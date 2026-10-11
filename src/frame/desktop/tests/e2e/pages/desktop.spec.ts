@@ -530,8 +530,9 @@ test('logout clears persisted desktop auth state before returning to login', asy
     document.cookie = 'control-panel_token=session-token; Path=/; SameSite=Lax'
   })
 
-  await page.getByRole('button', { name: 'BuckyOS' }).click()
-  await page.getByRole('button', { name: 'Log out' }).click()
+  // Log out lives on the profile card that hovering the avatar shows.
+  await page.getByRole('button', { name: 'BuckyOS' }).hover()
+  await page.getByTestId('taskbar-profile-card').getByRole('button', { name: 'Log out' }).click()
   await page.waitForURL('**/login?**')
 
   await expect
@@ -628,14 +629,19 @@ test('desktop taskbar slides out from the avatar, pins, and leaves windows the f
   await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
   await page.getByTestId('window-diagnostics').getByRole('button', { name: 'Close' }).click()
 
-  // Pinned: stays after outside clicks, survives a reload, and narrows the
-  // maximized window to the space right of it.
+  // Pinned (from the taskbar's right-click menu): stays after outside
+  // clicks, survives a reload, and narrows the maximized window to the
+  // space right of it.
   await avatar.click()
+  await taskbar.click({ button: 'right', position: { x: 30, y: 600 } })
   const pin = page.getByTestId('taskbar-pin')
+  await expect(pin).toHaveAttribute('aria-checked', 'false')
   await pin.click()
-  await expect(pin).toHaveAttribute('aria-pressed', 'true')
+  await expect(taskbar).toHaveAttribute('data-pinned', 'true')
   await page.mouse.click(900, 400)
+  // A pinned taskbar's avatar holds the profile card instead of hiding it.
   await avatar.click()
+  await expect(page.getByTestId('taskbar-profile-card')).toBeVisible()
   await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
   await expect.poll(async () => settingsWindow.boundingBox()).toEqual({
     x: 60,
@@ -645,13 +651,156 @@ test('desktop taskbar slides out from the avatar, pins, and leaves windows the f
   })
   await page.reload()
   await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
-  await expect(page.getByTestId('taskbar-pin')).toHaveAttribute('aria-pressed', 'true')
+  await expect(taskbar).toHaveAttribute('data-pinned', 'true')
 
   // Unpinning leaves it open until the next outside click.
+  await taskbar.click({ button: 'right', position: { x: 30, y: 600 } })
+  await expect(page.getByTestId('taskbar-pin')).toHaveAttribute('aria-checked', 'true')
   await page.getByTestId('taskbar-pin').click()
+  await expect(taskbar).toHaveAttribute('data-pinned', 'false')
   await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
   await page.mouse.click(900, 400)
   await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
+})
+
+test('taskbar apps launch from All apps, toggle like Windows 7, and pin from their menu', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('buckyos.desktop.taskbar-pinned.v1', 'true')
+  })
+  await page.goto('/?scenario=normal')
+
+  const taskbar = page.getByTestId('desktop-taskbar')
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
+  await expect(page.getByTestId('taskbar-app-files')).toHaveCount(0)
+
+  // All apps: a searchable list next to the taskbar; Enter opens the first match.
+  await page.getByTestId('taskbar-all-apps').click()
+  const allApps = page.getByTestId('all-apps-panel')
+  await expect(allApps).toBeVisible()
+  await expect(page.getByTestId('all-apps-search')).toBeFocused()
+  await page.getByTestId('all-apps-search').fill('file')
+  await expect(allApps.getByRole('button', { name: /^Files/ })).toBeVisible()
+  await expect(page.getByTestId('all-apps-item-settings')).toHaveCount(0)
+  await page.keyboard.press('Enter')
+  const files = page.getByTestId('window-files')
+  await expect(files).toBeVisible()
+  await expect(allApps).toHaveCount(0)
+
+  // A running app joins the taskbar after the pinned ones.
+  const filesButton = page.getByTestId('taskbar-app-files')
+  await expect(filesButton).toBeVisible()
+  await expect(page.getByTestId('taskbar-app-running-files')).toBeVisible()
+
+  // Clicking the front app minimizes it; clicking again restores it.
+  await filesButton.click()
+  await expect(files).toBeHidden()
+  await filesButton.click()
+  await expect(files).toBeVisible()
+
+  // Pin it, then close its window: the button stays, without the running mark.
+  await filesButton.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Pin to taskbar' }).click()
+  await filesButton.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Close window' }).click()
+  await expect(files).toHaveCount(0)
+  await expect(filesButton).toBeVisible()
+  await expect(page.getByTestId('taskbar-app-running-files')).toHaveCount(0)
+
+  // The pin survives a reload; unpinning removes the button.
+  await page.reload()
+  await expect(filesButton).toBeVisible()
+  await filesButton.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Unpin from taskbar' }).click()
+  await expect(filesButton).toHaveCount(0)
+})
+
+test('taskbar show desktop hides every window and brings them back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('buckyos.desktop.taskbar-pinned.v1', 'true')
+  })
+  await page.goto('/?scenario=normal')
+
+  await page.getByTestId('taskbar-app-settings').click()
+  const settings = page.getByTestId('window-settings')
+  await page.getByTestId('window-drag-settings').dblclick()
+  const maximized = await settings.boundingBox()
+  await page.getByTestId('taskbar-app-diagnostics').click()
+  const diagnostics = page.getByTestId('window-diagnostics')
+  await expect(diagnostics).toBeVisible()
+
+  const showDesktop = page.getByTestId('taskbar-show-desktop')
+  expect((await showDesktop.boundingBox())?.height).toBeLessThanOrEqual(16)
+  await showDesktop.click()
+  await expect(settings).toBeHidden()
+  await expect(diagnostics).toBeHidden()
+
+  // The second press restores them, maximized state and stacking included.
+  await showDesktop.click()
+  await expect(settings).toBeVisible()
+  await expect(diagnostics).toBeVisible()
+  expect(await settings.boundingBox()).toEqual(maximized)
+  const z = await page.evaluate(() =>
+    ['window-settings', 'window-diagnostics'].map((id) =>
+      Number((document.querySelector(`[data-testid="${id}"]`) as HTMLElement).style.zIndex),
+    ),
+  )
+  expect(z[1]).toBeGreaterThan(z[0])
+})
+
+test('taskbar profile and system status cards open on hover and hold on click', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/?scenario=normal')
+
+  const avatar = page.getByRole('button', { name: 'BuckyOS' })
+  await avatar.hover()
+  const profile = page.getByTestId('taskbar-profile-card')
+  await expect(profile).toBeVisible()
+  await expect(profile.getByRole('button', { name: 'Log out' })).toBeVisible()
+  await page.mouse.move(900, 400)
+  await expect(profile).toHaveCount(0)
+
+  // Two lines of system status at the bottom of the taskbar.
+  await avatar.click()
+  const status = page.getByTestId('taskbar-status')
+  await expect(status).toContainText(/CPU\s*\d+%/)
+  await expect(status).toContainText(/MEM\s*\d+%/)
+
+  await status.hover()
+  const details = page.getByTestId('taskbar-status-card')
+  await expect(details).toBeVisible()
+  await expect(details).toContainText('Memory')
+  await expect(details).toContainText('Uptime')
+
+  // A click holds the card after the pointer leaves; Escape lets it go.
+  await status.click()
+  await page.mouse.move(900, 400)
+  await page.waitForTimeout(400)
+  await expect(details).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(details).toHaveCount(0)
+  await expect(page.getByTestId('desktop-taskbar')).toHaveAttribute('aria-hidden', 'false')
+})
+
+test('mobile All apps covers the screen and launches the chosen app', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/?scenario=normal')
+
+  await page.getByRole('button', { name: 'BuckyOS' }).first().click()
+  await page.getByTestId('sidebar-all-apps').click()
+  const allApps = page.getByTestId('all-apps-panel')
+  await expect(allApps).toBeVisible()
+  expect(await allApps.boundingBox()).toEqual({ x: 0, y: 0, width: 390, height: 844 })
+
+  await page.getByTestId('all-apps-search').fill('sett')
+  await page.getByTestId('all-apps-item-settings').click()
+  await expect(allApps).toHaveCount(0)
+  await expect(page.getByPlaceholder('Search settings')).toBeVisible()
 })
 
 test('window modal only blocks its owner window', async ({ page }) => {

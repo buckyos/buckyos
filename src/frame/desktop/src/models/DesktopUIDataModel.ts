@@ -68,6 +68,7 @@ import type {
   SystemPreferencesInput,
   SystemSidebarAppItem,
   SystemSidebarDataModel,
+  TaskbarAppItem,
   ThemeMode,
   WidgetItem,
   WidgetLayoutSettings,
@@ -92,6 +93,7 @@ import {
   sameWindowGeometry,
   sanitizeWindowGeometryMap,
   windowAppearanceStorageKey,
+  desktopTaskbarAppsStorageKey,
   desktopTaskbarPinnedStorageKey,
   windowGeometryStorageKey,
   writeJson,
@@ -117,6 +119,8 @@ export interface DesktopRuntimeState {
   isSystemSidebarOpen: boolean
   /** 桌面端 taskbar 是否锁定常驻（持久化到 localStorage） */
   isTaskbarPinned: boolean
+  /** 固定在桌面端 taskbar 上的应用，按显示顺序（持久化到 localStorage） */
+  taskbarAppIds: string[]
   /** 当前选中的桌面项目 */
   selectedItemId: string | null
   /** 桌面翻页进度 (0~1) */
@@ -139,6 +143,31 @@ export interface AgentGuidePresentation {
 }
 
 const AGENT_GUIDE_LABEL_KEY = 'apps.agentGuide'
+
+/** What the taskbar holds before the user pins or unpins anything. */
+const defaultTaskbarAppIds = ['settings', 'diagnostics', 'users-agents', 'my-network']
+
+function readTaskbarAppIds(): string[] {
+  const stored = readJson<unknown>(desktopTaskbarAppsStorageKey)
+  return Array.isArray(stored) && stored.every((id) => typeof id === 'string')
+    ? stored
+    : defaultTaskbarAppIds
+}
+
+/** The state a window comes back to from `minimized`. */
+function restoredWindowState(app: AppDefinition, w: WindowRecord): WindowRecord['state'] {
+  if (w.state !== 'minimized') return w.state
+  return w.restoreState ?? (app.manifest.defaultMode === 'windowed' ? 'windowed' : 'maximized')
+}
+
+function minimizedWindow(w: WindowRecord, minimizedOrder: number | null): WindowRecord {
+  return {
+    ...w,
+    state: 'minimized',
+    restoreState: w.state === 'minimized' ? w.restoreState : w.state,
+    minimizedOrder,
+  }
+}
 
 async function agentGuideAllowedForAccount(): Promise<boolean> {
   const account = await fetchCurrentAccount().catch(() => null)
@@ -378,6 +407,17 @@ export class DesktopUIStore {
   private initSeq = 0
   private inflightInit: { key: string; promise: Promise<void> } | null = null
 
+  /** Windows hidden by the last "show desktop", bottom-to-top. */
+  private shownDesktopWindowIds: string[] = []
+
+  /** Memo for `getTaskbarApps()`. */
+  private taskbarAppsCache: {
+    apps: DesktopAppItem[]
+    windows: WindowRecord[]
+    taskbarAppIds: string[]
+    items: TaskbarAppItem[]
+  } | null = null
+
   /** Memo for `getWindowLayerModel()` — keyed on the inputs' identity. */
   private windowLayerModelCache: {
     apps: DesktopAppItem[]
@@ -425,6 +465,7 @@ export class DesktopUIStore {
         snackbar: null,
         isSystemSidebarOpen: false,
         isTaskbarPinned: readJson<boolean>(desktopTaskbarPinnedStorageKey) === true,
+        taskbarAppIds: readTaskbarAppIds(),
         selectedItemId: null,
         viewportProgress: 0,
         contextMenu: null,
@@ -846,9 +887,7 @@ export class DesktopUIStore {
 
     if (existing) {
       const nextWindows = raiseWindow(windows, existing.id, windows.length + 10, {
-        state: (app.manifest.defaultMode === 'windowed'
-          ? 'windowed'
-          : 'maximized') as WindowRecord['state'],
+        state: restoredWindowState(app, existing),
         minimizedOrder: null,
       })
       this.update({ runtime: { windows: nextWindows } })
@@ -911,16 +950,10 @@ export class DesktopUIStore {
 
     if (target) {
       const top = windows.reduce((max, w) => Math.max(max, w.zIndex), windows.length + 10) + 1
-      const restoredState: WindowRecord['state'] =
-        target.state === 'minimized'
-          ? app.manifest.defaultMode === 'windowed'
-            ? 'windowed'
-            : 'maximized'
-          : target.state
       this.update({
         runtime: {
           windows: raiseWindow(windows, target.id, top, {
-            state: restoredState,
+            state: restoredWindowState(app, target),
             minimizedOrder: null,
             launch: opts.launch ?? target.launch,
             title: opts.title ?? target.title,
@@ -1042,9 +1075,7 @@ export class DesktopUIStore {
     this.update({
       runtime: {
         windows: this.snapshot.runtime.windows.map((w) =>
-          w.id === windowId
-            ? { ...w, state: 'minimized' as const, minimizedOrder: order }
-            : w,
+          w.id === windowId ? minimizedWindow(w, order) : w,
         ),
       },
     })
@@ -1112,21 +1143,72 @@ export class DesktopUIStore {
       visibleWindowIds.map((id, i) => [id, this.nextMinimizedOrder + i]),
     )
     this.nextMinimizedOrder += visibleWindowIds.length
+    this.shownDesktopWindowIds = visibleWindowIds
 
     this.update({
       runtime: {
         windows: this.snapshot.runtime.windows.map((w) =>
           w.state === 'minimized'
             ? w
-            : {
-                ...w,
-                state: 'minimized' as const,
-                minimizedOrder: minimizedOrderMap.get(w.id) ?? null,
-              },
+            : minimizedWindow(w, minimizedOrderMap.get(w.id) ?? null),
         ),
         isSystemSidebarOpen: false,
       },
     })
+  }
+
+  /**
+   * The taskbar's "Show desktop": minimizes every window, and when nothing has
+   * been brought back since, a second press restores the windows it hid in
+   * their old stacking order.
+   */
+  toggleShowDesktop() {
+    const { windows } = this.snapshot.runtime
+    if (windows.some((w) => w.state !== 'minimized')) {
+      this.returnToDesktop()
+      return
+    }
+    const hidden = this.shownDesktopWindowIds
+    this.shownDesktopWindowIds = []
+    // `hidden` is bottom-to-top, so later entries land higher.
+    let top = windows.reduce((max, w) => Math.max(max, w.zIndex), 10 + windows.length)
+    const restored = new Map<string, number>()
+    for (const id of hidden) {
+      if (windows.some((w) => w.id === id)) restored.set(id, ++top)
+    }
+    if (restored.size === 0) return
+    this.update({
+      runtime: {
+        windows: windows.map((w) => {
+          const zIndex = restored.get(w.id)
+          const app = findDesktopAppById(this.snapshot.apps, w.appId)
+          if (zIndex === undefined || !app) return w
+          return { ...w, state: restoredWindowState(app, w), minimizedOrder: null, zIndex }
+        }),
+      },
+    })
+  }
+
+  /**
+   * A taskbar click on an app that has windows: minimizes its window when it
+   * is in front, otherwise restores and raises its front-most window (or the
+   * one minimized last). Returns false when the app has no window, so the
+   * caller launches it.
+   */
+  activateTaskbarApp(appId: string): boolean {
+    const own = this.snapshot.runtime.windows.filter((w) => w.appId === appId)
+    if (own.length === 0) return false
+    const front = this.getWindowLayerModel().topWindow
+    if (front?.appId === appId) {
+      this.minimizeWindow(front.id)
+      return true
+    }
+    const visible = own.filter((w) => w.state !== 'minimized')
+    const target = visible.length > 0
+      ? visible.reduce((a, b) => (b.zIndex > a.zIndex ? b : a))
+      : own.reduce((a, b) => ((b.minimizedOrder ?? 0) > (a.minimizedOrder ?? 0) ? b : a))
+    this.openAppWindow(appId, { windowId: target.id })
+    return true
   }
 
   /**
@@ -1429,6 +1511,15 @@ export class DesktopUIStore {
     this.normalizeOpenWindowsForViewport(viewportSize)
   }
 
+  /** Pin an app to the end of the desktop taskbar, or unpin it. */
+  setTaskbarAppPinned(appId: string, pinned: boolean) {
+    const current = this.snapshot.runtime.taskbarAppIds
+    if (current.includes(appId) === pinned) return
+    const next = pinned ? [...current, appId] : current.filter((id) => id !== appId)
+    writeJson(desktopTaskbarAppsStorageKey, next)
+    this.update({ runtime: { taskbarAppIds: next } })
+  }
+
   logActivity(message: string, locale: string) {
     const stamp = new Intl.DateTimeFormat(locale, {
       hour: '2-digit',
@@ -1460,6 +1551,53 @@ export class DesktopUIStore {
     const model = createDesktopWindowLayerDataModel(apps, windows)
     this.windowLayerModelCache = { apps, windows, model }
     return model
+  }
+
+  /**
+   * The desktop taskbar's app buttons: pinned apps in pinned order, then the
+   * other apps with open windows in the order they were opened.
+   */
+  getTaskbarApps(): TaskbarAppItem[] {
+    const { apps } = this.snapshot
+    const { windows, taskbarAppIds } = this.snapshot.runtime
+    const cached = this.taskbarAppsCache
+    if (
+      cached &&
+      cached.apps === apps &&
+      cached.windows === windows &&
+      cached.taskbarAppIds === taskbarAppIds
+    ) {
+      return cached.items
+    }
+    const frontAppId = this.getWindowLayerModel().topWindow?.appId
+    const pinned = new Set(taskbarAppIds)
+    const ids = [...new Set([...taskbarAppIds, ...windows.map((w) => w.appId)])]
+    const items = ids.flatMap((appId): TaskbarAppItem[] => {
+      const app = findDesktopAppById(apps, appId)
+      if (!app) return []
+      return [{
+        appId: app.id,
+        accent: app.accent,
+        iconKey: app.iconKey,
+        iconUrl: app.iconUrl,
+        labelKey: app.labelKey,
+        pinned: pinned.has(app.id),
+        windowCount: windows.filter((w) => w.appId === app.id).length,
+        active: frontAppId === app.id,
+      }]
+    })
+    // Window drags replace `windows` on every move; keep the old array when
+    // nothing the taskbar shows has changed.
+    const same =
+      cached !== null &&
+      cached.items.length === items.length &&
+      cached.items.every((item, i) => {
+        const next = items[i]
+        return (Object.keys(next) as Array<keyof TaskbarAppItem>).every((key) => next[key] === item[key])
+      })
+    const result = same && cached ? cached.items : items
+    this.taskbarAppsCache = { apps, windows, taskbarAppIds, items: result }
+    return result
   }
 
   getSystemSidebarDataModel(currentAppId?: string): SystemSidebarDataModel {

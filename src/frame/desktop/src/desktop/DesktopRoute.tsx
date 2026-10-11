@@ -45,6 +45,7 @@ import {
   resetDesktopViewportProgress,
   setDesktopViewportProgress,
 } from './viewportProgress'
+import { AllAppsPanel } from './AllAppsPanel'
 import { DesktopTaskbar } from './DesktopTaskbar'
 import { StatusBar } from './StatusBar'
 import { SystemSidebar } from './SystemSidebar'
@@ -239,6 +240,8 @@ export function DesktopRoute() {
     (searchParams.get('scenario') as MockScenario | null) ?? 'normal'
   const [scenario] = useState<MockScenario>(initialScenario)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  // Mobile only; the desktop taskbar keeps its own All apps panel.
+  const [isMobileAllAppsOpen, setMobileAllAppsOpen] = useState(false)
   const launchHandled = useRef(false)
   useEffect(() => {
     const value = searchParams.get('open')
@@ -535,6 +538,41 @@ export function DesktopRoute() {
     },
     [handleOpenApp, closeSidebar],
   )
+  const handleActivateTaskbarApp = useCallback(
+    (appId: string) => {
+      if (!store.activateTaskbarApp(appId)) handleOpenApp(appId)
+      closeSidebar()
+    },
+    [store, handleOpenApp, closeSidebar],
+  )
+  const handleCloseAppWindows = useCallback(
+    (appId: string) => {
+      for (const w of store.getSnapshot().runtime.windows) {
+        if (w.appId === appId) handleCloseWindow(w.id)
+      }
+    },
+    [store, handleCloseWindow],
+  )
+  const handleSetTaskbarAppPinned = useCallback(
+    (appId: string, pinned: boolean) => store.setTaskbarAppPinned(appId, pinned),
+    [store],
+  )
+  const handleShowDesktop = useCallback(() => {
+    store.toggleShowDesktop()
+    closeSidebar()
+  }, [store, closeSidebar])
+  const handleOpenMobileAllApps = useCallback(() => {
+    closeSidebar()
+    setMobileAllAppsOpen(true)
+  }, [closeSidebar])
+  const handleCloseMobileAllApps = useCallback(() => setMobileAllAppsOpen(false), [])
+  const handleOpenMobileAllAppsItem = useCallback(
+    (appId: string) => {
+      setMobileAllAppsOpen(false)
+      handleOpenApp(appId)
+    },
+    [handleOpenApp],
+  )
   const handleOpenDiagnostics = useCallback(
     () => handleSelectSidebarApp('diagnostics'),
     [handleSelectSidebarApp],
@@ -705,6 +743,7 @@ export function DesktopRoute() {
   )
   const shouldLockDesktopViewport = formFactor === 'desktop'
   const systemSidebarModel = store.getSystemSidebarDataModel(windowLayerModel.topWindow?.app.id)
+  const taskbarApps = store.getTaskbarApps()
   const topMobileWindowId = topMobileWindow?.id
   const handleMinimizeTopMobileWindow = useMemo(
     () =>
@@ -856,6 +895,7 @@ export function DesktopRoute() {
                     isLoggingOut={isLoggingOut}
                     onClose={closeSidebar}
                     onLogout={handleLogout}
+                    onOpenAllApps={handleOpenMobileAllApps}
                     onOpenApp={handleSelectSidebarApp}
                     onReturnDesktop={handleReturnDesktop}
                     open={isSystemSidebarOpen}
@@ -881,19 +921,23 @@ export function DesktopRoute() {
                 </>
               ) : (
                 <DesktopTaskbar
+                  apps={apps}
                   connectionState={connectionState}
                   isLoggingOut={isLoggingOut}
+                  onActivateApp={handleActivateTaskbarApp}
                   onClose={closeSidebar}
+                  onCloseAppWindows={handleCloseAppWindows}
                   onLogout={handleLogout}
                   onOpenApp={handleSelectSidebarApp}
-                  onReturnDesktop={handleReturnDesktop}
+                  onSetAppPinned={handleSetTaskbarAppPinned}
+                  onShowDesktop={handleShowDesktop}
                   onToggleOpen={toggleSidebar}
                   onTogglePinned={toggleTaskbarPinned}
                   open={isSystemSidebarOpen}
                   pinned={isTaskbarPinned}
                   runtimeContainer={runtimeContainer}
                   safeArea={safeArea}
-                  uiModel={systemSidebarModel}
+                  taskbarApps={taskbarApps}
                 />
               )}
               <div
@@ -964,6 +1008,19 @@ export function DesktopRoute() {
                   themeMode={themeMode}
                   topInset={mobileSheetTopInset}
                   windowAppearance={windowAppearance}
+                />
+              )}
+
+              {isMobile && isMobileAllAppsOpen && (
+                <AllAppsPanel
+                  apps={apps}
+                  insets={{
+                    top: safeArea.top + resolvedDeadZone.top,
+                    bottom: safeArea.bottom + resolvedDeadZone.bottom,
+                  }}
+                  onClose={handleCloseMobileAllApps}
+                  onOpenApp={handleOpenMobileAllAppsItem}
+                  variant="fullscreen"
                 />
               )}
             </MobileNavProvider>

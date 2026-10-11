@@ -42,6 +42,7 @@ export const runtimeStorageKey = 'buckyos.prototype.runtime.v1'
 export const windowGeometryStorageKey = 'buckyos.window-geometry.desktop.v1'
 export const windowAppearanceStorageKey = 'buckyos.window-appearance.v1'
 export const desktopTaskbarPinnedStorageKey = 'buckyos.desktop.taskbar-pinned.v1'
+export const desktopTaskbarAppsStorageKey = 'buckyos.desktop.taskbar-apps.v1'
 
 export function layoutStorageKey(formFactor: FormFactor) {
   return `buckyos.layout.${formFactor}.v2`

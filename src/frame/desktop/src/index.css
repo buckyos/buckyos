@@ -694,6 +694,14 @@ a {
   }
 }
 
+/* Desktop taskbar cards and panels opening out of the taskbar. */
+@keyframes cp-taskbar-pop {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

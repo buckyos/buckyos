@@ -199,6 +199,15 @@ export interface SystemSidebarDataModel {
   systemApps: SystemSidebarAppItem[]
 }
 
+/** A desktop taskbar button: a pinned app, an app with open windows, or both. */
+export interface TaskbarAppItem extends SystemSidebarAppItem {
+  pinned: boolean
+  /** Open windows of the app, minimized ones included. */
+  windowCount: number
+  /** The app owns the front-most visible window. */
+  active: boolean
+}
+
 export const systemPreferencesInputSchema = z.object({
   locale: z.enum(supportedLocales),
   theme: z.enum(['light', 'dark']),
@@ -237,6 +246,8 @@ export interface WindowRecord {
   id: string
   appId: string
   state: WindowState
+  /** The state a minimized window comes back to; unset until it is first minimized. */
+  restoreState?: Exclude<WindowState, 'minimized'>
   minimizedOrder: number | null
   titleKey: string
   /** Literal title (e.g. the open file name); falls back to `titleKey`. */

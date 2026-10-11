@@ -278,8 +278,8 @@ test('admin creates a real local user, then that user logs in and sees self', as
     await expect(appWindow.locator('.MuiChip-label').filter({ hasText: /^active$/ })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('admin-created-user.png'), fullPage: true })
 
-    await page.getByRole('button', { name: 'BuckyOS' }).click()
-    await page.getByRole('button', { name: 'Log out' }).click()
+    await page.getByRole('button', { name: 'BuckyOS' }).hover()
+    await page.getByTestId('taskbar-profile-card').getByRole('button', { name: 'Log out' }).click()
     await expect(page.getByLabel('Username')).toBeVisible()
     const cookiesAfterLogout = await page.context().cookies()
     expect(

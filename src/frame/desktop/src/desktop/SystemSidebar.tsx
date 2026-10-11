@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import {
   House,
+  Grip,
   LogOut,
   ShieldAlert,
   ShieldCheck,
@@ -22,6 +23,7 @@ export function SystemSidebar({
   isLoggingOut = false,
   onClose,
   onLogout,
+  onOpenAllApps,
   onOpenApp,
   onReturnDesktop,
   open,
@@ -35,6 +37,7 @@ export function SystemSidebar({
   isLoggingOut?: boolean
   onClose: () => void
   onLogout: () => void | Promise<void>
+  onOpenAllApps: () => void
   onOpenApp: (appId: string) => void
   onReturnDesktop: () => void
   open: boolean
@@ -139,6 +142,15 @@ export function SystemSidebar({
             <span className="truncate">
               {t('shell.returnDesktop', 'Desktop')}
             </span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenAllApps}
+            data-testid="sidebar-all-apps"
+            className={clsx(itemClassName, '-mt-2 font-medium text-[color:var(--cp-text)]')}
+          >
+            <Grip className="size-4 shrink-0 text-[color:var(--cp-muted)]" />
+            <span className="truncate">{t('shell.allApps', 'All apps')}</span>
           </button>
 
           {hasSwitchApps ? (
