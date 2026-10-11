@@ -65,7 +65,9 @@ xagent behaviors [--frozen <sid>] ; xagent xllm <sid> ; xagent schema <dir>
 
 驱动命令的 stdout 是一个带 `kind` 的 `DriveResult` JSON（`new` 另带 `session_id` / `path`，仍有未结束的子 Session 时带 `children`），日志与诊断在 stderr。退出码：0 完成，1 失败，2 参数 / 配置错误，3 未完成（idle、Turn 仍打开、input_full），4 被 stop / 中断，5 Busy，6 阻塞（非驱动者、未登记、绑定、runtime 不符、RecoveryBlocked、只读）。SIGINT 对 `new` / `run` 是对所驱动 Session 的 stop；对 `serve` 只结束托管。
 
-推进时 xagent 把自身包装成 session 的 `.runtime/bin/agent-session`，`shell` 里的命令用它访问本 Session 与 Agent State：`agent-session ctl activity --touch ws:foo`、`ctl perceive "…"`、`recall <tag>…`、`note <text>`、`sessions [--children] [--active]`、`read-session <sid>`、`artifact head|list`、`create-worksession --objective … [--report final|progress|none] [--wait] [--interactive]`、`wait <sid>`、`post <sid> --msg …`。
+推进时 xagent 把自身包装成 session 的 `.runtime/bin/agent-session`，`shell` 里的命令用它访问本 Session 与 Agent State：`agent-session ctl activity --touch ws:foo`、`ctl perceive "…"`、`recall <tag>…`、`note <text>`、`sessions [--children] [--active]`、`read-session <sid>`、`artifact head|list`、`create-worksession --objective … [--behavior <b>] [--runtime <id>] [--report final|progress|none] [--wait] [--interactive]`、`wait <sid>`、`post <sid> --msg …`、`runtime list|get|check`、`ask-user "<问题>" [--option <id>=<label>]... [--allow-text]`（只在 ui 类 Session 里：打印 `Pending{userinput:<call_id>}`，Session 把问题以 `thread → 占位` + `agent_ask` 发给用户，下一条用户消息回填为这次调用的结果，见 [Session Input Protocol](<../../../doc/opendan/protocol/Session Input Protocol.md>) §9）。
+
+behavior 可以用 `[tool]` 把自己（`create_sub_context` / `fork`）声明为调用方模型看到的具名函数，调用方在 `tool_whitelist` 写 `behavior:<name>`；运行时由 `runner::tools::BehaviorTool` 生成（通用的 `call_behavior` 也是它），内部协议同 `call_behavior`。fork 目标的 `[budget]` 作用于分支的 run。
 
 ## 测试
 
@@ -78,11 +80,13 @@ cargo test -p libopendan -- --test-threads=1
 | `tests/report.rs` | 阶段/最终报告、拒绝可修正、批次配对、显式完成策略、子 context 归属、稳定产物/JSON result、崩溃重做与历史去重 |
 | `tests/l1.rs` | 锁（epoch、inode 不变、CLOEXEC、kill -9 后接管）、反向读有界、压缩无空洞、kmsg 规则（文件队列与 kmsg 的 sled 实现）、订阅丢失重建、迁移、巡检、幂等创建、绑定失败、墓碑修复、活动视图 |
 | `tests/runner_basic.rs`、`tests/runner_more.rs` | work session 端到端、finished 后拒绝输入、非驱动者 / Busy、stop、事件路由（active / semi / 未订阅丢弃 / 订阅变更按投递顺序生效）、半订阅快照、behavior loop、普通 / fork / independent 切换（同一 Turn 内交接）、`max_turns` 只计已完成 Turn、decide 与 head、activity / perception 输入、tmux runtime |
-| `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`）或执行中被 kill -9 后恢复；版本不支持时阻塞；xllm 接手与拒绝 |
+| `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`、`user_input:after_question_commit`、`user_input:after_input_checkpoint`）或执行中被 kill -9 后恢复；问题只发一次、答案只消费一次；版本不支持时阻塞；xllm 接手与拒绝 |
 | `tests/input_tasks.rs` | 输入协议 3 与长任务：挂起调用在上下文之外等待 task 并回填同一 run、无 resolver 拒绝接手与 Unknown 回填、等待期间 stop、后台 task 完成合成 Input 事件、run 终态落盘后崩溃仍找回后台 task、工具执行中的 stop、64 条 pending 上限、Single / Batch、`input.media = inline`、重投去重与回复路径、旧 Session 只读、模板失败不消费、用户时区半订阅 |
 | `tests/self_improve.rs` | 感知幂等、self_improve 锁、整理游标、防自我回声 |
 | `tests/memory_sessions.rs` | Memory 多 Session 模拟的十个场景（与 `cargo run -p libopendan --example memory_sessions` 共用 `examples/support/memory_*.rs`），每个场景记录的检查都必须通过 |
 | `tests/memory_component.rs` | Memory 组件：并发写与观察无空隙、幂等键、批次与终局处置冲突、提交故障注入与恢复、pending 溢出重建、失败不当空结果、未变化与分页、整理 lease、预算分池与淡出、校验、派生物删除与修复、清理与追加并发、写锁期间观察、运行摘要、两进程 |
+| `tests/ask_user.rs` | `ask-user` 与 `[tool]`（意图分析 TODO V05–V10、V12、V14、V15、V22）：具名函数进入 fork、前缀字节一致、占位立即发出、问题 `thread → 占位` 带 `agent_ask`、等待 `input`、下一条消息回填（文本 / 选项 / 非回复 / 无占位）、`report` 的 `submission` 交回、Work 不能问、stop、嵌套、事件留给调用方、xllm 拒绝接手、fork 预算、同名函数与非法目标被拒 |
+| `tests/runtimes.rs` | Runtime 登记（V01–V04）：内建补建与保留 owner 修改、内建不可删、CAS、kRPC 署名、Workspace 按登记判断（`local` 即 `container`、`host` 拒绝）、`create-worksession --runtime` 查登记 |
 | `tests/outbound.rs` | 回复随 Turn 提交并沿来路发出、sink 不可达时保留并原样重发（同键同 ObjId）、被拒与路由不一致只记录不重试、没有 sink 时不产生 outbox |
 | `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json`；`14_input_bus` 的记录处理、拒绝原因与逐字节渲染 |
 | `tests/xagent_lib.rs` | 无队列 work Session 与 `prompt.initial_inputs`、`WAIT_USER_MSG` 的模板语义、`TurnClosed` / `TurnOpen`、behavior 冻结 / 补冻结 / 缺失冻结、三种 Agent State 实现结果一致、Sub Session（父等待汇报、`session:<sid>` 回填、数量与深度、交互式子提问、stop 级联、进度半订阅）、驱动者停止请求、on_context_switch 前的半订阅快照、timer bridge |
@@ -92,4 +96,6 @@ cargo test -p libopendan -- --test-threads=1
 
 重新生成 fixtures / JSON Schema：`cargo run -p libopendan --example fixtures -- ../doc/opendan/protocol/fixtures`（在 `src/` 下执行）。
 
-Workspace 管理由 `AgentStateClient.workspaces()` 统一提供，CLI 为 `xagent workspace` / `agent-session workspace`。创建或导入先显式指定 Runtime、绝对目录和操作 key，创建 Session 时用 `--workspace <稳定ID>` 绑定；无长期目录需求使用自身 SessionDir。旧 create_workspace / bind_workspace 工具已移除。格式、迁移和能力边界见 [Agent Workspace Protocol](<../../../doc/opendan/protocol/Agent Workspace Protocol.md>)。
+生成器将超长 fixture 路径缩短为 `_files/<编号>`，并写入 `_paths.json` 映射，避免 Windows checkout 超过路径长度限制；测试加载时还原完整路径。格式见 [协议 fixtures](../../../doc/opendan/protocol/README.md#3-机器可读材料)。
+
+Workspace 管理由 `AgentStateClient.workspaces()` 统一提供，CLI 为 `xagent workspace` / `agent-session workspace`；位置的 Runtime 引用 `AgentStateClient.runtimes()` 的登记（`state/runtimes/`，宿主补建 `container` 与 `host`，CLI `xagent runtime` / `agent-session runtime`，[Agent State Protocol](<../../../doc/opendan/protocol/Agent State Protocol.md>) §10）。创建或导入先显式指定 Runtime、绝对目录和操作 key，创建 Session 时用 `--workspace <稳定ID>` 绑定；无长期目录需求使用自身 SessionDir。旧 create_workspace / bind_workspace 工具已移除。格式、迁移和能力边界见 [Agent Workspace Protocol](<../../../doc/opendan/protocol/Agent Workspace Protocol.md>)。

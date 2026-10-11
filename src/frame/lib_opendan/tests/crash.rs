@@ -113,8 +113,82 @@ fn script_for(name: &str, _ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                 )
             }
         }),
+        "ask" => {
+            let (queue_dir, queue) = _ctx.expect("the ask scenario posts the answer");
+            ScriptedLlm::new(move |req: &LlmInferenceRequest, _| {
+                if has_tool_result(req, "f1").is_some() {
+                    text("final answer")
+                } else if let Some(a) = has_tool_result(req, "q1") {
+                    assert!(a.contains("docs only"), "{a}");
+                    text("analysis: docs only")
+                } else if last_user_text(req).contains("<sub_task") {
+                    // The user answers while the question is out (once,
+                    // whichever process gets here).
+                    let marker = queue_dir.join("answered");
+                    if !marker.exists() {
+                        std::fs::write(&marker, "").unwrap();
+                        post_blocking(&queue_dir, &queue, msg("docs only"));
+                    }
+                    tool_call(
+                        "q1",
+                        "shell",
+                        json!({ "command": "agent-session ask-user 'docs or everything?'" }),
+                    )
+                } else {
+                    tool_call("f1", "try_analyze", json!({ "request": "tidy docs" }))
+                }
+            })
+        }
         other => panic!("unknown scenario {other}"),
     }
+}
+
+/// Outbound sink of the crash tests: what was handed over, appended to a
+/// file both processes share.
+struct FileSink {
+    path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl libopendan::runner::OutboundSink for FileSink {
+    async fn placeholder(
+        &self,
+        _cfg: &SessionConfig,
+        mut base: ndn_lib::MsgObject,
+        _turn: u64,
+    ) -> Option<ndn_lib::MsgObject> {
+        base.content.content = "working".into();
+        Some(base)
+    }
+
+    async fn send(
+        &self,
+        _sid: &str,
+        record: &libopendan::bridge::OutboundRecord,
+    ) -> libopendan::runner::SendResult {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .unwrap();
+        writeln!(f, "{}", record.key).unwrap();
+        libopendan::runner::SendResult::Sent {
+            msg_id: Some(msg_key(&record.msg)),
+            deliveries: Vec::new(),
+        }
+    }
+}
+
+fn scenario_deps(env: &Env, scenario: &str, llm: Arc<ScriptedLlm>) -> libopendan::runner::RunnerDeps {
+    let mut deps = env.deps(llm);
+    if scenario == "ask" {
+        deps = deps.with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+        deps.outbound = Some(Arc::new(FileSink {
+            path: env.root.join("sent.log"),
+        }));
+    }
+    deps
 }
 
 /// Child entry point: a no-op unless spawned by `spawn_child`.
@@ -129,10 +203,11 @@ async fn child_driver() {
     };
     let env = Env::at(Path::new(&root));
     let sd = SessionDir::open(&session).unwrap();
-    let deps = env.deps(script_for(
+    let deps = scenario_deps(
+        &env,
         &scenario,
-        Some((env.queue_dir.clone(), queue_of(&sd))),
-    ));
+        script_for(&scenario, Some((env.queue_dir.clone(), queue_of(&sd)))),
+    );
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     eprintln!("child drive result: {r:?}");
 }
@@ -1013,4 +1088,74 @@ async fn xllm_cannot_take_over_a_managed_workspace_run_without_its_writer_gate()
     assert!(matches!(error, XllmError::NotResumable { .. }), "{error}");
     assert!(error.to_string().contains("workspace"), "{error}");
     assert_eq!(llm.count(), 0);
+}
+
+// Asking the user (intent analysis TODO V11) ---------------------------------
+
+fn ask_spec() -> libopendan::api::SessionSpec {
+    let mut spec = work_spec("analyze and ask");
+    spec.prompt.llm_context = json!({
+        "tools": { "enabled": true, "tools": [ { "groupname": "bash" }, { "name": "behavior:analyze" } ] }
+    });
+    spec.extensions.insert(
+        "opendan".into(),
+        json!({ "behaviors": { "analyze": { "mode": "fork", "tool": {
+            "name": "try_analyze", "description": "analyze",
+            "parameters": { "type": "object", "properties": { "request": { "type": "string" } } },
+            "task": "{{args.request}}"
+        } } } }),
+    );
+    spec
+}
+
+/// V11: a crash before the question is committed (the run already
+/// suspended on it), after it was committed but not sent, after the
+/// answer's snapshot was published, and after the answer was committed:
+/// the question leaves once, the answer is consumed and filled once.
+#[tokio::test]
+async fn asking_the_user_survives_a_crash_at_every_stage() {
+    for (fault, left) in [
+        ("outcome:after_checkpoint#2", 2),
+        ("user_input:after_question_commit", 2),
+        ("user_input:after_input_checkpoint", 2),
+        ("user_input:after_state_commit", 2),
+    ] {
+        let env = Env::new();
+        let sd = env.create_work(ask_spec()).await;
+        post_msg(&env, &sd, "m-1", "please tidy the docs").await;
+        let mut child = spawn_child(&env, &sd, "ask", Some(fault));
+        assert!(
+            !wait_exit(&mut child, Duration::from_secs(60)).success(),
+            "{fault}: the fault point was not reached"
+        );
+        let llm = script_for("ask", Some((env.queue_dir.clone(), queue_of(&sd))));
+        let r = drive(&sd, &scenario_deps(&env, "ask", llm.clone()), StopWhen::Finished).await;
+        assert!(r.is_finished(), "{fault}: {r:?}");
+        assert_eq!(llm.count(), left, "{fault}: nothing is inferred twice");
+        assert!(sd.report().unwrap().contains("final answer"), "{fault}");
+        let results: Vec<String> = read_worklog(&sd)
+            .into_iter()
+            .filter_map(|e| match e.body {
+                WorklogBody::ActionResult { call_id, .. } => Some(call_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, vec!["q1".to_string(), "f1".to_string()], "{fault}");
+        let st = sd.state().unwrap();
+        let questions: Vec<_> = st
+            .outbox
+            .iter()
+            .filter(|e| e.purpose == OutboxPurpose::Question)
+            .collect();
+        assert_eq!(questions.len(), 1, "{fault}");
+        assert_eq!(questions[0].status, OutboxStatus::Sent, "{fault}");
+        let sent = std::fs::read_to_string(env.root.join("sent.log")).unwrap();
+        let asked: std::collections::BTreeSet<&str> =
+            sent.lines().filter(|k| k.contains(":ask:")).collect();
+        assert_eq!(asked.len(), 1, "{fault}: {sent}");
+        assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "{fault}");
+        assert_eq!(st.source("q").acked_index, 2, "{fault}: request and answer consumed");
+        assert!(st.process_stack.is_empty(), "{fault}");
+        assert_worklog_contiguous(&sd);
+    }
 }

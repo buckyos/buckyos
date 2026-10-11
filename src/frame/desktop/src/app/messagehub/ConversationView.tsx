@@ -18,10 +18,12 @@ import { ConversationMessageActionsContext } from './conversation/history/action
 import type { ConversationMessageReader } from './conversation/history/types'
 import {
   ConversationComposer,
+  type ComposerAnswer,
   type ComposerRelation,
   type ConversationComposerHandle,
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
+import { conversationInputState } from './conversation/input/inputState'
 import { messageObjId, messageSummaryText, ownReactionId } from './conversation/history/relations'
 import { SessionPanel } from './conversation/SessionPanel'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
@@ -136,6 +138,11 @@ export function ConversationView({
   const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
   const [relation, setRelation] = useState<ComposerRelation | null>(null)
   const sessionId = session?.id
+  // The input state follows the timeline: an open question locks the
+  // composer to answering it and replaces a reply or edit the user picked.
+  const inputState = useMemo(() => conversationInputState(messageReader.timeline ?? [], context.ownerDid, { group: isGroup }), [messageReader, context.ownerDid, isGroup])
+  const answerState = inputState.mode === 'answer' ? inputState : null
+  if (answerState && relation) setRelation(null)
   const pinned = session ? store.preferences(context, session.id).pinnedMessage ?? null : null
   const pinnedId = pinned?.id
   const [panelInset, setPanelInset] = useState(0)
@@ -182,7 +189,8 @@ export function ConversationView({
           // Outside a group a redact is a request the peer's client honours by
           // default; nothing enforces it, so either side may ask for any message.
           const redact = canSend && (!isGroup || (own ? withinWindow(group?.messageRules.recallWindowMs, message.created_at_ms, now) : group?.can.redactAny ?? false))
-          return { reply: canSend, react: canSend, edit, redact, recall: redact && isGroup && own }
+          // While a question is open nothing but its answer may be sent.
+          return { reply: canSend && !answerState, react: canSend, edit: edit && !answerState, redact, recall: redact && isGroup && own }
         },
         reply: (message: MessageObject) => setRelation({ kind: 'reply', message }),
         edit: (message: MessageObject) => setRelation({ kind: 'edit', message }),
@@ -203,7 +211,9 @@ export function ConversationView({
       } : undefined,
       readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
     }
-  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, onOpenMessage, pinnedId, t]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, onOpenMessage, pinnedId, t, answerState]) // eslint-disable-line react-hooks/exhaustive-deps
+  const askerName = answerState ? messageActions.displayName(answerState.question.from) : ''
+  const answer = useMemo<ComposerAnswer | null>(() => answerState ? { ...answerState, askerName } : null, [answerState, askerName])
 
   useEffect(() => {
     if (!focusMessageId || !sessionId) return
@@ -377,8 +387,9 @@ export function ConversationView({
             placeholder={t('messagehub.inputPlaceholder', 'Message...')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
-            relation={relation}
+            relation={answer ? null : relation}
             onCancelRelation={() => setRelation(null)}
+            answer={answer}
             mentionCandidates={isGroup ? mentionCandidates : undefined}
             canMentionAll={isGroup && (group?.can.mentionAll ?? false)}
           /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</span></div>}

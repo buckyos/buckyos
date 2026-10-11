@@ -1120,6 +1120,13 @@
             "final_edit"
           ],
           "type": "string"
+        },
+        {
+          "description": "A question to the user while the Turn is open (`ask-user`): a `thread` message on the placeholder, carrying `agent_ask`.",
+          "enum": [
+            "question"
+          ],
+          "type": "string"
         }
       ]
     },

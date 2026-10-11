@@ -98,6 +98,17 @@ Agent 的回复可以在 MsgObject 顶层（`meta` 平铺，**不**再包一层 
 - 进度不走消息：运行中的状态、子任务树、事件都从 TaskMgr 读（`get_task`、`get_subtasks`、`list_task_events`，事件路径 `/task_mgr/<id>`、`/task_mgr/tree/<root_id>`），不为每次状态变化发 edit，也不产生新的 mailbox 记录或通知。
 - 未读：占位与 edit 各有一条 INBOX 记录；UI 在气泡可见时把二者一并标为已读（edit 没有自己的行）。会话摘要里的 `unread_count` 仍由 msg-center 按记录计数，未打开的会话在二者都未读时会计为 2（见 MessageHub `UI_DATAMODEL.md` §3.5.4）。
 
+#### 2.1.2 `agent_ask`：Turn 中途的提问（2026-10-11）
+
+Agent 在一个 Turn 内向用户提问（OpenDAN `agent-session ask-user`）时，问题是对占位的 `thread` 回复，顶层扩展字段：
+
+```json
+{ "agent_ask": { "anchor": "<占位 ObjId；不可编辑的会话为空>", "call_id": "<调用 id>", "turn": 3,
+                 "input": { "kind": "text | choice", "options": [{ "id": "a", "label": "…" }], "allow_text": false } } }
+```
+
+用户的回答同样是对占位（没有占位时对问题本身）的 `thread` 回复；从选项中选的回答另带 `content.machine = {intent: "agent_ask.answer", data: {call_id, option}}`。msg-center 与 tunnel 不解释这两个字段，原样存储与投递（读到的是正文；选项问题的正文附带选项列表）。只有 MessageHub（回答态、问答折叠，见 `UI_DATAMODEL.md` §3.5.5）和发出问题的 Agent 关心它们；Agent 把等待期间收到的下一条消息都当作答案，关系与 machine 只是线索。未读计数仍按记录：P、Q、A 与 edit 各一条（已知问题）。
+
 **永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类、接收方分配的序号。
 本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；投递回执由 `ReceiptObj`（`cyrece`）单独表达。
 会话级生命周期需另有 owner 范围元数据（§5.8）。这些变化均不修改原始 MsgObject。

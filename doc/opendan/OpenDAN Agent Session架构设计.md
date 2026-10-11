@@ -292,6 +292,38 @@ Goal 的明确性不等于一次性完成所有未来行动的规划。它需要
 
 分析结果不能悄悄把原始需求扩展为更大的目标。在关键条件或授权未明确时，应停留在待澄清/待确认，而不是用默认假设启动高成本执行。
 
+### 5.6 意图分析的实现形态
+
+2026-10-11 起按 [意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md) 实现。本节记录实现选择及原因；字段与命令以协议文档和源码为准。
+
+**具名函数由 behavior 声明。** UI 的模型看到的是 `try_analyze_user_intent(request)`，不是通用的 `call_behavior`。函数由 behavior `analyze_intent` 的 `[tool]` 声明生成：`name`、`description`（即路由指南）、`parameters`（JSON Schema）和 `task` 模板（只引用 `{{args.<name>}}`）。调用方 behavior 在 `tool_whitelist` 里写 `behavior:<name>` 才能看到它，目标必须在调用方的 `meta.next` 里，且进入模式为 `create_sub_context` 或 `fork`。声明随 behavior 冻结进 Session，存续期间工具定义不变。宿主不认识任何 behavior 名字；调用的内部协议仍是 `call_behavior` 的子 context 协议（xAgent §3.6），`call_behavior` 保留为可选的通用入口，不再默认提供给 UI。这是“LLM 可见的基础函数要可配置”的落点：换路由指南、换参数、换目标 behavior 都只改 Agent 包。
+
+**为什么是 fork 而不是 create_sub_context。** 分析需要完整理解当前对话，又要尽量便宜。`fork` 保留 UI 的 system、工具集、模型和分叉点前的完整历史，子 run 的第一个请求就是父请求的前缀加一条引导 user message，父恢复后的请求也是同一前缀加调用与结果，都能命中 provider 的前缀缓存。代价是 fork 不能换 system、模型或工具集，所以：
+
+- `analyze_intent` 没有 system，只有 `on_context_switch` 引导文字和 `[budget]`；它的预算作用于分支的 run（工具迭代、token、连续错误），不改变请求的渲染内容。
+- 分析用的“新工具”全是层 ② CLI（`agent-session workspace / runtime / sessions / goal / ask-user / create-worksession`），经 UI 本来就有的 `shell` 调用，由引导文字说明。
+- 分析用 UI 的模型（`llm.chat`）。
+- 分支结束以 `report({report, result, is_end: true})` 返回；UI 收到 `{status, behavior, submission: {report, result}}`，`result.outcome` 为 `work_created / goal_created / direct / declined / needs_confirmation / unsupported`。`report` 因此必须在 UI 的工具列表里（fork 继承工具集），UI 自己不用它作答。
+- 分支的 transcript 不进入 UI 之后重建的历史，UI 只留下一次函数调用与它的结果；用户在澄清里说的话靠 `result.clarifications` 回到 UI。
+
+**反问用户：`ask-user` 是挂起的工具调用。** `agent-session ask-user "<问题>" [--option id=label]... [--allow-text]` 打印 `Pending{task_id: "userinput:<call_id>"}`，run 以 PendingTool 挂起在这次调用上。只有 Session 解析 `userinput:`：它把问题发出去，状态写 `waiting_for = {kind: input, refs: ["userinput:<call_id>"]}`，Turn 保持打开；输入队列里下一条 msg（只取一条，context 消息除外）就是这次调用的工具结果 `{text, attachments, option, in_reply_to_question, msg_id, from, at_ms}`，以一张不注入消息的输入回执消费，与结果同一快照提交。事件、子 Session 状态和半订阅观察照旧留给调用方。只有“有输入队列、`wait_user_msg = allowed`、不是子 Session”的 Session 能问，其它 Session（Work、Goal）得到错误结果。这条路径与主 context 的 `WAIT_USER_MSG`、子 context 的哨兵路径（交回调用方）互不相干，D2 规则（xAgent §11.5 第 1 条：等待前已交付回复即完成该 Turn）不变：提问不是交付，不关 Turn，也不计入 `turns_completed`。xllm 不能解析 `userinput:`，拒绝接手这样的 run。stop 时挂起的提问以“用户未回答”结束。
+
+**问答消息流（P / Q / A / R）。** 在能编辑消息的频道上：
+
+```text
+[用户]  帮我把这个项目的文档整理一下
+[Agent] P：占位（agent_task）            ← ask-user 登记时立即发出，不等 placeholder_delay
+          └ Q：问题（thread → P，agent_ask{anchor: P, call_id, turn, input}）
+          └ A：回答（thread → P；选项回答带 machine{intent: "agent_ask.answer", data{call_id, option}}）
+[Agent] R：结果（P 的 edit）              ← Turn 结束
+```
+
+Q 在 outbox 中排在 P 之后，P 发出后按它实际的 `msg_id` 重定目标；P 没发出就被撤回时 Q 变成独立消息。问题在“写入等待状态”的同一次提交里入 outbox，提交之前不会把任何消息当作答案。MessageHub 只看时间线：最后一条是别人发来的 `agent_ask` 时进入回答态（文本问题锁定为对锚点的回复，选项问题把输入框换成选项，`/stop` 仍可发）；问答折叠在锚点下，R 到达后收起。群聊里问题会 `mentions` 主人，MessageHub 只对被提到的成员锁定输入框。
+
+**不可编辑频道的退化。** 没有 P：Q 是独立消息（`agent_ask.anchor` 为空），A 是普通消息或对 Q 的回复，R 是独立消息。Agent 侧不要求 A 一定带关系或 machine：任何下一条消息都是答案，`in_reply_to_question` 与 `option` 只是线索，分析自己判断“回答不是回答”。
+
+**Runtime。** 选择 Workspace 需要知道有哪些 Runtime：Agent State 有 Runtime 登记 `state/runtimes/<id>.json`，Loader 启动时幂等补建 `container`（Agent 自己所在环境，可用）与 `host`（宿主机，登记可见但在宿主机执行器落地前 `runtime_unavailable`）。Workspace 位置的 `runtime_id` 按登记判断（`local` 是 `container` 的旧名，仍可读），`create-worksession --runtime` 只接受已登记且可用的 Runtime。
+
 ## 6. Work Session：有界执行、明确失败与结果交付
 
 ### 6.1 定义
@@ -1435,6 +1467,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 合并与观察进度 | semi 按 `(subscription_id, source)` 分组；`latest / terminal` 分槽，槽内比较版本，终态不被非终态覆盖。仅按 receipt 清理实际展示版本。active 没有同等状态合并，当前也没有通用语义 Override。 | 复用版本与精确确认机制；区分状态维度、独立要求及显式纠正关系，再实现适用事件的 Coalesce / Override。 |
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |
 | 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；PendingTool 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |
+| 意图分析 | 2026-10-11 起（[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)）：behavior `[tool]` 声明生成 `try_analyze_user_intent`；`analyze_intent` 为 fork 子 context；`ask-user` 以 PendingTool `userinput:` 挂起，下一条消息回填为工具结果；问答以 `thread → 占位` + `agent_ask` 出站；Work 有 `plan` 与 `work_simple` 两种形态；Runtime 登记 `container` / `host`。见 §5.6。 | 计划任务（未来执行的 Work）；宿主机执行器；Task 修订；Anthropic `cache_control` 断点（前缀缓存命中依赖 provider 链路）。 |
 | Goal 的现有实现 | 2026-10-11 起（[Goal Session TODO](../../notepads/opendan-goal-session-todo.md) 第一段）：Goal 对象在 Agent State（`state/goals/`，定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度），模板 `goal`；宿主按 Goal 列表补建 Goal Session，运行机会为 epoch 开始、本地定时（`every_secs`，可替换的 `ScheduleBackend`）、手动、Work 结束、UI 转交的消息；一个 Activation = 一个 Turn，Goal 头在批次提交前冻结；结束只关闭 Turn，结果按 Goal 格式写回；Work 带 `origin.goal`，按 `goal_id` 吸收。 | 第二段：workflow 计划任务接入（cron、时区、一次性）、Memory 整理 Goal 与删除 self_improve、self_check 退役、WebUI Goals 视图、follow_up 与对象订阅驱动、通知人。 |
 
 实现核对入口：
@@ -1560,8 +1593,8 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 | 事项 | 当前方向 | 尚需确定 |
 |---|---|---|
-| 意图分析接口名称 | 倾向 `try_analyze_user_intent` | 旧名称兼容、返回协议及是否拆分创建调用。 |
-| 自动创建与二次确认 | 两种模式都保留 | 哪些任务、目标及权限条件适用哪一种。 |
+| 意图分析接口名称 | **已采用**（§5.6）：`try_analyze_user_intent(request)`，由 behavior `analyze_intent` 的 `[tool]` 声明；旧 `task_route` 已删除；返回 `{status, behavior, submission: {report, result}}`，`result.outcome` 六种；创建在分析内部完成，不拆分创建调用 | `result` 字段目前只由引导文字约定，宿主不校验。 |
+| 自动创建与二次确认 | **已采用**：条件齐备时在分析内自动创建；需要用户拍板的单个选择作为 `ask-user` 问题问完仍自动创建；无法用一个问题问清的整体方案返回 `needs_confirmation`，UI 讲清后再调一次 | 哪些权限条件必须二次确认（目前只靠引导文字约束，按“先能力后安全”记为已知风险）。 |
 | Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续。**当前实现（2026-10-11，Goal Session TODO 第一段）**：同一时刻一个 Goal 一个 Goal Session，按 `(goal_id, epoch)` 确定性派生；reopen / restart 开新 epoch（旧 Session 结束、Goal State 存档），Work 按 `goal_id` 归属、跨 epoch 由新 Session 接管 | 多 Session 协作、跨节点所有权。 |
 | Goal 压缩策略 | 比 UI 更重视目标历史与当前 Skills | 阈值、摘要结构和恢复算法。 |
 | Work 时限与资源 | 相对短期且有界 | 不同任务类别的超时、轮次和失败判定。 |

@@ -63,3 +63,46 @@ export function useTaskExpanded(anchorId: string): [boolean, (value: boolean) =>
     setExpanded(value)
   }]
 }
+
+const QA_EXPANDED_KEY = 'buckyos.messagehub.qaExpanded.v1'
+/** Hand-set Q/A lists remembered per viewer; the oldest are forgotten first. */
+const QA_EXPANDED_LIMIT = 200
+let qaChoices: Record<string, Record<string, boolean>> | null = null
+
+function readQaChoices(): Record<string, Record<string, boolean>> {
+  if (qaChoices) return qaChoices
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(QA_EXPANDED_KEY) ?? '{}')
+    qaChoices = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, Record<string, boolean>> : {}
+  } catch {
+    qaChoices = {}
+  }
+  return qaChoices
+}
+
+function storeQaChoice(viewerDid: string, anchorId: string, expanded: boolean) {
+  const all = readQaChoices()
+  const own = { ...(typeof all[viewerDid] === 'object' ? all[viewerDid] : {}) }
+  delete own[anchorId]
+  own[anchorId] = expanded
+  const keys = Object.keys(own)
+  for (const key of keys.slice(0, Math.max(0, keys.length - QA_EXPANDED_LIMIT))) delete own[key]
+  qaChoices = { ...all, [viewerDid]: own }
+  try { localStorage.setItem(QA_EXPANDED_KEY, JSON.stringify(qaChoices)) } catch { /* kept for this page only */ }
+}
+
+/**
+ * Whether the Q/A list under an Agent bubble is open: `fallback` (open while
+ * the Turn waits, closed once its reply arrived) until the viewer opens or
+ * closes it by hand, which is remembered per viewer in this browser.
+ */
+export function useQaExpanded(viewerDid: string, anchorId: string, fallback: boolean): [boolean, (value: boolean) => void] {
+  const [choice, setChoice] = useState<boolean | undefined>(() => {
+    const stored = readQaChoices()[viewerDid]?.[anchorId]
+    return typeof stored === 'boolean' ? stored : undefined
+  })
+  return [choice ?? fallback, value => {
+    storeQaChoice(viewerDid, anchorId, value)
+    setChoice(value)
+  }]
+}

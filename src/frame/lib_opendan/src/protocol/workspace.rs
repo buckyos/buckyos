@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub const WORKSPACE_METADATA_FILE: &str = ".opendan-workspace.json";
 pub const WORKSPACE_METADATA_VERSION: u32 = 1;
 pub const WORKSPACE_RECORD_VERSION: u32 = 1;
-pub const LOCAL_WORKSPACE_RUNTIME: &str = "local";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceLocation {

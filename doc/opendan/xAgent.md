@@ -276,7 +276,25 @@ impl AgentSession {
 
 **与 T2 的关系**：T2 由 `next_behavior` 触发，结果经 `process_result` 交接批次返回；T4 由工具调用触发，结果经 `ToolResults` 返回。子 run 的构造（两种方式）、栈、持久化、worklog 完全共用。
 
-于是 `try_create_worksession` 的目标形态是：ui context 调用 `call_behavior({behavior: "route_worksession", task: …})`；`route_worksession` 声明 `mode = create_sub_context`、`inherit = recent_dialogue`，在自己的 system 里约定 JSON 输出，只开放 `read`、`exec` 和层 ② 的 `agent-session create-worksession`。**不需要层 ③**：子 context 不是一个进程内工具，而是 Session 的 Context 调度（回答 §12 第 7 项）。
+于是 `try_create_worksession` 的目标形态是：ui context 调用一个子 context 函数，结果作为工具结果返回。**不需要层 ③**：子 context 不是一个进程内工具，而是 Session 的 Context 调度（回答 §12 第 7 项）。已采用的形态（2026-10-11）是 `try_analyze_user_intent`：behavior `analyze_intent`（`fork`）用下面的 `[tool]` 声明暴露给 UI，取代 `task_route`。
+
+**`[tool]` 声明：LLM 可见的具名函数**（2026-10-11，[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md) §3.13）。目标 behavior 可以把自己声明为一个具名函数，调用方的模型看到的是这个函数，而不是通用的 `call_behavior`：
+
+```toml
+[tool]
+name = "try_analyze_user_intent"   # 函数名（字母、数字、_，≤ 64）；缺省 = behavior 名
+description = "…"                   # 什么时候该调：这就是路由指南
+task = "{{args.request}}"           # 子 context 的 task 模板，只能引用 args.<name>；缺省 = 参数 JSON（或缺省参数下的 args.task）
+[tool.parameters]                   # JSON Schema（type = object）；缺省 {task: string}
+…
+```
+
+- 只有进入模式为 `create_sub_context` / `fork` 的 behavior 能声明；它随 behavior 冻结（`extensions.opendan.behaviors.<name>.tool`），Session 存续期间定义不变（前缀缓存）。两个 behavior 声明同名函数，冻结时被拒。
+- 调用方在 `tool_whitelist` 里写 `behavior:<name>` 才能看到它（目标须是 `meta.next` 闭包内的已冻结 behavior 且带 `[tool]`，否则冻结时报错）；没有 `[tool]` 的目标仍只能经 `call_behavior` 调用，`call_behavior` 不再缺省进任何白名单。
+- 实现上 `CallBehaviorTool` 泛化为 `BehaviorTool`（通用 `call_behavior` 或某个 behavior 的具名函数）：`call()` 与上面完全一样——校验、深度、`allow_deferred`，返回 `Pending{subctx:<call_id>}`；`ChildCall.behavior` 是声明它的 behavior，`ChildCall.task` 是模板渲染结果。挂起识别（`pending_sub_call`）按函数名找回 behavior，结果回填、worklog、崩溃恢复不变。宿主不认识任何 behavior 名字。
+- behavior（XML）循环里作为 action 暴露（`action_whitelist` 写 `behavior:<name>`）协议上不排除，目前未实现。
+
+子 context 向用户提问不走 `needs_user_input`：允许提问的 Session（有输入队列、`wait_user_msg = allowed`、不是子 Session）里，子 context 运行 `agent-session ask-user`，以 PendingTool `userinput:<call_id>` 挂起，Session 把下一条用户消息作为该调用的结果回填，见[架构文档 §5.6](<OpenDAN Agent Session架构设计.md>)。`<sub_task>` 包装在这类 Session 里写“To ask the user, run `agent-session ask-user`”，其它 Session 写“Do not ask the user.”。
 
 ### 3.7 llm_context / xllm 层提供的原语
 
@@ -795,7 +813,7 @@ pub struct BehaviorConfig {
 
 `semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主自 `session_config/4` 起按新名实施（当前为 `/7`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
 
-进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6），不需要另外声明工具。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, prompt{system?, on_init?, on_input?, on_context_switch?, semi_subscription_snapshot?}, input{mode, media}?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
+进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6）；要让模型看到一个具名函数，再加 `[tool]` 声明（§3.6）。`fork` 目标的 `[budget]` 不进 `llm_context`，由宿主作用于分支的 run（工具迭代、token、时长、连续错误），不改变请求的渲染内容。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, prompt{system?, on_init?, on_input?, on_context_switch?, semi_subscription_snapshot?}, input{mode, media}?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
 
 ### 6.3 冻结：时机、位置、范围
 

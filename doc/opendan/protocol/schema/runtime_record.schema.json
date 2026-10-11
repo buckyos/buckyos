@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "RuntimeAvailability": {
+      "enum": [
+        "available",
+        "runtime_unavailable",
+        "permission_denied"
+      ],
+      "type": "string"
+    },
+    "RuntimeKind": {
+      "enum": [
+        "container",
+        "host_native",
+        "remote_ssh"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "availability": {
+      "$ref": "#/definitions/RuntimeAvailability"
+    },
+    "builtin": {
+      "default": false,
+      "description": "Created by the host; cannot be unregistered.",
+      "type": "boolean"
+    },
+    "capabilities": {
+      "default": null,
+      "description": "`{tools, network, os}` as far as known."
+    },
+    "checked_at_ms": {
+      "default": null,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "exec": {
+      "default": null,
+      "description": "How the runtime layer reaches it (`agent_tool` RuntimeConfig); `None`: there is no executor for it yet."
+    },
+    "kind": {
+      "$ref": "#/definitions/RuntimeKind"
+    },
+    "last_error": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "registered_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "registered_by": {
+      "type": "string"
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "roots": {
+      "default": [],
+      "description": "Where workspaces are best placed in it.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "runtime_host": {
+      "description": "`native_host_id()` of the host that registered it.",
+      "type": "string"
+    },
+    "runtime_id": {
+      "type": "string"
+    },
+    "updated_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "availability",
+    "kind",
+    "name",
+    "registered_at_ms",
+    "registered_by",
+    "revision",
+    "runtime_host",
+    "runtime_id",
+    "updated_at_ms",
+    "version"
+  ],
+  "title": "RuntimeRecord",
+  "type": "object"
+}

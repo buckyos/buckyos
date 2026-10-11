@@ -310,6 +310,9 @@ impl AgentStateClient for ForwardingStateClient {
     fn workspaces(&self) -> &dyn WorkspaceManager {
         self.inner.workspaces()
     }
+    fn runtimes(&self) -> &dyn RuntimeRegistry {
+        self.inner.runtimes()
+    }
     fn locks(&self) -> &dyn LockManager {
         self
     }
@@ -361,6 +364,9 @@ impl AgentStateClient for WithBehaviors {
     }
     fn workspaces(&self) -> &dyn WorkspaceManager {
         self.inner.workspaces()
+    }
+    fn runtimes(&self) -> &dyn RuntimeRegistry {
+        self.inner.runtimes()
     }
     fn locks(&self) -> &dyn LockManager {
         self.inner.locks()

@@ -122,6 +122,10 @@ pub fn is_write(method: &str) -> bool {
             | "workspaces.archive"
             | "workspaces.unregister"
             | "workspaces.set_runtime_available"
+            | "runtimes.register"
+            | "runtimes.update"
+            | "runtimes.check"
+            | "runtimes.unregister"
             | "goals.create"
             | "goals.revise"
             | "goals.set_status"
@@ -294,6 +298,27 @@ pub async fn serve_call(
         "workspaces.runtime_impact" => match arg::<String>(params, "runtime_id") {
             Ok(id) => agent.workspaces().runtime_impact(&id).await.and_then(out),
             Err(e) => Err(e),
+        },
+        "runtimes.list" => agent.runtimes().list().await.and_then(out),
+        "runtimes.lookup" => match arg::<String>(params, "runtime_id") {
+            Ok(id) => agent.runtimes().lookup(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "runtimes.register" => match arg::<RuntimeRegister>(params, "request") {
+            Ok(request) => agent.runtimes().register(&request, who).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "runtimes.update" => match (arg::<String>(params, "runtime_id"), arg::<RuntimeUpdate>(params, "request")) {
+            (Ok(id), Ok(request)) => agent.runtimes().update(&id, &request, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "runtimes.check" => match arg::<String>(params, "runtime_id") {
+            Ok(id) => agent.runtimes().check(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "runtimes.unregister" => match (arg::<String>(params, "runtime_id"), arg::<u64>(params, "expected_revision")) {
+            (Ok(id), Ok(revision)) => agent.runtimes().unregister(&id, revision, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "workspaces.set_runtime_available" => match (arg::<String>(params, "runtime_id"), arg::<bool>(params, "available")) {
             (Ok(id), Ok(available)) => agent.workspaces().set_runtime_available(&id, available, who).await.and_then(out),
@@ -663,6 +688,9 @@ impl AgentStateClient for KrpcAgentStateClient {
     fn workspaces(&self) -> &dyn WorkspaceManager {
         self
     }
+    fn runtimes(&self) -> &dyn RuntimeRegistry {
+        self
+    }
     fn locks(&self) -> &dyn LockManager {
         self
     }
@@ -756,6 +784,37 @@ impl GoalStore for KrpcAgentStateClient {
     }
     async fn write_schedule(&self, _schedule: &GoalSchedule) -> Result<()> {
         Err(driver_only("goals.write_schedule"))
+    }
+}
+
+#[async_trait]
+impl RuntimeRegistry for KrpcAgentStateClient {
+    async fn list(&self) -> Result<Vec<RuntimeRecord>> {
+        self.call("runtimes.list", json!({})).await
+    }
+    async fn lookup(&self, runtime_id: &str) -> Result<Option<RuntimeRecord>> {
+        self.call("runtimes.lookup", json!({ "runtime_id": runtime_id })).await
+    }
+    async fn register(&self, request: &RuntimeRegister, _who: &str) -> Result<RuntimeRecord> {
+        self.call("runtimes.register", json!({ "request": request })).await
+    }
+    async fn update(&self, runtime_id: &str, request: &RuntimeUpdate, _who: &str) -> Result<RuntimeRecord> {
+        self.call("runtimes.update", json!({ "runtime_id": runtime_id, "request": request })).await
+    }
+    async fn check(&self, runtime_id: &str) -> Result<RuntimeRecord> {
+        self.call("runtimes.check", json!({ "runtime_id": runtime_id })).await
+    }
+    async fn unregister(&self, runtime_id: &str, expected_revision: u64, _who: &str) -> Result<()> {
+        self.call(
+            "runtimes.unregister",
+            json!({ "runtime_id": runtime_id, "expected_revision": expected_revision }),
+        )
+        .await
+    }
+    async fn ensure_builtin(&self, _builtin: &[RuntimeRegister], _who: &str) -> Result<Vec<RuntimeRecord>> {
+        Err(OpenDanError::Forbidden(
+            "built-in runtimes are registered by the host on the AgentRoot".into(),
+        ))
     }
 }
 

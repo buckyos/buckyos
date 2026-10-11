@@ -123,7 +123,7 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 - 订阅匹配：给出 `subscription_id` 时必须存在且来源相符；未给出时取第一个来源相符的显式或隐式订阅。每个 Session 都有一个隐式 semi 订阅：用户时区（`_user_timezone`，`source = system:user_timezone`）。Goal Session（模板 `goal`）另有隐式 active 订阅 `_goal_activation`（`source = system:goal`）。
 - **Goal 的运行机会**：运行时（宿主或 CLI）向 Goal 当前 epoch 的 Goal Session 投递 `AgentEvent{subscription_id: "_goal_activation", source: system:goal, event, summary}`：`event = created | reopened | restarted`（epoch 开始，key `goal:<goal_id>:start:<epoch>`，每个 epoch 只投一次）、`scheduled`（定时，key `goal:<goal_id>:scheduled:<slot>:<missed>`，`missed` = 自上次以来经过的槽数，>1 表示停机期间错过的槽已合并为这一次）、`activate`（手动，key `goal:<goal_id>:activate:<request_id>`）。UI 转交的反馈是 Agent 自己发给自己的 `msg`（`delivery.from_name = "feedback from <来源>"`、`conversation_name = "goal <goal_id>"`）。积压的多个运行机会、Work 的结束（`_child`，Goal Session 按 `goal_id` 收取，跨 epoch 只收一次）与反馈合成一个 Activation 的输入批次，各自成为该 Activation 的 `reasons[]`。Goal 暂停时这些输入留在队列。
 - subscribe / unsubscribe 与事件按投递 index 生效：`event A → unsubscribe → event B` 中 A 按当时有效的订阅处理，unsubscribe 清理该订阅尚未注入的状态，B 丢弃。已被 active 订阅接受的事件不因之后的 unsubscribe 改判。
-- 挂起工具（PendingTool）或子 context 进行期间，msg / Input event 留在队列，不能填补缺失的 ToolResult；control 继续处理。
+- 挂起工具（PendingTool）或子 context 进行期间，msg / Input event 留在队列，不能填补缺失的 ToolResult；control 继续处理。唯一的例外是等用户回答的调用（`userinput:`，§9）：它取一条 msg 作为结果。
 - 先提交 state.json（消费位置、`pending_events`、worklog），再确认输入源。
 
 ## 4. 消费进度（state.json）
@@ -288,6 +288,11 @@ bridge 只转换来源并可靠投递（先 `post`，成功后再确认上游；
 - **并行等待**：调用已返回、task 继续运行。run 结束而 Session 未 finished 时，仍在运行的 task 记入 `state.watched_tasks`；之后每轮用保存的 task id 查询，结束时合成 `AgentEvent{source: task:<id>, terminal: true}`：有显式订阅按其 active / semi 处理，否则作为 Input 事件。不依赖输入队列或通知；finished 的 Session 不因 task 完成而重开。
 - 经外部服务创建任务的工具用在途记录里的 `idempotency_key`（由 run 与 call 的稳定身份导出）作为幂等键。
 - 崩溃恢复：run 的终态已落盘而 state 尚未提交时，重做的结束从 run.json 的 `host.extra.tasks` 取回仍需跟踪的 task（[Session Directory Protocol](<Session Directory Protocol.md>) §7），其完成只交付一次。
+- **向用户提问（`userinput:`）**：`agent-session ask-user "<问题>" [--option <id>=<label>]... [--allow-text]` 返回 `Pending{task_id: "userinput:<call_id>", detail: {question, input: {kind: text | choice, options: [{id, label}], allow_text}}}`（schema `user_input_request`）。只有 Session 解析这个前缀：
+  - 允许条件：有输入队列、`wait_user_msg = allowed`、不是子 Session；否则该调用直接得到错误结果，run 不挂起。task id 必须是本次调用的 `call_id`（命令放在管道或脚本里无效）。问题在快照挂起之前记入 run.json `host.extra.asks[<call_id>]`。
+  - 等待：`waiting_for = {kind: input, refs: ["userinput:<call_id>"]}`，Turn 保持打开；问题以 `question` 出站（[Session Directory Protocol](<Session Directory Protocol.md>) §5 `outbox`），与写入这个等待状态是同一次提交——提交之前没有任何消息会被当作答案。
+  - 回填：此后路由出的第一条 msg（`delivery.context` 的除外）就是答案，只取一条，其余留在队列；它以 `ResumeFill::ToolResults` 填为该调用的结果 `{text, attachments: [{obj_id, name}], option, in_reply_to_question, msg_id, from, at_ms}`（schema `user_input_answer`），同一快照里追加一张输入 receipt（`inputs = [该 msg]`、`parts = []`、`extra.user_input = <call_id>`，加入打开的 Turn），按 §7 提交与确认。`in_reply_to_question`：该消息 `relates_to = {rel: thread}` 的目标是本 Turn 占位或问题的 ObjId；`option`：`content.machine = {intent: "agent_ask.answer", data: {call_id, option}}` 且 `call_id` 匹配时的选项 id。关系与 machine 只是线索，任何下一条消息都是答案。
+  - 事件、`_child` 与半订阅观察照旧留给调用方，不进提问的 run；同批有其它挂起调用时，它们的等待都结束才回填。stop：按“用户未回答”回填（`Cancelled`）。独立 xllm 不能解析 `userinput:`，拒绝接手。主 context 自己的 `WAIT_USER_MSG` 与子 context 的哨兵语义不变。
 
 ## 10. Sub Session：创建、汇报与等待
 

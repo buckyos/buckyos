@@ -186,7 +186,7 @@ export function TaskDetailsBody({ taskId }: { taskId: string }) {
           <ToneIcon tone={state.tone} />
           <div className="min-w-0 flex-1">
             <p className="break-words text-[13px] font-medium">{task.name}</p>
-            <p className="break-words text-[13px]">{[text(state.label), task.message, task.phase === 'Waiting' ? task.waitReason?.message : ''].filter(Boolean).join(' · ')}</p>
+            <p className="break-words text-[13px]">{[...new Set([text(state.label), task.message, task.phase === 'Waiting' ? task.waitReason?.message : ''])].filter(Boolean).join(' · ')}</p>
             {snapshot?.stale ? <p className="text-xs text-[color:var(--cp-warning)]" role="note">{t('messagehub.task.staleHint')}</p> : null}
             <p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.task.updatedAt', undefined, { time: new Date(task.updatedAt).toLocaleString() })}</p>
             {task.originRef ? <p className="break-all text-xs text-[color:var(--cp-muted)]">{task.originRef.kind} · {task.originRef.id}</p> : null}

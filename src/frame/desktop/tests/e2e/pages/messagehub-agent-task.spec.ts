@@ -268,3 +268,206 @@ test('a dropped connection never keeps saying "working"; reconnecting catches up
   await expect(area).toHaveCount(0)
   await expect(bubble(page, 'msg-ct-10')).toContainText('Got it, working on it')
 })
+
+/* ── An Agent Turn that asks the user (`agent_ask`) ── */
+
+const ASK_SESSION = 'session-coder-ask'
+const DONE_SESSION = 'session-coder-qa'
+const ANCHOR = 'msg-qa-2'
+
+async function openSession(page: Page, session: string, firstBubble: string) {
+  await page.goto(`/messagehub?entityId=${encodeURIComponent(CODER)}&sessionId=${session}`)
+  await expect(page.getByTestId('conversation-history')).toBeVisible()
+  await expect(bubble(page, firstBubble)).toBeVisible()
+}
+
+/** The newest raw (unfolded) message of a mock session. */
+const lastSent = (page: Page, session: string) => page.evaluate(({ context, session }) => {
+  const timeline = window.__messageHubMock.reader(context, session).timeline ?? []
+  const message = timeline[timeline.length - 1]
+  return { from: message.from, content: message.content.content, relates_to: message.relates_to ?? null, machine: message.content.machine ?? null, mentions: message.mentions ?? null }
+}, { context: OWN, session })
+
+/** The Agent asks: a `thread` reply to the anchor carrying `agent_ask`. */
+const ask = (page: Page, id: string, text: string, input: { kind: 'text' | 'choice'; options?: Array<{ id: string; label: string }>; allow_text?: boolean }, anchor: string | null = ANCHOR, session = ASK_SESSION) => page.evaluate(({ session, id, text, input, anchor }) => window.__messageHubMock.simulateIncoming(session, {
+  ui_message_id: id,
+  content: { format: 'text/plain', content: text },
+  ...(anchor ? { relates_to: { rel: 'thread', target: anchor } } : {}),
+  agent_ask: { ...(anchor ? { anchor } : {}), call_id: `call-${id}`, turn: 3, input: { kind: input.kind, options: input.options ?? [], allow_text: input.allow_text ?? false } },
+}), { session, id, text, input, anchor })
+
+test('a choice question replaces the input with its options; a pick answers in the thread of the anchor and ends the answer state', async ({ page }) => {
+  await openSession(page, ASK_SESSION, ANCHOR)
+  const composer = page.getByTestId('message-composer')
+  const answer = composer.getByTestId('composer-answer')
+  await expect(answer).toHaveAttribute('data-kind', 'choice')
+  await expect(answer).toContainText('Answer CodeAssistant\'s question')
+  // The question without the option list its body repeats for other clients.
+  await expect(answer.getByTestId('answer-question')).toHaveText('Which docs should I tidy?')
+  await expect(answer.getByTestId('answer-option')).toHaveText(['docs/ only', 'The whole repository'])
+  await expect(answer.getByTestId('answer-other')).toHaveCount(0)
+  await expect(composer.locator('textarea')).toHaveCount(0)
+  await expect(composer.getByRole('button', { name: 'Cancel' })).toHaveCount(0)
+
+  // The questions and answers live under the anchor, open while the Turn waits.
+  expect(await anchors(page)).toEqual(['msg-qa-1', ANCHOR])
+  const qa = bubble(page, ANCHOR).getByTestId('agent-qa')
+  await expect(qa).toHaveAttribute('data-expanded', 'true')
+  await expect(qa.getByTestId('agent-qa-item')).toHaveCount(3)
+  expect(await qa.getByTestId('agent-qa-item').evaluateAll(items => items.map(item => item.getAttribute('data-kind')))).toEqual(['question', 'answer', 'question'])
+  await expect(qa.getByTestId('agent-qa-item').nth(2)).toContainText('Which docs should I tidy?')
+  await expect(bubble(page, ANCHOR).getByTestId('message-task')).toHaveAttribute('data-state', 'waitingInput')
+  await expect(bubble(page, ANCHOR).getByTestId('task-line-1')).toHaveText('Waiting for your answer')
+  // Nothing but the answer may be sent: no reply action meanwhile.
+  await bubble(page, 'msg-qa-1').hover()
+  await expect(bubble(page, 'msg-qa-1').getByTestId('message-reply')).toHaveCount(0)
+
+  await answer.getByTestId('answer-option').filter({ hasText: 'docs/ only' }).click()
+  await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
+  await expect(composer.locator('textarea')).toBeVisible()
+  expect(await lastSent(page, ASK_SESSION)).toEqual({ from: SELF, content: 'docs/ only', relates_to: { rel: 'thread', target: ANCHOR }, machine: { intent: 'agent_ask.answer', data: { call_id: 'call-docs-2', option: 'a' } }, mentions: null })
+  await expect(qa.getByTestId('agent-qa-item')).toHaveCount(4)
+  await expect(qa.getByTestId('agent-qa-item').nth(2).locator('[data-picked]')).toHaveText('docs/ only')
+  expect(await anchors(page)).toEqual(['msg-qa-1', ANCHOR])
+  await bubble(page, 'msg-qa-1').hover()
+  await expect(bubble(page, 'msg-qa-1').getByTestId('message-reply')).toBeVisible()
+
+  // The Turn replies: its Q&A folds away by default.
+  await page.evaluate(({ session, anchor, task }) => {
+    window.__messageHubMockTasks.update(task, { phase: 'Terminal', outcome: 'Succeeded', waitReason: undefined, message: 'Docs tidied' })
+    return window.__messageHubMock.simulateIncoming(session, { content: { format: 'text/plain', content: 'docs/ is tidied up for new contributors.' }, relates_to: { rel: 'edit', target: anchor } })
+  }, { session: ASK_SESSION, anchor: ANCHOR, task: 'task-turn-docs' })
+  await expect(bubble(page, ANCHOR)).toContainText('docs/ is tidied up')
+  await expect(qa).toHaveAttribute('data-expanded', 'false')
+  await expect(qa.getByTestId('agent-qa-toggle')).toHaveText('4 Q&A message(s)')
+  await expect(qa.getByTestId('agent-qa-item')).toHaveCount(0)
+})
+
+test('a text question locks the input to answering it, without a way to cancel; the answer goes to the anchor', async ({ page }) => {
+  await openSession(page, ASK_SESSION, ANCHOR)
+  await ask(page, 'msg-qa-6', 'Should I keep the current folder layout?', { kind: 'text' })
+  const composer = page.getByTestId('message-composer')
+  const answer = composer.getByTestId('composer-answer')
+  await expect(answer).toHaveAttribute('data-kind', 'text')
+  await expect(answer).toContainText('Answer CodeAssistant\'s question')
+  await expect(answer).toContainText('Should I keep the current folder layout?')
+  await expect(composer.getByTestId('composer-relation')).toHaveCount(0)
+  await expect(composer.getByRole('button', { name: 'Cancel' })).toHaveCount(0)
+  const input = composer.getByRole('textbox', { name: 'Type your answer…' })
+  await input.fill('Yes, keep it.')
+  // Escape does not leave the answer state.
+  await input.press('Escape')
+  await expect(answer).toBeVisible()
+  await page.screenshot({ path: 'test-results/messagehub-agent-ask-text.png' })
+  await input.press('Enter')
+  await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
+  expect(await lastSent(page, ASK_SESSION)).toEqual({ from: SELF, content: 'Yes, keep it.', relates_to: { rel: 'thread', target: ANCHOR }, machine: null, mentions: null })
+  await expect(bubble(page, ANCHOR).getByTestId('agent-qa-item')).toHaveCount(5)
+  await expect(bubble(page, ANCHOR).getByTestId('agent-qa-item').last()).toHaveText(/Yes, keep it\./)
+  expect(await anchors(page)).toEqual(['msg-qa-1', ANCHOR])
+  await expect(composer.getByRole('textbox', { name: 'Message...' })).toBeVisible()
+
+  // Without an anchor (a channel that cannot edit) the question is a row and the answer replies to it.
+  await ask(page, 'msg-qa-bare', 'Which branch?', { kind: 'text' }, null)
+  await expect(composer.getByTestId('composer-answer')).toHaveAttribute('data-kind', 'text')
+  await composer.getByRole('textbox', { name: 'Type your answer…' }).fill('main')
+  await composer.getByRole('textbox', { name: 'Type your answer…' }).press('Enter')
+  await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
+  expect((await lastSent(page, ASK_SESSION)).relates_to).toEqual({ rel: 'thread', target: 'msg-qa-bare' })
+  const rows = await anchors(page)
+  expect(rows.slice(0, 3)).toEqual(['msg-qa-1', ANCHOR, 'msg-qa-bare'])
+  expect(rows).toHaveLength(4)
+  await expect(page.getByTestId('conversation-history').getByTestId('reply-quote').last()).toContainText('Which branch?')
+})
+
+test('"Other…" turns a choice that accepts free text into the locked input; /stop still goes out as a command', async ({ page }) => {
+  await openSession(page, ASK_SESSION, ANCHOR)
+  const composer = page.getByTestId('message-composer')
+  await ask(page, 'msg-qa-7', 'Where should the index page go?\n1. README.md\n2. docs/index.md', { kind: 'choice', options: [{ id: '1', label: 'README.md' }, { id: '2', label: 'docs/index.md' }], allow_text: true })
+  await expect(composer.getByTestId('answer-question')).toHaveText('Where should the index page go?')
+  await composer.getByTestId('answer-other').click()
+  await expect(composer.getByTestId('composer-answer')).toHaveAttribute('data-kind', 'text')
+  await expect(composer.getByRole('textbox', { name: 'Type your answer…' })).toBeFocused()
+  await composer.getByTestId('answer-back-to-options').click()
+  await expect(composer.getByTestId('answer-option')).toHaveCount(2)
+  await composer.getByTestId('answer-other').click()
+  await composer.getByRole('textbox', { name: 'Type your answer…' }).fill('Both, README.md links to docs/index.md')
+  await composer.getByRole('textbox', { name: 'Type your answer…' }).press('Enter')
+  await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
+  expect(await lastSent(page, ASK_SESSION)).toEqual({ from: SELF, content: 'Both, README.md links to docs/index.md', relates_to: { rel: 'thread', target: ANCHOR }, machine: null, mentions: null })
+
+  // The stop button sends `/stop` as the command it is, not as an answer.
+  await ask(page, 'msg-qa-8', 'Delete the outdated pages?', { kind: 'choice', options: [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }] })
+  const before = (await anchors(page)).length
+  await composer.getByTestId('answer-stop').click()
+  await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
+  expect(await lastSent(page, ASK_SESSION)).toEqual({ from: SELF, content: '/stop', relates_to: null, machine: null, mentions: null })
+  expect(await anchors(page)).toHaveLength(before + 1)
+  await expect(page.getByTestId('conversation-history').getByTestId('message-bubble').last()).toContainText('/stop')
+
+  // Typed in a text answer, too.
+  await ask(page, 'msg-qa-9', 'Anything else?', { kind: 'text' })
+  await composer.getByRole('textbox', { name: 'Type your answer…' }).fill('/stop')
+  await composer.getByRole('textbox', { name: 'Type your answer…' }).press('Enter')
+  await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
+  expect(await lastSent(page, ASK_SESSION)).toEqual({ from: SELF, content: '/stop', relates_to: null, machine: null, mentions: null })
+})
+
+test('Q&A under a finished Turn starts collapsed and under a waiting one open; a hand-set state is remembered; other replies keep their rows', async ({ page }) => {
+  await openSession(page, DONE_SESSION, 'msg-qd-2')
+  expect(await anchors(page)).toEqual(['msg-qd-1', 'msg-qd-2', 'msg-qd-8'])
+  const done = bubble(page, 'msg-qd-2')
+  await expect(done).toContainText('Release 2.4')
+  await expect(done.getByTestId('edited-marker')).toBeVisible()
+  const qa = done.getByTestId('agent-qa')
+  await expect(qa).toHaveAttribute('data-expanded', 'false')
+  await expect(qa.getByTestId('agent-qa-toggle')).toHaveText('4 Q&A message(s)')
+  // An ordinary reply to the Agent's reply is a row of its own that quotes it.
+  await expect(bubble(page, 'msg-qd-8').getByTestId('reply-quote')).toContainText('Release 2.4')
+  await expect(page.getByTestId('message-composer').getByTestId('composer-answer')).toHaveCount(0)
+
+  await qa.getByTestId('agent-qa-toggle').click()
+  await expect(qa.getByTestId('agent-qa-item')).toHaveCount(4)
+  await expect(qa.getByTestId('agent-qa-item').first().locator('[data-picked]')).toHaveText('End users')
+  await expect(qa.getByTestId('agent-qa-item').first()).not.toContainText('- a. Developers')
+  await page.reload()
+  await expect(bubble(page, 'msg-qd-2').getByTestId('agent-qa')).toHaveAttribute('data-expanded', 'true')
+
+  // A reply to a quick Agent reply keeps its row too.
+  await openTaskSession(page)
+  await bubble(page, 'msg-ct-4').hover()
+  await bubble(page, 'msg-ct-4').getByTestId('message-reply').click()
+  await page.getByTestId('message-composer').locator('textarea').fill('Thanks!')
+  await page.getByTestId('message-composer').locator('textarea').press('Enter')
+  await expect.poll(async () => (await anchors(page)).length).toBe(11)
+  await expect(page.getByTestId('conversation-history').getByTestId('reply-quote').last()).toContainText('09:41 UTC')
+  await expect(bubble(page, 'msg-ct-4').getByTestId('agent-qa')).toHaveCount(0)
+
+  // Closed by hand while waiting: it stays closed, also after the reply arrived.
+  await openSession(page, ASK_SESSION, ANCHOR)
+  const waiting = bubble(page, ANCHOR).getByTestId('agent-qa')
+  await expect(waiting).toHaveAttribute('data-expanded', 'true')
+  await waiting.getByTestId('agent-qa-toggle').click()
+  await page.reload()
+  await expect(bubble(page, ANCHOR).getByTestId('agent-qa')).toHaveAttribute('data-expanded', 'false')
+  await page.getByTestId('message-composer').getByTestId('answer-option').first().click()
+  await expect(bubble(page, ANCHOR).getByTestId('agent-qa-toggle')).toHaveText('4 Q&A message(s)')
+  await expect(bubble(page, ANCHOR).getByTestId('agent-qa')).toHaveAttribute('data-expanded', 'false')
+})
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`answer mode and the Q&A list read well in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => { try { localStorage.setItem('buckyos.prototype.theme.v1', value) } catch { /* ignored */ } }, theme)
+    await openSession(page, ASK_SESSION, ANCHOR)
+    await expect(page.getByTestId('message-composer').getByTestId('composer-answer')).toHaveAttribute('data-kind', 'choice')
+    await page.getByTestId('message-composer').getByTestId('answer-option').first().hover()
+    await page.screenshot({ path: `test-results/messagehub-agent-ask-choice-${theme}.png` })
+    await ask(page, 'msg-qa-6', 'Should I keep the current folder layout?', { kind: 'text' })
+    await expect(page.getByTestId('message-composer').getByTestId('composer-answer')).toHaveAttribute('data-kind', 'text')
+    await page.screenshot({ path: `test-results/messagehub-agent-ask-text-${theme}.png` })
+    await openSession(page, DONE_SESSION, 'msg-qd-2')
+    await bubble(page, 'msg-qd-2').getByTestId('agent-qa-toggle').click()
+    await expect(bubble(page, 'msg-qd-2').getByTestId('agent-qa-item')).toHaveCount(4)
+    await page.screenshot({ path: `test-results/messagehub-agent-ask-qa-${theme}.png` })
+  })
+}

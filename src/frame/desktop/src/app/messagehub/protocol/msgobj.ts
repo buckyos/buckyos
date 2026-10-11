@@ -157,6 +157,35 @@ export interface AgentTaskRef {
   task_id: string
 }
 
+export interface AgentAskOption {
+  id: string
+  label: string
+}
+
+/** How a question is answered: free text, or one of `options` (plus free text when `allow_text`). */
+export interface AgentAskInput {
+  kind: 'text' | 'choice'
+  options: AgentAskOption[]
+  allow_text: boolean
+}
+
+/**
+ * `agent_ask`: this message is a question an Agent asks within a Turn and
+ * waits for the answer to. `anchor` is the Turn's placeholder (the answer
+ * joins its `thread`); it is empty on channels that cannot edit, where the
+ * answer replies to the question itself. A choice question also lists its
+ * options in the body for clients that do not read `agent_ask`.
+ */
+export interface AgentAsk {
+  anchor?: ObjId
+  call_id: string
+  turn?: number
+  input: AgentAskInput
+}
+
+/** `content.machine.intent` of an answer that picked an option; `data = { call_id, option }`. */
+export const AGENT_ASK_ANSWER_INTENT = 'agent_ask.answer'
+
 /**
  * MsgObject v2 (`CYFS 标准对象` §16).
  *
@@ -188,6 +217,8 @@ export interface MsgObject {
   content: MsgContent
   /** Flattened `meta` extension, see `AgentTaskRef`. */
   agent_task?: AgentTaskRef
+  /** Flattened `meta` extension, read only through `messageAgentAsk`. */
+  agent_ask?: AgentAsk
   [key: string]: unknown
 }
 
@@ -220,12 +251,103 @@ export function randomMsgNonce(): number {
   const [high, low] = crypto.getRandomValues(new Uint32Array(2))
   return (high & 0x1f_ffff) * 0x1_0000_0000 + low
 }
+
+/** ObjId of a timeline message: the stored record's `msg_id`, else the accepted or local id. */
+export function messageObjId(message: MessageObject): string | undefined {
+  const record = message.ui_record
+  const msgId = record && typeof record === 'object' ? (record as { msgId?: unknown }).msgId : undefined
+  if (typeof msgId === 'string') return msgId
+  if (typeof message.ui_sent_msg_id === 'string') return message.ui_sent_msg_id
+  return typeof message.ui_message_id === 'string' ? message.ui_message_id : undefined
+}
+
 /** Task id of an anchor message; an `agent_task` carried by an edit is ignored. */
 export function messageAgentTaskId(message: MessageObject): string | undefined {
   if (message.relates_to?.rel === 'edit') return undefined
   const value: unknown = message.agent_task
   const taskId = value && typeof value === 'object' ? (value as { task_id?: unknown }).task_id : undefined
   return typeof taskId === 'string' && taskId.trim() ? taskId : undefined
+}
+
+function askOptions(value: unknown): AgentAskOption[] {
+  if (!Array.isArray(value)) return []
+  const options: AgentAskOption[] = []
+  for (const item of value) {
+    const { id, label } = item && typeof item === 'object' ? item as { id?: unknown; label?: unknown } : {}
+    if (typeof id !== 'string' || !id.trim() || typeof label !== 'string' || !label.trim() || options.some(option => option.id === id)) continue
+    options.push({ id, label })
+  }
+  return options
+}
+
+/**
+ * The `agent_ask` of a question, or `undefined` when there is none or it is
+ * malformed (no `call_id`). An `agent_ask` carried by an edit is ignored. A
+ * choice without a usable option, or an unknown kind, is read as a text question.
+ */
+export function messageAgentAsk(message: MessageObject): AgentAsk | undefined {
+  if (message.relates_to?.rel === 'edit') return undefined
+  const value: unknown = message.agent_ask
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const { anchor, call_id: callId, turn, input } = value as { anchor?: unknown; call_id?: unknown; turn?: unknown; input?: unknown }
+  if (typeof callId !== 'string' || !callId.trim()) return undefined
+  const raw = input && typeof input === 'object' ? input as { kind?: unknown; options?: unknown; allow_text?: unknown } : {}
+  const options = raw.kind === 'choice' ? askOptions(raw.options) : []
+  return {
+    ...(typeof anchor === 'string' && anchor.trim() ? { anchor } : {}),
+    call_id: callId,
+    ...(typeof turn === 'number' && Number.isFinite(turn) ? { turn } : {}),
+    input: options.length > 0 ? { kind: 'choice', options, allow_text: raw.allow_text === true } : { kind: 'text', options: [], allow_text: true },
+  }
+}
+
+/** The option an answer picked (`content.machine` with `agent_ask.answer`), when it names one. */
+export function messageAgentAskAnswer(message: MessageObject): { call_id: string; option: string } | undefined {
+  const machine = message.content?.machine
+  if (machine?.intent !== AGENT_ASK_ANSWER_INTENT) return undefined
+  const { call_id: callId, option } = machine.data ?? {}
+  return typeof callId === 'string' && typeof option === 'string' ? { call_id: callId, option } : undefined
+}
+
+/** What an answer to `question` replies to: the anchor, or the question itself when it has none. */
+export function agentAskTarget(question: MessageObject, ask: AgentAsk): ObjId | undefined {
+  return ask.anchor ?? messageObjId(question)
+}
+
+/**
+ * The parts of an answer to `question`: its text (the typed text, or the
+ * picked option's label), `relates_to` (`thread` to the anchor, or to the
+ * question itself when it has none) and, for a picked option,
+ * `content.machine`. `undefined` when the option is unknown or the question
+ * has no id to reply to.
+ */
+export function buildAgentAskAnswer(question: MessageObject, ask: AgentAsk, answer: { text: string } | { option: string }): { text: string; relates_to: MsgRelation; machine?: MachineContent } | undefined {
+  const target = agentAskTarget(question, ask)
+  if (!target) return undefined
+  const relates_to: MsgRelation = { rel: 'thread', target }
+  if ('text' in answer) return { text: answer.text, relates_to }
+  const option = ask.input.options.find(item => item.id === answer.option)
+  if (!option) return undefined
+  return { text: option.label, relates_to, machine: { intent: AGENT_ASK_ANSWER_INTENT, data: { call_id: ask.call_id, option: option.id } } }
+}
+
+/**
+ * The question of a choice `agent_ask` without the option list its body
+ * repeats for other clients: trailing lines that name the options, in order,
+ * are dropped. Any other body is returned as it is.
+ */
+export function agentAskQuestionText(text: string, ask: AgentAsk): string {
+  const options = ask.input.options
+  if (options.length === 0) return text.trim()
+  const lines = text.trimEnd().split('\n')
+  let end = lines.length
+  for (let index = options.length - 1; index >= 0; index--) {
+    while (end > 0 && !lines[end - 1].trim()) end--
+    if (end === 0 || !lines[end - 1].includes(options[index].label)) return text.trim()
+    end--
+  }
+  const question = lines.slice(0, end).join('\n').trim()
+  return question || text.trim()
 }
 
 export type MessageDeliveryStatus =

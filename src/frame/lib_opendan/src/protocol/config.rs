@@ -605,10 +605,36 @@ pub struct BehaviorEntry {
     pub llm_context: Value,
     #[serde(default)]
     pub inherit: InheritMode,
+    /// `[tool]` of the behavior: offered to callers that whitelist
+    /// `behavior:<name>` as a named function running this sub context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<super::behavior::BehaviorToolConfig>,
 }
 
 impl BehaviorEntry {
+    /// Behaviors whose `[tool]` this context offers (`behavior:<name>` in
+    /// its tool list).
+    pub fn behavior_tools(&self) -> Vec<String> {
+        self.llm_context
+            .pointer("/tools/tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .filter_map(|n| n.strip_prefix(super::behavior::BEHAVIOR_TOOL_PREFIX))
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn validate(&self, name: &str) -> std::result::Result<(), String> {
+        if let Some(t) = &self.tool {
+            if !self.mode.is_sub_context() {
+                return Err(format!(
+                    "behavior `{name}`: [tool] runs the behavior as a sub context; its entry mode must be create_sub_context or fork"
+                ));
+            }
+            t.validate(name)?;
+        }
         if !self.llm_context.is_null() && !self.llm_context.is_object() {
             return Err(format!("behavior `{name}`: llm_context must be an object"));
         }
@@ -926,8 +952,27 @@ impl SessionConfig {
         };
         let map: BTreeMap<String, BehaviorEntry> = serde_json::from_value(b.clone())
             .map_err(|e| format!("extensions.opendan.behaviors: {e}"))?;
+        let mut functions: BTreeMap<String, &str> = BTreeMap::new();
         for (name, entry) in &map {
             entry.validate(name)?;
+            if let Some(t) = &entry.tool {
+                let f = t.function_name(name);
+                if let Some(other) = functions.insert(f.clone(), name) {
+                    return Err(format!(
+                        "behaviors `{other}` and `{name}` both declare the function `{f}`"
+                    ));
+                }
+            }
+        }
+        for (name, entry) in &map {
+            for target in entry.behavior_tools() {
+                if !map.get(&target).is_some_and(|t| t.tool.is_some()) {
+                    return Err(format!(
+                        "behavior `{name}` offers `{}{target}`, but `{target}` is not a frozen sub context behavior with a [tool] declaration",
+                        super::behavior::BEHAVIOR_TOOL_PREFIX
+                    ));
+                }
+            }
         }
         Ok(map)
     }
@@ -947,6 +992,7 @@ impl SessionConfig {
                 input: None,
                 llm_context: Value::Null,
                 inherit: InheritMode::RecentDialogue,
+                tool: None,
             });
         }
         Err(format!(

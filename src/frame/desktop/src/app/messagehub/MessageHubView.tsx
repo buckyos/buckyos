@@ -354,7 +354,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
 
   const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
     if (!activeSession || !selectedEntityId) throw Error('session_missing')
-    await store.send(context, activeSession.id, { content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}) }, writeConfirmations[activeSession.id])
+    await store.send(context, activeSession.id, { content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}) }, writeConfirmations[activeSession.id])
   }
   const handleResend = async (message: import('./protocol/msgobj').MessageObject) => {
     if (!activeSession) throw Error('session_missing')

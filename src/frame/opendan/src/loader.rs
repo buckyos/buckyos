@@ -16,6 +16,7 @@ use libopendan::bridge::{EventBridge, KEventBridge, TimerBridge};
 use libopendan::channel::{KmsgChannels, Waker};
 use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
+use libopendan::protocol::builtin_runtimes;
 use libopendan::runner::{BehaviorAssembler, OutboundSink, RunnerOptions};
 use libopendan::state::{register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient};
 use name_lib::DID;
@@ -81,6 +82,29 @@ pub struct Loader {
     pub ui: Option<Arc<UiModule>>,
     pub config: AgentConfig,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Where workspaces are best placed in the agent's own environment: the
+/// AgentRoot's `workspaces/`, and the owner's home when the AgentRoot lives
+/// under it (`<home>/.local/share/<app>/agents/<agent>`).
+fn container_roots(agent_root: &std::path::Path) -> Vec<PathBuf> {
+    let mut roots = vec![agent_root.join("workspaces")];
+    let home = agent_root
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == ".local"))
+        .and_then(|local| local.parent());
+    if let Some(home) = home.filter(|h| h.is_dir()) {
+        roots.push(home.to_path_buf());
+    }
+    roots
+}
+
+fn container_note() -> &'static str {
+    if std::path::Path::new("/.dockerenv").exists() {
+        "It is the agent's container: paths here are not the owner's host paths."
+    } else {
+        "The agent currently runs as a process on its host (development), so this is the host's own environment."
+    }
 }
 
 impl Loader {
@@ -155,6 +179,21 @@ impl Loader {
         }
         let agent: Arc<dyn AgentStateClient> = Arc::new(fs);
         register_in_process(agent.clone());
+        // The runtimes every agent has, before anything can choose one.
+        match agent
+            .runtimes()
+            .ensure_builtin(&builtin_runtimes(container_roots(&env.agent_root), container_note()), &env.who)
+            .await
+        {
+            Ok(r) => log::info!(
+                "loader: runtimes {}",
+                r.iter()
+                    .map(|r| format!("{}={:?}", r.runtime_id, r.availability))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Err(e) => log::warn!("loader: built-in runtimes not registered: {e}"),
+        }
 
         let info = Arc::new(LoaderInfo {
             agent_did: env.agent_did.clone(),
@@ -189,6 +228,7 @@ impl Loader {
             Arc::new(MsgCenterSink {
                 mail,
                 texts: OutboundTexts::load(&env.agent_root, &config.language),
+                owner: env.owner_did.clone(),
             }) as Arc<dyn OutboundSink>
         });
         if env.session_cli.is_none() {

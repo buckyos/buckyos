@@ -64,6 +64,22 @@ test('known workspaces retain archived and unavailable registrations without ses
   expect(errors).toEqual([])
 })
 
+test('runtimes list the agent container and the host that is not usable yet', async ({ page }) => {
+  const errors = await open(page)
+  const runtimes = page.getByTestId('known-runtimes')
+  await expect(runtimes.locator('li')).toHaveCount(2)
+  const container = runtimes.getByTestId('runtime-container')
+  await expect(container).toContainText('Agent container')
+  await expect(container).toContainText('Available')
+  await expect(container).toContainText('Built in')
+  await expect(container).toContainText('/home/devtest')
+  const host = runtimes.getByTestId('runtime-host')
+  await expect(host).toContainText('Host machine')
+  await expect(host).toContainText('Not usable yet')
+  await expect(host).toContainText('no executor')
+  expect(errors).toEqual([])
+})
+
 test('relocation keeps identity and exposes errors without hiding the registration', async ({ page }) => {
   await open(page)
   const workspace = page.getByTestId('workspace-ws-project-notes')

@@ -70,7 +70,7 @@ pub async fn resolve_workspace(
     let record = agent.workspaces().check(&workspace.workspace_id).await?;
     if record.lifecycle != WorkspaceLifecycle::Active
         || record.availability != WorkspaceAvailability::Available
-        || record.location.runtime_id != LOCAL_WORKSPACE_RUNTIME
+        || !is_native_runtime(&record.location.runtime_id)
         || record.runtime_host != native_host_id()
     {
         return Err(OpenDanError::WorkspaceBindingInvalid(format!(
@@ -117,7 +117,7 @@ pub async fn verify_workspace(
                 || record.location_revision != binding.location_revision
                 || record.lifecycle != WorkspaceLifecycle::Active
                 || record.availability != WorkspaceAvailability::Available
-                || record.location.runtime_id != LOCAL_WORKSPACE_RUNTIME
+                || !is_native_runtime(&record.location.runtime_id)
             {
                 return Err(invalid(format!(
                     "workspace {} no longer matches location revision {} ({:?}, {:?})",
@@ -195,7 +195,7 @@ pub fn resolve_workdir(
             if reference.workspace_id == binding.workspace_id
                 && reference.access == binding.access =>
         {
-            if binding.location.runtime_id != LOCAL_WORKSPACE_RUNTIME
+            if !is_native_runtime(&binding.location.runtime_id)
                 || binding.runtime_host != native_host_id()
             {
                 return Err(OpenDanError::WorkspaceBindingInvalid(

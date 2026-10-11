@@ -140,8 +140,17 @@ impl FsWorkspaces {
         self.lock()
     }
 
+    /// Only the agent's own environment can hold workspaces of this runner;
+    /// its registration (when there is one) and the owner's switch decide
+    /// whether it is usable now.
     fn runtime_available(&self, runtime_id: &str) -> Result<bool> {
-        if runtime_id != LOCAL_WORKSPACE_RUNTIME {
+        if !is_native_runtime(runtime_id) {
+            return Ok(false);
+        }
+        let registered = fsutil::read_json_opt::<RuntimeRecord>(
+            &self.layout.runtime_entry(CONTAINER_RUNTIME),
+        )?;
+        if registered.is_some_and(|r| r.availability != RuntimeAvailability::Available) {
             return Ok(false);
         }
         Ok(!self
@@ -151,9 +160,20 @@ impl FsWorkspaces {
             .exists())
     }
 
+    fn unavailable(&self, runtime_id: &str) -> OpenDanError {
+        if is_native_runtime(runtime_id) {
+            invalid("runtime_unavailable", runtime_id)
+        } else {
+            invalid(
+                "runtime_unavailable",
+                format!("{runtime_id}: this runner only places workspaces in the `{CONTAINER_RUNTIME}` runtime (see `runtime list`)"),
+            )
+        }
+    }
+
     fn location(&self, location: &WorkspaceLocation) -> Result<WorkspaceLocation> {
         if !self.runtime_available(&location.runtime_id)? {
-            return Err(invalid("runtime_unavailable", &location.runtime_id));
+            return Err(self.unavailable(&location.runtime_id));
         }
         Ok(WorkspaceLocation {
             runtime_id: location.runtime_id.clone(),
@@ -235,7 +255,8 @@ impl FsWorkspaces {
     fn no_overlap(&self, id: &str, location: &WorkspaceLocation) -> Result<()> {
         for existing in self.all()? {
             if existing.workspace_id != id
-                && existing.location.runtime_id == location.runtime_id
+                && canonical_runtime(&existing.location.runtime_id)
+                    == canonical_runtime(&location.runtime_id)
                 && (existing.location.directory.starts_with(&location.directory)
                     || location.directory.starts_with(&existing.location.directory))
             {
@@ -444,7 +465,7 @@ impl FsWorkspaces {
         let Some(conflict) = &record.conflict else {
             return false;
         };
-        if conflict.candidate.runtime_id != LOCAL_WORKSPACE_RUNTIME
+        if !is_native_runtime(&conflict.candidate.runtime_id)
             || conflict.candidate == record.location
         {
             return false;
@@ -533,7 +554,7 @@ impl WorkspaceManager for FsWorkspaces {
         let _lock = self.lock()?;
         let id = self.operation_id(&request.operation_id, who)?;
         if !self.runtime_available(&request.location.runtime_id)? {
-            return Err(invalid("runtime_unavailable", &request.location.runtime_id));
+            return Err(self.unavailable(&request.location.runtime_id));
         }
         if !request.location.directory.is_absolute() {
             return Err(invalid("invalid_directory", "directory must be absolute"));
@@ -762,10 +783,9 @@ impl WorkspaceManager for FsWorkspaces {
             .all()?
             .into_iter()
             .filter(|r| {
-                query
-                    .runtime_id
-                    .as_ref()
-                    .is_none_or(|v| v == &r.location.runtime_id)
+                query.runtime_id.as_ref().is_none_or(|v| {
+                    canonical_runtime(v) == canonical_runtime(&r.location.runtime_id)
+                })
                     && query.lifecycle.is_none_or(|v| v == r.lifecycle)
                     && query.availability.is_none_or(|v| v == r.availability)
                     && query.text.as_ref().is_none_or(|v| {
@@ -838,7 +858,7 @@ impl WorkspaceManager for FsWorkspaces {
         _who: &str,
     ) -> Result<Vec<WorkspaceRecord>> {
         let _lock = self.lock()?;
-        if runtime_id != LOCAL_WORKSPACE_RUNTIME {
+        if !is_native_runtime(runtime_id) {
             return Err(invalid("unsupported_runtime", runtime_id));
         }
         let marker = self.layout.workspaces_dir().join(".local-unavailable.json");
@@ -858,13 +878,13 @@ impl WorkspaceManager for FsWorkspaces {
         }
         let mut records = self.all()?;
         for record in &mut records {
-            if record.location.runtime_id == runtime_id {
+            if is_native_runtime(&record.location.runtime_id) {
                 self.observe(record)?;
             }
         }
         Ok(records
             .into_iter()
-            .filter(|r| r.location.runtime_id == runtime_id)
+            .filter(|r| is_native_runtime(&r.location.runtime_id))
             .collect())
     }
 }

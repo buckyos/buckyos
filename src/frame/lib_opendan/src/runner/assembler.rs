@@ -397,8 +397,13 @@ impl Blocks {
             }
             // A sub context being entered: its task, and what it returns to.
             if let Some(call) = state.child_call().filter(|c| &c.behavior == b) {
+                let asking = if super::ask::allowed(cfg) {
+                    "To ask the user, run `agent-session ask-user`; its result is the user's answer."
+                } else {
+                    "Do not ask the user."
+                };
                 handover.push_str(&format!(
-                    "<sub_task mode=\"{}\">{}\nYour result returns to the caller: finish with your report; do not ask the user.</sub_task>\n",
+                    "<sub_task mode=\"{}\">{}\nYour result returns to the caller: finish with your report. {asking}</sub_task>\n",
                     call.mode.as_str(),
                     esc(call.task.as_deref().unwrap_or("Continue the work handed over to this behavior."))
                 ));

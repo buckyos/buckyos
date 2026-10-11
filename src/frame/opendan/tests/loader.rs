@@ -67,6 +67,17 @@ impl LlmClient for Llm {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         // `TOOL:<command>` is a shell call instead of an answer.
         let answer = (self.script)(&req, n);
+        // `CALL:<function> <json args>` calls any function.
+        if let Some(call) = answer.strip_prefix("CALL:") {
+            let (name, args) = call.split_once(' ').unwrap();
+            let args: serde_json::Map<String, Value> = serde_json::from_str(args).unwrap();
+            let mut r = AiResponse::new(AiMessage::new(
+                AiRole::Assistant,
+                vec![buckyos_api::AiContent::tool_use(format!("c{n}"), name, args.into_iter().collect())],
+            ));
+            r.usage = Some(AiUsage { input_tokens: Some(10), output_tokens: Some(5), total_tokens: Some(15), ..Default::default() });
+            return Ok(r);
+        }
         let message = match (answer.strip_prefix("TOOL:"), answer.strip_prefix("REPORT:")) {
             (Some(command), _) => AiMessage::new(
                 AiRole::Assistant,
@@ -1166,10 +1177,34 @@ async fn the_jarvis_package_loads_and_answers() {
     let loader = Loader::start(env).await.unwrap();
     assert_eq!(loader.config.language, "zh");
     assert_eq!(loader.config.llm_context["provider"]["type"], "buckyos");
-    for name in ["chat_route", "task_route", "plan", "do"] {
+    for name in ["chat_route", "plan", "do", "work_simple", "goal"] {
         let b = loader.agent.behaviors().get(name).await.unwrap().unwrap();
         assert!(b.prompt.system.is_some(), "{name}");
     }
+    assert!(loader.agent.behaviors().get("task_route").await.unwrap().is_none());
+    // Intent analysis: a fork of the UI context offered as a named function.
+    let analyze = loader.agent.behaviors().get("analyze_intent").await.unwrap().unwrap();
+    assert!(analyze.prompt.system.is_none() && analyze.model.preferred.is_none());
+    assert!(analyze.prompt.on_context_switch.as_deref().unwrap().contains("agent-session ask-user"));
+    let entry = analyze.to_entry("analyze_intent", &loader.config.llm_context, false).unwrap();
+    assert_eq!(entry.mode, libopendan::protocol::ContextMode::Fork);
+    assert_eq!(entry.tool.as_ref().unwrap().function_name("analyze_intent"), "try_analyze_user_intent");
+    assert_eq!(
+        entry.tool.unwrap().render_task(&serde_json::json!({ "request": "tidy the docs" })),
+        "tidy the docs"
+    );
+    let simple = loader.agent.behaviors().get("work_simple").await.unwrap().unwrap();
+    assert_eq!(simple.capabilities.tool_whitelist.as_deref(), Some(&["group:bash".to_string(), "report".to_string()][..]));
+    // The built-in runtimes are registered before anything runs.
+    let runtimes = loader.agent.runtimes().list().await.unwrap();
+    let ids: Vec<_> = runtimes.iter().map(|r| (r.runtime_id.as_str(), r.availability)).collect();
+    assert_eq!(
+        ids,
+        [
+            ("container", libopendan::protocol::RuntimeAvailability::Available),
+            ("host", libopendan::protocol::RuntimeAvailability::RuntimeUnavailable)
+        ]
+    );
     for name in ["groupchat_route"] {
         let b = loader.agent.behaviors().get(name).await.unwrap().unwrap();
         assert!(b.prompt.system.as_deref().is_some_and(|t| t.contains("context=\"true\"")), "{name}");
@@ -1195,7 +1230,8 @@ async fn the_jarvis_package_loads_and_answers() {
     assert!(system.contains("one-to-one UI session"), "{system}");
     assert!(!system.contains("<<"), "{system}");
     let tools = tools.lock().unwrap().clone();
-    assert!(tools.iter().any(|t| t == "shell") && tools.iter().any(|t| t == "call_behavior"), "{tools:?}");
+    assert!(tools.iter().any(|t| t == "shell") && tools.iter().any(|t| t == "try_analyze_user_intent"), "{tools:?}");
+    assert!(!tools.iter().any(|t| t == "call_behavior"), "{tools:?}");
     assert_eq!(cfg_max_tokens(&loader.config.llm_context), Some(8192));
     let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
         .unwrap()
@@ -1203,8 +1239,9 @@ async fn the_jarvis_package_loads_and_answers() {
     let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
     let cfg = SessionDir::open(&entry.location).unwrap().config().unwrap();
     assert_eq!(cfg.prompt.behavior.as_deref(), Some("chat_route"));
+    cfg.behaviors().unwrap();
     let frozen = cfg.prompt.frozen.unwrap();
-    assert!(frozen.behaviors.contains_key("chat_route") && frozen.behaviors.contains_key("task_route"));
+    assert!(frozen.behaviors.contains_key("chat_route") && frozen.behaviors.contains_key("analyze_intent"));
     // A work session of the package starts in plan and can hand over to do.
     let template = SessionTemplate::load("work", loader.agent.agent_root()).unwrap();
     assert_eq!(template.default_behavior.as_deref(), Some("plan"));
@@ -1467,7 +1504,13 @@ async fn the_agentroot_of_an_earlier_agent_is_archived() {
         serde_json::from_str(&std::fs::read_to_string(w.root.join(opendan::rootfs::IDENTITY_FILE)).unwrap()).unwrap();
     assert_eq!(identity["agent_did"], AGENT);
     assert_eq!(identity["agent_doc_object_id"], json!(doc_id(2)));
-    let info = loaded_info(&w).await;
+    // The first Loader's info is still there until the second one reports.
+    let started = Instant::now();
+    let mut info = loaded_info(&w).await;
+    while info.generation != 2 && started.elapsed() < Duration::from_secs(20) {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        info = loaded_info(&w).await;
+    }
     assert_eq!((info.agent_doc_object_id, info.generation), (doc_id(2), 2));
     loader.shutdown().await;
 }
@@ -1783,5 +1826,160 @@ async fn goals_are_hosted_and_a_canceled_activation_keeps_the_goal() {
     assert!(!finished(&sd));
     let goal = rpc(port, "goals.get", json!({ "goal_id": goal_id })).await.unwrap();
     assert_eq!(goal["status"], "active");
+    loader.shutdown().await;
+}
+
+// Intent analysis: asking the user from a fork (TODO V16) ------------------
+
+const ANALYZE_TOML: &str = r#"
+[meta]
+name = "analyze"
+[entry]
+mode = "fork"
+[tool]
+name = "try_analyze"
+description = "Analyze the request."
+task = "{{args.request}}"
+[tool.parameters]
+type = "object"
+required = ["request"]
+[tool.parameters.properties.request]
+type = "string"
+[prompt]
+on_context_switch = "ANALYZE: {{handover.sub_task.task}}"
+"#;
+
+const CHAT_TOML: &str = r#"
+[meta]
+name = "chat"
+next = ["analyze"]
+[prompt]
+mode = "function_call"
+system = "chat with the owner"
+[capabilities]
+tool_whitelist = ["group:bash", "behavior:analyze", "report"]
+"#;
+
+/// The answer `ask-user` would print (the command itself is tested with
+/// libopendan; this host has no `agent-session`).
+fn ask_command(question: &str, input: Value) -> String {
+    let out = json!({
+        "agent_tool_protocol": "1", "tool": "ask-user", "status": "pending",
+        "task_id": "userinput:%s", "summary": "waiting for the answer",
+        "detail": { "question": question, "input": input },
+    });
+    format!("TOOL:printf '{}' \"$XLLM_CALL_ID\"", out)
+}
+
+fn qa_world() -> World {
+    let w = World::with_tasks();
+    std::fs::create_dir_all(w.root.join("behaviors")).unwrap();
+    std::fs::write(w.root.join("behaviors/analyze.toml"), ANALYZE_TOML).unwrap();
+    std::fs::write(w.root.join("behaviors/chat.toml"), CHAT_TOML).unwrap();
+    std::fs::write(
+        w.root.join("agent.toml"),
+        format!("[loader]\nplaceholder_delay_ms = 60000\n{AGENT_TOML}\n[session.ui]\ndefault_behavior = \"chat\"\n"),
+    )
+    .unwrap();
+    w
+}
+
+fn thread_reply(text: &str, target: &MsgObject, machine: Option<Value>) -> MsgObject {
+    let mut m = chat(BOB, text);
+    m.relates_to = Some(ndn_lib::MsgRelation::new(
+        ndn_lib::MsgRelType::Thread,
+        ObjId::new(&msg_key(target)).unwrap(),
+    ));
+    m.content.machine = machine.map(|v| serde_json::from_value(v).unwrap());
+    m
+}
+
+/// V16: the user gets the placeholder P at once, the question Q as a thread
+/// message on P carrying `agent_ask`, answers on P, and the Turn's result R
+/// as the edit of P — one Turn, one task, which waits for the answer in
+/// between.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_and_its_answer_stay_in_the_turn() {
+    let w = qa_world();
+    let tasks = w.tasks.clone().unwrap();
+    let llm = Llm::new(|req, n| match n {
+        0 => r#"CALL:try_analyze {"request":"tidy up the docs"}"#.to_string(),
+        1 => {
+            assert!(last_user(req).contains("ANALYZE: tidy up the docs"), "{}", last_user(req));
+            ask_command(
+                "docs/ or everything?",
+                json!({ "kind": "choice", "options": [ { "id": "a", "label": "docs/" }, { "id": "b", "label": "everything" } ] }),
+            )
+        }
+        2 => {
+            let all: String = req.messages.iter().map(|m| serde_json::to_string(m).unwrap()).collect();
+            assert!(all.contains(r#"\"option\":\"a\""#) && all.contains(r#"\"in_reply_to_question\":true"#), "{all}");
+            r#"REPORT:{"report":"created work for docs/","result":{"outcome":"work_created"},"is_end":true}"#.to_string()
+        }
+        3 => {
+            let all: String = req.messages.iter().map(|m| serde_json::to_string(m).unwrap()).collect();
+            assert!(all.contains("work_created"), "{all}");
+            "Started: tidying docs/.".to_string()
+        }
+        _ => panic!("unexpected call {n}"),
+    });
+    let loader = w.start(llm.clone()).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "please tidy up the docs"));
+    until("placeholder and question", || w.mail.sent().len() == 2).await;
+    let sent = w.mail.sent();
+    let (p, q) = (&sent[0].1, &sent[1].1);
+    assert_eq!(p.content.content, "(working)");
+    let task_id = agent_task_of(p).expect("P carries the Turn's task");
+    let rel = q.relates_to.as_ref().expect("Q is a thread message on P");
+    assert_eq!((rel.rel.clone(), rel.target.to_string()), (ndn_lib::MsgRelType::Thread, msg_key(p)));
+    assert_eq!(q.meta["agent_ask"]["anchor"], msg_key(p).as_str());
+    assert_eq!(q.meta["agent_ask"]["input"]["kind"], "choice");
+    assert!(q.content.content.starts_with("docs/ or everything?\n1. docs/"), "{}", q.content.content);
+    assert!(q.mentions.is_none(), "a direct chat mentions nobody");
+    until("task waits for the answer", || {
+        tasks.all().iter().any(|t| t.id == task_id && t.state == "waiting" && t.message.contains("answer"))
+    })
+    .await;
+
+    w.mail.deliver(
+        &session,
+        thread_reply("docs/", p, Some(json!({ "intent": "agent_ask.answer", "data": { "call_id": "c1", "option": "a" } }))),
+    );
+    until("result", || w.mail.sent().len() == 3).await;
+    let r = &w.mail.sent()[2].1;
+    assert_eq!(r.content.content, "Started: tidying docs/.");
+    let rel = r.relates_to.as_ref().expect("R edits P");
+    assert_eq!((rel.rel.clone(), rel.target.to_string()), (ndn_lib::MsgRelType::Edit, msg_key(p)));
+    until("task closed", || tasks.all().iter().any(|t| t.id == task_id && t.state == "succeeded")).await;
+    assert_eq!(tasks.all().len(), 1, "one Turn, one task");
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session)).unwrap().to_string();
+    let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let st = SessionDir::open(&entry.location).unwrap().state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 4);
+    loader.shutdown().await;
+}
+
+/// In a group the question is addressed to the owner (MessageHub locks the
+/// composer of the members a question mentions).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_in_a_group_mentions_the_owner() {
+    let w = qa_world();
+    let mut settings = w.settings.clone();
+    settings.allow_group = true;
+    let w = World { settings, ..w };
+    let llm = Llm::new(|_req, n| match n {
+        0 => r#"CALL:try_analyze {"request":"plan the trip"}"#.to_string(),
+        1 => ask_command("which weekend?", json!({ "kind": "text" })),
+        _ => "ok".to_string(),
+    });
+    let loader = w.start(llm).await;
+    let group = "did:bns:hikers";
+    w.mail.deliver(group, group_msg(BOB, group, "@jarvis plan the trip", true));
+    until("question", || w.mail.sent().iter().any(|(_, m)| m.meta.contains_key("agent_ask"))).await;
+    let q = w.mail.sent().into_iter().map(|(_, m)| m).find(|m| m.meta.contains_key("agent_ask")).unwrap();
+    assert_eq!(q.kind, MsgObjKind::GroupMsg);
+    assert_eq!(q.mentions.as_ref().unwrap().dids, vec![parse_did(BOB).unwrap()]);
     loader.shutdown().await;
 }

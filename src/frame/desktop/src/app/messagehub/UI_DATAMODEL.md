@@ -794,6 +794,54 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 - edit 没有自己的行：`markRead` 把可见气泡对应的 edit 记录（`editsOf`）一并标为已读；历史面板在气泡新折叠进一条 edit 后会重新上报可见消息。
 - 已知缺口：未打开的会话里占位与 edit 都未读时，msg-center 的 `unread_count` 计为 2，UI 无法在不加载历史的情况下修正。
 
+#### 3.5.5 Agent 提问：`agent_ask`、问答折叠与会话输入态（2026-10-11）
+
+来源：`notepads/opendan-analyze-user-intent-todo.md` §3.8—§3.9。一次 Turn 里 Agent 可以反问用户，问答都在同一个 Turn 内：
+
+```text
+[用户]  帮我把这个项目的文档整理一下
+[Agent] P：占位（agent_task；任务区：等待你的回答）
+          └ Q1 Agent（thread → P，agent_ask）
+          └ A1 用户（thread → P）
+          └ Q2 Agent（thread → P，agent_ask，choice）
+          └ A2 用户（thread → P，machine: agent_ask.answer）
+[Agent] R：P 的 edit（任务区：成功）  ▸ 4 条问答（收起）
+```
+
+**协议约定（`protocol/msgobj.ts`）**
+
+- `agent_ask`：问题 Q 上的顶层 meta（与 `agent_task` 同为扁平化的 `meta` 扩展）：
+
+  ```json
+  "agent_ask": { "anchor": "<P 的 ObjId；不可编辑频道为空或省略>", "call_id": "<call_id>", "turn": 3,
+                 "input": { "kind": "text | choice", "options": [{"id": "a", "label": "…"}], "allow_text": false } }
+  ```
+
+  `messageAgentAsk()` 宽松读取：不是对象或缺 `call_id` → 不是问题；edit 上的 `agent_ask` 忽略；`choice` 没有可用选项（id / label 为空、id 重复的丢弃）或 kind 未知 → 按文本问题读。选项问题的正文另附选项列表给不认识 `agent_ask` 的客户端；MessageHub 用 `agentAskQuestionText()` 去掉正文末尾按顺序逐行包含各选项 label 的那几行，对不上就原样显示。
+- 回答 A（`buildAgentAskAnswer()`）：正文 = 输入文字或所选 label；总是 `relates_to = {rel: 'thread', target: anchor}`，没有 anchor 时 target = Q 自己（`agentAskTarget()`）；选项回答再带 `content.machine = {intent: 'agent_ask.answer', data: {call_id, option}}`。群会话里回答还带 `mentions = {dids: [提问者]}`（OpenDAN 群桥只收提及它的群消息）。
+- 谁读 / 谁忽略：`agent_ask` 只有 MessageHub（输入态、折叠）和发出它的 Agent 关心；`agent_ask.answer` 只是 Agent 的线索（`option`、`in_reply_to_question`），Agent 等待期间收到的下一条消息无论带不带它都是答案。其它客户端与 tunnel 把两者当作普通消息的不透明字段原样传递，读到的是正文。
+
+**问答折叠（`conversation/history/relations.ts` 的 `foldMessageRelations` → `foldAgentQuestions`）**
+
+- `thread` 消息的目标是更早的、带 `agent_task` 的锚点（P，或被 edit 成 R 后的同一行）时，以下两种不占独立行，归入锚点的 `ui_relations.thread = [{id, from, senderName?, content, at, agent_ask?, option?, redacted?}]`（时间线顺序；`content` 是该条的有效内容）：
+  - 问题：带 `agent_ask` 且发送者是锚点作者；
+  - 回答：带 `agent_ask.answer` 的消息，或锚点有未答问题时、提问者以外的人发来的下一条 `thread` 消息。
+- 其它回复（没有未答问题时对 Agent 消息的回复、提问者自己的补充、对普通消息的回复）照旧占一行并引用目标。对 Q/A 的 edit / redact 照常折叠进该条（撤回的显示“消息已撤回”）。
+- 渲染（`AgentQuestions.tsx`，气泡内任务区下方）：标题“▸ N 条问答”可展开 / 收起；问题显示去掉选项列表的正文，选项问题另列选项，下一条回答选中的那项高亮；用户的回答带左侧色条。
+- 默认展开态取自时间线：锚点还没有 edit（Turn 未回复）→ 展开；最终 edit 到达 → 收起。用户手动展开 / 收起后按 viewer 记在本浏览器 `localStorage`（`buckyos.messagehub.qaExpanded.v1`，每个 viewer 最多记 200 个锚点，读写异常时只在本页生效），之后不再随默认值变化。实现与任务区展开态同在 `conversation/tasks/index.ts`（`useQaExpanded`）。
+- 未读：`markRead` 把可见锚点下折叠的 Q/A 记录（`threadMessagesOf`）一并标为已读；历史面板在锚点新折进一条 Q/A 后重新上报可见消息。消息链接（`messageId`）指向折叠的 Q/A 时找不到对应行（未处理）。
+
+**会话输入态（`conversation/input/inputState.ts` 的 `conversationInputState`）**
+
+输入框的样式与目标由会话逻辑决定，不只是用户手动选的回复 / 编辑。目前只有一个来源：
+
+- 判定只看时间线（reader 的 `timeline`：已加载的未折叠消息），不看 TaskMgr：时间线上最新的一条消息是别人发的、带 `agent_ask` 的消息 → **回答态**；否则普通态。用户发出回答后最新一条是用户自己的，自然退出；多设备看同一条时间线，结果一致。
+- 不算“消息”的：edit / redact / reaction、事件（action log）、状态条、本地发送失败的消息、已撤回的消息。问题的锚点在问题之后被提问者 edit 过（Turn 的最终回复已到）→ 问题作废，普通态。群会话里只有问题 `mentions` 了的 viewer 进入回答态（建议 Agent 在群里提问时提及请求人）。
+- 回答态 / text：横幅“回答 {{agent}} 的提问”+ 问题摘要，**没有取消按钮**，Esc 也不退出；手动选的回复 / 编辑被清除，悬停栏不提供回复、编辑；能发附件。发出的一切都是回答（`relates_to{thread → anchor}`）。
+- 回答态 / choice：输入框换成选项列表，点选即发送（正文 = label，带 `agent_ask.answer`）；`allow_text = true` 时多一个“其他…”，切到上面的锁定文本输入，横幅上可“返回选项”。草稿与已选附件保留，退出回答态后回到输入框。
+- `/stop`：回答态横幅 / 选项区右上角有“停止任务”，发送纯文本 `/stop`（无 `relates_to`，群里带提及），这是“我不想回答了”的出口；在锁定文本输入里键入 `/stop`（不带附件）同样作为顶层命令发出，而不是回答。之后最新一条是用户的 `/stop`，退出回答态；Agent 侧按现有 stop 路径结束 Turn。
+- 任务区：TaskMgr wait reason `code = 'input'`（Turn 在等回答）显示“等待你的回答”，不再重复 runner 的 “waiting for input” 原文。
+
 ### 3.6 会话时间线投影模型
 
 当前原型接口如下（`conversation/history/types.ts`）；真实接入需补 §6.6 的记录更新与分页能力：
@@ -890,7 +938,7 @@ store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup 
   | `rejected` / `removed` / `session_removed` | 不变 | 只显示文案 |
 
 - **管理**：群面板列出成员、角色和待加入状态；邀请、移出或撤销邀请（`group.remove_member`）、退出（`group.leave`）、解散（`group.delete`，仅群主）均先确认，失败显示 host 的原因码对应文案（`knownGroupErrors`：`invitation-mismatch`、`transfer-mismatch`、`agent-owner-required`、`invite-required`、`join-not-allowed`、`member-not-pending`、`revision-conflict` 等；未知码原样显示）。
-- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者编辑的**完整 `MsgContent`**（`edited.content`，含 format / refs / machine；`edited.edits` 保留全部编辑记录，见 §3.5.4）+ 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数 `reactions[{ key, dids, messages: { did → 回应消息 ObjId } }]`；目标为回应消息的 `redact` 是取消回应，从计数中移除该人，见 v2 §2.6「取消回应就是撤回这条回应消息」），`thread` 消息正常成行并引用目标。发送侧全部是普通 `msg.post_send`（群会话 `group_msg`，直聊 `chat`）：回复（`thread`）和回应（`reaction` + `key`）在任何本人可写的会话都可用，编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）仅群会话。回应入口（buckyos#638，参考飞书 / Discord）：指针设备上气泡顶部悬停栏（`.mh-hover-bar`，`@media (hover: hover)`）给出 4 个快捷表情、「添加回应」表情面板（`REACTION_PALETTE`）和「…」菜单；触屏设备用页脚「…」菜单（含快捷表情与表情面板）。回应 chip 高亮本人已回应项（`aria-pressed`），点击切换：未回应则发 `reaction`，已回应则 `unreact` = 对 `ownReactionId` 的回应消息发 `redact`；同一 `(from, target, key)` 重复发送是 no-op。回应 / 撤回不计入会话活动预览（`isMessageActivity`）。Composer 的 @ 提及（`input/mentions.ts`）：光标前的 `@词`（`@` 位于开头或空白 / 左括号之后，`mail@host` 不算）弹出候选，候选为当前 Session 的参与者（`groupSessionMembers` 中 `included` 者，含 Guest，未知时用群成员），按名字前缀 / 词首 / 包含排序，最多 8 个，`session.mention_all` 能力下 `@all` 在匹配时排第一；↑↓ 选择，Enter / Tab 选中（替换整个 `@词` 并补一个空格），Esc 关闭（直到光标离开该 `@`）。@ 按钮在光标处插入 `@` 并打开同一列表。选中的人写入结构化 `mentions.dids`（只计仍出现在文本中的名字）；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
+- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者编辑的**完整 `MsgContent`**（`edited.content`，含 format / refs / machine；`edited.edits` 保留全部编辑记录，见 §3.5.4）+ 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数 `reactions[{ key, dids, messages: { did → 回应消息 ObjId } }]`；目标为回应消息的 `redact` 是取消回应，从计数中移除该人，见 v2 §2.6「取消回应就是撤回这条回应消息」），`thread` 消息正常成行并引用目标（Agent Turn 的问答折叠在锚点下，见 §3.5.5）。发送侧全部是普通 `msg.post_send`（群会话 `group_msg`，直聊 `chat`）：回复（`thread`）和回应（`reaction` + `key`）在任何本人可写的会话都可用，编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）仅群会话。回应入口（buckyos#638，参考飞书 / Discord）：指针设备上气泡顶部悬停栏（`.mh-hover-bar`，`@media (hover: hover)`）给出 4 个快捷表情、「添加回应」表情面板（`REACTION_PALETTE`）和「…」菜单；触屏设备用页脚「…」菜单（含快捷表情与表情面板）。回应 chip 高亮本人已回应项（`aria-pressed`），点击切换：未回应则发 `reaction`，已回应则 `unreact` = 对 `ownReactionId` 的回应消息发 `redact`；同一 `(from, target, key)` 重复发送是 no-op。回应 / 撤回不计入会话活动预览（`isMessageActivity`）。Composer 的 @ 提及（`input/mentions.ts`）：光标前的 `@词`（`@` 位于开头或空白 / 左括号之后，`mail@host` 不算）弹出候选，候选为当前 Session 的参与者（`groupSessionMembers` 中 `included` 者，含 Guest，未知时用群成员），按名字前缀 / 词首 / 包含排序，最多 8 个，`session.mention_all` 能力下 `@all` 在匹配时排第一；↑↓ 选择，Enter / Tab 选中（替换整个 `@词` 并补一个空格），Esc 关闭（直到光标离开该 `@`）。@ 按钮在光标处插入 `@` 并打开同一列表。选中的人写入结构化 `mentions.dids`（只计仍出现在文本中的名字）；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
 - **Session 详情**：群会话提示「群主可以查看本群的所有会话」（v2 §2.3.4）。
 
 已知缺口：
@@ -1198,6 +1246,7 @@ export interface DataState<T> {
 | 状态 | 呈现 |
 |---|---|
 | 正常 | 可输入可发送 |
+| 回答态（§3.5.5） | 锁定为回答 Agent 的问题：文本问题锁定回复锚点、无取消；选项问题以选项代替输入框；`/stop` 仍可发 |
 | 只读 | 禁用输入、上传、发送与重试；显示原因，符合条件时显示「启用写入」 |
 | 空草稿 | 发送按钮禁用 |
 | 发送中 | 按钮 loading，输入框保持可编辑（允许连续发送） |

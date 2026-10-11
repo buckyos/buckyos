@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "UserInputAttachment": {
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obj_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "obj_id"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Result of an `ask-user` call: the next message the user sent.",
+  "properties": {
+    "at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "attachments": {
+      "items": {
+        "$ref": "#/definitions/UserInputAttachment"
+      },
+      "type": "array"
+    },
+    "from": {
+      "type": "string"
+    },
+    "in_reply_to_question": {
+      "description": "The message replies to the question (`thread` on its anchor).",
+      "type": "boolean"
+    },
+    "msg_id": {
+      "type": "string"
+    },
+    "option": {
+      "description": "Option id picked (`agent_ask.answer` of this call).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "at_ms",
+    "from",
+    "in_reply_to_question",
+    "msg_id",
+    "text"
+  ],
+  "title": "UserInputAnswer",
+  "type": "object"
+}

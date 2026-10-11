@@ -366,6 +366,7 @@ fn relativize(dir: &Path) {
     );
     // kmsg lock file is runtime only.
     let _ = std::fs::remove_file(dir.join("kmsg").join(".lock"));
+    fixture_paths::compact(dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +569,7 @@ async fn gen(out: &Path) -> R<()> {
                 &WorkspaceImport {
                     operation_id: "fixture-overlap".into(),
                     location: WorkspaceLocation {
-                        runtime_id: LOCAL_WORKSPACE_RUNTIME.into(),
+                        runtime_id: CONTAINER_RUNTIME.into(),
                         directory: ws,
                     },
                     name: Some("Overlap fixture".into()),

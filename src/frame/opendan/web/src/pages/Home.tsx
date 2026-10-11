@@ -25,7 +25,7 @@ import {
   type UiBinding,
 } from '../model'
 import { ErrorBox } from '../ui'
-import { WorkspaceList } from './Workspaces'
+import { RuntimeList, WorkspaceList } from './Workspaces'
 
 const AVATAR_SIZE = 192
 const NAME_MAX = 64
@@ -534,6 +534,7 @@ export default function HomePage() {
             <AgentCard profile={profile.data} />
             <Overview entries={sessions.data} />
             <WorkspaceList entries={sessions.data} />
+            <RuntimeList />
           </div>
           <SessionList entries={sessions.data} profile={profile.data} loading={sessions.isLoading} />
         </div>

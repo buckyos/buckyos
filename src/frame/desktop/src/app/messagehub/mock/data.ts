@@ -408,6 +408,22 @@ const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | '
       lastActiveAt: Date.now() - 3 * 60_000,
       unreadCount: 0,
     },
+    {
+      id: 'session-coder-ask',
+      entityId: 'agent-coder',
+      title: 'Docs Cleanup',
+      type: 'chat',
+      lastActiveAt: Date.now() - 6 * 60_000,
+      unreadCount: 1,
+    },
+    {
+      id: 'session-coder-qa',
+      entityId: 'agent-coder',
+      title: 'Release Notes',
+      type: 'chat',
+      lastActiveAt: Date.now() - 3 * 3600_000,
+      unreadCount: 0,
+    },
   ],
   'person-alice': [
     {
@@ -595,6 +611,10 @@ export const MOCK_AGENT_TASKS = {
   failed: 'task-turn-deploy',
   foreign: 'task-turn-foreign',
   running: 'task-turn-checklist',
+  /** Waits for the answer to a question (`session-coder-ask`). */
+  asking: 'task-turn-docs',
+  /** Asked two questions, then replied (`session-coder-qa`). */
+  answered: 'task-turn-notes',
   /** Only ever carried by an edit, so it must never be read. */
   hijack: 'task-turn-hijack',
 } as const
@@ -628,8 +648,47 @@ function agentTaskSeeds(sessionId: string): MessageObject[] {
   ]
 }
 
+/**
+ * An Agent Turn that asks the user (`agent_ask`): each question is a
+ * `thread` reply to the Turn's placeholder, and so is each answer. The
+ * questions and answers fold under the placeholder; the final edit replies.
+ */
+function agentAskSeeds(sessionId: string, done: boolean): MessageObject[] {
+  const minutes = (value: number) => Date.now() - value * 60_000
+  const you = (id: string, content: string, at: number, extra: Partial<MessageObject> = {}): MessageObject => ({ ...createChatMessage({ id, from: participantDids.you, to: [participantDids.codeAssistant], senderName: 'You', content, createdAtMs: at, deliveryStatus: 'read', sessionId }), ...extra })
+  const agent = (id: string, content: MsgContent, at: number, extra: Partial<MessageObject> = {}): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: content.content ?? '', createdAtMs: at, sessionId, contentOverride: content }), ...extra })
+  const text = (content: string): MsgContent => ({ format: 'text/plain', content })
+  const placeholder = text('Got it, working on it…')
+  if (!done) {
+    const anchor = 'msg-qa-2'
+    const thread = { relates_to: { rel: 'thread', target: anchor } }
+    return [
+      you('msg-qa-1', 'Tidy up the project docs.', minutes(10)),
+      agent(anchor, placeholder, minutes(10), { agent_task: { task_id: MOCK_AGENT_TASKS.asking } }),
+      agent('msg-qa-3', text('Who are the docs for: new contributors, or the people using the release?'), minutes(9), { ...thread, agent_ask: { anchor, call_id: 'call-docs-1', turn: 3, input: { kind: 'text', options: [], allow_text: false } } }),
+      you('msg-qa-4', 'New contributors.', minutes(8), thread),
+      agent('msg-qa-5', text('Which docs should I tidy?\n\na. docs/ only\nb. The whole repository'), minutes(6), { ...thread, agent_ask: { anchor, call_id: 'call-docs-2', turn: 3, input: { kind: 'choice', options: [{ id: 'a', label: 'docs/ only' }, { id: 'b', label: 'The whole repository' }], allow_text: false } } }),
+    ]
+  }
+  const anchor = 'msg-qd-2'
+  const thread = { relates_to: { rel: 'thread', target: anchor } }
+  return [
+    you('msg-qd-1', 'Draft the release notes for 2.4.', minutes(190)),
+    agent(anchor, placeholder, minutes(190), { agent_task: { task_id: MOCK_AGENT_TASKS.answered } }),
+    agent('msg-qd-3', text('Who are the notes for?\n\n- a. Developers\n- b. End users'), minutes(189), { ...thread, agent_ask: { anchor, call_id: 'call-notes-1', turn: 7, input: { kind: 'choice', options: [{ id: 'a', label: 'Developers' }, { id: 'b', label: 'End users' }], allow_text: true } } }),
+    you('msg-qd-4', 'End users', minutes(188), { ...thread, content: { format: 'text/plain', content: 'End users', machine: { intent: 'agent_ask.answer', data: { call_id: 'call-notes-1', option: 'b' } } } }),
+    agent('msg-qd-5', text('Should the notes mention the known sync issue?'), minutes(187), { ...thread, agent_ask: { anchor, call_id: 'call-notes-2', turn: 7, input: { kind: 'text', options: [], allow_text: false } } }),
+    you('msg-qd-6', 'Yes, with the workaround.', minutes(186), thread),
+    agent('msg-qd-2-final', { format: 'text/markdown', content: '## Release 2.4\n\n- Faster sync on large folders\n- **Known issue:** sync can stall after sleep; reopen the app to resume.' }, minutes(182), { relates_to: { rel: 'edit', target: anchor } }),
+    // An ordinary reply to the Agent's reply: it keeps its own row.
+    you('msg-qd-8', 'Thanks, please keep it under one page.', minutes(180), thread),
+  ]
+}
+
 export const mockMessageSeeds: Record<string, readonly MessageObject[]> = {
   'session-coder-task': agentTaskSeeds('session-coder-task'),
+  'session-coder-ask': agentAskSeeds('session-coder-ask', false),
+  'session-coder-qa': agentAskSeeds('session-coder-qa', true),
   'session-coder-1': [
     createChatMessage({
       id: 'msg-c1-1',

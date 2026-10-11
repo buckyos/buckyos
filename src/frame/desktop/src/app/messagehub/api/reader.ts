@@ -124,11 +124,13 @@ export class SessionApiReader implements ConversationMessageReader {
   readonly readerKey: string
   readonly totalCount: number
   readonly revision: number
+  readonly timeline: readonly MessageObject[]
   private readonly messages: readonly MessageObject[]
 
-  /** Relation messages are folded into their targets, so the rows are the history minus edits / redactions / reactions. */
+  /** Relation messages are folded into their targets, so the rows are the history minus edits / redactions / reactions and Agent Q/A. */
   constructor(readerKey: string, history: SessionHistory) {
     this.readerKey = readerKey
+    this.timeline = history.messages
     this.messages = foldMessageRelations(history.messages)
     this.totalCount = this.messages.length
     this.revision = history.revision

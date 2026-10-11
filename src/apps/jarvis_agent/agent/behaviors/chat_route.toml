@@ -1,7 +1,7 @@
 [meta]
 name = "chat_route"
 objective = "Handle one-to-one user chat, answer directly when possible, and route substantial work into work sessions."
-next = ["task_route"]
+next = ["analyze_intent"]
 
 [prompt]
 mode = "function_call"
@@ -13,14 +13,19 @@ system = """
 
 ## Routing Work
 
-Default to a direct conversational reply. When a request is likely to take multiple steps, needs durable workspace state, should continue independently, or the user asks for a work session, call `call_behavior` with `behavior = "task_route"` and `task = "Route this request of the user to a work session: <the user's request, restated completely>"`. `task_route` only decides and creates the work session; it does not do the work.
+Default to a direct conversational reply. When a request may need work done outside this conversation, call `try_analyze_user_intent` (its description says when). It looks at the environment, asks the user what it must, creates what is needed and returns `{"status", "behavior", "submission": {"report", "result"}}`. Relay it by `result.outcome`:
 
-- `created: <session id> …`: a work session is now working in the background. Tell the user it has started and what it will do. Its result arrives later as an input of this session; relay it to the user then.
-- `direct: …`: answer the request yourself.
-- `failed: …`: tell the user the work could not be started and why.
-- When a work session reports that it finished, the event carries only the beginning of its report. Read the whole report with `agent-session read-session <session id> --report` before you relay it.
+- `work_created`: tell the user the work has started, what it will do and the assumptions it made. Its result arrives later as an input of this session; read the whole report with `agent-session read-session <session id> --report` and relay it then.
+- `goal_created`: tell the user the goal is set up and how it will be pursued; it goes on in its own goal session.
+- `direct`: answer the request yourself; the report may carry facts the analysis found.
+- `declined` / `unsupported`: relay `reason` and `gaps`. For something that has to run at a later time, say plainly that scheduled tasks are not supported yet.
+- `needs_confirmation`: present the `proposal`. When the user decides, call `try_analyze_user_intent` again with the request and the decision.
+- `status` is `failed`, or the result has no outcome: tell the user the analysis did not complete and why. Do not do the work yourself.
+
+The analysis talks to the user directly: do not ask its questions again (they are in the conversation already) and do not retell its exploration. `report` is the analysis's tool; you answer with your final message.
+
 - Never say that work is finished before the work session has reported back.
-- If the user changes topic or interrupts with a new task, route a new work session instead of overwriting old context.
+- If the user changes topic or gives a new task, analyze the new request instead of changing earlier work.
 
 ## Returning Attachments
 
@@ -38,7 +43,7 @@ Before attaching a local file, create it and verify that the exact path exists.
 """
 
 [capabilities]
-tool_whitelist = ["group:bash", "call_behavior"]
+tool_whitelist = ["group:bash", "behavior:analyze_intent", "report"]
 
 [budget]
 max_tool_iterations = 24

@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import clsx from 'clsx'
-import { Folder } from 'lucide-react'
+import { Folder, Server } from 'lucide-react'
 import { ago, t, type TextKey } from '../i18n'
 import { sessionHref, useQuery } from '../lib'
-import { dataModel, type ArtifactHead, type KnownWorkspace, type RegistryEntry } from '../model'
+import { dataModel, type ArtifactHead, type KnownRuntime, type KnownWorkspace, type RegistryEntry } from '../model'
 import { ErrorBox } from '../ui'
 
 const availabilityLabel: Record<KnownWorkspace['availability'], TextKey> = {
@@ -165,6 +165,51 @@ export function WorkspaceList({ entries = [] }: { entries?: RegistryEntry[] }) {
         {records.map((workspace) => <WorkspaceCard key={workspace.workspace_id} workspace={workspace} entries={entries}
           artifacts={artifacts.data ?? []} refresh={() => workspaces.mutate()} />)}
       </ul> : !workspaces.error && <p className="py-2 text-sm text-mute">{t(workspaces.isLoading ? 'loading' : 'noWorkspaces')}</p>}
+    </section>
+  )
+}
+
+const runtimeAvailability: Record<KnownRuntime['availability'], TextKey> = {
+  available: 'runtimeAvailable',
+  runtime_unavailable: 'runtimeUnavailable',
+  permission_denied: 'runtimePermissionDenied',
+}
+
+export function RuntimeList() {
+  const runtimes = useQuery(['runtimes.list'], () => dataModel.runtimes())
+  const records = runtimes.data ?? []
+  return (
+    <section className="card min-w-0 p-4" data-testid="known-runtimes">
+      <h2 className="mb-3 text-base font-semibold">{t('runtimes')}
+        {runtimes.data && <span className="ml-1.5 text-sm font-normal text-mute">{records.length}</span>}
+      </h2>
+      <ErrorBox error={runtimes.error} />
+      {records.length > 0 ? <ul className="divide-y divide-line">
+        {records.map((runtime) => <li key={runtime.runtime_id} className="min-w-0 py-3 first:pt-1 last:pb-0"
+          data-testid={`runtime-${runtime.runtime_id}`}>
+          <div className="flex items-start gap-2">
+            <Server size={18} className="mt-0.5 shrink-0 text-accent" />
+            <div className="min-w-0 flex-1">
+              <h3 className="break-words text-sm font-semibold">{runtime.name}
+                <span className="ml-1.5 font-mono text-xs font-normal text-mute">{runtime.runtime_id}</span>
+              </h3>
+              {runtime.description && <p className="mt-1 break-words text-sm text-mute">{runtime.description}</p>}
+            </div>
+          </div>
+          <div className="my-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+            <span className={clsx(runtime.availability === 'available' ? 'text-ok' : 'text-warn')}>
+              {t(runtimeAvailability[runtime.availability])}
+            </span>
+            {runtime.builtin && <span>{t('runtimeBuiltin')}</span>}
+          </div>
+          {runtime.roots.length > 0 && <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+            <dt className="text-mute">{t('runtimeRoots')}</dt>
+            <dd className="break-all font-mono">{runtime.roots.join(' · ')}</dd>
+          </dl>}
+          {runtime.last_error && runtime.availability !== 'available' &&
+            <p className="mt-2 break-words text-xs text-warn">{runtime.last_error}</p>}
+        </li>)}
+      </ul> : !runtimes.error && <p className="py-2 text-sm text-mute">{t(runtimes.isLoading ? 'loading' : 'noRuntimes')}</p>}
     </section>
   )
 }

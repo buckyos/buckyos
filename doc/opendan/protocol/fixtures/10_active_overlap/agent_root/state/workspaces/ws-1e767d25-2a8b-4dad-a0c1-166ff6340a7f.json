@@ -5,7 +5,7 @@
   "name": "Overlap fixture",
   "description": "",
   "location": {
-    "runtime_id": "local",
+    "runtime_id": "container",
     "directory": "${FIXTURE_ROOT}/ws"
   },
   "usage": "collaborative",
@@ -13,10 +13,10 @@
   "availability": "available",
   "revision": 6,
   "location_revision": 1,
-  "created_at_ms": 1791715814450,
-  "registered_at_ms": 1791715814452,
-  "updated_at_ms": 1791715814582,
-  "checked_at_ms": 1791715814582,
+  "created_at_ms": 1791731446943,
+  "registered_at_ms": 1791731446947,
+  "updated_at_ms": 1791731447069,
+  "checked_at_ms": 1791731447069,
   "registered_by": "app:app2@alice",
   "source": "imported",
   "private_notes": "",

@@ -198,6 +198,7 @@ async fn drive_locked(
         task_status: Mutex::new(None),
         flush: tokio::sync::Mutex::new(()),
         external_stop_applied: AtomicBool::new(false),
+        behavior_functions: Default::default(),
     });
     let r = Box::pin(drive_inner(&sh, until)).await;
     let failure = sh
@@ -1276,6 +1277,28 @@ async fn external_stop(sh: &Arc<Shared>) -> Result<()> {
     commit_and_report(sh, &mut s).await
 }
 
+/// State waits for what the suspended run waits for; a question to the
+/// user it did not wait for yet is queued in the same commit and sent.
+async fn commit_waiting(sh: &Arc<Shared>, w: &WaitingRun) -> Result<(u64, RunState)> {
+    let mut asked = false;
+    let r = {
+        let mut s = sh.session.lock().await;
+        let wf = super::ask::waiting_for(&w.snapshot);
+        if s.state.run_state != RunState::Waiting || s.state.waiting_for.as_ref() != Some(&wf) {
+            asked = super::ask::queue_questions(sh, &mut s, &w.run, &w.snapshot).await;
+            s.state.run_state = RunState::Waiting;
+            s.state.waiting_for = Some(wf);
+            commit_and_report(sh, &mut s).await?;
+        }
+        (s.state.rev, s.state.run_state)
+    };
+    if asked {
+        crate::fault::point("user_input:after_question_commit");
+        Box::pin(super::outbound::flush_outbox(sh)).await;
+    }
+    Ok(r)
+}
+
 async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     {
         let session = sh.session.lock().await;
@@ -1488,29 +1511,35 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // the same run / Turn continues. Meanwhile msg / Input events stay
         // queued — they never stand in for a missing tool result — while
         // controls keep being applied.
+        // A run waiting for the user's answer takes the next message of the
+        // queue as that answer (one message; the rest stays queued) — only
+        // once its question is committed to go out.
         if let Some(w) = waiting.take() {
-            match Box::pin(try_fill(sh, w, false)).await? {
+            let user = super::ask::waits_for_user(&w.snapshot);
+            if user {
+                Box::pin(commit_waiting(sh, &w)).await?;
+            }
+            let attempt = match user
+                .then(|| super::ask::take_answer(&mut routed.candidates))
+                .flatten()
+            {
+                Some(m) => Box::pin(super::live::fill_answer(sh, w, m)).await?,
+                None => Box::pin(try_fill(sh, w, false)).await?,
+            };
+            match attempt {
                 Ok(lc) => live = Some(lc),
                 Err(w) => {
-                    let (rev, rs) = {
-                        let mut s = sh.session.lock().await;
-                        let refs = w.task_ids();
-                        let wf = WaitingFor {
-                            kind: WaitingKind::Tool,
-                            refs,
-                            deadline_ms: w.deadline_ms(),
-                        };
-                        if s.state.run_state != RunState::Waiting
-                            || s.state.waiting_for.as_ref() != Some(&wf)
-                        {
-                            s.state.run_state = RunState::Waiting;
-                            s.state.waiting_for = Some(wf);
-                            commit_and_report(sh, &mut s).await?;
-                        }
-                        (s.state.rev, s.state.run_state)
-                    };
+                    let (rev, rs) = Box::pin(commit_waiting(sh, &w)).await?;
                     if matches!(until, StopWhen::MaxOutcomes { .. }) {
                         return Ok(DriveResult::OutcomesHandled { rev, run_state: rs });
+                    }
+                    // Nothing advances without the user: the session is idle
+                    // until a message comes in.
+                    if user && until == StopWhen::Idle {
+                        return Ok(DriveResult::Idle { rev, run_state: rs });
+                    }
+                    if user && until == StopWhen::TurnClosed {
+                        return Ok(turn_open_result(sh).await);
                     }
                     let (cfg, state) = {
                         let session = sh.session.lock().await;

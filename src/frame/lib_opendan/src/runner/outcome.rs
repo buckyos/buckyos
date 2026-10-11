@@ -599,7 +599,8 @@ pub(super) async fn handle_context_outcome(
         LLMContextOutcome::PendingTool { snapshot: s, .. } => {
             snapshot = s;
             status = RunStatus::Paused;
-            match pending_sub_call(&snapshot, &entry)? {
+            let behaviors = cfg.behaviors().map_err(crate::error::OpenDanError::InvalidArgument)?;
+            match pending_sub_call(&snapshot, &behaviors, &entry)? {
                 // Suspended on `call_behavior`: the run becomes the caller
                 // of that sub context; its batch / step stays with it.
                 Some(call) => {
@@ -675,19 +676,21 @@ pub(super) async fn handle_context_outcome(
     } else {
         RunState::Ready
     };
+    let mut asked = false;
     if next.waiting {
         // Generated from the snapshot's suspended calls (status display and
         // event matching); the calls and their deadlines live in the
-        // snapshot only.
-        let pending = snapshot.state.pending_calls();
-        s.state.waiting_for = Some(WaitingFor {
-            kind: WaitingKind::Tool,
-            refs: pending.iter().map(|p| p.task_id.clone()).collect(),
-            deadline_ms: pending.iter().filter_map(|p| p.until_ms).min(),
-        });
+        // snapshot only. A question to the user leaves with this commit.
+        asked = Box::pin(super::ask::queue_questions(sh, &mut s, &lc.run, &snapshot)).await;
+        s.state.waiting_for = Some(super::ask::waiting_for(&snapshot));
     }
     s.state.last_error = next.error.clone();
     commit_and_report(sh, &mut s).await?;
+    drop(s);
+    if asked {
+        crate::fault::point("user_input:after_question_commit");
+        Box::pin(super::outbound::flush_outbox(sh)).await;
+    }
     Ok(next)
 }
 

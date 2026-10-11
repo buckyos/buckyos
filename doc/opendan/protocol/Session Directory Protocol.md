@@ -141,7 +141,7 @@ Schema：`schema/session_state.schema.json`。
   "rev": 17,                                   // 每次提交 +1
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "host:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
-  "waiting_for": null | { "kind": "input | tool | event | children", "refs": ["<task_id>"], "deadline_ms": null },   // tool：由快照的挂起调用生成；event：Goal Session 在两次 Activation 之间
+  "waiting_for": null | { "kind": "input | tool | event | children", "refs": ["<task_id>"], "deadline_ms": null },   // tool：由快照的挂起调用生成；input + refs ["userinput:<call_id>"]：挂起调用在等用户回答（Turn 仍打开）；event：Goal Session 在两次 Activation 之间
   "outcome": null | "succeeded | failed | stopped",
   "acceptance": "n/a | pending | accepted | discarded",
   "latest_report": null,  // 最近顶层 context 的 ReportSubmission；子报告仅保留在子 run
@@ -176,6 +176,7 @@ Schema：`schema/session_state.schema.json`。
   "reply": null | { "route": "message", "to": "…", "to_session": null, "kind": "chat", "reply_to": "cymsg:…", "tunnel": null }
                 | { "route": "parent_session", "session_id": "…" },   // 默认回复路径
   "outbox": [ { "key": "<sid>:<turn>:<run_id>:<n>", "msg": { /* 完整的 MsgObject，含 created_at_ms */ }, "turn": 3,
+                "purpose": "reply | placeholder | final_edit | question",
                 "status": "pending | sent | failed", "msg_id": null, "deliveries": [], "error": null,
                 "attempts": 0, "updated_at_ms": 0 } ],                 // 出站消息，见下
   "watched_tasks": ["<task_id>"],              // run 结束后仍在跟踪的后台 task
@@ -207,7 +208,7 @@ Schema：`schema/session_state.schema.json`。
 - `handover_at_ms`：本 state 已提交的交接记录（run.json `handover.at_ms`）的时间戳；带相同时间戳的记录不是待办的转移（§7、§8）。
 - `live_run` = 未结束的 run；`last_run` = 最后一次结束的 run（保留其 llm context 状态）；`process_stack[].run_id` = 挂起的 process 的 run。三者之外的 run 目录可以删除（§7）。
 - `outbox`（出站，驱动者配置了出站 sink 时才产生）：Turn 关闭的那次提交里，由 `reply` 给出信封、sink 填内容，生成完整的 MsgObject 连同幂等键写入，`status = pending`；`created_at_ms` 在这里定死。提交之后驱动者把 `pending` 条目按序交给 sink：成功 → `sent`（记 `msg_id` / `deliveries`）；被拒 → `failed`（记 `error`，不重试）；没送到 → 保持 `pending`，`attempts + 1`，退避后由之后的 drive 原样重发（同一个键、同一个 MsgObject，ObjId 不变）。发送失败不让 Turn 失败，也不阻塞后续输入；排在它后面的条目等它。`channels.outbound` 存在而 `reply` 的 `to / to_session / kind` 与它不一致时，条目直接记为 `failed`（`route_mismatch`），不发送。有父 Session 的 Session、以及回复对象是 Agent 自己时不产生条目。已结束（`sent` / `failed`）的条目保留最近 16 条供展示。
-- `outbox[].purpose`（可缺省，缺省为 `reply`）与占位：`reply` 是 Turn 的回复作为独立消息；`placeholder` 是 Turn 进行中发出的占位（键 `<sid>:<turn>:placeholder`）；`final_edit` 是以 `relates_to = {rel: edit, target: <占位 ObjId>}` 替换占位的回复。占位只在 Turn 绑定了 task、由消息打开、打开超过 `placeholder_delay`（默认 3 秒）或已发生首次工具调用、且 sink 给出占位消息（宿主有文案、目标可编辑）时产生。Turn 关闭时：占位从未交给 sink（`pending` 且 `attempts = 0`）则撤销占位、回复照常独立发出；否则回复是 `final_edit`，sink 没有正文可给时用结束摘要收尾。占位被拒或放弃后，同一 Turn 的 `final_edit` 改回 `reply`。Turn 的 task id 以顶层扩展字段 `agent_task = {task_id}` 写在锚点消息上（占位，或没有占位时的回复本身），edit 不带。
+- `outbox[].purpose`（可缺省，缺省为 `reply`）与占位：`reply` 是 Turn 的回复作为独立消息；`placeholder` 是 Turn 进行中发出的占位（键 `<sid>:<turn>:placeholder`）；`final_edit` 是以 `relates_to = {rel: edit, target: <占位 ObjId>}` 替换占位的回复。占位只在 Turn 绑定了 task、由消息打开、打开超过 `placeholder_delay`（默认 3 秒）或已发生首次工具调用、且 sink 给出占位消息（宿主有文案、目标可编辑）时产生。Turn 关闭时：占位从未交给 sink（`pending` 且 `attempts = 0`）则撤销占位、回复照常独立发出；否则回复是 `final_edit`，sink 没有正文可给时用结束摘要收尾。占位被拒或放弃后，同一 Turn 的 `final_edit` 改回 `reply`。Turn 的 task id 以顶层扩展字段 `agent_task = {task_id}` 写在锚点消息上（占位，或没有占位时的回复本身），edit 不带。 `question`（键 `<sid>:<turn>:ask:<call_id>`）是 `ask-user` 的问题：在使 Session 等待该调用的同一次提交里入 outbox；先确保本 Turn 的占位（立即，不等 `placeholder_delay`、不要求已有工具调用），再以 `relates_to = {rel: thread, target: <占位 ObjId>}` 发出，正文为问题（选项问题附 `1. <label>` 列表），顶层扩展字段 `agent_ask = {anchor, call_id, turn, input}`。它排在占位之后，占位发出后按实际 `msg_id` 重定目标；占位被撤销、被拒或没有占位时，问题是独立消息，`anchor` 为空。宿主的 sink 可以在入 outbox 前补充（群聊里 `mentions` 主人）。
 - `turn_tasks`（驱动者配置了 task 钩子 `TurnTaskSink` 时才产生）：`{turn, task_id, has_msg, opened_at_ms, placeholder?, closed?, summary?, error?, reported}`。Turn 打开后幂等创建 task（键 = `(session_id, turn)`）并写入绑定；关闭 Turn 的那次提交写 `closed`（TurnStatus）与结果摘要；task 服务收下终态后 `reported = true`，没送到则由之后的 drive 重试。绑定独立于 outbox 的清理，已上报的保留最近 64 条。task 创建失败的 Turn 没有绑定，也就没有占位，回复照常。子 Session 的 `origin.parent_task` 取自创建它时父 Session 打开的 Turn 的绑定，它的每个 Turn 的 task 都以此为父。
 - `run_state` 迁移：`created → ready ⇄ running ⇄ waiting → finished`；进入 finished 后不能回到 running。stop / decide 只能由驱动者执行，其它参与方投递 control。
 - `goal`（Goal Session）：首次推进时从 `state/goals/<id>/state.json` 载入（文件不存在 → 初始 Goal State；文件仍是更早的 epoch → 宿主尚未准备，拒绝推进）。之后 Goal State 只在本 Session 的提交里改变（`state.rev + 1`）：打开 Activation 的 receipt（`extra.goal_activation`）写入 `activation`；消费某个 Work 的结束（`_child` finished）把它记入 `state.absorbed` 与 `activation.absorbed`；`control(goal_skills)` 改 `state.current_skills`；关闭 Turn 的那次提交取出 `activation`、按 Goal 结果更新 Goal State、把 Activation 记录放进 `unwritten`。提交之后驱动者发布（`write_state`，再按 `(epoch, seq)` 追加 `unwritten`），最后提交 `published_rev` 与清空的 `unwritten`；中途崩溃由之后的 drive 补写，只写一次、不重新推理（fixture 16）。`ending` 由 Goal 的状态闸门写入（Goal 归档 / 达成 / 进入新 epoch），随后按 `stop_requested` 的路径在下一个提交点结束 Session（`outcome` 取 `ending.outcome`；`cascade = false` 时不向子 Session 投递 stop）。
@@ -365,11 +366,11 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 | 触发 | 调用方的停止点 | 子结果返回 |
 |---|---|---|
 | `next_behavior = B` | 完整 Step 的 `Done` | `process_result` 渲染进调用方的下一个 `on_context_switch` 输入批次（`<process_result behavior status>`） |
-| `call_behavior` | `PendingTool`（task id `subctx:<call_id>`），未完成的批次 / Step 留在调用方快照 | 调用方的 run 被打开时用 `ResumeFill::ToolResults` 按 `call_id` 回填，然后续派同批余下的调用；不产生输入批次。`failed` 回填为工具错误，`needs_user_input` 回填为结构化结果 |
+| `call_behavior`，或目标 `[tool]` 声明的具名函数 | `PendingTool`（task id `subctx:<call_id>`），未完成的批次 / Step 留在调用方快照 | 调用方的 run 被打开时用 `ResumeFill::ToolResults` 按 `call_id` 回填，然后续派同批余下的调用；不产生输入批次。`failed` 回填为工具错误，`needs_user_input` 回填为结构化结果，以 `report` 结束的回填为 `{status, behavior, submission: {report, result}}` |
 
 子 context 的规则：
 
-- 子 run 写入 `runs/`，进入时的交接批次（`on_context_switch`）带 `<sub_task mode="…">任务</sub_task>`；它继承的部分不由它写入 worklog（function call：`request.input` 即继承的前缀；behavior：`HostMeta.inherited_below` 之下的 step），step / action 编号接着调用方的，调用方恢复时编号不小于子 run 的，保证 `(run_id, step_index)` 与 `call_id` 唯一。预算、用量、错误计数与输入 receipt 独立；调用方恢复时不重置自己的预算。
+- 子 run 写入 `runs/`，进入时的交接批次（`on_context_switch`）带 `<sub_task mode="…">任务</sub_task>`（具名函数的任务是其 `task` 模板的渲染结果；允许提问的 Session 里附“用 `agent-session ask-user` 提问”，否则“不要问用户”）；fork 目标冻结的 `[budget]` 限制子 run；它继承的部分不由它写入 worklog（function call：`request.input` 即继承的前缀；behavior：`HostMeta.inherited_below` 之下的 step），step / action 编号接着调用方的，调用方恢复时编号不小于子 run 的，保证 `(run_id, step_index)` 与 `call_id` 唯一。预算、用量、错误计数与输入 receipt 独立；调用方恢复时不重置自己的预算。
 - fork 的分叉点：调用方没有未完成调用时是它的全部历史；工具触发时是触发批次（function call）/ 进行中的 Step（behavior）之前的最后一个已配对前缀，触发批次只留在调用方。
 - 子 context 无论以什么结束都返回调用方，**在子 run 结束的同一次提交里**出栈、调用方的 run 成为 `live_run`、写入 `process_result`：`END` / 交付结果 → `ok`；`WAIT_USER_MSG` → `needs_user_input`（子 context 不消费调用方的输入队列，由调用方去问用户）；不可重试错误、预算耗尽、交接到没有进入模式的 behavior → `failed`（不结束 Turn）；交接到 `switch_context` 目标也只是返回。子 context 可以再调用子 context，`caller` 帧最多 4 层，超出时调用失败。
 - 子 run 新增的记录进入 worklog 供审计，但不进入调用方的上下文：为其它 context 重建会话历史（§6）时，已返回的子 run（有 `process_done` outcome）只渲染这条 outcome（即交回的结果），不渲染它的过程。压缩时同样过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要（当前实现的限制）。

@@ -353,6 +353,33 @@ impl RunHandle {
             .unwrap_or_default()
     }
 
+    /// Record the question a call asks the user (`ask-user`), before the
+    /// snapshot suspended on it is checkpointed: the session queues the
+    /// question from here, also after a crash.
+    pub fn save_ask(&self, call_id: &str, ask: &crate::protocol::UserInputRequest) -> Result<()> {
+        let value = serde_json::to_value(ask).map_err(|e| OpenDanError::Other(e.to_string()))?;
+        self.update(|r| {
+            if let Some(h) = r.host.as_mut() {
+                if !h.extra.is_object() {
+                    h.extra = serde_json::json!({});
+                }
+                if !h.extra["asks"].is_object() {
+                    h.extra["asks"] = serde_json::json!({});
+                }
+                h.extra["asks"][call_id] = value;
+            }
+        })
+    }
+
+    pub fn ask(&self, call_id: &str) -> Option<crate::protocol::UserInputRequest> {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("asks"))
+            .and_then(|a| a.get(call_id))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
     pub fn reports(&self) -> Result<Vec<crate::protocol::ReportSubmission>> {
         let record = self.record();
         let Some(value) = record.host.as_ref().and_then(|h| h.extra.get("reports")) else {

@@ -585,6 +585,26 @@ pub async fn create_sub_session(
     if let Some(existing) = agent.sessions().lookup(&sid).await? {
         return SessionDir::open(&existing.location);
     }
+    // An explicit runtime is one of the agent's registered runtimes, usable
+    // now; the agent's own environment needs no requirement of its own.
+    let runtime_requirement = match sub.runtime_id.as_deref() {
+        None => None,
+        Some(id) => {
+            let record = agent.runtimes().lookup(id).await?.ok_or_else(|| {
+                OpenDanError::Bind(format!("runtime `{id}` is not registered (see `runtime list`)"))
+            })?;
+            if record.availability != RuntimeAvailability::Available {
+                return Err(OpenDanError::Bind(format!(
+                    "runtime `{id}` is not available: {}",
+                    record
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| format!("{:?}", record.availability))
+                )));
+            }
+            (!is_native_runtime(&record.runtime_id)).then(|| record.runtime_id.clone())
+        }
+    };
     let policy = &pcfg.session.policy;
     // A Goal's Work counts for the Goal, whichever epoch created it.
     let goal_origin = match &pcfg.session.goal {
@@ -651,7 +671,7 @@ pub async fn create_sub_session(
     spec.runtime = pcfg.runtime.clone();
     // The binding identity is the sub session's own: only an explicit
     // requirement is carried, the runtime configuration is inherited.
-    spec.runtime.requirement.runtime_id = sub.runtime_id.clone();
+    spec.runtime.requirement.runtime_id = runtime_requirement;
     spec.policy.max_session_depth = policy.max_session_depth;
     if let Some(b) = sub.behavior.clone() {
         spec.prompt.behavior = Some(b);

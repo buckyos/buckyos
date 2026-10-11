@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "UserInputKind": {
+      "enum": [
+        "text",
+        "choice"
+      ],
+      "type": "string"
+    },
+    "UserInputOption": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UserInputSpec": {
+      "description": "How the user answers a question.",
+      "properties": {
+        "allow_text": {
+          "default": false,
+          "description": "A choice question also takes free text.",
+          "type": "boolean"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UserInputKind"
+            }
+          ],
+          "default": "text"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/definitions/UserInputOption"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "A question to the user (`details` of the `ask-user` pending result).",
+  "properties": {
+    "input": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UserInputSpec"
+        }
+      ],
+      "default": {
+        "allow_text": false,
+        "kind": "text"
+      }
+    },
+    "question": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "question"
+  ],
+  "title": "UserInputRequest",
+  "type": "object"
+}

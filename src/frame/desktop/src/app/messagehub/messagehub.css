@@ -303,6 +303,88 @@
   animation: mh-task-spin 1.4s linear infinite;
 }
 
+/* Questions an Agent asked during a Turn and their answers, under its bubble. */
+.mh-qa {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.mh-qa-toggle:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mh-qa-answer {
+  border-left: 2px solid color-mix(in srgb, var(--cp-accent) 45%, transparent);
+}
+
+.mh-qa-option {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  opacity: 0.8;
+}
+
+.mh-qa-option[data-picked] {
+  border-color: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 22%, var(--cp-surface));
+  color: var(--cp-text);
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* Composer locked to answering a question: option rows and small text actions. */
+.mh-answer-option {
+  display: flex;
+  min-height: 40px;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--cp-border);
+  border-radius: 12px;
+  background: var(--cp-message-canvas);
+  color: var(--cp-text);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.mh-answer-option:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--cp-accent) 24%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 12%, var(--cp-surface));
+}
+
+.mh-answer-option[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 22%, var(--cp-surface));
+}
+
+.mh-answer-option:disabled {
+  cursor: default;
+}
+
+.mh-answer-option:disabled:not([aria-pressed="true"]) {
+  opacity: 0.6;
+}
+
+.mh-answer-action {
+  display: inline-flex;
+  min-height: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--cp-muted);
+  font-size: 12px;
+}
+
+.mh-answer-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-answer-action:disabled {
+  opacity: 0.5;
+}
+
 @keyframes mh-task-spin {
   to { transform: rotate(360deg); }
 }

@@ -965,3 +965,113 @@ pub const HOST_META_KEY: &str = "libopendan";
 fn is_zero(v: &u64) -> bool {
     *v == 0
 }
+
+/// `meta` key of a question a session asks the user along its reply path
+/// (`agent-session ask-user`): `{anchor, call_id, turn, input}`.
+pub const AGENT_ASK_META: &str = "agent_ask";
+
+/// `content.machine.intent` of an answer picked from a question's options
+/// (`data: {call_id, option}`).
+pub const AGENT_ASK_ANSWER_INTENT: &str = "agent_ask.answer";
+
+/// Task id prefix of a call waiting for the user's answer
+/// (`userinput:<call_id>`): only the session resolves it, from its input
+/// queue.
+pub const USER_INPUT_TASK_PREFIX: &str = "userinput:";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UserInputKind {
+    #[default]
+    Text,
+    Choice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserInputOption {
+    pub id: String,
+    pub label: String,
+}
+
+/// How the user answers a question.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserInputSpec {
+    #[serde(default)]
+    pub kind: UserInputKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<UserInputOption>,
+    /// A choice question also takes free text.
+    #[serde(default)]
+    pub allow_text: bool,
+}
+
+/// A question to the user (`details` of the `ask-user` pending result).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserInputRequest {
+    pub question: String,
+    #[serde(default)]
+    pub input: UserInputSpec,
+}
+
+impl UserInputRequest {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.question.trim().is_empty() {
+            return Err("the question is empty".into());
+        }
+        let options = &self.input.options;
+        match self.input.kind {
+            UserInputKind::Text if !options.is_empty() || self.input.allow_text => {
+                Err("a text question has no options".into())
+            }
+            UserInputKind::Choice if options.len() < 2 => {
+                Err("a choice question needs at least two options".into())
+            }
+            UserInputKind::Choice => {
+                let mut ids = std::collections::BTreeSet::new();
+                for o in options {
+                    if o.id.trim().is_empty() || o.label.trim().is_empty() {
+                        return Err("every option needs an id and a label".into());
+                    }
+                    if !ids.insert(o.id.as_str()) {
+                        return Err(format!("option id `{}` is used twice", o.id));
+                    }
+                }
+                Ok(())
+            }
+            UserInputKind::Text => Ok(()),
+        }
+    }
+
+    /// The question as text for readers that do not know `agent_ask`.
+    pub fn text(&self) -> String {
+        let mut s = self.question.trim().to_string();
+        if self.input.kind == UserInputKind::Choice {
+            for (i, o) in self.input.options.iter().enumerate() {
+                s.push_str(&format!("\n{}. {}", i + 1, o.label.trim()));
+            }
+        }
+        s
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserInputAttachment {
+    pub obj_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Result of an `ask-user` call: the next message the user sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserInputAnswer {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<UserInputAttachment>,
+    /// Option id picked (`agent_ask.answer` of this call).
+    pub option: Option<String>,
+    /// The message replies to the question (`thread` on its anchor).
+    pub in_reply_to_question: bool,
+    pub msg_id: String,
+    pub from: String,
+    pub at_ms: u64,
+}

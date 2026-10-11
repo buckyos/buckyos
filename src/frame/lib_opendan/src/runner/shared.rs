@@ -48,6 +48,9 @@ pub struct Shared {
     /// The driving process's stop was applied to a Goal Session's
     /// Activation (once per drive).
     pub external_stop_applied: std::sync::atomic::AtomicBool,
+    /// Functions that run a sub context (`call_behavior` and the behaviors'
+    /// `[tool]` names) offered to the runs of this drive.
+    pub behavior_functions: Mutex<std::collections::BTreeSet<String>>,
 }
 
 /// A Turn closed by a commit of this drive.

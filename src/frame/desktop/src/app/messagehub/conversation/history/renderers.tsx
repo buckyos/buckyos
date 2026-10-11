@@ -35,6 +35,7 @@ import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
 import { displayedContent, effectiveContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
 import { MessageTaskArea } from '../tasks/MessageTask'
+import { AgentQuestions } from './AgentQuestions'
 import type { ConversationListItem } from './types'
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉']
@@ -479,6 +480,7 @@ function MessageFooter({ message, isSelf, deliveryStatus, selfDid, frameless = f
     <>
       <MessageHoverBar message={message} isSelf={isSelf} selfDid={selfDid} mode={relations?.redacted ? 'redacted' : mode} />
       {mode === 'message' && !relations?.redacted ? <MessageTaskArea message={message} /> : null}
+      {mode === 'message' && !relations?.redacted && relations?.thread ? <AgentQuestions message={message} selfDid={selfDid} /> : null}
       <ReactionChips message={message} isSelf={selfTone} selfDid={selfDid} />
       <div className="mt-1 flex items-center justify-end gap-1">
         {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 16%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}>{t('messagehub.requestShort')}</span> : null}

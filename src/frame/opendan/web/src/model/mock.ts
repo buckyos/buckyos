@@ -3,6 +3,7 @@ import type {
   AgentProfile,
   ArtifactVersion,
   HostedStatus,
+  KnownRuntime,
   KnownWorkspace,
   PerceptionRecord,
   RegistryEntry,
@@ -343,6 +344,23 @@ export const createMockDataModel = (): OpenDanDataModel => {
       source_session: null, conflict: null, last_error: 'Directory does not exist; locate the moved workspace to restore access.',
     },
   ]
+  const runtimes: KnownRuntime[] = [
+    {
+      version: 1, runtime_id: 'container', kind: 'container', name: 'Agent container',
+      description: "The environment the agent itself runs in; commands run directly. It is the agent's container: paths here are not the owner's host paths.",
+      runtime_host: 'mock-host', exec: { kind: 'native' }, roots: [`${ROOT}/workspaces`, '/home/devtest'],
+      capabilities: { network: true, os: 'linux' }, availability: 'available', builtin: true,
+      revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
+      checked_at_ms: ago(60), last_error: null,
+    },
+    {
+      version: 1, runtime_id: 'host', kind: 'host_native', name: 'Host machine',
+      description: "The machine the agent's container runs on, where the owner's own files and tools are. Not usable yet: it needs a host executor.",
+      runtime_host: 'mock-host', exec: null, roots: [], capabilities: {}, availability: 'runtime_unavailable', builtin: true,
+      revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
+      checked_at_ms: ago(60), last_error: 'no executor for the `host` runtime yet',
+    },
+  ]
   const findWorkspace = (workspaceId: string) => {
     const workspace = workspaces.find((record) => record.workspace_id === workspaceId)
     if (!workspace) throw new OpenDanError('not_found', `workspace ${workspaceId} is not registered`)
@@ -457,6 +475,11 @@ export const createMockDataModel = (): OpenDanDataModel => {
     workspaces: async () => {
       await delay()
       return structuredClone(workspaces)
+    },
+
+    runtimes: async () => {
+      await delay()
+      return structuredClone(runtimes)
     },
 
     checkWorkspace: async (workspaceId) => {

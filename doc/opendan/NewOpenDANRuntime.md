@@ -839,6 +839,8 @@ WorkSession 的 `Done` 不需要特别处理——下游通过 worksession 的 `
 
 ## 8. WorkSession 工具：try_create_worksession / create_worksession / forward_msg
 
+> 2026-10-11：本节描述的 `try_create_worksession` 已被 behavior `analyze_intent` 的具名函数 `try_analyze_user_intent`（`[tool]` 声明，fork 子 context）取代，见 [架构文档 §5.6](<OpenDAN Agent Session架构设计.md>) 与 [意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)。
+
 UI session 不直接构造 worksession——它经过一个 **fork 出来的 sub-LLMContext** 来决定
 "复用已有 worksession 还是新建一个"，由 sub-context 调一个全参数的 `create_worksession`
 落地。这套设计把"探索 / 选择"和"实际落地"拆成两个工具，加上 §8.4 的 `forward_msg`

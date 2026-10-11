@@ -1,5 +1,6 @@
-import { displayedContent, editsOf, effectiveContent, foldMessageRelations, messageObjId, messageRelations, messageSummaryText } from '../../src/app/messagehub/conversation/history/relations.ts'
-import { messageAgentTaskId, type MessageObject, type MsgContent } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { displayedContent, editsOf, effectiveContent, foldMessageRelations, messageObjId, messageRelations, messageSummaryText, threadMessagesOf } from '../../src/app/messagehub/conversation/history/relations.ts'
+import { agentAskQuestionText, buildAgentAskAnswer, messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, type AgentAsk, type MessageObject, type MsgContent } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { conversationInputState, isStopCommand, mergeMentions } from '../../src/app/messagehub/conversation/input/inputState.ts'
 import { taskAreaView, taskNodeState } from '../../src/app/messagehub/conversation/tasks/taskView.ts'
 import { TaskWatch, type TaskChildren, type TaskSnapshot } from '../../src/app/messagehub/conversation/tasks/taskWatch.ts'
 import type { TaskWatchDetail, TaskWatchNode, TaskWatchSource } from '../../src/api/task_mgr.ts'
@@ -87,6 +88,126 @@ Deno.test('quotes show the effective content and the edits of a bubble are found
   equal(editsOf([question, placeholder, final], [question]), [])
 })
 
+/* ── Agent questions (`agent_ask`) ── */
+
+const textAsk: AgentAsk = { anchor: 'obj-p', call_id: 'call-1', turn: 3, input: { kind: 'text', options: [], allow_text: false } }
+const choiceAsk: AgentAsk = { anchor: 'obj-p', call_id: 'call-2', turn: 3, input: { kind: 'choice', options: [{ id: 'a', label: 'docs/ only' }, { id: 'b', label: 'The whole repository' }], allow_text: false } }
+const onP = { relates_to: { rel: 'thread', target: 'obj-p' } }
+const q1 = msg('q1', AGENT, 'Who are the docs for?', { ...onP, agent_ask: textAsk }, now + 10)
+const a1 = msg('a1', ME, 'New contributors.', onP, now + 20)
+const q2 = msg('q2', AGENT, 'Which docs?\n\na. docs/ only\nb. The whole repository', { ...onP, agent_ask: choiceAsk }, now + 30)
+const a2 = msg('a2', ME, { format: 'text/plain', content: 'docs/ only', machine: { intent: 'agent_ask.answer', data: { call_id: 'call-2', option: 'a' } } }, onP, now + 40)
+
+Deno.test('agent_ask is read tolerantly and an answer is built from it', () => {
+  equal(messageAgentAsk(q2), choiceAsk)
+  equal(messageAgentAsk(msg('x', AGENT, 'no ask')), undefined)
+  // No call_id, or not an object: no question at all.
+  equal(messageAgentAsk({ ...q1, agent_ask: { anchor: 'obj-p', input: { kind: 'text' } } as never }), undefined)
+  equal(messageAgentAsk({ ...q1, agent_ask: 'ask' as never }), undefined)
+  // A choice without a usable option, or an unknown kind, is a text question; duplicate and empty options are dropped.
+  equal(messageAgentAsk({ ...q1, agent_ask: { call_id: 'c', input: { kind: 'choice', options: [{ id: 'a' }, 'b'] } } as never })?.input.kind, 'text')
+  equal(messageAgentAsk({ ...q1, agent_ask: { call_id: 'c', anchor: '', turn: 'x', input: { kind: 'choice', options: [{ id: 'a', label: 'A' }, { id: 'a', label: 'again' }, { id: 'b', label: ' ' }], allow_text: true } } as never }), { call_id: 'c', input: { kind: 'choice', options: [{ id: 'a', label: 'A' }], allow_text: true } })
+  equal(messageAgentAsk({ ...q1, agent_ask: { call_id: 'c', input: { kind: 'poll' } } as never })?.input.kind, 'text')
+  // An edit never asks.
+  equal(messageAgentAsk({ ...q2, relates_to: { rel: 'edit', target: 'obj-q1' } }), undefined)
+  equal(messageAgentAskAnswer(a2), { call_id: 'call-2', option: 'a' })
+  equal(messageAgentAskAnswer(a1), undefined)
+
+  equal(buildAgentAskAnswer(q2, choiceAsk, { option: 'b' }), { text: 'The whole repository', relates_to: { rel: 'thread', target: 'obj-p' }, machine: { intent: 'agent_ask.answer', data: { call_id: 'call-2', option: 'b' } } })
+  equal(buildAgentAskAnswer(q2, choiceAsk, { option: 'z' }), undefined)
+  equal(buildAgentAskAnswer(q1, textAsk, { text: 'Me' }), { text: 'Me', relates_to: { rel: 'thread', target: 'obj-p' } })
+  // Without an anchor (a channel that cannot edit) the answer replies to the question itself.
+  equal(buildAgentAskAnswer(q1, { ...textAsk, anchor: undefined }, { text: 'Me' })?.relates_to, { rel: 'thread', target: 'obj-q1' })
+
+  // The option list the body repeats for other clients is not shown twice.
+  equal(agentAskQuestionText(q2.content.content ?? '', choiceAsk), 'Which docs?')
+  equal(agentAskQuestionText('Which docs?\n- 1) docs/ only\n- 2) The whole repository\n\n', choiceAsk), 'Which docs?')
+  equal(agentAskQuestionText('Which docs: docs/ only or The whole repository?', choiceAsk), 'Which docs: docs/ only or The whole repository?')
+  equal(agentAskQuestionText('Which docs?\nb. The whole repository\na. docs/ only', choiceAsk), 'Which docs?\nb. The whole repository\na. docs/ only')
+  equal(agentAskQuestionText('  Who?  ', textAsk), 'Who?')
+})
+
+Deno.test('the questions and answers of a Turn fold under its anchor, also after the final edit', () => {
+  const rows = foldMessageRelations([question, placeholder, q1, a1, q2, a2, final])
+  equal(rows.map(item => item.ui_message_id), ['q', 'p'])
+  const view = messageRelations(rows[1])
+  equal(displayedContent(rows[1]), finalContent.content)
+  equal(view?.thread?.map(entry => [entry.id, entry.from, entry.content.content, entry.at, entry.agent_ask?.call_id ?? null, entry.option ?? null]), [
+    ['obj-q1', AGENT, 'Who are the docs for?', now + 10, 'call-1', null],
+    ['obj-a1', ME, 'New contributors.', now + 20, null, null],
+    ['obj-q2', AGENT, q2.content.content, now + 30, 'call-2', null],
+    ['obj-a2', ME, 'docs/ only', now + 40, null, 'a'],
+  ])
+  // While waiting: no edit yet, the list is there already.
+  equal(messageRelations(foldMessageRelations([question, placeholder, q1])[1])?.thread?.length, 1)
+  // The Q/A records are read together with the bubble that shows them.
+  equal(threadMessagesOf([question, placeholder, q1, a1, q2, a2, final, next], [placeholder]).map(item => item.ui_message_id), ['q1', 'a1', 'q2', 'a2'])
+  equal(threadMessagesOf([question, placeholder, q1, a1], [question]), [])
+  // An edited answer folds with its latest content; a recalled one is marked.
+  const fix = msg('a1e', ME, 'New contributors and reviewers.', { relates_to: { rel: 'edit', target: 'obj-a1' } }, now + 25)
+  const recall = msg('q1r', AGENT, '', { relates_to: { rel: 'redact', target: 'obj-q1' } }, now + 26)
+  const edited = messageRelations(foldMessageRelations([placeholder, q1, a1, fix, recall])[0])?.thread
+  equal(edited?.map(entry => [entry.id, entry.content.content, entry.redacted ?? false]), [['obj-q1', 'Who are the docs for?', true], ['obj-a1', 'New contributors and reviewers.', false]])
+})
+
+Deno.test('other replies to an Agent message keep their rows', () => {
+  // No question is open: a reply to the Agent's reply is an ordinary reply.
+  const reply = msg('re', ME, 'about that', onP, now + 50)
+  let rows = foldMessageRelations([question, placeholder, final, reply])
+  equal(rows.map(item => item.ui_message_id), ['q', 'p', 're'])
+  equal([messageRelations(rows[1])?.thread, messageRelations(rows[2])?.replyTo?.content], [undefined, finalContent.content])
+  // The answer closed the question; the next reply is an ordinary one again.
+  rows = foldMessageRelations([placeholder, q1, a1, reply])
+  equal([rows.map(item => item.ui_message_id), messageRelations(rows[0])?.thread?.length], [['p', 're'], 2])
+  // The asker's own follow-up is not an answer; a "question" from someone else than the anchor's author is no question.
+  rows = foldMessageRelations([placeholder, q1, msg('more', AGENT, 'one more thing', onP, now + 15)])
+  equal(rows.map(item => item.ui_message_id), ['p', 'more'])
+  equal(foldMessageRelations([placeholder, msg('fake', BOB, 'Q?', { ...onP, agent_ask: textAsk }, now + 16)]).map(item => item.ui_message_id), ['p', 'fake'])
+  // A reply to a message without agent_task, or to an anchor that is not loaded or comes later, keeps its row.
+  equal(foldMessageRelations([question, msg('r2', AGENT, 'x', { relates_to: { rel: 'thread', target: 'obj-q' }, agent_ask: textAsk }, now + 5)]).length, 2)
+  equal(foldMessageRelations([q1, a1]).map(item => item.ui_message_id), ['q1', 'a1'])
+  equal(foldMessageRelations([q1, placeholder]).map(item => item.ui_message_id), ['q1', 'p'])
+})
+
+Deno.test('the input state follows the newest message of the timeline only', () => {
+  const state = (timeline: MessageObject[], group = false) => conversationInputState(timeline, ME, { group })
+  const summary = (timeline: MessageObject[], group = false) => {
+    const value = state(timeline, group)
+    return value.mode === 'answer' ? [value.mode, value.question.ui_message_id, value.ask.input.kind, value.relatesTo, value.mentions ?? null] : [value.mode]
+  }
+  equal(summary([question, placeholder, q1]), ['answer', 'q1', 'text', { rel: 'thread', target: 'obj-p' }, null])
+  equal(summary([question, placeholder, q1, a1, q2]), ['answer', 'q2', 'choice', { rel: 'thread', target: 'obj-p' }, null])
+  // Answered, from this or another device: the newest message is the viewer's.
+  equal(summary([question, placeholder, q1, a1]), ['normal'])
+  equal(summary([question, placeholder, q1, msg('top', ME, 'never mind', {}, now + 15)]), ['normal'])
+  // No question, or one the viewer asked.
+  equal(summary([question, placeholder]), ['normal'])
+  equal(summary([placeholder, msg('mine', ME, 'Q?', { agent_ask: textAsk }, now + 5)]), ['normal'])
+  equal(summary([]), ['normal'])
+  // Without an anchor the answer replies to the question.
+  const bare = msg('bare', AGENT, 'Which branch?', { agent_ask: { call_id: 'call-9', input: { kind: 'text', options: [], allow_text: false } } }, now + 5)
+  equal(summary([question, bare]), ['answer', 'bare', 'text', { rel: 'thread', target: 'obj-bare' }, null])
+  // Reactions, redactions of other messages, edits of other messages, events, status pills and failed sends do not end it.
+  const reaction = msg('re1', ME, '👍', { relates_to: { rel: 'reaction', target: 'obj-q1', key: '👍' } }, now + 11)
+  const status = { ...msg('st', AGENT, 'typing'), ui_item_kind: 'status', created_at_ms: now + 12 }
+  const event = { ...msg('ev', ME, 'session.title_changed'), kind: 'event' as const, content: { content: 'session.title_changed', machine: { intent: 'buckyos.action_log', data: {} } } }
+  const failed = { ...msg('fail', ME, 'my answer'), ui_delivery_status: 'failed' }
+  const otherEdit = msg('oe', ME, 'fixed', { relates_to: { rel: 'edit', target: 'obj-q' } }, now + 13)
+  equal(summary([question, placeholder, q1, reaction, status, event, failed, otherEdit])[0], 'answer')
+  // The Turn's final reply (an edit of the anchor by the asker) ends it; a recalled question is no question.
+  equal(summary([question, placeholder, q1, final]), ['normal'])
+  equal(summary([question, placeholder, q1, msg('fx', BOB, 'hijack', { relates_to: { rel: 'edit', target: 'obj-p' } })])[0], 'answer')
+  equal(summary([question, placeholder, q1, msg('rq', AGENT, '', { relates_to: { rel: 'redact', target: 'obj-q1' } }, now + 14)]), ['normal'])
+  // A malformed agent_ask is an ordinary message.
+  equal(summary([question, placeholder, { ...q1, agent_ask: { anchor: 'obj-p' } as never }]), ['normal'])
+  // In a group only the viewer the question mentions answers, and the answer mentions the asker.
+  equal(summary([question, placeholder, q1], true), ['normal'])
+  equal(summary([question, placeholder, { ...q1, mentions: { dids: [ME] } }], true), ['answer', 'q1', 'text', { rel: 'thread', target: 'obj-p' }, { dids: [AGENT] }])
+  // `/stop` is a command, never an answer.
+  equal([isStopCommand('/stop'), isStopCommand(' /stop too slow '), isStopCommand('/stopped'), isStopCommand('please /stop')], [true, true, false, false])
+  equal([mergeMentions(undefined, undefined), mergeMentions({ dids: [BOB] }, { dids: [AGENT, BOB] }), mergeMentions({ all: true }, undefined)], [undefined, { dids: [BOB, AGENT] }, { all: true }])
+})
+
 function node(taskId: string, patch: Partial<TaskWatchDetail> = {}): TaskWatchDetail {
   return { taskId, name: taskId, rootId: 'root', phase: 'Running', revision: 1, createdAt: now, updatedAt: now + 1_000, schemaId: 'opendan.turn/v1', ...patch }
 }
@@ -101,6 +222,11 @@ Deno.test('the default task area: state and activity, then sub-task counts, wait
   equal([waiting?.label.key, waiting?.secondary], ['messagehub.task.state.waitingExternal', ['Waiting for the doc lock']])
   equal(taskNodeState(node('root', { phase: 'Waiting', waitReason: { kind: 'ChildTask' } })).label.key, 'messagehub.task.state.waitingChild')
   equal(taskNodeState(node('root', { phase: 'Paused' })).label.key, 'messagehub.task.state.paused')
+  // Waiting for the viewer's answer: the label says it, the runner's restated text is not repeated.
+  const input = taskAreaView(ready(node('root', { phase: 'Waiting', message: 'waiting for input', waitReason: { kind: 'Other', code: 'input', message: 'waiting for input' } })), page([]), anchor, now)
+  equal([input?.label.key, input?.activity, input?.secondary], ['messagehub.task.state.waitingInput', undefined, []])
+  equal(taskAreaView(ready(node('root', { phase: 'Waiting', message: 'Asking about the docs', waitReason: { kind: 'Other', code: 'input', message: 'waiting for input' } })), page([]), anchor, now)?.activity, 'Asking about the docs')
+  equal(taskNodeState(node('root', { phase: 'Waiting', waitReason: { kind: 'Other', code: 'tool' } })).label.key, 'messagehub.task.state.waiting')
   // More children than the loaded page: the count says so instead of guessing a total.
   equal(taskAreaView(ready(node('root')), page([node('a')], '20'), anchor, now)?.secondary, [{ key: 'messagehub.task.children.running', vars: { count: '1+' } }])
   // A stop request is "stopping" until the runner reports the terminal state.

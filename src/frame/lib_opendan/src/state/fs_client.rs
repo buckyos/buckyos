@@ -8,6 +8,8 @@
 //!   state/artifacts/<aid>/artifact.json  artifact head
 //!   state/artifacts/<aid>/versions/v-<sid>.json
 //!   state/goals/<goal_id>/               goal, state, activations, schedule
+//!   state/workspaces/<wid>.json          workspace registrations
+//!   state/runtimes/<runtime_id>.json     runtime registrations
 //!   memory/ notebook/ attention_signals/ cognition (agent_tool)
 //!   .locks/self_improve.lease  .locks/artifact/<aid>.lease
 //! ```
@@ -28,6 +30,7 @@ use super::goals::FsGoals;
 use super::locks::FsLocks;
 use super::perception::FsPerception;
 use super::registry::FsRegistry;
+use super::runtimes::FsRuntimes;
 use super::workspaces::FsWorkspaces;
 use super::*;
 
@@ -93,6 +96,14 @@ impl AgentLayout {
         self.workspaces_dir().join(format!("{wid}.json"))
     }
 
+    pub fn runtimes_dir(&self) -> PathBuf {
+        self.root.join("state").join("runtimes")
+    }
+
+    pub fn runtime_entry(&self, runtime_id: &str) -> PathBuf {
+        self.runtimes_dir().join(format!("{runtime_id}.json"))
+    }
+
     pub fn locks_dir(&self) -> PathBuf {
         self.root.join(".locks")
     }
@@ -101,6 +112,9 @@ impl AgentLayout {
     pub fn lock_path(&self, resource: &str) -> Result<PathBuf> {
         if resource == "workspaces" {
             return Ok(self.locks_dir().join("workspaces.lock"));
+        }
+        if resource == "runtimes" {
+            return Ok(self.locks_dir().join("runtimes.lock"));
         }
         if let Some(wid) = resource.strip_prefix("workspace:") {
             super::workspaces::validate_workspace_id(wid)?;
@@ -145,6 +159,7 @@ pub struct FsAgentStateClient {
     cognition: FsCognition,
     artifacts: FsArtifacts,
     workspaces: FsWorkspaces,
+    runtimes: FsRuntimes,
     locks: FsLocks,
     behaviors: FsBehaviorCatalog,
     goals: FsGoals,
@@ -180,6 +195,7 @@ impl FsAgentStateClient {
             cognition: FsCognition::new(layout.clone()),
             artifacts: FsArtifacts::new(layout.clone()),
             workspaces: FsWorkspaces::new(layout.clone(), agent_did),
+            runtimes: FsRuntimes::new(layout.clone()),
             locks: FsLocks::new(layout.clone()),
             behaviors: FsBehaviorCatalog::new(layout.root.clone()),
             goals: FsGoals::new(layout.clone(), agent_did),
@@ -235,6 +251,10 @@ impl AgentStateClient for FsAgentStateClient {
 
     fn workspaces(&self) -> &dyn WorkspaceManager {
         &self.workspaces
+    }
+
+    fn runtimes(&self) -> &dyn RuntimeRegistry {
+        &self.runtimes
     }
 
     fn locks(&self) -> &dyn LockManager {

@@ -822,3 +822,41 @@ fn goals_from_the_command_line() {
     let _ = serve.wait();
     assert!(llm.count() >= 2);
 }
+
+/// `ask-user` prints the pending result the `shell` tool forwards; it only
+/// runs as a call of a session's run and checks its options.
+#[test]
+fn ask_user_prints_a_pending_question() {
+    let cli = Cli::new();
+    let ask = |args: &[&str], env: bool| {
+        let mut c = cli.command(&[&["ask-user"], args].concat());
+        if env {
+            c.env("OPENDAN_SESSION_ID", "ui-1").env(agent_tool::llm_bash::ENV_CALL_ID, "c9");
+        }
+        parse(c.output().unwrap())
+    };
+    let (code, _, err) = ask(&["which one?"], false);
+    assert_eq!(code, 2, "{err}");
+    let (code, v, err) = ask(&["which one?", "--option", "a=docs/", "--option", "b=everything", "--allow-text"], true);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["status"], "pending");
+    assert_eq!(v["task_id"], "userinput:c9");
+    assert_eq!(v["tool"], "ask-user");
+    let request: UserInputRequest = serde_json::from_value(v["detail"].clone()).unwrap();
+    assert_eq!(request.question, "which one?");
+    assert_eq!(request.input.kind, UserInputKind::Choice);
+    assert_eq!(request.input.options[1].label, "everything");
+    assert!(request.input.allow_text);
+    let (code, v, _) = ask(&["free text?"], true);
+    assert_eq!((code, v["detail"]["input"]["kind"].as_str()), (0, Some("text")));
+    for bad in [
+        vec!["q", "--option", "a=only one"],
+        vec!["q", "--option", "a=x", "--option", "a=y"],
+        vec!["q", "--option", "no-label"],
+        vec!["q", "--allow-text"],
+        vec!["  "],
+    ] {
+        let (code, _, err) = ask(&bad, true);
+        assert_eq!(code, 2, "{bad:?}: {err}");
+    }
+}

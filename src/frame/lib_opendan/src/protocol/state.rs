@@ -294,6 +294,9 @@ pub enum OutboxPurpose {
     Placeholder,
     /// The reply of a Turn as an edit of its placeholder.
     FinalEdit,
+    /// A question to the user while the Turn is open (`ask-user`): a
+    /// `thread` message on the placeholder, carrying `agent_ask`.
+    Question,
 }
 
 impl OutboxPurpose {

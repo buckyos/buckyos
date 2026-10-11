@@ -4,7 +4,7 @@
 
 本协议落实 [OpenDAN Agent Workspace 设计](<../OpenDAN Agent Workspace 设计.md>) 的首轮本地实现。Workspace 是独立于 Session 的长期目录；稳定身份不由目录路径决定。Agent State 保存 Known Workspaces，Session 保存创建时解析的位置快照。
 
-本轮 Runtime 引用为 `local`，表示当前 Agent State 所在主机可访问的文件系统，native 和 tmux 执行实例都映射到它。登记及 Session 快照用 `runtime_host` 固定本地宿主身份；通过 kRPC 返回的另一宿主上的同名路径不能被当成本机目录执行。它不是 tmux Session ID。尚未接入远程 Workspace helper、Host/Container 注册表、跨主机锁或文件同步；不支持的 Runtime 明确失败。
+位置的 `runtime_id` 引用 Agent State 的 Runtime 登记（[Agent State Protocol](<Agent State Protocol.md>) §10）。本 runner 只能直接使用 `container`：Agent 进程自己所在环境的文件系统，native 和 tmux 执行实例都映射到它；旧记录里的 `local` 是它的旧名，照常读取、与 `container` 视为同一 Runtime（目录重叠检查、按 Runtime 查询都按同一个算）。`container` 登记为不可用（或 owner 用 `set-runtime` 关掉）时其上的 Workspace 不可用。`host` 等其它已登记 Runtime 在执行器落地前不能放 Workspace，创建 / 导入明确失败并说明原因。登记及 Session 快照用 `runtime_host` 固定本地宿主身份；通过 kRPC 返回的另一宿主上的同名路径不能被当成本机目录执行。它不是 tmux Session ID。尚未接入远程 Workspace helper、宿主机执行器、跨主机锁或文件同步。
 
 ## 2. 数据分类与存储
 
@@ -50,17 +50,17 @@
 
 ```bash
 xagent workspace list
-xagent workspace create --runtime local --directory /projects/demo --name Demo --description "长期项目" --key create-demo-1
-xagent workspace import --runtime local --directory /projects/existing --name Existing --key import-existing-1
+xagent workspace create --runtime container --directory /projects/demo --name Demo --description "长期项目" --key create-demo-1
+xagent workspace import --runtime container --directory /projects/existing --name Existing --key import-existing-1
 xagent workspace get <workspace_id>
 xagent workspace check <workspace_id>
-xagent workspace discover --runtime local --directory /projects/moved --expected-revision <revision>
+xagent workspace discover --runtime container --directory /projects/moved --expected-revision <revision>
 xagent workspace archive <workspace_id> --expected-revision <revision>
 xagent workspace restore <workspace_id> --expected-revision <revision>
 xagent workspace unregister <workspace_id> --expected-revision <revision>
-xagent workspace runtime-impact local
-xagent workspace set-runtime local unavailable
-xagent workspace set-runtime local available
+xagent workspace runtime-impact container
+xagent workspace set-runtime container unavailable
+xagent workspace set-runtime container available
 xagent new --objective "更新项目" --workspace <workspace_id> --no-run
 agent-session create-worksession --objective "一次性系统操作" --workspace none
 ```

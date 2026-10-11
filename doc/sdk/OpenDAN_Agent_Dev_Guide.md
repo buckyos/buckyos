@@ -1,95 +1,189 @@
 # OpenDAN Agent 开发指南
 
-面向开发 Agent / Behavior / Skill 的工程师，记录容易踩坑的配置细节与默认行为。
+面向 Agent、Behavior、Skill 和运行环境的开发者。本文规定能力扩展的设计目标，可以领先现有实现；标为“当前实现”的内容以 2026-10-11 的仓库源码为准，实现差距见 §6。
 
-## 1. Tools 与 Actions 的可用性
+核心原则：**尽量让所有 Agent 能力扩展都表现为 CLI 环境的扩展，保持模型可见的 tool 定义、action 协议和公共 system prompt 前缀稳定。**
 
-### 1.1 判断逻辑概览
+## 1. 稳定模型接口，通过 CLI 扩展能力
 
-一个 action 在 prompt build 时被视为**可用**，需同时满足：
+### 1.1 为什么同时限制 tool 和 action 的变化
 
-| 条件 | 含义 |
-|------|------|
-| 在 `requested_actions` 中 | 来自 `default_load_actions` 或当前 loaded skills 的 `actions` |
-| 在 `action_specs` 中 | 已在 `tool_mgr` 中注册 |
-| 通过 `allowed_tools` 过滤 | 由 behavior 的 `tools` 配置决定（见下） |
+原生 function-call tool 的名称、参数 schema、description、排列顺序，以及 action 的标签、参数表达和用法说明，都会参与模型输入的构造。频繁增删或重写这些内容会改变可缓存的前缀。Action 还依赖提示词中的 XML 用法，扩展时需要同步维护提示词和解析约定。
 
-### 1.2 `tools` 配置（Behavior 层）
+因此，原生 tool 有参数 API 支持，也不意味着它适合作为日常能力扩展入口。设计目标是：
 
-位置：`BehaviorConfig.tools` / `toolbox.tools`
+- tool 和 action 都作为少量、稳定的协议入口维护；新增业务能力默认不增加 tool 或 action。
+- 新能力通过安装 CLI、增加子命令、提供脚本或连接后端服务进入执行环境。
+- 能力发现和详细用法通过 CLI 查询、`--help`、Skill 文档按需读取，作为当前上下文的增量信息返回。
+- 新增 CLI、Skill、MCP 服务或可调用 behavior，不自动重建 tool/action 定义，也不把完整能力清单重新写入公共 system prompt。
+- 保持已有稳定入口也是目标；CLI 化不要求为了统一形式反复删改已经稳定的 tool/action 集合。
 
-| `tools.mode` | 行为 |
-|--------------|------|
-| **all** | 全放开，`tool_mgr` 中注册的都能用 |
-| **allow_list** | 白名单，仅 `names` 中的 tools 可用 |
-| **none** | 全部禁用，返回空列表 |
+**只把 tool schema 改写成 system prompt 里的 CLI 手册，仍然会改变公共前缀。** 需要一并稳定工具定义和公共提示词，把动态发现结果留在运行中的消息里。不同任务或 behavior 所需的正文可以变化，但能力扩展不应附带重写公共协议。这里的目标是减少无谓的前缀变化，不承诺具体模型或 provider 的 cache 命中率。
 
-### 1.3 默认值（不配置时）
+### 1.2 各层职责
 
-**`tools` 不配置时**，使用 `BehaviorToolsConfig::default()`：
+| 层级 | 负责什么 | 能力扩展方式 |
+|---|---|---|
+| tool / action 协议 | 模型如何请求执行、传递内容、接收结果 | 少量固定入口，作为协议变更管理 |
+| CLI 环境 | 当前执行环境中有哪些命令及其用法 | PATH、命令、子命令、脚本、服务客户端 |
+| Skill | 何时使用能力、工作流程、领域知识 | 按需读取说明和资源，调用 CLI |
+| Behavior | 当前目标、决策规则、上下文切换方式 | 调整任务编排，不自动扩张工具集合 |
+| runtime / 宿主 | 执行、授权、task、状态提交和恢复 | 提供稳定的执行与控制接口 |
 
-- `mode: all`
+工具列表的稳定性不代替权限控制。命令能否执行、能访问哪些资源，应由 runtime、命令后端和宿主校验；拒绝结果通过稳定的结果协议返回。不同权限环境可以使用预先定义的固定接口集合，不应因某个 Skill 的加载临时增删模型工具。
 
+## 2. CLI 能力的开发约定
 
-即：**默认启用所有 tools**，
+### 2.1 命令入口与发现
 
-### 1.4 无 Behavior 配置时的兜底
+一个新能力应优先提供可独立调用的命令或已有 CLI 的子命令，并提供简短帮助、明确参数和退出码。命令由实际执行环境提供；不能只把命令名写进提示词而没有可执行入口。
 
-当 `behavior_cfg_cache` 中**没有**当前 behavior 的配置时，`AgentPolicy::allowed_tools` 直接返回 `tool_mgr.list_tool_specs()` 的全部结果，即**全放开**。
+公共提示词只需要说明稳定的执行入口和能力发现方式。动态命令目录、可用 behavior 列表、服务清单和详细参数，通过命令查询或读取文件获得。本文不规定新的发现命令名，具体命令及其可用性由实现提供。
 
----
+MCP 和进程内 host tool 也遵循同一方向：优先由 CLI 客户端或宿主代理访问后端能力。外部服务增加一个方法，不应自动让模型请求增加一个 function-call 定义或 XML action。
 
-## 2. 多层级影响（当前 vs 理想）
+### 2.2 输入、输出和宿主桥接
 
-| 层级 | 当前是否参与 | 说明 |
-|------|--------------|------|
-| **Behavior** | ✅ | `cfg.tools.filter_tool_specs()` |
-| **Toolbox / Skills** | ✅ | `default_load_actions` + 各 skill 的 `actions` |
-| **Workspace** | ⚠️ 间接 | 仅影响 skill 加载路径，不参与 action 限制 |
-| **Agent** | ❌ | `AIAgentConfig` 无 tool/action 相关配置 |
+- 大段文本通过 stdin 或文件传入，避免把复杂内容全部塞进 argv。`write_file` 的 `--content-stdin`、`edit_file` 的 `--new-string-stdin` 已提供这种入口。
+- 面向 Agent 的结构化结果遵循 [AgentToolResult 协议](../llm_context/agent_tool/agent_tool_result_protocol.md)，保留成功、失败、task ID 和等待状态；诊断信息写 stderr。
+- 普通命令可以输出文本。需要让宿主解释结构化结果的命令，stdout 应只包含协议约定的结果，不能混入日志。
+- 需要当前 run 的内存状态或控制权时，通过宿主桥接访问。CLI 是接口形态，不要求所有后端状态都存在于 CLI 子进程中。
+- 桥接必须保留调用所属的 run、call 身份，以及存在时的 Session 身份；由拥有状态的执行器校验请求、提交变更和处理恢复，CLI 不直接改写驱动者持锁维护的状态。
 
-未来可扩展：Workspace 级、Agent 级的 allowed/deny 策略。
+当前 `shell` 已支持识别简单命令 stdout 中的 `AgentToolResult` 并转发；含管道等 shell 运算符的复合命令不走同一结构化直传路径。依赖 `Pending` 等控制语义时，应使用直接的 CLI 调用，见 [ShellTool 实现](../../src/frame/agent_tool/src/llm_bash.rs)。
 
----
+## 3. xllm 是最小可用层
 
-## 3. Toolbox 与 Skills
+### 3.1 独立 xllm 应具备的能力
 
-### 3.1 `requested_actions` 来源
+用户可以只使用 xllm 推进一个 LLM context，不创建 OpenDAN Session。CLI 优先的能力体系必须从这一层成立：
 
-```text
-requested_actions = default_load_actions ∪ (各 loaded_skill 的 actions)
-loaded_skills = effective_skills() ∪ session.loaded_skills
+- 执行命令、读取和写入文件。
+- 启动长命令，并取得 task ID。
+- 查询、等待和取消当前 runtime 管理的 task。
+- 按需发现执行环境中的命令和用法。
+
+这些能力不应以 `agent-session`、SessionRunner 或在线 BuckyOS task-mgr 为前提。需要上层状态的 CLI 可以依赖对应宿主，但通用 runtime task 的 CLI 入口应由 xllm/runtime 层提供。
+
+### 3.2 当前 wait_task 的语义
+
+**当前实现：独立 xllm 已允许模型调用 `wait_task`。** 启用工具、选择内置 `bash` 组且 `shell.mode = auto` 时，会同时注册 `wait_task`、`get_task_state`、`cancel_task`。默认 shell 模式为 `auto`。
+
+| 情况 | 行为 |
+|---|---|
+| `auto` 模式下 `shell` 命令在 `wait_ms` 内完成 | 直接返回结果 |
+| `auto` 模式等待到期，命令仍未完成 | 返回 task ID 和已有输出，模型可继续查询或等待 |
+| 独立 xllm 调用 `wait_task` | 默认等 30 秒，单次工具内等待上限 30 分钟，同时受 run deadline 和打断约束；完成则返回结果，否则返回当时状态 |
+| `allow_deferred = false` | 在调用内等待，不把当前 run 挂起交给上层；不表示禁用 `wait_task` |
+| 宿主允许 deferred，且请求等待超过工具内上限 | `wait_task` 可以返回 `Pending`，由宿主承担后续等待和恢复 |
+
+工具内等待、宿主持久挂起是两个层次。独立 xllm 无须依赖上层 Session 就能等待 task；支持等待也不自动承诺 task 在执行器退出后继续运行或可恢复。对 `wait_task` 而言，等待到期或取消等待不等于取消 task；停止任务应通过显式取消请求完成，不支持取消时应明确返回这一结果。
+
+### 3.3 task 能力 CLI 化的目标
+
+目标是让模型通过稳定的 shell 入口调用任务命令。例如，下列为**目标用法，当前尚未提供等价的 runtime task CLI**：
+
+```xml
+<actions>
+  <shell>get_task_state local:shell:example</shell>
+  <shell>wait_task local:shell:example --wait-ms 30000</shell>
+</actions>
 ```
 
-### 3.2 未解析的 actions
+命令必须连接当前 xllm/runtime 的同一个 task resolver，复用状态、输出、等待和取消语义。不能简单把 `get_task_state` 别名到现有 `check_task`：后者查询 BuckyOS task-mgr，不覆盖当前 runtime 的 `local:` task；现有同名 CLI `cancel_task` 也有这一差别。
 
-在 `requested_actions` 中但不在 `action_specs` 中的 action 会被记为 `unresolved_actions`，并打 warning：
+SessionRunner 可以为这个基础层增加宿主任务解析、进程外等待和持久恢复。桥接入口不应反向要求独立 xllm 先创建 Session。
 
-```text
-prompt.build_toolbox unresolved_actions_ignored=...
+实现 CLI 入口并验证等价性之后，再安排模型工具/action 集合的一次性收敛；不能先移除 task 工具而让长命令失去跟进入口。
+
+## 4. 宿主控制能力如何 CLI 化
+
+“依赖宿主内存”不是无法 CLI 化的理由。当前没有发现必须随业务增长而新增 tool/action 的内置能力；需要单独设计的是执行入口、结果协议和当前上下文的控制语义。
+
+| 能力 | CLI 化后仍须保留的语义 | 当前边界 |
+|---|---|---|
+| runtime task 查询、等待、取消 | 同一 resolver、task 身份、等待上限、打断与结果读取 | 模型已有工具；缺少等价 CLI 桥 |
+| `report` / `<report end="true">` | 提交报告、固化产物；最终报告还需校验未完成工作、完成当前上下文并停止执行后续调用 | 没有提交当前 run 报告的 CLI；写出 `report.md` 不等于提交 |
+| `call_behavior` | 当前 Session 内的子 context 调用栈、fork 历史、调用身份、挂起与结果回填 | 没有等价 CLI；`create-worksession` 创建独立子 Session，不能替代 fork / create_sub_context |
+| `next_behavior` / `WAIT_USER_MSG` | 在规定的提交点切换、等待或关闭 Turn，遵循当前 Session 策略 | 当前属于回复协议字段，没有等价 CLI |
+| MCP / 自定义 host tool | 后端调用、错误和结果语义；需要时关联当前 run | 默认 CLI 尚无通用动态接入桥 |
+
+`report` 和 `next_behavior` 不只是普通业务动作：前者同时有原生 tool 和回复字段形式，后者是回复控制字段。可以设计 CLI 提交控制请求，但应由宿主确认和执行；普通 stdout 文本不能被当作已经完成提交或切换。
+
+控制请求还需定义幂等、checkpoint、恢复和同一批次中后续调用的处理。本文不新增控制命令名称，也不要求立即撤掉现有稳定控制协议。
+
+已有可复用的例子是 `agent-session create-worksession --wait` 和 `agent-session wait <sid>`：CLI 返回带 `session:<sid>` 的 `Pending` 结果，shell 转发给宿主处理。因此，“需要挂起”本身也不构成 CLI 化障碍。见 [xagent 实现](../../src/frame/lib_opendan/src/bin/xagent.rs)。
+
+## 5. 当前配置：用于理解存量实现
+
+本节记录当前配置语义，不把“每个 behavior 动态组装不同工具集”作为能力扩展目标。
+
+### 5.1 Behavior 的 capabilities
+
+```toml
+[prompt]
+mode = "behavior"
+
+[capabilities]
+tool_whitelist = []
+action_whitelist = ["group:bash"]
 ```
 
-### 3.3 工程约束（提示词工程师必看）
+当前 Jarvis 的 plan / do 使用这类配置，且在 Agent 的基础 `[llm_context.tools]` 中设置 `enabled = true`。
 
-- 优先使用 `skills` 和 `default_load_skills`
-- 使用 `allow_tools`、`default_load_actions` 时需清楚与当前加载 skills 的关系，避免冲突
-- 一个 Behavior 只给完成目标所需的最小工具集，不要“为了保险”扩大集合
+| 字段或写法 | 当前含义 |
+|---|---|
+| `tool_whitelist` | 映射到 `.llm_context` 的 `tools.tools`，作为原生 function call 暴露 |
+| `action_whitelist` | 映射到 `tools.actions`，作为 behavior XML action 暴露 |
+| 不写某个 whitelist | 保留 Session 中对应的基础配置 |
+| 显式 `[]` | 清空对应列表，不补回默认组 |
+| `group:bash` | 唯一内置组：`shell`、`read_file`、`write_file`、`edit_file`；auto 模式另加三个 task 工具 |
+| 普通名称 | 查询宿主注册的具名工具，不是在内置组中挑选同名成员 |
 
----
+因此，上述配置的实际效果是无原生 tools，整个 bash 组作为 actions 提供，包含 task 工具。**这是当前实现与 CLI 优先目标之间的差距，不能据此继续把所有新能力展开成 action。**
 
-## 4. 相关代码位置
+当前独立 xllm 默认关闭工具；只启用工具但不指定原生列表时，默认使用 bash 组。function_call 模式拒绝非空 actions 和 `tools2actions = true`；behavior 模式可以同时使用两类入口。不要从 Jarvis 的基础配置推断所有 xllm 调用都默认开放工具。
 
-| 模块 | 路径 |
-|------|------|
-| Behavior 配置 | `src/frame/opendan/src/behavior/config.rs` |
-| `allowed_tools` | `src/frame/opendan/src/agent_tool.rs` |
-| `build_toolbox` / `select_action_specs` | `src/frame/opendan/src/behavior/prompt.rs` |
-| 行为执行 | `src/frame/opendan/src/behavior/behavior.rs` |
+普通名称只查宿主注册表，所以直接写 `"shell"` 或 `"read_file"` 不能替代 `"group:bash"`，除非宿主另行注册。MCP 来源需要通过底层 `.llm_context` 的 `{mcp: "服务地址"}` 配置，这两个 whitelist 字符串列表没有直接 MCP 写法。
 
----
+配置映射见 [BehaviorConfig](../../src/frame/lib_opendan/src/protocol/behavior.rs)，展开和校验见 [xllm](../../src/frame/agent_tool/src/xllm.rs)。完整配置见 [Agent State Protocol §7](<../opendan/protocol/Agent State Protocol.md>) 和 [本地 llm_context 配置协议](../llm_context/local_llm_context_protocol.md)。
 
-## 5. 参考文档
+## 6. 实现差距与迁移顺序
 
-- `notepads/LLM_Behavior.md` - LLMBehavior 职责与模块结构
-- `notepads/opendanv2.md` - 完整 OpenDAN 设计（含 toolbox 模式）
-- `notepads/opendan关键类型.md` - 关键类型索引
+### 6.1 已具备的基础
+
+- `agent_tool` CLI 已覆盖文件读写、搜索、对象访问、todo、memory、notebook、skills、attention 相关能力；另有模型调用和媒体分析子命令。
+- `agent-session` 已提供子 Session 创建、等待、输入投递，以及 `ctl subscribe/unsubscribe` 等控制命令。事件订阅不能再仅因涉及 Session 状态就被视为必须保留独立 action。
+- shell 已有结构化结果转发；CLI 发起子 Session 等待已有实际路径。
+
+### 6.2 尚需收敛的地方
+
+1. 在 xllm/runtime 层补齐 runtime task CLI 桥，复用现有 resolver；上层再提供 Session 控制桥。
+2. 为动态能力提供 CLI 接入和发现路径。当前 `agent_tool` CLI 仍有静态命令表；独立可执行命令可通过执行环境提供，不能把新增能力仅注册到模型 tool 列表。
+3. 将动态目录移出公共模型接口：当前 `call_behavior` 的 description 会拼入可调用 behavior 列表；`bash_tools` 手册会写入 system prompt。这两处即使不增加 tool 名，也会改变模型输入前缀。
+4. CLI 功能与控制语义等价后，再统一调整固定 tool/action 集合、提示词和恢复协议；不在每次能力扩展时改变它们。
+
+媒体分析目前已有 CLI，结果是侧模型生成的文本。若将来要求当前主模型直接接收图片等原生媒体，应扩展稳定的结果协议和宿主处理；当前标准 tool 与 shell 的模型结果通道都是文本，不能把此缺口当作必须新增业务 tool 的理由。
+
+### 6.3 设计验收标准
+
+- 新增一个 CLI / Skill / MCP 能力，不改变既定 tool schema、description、顺序、XML action 用法和公共 system prompt 前缀；动态信息通过运行中的查询结果获得。
+- 不依赖 OpenDAN Session，独立 xllm 就能通过 CLI 启动长任务、查询、等待和取消；未知 task、超时、打断和不可取消任务的行为明确。
+- 接到上层宿主后，等待和控制命令保留身份、提交顺序、幂等与恢复语义；不把独立子 Session 当作 fork 的替代。
+- 文档和提示词只声明实际存在的命令；设计中的 CLI 示例明确标注，迁移前保留可用的任务跟进路径。
+
+## 7. 代码与文档入口
+
+| 内容 | 入口 |
+|---|---|
+| xllm 工具来源、提示词与结果装配 | [xllm.rs](../../src/frame/agent_tool/src/xllm.rs) |
+| runtime task 工具与 resolver | [tasks.rs](../../src/frame/agent_tool/src/tasks.rs) |
+| shell 执行与 CLI 结果转发 | [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs) |
+| Agent CLI 命令与分发 | [agent_tool_cli_dev](../../src/frame/agent_tool_cli_dev/src/lib.rs) |
+| Session CLI | [xagent.rs](../../src/frame/lib_opendan/src/bin/xagent.rs) |
+| 当前报告与子 context 控制 | [reports.rs](../../src/frame/lib_opendan/src/runner/reports.rs)、[tools.rs](../../src/frame/lib_opendan/src/runner/tools.rs) |
+
+- [OpenDAN AgentTool 开发指南](<../llm_context/agent_tool/OpenDAN AgentTool 开发指南.md>)：接口、CLI、执行环境和结果契约。
+- [xllm Rust SDK](../llm_context/xllm_rust_sdk.md)：独立 xllm、runtime 和等待行为。
+- [Agent Actions](<../llm_context/Agent Actions.md>)：Action 保持小集合的设计背景；其中历史固定动作表和旧实现路径不能作为当前能力清单。
+- [OpenDAN 协议目录](../opendan/protocol/README.md)：Session、Agent State、持久格式与恢复约定。

@@ -51,6 +51,10 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent behaviors --agent <did> [--frozen <sid>]
   xagent xllm   <sid> [--run <id>]
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|runtime-impact|set-runtime ...
+  xagent runtime list [--available] | get <id> | check <id>
+                 | register <id> --kind container|host_native|remote_ssh --name <n> [--description <t>] [--exec <json>] [--root <dir>]...
+                 | update <id> --expected-revision <n> [--name <n>] [--description <t>] [--root <dir>]...
+                 | unregister <id> --expected-revision <n>
   xagent goal   create --objective <text> [--title <t>] [--lifecycle achieve|maintain] [--achieved-when <t>]
                        [--healthy-state <t>] [--distance <t>] [--constraint <t>]... [--skill <name>[=<ref>]]...
                        [--workspace <id>] [--path <p>]... [--object <o>]... [--every <secs>] [--min-interval <secs>]
@@ -74,6 +78,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         [--class <c>] [--behavior <b>] [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive] [--wait [--wait-ms <ms>]]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
+  ask-user <question> [--option <id>=<label>]... [--allow-text]   (ui sessions: the result is the user's next message)
+  runtime list [--available] | get <id> | check <id> | workspace ...
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
 
@@ -163,6 +169,8 @@ const FLAGS: &[&str] = &[
     "schedule",
     "fresh-state",
     "carry-state",
+    "allow-text",
+    "available",
 ];
 
 struct Args {
@@ -1074,6 +1082,51 @@ fn pending_on_session(tool: &str, sid: &str, wait_ms: Option<u64>) -> AgentToolR
     r
 }
 
+/// `ask-user`: a question to the user. The result is `Pending` on
+/// `userinput:<call_id>`; the session sends the question and fills the
+/// call with the user's next message.
+fn cmd_ask_user(mut a: Args) -> R<i32> {
+    if env_sid().is_none() {
+        return Err(bad("ask-user runs inside a session ($OPENDAN_SESSION_ID)"));
+    }
+    let call_id = std::env::var(agent_tool::llm_bash::ENV_CALL_ID)
+        .ok()
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| bad("ask-user is a tool call of the session's run ($XLLM_CALL_ID); run it as a shell command of the run"))?;
+    let question = a.next("the question")?;
+    let options = a
+        .all("option")
+        .into_iter()
+        .map(|o| match o.split_once('=') {
+            Some((id, label)) => Ok(UserInputOption {
+                id: id.trim().to_string(),
+                label: label.trim().to_string(),
+            }),
+            None => Err(bad(format!("bad --option {o} (<id>=<label>)"))),
+        })
+        .collect::<R<Vec<_>>>()?;
+    let request = UserInputRequest {
+        question,
+        input: UserInputSpec {
+            kind: if options.is_empty() {
+                UserInputKind::Text
+            } else {
+                UserInputKind::Choice
+            },
+            options,
+            allow_text: a.has("allow-text"),
+        },
+    };
+    request.validate().map_err(bad)?;
+    let mut r = AgentToolResult::from_details(serde_json::to_value(&request)?)
+        .with_tool("ask-user")
+        .with_status(AgentToolStatus::Pending);
+    r.task_id = Some(format!("{USER_INPUT_TASK_PREFIX}{call_id}"));
+    r.summary = "waiting for the user's answer".into();
+    print(&r);
+    Ok(0)
+}
+
 async fn cmd_create_worksession(a: Args) -> R<i32> {
     let parent = env_sid()
         .or_else(|| a.get("parent-session"))
@@ -1170,7 +1223,7 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
         Ok(WorkspaceLocation {
             runtime_id: a
                 .get("runtime")
-                .unwrap_or_else(|| LOCAL_WORKSPACE_RUNTIME.into()),
+                .unwrap_or_else(|| CONTAINER_RUNTIME.into()),
             directory,
         })
     };
@@ -1291,6 +1344,87 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
             );
         }
         _ => return Err(bad(format!("unknown workspace command `{command}`"))),
+    }
+    Ok(0)
+}
+
+async fn cmd_runtime(mut a: Args) -> R<i32> {
+    let command = a.next("runtime command")?;
+    let c = ctx(&a, None, false).await?;
+    let registry = c.agent.runtimes();
+    match command.as_str() {
+        "list" => {
+            let mut all = registry.list().await?;
+            if a.has("available") {
+                all.retain(|r| r.availability == RuntimeAvailability::Available);
+            }
+            print(&all);
+        }
+        "get" => {
+            let id = a.next("runtime id")?;
+            print(
+                &registry
+                    .lookup(&id)
+                    .await?
+                    .ok_or_else(|| bad(format!("runtime {id} is not registered")))?,
+            );
+        }
+        "check" => print(&registry.check(&a.next("runtime id")?).await?),
+        "register" => {
+            let kind = match a.get("kind").as_deref() {
+                Some("container") => RuntimeKind::Container,
+                Some("host_native") => RuntimeKind::HostNative,
+                Some("remote_ssh") => RuntimeKind::RemoteSsh,
+                _ => return Err(bad("--kind takes container | host_native | remote_ssh")),
+            };
+            let exec = a.get("exec").map(|e| json_arg::<Value>(&e)).transpose()?;
+            print(
+                &registry
+                    .register(
+                        &RuntimeRegister {
+                            runtime_id: a.next("runtime id")?,
+                            kind,
+                            name: a.get("name").ok_or_else(|| bad("missing --name"))?,
+                            description: a.get("description").unwrap_or_default(),
+                            exec,
+                            roots: a.all("root").into_iter().map(PathBuf::from).collect(),
+                            capabilities: json!({}),
+                        },
+                        &c.who,
+                    )
+                    .await?,
+            );
+        }
+        "update" => {
+            let id = a.next("runtime id")?;
+            let roots = a.all("root");
+            print(
+                &registry
+                    .update(
+                        &id,
+                        &RuntimeUpdate {
+                            expected_revision: a.num("expected-revision")?.ok_or_else(|| {
+                                bad("missing --expected-revision (read runtime get first)")
+                            })?,
+                            name: a.get("name"),
+                            description: a.get("description"),
+                            roots: (!roots.is_empty())
+                                .then(|| roots.into_iter().map(PathBuf::from).collect()),
+                        },
+                        &c.who,
+                    )
+                    .await?,
+            );
+        }
+        "unregister" => {
+            let id = a.next("runtime id")?;
+            let revision = a
+                .num("expected-revision")?
+                .ok_or_else(|| bad("missing --expected-revision (read runtime get first)"))?;
+            registry.unregister(&id, revision, &c.who).await?;
+            print(&json!({ "runtime_id": id, "unregistered": true }));
+        }
+        _ => return Err(bad(format!("unknown runtime command `{command}`"))),
     }
     Ok(0)
 }
@@ -1680,12 +1814,14 @@ async fn real_main() -> R<i32> {
         "xllm" => cmd_xllm(a).await,
         "schema" => cmd_schema(a),
         "workspace" => cmd_workspace(a).await,
+        "runtime" => cmd_runtime(a).await,
         "recall" => cmd_recall(a).await,
         "note" => cmd_note(a).await,
         "sessions" => cmd_sessions(a).await,
         "read-session" => cmd_read_session(a).await,
         "artifact" => cmd_artifact(a).await,
         "create-worksession" => cmd_create_worksession(a).await,
+        "ask-user" => cmd_ask_user(a),
         "wait" => cmd_wait(a).await,
         "goal" => cmd_goal(a).await,
         other => {

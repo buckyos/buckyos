@@ -25,7 +25,9 @@ fn fixtures_dir() -> PathBuf {
 fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
     let tmp = tempfile::tempdir().unwrap();
     let dst = tmp.path().join(name);
-    copy_dir(&fixtures_dir().join(name), &dst, libopendan::now_ms());
+    let started_at_ms = libopendan::now_ms();
+    copy_dir(&fixtures_dir().join(name), &dst);
+    fixture_paths::expand(&dst);
     if name == "10_active_overlap" {
         std::fs::create_dir_all(dst.join("ws")).unwrap();
     }
@@ -55,7 +57,7 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
             ("${FIXTURE_HOSTNAME}", &hostname),
         ],
     );
-    localize(&dst, &root, &os);
+    localize(&dst, &root, &os, started_at_ms);
     let expected: Value =
         serde_json::from_slice(&std::fs::read(dst.join("expected.json")).unwrap()).unwrap();
     let env = Env {
@@ -68,7 +70,7 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
     (tmp, env, expected)
 }
 
-fn localize(dir: &Path, root: &str, os: &str) {
+fn localize(dir: &Path, root: &str, os: &str, started_at_ms: u64) {
     fn value(v: &mut Value, root: &str, os: &str, canonical: bool) {
         match v {
             Value::Object(map) => {
@@ -99,32 +101,27 @@ fn localize(dir: &Path, root: &str, os: &str) {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let path = entry.path();
         if path.is_dir() {
-            localize(&path, root, os);
+            localize(&path, root, os, started_at_ms);
         } else if path.extension().is_some_and(|ext| ext == "json") {
             let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             value(&mut v, root, os, false);
+            if dir.file_name().is_some_and(|name| name == "snapshots") {
+                v["state"]["started_at_ms"] = started_at_ms.into();
+            }
             std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
         }
     }
 }
 
-fn copy_dir(src: &Path, dst: &Path, started_at_ms: u64) {
+fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap();
     for e in std::fs::read_dir(src).unwrap().flatten() {
         let p = e.path();
         let t = dst.join(e.file_name());
         if p.is_dir() {
-            copy_dir(&p, &t, started_at_ms);
+            copy_dir(&p, &t);
         } else {
             std::fs::copy(&p, &t).unwrap();
-            if src.file_name().is_some_and(|n| n == "snapshots")
-                && p.extension().is_some_and(|n| n == "json")
-            {
-                let mut snapshot: Value =
-                    serde_json::from_slice(&std::fs::read(&t).unwrap()).unwrap();
-                snapshot["state"]["started_at_ms"] = started_at_ms.into();
-                std::fs::write(&t, serde_json::to_vec(&snapshot).unwrap()).unwrap();
-            }
             #[cfg(unix)]
             {
                 let mode = std::fs::metadata(&p).unwrap().permissions();
@@ -132,6 +129,60 @@ fn copy_dir(src: &Path, dst: &Path, started_at_ms: u64) {
             }
         }
     }
+}
+
+#[test]
+fn fixture_paths_fit_windows_checkout() {
+    let root = fixtures_dir();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = path.strip_prefix(&root).unwrap();
+            let scenario_relative: PathBuf = relative.components().skip(1).collect();
+            assert!(
+                scenario_relative.to_str().unwrap().encode_utf16().count() <= 160,
+                "{}",
+                path.display()
+            );
+            let repository_relative = format!("doc/opendan/protocol/fixtures/{}", relative.display());
+            assert!(
+                repository_relative.encode_utf16().count() <= 210,
+                "{repository_relative}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_snapshot_is_localized_after_expansion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    let relative = format!(
+        "app/{}/.opendan_agent_session/runs/run/snapshots/0001.json",
+        "s".repeat(120)
+    );
+    let snapshot = src.join(&relative);
+    std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+    std::fs::write(
+        &snapshot,
+        serde_json::to_vec(&json!({ "state": { "started_at_ms": 1, "os": "linux" } })).unwrap(),
+    )
+    .unwrap();
+    fixture_paths::compact(&src);
+    assert!(!snapshot.exists());
+    copy_dir(&src, &dst);
+    fixture_paths::expand(&dst);
+    localize(&dst, dst.to_str().unwrap(), "fixture-os", 42);
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(dst.join(relative)).unwrap()).unwrap();
+    assert_eq!(snapshot["state"]["started_at_ms"], 42);
+    assert_eq!(snapshot["state"]["os"], "fixture-os");
 }
 
 /// Runner deps on the runtime the fixtures were bound to.

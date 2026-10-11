@@ -4,6 +4,8 @@
 
 2026-10-11：增加 Goals（§9，`state/goals/`）、登记表 `goal_id`、查询 `goal_id`、kRPC `goals.*`。只是加法。
 
+2026-10-11：增加 Runtime 登记（§10，`state/runtimes/`，kRPC `runtimes.*`）；behavior 增加 `[tool]`（§7）。只是加法；Workspace 位置的 `runtime_id` 由 `local` 改称 `container`，旧记录照常读。
+
 ## 1. AgentRoot 布局
 
 ```text
@@ -24,7 +26,8 @@
                                             activations.jsonl epochs/<n>/state.json schedule.json .lock
   memory/  notebook/  attention_signals/    认知（agent_tool 实现与其内部锁）
   state/workspaces/                         Known Workspace 登记（项目目录可在 AgentRoot 外）
-  .locks/self_improve.lease  .locks/artifact/<aid>.lease
+  state/runtimes/<runtime_id>.json          Runtime 登记（§10）
+  .locks/self_improve.lease  .locks/artifact/<aid>.lease  .locks/workspaces.lock  .locks/runtimes.lock
 ```
 
 访问经 `AgentStateClient`：文件版直接读写上述文件（要求能看到 AgentRoot）；kRPC 版与 DFS 版必须对外表现一致（同一组 fixtures）。
@@ -135,7 +138,7 @@ mode = "batch"                     # single | batch
 media = "reference"                # reference | inline
 
 [capabilities]
-tool_whitelist = ["group:bash", "call_behavior"]   # → tools.tools；`group:<内置工具组>` → {groupname}，其余 → {name}（运行环境提供的工具）
+tool_whitelist = ["group:bash", "behavior:analyze_intent", "report"]   # → tools.tools；`group:<内置工具组>` → {groupname}，其余 → {name}（运行环境提供的工具）；`behavior:<name>` 是该 behavior 的 [tool] 函数
 action_whitelist = ["shell"]       # → tools.actions
 
 [budget]
@@ -153,7 +156,15 @@ temperature = 0.2
 [entry]                            # 进入本 behavior 的方式，由目标决定
 mode = "switch_context"            # switch_context | create_sub_context | fork；仅 Session 的入口 behavior 可省略
 inherit = "none"                   # none | recent_dialogue | steps
+
+[tool]                             # 可选：把本 behavior（create_sub_context / fork）作为具名函数给调用方
+name = "try_analyze_user_intent"   # 字母、数字、_；缺省 = behavior 名；同一 Session 内唯一
+description = "…"                  # 必填：什么时候调用
+task = "{{args.request}}"          # 子 context 的 task 模板，只能引用 args.<name>
+[tool.parameters]                  # JSON Schema，type = object；缺省 {task: string}
 ```
+
+`[tool]` 由调用方在 `tool_whitelist` 写 `behavior:<name>` 时提供给它的模型（目标必须在调用方的 `next` 闭包内）；内部协议同 `call_behavior`（[Session Directory Protocol](<Session Directory Protocol.md>) §6）。fork 目标的 `[budget]` 只作用于分支的 run，不进 `.llm_context`。
 
 `[model] / [capabilities] / [budget] / prompt.mode` 叠加为该 behavior 的 run 的有效 `.llm_context`（只产生 `model / loop_model / max_tool_iterations / max_tokens / tools` 这几个键），结果进 run.json `config`，xllm 接手时不需要理解 behavior。`prompt.llm_context` 里的 `prompt / groups / runs_dir` 在宿主装配下无效，冻结时拒绝。
 
@@ -163,7 +174,7 @@ Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one"
 
 ## 8. kRPC 形态
 
-看不到 AgentRoot 的调用方（容器或远端沙箱里的层 ② 工具、WebUI、其它应用）经托管该 Agent 的 OpenDAN 进程访问 Agent State：路径 `/kapi/opendan`，方法与 `AgentStateClient` 的门面一一对应（`sessions.*`、`activity.*`、`perception.*`、`cognition.*`、`artifacts.*`、`behaviors.*`，见 [opendan README](../../../src/frame/opendan/README.md)）。真相仍是上面的文件；服务只做鉴权与转发，不引入第二份存储。
+看不到 AgentRoot 的调用方（容器或远端沙箱里的层 ② 工具、WebUI、其它应用）经托管该 Agent 的 OpenDAN 进程访问 Agent State：路径 `/kapi/opendan`，方法与 `AgentStateClient` 的门面一一对应（`sessions.*`、`activity.*`、`perception.*`、`cognition.*`、`artifacts.*`、`behaviors.*`、`workspaces.*`、`runtimes.*`、`goals.*`，见 [opendan README](../../../src/frame/opendan/README.md)）。真相仍是上面的文件；服务只做鉴权与转发，不引入第二份存储。
 
 - 只承载读与带署名的写：`sessions.register`（`created_by` 必须是调用方）、`sessions.post_input`（`from` 由服务端改写为调用方）、`cognition.notebook_append`、`artifacts.decide`（服务端在调用期间持有 `artifact:<aid>` 锁）、`goals.create / revise / set_status / reopen / restart`（调用方 = 服务端看到的身份，`session` 参数是调用方自报的所在 Session，§9.5）。
 - Goal 的驱动者 / 宿主写（`goals.write_state`、`goals.append_activations`、`goals.prepare_epoch`、`goals.end_epoch`、`goals.write_schedule`）一律拒绝（错误说明需要 AgentRoot）。
@@ -227,3 +238,25 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 
 `goals.list`、`goals.get {goal_id}`、`goals.revision {goal_id, revision}`、`goals.changes {goal_id, limit?}`、`goals.state {goal_id}`、`goals.epoch_state {goal_id, epoch}`、`goals.activations {goal_id, query?: {epoch?, limit?}}`、`goals.schedule {goal_id}`；写：`goals.create {request, session?}`、`goals.revise {goal_id, request: {expected_revision, …}, session?}`、`goals.set_status {goal_id, request: {status, reason?, evidence?}, session?}`、`goals.reopen {goal_id, request: {reason, fresh_state?}, session?}`、`goals.restart {goal_id, request: {reason, carry_state?}, session?}`。驱动者 / 宿主写一律拒绝（§8）。宿主进程额外提供 `goals.activate` / `goals.post`（见 [opendan README](../../../src/frame/opendan/README.md)）。
 
+
+## 10. Runtimes `state/runtimes/<runtime_id>.json`
+
+Agent 的 Session 与 Workspace 能用哪些 Runtime。登记只说明“有这个 Runtime、本宿主现在能不能用、Workspace 建议放在哪”；在其中执行是 `agent_tool::runtime` 的事。schema：`schema/runtime_record.schema.json`。
+
+```json
+{ "version": 1, "runtime_id": "container", "kind": "container | host_native | remote_ssh",
+  "name": "Agent container", "description": "…", "runtime_host": "<native_host_id()>",
+  "exec": { "kind": "native" },            // agent_tool RuntimeConfig；null = 还没有执行器
+  "roots": ["<agent_root>/workspaces", "/home/<owner>"],
+  "capabilities": { "network": true, "os": "linux" },
+  "availability": "available | runtime_unavailable | permission_denied",
+  "builtin": true, "revision": 1, "registered_by": "…", "registered_at_ms": 0, "updated_at_ms": 0,
+  "checked_at_ms": 0, "last_error": null }
+```
+
+- **内建**：宿主（Loader）启动时幂等补建 `container`（Agent 进程自己所在的环境，`exec = {kind: native}`，可用）与 `host`（容器所在的宿主机，`exec = null`，在宿主机执行器落地前 `runtime_unavailable`）。补建不覆盖 owner 改过的 `name / description / roots`；内建记录不能取消登记。
+- **可用性**：`check` 按记录判断——`exec` 为空、`kind` 不是 `container`、或 `container` 登记在别的宿主上 → `runtime_unavailable`（`last_error` 说明原因）。
+- **写**：`register`（owner 添加，同参数重试幂等，已存在的 id 拒绝）、`update`（CAS `expected_revision`，只改 `name / description / roots`）、`check`、`unregister`（CAS，内建拒绝）；`.locks/runtimes.lock` 互斥。`ensure_builtin` 只给宿主，kRPC 拒绝。
+- **id**：小写字母、数字、`-`、`_`；`local` 保留为 `container` 的旧名，`lookup("local")` 返回 `container`。
+- **使用者**：Workspace 位置的 `runtime_id` 只接受本 runner 能直接用的 Runtime（`container`，旧记录的 `local`），`container` 登记为不可用时 Workspace 也不可用（[Agent Workspace Protocol](<Agent Workspace Protocol.md>)）；`create-worksession --runtime <id>` 要求已登记且 `available`，否则拒绝（退出码 6）。
+- kRPC：`runtimes.list`、`runtimes.lookup {runtime_id}`；写：`runtimes.register {request}`、`runtimes.update {runtime_id, request}`、`runtimes.check {runtime_id}`、`runtimes.unregister {runtime_id, expected_revision}`（署名为服务端看到的调用方）。

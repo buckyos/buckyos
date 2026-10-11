@@ -42,6 +42,10 @@ Turn 与 task：zone 形态下每个 Turn 打开时在 TaskMgr 建 task（幂等
 
 占位：Agent 包 `i18n/<语言>.toml` 的 `[outbound]` 有 `accepted` 文案、msg-center `msg.get_edit_capability` 回答可编辑、且 Turn 打开超过 `[loader] placeholder_delay_ms`（默认 3000）或已有首次工具调用时，先发占位（带 `agent_task`），Turn 结束时以一条 edit 替换；`stopped` / `finished` 是停止与无正文结束时收尾占位的文案。其余情况只发最终回复（同样带 `agent_task`）。
 
+提问：Session 里的 `agent-session ask-user` 让 Turn 等用户回答时，占位立即发出（不等 `placeholder_delay_ms`），问题以 `relates_to {thread → 占位}` + 顶层 `agent_ask {anchor, call_id, turn, input}` 出站；群聊里问题 `mentions` 主人（MessageHub 只对被提到的成员进入回答态）。用户的下一条消息就是答案（MessageHub 的回答带 `thread → 占位`，选项回答带 `machine {intent: "agent_ask.answer", data {call_id, option}}`）；Turn 结束时占位被 edit 成结果。TaskMgr 的 Turn task 在等待期间为 Waiting（reason `input`，“waiting for the user's answer”）。
+
+Runtime：启动时在 Agent State 幂等补建内建 Runtime `container`（本进程所在环境，`roots` 为 AgentRoot 的 `workspaces/` 与 owner 的 home）与 `host`（宿主机，执行器落地前不可用），首页在 Workspace 旁列出。
+
 ## 运行
 
 ```bash
@@ -124,6 +128,8 @@ cd src && uv run start.py --skip-update
 | `artifacts.list` / `artifacts.head {aid}` / `artifacts.versions {aid}` / `artifacts.version {aid, ver}` | | `ArtifactHead[]` / `ArtifactHead \| null` / `ArtifactVersion[]` / `ArtifactVersion \| null` |
 | `artifacts.decide` | `{aid, ver, decision: accept \| discard}`（服务端在调用期间持有 `artifact:<aid>` 锁） | `DecideResult` |
 | `behaviors.identity` / `behaviors.list` / `behaviors.get {name}` / `behaviors.revision` | | `IdentityText` / `BehaviorMeta[]` / `BehaviorConfig \| null` / `string` |
+| `runtimes.list` / `runtimes.lookup {runtime_id}` | | `RuntimeRecord[]` / `RuntimeRecord \| null` |
+| `runtimes.register {request}` / `runtimes.update {runtime_id, request}` / `runtimes.check {runtime_id}` / `runtimes.unregister {runtime_id, expected_revision}` | 写，署名为调用方；内建 Runtime 不能取消登记 | `RuntimeRecord` / `null` |
 
 类型定义：`libopendan::protocol`（`agent_state.rs`、`state.rs`、`config.rs`、`input.rs`、`worklog.rs`、`behavior.rs`）与 `libopendan::state::{activity, perception, cognition, artifacts}`；JSON Schema 在 `doc/opendan/protocol/schema/`。
 
@@ -201,6 +207,7 @@ Goal 不存在 → `not_found`；Goal 已结束（achieved / archived）→ `goa
 - 资料：读写系统配置里的 Agent `profile`（与 control_panel 的 `agent.profile.*` 是同一份）；没有昵称时 `display_name` 是 Agent 用户名（AgentId 的第一段）。`agent.profile_set` 只改传入的字段，传空字符串清除该字段。`display_name` ≤ 64 字符，`bio` ≤ 500 字符，`avatar` 是图片 data URL，≤ 128 KiB。`owner_did` 是 AgentSpec 里的 Owner DID（`--dev` 取 `--owner-did`），`desktop_url`（zone 桌面的地址，MessageHub 在其 `/messagehub`）在 `--dev` 形态下为 `null`。
 - 用量：汇总登记表里各 Session 的 `usage.jsonl`（[Session Directory Protocol](../../../doc/opendan/protocol/Session%20Directory%20Protocol.md) §4），按 `all.total` 降序；`hour` / `day` 是最近 1 小时 / 24 小时。`model` 是 AICC 路由最终选中的模型，取不到时是请求里的模型别名。没有 `usage.jsonl` 的旧 Session 不计入，`since_ms` 是最早一条记录的时间。
 - `ui.bindings`：UI Session 的回复去向（`session_config.json` 的 `channels.outbound`）。WebUI 据此把 Session 链接到 MessageHub：对方是 owner 时打开 owner 自己与 Agent 的会话（`/messagehub?entityId=<agent>&sessionId=<to_session | dm:<agent>>`），否则以观察模式打开 Agent 的会话（`ownerDid=<agent>&mode=observe&entityId=<对方>&sessionId=<收件箱会话>`）。没有绑定会话的 Session（work、self_check 等）在 WebUI 里进入自己的详情页。
+- 首页的 Runtime 卡片直接读 `runtimes.list`：名称、id、可用性、是否内建、建议根目录、不可用原因。
 - `home.workspaces` 从 Workspace Manager 查询已知目录，不按 Session 是否使用过或本机目录是否存在过滤。首页展示稳定 ID、Runtime、目录、使用属性、生命周期、最近可用性检查、错误与冲突，按稳定 ID 关联 Session 和产物。检查访问调用 `workspaces.check`；重新定位调用 `workspaces.discover` 并同时提交目标 ID 和预期登记修订，失败保留原登记。重新定位只供新的 Session 使用，既有 Session 的绑定保持不变。
 
 ### Loader 状态
@@ -238,6 +245,10 @@ cargo test -p opendan -- --test-threads=1
 # Agent：BUCKYOS_TEST_AGENT_CREATE=<名字>（没有就创建）| BUCKYOS_TEST_AGENT_ID=<agent_id> | 当前用户第一个 ready 的
 cd test/test_opendan && deno run --config ../deno.json --allow-net --allow-env \
   --unsafely-ignore-certificate-errors test_agent_loader.ts ["<消息>"]     # OPENDAN_FOLLOW_S=300 继续打印后续消息（work session 的结果）
+
+# 意图分析的问答（P/Q/A/R）：发请求，Agent 提问时退出码 10 并打印问题，再按 MessageHub 的方式回答
+cd test/test_opendan && deno run --config ../deno.json --allow-net --allow-env --allow-read --allow-write \
+  --unsafely-ignore-certificate-errors test_agent_ask.ts send "<请求>"     # | answer "<文字>" [--option <id>] | wait | stop
 
 # WebUI 经 zone 网关（SSO 登录）
 cd src/frame/opendan/web && pnpm exec playwright test -c playwright.zone.config.ts

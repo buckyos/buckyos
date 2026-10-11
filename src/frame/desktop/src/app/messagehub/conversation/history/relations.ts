@@ -1,4 +1,4 @@
-import type { MessageObject, MsgContent, MsgRelation } from '../../protocol/msgobj'
+import { messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, messageObjId, type AgentAsk, type MessageObject, type MsgContent, type MsgRelation } from '../../protocol/msgobj'
 
 /** Reactions to one message, grouped by key (`CYFS 标准对象` §16.3). */
 export interface MessageReaction {
@@ -15,6 +15,23 @@ export interface MessageEdit {
   content: MsgContent
 }
 
+/**
+ * One question or answer of an Agent Turn, folded under the Turn's anchor
+ * (`ui_relations.thread`). `content` is the effective content (after edits).
+ */
+export interface MessageThreadEntry {
+  id: string
+  from: string
+  senderName?: string
+  content: MsgContent
+  at: number
+  /** On a question: what it asks. */
+  agent_ask?: AgentAsk
+  /** On an answer that picked an option. */
+  option?: string
+  redacted?: boolean
+}
+
 /** What the relation messages of a timeline say about one target message (`ui_relations`). */
 export interface MessageRelationsView {
   /** The complete content of the latest edit by the author, plus every edit seen (oldest first). */
@@ -23,16 +40,12 @@ export interface MessageRelationsView {
   reactions?: MessageReaction[]
   /** Only on a `thread` message: the quoted target, when it is in the same timeline. */
   replyTo?: { id: string; from: string; senderName?: string; content: string; found: boolean }
+  /** Only on an Agent anchor (`agent_task`): the questions it asked during its Turn and their answers, oldest first. */
+  thread?: MessageThreadEntry[]
 }
 
-/** ObjId of a timeline message: the stored record's `msg_id`, else the accepted or local id. */
-export function messageObjId(message: MessageObject): string | undefined {
-  const record = message.ui_record
-  const msgId = record && typeof record === 'object' ? (record as { msgId?: unknown }).msgId : undefined
-  if (typeof msgId === 'string') return msgId
-  if (typeof message.ui_sent_msg_id === 'string') return message.ui_sent_msg_id
-  return typeof message.ui_message_id === 'string' ? message.ui_message_id : undefined
-}
+/** ObjId of a timeline message; it lives with the protocol helpers, which build answers from it. */
+export { messageObjId }
 
 function messageIds(message: MessageObject): string[] {
   const ids = [messageObjId(message), message.ui_sent_msg_id, message.ui_message_id].filter((id): id is string => typeof id === 'string')
@@ -70,6 +83,10 @@ export function mentionsViewer(message: MessageObject, viewerDid: string): boole
  * target is a reaction message cancels that reaction (§16.3: "取消回应就是撤回
  * 这条回应消息"); the host enforces the rest and rejects anything else before
  * it reaches a timeline.
+ *
+ * The questions and answers of an Agent Turn are the exception to "a
+ * `thread` message keeps its row" (`foldAgentQuestions`): they go under the
+ * Turn's anchor as `ui_relations.thread`.
  */
 export function foldMessageRelations(messages: readonly MessageObject[]): MessageObject[] {
   const indexById = new Map<string, number>()
@@ -128,10 +145,11 @@ export function foldMessageRelations(messages: readonly MessageObject[]): Messag
   }
   // A redacted message shows its placeholder whatever its edits said.
   for (const view of views.values()) if (view.redacted) delete view.edited
+  const folded = foldAgentQuestions(visible, indexById, views, viewOf)
   // Quotes are resolved last so they reflect the target's final edit / redaction.
   visible.forEach((message, index) => {
     const relation = messageRelation(message)
-    if (relation?.rel !== 'thread') return
+    if (relation?.rel !== 'thread' || folded.has(index)) return
     const targetIndex = indexById.get(relation.target)
     const target = targetIndex === undefined ? undefined : visible[targetIndex]
     const targetView = targetIndex === undefined ? undefined : views.get(targetIndex)
@@ -143,8 +161,56 @@ export function foldMessageRelations(messages: readonly MessageObject[]): Messag
     if (view.reactions && view.reactions.length === 0) delete view.reactions
     if (Object.keys(view).length === 0) views.delete(index)
   }
-  if (views.size === 0) return visible
-  return visible.map((message, index) => views.has(index) ? { ...message, ui_relations: views.get(index) } : message)
+  if (views.size === 0 && folded.size === 0) return visible
+  const rows: MessageObject[] = []
+  visible.forEach((message, index) => { if (!folded.has(index)) rows.push(views.has(index) ? { ...message, ui_relations: views.get(index) } : message) })
+  return rows
+}
+
+/**
+ * The questions and answers of Agent Turns: a `thread` message to an
+ * earlier anchor carrying `agent_task` is folded into that anchor's
+ * `ui_relations.thread` (instead of a row of its own) when it is
+ *
+ * - a question: it carries `agent_ask` and comes from the anchor's author;
+ * - an answer: it picked an option (`agent_ask.answer`), or it is the first
+ *   message after an open question of that anchor from someone other than
+ *   the asker.
+ *
+ * Any other reply to an Agent message keeps its row. Returns the indexes
+ * folded away.
+ */
+function foldAgentQuestions(visible: readonly MessageObject[], indexById: ReadonlyMap<string, number>, views: ReadonlyMap<number, MessageRelationsView>, viewOf: (index: number) => MessageRelationsView): Set<number> {
+  const folded = new Set<number>()
+  /** Anchor index → the asker of its question still waiting for an answer. */
+  const open = new Map<number, string>()
+  visible.forEach((message, index) => {
+    const relation = messageRelation(message)
+    if (relation?.rel !== 'thread') return
+    const anchorIndex = indexById.get(relation.target)
+    const anchor = anchorIndex === undefined ? undefined : visible[anchorIndex]
+    if (anchorIndex === undefined || !anchor || anchorIndex >= index || folded.has(anchorIndex) || !messageAgentTaskId(anchor)) return
+    const ask = messageAgentAsk(message)
+    const picked = messageAgentAskAnswer(message)
+    if (ask && message.from === anchor.from) open.set(anchorIndex, message.from)
+    else if (picked || (open.has(anchorIndex) && open.get(anchorIndex) !== message.from)) open.delete(anchorIndex)
+    else return
+    folded.add(index)
+    const own = views.get(index)
+    const entry: MessageThreadEntry = {
+      id: messageObjId(message) ?? '',
+      from: message.from,
+      ...(typeof message.ui_sender_name === 'string' ? { senderName: message.ui_sender_name } : {}),
+      content: own?.edited?.content ?? message.content,
+      at: message.created_at_ms,
+      ...(ask && message.from === anchor.from ? { agent_ask: ask } : {}),
+      ...(picked ? { option: picked.option } : {}),
+      ...(own?.redacted ? { redacted: true } : {}),
+    }
+    const view = viewOf(anchorIndex)
+    view.thread = [...(view.thread ?? []), entry]
+  })
+  return folded
 }
 
 /** The viewer's own reaction message for `key` on a folded message, if any. */
@@ -188,4 +254,21 @@ export function editsOf(messages: readonly MessageObject[], anchors: readonly Me
     const relation = messageRelation(message)
     return relation?.rel === 'edit' && authors.get(relation.target) === message.from
   })
+}
+
+/**
+ * The questions and answers folded under `anchors` (`ui_relations.thread`),
+ * taken from the unfolded timeline: like edits, they are read together with
+ * the bubble that shows them.
+ */
+export function threadMessagesOf(messages: readonly MessageObject[], anchors: readonly MessageObject[]): MessageObject[] {
+  if (!anchors.some(anchor => messageAgentTaskId(anchor))) return []
+  const anchorIds = new Set(anchors.flatMap(messageIds))
+  const entryIds = new Set<string>()
+  for (const row of foldMessageRelations(messages)) {
+    if (!messageIds(row).some(id => anchorIds.has(id))) continue
+    for (const entry of messageRelations(row)?.thread ?? []) if (entry.id) entryIds.add(entry.id)
+  }
+  if (entryIds.size === 0) return []
+  return messages.filter(message => entryIds.has(messageObjId(message) ?? ''))
 }

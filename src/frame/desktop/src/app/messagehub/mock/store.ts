@@ -5,7 +5,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
-import { effectiveContent, foldMessageRelations, isHiddenRelationMessage, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
+import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
@@ -262,8 +262,11 @@ export class MessageHubMockStore implements MessageHubStore {
       Object.assign(stored.messages, seeded.messages, stored.messages)
       Object.assign(stored.sessions, seeded.sessions, stored.sessions)
     }
-    const taskDemoKey = sessionKey(MOCK_SELF_DID, 'session-coder-task')
-    if (stored && !stored.sessions[taskDemoKey] && !stored.deleted[taskDemoKey]) stored.sessions[taskDemoKey] = this.snapshot.sessions[taskDemoKey]
+    // Demo sessions added after a browser stored its snapshot.
+    for (const id of ['session-coder-task', 'session-coder-ask', 'session-coder-qa']) {
+      const demoKey = sessionKey(MOCK_SELF_DID, id)
+      if (stored && !stored.sessions[demoKey] && !stored.deleted[demoKey]) stored.sessions[demoKey] = this.snapshot.sessions[demoKey]
+    }
     if (stored) this.snapshot = { ...stored, hidden: stored.hidden ?? {} }
     else await this.persist(this.snapshot)
     this.listeners.forEach(listener => listener())
@@ -362,9 +365,10 @@ export class MessageHubMockStore implements MessageHubStore {
     const folded = foldMessageRelations([...(seedMessages ?? []), ...raw])
     const hidden = new Set(this.snapshot.hidden[key] ?? [])
     const visible = (rows: MessageObject[]) => hidden.size ? rows.filter(message => !hidden.has(getMessageStableId(message, 0))) : rows
-    const seedRowCount = seedMessages?.filter(message => !isHiddenRelationMessage(message)).length ?? 0
-    const seededRows = seedMessages ? visible(folded.slice(0, seedRowCount)) : undefined
-    const delta = visible(seedMessages ? folded.slice(seedRowCount) : folded)
+    // A seeded message may be folded away (an edit, an Agent Q/A), so seeded rows are told apart by id.
+    const seedIds = new Set(seedMessages?.map(message => getMessageStableId(message, 0)))
+    const seededRows = seedMessages ? visible(folded.filter(message => seedIds.has(getMessageStableId(message, 0)))) : undefined
+    const delta = visible(seedMessages ? folded.filter(message => !seedIds.has(getMessageStableId(message, 0))) : folded)
     const baseCount = seededRows?.length ?? base?.totalCount ?? 0
     // Folded relations change rows without changing the row count, so the
     // raw message count serves as the reader revision the history pane watches.
@@ -372,6 +376,8 @@ export class MessageHubMockStore implements MessageHubStore {
       readerKey: `mock:${cacheKey}:${this.snapshot.withoutSeed[key] ? `fresh:${deletedAt}` : 'seed'}:${JSON.stringify(delivery)}`,
       revision: raw.length + hidden.size,
       totalCount: exists ? baseCount + delta.length : 0,
+      // A lazily generated seed history is not in memory: only what was appended to it counts.
+      timeline: exists ? visible([...(seedMessages ?? []), ...raw]) : [],
       readRange: async (start, count) => {
         if (!this.canView(context) || !this.snapshot.sessions[key] || this.snapshot.withoutSeed[key] !== withoutSeed || this.snapshot.deleted[key]?.at !== deletedAt) return []
         const from = Math.max(0, start)
@@ -482,6 +488,7 @@ export class MessageHubMockStore implements MessageHubStore {
   send(context: MessageHubContext, id: string, payload: OutgoingPayload, confirmation: string | undefined) {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
     const message = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: buildOutgoingDraftContent(payload), createdAtMs: this.now() })
+    if (payload.machine) message.content = { ...message.content, machine: payload.machine }
     if (payload.relatesTo) {
       const { rel, target: targetId, key } = payload.relatesTo
       const group = session ? this.snapshot.groups[session.entityId] : undefined

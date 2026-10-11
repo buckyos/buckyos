@@ -171,7 +171,8 @@ async fn redo_transfer(
         return Ok(true);
     }
     if !returned {
-        if let Some(call) = pending_sub_call(snapshot, &entry)? {
+        let behaviors = cfg.behaviors().map_err(OpenDanError::InvalidArgument)?;
+        if let Some(call) = pending_sub_call(snapshot, &behaviors, &entry)? {
             let mut next = Next {
                 kind: FinishKind::Switch,
                 next_behavior: Some(call.behavior.clone()),

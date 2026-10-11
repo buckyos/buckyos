@@ -281,6 +281,27 @@ export interface WorkspaceBinding extends WorkspaceRef {
   location: WorkspaceLocation
 }
 
+/** A runtime the agent's sessions and workspaces may use (`state/runtimes/`). */
+export interface KnownRuntime {
+  version: number
+  runtime_id: string
+  kind: 'container' | 'host_native' | 'remote_ssh'
+  name: string
+  description: string
+  runtime_host: string
+  exec: unknown
+  roots: string[]
+  capabilities: unknown
+  availability: 'available' | 'runtime_unavailable' | 'permission_denied'
+  builtin: boolean
+  revision: number
+  registered_by: string
+  registered_at_ms: number
+  updated_at_ms: number
+  checked_at_ms: number | null
+  last_error: string | null
+}
+
 export interface KnownWorkspace {
   version: number
   runtime_host: string

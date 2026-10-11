@@ -2,6 +2,7 @@
 
 - 版本：7（session_input /3、session_config /7、session_state /6、binding /4、run.json version 6、snapshot_version 5；summary /2、mechanical/3）。2026-10-10 增加显式 report 提交、`session.policy.completion`、`state.latest_report / final_report`、`report_delivery` 和持久报告 journal；XML 结束只用 report.end，取消 END / 隐式 done。旧目录不迁移。版本 5 的 Session 模板、冻结配置、输入总线、Turn/task 与出站协议继续保留。Round / Step / Turn 见 [LLM Context readme](../../llm_context/readme.md)。
 - 2026-10-11（同一主版本内的加法，不升版本）：Goal 与 Goal Session——AgentRoot `state/goals/<goal_id>/`（`opendan.goal/1`、`goal_state/1`、`goal_activation/1`、`goal_schedule/1`）、登记表与查询的 `goal_id`、`session.kind = goal` 与 `session.goal`、`origin.goal`、`policy.wait_user_msg = end_turn`、`prompt.goal_activation` 模板槽、`state.goal` 与 `state.turn_stop_requested`、`waiting_for.kind = event` 的实际使用、receipt part `goal_activation` 与 `parts[].brief` / worklog `user_message.brief`、`control(stop).scope` 与 `control(goal_skills)`、`system:goal` 运行机会事件。见 Agent State Protocol §9。
+- 2026-10-11（同一主版本内的加法，不升版本）：意图分析——behavior `[tool]` 与 `BehaviorEntry.tool`（`tool_whitelist` 的 `behavior:<name>`）、fork 目标的 `[budget]`；挂起 task `userinput:<call_id>`（`ask-user`）与它的结果 `user_input_answer`、`waiting_for = {kind: input, refs: ["userinput:…"]}`、`outbox[].purpose = question` 与 `agent_ask` meta、输入 receipt `extra.user_input`；run.json `host.extra.asks`；AgentRoot `state/runtimes/<runtime_id>.json`（`runtime_record`）与 kRPC `runtimes.*`；Workspace 位置 `runtime_id` 的 `local` 改称 `container`（旧值照读）。见 Session Input Protocol §9、Agent State Protocol §10。
 - 日期：2026-10-11
 - 来源：由 Rust 参考实现 `src/frame/lib_opendan`（crate `libopendan`）反写（[实现计划](<../Agent Session SDK 实现计划.md>) L6 / V6）。字段以 `src/protocol/` 的类型为准，本目录的 JSON Schema 由这些类型导出。
 - 读者：实现其它语言 runner（buckyos-websdk 的 ts-runner 等）的开发者，以及审查协议的人。
@@ -27,13 +28,14 @@ Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；�
 | [Lease Protocol](<Lease Protocol.md>) | 推进权与各类锁、锁文件内容、接管前的执行核对 |
 | [Session Input Protocol](<Session Input Protocol.md>) | Agent 输入：总线记录（`opendan.session_input/3`）、MsgObject 消息与 AgentEvent、校验与拒绝、路由、消费进度、半订阅状态、Input 链路与内建渲染、receipt 与提交、bridge、长任务等待、Sub Session 的创建 / 汇报 / 等待 |
 | [Session Control Protocol](<Session Control Protocol.md>) | Session 控制：stop / decide / subscribe / unsubscribe / activity / perceive；驱动者自己的停止请求 |
-| [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录与 Session 模板、Goals（定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度、写者与权限） |
+| [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录（含 `[tool]`）与 Session 模板、Goals（定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度、写者与权限）、Runtime 登记 |
 | [Agent Workspace Protocol](<Agent Workspace Protocol.md>) | 稳定身份、Known Workspaces、位置修订、固定绑定、本地写锁及交接、CLI、旧目录导入与能力边界 |
 
 ## 3. 机器可读材料
 
 - `schema/*.schema.json`：由 `libopendan::protocol::json_schemas()` 导出，覆盖全部持久结构（`cargo run -p libopendan --bin xagent -- schema <dir>` 可重新导出）。
 - `fixtures/<NN>_<scenario>/`：由 `cargo run -p libopendan --example fixtures -- doc/opendan/protocol/fixtures` 生成的黄金目录。每个场景包含 `agent_root/`、`app/<sid>/`、`kmsg/`（开发用文件队列，语义同 kmsg）和 `expected.json`。文件里的绝对路径已替换为 `${FIXTURE_ROOT}`，使用前替换为拷贝后的场景目录。
+- 为支持 Windows checkout，场景内相对路径超过 160 个 UTF-16 单元的文件保存在 `_files/<编号>`；可选的 `_paths.json` 记录「短路径 → 原始相对路径」，统一用 `/` 分隔。消费方复制场景后先按映射还原文件，再替换占位符；文件内容、协议 ID 和哈希保持原样。Rust 生成器和 fixture 测试自动处理此映射。
 - `expected.json` 的 `sessions[]` 记录解析结果（state 摘要、live_run、run.json 的门槛与在途、worklog 边界），`next` 记录符合协议的 runner 下一步必须做什么。Rust 参考实现用 `tests/fixtures.rs` 在每个场景上验证 `next`；其它语言应跑同一组断言。
 
 | 场景 | 要点 |

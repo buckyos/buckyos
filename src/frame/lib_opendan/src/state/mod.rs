@@ -15,6 +15,7 @@ pub mod krpc;
 mod locks;
 pub mod perception;
 mod registry;
+mod runtimes;
 mod workspaces;
 
 use std::path::Path;
@@ -175,6 +176,25 @@ pub trait WorkspaceManager: Send + Sync {
     async fn set_runtime_available(&self, runtime_id: &str, available: bool, who: &str) -> Result<Vec<WorkspaceRecord>>;
 }
 
+/// Runtimes of the agent (`state/runtimes/`): what its sessions and
+/// workspaces may run in. Writes are signed with the caller.
+#[async_trait]
+pub trait RuntimeRegistry: Send + Sync {
+    async fn list(&self) -> Result<Vec<RuntimeRecord>>;
+    /// `local` is read as `container`.
+    async fn lookup(&self, runtime_id: &str) -> Result<Option<RuntimeRecord>>;
+    /// A runtime an owner adds (idempotent for the same registration).
+    async fn register(&self, request: &RuntimeRegister, who: &str) -> Result<RuntimeRecord>;
+    async fn update(&self, runtime_id: &str, request: &RuntimeUpdate, who: &str) -> Result<RuntimeRecord>;
+    /// Whether this host can use it now (writes the observation).
+    async fn check(&self, runtime_id: &str) -> Result<RuntimeRecord>;
+    /// Built-in runtimes are refused.
+    async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<()>;
+    /// Host: the built-in runtimes, created when missing; what an owner
+    /// changed of them is kept.
+    async fn ensure_builtin(&self, builtin: &[RuntimeRegister], who: &str) -> Result<Vec<RuntimeRecord>>;
+}
+
 /// The SDK boundary to Agent State (not a protocol; the protocol is the file
 /// layout and the locks behind it).
 pub trait AgentStateClient: Send + Sync {
@@ -189,6 +209,7 @@ pub trait AgentStateClient: Send + Sync {
     fn cognition(&self) -> &dyn Cognition;
     fn artifacts(&self) -> &dyn Artifacts;
     fn workspaces(&self) -> &dyn WorkspaceManager;
+    fn runtimes(&self) -> &dyn RuntimeRegistry;
     fn locks(&self) -> &dyn LockManager;
     /// The agent's behaviors and identity text (frozen into a session when
     /// it is constructed).

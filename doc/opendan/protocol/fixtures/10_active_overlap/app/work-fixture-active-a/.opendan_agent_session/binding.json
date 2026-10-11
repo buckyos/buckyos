@@ -13,11 +13,11 @@
     "location_revision": 1,
     "runtime_host": "${FIXTURE_HOST}",
     "location": {
-      "runtime_id": "local",
+      "runtime_id": "container",
       "directory": "${FIXTURE_ROOT}/ws"
     },
     "access": "read_write"
   },
-  "bound_at_ms": 1791715814520,
-  "bound_by": "rn-7ab5f4b817214c4d"
+  "bound_at_ms": 1791731447002,
+  "bound_by": "rn-a6b48659eb604197"
 }

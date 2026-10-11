@@ -6,6 +6,12 @@ import type {
 export interface ConversationMessageReader {
   readonly readerKey: string
   readonly totalCount: number
+  /**
+   * The loaded messages behind the rows, unfolded and oldest first, when the
+   * reader holds them in memory: state derived from the whole timeline (the
+   * conversation input state) reads them here.
+   */
+  readonly timeline?: readonly MessageObject[]
   readRange(startIndex: number, count: number): Promise<readonly MessageObject[]>
 }
 

@@ -52,6 +52,8 @@ OpenDAN 里的 Agent Tool 在工程上由 `agent_tool` crate 的 `AgentToolManag
 
 ### 3.2 Worksession 控制类
 
+> 2026-10-11：本节描述的 `try_create_worksession` 已被 behavior `analyze_intent` 的具名函数 `try_analyze_user_intent`（`[tool]` 声明，fork 子 context）取代，见 [架构文档 §5.6](<OpenDAN Agent Session架构设计.md>) 与 [意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)。
+
 在 [`opendan/src/worksession_tools.rs`](src/frame/opendan/src/worksession_tools.rs) 实现，入口函数 `register_worksession_tools`。三者都是 `CallingConventions::LLM`。
 
 | 工具 | 用途 | 关键参数 |

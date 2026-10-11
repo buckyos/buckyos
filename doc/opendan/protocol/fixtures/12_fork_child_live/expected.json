@@ -13,12 +13,12 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261011-035014-1e9e8c",
+        "run_id": "20261011-081047-4171db",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261011-035014-1e9e8c",
-        "20261011-035014-76c8c7"
+        "20261011-081047-3c6e6f",
+        "20261011-081047-4171db"
       ],
       "session_id": "work-fixture-fork",
       "state": {
@@ -38,7 +38,7 @@
             },
             "entry": "plan",
             "role": "caller",
-            "run_id": "20261011-035014-76c8c7"
+            "run_id": "20261011-081047-3c6e6f"
           }
         ],
         "rev": 4,

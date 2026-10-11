@@ -23,7 +23,7 @@ import {
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
-import { editsOf, effectiveContent, messageObjId } from '../conversation/history/relations'
+import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
 import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
@@ -647,8 +647,9 @@ export class MessageHubApiStore implements MessageHubStore {
     const wanted = new Set(recordIds)
     // An edit has no row of its own: its record is read with the bubble that
     // shows it, so a placeholder and its final edit count as one unread message.
+    // The questions and answers folded under an Agent bubble are read with it too.
     const shown = history.messages.filter(message => wanted.has(recordMeta(message)?.recordId ?? ''))
-    const targets = [...shown, ...editsOf(history.messages, shown)].filter(message => {
+    const targets = [...shown, ...editsOf(history.messages, shown), ...threadMessagesOf(history.messages, shown)].filter(message => {
       const meta = recordMeta(message)
       return meta && meta.direction === 'in' && meta.recipientState === 'UNREAD'
     })
@@ -921,7 +922,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const session = this.writableSession(context, sessionId, confirmation)
     const text = payload.content.trim()
     const attachmentSignature = payload.attachments.map(item => `${item.relativePath ?? item.file.name}:${item.file.size}:${item.file.lastModified}`).join('|')
-    const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null])
+    const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null])
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:${await hashKey(`${text}\n${attachmentSignature}\n${relationSignature}`)}`
     // The idempotency key is reused when the composer retries the same payload,
     // so an unknown result (timeout) can never produce a second message.
@@ -930,7 +931,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const uploads = await uploadAttachments(payload.attachments)
     const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
     const meta: Pick<MsgObject, 'relates_to' | 'mentions'> = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}) }
-    await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta)
+    await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta)
   }
 
   /** A failed outgoing message is posted again as a new message with the same content and attachment refs. */

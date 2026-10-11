@@ -117,6 +117,126 @@ pub struct BehaviorEntryConfig {
     pub inherit: Option<InheritMode>,
 }
 
+/// `[tool]`: a sub context behavior offered to its callers as a named
+/// function. Calling it runs the behavior exactly like `call_behavior`
+/// does; the declaration only decides what the caller's model sees.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorToolConfig {
+    /// Function name (letters, digits, `_`); default: the behavior name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// When to call it: the caller's routing guide.
+    #[serde(default)]
+    pub description: String,
+    /// JSON Schema of the arguments (an object); default: `{task: string}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
+    /// Template of the sub context's task (`{{args.<name>}}` only); default:
+    /// the arguments as JSON (or `args.task` with the default parameters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+/// Prefix of a `tool_whitelist` entry naming a behavior's `[tool]`.
+pub const BEHAVIOR_TOOL_PREFIX: &str = "behavior:";
+
+fn valid_function_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && name.len() <= 64
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `{{ args.<name> }}` placeholders of a task template, in order; an error
+/// for any other template syntax.
+fn task_placeholders(template: &str) -> std::result::Result<Vec<(usize, usize, String)>, String> {
+    if template.contains("{%") {
+        return Err("a task template only takes {{args.<name>}} placeholders".into());
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(start) = template[at..].find("{{").map(|i| at + i) {
+        let end = template[start..]
+            .find("}}")
+            .map(|i| start + i + 2)
+            .ok_or_else(|| "unclosed {{ in the task template".to_string())?;
+        let inner = template[start + 2..end - 2].trim();
+        let key = inner
+            .strip_prefix("args.")
+            .filter(|k| valid_function_name(k))
+            .ok_or_else(|| format!("task template placeholder `{{{{{inner}}}}}`: only args.<name> is available"))?;
+        out.push((start, end, key.to_string()));
+        at = end;
+    }
+    Ok(out)
+}
+
+impl BehaviorToolConfig {
+    pub fn function_name(&self, behavior: &str) -> String {
+        self.name.clone().unwrap_or_else(|| behavior.to_string())
+    }
+
+    pub fn args_schema(&self) -> Value {
+        self.parameters.clone().unwrap_or_else(|| {
+            json!({
+                "type": "object",
+                "properties": { "task": { "type": "string", "description": "what the sub context must do and return" } },
+                "required": ["task"]
+            })
+        })
+    }
+
+    pub fn validate(&self, behavior: &str) -> std::result::Result<(), String> {
+        let name = self.function_name(behavior);
+        if !valid_function_name(&name) {
+            return Err(format!(
+                "behavior `{behavior}`: [tool] name `{name}` must be letters, digits and `_` (at most 64)"
+            ));
+        }
+        if self.description.trim().is_empty() {
+            return Err(format!("behavior `{behavior}`: [tool] needs a description"));
+        }
+        let schema = self.args_schema();
+        if schema.get("type").and_then(Value::as_str) != Some("object") {
+            return Err(format!(
+                "behavior `{behavior}`: [tool] parameters must be a JSON Schema of type object"
+            ));
+        }
+        if let Some(t) = &self.task {
+            task_placeholders(t).map_err(|e| format!("behavior `{behavior}`: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// The sub context's task for a call with `args`.
+    pub fn render_task(&self, args: &Value) -> String {
+        let text = |v: &Value| match v {
+            Value::String(s) => s.clone(),
+            Value::Null => String::new(),
+            v => v.to_string(),
+        };
+        let Some(template) = &self.task else {
+            return match (&self.parameters, args.get("task")) {
+                (None, Some(t)) => text(t),
+                _ => args.to_string(),
+            };
+        };
+        let Ok(holes) = task_placeholders(template) else {
+            return args.to_string();
+        };
+        let mut out = String::with_capacity(template.len());
+        let mut at = 0;
+        for (start, end, key) in holes {
+            out.push_str(&template[at..start]);
+            out.push_str(&args.get(&key).map(text).unwrap_or_default());
+            at = end;
+        }
+        out.push_str(&template[at..]);
+        out.trim().to_string()
+    }
+}
+
 /// One behavior of the agent, includes expanded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -135,6 +255,8 @@ pub struct BehaviorConfig {
     pub model: BehaviorModel,
     #[serde(default)]
     pub entry: BehaviorEntryConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<BehaviorToolConfig>,
     /// Host hooks (`on_context_limit_reached` …): carried, not interpreted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hooks: BTreeMap<String, Value>,
@@ -207,6 +329,18 @@ impl BehaviorConfig {
                 ))
             }
         };
+        let mut llm_context = self.overlay_llm_context(base_llm_context);
+        if mode == ContextMode::Fork {
+            // A fork keeps the caller's configuration; its `[budget]` limits
+            // the branch's run and is applied by the runner, not here.
+            if let Some(o) = llm_context.as_object_mut() {
+                o.remove("max_tool_iterations");
+                o.remove("max_tokens");
+                if o.is_empty() {
+                    llm_context = Value::Null;
+                }
+            }
+        }
         let entry = BehaviorEntry {
             mode,
             prompt: BehaviorPrompt {
@@ -218,11 +352,12 @@ impl BehaviorConfig {
                 goal_activation: self.prompt.goal_activation.clone(),
             },
             input: self.input,
-            llm_context: self.overlay_llm_context(base_llm_context),
+            llm_context,
             inherit: self.entry.inherit.unwrap_or(match mode {
                 ContextMode::SwitchContext if initial => InheritMode::RecentDialogue,
                 _ => InheritMode::None,
             }),
+            tool: self.tool.clone(),
         };
         entry.validate(name)?;
         Ok(entry)

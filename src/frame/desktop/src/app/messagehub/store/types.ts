@@ -1,7 +1,7 @@
 import type { z } from 'zod'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import type { ConversationMessageReader } from '../conversation/history/types'
-import type { MessageObject, MsgMentions, MsgRelation } from '../protocol/msgobj'
+import type { MachineContent, MessageObject, MsgMentions, MsgRelation } from '../protocol/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { createGroupSchema } from '../groupModel'
 import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
@@ -10,12 +10,14 @@ import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, 
  * What the composer hands to the store: text plus the raw browser files, and
  * for a relation message (edit / redact / reaction / reply) the MsgObject v2
  * `relates_to` and structured `mentions`, which travel in the message itself.
+ * `machine` becomes `content.machine` (an answer that picked an option).
  */
 export interface OutgoingPayload {
   content: string
   attachments: ComposerAttachmentInput[]
   relatesTo?: MsgRelation
   mentions?: MsgMentions
+  machine?: MachineContent
 }
 
 export interface ConnectionChoice {

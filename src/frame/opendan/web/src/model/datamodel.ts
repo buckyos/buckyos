@@ -8,6 +8,7 @@ import type {
   Decision,
   Hint,
   IdentityText,
+  KnownRuntime,
   KnownWorkspace,
   LoaderStatus,
   PerceptionCursor,
@@ -41,6 +42,7 @@ export interface OpenDanDataModel {
   usageModels(): Promise<UsageByModel | null>
   uiBindings(): Promise<UiBinding[]>
   workspaces(): Promise<KnownWorkspace[]>
+  runtimes(): Promise<KnownRuntime[]>
   checkWorkspace(workspaceId: string): Promise<KnownWorkspace>
   relocateWorkspace(workspace: KnownWorkspace, location: WorkspaceLocation): Promise<KnownWorkspace>
 

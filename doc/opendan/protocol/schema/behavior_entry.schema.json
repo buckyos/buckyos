@@ -46,6 +46,35 @@
       },
       "type": "object"
     },
+    "BehaviorToolConfig": {
+      "additionalProperties": false,
+      "description": "`[tool]`: a sub context behavior offered to its callers as a named function. Calling it runs the behavior exactly like `call_behavior` does; the declaration only decides what the caller's model sees.",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "When to call it: the caller's routing guide.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Function name (letters, digits, `_`); default: the behavior name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parameters": {
+          "description": "JSON Schema of the arguments (an object); default: `{task: string}`."
+        },
+        "task": {
+          "description": "Template of the sub context's task (`{{args.<name>}}` only); default: the arguments as JSON (or `args.task` with the default parameters).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ContextMode": {
       "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
       "oneOf": [
@@ -193,6 +222,17 @@
         }
       ],
       "description": "`prompt.system` and the input templates of the context. A system prompt is not allowed for `fork`."
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/BehaviorToolConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`[tool]` of the behavior: offered to callers that whitelist `behavior:<name>` as a named function running this sub context."
     }
   },
   "required": [

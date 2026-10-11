@@ -91,6 +91,7 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     usageModels: () => optional('usage.models', () => null),
     uiBindings: () => optional('ui.bindings', () => []),
     workspaces: () => call('home.workspaces'),
+    runtimes: () => call('runtimes.list'),
     checkWorkspace: (workspaceId) => call('workspaces.check', { workspace_id: workspaceId }),
     relocateWorkspace: (workspace, location) => call('workspaces.discover', {
       request: { location, expected_revision: workspace.revision, expected_workspace_id: workspace.workspace_id },

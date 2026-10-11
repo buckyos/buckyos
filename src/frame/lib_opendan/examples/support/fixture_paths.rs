@@ -1,5 +1,66 @@
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::Path;
+
+pub fn compact(root: &Path) {
+    let mut stack = vec![root.to_path_buf()];
+    let mut paths = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace('\\', "/");
+                if relative.encode_utf16().count() > 160 {
+                    paths.push(relative);
+                }
+            }
+        }
+    }
+    if paths.is_empty() {
+        return;
+    }
+    paths.sort();
+    std::fs::create_dir_all(root.join("_files")).unwrap();
+    let mut mapping = BTreeMap::new();
+    for (index, relative) in paths.into_iter().enumerate() {
+        let stored = format!("_files/{index}");
+        let source = root.join(&relative);
+        std::fs::rename(&source, root.join(&stored)).unwrap();
+        let mut parent = source.parent().unwrap();
+        while parent != root && std::fs::remove_dir(parent).is_ok() {
+            parent = parent.parent().unwrap();
+        }
+        mapping.insert(stored, relative);
+    }
+    std::fs::write(
+        root.join("_paths.json"),
+        serde_json::to_vec_pretty(&mapping).unwrap(),
+    )
+    .unwrap();
+}
+
+pub fn expand(root: &Path) {
+    let manifest = root.join("_paths.json");
+    if !manifest.exists() {
+        return;
+    }
+    let mapping: BTreeMap<String, String> =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    for (stored, relative) in mapping {
+        let destination = root.join(relative);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::rename(root.join(stored), destination).unwrap();
+    }
+    std::fs::remove_file(manifest).unwrap();
+    std::fs::remove_dir(root.join("_files")).unwrap();
+}
 
 pub fn rewrite(root: &Path, replacements: &[(&str, &str)]) {
     let mut stack = vec![root.to_path_buf()];
@@ -114,4 +175,49 @@ pub fn hostname() -> String {
     )
     .trim()
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_round_trip_preserves_paths_and_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let short = format!("nested/{}", "s".repeat(153));
+        let long_a = format!("nested/{}", "a".repeat(154));
+        let long_b = format!("nested/{}", "b".repeat(154));
+        let unicode = format!(
+            "unicode/{}/{}/snapshot.json",
+            "😀".repeat(35),
+            "😀".repeat(35)
+        );
+        let contents = [0, 255, 42, 10];
+        for relative in [&short, &long_a, &long_b, &unicode] {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+
+        compact(dir.path());
+        let mapping: BTreeMap<String, String> = serde_json::from_slice(
+            &std::fs::read(dir.path().join("_paths.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mapping.len(), 3);
+        assert_eq!(mapping["_files/0"], long_a);
+        assert_eq!(mapping["_files/1"], long_b);
+        assert_eq!(mapping["_files/2"], unicode);
+        assert!(dir.path().join(&short).exists());
+        for relative in mapping.values() {
+            assert!(!dir.path().join(relative).exists());
+        }
+
+        expand(dir.path());
+        assert!(!dir.path().join("_paths.json").exists());
+        assert!(!dir.path().join("_files").exists());
+        for relative in [&short, &long_a, &long_b, &unicode] {
+            assert_eq!(std::fs::read(dir.path().join(relative)).unwrap(), contents);
+        }
+    }
 }

@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1791715814582,
+    "created_at_ms": 1791731447069,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -61,7 +61,7 @@
     "location_revision": 1,
     "runtime_host": "${FIXTURE_HOST}",
     "location": {
-      "runtime_id": "local",
+      "runtime_id": "container",
       "directory": "${FIXTURE_ROOT}/ws"
     },
     "access": "read_write"

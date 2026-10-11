@@ -504,9 +504,9 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       const visible = virtualItems
         .map((virtualItem) => itemsByIndex.get(virtualItem.index))
         .filter((item): item is Extract<ConversationListItem, { kind: 'message' }> => item?.kind === 'message')
-        .map((item) => ({ id: getMessageStableId(item.data, item.messageIndex), editedAt: messageRelations(item.data)?.edited?.at }))
-      // A newly folded edit is reported again: its own record still has to be marked read.
-      const signature = visible.map(item => `${item.id}:${item.editedAt ?? ''}`).join('|')
+        .map((item) => ({ id: getMessageStableId(item.data, item.messageIndex), editedAt: messageRelations(item.data)?.edited?.at, threadCount: messageRelations(item.data)?.thread?.length ?? 0 }))
+      // A newly folded edit or Q/A message is reported again: its own record still has to be marked read.
+      const signature = visible.map(item => `${item.id}:${item.editedAt ?? ''}:${item.threadCount}`).join('|')
       if (signature && signature !== visibleReportRef.current) {
         visibleReportRef.current = signature
         onVisibleMessages(visible.map(item => item.id))

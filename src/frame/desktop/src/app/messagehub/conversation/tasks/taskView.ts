@@ -29,6 +29,11 @@ const REPLY_SYNC_WINDOW_MS = 10 * 60_000
 /** A placeholder is posted well before its Turn ends; an ordinary reply is created as the Turn ends. */
 const PLACEHOLDER_LEAD_MS = 2_000
 
+/** The Agent waits for the viewer's answer to a question it asked (wait reason code `input`). */
+function waitsForInput(node: Pick<TaskWatchNode, 'phase' | 'waitReason'>): boolean {
+  return node.phase === 'Waiting' && node.waitReason?.code === 'input'
+}
+
 /**
  * State of one task node. A pending control request is shown as "stopping…"
  * (never as canceled) until the runner reports the terminal state.
@@ -45,6 +50,7 @@ export function taskNodeState(node: TaskWatchNode): TaskStateView {
   if (node.phase === 'Paused') return { tone: 'paused', label: { key: 'messagehub.task.state.paused' } }
   if (node.phase === 'Waiting') {
     const kind = node.waitReason?.kind
+    if (waitsForInput(node)) return { tone: 'waiting', label: { key: 'messagehub.task.state.waitingInput' } }
     if (kind === 'ChildTask') return { tone: 'waiting', label: { key: 'messagehub.task.state.waitingChild' } }
     if (kind === 'Dependency' || kind === 'External') return { tone: 'waiting', label: { key: 'messagehub.task.state.waitingExternal' } }
     return { tone: 'waiting', label: { key: 'messagehub.task.state.waiting' } }
@@ -88,8 +94,11 @@ export function taskAreaView(snapshot: TaskSnapshot | undefined, children: TaskC
     if (counts.length === 0) return null
   }
   const state = taskNodeState(task)
-  const activity = terminal && task.outcome === 'Failed' ? task.error?.message || task.message : task.message
+  // Waiting for an answer, the runner's activity and wait message only restate the label.
+  const restated = waitsForInput(task) ? task.waitReason?.message : undefined
+  const reported = terminal && task.outcome === 'Failed' ? task.error?.message || task.message : task.message
+  const activity = restated && reported === restated ? undefined : reported
   const secondary: Array<TaskText | string> = [...counts]
-  if (!terminal && task.phase === 'Waiting' && task.waitReason?.message && task.waitReason.message !== activity) secondary.push(task.waitReason.message)
+  if (!terminal && task.phase === 'Waiting' && task.waitReason?.message && task.waitReason.message !== activity && task.waitReason.message !== restated) secondary.push(task.waitReason.message)
   return { ...state, activity: activity?.trim() || undefined, secondary, updatedAt: terminal ? undefined : task.updatedAt }
 }
