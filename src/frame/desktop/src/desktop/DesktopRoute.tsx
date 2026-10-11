@@ -45,10 +45,10 @@ import {
   resetDesktopViewportProgress,
   setDesktopViewportProgress,
 } from './viewportProgress'
-import { AllAppsPanel } from './AllAppsPanel'
 import { DesktopTaskbar } from './DesktopTaskbar'
+import { MobileTaskbar } from './MobileTaskbar'
 import { StatusBar } from './StatusBar'
-import { SystemSidebar } from './SystemSidebar'
+import { useCurrentUser } from './taskbarHooks'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
 import { DesktopWindowLayer } from './windows/DesktopWindowLayer'
 import {
@@ -240,8 +240,7 @@ export function DesktopRoute() {
     (searchParams.get('scenario') as MockScenario | null) ?? 'normal'
   const [scenario] = useState<MockScenario>(initialScenario)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
-  // Mobile only; the desktop taskbar keeps its own All apps panel.
-  const [isMobileAllAppsOpen, setMobileAllAppsOpen] = useState(false)
+  const currentUser = useCurrentUser()
   const launchHandled = useRef(false)
   useEffect(() => {
     const value = searchParams.get('open')
@@ -523,7 +522,6 @@ export function DesktopRoute() {
   )
 
   const restoreDefaults = useCallback(() => store.restoreDefaults(), [store])
-  const handleReturnDesktop = useCallback(() => store.returnToDesktop(), [store])
 
   const toggleSidebar = useCallback(() => store.toggleSystemSidebar(), [store])
   const closeSidebar = useCallback(() => store.closeSystemSidebar(), [store])
@@ -561,18 +559,6 @@ export function DesktopRoute() {
     store.toggleShowDesktop()
     closeSidebar()
   }, [store, closeSidebar])
-  const handleOpenMobileAllApps = useCallback(() => {
-    closeSidebar()
-    setMobileAllAppsOpen(true)
-  }, [closeSidebar])
-  const handleCloseMobileAllApps = useCallback(() => setMobileAllAppsOpen(false), [])
-  const handleOpenMobileAllAppsItem = useCallback(
-    (appId: string) => {
-      setMobileAllAppsOpen(false)
-      handleOpenApp(appId)
-    },
-    [handleOpenApp],
-  )
   const handleOpenDiagnostics = useCallback(
     () => handleSelectSidebarApp('diagnostics'),
     [handleSelectSidebarApp],
@@ -725,9 +711,10 @@ export function DesktopRoute() {
   const topMobileWindow = windowLayerModel.topWindow
   const activeMobileApp =
     formFactor === 'mobile' && topMobileWindow ? topMobileWindow.app : undefined
+  const mobileStatusBarRowHeight = mobileStatusBarHeight(activeMobileApp)
   const mobileSheetTopInset =
     activeMobileApp && mobileStatusBarMode(activeMobileApp) === 'standard'
-      ? safeArea.top + resolvedDeadZone.top + mobileStatusBarHeight(activeMobileApp)
+      ? safeArea.top + resolvedDeadZone.top + mobileStatusBarRowHeight
       : 0
   // On desktop the launcher grid starts below the floating avatar.
   const workspaceTopPadding =
@@ -742,8 +729,6 @@ export function DesktopRoute() {
     360,
   )
   const shouldLockDesktopViewport = formFactor === 'desktop'
-  const systemSidebarModel = store.getSystemSidebarDataModel(windowLayerModel.topWindow?.app.id)
-  const taskbarApps = store.getTaskbarApps()
   const topMobileWindowId = topMobileWindow?.id
   const handleMinimizeTopMobileWindow = useMemo(
     () =>
@@ -752,6 +737,7 @@ export function DesktopRoute() {
         : undefined,
     [isMobile, topMobileWindowId, minimizeWindow],
   )
+  const taskbarApps = store.getTaskbarApps()
 
   // Tray state depends on a few primitives derived from `windows`; derive
   // them first so the memo is not invalidated by every geometry update.
@@ -889,20 +875,23 @@ export function DesktopRoute() {
             <MobileNavProvider>
               {isMobile ? (
                 <>
-                  <SystemSidebar
+                  <MobileTaskbar
+                    apps={apps}
+                    avatarRowHeight={mobileStatusBarRowHeight}
                     connectionState={connectionState}
                     deadZone={resolvedDeadZone}
                     isLoggingOut={isLoggingOut}
                     onClose={closeSidebar}
+                    onCloseAppWindows={handleCloseAppWindows}
                     onLogout={handleLogout}
-                    onOpenAllApps={handleOpenMobileAllApps}
                     onOpenApp={handleSelectSidebarApp}
-                    onReturnDesktop={handleReturnDesktop}
+                    onSetAppPinned={handleSetTaskbarAppPinned}
+                    onShowDesktop={handleShowDesktop}
                     open={isSystemSidebarOpen}
                     runtimeContainer={runtimeContainer}
-                    safeAreaTop={safeArea.top}
-                    safeAreaBottom={safeArea.bottom}
-                    uiModel={systemSidebarModel}
+                    safeArea={safeArea}
+                    taskbarApps={taskbarApps}
+                    user={currentUser}
                   />
                   <StatusBar
                     activeApp={activeMobileApp}
@@ -917,6 +906,7 @@ export function DesktopRoute() {
                     onToggleTheme={handleToggleTheme}
                     themeMode={themeMode}
                     trayState={trayState}
+                    user={currentUser}
                   />
                 </>
               ) : (
@@ -938,6 +928,7 @@ export function DesktopRoute() {
                   runtimeContainer={runtimeContainer}
                   safeArea={safeArea}
                   taskbarApps={taskbarApps}
+                  user={currentUser}
                 />
               )}
               <div
@@ -1008,19 +999,6 @@ export function DesktopRoute() {
                   themeMode={themeMode}
                   topInset={mobileSheetTopInset}
                   windowAppearance={windowAppearance}
-                />
-              )}
-
-              {isMobile && isMobileAllAppsOpen && (
-                <AllAppsPanel
-                  apps={apps}
-                  insets={{
-                    top: safeArea.top + resolvedDeadZone.top,
-                    bottom: safeArea.bottom + resolvedDeadZone.bottom,
-                  }}
-                  onClose={handleCloseMobileAllApps}
-                  onOpenApp={handleOpenMobileAllAppsItem}
-                  variant="fullscreen"
                 />
               )}
             </MobileNavProvider>

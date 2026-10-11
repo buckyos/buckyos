@@ -66,8 +66,6 @@ import type {
   RuntimeContainer,
   SupportedLocale,
   SystemPreferencesInput,
-  SystemSidebarAppItem,
-  SystemSidebarDataModel,
   TaskbarAppItem,
   ThemeMode,
   WidgetItem,
@@ -1598,57 +1596,6 @@ export class DesktopUIStore {
     const result = same && cached ? cached.items : items
     this.taskbarAppsCache = { apps, windows, taskbarAppIds, items: result }
     return result
-  }
-
-  getSystemSidebarDataModel(currentAppId?: string): SystemSidebarDataModel {
-    const { apps } = this.snapshot
-    const { windows } = this.snapshot.runtime
-    const systemSidebarSystemAppIds = new Set(['settings', 'diagnostics'])
-    const appMap = new Map(apps.map((app) => [app.id, app]))
-    const toSidebarApp = (
-      app: DesktopAppItem | undefined,
-    ): SystemSidebarAppItem | null =>
-      app
-        ? { appId: app.id, accent: app.accent, iconKey: app.iconKey, iconUrl: app.iconUrl, labelKey: app.labelKey }
-        : null
-
-    const seenSwitchApps = new Set<string>()
-    const switchApps = windows
-      .filter(
-        (w) =>
-          w.state === 'minimized' &&
-          w.minimizedOrder !== null &&
-          !systemSidebarSystemAppIds.has(w.appId),
-      )
-      .sort((a, b) => (a.minimizedOrder ?? 0) - (b.minimizedOrder ?? 0))
-      .map((w): SystemSidebarDataModel['switchApps'][number] | null => {
-        const app = appMap.get(w.appId)
-        if (!app || w.minimizedOrder === null || seenSwitchApps.has(app.id))
-          return null
-        seenSwitchApps.add(app.id)
-        return {
-          appId: app.id,
-          accent: app.accent,
-          iconKey: app.iconKey,
-          iconUrl: app.iconUrl,
-          labelKey: app.labelKey,
-          minimizedOrder: w.minimizedOrder,
-        }
-      })
-      .filter(
-        (app): app is SystemSidebarDataModel['switchApps'][number] => Boolean(app),
-      )
-
-    const systemApps = ['settings', 'diagnostics', 'users-agents', 'my-network']
-      .map((appId) => toSidebarApp(appMap.get(appId)))
-      .filter((app): app is SystemSidebarAppItem => Boolean(app))
-
-    return {
-      currentAppId,
-      runningAppCount: windows.filter((w) => w.state !== 'minimized').length,
-      switchApps,
-      systemApps,
-    }
   }
 
   getResolvedDeadZone(): DeadZone {

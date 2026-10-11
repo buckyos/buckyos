@@ -15,6 +15,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../i18n/provider'
 import type { AppDefinition, LayoutState, ThemeMode } from '../models/ui'
 import { useMobileNavState } from './windows/MobileNavContext'
+import { UserAvatar } from './TaskbarParts'
+import type { CurrentUser } from './taskbarHooks'
 import {
   connectionTone,
   mobileStatusBarHeight,
@@ -30,24 +32,26 @@ function StatusLogoButton({
   connectionState,
   highlightBorder = false,
   onClick,
+  user,
 }: {
   connectionState: ConnectionState
   highlightBorder?: boolean
   onClick: () => void
+  user: CurrentUser | null
 }) {
   return (
     <button
       type="button"
       aria-label="BuckyOS"
       onClick={onClick}
-      className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] font-display text-sm font-semibold tracking-[-0.04em] text-[color:var(--cp-text)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]"
+      className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] text-[color:var(--cp-text)] shadow-[0_10px_24px_color-mix(in_srgb,var(--cp-shadow)_12%,transparent)] transition-transform duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]"
       style={{
         borderColor: highlightBorder
           ? `color-mix(in srgb, ${connectionTone(connectionState)} 76%, var(--cp-border))`
           : 'color-mix(in srgb, var(--cp-border) 82%, transparent)',
       }}
     >
-      B
+      <UserAvatar size={36} user={user} />
     </button>
   )
 }
@@ -324,6 +328,7 @@ export function StatusBar({
   safeAreaTop = 0,
   themeMode,
   trayState,
+  user,
 }: {
   activeApp?: AppDefinition
   connectionState: ConnectionState
@@ -337,6 +342,7 @@ export function StatusBar({
   safeAreaTop?: number
   themeMode: ThemeMode
   trayState: StatusTrayState
+  user: CurrentUser | null
 }) {
   const { locale, t } = useI18n()
   const now = useMinuteClock()
@@ -382,7 +388,7 @@ export function StatusBar({
               {mobileNav.canGoBack ? (
                 <MobileBackButton onClick={mobileNav.goBack} />
               ) : (
-                <StatusLogoButton connectionState={connectionState} onClick={onOpenSidebar} />
+                <StatusLogoButton connectionState={connectionState} onClick={onOpenSidebar} user={user} />
               )}
               <button
                 type="button"
@@ -438,6 +444,7 @@ export function StatusBar({
                   connectionState={connectionState}
                   highlightBorder
                   onClick={onOpenSidebar}
+                  user={user}
                 />
               )}
               {activeMode === 'compact' && activeApp ? (

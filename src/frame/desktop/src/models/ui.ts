@@ -180,27 +180,13 @@ export interface DataState<T> {
   error: string | null
 }
 
-export interface SystemSidebarAppItem {
+/** A taskbar button: a pinned app, an app with open windows, or both. */
+export interface TaskbarAppItem {
   appId: string
   accent: string
   iconKey: string
   iconUrl?: string
   labelKey: string
-}
-
-export interface SystemSidebarSwitchAppItem extends SystemSidebarAppItem {
-  minimizedOrder: number
-}
-
-export interface SystemSidebarDataModel {
-  currentAppId?: string
-  runningAppCount: number
-  switchApps: SystemSidebarSwitchAppItem[]
-  systemApps: SystemSidebarAppItem[]
-}
-
-/** A desktop taskbar button: a pinned app, an app with open windows, or both. */
-export interface TaskbarAppItem extends SystemSidebarAppItem {
   pinned: boolean
   /** Open windows of the app, minimized ones included. */
   windowCount: number

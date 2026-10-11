@@ -11,6 +11,64 @@ import { fetchSystemMetrics, type SystemMetrics } from '../api/system_metrics'
 import { fetchUserDetail } from '../api/user_mgr'
 import { usableImageUrl } from '../app/agent-setup/model'
 
+const longPressMs = 450
+const longPressTolerance = 12
+
+/**
+ * Touch long-press for elements that otherwise only have a right-click
+ * menu. The handlers can be shared by a whole list: the callback gets the
+ * pressed element. The click that follows a fired press must be swallowed
+ * with `consumeLongPress()`.
+ */
+export function useLongPress(onLongPress: (element: HTMLElement, point: { x: number; y: number }) => void) {
+  const timer = useRef<number | null>(null)
+  const fired = useRef(false)
+  const origin = useRef({ x: 0, y: 0 })
+
+  const cancel = useCallback(() => {
+    if (timer.current === null) return
+    window.clearTimeout(timer.current)
+    timer.current = null
+  }, [])
+  useEffect(() => cancel, [cancel])
+
+  const handlers = useMemo(
+    () => ({
+      onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+        // A press that never ended in a click must not swallow the next one.
+        fired.current = false
+        if (event.pointerType === 'mouse') return
+        cancel()
+        const element = event.currentTarget
+        const point = { x: event.clientX, y: event.clientY }
+        origin.current = point
+        timer.current = window.setTimeout(() => {
+          timer.current = null
+          fired.current = true
+          onLongPress(element, point)
+        }, longPressMs)
+      },
+      onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+        if (timer.current === null) return
+        const dx = event.clientX - origin.current.x
+        const dy = event.clientY - origin.current.y
+        if (dx * dx + dy * dy > longPressTolerance * longPressTolerance) cancel()
+      },
+      onPointerUp: cancel,
+      onPointerCancel: cancel,
+    }),
+    [cancel, onLongPress],
+  )
+
+  const consumeLongPress = useCallback(() => {
+    const wasFired = fired.current
+    fired.current = false
+    return wasFired
+  }, [])
+
+  return { handlers, consumeLongPress }
+}
+
 type HoverCardMode = 'closed' | 'hover' | 'held'
 
 /**

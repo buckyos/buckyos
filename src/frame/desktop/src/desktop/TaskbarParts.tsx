@@ -1,21 +1,156 @@
+import { Divider, ListItemIcon, Menu, MenuItem } from '@mui/material'
 import clsx from 'clsx'
 import {
   CircleCheck,
   LogOut,
   OctagonAlert,
+  Pin,
+  PinOff,
   ShieldAlert,
   ShieldCheck,
   ShieldX,
   TriangleAlert,
   UserRound,
+  X,
 } from 'lucide-react'
 import { useState, type CSSProperties, type ReactNode, type Ref } from 'react'
 import type { SystemMetrics } from '../api/system_metrics'
+import type { DesktopAppItem } from '../app/types'
+import { AppIcon } from '../components/DesktopVisuals'
+import { appIconSurfaceStyle } from '../components/DesktopVisualTokens'
 import { useI18n } from '../i18n/provider'
+import type { TaskbarAppItem } from '../models/ui'
 import { connectionLabel, type ConnectionState } from './shell'
 import type { CurrentUser, SystemStatusState, useHoverCard } from './taskbarHooks'
 
 type TranslateFn = ReturnType<typeof useI18n>['t']
+
+// ---------------------------------------------------------------------------
+// App buttons and their menu (desktop taskbar and mobile rail)
+// ---------------------------------------------------------------------------
+
+/** An app's icon tile with the running (and front-most) mark at its left edge. */
+export function TaskbarAppTile({
+  indicatorOffset,
+  item,
+  size,
+}: {
+  /** How far left of the tile the running mark sits. */
+  indicatorOffset: number
+  item: TaskbarAppItem
+  size: number
+}) {
+  return (
+    <>
+      {item.windowCount > 0 ? (
+        <span
+          data-testid={`taskbar-app-running-${item.appId}`}
+          className={clsx(
+            'absolute top-1/2 w-[3px] -translate-y-1/2 rounded-full transition-[height] duration-150',
+            item.active ? 'h-4 bg-[color:var(--cp-accent)]' : 'h-1.5 bg-[color:var(--cp-muted)]',
+          )}
+          style={{ left: -indicatorOffset }}
+        />
+      ) : null}
+      <span
+        className="flex items-center justify-center overflow-hidden rounded-[10px]"
+        style={{
+          width: size,
+          height: size,
+          '--icon-size': `${size}px`,
+          ...appIconSurfaceStyle(item.accent),
+        } as CSSProperties}
+      >
+        <AppIcon iconKey={item.iconKey} iconUrl={item.iconUrl} fill className="text-white" />
+      </span>
+    </>
+  )
+}
+
+export type TaskbarMenuState = { appId?: string; x: number; y: number }
+
+/**
+ * The taskbar's context menu. For an app: open it, pin or unpin it, close
+ * its windows. Without an app it shows `children` (the taskbar's own items).
+ */
+export function TaskbarMenu({
+  app,
+  children,
+  menu,
+  menuRef,
+  onClose,
+  onCloseWindows,
+  onOpenApp,
+  onSetPinned,
+  pinned,
+  windowCount,
+}: {
+  app?: DesktopAppItem
+  children?: ReactNode
+  menu: TaskbarMenuState | null
+  menuRef?: Ref<HTMLDivElement>
+  onClose: () => void
+  onCloseWindows: (appId: string) => void
+  onOpenApp: (appId: string) => void
+  onSetPinned: (appId: string, pinned: boolean) => void
+  pinned: boolean
+  windowCount: number
+}) {
+  const { t } = useI18n()
+  return (
+    <Menu
+      ref={menuRef}
+      open={Boolean(menu)}
+      onClose={onClose}
+      anchorReference="anchorPosition"
+      anchorPosition={menu ? { top: menu.y, left: menu.x } : undefined}
+      // The page's own context menu must not open over this one.
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {app
+        ? [
+            <MenuItem key="open" onClick={() => onOpenApp(app.id)}>
+              <ListItemIcon>
+                <span
+                  className="flex size-5 items-center justify-center overflow-hidden rounded-[6px]"
+                  style={{ '--icon-size': '20px', ...appIconSurfaceStyle(app.accent) } as CSSProperties}
+                >
+                  <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
+                </span>
+              </ListItemIcon>
+              {t(app.labelKey)}
+            </MenuItem>,
+            <Divider key="divider" />,
+            <MenuItem
+              key="pin"
+              data-testid="taskbar-menu-pin-app"
+              onClick={() => {
+                onClose()
+                onSetPinned(app.id, !pinned)
+              }}
+            >
+              <ListItemIcon>{pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}</ListItemIcon>
+              {pinned ? t('shell.unpinFromTaskbar', 'Unpin from taskbar') : t('shell.pinToTaskbar', 'Pin to taskbar')}
+            </MenuItem>,
+            windowCount > 0 ? (
+              <MenuItem
+                key="close"
+                onClick={() => {
+                  onClose()
+                  onCloseWindows(app.id)
+                }}
+              >
+                <ListItemIcon>
+                  <X className="size-4" />
+                </ListItemIcon>
+                {windowCount > 1 ? t('shell.closeAllWindows', 'Close all windows') : t('shell.closeWindow', 'Close window')}
+              </MenuItem>
+            ) : null,
+          ]
+        : children}
+    </Menu>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Cards

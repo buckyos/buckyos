@@ -1,20 +1,17 @@
-import { Divider, ListItemIcon, Menu, MenuItem, Tooltip } from '@mui/material'
+import { ListItemIcon, MenuItem, Tooltip } from '@mui/material'
 import clsx from 'clsx'
-import { Check, Grip, Pin, PinOff, X } from 'lucide-react'
+import { Check, Grip } from 'lucide-react'
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type Ref,
 } from 'react'
 import type { DesktopAppItem } from '../app/types'
-import { AppIcon } from '../components/DesktopVisuals'
-import { appIconSurfaceStyle } from '../components/DesktopVisualTokens'
 import { useI18n } from '../i18n/provider'
 import type { TaskbarAppItem } from '../models/ui'
 import { AllAppsPanel } from './AllAppsPanel'
@@ -22,9 +19,12 @@ import {
   ProfileCard,
   SystemStatusCard,
   SystemStatusLines,
+  TaskbarAppTile,
+  TaskbarMenu,
   UserAvatar,
-} from './DesktopTaskbarCards'
-import { useCurrentUser, useHoverCard, useSystemStatus } from './taskbarHooks'
+  type TaskbarMenuState,
+} from './TaskbarParts'
+import { useHoverCard, useLongPress, useSystemStatus, type CurrentUser } from './taskbarHooks'
 import {
   desktopAvatarOffset,
   desktopAvatarRowHeight,
@@ -35,10 +35,6 @@ import {
 
 type SafeArea = { top: number; bottom: number; left: number; right: number }
 
-type TaskbarMenuState =
-  | { kind: 'app'; appId: string; x: number; y: number }
-  | { kind: 'taskbar'; x: number; y: number }
-
 const appTileSize = 36
 const allAppsPanelWidth = 320
 const popupGap = 8
@@ -46,15 +42,19 @@ const popupGap = 8
 const accountAppId = 'users-agents'
 
 function TaskbarButton({
+  appId,
   buttonRef,
   children,
   expanded,
   label,
   onClick,
   onContextMenu,
+  pressHandlers,
   selected = false,
   testId,
 }: {
+  /** Set on app buttons, for the shared long-press handlers. */
+  appId?: string
   buttonRef?: Ref<HTMLButtonElement>
   children: ReactNode
   /** Set for buttons that open a panel. */
@@ -62,6 +62,8 @@ function TaskbarButton({
   label: string
   onClick: () => void
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void
+  /** Touch long-press handlers (see `useLongPress`). */
+  pressHandlers?: ReturnType<typeof useLongPress>['handlers']
   selected?: boolean
   testId?: string
 }) {
@@ -73,10 +75,12 @@ function TaskbarButton({
         aria-label={label}
         aria-expanded={expanded}
         data-testid={testId}
+        data-app-id={appId}
+        {...pressHandlers}
         onClick={onClick}
         onContextMenu={onContextMenu}
         className={clsx(
-          'relative flex size-11 shrink-0 items-center justify-center rounded-[12px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]',
+          'relative flex size-11 select-none [-webkit-touch-callout:none] shrink-0 items-center justify-center rounded-[12px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]',
           selected
             ? 'border-[color:color-mix(in_srgb,var(--cp-accent)_24%,var(--cp-border))] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] text-[color:var(--cp-text)]'
             : expanded
@@ -127,6 +131,7 @@ export function DesktopTaskbar({
   runtimeContainer,
   safeArea,
   taskbarApps,
+  user,
 }: {
   /** Every installed app, for All apps. */
   apps: DesktopAppItem[]
@@ -148,6 +153,7 @@ export function DesktopTaskbar({
   runtimeContainer: string
   safeArea: SafeArea
   taskbarApps: TaskbarAppItem[]
+  user: CurrentUser | null
 }) {
   const { t } = useI18n()
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -167,7 +173,6 @@ export function DesktopTaskbar({
   const statusCard = useHoverCard()
   const { close: closeProfileCard, held: profileHeld } = profileCard
   const { close: closeStatusCard, held: statusHeld } = statusCard
-  const user = useCurrentUser()
   const systemStatus = useSystemStatus(visible)
 
   const pinnedAppIds = useMemo(
@@ -256,16 +261,13 @@ export function DesktopTaskbar({
     onOpenApp(appId)
   }
 
-  const openAppMenu = (appId: string, event: ReactMouseEvent) => {
-    event.preventDefault()
-    event.stopPropagation()
-    setMenu({ kind: 'app', appId, x: event.clientX, y: event.clientY })
-  }
+  const openAppMenu = (appId: string, point: { x: number; y: number }) => setMenu({ appId, ...point })
+  const appLongPress = useLongPress((element, point) => {
+    if (element.dataset.appId) openAppMenu(element.dataset.appId, point)
+  })
 
-  const menuApp = menu?.kind === 'app' ? apps.find((app) => app.id === menu.appId) : undefined
-  const menuTaskbarItem =
-    menu?.kind === 'app' ? taskbarApps.find((item) => item.appId === menu.appId) : undefined
-  const menuWindowCount = menuTaskbarItem?.windowCount ?? 0
+  const menuApp = menu?.appId ? apps.find((app) => app.id === menu.appId) : undefined
+  const menuTaskbarItem = menu?.appId ? taskbarApps.find((item) => item.appId === menu.appId) : undefined
 
   const popupLeft = safeArea.left + desktopTaskbarWidth + popupGap
 
@@ -280,7 +282,7 @@ export function DesktopTaskbar({
         data-pinned={pinned}
         onContextMenu={(event) => {
           event.preventDefault()
-          setMenu({ kind: 'taskbar', x: event.clientX, y: event.clientY })
+          setMenu({ x: event.clientX, y: event.clientY })
         }}
         className={clsx(
           'absolute inset-y-0 left-0 z-[55] flex flex-col items-center border-r border-[color:color-mix(in_srgb,var(--cp-border)_88%,transparent)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface)_96%,transparent),color-mix(in_srgb,var(--cp-surface-2)_94%,transparent))] backdrop-blur-xl transition-[transform,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)]',
@@ -319,33 +321,21 @@ export function DesktopTaskbar({
               key={app.appId}
               label={t(app.labelKey)}
               onClick={() => {
+                if (appLongPress.consumeLongPress()) return
                 closeLayers()
                 onActivateApp(app.appId)
               }}
-              onContextMenu={(event) => openAppMenu(app.appId, event)}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                openAppMenu(app.appId, { x: event.clientX, y: event.clientY })
+              }}
+              pressHandlers={appLongPress.handlers}
               selected={app.active}
               testId={`taskbar-app-${app.appId}`}
+              appId={app.appId}
             >
-              {app.windowCount > 0 ? (
-                <span
-                  data-testid={`taskbar-app-running-${app.appId}`}
-                  className={clsx(
-                    'absolute left-[-6px] top-1/2 w-[3px] -translate-y-1/2 rounded-full transition-[height] duration-150',
-                    app.active ? 'h-4 bg-[color:var(--cp-accent)]' : 'h-1.5 bg-[color:var(--cp-muted)]',
-                  )}
-                />
-              ) : null}
-              <span
-                className="flex items-center justify-center overflow-hidden rounded-[10px]"
-                style={{
-                  width: appTileSize,
-                  height: appTileSize,
-                  '--icon-size': `${appTileSize}px`,
-                  ...appIconSurfaceStyle(app.accent),
-                } as CSSProperties}
-              >
-                <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
-              </span>
+              <TaskbarAppTile indicatorOffset={6} item={app} size={appTileSize} />
             </TaskbarButton>
           ))}
         </nav>
@@ -387,7 +377,7 @@ export function DesktopTaskbar({
       {visible && allAppsOpen ? (
         <AllAppsPanel
           apps={apps}
-          onAppContextMenu={openAppMenu}
+          onAppMenu={openAppMenu}
           onClose={() => setAllAppsOpen(false)}
           onOpenApp={launchApp}
           panelRef={allAppsPanelRef}
@@ -461,77 +451,30 @@ export function DesktopTaskbar({
         <UserAvatar size={desktopAvatarSize} user={user} />
       </button>
 
-      <Menu
-        ref={menuRef}
-        open={Boolean(menu)}
+      <TaskbarMenu
+        app={menuApp}
+        menu={menu}
+        menuRef={menuRef}
         onClose={() => setMenu(null)}
-        anchorReference="anchorPosition"
-        anchorPosition={menu ? { top: menu.y, left: menu.x } : undefined}
-        // The page's own context menu must not open over this one.
-        onContextMenu={(event) => event.preventDefault()}
+        onCloseWindows={onCloseAppWindows}
+        onOpenApp={launchApp}
+        onSetPinned={onSetAppPinned}
+        pinned={Boolean(menuApp && pinnedAppIds.has(menuApp.id))}
+        windowCount={menuTaskbarItem?.windowCount ?? 0}
       >
-        {menu?.kind === 'taskbar' ? (
-          <MenuItem
-            role="menuitemcheckbox"
-            aria-checked={pinned}
-            data-testid="taskbar-pin"
-            onClick={() => {
-              setMenu(null)
-              onTogglePinned()
-            }}
-          >
-            <ListItemIcon>{pinned ? <Check className="size-4" /> : null}</ListItemIcon>
-            {t('shell.pinTaskbar', 'Keep taskbar visible')}
-          </MenuItem>
-        ) : null}
-        {menu?.kind === 'app' && menuApp
-          ? [
-              <MenuItem key="open" onClick={() => launchApp(menuApp.id)}>
-                <ListItemIcon>
-                  <span
-                    className="flex size-5 items-center justify-center overflow-hidden rounded-[6px]"
-                    style={{ '--icon-size': '20px', ...appIconSurfaceStyle(menuApp.accent) } as CSSProperties}
-                  >
-                    <AppIcon iconKey={menuApp.iconKey} iconUrl={menuApp.iconUrl} fill className="text-white" />
-                  </span>
-                </ListItemIcon>
-                {t(menuApp.labelKey)}
-              </MenuItem>,
-              <Divider key="divider" />,
-              <MenuItem
-                key="pin"
-                data-testid="taskbar-menu-pin-app"
-                onClick={() => {
-                  setMenu(null)
-                  onSetAppPinned(menuApp.id, !pinnedAppIds.has(menuApp.id))
-                }}
-              >
-                <ListItemIcon>
-                  {pinnedAppIds.has(menuApp.id) ? <PinOff className="size-4" /> : <Pin className="size-4" />}
-                </ListItemIcon>
-                {pinnedAppIds.has(menuApp.id)
-                  ? t('shell.unpinFromTaskbar', 'Unpin from taskbar')
-                  : t('shell.pinToTaskbar', 'Pin to taskbar')}
-              </MenuItem>,
-              menuWindowCount > 0 ? (
-                <MenuItem
-                  key="close"
-                  onClick={() => {
-                    setMenu(null)
-                    onCloseAppWindows(menuApp.id)
-                  }}
-                >
-                  <ListItemIcon>
-                    <X className="size-4" />
-                  </ListItemIcon>
-                  {menuWindowCount > 1
-                    ? t('shell.closeAllWindows', 'Close all windows')
-                    : t('shell.closeWindow', 'Close window')}
-                </MenuItem>
-              ) : null,
-            ]
-          : null}
-      </Menu>
+        <MenuItem
+          role="menuitemcheckbox"
+          aria-checked={pinned}
+          data-testid="taskbar-pin"
+          onClick={() => {
+            setMenu(null)
+            onTogglePinned()
+          }}
+        >
+          <ListItemIcon>{pinned ? <Check className="size-4" /> : null}</ListItemIcon>
+          {t('shell.pinTaskbar', 'Keep taskbar visible')}
+        </MenuItem>
+      </TaskbarMenu>
     </div>
   )
 }

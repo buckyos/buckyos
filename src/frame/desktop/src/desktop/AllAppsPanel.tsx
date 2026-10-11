@@ -6,7 +6,6 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
   type Ref,
 } from 'react'
 import type { DesktopAppItem } from '../app/types'
@@ -14,7 +13,10 @@ import { AppIcon } from '../components/DesktopVisuals'
 import { appIconSurfaceStyle } from '../components/DesktopVisualTokens'
 import { useI18n } from '../i18n/provider'
 import { isLauncherApp } from '../models/ui'
-import { taskbarPopupSurface } from './DesktopTaskbarCards'
+import { taskbarPopupSurface } from './TaskbarParts'
+import { useLongPress } from './taskbarHooks'
+
+const noAppMenu = () => {}
 
 /**
  * Every installed app as a searchable list. On the desktop it slides out of
@@ -24,7 +26,7 @@ import { taskbarPopupSurface } from './DesktopTaskbarCards'
 export function AllAppsPanel({
   apps,
   insets = { top: 0, bottom: 0 },
-  onAppContextMenu,
+  onAppMenu,
   onClose,
   onOpenApp,
   panelRef,
@@ -35,7 +37,8 @@ export function AllAppsPanel({
   apps: DesktopAppItem[]
   /** Safe-area / dead-zone space the fullscreen variant keeps clear. */
   insets?: { top: number; bottom: number }
-  onAppContextMenu?: (appId: string, event: ReactMouseEvent) => void
+  /** Right-click or long-press on an app: show its menu at `point`. */
+  onAppMenu?: (appId: string, point: { x: number; y: number }) => void
   onClose: () => void
   onOpenApp: (appId: string) => void
   panelRef?: Ref<HTMLDivElement>
@@ -47,6 +50,13 @@ export function AllAppsPanel({
   const [query, setQuery] = useState('')
   const listRef = useRef<HTMLUListElement | null>(null)
   const fullscreen = variant === 'fullscreen'
+  const longPress = useLongPress(
+    onAppMenu
+      ? (element, point) => {
+          if (element.dataset.appId) onAppMenu(element.dataset.appId, point)
+        }
+      : noAppMenu,
+  )
 
   const sortedApps = useMemo(() => {
     const collator = new Intl.Collator(locale, { sensitivity: 'base', numeric: true })
@@ -188,17 +198,20 @@ export function AllAppsPanel({
                 type="button"
                 data-app-id={app.id}
                 data-testid={`all-apps-item-${app.id}`}
-                onClick={() => onOpenApp(app.id)}
+                {...(onAppMenu ? longPress.handlers : {})}
+                onClick={() => {
+                  if (!longPress.consumeLongPress()) onOpenApp(app.id)
+                }}
                 onContextMenu={
-                  onAppContextMenu
+                  onAppMenu
                     ? (event) => {
                         event.preventDefault()
-                        onAppContextMenu(app.id, event)
+                        onAppMenu(app.id, { x: event.clientX, y: event.clientY })
                       }
                     : undefined
                 }
                 className={clsx(
-                  'flex w-full min-w-0 items-center gap-3 rounded-[12px] px-2.5 text-left transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)]',
+                  'flex w-full min-w-0 select-none items-center gap-3 rounded-[12px] px-2.5 text-left transition-colors [-webkit-touch-callout:none] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)]',
                   fullscreen ? 'py-2.5' : 'py-2',
                 )}
               >

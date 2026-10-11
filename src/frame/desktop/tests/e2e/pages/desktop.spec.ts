@@ -792,7 +792,7 @@ test('mobile All apps covers the screen and launches the chosen app', async ({ p
   await page.goto('/?scenario=normal')
 
   await page.getByRole('button', { name: 'BuckyOS' }).first().click()
-  await page.getByTestId('sidebar-all-apps').click()
+  await page.getByTestId('mobile-taskbar').getByTestId('taskbar-all-apps').click()
   const allApps = page.getByTestId('all-apps-panel')
   await expect(allApps).toBeVisible()
   expect(await allApps.boundingBox()).toEqual({ x: 0, y: 0, width: 390, height: 844 })
@@ -801,6 +801,64 @@ test('mobile All apps covers the screen and launches the chosen app', async ({ p
   await page.getByTestId('all-apps-item-settings').click()
   await expect(allApps).toHaveCount(0)
   await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+})
+
+test('mobile taskbar mirrors the desktop one: profile card, pinning, status and show desktop', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/?scenario=normal')
+
+  await page.getByRole('button', { name: 'BuckyOS' }).first().click()
+  const rail = page.getByTestId('mobile-taskbar')
+  await expect(rail).toHaveAttribute('data-open', 'true')
+  await expect.poll(async () => (await rail.boundingBox())?.x).toBe(0)
+  expect((await rail.boundingBox())?.width).toBe(60)
+  // A tap on an app opens it and closes the rail.
+  await rail.getByTestId('taskbar-app-settings').click()
+  await expect(rail).toHaveAttribute('data-open', 'false')
+  await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+  await page.getByRole('button', { name: 'BuckyOS' }).first().click()
+
+  // The rail's avatar sits right over the status bar's and holds the profile card.
+  const avatar = page.getByTestId('mobile-taskbar-avatar')
+  const statusBarAvatar = await page.getByRole('button', { name: 'BuckyOS' }).first().boundingBox()
+  await expect.poll(() => avatar.boundingBox()).toEqual(statusBarAvatar)
+  await avatar.click()
+  const profile = page.getByTestId('taskbar-profile-card')
+  await expect(profile.getByRole('button', { name: 'Log out' })).toBeVisible()
+  await rail.getByTestId('taskbar-status').click()
+  await expect(profile).toHaveCount(0)
+  await expect(page.getByTestId('taskbar-status-card')).toBeVisible()
+  await expect(rail.getByTestId('taskbar-status')).toContainText(/CPU\s*\d+%/)
+
+  // The running app is marked; a long press opens its menu.
+  await expect(rail.getByTestId('taskbar-app-running-settings')).toBeVisible()
+  const settingsButton = rail.getByTestId('taskbar-app-settings')
+  const box = await settingsButton.boundingBox()
+  const point = { clientX: (box?.x ?? 0) + 24, clientY: (box?.y ?? 0) + 24, bubbles: true, pointerId: 7, pointerType: 'touch' }
+  await settingsButton.dispatchEvent('pointerdown', point)
+  await page.waitForTimeout(600)
+  await settingsButton.dispatchEvent('pointerup', point)
+  await page.getByRole('menuitem', { name: 'Unpin from taskbar' }).click()
+  // Still running, so it stays until its window closes.
+  await expect(settingsButton).toBeVisible()
+  await settingsButton.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Close window' }).click()
+  await expect(settingsButton).toHaveCount(0)
+  await expect(page.getByPlaceholder('Search settings')).toHaveCount(0)
+
+  // Show desktop is a full-size button at the bottom of the rail.
+  await rail.getByTestId('taskbar-app-diagnostics').click()
+  await expect(rail).toHaveAttribute('data-open', 'false')
+  await expect(page.getByText('Window system telemetry')).toBeVisible()
+  await page.getByRole('button', { name: 'BuckyOS' }).first().click()
+  const showDesktop = rail.getByTestId('taskbar-show-desktop')
+  expect((await showDesktop.boundingBox())?.height).toBe(48)
+  await showDesktop.click()
+  await expect(rail).toHaveAttribute('data-open', 'false')
+  await expect(page.getByText('Window system telemetry')).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible()
 })
 
 test('window modal only blocks its owner window', async ({ page }) => {
