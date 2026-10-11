@@ -132,7 +132,11 @@ fn summary_of(e: &RegistryEntry, attention: Option<&str>) -> String {
 
 /// Sub sessions the session still has to hear from before it may finish:
 /// reporting children that are not finished, or whose end was not delivered.
+/// A Goal Session never waits for its Work (a later Activation takes it in).
 pub(super) async fn unsettled_children(sh: &Shared) -> Result<Vec<String>> {
+    if super::goal::is_goal(&sh.session.lock().await.config) {
+        return Ok(Vec::new());
+    }
     let me = sh.dir.sid().to_string();
     let children = sh.agent().sessions().children_of(&[me]).await?;
     let s = sh.session.lock().await;
@@ -144,6 +148,40 @@ pub(super) async fn unsettled_children(sh: &Shared) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The sub sessions a session hears from: its own children; for a Goal
+/// Session every Work of its Goal not taken in yet, whichever epoch created
+/// it (a new epoch takes over the Work of the one before).
+async fn watched_children(sh: &Shared) -> Result<Vec<RegistryEntry>> {
+    let me = sh.dir.sid().to_string();
+    let mut children = sh.agent().sessions().children_of(&[me.clone()]).await?;
+    let goal = {
+        let s = sh.session.lock().await;
+        s.state
+            .goal
+            .as_ref()
+            .map(|g| (g.goal_id.clone(), g.state.absorbed.clone()))
+    };
+    let Some((goal_id, absorbed)) = goal else {
+        return Ok(children);
+    };
+    for e in sh
+        .agent()
+        .sessions()
+        .query(&RegistryQuery {
+            goal_id: Some(goal_id),
+            ..Default::default()
+        })
+        .await?
+    {
+        if e.kind != SessionKind::Goal && !children.iter().any(|c| c.session_id == e.session_id) {
+            children.push(e);
+        }
+    }
+    children.retain(|e| !absorbed.contains(&e.session_id));
+    children.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    Ok(children)
+}
+
 /// One look at the session's sub sessions. Progress is saved as
 /// semi-subscription state (and committed here); what needs the parent's
 /// attention is returned as input candidates. `pending_tasks`: task ids the
@@ -152,8 +190,7 @@ pub(super) async fn poll_children(
     sh: &Arc<Shared>,
     pending_tasks: &[String],
 ) -> Result<Vec<FetchedInput>> {
-    let me = sh.dir.sid().to_string();
-    let children = sh.agent().sessions().children_of(&[me]).await?;
+    let children = watched_children(sh).await?;
     if children.is_empty() {
         return Ok(Vec::new());
     }

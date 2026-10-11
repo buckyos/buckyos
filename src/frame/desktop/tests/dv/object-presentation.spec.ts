@@ -154,6 +154,30 @@ test.describe('object presentation on the DV zone', () => {
     }
   })
 
+  test('browser: HomeStation shows the owner\'s picture and the zone feed takes the Zone display settings', async ({ page, request, baseURL }) => {
+    const { token, sudoToken } = await sessions(request, baseURL!)
+    try {
+      await rpc(request, baseURL!, 'control-panel', 'user.profile.set', { avatar: PNG }, token)
+      await rpc(request, baseURL!, 'control-panel', 'zone.presentation.set', { display_name: '我的家庭云', icon: PNG }, sudoToken)
+      await loginThroughUi(page)
+      // Profile → msg-center contact sync → HomeStation identities (its contact cache lives 30s).
+      await page.goto('/homestation')
+      await expect.poll(async () => {
+        await page.reload()
+        return page.getByTestId('hs-avatar').locator('img').getAttribute('src', { timeout: 15_000 }).catch(() => null)
+      }, { timeout: 90_000, intervals: [5_000] }).toBe(PNG)
+      // The service refreshes the Zone's display name and icon every minute.
+      await expect.poll(async () => (await rpc(request, baseURL!, 'homestation', 'portal.home', {})).zoneName, { timeout: 90_000, intervals: [5_000] }).toBe('我的家庭云')
+      expect((await rpc(request, baseURL!, 'homestation', 'portal.home', {})).zoneIcon).toBe(PNG)
+      await page.goto('/homestation/~zone')
+      await expect(page.getByTestId('hs-portal-zone')).toContainText('我的家庭云')
+      await expect(page.getByTestId('hs-portal-zone').locator('img')).toHaveAttribute('src', PNG)
+    } finally {
+      await rpc(request, baseURL!, 'control-panel', 'user.profile.set', { avatar: null }, token)
+      await rpc(request, baseURL!, 'control-panel', 'zone.presentation.set', { display_name: null, icon: null }, sudoToken)
+    }
+  })
+
   test('app summaries carry document text and no unserved icon path', async ({ request, baseURL }) => {
     const { token } = await sessions(request, baseURL!)
     const apps = await rpc(request, baseURL!, 'control-panel', 'apps.list', {}, token)

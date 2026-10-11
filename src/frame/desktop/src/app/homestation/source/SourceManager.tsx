@@ -10,7 +10,7 @@ import { sourceInputSchema, type SourceInput } from '../datamodel/inputs'
 import type { NotifyState, SourceResolution, SourceView, SubscriptionIntent } from '../datamodel/types'
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useNow, useStoreRevalidate } from '../store/context'
-import { ErrorState, ListSkeleton, PageHeader } from '../ui/primitives'
+import { Avatar, ErrorState, ListSkeleton, PageHeader } from '../ui/primitives'
 import { useToast } from '../ui/toastContext'
 
 function notifyBadge(t: Translate, notify: NotifyState) {
@@ -33,6 +33,8 @@ function credibilityLabel(t: Translate, source: SourceView) {
 }
 
 function SourceIcon({ source }: { source: SourceView }) {
+  const store = useHomeStationStore()
+  if (source.kind === 'person' && source.did) return <Avatar identity={store.peekIdentity(source.did)} size={36} />
   const icon = source.kind === 'person' ? <Users size={15} /> : source.kind === 'rss' ? <Rss size={15} /> : source.kind === 'channel' ? <MessageSquare size={15} /> : <Globe size={15} />
   return <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full" style={{ background: 'var(--hs-chip-bg)', color: 'var(--cp-muted)' }}>{icon}</span>
 }

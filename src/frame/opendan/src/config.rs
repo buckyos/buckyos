@@ -35,6 +35,22 @@ pub struct ModuleSwitch {
     pub enabled: bool,
 }
 
+/// `[loader.goals]`: the agent's Goals are hosted (their Goal Sessions,
+/// scheduled run opportunities). On by default: without a Goal it costs
+/// nothing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalsSwitch {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+impl Default for GoalsSwitch {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoaderSection {
@@ -55,6 +71,8 @@ pub struct LoaderSection {
     pub self_check: ModuleSwitch,
     #[serde(default)]
     pub self_improve: ModuleSwitch,
+    #[serde(default)]
+    pub goals: GoalsSwitch,
 }
 
 fn yes() -> bool {
@@ -75,6 +93,7 @@ impl Default for LoaderSection {
             placeholder_delay_ms: None,
             self_check: ModuleSwitch::default(),
             self_improve: ModuleSwitch::default(),
+            goals: GoalsSwitch::default(),
         }
     }
 }
@@ -160,6 +179,13 @@ impl AgentConfig {
                 bail!("{at}: session class `{}` has no input queue", rule.session_class);
             }
         }
+        if self.loader.goals.enabled {
+            let template = SessionTemplate::load(libopendan::goal::GOAL_CLASS, Some(agent_root))
+                .map_err(|e| anyhow!("[session.goal]: {e}"))?;
+            if template.kind != SessionKind::Goal {
+                bail!("[session.goal]: goal sessions need a class based on `goal`");
+            }
+        }
         Ok(())
     }
 
@@ -184,6 +210,36 @@ mod tests {
         let cfg = AgentConfig::load(dir.path()).unwrap();
         assert!(cfg.loader.ui.is_empty() && cfg.loader.agent_state_service);
         assert!(!cfg.loader.self_check.enabled && !cfg.loader.self_improve.enabled);
+        assert!(cfg.loader.goals.enabled);
+    }
+
+    #[test]
+    fn goal_defaults_come_from_session_goal() {
+        let cfg = load(
+            r#"
+[loader.goals]
+enabled = true
+
+[session.goal]
+default_behavior = "goal"
+min_interval_secs = 120
+[session.goal.budget.activation]
+max_total_tokens = 1000
+"#,
+        )
+        .unwrap();
+        assert!(cfg.loader.goals.enabled);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("agent.toml"),
+            "[session.goal]\nmin_interval_secs = 120\n[session.goal.budget.activation]\nmax_total_tokens = 1000\n",
+        )
+        .unwrap();
+        let d = libopendan::goal::defaults(Some(dir.path()), "goal");
+        assert_eq!(d.min_interval_secs, 120);
+        assert_eq!(d.budget.activation.max_total_tokens, Some(1000));
+        assert_eq!(d.budget.activation.max_runs, Some(8), "built-in default kept");
+        assert!(load("[session.goal.budget]\nnope = 1\n").is_err());
     }
 
     #[test]

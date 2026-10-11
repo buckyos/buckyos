@@ -1,0 +1,50 @@
+{
+  "session_id": "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "session:goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f"
+  },
+  "idempotency_key": "sub:7c419f3726aaa85a1436813f82df58dbcb0d1e66ac569bf02e9da233a0f6b74f",
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea",
+  "wake_event": "/opendan/jarvis.alice/session/work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea/input",
+  "agent_access": "full",
+  "origin": {
+    "parent_session": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+    "report": "final",
+    "goal": {
+      "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+      "revision": 1,
+      "epoch": 1,
+      "activation_seq": 0,
+      "at_ms": 1791715815203
+    }
+  },
+  "objective": "Tick item 1 of TODO.md",
+  "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+  "status": {
+    "rev": 3,
+    "run_state": "finished",
+    "outcome": "succeeded",
+    "acceptance": "pending",
+    "one_line_status": "finished: answer",
+    "report_brief": "# Report — Tick item 1 of TODO.md\n\n- session: `work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea`\n- goal: `g-k9ed545152f8cdfcc3d3f30bc` (revision 1, epoch 1 activation 0)\n- outcome: succeeded\n- turns: 1\n\nanswer\n",
+    "activity": {
+      "summary": "",
+      "heartbeat_ms": 0
+    },
+    "last_runner": {
+      "runner_id": "rn-07b5d9c38c8a4d3f",
+      "host": "${FIXTURE_HOST}",
+      "pid": 1393667,
+      "lock_epoch": 1,
+      "at_ms": 1791715815321
+    },
+    "updated_at_ms": 1791715815316
+  },
+  "location_rev": 0
+}

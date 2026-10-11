@@ -91,6 +91,9 @@ pub struct PublicProfile {
     pub user: String,
     pub name: String,
     pub bio: String,
+    /// The owner's public picture (as Message Center publishes it for the Zone user).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     pub stream: String,
     pub inbox: String,
     pub followers: i64,
@@ -521,11 +524,19 @@ impl Station {
             })
             .await?;
         let home = self.home();
+        let avatar = self
+            .contacts
+            .list()
+            .await
+            .into_iter()
+            .find(|contact| contact.did == self.cfg.owner)
+            .and_then(|contact| contact.avatar);
         Ok(PublicProfile {
             did: self.cfg.owner.clone(),
             user: self.cfg.user.clone(),
             name,
             bio: settings.profile.bio,
+            avatar,
             stream: home.stream(),
             inbox: home.inbox(),
             followers,

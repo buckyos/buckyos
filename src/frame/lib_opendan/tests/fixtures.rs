@@ -439,6 +439,53 @@ async fn f15_report_pending_commit() {
     assert_eq!(read_worklog(&sd), entries);
 }
 
+/// A Goal Session whose Activation close is committed but not written back:
+/// the next drive publishes the Goal State and appends the record, once,
+/// without inferring.
+#[tokio::test]
+async fn f16_goal_session() {
+    let (_t, env, expected) = load("16_goal_session");
+    let goal_id = expected["sessions"][0]["goal"]["goal_id"].as_str().unwrap().to_string();
+    let sid = expected["sessions"][0]["session_id"].as_str().unwrap().to_string();
+    let sd = session(&env, &sid);
+    let agent = env.agent();
+    let before = sd.state().unwrap();
+    assert!(before.goal.as_ref().unwrap().needs_flush());
+    assert!(agent
+        .goals()
+        .activations(&goal_id, &Default::default())
+        .await
+        .unwrap()
+        .is_empty());
+    let llm = ScriptedLlm::new(|_, _| panic!("a committed activation is not inferred again"));
+    let deps = fdeps(&env, llm.clone());
+    let r = drive(&sd, &deps, StopWhen::Idle).await;
+    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
+    assert_eq!(llm.count(), expected["next"]["llm_calls"].as_u64().unwrap() as usize);
+    let acts = agent.goals().activations(&goal_id, &Default::default()).await.unwrap();
+    assert_eq!(acts.len(), 1);
+    let a = &acts[0];
+    let want = &expected["next"]["activation"];
+    assert_eq!(json!([a.epoch, a.seq]), json!([want["epoch"], want["seq"]]));
+    assert_eq!(json!(a.outcome), want["outcome"]);
+    assert_eq!(json!(a.decision), want["decision"]);
+    assert_eq!(json!(a.works_absorbed), want["works_absorbed"]);
+    let kinds: Vec<Value> = a.reasons.iter().map(|r| json!(r.kind)).collect();
+    assert_eq!(json!(kinds), want["reasons"]);
+    let st = agent.goals().state(&goal_id).await.unwrap().unwrap();
+    assert_eq!(st.rev, expected["next"]["goal_state_rev"].as_u64().unwrap());
+    assert_eq!(json!(st.absorbed), expected["next"]["goal_state"]["absorbed"]);
+    assert_eq!(json!(st.distance.unwrap().text), expected["next"]["goal_state"]["distance"]);
+    assert_eq!(st.usage.activations, expected["next"]["goal_state"]["activations"].as_u64().unwrap());
+    let after = sd.state().unwrap();
+    assert!(!after.goal.as_ref().unwrap().needs_flush());
+    assert_eq!(after.run_state, RunState::Waiting);
+    assert_eq!(after.waiting_for.map(|w| w.kind), Some(WaitingKind::Event));
+    // Again: nothing more to write.
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(agent.goals().activations(&goal_id, &Default::default()).await.unwrap().len(), 1);
+}
+
 /// The input bus fixture: every stored record is handled as `expected.json`
 /// says, and the renderings are reproduced byte for byte.
 #[tokio::test]

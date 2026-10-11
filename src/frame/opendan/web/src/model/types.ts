@@ -1,4 +1,4 @@
-export type SessionKind = 'ui' | 'work' | 'self_improve' | 'self_check'
+export type SessionKind = 'ui' | 'work' | 'self_improve' | 'self_check' | 'goal'
 export type RunState = 'created' | 'ready' | 'running' | 'waiting' | 'finished'
 export type Outcome = 'succeeded' | 'failed' | 'stopped'
 export type Acceptance = 'n/a' | 'pending' | 'accepted' | 'discarded'

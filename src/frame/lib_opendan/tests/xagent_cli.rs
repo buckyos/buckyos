@@ -727,3 +727,98 @@ fn workspace_import_and_unregister_never_delete_project_files() {
         "user content"
     );
 }
+
+fn call_report(id: &str, args: Value) -> Result<Value, u16> {
+    Ok(json!({ "role": "assistant", "content": null, "tool_calls": [{
+        "id": id, "type": "function",
+        "function": { "name": "report", "arguments": args.to_string() }
+    }]}))
+}
+
+/// Goals from the command line: `goal create` (idempotent by key), `goal
+/// serve` hosts them (the Goal Session, an Activation with the mock
+/// provider), `goal show / activate / pause / revise`, permissions by the
+/// calling session, exit codes of a conflict and a refusal.
+#[test]
+fn goals_from_the_command_line() {
+    let cli = Cli::new();
+    let llm = MockLlm::start(|req, _| {
+        assert!(system_of(req).contains("(goal session)"), "{}", system_of(req));
+        let header = messages(req)
+            .iter()
+            .map(text_of)
+            .find(|t| t.starts_with("<goal_activation"))
+            .unwrap_or_default();
+        assert!(header.contains("<objective>keep notes.md short</objective>"), "{header}");
+        call_report("r1", json!({ "report": "notes are short", "is_end": true, "result": { "decision": "no_action" } }))
+    });
+    let lc = llm.llm_context(json!({}));
+    let create = ["goal", "create", "--objective", "keep notes.md short", "--every", "300", "--start", "--key", "k1"];
+    let (code, g, err) = cli.run(&create);
+    assert_eq!(code, 0, "{g} {err}");
+    let goal_id = g["goal_id"].as_str().unwrap().to_string();
+    let sid = g["session"]["sid"].as_str().unwrap().to_string();
+    let (_, again, _) = cli.run(&create);
+    assert_eq!(again["goal_id"], goal_id.as_str());
+    let (code, _, err) = cli.run(&["new", "--class", "goal", "--objective", "x", "--no-run"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("goal create"), "{err}");
+    let (_, list, _) = cli.run(&["goal", "list"]);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    let mut serve = cli
+        .command(&["goal", "serve", "--llm-context", &lc, "--poll-ms", "50"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let activations = |cli: &Cli| -> usize {
+        let (_, v, _) = cli.run(&["goal", "show", &goal_id, "--activations", "10"]);
+        v["activations"].as_array().map(|a| a.len()).unwrap_or(0)
+    };
+    let started = Instant::now();
+    while activations(&cli) < 1 {
+        assert!(started.elapsed() < Duration::from_secs(30), "no activation");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (_, v, _) = cli.run(&["goal", "show", &goal_id, "--state", "--schedule", "--activations", "5"]);
+    assert_eq!(v["activations"][0]["decision"], "no_action");
+    assert_eq!(v["activations"][0]["reasons"][0]["kind"], "created");
+    assert_eq!(v["session"]["session_id"], sid.as_str());
+    assert_eq!(v["state"]["usage"]["activations"], 1);
+    assert_eq!(v["schedule"]["start_posted_epoch"], 1);
+    // A manual run opportunity.
+    let (code, v, err) = cli.run(&["goal", "activate", &goal_id, "--reason", "look again"]);
+    assert_eq!(code, 0, "{v} {err}");
+    let started = Instant::now();
+    while activations(&cli) < 2 {
+        assert!(started.elapsed() < Duration::from_secs(30), "no second activation");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // From inside its own session the goal may not pause itself.
+    let out = cli
+        .command(&["goal", "pause", &goal_id])
+        .env("OPENDAN_SESSION_ID", &sid)
+        .output()
+        .unwrap();
+    let (code, _, err) = parse(out);
+    assert_eq!(code, 6, "{err}");
+    // ... but it may show itself without naming it.
+    let out = cli
+        .command(&["goal", "show"])
+        .env("OPENDAN_SESSION_ID", &sid)
+        .output()
+        .unwrap();
+    let (code, v, err) = parse(out);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["goal"]["goal_id"], goal_id.as_str());
+    let (code, _, err) = cli.run(&["goal", "revise", &goal_id, "--expected-revision", "7", "--objective", "x"]);
+    assert_eq!(code, 5, "{err}");
+    let (code, v, _) = cli.run(&["goal", "revise", &goal_id, "--expected-revision", "1", "--objective", "keep notes.md short"]);
+    assert_eq!((code, v["revision"].as_u64()), (0, Some(1)), "no change is no revision");
+    let (code, v, err) = cli.run(&["goal", "pause", &goal_id, "--reason", "holiday"]);
+    assert_eq!((code, v["status"].as_str()), (0, Some("paused")), "{err}");
+    let _ = serve.kill();
+    let _ = serve.wait();
+    assert!(llm.count() >= 2);
+}

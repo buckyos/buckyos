@@ -372,6 +372,13 @@
     },
     {
       "properties": {
+        "brief": {
+          "description": "One line standing for it in rendered history (a Goal header).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "content": {
           "type": "string"
         },

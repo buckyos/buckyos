@@ -43,8 +43,15 @@ export const fmtTokens = (n: number): string => {
   return String(n)
 }
 
-/** `did:bns:devtest` -> `devtest`. */
-export const didName = (did: string): string => did.split(':').pop() || did
+/** The readable part of a DID: `did:bns:devtest` -> `devtest`, `did:web:a.com:u:b#k` -> `a.com/u/b`. */
+export const didName = (did: string): string => {
+  const match = /^did:([a-z0-9]+):([^/?#]+)/i.exec(did.trim())
+  if (!match) return did
+  const [, method, id] = match
+  if (method === 'web') return id.split(':').map((part) => { try { return decodeURIComponent(part) } catch { return part } }).join('/')
+  if (method === 'key' && id.length > 16) return `${id.slice(0, 8)}…${id.slice(-6)}`
+  return id
+}
 
 // A UI session's `route_key` is the agent's mailbox address,
 // `<agent did>/<conversation session, percent-encoded>`.

@@ -309,6 +309,13 @@
     "BehaviorPromptConfig": {
       "additionalProperties": false,
       "properties": {
+        "goal_activation": {
+          "description": "Goal Sessions: template of the Goal header (variable `goal`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mode": {
           "anyOf": [
             {
@@ -433,6 +440,14 @@
                 "string",
                 "null"
               ]
+            },
+            "scope": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/StopScope"
+                }
+              ],
+              "description": "`session` (default): the session finishes as stopped. `turn`: only the open Turn closes as stopped and the session goes on waiting. A Goal Session only ever stops its open Turn (it ends with its Goal)."
             }
           },
           "required": [
@@ -571,6 +586,33 @@
             "command"
           ],
           "type": "object"
+        },
+        {
+          "description": "Goal Sessions: change the Goal's current skills (applied by the driver to the Goal State it owns).",
+          "properties": {
+            "add": {
+              "items": {
+                "$ref": "#/definitions/GoalSkill"
+              },
+              "type": "array"
+            },
+            "command": {
+              "enum": [
+                "goal_skills"
+              ],
+              "type": "string"
+            },
+            "remove": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -684,6 +726,91 @@
           "default": {}
         }
       },
+      "type": "object"
+    },
+    "GoalBinding": {
+      "description": "`session.goal` of a Goal Session: the Goal it works for. The definition is read from the Goal, never copied here.",
+      "properties": {
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch",
+        "goal_id"
+      ],
+      "type": "object"
+    },
+    "GoalOrigin": {
+      "description": "`origin.goal` of a Work created by a Goal Session.",
+      "properties": {
+        "activation_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activation_seq",
+        "at_ms",
+        "epoch",
+        "goal_id",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "GoalSkill": {
+      "description": "A method / capability the Goal works with (architecture §10.2).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Where it is read (path, object id, behavior name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
       "type": "object"
     },
     "IdentityText": {
@@ -924,6 +1051,17 @@
             "null"
           ]
         },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Created by an Activation of a Goal: the Goal and the revision the Work was given (kept when the Goal is revised later)."
+        },
         "intent_ref": {
           "type": [
             "string",
@@ -1108,6 +1246,13 @@
           ],
           "description": "Behaviors and identity frozen from the agent's catalog."
         },
+        "goal_activation": {
+          "description": "Goal Sessions: the Goal header placed before the first batch of an Activation (variable `goal`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "history_budget_tokens": {
           "description": "Context budget (tokens) available to the history section when the next llm_context is assembled. `None` → runner default.",
           "format": "uint32",
@@ -1288,13 +1433,24 @@
       "type": "object"
     },
     "SessionKind": {
-      "enum": [
-        "ui",
-        "work",
-        "self_improve",
-        "self_check"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "ui",
+            "work",
+            "self_improve",
+            "self_check"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The context of a Goal (`state/goals/<goal_id>`): one per `(goal, epoch)`, created by the host, never a sub session.",
+          "enum": [
+            "goal"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "SessionMsg": {
       "description": "`type = \"msg\"` payload: the message object as it is plus what a MsgObject does not carry by design.",
@@ -1407,6 +1563,17 @@
             "type": "llm_declares_done"
           }
         },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Goal Sessions: the Goal and epoch."
+        },
         "idempotency_key": {
           "type": [
             "string",
@@ -1479,6 +1646,14 @@
         "session_id"
       ],
       "type": "object"
+    },
+    "StopScope": {
+      "description": "What a `stop` ends.",
+      "enum": [
+        "session",
+        "turn"
+      ],
+      "type": "string"
     },
     "Subscription": {
       "properties": {
@@ -1674,6 +1849,13 @@
           "description": "Treated as the delivered result.",
           "enum": [
             "finish_completed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Nobody answers now: the Turn ends (needs input), the session goes on waiting for its next input (Goal Sessions).",
+          "enum": [
+            "end_turn"
           ],
           "type": "string"
         }

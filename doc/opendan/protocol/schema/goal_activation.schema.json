@@ -1,0 +1,239 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActivationCost": {
+      "properties": {
+        "runs": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "total_tokens": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ActivationDecision": {
+      "oneOf": [
+        {
+          "enum": [
+            "acted",
+            "created_work",
+            "needs_info"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Looked, nothing to do now (not \"achieved\").",
+          "enum": [
+            "no_action"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No valid result was submitted.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ActivationOutcome": {
+      "enum": [
+        "completed",
+        "failed",
+        "budget_exhausted",
+        "stopped",
+        "needs_input"
+      ],
+      "type": "string"
+    },
+    "ActivationReason": {
+      "properties": {
+        "key": {
+          "description": "Input key.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ActivationReasonKind"
+        },
+        "missed": {
+          "description": "Slots that passed while no fire was possible (`scheduled`).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Work sid (`child`), message key (`feedback`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ActivationReasonKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "created",
+            "scheduled",
+            "manual",
+            "reopened",
+            "restarted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A Work of the Goal finished (or needs attention).",
+          "enum": [
+            "child"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A message handed over from a UI.",
+          "enum": [
+            "feedback"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Any other subscribed event (a followed task, an object).",
+          "enum": [
+            "event"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "One line of `activations.jsonl`.",
+  "properties": {
+    "cost": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ActivationCost"
+        }
+      ],
+      "default": {
+        "runs": 0,
+        "total_tokens": 0
+      }
+    },
+    "decision": {
+      "$ref": "#/definitions/ActivationDecision"
+    },
+    "end_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ended_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "epoch": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "goal_id": {
+      "type": "string"
+    },
+    "goal_revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "outcome": {
+      "$ref": "#/definitions/ActivationOutcome"
+    },
+    "reasons": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ActivationReason"
+      },
+      "type": "array"
+    },
+    "report_ref": {
+      "description": "Where the full report is (`worklog:<sid>:turn:<seq>`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result": {
+      "description": "The submitted Goal result, as accepted."
+    },
+    "schema": {
+      "type": "string"
+    },
+    "seq": {
+      "description": "= the Turn index of the epoch's Goal Session.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "started_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "summary": {
+      "default": "",
+      "type": "string"
+    },
+    "works_absorbed": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "works_created": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "decision",
+    "ended_at_ms",
+    "epoch",
+    "goal_id",
+    "goal_revision",
+    "outcome",
+    "schema",
+    "seq",
+    "session_id",
+    "started_at_ms"
+  ],
+  "title": "GoalActivation",
+  "type": "object"
+}

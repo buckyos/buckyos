@@ -259,7 +259,9 @@ function commitStagedTree(stagedRoot: string, targetRoot: string): void {
       throw new Error(`staged file escaped activation root: ${source}`);
     }
     const destination = path.join(targetRoot, relative);
-    const isPrivate = relative.startsWith(`security${path.sep}`);
+    const isPrivate = relative.startsWith(`security${path.sep}`) ||
+      relative === path.join("etc", "start_config.json") ||
+      relative === path.join("etc", "node_identity.json");
     atomicCopyFile(source, destination, isPrivate ? 0o600 : 0o644);
   }
 }
@@ -630,7 +632,7 @@ async function main(): Promise<void> {
       }; no DNS BOOT/PKX/DEV records are required.`,
     );
     console.log(
-      "Restart BuckyOS to leave activation mode and boot the new Zone.",
+      "Activation only writes files. Start or restart BuckyOS separately after TLS/ACME is configured.",
     );
     console.log(
       "TLS/ACME is not provided by SN in this mode; configure it on the public gateway.",

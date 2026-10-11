@@ -7,6 +7,8 @@ export interface IdentityView {
   name: string
   kind: IdentityKind
   hue: number
+  /** The identity's own picture (from the owner's contacts); the initial on `hue` otherwise. */
+  avatar?: string
 }
 
 export type Verification = 'verified' | 'unverified' | 'wrapper_only'
@@ -333,6 +335,7 @@ export interface ProfileView {
   name: string
   bio: string
   hue: number
+  avatar?: string
   followers: number
   following: number
   posts: number
@@ -351,6 +354,8 @@ export interface HomeInfo {
 export interface PortalHome {
   zone: string
   zoneName: string
+  /** The Zone's icon from its display settings. */
+  zoneIcon?: string | null
   defaultFeed: string
   zoneFeed: string
   viewer: { did: Did; user?: string; name?: string; zoneFeedWriter?: boolean } | null

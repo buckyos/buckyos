@@ -422,6 +422,13 @@ impl CancelBridge {
                 format!("stop:task:{task_id}"),
                 ControlCommand::Stop {
                     reason: Some(format!("task {task_id} was canceled")),
+                    // The task of a Goal Session's Turn is one Activation:
+                    // canceling it never ends the Goal.
+                    scope: if e.kind == SessionKind::Goal {
+                        StopScope::Turn
+                    } else {
+                        StopScope::Session
+                    },
                 },
             );
             match self.agent.sessions().post_input(&e.session_id, &input).await {

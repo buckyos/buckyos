@@ -9,6 +9,7 @@
 pub mod agent_state;
 pub mod behavior;
 pub mod config;
+pub mod goal;
 pub mod input;
 pub mod misc;
 pub mod report;
@@ -21,6 +22,7 @@ pub mod workspace;
 pub use agent_state::*;
 pub use behavior::*;
 pub use config::*;
+pub use goal::*;
 pub use input::*;
 pub use misc::*;
 pub use report::*;
@@ -79,5 +81,11 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("workspace_metadata", s::<workspace::WorkspaceMetadata>()),
         ("workspace_record", s::<workspace::WorkspaceRecord>()),
         ("runtime_descriptor", s::<runtime::RuntimeDescriptor>()),
+        ("goal", s::<goal::GoalDefinition>()),
+        ("goal_change", s::<goal::GoalChange>()),
+        ("goal_state", s::<goal::GoalState>()),
+        ("goal_activation", s::<goal::GoalActivation>()),
+        ("goal_schedule", s::<goal::GoalSchedule>()),
+        ("goal_result", s::<goal::GoalResult>()),
     ]
 }

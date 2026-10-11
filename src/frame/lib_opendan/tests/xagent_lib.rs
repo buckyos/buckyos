@@ -779,7 +779,7 @@ async fn a_stopped_parent_stops_its_sub_sessions() {
             post_blocking(
                 &qd,
                 &q,
-                PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
+                PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
             );
             return tool_call("p1", "shell", json!({ "command": "sleep 30" }));
         }

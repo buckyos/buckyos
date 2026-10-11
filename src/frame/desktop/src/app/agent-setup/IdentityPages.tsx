@@ -8,7 +8,9 @@ import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
 import type { NameCheckState } from './hooks'
 import { draftDisplayName, type AgentSetupDraft, type ClassifiedAgentError } from './model'
-import { AgentAvatar, Section, StatusPill } from './ui'
+import { Section, StatusPill } from './ui'
+import { ObjectAvatar } from '../../presentation/ObjectIcon'
+import type { ObjectPresentation } from '../../presentation/model'
 
 const NICKNAME_MAX = 64
 const BIO_MAX = 500
@@ -213,19 +215,21 @@ export function PermissionsPage({
   draft,
   update,
   account,
+  owner,
 }: {
   draft: AgentSetupDraft
   update: (patch: Partial<AgentSetupDraft>) => void
   account: CurrentAccount
+  owner: ObjectPresentation
 }) {
   const { t } = useI18n()
   return (
     <div className="space-y-4">
       <Section title={t('agentSetup.owner.title')} description={t('agentSetup.owner.description')}>
         <div className="flex items-center gap-3" data-testid="agent-setup-owner">
-          <AgentAvatar name={account.user_name || account.user_id} size={40} />
+          <ObjectAvatar title={owner.title} icons={owner.icons} size={40} decorative />
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-[color:var(--cp-text)]">{account.user_name || account.user_id}</div>
+            <div className="truncate text-sm font-semibold text-[color:var(--cp-text)]">{owner.title}</div>
             <div className="truncate text-[12px] text-[color:var(--cp-muted)]">{account.user_id}</div>
           </div>
           <StatusPill tone="muted">{t('agentSetup.readonly')}</StatusPill>

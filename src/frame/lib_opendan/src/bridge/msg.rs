@@ -178,9 +178,9 @@ pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx)
             return match ctx.commands.get(name) {
                 Some(SlashCommand::Stop) => MsgBridgeOutput::Control {
                     key: format!("ctl:{}", msg_key(msg)),
-                    command: ControlCommand::Stop {
-                        reason: Some(args.to_string()).filter(|a| !a.is_empty()),
-                    },
+                    command: ControlCommand::stop(
+                        Some(args.to_string()).filter(|a| !a.is_empty()),
+                    ),
                 },
                 _ => MsgBridgeOutput::AppCommand {
                     name: name.to_string(),
@@ -512,9 +512,7 @@ mod tests {
                 assert_eq!(key, format!("ctl:{}", msg_key(&stop)));
                 assert_eq!(
                     command,
-                    ControlCommand::Stop {
-                        reason: Some("too slow".into())
-                    }
+                    ControlCommand::stop(Some("too slow".into()))
                 );
             }
             o => panic!("{o:?}"),

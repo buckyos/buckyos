@@ -18,6 +18,8 @@ pub struct ViewCtx {
     pub owner_name: String,
     /// did → (name, kind)
     pub names: HashMap<String, (String, String)>,
+    /// did → picture, from Message Center contacts (the owner's own one included)
+    pub avatars: HashMap<String, String>,
     pub reader: Reader,
     pub rel: ReaderRelations,
     pub settings: UserSettings,
@@ -39,7 +41,11 @@ impl Station {
         let settings = self.settings().await.unwrap_or_default();
         let owner_name = if settings.profile.name.is_empty() { self.cfg.owner_name.clone() } else { settings.profile.name.clone() };
         let mut names: HashMap<String, (String, String)> = HashMap::new();
+        let mut avatars: HashMap<String, String> = HashMap::new();
         for c in self.contacts.list().await {
+            if let Some(avatar) = c.avatar.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                avatars.insert(c.did.clone(), avatar.to_string());
+            }
             names.insert(c.did.clone(), (c.name.clone(), "person".into()));
         }
         let sources: Vec<(String, String)> = self
@@ -59,7 +65,22 @@ impl Station {
         }
         names.insert(self.cfg.owner.clone(), (owner_name.clone(), "self".into()));
         let rel = self.reader_relations(&reader).await;
-        ViewCtx { owner: self.cfg.owner.clone(), owner_name, names, reader, rel, settings, collector: self.cfg.collector }
+        ViewCtx { owner: self.cfg.owner.clone(), owner_name, names, avatars, reader, rel, settings, collector: self.cfg.collector }
+    }
+}
+
+/// The readable part of a DID (`did:bns:alice` → `alice`, `did:web:a.com:u:b` → `a.com/u/b`); the DID stays the identity.
+pub fn did_display_name(did: &str) -> String {
+    let bare = did.split(['/', '?', '#']).next().unwrap_or(did);
+    match name_lib::DID::from_str(bare) {
+        Ok(parsed) if bare.starts_with("did:") && !parsed.id.is_empty() => {
+            if parsed.method == "web" {
+                parsed.id.replace(':', "/")
+            } else {
+                parsed.id
+            }
+        }
+        _ => did.to_string(),
     }
 }
 
@@ -68,8 +89,8 @@ pub fn identity_view(ctx: &ViewCtx, did: &str) -> Value {
         .names
         .get(did)
         .cloned()
-        .unwrap_or_else(|| (did.trim_start_matches("did:").split_once(':').map(|x| x.1).unwrap_or(did).to_string(), "person".into()));
-    json!({ "did": did, "name": name, "kind": kind, "hue": hue_of(did) })
+        .unwrap_or_else(|| (did_display_name(did), "person".into()));
+    without_nulls(json!({ "did": did, "name": name, "kind": kind, "hue": hue_of(did), "avatar": ctx.avatars.get(did) }))
 }
 
 /// Optional fields are omitted rather than sent as `null` (the UI types use `?:`).
@@ -373,5 +394,18 @@ impl Station {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::did_display_name;
+
+    #[test]
+    fn did_fallback_names_come_from_the_did() {
+        assert_eq!(did_display_name("did:bns:alice"), "alice");
+        assert_eq!(did_display_name("did:web:alice.test.buckyos.io"), "alice.test.buckyos.io");
+        assert_eq!(did_display_name("did:web:example.com:users:alice#key"), "example.com/users/alice");
+        assert_eq!(did_display_name("not-a-did"), "not-a-did");
     }
 }

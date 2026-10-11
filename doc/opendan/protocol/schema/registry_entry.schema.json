@@ -68,6 +68,42 @@
       ],
       "type": "object"
     },
+    "GoalOrigin": {
+      "description": "`origin.goal` of a Work created by a Goal Session.",
+      "properties": {
+        "activation_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "activation_seq",
+        "at_ms",
+        "epoch",
+        "goal_id",
+        "revision"
+      ],
+      "type": "object"
+    },
     "LastRunner": {
       "description": "Driver of the last commit (Q9: which runner advanced the session).",
       "properties": {
@@ -112,6 +148,17 @@
             "string",
             "null"
           ]
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Created by an Activation of a Goal: the Goal and the revision the Work was given (kept when the Goal is revised later)."
         },
         "intent_ref": {
           "type": [
@@ -215,13 +262,24 @@
       "type": "object"
     },
     "SessionKind": {
-      "enum": [
-        "ui",
-        "work",
-        "self_improve",
-        "self_check"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "ui",
+            "work",
+            "self_improve",
+            "self_check"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The context of a Goal (`state/goals/<goal_id>`): one per `(goal, epoch)`, created by the host, never a sub session.",
+          "enum": [
+            "goal"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "SessionStatus": {
       "description": "Cached status of a session (the truth is its own state.json).",
@@ -403,6 +461,13 @@
     },
     "driver": {
       "$ref": "#/definitions/DriverRef"
+    },
+    "goal_id": {
+      "description": "The Goal a Goal Session works for, or that created a Work.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "idempotency_key": {
       "type": [

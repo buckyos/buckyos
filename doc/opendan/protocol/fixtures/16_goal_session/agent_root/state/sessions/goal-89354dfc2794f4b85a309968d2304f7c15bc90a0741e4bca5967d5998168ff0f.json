@@ -1,0 +1,40 @@
+{
+  "session_id": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+  "kind": "goal",
+  "class": "goal",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "opendan"
+  },
+  "idempotency_key": "goal:g-k9ed545152f8cdfcc3d3f30bc:1",
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+  "input_queue": "app2::alice::opendan.session.goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+  "wake_event": "/opendan/jarvis.alice/session/goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f/input",
+  "agent_access": "full",
+  "objective": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); each activation observes, judges and acts within its budget, then ends with a final report.",
+  "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+  "status": {
+    "rev": 4,
+    "run_state": "running",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "turn_open": true,
+    "activity": {
+      "summary": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); eac",
+      "heartbeat_ms": 1791715815412
+    },
+    "last_runner": {
+      "runner_id": "rn-bebc993c082f43d4",
+      "host": "${FIXTURE_HOST}",
+      "pid": 1396465,
+      "lock_epoch": 1,
+      "at_ms": 1791715815414
+    },
+    "updated_at_ms": 1791715815412
+  },
+  "location_rev": 0
+}

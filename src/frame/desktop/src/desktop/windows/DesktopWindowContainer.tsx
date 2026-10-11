@@ -235,9 +235,12 @@ export function DesktopWindowContainer({
             onMaximize()
           }}
         >
-          {/* Centred: the desktop's floating avatar sits over the title bar's
-              left end when a window is maximized or dragged to the corner. */}
-          <div className="absolute inset-y-0 left-20 right-20 flex min-w-0 items-center justify-center gap-2">
+          <div
+            className={clsx(
+              'absolute inset-y-0 right-20 flex min-w-0 items-center gap-2',
+              isMaximized ? 'left-20 justify-center' : 'left-3 justify-start',
+            )}
+          >
             <span
               className="flex size-4 shrink-0 items-center justify-center"
               style={{ color: titleTextColor }}

@@ -16,6 +16,9 @@ pub struct ContactInfo {
     pub blocked: bool,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// The picture Message Center holds for this identity (the Zone's public one for Zone users and Agents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 #[async_trait]
@@ -56,6 +59,7 @@ impl Contacts for MsgCenterContacts {
                     friend: contact.access_level == AccessGroupLevel::Friend,
                     blocked: contact.access_level == AccessGroupLevel::Block,
                     groups: contact.groups,
+                    avatar: contact.avatar,
                 });
             }
             if len < 200 {

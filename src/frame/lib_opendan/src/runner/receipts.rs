@@ -180,6 +180,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         state.internal_continuation = None;
         state.process_result = None;
     }
+    super::goal::apply_receipt(state, r);
     Ok(true)
 }
 

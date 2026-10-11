@@ -63,6 +63,9 @@ pub struct BehaviorPromptConfig {
     pub on_context_switch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semi_subscription_snapshot: Option<String>,
+    /// Goal Sessions: template of the Goal header (variable `goal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_activation: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -212,6 +215,7 @@ impl BehaviorConfig {
                 on_input: self.prompt.on_input.clone(),
                 on_context_switch: self.prompt.on_context_switch.clone(),
                 semi_subscription_snapshot: self.prompt.semi_subscription_snapshot.clone(),
+                goal_activation: self.prompt.goal_activation.clone(),
             },
             input: self.input,
             llm_context: self.overlay_llm_context(base_llm_context),

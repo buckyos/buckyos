@@ -19,12 +19,16 @@ use buckyos_api::msg_queue::MsgQueueClient;
 use libopendan::api::{create_session, create_sub_session, SubSessionSpec, SubWorkspace};
 use libopendan::bridge::{EventBridge, KEventBridge, TimerBridge};
 use libopendan::channel::{InputChannelFactory, InputSource, KEventWaker, KmsgChannels, PollWaker, Waker};
-use libopendan::host::{run_session, serve, HostDeps};
+use libopendan::host::goals::{GoalHost, GoalHostOptions};
+use libopendan::host::{run_session, serve, HostDeps, Supervisor};
 use libopendan::protocol::*;
 use libopendan::runner::{
     BehaviorAssembler, DriveResult, RunnerOptions, StopSignal, StopWhen, SESSION_TASK_PREFIX,
 };
-use libopendan::state::{connect, AgentStateClient, ConnectOptions, StateLocator};
+use libopendan::state::{
+    connect, ActivationQuery, AgentStateClient, ConnectOptions, GoalCaller, GoalCreate,
+    GoalReopen, GoalRestart, GoalRevise, GoalStatusChange, StateLocator,
+};
 use libopendan::{InputChannel, OpenDanError, SessionDir, SessionTemplate};
 use serde_json::{json, Value};
 
@@ -47,6 +51,18 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent behaviors --agent <did> [--frozen <sid>]
   xagent xllm   <sid> [--run <id>]
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|runtime-impact|set-runtime ...
+  xagent goal   create --objective <text> [--title <t>] [--lifecycle achieve|maintain] [--achieved-when <t>]
+                       [--healthy-state <t>] [--distance <t>] [--constraint <t>]... [--skill <name>[=<ref>]]...
+                       [--workspace <id>] [--path <p>]... [--object <o>]... [--every <secs>] [--min-interval <secs>]
+                       [--start] [--behavior <b>] [--budget <json|@file>] [--key <idem>] [--json <request|@file>]
+  xagent goal   list | show [<id>] [--state] [--activations <n>] [--changes <n>] [--revisions] [--epochs] [--schedule]
+  xagent goal   revise <id> --expected-revision <n> [--objective ..] [--title ..] [--every ..] [--budget <json>]
+                       [--json <patch|@file>] [--reason <t>]
+  xagent goal   pause|resume|archive [<id>] [--reason <t>] | achieved [<id>] --evidence <t>
+  xagent goal   reopen <id> --reason <t> [--fresh-state] | restart <id> --reason <t> [--carry-state]
+  xagent goal   activate <id> [--reason <t>] | post <id> --msg <t>
+  xagent goal   skills add <name>[=<ref>] [--note <t>] | skills remove <name>     (inside a goal session)
+  xagent goal   serve [--llm-context <json|@file>] [--idle-unload <secs>]      (host the agent's goals and sessions)
   xagent schema <dir>
 
   <spec> = active|semi:object:<id>[#<event>] | semi:session:<sid>[:watch=f1,f2] | active|semi:timer:<name>
@@ -58,6 +74,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         [--class <c>] [--behavior <b>] [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive] [--wait [--wait-ms <ms>]]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
+  goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
+            goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
 
 identity and location (flags or environment):
   --agent <did>        [$OPENDAN_AGENT_DID]     --who <principal>  [$LIBOPENDAN_WHO]
@@ -92,7 +110,12 @@ impl From<OpenDanError> for Fail {
             | OpenDanError::SessionIdConflict(_)
             | OpenDanError::Channel(_) => 2,
             OpenDanError::InputFull { .. } | OpenDanError::QueueMissing { .. } => 3,
-            OpenDanError::Busy { .. } | OpenDanError::RunBusy { .. } | OpenDanError::LeaseLost(_) => 5,
+            OpenDanError::Busy { .. }
+            | OpenDanError::RunBusy { .. }
+            | OpenDanError::LeaseLost(_)
+            | OpenDanError::GoalConflict(_) => 5,
+            OpenDanError::GoalBudgetExhausted(_) => 3,
+            OpenDanError::Forbidden(_) => 6,
             OpenDanError::NotDriver { .. }
             | OpenDanError::Unregistered(_)
             | OpenDanError::Bind(_)
@@ -133,6 +156,13 @@ const FLAGS: &[&str] = &[
     "wait",
     "clear",
     "help",
+    "start",
+    "state",
+    "revisions",
+    "epochs",
+    "schedule",
+    "fresh-state",
+    "carry-state",
 ];
 
 struct Args {
@@ -565,6 +595,11 @@ async fn cmd_new(mut a: Args) -> R<i32> {
     let c = ctx(&a, None, true).await?;
     let class = a.get("class").unwrap_or_else(|| "work".to_string());
     let template = SessionTemplate::load(&class, c.agent.agent_root())?;
+    if template.kind == SessionKind::Goal {
+        return Err(bad(
+            "a goal session belongs to a goal: create the goal with `xagent goal create`; its host creates the session",
+        ));
+    }
     let mut spec = template.spec(
         a.get("objective")
             .ok_or_else(|| bad("missing --objective"))?,
@@ -711,7 +746,7 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
             .unwrap_or_else(|| format!("{prefix}-{}", uuid::Uuid::new_v4().simple()))
     };
     let (key, command) = match cmd.as_str() {
-        "stop" => (key("stop"), ControlCommand::Stop { reason: a.get("reason") }),
+        "stop" => (key("stop"), ControlCommand::stop(a.get("reason"))),
         "decide" => {
             let decision = a.next("accept|discard")?;
             if !matches!(decision.as_str(), "accept" | "discard") {
@@ -1260,6 +1295,365 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
+/// The caller of a goal operation: inside a session its kind decides what it
+/// may do (`$OPENDAN_SESSION_ID`), outside the owner side.
+fn goal_caller(c: &Ctx) -> GoalCaller {
+    GoalCaller {
+        principal: c.who.clone(),
+        session: env_sid(),
+    }
+}
+
+/// `<id>`, or the goal of the calling goal session.
+async fn goal_id_arg(c: &Ctx, a: &mut Args) -> R<String> {
+    if let Some(id) = a.pos.pop_front() {
+        return Ok(id);
+    }
+    if let Some(sid) = env_sid() {
+        if let Some(e) = c.agent.sessions().lookup(&sid).await? {
+            if e.kind == SessionKind::Goal {
+                if let Some(g) = e.goal_id {
+                    return Ok(g);
+                }
+            }
+        }
+    }
+    Err(bad("missing <goal_id>"))
+}
+
+fn json_arg<T: serde::de::DeserializeOwned>(s: &str) -> R<T> {
+    Ok(serde_json::from_str(&file_or_inline(s)?)?)
+}
+
+fn skills_arg(a: &Args) -> Vec<GoalSkill> {
+    a.all("skill")
+        .into_iter()
+        .map(|s| match s.split_once('=') {
+            Some((n, r)) => GoalSkill {
+                name: n.to_string(),
+                reference: Some(r.to_string()),
+                version: None,
+                note: None,
+            },
+            None => GoalSkill {
+                name: s,
+                reference: None,
+                version: None,
+                note: None,
+            },
+        })
+        .collect()
+}
+
+async fn goal_show(c: &Ctx, a: &Args, id: &str) -> R<Value> {
+    let goals = c.agent.goals();
+    let goal = goals
+        .get(id)
+        .await?
+        .ok_or_else(|| bad(format!("goal {id} does not exist")))?;
+    let mut v = json!({ "goal": goal });
+    let session = c.agent.sessions().lookup(&goal.session.sid).await?;
+    v["session"] = json!(session.map(|e| json!({
+        "session_id": e.session_id, "run_state": e.status.run_state, "outcome": e.status.outcome,
+        "waiting_for": e.status.waiting_for, "turn_open": e.status.turn_open,
+        "one_line_status": e.status.one_line_status,
+    })));
+    if a.has("state") {
+        v["state"] = json!(goals.state(id).await?);
+    }
+    if let Some(n) = a.num::<usize>("activations")? {
+        v["activations"] = json!(goals.activations(id, &ActivationQuery { epoch: None, limit: n }).await?);
+    }
+    if let Some(n) = a.num::<usize>("changes")? {
+        v["changes"] = json!(goals.changes(id, n).await?);
+    }
+    if a.has("revisions") {
+        let mut revs = Vec::new();
+        for r in 1..=goal.revision {
+            revs.push(goals.revision(id, r).await?);
+        }
+        v["revisions"] = json!(revs);
+    }
+    if a.has("epochs") {
+        let mut epochs = Vec::new();
+        for e in &goal.epochs {
+            epochs.push(json!({ "epoch": e, "state": goals.epoch_state(id, e.epoch).await? }));
+        }
+        v["epochs"] = json!(epochs);
+    }
+    if a.has("schedule") {
+        v["schedule"] = json!(goals.schedule(id).await?);
+    }
+    let works = c
+        .agent
+        .sessions()
+        .query(&RegistryQuery {
+            goal_id: Some(id.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    v["works"] = json!(works
+        .iter()
+        .filter(|e| e.kind != SessionKind::Goal)
+        .map(brief)
+        .collect::<Vec<_>>());
+    Ok(v)
+}
+
+async fn cmd_goal(mut a: Args) -> R<i32> {
+    let sub = a.next("goal command")?;
+    if sub == "serve" {
+        return cmd_goal_serve(a).await;
+    }
+    let c = ctx(&a, None, sub == "skills" || sub == "activate" || sub == "post").await?;
+    let caller = goal_caller(&c);
+    let goals = c.agent.goals();
+    match sub.as_str() {
+        "create" => {
+            let mut req: GoalCreate = match a.get("json") {
+                Some(j) => json_arg(&j)?,
+                None => GoalCreate {
+                    objective: a.get("objective").ok_or_else(|| bad("missing --objective"))?,
+                    ..Default::default()
+                },
+            };
+            if let Some(t) = a.get("objective") {
+                req.objective = t;
+            }
+            if let Some(t) = a.get("title") {
+                req.title = Some(t);
+            }
+            req.key = a.get("key").or(req.key);
+            match a.get("lifecycle").as_deref() {
+                None => {}
+                Some("achieve") => req.lifecycle = GoalLifecycle::Achieve,
+                Some("maintain") => req.lifecycle = GoalLifecycle::Maintain,
+                Some(s) => return Err(bad(format!("bad --lifecycle {s} (achieve | maintain)"))),
+            }
+            if let Some(t) = a.get("achieved-when") {
+                req.achieved_when = Some(t);
+            }
+            if let Some(t) = a.get("healthy-state") {
+                req.healthy_state = Some(t);
+            }
+            if let Some(t) = a.get("distance") {
+                req.distance_evaluation = t;
+            }
+            req.constraints.extend(a.all("constraint"));
+            req.initial_skills.extend(skills_arg(&a));
+            if let Some(w) = a.get("workspace") {
+                req.scope.workspace = Some(w);
+            }
+            req.scope.paths.extend(a.all("path"));
+            req.scope.objects.extend(a.all("object"));
+            if let Some(n) = a.num::<u64>("every")? {
+                req.schedule.every_secs = Some(n);
+            }
+            if let Some(n) = a.num::<u64>("min-interval")? {
+                req.schedule.min_interval_secs = Some(n);
+            }
+            if a.has("start") {
+                req.schedule.start_on_create = true;
+            }
+            if let Some(b) = a.get("behavior") {
+                req.behavior = Some(b);
+            }
+            if let Some(b) = a.get("budget") {
+                req.budget = json_arg(&b)?;
+            }
+            print(&goals.create(&req, &caller).await?);
+        }
+        "list" => {
+            let list = goals.list().await?;
+            print(
+                &list
+                    .iter()
+                    .map(|g| json!({
+                        "goal_id": g.goal_id, "title": g.title, "status": g.status,
+                        "revision": g.revision, "epoch": g.session.epoch, "session_id": g.session.sid,
+                        "every_secs": g.schedule.every_secs, "lifecycle": g.lifecycle,
+                    }))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        "show" => {
+            let id = goal_id_arg(&c, &mut a).await?;
+            print(&goal_show(&c, &a, &id).await?);
+        }
+        "revise" => {
+            let id = a.next("<goal_id>")?;
+            let mut req: GoalRevise = match a.get("json") {
+                Some(j) => json_arg(&j)?,
+                None => GoalRevise::default(),
+            };
+            match a.num::<u64>("expected-revision")? {
+                Some(n) => req.expected_revision = n,
+                None if a.get("json").is_some() => {}
+                None => return Err(bad("missing --expected-revision (read `goal show` first)")),
+            }
+            if let Some(t) = a.get("objective") {
+                req.objective = Some(t);
+            }
+            if let Some(t) = a.get("title") {
+                req.title = Some(t);
+            }
+            if let Some(t) = a.get("distance") {
+                req.distance_evaluation = Some(t);
+            }
+            if let Some(n) = a.num::<u64>("every")? {
+                let mut s = goals
+                    .get(&id)
+                    .await?
+                    .ok_or_else(|| bad(format!("goal {id} does not exist")))?
+                    .schedule;
+                s.every_secs = Some(n);
+                req.schedule = Some(s);
+            }
+            if let Some(b) = a.get("budget") {
+                req.budget = Some(json_arg(&b)?);
+            }
+            if let Some(r) = a.get("reason") {
+                req.reason = Some(r);
+            }
+            print(&goals.revise(&id, &req, &caller).await?);
+        }
+        "pause" | "resume" | "archive" | "achieved" => {
+            let id = goal_id_arg(&c, &mut a).await?;
+            let status = match sub.as_str() {
+                "pause" => GoalStatus::Paused,
+                "resume" => GoalStatus::Active,
+                "archive" => GoalStatus::Archived,
+                _ => GoalStatus::Achieved,
+            };
+            let req = GoalStatusChange {
+                status,
+                reason: a.get("reason"),
+                evidence: a.get("evidence"),
+            };
+            print(&goals.set_status(&id, &req, &caller).await?);
+        }
+        "reopen" => {
+            let id = a.next("<goal_id>")?;
+            let req = GoalReopen {
+                reason: a.get("reason").ok_or_else(|| bad("missing --reason"))?,
+                fresh_state: a.has("fresh-state"),
+            };
+            print(&goals.reopen(&id, &req, &caller).await?);
+        }
+        "restart" => {
+            let id = a.next("<goal_id>")?;
+            let req = GoalRestart {
+                reason: a.get("reason").ok_or_else(|| bad("missing --reason"))?,
+                carry_state: a.has("carry-state"),
+            };
+            print(&goals.restart(&id, &req, &caller).await?);
+        }
+        "activate" | "post" => {
+            let id = a.next("<goal_id>")?;
+            let goal = goals
+                .get(&id)
+                .await?
+                .ok_or_else(|| bad(format!("goal {id} does not exist")))?;
+            if !goal.status.is_live() {
+                return Err(OpenDanError::GoalConflict(format!("goal {id} is {}", goal.status.as_str())).into());
+            }
+            if c.agent.sessions().lookup(&goal.session.sid).await?.is_none() {
+                return Err(bad(format!(
+                    "the goal session of {id} does not exist yet: its host creates it (the agent's Loader, or `xagent goal serve`)"
+                )));
+            }
+            let from = env_sid()
+                .map(|s| format!("session:{s}"))
+                .unwrap_or_else(|| c.who.clone());
+            if sub == "activate" {
+                let key = libopendan::goal::activate_key(&id, &uuid::Uuid::new_v4().simple().to_string());
+                let note = a.get("reason").unwrap_or_else(|| format!("activated by {from}"));
+                let index = libopendan::goal::post_activation(
+                    c.agent.as_ref(),
+                    &goal,
+                    &c.who,
+                    ActivationReasonKind::Manual,
+                    &key,
+                    &note,
+                )
+                .await?;
+                print(&json!({ "posted": index, "key": key, "session_id": goal.session.sid }));
+            } else {
+                let text = a.get("msg").ok_or_else(|| bad("missing --msg"))?;
+                let (index, key) =
+                    libopendan::goal::post_feedback(c.agent.as_ref(), &goal, &c.who, &text, &from).await?;
+                print(&json!({ "posted": index, "key": key, "session_id": goal.session.sid }));
+            }
+        }
+        "skills" => {
+            // A change of the Goal State: applied by the session's driver.
+            let sid = env_sid().ok_or_else(|| bad("goal skills runs inside a goal session ($OPENDAN_SESSION_ID)"))?;
+            let op = a.next("add | remove")?;
+            let name = a.next("<name>")?;
+            let cmd = match op.as_str() {
+                "add" => {
+                    let (n, r) = match name.split_once('=') {
+                        Some((n, r)) => (n.to_string(), Some(r.to_string())),
+                        None => (name.clone(), None),
+                    };
+                    ControlCommand::GoalSkills {
+                        add: vec![GoalSkill {
+                            name: n,
+                            reference: r,
+                            version: a.get("version"),
+                            note: a.get("note"),
+                        }],
+                        remove: Vec::new(),
+                    }
+                }
+                "remove" => ControlCommand::GoalSkills {
+                    add: Vec::new(),
+                    remove: vec![name.clone()],
+                },
+                _ => return Err(bad("goal skills add | remove")),
+            };
+            let key = format!("goal_skills:{}", uuid::Uuid::new_v4().simple());
+            let index = c
+                .agent
+                .sessions()
+                .post_input(&sid, &PostedInput::control(&c.who, key, cmd))
+                .await?;
+            print(&json!({ "posted": index, "note": "applied by the session before its next step" }));
+        }
+        other => return Err(bad(format!("unknown goal command `{other}`"))),
+    }
+    Ok(0)
+}
+
+/// Host the agent's goals (and every session this identity drives) until
+/// interrupted: the Loader's goals module without the Loader.
+async fn cmd_goal_serve(a: Args) -> R<i32> {
+    let c = ctx(&a, None, true).await?;
+    let root = c
+        .agent
+        .agent_root()
+        .ok_or_else(|| bad("goal serve needs the AgentRoot (--agent-root / $OPENDAN_AGENT_ROOT)"))?
+        .to_path_buf();
+    let llm_context = match a.get("llm-context") {
+        None => json!({ "tools": { "enabled": true } }),
+        Some(s) => serde_json::from_str(&file_or_inline(&s)?)?,
+    };
+    let h = host(&c, &a)?;
+    let idle = a.num::<u64>("idle-unload")?.map(Duration::from_secs);
+    let sup = Supervisor::new(h, idle).with_goals(GoalHost::new(GoalHostOptions::new(
+        root.join("sessions"),
+        llm_context,
+    )));
+    let task = tokio::spawn(sup.clone().run());
+    let _ = tokio::signal::ctrl_c().await;
+    eprintln!("xagent: interrupted, hosting ends (sessions keep their committed state)");
+    sup.shutdown().await;
+    task.abort();
+    let _ = task.await;
+    print(&json!({ "kind": "interrupted", "goals": sup.goals().map(|g| g.status()) }));
+    Ok(4)
+}
+
 async fn real_main() -> R<i32> {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() || matches!(argv[0].as_str(), "-h" | "--help" | "help") {
@@ -1293,6 +1687,7 @@ async fn real_main() -> R<i32> {
         "artifact" => cmd_artifact(a).await,
         "create-worksession" => cmd_create_worksession(a).await,
         "wait" => cmd_wait(a).await,
+        "goal" => cmd_goal(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");
             Ok(2)

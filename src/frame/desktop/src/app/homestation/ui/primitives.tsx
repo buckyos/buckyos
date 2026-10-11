@@ -3,8 +3,21 @@ import { AlertTriangle, ChevronLeft, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import type { IdentityView } from '../datamodel/types'
+import { initialOf, usableImageUrl } from '../../../presentation/model'
+import { ObjectImage } from '../../../presentation/ObjectIcon'
 
-export function Avatar({ identity, size = 36, className }: { identity: Pick<IdentityView, 'name' | 'hue'>; size?: number; className?: string }) {
+export function Avatar({ identity, size = 36, className }: { identity: Pick<IdentityView, 'name' | 'hue' | 'avatar'>; size?: number; className?: string }) {
+  return (
+    <ObjectImage
+      icons={[usableImageUrl(identity.avatar)]}
+      className={clsx('flex-shrink-0 rounded-full object-cover', className)}
+      style={{ width: size, height: size }}
+      fallback={<InitialAvatar identity={identity} size={size} className={className} />}
+    />
+  )
+}
+
+function InitialAvatar({ identity, size, className }: { identity: Pick<IdentityView, 'name' | 'hue'>; size: number; className?: string }) {
   return (
     <span
       aria-hidden="true"
@@ -17,7 +30,7 @@ export function Avatar({ identity, size = 36, className }: { identity: Pick<Iden
         color: `color-mix(in srgb, hsl(${identity.hue} 60% 42%) 80%, var(--cp-text))`,
       }}
     >
-      {identity.name.charAt(0).toUpperCase()}
+      {initialOf(identity.name)}
     </span>
   )
 }

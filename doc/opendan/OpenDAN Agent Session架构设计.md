@@ -1435,6 +1435,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 合并与观察进度 | semi 按 `(subscription_id, source)` 分组；`latest / terminal` 分槽，槽内比较版本，终态不被非终态覆盖。仅按 receipt 清理实际展示版本。active 没有同等状态合并，当前也没有通用语义 Override。 | 复用版本与精确确认机制；区分状态维度、独立要求及显式纠正关系，再实现适用事件的 Coalesce / Override。 |
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |
 | 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；PendingTool 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |
+| Goal 的现有实现 | 2026-10-11 起（[Goal Session TODO](../../notepads/opendan-goal-session-todo.md) 第一段）：Goal 对象在 Agent State（`state/goals/`，定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度），模板 `goal`；宿主按 Goal 列表补建 Goal Session，运行机会为 epoch 开始、本地定时（`every_secs`，可替换的 `ScheduleBackend`）、手动、Work 结束、UI 转交的消息；一个 Activation = 一个 Turn，Goal 头在批次提交前冻结；结束只关闭 Turn，结果按 Goal 格式写回；Work 带 `origin.goal`，按 `goal_id` 吸收。 | 第二段：workflow 计划任务接入（cron、时区、一次性）、Memory 整理 Goal 与删除 self_improve、self_check 退役、WebUI Goals 视图、follow_up 与对象订阅驱动、通知人。 |
 
 实现核对入口：
 
@@ -1453,7 +1454,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 |---|---|---|
 | `AIAgent.main_loop`、`AgentSession` 内集成宿主与 Session 驱动 | 按 §3.4 分层，消息桥接、Session 状态和推理循环各自负责。 | `opendan` 已是 Loader；Session / State 在 `libopendan`，推理和执行复用 `llm_context` / `agent_tool`。旧 `opendan/src/agent*.rs` 不再是依据。 |
 | 四类 Session、向 Work `forwardMessage`、Work 等用户输入 | UI / Work / Goal 按职责划分；Work 无普通 Message input，修改走确定性的 Task 修订半订阅。 | 当前内建模板与新 Goal 职责仍有差距；不得照搬旧 driver 默认值或用 Memory 代替修订送达。 |
-| SelfCheck 精确 / 兜底 timer，SelfImprove budget 与改进任务流水 | 保留定向检查、预算和未完成事项的语义，迁入相关 Goal 与 Runtime 调度。 | Timer bridge 已有周期触发；旧 `TimerReason`、固定 60 秒兜底及专用预算字段不作为现行或目标协议。精确调度与原因记录仍需对齐。 |
+| SelfCheck 精确 / 兜底 timer，SelfImprove budget 与改进任务流水 | 保留定向检查、预算和未完成事项的语义，迁入相关 Goal 与 Runtime 调度。 | Timer bridge 已有周期触发；旧 `TimerReason`、固定 60 秒兜底及专用预算字段不作为现行或目标协议。Goal 的运行机会已带原因记录（Activation `reasons[]`，定时由 Goal 的计划后端提供，第一段为本地后端）；SelfCheck / SelfImprove 迁为 Goal 属于 Goal Session TODO 第二段。 |
 | `.meta/session.json`、`state.snap`、完整 `SessionMeta` 作为统一格式 | 按 §11.6 保存必需状态，物理布局与字段由协议定义。 | 当前是 `.opendan_agent_session/` 下的 `session_config.json`、`state.json`、`worklog.jsonl`、`runs/` 等，另有 `binding.json`；不能把旧目录直接当作可加载格式。 |
 | turn 成功才删除输入；或进入推理即删除、失败就丢失 | 统一为 §11.7 的可靠接收、上下文提交和执行完成三个边界。 | 已有 snapshot + receipt → run 的 `host_commit_pending` → Session state → 清提交标记 → 输入确认的顺序；已提交输入不会因推理失败无痕消失。 |
 | crash 一律不得恢复；无 task 句柄就丢弃挂起快照 | 基于检查点、提交证据和调用状态恢复，未知副作用显式核对或阻塞。 | 已有 receipt 对齐、live run 恢复、终态补提交、未知工具结果标记；不可查询的依赖与不支持的版本阻止推进。 |
@@ -1561,10 +1562,10 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 |---|---|---|
 | 意图分析接口名称 | 倾向 `try_analyze_user_intent` | 旧名称兼容、返回协议及是否拆分创建调用。 |
 | 自动创建与二次确认 | 两种模式都保留 | 哪些任务、目标及权限条件适用哪一种。 |
-| Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续 | 一对一约束、多 Session 协作及重建规则。 |
+| Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续。**当前实现（2026-10-11，Goal Session TODO 第一段）**：同一时刻一个 Goal 一个 Goal Session，按 `(goal_id, epoch)` 确定性派生；reopen / restart 开新 epoch（旧 Session 结束、Goal State 存档），Work 按 `goal_id` 归属、跨 epoch 由新 Session 接管 | 多 Session 协作、跨节点所有权。 |
 | Goal 压缩策略 | 比 UI 更重视目标历史与当前 Skills | 阈值、摘要结构和恢复算法。 |
 | Work 时限与资源 | 相对短期且有界 | 不同任务类别的超时、轮次和失败判定。 |
-| Goal 预算 | 至少限制轮次或 Token 等成本 | 单轮/周期预算、子 Work 分配和计量协议。 |
+| Goal 预算 | 至少限制轮次或 Token 等成本。**当前实现**：单次 Activation 的 token 与 run 数为硬约束；按固定窗口统计周期 token / Activation / Work 数，到上限时拒绝定时运行机会与新 Work，吸收结果不受限 | 子 Work 的预算预留与分配、费用维度、与 Agent 总预算的衔接。 |
 | 目标变更与运行中 Work | 保留初始任务依据；同目标修改写为 Task 修订，经 Task 对象半订阅在每次推理前必达，不经过 Memory；结束后按修订编号把未处理修订交给新 Work | Task 修订的数据结构与授权模型、承载格式；超出边界时继续、取消、重建的决策。 |
 | Topic 与半订阅成本 | 默认每次推理前提供观察机会，旁路维护相关范围；不额外唤醒 | Topic 更新条件、变化幅度与间隔阈值、优先级、增量读取与显式关闭配置。 |
 | 事件 Coalesce / Override | 状态合并与语义覆盖分开，保留独立要求、版本与来源 | 各事件类型的状态维度、终态和纠正关系；迟到与跨版本事件的处理。 |

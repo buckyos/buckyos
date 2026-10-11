@@ -10,6 +10,155 @@
       ],
       "type": "string"
     },
+    "ActivationBudget": {
+      "additionalProperties": false,
+      "description": "Hard limits of one Activation (accumulated over its runs).",
+      "properties": {
+        "max_runs": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_total_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ActivationCost": {
+      "properties": {
+        "runs": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "total_tokens": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ActivationDecision": {
+      "oneOf": [
+        {
+          "enum": [
+            "acted",
+            "created_work",
+            "needs_info"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Looked, nothing to do now (not \"achieved\").",
+          "enum": [
+            "no_action"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No valid result was submitted.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ActivationOutcome": {
+      "enum": [
+        "completed",
+        "failed",
+        "budget_exhausted",
+        "stopped",
+        "needs_input"
+      ],
+      "type": "string"
+    },
+    "ActivationReason": {
+      "properties": {
+        "key": {
+          "description": "Input key.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ActivationReasonKind"
+        },
+        "missed": {
+          "description": "Slots that passed while no fire was possible (`scheduled`).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Work sid (`child`), message key (`feedback`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ActivationReasonKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "created",
+            "scheduled",
+            "manual",
+            "reopened",
+            "restarted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A Work of the Goal finished (or needs attention).",
+          "enum": [
+            "child"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A message handed over from a UI.",
+          "enum": [
+            "feedback"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Any other subscribed event (a followed task, an object).",
+          "enum": [
+            "event"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Activity": {
       "description": "What this session is doing and roughly what it modifies (§6.7).",
       "properties": {
@@ -133,6 +282,24 @@
         }
       ]
     },
+    "EpochEnd": {
+      "oneOf": [
+        {
+          "enum": [
+            "archived",
+            "achieved"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A restart opened the next epoch (the Work keeps running).",
+          "enum": [
+            "restarted"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "EventSource": {
       "description": "Where an event comes from.",
       "properties": {
@@ -170,6 +337,475 @@
         }
       ]
     },
+    "GoalActivation": {
+      "description": "One line of `activations.jsonl`.",
+      "properties": {
+        "cost": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ActivationCost"
+            }
+          ],
+          "default": {
+            "runs": 0,
+            "total_tokens": 0
+          }
+        },
+        "decision": {
+          "$ref": "#/definitions/ActivationDecision"
+        },
+        "end_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ended_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "goal_revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/definitions/ActivationOutcome"
+        },
+        "reasons": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ActivationReason"
+          },
+          "type": "array"
+        },
+        "report_ref": {
+          "description": "Where the full report is (`worklog:<sid>:turn:<seq>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "description": "The submitted Goal result, as accepted."
+        },
+        "schema": {
+          "type": "string"
+        },
+        "seq": {
+          "description": "= the Turn index of the epoch's Goal Session.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "started_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "type": "string"
+        },
+        "works_absorbed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "works_created": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "decision",
+        "ended_at_ms",
+        "epoch",
+        "goal_id",
+        "goal_revision",
+        "outcome",
+        "schema",
+        "seq",
+        "session_id",
+        "started_at_ms"
+      ],
+      "type": "object"
+    },
+    "GoalDistance": {
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "observed_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "unknowns": {
+          "description": "What is not known (never \"no change\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "GoalEnding": {
+      "description": "How the Goal Session ends (decided by its Goal).",
+      "properties": {
+        "cascade": {
+          "default": false,
+          "description": "The Goal's running Work is stopped too (archive).",
+          "type": "boolean"
+        },
+        "end": {
+          "$ref": "#/definitions/EpochEnd"
+        },
+        "outcome": {
+          "$ref": "#/definitions/Outcome"
+        },
+        "reason": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "end",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "GoalQuestion": {
+      "properties": {
+        "activation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation",
+        "at_ms",
+        "epoch",
+        "text"
+      ],
+      "type": "object"
+    },
+    "GoalSessionState": {
+      "description": "`state.json.goal` of a Goal Session: the Goal State the session owns (committed with the session, published to `state/goals/<id>/state.json` afterwards), Activation records not appended yet, the open Activation.",
+      "properties": {
+        "activation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OpenActivation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ending": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalEnding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "published_rev": {
+          "default": 0,
+          "description": "`state.rev` published last.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/definitions/GoalState"
+        },
+        "unwritten": {
+          "items": {
+            "$ref": "#/definitions/GoalActivation"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "epoch",
+        "goal_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "GoalSkill": {
+      "description": "A method / capability the Goal works with (architecture §10.2).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Where it is read (path, object id, behavior name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "GoalState": {
+      "description": "`state.json`.",
+      "properties": {
+        "absorbed": {
+          "description": "Work whose end was taken in by an Activation (any epoch; bounded).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "active_works": {
+          "items": {
+            "$ref": "#/definitions/GoalWork"
+          },
+          "type": "array"
+        },
+        "current_skills": {
+          "items": {
+            "$ref": "#/definitions/GoalSkill"
+          },
+          "type": "array"
+        },
+        "distance": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalDistance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "goal_revision_seen": {
+          "default": 0,
+          "description": "Goal revision the last Activation worked with.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "last_activation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LastActivation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_error": true,
+        "pending": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "questions": {
+          "description": "Recorded only; nobody is notified (phase 1).",
+          "items": {
+            "$ref": "#/definitions/GoalQuestion"
+          },
+          "type": "array"
+        },
+        "recent_works": {
+          "items": {
+            "$ref": "#/definitions/RecentWork"
+          },
+          "type": "array"
+        },
+        "rev": {
+          "description": "Monotonic; every published change.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "usage": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GoalUsage"
+            }
+          ],
+          "default": {
+            "activations": 0,
+            "period_start_ms": 0,
+            "tokens": 0,
+            "work_tokens": 0,
+            "works": 0
+          }
+        }
+      },
+      "required": [
+        "epoch",
+        "goal_id",
+        "rev",
+        "schema"
+      ],
+      "type": "object"
+    },
+    "GoalUsage": {
+      "description": "Usage of the current statistics period.",
+      "properties": {
+        "activations": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "period_start_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "tokens": {
+          "default": 0,
+          "description": "Tokens of the Goal Session's Activations.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "work_tokens": {
+          "default": 0,
+          "description": "Tokens of the Work absorbed in the period.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "works": {
+          "default": 0,
+          "description": "Work created in the period.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "period_start_ms"
+      ],
+      "type": "object"
+    },
+    "GoalWork": {
+      "description": "A Work of the Goal not absorbed yet.",
+      "properties": {
+        "created_in_activation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "goal_revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "objective": {
+          "default": "",
+          "type": "string"
+        },
+        "sid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_in_activation",
+        "epoch",
+        "goal_revision",
+        "sid"
+      ],
+      "type": "object"
+    },
     "InputPos": {
       "description": "Delivery position of a bus record.",
       "properties": {
@@ -185,6 +821,50 @@
       "required": [
         "index",
         "src"
+      ],
+      "type": "object"
+    },
+    "LastActivation": {
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "decision": {
+          "$ref": "#/definitions/ActivationDecision"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/definitions/ActivationOutcome"
+        },
+        "reasons": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ActivationReason"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "decision",
+        "epoch",
+        "outcome",
+        "seq"
       ],
       "type": "object"
     },
@@ -249,6 +929,62 @@
       },
       "required": [
         "run_id"
+      ],
+      "type": "object"
+    },
+    "OpenActivation": {
+      "description": "The Activation in progress of a Goal Session (= its open Turn).",
+      "properties": {
+        "absorbed": {
+          "description": "Work whose end it consumed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "budget": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ActivationBudget"
+            }
+          ],
+          "default": {},
+          "description": "Effective limits, frozen when it opened. Its tokens and runs are those of the `usage.jsonl` records after `usage_offset`."
+        },
+        "goal_revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "reasons": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ActivationReason"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "started_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "usage_offset": {
+          "default": 0,
+          "description": "Length of the session's `usage.jsonl` when it opened: its tokens are the records after it.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "goal_revision",
+        "seq",
+        "started_at_ms"
       ],
       "type": "object"
     },
@@ -599,6 +1335,56 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "RecentWork": {
+      "properties": {
+        "absorbed_in": {
+          "description": "`(epoch, activation)` that absorbed it.",
+          "items": [
+            {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "one_line_status": {
+          "default": "",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Outcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "absorbed_in",
+        "sid"
+      ],
+      "type": "object"
     },
     "ReplyRoute": {
       "description": "Default reply path of a session.",
@@ -1123,6 +1909,17 @@
         }
       ]
     },
+    "goal": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GoalSessionState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Goal Sessions: the Goal State it owns and the Activation in progress."
+    },
     "inputs": {
       "additionalProperties": {
         "$ref": "#/definitions/SourceProgress"
@@ -1293,6 +2090,10 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "turn_stop_requested": {
+      "description": "Only the open Turn is to be stopped (`control(stop, scope = turn)`, or any stop of a Goal Session): the session goes on waiting afterwards.",
+      "type": "boolean"
     },
     "turn_tasks": {
       "description": "Turns bound to a task of the host's task service: the open Turn's, closed ones whose terminal state is not reported yet, and the most recent settled ones.",

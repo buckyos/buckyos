@@ -114,6 +114,9 @@ pub struct RegistryEntry {
     /// Initial activity declaration copied from the session scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<super::config::Scope>,
+    /// The Goal a Goal Session works for, or that created a Work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_id: Option<String>,
     pub status: SessionStatus,
     /// `verify` marks entries whose location disappeared (never deleted).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -336,6 +339,9 @@ pub struct RegistryQuery {
     pub artifact_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_decision: Option<bool>,
+    /// Sessions of a Goal: its Goal Sessions (every epoch) and its Work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_id: Option<String>,
 }
 
 impl Default for RegistryQuery {
@@ -347,6 +353,7 @@ impl Default for RegistryQuery {
             not_finished_or_pending: None,
             artifact_id: None,
             pending_decision: None,
+            goal_id: None,
         }
     }
 }

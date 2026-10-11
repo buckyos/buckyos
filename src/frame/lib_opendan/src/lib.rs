@@ -14,6 +14,8 @@
 //! - [`bridge`]: msg-center / task state → Session Input Bus records.
 //! - [`runtime`]: execution environments for `exec` (native, tmux).
 //! - [`runner`]: drives a session to its end condition.
+//! - [`goal`]: Goals and their Goal Sessions (derivation, run
+//!   opportunities, budgets); the Goal object is in [`state::GoalStore`].
 
 pub mod api;
 pub mod bridge;
@@ -21,6 +23,7 @@ pub mod channel;
 pub mod error;
 pub mod fault;
 pub mod fsutil;
+pub mod goal;
 pub mod host;
 pub mod ids;
 pub mod lock;

@@ -127,7 +127,7 @@ async fn a_finished_session_gives_its_queue_back() {
     libopendan::post_input(
         agent.as_ref(),
         ui.sid(),
-        &PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
+        &PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
     )
     .await
     .unwrap();

@@ -67,8 +67,8 @@ impl LlmClient for Llm {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         // `TOOL:<command>` is a shell call instead of an answer.
         let answer = (self.script)(&req, n);
-        let message = match answer.strip_prefix("TOOL:") {
-            Some(command) => AiMessage::new(
+        let message = match (answer.strip_prefix("TOOL:"), answer.strip_prefix("REPORT:")) {
+            (Some(command), _) => AiMessage::new(
                 AiRole::Assistant,
                 vec![buckyos_api::AiContent::tool_use(
                     format!("c{n}"),
@@ -76,7 +76,19 @@ impl LlmClient for Llm {
                     [("command".to_string(), json!(command))].into_iter().collect(),
                 )],
             ),
-            None => AiMessage::text(AiRole::Assistant, answer),
+            // `REPORT:<json args>` is a call of the report tool.
+            (_, Some(args)) => {
+                let args: serde_json::Map<String, Value> = serde_json::from_str(args).unwrap();
+                AiMessage::new(
+                    AiRole::Assistant,
+                    vec![buckyos_api::AiContent::tool_use(
+                        format!("c{n}"),
+                        "report",
+                        args.into_iter().collect(),
+                    )],
+                )
+            }
+            _ => AiMessage::text(AiRole::Assistant, answer),
         };
         let mut r = AiResponse::new(message);
         r.usage = Some(AiUsage {
@@ -1666,5 +1678,110 @@ async fn a_canceled_task_stops_its_session() {
     let page = rpc(port, "session.worklog", json!({ "sid": sd.sid(), "turn": 1 })).await.unwrap();
     assert_eq!(page["complete"], true);
     assert!(page["entries"].as_array().unwrap().iter().any(|e| e["t"] == "turn_ended" && e["status"] == "stopped"));
+    loader.shutdown().await;
+}
+
+
+/// Goals in the Loader: created over kRPC, the host creates and runs the
+/// Goal Session (one Activation = one Turn = one task), `loader.status`
+/// shows the module, a Goal's driver-only files are not served, a manual
+/// activation is a run opportunity, and a TaskMgr cancel of an Activation's
+/// task ends only that Activation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn goals_are_hosted_and_a_canceled_activation_keeps_the_goal() {
+    let w = World::with_tasks();
+    let tasks = w.tasks.clone().unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = release.clone();
+    let llm = Llm::new(move |req, _| {
+        let system = system_text(req);
+        assert!(system.contains("(goal session)"), "{system}");
+        let header = req
+            .messages
+            .iter()
+            .map(|m| m.text_content())
+            .find(|t| t.starts_with("<goal_activation"))
+            .unwrap_or_default();
+        let root = header.lines().next().unwrap_or_default().to_string();
+        if root.contains(" activation=\"3\"") {
+            // The third Activation is busy until canceled.
+            let asked = Instant::now();
+            while !gate.load(Ordering::SeqCst) && asked.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return "TOOL:echo still busy".to_string();
+        }
+        r#"REPORT:{"report":"checked the list","is_end":true,"result":{"decision":"no_action","distance":"nothing open"}}"#.to_string()
+    });
+    let port = free_port();
+    let loader = Loader::start(w.env(llm, port).await).await.unwrap();
+    let g = rpc(
+        port,
+        "goals.create",
+        json!({ "request": { "objective": "keep the list short", "schedule": { "start_on_create": true } } }),
+    )
+    .await
+    .unwrap();
+    let goal_id = g["goal_id"].as_str().unwrap().to_string();
+    let activations = |n: usize| {
+        let goal_id = goal_id.clone();
+        move || {
+            futures_block(rpc(port, "goals.activations", json!({ "goal_id": goal_id })))
+                .map(|v| v.as_array().map(|a| a.len()).unwrap_or(0) >= n)
+                .unwrap_or(false)
+        }
+    };
+    until("first activation", activations(1)).await;
+    let state = rpc(port, "goals.state", json!({ "goal_id": goal_id })).await.unwrap();
+    assert_eq!(state["distance"]["text"], "nothing open");
+    let status = rpc(port, "loader.status", json!({})).await.unwrap();
+    assert_eq!(status["goals"]["goals"], 1);
+    assert!(status["modules"].as_array().unwrap().iter().any(|m| m["name"] == "goals" && m["running"] == true));
+    let err = rpc(port, "goals.write_state", json!({ "state": state })).await.unwrap_err();
+    assert!(err.to_string().contains("driver"), "{err}");
+    // A task per Activation.
+    let sid = g["session"]["sid"].as_str().unwrap().to_string();
+    until("task of activation 1", || {
+        tasks.all().iter().any(|t| t.new.input["session_id"] == sid && t.new.input["turn"] == 1)
+    })
+    .await;
+    rpc(port, "goals.activate", json!({ "goal_id": goal_id, "reason": "look again" }))
+        .await
+        .unwrap();
+    until("second activation", activations(2)).await;
+    // The third one is canceled through its task.
+    rpc(port, "goals.activate", json!({ "goal_id": goal_id })).await.unwrap();
+    until("task of activation 3", || {
+        tasks.all().iter().any(|t| t.new.input["session_id"] == sid && t.new.input["turn"] == 3)
+    })
+    .await;
+    let task_id = tasks
+        .all()
+        .iter()
+        .find(|t| t.new.input["session_id"] == sid && t.new.input["turn"] == 3)
+        .unwrap()
+        .id
+        .clone();
+    tasks
+        .tasks
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|t| t.id == task_id)
+        .unwrap()
+        .cancel_requested = true;
+    let entry = loader.agent.sessions().lookup(&sid).await.unwrap().unwrap();
+    let sd = SessionDir::open(&entry.location).unwrap();
+    until("the stop reached the activation", || {
+        sd.state().map(|s| s.turn_stop_requested || s.open_turn.is_none()).unwrap_or(false)
+    })
+    .await;
+    release.store(true, Ordering::SeqCst);
+    until("third activation", activations(3)).await;
+    let acts = rpc(port, "goals.activations", json!({ "goal_id": goal_id })).await.unwrap();
+    assert_eq!(acts[2]["outcome"], "stopped", "{acts:#}");
+    assert!(!finished(&sd));
+    let goal = rpc(port, "goals.get", json!({ "goal_id": goal_id })).await.unwrap();
+    assert_eq!(goal["status"], "active");
     loader.shutdown().await;
 }

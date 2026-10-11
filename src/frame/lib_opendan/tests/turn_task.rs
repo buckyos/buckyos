@@ -340,7 +340,7 @@ async fn a_stopped_turn_ends_its_placeholder_and_its_task() {
             post_blocking(
                 &queue_dir,
                 &queue,
-                PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
+                PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
             );
         }
         tool_call(&format!("c{n}"), "shell", json!({ "command": "echo hi" }))

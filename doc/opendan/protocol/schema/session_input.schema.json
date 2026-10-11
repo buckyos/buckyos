@@ -66,6 +66,14 @@
                 "string",
                 "null"
               ]
+            },
+            "scope": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/StopScope"
+                }
+              ],
+              "description": "`session` (default): the session finishes as stopped. `turn`: only the open Turn closes as stopped and the session goes on waiting. A Goal Session only ever stops its open Turn (it ends with its Goal)."
             }
           },
           "required": [
@@ -204,6 +212,33 @@
             "command"
           ],
           "type": "object"
+        },
+        {
+          "description": "Goal Sessions: change the Goal's current skills (applied by the driver to the Goal State it owns).",
+          "properties": {
+            "add": {
+              "items": {
+                "$ref": "#/definitions/GoalSkill"
+              },
+              "type": "array"
+            },
+            "command": {
+              "enum": [
+                "goal_skills"
+              ],
+              "type": "string"
+            },
+            "remove": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -222,6 +257,37 @@
       },
       "required": [
         "kind"
+      ],
+      "type": "object"
+    },
+    "GoalSkill": {
+      "description": "A method / capability the Goal works with (architecture §10.2).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Where it is read (path, object id, behavior name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     },
@@ -277,6 +343,14 @@
         "msg"
       ],
       "type": "object"
+    },
+    "StopScope": {
+      "description": "What a `stop` ends.",
+      "enum": [
+        "session",
+        "turn"
+      ],
+      "type": "string"
     },
     "Subscription": {
       "properties": {

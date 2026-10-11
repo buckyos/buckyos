@@ -33,6 +33,7 @@ fn random_part() -> String {
 /// - `work`: random, or `work-H("work", agent_did, creator, key)`
 /// - `self_improve`: random, or `si-H("self_improve", agent_did, creator, key)`
 /// - `self_check`: `sc-H("self_check", agent_did)`
+/// - `goal`: from the Goal only, [`goal_session_id`]
 pub fn derive_session_id(
     kind: SessionKind,
     agent_did: &str,
@@ -49,6 +50,11 @@ pub fn derive_session_id(
             format!("{prefix}-{}", h(&["ui", agent_did, route]))
         }
         SessionKind::SelfCheck => format!("{prefix}-{}", h(&["self_check", agent_did])),
+        SessionKind::Goal => {
+            return Err(OpenDanError::InvalidArgument(
+                "a goal session id derives from its goal and epoch (ids::goal_session_id); goal sessions are created by the host for a goal".into(),
+            ))
+        }
         SessionKind::Work | SessionKind::SelfImprove => match idempotency_key {
             Some(key) => format!(
                 "{prefix}-{}",
@@ -57,6 +63,25 @@ pub fn derive_session_id(
             None => format!("{prefix}-{}-{}", stamp(), random_part()),
         },
     })
+}
+
+/// Session id of epoch `epoch` of a Goal: `goal-H("goal", agent_did,
+/// goal_id, epoch)`.
+pub fn goal_session_id(agent_did: &str, goal_id: &str, epoch: u64) -> String {
+    format!(
+        "{}-{}",
+        SessionKind::Goal.id_prefix(),
+        h(&["goal", agent_did, goal_id, &epoch.to_string()])
+    )
+}
+
+/// A new goal id: `g-<yyyymmddThhmmss>-<8 hex>`, or `g-k<24 hex>` derived
+/// from an idempotency key of the creator.
+pub fn new_goal_id(agent_did: &str, creator: &str, key: Option<&str>) -> String {
+    match key {
+        Some(k) => format!("g-k{}", &h(&["goal_key", agent_did, creator, k])[..24]),
+        None => format!("g-{}-{}", stamp(), &random_part()[..8]),
+    }
 }
 
 /// Characters allowed in ids that become kevent segments / kmsg names.
@@ -187,6 +212,21 @@ mod tests {
         let o2 = derive_session_id(SessionKind::SelfCheck, "did:bns:jarvis.bob", "", None, None)
             .unwrap();
         assert_ne!(o1, o2);
+    }
+
+    #[test]
+    fn goal_session_ids_follow_the_goal_and_epoch() {
+        let a1 = goal_session_id("did:bns:a", "g-1", 1);
+        assert_eq!(a1, goal_session_id("did:bns:a", "g-1", 1));
+        assert_ne!(a1, goal_session_id("did:bns:a", "g-1", 2));
+        assert_ne!(a1, goal_session_id("did:bns:b", "g-1", 1));
+        assert!(a1.starts_with("goal-"));
+        validate_session_id(&a1).unwrap();
+        assert!(derive_session_id(SessionKind::Goal, "did:bns:a", "app:x@o", Some("k"), None).is_err());
+        let k1 = new_goal_id("did:bns:a", "app:x@o", Some("k"));
+        assert_eq!(k1, new_goal_id("did:bns:a", "app:x@o", Some("k")));
+        assert_ne!(new_goal_id("did:bns:a", "app:x@o", None), new_goal_id("did:bns:a", "app:x@o", None));
+        validate_session_id(&k1).unwrap();
     }
 
     #[test]

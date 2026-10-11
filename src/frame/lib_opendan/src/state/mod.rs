@@ -10,6 +10,7 @@ mod behaviors;
 mod cognition;
 mod connect;
 mod fs_client;
+pub mod goals;
 pub mod krpc;
 mod locks;
 pub mod perception;
@@ -39,6 +40,10 @@ pub use connect::{
     StateLocator, WithBehaviors, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
 };
 pub use fs_client::{AgentLayout, FsAgentStateClient};
+pub use goals::{
+    ActivationQuery, CallerKind, GoalCaller, GoalCreate, GoalReopen, GoalRestart, GoalRevise,
+    GoalStatusChange, GoalStore,
+};
 pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
 pub use perception::{run_digest, Backlog, BacklogItem, PERCEPTION_LOCK_TIMEOUT};
 
@@ -188,4 +193,6 @@ pub trait AgentStateClient: Send + Sync {
     /// The agent's behaviors and identity text (frozen into a session when
     /// it is constructed).
     fn behaviors(&self) -> &dyn BehaviorCatalog;
+    /// The agent's Goals (`state/goals/`).
+    fn goals(&self) -> &dyn GoalStore;
 }

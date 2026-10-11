@@ -187,7 +187,7 @@ async fn friends_without_homestation() {
     let net = Net::new(&["alice", "bob"], &[]).await;
     let (alice, bob) = (net.n("alice"), net.n("bob"));
     let kid = "did:test:alice-kid";
-    alice.contacts.0.lock().unwrap().push(homestation::contacts::ContactInfo { did: kid.into(), name: "kid".into(), friend: true, blocked: false, groups: vec![] });
+    alice.contacts.0.lock().unwrap().push(homestation::contacts::ContactInfo { did: kid.into(), name: "kid".into(), friend: true, blocked: false, groups: vec![], avatar: None });
     alice.add_contact(bob, true, &[]);
     net.rpc("alice", "admin.run", json!({ "task": "friends" })).await;
     let sources = net.rpc("alice", "sources.list", json!({})).await;

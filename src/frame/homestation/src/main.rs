@@ -1,6 +1,6 @@
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntimeType, HomeStationSettings, HOMESTATION_SERVICE_NAME,
-    HOMESTATION_SERVICE_PORT,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntimeType, HomeStationSettings,
+    ZonePresentationConfig, ZonePresentationFields, HOMESTATION_SERVICE_NAME, HOMESTATION_SERVICE_PORT, ZONE_PRESENTATION_KEY,
 };
 use clap::{Arg, ArgAction, Command};
 use homestation::auth::RuntimeAuth;
@@ -9,7 +9,7 @@ use homestation::db::Db;
 use homestation::directory::NameDirectory;
 use homestation::error::HsResult;
 use homestation::evaluation::{AiccModel, ModelClient};
-use homestation::host::{Host, HostConfig};
+use homestation::host::{Host, HostConfig, ZoneBrand};
 use homestation::http::{serve, AppState};
 use homestation::objects::{ChunkStore, NdmChunkStore};
 use homestation::sign::Signer;
@@ -172,7 +172,7 @@ async fn service_main() {
     };
     let mut host_cfg = HostConfig::new(&zone);
     host_cfg.zone_did = Some(zone_doc.id.to_string());
-    host_cfg.zone_name = settings.zone_name.clone().unwrap_or_else(|| zone.clone());
+    host_cfg.zone_name = settings.zone_name.clone();
     host_cfg.owner_user = owner_user;
     host_cfg.default_feed = settings.default_feed.clone();
     host_cfg.zone_feed_writers = settings.zone_feed_writers.clone();
@@ -184,6 +184,18 @@ async fn service_main() {
         }
     };
     let host = Host::new(host_cfg, directory, Arc::new(RuntimeAuth::default()), users, zone_feed, builder);
+    {
+        let host = host.clone();
+        tokio::spawn(async move {
+            loop {
+                match load_zone_brand().await {
+                    Ok(brand) => host.set_zone_brand(brand),
+                    Err(e) => log::warn!("zone display settings unavailable: {e}"),
+                }
+                tokio::time::sleep(ZONE_BRAND_REFRESH).await;
+            }
+        });
+    }
     match host.open_all().await {
         Ok(n) => log::info!("serving the HomeStations of {n} users of {zone}"),
         Err(e) => log::error!("opening user HomeStations: {e}"),
@@ -192,4 +204,23 @@ async fn service_main() {
         log::error!("serve failed: {e}");
         std::process::exit(1);
     }
+}
+
+const ZONE_BRAND_REFRESH: Duration = Duration::from_secs(60);
+
+/// The Zone's display name and icon: the administrator's settings over the ZoneDocument's candidates.
+async fn load_zone_brand() -> Result<ZoneBrand, String> {
+    let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+    let client = runtime.get_system_config_client().await.map_err(|e| e.to_string())?;
+    let settings = match client.get(ZONE_PRESENTATION_KEY).await {
+        Ok(value) => serde_json::from_str::<ZonePresentationConfig>(&value.value).map_err(|e| e.to_string())?.fields(),
+        Err(buckyos_api::SystemConfigError::KeyNotFound(_)) => ZonePresentationFields::default(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let document = runtime
+        .get_zone_config()
+        .and_then(|config| config.zone_document().ok())
+        .map(|document| ZonePresentationFields::from_zone_document(&document))
+        .unwrap_or_default();
+    Ok(ZoneBrand { name: settings.display_name.or(document.display_name), icon: settings.icon.or(document.icon) })
 }

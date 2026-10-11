@@ -27,6 +27,7 @@ import type {
 import type { Did, ObjId } from '../protocol/feed'
 import type { CommentList, EntryDebugView, HomeStationStore, ReadingSummary, StoreDomain, StoreSettings, StoreStatus } from '../store/types'
 import { setContentHome, type Transport, type UploadMeta } from './transport'
+import { didDisplayName } from '../../../presentation/model'
 
 const READING_PAGE = 8
 const PUBLISHED_PAGE = 10
@@ -350,7 +351,7 @@ export function createApiHomeStationStore(transport: Transport): HomeStationStor
 
     peekStatus: () => status,
     peekCard: (objId, reader) => cards.get(cardKey(objId, reader)) ?? null,
-    peekIdentity: did => identities.get(did) ?? { did, name: did.replace(/^did:[a-z0-9]+:/i, ''), kind: 'person', hue: hueOf(did) },
+    peekIdentity: did => identities.get(did) ?? { did, name: didDisplayName(did), kind: 'person', hue: hueOf(did) },
     peekSettings: () => ({ defaultAudience: boot?.settings.defaultAudience ?? { kind: 'public' }, likeNoticeShown: boot?.settings.likeNoticeShown ?? false }),
     peekGroups: () => boot?.groups ?? [],
     peekMuteRules: () => boot?.settings.muteRules ?? [],

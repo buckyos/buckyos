@@ -413,14 +413,14 @@ bridge 必须保证：同一来源内有序、至少一次、key 唯一。Sessio
 
 ### 4.7 Session 模板
 
-模板是 `SessionSpec` 的预设，按 `session.class` 选择；内置四个，`agent.toml [session.<class>]` 可覆盖；创建时解析进 session_config 的现有字段（`end_condition`、`input_policy`、`channels`、`subscriptions`、`prompt.behavior`）加一个新段 `session.policy`，与 behavior 一起冻结。
+模板是 `SessionSpec` 的预设，按 `session.class` 选择；内置五个，`agent.toml [session.<class>]` 可覆盖；创建时解析进 session_config 的现有字段（`end_condition`、`input_policy`、`channels`、`subscriptions`、`prompt.behavior`）加一个新段 `session.policy`，与 behavior 一起冻结。
 
 ```rust
 pub struct SessionTemplate {
     pub class: String,
     pub kind: SessionKind,
     pub turns: Turns,                 // One | Unbounded | N(n)   → end_condition
-    pub wait_user_msg: WaitPolicy,    // Allowed（Turn 保持打开等输入）| FinishFailed（work：不许等人，记 failed 并结束）| FinishCompleted
+    pub wait_user_msg: WaitPolicy,    // Allowed（Turn 保持打开等输入）| FinishFailed（work：不许等人，记 failed 并结束）| FinishCompleted | EndTurn（goal：Turn 带着问题结束，Session 继续等）
     pub input: InputChannel,          // None（不建队列）| Queue
     pub observe: Observe,             // Off | Events | EventsAndActive     → 半订阅快照包含哪些状态
     pub load_hints: bool,
@@ -428,7 +428,8 @@ pub struct SessionTemplate {
     pub max_process_depth: u8,        // process_stack 深度上限（默认 4，§3.3）
     pub max_sub_sessions: u8,         // 同时未结束的子 session 数上限（默认 4，§4.11）
     pub max_session_depth: u8,        // 子 session 嵌套深度上限（默认 2，§4.11）
-    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 self_check 的 timer、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
+    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 self_check 的 timer、goal 的 system:goal、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
+    pub goal: Option<GoalDefaults>,   // goal 类：[session.goal] 的 budget / min_interval_secs 缺省值
 }
 ```
 
@@ -438,6 +439,7 @@ pub struct SessionTemplate {
 | `ui` | Unbounded | Allowed | Queue | EventsAndActive | 是 | 长生命周期对话入口（后移） |
 | `self_improve` | One | FinishFailed | None | Off | 否 | 感知窗口整理 |
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
+| `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/opendan-goal-session-todo.md) |
 
 **无队列 work session 的后果**：stop 由 lease 持有者将 SIGINT 接到现有取消路径；decide 走 artifacts 门面；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断、感知只有结束时的 run_digest。父接收子状态（C15）与 task resolver 查询不需要队列，但子 LLM 主动给父发消息需要父有队列。只有需要接收外部投递的订阅才自动升为 Queue；默认时区的初始快照、拉取 session 状态、已跟踪 task 不因此强制建队列。无队列时不承诺收到外部时区更新。等待 task / children 时仍须轮询，不能因 `bus = None` 提前结束。
 
@@ -947,6 +949,16 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent behaviors --agent <did> [--frozen <sid>]
   xagent xllm   <sid> [--run <id>]                                     打印让 xllm 接手 live run 的命令行
   xagent schema <dir>                                               导出现有 protocol::json_schemas()
+  xagent goal   create --objective <t> [--title] [--lifecycle achieve|maintain] [--achieved-when] [--healthy-state]
+                       [--distance] [--constraint]… [--skill <name>[=<ref>]]… [--workspace] [--path]… [--object]…
+                       [--every <secs>] [--min-interval <secs>] [--start] [--behavior] [--budget <json>] [--key] [--json <request>]
+  xagent goal   list | show [<id>] [--state] [--activations <n>] [--changes <n>] [--revisions] [--epochs] [--schedule]
+  xagent goal   revise <id> --expected-revision <n> [...] | pause|resume|archive [<id>] [--reason] | achieved [<id>] --evidence <t>
+  xagent goal   reopen <id> --reason <t> [--fresh-state] | restart <id> --reason <t> [--carry-state]
+  xagent goal   activate <id> [--reason] | post <id> --msg <t> | skills add <name>[=<ref>] | skills remove <name>
+  xagent goal   serve [--llm-context <json|@file>] [--idle-unload <secs>]
+                 Goal：create 只写 Goal；宿主（Loader 的 goals 模块，或 goal serve 的 Supervisor）补建 Goal Session、
+                 投递运行机会（epoch 开始、本地定时、手动）、处理 epoch 迁移；activate / post 直接投给当前 epoch 的 Session
 
   <spec> = active|semi:session:<sid>[:watch=f1,f2] | active|semi:object:<id>#<event>
 
@@ -955,6 +967,9 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent recall <query> | note <text> | sessions [--active] [--children] | read-session <sid> | artifact ...
   xagent create-worksession --objective <t> [--report final|progress|none] [--wait] [...]   （§4.11）
   xagent wait <sid> | post <sid> --msg <t>                                                  （§4.13、§4.15）
+  xagent goal ...    调用方 = $OPENDAN_SESSION_ID 所在的 Session：UI Session 可 create / show / post / pause / resume /
+                     archive / reopen / restart / activate；Goal Session 可 show（省略 <id> 即自己的 Goal）/ skills add|remove /
+                     achieved --evidence / archive --reason；其余由 GoalStore 拒绝（退出码 6）
 
 身份与定位（都可用环境变量）：
   --agent <did>          [$OPENDAN_AGENT_DID]      --who <principal>       [$LIBOPENDAN_WHO，默认取 BuckyOS 运行时 app principal]
@@ -975,10 +990,10 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 | 0 | Turn 以 `completed` 关闭，或 Session 成功完成；只读 / 投递 / 创建不运行等命令成功 |
 | 1 | Turn 以 `failed` / `budget_exhausted` 关闭（含 work 模板下的 `WAIT_USER_MSG`），或 session 结束为 Failed |
 | 2 | 参数 / 配置 / 模板 / 冻结校验错误；失败的输入批次未消费，不表示此前没有应用控制或恢复提交 |
-| 3 | Idle / TurnOpen / OutcomesHandled：未正常完成所请求的推进，或调试停止条件已达到；等待用户、工具或子 Session 可再次 run；投递 input_full / queue_missing 也以可重试诊断返回 3 |
+| 3 | Idle / TurnOpen / OutcomesHandled：未正常完成所请求的推进，或调试停止条件已达到；等待用户、工具或子 Session 可再次 run；投递 input_full / queue_missing 也以可重试诊断返回 3；Goal 周期预算用尽（goal_budget_exhausted） |
 | 4 | 被 stop / 中断 |
-| 5 | Busy：session lease 或 run 锁被他人持有 |
-| 6 | 阻塞：NotDriver / Unregistered / BindFailed / RuntimeMismatch / RecoveryBlocked / session_readonly |
+| 5 | Busy：session lease 或 run 锁被他人持有；Goal 冲突（修订号不符、状态迁移不合法） |
+| 6 | 阻塞：NotDriver / Unregistered / BindFailed / RuntimeMismatch / RecoveryBlocked / session_readonly；Goal 操作越权（forbidden） |
 
 驱动命令 `--format json` 时 stdout 是带 kind 的 `DriveResult` JSON，各变体仅包含自己的字段；新增 TurnClosed / TurnOpen 带 §4.9 的字段。日志与诊断走 stderr，不能混入 JSON。现有 Idle 的详细等待信息可由 `status` 读取 state.waiting_for；不把本地推测补写回 state。
 

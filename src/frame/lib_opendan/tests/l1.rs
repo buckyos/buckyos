@@ -172,7 +172,7 @@ async fn worklog_turn_pages_preserve_boundaries_and_live_catchup() {
     let Acquire::Acquired(lease) = sd.acquire(holder("pages")).unwrap() else { panic!() };
     let mut session = sd.load(&lease).unwrap();
     let body = |turn, i| WorklogBody::UserMessage {
-        run_id: format!("r-{turn}"), turn, content: format!("message-{i}"),
+        run_id: format!("r-{turn}"), turn, content: format!("message-{i}"), brief: None,
     };
     session.append_worklog(&lease, (0..120).map(|i| body(1, i)).collect()).unwrap();
     let first_end = session.worklog_end();
@@ -230,6 +230,7 @@ async fn worklog_reverse_read_is_bounded_by_the_start_point() {
                 run_id: "r".into(),
                 turn: i,
                 content: format!("{i}:{body}"),
+                brief: None,
             }],
         )
         .unwrap();
@@ -291,6 +292,7 @@ async fn budget_exhaustion_compacts_without_gap() {
                 run_id: "r".into(),
                 turn: i,
                 content: format!("message {i} {}", "y".repeat(200)),
+                brief: None,
             }],
         )
         .unwrap();

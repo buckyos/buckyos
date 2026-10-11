@@ -375,13 +375,8 @@ impl Station {
                 )?)
             })
             .await?;
-        let identities: Vec<Value> = self
-            .view_ctx(Reader::Owner)
-            .await
-            .names
-            .iter()
-            .map(|(did, (name, kind))| json!({ "did": did, "name": name, "kind": kind, "hue": crate::hue_of(did) }))
-            .collect();
+        let ctx = self.view_ctx(Reader::Owner).await;
+        let identities: Vec<Value> = ctx.names.keys().map(|did| crate::projection::identity_view(&ctx, did)).collect();
         let followers = self.active_followers().await?;
         let following: Vec<Value> = self
             .db
@@ -673,6 +668,7 @@ impl Station {
                 "user": profile.user,
                 "name": profile.name,
                 "bio": profile.bio,
+                "avatar": profile.avatar,
                 "hue": crate::hue_of(&profile.did),
                 "followers": profile.followers,
                 "following": profile.following,
@@ -688,6 +684,7 @@ impl Station {
             "did": did,
             "name": remote.get("name"),
             "bio": remote.get("bio"),
+            "avatar": remote.get("avatar"),
             "hue": crate::hue_of(did),
             "followers": remote.get("followers"),
             "following": remote.get("following"),

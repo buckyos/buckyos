@@ -157,6 +157,13 @@
     "BehaviorPromptConfig": {
       "additionalProperties": false,
       "properties": {
+        "goal_activation": {
+          "description": "Goal Sessions: template of the Goal header (variable `goal`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mode": {
           "anyOf": [
             {

@@ -564,6 +564,7 @@
 .aiws-conn-offline .aiws-dot, .aiws-conn-stopped .aiws-dot { background: var(--cp-danger); }
 .aiws-root button.aiws-avatar { width: 32px; height: 32px; min-width: 32px; padding: 0; border-radius: 50%; justify-content: center; font-weight: 700; background: color-mix(in srgb, var(--cp-accent) 18%, var(--cp-surface)); color: var(--cp-accent); border: 2px solid var(--cp-surface-opaque, var(--cp-surface)); margin: 0 4px; }
 .aiws-avatar.is-static { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--cp-accent) 18%, var(--cp-surface)); color: var(--cp-accent); font-weight: 700; }
+.aiws-avatar-img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .aiws-identity-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
 .aiws-zoom-button span { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
 .aiws-zoom-panel { width: 220px; display: flex; flex-direction: column; gap: 6px; }

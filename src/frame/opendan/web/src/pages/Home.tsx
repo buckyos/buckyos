@@ -39,8 +39,9 @@ const outerTarget = window.top === window.self ? undefined : '_top'
 
 function Avatar({ profile, src, className }: { profile: AgentProfile; src?: string | null; className?: string }) {
   const image = src === undefined ? profile.avatar : src
-  return image ? (
-    <img src={image} alt="" className={clsx('shrink-0 rounded-full object-cover', className)} />
+  const [failed, setFailed] = useState<string | null>(null)
+  return image && image !== failed ? (
+    <img src={image} alt="" className={clsx('shrink-0 rounded-full object-cover', className)} onError={() => setFailed(image)} />
   ) : (
     <div
       aria-hidden
@@ -395,6 +396,7 @@ const KIND_LABEL: Partial<Record<RegistryEntry['kind'], TextKey>> = {
   work: 'kindWork',
   self_check: 'kindSelfCheck',
   self_improve: 'kindSelfImprove',
+  goal: 'kindGoal',
 }
 
 const sessionTitle = (e: RegistryEntry, binding?: UiBinding): string => {

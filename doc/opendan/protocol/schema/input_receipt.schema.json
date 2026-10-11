@@ -146,8 +146,15 @@
     "ReceiptPart": {
       "description": "One message injected by a batch.",
       "properties": {
+        "brief": {
+          "description": "One line standing for the message once it is history (a Goal header is not repeated in full by later Activations).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "part": {
-          "description": "`semi_subscription_snapshot | input`.",
+          "description": "`goal_activation | semi_subscription_snapshot | input`.",
           "type": "string"
         },
         "pos": {

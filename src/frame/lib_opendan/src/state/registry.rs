@@ -113,6 +113,11 @@ impl FsRegistry {
                 return false;
             }
         }
+        if let Some(g) = &q.goal_id {
+            if e.goal_id.as_deref() != Some(g.as_str()) {
+                return false;
+            }
+        }
         true
     }
 }

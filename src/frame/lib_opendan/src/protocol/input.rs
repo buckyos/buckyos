@@ -161,6 +161,12 @@ pub enum ControlCommand {
     Stop {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// `session` (default): the session finishes as stopped. `turn`: only
+        /// the open Turn closes as stopped and the session goes on waiting.
+        /// A Goal Session only ever stops its open Turn (it ends with its
+        /// Goal).
+        #[serde(default, skip_serializing_if = "StopScope::is_session")]
+        scope: StopScope,
     },
     /// The only input a finished session still accepts.
     Decide {
@@ -197,6 +203,29 @@ pub enum ControlCommand {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         objects: Vec<String>,
     },
+    /// Goal Sessions: change the Goal's current skills (applied by the
+    /// driver to the Goal State it owns).
+    GoalSkills {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add: Vec<super::goal::GoalSkill>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remove: Vec<String>,
+    },
+}
+
+/// What a `stop` ends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StopScope {
+    #[default]
+    Session,
+    Turn,
+}
+
+impl StopScope {
+    pub fn is_session(&self) -> bool {
+        *self == StopScope::Session
+    }
 }
 
 fn default_perceive_kind() -> String {
@@ -210,6 +239,7 @@ const CONTROL_COMMANDS: &[&str] = &[
     "unsubscribe",
     "activity",
     "perceive",
+    "goal_skills",
 ];
 
 impl ControlCommand {
@@ -221,6 +251,23 @@ impl ControlCommand {
             ControlCommand::Unsubscribe { .. } => "unsubscribe",
             ControlCommand::Activity { .. } => "activity",
             ControlCommand::Perceive { .. } => "perceive",
+            ControlCommand::GoalSkills { .. } => "goal_skills",
+        }
+    }
+
+    /// `stop` of the whole session.
+    pub fn stop(reason: Option<String>) -> Self {
+        ControlCommand::Stop {
+            reason,
+            scope: StopScope::Session,
+        }
+    }
+
+    /// `stop` of the open Turn only.
+    pub fn stop_turn(reason: Option<String>) -> Self {
+        ControlCommand::Stop {
+            reason,
+            scope: StopScope::Turn,
         }
     }
 }
@@ -763,12 +810,16 @@ pub const HOOK_ON_CONTEXT_SWITCH: &str = "on_context_switch";
 /// One message injected by a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReceiptPart {
-    /// `semi_subscription_snapshot | input`.
+    /// `goal_activation | semi_subscription_snapshot | input`.
     pub part: String,
     pub pos: MessagePos,
     /// The message's text block (evidence, worklog `user_message`). Image /
     /// document blocks are not repeated: read them at `pos` in the snapshot.
     pub text: String,
+    /// One line standing for the message once it is history (a Goal header
+    /// is not repeated in full by later Activations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
 }
 
 /// A semi-subscription state version a batch actually injected.

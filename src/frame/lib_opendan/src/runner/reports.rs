@@ -121,8 +121,11 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
             "cannot finish while tasks are still active; wait for their results",
         ));
     }
+    let goal = super::goal::is_goal(&s.config);
     drop(s);
-    if !child && !super::children::unsettled_children(sh).await?.is_empty() {
+    // A Goal Activation ends while its Work runs on: the Work's end is a
+    // later Activation's input.
+    if !child && !goal && !super::children::unsettled_children(sh).await?.is_empty() {
         return Err(invalid("cannot finish while child sessions are unsettled"));
     }
     Ok(())
@@ -163,6 +166,25 @@ pub(super) async fn submit(
         return Err(invalid("this context already has a final report"));
     }
     validate(sh, run, &args).await?;
+    // The final report of a Goal Activation carries the Goal result (a
+    // behavior-loop report is taken as it is; a wrong result is recorded).
+    let child = super::outcome::call_site_of(sh, run.run_id()).await.0;
+    if args.is_end
+        && !child
+        && matches!(source, ReportSource::Tool { .. })
+        && super::goal::is_goal(&sh.session.lock().await.config)
+    {
+        match &args.result {
+            Some(v) => {
+                GoalResult::parse(v).map_err(invalid)?;
+            }
+            None => {
+                return Err(invalid(
+                    "a goal activation ends with result={decision: no_action | acted | created_work | needs_info, distance?, pending?, questions?, skills?}",
+                ))
+            }
+        }
+    }
     let cfg = sh.session.lock().await.config.clone();
     let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
     let mut artifacts = Vec::new();

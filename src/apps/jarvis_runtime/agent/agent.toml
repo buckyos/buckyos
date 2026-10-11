@@ -41,6 +41,11 @@ enabled = false
 [loader.self_improve]
 enabled = false
 
+# Goals of the agent: the Loader creates one Goal Session per goal and epoch
+# and offers scheduled run opportunities (local schedule).
+[loader.goals]
+enabled = true
+
 [session.ui]
 default_behavior = "chat_route"
 max_process_depth = 4
@@ -53,3 +58,18 @@ max_process_depth = 4
 [session.work]
 default_behavior = "plan"
 max_process_depth = 8
+
+# Goal Sessions: every activation is one Turn; what a goal leaves out of its
+# budget and schedule comes from here.
+[session.goal]
+default_behavior = "goal"
+max_sub_sessions = 4
+min_interval_secs = 60
+
+[session.goal.budget.activation]
+max_total_tokens = 300000
+max_runs = 6
+
+[session.goal.budget.period]
+window_secs = 86400
+max_works = 24

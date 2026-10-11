@@ -1,0 +1,175 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ActivationDecision": {
+      "oneOf": [
+        {
+          "enum": [
+            "acted",
+            "created_work",
+            "needs_info"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Looked, nothing to do now (not \"achieved\").",
+          "enum": [
+            "no_action"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No valid result was submitted.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DistanceInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "properties": {
+            "evidence_refs": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "text": {
+              "type": "string"
+            },
+            "unknowns": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "`distance` of a Goal result: a sentence, or the structured form."
+    },
+    "GoalSkill": {
+      "description": "A method / capability the Goal works with (architecture §10.2).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Where it is read (path, object id, behavior name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "SkillsChange": {
+      "additionalProperties": false,
+      "properties": {
+        "add": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/GoalSkill"
+          },
+          "type": "array"
+        },
+        "remove": {
+          "default": [],
+          "description": "Skill names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "`result` of the final `report` of an Activation (checked by the runtime; a result that does not match makes the `report` call fail).",
+  "properties": {
+    "decision": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ActivationDecision"
+        }
+      ],
+      "description": "`no_action | acted | created_work | needs_info`."
+    },
+    "distance": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DistanceInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pending": {
+      "default": null,
+      "description": "Replaces the open items.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "questions": {
+      "default": null,
+      "description": "Questions for a person (recorded, not delivered).",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "skills": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SkillsChange"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "decision"
+  ],
+  "title": "GoalResult",
+  "type": "object"
+}

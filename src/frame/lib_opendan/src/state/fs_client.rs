@@ -7,6 +7,7 @@
 //!   state/perception/.cursor.json        consolidation cursor
 //!   state/artifacts/<aid>/artifact.json  artifact head
 //!   state/artifacts/<aid>/versions/v-<sid>.json
+//!   state/goals/<goal_id>/               goal, state, activations, schedule
 //!   memory/ notebook/ attention_signals/ cognition (agent_tool)
 //!   .locks/self_improve.lease  .locks/artifact/<aid>.lease
 //! ```
@@ -23,6 +24,7 @@ use super::activity::FsActivity;
 use super::artifacts::FsArtifacts;
 use super::behaviors::FsBehaviorCatalog;
 use super::cognition::FsCognition;
+use super::goals::FsGoals;
 use super::locks::FsLocks;
 use super::perception::FsPerception;
 use super::registry::FsRegistry;
@@ -77,6 +79,10 @@ impl AgentLayout {
             .join(aid)
             .join("versions")
             .join(format!("{ver}.json"))
+    }
+
+    pub fn goals_dir(&self) -> PathBuf {
+        self.root.join("state").join("goals")
     }
 
     pub fn workspaces_dir(&self) -> PathBuf {
@@ -141,6 +147,7 @@ pub struct FsAgentStateClient {
     workspaces: FsWorkspaces,
     locks: FsLocks,
     behaviors: FsBehaviorCatalog,
+    goals: FsGoals,
 }
 
 impl FsAgentStateClient {
@@ -160,6 +167,7 @@ impl FsAgentStateClient {
             layout.perception_dir(),
             layout.artifacts_dir(),
             layout.workspaces_dir(),
+            layout.goals_dir(),
             layout.locks_dir(),
         ] {
             std::fs::create_dir_all(&d).map_err(|e| OpenDanError::io(&d, e))?;
@@ -174,6 +182,7 @@ impl FsAgentStateClient {
             workspaces: FsWorkspaces::new(layout.clone(), agent_did),
             locks: FsLocks::new(layout.clone()),
             behaviors: FsBehaviorCatalog::new(layout.root.clone()),
+            goals: FsGoals::new(layout.clone(), agent_did),
             layout,
             did: agent_did.to_string(),
             id,
@@ -234,5 +243,9 @@ impl AgentStateClient for FsAgentStateClient {
 
     fn behaviors(&self) -> &dyn BehaviorCatalog {
         &self.behaviors
+    }
+
+    fn goals(&self) -> &dyn GoalStore {
+        &self.goals
     }
 }

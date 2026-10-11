@@ -14,6 +14,7 @@ use buckyos_api::{agent_short_name, AgentId, AgentRuntimeInfo, AgentSettings, KE
 use buckyos_http_server::{DirHandlerOptions, Runner};
 use libopendan::bridge::{EventBridge, KEventBridge, TimerBridge};
 use libopendan::channel::{KmsgChannels, Waker};
+use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
 use libopendan::runner::{BehaviorAssembler, OutboundSink, RunnerOptions};
 use libopendan::state::{register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient};
@@ -231,6 +232,14 @@ impl Loader {
                     supervisor.with_class_idle(&rule.session_class, Duration::from_secs(secs));
             }
         }
+        // Goals: their Goal Sessions follow the Goal list, scheduled run
+        // opportunities come from the local schedule (phase 1).
+        if config.loader.goals.enabled {
+            supervisor = supervisor.with_goals(GoalHost::new(GoalHostOptions::new(
+                env.agent_root.join("sessions"),
+                config.llm_context.clone(),
+            )));
+        }
 
         let mut tasks = Vec::new();
         let ui = match (&env.mail, config.loader.ui.is_empty()) {
@@ -262,6 +271,12 @@ impl Loader {
                 ))
             }
         };
+        module(
+            "goals",
+            config.loader.goals.enabled,
+            config.loader.goals.enabled,
+            config.loader.goals.enabled.then_some("schedule backend: local"),
+        );
         for (name, switch) in [
             ("self_check", &config.loader.self_check),
             ("self_improve", &config.loader.self_improve),

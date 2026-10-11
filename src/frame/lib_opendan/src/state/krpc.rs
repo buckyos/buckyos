@@ -86,6 +86,11 @@ pub fn error_from_wire(text: &str) -> OpenDanError {
         ),
         "session_id_conflict" => OpenDanError::SessionIdConflict(detail("session id conflict: ")),
         "artifact" => OpenDanError::Artifact(detail("artifact error: ")),
+        "goal_conflict" => OpenDanError::GoalConflict(detail("goal conflict: ")),
+        "goal_budget_exhausted" => {
+            OpenDanError::GoalBudgetExhausted(detail("goal budget exhausted: "))
+        }
+        "forbidden" => OpenDanError::Forbidden(detail("forbidden: ")),
         "channel" => OpenDanError::Channel(detail("input channel error: ")),
         _ => OpenDanError::Other(message),
     }
@@ -117,7 +122,29 @@ pub fn is_write(method: &str) -> bool {
             | "workspaces.archive"
             | "workspaces.unregister"
             | "workspaces.set_runtime_available"
+            | "goals.create"
+            | "goals.revise"
+            | "goals.set_status"
+            | "goals.reopen"
+            | "goals.restart"
     )
+}
+
+/// Goal writes of a driver or the host: never served (they need the
+/// AgentRoot and, for the Goal State, the session lease).
+pub const GOAL_DRIVER_ONLY: &[&str] = &[
+    "goals.write_state",
+    "goals.append_activations",
+    "goals.prepare_epoch",
+    "goals.end_epoch",
+    "goals.write_schedule",
+];
+
+fn goal_caller(who: &str, params: &Value) -> Result<GoalCaller> {
+    Ok(GoalCaller {
+        principal: who.to_string(),
+        session: arg::<Option<String>>(params, "session")?,
+    })
 }
 
 /// Dispatch one Agent State call of `who` onto `agent`. `None`: not an
@@ -279,6 +306,75 @@ pub async fn serve_call(
         },
         "behaviors.list" => agent.behaviors().list().await.and_then(out),
         "behaviors.revision" => agent.behaviors().revision().await.and_then(out),
+        "goals.list" => agent.goals().list().await.and_then(out),
+        "goals.get" => match arg::<String>(params, "goal_id") {
+            Ok(id) => agent.goals().get(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "goals.revision" => match (arg::<String>(params, "goal_id"), arg::<u64>(params, "revision")) {
+            (Ok(id), Ok(rev)) => agent.goals().revision(&id, rev).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "goals.changes" => match (arg::<String>(params, "goal_id"), arg::<Option<usize>>(params, "limit")) {
+            (Ok(id), Ok(limit)) => agent.goals().changes(&id, limit.unwrap_or(0)).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "goals.create" => match (arg::<GoalCreate>(params, "request"), goal_caller(who, params)) {
+            (Ok(req), Ok(c)) => agent.goals().create(&req, &c).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "goals.revise" => match (
+            arg::<String>(params, "goal_id"),
+            arg::<GoalRevise>(params, "request"),
+            goal_caller(who, params),
+        ) {
+            (Ok(id), Ok(req), Ok(c)) => agent.goals().revise(&id, &req, &c).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.set_status" => match (
+            arg::<String>(params, "goal_id"),
+            arg::<GoalStatusChange>(params, "request"),
+            goal_caller(who, params),
+        ) {
+            (Ok(id), Ok(req), Ok(c)) => agent.goals().set_status(&id, &req, &c).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.reopen" => match (
+            arg::<String>(params, "goal_id"),
+            arg::<GoalReopen>(params, "request"),
+            goal_caller(who, params),
+        ) {
+            (Ok(id), Ok(req), Ok(c)) => agent.goals().reopen(&id, &req, &c).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.restart" => match (
+            arg::<String>(params, "goal_id"),
+            arg::<GoalRestart>(params, "request"),
+            goal_caller(who, params),
+        ) {
+            (Ok(id), Ok(req), Ok(c)) => agent.goals().restart(&id, &req, &c).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.state" => match arg::<String>(params, "goal_id") {
+            Ok(id) => agent.goals().state(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "goals.epoch_state" => match (arg::<String>(params, "goal_id"), arg::<u64>(params, "epoch")) {
+            (Ok(id), Ok(epoch)) => agent.goals().epoch_state(&id, epoch).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "goals.activations" => match (
+            arg::<String>(params, "goal_id"),
+            arg::<Option<ActivationQuery>>(params, "query"),
+        ) {
+            (Ok(id), Ok(q)) => agent.goals().activations(&id, &q.unwrap_or_default()).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "goals.schedule" => match arg::<String>(params, "goal_id") {
+            Ok(id) => agent.goals().schedule(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        m if GOAL_DRIVER_ONLY.contains(&m) => Err(driver_only(m)),
         _ => return None,
     })
 }
@@ -572,6 +668,94 @@ impl AgentStateClient for KrpcAgentStateClient {
     }
     fn behaviors(&self) -> &dyn BehaviorCatalog {
         self
+    }
+    fn goals(&self) -> &dyn GoalStore {
+        self
+    }
+}
+
+#[async_trait]
+impl GoalStore for KrpcAgentStateClient {
+    async fn list(&self) -> Result<Vec<GoalDefinition>> {
+        self.call("goals.list", json!({})).await
+    }
+    async fn get(&self, goal_id: &str) -> Result<Option<GoalDefinition>> {
+        self.call("goals.get", json!({ "goal_id": goal_id })).await
+    }
+    async fn revision(&self, goal_id: &str, revision: u64) -> Result<Option<GoalDefinition>> {
+        self.call("goals.revision", json!({ "goal_id": goal_id, "revision": revision })).await
+    }
+    async fn changes(&self, goal_id: &str, limit: usize) -> Result<Vec<GoalChange>> {
+        self.call("goals.changes", json!({ "goal_id": goal_id, "limit": limit })).await
+    }
+    async fn create(&self, req: &GoalCreate, caller: &GoalCaller) -> Result<GoalDefinition> {
+        self.call("goals.create", json!({ "request": req, "session": caller.session })).await
+    }
+    async fn revise(&self, goal_id: &str, req: &GoalRevise, caller: &GoalCaller) -> Result<GoalDefinition> {
+        self.call(
+            "goals.revise",
+            json!({ "goal_id": goal_id, "request": req, "session": caller.session }),
+        )
+        .await
+    }
+    async fn set_status(
+        &self,
+        goal_id: &str,
+        req: &GoalStatusChange,
+        caller: &GoalCaller,
+    ) -> Result<GoalDefinition> {
+        self.call(
+            "goals.set_status",
+            json!({ "goal_id": goal_id, "request": req, "session": caller.session }),
+        )
+        .await
+    }
+    async fn reopen(&self, goal_id: &str, req: &GoalReopen, caller: &GoalCaller) -> Result<GoalDefinition> {
+        self.call(
+            "goals.reopen",
+            json!({ "goal_id": goal_id, "request": req, "session": caller.session }),
+        )
+        .await
+    }
+    async fn restart(&self, goal_id: &str, req: &GoalRestart, caller: &GoalCaller) -> Result<GoalDefinition> {
+        self.call(
+            "goals.restart",
+            json!({ "goal_id": goal_id, "request": req, "session": caller.session }),
+        )
+        .await
+    }
+    async fn state(&self, goal_id: &str) -> Result<Option<GoalState>> {
+        self.call("goals.state", json!({ "goal_id": goal_id })).await
+    }
+    async fn epoch_state(&self, goal_id: &str, epoch: u64) -> Result<Option<GoalState>> {
+        self.call("goals.epoch_state", json!({ "goal_id": goal_id, "epoch": epoch })).await
+    }
+    async fn activations(&self, goal_id: &str, q: &ActivationQuery) -> Result<Vec<GoalActivation>> {
+        self.call("goals.activations", json!({ "goal_id": goal_id, "query": q })).await
+    }
+    async fn schedule(&self, goal_id: &str) -> Result<Option<GoalSchedule>> {
+        self.call("goals.schedule", json!({ "goal_id": goal_id })).await
+    }
+    async fn write_state(&self, _lease: &Lease, _state: &GoalState) -> Result<()> {
+        Err(driver_only("goals.write_state"))
+    }
+    async fn append_activations(&self, _lease: &Lease, _records: &[GoalActivation]) -> Result<()> {
+        Err(driver_only("goals.append_activations"))
+    }
+    async fn prepare_epoch(&self, _goal_id: &str, _epoch: u64) -> Result<GoalState> {
+        Err(driver_only("goals.prepare_epoch"))
+    }
+    async fn end_epoch(
+        &self,
+        _goal_id: &str,
+        _epoch: u64,
+        _end: EpochEnd,
+        _reason: Option<String>,
+    ) -> Result<GoalDefinition> {
+        Err(driver_only("goals.end_epoch"))
+    }
+    async fn write_schedule(&self, _schedule: &GoalSchedule) -> Result<()> {
+        Err(driver_only("goals.write_schedule"))
     }
 }
 

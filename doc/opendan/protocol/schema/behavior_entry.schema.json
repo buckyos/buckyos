@@ -6,6 +6,12 @@
       "additionalProperties": false,
       "description": "`prompt` of a behavior entry.",
       "properties": {
+        "goal_activation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "on_context_switch": {
           "type": [
             "string",

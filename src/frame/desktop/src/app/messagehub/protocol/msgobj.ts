@@ -6,6 +6,8 @@
  * protocol objects directly instead of mapping them into a separate UI DTO.
  */
 
+import { didDisplayName } from '../../../presentation/model'
+
 export type DID = string
 export type ObjId = string
 export type Uri = string
@@ -248,7 +250,7 @@ export function getMessageMetaString(
 }
 
 export function getMessageSenderName(message: MessageObject): string {
-  return getMessageMetaString(message, 'ui_sender_name') ?? message.from
+  return getMessageMetaString(message, 'ui_sender_name') ?? didDisplayName(message.from)
 }
 
 export function getMessageDeliveryStatus(

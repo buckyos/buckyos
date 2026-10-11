@@ -2674,11 +2674,17 @@ pub fn build_runtime_protocol_for(
                     s.push_str(&render_action_usage(t));
                     s.push('\n');
                 }
+                if has_native {
+                    s.push_str("- Native function-call tools are also declared for this run; a reply that uses them is treated as a step with actions.\n");
+                }
+            } else if has_native {
+                // No XML actions, but tools: the run acts through them (a
+                // run told it has nothing to act with ends at its first step).
+                s.push_str("- To act, call one or more of the native function-call tools declared for this run (never inside <actions>); their results come back to you and you may call more. Only the declared tools exist.\n");
+                s.push_str("- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n");
+                s.push_str("- A reply without tool calls is the <response> document of the step: without <report end=\"true\"> the work continues with the next step. Submit <report end=\"true\"> with the complete final result only after you have done the work and observed the results.\n");
             } else {
-                s.push_str("- No actions are available in this run: reply with a single <response> whose <report end=\"true\"> contains the complete final result. Do not include <actions>.\n");
-            }
-            if has_native {
-                s.push_str("- Native function-call tools are also declared for this run; a reply that uses them is treated as a step with actions.\n");
+                s.push_str("- No actions or tools are available in this run: reply with a single <response> whose <report end=\"true\"> contains the complete final result. Do not include <actions>.\n");
             }
             if json {
                 s.push_str("- Output constraint: the content of the final <report end=\"true\"> MUST be exactly one valid JSON value.\n");
@@ -9031,6 +9037,63 @@ pub fn build_result_view(
 // =========================================================================
 // 测试
 // =========================================================================
+
+#[cfg(test)]
+mod behavior_protocol_tests {
+    use super::*;
+
+    fn tool(name: &str) -> ResolvedTool {
+        ResolvedTool {
+            name: name.into(),
+            description: String::new(),
+            args_schema: serde_json::json!({"type": "object"}),
+            source: "t".into(),
+        }
+    }
+
+    fn protocol(native: &[&str], actions: &[&str]) -> String {
+        let tools = EffectiveTools {
+            enabled: true,
+            native: native.iter().map(|n| tool(n)).collect(),
+            actions: actions.iter().map(|n| tool(n)).collect(),
+            ..Default::default()
+        };
+        build_runtime_protocol_for(
+            &HostProtocolFlavor::Session { intro: "intro".into() },
+            LoopModel::Behavior,
+            &tools,
+            false,
+        )
+    }
+
+    /// Native tools without XML actions: the run is told to act with them,
+    /// never that nothing is available.
+    #[test]
+    fn native_tools_only_are_the_way_to_act() {
+        let p = protocol(&["shell", "read_file"], &[]);
+        assert!(!p.contains("No actions"), "{p}");
+        assert!(p.contains("call one or more of the native function-call tools"), "{p}");
+        assert!(p.contains("without tool calls"), "{p}");
+        assert!(!p.contains("<actions>\n"), "{p}");
+    }
+
+    #[test]
+    fn actions_and_native_tools_both_described() {
+        let p = protocol(&["read_file"], &["shell"]);
+        assert!(p.contains("put one or more actions inside <actions>"), "{p}");
+        assert!(p.contains("Native function-call tools are also declared"), "{p}");
+        assert!(!p.contains("No actions"), "{p}");
+        let p = protocol(&[], &["shell"]);
+        assert!(!p.contains("Native function-call tools"), "{p}");
+    }
+
+    #[test]
+    fn without_actions_or_tools_the_reply_is_the_result() {
+        let p = protocol(&[], &[]);
+        assert!(p.contains("No actions or tools are available"), "{p}");
+        assert!(!p.contains("native function-call tools"), "{p}");
+    }
+}
 
 #[cfg(test)]
 mod tests {

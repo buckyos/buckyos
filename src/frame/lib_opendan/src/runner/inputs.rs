@@ -393,13 +393,44 @@ async fn apply_control(
 ) -> Result<bool> {
     let finished = s.state.is_finished();
     match cmd {
-        ControlCommand::Stop { reason } => {
-            s.state.stop_requested = true;
+        ControlCommand::Stop { reason, scope } => {
+            // A Goal Session ends with its Goal: a stop only ends the
+            // Activation in progress.
+            let turn_only =
+                *scope == StopScope::Turn || s.config.session.kind == SessionKind::Goal;
+            let applied = if !turn_only {
+                s.state.stop_requested = true;
+                true
+            } else if s.state.open_turn.is_some() {
+                s.state.turn_stop_requested = true;
+                true
+            } else {
+                false
+            };
             bodies.push(WorklogBody::ControlApplied {
                 input: m.input_ref(),
                 command: "stop".into(),
-                detail: json!({ "reason": reason, "from": m.from }),
+                detail: json!({
+                    "reason": reason,
+                    "from": m.from,
+                    "scope": if turn_only { "turn" } else { "session" },
+                    "applied": applied,
+                }),
             });
+        }
+        ControlCommand::GoalSkills { add, remove } => {
+            match super::goal::apply_skills_control(&mut s.state, add, remove) {
+                Ok(()) => bodies.push(WorklogBody::ControlApplied {
+                    input: m.input_ref(),
+                    command: "goal_skills".into(),
+                    detail: serde_json::to_value(cmd).unwrap_or(Value::Null),
+                }),
+                Err(reason) => bodies.push(WorklogBody::InputRejected {
+                    input: m.input_ref(),
+                    reason: RejectReason::InvalidPayload.as_str().into(),
+                    detail: reason,
+                }),
+            }
         }
         ControlCommand::Activity {
             summary,

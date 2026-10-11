@@ -226,7 +226,7 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
         })
     };
     let mut host_cfg = HostConfig::new(&zone);
-    host_cfg.zone_name = cfg.zone_name.clone().unwrap_or_else(|| zone.clone());
+    host_cfg.zone_name = cfg.zone_name.clone();
     host_cfg.owner_user = Some(owner_user.clone());
     host_cfg.default_feed = cfg.default_feed.clone();
     host_cfg.zone_feed_writers = cfg.zone_feed_writers.clone();

@@ -1,7 +1,8 @@
 # Agent Session 协议（反写 Spec）
 
 - 版本：7（session_input /3、session_config /7、session_state /6、binding /4、run.json version 6、snapshot_version 5；summary /2、mechanical/3）。2026-10-10 增加显式 report 提交、`session.policy.completion`、`state.latest_report / final_report`、`report_delivery` 和持久报告 journal；XML 结束只用 report.end，取消 END / 隐式 done。旧目录不迁移。版本 5 的 Session 模板、冻结配置、输入总线、Turn/task 与出站协议继续保留。Round / Step / Turn 见 [LLM Context readme](../../llm_context/readme.md)。
-- 日期：2026-10-10
+- 2026-10-11（同一主版本内的加法，不升版本）：Goal 与 Goal Session——AgentRoot `state/goals/<goal_id>/`（`opendan.goal/1`、`goal_state/1`、`goal_activation/1`、`goal_schedule/1`）、登记表与查询的 `goal_id`、`session.kind = goal` 与 `session.goal`、`origin.goal`、`policy.wait_user_msg = end_turn`、`prompt.goal_activation` 模板槽、`state.goal` 与 `state.turn_stop_requested`、`waiting_for.kind = event` 的实际使用、receipt part `goal_activation` 与 `parts[].brief` / worklog `user_message.brief`、`control(stop).scope` 与 `control(goal_skills)`、`system:goal` 运行机会事件。见 Agent State Protocol §9。
+- 日期：2026-10-11
 - 来源：由 Rust 参考实现 `src/frame/lib_opendan`（crate `libopendan`）反写（[实现计划](<../Agent Session SDK 实现计划.md>) L6 / V6）。字段以 `src/protocol/` 的类型为准，本目录的 JSON Schema 由这些类型导出。
 - 读者：实现其它语言 runner（buckyos-websdk 的 ts-runner 等）的开发者，以及审查协议的人。
 
@@ -26,7 +27,7 @@ Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；�
 | [Lease Protocol](<Lease Protocol.md>) | 推进权与各类锁、锁文件内容、接管前的执行核对 |
 | [Session Input Protocol](<Session Input Protocol.md>) | Agent 输入：总线记录（`opendan.session_input/3`）、MsgObject 消息与 AgentEvent、校验与拒绝、路由、消费进度、半订阅状态、Input 链路与内建渲染、receipt 与提交、bridge、长任务等待、Sub Session 的创建 / 汇报 / 等待 |
 | [Session Control Protocol](<Session Control Protocol.md>) | Session 控制：stop / decide / subscribe / unsubscribe / activity / perceive；驱动者自己的停止请求 |
-| [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录与 Session 模板 |
+| [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录与 Session 模板、Goals（定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度、写者与权限） |
 | [Agent Workspace Protocol](<Agent Workspace Protocol.md>) | 稳定身份、Known Workspaces、位置修订、固定绑定、本地写锁及交接、CLI、旧目录导入与能力边界 |
 
 ## 3. 机器可读材料
@@ -51,6 +52,7 @@ Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；�
 | 12_fork_child_live | fork 子 context 的 run 在跑、调用方的 run 作为 `caller` 帧挂起在 process_stack；两个 run 同属仍打开的 Turn 1 |
 | 13_unsupported_snapshot_version | 快照版本不支持：RecoveryBlocked，保留现场 |
 | 15_report_pending_commit | 最终报告与配对快照已持久但 Session 尚未关闭；恢复不推理，稳定产物与最终消息只交付一次 |
+| 16_goal_session | Goal 与它 epoch 1 的 Goal Session（两次 Activation 之间：`waiting_for = event`）、一个已结束的 Goal 派生 Work；Activation 1 吸收了定时运行机会与 Work 的结束，关闭 Turn 的提交已落盘但 Goal State 与 Activation 记录尚未写回：下一次推进只写回一次，不推理 |
 | 14_input_bus | 没有 session 状态：手工投递的总线记录（`records/`）及各自的处理、每种拒绝原因的记录（`rejected/`）、同一批输入的逐字节渲染（`rendering/`：`input_text.xml`、内建模板、半订阅快照、六个示例模板的 `.tpl` / `.out`、模板变量 `vars.json`、`input.media = reference / inline` 的 user 消息） |
 
 其余 §11 场景（选择性消费、订阅丢失重建、ack 不回退、持有者退出后接管、非驱动者被拒、binding 准备中断后修复、discard 与 accept 并发、历史段确定性、跨 Agent/App/owner 的 sid）由 `src/frame/lib_opendan/tests/` 的用例覆盖。

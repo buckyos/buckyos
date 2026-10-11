@@ -87,6 +87,16 @@ pub enum OpenDanError {
     Tool(String),
     #[error("artifact error: {0}")]
     Artifact(String),
+    /// A Goal changed meanwhile (revision / status / epoch), or the change
+    /// is not a valid transition from its current status.
+    #[error("goal conflict: {0}")]
+    GoalConflict(String),
+    /// The Goal's period budget refuses the request (a new Work, a fire).
+    #[error("goal budget exhausted: {0}")]
+    GoalBudgetExhausted(String),
+    /// The caller's kind may not do this (Goal rules by caller type).
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("{0}")]
     Other(String),
 }
@@ -142,6 +152,9 @@ impl OpenDanError {
             OpenDanError::Xllm(_) => "xllm",
             OpenDanError::Tool(_) => "tool",
             OpenDanError::Artifact(_) => "artifact",
+            OpenDanError::GoalConflict(_) => "goal_conflict",
+            OpenDanError::GoalBudgetExhausted(_) => "goal_budget_exhausted",
+            OpenDanError::Forbidden(_) => "forbidden",
             OpenDanError::Other(_) => "other",
         };
         let mut v = serde_json::json!({

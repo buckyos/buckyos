@@ -2,6 +2,7 @@ import type { CardView, IdentityView, ProfileView, PublishedPage, WrappedBody } 
 import type { Did, ObjId } from '../protocol/feed'
 import type { CommentList, HomeStationStore, StoreStatus } from '../store/types'
 import { setContentHome, TransportError } from './transport'
+import { didDisplayName } from '../../../presentation/model'
 
 // A read-only store for portal pages (`/homestation/<user>`, `/homestation/~zone`, the short
 // hosts' `/`): everything goes through `portal.*`, which the service answers with or without a
@@ -55,7 +56,7 @@ export function createPortalStore(source: PortalSource, feed: string): HomeStati
   async function loadProfile() {
     const data = await source.call<ProfileView>('portal.profile', { feed })
     profile = data
-    if (data.did) identities.set(data.did, { did: data.did, name: data.name, kind: data.kind === 'zone' ? 'site' : 'person', hue: data.hue })
+    if (data.did) identities.set(data.did, { did: data.did, name: data.name, kind: data.kind === 'zone' ? 'site' : 'person', hue: data.hue, avatar: data.avatar })
     return data
   }
 
@@ -116,7 +117,7 @@ export function createPortalStore(source: PortalSource, feed: string): HomeStati
 
     peekStatus: () => status,
     peekCard: objId => cards.get(objId) ?? null,
-    peekIdentity: did => identities.get(did) ?? { did, name: did.replace(/^did:[a-z0-9]+:/i, ''), kind: 'person', hue: hueOf(did) },
+    peekIdentity: did => identities.get(did) ?? { did, name: didDisplayName(did), kind: 'person', hue: hueOf(did) },
     peekSettings: () => ({ defaultAudience: { kind: 'public' }, likeNoticeShown: false }),
     peekGroups: () => [],
     peekMuteRules: () => [],

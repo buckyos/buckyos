@@ -167,13 +167,13 @@ async fn main() {
         }
         let contacts: Vec<ContactInfo> = match *name {
             "me" => vec![
-                ContactInfo { did: did("alice"), name: "Alice Chen".into(), friend: true, blocked: false, groups: vec![] },
-                ContactInfo { did: did("bob"), name: "Bob Zhang".into(), friend: true, blocked: false, groups: vec!["Hiking buddies".into()] },
-                ContactInfo { did: did(KAI.0), name: KAI.1.into(), friend: true, blocked: false, groups: vec![] },
+                ContactInfo { did: did("alice"), name: "Alice Chen".into(), friend: true, blocked: false, groups: vec![], avatar: None },
+                ContactInfo { did: did("bob"), name: "Bob Zhang".into(), friend: true, blocked: false, groups: vec!["Hiking buddies".into()], avatar: None },
+                ContactInfo { did: did(KAI.0), name: KAI.1.into(), friend: true, blocked: false, groups: vec![], avatar: None },
             ],
             "alice" | "bob" => vec![
-                ContactInfo { did: did("me"), name: "Lin".into(), friend: true, blocked: false, groups: vec![] },
-                ContactInfo { did: did(if *name == "alice" { "bob" } else { "alice" }), name: "friend".into(), friend: true, blocked: false, groups: vec![] },
+                ContactInfo { did: did("me"), name: "Lin".into(), friend: true, blocked: false, groups: vec![], avatar: None },
+                ContactInfo { did: did(if *name == "alice" { "bob" } else { "alice" }), name: "friend".into(), friend: true, blocked: false, groups: vec![], avatar: None },
             ],
             _ => vec![],
         };

@@ -120,7 +120,8 @@ payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 c
 | `event`，`source = task:<id>` 且有挂起调用在等该 task | 消费，`event_dropped{reason: pending_call}` | 只触发一次 resolver 查询；结果以 ToolResult 回填原 run / Turn |
 | `event`，没有匹配的有效订阅 | 消费，`event_dropped{reason: unsubscribed}` | 无；timer、系统事件没有兜底例外 |
 
-- 订阅匹配：给出 `subscription_id` 时必须存在且来源相符；未给出时取第一个来源相符的显式或隐式订阅。每个 Session 都有一个隐式 semi 订阅：用户时区（`_user_timezone`，`source = system:user_timezone`）。
+- 订阅匹配：给出 `subscription_id` 时必须存在且来源相符；未给出时取第一个来源相符的显式或隐式订阅。每个 Session 都有一个隐式 semi 订阅：用户时区（`_user_timezone`，`source = system:user_timezone`）。Goal Session（模板 `goal`）另有隐式 active 订阅 `_goal_activation`（`source = system:goal`）。
+- **Goal 的运行机会**：运行时（宿主或 CLI）向 Goal 当前 epoch 的 Goal Session 投递 `AgentEvent{subscription_id: "_goal_activation", source: system:goal, event, summary}`：`event = created | reopened | restarted`（epoch 开始，key `goal:<goal_id>:start:<epoch>`，每个 epoch 只投一次）、`scheduled`（定时，key `goal:<goal_id>:scheduled:<slot>:<missed>`，`missed` = 自上次以来经过的槽数，>1 表示停机期间错过的槽已合并为这一次）、`activate`（手动，key `goal:<goal_id>:activate:<request_id>`）。UI 转交的反馈是 Agent 自己发给自己的 `msg`（`delivery.from_name = "feedback from <来源>"`、`conversation_name = "goal <goal_id>"`）。积压的多个运行机会、Work 的结束（`_child`，Goal Session 按 `goal_id` 收取，跨 epoch 只收一次）与反馈合成一个 Activation 的输入批次，各自成为该 Activation 的 `reasons[]`。Goal 暂停时这些输入留在队列。
 - subscribe / unsubscribe 与事件按投递 index 生效：`event A → unsubscribe → event B` 中 A 按当时有效的订阅处理，unsubscribe 清理该订阅尚未注入的状态，B 丢弃。已被 active 订阅接受的事件不因之后的 unsubscribe 改判。
 - 挂起工具（PendingTool）或子 context 进行期间，msg / Input event 留在队列，不能填补缺失的 ToolResult；control 继续处理。
 - 先提交 state.json（消费位置、`pending_events`、worklog），再确认输入源。

@@ -21,8 +21,8 @@ use std::sync::{Arc, Weak};
 pub struct HostConfig {
     pub zone: String,
     pub zone_did: Option<String>,
-    /// Display name of the zone feed.
-    pub zone_name: String,
+    /// Display name of the zone feed set for HomeStation; none = the Zone's own display name.
+    pub zone_name: Option<String>,
     /// What `www.<zone>/` and `homestation.<zone>/` open: `<user>` or `~zone`; none = the
     /// zone owner's feed.
     pub default_feed: Option<String>,
@@ -38,7 +38,7 @@ impl HostConfig {
         Self {
             zone: zone.trim_end_matches('.').to_ascii_lowercase(),
             zone_did: None,
-            zone_name: zone.to_string(),
+            zone_name: None,
             default_feed: None,
             owner_user: None,
             zone_feed_writers: None,
@@ -148,7 +148,15 @@ pub struct Host {
     pub zone_feed: ZoneFeed,
     builder: StationBuilder,
     stations: std::sync::Mutex<HashMap<String, Arc<Station>>>,
+    brand: std::sync::RwLock<ZoneBrand>,
     me: Weak<Host>,
+}
+
+/// The Zone's display name and icon (`system/zone_presentation`), refreshed by the service.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ZoneBrand {
+    pub name: Option<String>,
+    pub icon: Option<String>,
 }
 
 impl Host {
@@ -160,7 +168,24 @@ impl Host {
         zone_feed: ZoneFeed,
         builder: StationBuilder,
     ) -> Arc<Self> {
-        Arc::new_cyclic(|me| Self { cfg, directory, auth, users, zone_feed, builder, stations: Default::default(), me: me.clone() })
+        Arc::new_cyclic(|me| Self { cfg, directory, auth, users, zone_feed, builder, stations: Default::default(), brand: Default::default(), me: me.clone() })
+    }
+
+    pub fn set_zone_brand(&self, brand: ZoneBrand) {
+        *self.brand.write().unwrap() = brand;
+    }
+
+    /// The zone feed's name: HomeStation's own setting, else the Zone's display name, else its host.
+    pub fn zone_name(&self) -> String {
+        self.cfg
+            .zone_name
+            .clone()
+            .or_else(|| self.brand.read().unwrap().name.clone())
+            .unwrap_or_else(|| self.cfg.zone.clone())
+    }
+
+    pub fn zone_icon(&self) -> Option<String> {
+        self.brand.read().unwrap().icon.clone()
     }
 
     pub fn home(&self, user: &str) -> HomeRef {
@@ -256,7 +281,7 @@ impl Host {
         json!({
             "zone": self.cfg.zone,
             "zoneDid": self.cfg.zone_did,
-            "zoneName": self.cfg.zone_name,
+            "zoneName": self.zone_name(),
             "defaultFeed": self.default_feed().await,
             "zoneFeed": { "feed": ZONE_FEED, "stream": self.home(ZONE_FEED).stream() },
         })
@@ -319,16 +344,17 @@ impl Host {
 
     pub async fn zone_profile(&self) -> HsResult<Value> {
         let home = self.home(ZONE_FEED);
-        Ok(json!({
+        Ok(crate::projection::without_nulls(json!({
             "did": self.cfg.zone_did,
             "user": ZONE_FEED,
             "kind": "zone",
-            "name": self.cfg.zone_name,
+            "name": self.zone_name(),
+            "avatar": self.zone_icon(),
             "bio": "",
             "stream": home.stream(),
             "posts": self.zone_feed.count().await?,
             "featured": [],
-        }))
+        })))
     }
 
     /// Object of a listed entry, from the publisher's station that grants it to the viewer
@@ -406,7 +432,7 @@ impl Host {
             "user": station.cfg.user,
             "stream": station.home().stream(),
             "defaultFeed": self.default_feed().await,
-            "zoneFeed": { "feed": ZONE_FEED, "name": self.cfg.zone_name, "writer": self.zone_feed_writer(&station.cfg.user).await },
+            "zoneFeed": { "feed": ZONE_FEED, "name": self.zone_name(), "writer": self.zone_feed_writer(&station.cfg.user).await },
         })
     }
 
@@ -438,7 +464,8 @@ impl Host {
         match method {
             "home" => Ok(json!({
                 "zone": self.cfg.zone,
-                "zoneName": self.cfg.zone_name,
+                "zoneName": self.zone_name(),
+                "zoneIcon": self.zone_icon(),
                 "defaultFeed": self.default_feed().await,
                 "zoneFeed": ZONE_FEED,
                 "viewer": match &me {

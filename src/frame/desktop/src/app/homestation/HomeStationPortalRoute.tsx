@@ -23,6 +23,8 @@ import { HomeStationStoreProvider } from './store/HomeStationStoreProvider'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from './ui/primitives'
 import { ToastHost } from './ui/ToastHost'
 import { useToast } from './ui/toastContext'
+import { usableImageUrl } from '../../presentation/model'
+import { ObjectImage } from '../../presentation/ObjectIcon'
 
 installHomeStationPreviewSource()
 
@@ -50,7 +52,7 @@ function PortalBar({ home, feed, entryKey }: { home: PortalHome; feed: string; e
   return (
     <div className="flex flex-wrap items-center gap-2 px-4 py-2.5" style={{ borderBottom: '1px solid var(--hs-divider)', background: 'var(--hs-subtle-bg)' }} data-testid="hs-portal-bar">
       <a href={portalHref(ZONE_FEED)} className="flex min-w-0 items-center gap-1.5 text-sm font-semibold" data-testid="hs-portal-zone">
-        <Globe2 size={15} />
+        <ObjectImage icons={[usableImageUrl(home.zoneIcon)]} className="h-[18px] w-[18px] rounded-[5px] object-cover" fallback={<Globe2 size={15} />} />
         <span className="truncate">{home.zoneName}</span>
       </a>
       <span className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -101,7 +103,7 @@ function ZoneFeedView({ home }: { home: PortalHome }) {
   return (
     <div data-testid="hs-zone-feed">
       <div className="px-4 pb-3 pt-5" style={{ borderBottom: '1px solid var(--hs-divider)' }}>
-        <h1 className="flex items-center gap-2 text-xl font-bold"><Globe2 size={20} />{home.zoneName}</h1>
+        <h1 className="flex items-center gap-2 text-xl font-bold"><ObjectImage icons={[usableImageUrl(home.zoneIcon)]} className="h-6 w-6 rounded-md object-cover" fallback={<Globe2 size={20} />} />{home.zoneName}</h1>
         <p className="mt-1 text-sm" style={{ color: 'var(--cp-muted)' }}>{t('homestation.portal.zoneIntro', 'Posts the users of this zone chose to show on its front page. Each one stays signed by its author and lives in the author’s own home feed.')}</p>
       </div>
       <ZoneFeedList />

@@ -45,6 +45,9 @@ pub struct Shared {
     pub task_status: Mutex<Option<(String, super::turn_task::TurnTaskStatus)>>,
     /// Serializes hand-overs of the outbox.
     pub flush: tokio::sync::Mutex<()>,
+    /// The driving process's stop was applied to a Goal Session's
+    /// Activation (once per drive).
+    pub external_stop_applied: std::sync::atomic::AtomicBool,
 }
 
 /// A Turn closed by a commit of this drive.

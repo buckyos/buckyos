@@ -719,6 +719,10 @@ pub struct SessionState {
     /// Stop requested through `control(stop)`; applied at the next safe point.
     #[serde(default)]
     pub stop_requested: bool,
+    /// Only the open Turn is to be stopped (`control(stop, scope = turn)`, or
+    /// any stop of a Goal Session): the session goes on waiting afterwards.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turn_stop_requested: bool,
     /// An input batch to commit without new input (context switch, sub
     /// context call / return through `next_behavior`); it joins the open Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -730,6 +734,10 @@ pub struct SessionState {
     /// call's tool result when the caller's run is opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_result: Option<Value>,
+    /// Goal Sessions: the Goal State it owns and the Activation in
+    /// progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<super::goal::GoalSessionState>,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -773,8 +781,10 @@ impl SessionState {
             last_error: None,
             pending_decision: None,
             stop_requested: false,
+            turn_stop_requested: false,
             internal_continuation: None,
             process_result: None,
+            goal: None,
             updated_at_ms: now_ms,
         }
     }

@@ -77,6 +77,12 @@ Deno.test("offline activation writes a self-contained did:web identity", async (
     const startConfig = readJson(
       path.join(rootDir, "etc", "start_config.json"),
     );
+    for (const filename of ["start_config.json", "node_identity.json"]) {
+      assert(
+        (fs.statSync(path.join(rootDir, "etc", filename)).mode & 0o777) === 0o600,
+        `${filename} must be private when activation commits it`,
+      );
+    }
     assert(
       startConfig.zone_name === result.zoneDid,
       "start config zone mismatch",

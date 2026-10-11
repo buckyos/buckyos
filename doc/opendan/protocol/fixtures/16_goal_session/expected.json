@@ -1,0 +1,109 @@
+{
+  "description": "Goal g (agent_root/state/goals/<goal_id>/) with its epoch-1 Goal Session between Activations (waiting for an event). Activation 1 consumed a scheduled run opportunity and the end of the Goal's Work, its Turn close is committed in state.json (state.goal), but the Goal State and the Activation record are not written back to the Goal yet.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "publish_goal_state_and_append_activation_without_inference",
+    "activation": {
+      "decision": "no_action",
+      "epoch": 1,
+      "outcome": "completed",
+      "reasons": [
+        "scheduled",
+        "child"
+      ],
+      "seq": 1,
+      "works_absorbed": [
+        "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea"
+      ]
+    },
+    "goal_state": {
+      "absorbed": [
+        "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea"
+      ],
+      "activations": 1,
+      "distance": "TODO.md has no finished items left"
+    },
+    "goal_state_rev": 3,
+    "llm_calls": 0,
+    "session": {
+      "finished": false,
+      "run_state": "waiting",
+      "waiting_for": "event"
+    }
+  },
+  "scenario": "goal_session",
+  "sessions": [
+    {
+      "goal": {
+        "activation_open": false,
+        "epoch": 1,
+        "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+        "published_rev": 1,
+        "state_rev": 3,
+        "unwritten": [
+          [
+            1,
+            1
+          ]
+        ],
+        "waiting_for": "event"
+      },
+      "live_run": null,
+      "runs_on_disk": [
+        "20261011-035015-cfc125"
+      ],
+      "session_id": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {
+          "q": {
+            "acked_index": 1
+          }
+        },
+        "last_run": "20261011-035015-cfc125",
+        "open_turn": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 6,
+        "run_state": "waiting",
+        "turn_seq": 1,
+        "turns_completed": 1
+      },
+      "worklog": {
+        "committed_bytes": 5159,
+        "committed_seq": 9,
+        "file_bytes": 5159,
+        "uncommitted_tail": false
+      }
+    },
+    {
+      "live_run": null,
+      "runs_on_disk": [
+        "20261011-035015-fe70f5"
+      ],
+      "session_id": "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea",
+      "state": {
+        "acceptance": "pending",
+        "inputs": {
+          "_bootstrap": {
+            "acked_index": 1
+          }
+        },
+        "last_run": "20261011-035015-fe70f5",
+        "open_turn": null,
+        "outcome": "succeeded",
+        "process_stack": [],
+        "rev": 3,
+        "run_state": "finished",
+        "turn_seq": 1,
+        "turns_completed": 1
+      },
+      "worklog": {
+        "committed_bytes": 1659,
+        "committed_seq": 6,
+        "file_bytes": 1659,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

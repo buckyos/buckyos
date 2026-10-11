@@ -262,7 +262,7 @@ async fn stop_while_waiting_for_a_task() {
     libopendan::post_input(
         env.agent().as_ref(),
         sd.sid(),
-        &PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
+        &PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
     )
     .await
     .unwrap();
@@ -336,7 +336,7 @@ async fn stop_interrupts_a_running_tool() {
                 post_blocking(
                     &qd,
                     &q,
-                    PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
+                    PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
                 );
             });
             tool_call("c1", "shell", json!({ "command": "sleep 60" }))
@@ -381,7 +381,7 @@ async fn the_bus_holds_at_most_64_pending_inputs() {
         .unwrap_err();
     assert!(matches!(err, OpenDanError::InputFull { pending: 64, .. }), "{err}");
     // Controls share the limit.
-    let stop = PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None });
+    let stop = PostedInput::control(APP, "stop-1", ControlCommand::stop(None));
     assert!(matches!(
         libopendan::post_input(agent.as_ref(), sd.sid(), &stop).await,
         Err(OpenDanError::InputFull { .. })

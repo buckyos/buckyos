@@ -1,0 +1,514 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActivationBudget": {
+      "additionalProperties": false,
+      "description": "Hard limits of one Activation (accumulated over its runs).",
+      "properties": {
+        "max_runs": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_total_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EpochEnd": {
+      "oneOf": [
+        {
+          "enum": [
+            "archived",
+            "achieved"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A restart opened the next epoch (the Work keeps running).",
+          "enum": [
+            "restarted"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "EpochStart": {
+      "enum": [
+        "created",
+        "reopened",
+        "restarted"
+      ],
+      "type": "string"
+    },
+    "GoalBudget": {
+      "additionalProperties": false,
+      "description": "Budget of a Goal; a field left out takes `agent.toml [session.goal]`.",
+      "properties": {
+        "activation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ActivationBudget"
+            }
+          ],
+          "default": {}
+        },
+        "period": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PeriodBudget"
+            }
+          ],
+          "default": {}
+        }
+      },
+      "type": "object"
+    },
+    "GoalCreatedBy": {
+      "properties": {
+        "principal": {
+          "type": "string"
+        },
+        "via": {
+          "description": "`owner | ui_session:<sid> | opendan`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal",
+        "via"
+      ],
+      "type": "object"
+    },
+    "GoalEpoch": {
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EpochEnd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ended_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "keep": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StateKeep"
+            }
+          ],
+          "default": "all"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sid": {
+          "type": "string"
+        },
+        "start": {
+          "$ref": "#/definitions/EpochStart"
+        },
+        "started_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "epoch",
+        "sid",
+        "start",
+        "started_at_ms"
+      ],
+      "type": "object"
+    },
+    "GoalLifecycle": {
+      "oneOf": [
+        {
+          "description": "Has a reachable end (`achieved_when`).",
+          "enum": [
+            "achieve"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Keeps a state (`healthy_state`); never achieved.",
+          "enum": [
+            "maintain"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "GoalScheduleSpec": {
+      "additionalProperties": false,
+      "description": "When the runtime offers the Goal a run (phase 1: a fixed interval).",
+      "properties": {
+        "every_secs": {
+          "description": "Scheduled Activations every `every_secs` (none: manual and event driven only).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_interval_secs": {
+          "description": "A scheduled fire closer than this to the last Activation is skipped (`None`: `[session.goal] min_interval_secs`).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "start_on_create": {
+          "default": false,
+          "description": "The first Activation starts when the Goal Session is created.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "GoalScope": {
+      "properties": {
+        "objects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "description": "Workspace the Goal Session (and the Work it creates) works in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GoalSessionRef": {
+      "properties": {
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch",
+        "sid"
+      ],
+      "type": "object"
+    },
+    "GoalSkill": {
+      "description": "A method / capability the Goal works with (architecture §10.2).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "Where it is read (path, object id, behavior name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "GoalStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "achieved",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "PeriodBudget": {
+      "additionalProperties": false,
+      "description": "Limits of one statistics period (fixed windows of `window_secs`).",
+      "properties": {
+        "max_activations": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_total_tokens": {
+          "description": "Tokens of Activations and absorbed Work together.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_works": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "window_secs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "StateKeep": {
+      "description": "What a new epoch keeps of the previous Goal State.",
+      "oneOf": [
+        {
+          "description": "Everything (reopen's default).",
+          "enum": [
+            "all"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Only what must not be lost: `active_works`, `absorbed`, `usage`, `recent_works`; skills return to `initial_skills` (restart's default).",
+          "enum": [
+            "facts"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "`goal.json`.",
+  "properties": {
+    "achieved_when": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "behavior": {
+      "description": "Behavior of the Goal Session (`None`: `[session.goal] default_behavior`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "beneficiaries": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "budget": {
+      "$ref": "#/definitions/GoalBudget"
+    },
+    "change_seq": {
+      "default": 0,
+      "description": "Every change of this file (`changes.jsonl` seq of the last one).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "constraints": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "created_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "created_by": {
+      "$ref": "#/definitions/GoalCreatedBy"
+    },
+    "distance_evaluation": {
+      "type": "string"
+    },
+    "epochs": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/GoalEpoch"
+      },
+      "type": "array"
+    },
+    "extensions": {
+      "additionalProperties": true,
+      "description": "Fields of later phases, preserved verbatim.",
+      "type": "object"
+    },
+    "goal_id": {
+      "type": "string"
+    },
+    "healthy_state": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "idempotency_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "initial_skills": {
+      "items": {
+        "$ref": "#/definitions/GoalSkill"
+      },
+      "type": "array"
+    },
+    "lifecycle": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoalLifecycle"
+        }
+      ],
+      "default": "maintain"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "revision": {
+      "description": "Content revision: definition, budget, schedule. Status changes, reopen and restart do not count.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "schedule": {
+      "$ref": "#/definitions/GoalScheduleSpec"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "scope": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoalScope"
+        }
+      ],
+      "default": {}
+    },
+    "session": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoalSessionRef"
+        }
+      ],
+      "description": "The epoch whose Goal Session is current."
+    },
+    "status": {
+      "$ref": "#/definitions/GoalStatus"
+    },
+    "status_by": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status_changed_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "status_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "created_at_ms",
+    "created_by",
+    "goal_id",
+    "objective",
+    "owner",
+    "revision",
+    "schema",
+    "session",
+    "status",
+    "title"
+  ],
+  "title": "GoalDefinition",
+  "type": "object"
+}

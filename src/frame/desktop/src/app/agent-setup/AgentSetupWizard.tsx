@@ -43,6 +43,7 @@ import {
 } from './model'
 import { RuntimePage } from './RuntimePage'
 import { Section } from './ui'
+import { presentUser } from '../../presentation/model'
 
 const stepGroups: Array<{ key: string; pages: AgentSetupPage[] }> = [
   { key: 'identity', pages: ['account', 'permissions'] },
@@ -366,7 +367,18 @@ function WizardBody({
       footer = next(nameReady, 'permissions')
       break
     case 'permissions':
-      body = <PermissionsPage draft={draft} update={update} account={account} />
+      body = (
+        <PermissionsPage
+          draft={draft}
+          update={update}
+          account={account}
+          owner={presentUser({
+            userId: account.user_id,
+            profile: ownProfile.state.status === 'ready' ? { display_name: account.user_name, ...ownProfile.state.detail.profile } : { display_name: account.user_name },
+            document: ownProfile.state.status === 'ready' ? ownProfile.state.detail.did_document : undefined,
+          })}
+        />
+      )
       footer = <>{back}{next(true, 'runtime')}</>
       break
     case 'runtime':

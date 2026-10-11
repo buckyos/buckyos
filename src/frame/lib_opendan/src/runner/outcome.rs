@@ -102,6 +102,12 @@ pub(super) struct Next {
     /// The session would finish, but sub sessions it must hear from are not
     /// settled: the run ends, the Turn stays open waiting for them.
     pub(super) wait_children: Vec<String>,
+    /// The Turn ended on a question nobody answers now
+    /// (`wait_user_msg = end_turn`).
+    pub(super) needs_input: bool,
+    /// Goal Sessions: why the Activation ended badly. The session itself
+    /// carries no error: it goes on waiting for its next Activation.
+    pub(super) goal_error: Option<Value>,
 }
 
 fn is_retryable_error(e: &LLMComputeError) -> bool {
@@ -187,6 +193,29 @@ fn refuse_handover(next: &mut Next, site: &CallSite, message: String) {
     next.error = Some(json!({ "kind": "behavior_config", "message": message, "recoverable": false }));
 }
 
+/// A Goal Session ends only with its Goal: whatever closes the Turn of an
+/// Activation (result, question, budget, error, a stop of the Turn) leaves
+/// the session waiting for its next run opportunity. Only the Goal's end
+/// (`state.goal.ending`, carried out as a session stop) finishes it.
+pub(super) fn goal_turn_end(state: &SessionState, next: &mut Next) {
+    if next.turn_end.is_none() || next.kind == FinishKind::ProcessDone {
+        return;
+    }
+    if next.kind == FinishKind::Stopped && super::goal::ending(state).is_some() {
+        if let Some(e) = super::goal::ending(state) {
+            next.outcome = Some(e.outcome);
+        }
+        return;
+    }
+    next.finished = false;
+    next.outcome = None;
+    next.waiting = true;
+    next.wait_children.clear();
+    if next.error.is_some() {
+        next.goal_error = next.error.take();
+    }
+}
+
 /// A Turn that failed for good in a session nobody answers
 /// (`wait_user_msg = finish_failed`) has no next input to recover with: the
 /// session ends as failed, which is what its parent or creator is told.
@@ -261,6 +290,14 @@ pub(super) fn classify_done(
                 );
             }
             WaitPolicy::FinishCompleted => decide_end(cfg, &mut next, completed + 1),
+            // Nobody answers now: the Turn ends with its question, the
+            // session waits for its next input.
+            WaitPolicy::EndTurn => {
+                next.kind = FinishKind::Wait;
+                next.waiting = true;
+                next.needs_input = true;
+                next.turn_end = Some(TurnStatus::Completed);
+            }
         },
         Some(b) if behavior && agent_tool::xllm::is_handover_target(b) => match (site.entry)(b) {
             Err(e) => refuse_handover(&mut next, site, e.to_string()),
@@ -394,12 +431,13 @@ pub(super) async fn handle_context_outcome(
         )
         .await;
     }
-    let (cfg, completed, stop) = {
+    let (cfg, completed, stop, turn_stop) = {
         let s = sh.session.lock().await;
         (
             s.config.clone(),
             s.state.turns_completed,
             s.state.stop_requested,
+            s.state.turn_stop_requested,
         )
     };
     let mut next = Next::default();
@@ -544,6 +582,14 @@ pub(super) async fn handle_context_outcome(
                 next.outcome = Some(Outcome::Stopped);
                 next.turn_end = Some(TurnStatus::Stopped);
                 status = RunStatus::Interrupted;
+            } else if turn_stop && !site.child {
+                // Only the open Turn is stopped; the session goes on.
+                next.kind = FinishKind::Stopped;
+                next.run_ended = true;
+                next.waiting = true;
+                next.turn_end = Some(TurnStatus::Stopped);
+                next.error = Some(json!({ "kind": "stopped", "message": reason, "recoverable": false }));
+                status = RunStatus::Interrupted;
             } else {
                 next.kind = FinishKind::Interrupted;
                 next.error = Some(json!({ "kind": "interrupted", "message": reason }));
@@ -576,6 +622,10 @@ pub(super) async fn handle_context_outcome(
             next.error = Some(json!({ "kind": "context_limit", "message": "context limit reached" }));
             status = RunStatus::Paused;
         }
+    }
+    if super::goal::is_goal(&cfg) && !site.child {
+        let s = sh.session.lock().await;
+        goal_turn_end(&s.state, &mut next);
     }
     if next.report.is_some() {
         lc.run.checkpoint_with_results(&snapshot, None)?;
@@ -669,8 +719,8 @@ pub(super) async fn finish_run(
     next: Next,
 ) -> Result<()> {
     let mut s = sh.session.lock().await;
-    let ended = commit_run_end(sh, &mut s, run, snapshot, behavior, &next).await?;
-    after_run_end(sh, s, run, &next, ended).await
+    let ended = Box::pin(commit_run_end(sh, &mut s, run, snapshot, behavior, &next)).await?;
+    Box::pin(after_run_end(sh, s, run, &next, ended)).await
 }
 
 /// The end-of-run commit: flush the run's unwritten history and its
@@ -738,6 +788,21 @@ async fn commit_run_end(
             if status == TurnStatus::Completed {
                 s.state.turns_completed += 1;
             }
+            s.state.turn_stop_requested = false;
+            // The Activation ends with its Turn, in the same commit.
+            Box::pin(super::goal::close_activation(
+                sh,
+                s,
+                super::goal::TurnEnd {
+                    status,
+                    needs_input: next.needs_input,
+                    answer: next.answer.as_deref(),
+                    report: next.report.as_ref(),
+                    error: next.goal_error.as_ref().or(next.error.as_ref()),
+                },
+            ))
+            .await?;
+            crate::fault::point("goal:after_activation_close");
             *sh.turn_closed.lock().expect("turn closed") = Some(ClosedTurn {
                 turn,
                 status,
@@ -820,6 +885,10 @@ async fn commit_run_end(
             "answer": next.answer.clone().map(|a| a.chars().take(2000).collect::<String>()),
             "answer_ref": REPORT_FILE,
         });
+        // A Goal's Work says which Goal (and revision) it was done for.
+        if let Some(g) = s.config.session.origin.as_ref().and_then(|o| o.goal.as_ref()) {
+            result["goal"] = serde_json::to_value(g).unwrap_or(Value::Null);
+        }
         if let Some(a) = artifact_ref {
             result["artifact_ref"] = a;
         }
@@ -835,7 +904,13 @@ async fn commit_run_end(
         s.state.run_state = RunState::Waiting;
         s.state.waiting_for = Some(if next.wait_children.is_empty() {
             WaitingFor {
-                kind: WaitingKind::Input,
+                // Between Activations a Goal Session waits for its next
+                // run opportunity, not for a person.
+                kind: if super::goal::is_goal(&s.config) {
+                    WaitingKind::Event
+                } else {
+                    WaitingKind::Input
+                },
                 refs: Vec::new(),
                 deadline_ms: None,
             }
@@ -989,6 +1064,17 @@ async fn after_run_end(
         &s.state.one_line_status,
         s.state.worklog.committed_seq,
     )];
+    // What a Goal Session perceives belongs to its Goal.
+    if let Some(b) = super::goal::binding(&s.config) {
+        let mut source = agent_tool::agent_memory::SourceRef::event(
+            agent_tool::agent_memory::SourceType::System,
+            format!("goal:{}:{}:turn:{turn}", b.goal_id, b.epoch),
+        );
+        source.session_id = Some(sid.clone());
+        source.goal_ref = Some(format!("goal:{}", b.goal_id));
+        source.actor_kind = Some(agent_tool::agent_memory::ActorKind::Runtime);
+        recs[0].source_ref = Some(source);
+    }
     if next.finished {
         recs.push(PerceptionRecord {
             seq: digest_seq + 1,
@@ -1062,8 +1148,21 @@ fn one_line(next: &Next) -> String {
 }
 
 fn render_report(s: &Session, answer: &str, next: &Next) -> String {
+    let goal = s
+        .config
+        .session
+        .origin
+        .as_ref()
+        .and_then(|o| o.goal.as_ref())
+        .map(|g| {
+            format!(
+                "- goal: `{}` (revision {}, epoch {} activation {})\n",
+                g.goal_id, g.revision, g.epoch, g.activation_seq
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "# Report — {}\n\n- session: `{}`\n- outcome: {}\n- turns: {}\n\n{}\n",
+        "# Report — {}\n\n- session: `{}`\n{goal}- outcome: {}\n- turns: {}\n\n{}\n",
         s.config
             .session
             .objective

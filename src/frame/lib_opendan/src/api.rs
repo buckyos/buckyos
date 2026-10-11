@@ -76,6 +76,9 @@ pub struct SessionSpec {
     /// the driver's first drive.
     #[serde(default)]
     pub freeze: bool,
+    /// Goal Sessions: the Goal and epoch (see [`ensure_goal_session`]).
+    #[serde(default)]
+    pub goal: Option<GoalBinding>,
 }
 
 /// Input channel of a session (xAgent §4.7).
@@ -124,6 +127,7 @@ impl SessionSpec {
             input_channel: None,
             outbound: None,
             freeze: false,
+            goal: None,
         }
     }
 }
@@ -151,6 +155,11 @@ pub async fn create_session(
     channels: &dyn InputChannelFactory,
 ) -> Result<SessionDir> {
     let mut spec = spec;
+    if spec.kind == SessionKind::Goal && (spec.goal.is_none() || spec.session_id.is_none()) {
+        return Err(OpenDanError::InvalidArgument(
+            "goal sessions are created by the host for a goal (`xagent goal create`, kRPC goals.create)".into(),
+        ));
+    }
     if spec.kind == SessionKind::Ui && spec.route_key.is_none() {
         // Not bound to a mailbox (a local dialogue): a route of its own.
         spec.route_key = Some(match &spec.idempotency_key {
@@ -253,6 +262,7 @@ pub async fn create_session(
             task_binding: spec.task_binding.clone(),
             timezone: spec.timezone.clone(),
             policy: spec.policy.clone(),
+            goal: spec.goal.clone(),
         },
         prompt: spec.prompt.clone(),
         runtime: spec.runtime.clone(),
@@ -317,6 +327,19 @@ pub async fn create_session(
         artifact_id: existing.artifact_id.clone(),
         objective: existing.session.objective.clone(),
         scope: existing.session.scope.clone(),
+        goal_id: existing
+            .session
+            .goal
+            .as_ref()
+            .map(|g| g.goal_id.clone())
+            .or_else(|| {
+                existing
+                    .session
+                    .origin
+                    .as_ref()
+                    .and_then(|o| o.goal.as_ref())
+                    .map(|g| g.goal_id.clone())
+            }),
         status: SessionStatus::created(crate::now_ms()),
         unreachable: false,
         location_rev: 0,
@@ -552,19 +575,41 @@ pub async fn create_sub_session(
     };
     let class = sub.class.clone().unwrap_or_else(|| "work".to_string());
     let template = crate::template::SessionTemplate::load(&class, agent.agent_root())?;
+    if template.kind == SessionKind::Goal {
+        return Err(OpenDanError::InvalidArgument(
+            "a goal session is never a sub session: create a goal (`agent-session goal create`)".into(),
+        ));
+    }
     let sid = ids::derive_session_id(template.kind, agent.agent_did(), who, Some(&key), None)?;
     // The same call again: the session it created, never a second one.
     if let Some(existing) = agent.sessions().lookup(&sid).await? {
         return SessionDir::open(&existing.location);
     }
     let policy = &pcfg.session.policy;
-    let siblings = agent
-        .sessions()
-        .children_of(&[parent_sid.to_string()])
-        .await?
-        .into_iter()
-        .filter(|e| e.status.run_state != RunState::Finished)
-        .count();
+    // A Goal's Work counts for the Goal, whichever epoch created it.
+    let goal_origin = match &pcfg.session.goal {
+        Some(binding) => Some(crate::goal::work_admission(agent, &pcfg, &parent_dir, binding).await?),
+        None => None,
+    };
+    let siblings = match &goal_origin {
+        Some(g) => agent
+            .sessions()
+            .query(&RegistryQuery {
+                goal_id: Some(g.goal_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|e| e.kind != SessionKind::Goal && e.status.run_state != RunState::Finished)
+            .count(),
+        None => agent
+            .sessions()
+            .children_of(&[parent_sid.to_string()])
+            .await?
+            .into_iter()
+            .filter(|e| e.status.run_state != RunState::Finished)
+            .count(),
+    };
     if siblings >= policy.max_sub_sessions as usize {
         return Err(OpenDanError::InvalidArgument(format!(
             "session {parent_sid} already has {siblings} unfinished sub sessions (max_sub_sessions = {}); wait for one or stop it",
@@ -599,6 +644,7 @@ pub async fn create_sub_session(
                     .as_ref()
                     .and_then(|o| o.parent_task.clone())
             }),
+        goal: goal_origin,
     });
     spec.timezone = pcfg.session.timezone.clone();
     spec.prompt.llm_context = pcfg.prompt.llm_context.clone();

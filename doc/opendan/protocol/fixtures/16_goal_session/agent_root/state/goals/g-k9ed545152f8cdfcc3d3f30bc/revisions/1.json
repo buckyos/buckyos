@@ -1,0 +1,39 @@
+{
+  "schema": "opendan.goal/1",
+  "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+  "revision": 1,
+  "change_seq": 0,
+  "title": "todo keeper",
+  "objective": "Keep TODO.md free of finished items.",
+  "scope": {},
+  "lifecycle": "maintain",
+  "distance_evaluation": "Count the finished items still listed in TODO.md.",
+  "owner": "app:app2@alice",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "owner"
+  },
+  "schedule": {
+    "every_secs": 3600,
+    "start_on_create": false
+  },
+  "status": "active",
+  "status_changed_at_ms": 1791715815183,
+  "status_by": "app:app2@alice",
+  "session": {
+    "epoch": 1,
+    "sid": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f"
+  },
+  "epochs": [
+    {
+      "epoch": 1,
+      "sid": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+      "started_at_ms": 1791715815183,
+      "start": "created",
+      "keep": "all"
+    }
+  ],
+  "idempotency_key": "fixture",
+  "created_at_ms": 1791715815183,
+  "updated_at_ms": 1791715815183
+}

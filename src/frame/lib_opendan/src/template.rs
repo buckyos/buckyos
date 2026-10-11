@@ -40,10 +40,41 @@ pub struct SessionTemplate {
     /// Subscriptions the template registers (there is no "delivered without
     /// a subscription" rule).
     pub implicit_subscriptions: Vec<Subscription>,
+    /// Goal Sessions: what a Goal leaves out of its budget and schedule.
+    pub goal: Option<GoalDefaults>,
+}
+
+/// `agent.toml [session.goal]` defaults of every Goal (`budget`,
+/// `min_interval_secs`), over the built-in ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalDefaults {
+    pub budget: GoalBudget,
+    pub min_interval_secs: u64,
+}
+
+impl Default for GoalDefaults {
+    fn default() -> Self {
+        Self {
+            budget: GoalBudget {
+                activation: ActivationBudget {
+                    max_total_tokens: Some(400_000),
+                    max_runs: Some(8),
+                },
+                period: PeriodBudget {
+                    window_secs: Some(86_400),
+                    max_total_tokens: None,
+                    max_activations: None,
+                    max_works: Some(24),
+                },
+            },
+            min_interval_secs: 60,
+        }
+    }
 }
 
 impl SessionTemplate {
-    /// The built-in templates: `work`, `ui`, `self_improve`, `self_check`.
+    /// The built-in templates: `work`, `ui`, `self_improve`, `self_check`,
+    /// `goal`.
     pub fn builtin(class: &str) -> Option<Self> {
         let policy = SessionPolicy::default();
         let base = |kind, turns, wait, input, observe, hints| SessionTemplate {
@@ -60,6 +91,7 @@ impl SessionTemplate {
             max_sub_sessions: policy.max_sub_sessions,
             max_session_depth: policy.max_session_depth,
             implicit_subscriptions: Vec::new(),
+            goal: None,
         };
         Some(match class {
             "work" => base(
@@ -107,6 +139,31 @@ impl SessionTemplate {
                 });
                 t
             }
+            // The context of one epoch of a Goal: every Activation is one
+            // Turn; between them it waits for the next run opportunity the
+            // runtime posts (`system:goal`), a Work's end or a message
+            // handed over from a UI. Nobody answers it directly: a question
+            // ends the Activation.
+            "goal" => {
+                let mut t = base(
+                    SessionKind::Goal,
+                    Turns::Unbounded,
+                    WaitPolicy::EndTurn,
+                    InputChannel::Queue,
+                    ObserveScope::EventsAndActive,
+                    true,
+                );
+                t.implicit_subscriptions.push(Subscription {
+                    id: GOAL_ACTIVATION_SUBSCRIPTION.into(),
+                    mode: SubscriptionMode::Active,
+                    source: SubscriptionSource::System {
+                        id: GOAL_SOURCE_ID.into(),
+                    },
+                    watch: Vec::new(),
+                });
+                t.goal = Some(GoalDefaults::default());
+                t
+            }
             _ => return None,
         })
     }
@@ -146,7 +203,7 @@ impl SessionTemplate {
             }
             (None, None) => {
                 return Err(OpenDanError::InvalidArgument(format!(
-                    "unknown session class `{class}` (built-in: work, ui, self_improve, self_check; others need agent.toml [session.{class}])"
+                    "unknown session class `{class}` (built-in: work, ui, self_improve, self_check, goal; others need agent.toml [session.{class}])"
                 )))
             }
         };
@@ -201,6 +258,19 @@ impl SessionTemplate {
                     .as_integer()
                     .and_then(|n| u8::try_from(n).ok())
                     .ok_or_else(|| bad(key))?;
+            }
+        }
+        if let Some(g) = t.goal.as_mut() {
+            if let Some(v) = parse("budget")? {
+                let budget: GoalBudget = serde_json::from_value(v)
+                    .map_err(|e| OpenDanError::InvalidArgument(format!("agent.toml [session.{class}] budget: {e}")))?;
+                g.budget = budget.over(&g.budget);
+            }
+            if let Some(v) = over.get("min_interval_secs") {
+                g.min_interval_secs = v
+                    .as_integer()
+                    .and_then(|n| u64::try_from(n).ok())
+                    .ok_or_else(|| bad("min_interval_secs"))?;
             }
         }
         Ok(t)

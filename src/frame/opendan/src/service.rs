@@ -13,6 +13,9 @@
 //! - `loader.status`: hosting state, modules, recent errors.
 //! - `agent.profile`, `agent.profile_set`, `usage.models`, `ui.bindings`:
 //!   the home page ([`crate::home`]).
+//! - `goals.*` of the facade, plus `goals.activate` / `goals.post` (a run
+//!   opportunity / a message for a Goal); a Goal changed here is reconciled
+//!   by the host right away.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -261,6 +264,17 @@ impl StateService {
                     self.host(&sid, "input").await;
                 }
             }
+            if method.starts_with("goals.") && is_write(method) {
+                // The host acts on the change now (its session, its epoch).
+                let id = param::<String>(params, "goal_id")
+                    .ok()
+                    .or_else(|| result.as_ref().ok().and_then(|g| g["goal_id"].as_str().map(str::to_string)));
+                if let Some(id) = id {
+                    if let Err(e) = self.supervisor.goal_changed(&id).await {
+                        log::warn!("service: goal {id} not reconciled yet: {e}");
+                    }
+                }
+            }
             return result;
         }
         match method {
@@ -269,7 +283,10 @@ impl StateService {
             "session.stop" => {
                 let sid: String = param(params, "sid")?;
                 let reason = param::<Option<String>>(params, "reason")?;
-                self.post_control(who, &sid, ControlCommand::Stop { reason }).await
+                // A Goal Session only stops its open Activation; the session
+                // itself ends with its Goal.
+                let scope = param::<Option<StopScope>>(params, "scope")?.unwrap_or_default();
+                self.post_control(who, &sid, ControlCommand::Stop { reason, scope }).await
             }
             "session.decide" => {
                 let sid: String = param(params, "sid")?;
@@ -307,6 +324,25 @@ impl StateService {
             "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
             "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,
             "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
+            "goals.activate" => {
+                let id: String = param(params, "goal_id")?;
+                let reason = param::<Option<String>>(params, "reason")?
+                    .unwrap_or_else(|| format!("activated by {who}"));
+                let request = param::<Option<String>>(params, "request_id")?
+                    .unwrap_or_else(libopendan::ids::new_runner_id);
+                let index = self.supervisor.goal_activate(&id, &request, &reason).await?;
+                Ok(json!({ "index": index, "key": libopendan::goal::activate_key(&id, &request) }))
+            }
+            "goals.post" => {
+                let id: String = param(params, "goal_id")?;
+                let text: String = param(params, "text")?;
+                let from = match param::<Option<String>>(params, "session")? {
+                    Some(s) => format!("session:{s}"),
+                    None => who.to_string(),
+                };
+                let (index, key) = self.supervisor.goal_feedback(&id, &text, &from).await?;
+                Ok(json!({ "index": index, "key": key }))
+            }
             "loader.status" => Ok(json!({
                 "agent_did": self.info.agent_did,
                 "agent_id": self.info.agent_id,
@@ -317,6 +353,7 @@ impl StateService {
                 "modules": *self.info.modules.lock().expect("modules"),
                 "hosted": self.supervisor.status(),
                 "ui": self.ui.as_ref().map(|u| u.status()),
+                "goals": self.supervisor.goals().map(|g| g.status()),
                 "errors": *self.info.errors.lock().expect("errors"),
             })),
             other => Err(OpenDanError::InvalidArgument(format!("unknown method `{other}`"))),
@@ -328,7 +365,12 @@ impl StateService {
 fn is_operation(method: &str) -> bool {
     matches!(
         method,
-        "session.stop" | "session.decide" | "session.post" | "agent.profile_set"
+        "session.stop"
+            | "session.decide"
+            | "session.post"
+            | "agent.profile_set"
+            | "goals.activate"
+            | "goals.post"
     )
 }
 

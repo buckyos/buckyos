@@ -11,14 +11,15 @@
 | `session` | `SessionDir`（读取、创建发布）、`Session`（持锁提交 state.json）、worklog、`runs/`（xllm RunStore 封装） |
 | `channel` | kmsg 输入（`KmsgInput`）、开发用文件队列 `DirMsgQueue`（kmsg 语义）、kevent 唤醒 |
 | `bridge` | msg bridge（msg-center 记录 → 总线记录，只过滤与分流：只放行 Owner，群消息要求开关与 @；较早记录转成 `delivery.context` 上下文消息）、task bridge（task 状态 → `AgentEvent`）、回复信封与出站记录；宿主内的 `EventBridge`：timer、kevent |
-| `state` | `AgentStateClient` 与文件实现：登记表（含 `children_of`）、活动视图、感知、认知门面、产物列表、Agent 级锁、behavior 目录（`BehaviorCatalog`、冻结）；`connect`（进程内 → AgentRoot → kRPC）、`krpc`（`KrpcAgentStateClient` 与传输无关的服务端分发 `serve_call`：读与带署名的写；驱动者的写入不上 kRPC）、`ForwardingStateClient`、`WithBehaviors` |
+| `state` | `AgentStateClient` 与文件实现：登记表（含 `children_of`）、活动视图、感知、认知门面、产物列表、Agent 级锁、behavior 目录（`BehaviorCatalog`、冻结）；`connect`（进程内 → AgentRoot → kRPC）、`krpc`（`KrpcAgentStateClient` 与传输无关的服务端分发 `serve_call`：读与带署名的写；驱动者的写入不上 kRPC）、`ForwardingStateClient`、`WithBehaviors`；`goals`（`GoalStore`：Goal 定义 / 修订 / 变更 CAS、按调用方类型的权限、驱动者的 Goal State / Activation 记录发布、宿主的 epoch 准备与计划进度） |
 | `memory` | Agent Memory 组件门面（[需求](<../../../doc/opendan/Agent Memory 认知管理需求.md>) 附录 A）：感知写入（宿主绑定身份、授权主体与来源，幂等键、文件短锁）、两层召回 `query_topic` / `query` 与按引用读取（可见性、范围、纠正兜底、分池预算）、`changes_since`（版本向量快照，快速路径不打开 Graph）、Session 侧 `ObservationState`（topic、阀门、pending、read_set）、持整理 lease 的 `Consolidator`（批次、单 envelope 提交、清理、到期清扫）；Graph 在 `agent_tool::agent_memory`（schema 3.0） |
-| `template` | Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 覆盖；包自定义的 class 用 `base = "<内建模板>"` 指定起点，缺省 `work`）→ `SessionSpec` 与 `session.policy`。ui 模板的 kind 是 `ui`，由 `route_key` 绑定到一个会话 |
-| `host` | 一个进程托管多个 Session：`HostDeps`（每个 Session 自己的 runtime）、`ChildDriver`（推进子 Session）、`run_session`、`serve`；常驻宿主用的 `Supervisor`（按登记表托管 `driver = me` 的未结束 Session 与子 Session、`ensure_task`、按 class 的 idle unload、只读托管状态、退出时等待各循环结束而不 stop Session） |
+| `goal` | Goal 与 Goal Session 的共用部分：`ensure_goal_session`（按 `(goal_id, epoch)` 派生）、运行机会事件（`post_activation` / `post_feedback`，稳定 key）、有效预算与统计窗口、Work 准入（`origin.goal`、周期上限） |
+| `template` | Session 模板（`work / ui / self_improve / self_check / goal`，`agent.toml [session.<class>]` 覆盖；包自定义的 class 用 `base = "<内建模板>"` 指定起点，缺省 `work`）→ `SessionSpec` 与 `session.policy`。ui 模板的 kind 是 `ui`，由 `route_key` 绑定到一个会话 |
+| `host` | 一个进程托管多个 Session：`HostDeps`（每个 Session 自己的 runtime）、`ChildDriver`（推进子 Session）、`run_session`、`serve`；常驻宿主用的 `Supervisor`（按登记表托管 `driver = me` 的未结束 Session 与子 Session、`ensure_task`、按 class 的 idle unload、只读托管状态、退出时等待各循环结束而不 stop Session）；`host::goals`（`GoalHost`：按 Goal 列表补建 Goal Session、epoch 迁移与结束、`ScheduleBackend` / `LocalScheduleBackend`、可扩展的准入链，`Supervisor::with_goals`、`goal_activate`、`goal_feedback`） |
 | `runtime` | 复用 agent_tool::runtime；仅保留 Session bin/helper、绑定与环境核验 |
-| `runner` | `drive`：恢复、输入路由（`inputs`）、模板视图与内建格式（`input_view`）、输入批次提交（半订阅快照 + 受控输入，开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭（`StopWhen::TurnClosed`）、挂起调用的 task 等待与回填、后台 task 跟踪、process 切换、压缩、Round 统计、子 Session 的隐式关注与 `session:<sid>` resolver（`children`）、`BehaviorAssembler`、驱动者停止请求（`StopSignal`）、出站（`outbound`：Turn 关闭的提交里写 `state.outbox`，提交后交给 `OutboundSink`，重启后原样重发） |
+| `runner` | `drive`：恢复、输入路由（`inputs`）、模板视图与内建格式（`input_view`）、输入批次提交（半订阅快照 + 受控输入，开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭（`StopWhen::TurnClosed`）、挂起调用的 task 等待与回填、后台 task 跟踪、process 切换、压缩、Round 统计、子 Session 的隐式关注与 `session:<sid>` resolver（`children`）、`BehaviorAssembler`、驱动者停止请求（`StopSignal`）、出站（`outbound`：Turn 关闭的提交里写 `state.outbox`，提交后交给 `OutboundSink`，重启后原样重发）、Goal Session（`goal`：Goal State 随 Session 提交再发布、状态闸门、Goal 头、Activation 的打开 / 预算 / 关闭与写回、Work 的跨 epoch 吸收） |
 | `api` | `create_session` / `read_session` / `post_input` / `create_self_improve_session` / `create_sub_session` |
-| `bin/xagent` | 命令行：`xagent new / run / serve / post / ctl / status / list / behaviors / xllm / schema`，以及作为 `agent-session` 被 shell 里的命令调用的层 ② 工具 |
+| `bin/xagent` | 命令行：`xagent new / run / serve / post / ctl / status / list / behaviors / xllm / schema / goal`，以及作为 `agent-session` 被 shell 里的命令调用的层 ② 工具 |
 
 ## 使用
 
@@ -86,6 +87,7 @@ cargo test -p libopendan -- --test-threads=1
 | `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json`；`14_input_bus` 的记录处理、拒绝原因与逐字节渲染 |
 | `tests/xagent_lib.rs` | 无队列 work Session 与 `prompt.initial_inputs`、`WAIT_USER_MSG` 的模板语义、`TurnClosed` / `TurnOpen`、behavior 冻结 / 补冻结 / 缺失冻结、三种 Agent State 实现结果一致、Sub Session（父等待汇报、`session:<sid>` 回填、数量与深度、交互式子提问、stop 级联、进度半订阅）、驱动者停止请求、on_context_switch 前的半订阅快照、timer bridge |
 | `tests/xagent_cli.rs` | `xagent` 可执行文件（本地 OpenAI 兼容 mock）：`new --no-run` / `run` / `post` / `ctl` / `status` / `list` / `xllm` / `schema` 的退出码与 stdout 单个 JSON、无队列投递拒绝、ui 模板等输入与同一 Turn 续答、经 `shell` 的 `agent-session create-worksession --wait`、xllm 接手后由 xagent 提交结束、第二个驱动者 Busy 与 SIGINT、tmux runtime 归属 Session、`serve` |
+| `tests/goal_session.rs` | Goal Session（Goal Session TODO §5 的 V01–V20）：宿主补建与幂等、定时 Activation 与 Goal 头、错过的槽合并、Activation 预算、错误结果被拒、Work 创建与跨 Activation 吸收、修订提示、周期上限、问题结束 Activation、暂停 / 恢复、归档级联、自我归档与 reopen、restart 接管 Work、停止单次 Activation、历史中的 Goal 头、调用方权限、kRPC、skills 控制与反馈；崩溃窗口（建 Session 前、Activation 中 kill -9、写回前后、fire 已记录未投递） |
 | `tests/dv_kmsg.rs` | （`--ignored`）真实 kmsg 服务：幂等建队列 / 订阅、消费与累积 ack、finished 后拒绝并 ack；在 DV Test OOD 上以 root 运行 `cargo test -p libopendan --test dv_kmsg -- --ignored` |
 
 重新生成 fixtures / JSON Schema：`cargo run -p libopendan --example fixtures -- ../doc/opendan/protocol/fixtures`（在 `src/` 下执行）。

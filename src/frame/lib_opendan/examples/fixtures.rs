@@ -24,12 +24,12 @@ use std::time::{Duration, Instant};
 use agent_tool::xllm::XllmDeps;
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiUsage};
-use libopendan::api::{create_session, SessionSpec};
+use libopendan::api::{create_session, create_sub_session, SessionSpec, SubSessionSpec};
 use libopendan::channel::{kmsg::post_to_queue, KmsgChannels, PollWaker};
 use libopendan::protocol::*;
 use libopendan::runner::{drive, RunnerDeps, RunnerOptions, StopWhen};
 use libopendan::runtime::NativeRuntime;
-use libopendan::state::AgentStateClient;
+use libopendan::state::{AgentStateClient, GoalCaller, GoalCreate};
 use libopendan::{FsAgentStateClient, SessionDir};
 use llm_context::deps::{LlmClient, LlmInferenceRequest};
 use llm_context::error::{LLMComputeError, ProviderFailure};
@@ -117,6 +117,15 @@ impl LlmClient for Script {
                     )
                 }
             }
+            "goal_no_action" => tool(
+                "goal-report",
+                "report",
+                json!({
+                    "report": "Item 1 was ticked by its work; nothing else is open.",
+                    "is_end": true,
+                    "result": { "decision": "no_action", "distance": "TODO.md has no finished items left", "pending": [] }
+                }),
+            ),
             "transient" => {
                 if all.contains("second message") {
                     text("got both")
@@ -618,6 +627,7 @@ async fn gen(out: &Path) -> R<()> {
                     run_id: "r-old".into(),
                     turn: i,
                     content: format!("old message {i}"),
+                    brief: None,
                 }],
             )?;
         }
@@ -823,6 +833,105 @@ async fn gen(out: &Path) -> R<()> {
                 "artifact": { "path": "answer.txt", "content": "verified answer: 42\n" },
                 "outcome": "succeeded",
                 "acceptance": "pending"
+            }));
+        relativize(&d);
+    }
+    {
+        // A Goal, its Goal Session between Activations, a Work of the Goal
+        // that finished, and an Activation whose close is committed but not
+        // written back to the Goal yet.
+        let d = scen("16_goal_session");
+        let env = Env::new(&d);
+        let agent = env.agent();
+        let goal = agent
+            .goals()
+            .create(
+                &GoalCreate {
+                    key: Some("fixture".into()),
+                    title: Some("todo keeper".into()),
+                    objective: "Keep TODO.md free of finished items.".into(),
+                    distance_evaluation: "Count the finished items still listed in TODO.md.".into(),
+                    schedule: GoalScheduleSpec {
+                        every_secs: Some(3600),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                &GoalCaller::owner(APP),
+            )
+            .await?;
+        agent.goals().prepare_epoch(&goal.goal_id, 1).await?;
+        let (gsd, _) = libopendan::goal::ensure_goal_session(
+            agent.as_ref(),
+            &goal,
+            1,
+            APP,
+            env.channels().as_ref(),
+            &d.join("app"),
+            &json!({ "tools": { "enabled": true } }),
+            libopendan::goal::GOAL_CLASS,
+        )
+        .await?;
+        let work = create_sub_session(
+            agent.as_ref(),
+            APP,
+            gsd.sid(),
+            SubSessionSpec {
+                objective: "Tick item 1 of TODO.md".into(),
+                msgs: vec!["tick item 1 of TODO.md".into()],
+                key: Some("fixture-work".into()),
+                ..Default::default()
+            },
+            env.channels().as_ref(),
+        )
+        .await?;
+        let r = drive(&work, &env.deps("answer"), StopWhen::Finished).await;
+        assert!(r.is_finished(), "{r:?}");
+        libopendan::goal::post_activation(
+            agent.as_ref(),
+            &goal,
+            APP,
+            ActivationReasonKind::Scheduled,
+            &libopendan::goal::scheduled_key(&goal.goal_id, 1, 1),
+            "scheduled run (every 3600s)",
+        )
+        .await?;
+        env.child_wait(&gsd, "goal_no_action", "finish_run:after_commit");
+        let st = gsd.state()?;
+        let shadow = st.goal.clone().unwrap();
+        assert!(shadow.needs_flush() && shadow.unwritten.len() == 1);
+        assert_eq!(st.waiting_for.as_ref().map(|w| w.kind), Some(WaitingKind::Event));
+        let mut observed = observe(&gsd);
+        observed["goal"] = json!({
+            "goal_id": goal.goal_id,
+            "epoch": shadow.epoch,
+            "state_rev": shadow.state.rev,
+            "published_rev": shadow.published_rev,
+            "unwritten": shadow.unwritten.iter().map(|a| json!([a.epoch, a.seq])).collect::<Vec<_>>(),
+            "activation_open": shadow.activation.is_some(),
+            "waiting_for": st.waiting_for.as_ref().map(|w| w.kind),
+        });
+        write_expected(&d, "goal_session",
+            "Goal g (agent_root/state/goals/<goal_id>/) with its epoch-1 Goal Session between Activations (waiting for an event). Activation 1 consumed a scheduled run opportunity and the end of the Goal's Work, its Turn close is committed in state.json (state.goal), but the Goal State and the Activation record are not written back to the Goal yet.",
+            vec![observed, observe(&work)],
+            json!({
+                "action": "publish_goal_state_and_append_activation_without_inference",
+                "llm_calls": 0,
+                "goal_state_rev": shadow.state.rev,
+                "activation": {
+                    "epoch": 1,
+                    "seq": 1,
+                    "outcome": "completed",
+                    "decision": "no_action",
+                    "reasons": ["scheduled", "child"],
+                    "works_absorbed": [work.sid()],
+                },
+                "goal_state": {
+                    "absorbed": [work.sid()],
+                    "distance": "TODO.md has no finished items left",
+                    "activations": 1
+                },
+                "session": { "run_state": "waiting", "waiting_for": "event", "finished": false }
             }));
         relativize(&d);
     }

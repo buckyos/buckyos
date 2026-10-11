@@ -102,7 +102,28 @@
 - [x] 实现时同步检查 Rust 类型、control_panel/msg_center、WebSDK 消费和前端类型；涉及 DID 文档/profile 类型时核对同级 `buckyos-base` 的定义，不在 Desktop 自造协议镜像。
 - [x] 实现后的检查按影响范围执行：Desktop `pnpm check`、相关 lint/浏览器用例与 `pnpm build`，以及变更服务的定向 Rust 测试。实施后的执行情况见 §8。
 
-## 8. 实施记录（2026-10-11）
+## 8. 补充：各应用的身份头像显示位置盘点（2026-10-11）
+
+原 TODO 只列了 Zone、Users & Agents、MessageHub、应用四条链路，遗漏了 HomeStation 等同样显示人/Agent/Zone 的应用。以下按应用盘点所有「身份图标」位置（含首字圆、类型图标占位），并给出处理决定。「已统一」指已使用 `presentation/` 公共层（`ObjectAvatar/ObjectImage`、`presentUser/presentAgent`、`didDisplayName`）。
+
+| 应用 | 位置 | 显示的身份 | 数据来源 | 改造前 | 决定 |
+| --- | --- | --- | --- | --- | --- |
+| 桌面外壳 | 任务栏/状态栏/资料卡 `UserAvatar`、Jarvis 引导图标 | 本人、本人的 Agent | `user.get` profile、`agent.list` | — | 已统一 |
+| Users & Agents / My Network | `EntityAvatar`（列表、卡片、详情头） | 本人、本地用户、Agent、联系人 | `user.get`、`user.list`、`agent.list`、msg-center 联系人 | — | 已统一；- [x] My Network 联系人头像补 `usableImageUrl`、名称缺失回退用 `didDisplayName` 而非原始 DID、不再拼 `did:bns:<user>` |
+| Agent 创建 | `AgentAvatar`（确认页、创建状态） | 新 Agent | 草稿/模板图标 | — | 已统一；- [x] 权限页「主人」行改用本人真实头像（原为无图的 Agent 组件） |
+| MessageHub | 列表、详情、会话头、群成员、建群选择 | 联系人、Agent、群、本人 | msg-center 联系人 `avatar` | — | 已统一；- [x] 转发对话框目标图标改用 `HubAvatar`；- [x] 消息发送者名称缺省时用 `didDisplayName` 而非原始 DID |
+| HomeStation | 顶栏/侧栏/「我」页本人头像、动态卡片作者、引用卡片作者、评论作者、个人主页头像 | 本人、关注的人、评论者 | `ui.bootstrap.identities`、卡片 `publisher`、`profile.get`/`portal.profile`（后端 `identity_view`/`PublicProfile`） | 只有首字+色相，后端不给头像 | - [x] 后端：msg-center 联系人头像进 `identity_view`/bootstrap，`PublicProfile` 与 `profile.get` 带 `avatar`（跨站读取随公开资料传递）；- [x] 前端 `Avatar` 有图显示图片、坏图回退原首字样式；- [x] `peekIdentity` 名称回退用 `didDisplayName`，后端回退用 DID 解析 |
+| HomeStation 门户 / Zone feed | 门户顶栏、`~zone` 标题与资料 | Zone | `portal.home.zoneName`、`zone_profile` | Globe 图标；名称只看 HomeStation 自己的 `zone_name` | - [x] 名称改为「HomeStation `zone_name` → Zone 展示设置 → Zone 主机名」，Zone 图标进 `zone_profile.avatar` 与门户顶栏，服务每 60 秒刷新 |
+| HomeStation 来源管理 | 关注来源列表 `SourceIcon` | 关注的人/RSS/站点 | `SourceView.kind` | 类型图标 | - [x] 人物来源有 DID 时显示其头像（`peekIdentity`），其余仍用类型图标 |
+| AI Workspace | 工具栏身份按钮与身份面板 | 本人 | 会话 principal（用户名） | 首字 | - [x] 显示本人头像（与任务栏同源），批注/锁/版本作者仍为文字（无头像位） |
+| OpenDAN WebUI（独立包 `src/frame/opendan/web`） | 首页 Agent 头像、编辑预览、卡片头 | Agent | `agent.profile` | `<img>` 无坏图回退；会话标题用 `split(':').pop()` | - [x] 坏图回退到首字；- [x] DID 名称回退按 DID 解析（去掉 DID URL 部分、`did:web` 路径） |
+| 公开资料页 `/userprofile` | 头像圆 | 任意用户 | 无数据源（占位页） | 首字 | 不改：占位页，接入 HomeStation 公开资料另列 |
+| 应用管理 / 安装器 | 所有者 | 用户 | `owner_user_id` | 纯文字 | 不改：无头像位 |
+| Task Center、文件、预览、AI 中心、Studio、市场、诊断、Workflow | — | — | — | 无身份头像 | 不涉及 |
+
+未纳入本次：MessageHub 群邀请卡片（群无图片源）、@ 提及候选与消息详情（无头像位）、Users & Agents 实体组成员（真实运行时为空）、My Network「添加联系人」的写死占位、CodeAssistant 的假 DID。
+
+## 9. 实施记录（2026-10-11）
 
 ### 落点
 
@@ -129,3 +150,12 @@
 - Desktop：`pnpm check`、`pnpm exec eslint src tests`（0 error，8 条既有 warning）、`pnpm build`；`deno test --config tests/datamodel/messagehub.deno.json --no-check -A tests/datamodel/*.test.ts` 全过（新增 `object-presentation.test.ts`，扩充 `app-launch-mapping`、`messagehub-projection`）。
 - mock e2e：新增 `tests/e2e/pages/object-presentation.spec.ts`（4 例）；全量 `pnpm exec playwright test` 235 过，失败只剩已知基线（desktop「SN Router」、mobile「App Service redundant back button」、messagehub「codeassistant wheel scrolling」并行偶发）；`app-installer-cancel` 已随 `apps.list` 调整；AI Workspace UI-P15 标题用例通过。浅色/深色截图已核对设置页、头像对话框、登录页、MessageHub。
 - 真实 Zone（2026-10-11，用户手动部署新的 control_panel / msg_center / web 后）：`BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=… pnpm exec playwright test --config=playwright.dv.config.ts object-presentation` 4 例全过——匿名读取、无 sudo 拒写、URL 图标/头像被拒、字段级清除；未登录登录页显示 Zone 名称/描述/标题/favicon；真实登录后桌面标签页与 favicon；Users & Agents 上传头像→任务栏→刷新保留；管理员（sudo）给 alice 设头像后 devtest 的 MessageHub 显示该头像；`user.list` 公开头像、自身联系人同步与清除后撤下；`apps.list` 摘要字段。测试结束后 Zone 设置与头像均已清空。注意 baseURL 必须是 Zone 根域，`sys.` 子域登录会被拒（control-panel 只向根域签发系统 token）；修改他人资料需要管理员的 sudo 会话。
+
+### 第二轮：补齐盘点出的位置（2026-10-11）
+
+- 起因：DV 上桌面图标「小白」有头像、MessageHub 仍是机器人图标。核实为浏览器仍在用 service worker 缓存的旧前端（新浏览器里三处都显示头像）；Desktop 没有「有新版本」提示（只有 AI Workspace 有），新前端要等所有标签页关闭重开才生效。另查出 HomeStation 等位置原 TODO 未覆盖，见 §8。
+- HomeStation 后端：`ContactInfo.avatar`（取 msg-center `Contact.avatar`）→ `ViewCtx.avatars` → `identity_view` / `ui.bootstrap.identities`；`PublicProfile.avatar` 与 `profile.get` 带头像（跨站随公开资料传递）；`identity_view` 名称回退改为 `did_display_name`（DID 解析）；`HostConfig.zone_name` 改为可选，`Host::zone_name()` 为「HomeStation 设置 → Zone 展示设置 → 主机名」，`ZoneBrand` 由服务每 60 秒从 `system/zone_presentation`（及 ZoneDocument 约定字段）刷新，`~zone` 资料与 `portal.home.zoneIcon` 带 Zone 图标。新测试 `tests/presentation.rs` 与 `projection.rs` 单测。
+- HomeStation 前端：`IdentityView/ProfileView.avatar`、`PortalHome.zoneIcon`；`ui/primitives` 的 `Avatar` 有图显示图片、坏图回退原首字样式（所有作者/评论者/本人/个人主页头像随之生效）；门户顶栏与 `~zone` 标题显示 Zone 图标；来源管理人物来源显示头像；`peekIdentity` 名称回退用 `didDisplayName`。
+- 其他：MessageHub 转发对话框用 `HubAvatar`，发送者名称缺省用 `didDisplayName`；Agent 创建权限页主人行用本人真实头像；My Network 联系人头像过滤、名称回退、不再拼 `did:bns:<user>`；`useCurrentUser` 移到 `presentation/currentUser.ts`，AI Workspace 身份按钮/面板显示本人头像与名称（开发直连身份不显示）；OpenDAN WebUI `Avatar` 坏图回退、`didName` 按 DID 解析。
+- 文档：`doc/homestation/HomeStation 协议与实现.md`（`portal.home`、`/home/<user>/profile`、`~zone` 资料、`zone_name` 回退、单机 `contacts[].avatar`）、HomeStation `UI_DATAMODEL.md`。
+- 验证：`cargo test -p homestation`（含新增 3 例）；Desktop `pnpm check`、eslint（0 error）、datamodel 单测全过；HomeStation mock e2e 16 例通过；OpenDAN WebUI `tsc`、eslint、mock e2e 14 例通过。DV 用例新增「HomeStation 显示本人头像、`~zone` 采用 Zone 展示设置」，需部署新的 homestation 与 web 后运行。

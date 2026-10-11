@@ -316,6 +316,9 @@ impl AgentStateClient for ForwardingStateClient {
     fn behaviors(&self) -> &dyn BehaviorCatalog {
         self
     }
+    fn goals(&self) -> &dyn GoalStore {
+        self.inner.goals()
+    }
 }
 
 /// An agent state whose behavior catalog is supplied by the host process
@@ -364,5 +367,8 @@ impl AgentStateClient for WithBehaviors {
     }
     fn behaviors(&self) -> &dyn BehaviorCatalog {
         self.behaviors.as_ref()
+    }
+    fn goals(&self) -> &dyn GoalStore {
+        self.inner.goals()
     }
 }

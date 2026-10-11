@@ -1,0 +1,97 @@
+{
+  "schema": "opendan.session_config/7",
+  "config_rev": 1,
+  "session": {
+    "session_id": "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "work",
+    "class": "work",
+    "created_at_ms": 1791715815203,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "session:goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "idempotency_key": "sub:7c419f3726aaa85a1436813f82df58dbcb0d1e66ac569bf02e9da233a0f6b74f",
+    "origin": {
+      "parent_session": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
+      "report": "final",
+      "goal": {
+        "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+        "revision": 1,
+        "epoch": 1,
+        "activation_seq": 0,
+        "at_ms": 1791715815203
+      }
+    },
+    "objective": "Tick item 1 of TODO.md",
+    "end_condition": {
+      "type": "llm_declares_done"
+    },
+    "input_policy": "any",
+    "acl": {
+      "agent_access": "full"
+    },
+    "policy": {
+      "completion": "natural",
+      "wait_user_msg": "finish_failed",
+      "observe": "events",
+      "load_hints": false,
+      "max_process_depth": 4,
+      "max_sub_sessions": 4,
+      "max_session_depth": 2
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true
+      }
+    },
+    "initial_inputs": [
+      {
+        "schema": "opendan.session_input/3",
+        "key": "cymsg:8eb1f91680d5c813d15788ac328d6e52adcb061d3a8861db4a31c70f9442f08f",
+        "from": "app:app2@alice",
+        "at_ms": 1791715815203,
+        "type": "msg",
+        "payload": {
+          "msg": {
+            "from": "did:bns:jarvis.alice",
+            "to": [
+              "did:bns:jarvis.alice"
+            ],
+            "kind": "chat",
+            "created_at_ms": 1791715815203,
+            "nonce": 2616985085,
+            "content": {
+              "content": "tick item 1 of TODO.md"
+            }
+          }
+        }
+      }
+    ],
+    "mechanical_compress": {
+      "recent_full_responses": 2,
+      "summary_chars": 280,
+      "max_result_chars": 4096,
+      "drop_kinds": [
+        "created",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {}
+  },
+  "channels": {
+    "inputs": [],
+    "wake_event": "/opendan/jarvis.alice/session/work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea/input"
+  }
+}

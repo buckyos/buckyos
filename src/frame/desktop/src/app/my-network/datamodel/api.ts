@@ -8,6 +8,7 @@ import type {
   ContactEntity,
   MyNetworkSnapshot,
 } from './types'
+import { didDisplayName, usableImageUrl } from '../../../presentation/model'
 
 interface AccountInfo {
   user_id: string
@@ -101,7 +102,7 @@ function socialAccountsFromChatBindings(value: unknown) {
 function toContactEntity(value: unknown): ContactEntity {
   const raw = asRecord(value)
   const did = firstString(raw.did, raw.contact_did, raw.id)
-  const displayName = firstString(raw.name, raw.display_name, did, 'Unknown Contact') ?? 'Unknown Contact'
+  const displayName = firstString(raw.name, raw.display_name, did && didDisplayName(did), 'Unknown Contact') ?? 'Unknown Contact'
   const socialAccounts = socialAccountsFromChatBindings(raw.bindings)
   const createdAt = isoFromUnix(raw.created_at ?? raw.createdAt) ?? '1970-01-01T00:00:00Z'
   const updatedAt = isoFromUnix(raw.updated_at ?? raw.updatedAt)
@@ -115,7 +116,7 @@ function toContactEntity(value: unknown): ContactEntity {
     id: firstString(did, raw.contact_id, raw.id, displayName) ?? displayName,
     kind: 'contact',
     displayName,
-    avatarUrl: firstString(raw.avatar, raw.avatar_url, raw.avatarUrl),
+    avatarUrl: usableImageUrl(firstString(raw.avatar, raw.avatar_url, raw.avatarUrl)),
     did,
     socialAccounts,
     source: chatContactSource(raw.access_level ?? raw.accessLevel),
@@ -134,7 +135,7 @@ function toContactEntity(value: unknown): ContactEntity {
   }
 }
 
-function ownerDidFromDetail(detail: UserDetail | null, fallbackUserId?: string): string | undefined {
+function ownerDidFromDetail(detail: UserDetail | null): string | undefined {
   const detailRecord = asRecord(detail)
   const didDocument = asRecord(detail?.did_document)
   const profile = asRecord(detail?.profile)
@@ -146,14 +147,13 @@ function ownerDidFromDetail(detail: UserDetail | null, fallbackUserId?: string):
     systemContact.did,
     didDocument.id,
     detailRecord.did,
-    fallbackUserId ? `did:bns:${fallbackUserId}` : undefined,
   )
 }
 
 async function fetchOwnerDid(): Promise<string | undefined> {
   const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
   const selfResult = await fetchUserDetail(accountInfo?.user_id ? { userId: accountInfo.user_id } : {})
-  return ownerDidFromDetail(selfResult.data, accountInfo?.user_id)
+  return ownerDidFromDetail(selfResult.data)
 }
 
 async function fetchChatContactList(ownerDid?: string): Promise<{

@@ -196,6 +196,7 @@ fn user_entries(run_id: &str, r: &InputReceipt, turn: &mut u64) -> Vec<WorklogBo
             run_id: run_id.to_string(),
             turn: *turn,
             content: part.text.clone(),
+            brief: part.brief.clone(),
         });
     }
     out
@@ -307,12 +308,14 @@ pub fn run_history_entries(
                             run_id: run_id.to_string(),
                             turn,
                             content: r.parts[n].text.clone(),
+                            brief: r.parts[n].brief.clone(),
                         });
                     }
                     None => out.push(WorklogBody::UserMessage {
                         run_id: run_id.to_string(),
                         turn,
                         content: m.text_content(),
+                        brief: None,
                     }),
                 },
                 _ => out.extend(native_message_entries(run_id, turn, m)),

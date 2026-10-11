@@ -114,6 +114,11 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
             hook.as_deref().unwrap_or("input"),
             input_list(inputs, events)
         ),
+        // A message that stands for itself in one line once it is history
+        // (the Goal header of an earlier Activation).
+        WorklogBody::UserMessage {
+            brief: Some(brief), ..
+        } => format!("[input] {brief}"),
         WorklogBody::UserMessage { content, .. } => {
             format!("[input] {}", limit(content, cfg.max_result_chars))
         }

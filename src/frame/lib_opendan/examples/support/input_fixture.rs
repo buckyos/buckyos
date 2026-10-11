@@ -99,9 +99,7 @@ pub fn records() -> Vec<(&'static str, Value)> {
     let mut stop = PostedInput::control(
         "did:bns:alice",
         "ctl:stop:1790899260000",
-        ControlCommand::Stop {
-            reason: Some("用户取消".into()),
-        },
+        ControlCommand::stop(Some("用户取消".into())),
     );
     stop.at_ms = T0 + 60_000;
 

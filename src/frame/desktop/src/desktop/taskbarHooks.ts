@@ -1,3 +1,4 @@
+export { useCurrentUser, type CurrentUser } from '../presentation/currentUser'
 import {
   useCallback,
   useEffect,
@@ -9,12 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
-import { fetchCurrentAccount } from '../api/account'
 import { fetchSystemMetrics, type SystemMetrics } from '../api/system_metrics'
-import { fetchUserDetail } from '../api/user_mgr'
-import { onOwnProfileChanged } from '../app/agent-setup/events'
-import { presentUser, textValue } from '../presentation/model'
-import { presentationStore } from '../presentation/store'
 
 const longPressMs = 450
 const longPressTolerance = 12
@@ -232,54 +228,6 @@ export function useHoverCard({ openDelay = 380, closeDelay = 200 } = {}) {
     close,
     cancelPending,
   }
-}
-
-export interface CurrentUser {
-  userId: string
-  displayName: string
-  userType: string
-  did?: string
-  avatarUrl?: string
-}
-
-async function loadCurrentUser(): Promise<CurrentUser | null> {
-  const account = await fetchCurrentAccount().catch(() => null)
-  if (!account) return null
-  const { data: detail } = await fetchUserDetail({ userId: account.user_id })
-  const user = presentUser({
-    userId: account.user_id,
-    did: textValue(detail?.local_profile?.did) ?? textValue(detail?.did_document?.id),
-    profile: detail?.profile,
-    document: detail?.did_document,
-  })
-  presentationStore.put(user)
-  return {
-    userId: account.user_id,
-    displayName: user.title,
-    userType: account.user_type,
-    did: user.did,
-    avatarUrl: user.icons[0],
-  }
-}
-
-/** The signed-in user as the shell shows them; null until loaded or when signed out. Reloads after a profile save. */
-export function useCurrentUser() {
-  const [user, setUser] = useState<CurrentUser | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    const load = () => {
-      void loadCurrentUser().then((next) => {
-        if (!cancelled) setUser(next)
-      })
-    }
-    load()
-    const stop = onOwnProfileChanged(load)
-    return () => {
-      cancelled = true
-      stop()
-    }
-  }, [])
-  return user
 }
 
 export interface SystemStatusState {

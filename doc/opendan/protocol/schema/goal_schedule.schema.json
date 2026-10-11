@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "PendingFire": {
+      "description": "A scheduled fire written before it is posted (re-posted with the same key after a crash).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "missed": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "slot": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "missed",
+        "slot"
+      ],
+      "type": "object"
+    },
+    "SkippedFire": {
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "`paused | period_budget | min_interval | not_active`.",
+          "type": "string"
+        },
+        "slot": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at_ms",
+        "reason",
+        "slot"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`schedule.json`.",
+  "properties": {
+    "backend": {
+      "description": "`local` (phase 1).",
+      "type": "string"
+    },
+    "every_secs": {
+      "description": "Interval the slots count in (a changed interval starts counting again).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "goal_id": {
+      "type": "string"
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_fire_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "last_posted_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_slot": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "pending": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PendingFire"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema": {
+      "type": "string"
+    },
+    "skipped": {
+      "items": {
+        "$ref": "#/definitions/SkippedFire"
+      },
+      "type": "array"
+    },
+    "start_posted_epoch": {
+      "default": 0,
+      "description": "Epoch whose start event (`created / reopened / restarted`) was posted.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "backend",
+    "goal_id",
+    "schema"
+  ],
+  "title": "GoalSchedule",
+  "type": "object"
+}

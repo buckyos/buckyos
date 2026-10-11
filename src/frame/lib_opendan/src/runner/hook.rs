@@ -82,9 +82,17 @@ impl SessionCheckpointHook {
         // Controls, rejected records, Observe events. msg / Input events
         // stay queued for the next controlled input.
         route_inputs(sh, true, &[]).await?;
-        if sh.session.lock().await.state.stop_requested {
+        let (stop, turn_stop) = {
+            let s = sh.session.lock().await;
+            (s.state.stop_requested, s.state.turn_stop_requested)
+        };
+        if stop || turn_stop {
             if let Some(h) = sh.interrupt.lock().expect("interrupt lock").as_ref() {
-                h.interrupt("session stop requested");
+                h.interrupt(if stop {
+                    "session stop requested"
+                } else {
+                    "turn stop requested"
+                });
             }
             return Ok(());
         }

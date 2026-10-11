@@ -105,6 +105,9 @@ pub enum WorklogBody {
         run_id: String,
         turn: u64,
         content: String,
+        /// One line standing for it in rendered history (a Goal header).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        brief: Option<String>,
     },
     /// Function call runs: one assistant response (one Round), with the
     /// native tool calls it requested. Not a behavior Step.

@@ -25,6 +25,9 @@ pub enum SessionKind {
     Work,
     SelfImprove,
     SelfCheck,
+    /// The context of a Goal (`state/goals/<goal_id>`): one per `(goal,
+    /// epoch)`, created by the host, never a sub session.
+    Goal,
 }
 
 impl SessionKind {
@@ -34,6 +37,7 @@ impl SessionKind {
             SessionKind::Work => "work",
             SessionKind::SelfImprove => "self_improve",
             SessionKind::SelfCheck => "self_check",
+            SessionKind::Goal => "goal",
         }
     }
 
@@ -44,6 +48,7 @@ impl SessionKind {
             SessionKind::Work => "work",
             SessionKind::SelfImprove => "si",
             SessionKind::SelfCheck => "sc",
+            SessionKind::Goal => "goal",
         }
     }
 }
@@ -86,6 +91,28 @@ pub struct Origin {
     /// every task this session's Turns get.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_task: Option<String>,
+    /// Created by an Activation of a Goal: the Goal and the revision the
+    /// Work was given (kept when the Goal is revised later).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<GoalOrigin>,
+}
+
+/// `origin.goal` of a Work created by a Goal Session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GoalOrigin {
+    pub goal_id: String,
+    pub revision: u64,
+    pub epoch: u64,
+    pub activation_seq: u64,
+    pub at_ms: u64,
+}
+
+/// `session.goal` of a Goal Session: the Goal it works for. The definition
+/// is read from the Goal, never copied here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GoalBinding {
+    pub goal_id: String,
+    pub epoch: u64,
 }
 
 /// What a parent receives from a sub session without subscribing: the
@@ -114,6 +141,9 @@ pub enum WaitPolicy {
     FinishFailed,
     /// Treated as the delivered result.
     FinishCompleted,
+    /// Nobody answers now: the Turn ends (needs input), the session goes on
+    /// waiting for its next input (Goal Sessions).
+    EndTurn,
 }
 
 /// Material of the semi-subscription snapshot and the fresh view.
@@ -284,6 +314,9 @@ pub struct SessionSection {
     pub timezone: Option<String>,
     #[serde(default, skip_serializing_if = "SessionPolicy::is_default")]
     pub policy: SessionPolicy,
+    /// Goal Sessions: the Goal and epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<GoalBinding>,
 }
 
 fn default_class() -> String {
@@ -448,6 +481,10 @@ pub struct InputTemplates {
     /// The snapshot message placed before a controlled input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semi_subscription_snapshot: Option<String>,
+    /// Goal Sessions: the Goal header placed before the first batch of an
+    /// Activation (variable `goal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_activation: Option<String>,
 }
 
 impl InputTemplates {
@@ -464,6 +501,10 @@ impl InputTemplates {
                 .semi_subscription_snapshot
                 .clone()
                 .or_else(|| base.semi_subscription_snapshot.clone()),
+            goal_activation: self
+                .goal_activation
+                .clone()
+                .or_else(|| base.goal_activation.clone()),
         }
     }
 }
@@ -483,6 +524,8 @@ pub struct BehaviorPrompt {
     pub on_context_switch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semi_subscription_snapshot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_activation: Option<String>,
 }
 
 impl BehaviorPrompt {
@@ -496,6 +539,7 @@ impl BehaviorPrompt {
             on_input: self.on_input.clone(),
             on_context_switch: self.on_context_switch.clone(),
             semi_subscription_snapshot: self.semi_subscription_snapshot.clone(),
+            goal_activation: self.goal_activation.clone(),
         }
     }
 }

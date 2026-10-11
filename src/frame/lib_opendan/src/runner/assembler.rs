@@ -405,7 +405,8 @@ impl Blocks {
             }
         }
         let mut task = String::new();
-        if !state.bootstrap_done {
+        // A Goal Activation's task is in its Goal header.
+        if !state.bootstrap_done && cfg.session.kind != SessionKind::Goal {
             task.push_str("<task>Start working on the objective of this session.</task>\n");
             if let Some(scope) = &cfg.session.scope {
                 if !scope.paths.is_empty() || !scope.objects.is_empty() {

@@ -19,9 +19,7 @@ async fn stop_takes_effect_after_one_do_action() {
             post_blocking(
                 &qd,
                 &q,
-                PostedInput::control(APP, "stop-1", ControlCommand::Stop {
-                        reason: Some("user".into()),
-                    },
+                PostedInput::control(APP, "stop-1", ControlCommand::stop(Some("user".into())),
                 ),
             );
             tool_call("c1", "shell", json!({ "command": "echo one >> log" }))
@@ -55,7 +53,7 @@ async fn stop_before_any_run_finishes_without_inference() {
     libopendan::post_input(
         agent.as_ref(),
         sd.sid(),
-        &PostedInput::control(APP, "s", ControlCommand::Stop { reason: None }),
+        &PostedInput::control(APP, "s", ControlCommand::stop(None)),
     )
     .await
     .unwrap();
@@ -1287,7 +1285,7 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
             post_blocking(
                 &qd,
                 &q,
-                PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
+                PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
             );
             text("<response><report end=\"true\"><![CDATA[research result X]]></report></response>")
         } else {

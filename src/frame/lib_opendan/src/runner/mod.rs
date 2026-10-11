@@ -8,6 +8,7 @@ mod children;
 mod drive;
 pub mod input_view;
 mod flush;
+mod goal;
 pub mod history;
 mod hook;
 mod inputs;

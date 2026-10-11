@@ -120,7 +120,7 @@ Zone 级：
 | `GET /home/` | Zone 索引：`{ zone, zoneDid, zoneName, defaultFeed, zoneFeed: { feed: "~zone", stream } }` |
 | `GET /home/?did=<DID>` | DID 查询：`{ did, user, stream, inbox }`；不托管该 DID 时 404 |
 | `GET /home/~zone/feed?mode=display\|changes` | Zone 汇总列表（§5.7），参数与个人发表流相同 |
-| `GET /home/~zone/profile` | 汇总列表资料：名称、`stream`、条目数 |
+| `GET /home/~zone/profile` | 汇总列表资料：名称、`avatar`（Zone 图标，可无）、`stream`、条目数 |
 | `GET /home/~zone/objects/<ObjId>[/content]` | 列入条目的对象，由发表者的 Station 按读者授权提供（门户媒体） |
 
 每个用户（`<user>` 不存在时 404，投递入口为 `no-handler`）：
@@ -134,7 +134,7 @@ Zone 级：
 | `GET /home/<user>/objects/<cyfile ObjId>/content` | 单 chunk 文件的内容，供媒体元素使用 |
 | `GET /home/<user>/chunks/<ChunkId>` | chunk 数据，接收方按 ChunkId 校验 |
 | `GET /home/<user>/comments?target=<ObjId>[&type=]` | 作者视图（目标是该用户的版本）或收录者视图（收录模式） |
-| `GET /home/<user>/profile` | 门户资料：DID、用户名、名称、简介、发表流 / 投递入口、关注者数、作品精选（按读者过滤） |
+| `GET /home/<user>/profile` | 门户资料：DID、用户名、名称、简介、`avatar`（Message Center 中本人联系人的公开头像，可无）、发表流 / 投递入口、关注者数、作品精选（按读者过滤） |
 | `GET /home/<user>/index/recent?since=&limit=` | 收录者最近收到的公开发表（冷启动） |
 | `PUT /home/<user>/inbox` | CYFS dispatch 投递（§3.4） |
 | `GET /home/<user>/inbox?dispatch-status=<ObjId>` | dispatch 状态查询 |
@@ -191,7 +191,7 @@ Push 对象（§13.1）：
 
 | 方法 | 说明 |
 | --- | --- |
-| `portal.home {}` | `{ zone, zoneName, defaultFeed, zoneFeed: "~zone", viewer: { did, user, name, zoneFeedWriter } \| null }` |
+| `portal.home {}` | `{ zone, zoneName, zoneIcon, defaultFeed, zoneFeed: "~zone", viewer: { did, user, name, zoneFeedWriter } \| null }`；`zoneIcon` 为 Zone 展示设置中的图标（无则 null） |
 | `portal.profile {feed}` | 用户主页资料（同 `profile.get`，另含 `user`、`kind: "user"`）或汇总列表资料（`kind: "zone"`） |
 | `portal.list {feed, kind?, cursor?, limit?}` | 同 `published.list` 的形状（`entries`、`cards`、`nextCursor`）；汇总列表的条目带 `user` 与 `zoneFeed: true` |
 | `portal.item {feed, key \| objId}` | `{ entry?, card }`；`key` 是 `feed/@/<key>` 的入口键，返回当前版本 |
@@ -213,7 +213,7 @@ Push 对象（§13.1）：
 | 条目 | `entry.withdraw`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery` |
 | 发布 | `publish.create {key, input}`（`input.zoneFeed: true` 同时列入汇总列表，只限公开受众，无写权限时在发表前拒绝）、`publish.retry {key}`、`publish.share_capture {objId}`、`publish.task {key}`、`publish.link_preview {url}`；上传 `PUT /kapi/homestation/upload?name=&mime=[&width=&height=&duration_ms=]` |
 | 收藏 | `saved.list {kind: bookmark\|read_later}` |
-| 门户 | `profile.get {did?, reader?}`、`profile.set {name, bio}`、`profile.set_featured {order}` |
+| 门户 | `profile.get {did?, reader?}`（返回含 `avatar`：本人取自 Message Center 中本人联系人的公开头像，他人取自其公开资料）、`profile.set {name, bio}`、`profile.set_featured {order}` |
 | 来源 | `sources.list`、`sources.resolve {kind: follow\|url\|natural, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.sync {sourceId?}` |
 | 偏好 | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override: remove\|confirm\|to_assisted\|null}`、`prefs.set_default_audience`、`prefs.set_topics`、`prefs.set_collectors`、`prefs.set_comments_open`、`prefs.mark_less_like` |
 | 反馈与回执 | `feedback.record {objId, event, value?}`、`consumption.join {target, receiver, action, terms?, joined}`、`consumption.report {agreementId, result?}`、`consumption.list` |
@@ -310,7 +310,7 @@ SQLite（WAL）。每个用户一个数据库 `<data dir>/users/<user>/homestati
   "default_feed": null, "zone_feed_writers": null, "zone_name": null }
 ```
 
-- `collector` 让 Zone owner 的 HomeStation 担任收录者；`default_feed` 为用户名或 `~zone`；`zone_feed_writers` 见 §5.7；`zone_name` 是汇总列表的显示名（默认 Zone 主机名）。
+- `collector` 让 Zone owner 的 HomeStation 担任收录者；`default_feed` 为用户名或 `~zone`；`zone_feed_writers` 见 §5.7；`zone_name` 是汇总列表的显示名；未设置时取 Zone 展示设置（`system/zone_presentation` 的 `display_name`，其次 ZoneDocument 约定字段），再次为 Zone 主机名。服务每 60 秒重读 Zone 展示设置，`~zone` 资料的 `avatar` 即 Zone 图标。
 - 系统依赖：verify-hub 会话令牌、system-config（用户表、用户 DID、Zone 文档）、Message Center 联系人、NDM 命名对象存储、名字服务（跨 Zone 的 DID 与密钥）、AICC（仅模型评价）。
 
 ### 7.2 单机模式与开发网络
@@ -322,7 +322,7 @@ cargo run -p homestation -- --data-dir /tmp/hs-a --config hs-a.json
 cargo run -p homestation --example devnet -- --port 4131 --data-dir /tmp/hs-devnet --fresh
 ```
 
-单机配置字段：`owner`、`owner_name`、`user`（owner 的用户名，默认 `owner`）、`zone`、`zone_name`、`users[{user, did, name, contacts, settings, collector, zone_feed_writer}]`（同 Zone 的其他用户）、`default_feed`、`zone_feed_writers`、`private_key_pem` 或 `private_key_file`、`kid`、`listen`、`collector`、`spider`、`workers`、`disclose_admission`、`intervals_s{pull,delivery,select,comments}`、`reading_window`、`tokens{<token>: {principal, did, app_id}}`、`directory{identities{<did>: {zone, user, public_key_x, devices, owner}}, zones{<zone>: <origin>}}`、`contacts[{did, name, friend, blocked, groups}]`、`settings`（初始用户设置）。
+单机配置字段：`owner`、`owner_name`、`user`（owner 的用户名，默认 `owner`）、`zone`、`zone_name`、`users[{user, did, name, contacts, settings, collector, zone_feed_writer}]`（同 Zone 的其他用户）、`default_feed`、`zone_feed_writers`、`private_key_pem` 或 `private_key_file`、`kid`、`listen`、`collector`、`spider`、`workers`、`disclose_admission`、`intervals_s{pull,delivery,select,comments}`、`reading_window`、`tokens{<token>: {principal, did, app_id}}`、`directory{identities{<did>: {zone, user, public_key_x, devices, owner}}, zones{<zone>: <origin>}}`、`contacts[{did, name, friend, blocked, groups, avatar}]`、`settings`（初始用户设置）。
 
 配置中的密钥是 Zone 的签名者，配置里的每个用户自动登记为由它签名；本 Zone 的源站默认指向 `listen`。`devnet` 在一个进程里启动 `me` 的 Zone（Desktop 的用户 `me`，令牌 `tok-me`；同 Zone 的第二个用户 `kai`，令牌 `tok-kai`；`me` 的 m1 与 kai 的 k1 列入汇总列表）、alice、bob、sarah 的 Zone、收录者 index 和一个 RSS 夹具站点，预置好友、关注、各类发表、评论、点赞、引用转发与订阅，节点之间只通过协议路径通信。Desktop 用 `HS_BACKEND=http://127.0.0.1:4131` 接入（见前端 README / UI_DATAMODEL）。
 

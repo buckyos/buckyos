@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "One line of `changes.jsonl`.",
+  "properties": {
+    "at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "detail": true,
+    "epoch": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "kind": {
+      "description": "`created | revised | status | reopened | restarted | epoch_ended`.",
+      "type": "string"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "seq": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "via": {
+      "description": "`owner | ui_session:<sid> | goal_session:<sid> | opendan`.",
+      "type": "string"
+    },
+    "who": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "at_ms",
+    "kind",
+    "seq",
+    "via",
+    "who"
+  ],
+  "title": "GoalChange",
+  "type": "object"
+}

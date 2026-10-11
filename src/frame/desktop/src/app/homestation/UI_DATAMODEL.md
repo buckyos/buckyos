@@ -98,7 +98,7 @@ interface FeedItemView {
   objId: ObjId
   object: FeedObject
   contentType: ContentType | 'comment' | 'reaction'
-  publisher: IdentityView         // 签名者
+  publisher: IdentityView         // 签名者：{ did, name, kind, hue, avatar? }，avatar 来自主人的 Message Center 联系人（含本人），无则以 hue 首字显示
   originalAuthor?: string         // source.original_author
   capturedFrom?: string           // source.original_url 的主机名
   isCapture: boolean

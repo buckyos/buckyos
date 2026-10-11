@@ -61,13 +61,13 @@ impl Node {
     pub fn add_contact(&self, other: &Node, friend: bool, groups: &[&str]) {
         let mut list = self.contacts.0.lock().unwrap();
         list.retain(|c| c.did != other.did);
-        list.push(ContactInfo { did: other.did.clone(), name: other.name.clone(), friend, blocked: false, groups: groups.iter().map(|g| g.to_string()).collect() });
+        list.push(ContactInfo { did: other.did.clone(), name: other.name.clone(), friend, blocked: false, groups: groups.iter().map(|g| g.to_string()).collect(), avatar: None });
     }
 
     pub fn block(&self, other: &Node) {
         let mut list = self.contacts.0.lock().unwrap();
         list.retain(|c| c.did != other.did);
-        list.push(ContactInfo { did: other.did.clone(), name: other.name.clone(), friend: false, blocked: true, groups: vec![] });
+        list.push(ContactInfo { did: other.did.clone(), name: other.name.clone(), friend: false, blocked: true, groups: vec![], avatar: None });
     }
 }
 

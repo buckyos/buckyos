@@ -16,6 +16,8 @@ import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import { SurfaceSwitcher } from './MainToolbar'
 import { PopoverPanel, usePopover } from './popover'
 import { shareLink, useShell, ZOOM_PRESETS } from './shellContext'
+import { ObjectImage } from '../../../../presentation/ObjectIcon'
+import { useCurrentUser } from '../../../../presentation/currentUser'
 
 export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate }: {
   /** Free Surfaces only: flow pages have no camera, so no zoom. */
@@ -140,16 +142,19 @@ function IdentityButton() {
   const shell = useShell()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const principal = store.session.principal
+  const me = useCurrentUser()
+  // A Zone account's own picture; a development token identity has none.
+  const picture = !shell.identity.dev && me && me.userId === principal ? me.avatarUrl : undefined
   return (
     <span ref={bindAnchor} className="aiws-anchor">
       <button ref={bindTrigger} type="button" className="aiws-avatar" aria-haspopup="dialog" aria-expanded={open} aria-label={`当前身份：${principal ?? '未知'}`} title={principal ?? '当前身份'}
         data-testid="aiws-principal" data-principal={principal ?? ''} onClick={toggle}>
-        {initial(principal)}
+        <ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={initial(principal)} />
       </button>
       {open && (
         <PopoverPanel align="end" label="身份与在线成员" testId="aiws-identity-panel" className="aiws-identity-panel">
           <div className="aiws-panel-title">我的身份</div>
-          <div className="aiws-identity-row"><span className="aiws-avatar is-static" aria-hidden="true">{initial(principal)}</span><b>{principal ?? '未知身份'}</b></div>
+          <div className="aiws-identity-row"><span className="aiws-avatar is-static" aria-hidden="true"><ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={initial(principal)} /></span><b>{me && me.userId === principal ? me.displayName : principal ?? '未知身份'}</b></div>
           <div className="aiws-muted">{shell.identity.dev ? '开发直连身份：由本地测试令牌指定，不是 Zone 账号，不能在这里登出。' : 'Zone 账号'}</div>
           <div className="aiws-panel-title">在线成员</div>
           <div className="aiws-muted" data-testid="aiws-presence-unavailable">在线状态尚未接入：协作面板中的授权名单不等于在线成员。</div>

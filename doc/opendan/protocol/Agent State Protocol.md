@@ -1,6 +1,8 @@
 # Agent State Protocol
 
-版本 3 · 2026-10-03 · 由 `libopendan` 反写（`src/protocol/agent_state.rs`、`src/state/*`）
+版本 3 · 2026-10-11 · 由 `libopendan` 反写（`src/protocol/agent_state.rs`、`src/protocol/goal.rs`、`src/state/*`）
+
+2026-10-11：增加 Goals（§9，`state/goals/`）、登记表 `goal_id`、查询 `goal_id`、kRPC `goals.*`。只是加法。
 
 ## 1. AgentRoot 布局
 
@@ -18,6 +20,8 @@
     perception/.consolidations.jsonl        整理审计
     artifacts/<aid>/artifact.json           产物 head
     artifacts/<aid>/versions/v-<sid>.json   各 work session 的贡献
+    goals/<goal_id>/                        Goal（§9）：goal.json revisions/ changes.jsonl state.json
+                                            activations.jsonl epochs/<n>/state.json schedule.json .lock
   memory/  notebook/  attention_signals/    认知（agent_tool 实现与其内部锁）
   state/workspaces/                         Known Workspace 登记（项目目录可在 AgentRoot 外）
   .locks/self_improve.lease  .locks/artifact/<aid>.lease
@@ -35,6 +39,7 @@
   "input_queue": "app2::alice::opendan.session.<sid>", "wake_event": "/opendan/<agent_id>/session/<sid>/input",
   "agent_access": "full | status_only", "origin": null, "workspace": null, "artifact_id": null,
   "objective": "…", "scope": { "paths": [], "objects": [] },
+  "goal_id": "g-…",                          // Goal Session 的 Goal，或创建 Work 的 Goal（session.goal / origin.goal）
   "status": { "rev": 17, "run_state": "…", "outcome": null, "acceptance": "…", "one_line_status": "…",
               "report_brief": "≤500 字", "pending_decision": null,
               "waiting_for": "input | tool | event | children",   // 仅 run_state = waiting 时；父据此区分“子在等输入”
@@ -48,7 +53,7 @@
 - **回报**：驱动者持 session 锁、在每次提交之后写 `status`（整条原子替换）；`status.rev ≤` 已有值时忽略。回报失败由下次 drive 按 `state.reported_rev` 补发。`status` 只是缓存，真相是 session 的 state.json。
 - **巡检**：location 不存在时只写 `.unreachable/<sid>` 标记，不删除、不改写条目（保持单写者）；驱动者下次回报时清除。
 - **子 Session**：`children_of(parents)` = `origin.parent_session` 属于 `parents` 的条目（按 session_id 排序），是查询的一个派生视图。父对子的隐式关注、同步等待的 resolver 与子 Session 的托管进程都只用它和 `lookup`。
-- **查询**是派生视图（扫描 + mtime 缓存），可以另建可删除重建的索引。
+- **查询**是派生视图（扫描 + mtime 缓存），可以另建可删除重建的索引。`RegistryQuery.goal_id` 取出一个 Goal 的全部 Goal Session（各 epoch）与它派生的 Work。
 
 ## 3. 活动 Session 视图
 
@@ -152,7 +157,7 @@ inherit = "none"                   # none | recent_dialogue | steps
 
 `[model] / [capabilities] / [budget] / prompt.mode` 叠加为该 behavior 的 run 的有效 `.llm_context`（只产生 `model / loop_model / max_tool_iterations / max_tokens / tools` 这几个键），结果进 run.json `config`，xllm 接手时不需要理解 behavior。`prompt.llm_context` 里的 `prompt / groups / runs_dir` 在宿主装配下无效，冻结时拒绝。
 
-Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`、`input = "none" | "queue"`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / self_improve / self_check`，其它 class 必须在这里声明。
+Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one" | "unbounded" | <n>`、`wait_user_msg`（`allowed | finish_failed | finish_completed | end_turn`）、`input = "none" | "queue"`、`observe`、`load_hints`、`default_behavior`、`max_process_depth`、`max_sub_sessions`、`max_session_depth`；内建 class 为 `work / ui / self_improve / self_check / goal`，其它 class 必须在这里声明。`goal` 类另有 `min_interval_secs` 与 `[session.goal.budget.activation|period]`（§9.4）。
 
 定位（不是协议）：`connect(agent_did, who)` 依次取进程内注册的实现、`$OPENDAN_AGENT_ROOT` 或 `~/.opendan/agents.toml`（`"<did>" = "<agent_root>"`）指向的 AgentRoot、`$OPENDAN_AGENT_STATE_URL` 的 kRPC 服务（服务端随 OpenDAN 改造提供）。
 
@@ -160,7 +165,8 @@ Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one"
 
 看不到 AgentRoot 的调用方（容器或远端沙箱里的层 ② 工具、WebUI、其它应用）经托管该 Agent 的 OpenDAN 进程访问 Agent State：路径 `/kapi/opendan`，方法与 `AgentStateClient` 的门面一一对应（`sessions.*`、`activity.*`、`perception.*`、`cognition.*`、`artifacts.*`、`behaviors.*`，见 [opendan README](../../../src/frame/opendan/README.md)）。真相仍是上面的文件；服务只做鉴权与转发，不引入第二份存储。
 
-- 只承载读与带署名的写：`sessions.register`（`created_by` 必须是调用方）、`sessions.post_input`（`from` 由服务端改写为调用方）、`cognition.notebook_append`、`artifacts.decide`（服务端在调用期间持有 `artifact:<aid>` 锁）。
+- 只承载读与带署名的写：`sessions.register`（`created_by` 必须是调用方）、`sessions.post_input`（`from` 由服务端改写为调用方）、`cognition.notebook_append`、`artifacts.decide`（服务端在调用期间持有 `artifact:<aid>` 锁）、`goals.create / revise / set_status / reopen / restart`（调用方 = 服务端看到的身份，`session` 参数是调用方自报的所在 Session，§9.5）。
+- Goal 的驱动者 / 宿主写（`goals.write_state`、`goals.append_activations`、`goals.prepare_epoch`、`goals.end_epoch`、`goals.write_schedule`）一律拒绝（错误说明需要 AgentRoot）。
 - 驱动者在 lease 下的写入（`report_state`、`perception.append`、`commit_cursor`、`register_version`、`update_location`、`commit_consolidation`）与 Agent 级锁依赖 flock，不经 kRPC：驱动者必须能看到 AgentRoot。
 - 错误以 `{"kind","message"}` 的 JSON 文本传回，`kind` 与文件实现的错误种类相同（`input_full` 另带 `session_id`、`pending`，`queue_missing` 另带 `session_id`），调用方按种类处理（如 `input_full`、`queue_missing` 可重试）。
 
@@ -168,3 +174,56 @@ Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one"
 ## Workspace Manager
 
 已知长期目录由 `AgentStateClient.workspaces()` 管理；身份元信息随目录，Agent State 保存登记与位置修订，Session 保存不可变快照。格式、kRPC 管理方法、幂等重试与生命周期见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。登记不是权限，activity 不是写锁，归档/取消登记不删除项目文件。
+
+## 9. Goals `state/goals/<goal_id>/`
+
+Goal 是 Agent State 中的持久对象，是唯一的真相；它的 Goal Session 只携带 `session.goal = {goal_id, epoch}`，不复制定义。字段以 `src/protocol/goal.rs` 为准，Schema 见 `schema/goal*.schema.json`。
+
+### 9.1 文件与写者
+
+| 文件 | schema | 写者 | 规则 |
+|---|---|---|---|
+| `goal.json` | `opendan.goal/1` | GoalStore（`.lock` 上 flock，读改写） | 内容修订 `revision` 只因定义 / 预算 / 计划变化而 +1，且要求调用方给出看到的修订号（不一致 → `goal_conflict`）；状态变化、reopen、restart 不增加它。`change_seq` 是 `changes.jsonl` 最后一条的 seq |
+| `revisions/<rev>.json` | 同上 | GoalStore | 每个内容修订的不可变快照（不覆盖发布） |
+| `changes.jsonl` | `GoalChange` | GoalStore | 每次变化一行：`kind = created / revised / status / reopened / restarted / epoch_ended`、`who`、`via`（`owner / ui_session:<sid> / goal_session:<sid> / opendan`）、`reason`、`revision`、`epoch`、`detail` |
+| `state.json` | `opendan.goal_state/1` | 当前 epoch 的 Goal Session 的驱动者（持其 session lease） | 真相在该 Session 的 `state.goal.state`（与 Session 同一次提交），这里是提交后发布的投影：`rev` 不大于已发布的、或 `epoch` 更旧的写入被忽略 / 拒绝 |
+| `activations.jsonl` | `opendan.goal_activation/1` | 同上 | 按 `(epoch, seq)` 幂等追加（只追加大于末行的记录） |
+| `epochs/<n>/state.json` | `opendan.goal_state/1` | 宿主 | epoch n 结束时的 Goal State（不覆盖发布） |
+| `schedule.json` | `opendan.goal_schedule/1` | 宿主 | 计划进度：`backend`、`every_secs`、`last_slot`、`pending`（已准入待投递的 fire）、`last_posted_key`、`start_posted_epoch`、`skipped[]`（最近 16 次：`paused / min_interval / period_budget / not_active`）、`last_error` |
+
+`goal.json` 的主要字段：`goal_id`（`g-<yyyymmddThhmmss>-<8 hex>`；带幂等键创建时为 `g-k<24 hex>` = H(agent, 创建者, key)）、`title`、`objective`、`scope{objects, paths, workspace}`、`lifecycle = achieve | maintain`、`achieved_when` / `healthy_state`、`distance_evaluation`、`constraints`、`initial_skills`、`owner`、`created_by{principal, via}`、`beneficiaries`、`budget`、`schedule{every_secs, min_interval_secs, start_on_create}`、`behavior`、`status = active | paused | achieved | archived`（及 `status_changed_at_ms / status_reason / status_by`）、`session{epoch, sid}`、`epochs[]{epoch, sid, started_at_ms, start: created | reopened | restarted, reason, keep: all | facts, ended_at_ms, end: archived | achieved | restarted, end_reason}`。
+
+`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（只记录，不投递）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens}`、`last_error`。
+
+### 9.2 Goal Session 与 epoch
+
+- 同一时刻一个 Goal 只有一个当前 epoch；Goal Session 的 sid = `goal-H("goal", agent_did, goal_id, epoch)`（`ids::goal_session_id`），幂等键 `goal:<goal_id>:<epoch>`，`kind = goal`、`class = goal`、驱动者为宿主身份、**没有 parent**，目录默认 `<agent_root>/sessions/`。登记表条目带 `goal_id`。
+- 由宿主按 Goal 列表补建（reconcile）：创建 Goal 只写 Goal；`create_session` 拒绝不经宿主创建 Goal Session，`create_sub_session` 拒绝 `goal` 类子 Session。
+- **reopen**（achieved / archived → active）与 **restart**（active / paused，开全新上下文）都在 `epochs[]` 追加新 epoch 并改 `session`；旧 Session 由其状态闸门在下一个提交点结束（restart：以 stopped 结束，`end = restarted`，**不停止 Work**）。宿主在旧 epoch 的 Session 结束且其 Goal State 全部发布后：`end_epoch` 记录结束时间；`prepare_epoch(n)` 把当前 `state.json` 存档到 `epochs/<旧 n>/state.json`，按新 epoch 的 `keep` 写出新的初始 state（`all`：整体保留；`facts`：只保留 `active_works / absorbed / recent_works / usage / goal_revision_seen`，skills 回到 `initial_skills`），再创建新 Session。各步幂等，中途崩溃由下一次 reconcile 补完。
+- reopen 默认 `keep = all`（`fresh_state` → `facts`），restart 默认 `facts`（`carry_state` → `all`）。restart / reopen 不重置周期用量。
+
+### 9.3 Work 的归属
+
+Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activation_seq, at_ms}`，登记表 `goal_id` 同步写入；Goal 修订后已运行的 Work 保留创建时的 `revision`。Work 的 `report.md` 与 `state.result.goal` 带同样的引用。Goal Session 吸收 Work 按 `goal_id` 而不是 `parent_session`：新 epoch 接管旧 epoch 的 Work，`absorbed` 保证只吸收一次。一个 Goal 的 Work 只在 Goal 被归档（或删除）时随之停止，epoch 结束不停止它。
+
+### 9.4 预算
+
+`budget = {activation: {max_total_tokens, max_runs}, period: {window_secs, max_total_tokens, max_activations, max_works}}`，缺省字段取 `agent.toml [session.goal] budget`，再缺省取内建值（activation 400000 tokens / 8 runs，period 86400 s / 24 works）。单次 Activation 的用量 = 该 Goal Session `usage.jsonl` 中 Activation 打开之后的记录（`OpenActivation.usage_offset`）。周期是按 `window_secs` 对齐的固定窗口。
+
+### 9.5 调用方与权限（只按类型区分）
+
+调用方 = `GoalCaller{principal, session}`；`session` 为空即 owner 侧（kRPC、`xagent goal`），否则按该 Session 的 kind 判定：
+
+| 调用方 | 可做 |
+|---|---|
+| owner | 全部 |
+| UI Session | create；revise 自己创建的 Goal（`created_by.via = ui_session:<sid>`）；pause / resume / archive / achieved / reopen / restart |
+| Goal Session（自己的 Goal） | 读；archive（须给 reason）；lifecycle 为 achieve 时 achieved（须给 evidence）。不能 revise、pause / resume、reopen、restart |
+| Work Session 等 | 只读 |
+
+`achieved` 只在该 Goal 没有未结束的 Work 时允许（否则 `goal_conflict`）。越权返回 `forbidden`；Goal 不存在返回 `not_found`。
+
+### 9.6 kRPC
+
+`goals.list`、`goals.get {goal_id}`、`goals.revision {goal_id, revision}`、`goals.changes {goal_id, limit?}`、`goals.state {goal_id}`、`goals.epoch_state {goal_id, epoch}`、`goals.activations {goal_id, query?: {epoch?, limit?}}`、`goals.schedule {goal_id}`；写：`goals.create {request, session?}`、`goals.revise {goal_id, request: {expected_revision, …}, session?}`、`goals.set_status {goal_id, request: {status, reason?, evidence?}, session?}`、`goals.reopen {goal_id, request: {reason, fresh_state?}, session?}`、`goals.restart {goal_id, request: {reason, carry_state?}, session?}`。驱动者 / 宿主写一律拒绝（§8）。宿主进程额外提供 `goals.activate` / `goals.post`（见 [opendan README](../../../src/frame/opendan/README.md)）。
+

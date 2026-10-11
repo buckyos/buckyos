@@ -125,7 +125,7 @@ export function PublicProfileView({ owner, previewReader, onPreviewReaderChange,
         <div className="h-28 w-full md:h-40" style={{ background: `linear-gradient(135deg, color-mix(in srgb, hsl(${data?.hue ?? 260} 60% 55%) 34%, var(--cp-surface)), color-mix(in srgb, var(--cp-accent-soft) 40%, var(--cp-surface-2)))` }} />
         <div className="relative px-4 pb-3">
           <div className="-mt-9 rounded-full border-4" style={{ borderColor: 'var(--cp-bg)', width: 'fit-content' }}>
-            <Avatar identity={{ name: data?.name ?? '?', hue: data?.hue ?? 260 }} size={72} />
+            <Avatar identity={{ name: data?.name ?? '?', hue: data?.hue ?? 260, avatar: data?.avatar }} size={72} />
           </div>
           <div className="mt-2 flex flex-wrap items-start gap-2">
             <div className="min-w-0 flex-1">

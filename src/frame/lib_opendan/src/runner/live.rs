@@ -528,6 +528,16 @@ async fn own_run_context(
             request.model_policy.temperature = model.temperature;
         }
     }
+    // A Goal Activation's run gets what the Activation has left.
+    if let Some(cap) = super::goal::run_token_cap(sh).await {
+        let cap = cap.min(u64::from(u32::MAX)) as u32;
+        request.budget.max_total_tokens = Some(
+            request
+                .budget
+                .max_total_tokens
+                .map_or(cap, |n| n.min(cap)),
+        );
+    }
     let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
     let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, rounds.clone(), &resolver);
     let mut inherited_below = 0;
@@ -865,7 +875,10 @@ pub(super) async fn resume_live_run(
         ctx,
         run,
         ready: true,
-        filled: false,
+        // In-flight calls answered as interrupted leave the run in the
+        // middle of its tool batch: that batch continues before any input
+        // batch can be placed (like answered suspended calls).
+        filled: !interrupted.is_empty(),
         deps,
         rounds,
         summary_llm: llm,
@@ -1294,6 +1307,9 @@ pub(super) struct InputBatch<'a> {
     /// The controlled input message: template output and media blocks.
     pub text: String,
     pub media: Vec<AiContent>,
+    /// Goal Sessions: the Activation this batch opens and its header
+    /// (placed first; the receipt carries the Activation).
+    pub goal: Option<super::goal::Opening>,
 }
 
 /// Commit one input batch (§8.3): its 1–2 messages + receipt in one
@@ -1327,10 +1343,25 @@ pub(super) async fn commit_input_batch(
     }
     let opens_turn = s.state.open_turn.is_none();
     // What the Turn is about, for its task: the first message of the batch.
-    let title = batch
+    let mut title = batch
         .picked
         .iter()
         .find_map(|m| m.msg().map(|msg| msg.msg.content.content.clone()));
+    let goal = batch.goal.filter(|_| opens_turn);
+    if let Some(g) = &goal {
+        let reasons: Vec<&str> = g
+            .open
+            .reasons
+            .iter()
+            .map(|r| crate::goal::event_name(r.kind))
+            .collect();
+        title = Some(format!(
+            "goal {} · activation {} ({})",
+            s.state.goal.as_ref().map(|x| x.goal_id.as_str()).unwrap_or_default(),
+            g.open.seq,
+            reasons.join(", ")
+        ));
+    }
     let turn = if opens_turn {
         s.state.turn_seq + 1
     } else {
@@ -1340,6 +1371,23 @@ pub(super) async fn commit_input_batch(
     let mut extra = std::collections::BTreeMap::new();
     if s.state.internal_continuation.is_some() {
         extra.insert("continuation".to_string(), Value::Bool(true));
+    }
+    if let Some(g) = &goal {
+        extra.insert(
+            RECEIPT_GOAL_ACTIVATION.to_string(),
+            serde_json::to_value(&g.open).unwrap_or(Value::Null),
+        );
+    } else if !opens_turn
+        && !batch.picked.is_empty()
+        && s.state.goal.as_ref().is_some_and(|g| g.activation.is_some())
+    {
+        // Run opportunities taken in while an Activation is open join it.
+        let reasons: Vec<ActivationReason> =
+            batch.picked.iter().map(crate::goal::reason_of).collect();
+        extra.insert(
+            RECEIPT_GOAL_REASONS.to_string(),
+            serde_json::to_value(&reasons).unwrap_or(Value::Null),
+        );
     }
     // Default reply path after this batch: the way its last message came
     // (by consumption order); events, controls, the snapshot and a
@@ -1354,6 +1402,11 @@ pub(super) async fn commit_input_batch(
     let mut messages = Vec::new();
     let mut part_texts: Vec<(&str, String)> = Vec::new();
     let mut events = Vec::new();
+    let goal_brief = goal.as_ref().map(|g| g.brief.clone());
+    if let Some(g) = &goal {
+        messages.push(AiMessage::text(AiRole::User, g.text.clone()));
+        part_texts.push((PART_GOAL, g.text.clone()));
+    }
     if let Some((text, shown)) = batch.snapshot {
         messages.push(AiMessage::text(AiRole::User, text.clone()));
         part_texts.push((PART_SNAPSHOT, text));
@@ -1387,6 +1440,11 @@ pub(super) async fn commit_input_batch(
             .into_iter()
             .zip(positions)
             .map(|((part, text), pos)| ReceiptPart {
+                brief: if part == PART_GOAL {
+                    goal_brief.clone()
+                } else {
+                    None
+                },
                 part: part.to_string(),
                 pos,
                 text,
