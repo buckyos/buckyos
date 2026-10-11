@@ -5,8 +5,8 @@
 应用看到的Path是一个在标准的linux FS，我们在标准的linux FS上做的扩展有
 
 > Agent 是独立身份，不等同于 App。`AgentSpec.binding` 把 AgentDID/AgentId 绑定到普通
-> App runtime 的 AppInstanceId + service_name；例如 Jarvis runtime 的 AppId 是
-> `jarvis.buckyos.bns.did`，AgentId 则由 Zone 的 Jarvis AgentDID 独立派生。
+> App 的 AppInstanceId + service_name。Jarvis RootFS 模板的 AppId 是
+> `jarvis.buckyos.bns.did`；基于模板创建的每个 Agent 由 OpenDAN 加载，构造 App 的 AppId 等于其 AgentId。
 
 /opt/buckyos/bin/$appid ：我们鼓励应用开发把二进制文件放在这个目录，这样脱离容器运行时改动也很小（比如容器变成了VM）
 

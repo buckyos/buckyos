@@ -39,3 +39,17 @@ DV 中 Jarvis 的 Work Session（入口 behavior `plan`，`mode = "behavior"`，
 - 单测 `xllm::behavior_protocol_tests`（三种组合）。`cargo test -p agent_tool --lib` 247 通过、`cargo test -p llm_context` 222 通过。
 - 已有 Session 的 run 不重新生成系统提示：修复对新建的 run 生效。
 
+
+## 配置侧根因（2026-10-11）
+
+触发上面问题的是 Jarvis 配置：`plan.toml`、`do.toml` 都没有 `[capabilities]`，只继承了 `agent.toml` 里的 `[llm_context.tools] enabled = true`。xllm 在只启用工具、没有列出工具时，会默认提供 `group:bash`；`tools2actions` 为 false 时，这组工具作为原生 function-call 工具提供，XML action 为空，于是落入“只有原生工具”这种组合。
+
+约定：XML behavior（`mode = "behavior"`）只配置 actions，不配置 tools，并且要明确写出来。已给 plan/do 补上：
+
+```toml
+[capabilities]
+tool_whitelist = []
+action_whitelist = ["group:bash"]
+```
+
+两项都要写：只写 `action_whitelist` 时，tools 仍会默认用 bash 组，同名工具会重复注册（`tool name ... conflicts`）。内置工具不能逐个列名（具名工具只从宿主的 `host_tools` 里找，目前只有 `call_behavior`、`report`），所以最精确只能写到 `group:bash`。验证方法：用 `parse_behavior` + `overlay_llm_context` + `build_toolset` 跑一遍，plan/do 得到 `native=[]`，actions 为 read_file/write_file/edit_file/shell/wait_task/get_task_state/cancel_task。已有 Session 冻结的是旧配置，只有新建的 Work 会用到新配置。

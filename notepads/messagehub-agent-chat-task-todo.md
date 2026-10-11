@@ -223,7 +223,7 @@ P0 门禁：能力查询落地前，凡经 tunnel 出站的目标一律视为不
 | 持久绑定 | `lib_opendan/src/protocol/{state,config}.rs`、`api.rs` | `state.turn_tasks`、`OutboxEntry.purpose`、`origin.parent_task`（建子 Session 时取父 Session 打开的 Turn 的 task） |
 | 占位与最终 edit | `lib_opendan/src/runner/outbound.rs` | `OutboundSink::placeholder`、`maybe_placeholder`（阈值定时器 / 首次工具调用 / drive 入口）、`queue_reply` 的 edit 与撤销分支、`agent_task` 写入锚点消息 |
 | OpenDAN | `src/frame/opendan/src/tasks.rs`、`ui.rs`、`loader.rs`、`config.rs` | `ZoneTaskService`、`TurnTasks`、`CancelBridge`；`MsgCenterSink::placeholder`（文案 + 能力查询）；`[loader] placeholder_delay_ms`；模块状态 `task_mgr` |
-| Agent 包 | `src/apps/jarvis_runtime/agent/i18n/{en,zh}.toml` | `[outbound]` 的 `accepted` / `stopped` / `finished` |
+| Agent 包 | `src/apps/jarvis_agent/agent/i18n/{en,zh}.toml` | `[outbound]` 的 `accepted` / `stopped` / `finished` |
 | msg-center | `src/frame/msg_center/src/{msg_center,msg_tunnel,message_hub,tg_tunnel,main}.rs`、`buckyos-api/src/msg_center_client.rs` | `msg.get_edit_capability`（与 `post_send` 同一套路由规划）；tunnel 的 `EditCapability` / `EditFailure`；Telegram 通用 edit 与一次性兜底；删除 status_line / turn_nonce / `TgUiSessionTracker`；私聊 edit 接收侧校验 |
 | MessageHub | `src/frame/desktop/src/app/messagehub/`（`protocol/msgobj.ts`、`conversation/history/{relations,renderers,locate}.ts(x)`、`conversation/tasks/`、`MessageDetails.tsx`、`launch.ts`、`api/store.ts`、`mock/`）、`src/api/task_mgr.ts` | 完整 `MsgContent` 折叠、两行任务区、共享 task 缓存与订阅、展开树、通用消息详情、`messageId` 深链、占位与 edit 一并标已读、mock 会话“Release Checklist” |
 | 文档 | `doc/opendan/protocol/`（Session Directory / Input / README、schema、fixtures）、`doc/opendan/xAgent.md`、`doc/message_hub/`、`src/frame/opendan/README.md`、MessageHub `UI_DATAMODEL.md`、[lib-opendan-outbound-todo.md](./lib-opendan-outbound-todo.md) §7 | 与上面的改动同步 |

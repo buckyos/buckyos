@@ -1146,7 +1146,7 @@ async fn the_jarvis_package_loads_and_answers() {
     let w = World::new();
     std::fs::remove_file(w.root.join("agent.toml")).unwrap();
     std::fs::remove_dir_all(w.root.join("i18n")).unwrap();
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_runtime/agent");
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_agent/agent");
     let seen = Arc::new(Mutex::new(String::new()));
     let tools = Arc::new(Mutex::new(Vec::<String>::new()));
     let (s2, t2) = (seen.clone(), tools.clone());

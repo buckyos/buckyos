@@ -1941,7 +1941,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 进度（2026-10-10，组件阶段）：完成：枚举封闭并校验，A.3.5 迁移规则（含证据才能恢复被替代条目），对象合并/删除级联别名。
 
 **TD-09 删除 Notebook**（M-01）
-- 现状：`lo/state/cognition.rs` 的 `notebook_append` 与 `Cognition` trait 方法、`NotebookNote`、`ConsolidationBatch.notebook_ops`；`lo/bin/xagent.rs` 的 `note` 子命令；`apps/jarvis_runtime/agent/behaviors/chat_route.toml` 提示模型使用 note；`agent_tool/src/agent_notebook.rs` 及其 CLI 与导出；`self_check.toml` 以 Notebook 为调度依据。
+- 现状：`lo/state/cognition.rs` 的 `notebook_append` 与 `Cognition` trait 方法、`NotebookNote`、`ConsolidationBatch.notebook_ops`；`lo/bin/xagent.rs` 的 `note` 子命令；`apps/jarvis_agent/agent/behaviors/chat_route.toml` 提示模型使用 note；`agent_tool/src/agent_notebook.rs` 及其 CLI 与导出；`self_check.toml` 以 Notebook 为调度依据。
 - 改为：整体移除，“你记一下”改走 `agent-session ctl perceive`；Self-Check 的去向按架构文档迁移表改为 Goal；不自动删除已有 Notebook 数据，另列清点范围。
 - 进度（2026-10-10，组件阶段）：组件完成：新路径不依赖 Notebook（S19 断言不创建 Notebook）。S 待办与清点范围：调用方 `lo/state/cognition.rs` 的 `notebook_append` 与 `Cognition` 方法、`NotebookNote`、`ConsolidationBatch.notebook_ops`，`lo/state/krpc.rs` 的 `cognition.notebook_append`，`lo/bin/xagent.rs` 的 `note`，`agent_tool/src/agent_notebook.rs` 与 `agent_tool_cli_dev` 的 agent-notebook CLI，jarvis `chat_route.toml`、`self_check.toml`；数据 `<agent_root>/notebook/`（不自动删除）。
 

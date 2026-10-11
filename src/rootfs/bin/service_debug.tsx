@@ -105,7 +105,7 @@ function printUsage(): never {
       '  service_debug xiaobai.test.buckyos.io alice',
       '  service_debug buckyos_systest devtest',
       '  service_debug xiaobai.test.buckyos.io alice --port 14060',
-      '  service_debug xiaobai.test.buckyos.io alice --agent-package-root ./apps/jarvis_runtime/agent',
+      '  service_debug xiaobai.test.buckyos.io alice --agent-package-root ./apps/jarvis_agent/agent',
       '  service_debug xiaobai.test.buckyos.io alice --opendan-bin ./target/debug/opendan -- --web ./frame/opendan/web/dist',
     ].join('\n'),
   )

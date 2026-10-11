@@ -58,21 +58,21 @@ fn build_appservice_doc() -> AppDoc {
 
 fn build_agent_doc_without_category() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
-    let app_did = DID::from_str("did:web:jarvis-runtime.example").unwrap();
+    let app_did = DID::from_str("did:web:jarvis-agent.example").unwrap();
     AppDoc::builder(
         AppType::Agent,
-        "jarvis-runtime",
+        "jarvis-agent",
         "0.1.0",
         "did:bns:test",
         &owner,
     )
     .app_did(app_did)
     .agent_pkg(
-        SubPkgDesc::new("agent.jarvis-runtime.example#0.1.0")
+        SubPkgDesc::new("agent.jarvis-agent.example#0.1.0")
             .package_meta_object_id(test_package_object_id(3)),
     )
     .agent_skills_pkg(
-        SubPkgDesc::new("skills.jarvis-runtime.example#0.1.0")
+        SubPkgDesc::new("skills.jarvis-agent.example#0.1.0")
             .package_meta_object_id(test_package_object_id(4)),
     )
     .service_port("main", 4060)
@@ -627,13 +627,13 @@ fn docker_runtime_exact_match_rejects_another_deployment_generation() {
 
 #[test]
 fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
-    let agent_env = Path::new("/opt/buckyos/data/home/alice/.local/share/jarvis-runtime.example");
+    let agent_env = Path::new("/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example");
     let expected_root =
-        Path::new("/opt/buckyos/env/pkgs/agent.jarvis-runtime.example#pkg:1234567890");
+        Path::new("/opt/buckyos/env/pkgs/agent.jarvis-agent.example#pkg:1234567890");
     let exact_cmd = vec![
         "opendan".to_string(),
         "--app-id".to_string(),
-        "jarvis-runtime.example".to_string(),
+        "jarvis-agent.example".to_string(),
         "--agent-bin".to_string(),
         expected_root.to_string_lossy().to_string(),
         "--service-port".to_string(),
@@ -642,31 +642,31 @@ fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
     let old_cmd = vec![
         "opendan".to_string(),
         "--app-id".to_string(),
-        "jarvis-runtime.example".to_string(),
+        "jarvis-agent.example".to_string(),
         "--agent-bin".to_string(),
-        "/opt/buckyos/env/pkgs/agent.jarvis-runtime.example#pkg:oldversion".to_string(),
+        "/opt/buckyos/env/pkgs/agent.jarvis-agent.example#pkg:oldversion".to_string(),
         "--service-port".to_string(),
         "4060".to_string(),
     ];
 
     assert!(command_matches_agent_process(
         &exact_cmd,
-        "jarvis-runtime.example"
+        "jarvis-agent.example"
     ));
     assert!(command_matches_agent_process(
         &old_cmd,
-        "jarvis-runtime.example"
+        "jarvis-agent.example"
     ));
     assert!(command_matches_exact_agent_process(
         &exact_cmd,
-        "jarvis-runtime.example",
+        "jarvis-agent.example",
         agent_env,
         Some(expected_root),
         Some("pkg:1234567890"),
     ));
     assert!(!command_matches_exact_agent_process(
         &old_cmd,
-        "jarvis-runtime.example",
+        "jarvis-agent.example",
         agent_env,
         Some(expected_root),
         Some("pkg:1234567890"),
@@ -803,11 +803,11 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     );
     assert_eq!(
         deploy.commands[0].args,
-        vec![test_exact_package_id("agent.jarvis-runtime.example", 3)]
+        vec![test_exact_package_id("agent.jarvis-agent.example", 3)]
     );
     assert_eq!(
         deploy.commands[1].args,
-        vec![test_exact_package_id("skills.jarvis-runtime.example", 4)]
+        vec![test_exact_package_id("skills.jarvis-agent.example", 4)]
     );
     assert_eq!(
         deploy.commands[2].args,
@@ -825,7 +825,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Agent);
     assert_programs(&start.commands, &["docker", "docker"]);
-    let runtime_key = test_runtime_key("jarvis-runtime.example");
+    let runtime_key = test_runtime_key("jarvis-agent.example");
     let container_name = test_container_name("test-app");
     assert_eq!(
         start.commands[0].args,
@@ -842,17 +842,17 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .contains(&"host.docker.internal:host-gateway".to_string()));
     assert!(start.commands[1]
         .args
-        .contains(&"BUCKYOS_APP_ID=jarvis-runtime.example".to_string()));
+        .contains(&"BUCKYOS_APP_ID=jarvis-agent.example".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
     assert!(start.commands[1].args.contains(
-        &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/.local/share/jarvis-runtime.example"
+        &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example"
             .to_string(),
     ));
     assert!(start.commands[1]
         .args
-        .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/jarvis-runtime.example".to_string()));
+        .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/jarvis-agent.example".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg".to_string()));
@@ -891,7 +891,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
     assert!(start.commands[1].args.iter().any(|arg| arg
-        == "<app_data>:/opt/buckyos/data/home/alice/.local/share/jarvis-runtime.example:rw"));
+        == "<app_data>:/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example:rw"));
     assert!(start.commands[1]
         .args
         .iter()

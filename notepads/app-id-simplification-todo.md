@@ -155,7 +155,7 @@ scheduler / NodeConfig / node-daemon 中的普通 App Service
 设计方向：
 
 - `AgentDocument.id`/AgentDID 是 Agent 身份真相，`AgentId = agent_did.to_raw_host_name()`。
-- Agent runtime 的产品身份仍由独立 AppDID/AppDoc 表达，例如 Jarvis Agent 可以绑定到 OpenDAN/Jarvis runtime AppInstance。
+- Agent runtime 的产品身份仍由独立 AppDID/AppDoc 表达，例如 Jarvis Agent 可以绑定到由 OpenDAN 加载的 AppInstance。
 - `users/{owner}/agents/{agent_id}/spec` 保存 AgentDoc snapshot 与 `AgentServiceBinding`，不是另一份 `AppServiceSpec`。
 - `AgentServiceBinding` 至少包含 `agent_did`、`agent_doc_object_id`、`target_app_instance_id`、`service_name` 和 generation；具体 schema 必须在 Phase 1 冻结。
 - scheduler 根据 binding 把 AgentDID 对应的 gateway/service endpoint 投影到目标 App Service；node-daemon 只运行目标 AppInstance，不创建第二套 Agent 容器身份。

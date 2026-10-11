@@ -11,7 +11,7 @@ BuckyOS 是一个开源的个人 AI 操作系统，将你的设备、应用、�
 - **Web Desktop 与 Control Panel**：统一的桌面环境，支持应用窗口、设置、用户与 Agent 管理、AI Center、Task Center 和应用管理。
 - **FileBrowser 与 Preview**：内置文件浏览和预览界面。FileBrowser 通过 `nfs-server` 执行文件操作，后台复制任务由 Task Manager 管理。
 - **MessageHub 与 Message Center**：内置消息应用，以 `msg-center` 为后端，支持会话历史、附件、已读状态，以及会话归档、恢复和删除。服务层提供基于 DID 的收发箱、联系人、自托管群组、原生消息通信和 Telegram 通道。
-- **OpenDAN 与 Jarvis**：基于 Rust 的 Agent Runtime，支持可配置的会话类别与行为循环、记忆和工作区工具、消息与事件路由、任务委派，以及请求人工输入。Jarvis 以带版本号的 `.pikg` 应用包交付，提示词、行为配置和翻译资源位于 [`src/apps/jarvis_runtime/agent`](src/apps/jarvis_runtime/agent)。
+- **OpenDAN 与 Jarvis**：OpenDAN 是基于 Rust 的 Agent Runtime，支持可配置的会话类别与行为循环、记忆和工作区工具、消息与事件路由、任务委派，以及请求人工输入。Jarvis 是系统内置的 Agent 模板，以带版本号的 `.pikg` 应用包交付，提示词、行为配置和翻译资源位于 [`src/apps/jarvis_agent/agent`](src/apps/jarvis_agent/agent)。
 - **AI Compute Center（AICC）**：提供服务商与模型管理、逻辑模型路由、用量日志，以及文本和媒体能力的适配器。桌面中的 AI Center 提供相应的管理界面。
 - **Workflow 与 Task Manager**：支持工作流定义与运行、计划任务、任务进度与控制，以及人工审批或介入。Workflow 和 OpenDAN 与 Task Manager、`kevent` 集成，交换任务状态更新。
 - **应用交付与 SDK/CLI**：支持 `.pikg` 包、经过校验的安装计划、按用户区分的应用实例和网关路由。TypeScript SDK 与 `buckyos` CLI 一起构建并随系统分发；Rust 服务使用 `buckyos-api`。

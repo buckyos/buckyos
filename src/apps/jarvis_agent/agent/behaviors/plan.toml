@@ -31,6 +31,10 @@ __INCLUDE(./step_record_rule.inc)__
 
 """
 
+[capabilities]
+tool_whitelist = []
+action_whitelist = ["group:bash"]
+
 [budget]
 max_tool_iterations = 256
 max_consecutive_errors = 8

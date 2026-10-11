@@ -32,7 +32,7 @@ Examples:
 Environment:
   BUCKYOS_ROOT=/opt/buckyos
   AGENT_ID=<agent_id>
-  JARVIS_PACKAGE_ROOT=src/apps/jarvis_runtime/agent
+  JARVIS_PACKAGE_ROOT=src/apps/jarvis_agent/agent
   OPENDAN_WEB_ROOT=src/frame/opendan/web/dist (falls back to $BUCKYOS_ROOT/bin/opendan/web)
 EOF_USAGE
 }
@@ -86,7 +86,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/apps/jarvis_runtime/agent}"
+JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/apps/jarvis_agent/agent}"
 SERVICE_DEBUG_SCRIPT="${SCRIPT_DIR}/rootfs/bin/service_debug.tsx"
 
 if [[ ! -d "${JARVIS_PACKAGE_ROOT}" ]]; then

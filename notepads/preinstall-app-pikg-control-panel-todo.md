@@ -161,9 +161,9 @@ pre-install app config = local PIKG path + install plan
 
 ### Jarvis / bootstrap Agent Gate
 
-`add_default_agents()` 当前复用 `stage_bootstrap_install_plan()` 创建 Jarvis runtime plan，并由 scheduler recovery 后再写 `BootstrapAgentProvision`。删除 helper 前必须显式处理：
+`add_default_agents()` 当前复用 `stage_bootstrap_install_plan()` 创建 Jarvis Agent 安装计划，并由 scheduler recovery 后再写 `BootstrapAgentProvision`。删除 helper 前必须显式处理：
 
-- [ ] 先确认 Jarvis runtime 是否也属于“预装 App”。若是，优先把它表示为 Control Panel 的另一项 preinstall seed，再在 runtime 安装完成后执行 Agent binding。
+- [ ] 先确认 Jarvis Agent 包是否也属于“预装 App”。若是，优先把它表示为 Control Panel 的另一项 preinstall seed，再在 Agent 包安装完成后执行 Agent binding。
 - [ ] 如果本任务暂不迁移 Jarvis，拆出明确的 internal Agent bootstrap helper，避免继续借用普通 `pre_install_apps` 类型；不得因此恢复 boot 阶段执行普通 App。
 - [ ] 不为解决 Jarvis 依赖在 scheduler 新增更多特殊状态机。需要新的 Agent 安装编排时优先放到 Control Panel，并单独记录范围。
 

@@ -1,7 +1,7 @@
 # OpenDAN 重构需求：Agent Loader
 
 - 状态：v0.7（2026-10-04）。M0–M3 已实施，通过库级、进程级验收（§10.3）和 DV 环境的真实 zone 验收（§10.6）。M5 切换还没做；M4 与 `agent.delegate` 按 §2.2 后做。
-- 对象：`src/frame/opendan`（服务进程）与 `src/apps/jarvis_runtime`（Agent 包）。
+- 对象：`src/frame/opendan`（服务进程）与 `src/apps/jarvis_agent`（Agent 包）。
 - 依据：[xAgent.md](../doc/opendan/xAgent.md) v0.4、[Agent Session SDK 实现计划](<../doc/opendan/Agent Session SDK 实现计划.md>) 附录 A、`doc/opendan/protocol/`、[lib_opendan README](../src/frame/lib_opendan/README.md)。
 - 读者：实施重构的开发者与 Code Agent。实施前先读 xAgent.md §0–§2、§4.6–§4.8、§7、§9.6、§11。
 
@@ -16,7 +16,7 @@
    - **B. UI Session + Message Tunnel**：按配置发现 inbox、创建并托管 UI Session，接通 msg-center 入站与出站。
    - **C. self-check / self-improve**：按配置定时或按条件启动对应 Session（后做）。
 4. **第一版目标是把架子跑起来**：能启动、能托管、能对话、能派出 work session、能在 WebUI 里看到状态、重启后不丢不重。不追求 Agent 能力。
-5. **之后的能力迭代收束到 `src/apps/jarvis_runtime`**：memory、workspace、提示词、behavior、skill 的优化都通过 Agent 包里的配置与素材完成。判断标准是“改 Jarvis 的能力不需要改 Rust”；做不到的地方就是框架缺扩展点，补扩展点而不是往 Loader 里加特例（§5）。
+5. **之后的能力迭代收束到 `src/apps/jarvis_agent`**：memory、workspace、提示词、behavior、skill 的优化都通过 Agent 包里的配置与素材完成。判断标准是“改 Jarvis 的能力不需要改 Rust”；做不到的地方就是框架缺扩展点，补扩展点而不是往 Loader 里加特例（§5）。
 
 ---
 
@@ -271,7 +271,7 @@ Loader 自己不带任何写死的权限假设。它需要什么权限，取决�
 
 ### 5.2 Agent 包里能改什么
 
-| 想改的东西 | 改哪里（`src/apps/jarvis_runtime/agent/`） | 由谁读取 |
+| 想改的东西 | 改哪里（`src/apps/jarvis_agent/agent/`） | 由谁读取 |
 |---|---|---|
 | 身份与人设 | `role.md`、`self.md` | `BehaviorCatalog::identity`，冻结进 Session |
 | 某个阶段的提示词、模型、工具、预算、进入模式 | `behaviors/<name>.toml`、`*.inc` | `BehaviorCatalog`，冻结 |
@@ -419,7 +419,7 @@ memory、workspace 以及以后的新能力，默认做成 **Agent 包里的 CLI
 10. **`REQUEST_BOX`**：v1 不消费。
 11. **待发列表**：放 state.json，与产生回复的提交同一个提交点。
 
-12. **权限声明放 `dapp_meta/app.json` 的 `permissions`**（用户定）。`src/apps/jarvis_runtime` 本身就是一个 app，Agent 包按 app 的方式声明权限。
+12. **权限声明放 `dapp_meta/app.json` 的 `permissions`**（用户定）。`src/apps/jarvis_agent` 本身就是一个 app，Agent 包按 app 的方式声明权限。
 13. **一个进程托管一个 Agent**（用户定）。kRPC 路径与 WebUI 不带 agent 维度。
 14. **扩展优先用标准 CLI 工具，尽量不开进程内 tool**（用户定，§5.4）。memory / workspace 的最小扩展接口按这个原则定。
 15. **xAgent §11.5 中影响 UI 的几条先按下面的默认选择走**。它们不属于核心框架，之后可以单独调整，不阻塞 Loader：
@@ -449,7 +449,7 @@ memory、workspace 以及以后的新能力，默认做成 **Agent 包里的 CLI
 | M1 | Agent State 服务 | `service.rs`（鉴权 + `libopendan::state::krpc::serve_call` + `session.read` + 三个操作 + `loader.status`），接口见 [opendan README](../src/frame/opendan/README.md) |
 | M2 | WebUI | `src/frame/opendan/web`（见 §10.4） |
 | M3 | UI Session + Tunnel | `ui.rs`：`UiModule`（inbox 发现、绑定、入站桥）、`MsgCenterSink`（出站）、`MailService`（msg-center 的最小接口，zone 实现 `ZoneMailService`） |
-| M3 | Jarvis 最小迁移 | `src/apps/jarvis_runtime/agent/agent.toml`、`behaviors/{chat_route,task_route,plan,do}.toml`、`i18n/{en,zh}.toml [outbound]` |
+| M3 | Jarvis 最小迁移 | `src/apps/jarvis_agent/agent/agent.toml`、`behaviors/{chat_route,task_route,plan,do}.toml`、`i18n/{en,zh}.toml [outbound]` |
 | 脚本 | 启动参数 | `debug_jarvis.sh`、`rootfs/bin/service_debug.tsx` 去掉 `--worksession-test` 透传 |
 
 ### 10.2 与本文不同或本文没写的决定

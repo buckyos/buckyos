@@ -97,7 +97,7 @@
 | `src/frame/lib_opendan/src/runner/turn_task.rs`、`src/frame/opendan/src/tasks.rs` | 每个 Turn 一个 TaskMgr task；`CancelBridge`（378-451）把取消转成 `stop`，会结束整个 Session | 取消一次 Activation 不应结束 Goal |
 | `src/frame/lib_opendan/src/state/mod.rs:173-191`、`state/krpc.rs::serve_call`（125-285） | AgentStateClient 门面与 kRPC；driver-only 写在 kRPC 上拒绝 | 没有 `goals()` |
 | `src/frame/opendan/src/loader.rs`、`service.rs` | Supervisor 托管、`loader.status`、`/kapi/opendan` | 没有 Goal 模块 |
-| `src/apps/jarvis_runtime/agent/` | `[session.ui/group/work]`、现行结构的 behavior（例如 `task_route.toml`） | 没有 `[session.goal]` 和 Goal behavior |
+| `src/apps/jarvis_agent/agent/` | `[session.ui/group/work]`、现行结构的 behavior（例如 `task_route.toml`） | 没有 `[session.goal]` 和 Goal behavior |
 
 ---
 
@@ -535,7 +535,7 @@
 | 宿主：`GoalHost`（reconcile、epoch 迁移与结束、启动事件、准入链、`ScheduleBackend` / `LocalScheduleBackend`、`ManualClock`）、`Supervisor::with_goals / goal_changed / goal_activate / goal_feedback`、`stopped_from_above`（Goal 的 Work 只随 Goal 归档停止） | `host/goals.rs`、`host/mod.rs`（原 `host.rs` 移为目录） |
 | CLI：`xagent goal create / list / show / revise / pause / resume / archive / achieved / reopen / restart / activate / post / skills / serve`；`new --class goal` 拒绝 | `src/bin/xagent.rs` |
 | Loader：`[loader.goals] enabled`（缺省开）、`goals` 模块、`loader.status.goals`、`goals.activate` / `goals.post`、写后立即 reconcile、`session.stop` 的 `scope`、TaskMgr 取消 Goal 的 Turn 用 `scope = turn` | `src/frame/opendan/src/{config,loader,service,tasks}.rs` |
-| Jarvis：`[loader.goals]`、`[session.goal]`（`default_behavior = "goal"`、预算缺省）、`behaviors/goal.toml`（function_call） | `src/apps/jarvis_runtime/agent/` |
+| Jarvis：`[loader.goals]`、`[session.goal]`（`default_behavior = "goal"`、预算缺省）、`behaviors/goal.toml`（function_call） | `src/apps/jarvis_agent/agent/` |
 | WebUI：只加了 `goal` kind 的类型与标签（Goals 视图属第二段） | `src/frame/opendan/web/src/{model/types.ts,i18n.ts,pages/Home.tsx}` |
 | 文档 | 协议 README（版本说明、fixture 16）、Agent State Protocol §1/§2/§8/§9（新）、Session Directory / Input / Control Protocol、`doc/opendan/xAgent.md`（模板表、CLI、退出码）、`src/frame/opendan/README.md`、`src/frame/lib_opendan/README.md`、架构设计 §15.5（“Goal 的现有实现”行）/ §15.6 / §17.2 |
 | fixture | `doc/opendan/protocol/fixtures/16_goal_session`（生成器 `examples/fixtures.rs`，断言 `tests/fixtures.rs::f16_goal_session`）；重新生成时其余 fixture 的时间戳 / run id 一并刷新 |
@@ -579,7 +579,7 @@ V21：上述全量回归通过，UI / Work / self_* 的既有用例行为不变�
 - restart：epoch 2 的 Session 以 stopped 结束（“superseded by epoch 3”），`epochs/1`、`epochs/2` 存档；epoch 3 的首个 Activation 原因为 `restarted` + `child`，接管了 epoch 2 创建的 Work。再次在 Work 运行中 restart：Work 未被停止，epoch 4 的 `restarted` Activation 在 `<works>` 里看到它并决定 `no_action`；它结束后由 epoch 4 吸收（一次）。
 - 计划改为 60 s 后停 Loader 3 分多钟再启动：Loader 在 Activation 进行中被 SIGINT，重启后同一 `(epoch 4, seq 3)` 续完（一条记录）；停机期间错过的槽合并为一次 fire（key `scheduled:<slot>:3`）。那次 fire 并入了续跑的 Activation，而旧二进制没有把并入的原因记进记录——已按 §11.2 第 8 条修正并用新二进制复验（之后每分钟一次 `scheduled`，`min_interval` 跳过有记录）。
 - 结束时已把测试 Goal 归档（epoch 4 `end = archived`），并停掉宿主机上的 Loader，app 交回 node-daemon 的容器。
-- **本地测试镜像（同日）**：`./build_aios --local-test`（`local/aios-test:latest-amd64`，devenv.json 原本就指向它）+ `cd src && uv run start.py --skip-update`。镜像只带二进制；Agent 的包由 bundled 模板 `data/cache/jarvis.buckyos.bns.did-0.7.0.pikg` 构造，所以另用 `uv run buckyos-build -s jarvis_runtime` 只重建模板并把这一个文件装到 `/opt/buckyos/data/cache/`（旧文件备份在会话 scratchpad），再 `start.py --skip-update`：control_panel 的预装 reconciler 发现模板 AppDoc 变化，自动重建 `template_auto_update` 的 Agent，AgentRoot 同步出 `[session.goal]` 与 `behaviors/goal.toml`。容器形态验证（经 `https://test.buckyos.io/kapi/xiaobai.test.buckyos.io`，devtest 登录）：`loader.status` 的 `goals` 模块运行；reopen → epoch 5，Session 冻结了 `goal` behavior，Activation 原因 `reopened` + 并入的 `scheduled`；它报告 `needs_info`——容器里看不到宿主机的 `goal_dv` 目录，Goal 如实说“无法观察”，没有当成“没有变化”。之后再次归档。
+- **本地测试镜像（同日）**：`./build_aios --local-test`（`local/aios-test:latest-amd64`，devenv.json 原本就指向它）+ `cd src && uv run start.py --skip-update`。镜像只带二进制；Agent 的包由 bundled 模板 `data/cache/jarvis.buckyos.bns.did-0.7.0.pikg` 构造，所以另用 `uv run buckyos-build -s jarvis_agent` 只重建模板并把这一个文件装到 `/opt/buckyos/data/cache/`（旧文件备份在会话 scratchpad），再 `start.py --skip-update`：control_panel 的预装 reconciler 发现模板 AppDoc 变化，自动重建 `template_auto_update` 的 Agent，AgentRoot 同步出 `[session.goal]` 与 `behaviors/goal.toml`。容器形态验证（经 `https://test.buckyos.io/kapi/xiaobai.test.buckyos.io`，devtest 登录）：`loader.status` 的 `goals` 模块运行；reopen → epoch 5，Session 冻结了 `goal` behavior，Activation 原因 `reopened` + 并入的 `scheduled`；它报告 `needs_info`——容器里看不到宿主机的 `goal_dv` 目录，Goal 如实说“无法观察”，没有当成“没有变化”。之后再次归档。
 
 ### 11.5 发现的问题与遗留
 

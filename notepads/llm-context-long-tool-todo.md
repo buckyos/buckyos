@@ -136,7 +136,7 @@ runtime 相关的信息通过说明和结果传达：
   - agent_tool：`TOOL_EXEC_BASH` 与 xllm 的 `TOOL_EXEC` 合并成一个常量，同步 `llm_compress`、`llm_explore`、`llm_understand_media`、`llm_tool_carft`、`todo_tools` 中的引用。`ExecBashTool`、`llm_bash` 等类型名和模块名不进入协议，实施时顺手改。
   - llm_context：XML behavior 的内置动作标签 `<exec_bash>` 改为 `<shell>`，涉及 `xml_behavior.rs` 的标签表、body → `command` 的映射和协议提示词，以及 `request.rs` 的注释和相关测试。
   - libopendan：`runner/tools.rs` 的副作用表，`lock.rs` 的注释和测试。
-  - opendan 与 Jarvis：`opendan/src` 中的引用，以及 `jarvis_runtime/agent/behaviors/*.toml` 中的提示词。
+  - opendan 与 Jarvis：`opendan/src` 中的引用，以及 `jarvis_agent/agent/behaviors/*.toml` 中的提示词。
   - buckyos-api：TaskMgr 的任务数据类型 `tool.exec_bash` 与 schema `tool.exec_bash/v1`（`taskdata.rs`、`task_mgr.rs`）。`shell` 不使用 buckyos task-mgr（§4），本仓库也没有其它引用。确认没有外部调用方后删除；有调用方则改名为 `tool.shell` 与 `tool.shell/v1`。这是 kernel 的共享类型。
   - 其它：`msg_center/src/tg_tunnel.rs` 的测试数据、`src/read_aicc_log.py`、`tools/buckyos-agent/readme.md`。
   - 文档：xllm PRD 与 xllm_rust_sdk.md；`doc/llm_context/` 下的 Agent Actions、agent_tool_result_protocol、local_llm_context_protocol 等；`doc/opendan/` 下的 build-in agent-tool 手册、NewOpenDANRuntime、Agent Session SDK 实现计划、xAgent.md 等。

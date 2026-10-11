@@ -79,7 +79,7 @@ cd src && ./debug_jarvis.sh            # 可选：[owner] --agent <agent_id> | -
 ```
 
 - 先要有一个用 Jarvis 模板创建的 Agent（桌面 Add Agent，或 `test/test_opendan/agent_target.ts --create <名字>`）。不指定 `--agent`（或 `$AGENT_ID`）时取 owner 名下第一个 ready 的 Agent，没有则取第一个已绑定的；列表来自 `rootfs/bin/service_debug.tsx agents <owner>`。
-- `cargo build`（debug）后以该 Agent 的构造 App 身份（AppId = AgentId）在前台运行，Agent 包直接读 `src/apps/jarvis_runtime/agent`，WebUI 读 `frame/opendan/web/dist`（没有则用已安装的）。改了包里的提示词或 Rust 代码，Ctrl+C 再跑一次即可；已有 Session 冻结的 behavior 不变，发 `/stop` 开新一代 Session 才会用上新的。
+- `cargo build`（debug）后以该 Agent 的构造 App 身份（AppId = AgentId）在前台运行，Agent 包直接读 `src/apps/jarvis_agent/agent`，WebUI 读 `frame/opendan/web/dist`（没有则用已安装的）。改了包里的提示词或 Rust 代码，Ctrl+C 再跑一次即可；已有 Session 冻结的 behavior 不变，发 `/stop` 开新一代 Session 才会用上新的。
 - 脚本先停掉 node-daemon 拉起的 `buckyos-app-*` 容器，再占住 app 的服务端口，容器因此起不来（node-daemon 日志里会持续有 `docker run` 失败，属于预期）。容器抢先回来时 opendan 拒绝启动，脚本再停一次容器并重试。Ctrl+C 退出后 node-daemon 会自己把容器拉回来。
 - 容器不在时 zone 网关没有到 app 的路由，WebUI 直接开 `http://127.0.0.1:<服务端口>/`，本机访问不需要登录（`--trust-loopback`）。
 - 消息收发、AICC、kmsg、kevent 都是真实服务：`test/test_opendan/test_agent_loader.ts` 可以直接用（`OPENDAN_URL=http://127.0.0.1:<服务端口>/kapi/opendan`）。

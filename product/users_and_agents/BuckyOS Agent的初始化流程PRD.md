@@ -63,7 +63,7 @@
 | Message Tunnel | 接入 Telegram 等外部应用的消息通道，不建立第二套 Agent 身份或独立权限体系。 |
 | PIKG | 本文对可安装软件包的统一称呼。模板通过现有 App Service／系统包安装器安装；界面名称应与系统现有产品保持一致。 |
 
-“Jarvis Runtime”在本流程中统一改称 **Jarvis RootFS 模板**，面向普通用户的字段标签可简化为“Agent 模板”。OpenDAN 是 Loader 实现，Jarvis 是模板，两者不与 Agent 实例的身份混用。
+本流程统一使用 **Jarvis RootFS 模板**，面向普通用户的字段标签可简化为“Agent 模板”。OpenDAN 是 Loader 实现，Jarvis 是模板，两者不与 Agent 实例的身份混用。
 
 **运行配置是一个阶段，不应再拆成彼此重复的 Runtime 选择和 Loader 选择。** 本期只需要选择 Agent Loader，再选择与其兼容的 RootFS 模板。
 
@@ -990,7 +990,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 - `allow_group = false` 时，群消息只做 `mark_read`。
 - `allow_group = true` 时，只有发送者身份是 Owner 且 `msg.mentions.dids` 包含 Agent DID 才触发；其他群消息只做 `mark_read`。
 - 触发时，先通过 `MailService` 的新方法（基于 `MsgCenterClient::list_box_by_time`）取同一 mailbox 最近 20 条已读消息，把它们和触发消息依次投入同一队列，再调用 `ensure_task`。重复的对象会按 ObjId 去重。
-- Jarvis 模板（`apps/jarvis_runtime/agent/`）：增加 `[[loader.ui]] on = "msg.group"` 规则和 `[session.group]`，并按当前 behavior 结构参照 `chat_route` 重写 `behaviors/groupchat_route.toml`。本期不支持 Telegram 群。
+- Jarvis 模板（`apps/jarvis_agent/agent/`）：增加 `[[loader.ui]] on = "msg.group"` 规则和 `[session.group]`，并按当前 behavior 结构参照 `chat_route` 重写 `behaviors/groupchat_route.toml`。本期不支持 Telegram 群。
 
 ### B.8 msg-center
 
@@ -1104,7 +1104,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 | 共享类型与 RBAC | `kernel/buckyos-api/src/app_schema.rs`（扩展 `AgentInstallRecord`；新增 `AgentSettings`、`AgentProfile`、`AgentRuntimeInfo`、`AgentTemplateRecord` 与键函数）、`app_install.rs`（`SystemInstallSettings.agent_templates`）、`rbac_config.rs` |
 | control_panel | 新增 `frame/control_panel/src/agent_mgr.rs`（名称检查、模板、构造 PIKG、创建驱动、删除、模板更新、`agent.*` 方法）；`app_installer.rs`（`submit_internal_install`、模板分支）、`pre_install_reconciler.rs`、`pikg.rs`、`user_mgr.rs`、`main.rs` |
 | scheduler 与激活 | `kernel/scheduler/src/{system_config_builder,install_plan_executor,system_config_agent,main}.rs`、`rootfs/etc/scheduler/boot.template.toml`；`kernel/node_active/`（`OwnerTelegramStep.tsx` 取代 `JarvisMsgTunnelStep.tsx`）、`kernel/node_daemon/src/active_server.rs`、`make_config.ts`、`active.ts` |
-| OpenDAN | `frame/opendan/src/{main,loader,records,rootfs,home,ui}.rs`；`frame/lib_opendan/src/{bridge/msg.rs,protocol/input.rs,runner/inputs.rs,runner/drive.rs,runner/input_view.rs,state/behaviors.rs}`；`apps/jarvis_runtime/agent/{agent.toml,role.md,behaviors/groupchat_route.toml}` |
+| OpenDAN | `frame/opendan/src/{main,loader,records,rootfs,home,ui}.rs`；`frame/lib_opendan/src/{bridge/msg.rs,protocol/input.rs,runner/inputs.rs,runner/drive.rs,runner/input_view.rs,state/behaviors.rs}`；`apps/jarvis_agent/agent/{agent.toml,role.md,behaviors/groupchat_route.toml}` |
 | msg-center | 新增 `frame/msg_center/src/zone_agent.rs`；`owner_session.rs`、`group_service.rs`、`main.rs`、`msg_tunnel.rs`、`msg_center.rs`、`contact_mgr.rs`、`tg_tunnel.rs` |
 | 桌面 | 新增 `frame/desktop/src/app/agent-setup/`（向导、`guide.ts` 入口状态）、`api/account.ts`、`api/control_panel_mock.ts`、`i18n/agent-setup.ts`；改写 `api/user_mgr.ts`、`api/task_mgr.ts`、`app/users-agents/`、MessageHub 的 `agent_group_disabled` 提示 |
 | 脚本与测试 | `debug_jarvis.sh`（`--agent`）、`rootfs/bin/service_debug.tsx`（`agents <owner>`）、`test/test_opendan/agent_target.ts`、`test/test_control_panel/test_user_mgr.ts` |

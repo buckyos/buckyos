@@ -847,7 +847,7 @@ Jarvis 当前可能暂时离线，因此走 Dispatcher，而不是直接调 Open
 ```
 
 `owner_user_id` / `owner_app_id` 由服务端从 OpenDAN 的验签 token 写入（`opendan`），
-payload 不能冒充。Jarvis 的 AgentRuntime 上线后 `attach_instance`，周期
+payload 不能冒充。加载 Jarvis Agent 的 OpenDAN 上线后 `attach_instance`，周期
 `renew_instance` 上报 `available_capacity`。
 
 **2. Workflow（zone 可信调用者）提交 dispatch**

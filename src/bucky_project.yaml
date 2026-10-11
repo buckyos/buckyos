@@ -83,10 +83,10 @@ modules:
     format: pikg
     name: text_editor
     src_dir: apps/text_editor
-  jarvis_runtime:
+  jarvis_agent:
     format: pikg
-    name: jarvis_runtime
-    src_dir: apps/jarvis_runtime
+    name: jarvis_agent
+    src_dir: apps/jarvis_agent
 
 apps:
   buckyos:
@@ -131,7 +131,7 @@ apps:
       desktop: bin/control-panel/web/
       buckyos_systest: data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg
       text_editor: data/cache/text-editor.buckyos.bns.did-0.1.0.pikg
-      jarvis_runtime: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg
+      jarvis_agent: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 

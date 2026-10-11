@@ -78,7 +78,7 @@ src/rootfs/bin/opendan/xagent
 
 src/apps/sys_test/dist/
 src/apps/sys_test/dapp_dist/
-src/apps/jarvis_runtime/dapp_dist/
+src/apps/jarvis_agent/dapp_dist/
 src/rootfs/data/cache/*.pikg
 old/*
 src/frame/desktop/dist/favicon.svg
