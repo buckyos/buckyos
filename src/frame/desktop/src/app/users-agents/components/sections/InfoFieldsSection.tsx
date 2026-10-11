@@ -8,10 +8,12 @@ interface InfoFieldsSectionProps {
   title: string
   fields: Record<string, string>
   editable?: boolean
+  /** When set, only these keys get an edit button. */
+  editableKeys?: readonly string[]
   onFieldChange?: (key: string, value: string) => void
 }
 
-export function InfoFieldsSection({ title, fields, editable = true, onFieldChange }: InfoFieldsSectionProps) {
+export function InfoFieldsSection({ title, fields, editable = true, editableKeys, onFieldChange }: InfoFieldsSectionProps) {
   const { t } = useI18n()
   const label = (key: string) => t(`usersAgents.field.${key}`, key)
   const entries = Object.entries(fields)
@@ -58,7 +60,7 @@ export function InfoFieldsSection({ title, fields, editable = true, onFieldChang
               <span className="text-sm flex-1 min-w-0 break-words" style={{ color: 'var(--cp-text)' }}>
                 {value}
               </span>
-              {canEdit && (
+              {canEdit && (!editableKeys || editableKeys.includes(key)) && (
                 <IconButton
                   size="small"
                   aria-label={t('usersAgents.info.edit', undefined, { field: label(key) })}

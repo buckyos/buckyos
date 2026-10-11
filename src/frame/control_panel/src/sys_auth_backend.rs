@@ -872,6 +872,7 @@ impl ControlPanelServer {
                 | "auth.issue_sso_token"
                 | "user.invite.get"
                 | "user.invite.accept"
+                | "zone.presentation.get"
         )
     }
 

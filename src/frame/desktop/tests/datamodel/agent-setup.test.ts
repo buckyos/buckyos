@@ -180,7 +180,7 @@ Deno.test('constructed Agent Apps keep a definition but no launcher icon; the gu
   const summary = {
     app_id: 'xiaobai.test.buckyos.io', app_instance_id: 'xiaobai.test.buckyos.io@devtest', app_did: 'did:web:xiaobai.test.buckyos.io',
     runtime_type: 'agent', owner_user_id: 'devtest', availability_match: null, show_name: '小白', version: '0.7.0', app_icon_url: null,
-    icon_res_url: '', author: '', app_index: 1, enable: true, state: 'running', expected_instance_count: 1, spec_path: '', web_hosts: ['xiaobai'],
+    author: '', app_index: 1, enable: true, state: 'running', expected_instance_count: 1, spec_path: '', web_hosts: ['xiaobai'],
   } as unknown as AppSummary
   const definition = createBackendAppDefinitionMapper([])(summary)
   assertEquals([definition.id, definition.manifest.showInLauncher, definition.webHosts], ['xiaobai.test.buckyos.io@devtest', false, ['xiaobai']], 'agent app')

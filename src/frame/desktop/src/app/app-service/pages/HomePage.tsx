@@ -11,6 +11,7 @@ import {
   ServerCog,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
+import { useServiceText } from '../useServiceText'
 import { AppIcon } from '../../../components/DesktopVisuals'
 import type { AppServiceNav } from '../components/layout/navigation'
 import { useAppServiceStore } from '../hooks/use-app-service-store'
@@ -125,6 +126,7 @@ function AppCard({
   onOpen: () => void
 }) {
   const { t } = useI18n()
+  const serviceText = useServiceText()
   return (
     <button
       type="button"
@@ -148,14 +150,14 @@ function AppCard({
             border: '1px solid var(--cp-border)',
           }}
         >
-          <AppIcon iconKey={service.iconKey} className="!size-6" />
+          <AppIcon iconKey={service.iconKey} iconUrl={service.iconUrl} className="!size-6" />
         </div>
         <div className="min-w-0 flex-1">
           <h3
             className="truncate text-sm font-semibold"
             style={{ color: 'var(--cp-text)' }}
           >
-            {service.name}
+            {serviceText(service).title}
           </h3>
           <p className="mt-1 truncate text-xs text-[var(--cp-muted)]">
             {t('app22.owner')}: {service.owner_user_id}
@@ -164,7 +166,7 @@ function AppCard({
             className="mt-1 line-clamp-2 text-xs leading-5"
             style={{ color: 'var(--cp-muted)' }}
           >
-            {t(service.description)}
+            {serviceText(service).summary}
           </p>
         </div>
         <StatusBadge service={service} />
@@ -190,6 +192,7 @@ function AppCard({
 
 function ServiceLedger({ services }: { services: AppServiceItem[] }) {
   const { t } = useI18n()
+  const serviceText = useServiceText()
   return (
     <div
       className="overflow-hidden rounded-[18px]"
@@ -212,7 +215,7 @@ function ServiceLedger({ services }: { services: AppServiceItem[] }) {
               className="truncate text-sm font-semibold"
               style={{ color: 'var(--cp-text)' }}
             >
-              {service.name}
+              {serviceText(service).title}
             </div>
             <div
               className="mt-0.5 truncate text-[11px] tabular-nums"
@@ -227,7 +230,7 @@ function ServiceLedger({ services }: { services: AppServiceItem[] }) {
             className="col-span-2 row-start-2 truncate text-xs sm:col-span-1 sm:col-start-2 sm:row-start-1"
             style={{ color: 'var(--cp-muted)' }}
           >
-            {t(service.description)}
+            {serviceText(service).summary}
           </p>
           <div className="col-start-2 row-start-1 sm:col-start-3">
             <StatusBadge service={service} />

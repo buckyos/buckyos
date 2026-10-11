@@ -5,6 +5,7 @@ import { useI18n } from '../../../i18n/provider'
 import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
 import { Section, CollapsibleSection, InfoRow, StatusBadge } from '../components/shared/Section'
 import { SettingsPageIntro } from '../components/shared/SettingsPageIntro'
+import { didDisplayName } from '../../../presentation/model'
 
 export function ClusterManagerPage() {
   const { t } = useI18n()
@@ -36,7 +37,7 @@ export function ClusterManagerPage() {
             { label: t('settings.cluster.mode', 'Mode'), value: overview.clusterMode === 'single_node' ? 'Single Node' : 'Multi Node', icon: Server },
             { label: t('settings.cluster.nodes', 'Nodes'), value: overview.nodeCount, icon: Server },
             { label: t('settings.cluster.zones', 'Zones'), value: overview.zoneCount, icon: Globe },
-            { label: t('settings.cluster.activeZone', 'Active Zone'), value: overview.activeZone?.split(':').pop() ?? '—', icon: Wifi },
+            { label: t('settings.cluster.activeZone', 'Active Zone'), value: overview.activeZone ? didDisplayName(overview.activeZone) : '—', icon: Wifi },
           ].map((item) => (
             <div
               key={item.label}

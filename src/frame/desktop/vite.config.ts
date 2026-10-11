@@ -79,7 +79,7 @@ export default defineConfig(() => {
       })
     : undefined
   const zoneProxy = zoneTarget
-    ? Object.fromEntries(['/kapi', '/sso_callback', '/sso_refresh', '/sso_logout', '/ndm', '/api'].map((path) => [path, {
+    ? Object.fromEntries(['/kapi', '/sso_callback', '/sso_refresh', '/sso_logout', '/ndm', '/api', '/1.0/identifiers'].map((path) => [path, {
         target: zoneTarget,
         changeOrigin: true,
         secure: false,

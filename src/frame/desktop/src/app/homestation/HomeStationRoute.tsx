@@ -1,6 +1,10 @@
+import { useI18n } from '../../i18n/provider'
+import { useDocumentTitle } from '../../presentation/documentHead'
 import { HomeStationView } from './HomeStationView'
 
 export function HomeStationRoute() {
+  const { t } = useI18n()
+  useDocumentTitle(t('apps.homestation'))
   return (
     <main className="homestation-root min-h-dvh bg-[color:var(--cp-bg)] p-0 md:p-5">
       <div

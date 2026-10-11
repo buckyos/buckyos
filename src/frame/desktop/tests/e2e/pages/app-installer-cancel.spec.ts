@@ -37,6 +37,11 @@ for (const force of [false, true]) {
     })
     await page.route('**/__installer_rpc', async (route) => {
       const { method, params } = route.request().postDataJSON()
+      if (method === 'apps.list') {
+        // The App Service store lists the caller's real apps outside the mock runtime.
+        await route.fulfill({ json: { user_id: 'alice', total: 0, apps: [] } })
+        return
+      }
       expect(params.task_id).toBe(taskId)
       if (method === 'apps.install.cancel') {
         cancellations.push(params)

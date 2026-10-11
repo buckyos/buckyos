@@ -82,6 +82,9 @@ function isoFromUnix(value: unknown): string | undefined {
   return new Date(millis).toISOString()
 }
 
+/** Profile fields the signed-in user can edit from the info section (others are shown read-only). */
+export const SELF_EDITABLE_INFO_KEYS = ['displayName', 'title', 'bio', 'location', 'organization', 'website', 'email', 'phone'] as const
+
 function profileMap(profile: unknown, fallback: Record<string, string> = {}): Record<string, string> {
   const source = asRecord(profile)
   const extra = asRecord(source.extra)
@@ -181,7 +184,7 @@ export function toSelfEntity(
     ...fallback,
     id: detail.user_id,
     displayName,
-    avatarUrl: firstString(profile.avatar, profile.avatar_url, profile.avatarUrl, fallback.avatarUrl),
+    avatarUrl: usableImageUrl(firstString(profile.avatar, profile.avatar_url, profile.avatarUrl, fallback.avatarUrl)),
     did: firstString(profile.did, asRecord(detail.local_profile).did, contact?.did, asRecord(detail.did_document).id, fallback.did),
     socialAccounts: toSocialAccounts(contact?.bindings),
     bio,
@@ -213,7 +216,8 @@ export function toLocalUserEntity(
     id: user.user_id,
     kind: 'local-user',
     displayName: user.show_name || user.user_id,
-    did: `did:bns:${user.user_id}`,
+    did: user.did,
+    avatarUrl: usableImageUrl(user.avatar),
     socialAccounts: [],
     role,
     source,

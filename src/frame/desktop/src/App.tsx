@@ -9,6 +9,8 @@ import { I18nProvider } from './i18n/provider'
 import { PrototypeThemeProvider } from './theme/provider'
 import { DesktopRoute } from './desktop/DesktopRoute'
 import { isPortalRoot } from './app/homestation/links'
+import { useDocumentBrand } from './presentation/documentHead'
+import { useZonePresentation } from './presentation/zone'
 
 // Standalone routes are code-split like the app panels: a visitor of `/`
 // should not download MessageHub / HomeStation / TaskCenter / the installer
@@ -125,11 +127,19 @@ const router = createBrowserRouter([
   },
 ])
 
+/** Every page shows the Zone's name and icon in the browser tab. */
+function ZoneBrand() {
+  const zone = useZonePresentation()
+  useDocumentBrand(zone.status === 'loading' ? undefined : zone.title, zone.icons[0])
+  return null
+}
+
 function AppShell() {
   const { background } = useDesktopBackground()
 
   return (
     <>
+      <ZoneBrand />
       <DesktopBackground
         wallpaper={background.wallpaper}
         pageCount={background.pageCount}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bot, Crown, Shield, User, UserMinus, X } from 'lucide-react'
+import { Crown, Shield, UserMinus, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
@@ -13,6 +13,7 @@ import { PickMembersForm } from './GroupDialogs'
 import { friendlyDidName } from './api/projection'
 import { groupErrorText, groupSessionId, memberCandidates, sortSessionParticipants } from './groupModel'
 import type { Entity, GroupInfo, GroupSessionInfo, MessageHubContext, Session, SessionAccess } from './types'
+import { MemberAvatar } from './HubAvatar'
 
 export function SessionDetails({ session, entity, context, access, showActions, onShowActions, onClose, onManage, onWrite }: { session: Session; entity: Entity; context: MessageHubContext; access: SessionAccess; showActions: boolean; onShowActions: (value: boolean) => Promise<void>; onClose: () => void; onManage: () => void; onWrite: (enabled: boolean) => void }) {
   const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
@@ -172,11 +173,10 @@ function GroupSessionParticipantList({ session, context, group, fallback }: { se
   return <div className="space-y-1">
     <ul className="divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="session-participants">
       {sortSessionParticipants(list.items).map(item => {
-        const type = store.findEntity(context, item.did)?.type
         const nickname = session.members[item.did]?.nickname
         const removable = named && item.state === 'included' && item.did !== context.ownerDid && item.role !== 'owner' && (item.kind === 'guest' ? group.can.inviteGuest : group.can.manageSession)
         return <li key={item.did} className="flex min-h-11 items-center gap-2.5 py-1" data-member-did={item.did} data-kind={item.kind} data-state={item.state} title={item.did}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: `color-mix(in srgb, ${type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)'} 16%, transparent)`, color: type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)' }} aria-hidden>{type === 'agent' ? <Bot size={15} /> : <User size={15} />}</span>
+          <MemberAvatar store={store} context={context} did={item.did} name={nameOf(item.did)} />
           <span className="min-w-0 flex-1">
             <span className="block truncate">{nameOf(item.did)}</span>
             {item.state === 'invited' ? <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{t('messagehub.group.session.guestInvited')}</span>

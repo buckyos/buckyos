@@ -4,14 +4,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import {
   ArrowLeft,
   BellOff,
-  Bot,
   ChevronRight,
   Pin,
   Plus,
   Search,
-  SlidersHorizontal,
-  User,
-  Users,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type {
@@ -20,6 +16,7 @@ import type {
   EntityFilter,
   EntityType,
 } from './types'
+import { HubAvatar } from './HubAvatar'
 
 interface EntityListProps {
   entities: Entity[]
@@ -206,44 +203,7 @@ function EntityAvatar({
   entity: Entity
   size?: number
 }) {
-  const colors: Record<EntityType, string> = {
-    person: 'var(--cp-accent)',
-    agent: 'var(--cp-success)',
-    group: 'var(--cp-warning)',
-    service: 'var(--cp-danger)',
-  }
-  const iconSize = size >= 46 ? 20 : size >= 38 ? 17 : 15
-  const icons: Record<EntityType, React.ReactNode> = {
-    person: <User size={iconSize} />,
-    agent: <Bot size={iconSize} />,
-    group: <Users size={iconSize} />,
-    service: <SlidersHorizontal size={iconSize} />,
-  }
-
-  return (
-    <div
-      className="relative flex-shrink-0 flex items-center justify-center rounded-full"
-      style={{
-        width: size,
-        height: size,
-        background: `color-mix(in srgb, ${colors[entity.type]} 18%, transparent)`,
-        color: colors[entity.type],
-      }}
-    >
-      {icons[entity.type]}
-      {entity.isOnline ? (
-        <span
-          className="absolute bottom-0 right-0 rounded-full border-2"
-          style={{
-            width: Math.max(10, Math.round(size * 0.24)),
-            height: Math.max(10, Math.round(size * 0.24)),
-            background: 'var(--cp-success)',
-            borderColor: 'var(--cp-surface)',
-          }}
-        />
-      ) : null}
-    </div>
-  )
+  return <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={size} isOnline={entity.isOnline} />
 }
 
 function TopLevelEntityItem({

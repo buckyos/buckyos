@@ -8,6 +8,7 @@ import { homeStationEn, homeStationZh } from './homestation'
 import { appServiceEn, appServiceZh } from './app-service'
 import { agentSetupEn, agentSetupZh } from './agent-setup'
 import { usersAgentsEn, usersAgentsZh } from './users-agents'
+import { presentationEn, presentationZh } from './presentation'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -2074,8 +2075,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh },
   ja,
   ko,
   fr,

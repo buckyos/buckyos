@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { Bot, Search, User, X } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { shortDid } from './api/projection'
 import { defaultGroupName, GROUP_MEMBER_LIMIT, groupErrorText, isAgentGroupDisabled, memberCandidates, parseInviteLink, participating } from './groupModel'
@@ -7,6 +7,7 @@ import { AgentGroupSettingsLink } from './AgentGroupSettingsLink'
 import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, MessageHubContext } from './types'
+import { HubAvatar } from './HubAvatar'
 
 export function MemberPicker({ candidates, selected, unavailable, onToggle }: { candidates: Entity[]; selected: string[]; unavailable?: Map<string, string>; onToggle: (id: string) => void }) {
   const { t } = useI18n()
@@ -34,7 +35,7 @@ export function MemberPicker({ candidates, selected, unavailable, onToggle }: { 
           return <li key={entity.id}>
             <label className={`flex min-h-11 items-center gap-3 px-3 py-1.5 ${note || (full && !checked) ? 'cursor-default opacity-60' : 'cursor-pointer hover:bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)]'}`}>
               <input type="checkbox" className="h-4 w-4 shrink-0 accent-[color:var(--cp-accent)]" checked={checked || Boolean(note)} disabled={Boolean(note) || (full && !checked)} onChange={() => onToggle(entity.id)} />
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: `color-mix(in srgb, ${entity.type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)'} 16%, transparent)`, color: entity.type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)' }} aria-hidden>{entity.type === 'agent' ? <Bot size={15} /> : <User size={15} />}</span>
+              <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={32} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{entity.name}</span>
                 <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{entity.type === 'agent' ? `${t('messagehub.entityType.agent', 'Agent')} · ` : ''}{shortDid(entity.id)}</span>

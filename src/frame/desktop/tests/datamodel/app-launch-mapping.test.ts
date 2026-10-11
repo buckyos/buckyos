@@ -4,6 +4,7 @@ import {
   createBackendAppDefinitionMapper,
 } from '../../src/app/backend-apps.ts'
 import type { AppDefinition } from '../../src/models/ui.ts'
+import { appDisplayText } from '../../src/presentation/appText.ts'
 
 function assertEquals<T>(actual: T, expected: T, message: string) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -24,7 +25,6 @@ function summary(overrides: Partial<AppSummary> = {}): AppSummary {
     show_name: 'Notes',
     version: '1.0.0',
     app_icon_url: null,
-    icon_res_url: 'res/notes/appicon.png',
     author: 'alice',
     app_index: 1,
     enable: true,
@@ -93,7 +93,8 @@ Deno.test('buckyos-systest keeps its canonical instance id but uses the short Sy
     'canonical instance id',
   )
   assertEquals(app.logicalAppId, 'buckyos-systest.buckyos.bns.did', 'logical app id')
-  assertEquals(app.labelKey, 'apps.systest', 'short localized label')
+  assertEquals(app.labelKey, 'apps.systest', 'catalog i18n key kept as the default')
+  assertEquals(app.text?.title, 'BuckyOS System Test', 'the document title wins over the catalog default')
   assertEquals(app.iconKey, 'systest', 'catalog icon')
   assertEquals(app.webHosts, ['systest'], 'gateway launch host')
   assertEquals(app.tier, 'sdk', 'embedded web tier')
@@ -104,7 +105,8 @@ Deno.test('unknown Web apps use their AppSpec host and the iframe window contrac
   const app = buildAuthorizedAppDefinitions([], [summary()])[0]
 
   assertEquals(app.id, 'notes.example@alice', 'canonical instance id')
-  assertEquals(app.labelKey, 'Notes', 'display name')
+  assertEquals(app.text?.title, 'Notes', 'display name')
+  assertEquals(app.did, 'did:web:notes.example', 'the app DID is kept')
   assertEquals(app.webHosts, ['notes'], 'gateway launch host')
   assertEquals(app.tier, 'sdk', 'embedded web tier')
   assertEquals(app.manifest.placement, 'inplace', 'window placement')
@@ -123,9 +125,55 @@ Deno.test('owner-qualified app instances use a short logical display name', () =
   ])[0]
 
   assertEquals(app.id, 'photos.example@alice', 'canonical instance id')
-  assertEquals(app.labelKey, 'photos', 'short display name')
+  assertEquals(app.text?.title, 'photos', 'short display name')
   assertEquals(app.webHosts, ['photos'], 'gateway launch host')
   assertEquals(app.manifest.placement, 'inplace', 'window placement')
+})
+
+const translate = (table: Record<string, string>) => (key: string, fallback?: string) => table[key] ?? fallback ?? key
+
+Deno.test('app text: localized document title and summary, a summary that repeats the title is dropped', () => {
+  const app = buildAuthorizedAppDefinitions([], [summary({
+    presentation: {
+      title: { en: 'Notes', 'zh-CN': '笔记' },
+      summary: { en: 'Write things down', 'zh-CN': '随手记录' },
+      description: { en: 'Long text' },
+    },
+  })])[0]
+  assertEquals(appDisplayText(app, 'zh-CN', translate({})), { title: '笔记', summary: '随手记录' }, 'zh-CN')
+  assertEquals(appDisplayText(app, 'ja', translate({})), { title: 'Notes', summary: 'Write things down' }, 'falls back to en')
+
+  const echo = buildAuthorizedAppDefinitions([], [summary({ show_name: 'Notes', presentation: { title: {}, summary: {}, description: { en: 'Notes' } } })])[0]
+  assertEquals(appDisplayText(echo, 'en', translate({})), { title: 'Notes' }, 'AppDoc builder default description equals the name')
+})
+
+Deno.test('app text never sends a document title through the dictionary', () => {
+  const app = buildAuthorizedAppDefinitions([], [summary({ show_name: 'apps.settings' })])[0]
+  assertEquals(appDisplayText(app, 'en', translate({ 'apps.settings': 'Settings' })).title, 'apps.settings', 'literal title')
+  const catalogOnly = buildAuthorizedAppDefinitions([systestCatalogEntry], [summary({
+    app_id: 'buckyos-systest.buckyos.bns.did' as AppSummary['app_id'],
+    show_name: ' ',
+    name: '',
+  })])[0]
+  assertEquals(
+    appDisplayText(catalogOnly, 'en', translate({ 'apps.systest': 'System Test', 'appSummary.systest': 'Runs checks' })),
+    { title: 'System Test', summary: 'Runs checks' },
+    'catalog defaults when the document has no text',
+  )
+  const didOnly = buildAuthorizedAppDefinitions([], [summary({ app_did: 'did:bns:myapp', show_name: '', name: null })])[0]
+  assertEquals(didOnly.text?.title, 'myapp', 'DID fallback')
+})
+
+Deno.test('app icons: absolute and data URLs pass, a relative one resolves on the app host, anything else is dropped', () => {
+  const options = { zoneHost: 'home.example', protocol: 'https:' }
+  const icon = (app_icon_url: string | null, web_hosts = ['notes']) =>
+    buildAuthorizedAppDefinitions([], [summary({ app_icon_url, web_hosts })], options)[0].iconUrl
+  assertEquals(icon('https://cdn.example/notes.png'), 'https://cdn.example/notes.png', 'absolute')
+  assertEquals(icon('data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA', 'data URL')
+  assertEquals(icon('res/icon.png'), 'https://notes.home.example/res/icon.png', 'relative to the app host')
+  assertEquals(icon('res/icon.png', []), undefined, 'relative without a web host')
+  assertEquals(icon('javascript:alert(1)'), undefined, 'scripts')
+  assertEquals(icon(null), undefined, 'none')
 })
 
 Deno.test('backend app mapping remains linear through one million entries', () => {

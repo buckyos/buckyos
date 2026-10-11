@@ -32,6 +32,8 @@ import {
   desktopTaskbarWidth,
   type ConnectionState,
 } from './shell'
+import { useAppText } from '../presentation/appText'
+import { openUsersAgents } from '../app/users-agents/launch'
 
 type SafeArea = { top: number; bottom: number; left: number; right: number }
 
@@ -156,6 +158,7 @@ export function DesktopTaskbar({
   user: CurrentUser | null
 }) {
   const { t } = useI18n()
+  const appText = useAppText()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const avatarRef = useRef<HTMLButtonElement | null>(null)
   const allAppsButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -319,7 +322,7 @@ export function DesktopTaskbar({
           {taskbarApps.map((app) => (
             <TaskbarButton
               key={app.appId}
-              label={t(app.labelKey)}
+              label={appText(app).title}
               onClick={() => {
                 if (appLongPress.consumeLongPress()) return
                 closeLayers()
@@ -414,7 +417,7 @@ export function DesktopTaskbar({
           onLogout={() => {
             void onLogout()
           }}
-          onOpenAccount={hasAccountApp ? () => launchApp(accountAppId) : undefined}
+          onOpenAccount={hasAccountApp ? () => { closeLayers(); void openUsersAgents({ view: 'self' }) } : undefined}
           runtimeContainer={runtimeContainer}
           style={{ left: popupLeft, top: safeArea.top + desktopAvatarOffset.top }}
           user={user}

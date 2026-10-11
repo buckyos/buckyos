@@ -11,9 +11,11 @@ import { isMockRuntime } from './runtime'
 import { isPublicRoute } from './publicRoutes'
 import { isPortalRoot } from './app/homestation/links'
 import { registerDesktopServiceWorker } from './serviceWorker'
+import { setPresentationViewer } from './presentation/zone'
 
 interface AccountInfo {
   session_token?: unknown
+  user_id?: unknown
 }
 
 function redirectToDesktopLogin() {
@@ -70,6 +72,7 @@ async function bootstrap() {
         redirectToDesktopLogin()
         return
       }
+      setPresentationViewer(typeof accountInfo.user_id === 'string' ? accountInfo.user_id : null)
     }
   }
 

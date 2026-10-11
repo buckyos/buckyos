@@ -84,6 +84,153 @@ impl BuckyOSDevConfig {
     }
 }
 
+pub const ZONE_PRESENTATION_KEY: &str = "system/zone_presentation";
+pub const ZONE_PRESENTATION_SCHEMA_VERSION: u32 = 1;
+pub const ZONE_PRESENTATION_MAX_NAME_CHARS: usize = 64;
+pub const ZONE_PRESENTATION_MAX_DESCRIPTION_CHARS: usize = 280;
+
+/// Zone display fields: a name, a description and an icon (an image data URL or link).
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ZonePresentationFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+impl ZonePresentationFields {
+    /// The ZoneDocument has no standard display fields; by convention top-level
+    /// `display_name` / `description` / `icon` strings among its extra fields are the candidates.
+    pub fn from_zone_document(document: &ZoneDocument) -> Self {
+        let text = |key: &str| {
+            document
+                .extra_info
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        Self {
+            display_name: text("display_name"),
+            description: text("description"),
+            icon: text("icon"),
+        }
+    }
+}
+
+/// `system/zone_presentation`: the display fields an administrator set for the Zone.
+/// A missing key or field means "not configured"; it never changes the Zone DID, hostname or owner.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ZonePresentationConfig {
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+}
+
+impl Default for ZonePresentationConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: ZONE_PRESENTATION_SCHEMA_VERSION,
+            display_name: None,
+            description: None,
+            icon: None,
+            updated_at: None,
+            updated_by: None,
+        }
+    }
+}
+
+impl ZonePresentationConfig {
+    pub fn fields(&self) -> ZonePresentationFields {
+        ZonePresentationFields {
+            display_name: self.display_name.clone(),
+            description: self.description.clone(),
+            icon: self.icon.clone(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != ZONE_PRESENTATION_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported ZonePresentationConfig schema_version {}",
+                self.schema_version
+            ));
+        }
+        validate_presentation_text(
+            "display_name",
+            self.display_name.as_deref(),
+            ZONE_PRESENTATION_MAX_NAME_CHARS,
+            false,
+        )?;
+        validate_presentation_text(
+            "description",
+            self.description.as_deref(),
+            ZONE_PRESENTATION_MAX_DESCRIPTION_CHARS,
+            true,
+        )?;
+        if let Some(icon) = self.icon.as_deref() {
+            if !icon.starts_with("data:image/") {
+                return Err("ZonePresentationConfig icon must be an image data URL".to_string());
+            }
+        }
+        match (self.updated_at, self.updated_by.as_deref()) {
+            (None, None) => Ok(()),
+            (Some(updated_at), Some(updated_by))
+                if updated_at > 0 && !updated_by.trim().is_empty() =>
+            {
+                Ok(())
+            }
+            _ => Err(
+                "ZonePresentationConfig updated_at and updated_by must be present together"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+fn validate_presentation_text(
+    field: &str,
+    value: Option<&str>,
+    max_chars: usize,
+    multiline: bool,
+) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(format!(
+            "ZonePresentationConfig {field} must be trimmed and non-empty"
+        ));
+    }
+    if value.chars().count() > max_chars {
+        return Err(format!(
+            "ZonePresentationConfig {field} must be at most {max_chars} characters"
+        ));
+    }
+    if value
+        .chars()
+        .any(|ch| ch.is_control() && !(multiline && ch == '\n'))
+    {
+        return Err(format!(
+            "ZonePresentationConfig {field} contains control characters"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BuckyOSInfo {
@@ -680,6 +827,76 @@ impl SystemConfigClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_presentation_config_validates_display_fields() {
+        let mut config = ZonePresentationConfig::default();
+        assert!(config.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&config).unwrap(),
+            json!({ "schema_version": 1 })
+        );
+
+        config.display_name = Some("我的家庭云".to_string());
+        config.description = Some("Family photos\nand files".to_string());
+        config.icon = Some("data:image/png;base64,AAAA".to_string());
+        config.updated_at = Some(1);
+        config.updated_by = Some("alice".to_string());
+        assert!(config.validate().is_ok());
+
+        let mut bad = config.clone();
+        bad.display_name = Some(" padded ".to_string());
+        assert!(bad.validate().is_err());
+        bad.display_name = Some("x".repeat(ZONE_PRESENTATION_MAX_NAME_CHARS + 1));
+        assert!(bad.validate().is_err());
+        bad.display_name = Some("two\nlines".to_string());
+        assert!(bad.validate().is_err());
+
+        let mut bad = config.clone();
+        bad.icon = Some("https://example.com/icon.png".to_string());
+        assert!(bad.validate().is_err());
+
+        let mut bad = config;
+        bad.updated_by = None;
+        assert!(bad.validate().is_err());
+
+        assert!(serde_json::from_value::<ZonePresentationConfig>(
+            json!({ "schema_version": 1, "title": "x" })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn zone_presentation_fields_project_document_extra_strings() {
+        let public_key = serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }))
+        .unwrap();
+        let mut document = ZoneDocument::new(
+            DID::new("bns", "home"),
+            DID::new("bns", "alice"),
+            public_key,
+        );
+        assert_eq!(
+            ZonePresentationFields::from_zone_document(&document),
+            ZonePresentationFields::default()
+        );
+        document
+            .extra_info
+            .insert("display_name".to_string(), json!(" Home Cloud "));
+        document.extra_info.insert("description".to_string(), json!(""));
+        document.extra_info.insert("icon".to_string(), json!(42));
+        assert_eq!(
+            ZonePresentationFields::from_zone_document(&document),
+            ZonePresentationFields {
+                display_name: Some("Home Cloud".to_string()),
+                description: None,
+                icon: None,
+            }
+        );
+    }
 
     #[test]
     fn zone_document_hostname_prefers_the_published_hostname() {

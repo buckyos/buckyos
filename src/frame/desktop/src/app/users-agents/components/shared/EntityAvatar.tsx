@@ -2,6 +2,7 @@
 
 import { Bot, CircleUser, Contact, Users2 } from 'lucide-react'
 import type { EntityKind } from '../../datamodel/types'
+import { ObjectAvatar } from '../../../../presentation/ObjectIcon'
 
 export type EntityAvatarKind = EntityKind | 'contact'
 
@@ -31,41 +32,20 @@ interface EntityAvatarProps {
 
 const sizeMap = { sm: 32, md: 40, lg: 56 }
 const iconSizeMap = { sm: 16, md: 20, lg: 28 }
-const textSizeMap = { sm: 'text-xs', md: 'text-sm', lg: 'text-xl' }
 
 export function EntityAvatar({ name, kind, avatarUrl, size = 'md', isOnline }: EntityAvatarProps) {
   const px = sizeMap[size]
-  const iconPx = iconSizeMap[size]
-  const initial = name.charAt(0).toUpperCase()
-  const color = kindColor[kind]
   const Icon = kindIcon[kind]
 
   return (
     <div className="relative shrink-0" style={{ width: px, height: px }}>
-      {avatarUrl ? (
-        <img
-          src={avatarUrl}
-          alt={name}
-          className="rounded-full object-cover"
-          style={{ width: px, height: px }}
-        />
-      ) : (
-        <div
-          className={`flex items-center justify-center rounded-full font-display font-semibold ${textSizeMap[size]}`}
-          style={{
-            width: px,
-            height: px,
-            background: `color-mix(in srgb, ${color} 16%, var(--cp-surface))`,
-            color,
-          }}
-        >
-          {kind === 'agent' || kind === 'entity-group' ? (
-            <Icon size={iconPx} />
-          ) : (
-            initial
-          )}
-        </div>
-      )}
+      <ObjectAvatar
+        title={name}
+        icons={[avatarUrl]}
+        size={px}
+        tone={kindColor[kind]}
+        fallbackIcon={kind === 'agent' || kind === 'entity-group' ? <Icon size={iconSizeMap[size]} /> : undefined}
+      />
 
       {/* online indicator */}
       {isOnline !== undefined && (

@@ -1,10 +1,14 @@
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { messageHubRouteContext } from './launch'
 import { MessageHubView } from './MessageHubView'
+import { useI18n } from '../../i18n/provider'
+import { useDocumentTitle } from '../../presentation/documentHead'
 
 export function MessageHubRoute() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+  const { t } = useI18n()
+  useDocumentTitle(t('apps.messagehub'))
   const entityId = searchParams.get('entityId')
   const sessionId = searchParams.get('sessionId')
   const messageId = searchParams.get('messageId')

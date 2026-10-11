@@ -65,6 +65,7 @@ import {
   type StatusTip,
 } from './shell'
 import { useI18n } from '../i18n/provider'
+import { useAppText } from '../presentation/appText'
 import type {
   AppDefinition,
   FormFactor,
@@ -231,6 +232,7 @@ export function DesktopRoute() {
   const snap = useDesktopUISnapshot()
   const { resetBackground, setBackground } = useDesktopBackground()
   const { locale, setLocale, t } = useI18n()
+  const appText = useAppText()
   const { themeMode, setThemeMode } = useThemeMode()
   const isMobile = useMediaQuery('(max-width:768px)')
   const navigate = useNavigate()
@@ -424,7 +426,7 @@ export function DesktopRoute() {
 
       if (appId === AGENT_GUIDE_APP_ID) {
         void agentGuide.open()
-        logActivity(t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey) }))
+        logActivity(t('activity.opened', 'Opened {{name}}', { name: appText(app).title }))
         return
       }
 
@@ -436,7 +438,7 @@ export function DesktopRoute() {
       if (app.manifest.placement === 'new-container' || app.tier === 'external') {
         logActivity(
           t('activity.external', 'Requested new-container launch for {{name}}', {
-            name: t(app.labelKey),
+            name: appText(app).title,
           }),
         )
         store.setSnackbar(t('external.body'))
@@ -451,10 +453,10 @@ export function DesktopRoute() {
         viewportBounds: desktopViewportBounds,
       })
       logActivity(
-        t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey) }),
+        t('activity.opened', 'Opened {{name}}', { name: appText(app).title }),
       )
     },
-    [store, isMobile, navigate, logActivity, t, desktopViewportBounds],
+    [store, isMobile, navigate, logActivity, t, appText, desktopViewportBounds],
   )
 
   const describeWindow = useCallback(
@@ -463,9 +465,9 @@ export function DesktopRoute() {
       const target = current.runtime.windows.find((w) => w.id === windowId)
       if (!target) return null
       const app = findDesktopAppById(current.apps, target.appId)
-      return t(app?.labelKey ?? target.titleKey)
+      return app ? appText(app).title : t(target.titleKey)
     },
-    [store, t],
+    [store, t, appText],
   )
 
   const handleCloseWindow = useCallback(
@@ -1322,7 +1324,7 @@ function DesktopTile({
   onOpenContextMenu: (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => void
   onSaveNote: (itemId: string, content: string) => void
 }) {
-  const { t } = useI18n()
+  const appText = useAppText()
   const touchStartRef = useRef<{
     x: number
     y: number
@@ -1426,7 +1428,7 @@ function DesktopTile({
           onPointerUp={handleAppPointerUp}
           onPointerCancel={clearAppPointer}
           data-testid={`desktop-app-${app.id}`}
-          title={t(app.labelKey)}
+          title={appText(app).title}
           className={clsx(
             'flex h-full w-full flex-col items-center rounded-[28px] bg-transparent text-center transition-[background-color,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,var(--cp-surface))]',
             isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
@@ -1474,7 +1476,7 @@ function DesktopTile({
               WebkitBoxOrient: 'vertical',
             }}
           >
-            {t(app.labelKey)}
+            {appText(app).title}
           </span>
         </button>
       ) : null}

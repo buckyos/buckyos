@@ -12,6 +12,7 @@
 import { buckyos } from 'buckyos'
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
+import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
 import { dictionaries } from '../../../i18n/dictionaries'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
@@ -37,6 +38,8 @@ import { uploadAttachments } from './upload'
 const SESSION_PAGE_SIZE = 50
 const HISTORY_PAGE_SIZE = 64
 const SUMMARY_POLL_MS = 20_000
+/** Contact names and pictures (other users' profile changes) are re-read at this pace. */
+const CONTACT_POLL_MS = 60_000
 /** Older pages a message lookup may load before giving up. */
 const LOCATE_MAX_PAGES = 50
 const RUNTIME_POLL_MS = 5_000
@@ -260,20 +263,15 @@ export class MessageHubApiStore implements MessageHubStore {
     data.loading = (async () => {
       try {
         const ownerDid = context.ownerDid
-        const [page, ownerContacts, systemContacts, agents, groups] = await Promise.all([
+        const [page, people, groups] = await Promise.all([
           listSessions({ owner: ownerDid, limit: SESSION_PAGE_SIZE, with_object: true, lifecycle: 'all', order_by: 'activity' }),
-          listContacts(ownerDid).catch(() => [] as Contact[]),
-          ownerDid === this.selfDid ? listContacts(undefined).catch(() => [] as Contact[]) : Promise.resolve([] as Contact[]),
-          ownerDid === this.selfDid ? fetchAgentList().then(result => result.data?.agents ?? []).catch(() => []) : Promise.resolve([]),
+          this.fetchPeople(ownerDid),
           ownerDid === this.selfDid ? this.fetchGroups().catch(() => ({})) : Promise.resolve({}),
         ])
         if (data.epoch !== epoch) return
         data.groups = groups
-        const merged = new Map<string, Contact>()
-        for (const contact of systemContacts) merged.set(contact.did, contact)
-        for (const contact of ownerContacts) merged.set(contact.did, contact)
-        data.contacts = [...merged.values()]
-        data.agentDids = agents.map(agent => agent.agent_did).filter(did => typeof did === 'string' && did.startsWith('did:'))
+        data.contacts = people.contacts
+        data.agentDids = people.agentDids
         data.summaries = page.items ?? []
         data.nextCursor = page.next_cursor_updated_at_ms !== undefined && page.next_cursor_session_id !== undefined ? { value: page.next_cursor_updated_at_ms, sessionId: page.next_cursor_session_id } : undefined
         data.status = { phase: 'ready' }
@@ -288,6 +286,35 @@ export class MessageHubApiStore implements MessageHubStore {
       }
     })()
     return data.loading
+  }
+
+  /** The owner's contacts (over the Zone-wide ones) and the owner's Agents. */
+  private async fetchPeople(ownerDid: string) {
+    const [ownerContacts, systemContacts, agents] = await Promise.all([
+      listContacts(ownerDid).catch(() => [] as Contact[]),
+      ownerDid === this.selfDid ? listContacts(undefined).catch(() => [] as Contact[]) : Promise.resolve([] as Contact[]),
+      ownerDid === this.selfDid ? fetchAgentList().then(result => result.data?.agents ?? []).catch(() => []) : Promise.resolve([]),
+    ])
+    const merged = new Map<string, Contact>()
+    for (const contact of systemContacts) merged.set(contact.did, contact)
+    for (const contact of ownerContacts) merged.set(contact.did, contact)
+    return {
+      contacts: [...merged.values()],
+      agentDids: agents.map(agent => agent.agent_did).filter(did => typeof did === 'string' && did.startsWith('did:')),
+    }
+  }
+
+  /** Re-reads names and pictures; a profile saved elsewhere shows without reloading the page. */
+  private async refreshPeople(context: MessageHubContext) {
+    const data = this.owner(context.ownerDid)
+    if (data.status.phase !== 'ready' || data.loading) return
+    const epoch = data.epoch
+    const people = await this.fetchPeople(context.ownerDid)
+    if (data.epoch !== epoch) return
+    if (JSON.stringify(people) === JSON.stringify({ contacts: data.contacts, agentDids: data.agentDids })) return
+    data.contacts = people.contacts
+    data.agentDids = people.agentDids
+    this.bump(data)
   }
 
   hasMoreEntities(context: MessageHubContext) { return Boolean(this.owner(context.ownerDid).nextCursor) }
@@ -352,6 +379,10 @@ export class MessageHubApiStore implements MessageHubStore {
     let stopped = false
     const data = this.owner(context.ownerDid)
     const summaryTimer = setInterval(() => { void this.refreshSummaries(context) }, SUMMARY_POLL_MS)
+    const peopleTimer = setInterval(() => { void this.refreshPeople(context) }, CONTACT_POLL_MS)
+    const refreshPeople = () => { void this.refreshPeople(context) }
+    const stopProfileListener = onOwnProfileChanged(refreshPeople)
+    const stopAgentsListener = onAgentsChanged(refreshPeople)
     const tailTimer = activeSessionId ? setInterval(() => { void this.reconcileTail(context, activeSessionId) }, SUMMARY_POLL_MS) : null
     const runtimeTimer = activeSessionId ? setInterval(() => { void this.refreshRuntime(context, activeSessionId) }, RUNTIME_POLL_MS) : null
     if (activeSessionId) {
@@ -370,6 +401,9 @@ export class MessageHubApiStore implements MessageHubStore {
     return () => {
       stopped = true
       clearInterval(summaryTimer)
+      clearInterval(peopleTimer)
+      stopProfileListener()
+      stopAgentsListener()
       if (tailTimer) clearInterval(tailTimer)
       if (runtimeTimer) clearInterval(runtimeTimer)
       if (subscription) void subscription.close()
@@ -396,6 +430,8 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   findEntity(context: MessageHubContext, id: string) { return this.projected(context).entityById.get(id) }
+
+  avatarOf(context: MessageHubContext, did: string) { return this.projected(context).avatars[did] }
 
   entities(context: MessageHubContext): Entity[] {
     if (!this.canView(context)) return []

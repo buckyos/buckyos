@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Bot, Crown, Link2, LogOut, MoreHorizontal, Pencil, Shield, Trash2, User, UserMinus, UserPlus } from 'lucide-react'
+import { Crown, Link2, LogOut, MoreHorizontal, Pencil, Shield, Trash2, UserMinus, UserPlus } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { confirmGroupAction } from './confirmDialog'
@@ -9,6 +9,7 @@ import { groupErrorText, parseInviteLink, participating, sortGroupMembers } from
 import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, GroupMember, MessageHubContext } from './types'
+import { MemberAvatar } from './HubAvatar'
 
 const MUTE_MS = 3600_000
 
@@ -151,10 +152,9 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       : !group.members ? <p className="mt-2 text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.group.membersHidden')}</p>
       : <ul className="mt-1 divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="group-members">
         {members.map(member => {
-          const type = store.findEntity(context, member.did)?.type
           const removable = group.can.remove && member.did !== context.ownerDid && member.role !== 'owner'
           return <li key={member.did} className="flex min-h-11 items-center gap-2.5 py-1" data-member-did={member.did} data-role={member.role} title={member.did}>
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: `color-mix(in srgb, ${type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)'} 16%, transparent)`, color: type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)' }} aria-hidden>{type === 'agent' ? <Bot size={15} /> : <User size={15} />}</span>
+            <MemberAvatar store={store} context={context} did={member.did} name={nameOf(member.did)} />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm">{nameOf(member.did)}</span>
               {member.state !== 'active' && <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{t(`messagehub.group.state.${member.state}`)}</span>}

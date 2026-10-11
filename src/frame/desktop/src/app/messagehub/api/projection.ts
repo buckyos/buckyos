@@ -7,6 +7,7 @@ import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, Ses
 import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
 import type { MessageObject } from '../protocol/msgobj'
 import { isActionMessage, isMessageActivity } from '../sessionModel'
+import { didDisplayName, usableImageUrl } from '../../../presentation/model'
 
 /** UI container for sessions without a determinable peer. Not a DID, never a send target. */
 export const UNASSIGNED_ENTITY_ID = 'messagehub:unassigned'
@@ -69,6 +70,8 @@ export interface ProjectedOwner {
   sessions: Session[]
   details: Record<string, EntityDetail>
   names: Record<string, string>
+  /** Loadable contact pictures by DID, the owner's own included. */
+  avatars: Record<string, string>
   /** O(1) lookups over `entities` / `sessions` (same objects, summary order kept). */
   entityById: Map<string, Entity>
   sessionsByEntity: Map<string, Session[]>
@@ -100,8 +103,7 @@ export function parseTunnelDid(did: string): TunnelDidParts | null {
 export function shortDid(did: string): string {
   const tunnel = parseTunnelDid(did)
   if (tunnel) return `${tunnel.accountId} · ${platformOfInstance(tunnel.tunnelInstanceId)}`
-  const parts = did.split(':')
-  return parts.length >= 3 ? parts.slice(2).join(':') : did
+  return didDisplayName(did)
 }
 
 export function friendlyDidName(did: string, isAgent: boolean): string {
@@ -271,6 +273,11 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     return seed
   }
 
+  const avatars: Record<string, string> = {}
+  for (const contact of contacts) {
+    const avatar = usableImageUrl(contact.avatar)
+    if (avatar) avatars[contact.did] = avatar
+  }
   for (const contact of contacts) {
     if (contact.did === ownerDid) { names[ownerDid] = contact.name || labels.you; continue }
     ensureSeed(contact.did)
@@ -338,7 +345,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       id: seed.id,
       type: seed.type,
       name: seed.name,
-      avatar: seed.contact?.avatar,
+      avatar: avatars[seed.id],
       statusText: seed.contact?.access_level === 'stranger' ? 'stranger' : undefined,
       isOnline: undefined,
       isPinned: false,
@@ -394,5 +401,5 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     names[UNASSIGNED_ENTITY_ID] = container.name
   }
   entities.sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.name.localeCompare(b.name))
-  return { entities, sessions, details, names, entityById: new Map([...entities, ...hiddenEntities].map(entity => [entity.id, entity])), sessionsByEntity }
+  return { entities, sessions, details, names, avatars, entityById: new Map([...entities, ...hiddenEntities].map(entity => [entity.id, entity])), sessionsByEntity }
 }

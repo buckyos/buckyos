@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../i18n/provider'
+import { useAppText } from '../presentation/appText'
 import type { AppDefinition, LayoutState, ThemeMode } from '../models/ui'
 import { useMobileNavState } from './windows/MobileNavContext'
 import { UserAvatar } from './TaskbarParts'
@@ -345,6 +346,7 @@ export function StatusBar({
   user: CurrentUser | null
 }) {
   const { locale, t } = useI18n()
+  const appText = useAppText()
   const now = useMinuteClock()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const mobileNav = useMobileNavState()
@@ -407,10 +409,10 @@ export function StatusBar({
             </div>
             <div className="absolute left-1/2 top-1/2 flex min-w-0 max-w-[46vw] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center">
               <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
-                {mobileNav.titleOverride?.title ?? t(activeApp.labelKey)}
+                {mobileNav.titleOverride?.title ?? appText(activeApp).title}
               </p>
               <p className="line-clamp-1 text-xs text-[color:var(--cp-muted)]">
-                {mobileNav.titleOverride?.subtitle ?? t(activeApp.summaryKey)}
+                {mobileNav.titleOverride?.subtitle ?? appText(activeApp).summary}
               </p>
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -450,7 +452,7 @@ export function StatusBar({
               {activeMode === 'compact' && activeApp ? (
                 <div className="min-w-0">
                   <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
-                    {t(activeApp.labelKey)}
+                    {appText(activeApp).title}
                   </p>
                 </div>
               ) : null}

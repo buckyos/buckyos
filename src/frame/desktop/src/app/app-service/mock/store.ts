@@ -21,6 +21,10 @@ import type {
   RuntimeView,
 } from '../types'
 import type { SudoByPasswordParams, SudoGrant } from '../../../components/sudo'
+import { fetchAppList } from '../../../api/app_mgr'
+import { currentZoneHost } from '../../../presentation/zone'
+import { isMockRuntime } from '../../../runtime'
+import { appServiceItemFromSummary } from '../realApps'
 import {
   appDocument,
   defaultInput,
@@ -230,6 +234,23 @@ export class AppServiceMockStore {
       },
       scenario === 'loading' ? 1600 : 220,
     )
+    void this.loadRealApps()
+  }
+  /** Outside the mock runtime the App layer lists the caller's real apps (display and state only). */
+  private async loadRealApps() {
+    if (isMockRuntime()) return
+    const { data } = await fetchAppList()
+    if (!data) {
+      this.viewStatus = 'error'
+      this.emit()
+      return
+    }
+    const options = { zoneHost: currentZoneHost(), protocol: window.location.protocol }
+    this.services = [
+      ...this.services.filter((service) => service.layer !== 'app'),
+      ...data.apps.map((summary) => appServiceItemFromSummary(summary, options)),
+    ]
+    this.emit()
   }
   retryLoad() {
     this.viewStatus = 'loading'
@@ -238,6 +259,7 @@ export class AppServiceMockStore {
       this.viewStatus = 'ready'
       this.emit()
     }, 400)
+    void this.loadRealApps()
   }
   getAllServices() {
     return this.services.filter(

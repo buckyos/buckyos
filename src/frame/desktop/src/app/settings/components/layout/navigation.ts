@@ -1,4 +1,4 @@
-import { Code, Network, Palette, Settings, Shield } from 'lucide-react'
+import { Code, Globe, Network, Palette, Settings, Shield } from 'lucide-react'
 
 export const settingsPageGroups = [
   {
@@ -32,6 +32,13 @@ export const settingsPageDefinitions = [
     icon: Palette,
     labelKey: 'settings.nav.appearance',
     label: 'Appearance',
+  },
+  {
+    key: 'zone',
+    group: 'system',
+    icon: Globe,
+    labelKey: 'settings.nav.zone',
+    label: 'Zone Name & Icon',
   },
   {
     key: 'cluster',

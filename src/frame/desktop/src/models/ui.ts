@@ -146,11 +146,21 @@ export interface AppDefinition {
   iconUrl?: string
   /** Small status mark on the launcher tile. */
   iconBadge?: 'busy' | 'error'
+  /** i18n keys of the built-in catalog; `text` (when set) is shown instead. */
   labelKey: string
   summaryKey: string
+  /** The app's DID when it has one; built-in apps have none. */
+  did?: string
+  /** Literal display text from the app's own document (or an Agent's name), per language. */
+  text?: AppDisplayText
   accent: string
   tier: IntegrationTier
   manifest: WindowManifest
+}
+
+export interface AppDisplayText {
+  title?: string | Readonly<Record<string, string>>
+  summary?: string | Readonly<Record<string, string>>
 }
 
 export function supportsFormFactor(
@@ -187,6 +197,7 @@ export interface TaskbarAppItem {
   iconKey: string
   iconUrl?: string
   labelKey: string
+  text?: AppDisplayText
   pinned: boolean
   /** Open windows of the app, minimized ones included. */
   windowCount: number

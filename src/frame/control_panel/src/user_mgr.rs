@@ -1,3 +1,4 @@
+use crate::image_data_url::{validate_image_data_url, MAX_AVATAR_PX};
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{kRPC, RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -238,22 +239,84 @@ fn set_profile_system_contact(
     Ok(())
 }
 
+/// The locally saved profile is the explicit setting; the DID document only fills fields it leaves empty.
 fn merge_profile_values(local_profile: Option<Value>, did_profile: Option<Value>) -> Value {
     let mut merged = match local_profile {
-        Some(profile) => profile,
-        None => json!({}),
+        Some(Value::Object(profile)) => profile,
+        _ => serde_json::Map::new(),
     };
-    if let Some(Value::Object(remote)) = did_profile {
-        if !merged.is_object() {
-            merged = json!({});
-        }
-        if let Some(target) = merged.as_object_mut() {
-            for (key, value) in remote {
-                target.insert(key, value);
+    if let Some(Value::Object(document)) = did_profile {
+        for (key, value) in document {
+            let unset = merged.get(&key).map_or(true, |current| {
+                current.is_null() || current.as_str().is_some_and(|text| text.trim().is_empty())
+            });
+            if unset {
+                merged.insert(key, value);
             }
         }
     }
-    merged
+    Value::Object(merged)
+}
+
+fn apply_profile_text_patch(
+    profile: &mut UserPrivateProfile,
+    req: &RPCRequest,
+) -> Result<(), RPCErrors> {
+    let avatar_key = if req.params.get("avatar").is_some() {
+        "avatar"
+    } else {
+        "avatar_url"
+    };
+    if let Some(avatar) = ControlPanelServer::param_text_patch(req, avatar_key)? {
+        if let Some(value) = avatar.as_deref() {
+            validate_image_data_url("avatar", value, MAX_AVATAR_PX)?;
+        }
+        profile.avatar = avatar;
+    }
+    for (key, slot) in [
+        ("display_name", &mut profile.display_name),
+        ("name", &mut profile.name),
+        ("headline", &mut profile.headline),
+        ("title", &mut profile.title),
+        ("bio", &mut profile.bio),
+        ("location", &mut profile.location),
+        ("organization", &mut profile.organization),
+        ("birthday", &mut profile.birthday),
+        ("bkg_image", &mut profile.bkg_image),
+    ] {
+        if let Some(value) = ControlPanelServer::param_text_patch(req, key)? {
+            *slot = value;
+        }
+    }
+    if let Some(website) = ControlPanelServer::param_text_patch(req, "website")? {
+        match website {
+            Some(url) => {
+                profile.links.insert(
+                    "website".to_string(),
+                    ProfileLink {
+                        label: "Website".to_string(),
+                        url,
+                    },
+                );
+            }
+            None => {
+                profile.links.remove("website");
+            }
+        }
+    }
+    for key in ["email", "phone"] {
+        if let Some(value) = ControlPanelServer::param_text_patch(req, key)? {
+            match value {
+                Some(text) => {
+                    profile.extra.insert(key.to_string(), Value::String(text));
+                }
+                None => {
+                    profile.extra.remove(key);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn public_profile_value(profile: &UserPrivateProfile) -> Value {
@@ -474,12 +537,20 @@ impl ControlPanelServer {
                             continue;
                         }
                         let mut info = settings.to_user_info();
+                        let mut public_profile = None;
                         if let Ok(Some(profile)) = load_user_profile(&client, uid).await {
+                            public_profile = Some(profile.to_public_profile());
                             if let Some(show_name) = profile.display_name.or(profile.name) {
                                 info.show_name = show_name;
                             }
                         }
                         if let Ok(mut v) = serde_json::to_value(&info) {
+                            if let Some(public_profile) = public_profile {
+                                v["did"] = Value::String(public_profile.did.to_string());
+                                if let Some(avatar) = public_profile.avatar {
+                                    v["avatar"] = Value::String(avatar);
+                                }
+                            }
                             v["is_local"] = Value::Bool(settings.is_local);
                             v["allow_password_change"] =
                                 serde_json::to_value(settings.allow_password_change)
@@ -677,6 +748,9 @@ impl ControlPanelServer {
             profile.display_name = Some(show_name);
         }
         save_user_profile(&client, &target, &profile).await?;
+        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+            warn!("msg-center reload after updating {target} failed: {error}");
+        }
 
         info!("User '{}' updated by '{}'", target, principal.username);
 
@@ -804,63 +878,19 @@ impl ControlPanelServer {
             None => profile_from_user_id(&target),
         };
         let fallback_did = fallback_profile.did.clone();
+        let previous_avatar = fallback_profile.avatar.clone();
         let mut profile = if let Some(value) = req.params.get("profile") {
             parse_user_profile_payload(value, &fallback_did)?
         } else {
             fallback_profile
         };
+        if profile.avatar != previous_avatar {
+            if let Some(avatar) = profile.avatar.as_deref() {
+                validate_image_data_url("avatar", avatar, MAX_AVATAR_PX)?;
+            }
+        }
 
-        if let Some(value) = Self::param_str(&req, "display_name") {
-            profile.display_name = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "name") {
-            profile.name = Some(value);
-        }
-        if let Some(value) =
-            Self::param_str(&req, "avatar").or_else(|| Self::param_str(&req, "avatar_url"))
-        {
-            profile.avatar = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "headline") {
-            profile.headline = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "title") {
-            profile.title = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "bio") {
-            profile.bio = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "location") {
-            profile.location = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "organization") {
-            profile.organization = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "birthday") {
-            profile.birthday = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "bkg_image") {
-            profile.bkg_image = Some(value);
-        }
-        if let Some(value) = Self::param_str(&req, "website") {
-            profile.links.insert(
-                "website".to_string(),
-                ProfileLink {
-                    label: "Website".to_string(),
-                    url: value,
-                },
-            );
-        }
-        if let Some(value) = Self::param_str(&req, "email") {
-            profile
-                .extra
-                .insert("email".to_string(), Value::String(value));
-        }
-        if let Some(value) = Self::param_str(&req, "phone") {
-            profile
-                .extra
-                .insert("phone".to_string(), Value::String(value));
-        }
+        apply_profile_text_patch(&mut profile, &req)?;
         if let Some(tags) = req.params.get("tags") {
             profile.tags = serde_json::from_value(tags.clone()).map_err(|e| {
                 RPCErrors::ParseRequestError(format!("Invalid profile tags payload: {}", e))
@@ -878,6 +908,9 @@ impl ControlPanelServer {
         }
 
         save_user_profile(&client, &target, &profile).await?;
+        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+            warn!("msg-center reload after profile update of {target} failed: {error}");
+        }
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -1558,6 +1591,60 @@ impl ControlPanelServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image_data_url::png_data_url;
+
+    #[test]
+    fn local_profile_fields_win_over_did_document_defaults() {
+        let merged = merge_profile_values(
+            Some(json!({ "did": "did:bns:alice", "avatar": "data:image/png;base64,LOCAL", "bio": " " })),
+            Some(json!({ "avatar": "https://doc/a.png", "bio": "From doc", "display_name": "Alice" })),
+        );
+        assert_eq!(merged["avatar"], "data:image/png;base64,LOCAL");
+        assert_eq!(merged["bio"], "From doc");
+        assert_eq!(merged["display_name"], "Alice");
+        assert_eq!(merged["did"], "did:bns:alice");
+
+        let cleared = merge_profile_values(
+            Some(json!({ "did": "did:bns:alice" })),
+            Some(json!({ "avatar": "https://doc/a.png" })),
+        );
+        assert_eq!(cleared["avatar"], "https://doc/a.png");
+    }
+
+    #[test]
+    fn profile_patch_distinguishes_keep_set_and_clear() {
+        let mut profile = profile_from_user_id("alice");
+        profile.bio = Some("Old bio".to_string());
+        profile.avatar = Some("https://old/avatar.png".to_string());
+        let avatar = png_data_url(96, 96);
+        let req = RPCRequest::new(
+            "user.profile.set",
+            json!({ "avatar": avatar, "display_name": " Alice ", "website": "https://a.example" }),
+        );
+        apply_profile_text_patch(&mut profile, &req).unwrap();
+        assert_eq!(profile.avatar.as_deref(), Some(avatar.as_str()));
+        assert_eq!(profile.display_name.as_deref(), Some("Alice"));
+        assert_eq!(profile.bio.as_deref(), Some("Old bio"));
+        assert_eq!(profile.links["website"].url, "https://a.example");
+
+        let req = RPCRequest::new(
+            "user.profile.set",
+            json!({ "avatar": null, "bio": "", "website": null }),
+        );
+        apply_profile_text_patch(&mut profile, &req).unwrap();
+        assert_eq!(profile.avatar, None);
+        assert_eq!(profile.bio, None);
+        assert!(!profile.links.contains_key("website"));
+        assert_eq!(profile.display_name.as_deref(), Some("Alice"));
+
+        let req = RPCRequest::new(
+            "user.profile.set",
+            json!({ "avatar": "https://example.com/a.png" }),
+        );
+        assert!(apply_profile_text_patch(&mut profile, &req).is_err());
+        let req = RPCRequest::new("user.profile.set", json!({ "bio": 1 }));
+        assert!(apply_profile_text_patch(&mut profile, &req).is_err());
+    }
 
     #[test]
     fn password_hash_must_be_a_sha256_digest() {

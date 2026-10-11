@@ -8,20 +8,18 @@ import { memberCandidates } from './groupModel'
 import { GroupPanel } from './GroupPanel'
 import {
   X,
-  Bot,
   Users,
-  User,
   Bell,
   BellOff,
   Pin,
   PinOff,
-  Tag,
   Link2,
   Edit3,
   UsersRound,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { EntityDetail, MessageHubContext } from './types'
+import { HubAvatar } from './HubAvatar'
 
 interface EntityDetailsProps {
   entity: EntityDetail
@@ -32,30 +30,9 @@ interface EntityDetailsProps {
 }
 
 function DetailAvatar({ entity }: { entity: EntityDetail }) {
-  const colors: Record<string, string> = {
-    person: 'var(--cp-accent)',
-    agent: 'var(--cp-success)',
-    group: 'var(--cp-warning)',
-    service: 'var(--cp-danger)',
-  }
-  const icons: Record<string, React.ReactNode> = {
-    person: <User size={32} />,
-    agent: <Bot size={32} />,
-    group: <Users size={32} />,
-    service: <Tag size={32} />,
-  }
-
   return (
-    <div
-      className="flex items-center justify-center rounded-full mx-auto"
-      style={{
-        width: 80,
-        height: 80,
-        background: `color-mix(in srgb, ${colors[entity.type]} 18%, transparent)`,
-        color: colors[entity.type],
-      }}
-    >
-      {icons[entity.type]}
+    <div className="mx-auto flex w-fit">
+      <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={80} />
     </div>
   )
 }

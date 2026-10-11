@@ -41,12 +41,17 @@ export interface AppSummary {
   runtime_type: AppRuntimeType
   owner_user_id: string
   availability_match: AvailabilityMatch | null
+  /** The AppDoc package name. */
+  name?: string | null
   show_name: string | null
+  /** AppDoc `presentation` text, each a language → text map; null when the document has none. */
+  presentation?: AppPresentationText | null
   version: string
-  /** Icon URL as declared in AppDoc; may be null/empty. */
+  /**
+   * AppDoc `presentation.links.app_icon_url`: absolute, a data URL, or relative to the app's own
+   * web host. `presentation.icons` (ObjIds) are not served to browsers yet.
+   */
   app_icon_url: string | null
-  /** Convention-based fallback: `res/<app_id>/appicon.png`. */
-  icon_res_url: string
   author: string
   app_index: number
   enable: boolean
@@ -55,6 +60,12 @@ export interface AppSummary {
   spec_path: string
   /** Gateway host keys compiled from Web expose_config; first entry is the default launch host. */
   web_hosts: string[]
+}
+
+export interface AppPresentationText {
+  title?: Record<string, string>
+  summary?: Record<string, string>
+  description?: Record<string, string>
 }
 
 export interface AppsListResponse {

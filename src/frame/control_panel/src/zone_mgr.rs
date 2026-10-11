@@ -1,15 +1,164 @@
+use crate::image_data_url::{validate_image_data_url, MAX_ZONE_ICON_PX};
 use crate::{
     docker_command, external_command, gateway_etc_dir, sn_self_cert_state_path, ControlPanelServer,
-    DockerOverviewCacheEntry, DOCKER_OVERVIEW_CACHE_TTL_SECS, GATEWAY_CONFIG_FILES,
-    ZONE_CONFIG_FILES,
+    DockerOverviewCacheEntry, RpcAuthPrincipal, DOCKER_OVERVIEW_CACHE_TTL_SECS,
+    GATEWAY_CONFIG_FILES, ZONE_CONFIG_FILES,
 };
-use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
+use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
+use buckyos_api::{
+    get_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntime, SystemConfigClient,
+    SystemConfigError, UserType, ZonePresentationConfig, ZonePresentationFields,
+    ZONE_PRESENTATION_KEY,
+};
+use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+async fn load_zone_presentation(
+    client: &SystemConfigClient,
+) -> Result<Option<(ZonePresentationConfig, u64)>, RPCErrors> {
+    let stored = match client.get(ZONE_PRESENTATION_KEY).await {
+        Ok(stored) => stored,
+        Err(SystemConfigError::KeyNotFound(_)) => return Ok(None),
+        Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+    };
+    let config: ZonePresentationConfig = serde_json::from_str(&stored.value).map_err(|error| {
+        RPCErrors::ReasonError(format!("failed to parse ZonePresentationConfig: {error}"))
+    })?;
+    config.validate().map_err(RPCErrors::ReasonError)?;
+    Ok(Some((config, stored.version)))
+}
+
+fn zone_presentation_value(runtime: &BuckyOSRuntime, settings: &ZonePresentationConfig) -> Value {
+    let document = runtime
+        .get_zone_config()
+        .and_then(|config| config.zone_document().ok());
+    json!({
+        "zone_did": runtime.zone_id.to_string(),
+        "hostname": document.as_ref().map(zone_document_hostname),
+        "settings": settings.fields(),
+        "document": document
+            .as_ref()
+            .map(ZonePresentationFields::from_zone_document)
+            .unwrap_or_default(),
+    })
+}
+
+fn apply_zone_presentation_patch(
+    config: &mut ZonePresentationConfig,
+    req: &RPCRequest,
+) -> Result<bool, RPCErrors> {
+    let mut changed = false;
+    for (key, slot) in [
+        ("display_name", &mut config.display_name),
+        ("description", &mut config.description),
+        ("icon", &mut config.icon),
+    ] {
+        if let Some(value) = ControlPanelServer::param_text_patch(req, key)? {
+            if key == "icon" {
+                if let Some(icon) = value.as_deref() {
+                    validate_image_data_url("icon", icon, MAX_ZONE_ICON_PX)?;
+                }
+            }
+            changed |= *slot != value;
+            *slot = value;
+        }
+    }
+    Ok(changed)
+}
+
 impl ControlPanelServer {
+    /// Public: the Zone display fields a signed-out visitor (the login page) may read.
+    pub(crate) async fn handle_zone_presentation_get(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let settings = load_zone_presentation(&client)
+            .await?
+            .map(|(config, _)| config)
+            .unwrap_or_default();
+        Ok(RPCResponse::new(
+            RPCResult::Success(zone_presentation_value(runtime, &settings)),
+            req.seq,
+        ))
+    }
+
+    pub(crate) async fn handle_zone_presentation_set(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        if !principal.is_user_session || !principal.is_control_panel_session {
+            return Err(RPCErrors::NoPermission(
+                "Zone display changes require a user-authenticated Control Panel session"
+                    .to_string(),
+            ));
+        }
+        if !matches!(principal.user_type, UserType::Admin | UserType::Root) {
+            return Err(RPCErrors::NoPermission(
+                "only Zone administrators can change the Zone display settings".to_string(),
+            ));
+        }
+        let token = req
+            .token
+            .as_deref()
+            .ok_or_else(|| RPCErrors::InvalidToken("missing caller session token".to_string()))?;
+        if !RPCSessionToken::from_string(token)?.sudo {
+            return Err(RPCErrors::NoPermission(
+                "sudo permission is required to change the Zone display settings".to_string(),
+            ));
+        }
+
+        let runtime = get_buckyos_api_runtime()?;
+        let system_config_url = runtime.get_system_config_url();
+        let client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(token));
+        let stored = load_zone_presentation(&client).await?;
+        let mut config = stored
+            .as_ref()
+            .map(|(config, _)| config.clone())
+            .unwrap_or_default();
+        if apply_zone_presentation_patch(&mut config, &req)? {
+            config.updated_at = Some(buckyos_get_unix_timestamp());
+            config.updated_by = Some(principal.username.clone());
+            config.validate().map_err(RPCErrors::ParseRequestError)?;
+            let encoded = serde_json::to_string(&config).map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to serialize ZonePresentationConfig: {error}"
+                ))
+            })?;
+            let (action, main_key) = match stored {
+                Some((_, version)) => (
+                    KVAction::Update(encoded),
+                    Some((ZONE_PRESENTATION_KEY.to_string(), version)),
+                ),
+                None => (KVAction::Create(encoded), None),
+            };
+            client
+                .exec_tx(
+                    HashMap::from([(ZONE_PRESENTATION_KEY.to_string(), action)]),
+                    main_key,
+                )
+                .await
+                .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+            runtime
+                .get_system_config_client()
+                .await?
+                .invalidate_cache(ZONE_PRESENTATION_KEY)
+                .await;
+        }
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(zone_presentation_value(runtime, &config)),
+            req.seq,
+        ))
+    }
+
     fn gateway_file_summary(path: &Path) -> Value {
         let metadata = std::fs::metadata(path).ok();
         let size_bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
@@ -867,5 +1016,44 @@ impl ControlPanelServer {
             })),
             req.seq,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::image_data_url::png_data_url;
+
+    #[test]
+    fn zone_presentation_patch_keeps_sets_and_clears_fields() {
+        let mut config = ZonePresentationConfig {
+            description: Some("Old description".to_string()),
+            ..ZonePresentationConfig::default()
+        };
+        let icon = png_data_url(64, 64);
+        let req = RPCRequest::new(
+            "zone.presentation.set",
+            json!({ "display_name": "  我的家庭云 ", "icon": icon }),
+        );
+        assert!(apply_zone_presentation_patch(&mut config, &req).unwrap());
+        assert_eq!(config.display_name.as_deref(), Some("我的家庭云"));
+        assert_eq!(config.description.as_deref(), Some("Old description"));
+        assert_eq!(config.icon.as_deref(), Some(icon.as_str()));
+        assert!(!apply_zone_presentation_patch(&mut config, &req).unwrap());
+
+        let req = RPCRequest::new(
+            "zone.presentation.set",
+            json!({ "description": "", "icon": null }),
+        );
+        assert!(apply_zone_presentation_patch(&mut config, &req).unwrap());
+        assert_eq!(config.description, None);
+        assert_eq!(config.icon, None);
+        assert_eq!(config.display_name.as_deref(), Some("我的家庭云"));
+
+        let oversized = png_data_url(MAX_ZONE_ICON_PX + 1, 8);
+        let req = RPCRequest::new("zone.presentation.set", json!({ "icon": oversized }));
+        assert!(apply_zone_presentation_patch(&mut config, &req).is_err());
+        let req = RPCRequest::new("zone.presentation.set", json!({ "display_name": 7 }));
+        assert!(apply_zone_presentation_patch(&mut config, &req).is_err());
     }
 }

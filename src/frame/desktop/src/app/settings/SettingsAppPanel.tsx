@@ -9,6 +9,7 @@ import { AppearancePage } from './pages/AppearancePage'
 import { ClusterManagerPage } from './pages/ClusterManagerPage'
 import { PrivacyPage } from './pages/PrivacyPage'
 import { DeveloperModePage } from './pages/DeveloperModePage'
+import { ZonePage } from './pages/ZonePage'
 
 function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppContentLoaderProps }) {
   switch (page) {
@@ -16,6 +17,8 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
       return <GeneralPage />
     case 'appearance':
       return <AppearancePage appProps={appProps} />
+    case 'zone':
+      return <ZonePage />
     case 'cluster':
       return <ClusterManagerPage />
     case 'privacy':

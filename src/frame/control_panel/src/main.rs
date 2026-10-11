@@ -12,6 +12,7 @@ mod app_servcie_mgr;
 mod app_staging;
 mod dashboard;
 mod diagnostic_mgr;
+mod image_data_url;
 mod ndn_download;
 mod pikg;
 mod pre_install_reconciler;
@@ -454,6 +455,22 @@ impl ControlPanelServer {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// A text field patch: `None` keeps the stored value, `Some(None)` clears it (JSON null or a
+    /// blank string), `Some(Some(text))` sets the trimmed text.
+    fn param_text_patch(req: &RPCRequest, key: &str) -> Result<Option<Option<String>>, RPCErrors> {
+        match req.params.get(key) {
+            None => Ok(None),
+            Some(Value::Null) => Ok(Some(None)),
+            Some(Value::String(value)) => {
+                let value = value.trim();
+                Ok(Some((!value.is_empty()).then(|| value.to_string())))
+            }
+            Some(_) => Err(RPCErrors::ParseRequestError(format!(
+                "{key} must be a string or null"
+            ))),
         }
     }
 
@@ -1016,6 +1033,11 @@ impl RPCHandler for ControlPanelServer {
 
             //ZoneMgr
             "zone.overview" => self.handle_zone_overview(req).await,
+            "zone.presentation.get" => self.handle_zone_presentation_get(req).await,
+            "zone.presentation.set" => {
+                self.handle_zone_presentation_set(req, principal.as_ref())
+                    .await
+            }
             "gateway.overview" => self.handle_gateway_overview(req).await,
             "gateway.file.get" => self.handle_gateway_file_get(req).await,
             "container.overview" => self.handle_container_overview(req).await,

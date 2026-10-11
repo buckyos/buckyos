@@ -1,5 +1,6 @@
 import { buckyos } from 'buckyos'
 import { useI18n } from '../../i18n/provider'
+import { useAppText } from '../../presentation/appText'
 import { isMockRuntime } from '../../runtime'
 import type { AppContentLoaderProps } from '../types'
 import { desktopCatalogIdForLogicalApp } from '../backend-apps'
@@ -48,6 +49,7 @@ function buildAppWebUrl(app: AppContentLoaderProps['app']) {
 
 export function SystestAppPanel({ app }: AppContentLoaderProps) {
   const { t } = useI18n()
+  const appText = useAppText()
   const src = buildAppWebUrl(app)
 
   if (!src) {
@@ -65,7 +67,7 @@ export function SystestAppPanel({ app }: AppContentLoaderProps) {
       className="block h-full w-full border-0 bg-white"
       data-testid={isSystest ? 'systest-frame' : 'web-app-frame'}
       src={src}
-      title={t(app.labelKey)}
+      title={appText(app).title}
     />
   )
 }

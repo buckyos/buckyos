@@ -253,7 +253,7 @@ export interface Entity {
   sessionCreation: EntitySessionCreation
   /** 展示名。优先级：Contact.name → GroupSummary.name → MailboxRecord.from_name → DID 友好名（did:web / did:bns 取域名首段，Agent 首字母大写，其余为 DID 短写）；完整 DID 在实体详情显示。 */
   name: string
-  /** 头像 URL。当前渲染层仍按 type 生成图标，此字段为预留位。 */
+  /** 头像：Contact.avatar 中可加载的图片（data:image / http(s) / 同源路径）。列表、详情、会话头、群成员由 HubAvatar 渲染，缺失或加载失败回落到 type 图标；Zone 用户/Agent 的头像由 msg-center Zone 同步按公开 profile 写入。 */
   avatar?: string
 
   /** 单行状态说明，如 "online" / "12 members" / "last seen 2h ago"。由 presence 与实体类型派生。 */
@@ -1390,7 +1390,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `isPinned` / `isMuted` | Frozen | 落在 ui_session KV |
 | `isOnline` / `statusText` | Volatile | presence 模型尚未定稿（PRD §18.6） |
 | `children` / `childrenMode` / `childrenSections` / `drilldownDescription` | Volatile | 子实体来源与 drilldown 配置仍在演进 |
-| `avatar` | Volatile | 渲染层尚未接入真实头像 |
+| `avatar` | Extensible | 已接入渲染；联系人随事件（本人资料/Agent 变更）与每 60s 重读刷新 |
 
 ### EntitySession
 

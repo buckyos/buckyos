@@ -90,10 +90,12 @@ export interface UserPrivateProfile extends UserProfile {
   private_extra?: Record<string, unknown>
 }
 
-/** Minimal user listing entry as returned by `user.list`. */
+/** Minimal user listing entry as returned by `user.list`; `did`/`avatar` are the public profile's. */
 export interface UserInfo {
   user_id: string
   show_name: string
+  did?: string
+  avatar?: string
   user_type: UserType | string
   state: UserStateString
   is_local?: boolean
@@ -409,24 +411,28 @@ export const fetchUserProfile = async (
   return callRpc<UserProfileResponse>('user.profile.get', params)
 }
 
+/**
+ * `user.profile.set`. A text field left `undefined` is kept; `null` (or a blank string) clears the
+ * local value so the DID document's value, if any, shows again. `avatar` must be a base64
+ * PNG/JPEG/WebP data URL of at most 192px.
+ */
 export const setUserProfile = async (input: {
   userId?: string
   profile?: UserPrivateProfile
-  name?: string
-  displayName?: string
-  avatar?: string
-  avatarUrl?: string
-  headline?: string
-  title?: string
-  bio?: string
-  location?: string
-  organization?: string
-  birthday?: string
-  bkgImage?: string
+  name?: string | null
+  displayName?: string | null
+  avatar?: string | null
+  headline?: string | null
+  title?: string | null
+  bio?: string | null
+  location?: string | null
+  organization?: string | null
+  birthday?: string | null
+  bkgImage?: string | null
   tags?: string[]
-  website?: string
-  email?: string
-  phone?: string
+  website?: string | null
+  email?: string | null
+  phone?: string | null
   privateExtra?: Record<string, unknown>
   extra?: Record<string, unknown>
 }): Promise<{ data: (SimpleOkResponse & { profile?: UserPrivateProfile }) | null; error: unknown }> => {
@@ -436,7 +442,6 @@ export const setUserProfile = async (input: {
   if (input.name !== undefined) params.name = input.name
   if (input.displayName !== undefined) params.display_name = input.displayName
   if (input.avatar !== undefined) params.avatar = input.avatar
-  if (input.avatarUrl !== undefined) params.avatar = input.avatarUrl
   if (input.headline !== undefined) params.headline = input.headline
   if (input.title !== undefined) params.title = input.title
   if (input.bio !== undefined) params.bio = input.bio
@@ -450,7 +455,7 @@ export const setUserProfile = async (input: {
   if (input.phone !== undefined) params.phone = input.phone
   if (input.privateExtra !== undefined) params.private_extra = input.privateExtra
   if (input.extra !== undefined) params.extra = input.extra
-  return callRpc<SimpleOkResponse & { profile?: UserPrivateProfile }>('user.profile.set', params)
+  return callControlPanel<SimpleOkResponse & { profile?: UserPrivateProfile }>('user.profile.set', params)
 }
 
 export const setUserMsgTunnel = async (input: {

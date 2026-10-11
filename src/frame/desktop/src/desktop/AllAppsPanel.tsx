@@ -15,6 +15,7 @@ import { useI18n } from '../i18n/provider'
 import { isLauncherApp } from '../models/ui'
 import { taskbarPopupSurface } from './TaskbarParts'
 import { useLongPress } from './taskbarHooks'
+import { useAppText } from '../presentation/appText'
 
 const noAppMenu = () => {}
 
@@ -58,13 +59,17 @@ export function AllAppsPanel({
       : noAppMenu,
   )
 
+  const appText = useAppText()
   const sortedApps = useMemo(() => {
     const collator = new Intl.Collator(locale, { sensitivity: 'base', numeric: true })
     return apps
       .filter(isLauncherApp)
-      .map((app) => ({ app, label: t(app.labelKey), summary: t(app.summaryKey, '') }))
+      .map((app) => {
+        const text = appText(app)
+        return { app, label: text.title, summary: text.summary ?? '' }
+      })
       .sort((a, b) => collator.compare(a.label, b.label))
-  }, [apps, locale, t])
+  }, [apps, locale, appText])
 
   const needle = query.trim().toLocaleLowerCase(locale)
   // Names starting with the query come first, then names containing it,

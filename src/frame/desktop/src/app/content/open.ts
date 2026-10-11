@@ -6,6 +6,7 @@ import { openPreview } from '../preview/launch'
 import type { PreviewOpenRequest } from '../preview/types'
 import { isMockRuntime } from '../../runtime'
 import { contentFixtureEnabled, mockContentRegistry } from '../../mock/content'
+import { appTitleNow } from '../../presentation/appText'
 export const appFrames = new Map<string, { host: AppFrameHost; handlerKey?: string }>()
 let registry: ContentRegistryClient | undefined
 let userId: string | undefined
@@ -35,7 +36,7 @@ export async function contentHandlers(request: PreviewOpenRequest, hints: { name
 export function handlerLabel(plan: HandlerPlan): string {
   if (!plan.appInstanceId) return 'Preview'
   const app = desktopUIStore.getSnapshot().apps.find(a => (a.appInstanceId ?? a.id) === plan.appInstanceId)
-  return app?.labelKey ?? plan.appInstanceId.split('@')[0]
+  return app ? appTitleNow(app) : plan.appInstanceId.split('@')[0]
 }
 export async function openContent(request: PreviewOpenRequest, options: { handlerKey?: string; newWindow?: boolean; name?: string; mime?: string; size?: number } = {}): Promise<string | null> {
   if (!isTransferableRef(request.source) || request.session && !isTransferableSession(request.session)) return openPreview(request)

@@ -13,12 +13,15 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import { useState, type CSSProperties, type ReactNode, type Ref } from 'react'
+import type { CSSProperties, ReactNode, Ref } from 'react'
 import type { SystemMetrics } from '../api/system_metrics'
 import type { DesktopAppItem } from '../app/types'
 import { AppIcon } from '../components/DesktopVisuals'
 import { appIconSurfaceStyle } from '../components/DesktopVisualTokens'
 import { useI18n } from '../i18n/provider'
+import { useAppText } from '../presentation/appText'
+import { initialOf } from '../presentation/model'
+import { ObjectImage } from '../presentation/ObjectIcon'
 import type { TaskbarAppItem } from '../models/ui'
 import { connectionLabel, type ConnectionState } from './shell'
 import type { CurrentUser, SystemStatusState, useHoverCard } from './taskbarHooks'
@@ -97,6 +100,7 @@ export function TaskbarMenu({
   windowCount: number
 }) {
   const { t } = useI18n()
+  const appText = useAppText()
   return (
     <Menu
       ref={menuRef}
@@ -118,7 +122,7 @@ export function TaskbarMenu({
                   <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
                 </span>
               </ListItemIcon>
-              {t(app.labelKey)}
+              {appText(app).title}
             </MenuItem>,
             <Divider key="divider" />,
             <MenuItem
@@ -200,27 +204,21 @@ function TaskbarCard({
 // ---------------------------------------------------------------------------
 
 export function UserAvatar({ size, user }: { size: number; user: CurrentUser | null }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null)
-  if (user?.avatarUrl && failedUrl !== user.avatarUrl) {
-    return (
-      <img
-        src={user.avatarUrl}
-        alt=""
-        draggable={false}
-        className="size-full rounded-full object-cover"
-        onError={() => setFailedUrl(user.avatarUrl ?? null)}
-      />
-    )
-  }
-  const initial = user ? Array.from(user.displayName)[0]?.toUpperCase() : undefined
+  const initial = user ? initialOf(user.displayName) : 'B'
   return (
-    <span
-      aria-hidden
-      className="font-display font-semibold tracking-[-0.04em]"
-      style={{ fontSize: Math.round(size * 0.46) }}
-    >
-      {initial ?? 'B'}
-    </span>
+    <ObjectImage
+      icons={[user?.avatarUrl]}
+      className="size-full rounded-full object-cover"
+      fallback={
+        <span
+          aria-hidden
+          className="font-display font-semibold tracking-[-0.04em]"
+          style={{ fontSize: Math.round(size * 0.46) }}
+        >
+          {initial}
+        </span>
+      }
+    />
   )
 }
 

@@ -7,6 +7,7 @@ import {
 } from '../../../api/user_mgr.ts'
 import type { UserContactSettings, UserDetail } from '../../../api/user_mgr.ts'
 import { buckyos } from 'buckyos'
+import { usableImageUrl } from '../../../presentation/model.ts'
 import {
   mockLocalUsers,
   mockSelf,
@@ -122,12 +123,16 @@ export async function fetchMockUsersAgentsSnapshot(): Promise<UsersAgentsSnapsho
   ])
   const base = createMockUsersAgentsSnapshot()
   const contact = (selfResult.data?.local_profile?.private_extra?.system_contact ?? {}) as UserContactSettings
+  const profile = (selfResult.data?.profile ?? {}) as Record<string, unknown>
+  const avatarUrl = usableImageUrl(profile.avatar)
   return {
     ...base,
     self: {
       ...base.self,
       id: account?.user_id ?? base.self.id,
       socialAccounts: toSocialAccounts(contact.bindings),
+      ...(avatarUrl ? { avatarUrl } : {}),
+      ...(typeof profile.bio === 'string' ? { bio: profile.bio } : {}),
     },
     agents: (agentsResult.data?.agents ?? []).map(toAgentEntity),
     canCreateAgents: !isLimitedUserType(account?.user_type),

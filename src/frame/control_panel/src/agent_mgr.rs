@@ -7,6 +7,7 @@
 //! so the background driver can resume from any persisted state.
 
 use crate::app_installer::{register_app_doc_authority, AppInstaller, InternalInstall};
+use crate::image_data_url::{validate_image_data_url, MAX_AVATAR_PX};
 use crate::pikg::{preferred_archive_name, PikgBuilder, PikgReader};
 use crate::pre_install_reconciler::{
     canonical_pikg_path, INSTALL_SETTINGS_KEY, PREINSTALL_PIKG_DIR,
@@ -15,7 +16,6 @@ use crate::user_mgr::{profile_system_contact, refresh_rbac_by_scheduler};
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
     agent_info_key, agent_install_record_key, agent_key_path, agent_profile_key,
     agent_settings_key, agent_short_name, agent_spec_key, agent_template_record_key,
@@ -66,8 +66,6 @@ const RESERVED_NAMES: [&str; 8] = [
     "homestation",
 ];
 const NAME_SUGGESTION_LIMIT: usize = 50;
-const MAX_AVATAR_PX: u32 = 192;
-const MAX_AVATAR_BYTES: usize = 512 * 1024;
 const START_TIMEOUT_SECS: u64 = 5 * 60;
 const DRIVE_POLL: Duration = Duration::from_secs(2);
 const DRIVE_SWEEP: Duration = Duration::from_secs(30);
@@ -895,27 +893,7 @@ async fn verify_telegram_bot(bot_token: &str) -> Result<String, AgentFailure> {
 }
 
 fn validate_avatar(avatar: &str) -> Result<(), RPCErrors> {
-    let invalid =
-        |message: &str| RPCErrors::ParseRequestError(format!("invalid avatar: {message}"));
-    let (header, data) = avatar
-        .strip_prefix("data:image/")
-        .and_then(|rest| rest.split_once(";base64,"))
-        .ok_or_else(|| invalid("expect a base64 image data URL"))?;
-    if header.is_empty() || data.len() > MAX_AVATAR_BYTES * 4 / 3 + 4 {
-        return Err(invalid("image is too large"));
-    }
-    let bytes = STANDARD
-        .decode(data)
-        .map_err(|_| invalid("bad base64 payload"))?;
-    let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|_| invalid("unknown image format"))?
-        .into_dimensions()
-        .map_err(|_| invalid("unreadable image"))?;
-    if width > MAX_AVATAR_PX || height > MAX_AVATAR_PX {
-        return Err(invalid("image must be at most 192px"));
-    }
-    Ok(())
+    validate_image_data_url("avatar", avatar, MAX_AVATAR_PX)
 }
 
 fn optional_text(value: Option<&Value>) -> Option<String> {
@@ -2987,6 +2965,9 @@ impl ControlPanelServer {
             None,
         )
         .await?;
+        if let Err(error) = reload_msg_center().await {
+            warn!("msg-center reload after profile update of agent {agent_id} failed: {error}");
+        }
         Ok(RPCResponse::new(
             RPCResult::Success(json!({ "profile": profile })),
             req.seq,
@@ -3707,24 +3688,6 @@ mod tests {
         assert!(AgentCreateRequest::parse(&missing).is_err());
         assert_eq!(bare_telegram_account(" user:42 "), "42");
         assert_eq!(bare_telegram_account("42"), "42");
-    }
-
-    #[test]
-    fn avatar_must_be_a_small_image_data_url() {
-        let encode = |size: u32| {
-            let mut bytes = Vec::new();
-            image::RgbaImage::new(size, size)
-                .write_to(
-                    &mut std::io::Cursor::new(&mut bytes),
-                    image::ImageFormat::Png,
-                )
-                .unwrap();
-            format!("data:image/png;base64,{}", STANDARD.encode(bytes))
-        };
-        assert!(validate_avatar(&encode(192)).is_ok());
-        assert!(validate_avatar(&encode(193)).is_err());
-        assert!(validate_avatar("https://example.com/a.png").is_err());
-        assert!(validate_avatar("data:image/png;base64,!!!").is_err());
     }
 
     #[tokio::test]

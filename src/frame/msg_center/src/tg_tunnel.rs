@@ -4561,6 +4561,7 @@ mod tests {
         center
             .upsert_zone_user_contacts(
                 vec![crate::contact_mgr::ZoneUserContactSeed {
+                    avatar: None,
                     did: owner.clone(),
                     name: "Alice".into(),
                     note: None,

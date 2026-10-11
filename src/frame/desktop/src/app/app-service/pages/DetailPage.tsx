@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../i18n/provider'
+import { useServiceText } from '../useServiceText'
 import { AppIcon } from '../../../components/DesktopVisuals'
 import type { AppServiceNav } from '../components/layout/navigation'
 import { useAppServiceStore } from '../hooks/use-app-service-store'
@@ -152,6 +153,7 @@ interface DetailPageProps {
 export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
   const store = useAppServiceStore()
   const { t } = useI18n()
+  const serviceText = useServiceText()
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [logsOpen, setLogsOpen] = useState(false)
   const service = store.getById(serviceId)
@@ -221,7 +223,7 @@ export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
               color: 'var(--cp-text)',
             }}
           >
-            <AppIcon iconKey={service.iconKey} className="!size-7" />
+            <AppIcon iconKey={service.iconKey} iconUrl={service.iconUrl} className="!size-7" />
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -229,7 +231,7 @@ export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
                 className="font-display text-xl font-semibold"
                 style={{ color: 'var(--cp-text)' }}
               >
-                {service.name}
+                {serviceText(service).title}
               </h1>
               <StateValue state={runtimeStatus(service.runtime)} />
             </div>
@@ -237,7 +239,7 @@ export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
               className="mt-1 max-w-2xl text-sm leading-6"
               style={{ color: 'var(--cp-muted)' }}
             >
-              {t(service.description)}
+              {serviceText(service).summary}
             </p>
             <div
               className="mt-2 text-[11px] tabular-nums"

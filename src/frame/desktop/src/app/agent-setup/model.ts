@@ -62,11 +62,7 @@ export function agentHomeTarget(entry: AgentEntry): { kind: 'app'; appId: string
 }
 
 /** Avatars are data URLs (or http(s) for template icons); anything else is not shown. */
-export function usableImageUrl(value: string | null | undefined): string | undefined {
-  const url = value?.trim()
-  if (!url) return undefined
-  return /^(data:image\/|https?:\/\/|\/)/i.test(url) ? url : undefined
-}
+export { usableImageUrl } from '../../presentation/model'
 
 // ── Errors ──
 

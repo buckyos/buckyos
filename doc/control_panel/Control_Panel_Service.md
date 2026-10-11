@@ -125,12 +125,12 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 | 方法 | 权限 | 说明 |
 |---|---|---|
-| `user.list` | 已登录 | 列出用户（可选 `include_deleted`） |
+| `user.list` | 已登录 | 列出用户（可选 `include_deleted`）；每项附带公开 profile 投影中的 `did` 与 `avatar`（遵守 `to_public_profile()` 可见性） |
 | `user.get` | 本人/Admin | 取单用户详情；profile 私有扩展中的 `contact` / `did_document` 仅本人或 Admin 可见 |
 | `user.create` | **Admin** | 事务创建 settings+doc+key，追加 RBAC 组；不允许创建 Root |
 | `user.update` | 本人/Admin | 改 profile 中的显示名等 |
 | `user.update_contact` | 本人/Admin | 改 profile 私有扩展中的 DID/groups/tags/消息平台绑定 |
-| `user.profile.get` / `user.profile.set` | 本人/Admin | `users/{uid}/profile` 中的私有 profile（DID profile 只读，响应中两源合并） |
+| `user.profile.get` / `user.profile.set` | 本人/Admin | `users/{uid}/profile` 中的私有 profile（DID profile 只读，响应中两源合并：本地显式字段优先，DID 文档 `profile`/`meta` 只补本地为空的字段）。`set` 的文本字段三态：省略=不改、`null` 或空串=清除（回落到 DID 文档值）、字符串=设置；`avatar` 只接受 ≤192px、≤512KB 的 base64 PNG/JPEG/WebP data URL。保存后通知 msg-center 重新同步 Zone 联系人 |
 | `user.set_msg_tunnel` / `user.remove_msg_tunnel` | 本人/Admin | 增删消息平台账号绑定 |
 | `user.invite.create` | **Admin** | 生成邀请（可预建 Pending 用户或绑定已有 DID），返回 `invite_url` |
 | `user.invite.get` | **公开** | 凭 `invite_id` 读邀请详情（含过期、zone_did/host） |
@@ -168,7 +168,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 | 方法 | 返回 | 说明 |
 |---|---|---|
-| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；每项包含 `app_id/app_did/app_instance_id/runtime_type/owner_user_id/availability_match/web_hosts` |
+| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；每项包含 `app_id/app_did/app_instance_id/runtime_type/owner_user_id/availability_match/web_hosts`，以及展示字段 `name`（AppDoc 包名）、`show_name`、`presentation`（`title/summary/description` 的语言→文本映射，无则 null）、`app_icon_url`（`presentation.links.app_icon_url`；`presentation.icons` 的 ObjId 尚无浏览器可加载路由，不返回） |
 | `apps.details` / `app.details` | typed details | 接受统一 selector（`selector/app_instance_id/app_did/identifier`），按可见 Owner 范围唯一选择；0 个返回 NotFound，多个返回 `AMBIGUOUS_APP_TARGET` 与脱敏候选 |
 | `apps.status` / `app.status` | `AppInstallationStatusSnapshot` | 聚合 install record、desired spec、active task、scheduled/runtime instance、目标/上次成功/回滚 deployment、typed deployment error 与 Static Web gateway generation evidence |
 | `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略与审计；scheduler 单独把 policy 投影为 Gateway access mode，不回写 AppSpec |
@@ -213,6 +213,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 * **Zone**：`zone.overview` / `zone.config` — 聚合 `start_config.json` / `node_identity.json` / `did.json`，输出 zone/device/SN/DNS 自检与文件清单。
 * **Gateway**：`gateway.overview` / `gateway.config` / `gateway.file.get` — 解析 `cyfs_gateway.json` / `boot_gateway.yaml` / `node_gateway.json` 等（白名单文件，单文件 ≤2MB），输出 stacks / routes / tlsDomains。
 * **Container**：`container.overview` / `container.action`（start/stop/restart，带缓存与刷新锁）。
+* **Zone 展示**：`zone.presentation.get`（**公开**）返回 `{zone_did, hostname, settings, document}`，`settings` 是管理员显式配置（SystemConfig `system/zone_presentation`，类型 `ZonePresentationConfig`），`document` 是 ZoneDocument 扩展字段中约定的 `display_name/description/icon` 候选；两者分开返回，由前端按「设置 → 文档 → DID 可读标识 → 默认」取值。`zone.presentation.set` 只接受 Admin/Root 的 Control Panel 用户 sudo session，以调用者 token 经 RBAC（`su_admin`）与 revision CAS 写入；字段三态同 `user.profile.set`，`icon` 只接受 ≤512px、≤512KB 的 base64 PNG/JPEG/WebP data URL。它只改显示元数据，不改 Zone DID、域名或 owner，也不签发/更新 ZoneDocument。键不存在即「未配置」。
 * **Dashboard / System**：`dashboard` / `system.overview` / `system.buckyos_info.get` / `system.dev_mode.get` / `system.dev_mode.set` / `system.status` / `system.metrics` / `network.overview`。`system.buckyos_info.get` 只读返回 SystemConfig `system/buckyos_info`；`system.dev_mode.get` 返回 `system/buckyos_dev_config`，`system.dev_mode.set` 只接受面向 Control Panel 的用户 sudo session，并继续以调用者 token 通过 SystemConfig RBAC 和 revision CAS 写入。SystemConfig 服务对这个 key 的 create/set/set-by-path/append/delete/transaction 运行期写入还有统一 sudo 门禁，首次 boot bootstrap 初始化除外。
 * **System Logs**：`system.logs.list` / `query` / `tail` / `download`（凭 token 经 `GET /kapi/control-panel/logs/download/{token}` 下载）。
 * **AICC Settings**：`ai.overview` / `ai.provider.*` / `ai.model.*` / `ai.policy.*` / `ai.diagnostics.list` / `ai.reload` 等，管理 AI 接入与路由策略。
@@ -292,6 +293,7 @@ identifier / staging handle
 | `auth.issue_sso_token` | 签发 SSO token |
 | `user.invite.get` | 凭邀请链接读邀请详情 |
 | `user.invite.accept` | 凭邀请链接接受邀请、激活账号 |
+| `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
 
 ### 6.2 后端：公开 HTTP 路由
 
@@ -333,6 +335,7 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 | 系统内置 App | `system/apps/{app_id}/spec` | 合成/内置 |
 | App 实例状态 | `services/{app_id}@{uid}/instances/{node_id}` | Node Daemon 上报 |
 | RBAC 策略 | `system/rbac/policy` | `append`（事务后追加，注意非原子） |
+| Zone 展示设置 | `system/zone_presentation` | 调用者 sudo token + revision CAS（不存在时 create） |
 | UI Session | `users/{uid}/desktop/{session_id}/{state_key}` · `.../_meta` | 单次 `set`，写后刷新 `_meta.updated_at` |
 
 ---
@@ -343,4 +346,4 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 2. **原子事务**：跨路径写用 `exec_tx`；唯一已知的尾随非原子点是 RBAC `append`，需知情并择机收敛。
 3. **最小越权**：受保护路径用调用者 token 访问 `system_config`，RBAC 在 `system_config` 侧对调用者直接生效。
 4. **异步任务化**：App 安装类重操作返回 `task_id` + 后台任务推进 + 仓库追加审计凭证，进度可观测、操作可审计。
-5. **公开面最小化**：未登录可达面被收敛为 7 个公开 RPC 方法 + 3 个 SSO HTTP 路由 + 静态 UI；前端再以 `publicRoutes` 显式列白 `/login`、`/userprofile`。
+5. **公开面最小化**：未登录可达面被收敛为 8 个公开 RPC 方法 + 3 个 SSO HTTP 路由 + 静态 UI；前端再以 `publicRoutes` 显式列白 `/login`、`/userprofile`。

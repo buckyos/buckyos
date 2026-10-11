@@ -8,8 +8,10 @@ import type { AppContentLoaderProps } from '../types'
 import { appFrames, openContent } from '../content/open'
 import { openPreview } from '../preview/launch'
 import { isMockRuntime } from '../../runtime'
+import { useAppText } from '../../presentation/appText'
 export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: AppContentLoaderProps) {
   const iframe = useRef<HTMLIFrameElement>(null)
+  const title = useAppText()(app).title
   const host = useRef<AppFrameHost | undefined>(undefined)
   const nonce = useMemo(() => crypto.randomUUID(), [])
   const runtime = useDesktopRuntime()
@@ -33,8 +35,8 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
   const latest = useRef({ request, themeMode, locale })
   useEffect(() => { latest.current = { request, themeMode, locale } }, [request, themeMode, locale])
   useEffect(() => {
-    if (!src && request) { desktopUIStore.setSnackbar(`Unable to open with ${app.labelKey}`); openPreview({ source: request.source, session: request.session }) }
-  }, [src, request, app.labelKey])
+    if (!src && request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) }
+  }, [src, request, title])
   useEffect(() => {
     if (!origin || !windowId || !src) return
     const { request, themeMode, locale } = latest.current
@@ -72,6 +74,6 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     void host.current?.back().then(handled => { if (!handled && windowId) desktopUIStore.closeWindow(windowId) }).catch(() => { if (windowId) desktopUIStore.closeWindow(windowId) })
     return true
   })
-  if (!src) return <p>Unable to open {app.labelKey}</p>
-  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={src} title={app.labelKey} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(`Unable to open with ${app.labelKey}`); openPreview({ source: request.source, session: request.session }) } }} />
+  if (!src) return <p>Unable to open {title}</p>
+  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={src} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) } }} />
 }

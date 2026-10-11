@@ -4,7 +4,7 @@ import type { AppDefinition } from '../models/ui'
 export const contentFixtureEnabled = () => new URLSearchParams(location.search).has('contentApps')
 export const contentFixtureApps = (base: AppDefinition): AppDefinition[] => ['notes', 'reader'].map(name => ({
   ...base, id: `${name}-fixture`, appInstanceId: `${name}.fixture.bns.did@owner`,
-  labelKey: `${name === 'notes' ? 'Notebook' : 'Reader'} Fixture`, tier: 'external', webHosts: [`${name}-fixture`],
+  labelKey: name, summaryKey: '', text: { title: `${name === 'notes' ? 'Notebook' : 'Reader'} Fixture` }, tier: 'external', webHosts: [`${name}-fixture`],
 }))
 const registry: ContentRegistry = { schema_version: 1, handlers: Object.fromEntries(['notes', 'reader'].map(name => {
   const instance = `${name}.fixture.bns.did@owner`

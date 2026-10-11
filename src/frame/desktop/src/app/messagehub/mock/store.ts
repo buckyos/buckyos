@@ -177,6 +177,7 @@ export class MessageHubMockStore implements MessageHubStore {
   ensureOwner() { return this.initialize() }
   startSync() { return () => {} }
   findEntity(_context: MessageHubContext, id: string) { return this.lookup(id) }
+  avatarOf(_context: MessageHubContext, did: string) { return this.lookup(did)?.avatar }
   /** Seeded entities, plus self-host groups created or joined in this mock. */
   private lookup(id: string): Entity | undefined {
     const seeded = findEntity(id)

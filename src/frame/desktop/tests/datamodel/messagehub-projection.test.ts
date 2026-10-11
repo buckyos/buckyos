@@ -195,3 +195,18 @@ Deno.test('root and the logged-in account stay out of the entity list but their 
   equal(projected.entityById.get('did:bns:root')?.sessionCount, 1)
   equal(projected.sessionsByEntity.get('did:bns:root')?.map(session => session.id), ['maintenance'])
 })
+
+Deno.test('contact pictures project onto entities and the owner, unloadable ones are dropped', () => {
+  const bob = 'did:bns:bob'
+  const carol = 'did:bns:carol'
+  const people: Contact[] = [
+    { did: owner, name: 'Me', avatar: 'data:image/png;base64,OWN', source: 'shared', is_verified: true, bindings: [], access_level: 'friend', groups: [], tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
+    { did: bob, name: 'Bob', avatar: 'data:image/jpeg;base64,BOB', source: 'shared', is_verified: true, bindings: [], access_level: 'friend', groups: [], tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
+    { did: carol, name: 'Carol', avatar: 'javascript:alert(1)', source: 'shared', is_verified: true, bindings: [], access_level: 'friend', groups: [], tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
+  ]
+  const projected = projectOwner({ ownerDid: owner, summaries: [], contacts: people, agentDids: [], personalTitles: {}, groups: {}, groupSessionTitles: {}, policies: {}, labels })
+  equal(projected.entityById.get(bob)?.avatar, 'data:image/jpeg;base64,BOB')
+  equal(projected.entityById.get(carol)?.avatar, undefined)
+  equal(projected.avatars[owner], 'data:image/png;base64,OWN')
+  equal(projected.names[owner], 'Me')
+})

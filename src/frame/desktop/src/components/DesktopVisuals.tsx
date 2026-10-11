@@ -1,5 +1,4 @@
 import clsx from 'clsx'
-import { useState } from 'react'
 import {
   BookOpen,
   Bot,
@@ -27,6 +26,7 @@ import {
 } from 'lucide-react'
 import type { AppDefinition } from '../models/ui'
 import { panelToneClasses } from './DesktopVisualTokens'
+import { ObjectImage } from '../presentation/ObjectIcon'
 
 const iconMap = {
   'ai-center': BrainCircuit,
@@ -85,25 +85,19 @@ export function AppIcon({
   className?: string
   style?: React.CSSProperties
 }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null)
-  if (iconUrl && failedUrl !== iconUrl) {
-    const size = fill ? 'var(--icon-size)' : 'calc(var(--icon-size) * 0.5)'
-    return (
-      <img
-        src={iconUrl}
-        alt=""
-        draggable={false}
-        className={clsx('relative z-10 shrink-0 object-cover', fill ? '' : 'rounded-full', className)}
-        style={{ width: size, height: size, ...style }}
-        onError={() => setFailedUrl(iconUrl)}
-      />
-    )
-  }
   const Icon = iconMap[iconKey as keyof typeof iconMap] ?? LayoutGrid
+  const size = fill ? 'var(--icon-size)' : 'calc(var(--icon-size) * 0.5)'
   return (
-    <Icon
-      className={clsx('relative z-10', className)}
-      style={{ width: 'calc(var(--icon-size) * 0.5)', height: 'calc(var(--icon-size) * 0.5)', ...style }}
+    <ObjectImage
+      icons={[iconUrl]}
+      className={clsx('relative z-10 shrink-0 object-cover', fill ? '' : 'rounded-full', className)}
+      style={{ width: size, height: size, ...style }}
+      fallback={
+        <Icon
+          className={clsx('relative z-10', className)}
+          style={{ width: 'calc(var(--icon-size) * 0.5)', height: 'calc(var(--icon-size) * 0.5)', ...style }}
+        />
+      }
     />
   )
 }

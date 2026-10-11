@@ -1,3 +1,4 @@
+import type { AppDisplayText } from '../../models/ui'
 import type { InstallInput } from './schemas'
 
 export type TaskId = string
@@ -263,8 +264,11 @@ export interface AppServiceItem {
   owner_user_id: string | null
   app_did: string | null
   name: string
+  /** i18n key of the prototype fixtures; `text` (a real app's own document text) replaces it. */
   description: string
   iconKey: string
+  iconUrl?: string
+  text?: AppDisplayText
   version: string
   layer: ServiceLayer
   status: AppServiceStatus

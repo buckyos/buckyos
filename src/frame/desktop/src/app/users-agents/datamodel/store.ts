@@ -13,15 +13,29 @@ import {
   fetchMockUsersAgentsSnapshot,
   fetchUsersAgentsSnapshot,
 } from './api'
-import { toAgentEntity, toSocialAccounts } from './transforms'
+import { toAgentEntity, toSelfEntity, toSocialAccounts } from './transforms'
 import {
   deleteAgent,
+  fetchUserDetail,
   removeUserMsgTunnel,
   setUserMsgTunnel,
+  setUserProfile,
   updateAgent,
 } from '../../../api/user_mgr'
 import { isMockRuntime } from '../../../runtime'
 import { notifyAgentsChanged, notifyOwnProfileChanged } from '../../agent-setup/events'
+
+const SELF_INFO_FIELDS: Record<string, keyof Parameters<typeof setUserProfile>[0]> = {
+  displayName: 'displayName',
+  title: 'title',
+  bio: 'bio',
+  location: 'location',
+  organization: 'organization',
+  website: 'website',
+  email: 'email',
+  phone: 'phone',
+}
+
 
 export interface UsersAgentsStoreOptions {
   useMock?: boolean
@@ -123,34 +137,38 @@ export class UsersAgentsStore {
     this.notify()
   }
 
-  updateSelfAvatar(avatarUrl?: string) {
-    this.self = { ...this.self, avatarUrl }
-    this.notify()
+  // ── The signed-in user's own profile (`user.profile.set`, then read back) ──
+
+  /** `null` removes the local avatar so the DID document's one, if any, shows again. */
+  updateSelfAvatar(avatar: string | null): Promise<unknown> {
+    return this.saveSelfProfile({ avatar })
   }
 
-  updateSelfBio(bio: string) {
-    this.self = {
-      ...this.self,
-      bio,
-      info: {
-        ...this.self.info,
-        bio,
-      },
-    }
-    this.notify()
+  updateSelfBio(bio: string): Promise<unknown> {
+    return this.saveSelfProfile({ bio: bio.trim() || null })
   }
 
-  updateSelfInfo(key: string, value: string) {
-    this.self = {
-      ...this.self,
-      displayName: key === 'displayName' ? value : this.self.displayName,
-      bio: key === 'bio' ? value : this.self.bio,
-      info: {
-        ...this.self.info,
-        [key]: value,
-      },
+  /** Saves one of SELF_EDITABLE_INFO_KEYS; an empty value clears it. */
+  updateSelfInfo(key: string, value: string): Promise<unknown> {
+    const field = SELF_INFO_FIELDS[key]
+    if (!field) return Promise.resolve(new Error(`${key} cannot be edited`))
+    return this.saveSelfProfile({ [field]: value.trim() || null })
+  }
+
+  /** Resolves with an error, or null once the saved profile has been read back and shown. */
+  private async saveSelfProfile(patch: Parameters<typeof setUserProfile>[0]): Promise<unknown> {
+    const { data, error } = await setUserProfile(patch)
+    if (!data) return error ?? new Error('user.profile.set failed')
+    const { data: detail } = await fetchUserDetail(this.self.id === 'self' ? {} : { userId: this.self.id })
+    if (detail) {
+      // Only identity and account settings carry over; profile fields come from the read-back alone.
+      const base = { ...this.self, info: {}, bio: undefined, avatarUrl: undefined, email: undefined, phone: undefined }
+      const next = toSelfEntity(detail, [], base)
+      this.self = this.useMock ? { ...next, settings: this.self.settings } : next
+      this.notify()
     }
-    this.notify()
+    notifyOwnProfileChanged()
+    return null
   }
 
   // ── Agents ──

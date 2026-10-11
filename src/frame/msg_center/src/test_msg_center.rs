@@ -2893,6 +2893,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let contacts: Vec<_> = [devtest.clone(), lucy.clone()]
             .into_iter()
             .map(|did| crate::contact_mgr::ZoneUserContactSeed {
+                avatar: None,
                 name: did.id.clone(),
                 did,
                 note: None,
@@ -2982,6 +2983,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let owner = DID::new("web", "alice.test.buckyos.io");
         let agent = zone_agent_of(&owner, json!({"display_name": "Xiaobai"}));
         let users = vec![crate::contact_mgr::ZoneUserContactSeed {
+            avatar: None,
             did: owner.clone(),
             name: "Alice".into(),
             note: None,
@@ -3255,6 +3257,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         center
             .upsert_zone_user_contacts(
                 vec![crate::contact_mgr::ZoneUserContactSeed {
+                    avatar: None,
                     did: alice.clone(),
                     name: "Alice".into(),
                     note: None,

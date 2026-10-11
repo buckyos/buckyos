@@ -40,6 +40,7 @@ import type {
   EntityFilter,
   MobileView,
 } from './types'
+import { didDisplayName } from '../../presentation/model'
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 const EMPTY_SESSIONS: Session[] = []
@@ -100,7 +101,7 @@ function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessage
   if (ownerStatus.phase === 'loading' || ownerStatus.phase === 'idle') return <div className="flex h-full items-center justify-center"><p role="status">{t('messagehub.loading')}</p></div>
   if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
-    {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
+    {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {didDisplayName(context.ownerDid)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
     <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}:${initialMessageId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
   </div>
 }

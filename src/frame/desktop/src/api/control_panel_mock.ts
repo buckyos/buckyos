@@ -1,7 +1,8 @@
 /* ── In-browser control panel for the mock runtime ──
  *
- * Answers the Agent (`agent.*`) and own-profile (`user.get`, `user.*_msg_tunnel`)
- * calls with the shapes of the Agent init contract §3. State lives in
+ * Answers the Agent (`agent.*`), own-profile (`user.get`, `user.profile.set`,
+ * `user.*_msg_tunnel`) and Zone display (`zone.presentation.*`) calls with the
+ * shapes of the Agent init contract §3 and control_panel. State lives in
  * localStorage under MOCK_CONTROL_PANEL_STORAGE_KEY and is re-read on every
  * call, so e2e tests can seed or change it (a partial object is merged over
  * the defaults).
@@ -31,7 +32,11 @@ interface MockAccount {
   user_name: string
   user_type: string
   did: string
+  /** Fields saved through `user.profile.set` (display_name, avatar, bio, …). */
+  profile?: Record<string, string>
 }
+
+type MockZonePresentation = Partial<Record<'display_name' | 'description' | 'icon', string>>
 
 interface MockAgent {
   agent_id: string
@@ -60,6 +65,7 @@ interface MockState {
   templates: AgentTemplate[]
   agents: MockAgent[]
   step_ms: number
+  zone_presentation?: MockZonePresentation
 }
 
 const RESERVED_NAMES = new Set(['root', 'system', 'admin', 'guest', '_', 'www', 'sys', 'homestation'])
@@ -330,19 +336,42 @@ function toEntry(state: MockState, agent: MockAgent): AgentEntry {
 function userDetail(state: MockState) {
   const { account } = state
   const contact = { did: account.did, bindings: state.user_bindings.map((binding) => ({ ...binding })) }
+  const profile = { did: account.did, display_name: account.user_name, ...account.profile }
   return {
     user_id: account.user_id,
-    show_name: account.user_name,
+    show_name: profile.display_name,
     user_type: account.user_type,
     state: 'active',
     res_pool_id: 'default',
     is_local: false,
-    profile: { did: account.did, display_name: account.user_name },
+    profile,
     local_profile: {
-      did: account.did,
-      display_name: account.user_name,
+      ...profile,
       private_extra: { system_contact: contact },
     },
+  }
+}
+
+const PROFILE_TEXT_FIELDS = ['display_name', 'avatar', 'bio', 'title', 'location', 'organization', 'website', 'email', 'phone'] as const
+
+/** A field left out is kept; null or a blank string clears it. */
+function applyTextPatch(target: Record<string, string>, params: Record<string, unknown>, keys: readonly string[]) {
+  for (const key of keys) {
+    if (!(key in params)) continue
+    const value = params[key]
+    if (value !== null && typeof value !== 'string') throw new MockRpcError(`${key} must be a string or null`)
+    const text = value?.trim()
+    if (text) target[key] = text
+    else delete target[key]
+  }
+}
+
+function zonePresentation(state: MockState) {
+  return {
+    zone_did: `did:bns:${state.zone}`,
+    hostname: `${state.zone}.web3.buckyos.ai`,
+    settings: { ...state.zone_presentation },
+    document: {},
   }
 }
 
@@ -482,6 +511,24 @@ function handle(state: MockState, method: string, params: Record<string, unknown
     }
     case 'user.get':
       return userDetail(state)
+    case 'user.profile.set': {
+      const profile = { ...state.account.profile }
+      applyTextPatch(profile, params, PROFILE_TEXT_FIELDS)
+      if (profile.avatar && !profile.avatar.startsWith('data:image/')) throw new MockRpcError('invalid avatar: expect a base64 image data URL')
+      state.account.profile = profile
+      return { ok: true, user_id: state.account.user_id, profile: userDetail(state).local_profile }
+    }
+    case 'zone.presentation.get':
+      return zonePresentation(state)
+    case 'zone.presentation.set': {
+      if (state.account.user_type !== 'admin' && state.account.user_type !== 'root') {
+        throw new MockRpcError('only Zone administrators can change the Zone display settings')
+      }
+      const settings: Record<string, string> = { ...state.zone_presentation }
+      applyTextPatch(settings, params, ['display_name', 'description', 'icon'])
+      state.zone_presentation = settings
+      return zonePresentation(state)
+    }
     case 'user.set_msg_tunnel': {
       const platform = stringParam(params, 'platform')
       const binding: UserTunnelBinding = {

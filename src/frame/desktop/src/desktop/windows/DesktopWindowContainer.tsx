@@ -8,6 +8,7 @@ import type {
 } from 'react'
 import { AppIcon } from '../../components/DesktopVisuals'
 import { useI18n } from '../../i18n/provider'
+import { useAppText } from '../../presentation/appText'
 import type { ThemeMode, WindowAppearancePreferences } from '../../models/ui'
 import {
   WindowDialogProvider,
@@ -149,6 +150,7 @@ export function DesktopWindowContainer({
   windowAppearance: WindowAppearancePreferences
 }) {
   const { t } = useI18n()
+  const appText = useAppText()
   const { app } = uiModel
   const isMaximized = uiModel.state === 'maximized'
   const hasFullBleedContent = app.manifest.contentPadding === 'none'
@@ -253,7 +255,7 @@ export function DesktopWindowContainer({
               className="truncate text-xs font-medium"
               style={{ color: titleTextColor }}
             >
-              {uiModel.title ?? t(app.labelKey)}
+              {uiModel.title ?? appText(app).title}
             </p>
           </div>
           <div

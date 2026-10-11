@@ -1,4 +1,6 @@
+import { buckyos } from 'buckyos'
 import { callRpc, type RpcCallOptions } from './rpc.ts'
+import { isMockRuntime } from '../runtime.ts'
 
 export interface BuckyOSInfo {
   schema_version: number
@@ -42,3 +44,50 @@ export const setBuckyOSDevMode = async (
   data: BuckyOSDevConfig | null
   error: unknown
 }> => callRpc<BuckyOSDevConfig>('system.dev_mode.set', { enabled }, options)
+
+export interface ZonePresentationFields {
+  display_name?: string | null
+  description?: string | null
+  icon?: string | null
+}
+
+/** `zone.presentation.get` (public): the administrator's settings and the ZoneDocument candidates. */
+export interface ZonePresentationResponse {
+  zone_did: string
+  hostname?: string | null
+  settings: ZonePresentationFields
+  document: ZonePresentationFields
+}
+
+/** A field left out is kept; `null` clears it back to the document / DID default. */
+export type ZonePresentationPatch = Partial<Record<keyof ZonePresentationFields, string | null>>
+
+export const fetchZonePresentation = async (): Promise<{
+  data: ZonePresentationResponse | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    const { callMockControlPanel } = await import('./control_panel_mock.ts')
+    return callMockControlPanel<ZonePresentationResponse>('zone.presentation.get', {})
+  }
+  try {
+    // Signed-out pages (the login page) read it too, so no session token is attached.
+    const client = new buckyos.kRPCClient('/kapi/control-panel')
+    const result = await client.call('zone.presentation.get', {})
+    if (!result || typeof result !== 'object') throw new Error('Invalid zone.presentation.get response')
+    return { data: result as ZonePresentationResponse, error: null }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
+export const setZonePresentation = async (
+  patch: ZonePresentationPatch,
+  options: RpcCallOptions,
+): Promise<{ data: ZonePresentationResponse | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    const { callMockControlPanel } = await import('./control_panel_mock.ts')
+    return callMockControlPanel<ZonePresentationResponse>('zone.presentation.set', patch)
+  }
+  return callRpc<ZonePresentationResponse>('zone.presentation.set', patch, options)
+}

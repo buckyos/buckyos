@@ -1,16 +1,12 @@
 import {
   ArrowLeft,
-  Bot,
   FileUp,
   Lock,
   Menu,
   MoreVertical,
   Pin,
   Ticket,
-  SlidersHorizontal,
   SquarePen,
-  User,
-  Users,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useI18n } from '../../i18n/provider'
@@ -35,6 +31,7 @@ import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
 import { useMessageHubRuntime, useMessageHubStore, type EntityAdmission } from './store'
 import { friendlyDidName } from './api/projection'
 import { parseGroupNotice, withinWindow } from './groupModel'
+import { HubAvatar } from './HubAvatar'
 
 interface ConversationViewProps {
   entity: Entity
@@ -318,10 +315,10 @@ export function ConversationView({
           {/* On touch layouts the whole title block is one entity target; session
               details stay on the ⋮ button. */}
           <button onClick={onOpenDetails} className="flex min-h-11 w-full min-w-0 flex-col justify-center text-left md:hidden" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}>
-            <span className="flex max-w-full items-center gap-1.5"><EntityTypeIcon type={entity.type} /><span className="truncate text-base font-semibold">{entity.name}</span></span>
+            <span className="flex max-w-full items-center gap-1.5"><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={20} /><span className="truncate text-base font-semibold">{entity.name}</span></span>
             <span className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]">{subtitle}</span>
           </button>
-          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`} title={t('messagehub.entityDetails')}><EntityTypeIcon type={entity.type} /><span className="truncate text-[15px] font-semibold">{entity.name}</span></button>
+          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`} title={t('messagehub.entityDetails')}><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={22} /><span className="truncate text-[15px] font-semibold">{entity.name}</span></button>
           <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')}>{subtitle}</button>
           <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
         </div>
@@ -435,15 +432,3 @@ export function ConversationView({
 }
 
 
-function EntityTypeIcon({ type }: { type: string }) {
-  switch (type) {
-    case 'agent':
-      return <Bot size={16} />
-    case 'group':
-      return <Users size={16} />
-    case 'service':
-      return <SlidersHorizontal size={16} />
-    default:
-      return <User size={16} />
-  }
-}

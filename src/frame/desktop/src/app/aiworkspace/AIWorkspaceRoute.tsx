@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { signOutToLogin } from '../../auth/signOut'
+import { useDocumentTitle } from '../../presentation/documentHead'
 import { AIWorkspaceAppPanel, type TabHost } from './AIWorkspaceAppPanel'
 import { targetOf, workspacePath } from './links'
 
@@ -11,8 +12,8 @@ export function AIWorkspaceRoute() {
   const search = searchParams.toString()
   const target = useMemo(() => targetOf(new URLSearchParams(search)), [search])
 
-  const [previousTitle] = useState(() => document.title)
-  useEffect(() => () => { document.title = previousTitle }, [previousTitle])
+  const [shownTitle, setShownTitle] = useState<string | null>(null)
+  useDocumentTitle(shownTitle ? `${shownTitle} · AI Workspace` : 'AI Workspace')
 
   const tab: TabHost = {
     workspaceId,
@@ -24,7 +25,7 @@ export function AIWorkspaceRoute() {
       next.delete('block')
       return next
     }, { replace: true }),
-    onShown: (shown) => { document.title = shown ? `${shown.title} - AI Workspace` : 'AI Workspace' },
+    onShown: (shown) => setShownTitle(shown?.title ?? null),
     home: () => navigate('/'),
     signOut: signOutToLogin,
   }

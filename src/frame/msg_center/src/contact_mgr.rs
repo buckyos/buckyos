@@ -47,6 +47,8 @@ struct MessageTunnelEndpointDid {
 pub struct ZoneUserContactSeed {
     pub did: DID,
     pub name: String,
+    /// The avatar the Zone publishes for this identity; `None` withdraws an earlier one.
+    pub avatar: Option<String>,
     pub note: Option<String>,
     pub bindings: Vec<AccountBinding>,
     pub groups: Vec<String>,
@@ -1299,6 +1301,7 @@ impl ContactMgr {
                 let ZoneUserContactSeed {
                     did,
                     name,
+                    avatar,
                     note,
                     bindings,
                     groups,
@@ -1319,6 +1322,9 @@ impl ContactMgr {
                 } else if contact.name.trim().is_empty() {
                     contact.name = did.to_string();
                 }
+                contact.avatar = avatar
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
                 contact.source = ContactSource::Shared;
                 contact.is_verified = true;
                 if newly_zone_contact && contact.access_level != AccessGroupLevel::Block {
@@ -2574,6 +2580,7 @@ mod tests {
 
         mgr.upsert_zone_user_contacts(
             vec![ZoneUserContactSeed {
+                avatar: None,
                 did: zone_user_did.clone(),
                 name: "Alice".to_string(),
                 note: None,
@@ -2824,6 +2831,7 @@ mod tests {
 
         mgr.upsert_zone_user_contacts(
             vec![ZoneUserContactSeed {
+                avatar: None,
                 did: contact_did.clone(),
                 name: "Bob".to_string(),
                 note: None,
@@ -2971,6 +2979,7 @@ mod tests {
         let updated = mgr
             .upsert_zone_user_contacts(
                 vec![ZoneUserContactSeed {
+                    avatar: None,
                     did: zone_user_did.clone(),
                     name: "Alice".to_string(),
                     note: Some("zone profile".to_string()),
@@ -3010,11 +3019,59 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn zone_user_sync_sets_and_withdraws_the_avatar() {
+        let (mgr, _tmp) = new_test_mgr().await;
+        let owner = DID::new("bns", "devtest");
+        let member = DID::new("web", "carol.test.buckyos.io");
+        let seed = |avatar: Option<&str>| ZoneUserContactSeed {
+            avatar: avatar.map(str::to_string),
+            did: member.clone(),
+            name: "Carol".to_string(),
+            note: None,
+            bindings: vec![],
+            groups: vec![],
+            tags: vec![],
+        };
+
+        mgr.upsert_zone_user_contacts(vec![seed(Some("data:image/png;base64,AAAA"))], Some(owner.clone()))
+            .await
+            .unwrap();
+        mgr.update_contact(
+            member.clone(),
+            ContactPatch {
+                note: Some("met at the park".to_string()),
+                ..Default::default()
+            },
+            Some(owner.clone()),
+        )
+        .await
+        .unwrap();
+        let contact = mgr
+            .get_contact(member.clone(), Some(owner.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(contact.avatar.as_deref(), Some("data:image/png;base64,AAAA"));
+
+        mgr.upsert_zone_user_contacts(vec![seed(None)], Some(owner.clone()))
+            .await
+            .unwrap();
+        let contact = mgr
+            .get_contact(member.clone(), Some(owner.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(contact.avatar, None);
+        assert_eq!(contact.note.as_deref(), Some("met at the park"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn repeated_zone_user_sync_keeps_the_owners_access_choice() {
         let (mgr, _tmp) = new_test_mgr().await;
         let owner = DID::new("bns", "devtest");
         let member = DID::new("web", "carol.test.buckyos.io");
         let seed = || ZoneUserContactSeed {
+            avatar: None,
             did: member.clone(),
             name: "Carol".to_string(),
             note: None,

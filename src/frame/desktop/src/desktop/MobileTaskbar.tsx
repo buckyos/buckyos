@@ -25,6 +25,8 @@ import {
 } from './TaskbarParts'
 import { useHoverCard, useLongPress, useSystemStatus, type CurrentUser } from './taskbarHooks'
 import type { ConnectionState } from './shell'
+import { useAppText } from '../presentation/appText'
+import { openUsersAgents } from '../app/users-agents/launch'
 
 type SafeArea = { top: number; bottom: number; left: number; right: number }
 
@@ -129,6 +131,7 @@ export function MobileTaskbar({
   user: CurrentUser | null
 }) {
   const { t } = useI18n()
+  const appText = useAppText()
   const avatarRef = useRef<HTMLButtonElement | null>(null)
   const profileCardRef = useRef<HTMLDivElement | null>(null)
   const statusButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -267,7 +270,7 @@ export function MobileTaskbar({
               <RailButton
                 key={app.appId}
                 appId={app.appId}
-                label={t(app.labelKey)}
+                label={appText(app).title}
                 onClick={() => {
                   if (!appLongPress.consumeLongPress()) launchApp(app.appId)
                 }}
@@ -333,7 +336,7 @@ export function MobileTaskbar({
             onLogout={() => {
               void onLogout()
             }}
-            onOpenAccount={hasAccountApp ? () => launchApp(accountAppId) : undefined}
+            onOpenAccount={hasAccountApp ? () => { setMenu(null); setAllAppsOpen(false); closeCards(); void openUsersAgents({ view: 'self' }) } : undefined}
             runtimeContainer={runtimeContainer}
             style={{ left: popupLeft, top: insetTop + (avatarRowHeight - avatarSize) / 2, width: popupWidth(288) }}
             user={user}

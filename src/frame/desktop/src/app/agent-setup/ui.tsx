@@ -2,6 +2,7 @@
 
 import clsx from 'clsx'
 import type { ReactNode } from 'react'
+import { ObjectAvatar } from '../../presentation/ObjectIcon'
 
 export type Tone = 'success' | 'warning' | 'danger' | 'accent' | 'muted'
 
@@ -158,27 +159,5 @@ export function AgentAvatar({
   src?: string | null
   size?: number
 }) {
-  const initial = [...name.trim()][0]?.toUpperCase() ?? '?'
-  return src ? (
-    <img
-      src={src}
-      alt=""
-      className="shrink-0 rounded-full object-cover"
-      style={{ width: size, height: size }}
-    />
-  ) : (
-    <span
-      aria-hidden="true"
-      className="flex shrink-0 items-center justify-center rounded-full font-display font-semibold"
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.4),
-        background: 'color-mix(in srgb, var(--cp-accent) 16%, var(--cp-surface))',
-        color: 'color-mix(in srgb, var(--cp-accent) 80%, var(--cp-text))',
-      }}
-    >
-      {initial}
-    </span>
-  )
+  return <ObjectAvatar title={name} icons={[src]} size={size} decorative />
 }

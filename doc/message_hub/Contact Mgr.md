@@ -126,10 +126,10 @@ pub struct Contact {
    不带 `access_level` 的其它字段修改仍要求联系人已存在。
 
 **Zone 用户同步**：启动、`reload_settings` 以及每 30 秒一次的周期扫描读取 Zone 用户列表与资料，在列表变化时写入系统库和各 owner 库（`source = Shared`，tag `zone_user`）。
-DID 首次成为 Zone 用户联系人时授予 Friend（Block 保留）；之后的同步只更新名称、分组、绑定等资料，不覆盖 owner 手动设置的准入级别。
+DID 首次成为 Zone 用户联系人时授予 Friend（Block 保留）；之后的同步只更新名称、分组、绑定等资料，不覆盖 owner 手动设置的准入级别。名称与头像取用户 profile 的公开投影（`to_public_profile()`）：头像以 Zone 公布的值为准，公开值消失（清除或改为私有）时同步撤下联系人上的旧头像；备注、屏蔽状态不受影响。同步指纹包含头像摘要，只换头像也会触发同步；control-panel 保存用户或 Agent 资料后会调用 `reload_settings` 立即同步。
 control-panel 创建 / 修改用户不通知 msg-center，新成员最迟一个扫描周期后成为彼此的 Friend。
 
-同一轮同步读取 `users/{user}/agents/{id}/spec` 中的 AgentDocument，以及 `agents/{id}/doc`，过滤已删除的 Agent，再按 `AgentDocument.owner` 为 Agent（包括 Jarvis）与主人建立双向默认 Friend，无需配置 tunnel。主人库中的 Agent 标记为 `agent` / `zone_agent`，Agent 库中的主人标记为 `zone_user`；只在首次同步该关系时授予 Friend，保留 Block 和之后手动调整的准入级别。用户身份默认采用 profile 中的实际 DID。Agent 列表、owner 或显示名称变化也会触发同步。
+同一轮同步读取 `users/{user}/agents/{id}/spec` 中的 AgentDocument，以及 `agents/{id}/doc`，过滤已删除的 Agent，再按 `AgentDocument.owner` 为 Agent（包括 Jarvis）与主人建立双向默认 Friend，无需配置 tunnel。主人库中的 Agent 标记为 `agent` / `zone_agent`，Agent 库中的主人标记为 `zone_user`；只在首次同步该关系时授予 Friend，保留 Block 和之后手动调整的准入级别。用户身份默认采用 profile 中的实际 DID。Agent 列表、owner、显示名称或头像（`AgentProfile.avatar`）变化也会触发同步。
 
 **授权**：`contact.*` 网络调用按 `contact_mgr_owner` 授权。指定 owner 时，写操作要求调用者就是该 owner（服务主体沿用 RBAC），读操作另允许观察 Zone Agent；
 未指定 owner 的系统库对所有已认证调用者可读，仅服务主体可写。无 token 的进程内调用视为服务内部调用。

@@ -64,6 +64,8 @@ export interface MessageHubStore {
   /** Start / stop background synchronisation for a context (events + polling). */
   startSync(context: MessageHubContext, activeSessionId: string | null): () => void
   findEntity(context: MessageHubContext, id: string): Entity | undefined
+  /** The identity's own picture as the owner's contacts know it (the owner's own one included). */
+  avatarOf(context: MessageHubContext, did: string): string | undefined
   entities(context: MessageHubContext): Entity[]
   hasMoreEntities(context: MessageHubContext): boolean
   loadMoreEntities(context: MessageHubContext): Promise<void>

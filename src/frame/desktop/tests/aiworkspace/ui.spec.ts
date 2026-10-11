@@ -486,11 +486,11 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   // the list: no automatic restore in a tab
   await page.goto('/workspace')
   await expect(page.getByTestId('aiws-tab').getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
-  await expect(page).toHaveTitle('AI Workspace')
+  await expect(page).toHaveTitle('AI Workspace · alice')
   await card(a.workspace_id).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', a.workspace_id, { timeout: 30_000 })
   await expect.poll(() => pathOf(page)).toBe(`/workspace/${a.workspace_id}`)
-  await expect(page).toHaveTitle(/p14a .* - AI Workspace/)
+  await expect(page).toHaveTitle(/p14a .* · AI Workspace · alice/)
   // the workspace fills the tab
   const box = (await page.getByTestId('aiws-root').boundingBox())!
   const viewport = page.viewportSize()!
@@ -500,7 +500,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await closeWorkspace(page)
   await expect(page.getByTestId('aiws-list')).toBeVisible()
   await expect.poll(() => pathOf(page)).toBe('/workspace')
-  await expect(page).toHaveTitle('AI Workspace')
+  await expect(page).toHaveTitle('AI Workspace · alice')
   await card(b.workspace_id).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id, { timeout: 30_000 })
   await expect.poll(() => pathOf(page)).toBe(`/workspace/${b.workspace_id}`)
@@ -526,7 +526,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await mainMenu(page, 'aiws-menu-home')
   await expect.poll(() => pathOf(page)).toBe('/')
   await expect(page.getByTestId('desktop-app-aiworkspace')).toBeVisible({ timeout: 30_000 })
-  await expect(page).toHaveTitle('BuckyOS')
+  await expect(page).toHaveTitle('alice')
 
   // in a Desktop window, the main menu opens the workspace (and its Surface) in a new tab
   await openCanvas(page, ALICE, b.workspace_id)

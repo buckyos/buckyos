@@ -41,6 +41,7 @@ use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObject};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -551,12 +552,14 @@ fn build_zone_user_seed(
         }
     }
 
-    let name = profile
+    let public_profile = profile.as_ref().map(UserPrivateProfile::to_public_profile);
+    let name = public_profile
         .as_ref()
         .and_then(|profile| profile.display_name.as_ref().or(profile.name.as_ref()))
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
     Some(ZoneUserContactSeed {
+        avatar: public_profile.and_then(|profile| profile.avatar),
         did: contact_did,
         name: if name.is_empty() {
             username.to_string()
@@ -765,6 +768,12 @@ impl ZoneSync {
     }
 }
 
+fn avatar_fingerprint(avatar: Option<&str>) -> String {
+    avatar
+        .map(|avatar| hex::encode(Sha256::digest(avatar.as_bytes())))
+        .unwrap_or_default()
+}
+
 /// What a contact sync would write, without the per-load binding timestamps.
 fn zone_contact_seed_signature(seeds: &[ZoneUserContactSeed], agents: &[ZoneAgent]) -> String {
     let mut parts: Vec<String> = seeds
@@ -788,9 +797,10 @@ fn zone_contact_seed_signature(seeds: &[ZoneUserContactSeed], agents: &[ZoneAgen
                 .collect();
             bindings.sort();
             format!(
-                "{}|{}|{:?}|{:?}|{:?}|{:?}",
+                "{}|{}|{}|{:?}|{:?}|{:?}|{:?}",
                 seed.did.to_string(),
                 seed.name,
+                avatar_fingerprint(seed.avatar.as_deref()),
                 seed.note,
                 seed.groups,
                 seed.tags,
@@ -800,10 +810,11 @@ fn zone_contact_seed_signature(seeds: &[ZoneUserContactSeed], agents: &[ZoneAgen
         .collect();
     parts.extend(agents.iter().map(|agent| {
         format!(
-            "agent|{}|{}|{}",
+            "agent|{}|{}|{}|{}",
             agent.did().to_string(),
             agent.owner().to_string(),
-            agent.display_name()
+            agent.display_name(),
+            avatar_fingerprint(agent.profile.avatar.as_deref())
         )
     }));
     parts.sort();
@@ -840,6 +851,7 @@ async fn sync_zone_agent_contacts(
             .find(|user| &user.did == agent.owner())
             .cloned()
             .unwrap_or_else(|| ZoneUserContactSeed {
+                avatar: None,
                 did: agent.owner().clone(),
                 name: agent.owner().id.clone(),
                 note: None,
@@ -855,6 +867,7 @@ async fn sync_zone_agent_contacts(
             .contact_mgr
             .upsert_zone_agent_contacts(
                 vec![ZoneUserContactSeed {
+                    avatar: agent.profile.avatar.clone(),
                     did: agent.did().clone(),
                     name: agent.display_name(),
                     note: None,
@@ -1354,6 +1367,52 @@ mod zone_contact_tests {
         let seed = build_zone_user_seed("alice", active_user(), Some(profile.clone())).unwrap();
         assert_eq!(seed.did, profile.did);
         assert_eq!(seed.name, "Alice");
+    }
+
+    #[test]
+    fn zone_user_contact_publishes_only_the_public_avatar() {
+        let mut profile: UserPrivateProfile = serde_json::from_value(json!({
+            "did": "did:web:alice.test.buckyos.io",
+            "display_name": "Alice",
+            "avatar": "data:image/png;base64,AAAA"
+        }))
+        .unwrap();
+        let seed = build_zone_user_seed("alice", active_user(), Some(profile.clone())).unwrap();
+        assert_eq!(seed.avatar.as_deref(), Some("data:image/png;base64,AAAA"));
+
+        profile.privacy = serde_json::from_value(json!({
+            "fields": {"avatar": {"visibility": "private"}}
+        }))
+        .unwrap();
+        let seed = build_zone_user_seed("alice", active_user(), Some(profile)).unwrap();
+        assert_eq!(seed.avatar, None);
+        assert_eq!(seed.name, "Alice");
+    }
+
+    #[test]
+    fn avatar_only_changes_trigger_contact_sync() {
+        let profile: UserPrivateProfile = serde_json::from_value(json!({
+            "did": "did:web:alice.test.buckyos.io",
+            "display_name": "Alice"
+        }))
+        .unwrap();
+        let mut seed = build_zone_user_seed("alice", active_user(), Some(profile)).unwrap();
+        let original = zone_contact_seed_signature(&[seed.clone()], &[]);
+        seed.avatar = Some("data:image/png;base64,AAAA".to_string());
+        let with_avatar = zone_contact_seed_signature(&[seed.clone()], &[]);
+        assert_ne!(original, with_avatar);
+        assert!(!with_avatar.contains("AAAA"));
+        seed.avatar = Some("data:image/png;base64,BBBB".to_string());
+        assert_ne!(with_avatar, zone_contact_seed_signature(&[seed], &[]));
+
+        let alice = DID::new("bns", "alice");
+        let agent = zone_agent("xiaobai.test.buckyos.io", &alice, json!({}), json!({}));
+        let mut with_agent_avatar = agent.clone();
+        with_agent_avatar.profile.avatar = Some("data:image/png;base64,CCCC".to_string());
+        assert_ne!(
+            zone_contact_seed_signature(&[], &[agent]),
+            zone_contact_seed_signature(&[], &[with_agent_avatar])
+        );
     }
 
     #[test]

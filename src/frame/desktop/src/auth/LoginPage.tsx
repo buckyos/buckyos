@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { buckyos } from 'buckyos'
 import {
@@ -18,21 +18,9 @@ import {
 } from '@mui/material'
 import { Eye, EyeOff, Lock, ExternalLink } from 'lucide-react'
 import { buildAuthLoginTargetParams } from './loginTarget'
-
-const resolveZoneDisplayName = (): string => {
-  let zoneHost: string | null = null
-  try {
-    zoneHost = buckyos.getZoneHostName()?.trim() ?? null
-  } catch {
-    zoneHost = null
-  }
-  if (zoneHost) return zoneHost
-
-  const currentHost = window.location.hostname.toLowerCase()
-  return currentHost.startsWith('sys.')
-    ? currentHost.slice(4)
-    : currentHost || 'BuckyOS'
-}
+import { useDocumentTitle } from '../presentation/documentHead'
+import { ObjectImage } from '../presentation/ObjectIcon'
+import { useZonePresentation } from '../presentation/zone'
 
 type LoginError =
   | { kind: 'empty_fields' }
@@ -146,7 +134,7 @@ const LoginPage = () => {
     () => searchParams.get('redirect_url') ?? '',
     [searchParams],
   )
-  const zoneDisplayName = useMemo(() => resolveZoneDisplayName(), [])
+  const zone = useZonePresentation()
 
   const sourceAppId = useMemo(() => {
     if (!redirectUrl) return null
@@ -173,9 +161,7 @@ const LoginPage = () => {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<LoginError | null>(null)
 
-  useEffect(() => {
-    document.title = 'BuckyOS | Login'
-  }, [])
+  useDocumentTitle('Sign in')
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -292,27 +278,44 @@ const LoginPage = () => {
               mb: 3,
             }}
           >
-            <Box
-              sx={{
-                width: 48,
-                height: 48,
-                borderRadius: 3,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                bgcolor: 'primary.main',
-                color: 'white',
-                mb: 2,
-              }}
-            >
-              <Lock size={24} />
-            </Box>
+            <ObjectImage
+              icons={zone.icons}
+              alt=""
+              className="mb-4 h-12 w-12 rounded-xl object-cover"
+              fallback={
+                <Box
+                  sx={{
+                    width: 48,
+                    height: 48,
+                    borderRadius: 3,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'primary.main',
+                    color: 'white',
+                    mb: 2,
+                  }}
+                >
+                  <Lock size={24} />
+                </Box>
+              }
+            />
             <Typography
               variant="h5"
               sx={{ fontWeight: 700, fontFamily: '"Space Grotesk", sans-serif' }}
             >
-              Sign in to {zoneDisplayName}
+              Sign in to {zone.title}
             </Typography>
+            {zone.description && (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 0.5, textAlign: 'center' }}
+                data-testid="login-zone-description"
+              >
+                {zone.description}
+              </Typography>
+            )}
             <Typography
               variant="body2"
               color="text.secondary"

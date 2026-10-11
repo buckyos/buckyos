@@ -25,6 +25,7 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import { fetchCurrentAccount, isLimitedUserType } from '../api/account'
 import { fetchAppList } from '../api/app_mgr'
+import { currentZoneHost } from '../presentation/zone'
 import { AGENT_GUIDE_APP_ID } from '../app/agent-setup/model'
 import {
   resolveDesktopApps,
@@ -745,7 +746,7 @@ export class DesktopUIStore {
 
       this.agentGuideAllowed = agentGuideAllowed
       const authorizedDefinitions = withAccountBuiltins(
-        buildAuthorizedAppDefinitions(payload.apps, appsResult.data.apps),
+        buildAuthorizedAppDefinitions(payload.apps, appsResult.data.apps, this.backendAppMapperOptions()),
         { agentGuide: agentGuideAllowed },
       )
       const defaultLayout = buildAuthorizedDefaultLayout(
@@ -999,7 +1000,7 @@ export class DesktopUIStore {
     const result = await fetchAppList()
     if (!result.data) throw result.error ?? new Error('apps.list unavailable')
     const definitions = withAccountBuiltins(
-      buildAuthorizedAppDefinitions(this.defaultPayload?.apps ?? [], result.data.apps),
+      buildAuthorizedAppDefinitions(this.defaultPayload?.apps ?? [], result.data.apps, this.backendAppMapperOptions()),
       { agentGuide: this.agentGuideAllowed },
     )
     this.update({ apps: this.resolveApps(definitions, this.snapshot.formFactor) })
@@ -1021,7 +1022,11 @@ export class DesktopUIStore {
   private decorateApp<T extends AppDefinition>(app: T): T {
     if (app.id !== AGENT_GUIDE_APP_ID) return app
     const { label, iconUrl, badge } = this.agentGuidePresentation
-    return { ...app, labelKey: label ?? AGENT_GUIDE_LABEL_KEY, iconUrl, iconBadge: badge }
+    return { ...app, labelKey: AGENT_GUIDE_LABEL_KEY, text: label ? { title: label } : undefined, iconUrl, iconBadge: badge }
+  }
+
+  private backendAppMapperOptions() {
+    return { zoneHost: currentZoneHost(), protocol: window.location.protocol }
   }
 
   private resolveApps(definitions: AppDefinition[], formFactor: FormFactor): DesktopAppItem[] {
@@ -1579,6 +1584,7 @@ export class DesktopUIStore {
         iconKey: app.iconKey,
         iconUrl: app.iconUrl,
         labelKey: app.labelKey,
+        text: app.text,
         pinned: pinned.has(app.id),
         windowCount: windows.filter((w) => w.appId === app.id).length,
         active: frontAppId === app.id,
