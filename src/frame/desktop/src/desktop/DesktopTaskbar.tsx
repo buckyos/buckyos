@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type Ref,
@@ -24,7 +25,7 @@ import {
   UserAvatar,
   type TaskbarMenuState,
 } from './TaskbarParts'
-import { useHoverCard, useLongPress, useSystemStatus, type CurrentUser } from './taskbarHooks'
+import { useDragReorder, useHoverCard, useLongPress, useSystemStatus, type CurrentUser } from './taskbarHooks'
 import {
   desktopAvatarOffset,
   desktopAvatarRowHeight,
@@ -53,6 +54,7 @@ function TaskbarButton({
   onContextMenu,
   pressHandlers,
   selected = false,
+  style,
   testId,
 }: {
   /** Set on app buttons, for the shared long-press handlers. */
@@ -67,6 +69,7 @@ function TaskbarButton({
   /** Touch long-press handlers (see `useLongPress`). */
   pressHandlers?: ReturnType<typeof useLongPress>['handlers']
   selected?: boolean
+  style?: CSSProperties
   testId?: string
 }) {
   return (
@@ -81,6 +84,7 @@ function TaskbarButton({
         {...pressHandlers}
         onClick={onClick}
         onContextMenu={onContextMenu}
+        style={style}
         className={clsx(
           'relative flex size-11 select-none [-webkit-touch-callout:none] shrink-0 items-center justify-center rounded-[12px] border transition-[background-color,border-color,color,transform] duration-150 ease-[var(--cp-ease-emphasis)] active:scale-[0.96]',
           selected
@@ -111,7 +115,7 @@ function TaskbarDivider() {
  *
  * Top to bottom: the avatar (hover — or click while pinned — for the
  * profile card with Log out), All apps, the app buttons (pinned apps, then
- * other running apps; right-click to pin or unpin), two lines of system
+ * other running apps; drag to reorder, right-click to pin or unpin), two lines of system
  * status (hover or click for details) and the "Show desktop" strip. Pinning
  * the taskbar itself lives in its right-click menu.
  */
@@ -123,6 +127,7 @@ export function DesktopTaskbar({
   onClose,
   onCloseAppWindows,
   onLogout,
+  onMoveApp,
   onOpenApp,
   onSetAppPinned,
   onShowDesktop,
@@ -144,6 +149,8 @@ export function DesktopTaskbar({
   onClose: () => void
   onCloseAppWindows: (appId: string) => void
   onLogout: () => void | Promise<void>
+  /** An app button was dragged to `index` among the app buttons. */
+  onMoveApp: (appId: string, index: number) => void
   /** Launch an app (or bring its window up). */
   onOpenApp: (appId: string) => void
   onSetAppPinned: (appId: string, pinned: boolean) => void
@@ -268,6 +275,7 @@ export function DesktopTaskbar({
   const appLongPress = useLongPress((element, point) => {
     if (element.dataset.appId) openAppMenu(element.dataset.appId, point)
   })
+  const appDrag = useDragReorder(onMoveApp)
 
   const menuApp = menu?.appId ? apps.find((app) => app.id === menu.appId) : undefined
   const menuTaskbarItem = menu?.appId ? taskbarApps.find((item) => item.appId === menu.appId) : undefined
@@ -317,7 +325,11 @@ export function DesktopTaskbar({
         </div>
         <nav
           aria-label={t('shell.taskbarApps', 'Apps')}
-          className="desktop-scrollbar flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden pb-2"
+          {...appDrag.listProps}
+          className={clsx(
+            'desktop-scrollbar flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden pb-2',
+            appDrag.dragging && 'cursor-grabbing',
+          )}
         >
           {taskbarApps.map((app) => (
             <TaskbarButton
@@ -335,6 +347,7 @@ export function DesktopTaskbar({
               }}
               pressHandlers={appLongPress.handlers}
               selected={app.active}
+              style={appDrag.itemStyle(app.appId)}
               testId={`taskbar-app-${app.appId}`}
               appId={app.appId}
             >

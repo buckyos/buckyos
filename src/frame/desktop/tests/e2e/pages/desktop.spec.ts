@@ -717,6 +717,49 @@ test('taskbar apps launch from All apps, toggle like Windows 7, and pin from the
   await expect(filesButton).toHaveCount(0)
 })
 
+test('taskbar app buttons reorder by dragging', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(() => {
+    window.localStorage.setItem('buckyos.desktop.taskbar-pinned.v1', 'true')
+  })
+  await page.goto('/?scenario=normal')
+
+  const appButtons = page.getByTestId('desktop-taskbar').getByRole('navigation').locator('[data-app-id]')
+  const order = () => appButtons.evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-app-id')))
+  const drag = async (appId: string, ontoAppId: string) => {
+    const from = await page.getByTestId(`taskbar-app-${appId}`).boundingBox()
+    const onto = await page.getByTestId(`taskbar-app-${ontoAppId}`).boundingBox()
+    if (!from || !onto) throw new Error('taskbar button missing')
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 })
+    await page.mouse.up()
+  }
+  await expect.poll(order).toEqual(['settings', 'diagnostics', 'users-agents', 'my-network'])
+
+  // Dropping is not a click: the dragged app does not open.
+  await drag('settings', 'users-agents')
+  await expect.poll(order).toEqual(['diagnostics', 'users-agents', 'settings', 'my-network'])
+  await expect(page.getByTestId('window-settings')).toHaveCount(0)
+
+  // A running app that is not pinned moves too, ahead of pinned ones.
+  await page.getByTestId('taskbar-all-apps').click()
+  await page.getByTestId('all-apps-search').fill('file')
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('window-files')).toBeVisible()
+  await expect.poll(order).toEqual(['diagnostics', 'users-agents', 'settings', 'my-network', 'files'])
+  await drag('files', 'diagnostics')
+  await expect.poll(order).toEqual(['files', 'diagnostics', 'users-agents', 'settings', 'my-network'])
+
+  // A plain click still works after a drag.
+  await page.getByTestId('taskbar-app-diagnostics').click()
+  await expect(page.getByTestId('window-diagnostics')).toBeVisible()
+
+  // The pinned order survives a reload.
+  await page.reload()
+  await expect.poll(order).toEqual(['diagnostics', 'users-agents', 'settings', 'my-network'])
+})
+
 test('taskbar show desktop hides every window and brings them back', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.addInitScript(() => {

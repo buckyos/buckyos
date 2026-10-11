@@ -557,6 +557,10 @@ export function DesktopRoute() {
     (appId: string, pinned: boolean) => store.setTaskbarAppPinned(appId, pinned),
     [store],
   )
+  const handleMoveTaskbarApp = useCallback(
+    (appId: string, index: number) => store.moveTaskbarApp(appId, index),
+    [store],
+  )
   const handleShowDesktop = useCallback(() => {
     store.toggleShowDesktop()
     closeSidebar()
@@ -920,6 +924,7 @@ export function DesktopRoute() {
                   onClose={closeSidebar}
                   onCloseAppWindows={handleCloseAppWindows}
                   onLogout={handleLogout}
+                  onMoveApp={handleMoveTaskbarApp}
                   onOpenApp={handleSelectSidebarApp}
                   onSetAppPinned={handleSetTaskbarAppPinned}
                   onShowDesktop={handleShowDesktop}

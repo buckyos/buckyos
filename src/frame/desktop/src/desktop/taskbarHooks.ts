@@ -4,6 +4,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { fetchCurrentAccount } from '../api/account'
@@ -69,6 +72,107 @@ export function useLongPress(onLongPress: (element: HTMLElement, point: { x: num
   }, [])
 
   return { handlers, consumeLongPress }
+}
+
+const dragThreshold = 5
+
+interface ReorderDrag {
+  /** The list's items at drag start, in order. */
+  ids: string[]
+  /** Each item's top at drag start. */
+  tops: number[]
+  from: number
+  to: number
+  offset: number
+}
+
+/**
+ * Mouse and pen drag-to-reorder for a vertical list whose items carry
+ * `data-app-id`; touch keeps its long-press menu. Spread `listProps` on the
+ * list and `itemStyle(id)` on each item. Items slide aside while one is
+ * dragged; `onMove` gets the new index on drop, and the click that ends the
+ * drag is swallowed.
+ */
+export function useDragReorder(onMove: (id: string, index: number) => void) {
+  const press = useRef<{ id: string; pointerId: number; x: number; y: number } | null>(null)
+  const dragRef = useRef<ReorderDrag | null>(null)
+  const [drag, setDrag] = useState<ReorderDrag | null>(null)
+  const swallowClick = useRef(false)
+
+  const update = (next: ReorderDrag | null) => {
+    dragRef.current = next
+    setDrag(next)
+  }
+  const finish = (drop: boolean) => {
+    const current = dragRef.current
+    press.current = null
+    if (!current) return
+    update(null)
+    if (!drop) return
+    swallowClick.current = true
+    if (current.to !== current.from) onMove(current.ids[current.from], current.to)
+  }
+
+  const listProps = {
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      swallowClick.current = false
+      if (event.pointerType === 'touch' || event.button !== 0) return
+      const id = (event.target as HTMLElement).closest<HTMLElement>('[data-app-id]')?.dataset.appId
+      press.current = id ? { id, pointerId: event.pointerId, x: event.clientX, y: event.clientY } : null
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      const start = press.current
+      if (!start || start.pointerId !== event.pointerId) return
+      let current = dragRef.current
+      if (!current) {
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < dragThreshold) return
+        const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-app-id]')]
+        const ids = items.map((item) => item.dataset.appId ?? '')
+        const from = ids.indexOf(start.id)
+        if (from < 0) {
+          press.current = null
+          return
+        }
+        // Captured only once dragging, so a plain click still lands on its button.
+        event.currentTarget.setPointerCapture(event.pointerId)
+        current = { ids, tops: items.map((item) => item.getBoundingClientRect().top), from, to: from, offset: 0 }
+      }
+      const { from, tops } = current
+      const offset = Math.min(
+        Math.max(event.clientY - start.y, tops[0] - tops[from]),
+        tops[tops.length - 1] - tops[from],
+      )
+      const top = tops[from] + offset
+      const to = tops.reduce((best, slot, i) => (Math.abs(slot - top) < Math.abs(tops[best] - top) ? i : best), 0)
+      update({ ...current, offset, to })
+    },
+    onPointerUp: () => finish(true),
+    onPointerCancel: () => finish(false),
+    onLostPointerCapture: () => finish(false),
+    onClickCapture: (event: ReactMouseEvent<HTMLElement>) => {
+      if (!swallowClick.current) return
+      swallowClick.current = false
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    // A native image drag would cancel the pointer stream.
+    onDragStart: (event: ReactDragEvent<HTMLElement>) => event.preventDefault(),
+  }
+
+  /** Where an item sits while one is dragged; `translate` stays clear of the press `transform`. */
+  const itemStyle = (id: string): CSSProperties | undefined => {
+    if (!drag) return undefined
+    const { from, ids, offset, to, tops } = drag
+    const i = ids.indexOf(id)
+    if (i === from) {
+      return { translate: `0 ${offset}px`, scale: '1.06', zIndex: 1, cursor: 'grabbing', transition: 'scale 120ms' }
+    }
+    const shift =
+      from < to && i > from && i <= to ? tops[i - 1] - tops[i] : to < from && i >= to && i < from ? tops[i + 1] - tops[i] : 0
+    return { translate: `0 ${shift}px`, transition: 'translate 160ms var(--cp-ease-emphasis)' }
+  }
+
+  return { dragging: drag !== null, itemStyle, listProps }
 }
 
 type HoverCardMode = 'closed' | 'hover' | 'held'

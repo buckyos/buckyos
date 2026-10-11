@@ -120,6 +120,8 @@ export interface DesktopRuntimeState {
   isTaskbarPinned: boolean
   /** 固定在桌面端 taskbar 上的应用，按显示顺序（持久化到 localStorage） */
   taskbarAppIds: string[]
+  /** 用户拖动后的 taskbar 按钮顺序，含未固定的运行中应用（仅当前会话） */
+  taskbarAppOrder: string[]
   /** 当前选中的桌面项目 */
   selectedItemId: string | null
   /** 桌面翻页进度 (0~1) */
@@ -414,6 +416,7 @@ export class DesktopUIStore {
     apps: DesktopAppItem[]
     windows: WindowRecord[]
     taskbarAppIds: string[]
+    taskbarAppOrder: string[]
     items: TaskbarAppItem[]
   } | null = null
 
@@ -465,6 +468,7 @@ export class DesktopUIStore {
         isSystemSidebarOpen: false,
         isTaskbarPinned: readJson<boolean>(desktopTaskbarPinnedStorageKey) === true,
         taskbarAppIds: readTaskbarAppIds(),
+        taskbarAppOrder: [],
         selectedItemId: null,
         viewportProgress: 0,
         contextMenu: null,
@@ -1523,6 +1527,27 @@ export class DesktopUIStore {
     this.update({ runtime: { taskbarAppIds: next } })
   }
 
+  /**
+   * Move a taskbar button to `index` among the buttons the taskbar shows.
+   * Pinned apps keep their new order across reloads; running ones that are
+   * not pinned keep their place for the session.
+   */
+  moveTaskbarApp(appId: string, index: number) {
+    const order = this.getTaskbarApps().map((item) => item.appId)
+    const from = order.indexOf(appId)
+    if (from < 0 || from === index) return
+    order.splice(from, 1)
+    order.splice(index, 0, appId)
+    const pinned = this.snapshot.runtime.taskbarAppIds
+    // Pinned apps the taskbar cannot show (not installed here) stay pinned.
+    const taskbarAppIds = [
+      ...order.filter((id) => pinned.includes(id)),
+      ...pinned.filter((id) => !order.includes(id)),
+    ]
+    writeJson(desktopTaskbarAppsStorageKey, taskbarAppIds)
+    this.update({ runtime: { taskbarAppIds, taskbarAppOrder: order } })
+  }
+
   logActivity(message: string, locale: string) {
     const stamp = new Intl.DateTimeFormat(locale, {
       hour: '2-digit',
@@ -1558,23 +1583,31 @@ export class DesktopUIStore {
 
   /**
    * The desktop taskbar's app buttons: pinned apps in pinned order, then the
-   * other apps with open windows in the order they were opened.
+   * other apps with open windows in the order they were opened. Buttons the
+   * user has dragged keep that order ahead of the rest.
    */
   getTaskbarApps(): TaskbarAppItem[] {
     const { apps } = this.snapshot
-    const { windows, taskbarAppIds } = this.snapshot.runtime
+    const { windows, taskbarAppIds, taskbarAppOrder } = this.snapshot.runtime
     const cached = this.taskbarAppsCache
     if (
       cached &&
       cached.apps === apps &&
       cached.windows === windows &&
-      cached.taskbarAppIds === taskbarAppIds
+      cached.taskbarAppIds === taskbarAppIds &&
+      cached.taskbarAppOrder === taskbarAppOrder
     ) {
       return cached.items
     }
     const frontAppId = this.getWindowLayerModel().topWindow?.appId
     const pinned = new Set(taskbarAppIds)
-    const ids = [...new Set([...taskbarAppIds, ...windows.map((w) => w.appId)])]
+    const rank = (id: string) => {
+      const index = taskbarAppOrder.indexOf(id)
+      return index < 0 ? taskbarAppOrder.length : index
+    }
+    const ids = [...new Set([...taskbarAppIds, ...windows.map((w) => w.appId)])].sort(
+      (a, b) => rank(a) - rank(b),
+    )
     const items = ids.flatMap((appId): TaskbarAppItem[] => {
       const app = findDesktopAppById(apps, appId)
       if (!app) return []
@@ -1600,7 +1633,7 @@ export class DesktopUIStore {
         return (Object.keys(next) as Array<keyof TaskbarAppItem>).every((key) => next[key] === item[key])
       })
     const result = same && cached ? cached.items : items
-    this.taskbarAppsCache = { apps, windows, taskbarAppIds, items: result }
+    this.taskbarAppsCache = { apps, windows, taskbarAppIds, taskbarAppOrder, items: result }
     return result
   }
 
