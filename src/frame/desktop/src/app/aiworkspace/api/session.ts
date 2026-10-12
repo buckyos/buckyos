@@ -229,6 +229,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
   static async open(client: AiwsClient, workspaceId: string, mode: SessionMode = { kind: 'direct', reason: 'not_prepared', detail: '尚未为此工作区准备离线' }): Promise<OnlineWorkspaceSession> {
     const info = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }))
+    if (info.principal) client.transport.learnPrincipal(info.principal)
     const session = new OnlineWorkspaceSession(client, info, mode, null)
     if (versionMismatch(info)) session.noteCode('VERSION_MISMATCH')
     else void session.follow()

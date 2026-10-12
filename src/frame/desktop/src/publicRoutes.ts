@@ -8,11 +8,13 @@
 
 export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 
-/** Login-optional paths that are not prefixes: the prompter link of an AI Workspace show
- * (`/workspace/<id>/show/<show>`), whose token is its only credential; HomeStation portal
- * pages (`/homestation/<user>`, `/homestation/<user>/<key>`, `/homestation/~zone`) — but not
- * `/homestation` itself, the signed-in user's own app. */
-const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/]
+/** Login-optional paths that are not prefixes: an AI Workspace link (`/workspace/<id>`, a public
+ * link opens for guests, any other sends them to log in) and the prompter link of a show
+ * (`/workspace/<id>/show/<show>`), whose token is its only credential — but not `/workspace`
+ * itself, the signed-in user's list; HomeStation portal pages (`/homestation/<user>`,
+ * `/homestation/<user>/<key>`, `/homestation/~zone`) — but not `/homestation` itself, the signed-in
+ * user's own app. */
+const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+$/, /^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/]
 
 const normalizePath = (pathname: string) =>
   (pathname || '/').replace(/\/+$/, '') || '/'

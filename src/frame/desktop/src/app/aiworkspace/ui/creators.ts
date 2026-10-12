@@ -43,12 +43,13 @@ export function appendKeys(core: AiwsCore, entities: EntityEnvelope[], parentId:
 }
 
 /** An annotation placed under `parentId` (a folder of the data tree, phase two §4.5), anchored by `anchor`. */
-export function annotationOp(core: AiwsCore, siblings: EntityEnvelope[], parentId: string, anchor: CapturedAnchor, body: string): Operation {
+export function annotationOp(core: AiwsCore, siblings: EntityEnvelope[], parentId: string, anchor: CapturedAnchor, body: string, authorName?: string): Operation {
   const last = siblings.length > 0 ? siblings[siblings.length - 1].order_key ?? null : null
   const key = orderKeyBetween(core, last, null)
   const payload: Record<string, Json> = { target: anchor.target as unknown as Json, kind: 'note', body }
   if (anchor.range) payload.range = anchor.range
   if (anchor.context) payload.context = anchor.context as unknown as Json
+  if (authorName) payload.author_name = authorName
   return { op: 'entity.create', entity_id: randomId('n'), type_id: 'buckyos.annotation', parent_id: parentId, order_key: key, payload }
 }
 

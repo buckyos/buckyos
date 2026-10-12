@@ -66,7 +66,7 @@ export function PermissionsPanel() {
             const scopeLabel = !g.scope_entity_id ? '工作区' : surface?.kind === 'surface' ? `画布：${entityLabel(surface)}` : `子树：${surface ? entityLabel(surface) : g.scope_entity_id}`
             return (
               <tr key={`${g.subject}:${g.scope_entity_id ?? ''}`} data-testid="aiws-grant" data-subject={g.subject} data-scope={g.scope_entity_id ?? ''}>
-                <td>{g.subject === '*' ? '任意已认证主体（*）' : g.subject}{g.subject === grants.data?.owner ? <span className="aiws-chip">所有者</span> : null}</td>
+                <td>{g.subject === '*' ? '任意已登录主体（*）' : g.subject === 'public' ? '任何拿到链接的人（public，无需登录）' : g.subject}{g.subject === grants.data?.owner ? <span className="aiws-chip">所有者</span> : null}</td>
                 <td>{scopeLabel}</td>
                 <td data-testid="aiws-grant-preset">{presetOf(g.capabilities)}</td>
                 <td data-testid="aiws-grant-caps">{g.capabilities.join('、')}</td>
@@ -79,7 +79,11 @@ export function PermissionsPanel() {
       {complete && (
         <form className="aiws-inline-form aiws-grant-form" data-testid="aiws-grant-form" onSubmit={(event) => { event.preventDefault(); void grant() }}>
           <input aria-label="主体" list="aiws-subjects" placeholder="用户或 Agent 标识" value={subject} onChange={(event) => setSubject(event.target.value)} data-testid="aiws-grant-subject" />
-          <datalist id="aiws-subjects">{(subjects.data ?? []).map((s) => <option key={s.subject} value={s.subject}>{s.kind}</option>)}</datalist>
+          <datalist id="aiws-subjects">
+            <option value="public">任何拿到链接的人（无需登录）</option>
+            <option value="*">任意已登录主体</option>
+            {(subjects.data ?? []).map((s) => <option key={s.subject} value={s.subject}>{s.kind}</option>)}
+          </datalist>
           <select aria-label="预设权限组" value={preset} data-testid="aiws-grant-preset-select" onChange={(event) => setPreset(event.target.value)}>
             {PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}（{p.caps.join('、')}）</option>)}
             <option value="custom">自定义…</option>

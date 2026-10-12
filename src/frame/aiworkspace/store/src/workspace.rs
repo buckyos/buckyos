@@ -34,10 +34,34 @@ pub struct Caller {
     pub app_id: Option<String>,
 }
 
+/// Grant subject that applies to everyone, signed in or not (a public link).
+pub const PUBLIC_SUBJECT: &str = "public";
+/// Grant subject that applies to every authenticated principal.
+pub const ANY_AUTHENTICATED_SUBJECT: &str = "*";
+pub const GUEST_PREFIX: &str = "guest:";
+
 impl Caller {
     pub fn user(principal: &str) -> Caller {
         Caller { principal: principal.to_string(), app_id: None }
     }
+    /// An unauthenticated visitor: the principal is derived from a bearer token the browser made up
+    /// (`gt_` + 26 base32 chars) and keeps, so the same browser stays the same guest (its own
+    /// annotations stay "mine") without the token ever being stored or shown.
+    pub fn guest(token: &str) -> Option<Caller> {
+        if !is_prefixed_id("gt_", token) {
+            return None;
+        }
+        let digest = sha256_hex(token.as_bytes());
+        let bytes: Vec<u8> = (0..17).map(|i| u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap()).collect();
+        Some(Caller { principal: prefixed_id(GUEST_PREFIX, bytes.as_slice().try_into().unwrap()), app_id: None })
+    }
+    pub fn is_guest(&self) -> bool {
+        is_guest_principal(&self.principal)
+    }
+}
+
+pub fn is_guest_principal(principal: &str) -> bool {
+    principal.starts_with(GUEST_PREFIX)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,14 +259,19 @@ impl Workspace {
 
     // ---- grants ----
 
-    /// Effective grants of a principal: its own rows plus `*` (any authenticated principal).
+    /// Effective grants of a principal: its own rows, `public` (everyone, a public link) and, unless it is a
+    /// guest, `*` (any authenticated principal).
     pub fn access(&self, principal: &str) -> WsResult<Access> {
         let mut st = self
             .local
-            .prepare_cached("SELECT scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = '*'")
+            .prepare_cached("SELECT scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = ?2 OR subject = ?3")
             .map_err(db_err)?;
-        let rows: Vec<(String, u16)> =
-            st.query_map([principal], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let authenticated = if is_guest_principal(principal) { PUBLIC_SUBJECT } else { ANY_AUTHENTICATED_SUBJECT };
+        let rows: Vec<(String, u16)> = st
+            .query_map(params![principal, PUBLIC_SUBJECT, authenticated], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db_err)?;
         let mut access = Access { principal: principal.to_string(), ws_caps: CapSet::NONE, scoped: BTreeMap::new() };
         for (scope, caps) in rows {
             if scope.is_empty() {
@@ -273,6 +302,9 @@ impl Workspace {
             return Err(WsError::invalid_op("invalid subject"));
         }
         let caps = CapSet::parse(caps)?;
+        if subject == PUBLIC_SUBJECT && caps.has(Cap::Manage) {
+            return Err(WsError::invalid_op("a public link cannot carry the manage capability"));
+        }
         if let Some(s) = scope {
             let now = self.now();
             if self.ctx(&now).entity(s)?.is_none() {
@@ -303,17 +335,18 @@ impl Workspace {
     }
 
     /// `ws.list_grants`: the whole list for a manager; anyone else only sees the rows that apply to
-    /// them (their own subject and `*`), never the complete name list (phase two §6.3).
+    /// them (their own subject, `public` and `*`), never the complete name list (phase two §6.3).
     pub fn list_grants(&self, caller: &Caller) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         let manage = access.ws_caps.has(Cap::Manage);
         let sql = if manage {
             "SELECT subject, scope_entity_id, capabilities FROM grants ORDER BY subject, scope_entity_id"
         } else {
-            "SELECT subject, scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = '*' ORDER BY subject, scope_entity_id"
+            "SELECT subject, scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = ?2 OR subject = ?3 ORDER BY subject, scope_entity_id"
         };
         let mut st = self.local.prepare(sql).map_err(db_err)?;
-        let params: Vec<&dyn rusqlite::ToSql> = if manage { vec![] } else { vec![&caller.principal] };
+        let authenticated = if caller.is_guest() { PUBLIC_SUBJECT } else { ANY_AUTHENTICATED_SUBJECT };
+        let params: Vec<&dyn rusqlite::ToSql> = if manage { vec![] } else { vec![&caller.principal, &PUBLIC_SUBJECT, &authenticated] };
         let owner: Option<String> =
             self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)?;
         let rows: Vec<Value> = st
@@ -384,7 +417,7 @@ impl Workspace {
         let access = self.require_ws_any(caller)?;
         Ok(json!({ "ok": true, "workspace_id": self.workspace_id, "title": self.title(), "epoch": self.epoch,
                    "head_seq": self.head_seq, "head_commit_id": self.head_commit_id, "format_version": FORMAT_VERSION,
-                   "protocol_version": PROTOCOL_VERSION, "capabilities": access.ws_caps.names(),
+                   "protocol_version": PROTOCOL_VERSION, "capabilities": access.ws_caps.names(), "principal": caller.principal,
                    "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose() }))
     }

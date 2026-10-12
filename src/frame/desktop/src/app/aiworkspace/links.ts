@@ -20,3 +20,10 @@ export function targetOf(search: URLSearchParams): LaunchTarget | null {
   const blockId = search.get('block')
   return surfaceId || blockId ? { surfaceId, blockId } : null
 }
+
+/** The Desktop login, coming back to the current address afterwards (a guest who wants to sign in, a private link). */
+export function loginUrl(): string {
+  const url = new URL('/login', window.location.origin)
+  url.searchParams.set('redirect_url', window.location.href)
+  return url.toString()
+}

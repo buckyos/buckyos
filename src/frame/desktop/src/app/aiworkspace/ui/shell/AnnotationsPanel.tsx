@@ -2,16 +2,19 @@
  * under a parent (a Surface's content folder, the selected data). New annotations are allowed with
  * the `comment` capability in edit and view mode alike (D13). */
 
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 import type { CapturedAnchor } from '../../anchors/registry'
+import { authorLabel, readGuestName } from '../../state/guest'
 import { useStore, useWorkspaceUi } from '../../state/hooks'
 import { annotationOp } from '../creators'
 import { anchorStatus, annotationLabel, revealAnnotation } from '../annotationInfo'
+import { ShellContext } from './shellContext'
 
 export function AnnotationsPanel({ parentId, draft, onDraftDone }: { parentId: string | null; draft?: CapturedAnchor | null; onDraftDone?: () => void }) {
   const store = useStore()
   const { annotations: all, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft, annotationFilter, showAnnotations } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: CapturedAnchor | null; clearDraft?: () => void }
   const [body, setBody] = useState('')
+  const guest = useContext(ShellContext)?.identity.guest ?? false
   const pending = draft ?? uiDraft ?? null
   const done = onDraftDone ?? clearDraft ?? (() => undefined)
   const target = parentId ?? 'data'
@@ -31,7 +34,7 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone }: { parentId: s
         <form className="aiws-annotation-draft" onSubmit={(event) => {
           event.preventDefault()
           if (body.trim() === '') return
-          void store.submit({ editId: `annotation:new`, label: `批注 ${pending.label}`, mine: body, hasMine: true, operations: [annotationOp(store.core, store.outline.childrenOf(target), target, pending, body.trim())] })
+          void store.submit({ editId: `annotation:new`, label: `批注 ${pending.label}`, mine: body, hasMine: true, operations: [annotationOp(store.core, store.outline.childrenOf(target), target, pending, body.trim(), guest ? readGuestName() : undefined)] })
             .then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { setBody(''); done() } })
         }}>
           <div data-testid="aiws-annotation-draft-target">批注对象：{pending.label}</div>
@@ -64,7 +67,7 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone }: { parentId: s
             <div className="aiws-annotation-meta">
               <span>{free ? '自由便签' : annotationLabel(mark)}</span>
               {!free && <span data-testid="aiws-anchor-state">{anchorStatus(mark.anchor)}</span>}
-              {mark.payload.author && <span>{mark.payload.author}</span>}
+              {authorLabel(mark.payload) && <span data-testid="aiws-annotation-author">{authorLabel(mark.payload)}</span>}
               {(capabilities.includes('comment') || capabilities.includes('manage')) && (
                 <button type="button" className="aiws-link" onClick={(event) => {
                   event.stopPropagation()
