@@ -389,6 +389,13 @@ impl OperationCodec for ResponsesDialectCodec {
         self.base.resource_input_form()
     }
 
+    fn resource_input_form_for(
+        &self,
+        resource_pointers: &[&str],
+    ) -> crate::resource::ResourceInputForm {
+        self.base.resource_input_form_for(resource_pointers)
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }

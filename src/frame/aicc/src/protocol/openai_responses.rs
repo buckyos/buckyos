@@ -310,6 +310,20 @@ impl OperationCodec for OpenAiResponsesCodec {
         crate::resource::ResourceInputForm::UrlOrBytes
     }
 
+    fn resource_input_form_for(
+        &self,
+        resource_pointers: &[&str],
+    ) -> crate::resource::ResourceInputForm {
+        if resource_pointers
+            .iter()
+            .any(|pointer| pointer.contains("/content/") && pointer.ends_with("/value/result"))
+        {
+            crate::resource::ResourceInputForm::BytesOnly
+        } else {
+            self.resource_input_form()
+        }
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -794,6 +808,7 @@ fn encode_response_input(
                 || (canonical_item_count > 0 && native_items.len() >= canonical_item_count)
             {
                 for item in native_items {
+                    let item = encode_provider_state_resources(item, call.context)?;
                     validate_provider_state(&item)?;
                     items.push(item);
                 }
@@ -852,14 +867,15 @@ fn encode_response_input(
                 AiContent::ProviderState { source, value, .. }
                     if super::provider_state_is_native(source, &call.context.state_coordinate) =>
                 {
-                    validate_provider_state(value)?;
+                    let value = encode_provider_state_resources(value.clone(), call.context)?;
+                    validate_provider_state(&value)?;
                     if replays_output_message
                         && value.get("type").and_then(Value::as_str) == Some("refusal")
                     {
-                        content.push(value.clone());
+                        content.push(value);
                     } else {
                         flush(&mut content, &mut items);
-                        items.push(value.clone());
+                        items.push(value);
                     }
                 }
                 AiContent::ProviderState {
@@ -919,6 +935,34 @@ fn validate_provider_state(value: &Value) -> ProtocolResultValue<()> {
         ));
     }
     Ok(())
+}
+
+fn encode_provider_state_resources(
+    mut value: Value,
+    context: &CodecContext,
+) -> ProtocolResultValue<Value> {
+    if value.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+        return Ok(value);
+    }
+    let Some(result) = value.get("result").cloned() else {
+        return Ok(value);
+    };
+    let Ok(resource) = serde_json::from_value::<PublicResourceRef>(result) else {
+        return Ok(value);
+    };
+    let bytes = match &resource {
+        PublicResourceRef::Base64 { data_base64, .. } => STANDARD
+            .decode(data_base64)
+            .map_err(|_| ProtocolError::invalid_request("resource contains invalid base64"))?,
+        PublicResourceRef::Url { .. } | PublicResourceRef::NamedObject { .. } => {
+            context.materialized_resource(&resource)?.bytes.to_vec()
+        }
+    };
+    value
+        .as_object_mut()
+        .expect("OpenAI provider state was validated as an object")
+        .insert("result".to_string(), Value::String(STANDARD.encode(bytes)));
+    Ok(value)
 }
 
 fn apply_responses_parameters(
@@ -1181,8 +1225,8 @@ fn decode_response_object(
     let mut artifacts = Vec::new();
     let mut images = Vec::new();
     for item in output {
-        decode_response_item(item, &mut blocks, &mut artifacts, &mut images)?;
-        blocks.push(provider_state(item.clone()));
+        let provider_value = decode_response_item(item, &mut blocks, &mut artifacts, &mut images)?;
+        blocks.push(provider_state(provider_value));
     }
     let message = AiMessage::new(AiRole::Assistant, blocks);
     message.validate().map_err(|error| {
@@ -1224,10 +1268,11 @@ fn decode_response_item(
     blocks: &mut Vec<AiContent>,
     artifacts: &mut Vec<AiArtifact>,
     images: &mut Vec<PublicResourceRef>,
-) -> ProtocolResultValue<()> {
+) -> ProtocolResultValue<Value> {
     let item_type = item.get("type").and_then(Value::as_str).ok_or_else(|| {
         ProtocolError::invalid_response("OpenAI response output item is missing type")
     })?;
+    let mut provider_value = item.clone();
     match item_type {
         "message" => {
             let content = item
@@ -1335,6 +1380,17 @@ fn decode_response_item(
                 .transpose()?
                 .unwrap_or("image/png");
             let resource = PublicResourceRef::base64(mime.to_string(), result);
+            provider_value
+                .as_object_mut()
+                .expect("OpenAI response item was validated as an object")
+                .insert(
+                    "result".to_string(),
+                    serde_json::to_value(&resource).map_err(|_| {
+                        ProtocolError::invalid_response(
+                            "OpenAI image generation resource could not be normalized",
+                        )
+                    })?,
+                );
             let index = images.len();
             images.push(resource.clone());
             artifacts.push(AiArtifact {
@@ -1346,7 +1402,7 @@ fn decode_response_item(
         }
         _ => {}
     }
-    Ok(())
+    Ok(provider_value)
 }
 
 fn provider_state(value: Value) -> AiContent {
@@ -3429,6 +3485,14 @@ mod tests {
             output.value["message"]["content"][1]["type"],
             "provider_state"
         );
+        let image_state = output.value["provider_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|state| state["value"]["type"] == "image_generation_call")
+            .unwrap();
+        assert_eq!(image_state["value"]["result"]["kind"], "base64");
+        assert!(!image_state["value"]["result"].is_string());
 
         let assistant: AiMessage = serde_json::from_value(output.value["message"].clone()).unwrap();
         let request = LlmChatInvokeRequest::new(

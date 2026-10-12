@@ -110,6 +110,8 @@ export type ProviderProtocolContract = {
   }>;
   success_content_type?: string;
   success_fixture?: Record<string, unknown>;
+  inline_artifact_success_fixture?: Record<string, unknown>;
+  inline_artifact_payload_paths?: string[];
   success_chunk_fixtures?: Array<Record<string, unknown>>;
   async_result_fixture?: Record<string, unknown>;
   success_fixture_base64?: string;
@@ -666,6 +668,36 @@ export function validateProviderProtocolCatalog(
         throw new Error(
           `${id}.success_fixture is invalid: ${fixtureErrors.join("; ")}`,
         );
+      }
+      if (contract.inline_artifact_success_fixture !== undefined) {
+        object(
+          contract.inline_artifact_success_fixture,
+          `${id}.inline_artifact_success_fixture`,
+        );
+        const paths = stringArray(
+          contract.inline_artifact_payload_paths,
+          `${id}.inline_artifact_payload_paths`,
+        );
+        if (paths.length === 0 || paths.some((path) => !path.startsWith("/"))) {
+          throw new Error(
+            `${id}.inline_artifact_payload_paths must contain JSON pointers`,
+          );
+        }
+        for (const path of paths) {
+          const payload = (contract.inline_artifact_success_fixture as Record<string, unknown>);
+          const value = path.split("/").slice(1).reduce<unknown>((current, segment) => {
+            if (Array.isArray(current)) return current[Number(segment)];
+            if (current && typeof current === "object") {
+              return (current as Record<string, unknown>)[segment];
+            }
+            return undefined;
+          }, payload);
+          if (typeof value !== "string" || value.length === 0) {
+            throw new Error(`${id}.inline_artifact_payload_paths entry ${path} is not a string`);
+          }
+        }
+      } else if (contract.inline_artifact_payload_paths !== undefined) {
+        throw new Error(`${id}.inline_artifact_payload_paths requires a fixture`);
       }
     }
   }
@@ -1925,6 +1957,22 @@ export function buildT15Manifest(
             expected_wire_fixture:
               `${contract.id}.request.task-result-artifact`,
             response_fixture: `${contract.id}.success`,
+          } as AcceptanceCase);
+        }
+        if (apiType === "llm" && contract.inline_artifact_success_fixture) {
+          cases.push({
+            ...common,
+            case_id: caseId(
+              `t1.5.${provider.provider_driver}.${contract.id}.${apiType}.inline-artifact-provider-state`,
+            ),
+            tags: [
+              ...common.tags!,
+              "task_result_artifact",
+              "inline_artifact_provider_state",
+            ],
+            mock_scenario: "inline_artifact_success",
+            expected_wire_fixture: `${contract.id}.request.inline-artifact-provider-state`,
+            response_fixture: `${contract.id}.inline-artifact-success`,
           } as AcceptanceCase);
         }
         const artifactIdentity = contract.provider_artifact_identity;

@@ -467,19 +467,7 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         let operation = format!("runner_complete task_id={task_id}");
         self.client(&operation)
             .await?
-            .runner_complete(
-                task_id,
-                json!({
-                    "result": {
-                        "output": serde_json::to_value(output).map_err(|_| {
-                            buckyos_api::AiccError::new(
-                                buckyos_api::AiccErrorCode::InternalError,
-                                "execution result could not be serialized",
-                            )
-                        })?
-                    }
-                }),
-            )
+            .runner_complete(task_id, task_result_payload(output)?)
             .await
             .map(|_| ())
             .map_err(|err| task_manager_error(operation, err))

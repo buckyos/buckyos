@@ -25,6 +25,9 @@ const DEFAULT_IDEMPOTENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
 const MAX_SAME_MODEL_ATTEMPTS: usize = 2;
 const DEFAULT_SAME_MODEL_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_SAME_MODEL_RETRY_DELAY: Duration = Duration::from_secs(2);
+const TASK_RESULT_PAYLOAD_MARGIN_BYTES: usize = 64 * 1024;
+const MAX_TASK_RESULT_PAYLOAD_BYTES: usize =
+    buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE - TASK_RESULT_PAYLOAD_MARGIN_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct IdempotencyScope {
@@ -140,6 +143,46 @@ pub(crate) struct ExecutionOutput {
     pub usage: AiUsage,
     pub cost: Option<AiCost>,
     pub artifacts: Vec<AiArtifact>,
+}
+
+pub(crate) fn task_result_payload(output: &ExecutionOutput) -> Result<Value, AiccError> {
+    Ok(serde_json::json!({
+        "result": {
+            "output": serde_json::to_value(output).map_err(|_| {
+                aicc_error(
+                    AiccErrorCode::InternalError,
+                    "execution result could not be serialized",
+                    false,
+                )
+            })?
+        }
+    }))
+}
+
+fn check_result_payload(output: &ExecutionOutput) -> Result<(), AiccError> {
+    let payload = task_result_payload(output)?;
+    let serialized_bytes = serde_json::to_vec(&payload)
+        .map_err(|_| {
+            aicc_error(
+                AiccErrorCode::InternalError,
+                "execution result could not be serialized",
+                false,
+            )
+        })?
+        .len();
+    if serialized_bytes <= MAX_TASK_RESULT_PAYLOAD_BYTES {
+        return Ok(());
+    }
+    let mut error = aicc_error(
+        AiccErrorCode::InternalError,
+        "AICC result exceeds the TaskMgr payload limit",
+        false,
+    );
+    error.details = Some(serde_json::json!({
+        "serialized_bytes": serialized_bytes,
+        "max_bytes": MAX_TASK_RESULT_PAYLOAD_BYTES,
+    }));
+    Err(error)
 }
 
 impl TryFrom<ProtocolOutput> for ExecutionOutput {
@@ -1636,6 +1679,9 @@ impl ExecutionEngine {
         };
         output.usage.cost = finance_snapshot.clone();
         output.cost = finance_snapshot.clone();
+        if let Err(error) = check_result_payload(&output) {
+            return self.finish_failure(task_id, error).await;
+        }
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(
                 AiccErrorCode::InternalError,
@@ -1678,6 +1724,9 @@ impl ExecutionEngine {
         task_id: &str,
         output: ExecutionOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
+        if let Err(error) = check_result_payload(&output) {
+            return self.finish_failure(task_id, error).await;
+        }
         if let Err(error) = self.tasks.commit_result(task_id, &output).await {
             self.remove_active(task_id);
             return Err(error);
@@ -2924,6 +2973,83 @@ mod tests {
         assert_eq!(receipts[0].state, ExecutionState::Succeeded);
         assert_eq!(providers.starts.lock().unwrap().len(), 1);
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_result_fails_before_usage_or_staging() {
+        let providers = Arc::new(FakeProviders::default());
+        let text = "x".repeat(MAX_TASK_RESULT_PAYLOAD_BYTES);
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
+                &text,
+            ))));
+        let (engine, store, tasks, usage) = make_engine(providers);
+
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        let error = receipt.error.unwrap();
+        assert_eq!(
+            error.message,
+            "AICC result exceeds the TaskMgr payload limit"
+        );
+        assert!(!error.retriable);
+        assert!(
+            error.details.unwrap()["serialized_bytes"].as_u64().unwrap()
+                > MAX_TASK_RESULT_PAYLOAD_BYTES as u64
+        );
+        assert!(usage.writes.lock().unwrap().is_empty());
+        assert!(store
+            .get_task("task-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .output
+            .is_none());
+        assert!(tasks.completed.lock().unwrap().is_empty());
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn recovery_fails_legacy_oversized_staged_result_once() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
+                "ok",
+            ))));
+        let (engine, store, tasks, _) = make_engine(providers);
+        *tasks.commit_error.lock().unwrap() = Some(aicc_error(
+            AiccErrorCode::InternalError,
+            "taskmgr unavailable",
+            true,
+        ));
+        engine.execute(request(call("primary"))).await.unwrap_err();
+        store
+            .stage_output(
+                "task-1",
+                ExecutionOutput {
+                    value: json!({"text": "x".repeat(MAX_TASK_RESULT_PAYLOAD_BYTES)}),
+                    usage: AiUsage::default(),
+                    cost: None,
+                    artifacts: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        *tasks.commit_error.lock().unwrap() = None;
+
+        let receipts = engine.recover().await.unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].state, ExecutionState::Failed);
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+        assert!(engine.recover().await.unwrap().is_empty());
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

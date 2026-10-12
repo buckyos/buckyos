@@ -540,6 +540,10 @@ pub enum ResourceRef {
 
 因此 JSON tag 必须是 `url`、`base64`、`named_object`，不得使用 Rust variant 名 `Url`、`Base64`、`NamedObject`。
 
+`base64` 是输入和 Adapter 解码中间态，不是最终输出形态。Adapter 解析 provider 响应后，AICC 必须在结果持久化边界把所有内联二进制写入对象存储，并把 typed output、`artifacts`、`provider_state` / `provider_states` 中的对应字段替换为 `named_object`。最终结果优先使用 `named_object`；只有已登记来源、有效期和访问策略且当前不需要下载内容的 Provider URL 可以保留为 `url`。TaskMgr result 的任何位置不得出现 `ResourceRef::Base64`、裸 base64 或 data URL。
+
+物化后执行两道公共门禁：第一道验证本次被物化的 payload 没有以其它字符串副本残留；第二道按 `runner_complete` 的实际 `{ result: { output } }` 包装计算 JSON 大小，必须低于 kRPC 1 MiB 上限并保留 64 KiB envelope 余量。大小门禁位于 usage/billing 和 staging 之前，并在 staged result recovery/commit 时重复执行。超限属于明确、不可重试的任务失败，不能让任务停留在 Accepted/running。
+
 当 `obj_id` 指向 FileObject 时，AICC 从 FileObject meta 获取资源属性：
 
 | meta 字段 | 说明 |
@@ -598,7 +602,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 1. `messages[].content` 是 `Vec<AiContent>` content-block 数组。最常见的纯文本消息用单个 `text` block 表达（`AiMessage::text(role, "...")`）。
 2. `role` 是 `AiRole` 枚举（snake_case 序列化）。`tool` 是 IR 内部承载 tool result 的角色，`developer` 是 OpenAI Responses 原生角色；Provider Adapter 在 lowering 时改写为各 provider 原生形态。
 3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` 三类子块。
-4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。lowering 仅在 `source` 四元组与目标四元组完全一致时原样还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。`thinking` 同样带 `source` 四元组，AICC 在每次响应（Immediate / Stream / Native Task）上与 `provider_state` 一起绑定；调用方原样回传即可，缺省为 unbound。编码请求前统一过滤：`source` 与目标四元组完全一致的 `thinking` 原样回放，其它来源或 unbound 的 `thinking` 静默丢弃（不报错、不降级为文本或 `reasoning_content`），只剩 thinking 的消息整条去掉。四元组包含 provider 实例，同一模型换 provider 实例（如官方 Anthropic 与 OpenRouter）也视为不同来源。过滤只取决于坐标，因此 `runtime_failover` 换到 backup 或之后切回 primary 时，发给同一目标的前缀在多次请求之间保持稳定。
+4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。这里的“原样”指协议语义和字段顺序可逆，不允许复制内联二进制：已知媒体字段在 decode 时替换为 `ResourceRef`，物化后保存 `named_object`，同坐标 lowering 时按该字段的官方 wire 形态恢复 bytes/base64。lowering 仅在 `source` 四元组与目标四元组完全一致时还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。`thinking` 同样带 `source` 四元组，AICC 在每次响应（Immediate / Stream / Native Task）上与 `provider_state` 一起绑定；调用方原样回传即可，缺省为 unbound。编码请求前统一过滤：`source` 与目标四元组完全一致的 `thinking` 原样回放，其它来源或 unbound 的 `thinking` 静默丢弃（不报错、不降级为文本或 `reasoning_content`），只剩 thinking 的消息整条去掉。四元组包含 provider 实例，同一模型换 provider 实例（如官方 Anthropic 与 OpenRouter）也视为不同来源。过滤只取决于坐标，因此 `runtime_failover` 换到 backup 或之后切回 primary 时，发给同一目标的前缀在多次请求之间保持稳定。
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
 6. Provider 响应中的一个原生历史单元可以同时产生 provider-neutral block 和紧邻的 `ProviderState`。两者不是两份待发送内容：同四元组回放时原生状态是权威表示并替代对应 canonical block；跨实例、原厂或模型时由源坐标到目标坐标执行转换，不能仅凭 namespace 直传。
 7. tool result 的 canonical `call_id` 必须能关联此前的 `tool_use`。若目标协议还要求函数名，Adapter 必须从同一历史中的 `tool_use` 恢复并校验名称，不能把内部生成的占位 ID 或缺失名称发送给 Provider。
@@ -1017,7 +1021,7 @@ OpenAI 渠道的 operation 由最终解析后的 metadata/Provider Rules 决定�
 - 声明 `capabilities.image_generation=true` 的 GPT-5 系列主线模型使用 Responses `image_generation` tool；
 - 不得根据模型名、调用方是否传 feature 或 endpoint URL 在 adapter 中临时猜测路径。
 
-Responses 返回的每个 completed `image_generation_call.result` 必须转换为通用图片 artifact，并同时保留对应 OpenAI `ProviderState` 以支持后续多轮编辑。多个结果全部保留；MIME 根据实际输出格式确定。缺失结果、非法 Base64、tool failed/rejected 必须返回明确 Provider error。
+Responses 返回的每个 completed `image_generation_call.result` 必须转换为通用图片 artifact，并同时保留对应 OpenAI `ProviderState` 以支持后续多轮编辑。ProviderState 中的 `result` 必须保存同一个 `ResourceRef`，物化后为 `named_object`，不得保留原始字符串；同坐标回放前以 `BytesOnly` 读取对象并恢复为官方要求的 base64 字符串。多个结果全部保留；MIME 根据实际输出格式确定。缺失结果、非法 Base64、tool failed/rejected 必须返回明确 Provider error。
 
 ### 8.2 `image.img2img`
 

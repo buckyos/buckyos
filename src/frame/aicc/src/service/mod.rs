@@ -95,9 +95,10 @@ use crate::call::{
 use crate::catalog::CatalogSnapshot;
 use crate::error::{NativeTaskResumeError, QuotaSourceError, ResourceError, RuntimeError};
 use crate::execution::{
-    ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll, NativeTaskResumeDescriptor,
-    PinnedProviderTask, ProviderExecution, ProviderExecutionPort, ProviderStartFailure,
-    ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort, TaskSpec,
+    task_result_payload, ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll,
+    NativeTaskResumeDescriptor, PinnedProviderTask, ProviderExecution, ProviderExecutionPort,
+    ProviderStartFailure, ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort,
+    TaskSpec,
 };
 use crate::health::{HealthFailureKind, ModelHealthRegistry};
 #[cfg(test)]
@@ -988,10 +989,8 @@ fn task_manager_error(
     operation: impl std::fmt::Display,
     error: RPCErrors,
 ) -> buckyos_api::AiccError {
-    if error
-        .to_string()
-        .contains(buckyos_api::TASK_ERR_IDEMPOTENCY_CONFLICT)
-    {
+    let diagnostic = error.to_string();
+    if diagnostic.contains(buckyos_api::TASK_ERR_IDEMPOTENCY_CONFLICT) {
         return buckyos_api::AiccError::new(
             buckyos_api::AiccErrorCode::IdempotencyConflict,
             "idempotency key was already used with a different canonical request body",
@@ -1002,10 +1001,29 @@ fn task_manager_error(
         operation,
         error
     );
-    buckyos_api::AiccError::new(
+    if diagnostic.contains("413 Payload Too Large") {
+        return buckyos_api::AiccError::new(
+            buckyos_api::AiccErrorCode::InternalError,
+            "TaskMgr rejected an oversized AICC result",
+        );
+    }
+    let retriable = matches!(&error, RPCErrors::S2sTransientError(_))
+        || diagnostic.contains("error sending request")
+        || diagnostic.contains("timed out")
+        || diagnostic.contains("connection")
+        || diagnostic.contains("rpc call error: 502")
+        || diagnostic.contains("rpc call error: 503")
+        || diagnostic.contains("rpc call error: 504");
+    let mut mapped = buckyos_api::AiccError::new(
         buckyos_api::AiccErrorCode::InternalError,
-        "TaskMgr operation failed",
-    )
+        if retriable {
+            "TaskMgr is temporarily unavailable"
+        } else {
+            "TaskMgr operation failed"
+        },
+    );
+    mapped.retriable = retriable;
+    mapped
 }
 
 fn replace_resource_ref_value(
@@ -1077,6 +1095,67 @@ fn collect_inline_base64_resource_refs(value: &Value, found: &mut Vec<buckyos_ap
         }
         _ => {}
     }
+}
+
+fn collect_inline_base64_payloads(value: &Value, found: &mut Vec<String>) {
+    let mut resources = Vec::new();
+    collect_inline_base64_resource_refs(value, &mut resources);
+    for resource in resources {
+        if let buckyos_api::ResourceRef::Base64 { data_base64, .. } = resource {
+            if !found.contains(&data_base64) {
+                found.push(data_base64);
+            }
+        }
+    }
+}
+
+fn contains_materialized_payload(value: &Value, payload: &str) -> bool {
+    match value {
+        Value::String(text) => {
+            text == payload
+                || text
+                    .strip_prefix("data:")
+                    .and_then(|value| value.split_once(";base64,"))
+                    .is_some_and(|(_, encoded)| encoded == payload)
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(|item| contains_materialized_payload(item, payload)),
+        Value::Object(object) => object
+            .values()
+            .any(|item| contains_materialized_payload(item, payload)),
+        _ => false,
+    }
+}
+
+fn assert_materialized_output_has_no_inline_payloads(
+    output: &ProtocolOutput,
+    materialized_payloads: &[String],
+) -> Result<(), ProtocolError> {
+    let mut remaining = Vec::new();
+    collect_inline_base64_resource_refs(&output.value, &mut remaining);
+    if !remaining.is_empty()
+        || output
+            .artifacts
+            .iter()
+            .any(|artifact| matches!(artifact.resource, ResourceRef::Base64 { .. }))
+    {
+        return Err(ProtocolError::invalid_response(
+            "provider output contains an unmaterialized inline artifact",
+        ));
+    }
+    if materialized_payloads.iter().any(|payload| {
+        contains_materialized_payload(&output.value, payload)
+            || output.artifacts.iter().any(|artifact| {
+                serde_json::to_value(artifact)
+                    .is_ok_and(|value| contains_materialized_payload(&value, payload))
+            })
+    }) {
+        return Err(ProtocolError::invalid_response(
+            "provider output retained an inline artifact payload outside ResourceRef",
+        ));
+    }
+    Ok(())
 }
 
 fn replace_json_value(value: &mut Value, old: &Value, new: &Value) {

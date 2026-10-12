@@ -717,6 +717,13 @@ pub(crate) trait OperationCodec: Send + Sync {
         crate::resource::ResourceInputForm::BytesOnly
     }
 
+    fn resource_input_form_for(
+        &self,
+        _resource_pointers: &[&str],
+    ) -> crate::resource::ResourceInputForm {
+        self.resource_input_form()
+    }
+
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest>;
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution>;
 
@@ -1342,6 +1349,7 @@ impl CodecRegistry {
         operation_id: &str,
         api_type: ApiType,
         execution_mode: ExecutionMode,
+        resource_pointers: &[&str],
     ) -> crate::resource::ResourceInputForm {
         let Ok(registered) = self.registered(adapter_id, operation_id, api_type) else {
             return crate::resource::ResourceInputForm::BytesOnly;
@@ -1355,7 +1363,7 @@ impl CodecRegistry {
             registered
                 .codec
                 .as_ref()
-                .map(|codec| codec.resource_input_form())
+                .map(|codec| codec.resource_input_form_for(resource_pointers))
         };
         form.unwrap_or(crate::resource::ResourceInputForm::BytesOnly)
     }
@@ -1847,6 +1855,7 @@ mod tests {
                 "media.create",
                 ApiType::VideoImageToVideo,
                 ExecutionMode::Immediate,
+                &[],
             ),
             crate::resource::ResourceInputForm::BytesOnly,
             "the buffered codec keeps the default"
@@ -1857,6 +1866,7 @@ mod tests {
                 "media.create",
                 ApiType::VideoImageToVideo,
                 ExecutionMode::NativeTask,
+                &[],
             ),
             crate::resource::ResourceInputForm::UrlOrBytes,
             "the native task codec declares URL support"

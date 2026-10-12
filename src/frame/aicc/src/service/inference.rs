@@ -298,6 +298,11 @@ impl RuntimeInferencePort {
             &call.operation,
             call.api_type,
             call.execution_mode,
+            &call
+                .resource_requirements
+                .iter()
+                .map(|requirement| requirement.request_pointer.as_str())
+                .collect::<Vec<_>>(),
         );
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {

@@ -463,7 +463,7 @@ T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能�
 - OpenAI Responses 同 Provider 历史必须以 Mock 返回的完整 output item 驱动下一轮请求，逐项比较 item 的顺序、ID、status、annotations、reasoning opaque 字段和 tool call；canonical block 只能用于跨 Provider 降级，不能与对应原生 item 重复发送。
 - OpenRouter Responses 的 completed output item 必须逐字段、逐数组顺序原样回传；仅验证提取出的 reasoning 文本不算通过。
 - Claude canonical JSON Schema 必须 lowering 到 `output_config.format`；Claude 5 Mock 必须拒绝 `thinking.type=enabled` 和 `budget_tokens`，并验证旧配置已转换为 adaptive thinking 且不覆盖显式 effort。
-- Provider 返回图片、音频、视频、OCR/segment 等媒体 artifact 时，不论 Provider driver 是 Gemini、OpenAI、Fal、MiniMax 还是其他实现，AICC 提交给 TaskMgr 的最终 result 必须使用 `NamedObject` 或 URL 等稳定资源引用，不得保留 inline base64 导致 TaskMgr result 提交失败或 task 停留在非终态。
+- 每个 Provider success cell 都必须检查 TaskMgr 最终 result 的任意层级不存在 `ResourceRef::Base64`。Provider 返回图片、音频、视频、OCR/segment 等媒体 artifact 时，不论 Provider driver 是 Gemini、OpenAI、Fal、MiniMax 还是其他实现，最终 result 必须使用 `NamedObject` 或已登记 URL 等稳定资源引用；对官方响应中存在已知内联媒体字段的协议，还必须记录 fixture payload 路径并断言同一 payload 没有以裸字符串或 data URL 残留在 `provider_state` / `provider_states`。
 
 对会生成图片、视频、音频等可二次创作内容的 Provider，T1.5 协议契约还必须显式声明内容标识能力。声明必须来自具体 adapter 对应的 Provider 官方协议，而不是从 AICC 实现、metadata 或历史日志推断；官方资料未明确返回可复用标识或未声明可用标识作为输入时，该协议点必须标记为不支持，不得猜测。契约至少包含：
 
@@ -487,7 +487,7 @@ T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能�
 - 官方正常响应到 AICC typed response、task、usage、finish reason、tool call 和 artifact 的映射。
 - Provider 返回内容标识时，必须验证该标识按 artifact name 或官方结果结构绑定到 AICC artifact，并在提交 TaskMgr result 前去除仅供内部复用的敏感原生标识；报告只记录标识存在性和脱敏摘要。
 - 对所有携带 provider-native history 的协议，至少一个 cell 必须使用 Mock 第一轮官方响应的 typed message 构造第二轮请求，执行真实 `decode -> canonical history -> encode`，并比较完整原生单元；只手工拼 canonical 历史不能作为 round-trip 通过证据。
-- TaskMgr 终态 result 的 artifact/resource 表示必须可追踪、可下载或可授权读取；T1.5 中所有产生 artifact 的成功用例都要断言 result 已提交成功且不包含 inline base64 资源。
+- TaskMgr 终态 result 的 artifact/resource 表示必须可追踪、可下载或可授权读取；T1.5 中所有 Provider success cell 都检查无 inline `ResourceRef::Base64`，所有产生 artifact 的成功用例还要断言 result 已提交成功、具有稳定引用，并且官方 fixture 的已知二进制 payload 未在 ProviderState 中留下字符串副本。
 
 Mock Provider 必须先按官方 schema 校验请求，再返回官方格式响应。宽松接受未知字段、错误字段名、错误路径或错误 content type 的 Mock 不能作为通过证据。
 

@@ -1386,15 +1386,29 @@ async function executeCase(
             testCase.protocol_contract_id!,
           ),
         );
-        if (testCase.tags.includes("task_result_artifact")) {
-          const resultPayload = taskResultPayload(terminalValue);
-          if (containsBase64Resource(resultPayload)) {
-            throw new Error(
-              `TaskMgr result retained inline base64 resource instead of a stable artifact reference: ${
-                artifactResultSummary(terminalValue)
-              }`,
-            );
+        const resultPayload = taskResultPayload(terminalValue);
+        if (containsBase64Resource(resultPayload)) {
+          throw new Error(
+            `TaskMgr result retained inline base64 ResourceRef: ${artifactResultSummary(terminalValue)}`,
+          );
+        }
+        if (testCase.tags.includes("inline_artifact_provider_state")) {
+          for (const pointer of contract.inline_artifact_payload_paths ?? []) {
+            const payload = pointer.split("/").slice(1).reduce<unknown>((current, segment) => {
+              if (Array.isArray(current)) return current[Number(segment)];
+              if (current && typeof current === "object") {
+                return (current as Record<string, unknown>)[segment];
+              }
+              return undefined;
+            }, contract.inline_artifact_success_fixture);
+            if (typeof payload === "string" && containsString(resultPayload, payload)) {
+              throw new Error(
+                `TaskMgr result retained Provider inline artifact payload from ${pointer}`,
+              );
+            }
           }
+        }
+        if (testCase.tags.includes("task_result_artifact")) {
           if (!hasReferencedArtifact(resultPayload)) {
             throw new Error(
               `TaskMgr result did not expose a named object or URL artifact reference: ${

@@ -1647,6 +1647,27 @@ fn task_manager_errors_are_redacted() {
 }
 
 #[test]
+fn task_manager_payload_and_transport_errors_are_classified_without_leaking_details() {
+    let oversized = task_manager_error(
+        "runner_complete task_id=t-secret",
+        RPCErrors::ReasonError("rpc call error: 413 Payload Too Large".to_string()),
+    );
+    assert_eq!(
+        oversized.message,
+        "TaskMgr rejected an oversized AICC result"
+    );
+    assert!(!oversized.retriable);
+
+    let unavailable = task_manager_error(
+        "runner_complete task_id=t-secret",
+        RPCErrors::S2sTransientError("top-secret transport detail".to_string()),
+    );
+    assert_eq!(unavailable.message, "TaskMgr is temporarily unavailable");
+    assert!(unavailable.retriable);
+    assert!(!format!("{unavailable:?}").contains("top-secret"));
+}
+
+#[test]
 fn inline_artifact_replacement_updates_nested_output_values() {
     let old = buckyos_api::ResourceRef::base64("image/png".to_string(), "cG5n".to_string());
     let new = buckyos_api::ResourceRef::url(
@@ -1682,6 +1703,26 @@ fn inline_artifact_collection_finds_nested_base64_resources() {
         &found[0],
         buckyos_api::ResourceRef::Base64 { mime, .. } if mime == "image/png"
     ));
+}
+
+#[test]
+fn materialized_output_rejects_known_payload_leaks_outside_resource_refs() {
+    let named = buckyos_api::ResourceRef::NamedObject {
+        obj_id: ndn_lib::ObjId::new("cyfile:010203").unwrap(),
+    };
+    let output = ProtocolOutput {
+        value: json!({
+            "image": named,
+            "provider_states": [{"value": {"result": "cG5n"}}]
+        }),
+        usage: None,
+        artifacts: Vec::new(),
+    };
+    let error = assert_materialized_output_has_no_inline_payloads(&output, &["cG5n".to_string()])
+        .unwrap_err();
+    assert!(error
+        .message
+        .contains("retained an inline artifact payload"));
 }
 
 fn quota_record() -> QuotaTruthRecord {

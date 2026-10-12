@@ -223,6 +223,23 @@ impl OperationCodec for GeminiInteractionCodec {
         crate::resource::ResourceInputForm::UrlOrBytes
     }
 
+    fn resource_input_form_for(
+        &self,
+        resource_pointers: &[&str],
+    ) -> crate::resource::ResourceInputForm {
+        if resource_pointers.iter().any(|pointer| {
+            pointer.contains("/content/")
+                && pointer.contains("/value/")
+                && ["/data", "/videoBytes", "/bytesBase64Encoded"]
+                    .iter()
+                    .any(|suffix| pointer.ends_with(suffix))
+        }) {
+            crate::resource::ResourceInputForm::BytesOnly
+        } else {
+            self.resource_input_form()
+        }
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -547,7 +564,9 @@ fn encode_assistant_steps(
         })
         .collect::<Vec<_>>();
     if !native_steps.is_empty() {
-        input.extend(native_steps);
+        for step in native_steps {
+            input.push(encode_provider_state_resources(step, call.context)?);
+        }
         return Ok(());
     }
     let mut model_content = Vec::new();
@@ -614,7 +633,10 @@ fn encode_assistant_steps(
                     && value.is_object() =>
             {
                 flush_model_output(&mut model_content, input);
-                input.push(value.clone());
+                input.push(encode_provider_state_resources(
+                    value.clone(),
+                    call.context,
+                )?);
             }
             AiContent::ProviderState {
                 provider, value, ..
@@ -657,6 +679,50 @@ fn encode_tool_result(
             }
         })
         .collect()
+}
+
+fn encode_provider_state_resources(
+    mut value: Value,
+    context: &CodecContext,
+) -> ProtocolResultValue<Value> {
+    fn restore(value: &mut Value, context: &CodecContext) -> ProtocolResultValue<()> {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    restore(item, context)?;
+                }
+            }
+            Value::Object(object) => {
+                for field in ["data", "videoBytes", "bytesBase64Encoded"] {
+                    let Some(encoded) = object.get(field).cloned() else {
+                        continue;
+                    };
+                    let Ok(resource) = serde_json::from_value::<ResourceRef>(encoded) else {
+                        continue;
+                    };
+                    let bytes = match &resource {
+                        ResourceRef::Base64 { data_base64, .. } => {
+                            STANDARD.decode(data_base64).map_err(|_| {
+                                ProtocolError::invalid_request("resource contains invalid base64")
+                            })?
+                        }
+                        ResourceRef::Url { .. } | ResourceRef::NamedObject { .. } => {
+                            context.materialized_resource(&resource)?.bytes.to_vec()
+                        }
+                    };
+                    object.insert(field.to_string(), Value::String(STANDARD.encode(bytes)));
+                }
+                for item in object.values_mut() {
+                    restore(item, context)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    restore(&mut value, context)?;
+    Ok(value)
 }
 
 fn encode_vision_ocr(
@@ -1608,7 +1674,7 @@ fn normalize_llm(
                     content.push(AiContent::ProviderState {
                         source: buckyos_api::ProviderStateCoordinate::unbound(),
                         provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
-                        value: step.clone(),
+                        value: normalize_provider_state_resources(step.clone())?,
                     });
                 }
                 Some("function_call" | "thought") => {
@@ -1616,13 +1682,13 @@ fn normalize_llm(
                     content.push(AiContent::ProviderState {
                         source: buckyos_api::ProviderStateCoordinate::unbound(),
                         provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
-                        value: step.clone(),
+                        value: normalize_provider_state_resources(step.clone())?,
                     });
                 }
                 _ => content.push(AiContent::ProviderState {
                     source: buckyos_api::ProviderStateCoordinate::unbound(),
                     provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
-                    value: step.clone(),
+                    value: normalize_provider_state_resources(step.clone())?,
                 }),
             }
         }
@@ -1651,6 +1717,51 @@ fn normalize_llm(
         usage,
         artifacts: Vec::new(),
     })
+}
+
+fn normalize_provider_state_resources(mut value: Value) -> ProtocolResultValue<Value> {
+    fn normalize(value: &mut Value) -> ProtocolResultValue<()> {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    normalize(item)?;
+                }
+            }
+            Value::Object(object) => {
+                if matches!(
+                    object.get("type").and_then(Value::as_str),
+                    Some("image" | "document" | "audio" | "video")
+                ) {
+                    for field in ["data", "videoBytes", "bytesBase64Encoded"] {
+                        if !object.get(field).is_some_and(Value::is_string) {
+                            continue;
+                        }
+                        let resource = decode_resource_with_default(
+                            &Value::Object(object.clone()),
+                            "application/octet-stream",
+                        )?;
+                        object.insert(
+                            field.to_string(),
+                            serde_json::to_value(resource).map_err(|_| {
+                                ProtocolError::invalid_response(
+                                    "Gemini media resource could not be normalized",
+                                )
+                            })?,
+                        );
+                        break;
+                    }
+                }
+                for item in object.values_mut() {
+                    normalize(item)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    normalize(&mut value)?;
+    Ok(value)
 }
 
 fn normalize_llm_output(output: &Value, content: &mut Vec<AiContent>) -> ProtocolResultValue<()> {
@@ -3076,6 +3187,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["generation_config"]["thinking_level"], "high");
+    }
+
+    #[test]
+    fn interaction_media_provider_state_uses_resource_refs_and_replays_bytes() {
+        let interaction = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{
+                    "type": "image",
+                    "mime_type": "image/png",
+                    "data": STANDARD.encode(b"image")
+                }]
+            }]
+        });
+        let mut output = normalize_interaction(&interaction, ApiType::Llm).unwrap();
+        crate::protocol::bind_provider_state_source(&mut output.value, &context().state_coordinate);
+        let message: AiMessage = serde_json::from_value(output.value["message"].clone()).unwrap();
+        let provider_state = message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                AiContent::ProviderState { value, .. } => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(provider_state["content"][0]["data"]["kind"], "base64");
+        assert!(!provider_state["content"][0]["data"].is_string());
+
+        let request = LlmChatInvokeRequest::new("ignored@google", vec![message]);
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(request),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-test"),
+            )]),
+        };
+        let body = encode_interaction(
+            &CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            },
+            ApiType::Llm,
+        )
+        .unwrap();
+        assert_eq!(
+            body["input"][0]["content"][0]["data"],
+            STANDARD.encode(b"image")
+        );
     }
 
     #[test]

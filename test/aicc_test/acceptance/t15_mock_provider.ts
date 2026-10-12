@@ -486,6 +486,9 @@ export function createT15MockHandler(
           scenarios.add("stream_success");
           scenarios.add("stream_interrupted");
         }
+        if (contract.inline_artifact_success_fixture) {
+          scenarios.add("inline_artifact_success");
+        }
         if (contract.async_protocol) {
           scenarios.add("async_success");
           scenarios.add("async_failed");
@@ -1336,7 +1339,9 @@ export function createT15MockHandler(
         return;
       }
       const rawFixture = structuredClone(
-        contract.success_fixture ?? {},
+        selection.scenario === "inline_artifact_success"
+          ? contract.inline_artifact_success_fixture ?? {}
+          : contract.success_fixture ?? {},
       ) as Record<string, unknown>;
       if (
         selection.provider_driver === "openai" &&

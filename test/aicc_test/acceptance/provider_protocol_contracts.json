@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-10.2",
-  "checked_at": "2026-10-10",
+  "revision": "official-provider-protocols-2026-10-12.1",
+  "checked_at": "2026-10-12",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -155,6 +155,8 @@
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
           "stream_protocol": "openai_responses",
           "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_success_fixture": { "id": "resp_inline_artifact_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "message", "id": "msg_inline_artifact_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }, { "type": "image_generation_call", "id": "ig_inline_artifact_mock_1", "status": "completed", "result": "aW1hZ2U=", "output_format": "png" }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_payload_paths": ["/output/1/result"],
           "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/tools-image-generation", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
           "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage. Compatible GPT variants can generate or edit images through the built-in image_generation tool."
         },
@@ -374,6 +376,8 @@
           },
           "stream_protocol": "gemini_interactions",
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_success_fixture": { "id": "interaction_inline_artifact_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }, { "type": "image", "id": "gemini_inline_artifact_mock_1", "mime_type": "image/png", "data": "aW1hZ2U=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_payload_paths": ["/steps/0/content/1/data"],
           "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call."
         },
