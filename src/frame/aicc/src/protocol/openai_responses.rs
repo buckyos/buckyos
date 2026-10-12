@@ -795,7 +795,7 @@ fn encode_response_input(
             {
                 for item in native_items {
                     validate_provider_state(&item)?;
-                    items.push(item);
+                    items.push(replay_provider_state_item(&item, call)?);
                 }
                 continue;
             }
@@ -859,7 +859,7 @@ fn encode_response_input(
                         content.push(value.clone());
                     } else {
                         flush(&mut content, &mut items);
-                        items.push(value.clone());
+                        items.push(replay_provider_state_item(value, call)?);
                     }
                 }
                 AiContent::ProviderState {
@@ -1182,7 +1182,7 @@ fn decode_response_object(
     let mut images = Vec::new();
     for item in output {
         decode_response_item(item, &mut blocks, &mut artifacts, &mut images)?;
-        blocks.push(provider_state(item.clone()));
+        blocks.push(provider_state(provider_state_item(item, &images)));
     }
     let message = AiMessage::new(AiRole::Assistant, blocks);
     message.validate().map_err(|error| {
@@ -1347,6 +1347,52 @@ fn decode_response_item(
         _ => {}
     }
     Ok(())
+}
+
+/// Provider state is structured data plus resource references, never an inline
+/// payload: an `image_generation_call` keeps its metadata, but `result` becomes
+/// the canonical ResourceRef that the artifact materializer rewrites into a
+/// Named Object reference. `replay_provider_state_item` restores the wire shape.
+fn provider_state_item(item: &Value, images: &[PublicResourceRef]) -> Value {
+    let mut state = item.clone();
+    if state.get("type").and_then(Value::as_str) == Some("image_generation_call") {
+        if let (Some(object), Some(resource)) = (state.as_object_mut(), images.last()) {
+            object.insert(
+                "result".to_string(),
+                serde_json::to_value(resource).unwrap_or(Value::Null),
+            );
+        }
+    }
+    state
+}
+
+/// Inverse of `provider_state_item` for request replay: a resource reference in
+/// an `image_generation_call` result is turned back into the base64 string the
+/// Responses API expects (Named Objects are materialized before encoding).
+fn replay_provider_state_item(
+    value: &Value,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<Value> {
+    let mut item = value.clone();
+    if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+        return Ok(item);
+    }
+    let Some(result) = item.get("result").filter(|result| result.is_object()).cloned() else {
+        return Ok(item);
+    };
+    let resource: PublicResourceRef = serde_json::from_value(result).map_err(|_| {
+        ProtocolError::invalid_request(
+            "OpenAI image_generation_call result is not a valid resource reference",
+        )
+    })?;
+    let data_base64 = match &resource {
+        PublicResourceRef::Base64 { data_base64, .. } => data_base64.clone(),
+        PublicResourceRef::Url { .. } | PublicResourceRef::NamedObject { .. } => {
+            STANDARD.encode(&call.context.materialized_resource(&resource)?.bytes)
+        }
+    };
+    item["result"] = Value::String(data_base64);
+    Ok(item)
 }
 
 fn provider_state(value: Value) -> AiContent {
@@ -3464,6 +3510,55 @@ mod tests {
         assert_eq!(output.value["tool_calls"][0]["args"]["city"], "Paris");
         assert_eq!(output.value["images"][0]["kind"], "base64");
         assert_eq!(output.artifacts[0].mime.as_deref(), Some("image/png"));
+        // Provider state never carries the inline payload: the image result is
+        // the canonical ResourceRef (later materialized into a Named Object).
+        let image_state = output.value["message"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["value"]["type"] == "image_generation_call")
+            .expect("image_generation_call provider state");
+        assert_eq!(image_state["value"]["result"]["kind"], "base64");
+        assert_eq!(image_state["value"]["result"]["data_base64"], "aW1hZ2U=");
+        assert_eq!(
+            output.value["provider_states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|state| state["value"]["type"] == "image_generation_call")
+                .unwrap()["value"]["result"]["kind"],
+            "base64"
+        );
+    }
+
+    #[test]
+    fn replays_named_object_image_results_from_materialized_resources() {
+        let image = PublicResourceRef::base64("image/png".to_string(), "aW1hZ2U=".to_string());
+        let context = context_with_resource(&image, b"image", "image/png", None);
+        let state = json!({
+            "type": "image_generation_call",
+            "id": "ig_1",
+            "status": "completed",
+            "output_format": "png",
+            "result": image
+        });
+        let request = LlmChatInvokeRequest::new("ignored@instance", Vec::new());
+        let input = input(AiccCall::ChatCompletionsCreate(request));
+        let call = CodecCall {
+            api_type: ApiType::Llm,
+            input: &input,
+            context: &context,
+        };
+        let replayed = replay_provider_state_item(&state, &call).unwrap();
+        assert_eq!(replayed["result"], "aW1hZ2U=");
+        assert_eq!(replayed["id"], "ig_1");
+
+        let missing = json!({
+            "type": "image_generation_call",
+            "id": "ig_2",
+            "result": {"kind": "named_object", "obj_id": "cyfile:0000000000000000000000000000000000000000000000000000000000000000"}
+        });
+        assert!(replay_provider_state_item(&missing, &call).is_err());
     }
 
     #[tokio::test]

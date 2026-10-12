@@ -1440,6 +1440,10 @@ impl ExecutionEngine {
             .collect();
         let results = join_all(records.iter().map(|record| async move {
             if let Some(output) = &record.output {
+                if let Err(error) = check_result_payload(output) {
+                    log::warn!("AICC task recovery: {}: {}", record.task_id, error.message);
+                    return self.finish_failure(&record.task_id, error).await;
+                }
                 return self
                     .commit_staged_success(&record.task_id, output.clone())
                     .await;
@@ -1666,6 +1670,10 @@ impl ExecutionEngine {
         {
             return self.finish_failure(task_id, error).await;
         }
+        if let Err(error) = check_result_payload(&output) {
+            log::warn!("AICC task {task_id}: {}", error.message);
+            return self.finish_failure(task_id, error).await;
+        }
         if !self.store.stage_output(task_id, output.clone()).await? {
             self.remove_active(task_id);
             return self.current_receipt(task_id).await;
@@ -1745,6 +1753,37 @@ fn json_state(kind: &str, value: Option<Value>, trace_id: Option<&str>) -> Value
         error: None,
     };
     serde_json::to_value(data).unwrap_or(Value::Null)
+}
+
+/// Upper bound for the serialized execution output that is committed to the
+/// Task Manager over kRPC. The HTTP layer rejects bodies above
+/// `DEFAULT_MAX_RPC_BODY_SIZE` with a plain 413 that the client only sees as a
+/// send error, so the limit is enforced here with a clear message instead.
+/// Outputs are structured data plus Named Object references; anything larger
+/// means a provider adapter leaked an inline payload.
+pub(crate) const MAX_TASK_RESULT_BYTES: usize =
+    buckyos_http_server::DEFAULT_MAX_RPC_BODY_SIZE - 64 * 1024;
+
+fn check_result_payload(output: &ExecutionOutput) -> Result<(), AiccError> {
+    let size = serde_json::to_vec(output)
+        .map_err(|_| {
+            aicc_error(
+                AiccErrorCode::InternalError,
+                "execution result could not be serialized",
+                false,
+            )
+        })?
+        .len();
+    if size > MAX_TASK_RESULT_BYTES {
+        return Err(aicc_error(
+            AiccErrorCode::InternalError,
+            &format!(
+                "execution result is {size} bytes, above the {MAX_TASK_RESULT_BYTES} byte task manager limit; provider output must reference artifacts as Named Objects instead of inline payloads"
+            ),
+            false,
+        ));
+    }
+    Ok(())
 }
 
 fn aicc_error(code: AiccErrorCode, message: &str, retriable: bool) -> AiccError {
@@ -2924,6 +2963,37 @@ mod tests {
         assert_eq!(receipts[0].state, ExecutionState::Succeeded);
         assert_eq!(providers.starts.lock().unwrap().len(), 1);
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_result_fails_task_instead_of_staging() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut oversized = output("ok");
+        oversized.value = json!({
+            "text": "ok",
+            "leaked_inline_payload": "x".repeat(MAX_TASK_RESULT_BYTES + 1)
+        });
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(oversized)));
+        let (engine, store, tasks, _) = make_engine(providers);
+
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        let record = store.get_task("task-1").await.unwrap().unwrap();
+        assert_eq!(record.state, ExecutionState::Failed);
+        let error = record.error.unwrap();
+        assert_eq!(error.code, AiccErrorCode::InternalError);
+        assert!(
+            error.message.contains("task manager limit"),
+            "{}",
+            error.message
+        );
+        assert!(store.recoverable().await.unwrap().is_empty());
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+        assert!(tasks.completed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
