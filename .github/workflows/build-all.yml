@@ -136,3 +136,33 @@ jobs:
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
+
+  upload-payloads:
+    name: Upload component payloads to R2
+    needs: [build-windows, build-linux, build-macos]
+    if: github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+    concurrency:
+      group: payload-r2-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Download component payloads
+        uses: actions/download-artifact@v6
+        with:
+          pattern: buckyos-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/payloads
+      - name: Upload component payloads to R2
+        uses: ryand56/r2-upload-action@latest
+        with:
+          r2-account-id: 87e0bdf811b13ee87fd0bcec7a4fd1e7
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: buckyos-installer
+          source-dir: ${{ runner.temp }}/payloads
+          destination-dir: buckyos/
+          keep-file-fresh: false
+          output-file-url: false
