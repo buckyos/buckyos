@@ -205,7 +205,8 @@ AICC, iterations, `max_output_tokens` (every stage sends it; Claude requires one
 `llm.map` item limit, `deno`). The service exchanges its startup assertion at verify-hub before it listens:
 AICC accepts only verify-hub sessions. Standalone:
 `--wish-config <json>` with `{ provider: { type: "openai", base_url, api_key_env }, analyze_model, … }`.
-Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` → `PATH`.
+Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` → `PATH`
+(`deno.exe` on Windows). The Windows program subprocess retains `SystemRoot` after clearing its environment.
 
 ## Storage
 

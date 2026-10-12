@@ -3,17 +3,17 @@
 
 import { assert, assertEquals } from './test_assert.js'
 
-const here = new URL('.', import.meta.url).pathname
+const here = new URL('.', import.meta.url)
 
 async function workdir(program, extra = {}) {
-  const dir = await Deno.makeTempDir({ prefix: 'aiws-' })
+  const dir = await Deno.makeTempDir({ prefix: 'aiws-许愿格 space #%+-' })
   const w = (p, s) => {
     const full = `${dir}/${p}`
     Deno.mkdirSync(full.slice(0, full.lastIndexOf('/')), { recursive: true })
     Deno.writeTextFileSync(full, typeof s === 'string' ? s : JSON.stringify(s))
   }
-  w('lib/aiws.js', Deno.readTextFileSync(`${here}/aiws.js`))
-  w('lib/run.js', Deno.readTextFileSync(`${here}/run.js`))
+  w('lib/aiws.js', Deno.readTextFileSync(new URL('aiws.js', here)))
+  w('lib/run.js', Deno.readTextFileSync(new URL('run.js', here)))
   w('program/main.js', program)
   w('request.json', { today: '2026-10-06', currency: 'CNY' })
   w('context/inputs.json', {
@@ -38,7 +38,7 @@ async function workdir(program, extra = {}) {
 
 async function run(dir, env = {}) {
   const cmd = new Deno.Command(Deno.execPath(), {
-    args: ['run', '--no-prompt', '--quiet', `--allow-read=${dir}`, `--allow-write=${dir}/output`, '--allow-net', '--allow-env', 'lib/run.js'],
+    args: ['run', '--no-prompt', '--quiet', '--no-remote', `--allow-read=${dir}`, `--allow-write=${dir}/output`, '--allow-net', '--allow-env=AIWS_HOST,AIWS_TOKEN', 'lib/run.js'],
     cwd: dir, env, stdout: 'piped', stderr: 'piped',
   })
   const out = await cmd.output()

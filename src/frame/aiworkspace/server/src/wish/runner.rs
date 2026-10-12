@@ -36,7 +36,7 @@ impl ProgramOutput {
     }
 }
 
-/// The Deno to use: the configured one, BuckyOS's own (`libexec/buckyos-tool/runtime/deno`), then `PATH`.
+/// The Deno to use: the configured one, BuckyOS's own (`libexec/buckyos-tool/runtime/deno[.exe]`), then `PATH`.
 pub fn find_deno(configured: &str) -> Option<PathBuf> {
     if !configured.trim().is_empty() {
         let p = PathBuf::from(configured);
@@ -48,11 +48,16 @@ pub fn find_deno(configured: &str) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let bundled = buckyos_kit::get_buckyos_root_dir().join("libexec/buckyos-tool/runtime/deno");
+    find_deno_in(&buckyos_kit::get_buckyos_root_dir(), std::env::var_os("PATH").as_deref())
+}
+
+fn find_deno_in(root: &Path, paths: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let name = format!("deno{}", std::env::consts::EXE_SUFFIX);
+    let bundled = root.join("libexec/buckyos-tool/runtime").join(&name);
     if bundled.is_file() {
         return Some(bundled);
     }
-    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join("deno")).find(|p| p.is_file()))
+    paths.and_then(|paths| std::env::split_paths(paths).map(|d| d.join(&name)).find(|p| p.is_file()))
 }
 
 async fn read_all(r: Option<impl tokio::io::AsyncRead + Unpin>) -> String {
@@ -98,6 +103,10 @@ pub async fn run_in(deno: &Path, workdir: &Path, env: Vec<(String, String)>, tim
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", system_root);
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -125,4 +134,42 @@ pub async fn run_in(deno: &Path, workdir: &Path, env: Vec<(String, String)>, tim
     let stderr = err_task.await.unwrap_or_default();
     let results = std::fs::read_to_string(&results).ok().and_then(|t| serde_json::from_str(&t).ok());
     Ok(ProgramOutput { code, stdout, stderr, results, timed_out })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_bundled_deno_before_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("deno{}", std::env::consts::EXE_SUFFIX);
+        let runtime = dir.path().join("libexec/buckyos-tool/runtime");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        let bundled = runtime.join(&name);
+        std::fs::write(&bundled, "").unwrap();
+        std::fs::write(bin.join(&name), "").unwrap();
+        let paths = std::env::join_paths([&bin]).unwrap();
+        assert_eq!(find_deno_in(dir.path(), Some(&paths)), Some(bundled.clone()));
+        assert_eq!(find_deno_in(dir.path(), None), Some(bundled.clone()));
+        std::fs::remove_file(bundled).unwrap();
+        assert_eq!(find_deno_in(dir.path(), Some(&paths)), Some(bin.join(&name)));
+        assert_eq!(find_deno_in(dir.path(), None), None);
+    }
+
+    #[test]
+    fn path_search_skips_directories_and_missing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("deno{}", std::env::consts::EXE_SUFFIX);
+        let first = dir.path().join("first");
+        let second = dir.path().join("中文 space #%+");
+        std::fs::create_dir_all(first.join(&name)).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let deno = second.join(&name);
+        std::fs::write(&deno, "").unwrap();
+        let paths = std::env::join_paths([dir.path().join("missing"), first, second]).unwrap();
+        assert_eq!(find_deno_in(dir.path(), Some(&paths)), Some(deno));
+    }
 }

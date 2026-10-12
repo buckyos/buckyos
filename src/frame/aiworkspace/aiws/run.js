@@ -7,8 +7,9 @@
 // Exit code 0: the program finished; 1: it threw (the error is in results.json and on stderr).
 
 import { createHost } from './aiws.js'
+import { fileURLToPath } from 'node:url'
 
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 const host = createHost(root)
 let failed = null
 try {
