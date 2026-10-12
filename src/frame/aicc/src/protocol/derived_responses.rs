@@ -683,18 +683,17 @@ mod tests {
                 assert_eq!(descriptor.operations.len(), expected_operations);
                 assert!(registration.operation_codecs.len() >= 1);
                 assert!(!registration.native_task_codecs.is_empty());
-                let expected_components = if descriptor.protocol_adapter_id
-                    == DOUBAO_RESPONSES_ADAPTER_ID
-                {
-                    3
-                } else {
-                    2
-                };
+                let expected_components =
+                    if descriptor.protocol_adapter_id == DOUBAO_RESPONSES_ADAPTER_ID {
+                        3
+                    } else {
+                        2
+                    };
                 assert_eq!(descriptor.component_adapter_ids.len(), expected_components);
                 if descriptor.protocol_adapter_id == QWEN_RESPONSES_ADAPTER_ID {
                     assert!(descriptor
                         .operations
-            .contains_key("chat.completions.create"));
+                        .contains_key("chat.completions.create"));
                 }
             }
         }
@@ -797,6 +796,70 @@ mod tests {
         assert_eq!(cost.currency, "USD");
     }
 
+    #[tokio::test]
+    async fn qwen_normalizes_inline_image_state_and_replays_provider_wire() {
+        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Qwen).unwrap();
+        let response = HttpResponse {
+            status: reqwest::StatusCode::OK,
+            headers: reqwest::header::HeaderMap::new(),
+            body: bytes::Bytes::from_static(
+                br#"{"id":"resp_qwen_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]},{"type":"image_generation_call","id":"ig_qwen_1","status":"completed","result":"aW1hZ2U=","output_format":"png"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}"#,
+            ),
+            request_id: "request-qwen-1".into(),
+            retry_after: None,
+        };
+        let ProtocolExecution::Immediate(mut output) = registration.operation_codecs[0]
+            .decode(response)
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate response")
+        };
+        let mut qwen_context =
+            context("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1");
+        qwen_context.state_coordinate.adapter_type = QWEN_RESPONSES_ADAPTER_ID.to_owned();
+        qwen_context.state_coordinate.origin_provider = "qwen".to_owned();
+        crate::protocol::bind_provider_state_source(
+            &mut output.value,
+            &qwen_context.state_coordinate,
+        );
+
+        let image_state = output.value["provider_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|state| state["value"]["type"] == "image_generation_call")
+            .unwrap();
+        assert_eq!(image_state["provider"], "qwen");
+        assert_eq!(image_state["value"]["result"]["kind"], "base64");
+        assert!(!image_state["value"]["result"].is_string());
+
+        let assistant: AiMessage = serde_json::from_value(output.value["message"].clone()).unwrap();
+        let replay_input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                "logical.model",
+                vec![AiMessage::text(AiRole::User, "continue"), assistant],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_owned(),
+                Value::String("qwen3.8-max".to_owned()),
+            )]),
+        };
+        let replay = registration.operation_codecs[0]
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &replay_input,
+                context: &qwen_context,
+            })
+            .unwrap();
+        let HttpBody::Json(body) = replay.body else {
+            panic!("expected JSON request")
+        };
+        assert!(body["input"].as_array().unwrap().iter().any(|item| {
+            item["type"] == "image_generation_call" && item["result"] == "aW1hZ2U="
+        }));
+    }
+
     #[test]
     fn derived_provider_state_round_trips_back_to_the_wire_request() {
         for dialect in [
@@ -888,7 +951,9 @@ mod tests {
                 vec![AiMessage::new(
                     AiRole::User,
                     vec![
-                        AiContent::Text { text: "describe the video".into() },
+                        AiContent::Text {
+                            text: "describe the video".into(),
+                        },
                         AiContent::Document {
                             source: ResourceRef::url(
                                 "https://example.test/result.mp4".into(),
@@ -908,16 +973,21 @@ mod tests {
             .encode(&CodecCall {
                 api_type: ApiType::Llm,
                 input: &input,
-                context: &context("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
+                context: &context(
+                    "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+                ),
             })
             .unwrap();
         let HttpBody::Json(body) = request.body else {
             panic!("expected JSON request")
         };
-        assert_eq!(body["input"][0]["content"][1], json!({
-            "type": "input_video",
-            "video_url": "https://example.test/result.mp4"
-        }));
+        assert_eq!(
+            body["input"][0]["content"][1],
+            json!({
+                "type": "input_video",
+                "video_url": "https://example.test/result.mp4"
+            })
+        );
     }
 
     #[test]

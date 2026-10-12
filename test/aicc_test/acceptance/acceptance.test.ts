@@ -4735,6 +4735,13 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   );
   assert.equal(qwenVideoInput?.model_selector?.value, "qwen3.8-omni-flash");
   assert.ok(qwenVideoInput?.tags.includes("video_input"));
+  const qwenInlineArtifact = manifest.find((item) =>
+    item.case_id ===
+      "t1.5.qwen.qwen.responses.compatible-v1.llm.inline-artifact-provider-state"
+  );
+  assert.equal(qwenInlineArtifact?.mock_scenario, "inline_artifact_success");
+  assert.ok(qwenInlineArtifact?.tags.includes("task_result_artifact"));
+  assert.ok(qwenInlineArtifact?.tags.includes("inline_artifact_provider_state"));
   const qwenAggregatedChat = manifest.find((item) =>
     item.case_id ===
       "t1.5.qwen.qwen.chat-completions.compatible-v1.llm.success"
