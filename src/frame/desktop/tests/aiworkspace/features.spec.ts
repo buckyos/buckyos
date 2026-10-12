@@ -184,7 +184,7 @@ test('annotations, field and option management, migration pre-check, broken view
   await expect(all.getByTestId('aiws-cell-task-41-owner').getByTestId('aiws-cell-annotation')).toBeVisible()
   // annotation on a rich text block: nothing selected, the block around the caret
   await notesBlock(page, 'n-intro').click()
-  await page.getByTestId('aiws-cell-frame-cell-notes').getByTestId('aiws-near-annotate-text').click()
+  await page.keyboard.press('Control+Alt+m')
   await page.getByLabel('批注内容').fill('这一段需要更新')
   await page.getByTestId('aiws-annotation-save').click()
   await expect(page.getByTestId('aiws-annotation').filter({ hasText: '这一段需要更新' })).toContainText('块「第一期围绕文档格式')
@@ -301,10 +301,13 @@ test('session filter and sort stay local until "save view"; structure edits: cre
     .filter((child: { type_id: string; kind?: string }) => child.type_id === 'buckyos.cell' || child.kind === 'group').map((child: { entity_id: string }) => child.entity_id) as string[]
   const frames = () => page.locator('[data-testid="aiws-flow"] > [data-cell-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
   expect(await order()).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
-  // reorder with the buttons (tree.place, order key from the WASM core)
+  // reorder from the Block menu of the ⋮⋮ handle (tree.place, order key from the WASM core)
+  const blockMenu = async (id: string) => { await page.getByTestId(`aiws-cell-frame-${id}`).hover(); await page.getByTestId(`aiws-flow-handle-${id}`).click() }
+  await blockMenu('cell-notes')
   await page.getByTestId('aiws-down-cell-notes').click()
   await expect.poll(order).toEqual(['cell-all-tasks', 'cell-notes', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
   await expect.poll(frames).toEqual(['cell-all-tasks', 'cell-notes', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
+  await blockMenu('cell-diagram')
   await page.getByTestId('aiws-up-cell-diagram').click()
   await expect.poll(order).toEqual(['cell-all-tasks', 'cell-notes', 'cell-open-tasks', 'cell-diagram', 'cell-info'])
 
@@ -340,6 +343,8 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   await page.getByTestId('aiws-rename').click()
   await expect.poll(async () => (await api.rpc(ALICE, 'doc.resolve', { workspace_id: ws.workspace_id, path: '/data/canvas-content/项目工作区/纪要正文' })).reference?.entity_id).toBe(newTextId)
   await page.getByTestId('aiws-top-canvas').click()
+  await page.getByTestId(`aiws-group-${groupId}`).hover()
+  await page.getByTestId(`aiws-flow-handle-${groupId}`).click()
   await page.getByTestId(`aiws-delete-group-${groupId}`).click()
   await expect(page.locator('[data-testid^="aiws-group-"]')).toHaveCount(0)
   await expect(page.locator(`[data-cell-id="${newCellId}"]`)).toHaveCount(0)
@@ -506,11 +511,12 @@ test('record properties, asset upload, object embed and object link', async ({ p
   // object embed (a cell, rendered read-only inside the document) and object link
   await notesBlock(page, 'n-end').click()
   await page.keyboard.press('End')
-  // one searchable picker for both (标准对象的交互改进 §4.4)
-  const notesFrame = page.getByTestId('aiws-cell-frame-cell-notes')
-  await notesFrame.getByTestId('aiws-near-link').click()
+  // one searchable picker for both (标准对象的交互改进 §4.4), reached from the `/` menu on a page (流式页交互改进 §3.3)
+  await page.keyboard.type('/')
+  await page.getByTestId('aiws-slash-link').click()
   await page.getByTestId('aiws-link-pick-project-info').click()
-  await notesFrame.getByTestId('aiws-near-link').click()
+  await page.keyboard.type('/')
+  await page.getByTestId('aiws-slash-link').click()
   await page.getByTestId('aiws-link-kind-embed').click()
   await page.getByTestId('aiws-link-search').fill('info')
   await page.getByTestId('aiws-link-pick-cell-info').click()
@@ -576,21 +582,20 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   const sourceId = await frame.getAttribute('data-cell-source') as string
   const cellId = await frame.getAttribute('data-cell-id') as string
 
-  // add two records through the form (the required title is asked for)
+  // add two records from the "+ 新建" line under the rows (the required title is typed there; the line stays open for the next one)
+  await page.getByTestId(`aiws-add-record-${cellId}`).click()
   for (const name of ['买菜', '写周报']) {
-    await page.getByTestId(`aiws-add-record-${cellId}`).click()
     await page.getByLabel('新记录 标题').fill(name)
-    await page.getByTestId('aiws-add-record-submit').click()
+    await page.getByLabel('新记录 标题').press('Enter')
     await expect(frame.getByTestId('aiws-row').filter({ hasText: name })).toBeVisible()
   }
   await expect(frame.getByTestId('aiws-row')).toHaveCount(2)
   const rows = async () => (await api.rpc(ALICE, 'doc.query', { workspace_id: workspaceId, source_id: sourceId })).rows as { record_id: string; values: Record<string, unknown> }[]
   const first = (await rows()).find((row) => row.values.title === '买菜')?.record_id as string
 
-  // boolean
-  await frame.getByTestId(`aiws-cell-${first}-done`).getByRole('button').first().click()
-  await page.getByLabel(`完成 ${first}`, { exact: true }).selectOption('true')
-  await expect(frame.getByTestId(`aiws-cell-${first}-done`)).toContainText('是')
+  // boolean: a tick box, one click writes
+  await page.getByLabel(`完成 ${first}`, { exact: true }).check()
+  await expect(page.getByLabel(`完成 ${first}`, { exact: true })).toBeChecked()
   // more field types
   await page.getByTestId(`aiws-fields-${cellId}`).click()
   for (const [name, type] of [['标签', 'multi_select'], ['提醒', 'datetime'], ['数量', 'number']]) {
@@ -613,7 +618,7 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   await group.getByLabel('工作').check()
   await group.getByLabel('家').check()
   await group.getByRole('button', { name: '确定' }).click()
-  await expect(frame.getByTestId(`aiws-cell-${first}-${id('标签')}`)).toContainText('家、工作')
+  await expect(frame.getByTestId(`aiws-cell-${first}-${id('标签')}`).locator('.aiws-pill')).toHaveText(['家', '工作'])
   // datetime: entered in local time, stored as a UTC instant
   await frame.getByTestId(`aiws-cell-${first}-${id('提醒')}`).getByRole('button').first().click()
   await page.getByLabel(`提醒 ${first}`, { exact: true }).fill('2026-10-04T16:00')

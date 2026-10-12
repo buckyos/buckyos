@@ -102,12 +102,11 @@ function RichTextStatic(context: RenderContext) {
 
 function RichTextEditorView(context: RenderContext) {
   const renderEmbed = useEmbedRenderer(context.depth)
-  const onCanvas = useOnFreeCanvas()
   if (!context.source) return null
   const { size, style } = textStyle(context)
   return (
     <div className="aiws-block-static" data-text-size={size} style={style}>
-      <RichTextCell key={context.source.entity_id} entity={context.source} entityId={context.source.entity_id} renderEmbed={renderEmbed} intentKey={onCanvas ? context.cell.entity_id : undefined} />
+      <RichTextCell key={context.source.entity_id} entity={context.source} entityId={context.source.entity_id} renderEmbed={renderEmbed} intentKey={context.cell.entity_id} />
     </div>
   )
 }

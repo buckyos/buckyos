@@ -53,7 +53,12 @@ richtext/
   collab.ts               confirmed doc + working doc, debounced `richtext.apply_update`, remote imports,
                           refused update → draft + rebuild (design §3.3.7)
   blockId.ts              block_id plugin
-  RichTextEditor.tsx      editor view, toolbar, object_embed node view, static (read-only) renderer
+  RichTextEditor.tsx      editor view, format tools (near toolbar on a canvas, a bubble over the selection elsewhere),
+                          `/` menu items, Markdown source mode switch, object_embed node view, static renderer
+  inputRules.ts           Markdown shortcuts while typing (# - 1. > ``` --- ** * ~~ `), Backspace undoes one
+  slash.ts, placeholder.ts  the `/` command plugin; empty-text / empty-line hints
+  markdownSource.ts       Markdown source ("notepad") mode: segments per top-level block, block-level apply, rebase
+  EditorMenus.tsx         `/` menu, format bubble, MarkdownSourceEditor (doc/workspace/流式页交互改进.md §3–§4)
   drafts.ts, loro.ts
 state/outline.ts          OutlineModel: the two trees kept up to date from the change stream's operations (no full
                           re-read on a move); per-entity subscriptions for Blocks
@@ -76,7 +81,8 @@ ui/
   canvas/                 CanvasView (sub-modes edit / view / path editing, selection, pointer tool,
                           one-shot placement, insert, clipboard, group, cross-Surface move, keyboard), ObjectToolbar,
                           InsertCatalog + catalog.ts (the one insert catalog), clipboard.ts, surfaceManage.tsx
-                          (rename / icon / delete pre-check), icons.tsx (preset canvas icons), FlowSurface, layout.ts,
+                          (rename / icon / delete pre-check), icons.tsx (preset canvas icons), FlowSurface +
+                          flowOps.ts (the page as a document: handles, drag, insert after, continue writing), layout.ts,
                           tools.tsx (near toolbar, context menu, inspector)
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
                           placeholders, mount budget, overlay, gestures that commit once; painting and hit testing
@@ -95,7 +101,9 @@ ui/
                           re-run / repair the program, preview with choices, apply by plan digest, history),
                           WishPanel + WishCandidate + WishPreviews, wishBlock, mockWishDef (the Mock executor as an
                           HTML definition entity)
-  TableViewCell.tsx       virtualised table view, inline editing, filter / sort, conflicts; also the source mode
+  TableViewCell.tsx       virtualised table view (database grid: type icons, pills, tick boxes, "+ 新建" line, "+"
+                          field column, arrow keys between cells), inline editing, filter / sort, conflicts; also the
+                          source mode; fieldOps.ts (adding a field, shared with FieldManager)
   tablePager.ts           keyset paging through doc.query, refresh from the change stream
   FieldManager.tsx        fields, options, migration pre-check
   annotations.tsx         cards next to a rich text, aligned with their anchors

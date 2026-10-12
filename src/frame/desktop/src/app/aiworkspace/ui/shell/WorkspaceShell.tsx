@@ -236,7 +236,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
     if (embedded.type_id !== 'buckyos.cell') return <div className="aiws-warning">嵌入目标不是 Block（{cellId}）</div>
     return (
       <div className="aiws-embedded" data-testid={`aiws-embed-${cellId}`}>
-        <div className="aiws-embedded-title">嵌入 · {embedded.title ?? embedded.name ?? cellId}（只读）</div>
+        <div className="aiws-embedded-title" title="嵌入的 Block（只读）：到它所在的地方修改">↗ {embedded.title ?? embedded.name ?? cellId}</div>
         <BlockHost cellId={cellId} mode="view" view="source" depth={depth} />
       </div>
     )

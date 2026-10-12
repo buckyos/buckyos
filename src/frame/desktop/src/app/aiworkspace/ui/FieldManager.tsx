@@ -5,9 +5,9 @@ import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type { CellPayload, FieldDef, FieldType, Json, KeyedContent, Operation, PrepareResult, TableSourceContent } from '../api/types'
 import { useStore } from '../state/hooks'
+import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
 import { FIELD_TYPE_LABEL } from './values'
 
-const CREATABLE: FieldType[] = ['text', 'number', 'decimal', 'date', 'datetime', 'boolean', 'select', 'multi_select']
 /** Conversions the backend implements (anything else answers MIGRATION_UNSUPPORTED). */
 const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal'], decimal: ['decimal'], select: ['text'] }
 
@@ -49,14 +49,7 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
   const addField = () => {
     const name = newName.trim()
     if (!name) return
-    const fieldId = randomId('f')
-    const field: Record<string, Json> = { field_id: fieldId, name, type: newType }
-    if (newType === 'decimal') field.scale = Number(newScale) || 0
-    if (newType === 'select' || newType === 'multi_select') field.options = []
-    const operations: Operation[] = [{ op: 'table.add_field', source_id: sourceId, field }]
-    // A view with an explicit column list would not show the new field: add it to this view in the same commit.
-    if (viewFields && viewFields.length > 0) operations.push(viewFieldsOp([...viewFields, { field_id: fieldId }]))
-    void submit(`新增字段「${name}」`, operations).then((outcome) => { if (outcome.status === 'accepted') setNewName('') })
+    void submit(`新增字段「${name}」`, addFieldOps(sourceId, cell, name, newType, Number(newScale) || 0)).then((outcome) => { if (outcome.status === 'accepted') setNewName('') })
   }
 
   const preCheck = async () => {
@@ -188,7 +181,7 @@ export function FieldManager({ source, cell }: { source: ReadOk<TableSourceConte
       <form className="aiws-inline-form" onSubmit={(event) => { event.preventDefault(); addField() }}>
         <input aria-label="新字段名" placeholder="新字段名" value={newName} onChange={(event) => setNewName(event.target.value)} />
         <select aria-label="新字段类型" value={newType} onChange={(event) => setNewType(event.target.value as FieldType)}>
-          {CREATABLE.map((type) => <option key={type} value={type}>{FIELD_TYPE_LABEL[type]}</option>)}
+          {CREATABLE_FIELD_TYPES.map((type) => <option key={type} value={type}>{FIELD_TYPE_LABEL[type]}</option>)}
         </select>
         {newType === 'decimal' && <input aria-label="小数位数" style={{ width: 48 }} value={newScale} onChange={(event) => setNewScale(event.target.value)} />}
         <button type="submit" data-testid="aiws-add-field">新增字段</button>

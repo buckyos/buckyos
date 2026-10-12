@@ -14,6 +14,7 @@ import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
 import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../api/types'
 import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import type { WorkspaceStore } from '../../state/store'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
@@ -39,6 +40,7 @@ import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
 import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
+import { flowOrder, moveInFlow } from './flowOps'
 import { FlowSurface } from './FlowSurface'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
 import { boundsOf, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
@@ -63,6 +65,14 @@ const LEFT_INSET = 68
 /** The path editor's panel (第三期规划 §7.1) takes the left side of the canvas. */
 const PATH_EDITOR_INSET = 324
 const BOTTOM_INSET = 52
+
+/** The order key right after `afterId` among the children of `parent`: first when null, last when undefined (or gone). */
+function siblingKey(store: WorkspaceStore, parent: string, afterId?: string | null): string {
+  const children = store.outline.childrenOf(parent)
+  const index = afterId === undefined ? -2 : afterId === null ? -1 : children.findIndex((child) => child.entity_id === afterId)
+  if (index === -2 || (afterId && index < 0)) return store.core.order_key_between(children.at(-1)?.order_key ?? undefined, undefined)
+  return store.core.order_key_between(children[index]?.order_key ?? undefined, children[index + 1]?.order_key ?? undefined)
+}
 
 export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
   const shell = useShell()
@@ -121,7 +131,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [editing, setEditingState] = useState<string | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
-  const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string } | null>(null)
+  const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
   const [tool, setTool] = useState<PointerTool>('select')
   const [placing, setPlacing] = useState<InsertRequest | null>(null)
   const [annotatePick, setAnnotatePick] = useState(false)
@@ -161,6 +171,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // on a free canvas a wish opens in the right panel instead (its Block stays a card)
   const { setSide } = shell
   const setEditing = useCallback((id: string | null) => {
+    // a flow page has no editing state (流式页交互改进 §2.1): every editor is live, the caret goes where an intent puts it,
+    // and the Block being typed in is not shown as selected
+    if (!isFree) { setEditingState(null); if (id) setSelectionState(new Set()); return }
     const l = id ? laid.get(id) : undefined
     // a Block inserted a moment ago may not be laid out yet: the outline knows what it is
     const entity = l?.entity ?? (id ? store.outline.get(id) : undefined)
@@ -269,7 +282,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- insertion (§4.2, §8.1; UI improvement §7.2): no title prompt; text and notes open their editor at once
   const insert = useCallback(async (request: InsertRequest, world: { x: number; y: number } | null, parentId?: string,
     /** Operations committed together with the insertion, given the new Block and its world rect (e.g. a line's end). */
-    also?: (cellId: string, rect: { x: number; y: number; w: number; h: number }) => Promise<Operation[]>) => {
+    also?: (cellId: string, rect: { x: number; y: number; w: number; h: number }) => Promise<Operation[]>,
+    /** A flow page: right after this sibling (null: first); appended when absent. */
+    afterId?: string | null) => {
     const definition = request.entry.definition
     if (!definition.create || insertReason) return
     // a flow page shows no connectors (连接线实现方案 §8.3)
@@ -291,7 +306,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const placement: Placement = isFree ? relativeTo(laid, parent, { ...spot, ...size }) : { x: 0, y: 0, ...size }
     const cellId = randomId('c')
     const dataId = randomId('d')
-    const orderKey = store.core.order_key_between(store.outline.childrenOf(parent).at(-1)?.order_key ?? undefined, undefined)
+    const orderKey = siblingKey(store, parent, afterId)
     const dataOrderKey = store.core.order_key_between(store.outline.childrenOf(contentFolderId).at(-1)?.order_key ?? undefined, undefined)
     let operations: Operation[]
     try {
@@ -306,7 +321,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
     const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${request.entry.title}`, operations })
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
-      setSelectionState(new Set([cellId]))
+      if (isFree) setSelectionState(new Set([cellId]))
       if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
         // a new wish opens its task in the right panel (it is not laid out yet when this runs)
         if (isFree && definition.type === 'wish') { setWishOpen({ wishId: dataId, cellId }); setSide('wish') } else { requestIntent(cellId, 'end'); setEditing(cellId) }
@@ -334,7 +349,24 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
     pick({ entry })
   }
-  const openCatalog = (tab: CatalogTab, key?: string, world: { x: number; y: number } | null = null, parentId?: string) => setCatalog({ tab, key, world, parentId })
+  const openCatalog = (tab: CatalogTab, key?: string, world: { x: number; y: number } | null = null, parentId?: string, afterId?: string | null) => setCatalog({ tab, key, world, parentId, afterId })
+
+  // ---- a flow page inserts where the user is (流式页交互改进 §2.3): after a Block, a file asked for first when needed
+  const insertGroup = (parent: string, afterId?: string | null) => {
+    const groupId = randomId('g')
+    void store.submit({ editId: `insert:${groupId}`, label: '插入分组', operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: siblingKey(store, parent, afterId), payload: { kind: 'group', layout: { mode: 'flow' }, title: '分组' } }] })
+  }
+  const insertFlow = (entry: CatalogEntry, parent: string, afterId: string | null) => {
+    if (insertReason) { store.notify('info', insertReason); return }
+    if (entry.catalog.needs === 'file') {
+      const input = document.createElement('input')
+      input.type = 'file'
+      if (entry.definition.type === 'asset') input.accept = 'image/*'
+      input.onchange = () => { const file = input.files?.[0]; if (file) void insert({ entry, file }, null, parent, undefined, afterId) }
+      input.click()
+    } else if (entry.catalog.needs !== 'none') openCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key, null, parent, afterId)
+    else void insert({ entry }, null, parent, undefined, afterId)
+  }
 
   // ---- actions on the selection
   const selectedEntities = [...selection].map((id) => store.outline.get(id)).filter((e): e is EntityEnvelope => Boolean(e))
@@ -611,7 +643,17 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (!policy.select) return
       if ((event.key === 'Delete' || event.key === 'Backspace') && remove.reason === null) { event.preventDefault(); remove.run(); return }
       if (event.key === 'Enter' && single && policy.editContent && !editing) { event.preventDefault(); requestIntent(single.entity_id, 'end'); setEditing(single.entity_id); return }
-      if (event.key.startsWith('Arrow') && selection.size > 0 && canLayout) {
+      // a flow page (流式页交互改进 §2.4): ↑ ↓ walk the Blocks, Ctrl+Shift+↑ ↓ move the selected one
+      if (!isFree && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && single) {
+        event.preventDefault()
+        const direction = event.key === 'ArrowUp' ? -1 : 1
+        if (mod && event.shiftKey) { if (canLayout) moveInFlow(store, single, direction); return }
+        const order = flowOrder(store, surfaceId)
+        const next = order[order.indexOf(single.entity_id) + direction]
+        if (next) setSelectionState(new Set([next]))
+        return
+      }
+      if (event.key.startsWith('Arrow') && selection.size > 0 && canLayout && isFree) {
         event.preventDefault()
         const step = event.shiftKey ? 10 : 1
         const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
@@ -707,11 +749,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   ]
   const menuItems = menu ? (menu.blockId ? blockMenu : [
     ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { void insert({ entry }, menu.world, menu.parentId) } })) : []),
-    ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => {
-      const parent = menu.parentId ?? surfaceId
-      const groupId = randomId('g')
-      void store.submit({ editId: `insert:${groupId}`, label: '插入分组', operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: store.core.order_key_between(store.outline.childrenOf(parent).at(-1)?.order_key ?? undefined, undefined), payload: { kind: 'group', layout: { mode: 'flow' }, title: '分组' } }] })
-    } }] : []),
+    ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => insertGroup(menu.parentId ?? surfaceId) }] : []),
     ...(insertReason === null ? [
       { id: 'catalog', label: '插入对象…', run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
       { id: 'add-data', label: '添加已有数据…', run: () => openCatalog('existing', undefined, menu.world, menu.parentId) },
@@ -776,7 +814,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               </OpenWishContext.Provider>
               </EditorToolbarContext.Provider>
             ) : (
-              <div className="aiws-flow-host" data-testid="aiws-flow-host"><FlowSurface surfaceId={surfaceId} mode={mode} selected={selection} onSelect={setSelection} editing={editing} onEditingChange={setEditing} onInsert={(parentId) => setMenu({ at: { x: 200, y: 120 }, world: null, blockId: null, parentId })} /></div>
+              <div className="aiws-flow-host" data-testid="aiws-flow-host">
+                <FlowSurface surfaceId={surfaceId} mode={mode} selected={selection} onSelect={setSelection}
+                  onInsertMenu={(parentId, at) => setMenu({ at, world: null, blockId: null, parentId })} insertAt={insertFlow} insertGroup={insertGroup}
+                  onInspect={(id) => { setSelection(new Set([id])); shell.setSide('inspector') }} />
+              </div>
             )}
             {mode === 'presentation_edit' && (isFree
               ? <PathEditor surface={surface} camera={camera} laid={laid} />
@@ -821,7 +863,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 const parentId = catalog.parentId
                 setCatalog(null)
                 if (how === 'place') pick(request)
-                else void insert(request, at, parentId)
+                else void insert(request, at, parentId, undefined, catalog.afterId)
               }} />
             )}
           </div>

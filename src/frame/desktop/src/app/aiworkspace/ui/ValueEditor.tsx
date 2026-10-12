@@ -10,10 +10,12 @@ interface Props {
   ariaLabel: string
   onCommit: (value: Input) => void
   onCancel: () => void
+  /** Tab / Shift+Tab: commit, then move to the next / previous cell. */
+  onTab?: (back: boolean) => void
 }
 
 /** Inline editor for one value. Enter / blur commits, Escape cancels; nothing is committed when the text is unchanged. */
-export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCancel }: Props) {
+export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCancel, onTab }: Props) {
   const startText = initialText ?? editText(def, value)
   const [text, setText] = useState(startText)
   const [error, setError] = useState<string | null>(null)
@@ -88,6 +90,7 @@ export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCa
         onKeyDown={(event) => {
           if (event.key === 'Enter') { event.preventDefault(); commit() }
           if (event.key === 'Escape') { event.preventDefault(); cancel() }
+          if (event.key === 'Tab' && onTab) { event.preventDefault(); commit(); if (settled.current) onTab(event.shiftKey) }
         }}
       />
       {error && <span className="aiws-error" role="alert">{error}</span>}

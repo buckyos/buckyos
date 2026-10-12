@@ -226,8 +226,9 @@ export function captureAnchor(host: RichTextAnchorHost): CapturedAnchor | null {
 export function selectionOf(view: EditorView): { from: number; to: number } {
   // a selected atom (an object link or embed clicked in the editor) is not a text selection: annotate the block around it
   if (view.state.selection instanceof NodeSelection) return { from: view.state.selection.from, to: view.state.selection.from }
+  // the DOM selection is read first, also a bare caret: the editor's own selection lags a click by a moment
   const dom = window.getSelection()
-  if (dom && dom.rangeCount > 0 && !dom.isCollapsed && dom.anchorNode && dom.focusNode && view.dom.contains(dom.anchorNode) && view.dom.contains(dom.focusNode)) {
+  if (dom && dom.rangeCount > 0 && dom.anchorNode && dom.focusNode && view.dom.contains(dom.anchorNode) && view.dom.contains(dom.focusNode)) {
     try {
       const a = view.posAtDOM(dom.anchorNode, dom.anchorOffset)
       const b = view.posAtDOM(dom.focusNode, dom.focusOffset)
