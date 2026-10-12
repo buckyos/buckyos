@@ -1961,6 +1961,7 @@ test("Provider credentials accept TOML values or provider-specific environment v
     if (name === "AICC_KIMI_API_TOKEN") return "env-kimi";
     if (name === "AICC_DOUBAO_API_TOKEN") return "env-doubao";
     if (name === "AICC_DOUBAO_AGENT_PLAN_API_TOKEN") return "env-doubao-agent-plan";
+    if (name === "AICC_QWEN_API_TOKEN") return "env-qwen";
     return undefined;
   });
   assert.deepEqual(tokens, {
@@ -1971,6 +1972,7 @@ test("Provider credentials accept TOML values or provider-specific environment v
     kimi: "env-kimi",
     doubao: "env-doubao",
     "doubao-agent-plan": "env-doubao-agent-plan",
+    qwen: "env-qwen",
   });
 });
 
@@ -2006,6 +2008,17 @@ test("Provider credential overrides apply configured static inventory subsets", 
     "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts",
     "asr.recognize.flash": "https://openspeech.bytedance.com/api/v3/auc/bigmodel",
   });
+
+  const qwenRules = configuredProviderInstanceOverrides({
+    "provider_credentials.qwen.workspace": "qwen-workspace",
+  });
+  const qwenPatched = applyProviderTokens(
+    {},
+    { qwen: "qwen-token" },
+    { qwen: "qwen-t2" },
+    qwenRules,
+  ) as { providers: Array<Record<string, unknown>> };
+  assert.equal(qwenPatched.providers[0].workspace, "qwen-workspace");
 
   const scoped = scopeOfficialInventoriesToInstanceRules([{
     provider_driver: "doubao-speech",

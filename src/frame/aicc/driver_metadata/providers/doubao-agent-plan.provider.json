@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 9,
+  "revision_seq": 10,
   "provider_profile_id": "doubao-agent-plan",
   "static_inventory_models": [
     "doubao-seed-2.0-mini",
@@ -107,6 +107,9 @@
     {"model_driver": "glm", "variant": "reasoning-high", "match": {"origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
     {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
     {"model_driver": "kimi", "variant": "reasoning-medium", "match": {"origin_model_id": "kimi-k2.7-code", "variant": "reasoning-medium"}, "provider_options": {"thinking": {"type": "enabled"}}},
+    {"model_driver": "kimi", "variant": "reasoning-low", "match": {"origin_model_id": "kimi-k2.8-preview", "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "kimi", "variant": "reasoning-high", "match": {"origin_model_id": "kimi-k2.8-preview", "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": "kimi-k2.8-preview", "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
     {"model_driver": "kimi", "variant": "reasoning-low", "match": {"origin_model_id": "kimi-k3", "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
     {"model_driver": "kimi", "variant": "reasoning-high", "match": {"origin_model_id": "kimi-k3", "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
     {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": "kimi-k3", "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}

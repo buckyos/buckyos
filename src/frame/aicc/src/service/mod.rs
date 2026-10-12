@@ -116,12 +116,13 @@ use crate::provider::{
     ProviderQuotaObservation, ProviderQuotaObservationState, ProviderRefreshEvent,
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
+use crate::resource::MaterializedResource as RawMaterializedResource;
 use crate::resource::{
     ArtifactSpec, DisabledNamedObjectUrlProvider, EmbeddingArtifactMetadata,
     NamedDataMgrResourceStore, NamedObjectUrlProvider, ReqwestUrlResourceFetcher,
     ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceFailure,
-    ResourceLimits, ResourceManager, ResourceStore, ResourceTarget, UrlResourceFetcher,
-    ZoneNamedObjectUrlProvider, DEFAULT_RESOURCE_MIME,
+    ResourceInputForm, ResourceLimits, ResourceManager, ResourceStore, ResourceTarget,
+    UrlResourceFetcher, ZoneNamedObjectUrlProvider, DEFAULT_RESOURCE_MIME,
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,

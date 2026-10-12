@@ -71,8 +71,10 @@ export type ProviderProtocolContract = {
     Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
   required_body_values?: Record<string, unknown>;
+  json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
   forbidden_body_paths?: string[];
+  canonical_request_overrides?: Record<string, unknown>;
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
@@ -424,6 +426,24 @@ export function validateProviderProtocolCatalog(
           }
         }
       }
+      if (contract.json_string_body_values !== undefined) {
+        const values = object(
+          contract.json_string_body_values,
+          `${id}.json_string_body_values`,
+        );
+        for (const [pointer, expected] of Object.entries(values)) {
+          if (!pointer.startsWith("/")) {
+            throw new Error(`${id}.json_string_body_values keys must be JSON pointers`);
+          }
+          object(expected, `${id}.json_string_body_values.${pointer}`);
+        }
+      }
+      if (contract.canonical_request_overrides !== undefined) {
+        object(
+          contract.canonical_request_overrides,
+          `${id}.canonical_request_overrides`,
+        );
+      }
       for (const field of ["required_body_paths", "forbidden_body_paths"] as const) {
         if (contract[field] === undefined) continue;
         const pointers = stringArray(contract[field], `${id}.${field}`);
@@ -698,7 +718,11 @@ export function validateProviderProtocolCatalog(
         ? body.base_resp as Record<string, unknown>
         : undefined;
       const nativeApplicationError = fixture.status === 200 &&
-        Number(baseResponse?.status_code) > 0;
+        (Number(baseResponse?.status_code) > 0 ||
+          Object.entries(fixture.headers ?? {}).some(([name, value]) =>
+            name.toLowerCase() === "x-api-status-code" &&
+            !["0", "20000000", "20000001", "20000002"].includes(value)
+          ));
       if (
         !Number.isInteger(fixture.status) ||
         (Number(fixture.status) < 400 && !nativeApplicationError)
@@ -901,6 +925,21 @@ export function validateProviderRequest(
     const actual = pointerValue(pointer);
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
+    }
+  }
+  for (const [pointer, expected] of Object.entries(contract.json_string_body_values ?? {})) {
+    const actual = pointerValue(pointer);
+    if (typeof actual !== "string") {
+      errors.push(`body ${pointer} must be a JSON string`);
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(actual);
+      if (JSON.stringify(parsed) !== JSON.stringify(expected)) {
+        errors.push(`body ${pointer} JSON must equal ${JSON.stringify(expected)}`);
+      }
+    } catch {
+      errors.push(`body ${pointer} must contain valid JSON`);
     }
   }
   for (const pointer of contract.required_body_paths ?? []) {
@@ -1755,6 +1794,9 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
       body.error_type,
       baseResponse?.status_code,
       header?.code,
+      Object.entries(fixture.headers ?? {}).find(([name]) =>
+        name.toLowerCase() === "x-api-status-code"
+      )?.[1],
     ]
   ) {
     if (value !== undefined && value !== null && String(value)) {
@@ -1769,6 +1811,12 @@ function providerErrorRetriable(fixture: ProtocolErrorFixture): boolean {
     name.toLowerCase() === "x-fal-retryable"
   )?.[1];
   if (explicit) return explicit.toLowerCase() === "true";
+  const businessCode = Object.entries(fixture.headers ?? {}).find(([name]) =>
+    name.toLowerCase() === "x-api-status-code"
+  )?.[1];
+  if (businessCode === "45000131" || businessCode?.startsWith("550")) {
+    return true;
+  }
   return fixture.status === 429 || fixture.status >= 500 ||
     [
       "rate_limit",

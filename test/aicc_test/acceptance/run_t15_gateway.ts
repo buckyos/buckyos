@@ -1307,6 +1307,11 @@ async function executeCase(
   let terminalValue: unknown;
   try {
     selectedExactModel = exactModel(catalog, testCase, inventory);
+    const contract = protocolContract(
+      catalog,
+      testCase.provider_driver!,
+      testCase.protocol_contract_id!,
+    );
     let historyMessage: Record<string, unknown> | undefined;
     if (
       testCase.tags.includes("native_history") ||
@@ -1337,14 +1342,17 @@ async function executeCase(
     }
     const result = await session.aicc.call(
       testCase.method,
-      buildT15TypedParams(
-        testCase.api_type!,
-        selectedExactModel,
-        runId,
-        testCase.execution_mode,
-        testCase.case_id,
-        { historyMessage },
-      ),
+      {
+        ...buildT15TypedParams(
+          testCase.api_type!,
+          selectedExactModel,
+          runId,
+          testCase.execution_mode,
+          testCase.case_id,
+          { historyMessage },
+        ),
+        ...(contract.canonical_request_overrides ?? {}),
+      },
     ) as Record<string, unknown>;
     if (testCase.mock_scenario === "async_cancel") {
       if (result.status !== "running" || typeof result.task_id !== "string") {

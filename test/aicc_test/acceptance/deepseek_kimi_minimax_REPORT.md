@@ -1,6 +1,6 @@
 # AICC DeepSeek / Kimi / MiniMax 最终测试报告
 
-测试日期：2026-10-11
+测试日期：2026-10-12
 
 测试环境：Ubuntu，BuckyOS `/opt/buckyos`。凭证未写入报告。
 
@@ -16,6 +16,9 @@
 | T2 | DeepSeek：`deepseek-flash`、`deepseek-v4-pro` | 2 passed，2 review，0 failed |
 | T2 | Kimi：4 个模型 × `llm` / `vision.caption` / `vision.ocr` | 12 / 12 通过 |
 | T2 | MiniMax 全部已测模型，共 19 个模型/API 单元 | 9 passed，10 review，0 failed |
+| PR #645 定向 T1 | fallback、metadata variant、history constraint | 5 / 5 通过 |
+| PR #645 定向 T1.5 | Doubao TTS/ASR、Kimi K2.8 effort、Qwen Omni vision | 12 / 12 通过 |
+| PR #645 定向 T2 | Kimi K2.8 LLM、Doubao TTS | 1 passed，1 review，0 failed |
 
 Kimi 官方 API 模型目录和账号 `/v1/models` 当前提供 `kimi-k3`、`kimi-k2.7-code`、`kimi-k2.7-code-highspeed`、`kimi-k2.6`。`kimi-k2.8-preview` 仅见于独立的 Kimi Code 模型说明，不在 Kimi API 模型目录或账号库存中，因此未作为 `kimi` Provider 的 T1.5/T2 模型执行；它在 Doubao Agent Plan 下的能力归属保持不变。
 
@@ -23,9 +26,13 @@ Kimi 最终 T2 的 12 个业务单元及 8 个视觉语义裁判均通过，20 /
 
 DeepSeek 与 MiniMax 的既有最终结论保持不变：所有真实调用单元无 failed，未启用 Judge 的视觉或媒体单元保留为 review。
 
+PR #645 定向回归中，Doubao TTS 已被真实服务接受并生成有效音频产物；由于该轮未启用 Judge，音频语义检查保留为 review。Kimi K2.8 Preview 的真实 LLM 调用通过。Qwen3.8 Omni Flash 的 vision.caption 与 vision.ocr 协议用例通过；真实 T2 未执行，因为当前凭证配置缺少官方端点要求的 Workspace ID。
+
 ## 详细报告链接
 
 ### T1
+
+- [PR #645 定向回归：5 / 5](../reports/acceptance/aicc-t1-2026-10-12T05-08-51-998Z-889d7663/summary.md)
 
 - [定向：0 passed，1 failed](../reports/acceptance/aicc-t1-2026-10-10T03-48-08-395Z-4cc1375f/summary.md)
 - [全量：178 / 178](../reports/acceptance/aicc-t1-2026-10-10T03-53-26-950Z-b9b6b849/summary.md)
@@ -38,6 +45,8 @@ DeepSeek 与 MiniMax 的既有最终结论保持不变：所有真实调用单�
 - [最终全量：184 / 184](../reports/acceptance/aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135/summary.md)
 
 ### T1.5
+
+- [PR #645 定向协议回归：12 / 12](../reports/acceptance/t15-20261012051304-2478597/summary.md)
 
 - [Provider 全量：1577 passed，28 failed](../reports/acceptance/t15-20261010040037-2623351/summary.md)
 - [定向：0 passed，1 failed](../reports/acceptance/t15-20261010043154-2665390/summary.md)
@@ -55,6 +64,8 @@ DeepSeek 与 MiniMax 的既有最终结论保持不变：所有真实调用单�
 - [Kimi 推理内容回归：35 / 35](../reports/acceptance/t15-20261010160418-3615574/summary.md)
 
 ### T2
+
+- [PR #645 定向真实调用：1 passed，1 review，0 failed](../reports/acceptance/aicc-2026-10-12T05-16-55-791Z-b9b6e4f3/summary.md)
 
 - [DeepSeek 与 Kimi / MiniMax 首轮目标矩阵](../reports/acceptance/aicc-2026-10-08T10-27-44-863Z-53cd8c14/summary.md)
 - [DeepSeek Flash vision.caption 最终结果](../reports/acceptance/aicc-2026-10-08T14-04-29-790Z-ded511de/summary.md)

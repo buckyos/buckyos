@@ -1679,6 +1679,14 @@
           "variants": { "reasoning-medium": { "thinking": { "type": "enabled" } } }
         },
         {
+          "model_ids": ["kimi-k2.8-preview"],
+          "variants": {
+            "reasoning-low": { "reasoning": { "effort": "low" } },
+            "reasoning-high": { "reasoning": { "effort": "high" } },
+            "reasoning-max": { "reasoning": { "effort": "max" } }
+          }
+        },
+        {
           "model_ids": ["kimi-k3"],
           "variants": {
             "reasoning-low": { "reasoning": { "effort": "low" } },
@@ -1887,6 +1895,21 @@
           "required_body_values": {
             "/req_params/speaker": "zh_female_vv_uranus_bigtts"
           },
+          "json_string_body_values": {
+            "/req_params/additions": {
+              "context_texts": ["Speak calmly"],
+              "explicit_language": "en"
+            }
+          },
+          "forbidden_body_paths": [
+            "/req_params/context_texts"
+          ],
+          "canonical_request_overrides": {
+            "voice": {
+              "language": "en-US",
+              "instructions": "Speak calmly"
+            }
+          },
           "success_content_type": "text/plain",
           "success_chunk_fixtures": [
             {
@@ -1917,7 +1940,7 @@
         {
           "id": "doubao-speech.asr.flash.v3",
           "protocol_adapter_id": "doubao-responses",
-          "error_fixture_key": "doubao-speech",
+          "error_fixture_key": "doubao-asr",
           "api_version": "v3",
           "api_types": [
             "audio.asr"
@@ -1985,7 +2008,7 @@
         {
           "id": "doubao-speech.asr.task.v3",
           "protocol_adapter_id": "doubao-responses",
-          "error_fixture_key": "doubao-speech",
+          "error_fixture_key": "doubao-asr",
           "api_version": "v3",
           "api_types": [
             "audio.asr"
@@ -2567,6 +2590,15 @@
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
   "error_fixtures": {
+    "doubao-asr": [
+      { "scenario": "empty_audio", "status": 200, "body": {}, "headers": { "x-api-status-code": "45000002", "x-api-message": "empty audio" } },
+      { "scenario": "invalid_audio_format", "status": 200, "body": {}, "headers": { "x-api-status-code": "45000151", "x-api-message": "invalid audio format" } },
+      { "scenario": "server_busy", "status": 200, "body": {}, "headers": { "x-api-status-code": "55000031", "x-api-message": "server busy" } },
+      { "scenario": "invalid_request", "status": 400, "body": { "header": { "reqid": "mock-doubao-speech-invalid", "code": 40000000, "message": "invalid request" } }, "headers": { "x-api-status-code": "40000000", "x-api-message": "invalid request" } },
+      { "scenario": "authentication", "status": 401, "body": { "header": { "reqid": "mock-doubao-speech-auth", "code": 45000010, "message": "Invalid X-Api-Key" } }, "headers": { "x-api-status-code": "45000010", "x-api-message": "Invalid X-Api-Key" } },
+      { "scenario": "rate_limit", "status": 429, "body": { "header": { "reqid": "mock-doubao-speech-rate-limit", "code": 42900000, "message": "rate limit reached" } }, "headers": { "x-api-status-code": "42900000", "x-api-message": "rate limit reached" } },
+      { "scenario": "server_error", "status": 500, "body": { "header": { "reqid": "mock-doubao-speech-server", "code": 50000000, "message": "internal service error" } }, "headers": { "x-api-status-code": "50000000", "x-api-message": "internal service error" } }
+    ],
     "doubao-speech": [
       { "scenario": "invalid_request", "status": 400, "body": { "header": { "reqid": "mock-doubao-speech-invalid", "code": 40000000, "message": "invalid request" } }, "headers": { "x-api-status-code": "40000000", "x-api-message": "invalid request" } },
       { "scenario": "authentication", "status": 401, "body": { "header": { "reqid": "mock-doubao-speech-auth", "code": 45000010, "message": "Invalid X-Api-Key" } }, "headers": { "x-api-status-code": "45000010", "x-api-message": "Invalid X-Api-Key" } },

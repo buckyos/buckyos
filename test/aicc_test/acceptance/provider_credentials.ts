@@ -13,6 +13,7 @@ const SUPPORTED_TOKEN_DRIVERS = [
   "doubao",
   "doubao-agent-plan",
   "doubao-speech",
+  "qwen",
 ] as const;
 
 export type ProviderTokenDriver = (typeof SUPPORTED_TOKEN_DRIVERS)[number];
@@ -23,6 +24,7 @@ export type ProviderInstanceOverrides = Partial<Record<
     enabled_inventory_models?: string[];
     base_url?: string;
     operation_base_urls?: Record<string, string>;
+    workspace?: string;
   }
 >>;
 
@@ -52,6 +54,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     doubao: "https://ark.cn-beijing.volces.com/api/v3",
     "doubao-agent-plan": "https://ark.cn-beijing.volces.com/api/plan/v3",
     "doubao-speech": "https://openspeech.bytedance.com",
+    qwen: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   };
   const adapters: Record<ProviderTokenDriver, string> = {
     openai: "openai-responses",
@@ -66,6 +69,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     doubao: "doubao-responses",
     "doubao-agent-plan": "doubao-responses",
     "doubao-speech": "doubao-responses",
+    qwen: "qwen-responses",
   };
   const profile = profileId(driver);
   return {
@@ -113,6 +117,7 @@ export function configuredProviderInstanceOverrides(
     const operationBaseUrls = values[
       `provider_credentials.${driver}.operation_base_urls`
     ];
+    const workspace = values[`provider_credentials.${driver}.workspace`];
     if (
       enabledModels !== undefined &&
       (!Array.isArray(enabledModels) ||
@@ -124,6 +129,9 @@ export function configuredProviderInstanceOverrides(
     }
     if (baseUrl !== undefined && (typeof baseUrl !== "string" || !baseUrl.trim())) {
       throw new Error(`provider_credentials.${driver}.base_url must be a non-empty string`);
+    }
+    if (workspace !== undefined && (typeof workspace !== "string" || !workspace.trim())) {
+      throw new Error(`provider_credentials.${driver}.workspace must be a non-empty string`);
     }
     if (
       operationBaseUrls !== undefined &&
@@ -138,12 +146,16 @@ export function configuredProviderInstanceOverrides(
         `provider_credentials.${driver}.operation_base_urls must contain operation=url strings`,
       );
     }
-    if (enabledModels === undefined && baseUrl === undefined && operationBaseUrls === undefined) continue;
+    if (
+      enabledModels === undefined && baseUrl === undefined &&
+      operationBaseUrls === undefined && workspace === undefined
+    ) continue;
     result[driver] = {
       ...(enabledModels === undefined
         ? {}
         : { enabled_inventory_models: enabledModels.map((modelId) => modelId.trim()).sort() }),
       ...(baseUrl === undefined ? {} : { base_url: baseUrl.trim() }),
+      ...(workspace === undefined ? {} : { workspace: workspace.trim() }),
       ...(operationBaseUrls === undefined
         ? {}
         : {
@@ -185,6 +197,7 @@ function applyInstanceOverrides(
     };
   }
   if (override.base_url) instance.base_url = override.base_url;
+  if (override.workspace) instance.workspace = override.workspace;
   if (override.operation_base_urls) {
     instance.operation_base_urls = {
       ...(object(instance.operation_base_urls) ?? {}),
@@ -246,6 +259,7 @@ export function applyProviderTokens(
         doubao: "doubao-main",
         "doubao-agent-plan": "doubao-agent-plan-main",
         "doubao-speech": "doubao-speech-main",
+        qwen: "qwen-main",
       };
       const created = defaultInstance(
         driver,

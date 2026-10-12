@@ -1625,6 +1625,14 @@
           "output_kinds": [
             "audio"
           ],
+          "request_defaults": {
+            "audio.tts": {
+              "voice": {
+                "language": "en",
+                "instructions": "Speak calmly"
+              }
+            }
+          },
           "source_urls": [
             "https://www.volcengine.com/docs/6561/1598757?lang=zh",
             "https://www.volcengine.com/docs/6257/2607681?lang=zh"

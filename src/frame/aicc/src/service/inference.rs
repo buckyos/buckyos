@@ -18,6 +18,21 @@ fn named_object_url_provider(settings: &AiccSettings) -> Arc<dyn NamedObjectUrlP
     }
 }
 
+fn cached_materialization(
+    cache: &[(
+        ResourceInputForm,
+        Vec<ResourceRef>,
+        Vec<RawMaterializedResource>,
+    )],
+    input_form: ResourceInputForm,
+    resources: &[ResourceRef],
+) -> Option<Vec<RawMaterializedResource>> {
+    cache
+        .iter()
+        .find(|(form, cached_resources, _)| *form == input_form && cached_resources == resources)
+        .map(|(_, _, materialized)| materialized.clone())
+}
+
 impl RuntimeInferencePort {
     pub(crate) fn new(
         runtime: Arc<RuntimeState>,
@@ -256,6 +271,11 @@ impl RuntimeInferencePort {
         caller: &AuthorizedCaller,
         request_id: &str,
         call: &mut ResolvedProviderCall,
+        cache: &mut Vec<(
+            ResourceInputForm,
+            Vec<ResourceRef>,
+            Vec<RawMaterializedResource>,
+        )>,
     ) -> Result<(), RPCErrors> {
         let context = ResourceAccessContext::new(
             caller.tenant_id.clone(),
@@ -311,14 +331,21 @@ impl RuntimeInferencePort {
                 _ => None,
             })
             .collect::<HashMap<_, _>>();
-        let inspected = manager
-            .inspect(&context, &resources)
-            .await
-            .map_err(resource_rpc_error)?;
-        let materialized = manager
-            .materialize_after_provider_selected(&context, &call.exact_model, inspected)
-            .await
-            .map_err(resource_rpc_error)?;
+        let materialized = match cached_materialization(cache, input_form, &resources) {
+            Some(materialized) => materialized,
+            None => {
+                let inspected = manager
+                    .inspect(&context, &resources)
+                    .await
+                    .map_err(resource_rpc_error)?;
+                let materialized = manager
+                    .materialize_after_provider_selected(&context, &call.exact_model, inspected)
+                    .await
+                    .map_err(resource_rpc_error)?;
+                cache.push((input_form, resources.clone(), materialized.clone()));
+                materialized
+            }
+        };
         for resource in materialized {
             let parts = resource.into_codec_parts().map_err(resource_rpc_error)?;
             if let Some(url) = parts.url.clone() {
@@ -680,11 +707,13 @@ impl InferencePort for RuntimeInferencePort {
         let mut primary = self
             .lower_call(routed.snapshot.as_ref(), &routed.decision, &exact_call)
             .await?;
+        let mut resource_cache = Vec::new();
         self.materialize_resources(
             routed.snapshot.settings.as_ref(),
             caller,
             &routed.request_id,
             &mut primary,
+            &mut resource_cache,
         )
         .await?;
         let mut failover = Vec::new();
@@ -696,15 +725,23 @@ impl InferencePort for RuntimeInferencePort {
                 .lower_call(routed.snapshot.as_ref(), &fallback_decision, &fallback_call)
                 .await
             {
-                call.context.resources = primary.context.resources.clone();
-                // Access scope belongs to the *request*, not to the candidate:
-                // tenant / caller / request id are identical for every
-                // failover target. Without this the candidate starts with no
-                // artifact scope and fails with a fabricated
-                // "inline artifact context is missing" before its Provider is
-                // ever contacted — masking the primary's real error.
-                call.resource_access_context = primary.resource_access_context.clone();
-                failover.push(call);
+                match self
+                    .materialize_resources(
+                        routed.snapshot.settings.as_ref(),
+                        caller,
+                        &routed.request_id,
+                        &mut call,
+                        &mut resource_cache,
+                    )
+                    .await
+                {
+                    Ok(()) => failover.push(call),
+                    Err(error) => log::warn!(
+                        "fallback_resource_materialization_failed: exact_model={} error={}",
+                        candidate.exact_model,
+                        error
+                    ),
+                }
             }
         }
         let receipt = self
@@ -1260,4 +1297,27 @@ pub(crate) trait DriverMetadataPort: Send + Sync {
         expected_settings_revision: u64,
         request: DriverMetadataUpdateSetReq,
     ) -> Result<DriverMetadataUpdateSetResponse, RPCErrors>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_materialization_cache_is_scoped_by_codec_input_form() {
+        let resources = vec![ResourceRef::url(
+            "https://cdn.example.com/audio.mp3".to_owned(),
+            None,
+        )];
+        let cache: Vec<(
+            ResourceInputForm,
+            Vec<ResourceRef>,
+            Vec<RawMaterializedResource>,
+        )> = vec![(ResourceInputForm::UrlOrBytes, resources.clone(), Vec::new())];
+
+        assert!(
+            cached_materialization(&cache, ResourceInputForm::UrlOrBytes, &resources).is_some()
+        );
+        assert!(cached_materialization(&cache, ResourceInputForm::BytesOnly, &resources).is_none());
+    }
 }
