@@ -72,14 +72,6 @@ pub async fn ensure_run_item_state(
     let item_kind = item.get_item_kind();
     match target_state {
         RunItemTargetState::Running => {
-            record_run_item_state(
-                item_name.as_str(),
-                item_kind,
-                &target_state,
-                None,
-                RunPlistItemState::PlannedStart,
-                None,
-            );
             let current_state =
                 observe_run_item_state(item, item_name.as_str(), item_kind, &target_state).await?;
             match &current_state {
@@ -217,14 +209,6 @@ pub async fn ensure_run_item_state(
             }
         }
         RunItemTargetState::Stopped => {
-            record_run_item_state(
-                item_name.as_str(),
-                item_kind,
-                &target_state,
-                None,
-                RunPlistItemState::PlannedStop,
-                None,
-            );
             let current_state =
                 observe_run_item_state(item, item_name.as_str(), item_kind, &target_state).await?;
             match &current_state {

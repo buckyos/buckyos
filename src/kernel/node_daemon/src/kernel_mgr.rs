@@ -30,7 +30,8 @@ impl KernelServiceRunItem {
         let pkg_id = pkg_desc
             .get_pkg_id_with_objid()
             .unwrap_or_else(|| pkg_desc.pkg_id.clone());
-        let service_pkg = ServicePkg::new(pkg_id.clone(), get_buckyos_system_bin_dir());
+        let mut service_pkg = ServicePkg::new(pkg_id.clone(), get_buckyos_system_bin_dir());
+        service_pkg.service_identity = app_id.to_string();
         Self {
             service_name: app_id.to_string(),
             pkg_desc,

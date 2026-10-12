@@ -38,7 +38,7 @@ pub use behaviors::{
 pub use cognition::{ConsolidationBatch, Hint, NotebookNote, RecallQuery};
 pub use connect::{
     connect, register_in_process, unregister_in_process, ConnectOptions, ForwardingStateClient,
-    StateLocator, WithBehaviors, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
+    StateLocator, WithBehaviors, WithNotify, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
 };
 pub use fs_client::{AgentLayout, FsAgentStateClient};
 pub use goals::{
@@ -216,4 +216,8 @@ pub trait AgentStateClient: Send + Sync {
     fn behaviors(&self) -> &dyn BehaviorCatalog;
     /// The agent's Goals (`state/goals/`).
     fn goals(&self) -> &dyn GoalStore;
+    /// The host's notification service (`None`: not available here).
+    fn notifies(&self) -> Option<&dyn crate::notify::NotifyHost> {
+        None
+    }
 }

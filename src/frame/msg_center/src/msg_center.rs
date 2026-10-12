@@ -51,7 +51,7 @@ const IDEMPOTENCY_GLOBAL_TARGET_ROWS: u64 = 80_000;
 const IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS: u64 = 10_000;
 
 #[derive(Debug, Default)]
-struct MessageCenterState {
+pub(crate) struct MessageCenterState {
     messages: HashMap<String, MsgObject>,
     receipts: HashMap<String, MsgReceiptObj>,
 }
@@ -62,7 +62,7 @@ struct MessageCenterState {
 #[derive(Clone, Debug)]
 pub(crate) struct TunnelRegistryEntry {
     pub(crate) transport_did: DID,
-    platform: String,
+    pub(crate) platform: String,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +86,11 @@ pub struct MessageCenter {
     /// Session token verifier used to derive the caller identity for
     /// owner-scoped authorization (see `owner_session.rs`).
     pub(crate) token_verifier: Arc<TokenVerifierSlot>,
+    /// System Notify (`notify.rs`).
+    pub(crate) notifies: crate::notify::NotifyStore,
+    pub(crate) notify_tasks: Arc<crate::notify::NotifyTasksSlot>,
+    pub(crate) notify_identity: Arc<RwLock<Option<(DID, Option<String>)>>>,
+    pub(crate) notify_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MessageCenter {
@@ -100,6 +105,7 @@ impl MessageCenter {
     pub async fn open_with_db(msg_box_db: MsgBoxDbMgr) -> std::result::Result<Self, RPCErrors> {
         let contact_mgr = ContactMgr::new_with_msg_box(msg_box_db.clone()).await?;
         let groups = crate::group_store::GroupStore::open(msg_box_db.clone()).await?;
+        let notifies = crate::notify::NotifyStore::open(msg_box_db.clone()).await?;
         let hosted = groups
             .list()
             .await?
@@ -118,6 +124,10 @@ impl MessageCenter {
             message_hub_did: Arc::new(OnceLock::new()),
             cyfs_dispatch: Arc::new(RwLock::new(Default::default())),
             token_verifier: Arc::new(TokenVerifierSlot::default()),
+            notifies,
+            notify_tasks: Arc::new(crate::notify::NotifyTasksSlot::default()),
+            notify_identity: crate::notify::notify_identity_slot(),
+            notify_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -257,7 +267,7 @@ impl MessageCenter {
         f(&guard)
     }
 
-    fn with_state_write<T, F>(&self, f: F) -> std::result::Result<T, RPCErrors>
+    pub(crate) fn with_state_write<T, F>(&self, f: F) -> std::result::Result<T, RPCErrors>
     where
         F: FnOnce(&mut MessageCenterState) -> std::result::Result<T, RPCErrors>,
     {
@@ -715,7 +725,7 @@ impl MessageCenter {
         }
     }
 
-    async fn store_message(
+    pub(crate) async fn store_message(
         msg_id: &ObjId,
         msg_json_str: &str,
     ) -> std::result::Result<(), RPCErrors> {
@@ -780,7 +790,7 @@ impl MessageCenter {
         msg.gen_obj_id().0
     }
 
-    fn ensure_message(state: &mut MessageCenterState, msg: MsgObject) -> MsgObject {
+    pub(crate) fn ensure_message(state: &mut MessageCenterState, msg: MsgObject) -> MsgObject {
         let msg_key = Self::message_obj_id(&msg).to_string();
         if let Some(existing) = state.messages.get(&msg_key) {
             return existing.clone();
@@ -789,7 +799,7 @@ impl MessageCenter {
         msg
     }
 
-    fn build_record_id(
+    pub(crate) fn build_record_id(
         owner: &DID,
         box_kind: &MailboxKind,
         msg_id: &ObjId,
@@ -1598,7 +1608,7 @@ impl MessageCenter {
         }
     }
 
-    async fn post_send_internal(
+    pub(crate) async fn post_send_internal(
         &self,
         msg: MsgObject,
         idempotency_key: Option<String>,
@@ -2005,7 +2015,7 @@ impl MessageCenter {
         }
     }
 
-    async fn update_record_state_internal(
+    pub(crate) async fn update_record_state_internal(
         &self,
         mut record: MailboxRecord,
         new_state: RecipientState,
@@ -2429,7 +2439,7 @@ impl MessageCenter {
         })
     }
 
-    async fn get_message_internal(
+    pub(crate) async fn get_message_internal(
         &self,
         msg_id: ObjId,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
@@ -3418,5 +3428,14 @@ impl MsgCenterHandler for MessageCenter {
         self.contact_mgr
             .set_group_subscribers(group_id, subscribers, contact_mgr_owner)
             .await
+    }
+
+    async fn handle_notify(
+        &self,
+        method: &str,
+        params: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<Value, RPCErrors> {
+        self.notify_rpc(method, params, ctx).await
     }
 }

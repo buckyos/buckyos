@@ -123,13 +123,21 @@ impl WaitingRun {
             .collect()
     }
 
-    /// Earliest `until_ms` of the suspended calls.
+    /// Earliest `until_ms` of the suspended calls (a question asked through
+    /// a notification: its deadline).
     pub(super) fn deadline_ms(&self) -> Option<u64> {
         self.snapshot
             .state
             .pending_calls()
             .iter()
-            .filter_map(|p| p.until_ms)
+            .filter_map(|p| {
+                p.until_ms.or_else(|| {
+                    p.task_id
+                        .strip_prefix(USER_INPUT_TASK_PREFIX)
+                        .and_then(|c| self.run.ask_notify(c))
+                        .map(|a| a.deadline_ms)
+                })
+            })
             .min()
     }
 }

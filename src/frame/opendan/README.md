@@ -46,6 +46,8 @@ Turn 与 task：zone 形态下每个 Turn 打开时在 TaskMgr 建 task（幂等
 
 Runtime：启动时在 Agent State 幂等补建内建 Runtime `container`（本进程所在环境，`roots` 为 AgentRoot 的 `workspaces/` 与 owner 的 home）与 `host`（宿主机，执行器落地前不可用），首页在 Workspace 旁列出。
 
+通知：Loader 有通知服务时（zone：msg-center `notify.*` 的 `ZoneNotify`，以 Agent 的 owner 为收件人；`--dev`：AgentRoot 下的文件实现，用 `xagent notify answer` 扮演用户），没有队列的 Work 的 `ask-user` 作为 `input` 通知发出、有界等待（缺省 3 小时，`[session.work] ask_user_timeout_secs`），Turn task 的等待原因为 `HumanInput`（code `ask_user`，`related_task_id` 为通知的任务）；Goal 的 `questions` 发成通知，回答以 `answer` Activation 回流。msg-center 把 Agent 通知的副本另投到会话后，在 Agent 自己 INBOX 该会话写的 `buckyos.notify.delivered` 记录被 msg bridge 转成该会话 UI Session 的 `_notify` 观察（没有 Session 时新建一代，回复坐标取自记录；UI Session 只在有消息时开口）。监视器按通知任务的 kevent（30 s 列表兜底）在回答后立即重新装载提问的 Session、让 Goal 立即收取回答。Agent State 服务透传 `notify.*`（见 Agent State Protocol §8）。
+
 ## 运行
 
 ```bash

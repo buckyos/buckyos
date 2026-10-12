@@ -22,6 +22,7 @@ import {
   getMessageDeliveryStatus,
   getMessageSenderName,
   getMessageStableId,
+  messageNotify,
   type RefItem,
   type DID,
   type MessageDeliveryStatus,
@@ -36,6 +37,7 @@ import { getObjectAccess } from './objectAccess'
 import { displayedContent, effectiveContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
 import { MessageTaskArea } from '../tasks/MessageTask'
 import { AgentQuestions } from './AgentQuestions'
+import { NotifyCard } from '../../notify/NotifyCard'
 import type { ConversationListItem } from './types'
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉']
@@ -97,6 +99,7 @@ const messageRenderers: readonly MessageRenderer[] = [
   message => message.ui_unavailable === true ? <UnavailableMessage message={message} /> : null,
   (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null,
   (message, context) => messageRelations(message)?.redacted ? <RedactedMessage message={message} context={context} /> : null,
+  (message, context) => messageNotify(message) ? <NotifyMessage message={message} context={context} /> : null,
   (message, context) => hasAttachmentRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
   (message, context) => isTextFormat(effectiveContent(message).format) ? <TextMessage message={message} context={context} /> : null,
   renderFallbackMessage,
@@ -741,6 +744,17 @@ function ActionMessage({ message }: { message: MessageObject }) {
     if (knownActions.has(data.action)) summary = t(`messagehub.action.${data.action}`, undefined, { actor, subject })
   } else if (data?.schema_version !== 1) summary = `${t('messagehub.action.unsupported')} · ${summary}`
   return <div data-testid="action-message" className="mx-auto my-2 max-w-xl rounded-lg bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-3 py-2 text-center text-xs text-[color:var(--cp-muted)] break-words">{summary}</div>
+}
+
+/** A System Notify card: the record in a category session, or a copy in a conversation with its Agent. */
+function NotifyMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const data = messageNotify(message)
+  if (!data) return null
+  return (
+    <div className={rowClass(false, context.continued)}>
+      <NotifyCard message={message} data={data} className={`${bubbleWidthClass} w-[420px] min-w-[240px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} footer={<MessageFooter message={message} isSelf={false} mode="card" />} />
+    </div>
+  )
 }
 
 function GroupNoticeMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {

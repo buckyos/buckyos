@@ -1,5 +1,6 @@
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
+use crate::msg_notify::*;
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
@@ -3488,6 +3489,87 @@ impl MsgCenterClient {
             }
         }
     }
+    async fn notify_call<Req: Serialize, Resp: DeserializeOwned>(
+        &self,
+        method: &str,
+        req: &Req,
+        type_name: &str,
+    ) -> std::result::Result<Resp, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let params = serialize_to_json(req, type_name)?;
+                let result = handler
+                    .handle_notify(method, params, RPCContext::default())
+                    .await?;
+                parse_rpc_response(result, type_name)
+            }
+            Self::KRPC(client) => {
+                let params = serialize_to_json(req, type_name)?;
+                let result = client.call(method, params).await?;
+                parse_rpc_response(result, type_name)
+            }
+        }
+    }
+
+    /// Notify a zone user (System Notify, see `msg_notify`).
+    pub async fn notify_send(
+        &self,
+        req: NotifySendReq,
+    ) -> std::result::Result<NotifyView, RPCErrors> {
+        self.notify_call(METHOD_NOTIFY_SEND, &req, "NotifyView").await
+    }
+
+    pub async fn notify_get(&self, notify_id: &str) -> std::result::Result<NotifyView, RPCErrors> {
+        let req = NotifyGetReq {
+            notify_id: notify_id.to_string(),
+        };
+        self.notify_call(METHOD_NOTIFY_GET, &req, "NotifyView").await
+    }
+
+    pub async fn notify_list(
+        &self,
+        req: NotifyListReq,
+    ) -> std::result::Result<NotifyListResult, RPCErrors> {
+        self.notify_call(METHOD_NOTIFY_LIST, &req, "NotifyListResult")
+            .await
+    }
+
+    /// Mark a `notice` read; `on_behalf` names who acknowledges for the user.
+    pub async fn notify_ack(
+        &self,
+        notify_id: &str,
+        on_behalf: Option<String>,
+    ) -> std::result::Result<NotifyView, RPCErrors> {
+        let req = NotifyAckReq {
+            notify_id: notify_id.to_string(),
+            on_behalf,
+        };
+        self.notify_call(METHOD_NOTIFY_ACK, &req, "NotifyView").await
+    }
+
+    pub async fn notify_dismiss(
+        &self,
+        notify_id: &str,
+    ) -> std::result::Result<NotifyView, RPCErrors> {
+        let req = NotifyDismissReq {
+            notify_id: notify_id.to_string(),
+        };
+        self.notify_call(METHOD_NOTIFY_DISMISS, &req, "NotifyView")
+            .await
+    }
+
+    pub async fn notify_cancel(
+        &self,
+        notify_id: &str,
+        reason: Option<String>,
+    ) -> std::result::Result<NotifyView, RPCErrors> {
+        let req = NotifyCancelReq {
+            notify_id: notify_id.to_string(),
+            reason,
+        };
+        self.notify_call(METHOD_NOTIFY_CANCEL, &req, "NotifyView")
+            .await
+    }
 }
 
 #[async_trait]
@@ -3953,6 +4035,17 @@ pub trait MsgCenterHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<SetGroupSubscribersResult, RPCErrors>;
 
+    /// `notify.*` (System Notify). `params` is the request of `method`;
+    /// the result is the response JSON.
+    async fn handle_notify(
+        &self,
+        method: &str,
+        params: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<Value, RPCErrors> {
+        let _ = (params, ctx);
+        Err(RPCErrors::UnknownMethod(method.to_string()))
+    }
 }
 
 pub struct MsgCenterServerHandler<T: MsgCenterHandler>(pub T);
@@ -4495,6 +4588,11 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     )
                     .await?;
                 RPCResult::Success(json!(result))
+            }
+            METHOD_NOTIFY_SEND | METHOD_NOTIFY_GET | METHOD_NOTIFY_LIST | METHOD_NOTIFY_ACK
+            | METHOD_NOTIFY_DISMISS | METHOD_NOTIFY_CANCEL => {
+                let result = self.0.handle_notify(req.method.as_str(), req.params, ctx).await?;
+                RPCResult::Success(result)
             }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };

@@ -177,6 +177,10 @@ p, admin,obj://msg-center/group_inbox/*,read,allow
 p, admin,obj://msg-center/request_box/*,read|write,allow
 p, admin,obj://msg-center/owners/*,read|write,allow
 p, admin,obj://msg-center/group,create,allow
+p, users,obj://msg-center/notify,read|write,allow
+p, admin,obj://msg-center/notify,read|write,allow
+p, app,obj://msg-center/notify,read|write,allow
+p, frame,obj://msg-center/notify,read|write,allow
 p, system:opendan,obj://msg-center/*,all,allow
 p, system:msg-center,obj://msg-center/*,all,allow
 p, agent_runtime,obj://msg-center/*,all,allow
@@ -276,6 +280,30 @@ mod tests {
     // otherwise a parallel test can swap the policy out from under us.
     lazy_static! {
         static ref TEST_LOCK: Mutex<()> = Mutex::new(());
+    }
+
+    #[tokio::test]
+    async fn an_app_may_notify_its_user_but_not_read_the_mailbox() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, users\ng, ood1, ood\ng, app:notes, app"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let notify = "obj://msg-center/notify";
+        assert!(rbac::enforce("alice", "app:notes", notify, "write", None).await);
+        assert!(rbac::enforce("alice", "app:notes", notify, "read", None).await);
+        assert!(rbac::enforce("alice", "system:control-panel", notify, "read", None).await);
+        assert!(rbac::enforce("ood1", "system:aiworkspace", notify, "write", None).await);
+        assert!(
+            !rbac::enforce(
+                "alice",
+                "app:notes",
+                "obj://msg-center/inbox/did:bns:alice",
+                "read",
+                None
+            )
+            .await
+        );
     }
 
     #[tokio::test]

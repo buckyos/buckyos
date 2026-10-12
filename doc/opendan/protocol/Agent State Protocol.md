@@ -179,6 +179,7 @@ Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one"
 - 只承载读与带署名的写：`sessions.register`（`created_by` 必须是调用方）、`sessions.post_input`（`from` 由服务端改写为调用方）、`cognition.notebook_append`、`artifacts.decide`（服务端在调用期间持有 `artifact:<aid>` 锁）、`goals.create / revise / set_status / reopen / restart`（调用方 = 服务端看到的身份，`session` 参数是调用方自报的所在 Session，§9.5）。
 - Goal 的驱动者 / 宿主写（`goals.write_state`、`goals.append_activations`、`goals.prepare_epoch`、`goals.end_epoch`、`goals.write_schedule`）一律拒绝（错误说明需要 AgentRoot）。
 - 驱动者在 lease 下的写入（`report_state`、`perception.append`、`commit_cursor`、`register_version`、`update_location`、`commit_consolidation`）与 Agent 级锁依赖 flock，不经 kRPC：驱动者必须能看到 AgentRoot。
+- 通知（宿主有通知服务时）：`notify.send {request: NotifySendReq}`、`notify.state {notify_id}`、`notify.list {request?: NotifyListReq}`、`notify.cancel {notify_id, reason}`、`notify.answer {notify_id, answer: {dismiss?, option?, text?}, via?: {agent_did, session_id?, input?}}`，转给宿主的 `NotifyHost`（zone：msg-center `notify.*` + TaskMgr；`--dev`：`state/notifies/<id>.json` 文件实现 `LocalNotify`，目录存在即启用）。服务端按请求里 `source.session_id` 从登记表补全来源（所属 Goal、用户所在的会话）。没有通知服务时报 `notifications are not available here`；通知已结束时报 `notify_conflict`（附当前状态）。请求与视图类型见 `doc/message_hub/System Notify.md`。
 - 错误以 `{"kind","message"}` 的 JSON 文本传回，`kind` 与文件实现的错误种类相同（`input_full` 另带 `session_id`、`pending`，`queue_missing` 另带 `session_id`），调用方按种类处理（如 `input_full`、`queue_missing` 可重试）。
 
 

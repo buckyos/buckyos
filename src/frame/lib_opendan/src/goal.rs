@@ -105,7 +105,14 @@ pub fn event_name(kind: ActivationReasonKind) -> &'static str {
         ActivationReasonKind::Child => "child",
         ActivationReasonKind::Feedback => "feedback",
         ActivationReasonKind::Event => "event",
+        ActivationReasonKind::Answer => "answer",
     }
+}
+
+/// Input key of the answer to a Goal question (`notify_id`: its
+/// notification).
+pub fn answer_key(goal_id: &str, notify_id: &str) -> String {
+    format!("goal:{goal_id}:answer:{notify_id}")
 }
 
 /// The reason an input of an Activation's batch stands for.
@@ -124,9 +131,13 @@ pub fn reason_of(input: &FetchedInput) -> ActivationReason {
                 "scheduled" => ActivationReasonKind::Scheduled,
                 "reopened" => ActivationReasonKind::Reopened,
                 "restarted" => ActivationReasonKind::Restarted,
+                "answer" => ActivationReasonKind::Answer,
                 _ => ActivationReasonKind::Manual,
             };
             let mut r = base(kind);
+            if kind == ActivationReasonKind::Answer {
+                r.reference = input.key.rsplit_once(":answer:").map(|(_, id)| id.to_string());
+            }
             if kind == ActivationReasonKind::Scheduled {
                 r.missed = input
                     .key

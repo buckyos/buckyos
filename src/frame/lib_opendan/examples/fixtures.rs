@@ -117,6 +117,19 @@ impl LlmClient for Script {
                     )
                 }
             }
+            "ask_notify" => {
+                if all.contains("<tool_result q1") {
+                    text("migrated to Postgres")
+                } else {
+                    let pending = json!({
+                        "agent_tool_protocol": "1", "tool": "ask-user", "status": "pending",
+                        "task_id": "userinput:q1", "summary": "waiting for the answer",
+                        "detail": { "question": "Postgres or SQLite?", "input": { "kind": "choice",
+                            "options": [ { "id": "pg", "label": "Postgres" }, { "id": "lite", "label": "SQLite" } ] } },
+                    });
+                    tool("q1", "shell", json!({ "command": format!("printf '%s' '{pending}'") }))
+                }
+            }
             "goal_no_action" => tool(
                 "goal-report",
                 "report",
@@ -933,6 +946,83 @@ async fn gen(out: &Path) -> R<()> {
                     "activations": 1
                 },
                 "session": { "run_state": "waiting", "waiting_for": "event", "finished": false }
+            }));
+        relativize(&d);
+    }
+    {
+        // A Work waiting for the answer to a question it asked through a
+        // notification (files of the AgentRoot: LocalNotify), and a UI
+        // session that observed a notification shown in its conversation.
+        let d = scen("17_notify");
+        let env = Env::new(&d);
+        let local = Arc::new(libopendan::notify::LocalNotify::enable(&d.join("agent_root"), AGENT)?);
+        let mut spec = libopendan::SessionTemplate::load("work", None)?.spec("Pick the database of the notes app");
+        spec.prompt.llm_context = json!({ "tools": { "enabled": true } });
+        let wsd = env.create("work-notify", spec).await;
+        let mut deps = env.deps("ask_notify");
+        deps.notify = Some(local.clone());
+        let r = drive(&wsd, &deps, StopWhen::Idle).await;
+        assert!(matches!(r, libopendan::runner::DriveResult::Idle { .. }), "{r:?}");
+        let st = wsd.state()?;
+        let w = st.waiting_for.clone().unwrap();
+        assert_eq!(w.kind, WaitingKind::Input);
+        let views = libopendan::notify::NotifyHost::list(local.as_ref(), Default::default()).await?;
+        assert_eq!(views.len(), 1);
+        let asked = &views[0];
+        let mut ui = libopendan::SessionTemplate::load("ui", None)?.spec("chat with alice");
+        ui.route_key = Some(format!("{AGENT}/dm%3Adid%3Abns%3Aalice"));
+        ui.outbound = Some(OutboundBinding {
+            to: "did:bns:alice".into(),
+            to_session: None,
+            kind: "chat".into(),
+        });
+        let usd = env.create("ui-notify", ui).await;
+        let data = buckyos_api::NotifyDeliveredData {
+            notify_id: asked.notify_id.clone(),
+            url: asked.url.clone(),
+            kind: asked.kind,
+            category: asked.category,
+            level: asked.level,
+            title: "Postgres or SQLite?".into(),
+            message: None,
+            options: libopendan::notify::prompt_options(&asked.prompt),
+            source: buckyos_api::NotifySource {
+                session_id: Some(wsd.sid().to_string()),
+                ..Default::default()
+            },
+            delivered_msg_id: None,
+            reply_route: buckyos_api::NotifyConversation {
+                to: "did:bns:alice".into(),
+                to_session: None,
+            },
+            at_ms: FIXTURE_MS,
+        };
+        let (key, ev) = libopendan::notify::notify_event(&data, "dm:did:bns:alice");
+        let mut posted = PostedInput::event(APP, key, ev);
+        posted.at_ms = FIXTURE_MS;
+        env.post(&usd, posted).await;
+        let _ = drive(&usd, &env.deps("answer"), StopWhen::Idle).await;
+        assert_eq!(usd.state()?.pending_events.len(), 1);
+        let mut work_obs = observe(&wsd);
+        work_obs["waiting_for"] = serde_json::to_value(&w)?;
+        let mut ui_obs = observe(&usd);
+        ui_obs["pending_events"] = serde_json::to_value(&usd.state()?.pending_events)?;
+        write_expected(&d, "notify",
+            "Work work-notify asked the user with `ask-user` (call q1) and, nobody reading it, the question went out as an `input` notification (agent_root/state/notifies/, run.json host.extra.asks.q1.notify): state waits for input with the deadline and the notification's task. UI session ui-notify holds a `_notify` observation of that notification in its conversation, not injected yet (it opened no Turn).",
+            vec![work_obs, ui_obs],
+            json!({
+                "work": {
+                    "action": "answer_the_notification_then_fill_q1_once",
+                    "answer": { "option": "pg" },
+                    "tool_result_q1": { "option": "pg", "text": "Postgres", "via": "notification", "notify_id": asked.notify_id },
+                    "llm_calls": 1,
+                    "report": "migrated to Postgres"
+                },
+                "ui": {
+                    "action": "show_the_observation_with_the_next_message",
+                    "snapshot_line_starts_with": format!("[notify {}] input/timely", asked.notify_id),
+                    "turns_opened_by_the_observation": 0
+                }
             }));
         relativize(&d);
     }

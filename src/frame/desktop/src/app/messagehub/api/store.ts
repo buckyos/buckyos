@@ -13,7 +13,6 @@ import { buckyos } from 'buckyos'
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
-import { dictionaries } from '../../../i18n/dictionaries'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
 import { registerObjectAccess } from '../conversation/history/objectAccess'
@@ -24,7 +23,7 @@ import {
 } from '../datamodel/sessionApi'
 import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
-import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
+import { isValidMsgSessionId, notifySessionCategory, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
@@ -34,6 +33,7 @@ import { apiObjectAccess } from './objects'
 import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
 import { emptyHistory, itemToMessage, messageId as messageIdOf, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
 import { uploadAttachments } from './upload'
+import { translate } from '../translate'
 
 const SESSION_PAGE_SIZE = 50
 const HISTORY_PAGE_SIZE = 64
@@ -46,7 +46,6 @@ const RUNTIME_POLL_MS = 5_000
 const DELIVERY_FOLLOW_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000, 8_000]
 const TYPING_TTL_MS = 30_000
 const STATUS_LINE_TTL_MS = 10 * 60_000
-const LOCALE_STORAGE_KEY = 'buckyos.prototype.locale.v1'
 
 interface GroupSummaryEntry {
   name: string
@@ -100,13 +99,6 @@ interface ReceiptState {
 
 const RECEIPT_PAGE = 256
 
-function translate(key: string, fallback?: string): string {
-  let locale = 'en'
-  try { locale = window.localStorage.getItem(LOCALE_STORAGE_KEY) ?? 'en' } catch { /* no storage */ }
-  const table = (dictionaries as Record<string, Record<string, string>>)[locale] ?? dictionaries.en
-  return table[key] ?? dictionaries.en[key] ?? fallback ?? key
-}
-
 function labels(): ProjectionLabels {
   return {
     direct: translate('messagehub.session.direct', 'Direct Message'),
@@ -118,6 +110,8 @@ function labels(): ProjectionLabels {
     previewImage: translate('messagehub.preview.image', '[Image]'),
     previewAttachment: translate('messagehub.preview.attachment', '[Attachment]'),
     previewUnavailable: translate('messagehub.preview.unavailable', 'Message unavailable'),
+    systemNotify: translate('messagehub.notify.entity', 'System notifications'),
+    notifyCategories: { todo: translate('messagehub.notify.category.todo', 'To-do'), agent: translate('messagehub.notify.category.agent', 'Agent'), app: translate('messagehub.notify.category.app', 'App notifications') },
   }
 }
 
@@ -458,7 +452,7 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   admission(context: MessageHubContext, entityId: string): EntityAdmission | null {
-    if (entityId === UNASSIGNED_ENTITY_ID || entityId === context.ownerDid) return null
+    if (entityId === UNASSIGNED_ENTITY_ID || entityId === context.ownerDid || this.findEntity(context, entityId)?.systemNotify) return null
     const contact = this.owner(context.ownerDid).contacts.find(item => item.did === entityId)
     const grant = contact?.temp_grants?.filter(item => item.expires_at * 1000 > this.now() || item.expires_at > this.now()).sort((a, b) => b.expires_at - a.expires_at)[0]
     return {
@@ -694,6 +688,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const own = context.mode === 'self' && context.ownerDid === this.selfDid && context.viewerDid === this.selfDid
     const base: SessionAccess = { mode: 'read_only', canManage: own, canEnableWrite: false, canEditPresentation: own, canEditSharedState: false, canEditOwnMemberState: false }
     if (!own) return { ...base, canManage: false, canEditPresentation: false, readOnlyReason: 'agent_observer' }
+    if (notifySessionCategory(session.id)) return { ...base, readOnlyReason: 'system_notify' }
     if (session.binding.kind === 'unknown') return { ...base, readOnlyReason: 'binding_unknown' }
     if (session.binding.kind === 'tunnel') {
       if (!session.binding.connected || !session.binding.canSend) return { ...base, readOnlyReason: 'transport_unavailable' }

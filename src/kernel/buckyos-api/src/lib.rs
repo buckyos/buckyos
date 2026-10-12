@@ -7,6 +7,7 @@ mod content_mgr_client;
 mod control_panel;
 mod device_identity;
 mod msg_center_client;
+mod msg_notify;
 mod aiworkspace_client;
 mod homestation_client;
 mod nfs_server_client;
@@ -69,6 +70,7 @@ pub use cyfs_gateway_api::{
 };
 pub use device_identity::*;
 pub use msg_center_client::*;
+pub use msg_notify::*;
 pub use aiworkspace_client::*;
 pub use homestation_client::*;
 pub use nfs_server_client::*;

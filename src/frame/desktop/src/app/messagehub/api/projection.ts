@@ -5,7 +5,7 @@
  */
 import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from '../types'
 import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
-import type { MessageObject } from '../protocol/msgobj'
+import { messageNotify, notifySessionCategory, type MessageObject, type NotifyCategory } from '../protocol/msgobj'
 import { isActionMessage, isMessageActivity } from '../sessionModel'
 import { didDisplayName, usableImageUrl } from '../../../presentation/model'
 
@@ -23,6 +23,10 @@ export interface ProjectionLabels {
   previewImage: string
   previewAttachment: string
   previewUnavailable: string
+  /** Name of the system notify sender's entity. */
+  systemNotify?: string
+  /** Titles of the notification sessions. */
+  notifyCategories?: Partial<Record<NotifyCategory, string>>
 }
 
 export interface ProjectionInput {
@@ -178,6 +182,9 @@ export function summarizeMessage(msg: MessageObject | null | undefined, labels: 
   if (!msg) return labels.previewUnavailable
   const content = msg.content.content ?? ''
   if (isActionMessage(msg)) return content || labels.previewUnavailable
+  // A notification reads as its title; the plain-text body is for clients that do not know the intent.
+  const notifyTitle = messageNotify(msg)?.prompt.title?.trim()
+  if (notifyTitle) return notifyTitle.length > 120 ? `${notifyTitle.slice(0, 120)}…` : notifyTitle
   const refs = msg.content.refs ?? []
   const dataRef = refs.find(ref => ref.target.type === 'data_obj')
   const format = msg.content.format ?? 'text/plain'
@@ -200,6 +207,8 @@ interface EntitySeed {
   domain: 'managed' | 'external'
   contact?: Contact
   sources: Set<string>
+  /** The system notify sender: the peer of the `sysnotify:*` sessions. */
+  systemNotify?: boolean
 }
 
 function bindingFor(peerDid: string, contacts: readonly Contact[], summary: SessionSummary | null): SessionBinding {
@@ -289,21 +298,35 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
   const sessions: Session[] = []
   const sessionsByEntity = new Map<string, Session[]>()
   for (const summary of input.summaries) {
+    // A notification session without a record is not shown.
+    const notifyCategory = notifySessionCategory(summary.session_id)
+    if (notifyCategory && !summary.last_record) continue
     const attribution = attributeSession(summary, ownerDid)
     const rawPeer = attribution.peerDid
     const peerDid = rawPeer ? canonicalizeDid(rawPeer, contacts) : null
     const entityId = peerDid ?? UNASSIGNED_ENTITY_ID
-    if (peerDid) ensureSeed(peerDid, { isGroup: attribution.isGroup, fromName: summary.last_record?.record.from_name })
+    if (peerDid) {
+      const seed = ensureSeed(peerDid, { isGroup: attribution.isGroup, fromName: summary.last_record?.record.from_name })
+      if (notifyCategory) {
+        seed.systemNotify = true
+        seed.type = 'service'
+        seed.domain = 'managed'
+        seed.name = labels.systemNotify ?? seed.name
+        names[peerDid] = seed.name
+      }
+    }
     const binding: SessionBinding = peerDid ? bindingFor(rawPeer ?? peerDid, contacts, summary) : { kind: 'unknown' }
     const msg = summary.last_record?.msg ?? undefined
     const lastMessage: MessagePreview | undefined = summary.last_record
       ? { senderName: attribution.isGroup && msg ? (msg.from === ownerDid ? labels.you : names[canonicalizeDid(msg.from, contacts)] ?? shortDid(msg.from)) : undefined, text: summarizeMessage(msg, labels), timestamp: summary.last_record.record.sort_key }
       : undefined
-    const registeredTitle = summary.state?.registered ? summary.state.title?.trim() || input.groupSessionTitles[summary.session_id] || '' : ''
+    // A notification session is titled by its category in the viewer's language, not by its registered title.
+    const registeredTitle = summary.state?.registered && !notifyCategory ? summary.state.title?.trim() || input.groupSessionTitles[summary.session_id] || '' : ''
     // `thread.topic` is a display hint only; the session key is always the
     // server-side `session_id` (derived from `to_session` since MsgObject v2).
     const topic = msg?.thread?.topic?.trim()
-    const derivedTitle = topic && topic !== summary.session_id && !summary.session_id.startsWith('dm:') ? topic
+    const derivedTitle = notifyCategory ? labels.notifyCategories?.[notifyCategory] ?? notifyCategory
+      : topic && topic !== summary.session_id && !summary.session_id.startsWith('dm:') ? topic
       : summary.session_id.startsWith('dm:') ? labels.direct
       : attribution.isGroup && peerDid && summary.session_id === peerDid ? labels.groupMain
       : attribution.isGroup && peerDid && summary.state?.origin === 'group' ? labels.untitled
@@ -359,6 +382,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       sources: [...seed.sources],
       domain: seed.domain,
       sessionCount: own.length,
+      ...(seed.systemNotify ? { systemNotify: true } : {}),
     }
     details[seed.id] = {
       ...entity,
@@ -375,7 +399,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
   const hiddenEntities: Entity[] = []
   for (const seed of seeds.values()) {
     const entity = toEntity(seed)
-    if (isHiddenAccount({ did: seed.id, name: seed.name, tags: seed.contact?.tags }, ownerDid, input.hiddenAccounts)) hiddenEntities.push(entity)
+    if (!seed.systemNotify && isHiddenAccount({ did: seed.id, name: seed.name, tags: seed.contact?.tags }, ownerDid, input.hiddenAccounts)) hiddenEntities.push(entity)
     else entities.push(entity)
   }
   const unassigned = sessionsByEntity.get(UNASSIGNED_ENTITY_ID) ?? []

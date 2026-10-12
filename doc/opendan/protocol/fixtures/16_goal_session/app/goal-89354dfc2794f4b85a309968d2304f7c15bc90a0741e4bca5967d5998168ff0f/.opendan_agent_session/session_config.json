@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "goal",
     "class": "goal",
-    "created_at_ms": 1791742053157,
+    "created_at_ms": 1791771748767,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "opendan"
@@ -33,7 +33,8 @@
       "load_hints": true,
       "max_process_depth": 4,
       "max_sub_sessions": 4,
-      "max_session_depth": 2
+      "max_session_depth": 2,
+      "ask_user_timeout_secs": 10800
     },
     "goal": {
       "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",

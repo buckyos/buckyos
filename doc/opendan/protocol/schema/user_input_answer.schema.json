@@ -40,7 +40,14 @@
       "type": "boolean"
     },
     "msg_id": {
+      "description": "The message (empty when the answer came through a notification).",
       "type": "string"
+    },
+    "notify_id": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "option": {
       "description": "Option id picked (`agent_ask.answer` of this call).",
@@ -51,6 +58,13 @@
     },
     "text": {
       "type": "string"
+    },
+    "via": {
+      "description": "`notification`: answered on the notification card, not by a message.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

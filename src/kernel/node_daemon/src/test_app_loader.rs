@@ -890,8 +890,11 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
-    assert!(start.commands[1].args.iter().any(|arg| arg
-        == "<app_data>:/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example:rw"));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg
+            == "<app_data>:/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example:rw"));
     assert!(start.commands[1]
         .args
         .iter()
@@ -1352,4 +1355,350 @@ async fn concurrent_prepare_exttool_volume_runs_pull_and_seed_exactly_once() {
         1,
         "the volume seeding run must happen exactly once: {entries:?}"
     );
+}
+
+struct DockerObservationFixture {
+    commands: Vec<Vec<String>>,
+    container: Option<serde_json::Value>,
+    repo_digests: Vec<String>,
+    image_exists: bool,
+    image_inspect_fails: bool,
+}
+
+fn docker_observation_fixture(
+    image_id: &str,
+) -> (
+    AppServiceInstanceConfig,
+    Arc<Mutex<DockerObservationFixture>>,
+) {
+    let app_doc = build_appservice_doc();
+    let mut spec = build_test_app_spec(app_doc.clone(), build_spec_config(&app_doc));
+    let platform = PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64);
+    spec.packages
+        .retain(|package| package_matches_platform(&package.sub_pkg_name, platform));
+    let config = AppServiceInstanceConfig::new("ood1", &spec).unwrap();
+    let desc = config
+        .node_execution_spec
+        .packages
+        .get("amd64_docker_image")
+        .unwrap();
+    let labels = HashMap::from([
+        (DOCKER_LABEL_PKG_ID, desc.pkg_id.clone()),
+        (
+            DOCKER_LABEL_PKG_OBJID,
+            desc.pkg_objid.as_ref().unwrap().to_string(),
+        ),
+        (DOCKER_LABEL_IMAGE_DIGEST, "sha256:deadbeef".to_string()),
+        (
+            DOCKER_LABEL_APP_DOC_OBJECT_ID,
+            config.deployment.app_doc_object_id.to_string(),
+        ),
+        (
+            DOCKER_LABEL_SPEC_GENERATION,
+            config.deployment.spec_generation.to_string(),
+        ),
+    ]);
+    let container = serde_json::json!({
+        "Id": "container-one",
+        "Image": image_id,
+        "State": { "Running": true, "Health": { "Status": "healthy" } },
+        "Config": { "Labels": labels },
+    });
+    (
+        config,
+        Arc::new(Mutex::new(DockerObservationFixture {
+            commands: Vec::new(),
+            container: Some(container),
+            repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
+            image_exists: true,
+            image_inspect_fails: false,
+        })),
+    )
+}
+
+fn docker_observation_loader(
+    config: &AppServiceInstanceConfig,
+    fixture: &Arc<Mutex<DockerObservationFixture>>,
+) -> AppLoader {
+    let fixture = fixture.clone();
+    let runner: DockerCommandRunner = Arc::new(move |args| {
+        let fixture = fixture.clone();
+        Box::pin(async move {
+            let mut fixture = fixture.lock().unwrap();
+            fixture.commands.push(args.clone());
+            let stdout = match args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["container", "inspect", ..] => {
+                    let Some(container) = fixture.container.as_ref() else {
+                        return DockerExecOutcome {
+                            ok: false,
+                            stdout: String::new(),
+                            stderr: "No such container".to_string(),
+                        };
+                    };
+                    container.to_string()
+                }
+                ["container", "ls", ..] => String::new(),
+                ["image", "inspect", "--format={{json .RepoDigests}}", ..] => {
+                    if fixture.image_inspect_fails {
+                        return DockerExecOutcome {
+                            ok: false,
+                            stdout: String::new(),
+                            stderr: "docker daemon unavailable".to_string(),
+                        };
+                    }
+                    serde_json::to_string(&fixture.repo_digests).unwrap()
+                }
+                ["images", "-q", ..] => if fixture.image_exists {
+                    "image-present"
+                } else {
+                    ""
+                }
+                .to_string(),
+                _ => panic!("unexpected docker observation command: {args:?}"),
+            };
+            DockerExecOutcome {
+                ok: true,
+                stdout,
+                stderr: String::new(),
+            }
+        })
+    });
+    AppLoader::new_for_service(
+        &config.node_execution_spec.app_instance_id.to_string(),
+        config.clone(),
+    )
+    .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+    .with_container_support_override(true)
+    .with_docker_command_runner(runner)
+}
+
+#[tokio::test]
+async fn deployment_observation_reads_state_health_and_identity_with_one_inspect() {
+    let (config, fixture) = docker_observation_fixture("sha256:observation-label-match");
+    let loader = docker_observation_loader(&config, &fixture);
+    for (running, health, state, expected_health) in [
+        (
+            true,
+            "healthy",
+            ServiceInstanceState::Started,
+            buckyos_api::DeploymentHealth::Healthy,
+        ),
+        (
+            true,
+            "unhealthy",
+            ServiceInstanceState::Started,
+            buckyos_api::DeploymentHealth::Unhealthy,
+        ),
+        (
+            true,
+            "starting",
+            ServiceInstanceState::Started,
+            buckyos_api::DeploymentHealth::Unknown,
+        ),
+        (
+            false,
+            "healthy",
+            ServiceInstanceState::Exited,
+            buckyos_api::DeploymentHealth::Unhealthy,
+        ),
+    ] {
+        {
+            let mut fixture = fixture.lock().unwrap();
+            fixture.commands.clear();
+            let container = fixture.container.as_mut().unwrap();
+            container["State"]["Running"] = serde_json::json!(running);
+            container["State"]["Health"]["Status"] = serde_json::json!(health);
+        }
+        let observation = loader.observe_deployment().await.unwrap();
+        assert_eq!(observation.state, state);
+        assert_eq!(observation.health, expected_health);
+        assert_eq!(observation.container_id.as_deref(), Some("container-one"));
+        assert_eq!(
+            observation.identity.unwrap().image_id.as_deref(),
+            Some("sha256:observation-label-match")
+        );
+        let fixture = fixture.lock().unwrap();
+        assert_eq!(fixture.commands.len(), 1, "{:?}", fixture.commands);
+        assert_eq!(&fixture.commands[0][..2], ["container", "inspect"]);
+    }
+}
+
+#[tokio::test]
+async fn deployment_observation_uses_container_image_id_without_image_inspect() {
+    let (config, fixture) = docker_observation_fixture("sha256:deadbeef");
+    fixture.lock().unwrap().container.as_mut().unwrap()["Config"]["Labels"]
+        .as_object_mut()
+        .unwrap()
+        .remove(DOCKER_LABEL_IMAGE_DIGEST);
+    let observation = docker_observation_loader(&config, &fixture)
+        .observe_deployment()
+        .await
+        .unwrap();
+    assert_eq!(observation.state, ServiceInstanceState::Started);
+    assert_eq!(fixture.lock().unwrap().commands.len(), 1);
+}
+
+#[tokio::test]
+async fn deployment_observation_caches_digest_across_loaders_and_refreshes_changed_image() {
+    let (config, fixture) = docker_observation_fixture("sha256:observation-cached-image-one");
+    fixture.lock().unwrap().container.as_mut().unwrap()["Config"]["Labels"]
+        .as_object_mut()
+        .unwrap()
+        .remove(DOCKER_LABEL_IMAGE_DIGEST);
+    for _ in 0..2 {
+        let observation = docker_observation_loader(&config, &fixture)
+            .observe_deployment()
+            .await
+            .unwrap();
+        assert_eq!(observation.state, ServiceInstanceState::Started);
+    }
+    {
+        let mut fixture = fixture.lock().unwrap();
+        assert_eq!(fixture.commands.len(), 3, "{:?}", fixture.commands);
+        let container = fixture.container.as_mut().unwrap();
+        container["Id"] = serde_json::json!("container-two");
+        container["Image"] = serde_json::json!("sha256:observation-cached-image-two");
+    }
+    let observation = docker_observation_loader(&config, &fixture)
+        .observe_deployment()
+        .await
+        .unwrap();
+    assert_eq!(observation.state, ServiceInstanceState::Started);
+    assert_eq!(observation.container_id.as_deref(), Some("container-two"));
+    let fixture = fixture.lock().unwrap();
+    assert_eq!(fixture.commands.len(), 5, "{:?}", fixture.commands);
+    assert_eq!(
+        fixture.commands[4].last().unwrap(),
+        "sha256:observation-cached-image-two"
+    );
+}
+
+#[tokio::test]
+async fn deployment_observation_rejects_stale_generation_without_inspecting_its_image() {
+    let (config, fixture) = docker_observation_fixture("sha256:observation-stale-generation");
+    {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.image_exists = false;
+        let labels = &mut fixture.container.as_mut().unwrap()["Config"]["Labels"];
+        labels
+            .as_object_mut()
+            .unwrap()
+            .remove(DOCKER_LABEL_IMAGE_DIGEST);
+        labels[DOCKER_LABEL_SPEC_GENERATION] = serde_json::json!("0");
+    }
+    let observation = docker_observation_loader(&config, &fixture)
+        .observe_deployment()
+        .await
+        .unwrap();
+    assert_eq!(observation.state, ServiceInstanceState::NotExist);
+    assert_eq!(observation.health, buckyos_api::DeploymentHealth::Unknown);
+    let fixture = fixture.lock().unwrap();
+    assert_eq!(fixture.commands.len(), 2, "{:?}", fixture.commands);
+    assert_eq!(fixture.commands[1][0], "images");
+}
+
+#[tokio::test]
+async fn deployment_observation_missing_container_preserves_installed_image_state() {
+    let (config, fixture) = docker_observation_fixture("sha256:observation-missing");
+    fixture.lock().unwrap().container = None;
+    let observation = docker_observation_loader(&config, &fixture)
+        .observe_deployment()
+        .await
+        .unwrap();
+    assert_eq!(observation.state, ServiceInstanceState::Stopped);
+    assert_eq!(observation.health, buckyos_api::DeploymentHealth::Unknown);
+    assert!(observation.identity.is_none());
+    fixture.lock().unwrap().image_exists = false;
+    assert_eq!(
+        docker_observation_loader(&config, &fixture)
+            .observe_deployment()
+            .await
+            .unwrap()
+            .state,
+        ServiceInstanceState::NotExist
+    );
+}
+
+#[tokio::test]
+async fn deployment_observation_retries_digest_inspect_after_failure() {
+    let (config, fixture) = docker_observation_fixture("sha256:observation-inspect-retry");
+    {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.image_inspect_fails = true;
+        fixture.container.as_mut().unwrap()["Config"]["Labels"]
+            .as_object_mut()
+            .unwrap()
+            .remove(DOCKER_LABEL_IMAGE_DIGEST);
+    }
+    let loader = docker_observation_loader(&config, &fixture);
+    assert!(loader.observe_deployment().await.is_err());
+    fixture.lock().unwrap().image_inspect_fails = false;
+    assert_eq!(
+        loader.observe_deployment().await.unwrap().state,
+        ServiceInstanceState::Started
+    );
+    assert_eq!(fixture.lock().unwrap().commands.len(), 4);
+}
+
+#[tokio::test]
+async fn deployment_observation_refreshes_cached_metadata_for_new_digest() {
+    let (mut config, fixture) = docker_observation_fixture("sha256:observation-new-digest");
+    fixture.lock().unwrap().container.as_mut().unwrap()["Config"]["Labels"]
+        .as_object_mut()
+        .unwrap()
+        .remove(DOCKER_LABEL_IMAGE_DIGEST);
+    assert_eq!(
+        docker_observation_loader(&config, &fixture)
+            .observe_deployment()
+            .await
+            .unwrap()
+            .state,
+        ServiceInstanceState::Started
+    );
+    config
+        .node_execution_spec
+        .packages
+        .get_mut("amd64_docker_image")
+        .unwrap()
+        .docker_image_digest = Some("sha256:new-digest".to_string());
+    fixture.lock().unwrap().repo_digests = vec!["demo/service@sha256:new-digest".to_string()];
+    assert_eq!(
+        docker_observation_loader(&config, &fixture)
+            .observe_deployment()
+            .await
+            .unwrap()
+            .state,
+        ServiceInstanceState::Started
+    );
+    assert_eq!(fixture.lock().unwrap().commands.len(), 4);
+}
+
+#[tokio::test]
+async fn deployment_observation_does_not_cache_missing_digest_metadata() {
+    let (config, fixture) = docker_observation_fixture("sha256:observation-empty-digests");
+    {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.container.as_mut().unwrap()["Config"]["Labels"]
+            .as_object_mut()
+            .unwrap()
+            .remove(DOCKER_LABEL_IMAGE_DIGEST);
+        fixture.repo_digests.clear();
+        fixture.image_exists = false;
+    }
+    let loader = docker_observation_loader(&config, &fixture);
+    assert_eq!(
+        loader.observe_deployment().await.unwrap().state,
+        ServiceInstanceState::NotExist
+    );
+    fixture.lock().unwrap().repo_digests = vec!["demo/service@sha256:deadbeef".to_string()];
+    assert_eq!(
+        loader.observe_deployment().await.unwrap().state,
+        ServiceInstanceState::Started
+    );
+    assert_eq!(fixture.lock().unwrap().commands.len(), 5);
 }

@@ -1,0 +1,38 @@
+{
+  "session_id": "ui-notify",
+  "kind": "ui",
+  "class": "ui",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "route_key": "did:bns:jarvis.alice/dm%3Adid%3Abns%3Aalice",
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/ui-notify",
+  "input_queue": "app2::alice::opendan.session.ui-notify",
+  "wake_event": "/opendan/jarvis.alice/session/ui-notify/input",
+  "agent_access": "full",
+  "objective": "chat with alice",
+  "status": {
+    "rev": 2,
+    "run_state": "created",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "",
+      "heartbeat_ms": 0
+    },
+    "last_runner": {
+      "runner_id": "rn-24a9d9777ffc453f",
+      "host": "${FIXTURE_HOST}",
+      "pid": 3502959,
+      "lock_epoch": 1,
+      "at_ms": 1791771749220
+    },
+    "updated_at_ms": 1791771749219
+  },
+  "location_rev": 0
+}

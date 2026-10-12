@@ -46,6 +46,7 @@ use crate::kernel_mgr::*;
 use crate::kevent_server::*;
 use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
+use crate::run_plist::begin_run_plist_batch;
 use crate::service_pkg::*;
 use crate::sn_zone_info::{load_sn_zone_info, relay_node_for_keep_tunnel, save_sn_zone_info};
 use crate::zone_boot_resolve::{
@@ -1235,6 +1236,17 @@ async fn node_main(
         return Ok(false);
     }
 
+    let _run_plist_batch = begin_run_plist_batch();
+    let mut managed_service_names = node_config
+        .kernel
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    managed_service_names.insert("cyfs-gateway".to_string());
+    if is_ood {
+        managed_service_names.insert("system-config".to_string());
+    }
+    begin_service_process_round(&managed_service_names).await;
     let kernel_stream = stream::iter(node_config.kernel);
     let kernel_task =
         kernel_stream.for_each_concurrent(4, |(kernel_service_name, kernel_cfg)| async move {
@@ -1365,6 +1377,7 @@ async fn node_daemon_main_loop(
     let mut node_gateway_info_id: Option<ObjId> = None;
     let mut keep_tunnel_config_id: Option<ObjId> = None;
     let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
+    let mut device_sampler = DeviceSystemInfoSampler::new();
     let mut last_zone_info_refresh: Option<Instant> = None;
     let mut sn_zone_info = match load_sn_zone_info() {
         Ok(zone_info) => zone_info,
@@ -1389,6 +1402,8 @@ async fn node_daemon_main_loop(
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);
+        let loop_started = Instant::now();
+        let (scans_before, pid_checks_before, fast_hits_before) = service_process_check_counts();
 
         let buckyos_runtime = get_buckyos_api_runtime();
         if buckyos_runtime.is_err() {
@@ -1447,7 +1462,9 @@ async fn node_daemon_main_loop(
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
             let mut device_info = DeviceInfo::from_device_doc(device_doc);
-            let fill_result = device_info.auto_fill_by_system_info().await;
+            let fill_result = device_info
+                .auto_fill_by_system_info_with_sampler(&mut device_sampler)
+                .await;
             if fill_result.is_err() {
                 error!(
                     "auto fill device info failed! {}",
@@ -1687,6 +1704,15 @@ async fn node_daemon_main_loop(
                 }
             }
         }
+        let (scans, pid_checks, fast_hits) = service_process_check_counts();
+        info!(
+            "node daemon main loop work: step={} elapsed_ms={} process_scans={} pid_checks={} fast_hits={}",
+            loop_step,
+            loop_started.elapsed().as_millis(),
+            scans - scans_before,
+            pid_checks - pid_checks_before,
+            fast_hits - fast_hits_before
+        );
     }
     Ok(())
 }

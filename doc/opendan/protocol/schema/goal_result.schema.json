@@ -147,7 +147,7 @@
     },
     "questions": {
       "default": null,
-      "description": "Questions for a person (recorded, not delivered).",
+      "description": "Questions for the user (replace the open ones; each reaches the user as a notification).",
       "items": {
         "type": "string"
       },

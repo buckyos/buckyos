@@ -322,6 +322,9 @@ impl AgentStateClient for ForwardingStateClient {
     fn goals(&self) -> &dyn GoalStore {
         self.inner.goals()
     }
+    fn notifies(&self) -> Option<&dyn crate::notify::NotifyHost> {
+        self.inner.notifies()
+    }
 }
 
 /// An agent state whose behavior catalog is supplied by the host process
@@ -376,5 +379,66 @@ impl AgentStateClient for WithBehaviors {
     }
     fn goals(&self) -> &dyn GoalStore {
         self.inner.goals()
+    }
+    fn notifies(&self) -> Option<&dyn crate::notify::NotifyHost> {
+        self.inner.notifies()
+    }
+}
+
+/// An agent state whose notification service is supplied by the host
+/// process (msg-center in a zone); the other facades stay with `inner`.
+pub struct WithNotify {
+    inner: Arc<dyn AgentStateClient>,
+    notify: Arc<dyn crate::notify::NotifyHost>,
+}
+
+impl WithNotify {
+    pub fn new(inner: Arc<dyn AgentStateClient>, notify: Arc<dyn crate::notify::NotifyHost>) -> Self {
+        Self { inner, notify }
+    }
+}
+
+impl AgentStateClient for WithNotify {
+    fn agent_did(&self) -> &str {
+        self.inner.agent_did()
+    }
+    fn agent_id(&self) -> &str {
+        self.inner.agent_id()
+    }
+    fn agent_root(&self) -> Option<&Path> {
+        self.inner.agent_root()
+    }
+    fn sessions(&self) -> &dyn SessionRegistry {
+        self.inner.sessions()
+    }
+    fn activity(&self) -> &dyn ActivityView {
+        self.inner.activity()
+    }
+    fn perception(&self) -> &dyn Perception {
+        self.inner.perception()
+    }
+    fn cognition(&self) -> &dyn Cognition {
+        self.inner.cognition()
+    }
+    fn artifacts(&self) -> &dyn Artifacts {
+        self.inner.artifacts()
+    }
+    fn workspaces(&self) -> &dyn WorkspaceManager {
+        self.inner.workspaces()
+    }
+    fn runtimes(&self) -> &dyn RuntimeRegistry {
+        self.inner.runtimes()
+    }
+    fn locks(&self) -> &dyn LockManager {
+        self.inner.locks()
+    }
+    fn behaviors(&self) -> &dyn BehaviorCatalog {
+        self.inner.behaviors()
+    }
+    fn goals(&self) -> &dyn GoalStore {
+        self.inner.goals()
+    }
+    fn notifies(&self) -> Option<&dyn crate::notify::NotifyHost> {
+        Some(self.notify.as_ref())
     }
 }

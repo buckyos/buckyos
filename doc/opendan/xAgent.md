@@ -294,7 +294,7 @@ task = "{{args.request}}"           # 子 context 的 task 模板，只能引用
 - 实现上 `CallBehaviorTool` 泛化为 `BehaviorTool`（通用 `call_behavior` 或某个 behavior 的具名函数）：`call()` 与上面完全一样——校验、深度、`allow_deferred`，返回 `Pending{subctx:<call_id>}`；`ChildCall.behavior` 是声明它的 behavior，`ChildCall.task` 是模板渲染结果。挂起识别（`pending_sub_call`）按函数名找回 behavior，结果回填、worklog、崩溃恢复不变。宿主不认识任何 behavior 名字。
 - behavior（XML）循环里作为 action 暴露（`action_whitelist` 写 `behavior:<name>`）协议上不排除，目前未实现。
 
-子 context 向用户提问不走 `needs_user_input`：允许提问的 Session（有输入队列、`wait_user_msg = allowed`、不是子 Session）里，子 context 运行 `agent-session ask-user`，以 PendingTool `userinput:<call_id>` 挂起，Session 把下一条用户消息作为该调用的结果回填，见[架构文档 §5.6](<OpenDAN Agent Session架构设计.md>)。`<sub_task>` 包装在这类 Session 里写“To ask the user, run `agent-session ask-user`”，其它 Session 写“Do not ask the user.”。
+子 context 向用户提问不走 `needs_user_input`：允许提问的 Session（有输入队列、`wait_user_msg = allowed`、不是子 Session）里，子 context 运行 `agent-session ask-user`，以 PendingTool `userinput:<call_id>` 挂起，Session 把下一条用户消息作为该调用的结果回填，见[架构文档 §5.6](<OpenDAN Agent Session架构设计.md>)。`<sub_task>` 包装在这类 Session 里写“To ask the user, run `agent-session ask-user`”。没有队列的 Work（`[session.work] ask_user_timeout_secs > 0`）在宿主有通知服务（`RunnerDeps.notify`）时同样能问：问题作为 `input` 系统通知发出，Session 有界等待通知的结果（缺省 3 小时），`<sub_task>` 写“Ask the user only when one answer decides the rest …”；其它 Session 写“Do not ask the user.”。见[通知人 TODO](../../notepads/opendan-agent-notify-todo.md) §3.6。
 
 ### 3.7 llm_context / xllm 层提供的原语
 
@@ -446,15 +446,16 @@ pub struct SessionTemplate {
     pub max_process_depth: u8,        // process_stack 深度上限（默认 4，§3.3）
     pub max_sub_sessions: u8,         // 同时未结束的子 session 数上限（默认 4，§4.11）
     pub max_session_depth: u8,        // 子 session 嵌套深度上限（默认 2，§4.11）
-    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 self_check 的 timer、goal 的 system:goal、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
+    pub ask_user_timeout_secs: u64,   // 没人读的 Session（work）经通知提问时最多等多久（默认 10800；0 = 不问）
+    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 self_check 的 timer、goal 的 system:goal、ui 的 _notify、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
     pub goal: Option<GoalDefaults>,   // goal 类：[session.goal] 的 budget / min_interval_secs 缺省值
 }
 ```
 
 | class | turns | wait_user_msg | input | observe | hints | 说明 |
 |---|---|---|---|---|---|---|
-| `work` | One | FinishFailed | **None**（需要外部投递的订阅则升为 Queue） | Events | 否 | 一次性任务：一个 Turn 跑到结果；不等用户；默认没有队列 |
-| `ui` | Unbounded | Allowed | Queue | EventsAndActive | 是 | 长生命周期对话入口（后移） |
+| `work` | One | FinishFailed | **None**（需要外部投递的订阅则升为 Queue） | Events | 否 | 一次性任务：一个 Turn 跑到结果；不等用户消息；有通知服务时 `ask-user` 经通知有界等待；默认没有队列 |
+| `ui` | Unbounded | Allowed | Queue（隐式半订阅 `_notify`：`system:notify:<id>`） | EventsAndActive | 是 | 长生命周期对话入口；只在有输入时 bootstrap（观察到的通知不会让它开口） |
 | `self_improve` | One | FinishFailed | None | Off | 否 | 感知窗口整理 |
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
 | `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/opendan-goal-session-todo.md) |

@@ -4,7 +4,7 @@ import { createCodeAssistantMockReaders } from '../../codeassistant/mockHistory'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
-import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
+import { getMessageStableId, messageNotify, notifySessionCategory, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
@@ -14,6 +14,8 @@ import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntitie
 import { isHiddenAccount } from '../api/projection'
 import { mockObjectAccess } from './objects'
 import { mockAgentGroupAllowed } from '../../../api/control_panel_mock'
+import { MOCK_NOTIFY_SENDER, mockNotifyEntity, mockNotifyMessages, mockNotifySessions } from './notify'
+import { translate } from '../translate'
 import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 
 interface MockGroupSession {
@@ -131,6 +133,9 @@ function seedSnapshot(now: number): Snapshot {
       notice('msg-session-invite-reading', carol, 'session-carol-1', now - 40 * 60000, MOCK_BOOK_CLUB, 'session_invite', { session_id: 'reading', title: 'Reading list' }),
     ],
   }
+  // System Notify: the three category sessions and a CodeAssistant conversation with copies.
+  for (const session of mockNotifySessions(now)) sessions[sessionKey(session.ownerDid, session.id)] = session
+  Object.assign(messages, mockNotifyMessages(now))
   return { groups, sessions, deleted: {}, withoutSeed: {}, hidden: {}, messages, delivery: {}, preferences: {}, policies: {}, drafts: {}, draftAttachments: {} }
 }
 
@@ -180,6 +185,7 @@ export class MessageHubMockStore implements MessageHubStore {
   avatarOf(_context: MessageHubContext, did: string) { return this.lookup(did)?.avatar }
   /** Seeded entities, plus self-host groups created or joined in this mock. */
   private lookup(id: string): Entity | undefined {
+    if (id === MOCK_NOTIFY_SENDER) return mockNotifyEntity(translate('messagehub.notify.entity', 'System notifications'))
     const seeded = findEntity(id)
     const group = this.snapshot.groups[id]
     if (seeded) return group ? { ...seeded, name: group.name } : seeded
@@ -263,9 +269,12 @@ export class MessageHubMockStore implements MessageHubStore {
       Object.assign(stored.sessions, seeded.sessions, stored.sessions)
     }
     // Demo sessions added after a browser stored its snapshot.
-    for (const id of ['session-coder-task', 'session-coder-ask', 'session-coder-qa']) {
+    for (const id of ['session-coder-task', 'session-coder-ask', 'session-coder-qa', ...mockNotifySessions(this.now()).map(session => session.id)]) {
       const demoKey = sessionKey(MOCK_SELF_DID, id)
-      if (stored && !stored.sessions[demoKey] && !stored.deleted[demoKey]) stored.sessions[demoKey] = this.snapshot.sessions[demoKey]
+      if (stored && !stored.sessions[demoKey] && !stored.deleted[demoKey]) {
+        stored.sessions[demoKey] = this.snapshot.sessions[demoKey]
+        if (this.snapshot.messages[demoKey]) stored.messages[demoKey] ??= this.snapshot.messages[demoKey]
+      }
     }
     if (stored) this.snapshot = { ...stored, hidden: stored.hidden ?? {} }
     else await this.persist(this.snapshot)
@@ -329,7 +338,7 @@ export class MessageHubMockStore implements MessageHubStore {
       const reason = choices.some(choice => !creationReason(context, entity, policy, choice.binding)) ? undefined : creationReason(context, entity, policy, choices[0]?.binding)
       return { ...entity, unreadCount: sessions.reduce((sum, session) => sum + session.unreadCount, 0), lastActiveAt: latest?.lastActiveAt ?? 0, lastMessage: latest?.lastMessage, sessionCreation: { policy, canCreate: !reason, unavailableReason: reason }, children: entity.children?.map(project) }
     }
-    const dynamic = Object.keys(this.snapshot.groups).filter(id => !findEntity(id)).map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
+    const dynamic = [...Object.keys(this.snapshot.groups).filter(id => !findEntity(id)), MOCK_NOTIFY_SENDER].map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
     return [...mockEntities.map(entity => this.lookup(entity.id) ?? entity), ...dynamic].filter(entity => !isHiddenAccount({ did: entity.id, name: entity.name, tags: entity.tags }, context.ownerDid, { dids: [MOCK_SELF_DID] })).map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
   }
   defaultSession(context: MessageHubContext, entityId: string) {
@@ -480,7 +489,7 @@ export class MessageHubMockStore implements MessageHubStore {
       if (target && target.from === message.from && session.lastMessage?.timestamp === target.created_at_ms) session.lastMessage = { ...session.lastMessage, text: messageSummaryText(message) }
     }
     if (!isMessageActivity(message)) return
-    if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: message.content.content ?? '', timestamp: message.created_at_ms }
+    if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: messageNotify(message)?.prompt.title ?? message.content.content ?? '', timestamp: message.created_at_ms }
     session.lastActiveAt = Math.max(session.lastActiveAt, message.created_at_ms)
     session.lifecycle = 'active'
     if (incoming) session.unreadCount++
@@ -615,7 +624,11 @@ export class MessageHubMockStore implements MessageHubStore {
     if (session?.binding.kind === 'tunnel') session.binding = { ...session.binding, ...patch, revision: (session.binding.revision ?? 0) + 1 }
   })
   denyOwner = (owner: string) => { this.revokedOwners.add(owner); this.snapshot = { ...this.snapshot }; this.listeners.forEach(listener => listener()) }
-  title(context: MessageHubContext, session: Session) { return sessionTitle(session, this.preferences(context, session.id)) }
+  title(context: MessageHubContext, session: Session) {
+    const preferences = this.preferences(context, session.id)
+    const category = notifySessionCategory(session.id)
+    return category && !preferences.title ? translate(`messagehub.notify.category.${category}`, session.title) : sessionTitle(session, preferences)
+  }
 
   private groupSessions(group: MockGroup): GroupSessionInfo[] {
     const named = Object.values(group.sessions).filter(session => session.lifecycle !== 'deleted').map(session => ({ key: groupSessionKey(group.did, session.sessionId), sessionId: session.sessionId, title: session.title, description: session.description, announcement: session.announcement, sharedRevision: session.revision, lifecycle: session.lifecycle, revision: session.revision, hasGuests: Object.values(session.participants).includes('guest'), receipts: session.receipts }))

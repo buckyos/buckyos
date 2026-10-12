@@ -124,6 +124,13 @@
             "event"
           ],
           "type": "string"
+        },
+        {
+          "description": "A question of the Goal was answered (or closed) by the user: `ref` is its notification.",
+          "enum": [
+            "answer"
+          ],
+          "type": "string"
         }
       ]
     }

@@ -2,7 +2,7 @@
 
 日期：2026-10-11
 
-状态：v0.3.1。用户已答复的事项见 §8.1，其余待定项按推荐写（§8.2），实施前仍可调整。第一段（§1—§7）可以开始实施，核心是**一套 App 可以稳定使用的系统通知接口**（§3.0）。第二段（§9）只记方向，第一段验收后再细化。
+状态：v0.3.1。**第一段已实施（2026-10-11，记录见 §12），DV（N11 / V20、V21）未做**：共用的 DV zone 处于停止状态，另一会话正在改 node_daemon，未擅自重启与替换二进制，步骤见 §12.5。用户已答复的事项见 §8.1，其余待定项按推荐写（§8.2）。第二段（§9）只记方向，第一段验收后再细化。
 
 修订记录：
 
@@ -442,28 +442,28 @@ agent-session notify cancel <notify_id> [--reason <r>]
 
 ### N1：buckyos-api
 
-- [ ] `msg_center_client.rs`：
+- [x] `msg_center_client.rs`：
   - 类型：`NotifyKind / NotifyCategory / NotifyLevel / NotifyStatus / NotifySource / NotifySendReq / NotifyView / NotifyListReq`；
   - 客户端方法：`notify_send / get / list / ack / dismiss / cancel`；方法常量。
-- [ ] `buckyos.notify` 的数据结构（§3.1），复用 `HumanTaskPrompt`、`TaskDataResult::Human`；`human.input/v1` 的 notify envelope 约定。
-- [ ] 辅助函数：
+- [x] `buckyos.notify` 的数据结构（§3.1），复用 `HumanTaskPrompt`、`TaskDataResult::Human`；`human.input/v1` 的 notify envelope 约定。
+- [x] 辅助函数：
   - `wait_notify(notify_id, deadline)`：基于 `wait_for_task_end_kevent`，并补上超时；
   - `answer_notify(notify_id, answer)`：先 `get` 拿到 `task_id`，再读最新快照并带 CAS 提交。
-- [ ] `rbac_config.rs`：App 主体对 `obj://msg-center/notify` 的写权限。按现有规则中 App 主体的角色名写；`agent` 已有 `obj://msg-center/*`。
-- [ ] 核对 `TaskGrantSubject::Principal` 在 ACL 中的匹配（`acl.rs:238-243`），以及 assignee 加上 User grant 后能读 result。
-- [ ] 测试：数据结构往返；`wait_notify` 的超时；`answer_notify` 的并发冲突。
+- [x] `rbac_config.rs`：App 主体对 `obj://msg-center/notify` 的写权限。按现有规则中 App 主体的角色名写；`agent` 已有 `obj://msg-center/*`。
+- [x] 核对 `TaskGrantSubject::Principal` 在 ACL 中的匹配（`acl.rs:238-243`），以及 assignee 加上 User grant 后能读 result。
+- [x] 测试：数据结构往返；`wait_notify` 的超时；`answer_notify` 的并发冲突。
 
 ### N2：msg-center `notify.*`
 
-- [ ] kRPC 分发与权限、来源填写、分类推导（§3.0、§3.2 第 1 步）；`notifies` 表与迁移。
-- [ ] `send`：
+- [x] kRPC 分发与权限、来源填写、分类推导（§3.0、§3.2 第 1 步）；`notifies` 表与迁移。
+- [x] `send`：
   - 幂等与断点续投；`input` 建 Task 与授权；
   - 系统通知发送者、分类会话的登记、主记录直接写 INBOX，以及已读规则（§3.3）；
   - Agent 来源的候选会话与等级规则；消息组成与 `post_send`；
   - 观察记录。
-- [ ] `get / list / ack / dismiss / cancel`；清扫器（补投、过期、关闭）。
-- [ ] `kind = notify` 计入会话活跃（`owner_session.rs:165-170`）。
-- [ ] 测试（`test_msg_center.rs`）：
+- [x] `get / list / ack / dismiss / cancel`；清扫器（补投、过期、关闭）。
+- [x] `kind = notify` 计入会话活跃（`owner_session.rs:165-170`）。
+- [x] 测试（`test_msg_center.rs`）：
   - 来自普通 App 的 `notice`：只有主记录，进入 `sysnotify:app`，不进 RequestBox；
   - App 指定 `todo` 被拒；Agent 来源进入 `sysnotify:agent`；
   - 四个等级下主记录的已读状态与另投位置；没有候选；
@@ -475,85 +475,85 @@ agent-session notify cancel <notify_id> [--reason <r>]
 
 ### N3：libopendan 协议与宿主接口
 
-- [ ] `protocol/notify.rs`：`NotifyRequest / NotifyState / NotifyAnswer / NotifyVia`；schema 导出。
-- [ ] `notify.rs`：`NotifyHost`；`LocalNotify`；`notify_source`。
-- [ ] `state/`：`AgentStateClient::notifies()`；kRPC `notify.*` 透传（按调用方 Session 记录来源）。
-- [ ] `template.rs` / `protocol/config.rs`：ui 模板的隐式半订阅 `_notify`；assembler builtin 渲染 `system:notify` 事件。
-- [ ] `protocol/goal.rs`：`GoalQuestion` 的 `notify_id / status / answer`；Activation 原因 `answer`。
-- [ ] `[session.work] ask_user_timeout_secs`（缺省 10800，0 关闭）。
-- [ ] 协议文档与 fixtures（新增一个 `17_notify`：Work 经 Notify 问答、Goal 问题回流、`_notify` 事件）。
+- [x] `protocol/notify.rs`：`NotifyRequest / NotifyState / NotifyAnswer / NotifyVia`；schema 导出。
+- [x] `notify.rs`：`NotifyHost`；`LocalNotify`；`notify_source`。
+- [x] `state/`：`AgentStateClient::notifies()`；kRPC `notify.*` 透传（按调用方 Session 记录来源）。
+- [x] `template.rs` / `protocol/config.rs`：ui 模板的隐式半订阅 `_notify`；assembler builtin 渲染 `system:notify` 事件。
+- [x] `protocol/goal.rs`：`GoalQuestion` 的 `notify_id / status / answer`；Activation 原因 `answer`。
+- [x] `[session.work] ask_user_timeout_secs`（缺省 10800，0 关闭）。
+- [x] 协议文档与 fixtures（新增一个 `17_notify`：Work 经 Notify 问答、Goal 问题回流、`_notify` 事件）。
 
 ### N4：libopendan runner
 
-- [ ] `runner/ask.rs`：`via_notify` 分支、发出、截止时间、回填（§3.6）；Goal 报错文本。
-- [ ] `runner/drive.rs` / `live.rs`：经 Notify 等待的调用查询与回填；stop 时撤销；`commit_answer` 处理无输入的 receipt。
-- [ ] `runner/turn_task.rs`：`HumanInput` + `related_task_id`。
-- [ ] `runner/goal.rs`：问题发出与撤销（close 前）；`answer` 事件的消费与状态更新。
-- [ ] `host/`：Supervisor 对无队列、等输入的 Session 按截止时间与 recheck 重新装载；GoalHost 监视问题 Notify 并投递 `answer`。
-- [ ] 测试（`tests/ask_user.rs` 扩展、`tests/goal_session.rs`、`tests/crash.rs`）：§5 的 V07—V15。
+- [x] `runner/ask.rs`：`via_notify` 分支、发出、截止时间、回填（§3.6）；Goal 报错文本。
+- [x] `runner/drive.rs` / `live.rs`：经 Notify 等待的调用查询与回填；stop 时撤销；`commit_answer` 处理无输入的 receipt。
+- [x] `runner/turn_task.rs`：`HumanInput` + `related_task_id`。
+- [x] `runner/goal.rs`：问题发出与撤销（close 前）；`answer` 事件的消费与状态更新。
+- [x] `host/`：Supervisor 对无队列、等输入的 Session 按截止时间与 recheck 重新装载；GoalHost 监视问题 Notify 并投递 `answer`。
+- [x] 测试（`tests/ask_user.rs` 扩展、`tests/goal_session.rs`、`tests/crash.rs`）：§5 的 V07—V15。
 
 ### N5：xagent CLI
 
-- [ ] `agent-session notify send|list|show|answer|ack|cancel`（§3.8）；`xagent notify …`（主人一侧）。
-- [ ] USAGE、退出码（越权为 6，状态冲突为 5，与现有约定一致）。
-- [ ] `tests/xagent_cli.rs`：真实二进制 + `LocalNotify` 的往返。
+- [x] `agent-session notify send|list|show|answer|ack|cancel`（§3.8）；`xagent notify …`（主人一侧）。
+- [x] USAGE、退出码（越权为 6，状态冲突为 5，与现有约定一致）。
+- [x] `tests/xagent_cli.rs`：真实二进制 + `LocalNotify` 的往返。
 
 ### N6：OpenDAN Loader
 
-- [ ] `notify.rs`：`ZoneNotify`；kRPC 透传；监视器（kevent `/task_mgr/<id>`，并以 30 s 扫描兜底），驱动 `ensure_task` 与 Goal 的 `answer`。
-- [ ] `ui.rs` + `bridge/msg.rs`：观察记录路由；`session_for` 从 `reply_route` 取 binding。
-- [ ] `tasks.rs`：wait reason 映射（:288-301）。
-- [ ] `tests/loader.rs` 端到端（脚本化 LLM + 进程内假 msg-center / TaskMgr，或 `LocalNotify`）：Work 提问 → 回答 → 继续；观察事件进入下一批输入。
+- [x] `notify.rs`：`ZoneNotify`；kRPC 透传；监视器（kevent `/task_mgr/<id>`，并以 30 s 扫描兜底），驱动 `ensure_task` 与 Goal 的 `answer`。
+- [x] `ui.rs` + `bridge/msg.rs`：观察记录路由；`session_for` 从 `reply_route` 取 binding。
+- [x] `tasks.rs`：wait reason 映射（:288-301）。
+- [x] `tests/loader.rs` 端到端（脚本化 LLM + 进程内假 msg-center / TaskMgr，或 `LocalNotify`）：Work 提问 → 回答 → 继续；观察事件进入下一批输入。
 
 ### N7：Desktop
 
-- [ ] MessageHub（§3.4）：
+- [x] MessageHub（§3.4）：
   - 系统通知实体与三个分类会话（不提供输入框、可筛选）；
   - `NotifyCard`：按 prompt 处理 `input`，`ack / dismiss` 处理 `notice`，实时状态，结束后的结果；
   - `?notify=` 深链；`sessionModel.ts` 活跃规则；`protocol/msgobj.ts` 的类型；
   - TS 客户端：`notify.*`、TaskMgr `get_task / commit_result`。
-- [ ] mock 场景：三个分类各有数据；Work 提问（Agent 会话里的副本 + 分类会话里的主记录）；Goal 提问；提醒；应用通知；已处理的历史。
-- [ ] TaskCenter 兼容：带 `input.notify` 的 Task 不进首页卡片；列表与详情链接到 `?notify=`。
-- [ ] i18n（中英）；`UI_DATAMODEL.md`。
-- [ ] 测试：
+- [x] mock 场景：三个分类各有数据；Work 提问（Agent 会话里的副本 + 分类会话里的主记录）；Goal 提问；提醒；应用通知；已处理的历史。
+- [x] TaskCenter 兼容：带 `input.notify` 的 Task 不进首页卡片；列表与详情链接到 `?notify=`。
+- [x] i18n（中英）；`UI_DATAMODEL.md`。
+- [x] 测试：
   - datamodel：notify 投影，同一 Notify 的多张卡片状态合并；
   - Playwright：卡片处理 choice / text / 知道了 / 忽略；两张卡片并发提交，一张成功、另一张显示最终结果；分类会话与筛选；深链；Agent 会话的输入框不被锁定；TaskCenter 首页不出现 Notify 的 Task。
 
 ### N8：Jarvis 包
 
-- [ ] `plan.toml` / `do.toml` / `work_simple.toml`：ask-user 兜底说明（§3.6 第 9 条）。
-- [ ] `goal.toml`：questions 改写（§3.7）；可以用 `notify send` 告知。
-- [ ] `chat_route.toml` / `groupchat_route.toml`：§3.10 的观察与代理规则。
-- [ ] `agent.toml`：`[session.work] ask_user_timeout_secs = 10800`。
+- [x] `plan.toml` / `do.toml` / `work_simple.toml`：ask-user 兜底说明（§3.6 第 9 条）。
+- [x] `goal.toml`：questions 改写（§3.7）；可以用 `notify send` 告知。
+- [x] `chat_route.toml` / `groupchat_route.toml`：§3.10 的观察与代理规则。
+- [x] `agent.toml`：`[session.work] ask_user_timeout_secs = 10800`。
 
 ### N9：（取消）workflow `remind` —— 用户决定暂不处理
 
 ### N10：文档
 
-- [ ] **面向 App 开发者的 System Notify 接口说明**：§3.0 的契约，加上 Rust / TS 用法示例（发告知、发提问并等待回答、撤销）。放在 `doc/message_hub/` 下，并在 `doc/sdk/` 加入口。
-- [ ] `Message Center.md`：`notify.*`、`buckyos.notify` 数据、系统通知发送者与分类会话、另投与已读规则、观察记录、`kind = notify` 计入活跃。
-- [ ] `UI_DATAMODEL.md`：系统通知实体、通知卡片、`?notify=` 深链。
-- [ ] `task data schema.md`：`human.input/v1` 的 notify envelope。
-- [ ] 架构设计：
+- [x] **面向 App 开发者的 System Notify 接口说明**：§3.0 的契约，加上 Rust / TS 用法示例（发告知、发提问并等待回答、撤销）。放在 `doc/message_hub/` 下，并在 `doc/sdk/` 加入口。
+- [x] `Message Center.md`：`notify.*`、`buckyos.notify` 数据、系统通知发送者与分类会话、另投与已读规则、观察记录、`kind = notify` 计入活跃。
+- [x] `UI_DATAMODEL.md`：系统通知实体、通知卡片、`?notify=` 深链。
+- [x] `task data schema.md`：`human.input/v1` 的 notify envelope。
+- [x] 架构设计：
   - §5.6 的“Work 与 Goal 报错”改为 §3.6 / §3.7 的规则；
   - §12.11 / §12.12.2 补上“Work 的有界 Notify 等待（缺省 3 小时）”及其与“长时间 PendingTool 等审批”的区别；
   - §15.5 增加一行 System Notify；
   - §17.2 标出已采用的部分。
-- [ ] `xAgent.md`（CLI、模板表、`_notify`）；协议文档：
+- [x] `xAgent.md`（CLI、模板表、`_notify`）；协议文档：
   - Session Input：`_notify`、经 Notify 的 ask 结果、Goal `answer`；
   - Agent State：`notify.*`；
   - Session Directory：run.json `asks[].notify_id / task_id / deadline_ms`。
-- [ ] `src/frame/lib_opendan/README.md`、`src/frame/opendan/README.md`。
-- [ ] 纪要本身不改；在本文 §11 记录对应关系。
+- [x] `src/frame/lib_opendan/README.md`、`src/frame/opendan/README.md`。
+- [x] 纪要本身不改；在本文 §11 记录对应关系。
 
 ### N11：验证（第一段的退出条件）
 
-- [ ] §5 全部通过；§6 全绿；DV 场景（V20）记录消息、Task 和 Activation 序列。
+- [ ] §5 全部通过；§6 全绿；DV 场景（V20）记录消息、Task 和 Activation 序列。——库级与 mock 的 §5 全部通过、§6 全绿（§12.4）；DV 未做（§12.5）。
 
 ### N12：buckyos-websdk（同级仓）
 
-- [ ] `notify.send / get / list / ack / dismiss / cancel` 的 TS 封装，以及 `waitNotify / answerNotify`，与 buckyos-api 保持同形。
-- [ ] 按该仓的构建与测试约定验证；`src/buckyos-build.py` 会从同级源码构建 SDK。
+- [x] `notify.send / get / list / ack / dismiss / cancel` 的 TS 封装，以及 `waitNotify / answerNotify`，与 buckyos-api 保持同形。
+- [x] 按该仓的构建与测试约定验证；`src/buckyos-build.py` 会从同级源码构建 SDK。
 
 ---
 
@@ -772,3 +772,65 @@ Goal 安排一次性唤醒（Goal TODO §9.1 的 `Once` 与 §9.5 的 follow_up�
 | §十一 智能提醒 | §3.8 `notify send`；V20 ④；§9.6 |
 | §十二 观察与代理 | §3.9、§3.10 |
 | §13.2 待定项 | §8.1、§8.2 |
+
+
+---
+
+## 12. 第一段实施记录（2026-10-11）
+
+### 12.1 落点
+
+| 部分 | 位置 |
+|---|---|
+| App 契约（N1） | `kernel/buckyos-api/src/msg_notify.rs`（类型、常量、`input_prompt` / `prompt_options`、`NotifyAnswer::validate / to_task_result`、`commit_notify_answer`（CAS + 冲突重读，抽象为 `NotifyTaskAccess`）、`wait_notify_loop`、`input_status_of`、`machine_content / machine_data`）；`msg_center_client.rs` 的 `notify_send / get / list / ack / dismiss / cancel` 与 `MsgCenterHandler::handle_notify`（缺省实现，`notify.*` 一个入口分发）；`runtime.rs` 的 `wait_notify(id, deadline)`（任务 kevent + 轮询兜底）、`answer_notify`；`rbac_config.rs`：`users / admin / app / frame` 对 `obj://msg-center/notify` 读写 |
+| msg-center（N2） | `frame/msg_center/src/notify.rs`（`NotifyStore` 建 `notifies` 表、`NotifyCaller` 按 token 推导请求方 / 用户 / App / Agent、`notify_send` 的各步与断点续做、候选会话与等级、副本与观察记录、`get / list / ack / dismiss / cancel`、清扫）；`NotifyTasks` 是对 TaskMgr 的窄接口（生产 `ZoneNotifyTasks`）；`owner_session(.rs/_db.rs)`：`notify` 计入活跃；`main.rs` 启动清扫；测试 `test_notify.rs` |
+| websdk（N12） | `buckyos-websdk/src/msg_center_client.ts`（类型、`notifySend…`、`inputPrompt`、`waitNotify`、`answerNotify`、`commitNotifyAnswer` 等）、`task_mgr_client.ts`（HumanPrompt 类型）、`sdk_core.ts` 导出、`tests/msg_center_client.test.ts`；按该仓惯例重建了 `dist/` |
+| libopendan（N3–N5） | `src/notify.rs`（`NotifyHost`、`NotifyVia`、`LocalNotify`、`StateNotify`、`complete_notify_source`、`notify_event`）；`protocol`：`SessionPolicy.ask_user_timeout_secs`、`_notify` 常量与 `system:<id>` 子 id 匹配、`UserInputAnswer.via / notify_id`、`AskNotify`（schema `ask_notify`）、`WaitingFor.human_tasks`、`GoalQuestion.notify_id / status / answer`、`ActivationReasonKind::Answer`；`template.rs`（ui 隐式 `_notify`、`ask_user_timeout_secs` 覆盖）；`runner/ask.rs`（`via_notify`、`send_notify_questions`、`notify_answers`）、`live.rs`（回填）、`drive.rs` / `outcome.rs`（先发后提交）、`turn_task.rs`、`goal.rs`（`questions_to_user`、`<open_questions>` 带状态与回答）、`assembler.rs`（Work 子 context 的提问说明）；`host/mod.rs`（`HostDeps.notify`、Supervisor / ChildDriver 的 recheck）、`host/goals.rs`（`collect_answers`、`recheck_answers`）；`state/`（`AgentStateClient::notifies()`、`WithNotify`、kRPC `notify.*`）；`bridge/msg.rs`（`MsgBridgeOutput::Observe`）；`bin/xagent.rs`（`notify` 命令）；`error.rs`（`NotifyConflict`）；测试 `tests/notify.rs`、`crash.rs`、`goal_session.rs`；fixtures `17_notify` |
+| Loader（N6） | `frame/opendan/src/notify.rs`（`ZoneNotify`、`watch_answers`）；`loader.rs`（`LoaderEnv.notify`、`WithNotify` 包装、监视器）；`main.rs`（zone：`ZoneNotify`；`--dev`：`LocalNotify`）；`ui.rs`（观察记录路由、`session_for` 用 `reply_route`）；`tasks.rs`（`HumanInput` + `related_task_id`）；`tests/loader.rs` 两个端到端 |
+| Desktop（N7） | `src/frame/desktop/src/app/messagehub/notify/`（`NotifyCard`、`watch`、`api`、`model`）、`mock/notify.ts`、`protocol/msgobj.ts`、`sessionModel.ts`、`api/projection.ts`（系统通知实体）、`MessageHubRoute.tsx`（`?notify=`）、`conversation/input/inputState.ts`、TaskCenter 兼容（`api/task_mgr.ts`、`TasksPage.tsx`、`TaskDetailPage.tsx`）、i18n、`UI_DATAMODEL.md` v0.12 §3.5.6；测试 `tests/datamodel/messagehub-notify.test.ts`、`tests/e2e/pages/messagehub-notify.spec.ts` |
+| Jarvis（N8） | `plan.toml` / `do.toml` / `work_simple.toml`（Asking the User）、`goal.toml`（questions 经通知、`notify send`）、`chat_route.toml` / `groupchat_route.toml`（Notifications）、`agent.toml`（`ask_user_timeout_secs = 10800`） |
+| 文档（N10） | `doc/message_hub/System Notify.md`（新）、`Message Center.md` §2.1.3 与 API 汇总、`task data schema.md`（notify envelope）、架构设计 §5.6 / §12.11 / §12.12.2 / §15.5 / §17.2、`xAgent.md`、`Session Input / Session Directory / Agent State Protocol`、两个 README、`doc/sdk/app-dev-quickstart.md` 入口；DV 驱动 `test/test_opendan/test_agent_notify.ts` |
+
+### 12.2 与原文不同的决定
+
+1. libopendan 不另写 `protocol/notify.rs`：宿主接口直接用 buckyos-api 的请求 / 视图类型；协议里只加 `AskNotify` 与几个字段，`NotifyVia` 在 `libopendan::notify`。
+2. `_notify` 事件的来源是 `system:notify:<notify_id>`（不是 `system:notify`）：半订阅按 `(subscription, source)` 合并，同一来源只留最新版本，多条通知会互相覆盖。为此 `system:<id>` 订阅也匹配子 id `system:<id>:<sub>`。一行渲染就是事件的 `summary`（`notify_event` 生成），没有另加 assembler 内建。
+3. 绑定了会话的 Session（有 `channels.outbound`，即 Loader 建的 UI Session）只在有受控输入时 bootstrap：否则为观察记录新建的一代会自己跑 `on_init` 并回复用户。本地 UI 与 Work 不变。
+4. 经通知的回答走普通工具结果路径（与 task 等待相同），不写空 inputs 的输入 receipt。
+5. Supervisor：无队列、`waiting_for = input` 的 Session 卸载后按 `recheck`（30 s）重新装载，没有单独按截止时间排期（截止时间由 drive 判断）；ChildDriver 对这类子 Session 每 `poll_interval × 6` 看一次（只在宿主有通知服务时）。
+6. Goal 问题的状态与回答在 `answer` Activation 关闭时（读通知）写入，`reason.ref = notify_id`；GoalHost 每 `answers_every`（30 s）查一次未结束问题的通知，Loader 的监视器在任务 kevent 到来时 `recheck_answers`。没有用 `notify.list{goal_id}`。
+7. 代确认 `notice` 记在视图的 `acked_by`（`notify.ack` 的 `on_behalf`），不写 `closed_reason`。
+8. `notice` 的 `read` 只看“写入时未读”的记录（未读的主记录、原生副本）：预置为已读的主记录不算读过。
+9. `notify.ack / dismiss` 只用于 `notice`；`input` 的忽略是向任务提交 `action = dismiss`。`notify.list` 允许系统服务用 `to_user` 指定用户；状态过滤逐条算视图。
+10. msg-center 对 TaskMgr 走 `NotifyTasks` 窄接口（测试用内存实现）。Telegram 用例检查的是 tunnel 投递队列里的副本（纯文本 + 链接），没有起 DryRun 网关。
+11. `LocalNotify` 以 `state/notifies/` 目录存在为启用条件（`--dev` 的 Loader 启动时创建；Session 里的 `agent-session` 经文件版 Agent State 也能用）。`xagent notify` 主人一侧另有 `dismiss`。
+12. fixtures `17_notify` 只含 Work 经通知等待与 UI 的 `_notify` 观察；Goal 问题回流由 `goal_session.rs` 覆盖。
+
+### 12.3 验收对照
+
+V01—V05：`test_notify.rs`（6 个）；V06、V19：Desktop datamodel 与 Playwright（mock）；V07—V11、V13、V15—V18：`tests/notify.rs`（7 个）与 `tests/loader.rs`（2 个）；V12：`crash.rs::asking_through_a_notification_survives_a_crash_at_every_stage`（发出前、发出后提交前、提交后，各恰好一个通知、一次回填，且不重复推理）；V14：`goal_session.rs::goal_questions_reach_the_user_and_answers_come_back`；V21 的 TS 封装：websdk 单测。V20 与 V21 的 DV 部分未做。
+
+### 12.4 验证（在 `src/`，2026-10-11）
+
+- `cargo test -p buckyos-api --lib -- --test-threads=1 msg_notify rbac_config`：27 通过。
+- `cargo test -p msg_center -- --test-threads=1`：143 通过（含 notify 6 个）。
+- `cargo test -p libopendan -p opendan -- --test-threads=1`：33 个测试目标全部通过。
+- `cargo run -p libopendan --example fixtures -- <绝对路径>/doc/opendan/protocol/fixtures` 重新生成；`--test fixtures` 19 通过。
+- `cargo check --workspace --tests --exclude node_daemon` 通过；`node_daemon` 有他人正在进行的未提交改动，依赖更新版 `name_lib`，与本文无关。
+- Desktop（子任务完成）：`tsc -b`、`eslint`（0 error）、deno datamodel 101 通过、Playwright（mock，`--workers=2` 分批）通过，`messagehub-agent-task` 有一个既有的偶发失败；`pnpm build` 通过。
+- websdk：`tsc`、`jest --runInBand` 502 通过、`pnpm run build`。
+
+### 12.5 DV（未做）与步骤
+
+1. msg-center：`cargo build --release -p msg_center`（已构建），备份并替换 `/opt/buckyos/bin/msg-center/msg_center`（或 `uv run buckyos-build.py -s msg_center` + `uv run start.py`）。RBAC 新规则编在 msg-center 里，它自己的鉴权即可生效。
+2. Desktop：`cp -r src/frame/desktop/dist/. /opt/buckyos/bin/control-panel/web/`（dist 已构建）。
+3. Agent：`./debug_jarvis.sh devtest --agent xiaobai.test.buckyos.io`（Loader 用 `ZoneNotify`；旧 UI Session 冻结了旧 behavior，要 `/stop`；先处理意图分析 TODO §11.5 的旧 `/5` Session）。
+4. 驱动：`cd test/test_opendan && deno run --config ../deno.json --allow-net --allow-env --allow-read --allow-write --unsafely-ignore-certificate-errors test_agent_notify.ts send input "覆盖吗？" --option yes=覆盖 --option no=保留`，在 MessageHub 卡片回答后 `… wait <id>`（V20 ①、V21）；`… ask "<让 Work 中途 ask-user 的请求>"` 等待 Agent 的通知（V20 ②），再在卡片或会话里回答。
+5. 需要在 DV 上确认的点：msg-center 以 `system:msg-center` 创建 `human.input/v1`（storage domain User）并授权是否被 TaskMgr 接受；Agent App 主体 `notify.list` 的 `resolve_user_did`；观察记录经 Loader 路由；MessageHub 对系统通知发送者（Zone DID）的展示。
+
+### 12.6 遗留
+
+- DV 验收（上节）；V20 ① 的 Rust 小程序未写（TS 驱动覆盖同一契约）。
+- `notify_view` 对每个 `input` 读一次任务，`notify.list` 条数多时偏慢；Loader 监视器每 30 s 列一次本 Agent 的未结束提问。
+- MessageHub 不渲染 Agent 自己 INBOX 里的观察记录（只有观察该 Agent 邮箱时可见）；launch schema 没有 `notify` 参数，只支持 `/messagehub?notify=` 路由；App 来源显示原始 `app_id`。
+- 第二段 §9 全部。

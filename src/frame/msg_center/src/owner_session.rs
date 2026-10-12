@@ -165,7 +165,7 @@ fn permission_denied(reason: impl Into<String>) -> RPCErrors {
 fn is_activity_kind(kind: MsgObjKind) -> bool {
     matches!(
         kind,
-        MsgObjKind::Chat | MsgObjKind::GroupMsg | MsgObjKind::Deliver
+        MsgObjKind::Chat | MsgObjKind::GroupMsg | MsgObjKind::Deliver | MsgObjKind::Notify
     )
 }
 

@@ -10,10 +10,11 @@ import {
   ChevronRight,
   Filter,
   Pause,
+  MessageSquare,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
-import type { Task, TaskStatus, TaskType, TaskSource } from '../../../api/task_mgr'
+import { notifyCardPath, type Task, type TaskStatus, type TaskType, type TaskSource } from '../../../api/task_mgr'
 import type { TaskCenterNav } from '../components/layout/navigation'
 
 function statusIcon(status: Task['status']) {
@@ -180,8 +181,8 @@ export function TasksPage({ onNavigate }: TasksPageProps) {
       {/* Task list */}
       <div className="space-y-1.5">
         {sorted.map((task) => (
+          <div key={task.taskId}>
           <button
-            key={task.taskId}
             type="button"
             onClick={() => onNavigate({ page: 'tasks', taskId: task.taskId })}
             className="flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors"
@@ -238,6 +239,18 @@ export function TasksPage({ onNavigate }: TasksPageProps) {
             </div>
             <ChevronRight size={14} style={{ color: 'var(--cp-muted)' }} />
           </button>
+          {task.notifyId && (
+            <a
+              href={notifyCardPath(task.notifyId)}
+              className="ml-14 mt-1 inline-flex items-center gap-1.5 text-xs font-medium"
+              style={{ color: 'var(--cp-accent)' }}
+              data-testid="task-notify-link"
+            >
+              <MessageSquare size={13} />
+              {t('taskCenter.notify.open', 'Handle in MessageHub')}
+            </a>
+          )}
+          </div>
         ))}
       </div>
 

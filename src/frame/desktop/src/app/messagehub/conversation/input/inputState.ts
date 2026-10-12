@@ -32,8 +32,8 @@ export function isStopCommand(text: string): boolean {
  * newest message of the conversation is a question (`agent_ask`) someone
  * else asked, the composer answers it; anything newer — the viewer's answer
  * above all — ends it. Not counted as messages: relation messages (edits,
- * redactions, reactions), events, status pills, sends that failed locally and
- * redacted messages. A question is also over once its anchor was edited
+ * redactions, reactions), events, status pills, notification cards, sends that
+ * failed locally and redacted messages. A question is also over once its anchor was edited
  * after it (the Turn's final reply arrived). In a group only the viewer the
  * question mentions answers it.
  */
@@ -46,7 +46,8 @@ export function conversationInputState(timeline: readonly MessageObject[], viewe
     const relation = messageRelation(message)
     if (relation?.rel === 'redact') { redacted.add(relation.target); continue }
     if (relation?.rel === 'edit') { edited.add(`${relation.target}\n${message.from}`); continue }
-    if (!isMessageActivity(message) || message.ui_delivery_status === 'failed') continue
+    // A notification card (System Notify) never changes what the composer does.
+    if (message.kind === 'notify' || !isMessageActivity(message) || message.ui_delivery_status === 'failed') continue
     const id = messageObjId(message)
     if (id && redacted.has(id)) continue
     const ask = messageAgentAsk(message)

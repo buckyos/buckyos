@@ -317,6 +317,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         mail: Some(Arc::new(ZoneMailService)),
         tasks: Some(Arc::new(ZoneTaskService)),
         objects: Some(Arc::new(NamedStoreObjects)),
+        notify: Some(Arc::new(opendan::notify::ZoneNotify {
+            owner_user: owner.clone(),
+        })),
         access: Access::Zone {
             owner,
             app_id: runtime.get_app_id(),
@@ -356,6 +359,11 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
     // Commands of a session's shell use the same development queue.
     std::env::set_var("LIBOPENDAN_QUEUE_DIR", &queue_dir);
     let who = args.who.clone().unwrap_or_else(|| "app:opendan@local".to_string());
+    // Notifications as files of the AgentRoot: `xagent notify` answers.
+    let notify: Arc<dyn libopendan::notify::NotifyHost> = Arc::new(
+        libopendan::notify::LocalNotify::enable(&agent_root, &agent_did)
+            .map_err(|e| anyhow!("notifications: {e}"))?,
+    );
     Ok(LoaderEnv {
         who: who.clone(),
         agent_did,
@@ -375,6 +383,7 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         mail: None,
         tasks: None,
         objects: None,
+        notify: Some(notify),
         access: Access::Open { who },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),

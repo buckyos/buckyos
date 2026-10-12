@@ -139,6 +139,16 @@ fn script_for(name: &str, _ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                 }
             })
         }
+        "ask_notify" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
+            match has_tool_result(req, "q1") {
+                Some(r) => text(&format!("final answer: {r}")),
+                None => tool_call(
+                    "q1",
+                    "shell",
+                    json!({ "command": "agent-session ask-user 'Which one?' --option a=Apple --option b=Banana" }),
+                ),
+            }
+        }),
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -182,6 +192,12 @@ impl libopendan::runner::OutboundSink for FileSink {
 
 fn scenario_deps(env: &Env, scenario: &str, llm: Arc<ScriptedLlm>) -> libopendan::runner::RunnerDeps {
     let mut deps = env.deps(llm);
+    if scenario == "ask_notify" {
+        deps = deps.with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+        deps.notify = Some(Arc::new(
+            libopendan::notify::LocalNotify::enable(&env.agent_root, AGENT).unwrap(),
+        ));
+    }
     if scenario == "ask" {
         deps = deps.with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
         deps.outbound = Some(Arc::new(FileSink {
@@ -206,7 +222,14 @@ async fn child_driver() {
     let deps = scenario_deps(
         &env,
         &scenario,
-        script_for(&scenario, Some((env.queue_dir.clone(), queue_of(&sd)))),
+        script_for(
+            &scenario,
+            sd.config()
+                .unwrap()
+                .channels
+                .kmsg()
+                .map(|(_, q, _)| (env.queue_dir.clone(), q.to_string())),
+        ),
     );
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     eprintln!("child drive result: {r:?}");
@@ -1156,6 +1179,55 @@ async fn asking_the_user_survives_a_crash_at_every_stage() {
         assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "{fault}");
         assert_eq!(st.source("q").acked_index, 2, "{fault}: request and answer consumed");
         assert!(st.process_stack.is_empty(), "{fault}");
+        assert_worklog_contiguous(&sd);
+    }
+}
+
+/// V12: a Work asking through a notification dies before the question is
+/// sent (the run suspended on it), after it was sent but before the wait
+/// was committed, and after the commit: one notification, one result.
+#[tokio::test]
+async fn asking_through_a_notification_survives_a_crash_at_every_stage() {
+    use libopendan::notify::{NotifyAnswer, NotifyHost, NotifyListReq};
+    for fault in [
+        "outcome:after_checkpoint",
+        "user_input:after_notify_send",
+        "user_input:after_notify_send#2",
+    ] {
+        let env = Env::new();
+        let mut spec = libopendan::SessionTemplate::load("work", None)
+            .unwrap()
+            .spec("pick a fruit");
+        spec.prompt.llm_context = json!({ "tools": { "enabled": true } });
+        let sd = env.create_work(spec).await;
+        let mut child = spawn_child(&env, &sd, "ask_notify", Some(fault));
+        let status = wait_exit(&mut child, Duration::from_secs(60));
+        assert!(!status.success(), "{fault}: the fault point was not reached");
+        let llm = script("ask_notify");
+        let deps = scenario_deps(&env, "ask_notify", llm.clone());
+        let r = drive(&sd, &deps, StopWhen::Idle).await;
+        assert!(matches!(r, DriveResult::Idle { .. }), "{fault}: {r:?}");
+        let local = deps.notify.clone().unwrap();
+        let all = local.list(NotifyListReq::default()).await.unwrap();
+        assert_eq!(all.len(), 1, "{fault}: {all:#?}");
+        local
+            .answer(&all[0].notify_id, NotifyAnswer::option("b"), None)
+            .await
+            .unwrap();
+        let r = drive(&sd, &deps, StopWhen::Finished).await;
+        assert!(r.is_finished(), "{fault}: {r:?}");
+        assert!(sd.report().unwrap().contains("Banana"), "{fault}");
+        // The child inferred the question; the parent only the end.
+        let inferred = 1;
+        assert_eq!(llm.count(), inferred, "{fault}");
+        let results: Vec<String> = read_worklog(&sd)
+            .into_iter()
+            .filter_map(|e| match e.body {
+                WorklogBody::ActionResult { call_id, .. } => Some(call_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, vec!["q1".to_string()], "{fault}");
         assert_worklog_contiguous(&sd);
     }
 }

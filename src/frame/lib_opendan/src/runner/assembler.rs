@@ -399,6 +399,8 @@ impl Blocks {
             if let Some(call) = state.child_call().filter(|c| &c.behavior == b) {
                 let asking = if super::ask::allowed(cfg) {
                     "To ask the user, run `agent-session ask-user`; its result is the user's answer."
+                } else if super::ask::via_notify(cfg, true) {
+                    "Ask the user only when one answer decides the rest: `agent-session ask-user` reaches the user as a notification, and the user may answer late or not at all."
                 } else {
                     "Do not ask the user."
                 };

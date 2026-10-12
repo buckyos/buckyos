@@ -10,6 +10,7 @@ mod message_hub;
 mod msg_box_db;
 mod msg_center;
 mod msg_tunnel;
+mod notify;
 mod object_access;
 mod owner_session;
 mod owner_session_db;
@@ -17,6 +18,8 @@ mod owner_session_db;
 mod test_group_service;
 #[cfg(test)]
 mod test_msg_center;
+#[cfg(test)]
+mod test_notify;
 mod tg_tunnel;
 mod zone_agent;
 
@@ -1258,6 +1261,7 @@ pub async fn start_msg_center_service() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
     *center.cyfs_dispatch.write().unwrap() = cyfs_dispatch::CyfsDispatchSettings::parse(&settings)?;
     center.start_idempotency_sweep();
+    center.start_notify_sweep();
     center.start_group_sync();
 
     let executor_mgr = Arc::new(DeliveryExecutorMgr::new());

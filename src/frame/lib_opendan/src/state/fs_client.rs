@@ -163,6 +163,7 @@ pub struct FsAgentStateClient {
     locks: FsLocks,
     behaviors: FsBehaviorCatalog,
     goals: FsGoals,
+    notify: Option<crate::notify::LocalNotify>,
 }
 
 impl FsAgentStateClient {
@@ -199,6 +200,7 @@ impl FsAgentStateClient {
             locks: FsLocks::new(layout.clone()),
             behaviors: FsBehaviorCatalog::new(layout.root.clone()),
             goals: FsGoals::new(layout.clone(), agent_did),
+            notify: crate::notify::LocalNotify::open_if_enabled(&layout.root, agent_did),
             layout,
             did: agent_did.to_string(),
             id,
@@ -267,5 +269,8 @@ impl AgentStateClient for FsAgentStateClient {
 
     fn goals(&self) -> &dyn GoalStore {
         &self.goals
+    }
+    fn notifies(&self) -> Option<&dyn crate::notify::NotifyHost> {
+        self.notify.as_ref().map(|n| n as &dyn crate::notify::NotifyHost)
     }
 }

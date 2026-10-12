@@ -1,0 +1,78 @@
+{
+  "schema": "opendan.session_config/7",
+  "config_rev": 1,
+  "session": {
+    "session_id": "ui-notify",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "ui",
+    "class": "ui",
+    "created_at_ms": 1791771749172,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "app"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "route_key": "did:bns:jarvis.alice/dm%3Adid%3Abns%3Aalice",
+    "objective": "chat with alice",
+    "end_condition": {
+      "type": "max_turns",
+      "detail": {
+        "n": 18446744073709551615
+      }
+    },
+    "input_policy": "any",
+    "acl": {
+      "agent_access": "full"
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true
+      }
+    },
+    "mechanical_compress": {
+      "recent_full_responses": 2,
+      "summary_chars": 280,
+      "max_result_chars": 4096,
+      "drop_kinds": [
+        "created",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {}
+  },
+  "subscriptions": [
+    {
+      "id": "_notify",
+      "mode": "semi",
+      "source": {
+        "type": "system",
+        "id": "notify"
+      }
+    }
+  ],
+  "channels": {
+    "inputs": [
+      {
+        "kind": "kmsg",
+        "id": "q",
+        "queue": "app2::alice::opendan.session.ui-notify",
+        "subscriber": "opendan.jarvis.alice.ui-notify"
+      }
+    ],
+    "outbound": {
+      "to": "did:bns:alice",
+      "kind": "chat"
+    },
+    "wake_event": "/opendan/jarvis.alice/session/ui-notify/input"
+  }
+}

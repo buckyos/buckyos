@@ -396,6 +396,9 @@ pub enum ActivationReasonKind {
     Restarted,
     /// Any other subscribed event (a followed task, an object).
     Event,
+    /// A question of the Goal was answered (or closed) by the user:
+    /// `ref` is its notification.
+    Answer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -532,6 +535,36 @@ pub struct GoalQuestion {
     pub at_ms: u64,
     pub epoch: u64,
     pub activation: u64,
+    /// The notification that asks it (none: not sent, or no notification
+    /// service).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<GoalQuestionStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalQuestionStatus {
+    Open,
+    Answered,
+    Dismissed,
+    Expired,
+    Canceled,
+}
+
+impl GoalQuestionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Answered => "answered",
+            Self::Dismissed => "dismissed",
+            Self::Expired => "expired",
+            Self::Canceled => "canceled",
+        }
+    }
 }
 
 /// A Work of the Goal not absorbed yet.
@@ -592,7 +625,8 @@ pub struct GoalState {
     pub distance: Option<GoalDistance>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<String>,
-    /// Recorded only; nobody is notified (phase 1).
+    /// Questions for the user: sent as notifications when the host has a
+    /// notification service; answers come back as `answer` Activations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<GoalQuestion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -775,7 +809,8 @@ pub struct GoalResult {
     /// Replaces the open items.
     #[serde(default)]
     pub pending: Option<Vec<String>>,
-    /// Questions for a person (recorded, not delivered).
+    /// Questions for the user (replace the open ones; each reaches the
+    /// user as a notification).
     #[serde(default)]
     pub questions: Option<Vec<String>>,
     #[serde(default)]

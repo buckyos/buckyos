@@ -134,9 +134,9 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
-        let state = self.app_loader.status().await?;
-        let health = self.app_loader.deployment_health().await?;
-        self.report_state(state.clone(), health, None).await;
-        Ok(state)
+        let observation = self.app_loader.observe_deployment().await?;
+        self.report_state(observation.state.clone(), observation.health, None)
+            .await;
+        Ok(observation.state)
     }
 }

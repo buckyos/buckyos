@@ -435,7 +435,7 @@ path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encodin
 PY
   log "Local BuckyOS now uses $IMAGE_NAME ($devenv_path)."
   log "Restart to recreate the app containers: (cd src && uv run start.py --skip-update)"
-  log "A fresh install (start.py --all) removes devenv.json; run ./build_aios --local-test again after it."
+  log "A fresh install (start.py --all) preserves devenv.json; remove its aios override and restart to use the published image."
 }
 
 prepare_opendan_web() {

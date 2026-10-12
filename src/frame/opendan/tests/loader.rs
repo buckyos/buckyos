@@ -283,6 +283,8 @@ struct FakeTask {
 #[derive(Default)]
 struct Tasks {
     tasks: Mutex<Vec<FakeTask>>,
+    /// Every wait reported, in order.
+    waits: Mutex<Vec<(String, TaskWaitReason)>>,
 }
 
 impl Tasks {
@@ -356,6 +358,7 @@ impl TaskService for Tasks {
     }
 
     async fn waiting(&self, task_id: &str, reason: TaskWaitReason) -> Result<(), String> {
+        self.waits.lock().unwrap().push((task_id.to_string(), reason.clone()));
         self.set(task_id, |t| {
             t.state = "waiting".into();
             t.message = reason.message.unwrap_or_default();
@@ -391,6 +394,8 @@ struct World {
     /// The agent's settings / profile / info records.
     records: Arc<LocalRecords>,
     settings: AgentSettings,
+    /// `Some`: the Loader has a notification service.
+    notify: Option<Arc<libopendan::notify::LocalNotify>>,
 }
 
 fn doc_id(n: u8) -> ObjId {
@@ -431,6 +436,7 @@ impl World {
             tasks: None,
             records: Arc::new(LocalRecords::memory()),
             settings: AgentSettings::default(),
+            notify: None,
         }
     }
 
@@ -484,6 +490,10 @@ impl World {
             mail: Some(self.mail.clone()),
             tasks: self.tasks.clone().map(|t| t as Arc<dyn TaskService>),
             objects: None,
+            notify: self
+                .notify
+                .clone()
+                .map(|n| n as Arc<dyn libopendan::notify::NotifyHost>),
             access: Access::Open { who: WHO.into() },
             port,
             web_dir: None,
@@ -1982,5 +1992,129 @@ async fn a_question_in_a_group_mentions_the_owner() {
     let q = w.mail.sent().into_iter().map(|(_, m)| m).find(|m| m.meta.contains_key("agent_ask")).unwrap();
     assert_eq!(q.kind, MsgObjKind::GroupMsg);
     assert_eq!(q.mentions.as_ref().unwrap().dids, vec![parse_did(BOB).unwrap()]);
+    loader.shutdown().await;
+}
+
+/// Notify TODO V07 / V08 through the Loader: a Work's question is an
+/// `input` notification, the Turn's task waits for the user (HumanInput on
+/// the notification's task), the answer continues the Work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_work_question_is_a_notification_and_its_answer_continues_the_work() {
+    use libopendan::notify::{LocalNotify, NotifyAnswer, NotifyHost, NotifyListReq};
+    let mut w = World::with_tasks();
+    let local = Arc::new(LocalNotify::enable(&w.root, AGENT).unwrap());
+    w.notify = Some(local.clone());
+    let tasks = w.tasks.clone().unwrap();
+    let llm = Llm::new(|req, n| match n {
+        0 => ask_command(
+            "Postgres or SQLite?",
+            json!({ "kind": "choice", "options": [ { "id": "pg", "label": "Postgres" }, { "id": "lite", "label": "SQLite" } ] }),
+        ),
+        1 => {
+            let all: String = req.messages.iter().map(|m| serde_json::to_string(m).unwrap()).collect();
+            assert!(all.contains(r#"\"option\":\"pg\""#) && all.contains(r#"\"via\":\"notification\""#), "{all}");
+            "migrated to Postgres".to_string()
+        }
+        _ => panic!("unexpected call {n}"),
+    });
+    let loader = w.start(llm.clone()).await;
+    let sd = new_work(loader.agent.as_ref(), &w, "migrate the notes").await;
+    let pending = || futures_block(local.list(NotifyListReq::default())).unwrap();
+    until("the question", || pending().len() == 1).await;
+    let v = pending().remove(0);
+    let human = v.task_id.clone().unwrap();
+    until("the Turn waits for the user", || {
+        tasks.waits.lock().unwrap().iter().any(|(_, r)| {
+            r.kind == buckyos_api::TaskWaitReasonKind::HumanInput
+                && r.related_task_id.as_deref() == Some(human.as_str())
+                && r.code.as_deref() == Some("ask_user")
+        })
+    })
+    .await;
+    local.answer(&v.notify_id, NotifyAnswer::option("pg"), None).await.unwrap();
+    until("the work finishes", || finished(&sd)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 2);
+    assert!(sd.report().unwrap().contains("migrated to Postgres"));
+    loader.shutdown().await;
+}
+
+/// Notify TODO V16 through the Loader: the record msg-center writes into
+/// the agent's own inbox when a copy of its notification reached a
+/// conversation becomes a `_notify` observation of that conversation's UI
+/// session — created for it when there is none, bound by the record's
+/// reply route — and says nothing by itself; the owner's next message
+/// sees it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_notification_shown_in_a_conversation_is_observed() {
+    let w = World::new();
+    let llm = Llm::new(|req, n| match n {
+        0 => {
+            let all: String = req.messages.iter().map(|m| m.text_content()).collect();
+            assert!(all.contains("[notify nt-9] input/timely from session work-1"), "{all}");
+            assert!(all.contains("yes, postgres"), "{all}");
+            "noted".to_string()
+        }
+        _ => panic!("unexpected call {n}"),
+    });
+    let loader = w.start(llm.clone()).await;
+    let session = format!("dm:{BOB}");
+    let data = buckyos_api::NotifyDeliveredData {
+        notify_id: "nt-9".into(),
+        url: "/messagehub?notify=nt-9".into(),
+        kind: buckyos_api::NotifyKind::Input,
+        category: buckyos_api::NotifyCategory::Agent,
+        level: buckyos_api::NotifyLevel::Timely,
+        title: "Postgres or SQLite?".into(),
+        message: None,
+        options: vec![buckyos_api::HumanPromptOption::new("pg", "Postgres")],
+        source: buckyos_api::NotifySource {
+            session_id: Some("work-1".into()),
+            ..Default::default()
+        },
+        delivered_msg_id: None,
+        reply_route: buckyos_api::NotifyConversation {
+            to: BOB.into(),
+            to_session: None,
+        },
+        at_ms: 1_760_000_000_000,
+    };
+    let agent = parse_did(AGENT).unwrap();
+    let observation = MsgObject {
+        from: agent.clone(),
+        to: vec![agent],
+        to_session: Some(session.clone()),
+        kind: MsgObjKind::Event,
+        created_at_ms: 7,
+        content: ndn_lib::MsgContent {
+            format: Some(ndn_lib::MsgContentFormat::TextPlain),
+            content: "notify nt-9 delivered".into(),
+            machine: Some(
+                buckyos_api::machine_content(buckyos_api::NOTIFY_DELIVERED_INTENT, &data).unwrap(),
+            ),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    w.mail.deliver_from(&session, observation, "Jarvis");
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.clone()))
+        .unwrap()
+        .to_string();
+    until("observed", || {
+        ui_entry(loader.agent.as_ref(), &route).is_some_and(|e| {
+            SessionDir::open(&e.location)
+                .and_then(|sd| sd.state())
+                .is_ok_and(|st| st.pending_events.len() == 1)
+        })
+    })
+    .await;
+    let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let cfg = SessionDir::open(&entry.location).unwrap().config().unwrap();
+    assert_eq!(cfg.channels.outbound.as_ref().unwrap().to, BOB);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 0, "an observation says nothing");
+    assert!(w.mail.sent().is_empty());
+    w.mail.deliver(&session, chat(BOB, "yes, postgres"));
+    until("reply", || w.mail.sent().len() == 1).await;
+    assert_eq!(w.mail.sent()[0].1.content.content, "noted");
     loader.shutdown().await;
 }

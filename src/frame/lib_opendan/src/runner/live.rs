@@ -641,6 +641,7 @@ async fn pending_results(
     returned: Option<&Value>,
     force: bool,
     answer: Option<&(String, Observation)>,
+    notified: &[(String, Observation)],
 ) -> Option<Vec<(String, Observation)>> {
     let returned_call = returned
         .and_then(|r| r.get("call_id"))
@@ -656,6 +657,10 @@ async fn pending_results(
             continue;
         }
         if super::ask::is_user_input(&p.task_id) {
+            if let Some((_, o)) = notified.iter().find(|(c, _)| c == call_id) {
+                results.push((call_id.to_string(), o.clone()));
+                continue;
+            }
             match answer {
                 Some((asked, o)) if asked == call_id => results.push((call_id.to_string(), o.clone())),
                 Some(_) => results.push((
@@ -738,12 +743,14 @@ async fn fill(
         });
         (s.state.process_result.clone(), answered)
     };
+    let notified = super::ask::notify_answers(sh, &w.run, &w.snapshot, force).await;
     let Some(results) = pending_results(
         &w.snapshot,
         w.resolver.as_ref(),
         returned.as_ref(),
         force,
         answered.as_ref(),
+        &notified,
     )
     .await
     else {

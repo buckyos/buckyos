@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "`run.json host.extra.asks[<call_id>].notify`: a question of a session nobody reads (a Work), asked through a notification. Recorded with the question (deadline), completed once the notification is sent.",
+  "properties": {
+    "deadline_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "notify_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "task_id": {
+      "description": "The TaskMgr task the answer is committed to.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "deadline_ms"
+  ],
+  "title": "AskNotify",
+  "type": "object"
+}

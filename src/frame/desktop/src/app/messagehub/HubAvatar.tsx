@@ -1,6 +1,6 @@
 /* ── MessageHub avatars: the identity's own picture, the entity type's glyph as the default ── */
 
-import { Bot, SlidersHorizontal, User, Users } from 'lucide-react'
+import { Bell, Bot, SlidersHorizontal, User, Users } from 'lucide-react'
 import { ObjectAvatar } from '../../presentation/ObjectIcon'
 import { presentUnresolvedDid } from '../../presentation/model'
 import { useDidPresentation } from '../../presentation/useDidPresentation'
@@ -34,6 +34,7 @@ export function HubAvatar({
   size,
   isOnline,
   decorative = true,
+  systemNotify = false,
 }: {
   type: EntityType
   name: string
@@ -41,6 +42,8 @@ export function HubAvatar({
   size: number
   isOnline?: boolean
   decorative?: boolean
+  /** The System notifications entity: a bell instead of the service glyph. */
+  systemNotify?: boolean
 }) {
   const glyph = size >= 64 ? 32 : size >= 46 ? 20 : size >= 38 ? 17 : size >= 28 ? 15 : Math.max(10, Math.round(size * 0.6))
   return (
@@ -49,8 +52,8 @@ export function HubAvatar({
         title={name}
         icons={[avatar]}
         size={size}
-        tone={typeColors[type]}
-        fallbackIcon={<TypeGlyph type={type} size={glyph} />}
+        tone={systemNotify ? 'var(--cp-accent)' : typeColors[type]}
+        fallbackIcon={systemNotify ? <Bell size={glyph} /> : <TypeGlyph type={type} size={glyph} />}
         decorative={decorative}
       />
       {isOnline ? (

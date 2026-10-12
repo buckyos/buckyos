@@ -49,6 +49,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
         outbound: None,
         objects: None,
         turn_tasks: None,
+        notify: None,
         runtime_id: None,
     }
 }
@@ -1513,5 +1514,97 @@ async fn a_run_opportunity_joining_an_open_activation_is_one_of_its_reasons() {
     let kinds: Vec<ActivationReasonKind> = acts[0].reasons.iter().map(|r| r.kind).collect();
     assert_eq!(kinds, vec![ActivationReasonKind::Created, ActivationReasonKind::Scheduled]);
     assert_eq!(acts[0].reasons[1].missed, Some(3));
+    h.shutdown().await;
+}
+
+/// V14 (notify TODO): the questions of an Activation reach the user as
+/// notifications — one per question text, a question that is no longer
+/// asked is canceled; the answer comes back as an `answer` Activation and
+/// the question records it. In a Goal `ask-user` points to `questions`.
+#[tokio::test]
+async fn goal_questions_reach_the_user_and_answers_come_back() {
+    use libopendan::notify::{LocalNotify, NotifyAnswer, NotifyHost, NotifyListReq, NotifyStatus};
+    let env = Env::new();
+    let local = Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap());
+    let llm = ScriptedLlm::new(|req, _| {
+        if !is_goal_req(req) {
+            return text("not a goal");
+        }
+        match act(req) {
+            1 if has_tool_result(req, "a1").is_none() => tool_call(
+                "a1",
+                "shell",
+                json!({ "command": "agent-session ask-user 'Which repository?'" }),
+            ),
+            1 => {
+                let r = has_tool_result(req, "a1").unwrap();
+                assert!(r.contains("put the question in `questions`"), "{r}");
+                report(json!({ "decision": "needs_info",
+                               "questions": ["Which repository should I watch?", "How often?"] }))
+            }
+            2 => report(json!({ "decision": "needs_info",
+                                "questions": ["Which repository should I watch?"] })),
+            _ => report(json!({ "decision": "acted", "distance": "watching" })),
+        }
+    });
+    let mut deps = host_deps(&env, llm.clone());
+    deps.notify = Some(local.clone());
+    deps.session_cli = Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+    let clock = ManualClock::at(libopendan::now_ms());
+    let mut opts = GoalHostOptions::new(
+        env.agent_root.join("sessions"),
+        json!({ "tools": { "enabled": true } }),
+    );
+    opts.clock = clock.clone();
+    opts.answers_every = Duration::ZERO;
+    let h = Hosted {
+        sup: Supervisor::new(deps, None).with_goals(GoalHost::new(opts)),
+        clock,
+        agent: env.agent(),
+    };
+    let mut req = goal_req("watch a repository");
+    req.title = Some("repo watcher".into());
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    let sent = local.list(NotifyListReq::default()).await.unwrap();
+    assert_eq!(sent.len(), 2, "{sent:#?}");
+    for v in &sent {
+        assert_eq!(v.source.goal_id.as_deref(), Some(g.goal_id.as_str()));
+        assert_eq!(v.source.operation.as_deref(), Some("repo watcher"));
+    }
+    let st = h.state(&g.goal_id).unwrap();
+    assert!(st.questions.iter().all(|q| q.notify_id.is_some()));
+    let repo = st.questions[0].notify_id.clone().unwrap();
+    let often = st.questions[1].notify_id.clone().unwrap();
+
+    // The same question again is the same notification; the dropped one is
+    // canceled.
+    h.sup.goal_activate(&g.goal_id, "again", "look again").await.unwrap();
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    assert_eq!(local.list(NotifyListReq::default()).await.unwrap().len(), 2);
+    let dropped = local.state(&often).await.unwrap();
+    assert_eq!(dropped.status, NotifyStatus::Canceled);
+    assert_eq!(dropped.closed_reason.as_deref(), Some("goal_dropped"));
+    let st = h.state(&g.goal_id).unwrap();
+    assert_eq!(st.questions.len(), 1);
+    assert_eq!(st.questions[0].notify_id.as_deref(), Some(repo.as_str()));
+
+    // The user answers: an `answer` Activation, once.
+    local.answer(&repo, NotifyAnswer::text("buckyos/buckyos"), None).await.unwrap();
+    h.until("answer activation", |h| h.activations(&g.goal_id).len() == 3).await;
+    let a = &h.activations(&g.goal_id)[2];
+    assert_eq!(a.reasons[0].kind, ActivationReasonKind::Answer);
+    assert_eq!(a.reasons[0].reference.as_deref(), Some(repo.as_str()));
+    let header = last_header(&llm);
+    assert!(header.contains("kind=\"answer\""), "{header}");
+    assert!(header.contains("buckyos/buckyos"), "{header}");
+    let st = h.state(&g.goal_id).unwrap();
+    assert_eq!(st.questions[0].status, Some(GoalQuestionStatus::Answered));
+    assert_eq!(st.questions[0].answer.as_deref(), Some("buckyos/buckyos"));
+    for _ in 0..10 {
+        h.tick().await;
+    }
+    assert_eq!(h.activations(&g.goal_id).len(), 3, "an answer opens one Activation");
     h.shutdown().await;
 }

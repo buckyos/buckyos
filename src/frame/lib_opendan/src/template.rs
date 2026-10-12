@@ -37,6 +37,9 @@ pub struct SessionTemplate {
     pub max_process_depth: u8,
     pub max_sub_sessions: u8,
     pub max_session_depth: u8,
+    /// How long a session that asks through a notification waits for the
+    /// answer (0: it does not ask).
+    pub ask_user_timeout_secs: u64,
     /// Subscriptions the template registers (there is no "delivered without
     /// a subscription" rule).
     pub implicit_subscriptions: Vec<Subscription>,
@@ -90,6 +93,7 @@ impl SessionTemplate {
             max_process_depth: policy.max_process_depth,
             max_sub_sessions: policy.max_sub_sessions,
             max_session_depth: policy.max_session_depth,
+            ask_user_timeout_secs: policy.ask_user_timeout_secs,
             implicit_subscriptions: Vec::new(),
             goal: None,
         };
@@ -103,15 +107,27 @@ impl SessionTemplate {
                 false,
             ),
             // The long-lived dialogue entry: bound to one conversation by
-            // its `route_key`, replies leave through the outbound sink.
-            "ui" => base(
-                SessionKind::Ui,
-                Turns::Unbounded,
-                WaitPolicy::Allowed,
-                InputChannel::Queue,
-                ObserveScope::EventsAndActive,
-                true,
-            ),
+            // its `route_key`, replies leave through the outbound sink. It
+            // observes the notifications shown in its conversation.
+            "ui" => {
+                let mut t = base(
+                    SessionKind::Ui,
+                    Turns::Unbounded,
+                    WaitPolicy::Allowed,
+                    InputChannel::Queue,
+                    ObserveScope::EventsAndActive,
+                    true,
+                );
+                t.implicit_subscriptions.push(Subscription {
+                    id: NOTIFY_SUBSCRIPTION.into(),
+                    mode: SubscriptionMode::Semi,
+                    source: SubscriptionSource::System {
+                        id: NOTIFY_SOURCE_ID.into(),
+                    },
+                    watch: Vec::new(),
+                });
+                t
+            }
             "self_improve" => base(
                 SessionKind::SelfImprove,
                 Turns::One,
@@ -248,6 +264,12 @@ impl SessionTemplate {
                     .to_string(),
             );
         }
+        if let Some(v) = over.get("ask_user_timeout_secs") {
+            t.ask_user_timeout_secs = v
+                .as_integer()
+                .and_then(|n| u64::try_from(n).ok())
+                .ok_or_else(|| bad("ask_user_timeout_secs"))?;
+        }
         for (key, slot) in [
             ("max_process_depth", &mut t.max_process_depth),
             ("max_sub_sessions", &mut t.max_sub_sessions),
@@ -285,6 +307,7 @@ impl SessionTemplate {
             max_process_depth: self.max_process_depth,
             max_sub_sessions: self.max_sub_sessions,
             max_session_depth: self.max_session_depth,
+            ask_user_timeout_secs: self.ask_user_timeout_secs,
         }
     }
 

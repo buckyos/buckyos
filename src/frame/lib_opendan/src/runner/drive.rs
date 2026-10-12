@@ -887,6 +887,7 @@ async fn end_open_work(
                     },
                     refs: Vec::new(),
                     deadline_ms: None,
+                    human_tasks: Vec::new(),
                 });
                 s.state.one_line_status = format!(
                     "turn {turn} {}",
@@ -1285,9 +1286,11 @@ async fn external_stop(sh: &Arc<Shared>) -> Result<()> {
 /// user it did not wait for yet is queued in the same commit and sent.
 async fn commit_waiting(sh: &Arc<Shared>, w: &WaitingRun) -> Result<(u64, RunState)> {
     let mut asked = false;
+    super::ask::send_notify_questions(sh, &w.run, &w.snapshot).await;
+    crate::fault::point("user_input:after_notify_send");
     let r = {
         let mut s = sh.session.lock().await;
-        let wf = super::ask::waiting_for(&w.snapshot);
+        let wf = super::ask::waiting_for(&w.snapshot, &w.run);
         if s.state.run_state != RunState::Waiting || s.state.waiting_for.as_ref() != Some(&wf) {
             asked = super::ask::queue_questions(sh, &mut s, &w.run, &w.snapshot).await;
             s.state.run_state = RunState::Waiting;
@@ -1648,9 +1651,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             HOOK_ON_INPUT
         };
         // A Goal Session only runs on a run opportunity (an input), never
-        // by itself: its bootstrap waits for one.
+        // by itself: its bootstrap waits for one. So does a session bound to
+        // a conversation (`channels.outbound`): it speaks when spoken to — a
+        // notification it only observes is no reason to say anything.
+        let waits_for_input = is_goal || cfg.channels.outbound.is_some();
         let triggered = !picked.is_empty()
-            || (!state.bootstrap_done && !is_goal)
+            || (!state.bootstrap_done && !waits_for_input)
             || state.internal_continuation.is_some();
         let mut msg = None;
         let mut media = Vec::new();
@@ -1780,6 +1786,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                         },
                         refs: Vec::new(),
                         deadline_ms: None,
+                        human_tasks: Vec::new(),
                     });
                     commit_and_report(sh, &mut s).await?;
                 }

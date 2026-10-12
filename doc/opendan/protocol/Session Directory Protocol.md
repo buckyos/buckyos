@@ -331,6 +331,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 一次推进内连续最多 3 次；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 最后发布的快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq`、消费位置与打开的 Turn 都不随重写改变。
 
 **保留**：`live_run`、`last_run`、`process_stack[].run_id` 引用的 run 保留；其它 run 在确认没有未核对执行后删除；旧快照按需裁剪（保留最新几份与已发布指针）。
+- `host.extra.asks`（宿主字段）：`ask-user` 调用的问题，`<call_id>` → `user_input_request`；经通知提问的 Work 另有 `asks[<call_id>].notify = {deadline_ms, notify_id?, task_id?}`（schema `ask_notify`）：登记时只有截止时间，通知发出后补上 `notify_id` 与 `task_id`（先发、后提交等待状态；重发用同一幂等键，得到同一条通知）。
 - `host.extra.tasks`（宿主字段）：run 的工具结果里引用过、LLM 还没有看到其结束的后台 task id。结果首次引用一个 task（且不是一条已结束命令的结果）或说明它“still running”时加入；之后关于它的其它结果（它的结束）移除。run 结束而 Session 未 finished 时，这些 id 与当时 resolver 报告仍在运行的 task 一起记入 `state.watched_tasks`；run 的结束在崩溃后被重做时同样从这里取，不依赖见过这个 run 的进程。
 
 ## 7.1 显式报告与完成提交（版本 6）

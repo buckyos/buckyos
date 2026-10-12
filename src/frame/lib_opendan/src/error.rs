@@ -97,6 +97,10 @@ pub enum OpenDanError {
     /// The caller's kind may not do this (Goal rules by caller type).
     #[error("forbidden: {0}")]
     Forbidden(String),
+    /// A notification is not in a state the request applies to (closed,
+    /// another kind); the message carries its current state.
+    #[error("notify conflict: {0}")]
+    NotifyConflict(String),
     #[error("{0}")]
     Other(String),
 }
@@ -155,6 +159,7 @@ impl OpenDanError {
             OpenDanError::GoalConflict(_) => "goal_conflict",
             OpenDanError::GoalBudgetExhausted(_) => "goal_budget_exhausted",
             OpenDanError::Forbidden(_) => "forbidden",
+            OpenDanError::NotifyConflict(_) => "notify_conflict",
             OpenDanError::Other(_) => "other",
         };
         let mut v = serde_json::json!({

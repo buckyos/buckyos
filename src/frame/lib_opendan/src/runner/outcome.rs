@@ -669,7 +669,12 @@ pub(super) async fn handle_context_outcome(
         finish_run(sh, &lc.run, &snapshot, lc.behavior, next.clone()).await?;
         return Ok(next);
     }
-    // Run kept (paused / waiting on a tool): state only.
+    // Run kept (paused / waiting on a tool): state only. Questions asked
+    // through a notification leave before the wait is committed.
+    if next.waiting {
+        Box::pin(super::ask::send_notify_questions(sh, &lc.run, &snapshot)).await;
+        crate::fault::point("user_input:after_notify_send");
+    }
     let mut s = sh.session.lock().await;
     s.state.run_state = if next.waiting {
         RunState::Waiting
@@ -682,7 +687,7 @@ pub(super) async fn handle_context_outcome(
         // event matching); the calls and their deadlines live in the
         // snapshot only. A question to the user leaves with this commit.
         asked = Box::pin(super::ask::queue_questions(sh, &mut s, &lc.run, &snapshot)).await;
-        s.state.waiting_for = Some(super::ask::waiting_for(&snapshot));
+        s.state.waiting_for = Some(super::ask::waiting_for(&snapshot, &lc.run));
     }
     s.state.last_error = next.error.clone();
     commit_and_report(sh, &mut s).await?;
@@ -921,12 +926,14 @@ async fn commit_run_end(
                 },
                 refs: Vec::new(),
                 deadline_ms: None,
+                human_tasks: Vec::new(),
             }
         } else {
             WaitingFor {
                 kind: WaitingKind::Children,
                 refs: next.wait_children.clone(),
                 deadline_ms: None,
+                human_tasks: Vec::new(),
             }
         });
     } else {

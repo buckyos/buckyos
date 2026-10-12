@@ -242,6 +242,9 @@ pub struct RunnerDeps {
     pub objects: Option<Arc<dyn ObjectStore>>,
     /// The host's task service (`None`: Turns get no task).
     pub turn_tasks: Option<Arc<dyn TurnTaskSink>>,
+    /// The host's notification service (`None`: a Work cannot ask its
+    /// user).
+    pub notify: Option<Arc<dyn crate::notify::NotifyHost>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
     pub session_cli: Option<PathBuf>,
     /// Tools that only exist in this runner process (`requirement.app_tools`).
@@ -272,6 +275,7 @@ impl RunnerDeps {
             outbound: None,
             objects: None,
             turn_tasks: None,
+            notify: None,
             session_cli: None,
             app_tools: Vec::new(),
             options: RunnerOptions::default(),

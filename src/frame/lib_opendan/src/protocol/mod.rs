@@ -84,6 +84,7 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("runtime_record", s::<runtime::RuntimeRecord>()),
         ("user_input_request", s::<input::UserInputRequest>()),
         ("user_input_answer", s::<input::UserInputAnswer>()),
+        ("ask_notify", s::<input::AskNotify>()),
         ("goal", s::<goal::GoalDefinition>()),
         ("goal_change", s::<goal::GoalChange>()),
         ("goal_state", s::<goal::GoalState>()),

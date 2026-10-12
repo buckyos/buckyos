@@ -385,6 +385,109 @@
   opacity: 0.5;
 }
 
+/* System Notify cards and the filter of a notification session. */
+.mh-notify-icon {
+  background: color-mix(in srgb, var(--cp-accent) 14%, transparent);
+  color: var(--cp-accent);
+}
+
+.mh-notify[data-kind="input"] .mh-notify-icon {
+  background: color-mix(in srgb, var(--cp-warning) 16%, transparent);
+  color: color-mix(in srgb, var(--cp-warning) 80%, var(--cp-text));
+}
+
+.mh-notify-chip {
+  --mh-chip: var(--cp-muted);
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mh-chip) 14%, transparent);
+  color: color-mix(in srgb, var(--mh-chip) 78%, var(--cp-text));
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.mh-notify-chip[data-level="timely"] {
+  --mh-chip: var(--cp-warning);
+}
+
+.mh-notify-chip[data-level="urgent"] {
+  --mh-chip: var(--cp-danger);
+}
+
+.mh-notify-input {
+  width: 100%;
+  min-height: 40px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--cp-border);
+  border-radius: 12px;
+  background: var(--cp-message-canvas);
+  color: var(--cp-text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.mh-notify-input:focus {
+  border-color: color-mix(in srgb, var(--cp-accent) 45%, var(--cp-border));
+  outline: none;
+}
+
+.mh-notify-primary {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--cp-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* the dark theme's accent is light: dark text keeps the primary action readable */
+:root[data-theme='dark'] .mh-notify-primary {
+  color: var(--cp-bg-strong);
+}
+
+.mh-notify-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cp-accent) 88%, #000);
+}
+
+.mh-notify-primary:disabled {
+  opacity: 0.5;
+}
+
+.mh-notify-result {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.mh-notify-filter {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--cp-muted);
+  font-size: 13px;
+}
+
+.mh-notify-filter:hover:not([aria-pressed="true"]) {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-notify-filter[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
+  background: color-mix(in srgb, var(--cp-accent-soft) 22%, var(--cp-surface));
+  color: var(--cp-text);
+  font-weight: 600;
+}
+
 @keyframes mh-task-spin {
   to { transform: rotate(360deg); }
 }

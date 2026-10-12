@@ -121,6 +121,12 @@ export interface Task {
   pendingControlAction?: TaskControlAction | null
   waitReason?: TaskWaitReason | null
   error?: string | null
+  /**
+   * The System Notify this task answers (`input.notify.notify_id` of a
+   * `human.input/v1` task). Such a task is handled on its MessageHub card
+   * (`/messagehub?notify=<id>`), never by an approve / reject card here.
+   */
+  notifyId?: string
 }
 
 export type SystemNotificationAction = 'confirm' | 'dismiss' | 'approve' | 'reject'
@@ -340,6 +346,17 @@ function toProgressPercent(progress: unknown): number | null {
   return null
 }
 
+/** The notification an input task answers (`input.notify.notify_id`), when it is one. */
+function notifyIdOf(detail: TaskMgrTask | null): string | undefined {
+  const notifyId = asRecord(asRecord(detail?.input).notify).notify_id
+  return typeof notifyId === 'string' && notifyId ? notifyId : undefined
+}
+
+/** Where the MessageHub card of a notification opens. */
+export function notifyCardPath(notifyId: string): string {
+  return `/messagehub?notify=${encodeURIComponent(notifyId)}`
+}
+
 /** Payload view of a task: result wins, then progress, then immutable input. */
 function taskPayload(detail: TaskMgrTask | null): Record<string, unknown> {
   if (!detail) return {}
@@ -429,6 +446,7 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot, agentAppIds:
   const waitReason = detail?.wait_reason ?? summary.wait_reason ?? null
   const errorMessage = detail?.error?.message ?? null
   const data = taskPayload(detail)
+  const notifyId = notifyIdOf(detail)
   const isSchedule = summary.schema_id === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID
 
   return {
@@ -468,6 +486,7 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot, agentAppIds:
     pendingControlAction: detail?.pending_control?.action ?? summary.pending_control_action ?? null,
     waitReason,
     error: errorMessage,
+    ...(notifyId ? { notifyId } : {}),
   }
 }
 
@@ -550,10 +569,11 @@ function deriveEvents(tasks: Task[]): SystemEvent[] {
 
 /**
  * A pending human task is the 2.0 shape of "needs a decision from you": a
- * HumanSet executor that has not been committed yet (doc §10.2).
+ * HumanSet executor that has not been committed yet (doc §10.2). The task of
+ * a System Notify is answered on its MessageHub card, so it gets no card here.
  */
 function isPendingHumanTask(task: Task): boolean {
-  return task.executorKind === TaskExecutorKind.HumanSet && task.phase !== TaskPhase.Terminal
+  return task.executorKind === TaskExecutorKind.HumanSet && task.phase !== TaskPhase.Terminal && !task.notifyId
 }
 
 function deriveNotifications(tasks: Task[]): SystemNotification[] {
@@ -740,6 +760,13 @@ export class TaskCenterMockModel
     return this.subscription.getSnapshot()
   }
 
+  /** The scripted notifications plus a card for each pending human task, as the RPC model derives them. */
+  override getPendingNotifications(): SystemNotification[] {
+    return [...super.getPendingNotifications(), ...deriveNotifications(this.tasks).filter((notification) => !this.handledTasks.has(notification.id))]
+  }
+
+  private readonly handledTasks = new Set<string>()
+
   subscribe(listener: () => void): () => void {
     this.attach()
     return this.subscription.subscribe(listener)
@@ -759,7 +786,8 @@ export class TaskCenterMockModel
   }
 
   override handleNotification(id: string, action: string): void {
-    super.handleNotification(id, action)
+    if (notificationTaskId(id)) this.handledTasks.add(id)
+    else super.handleNotification(id, action)
     this.subscription.emitChange()
   }
 }
@@ -1000,6 +1028,8 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
   private static needsRefreshDetail(summary: TaskSummary): boolean {
     return (
       summary.schema_id === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID ||
+      // An input task names its notification only in its input: the list links it to MessageHub.
+      summary.schema_id === HUMAN_INPUT_TASK_SCHEMA_ID ||
       summary.phase !== TaskPhase.Terminal
     )
   }

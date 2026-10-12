@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -660,7 +660,8 @@ export type ConversationStatusType =
 | `AttachmentMessage` | `content.refs` 中存在 `data_obj`：已注册 `ObjectAccess` 的对象引用，或 `uri_hint` 为 HTTP(S) 图片 URL | `refs[]`、`content.content`（caption） |
 | `renderTextMessage` | `content.format` ∈ `text/plain` / `text/markdown` / `text/html` | `content.content` |
 | `renderFallbackMessage` | 其余 | `content.format`、`content.content` |
-| 状态 pill（原型现状） | `kind === 'notify'` 或 `ui_item_kind === 'status'` | 仅保留 status/content；真实持久通知的完整投影需修正，见下 |
+| 通知卡片 `NotifyCard` | `kind === 'notify'` 且 `content.machine.intent === 'buckyos.notify'`（`messageNotify()` 能读出数据） | `machine.data`（`NotifyMessageData`）+ `notify.get` 的状态，见 §3.5.6 |
+| 状态 pill | 其余 `kind === 'notify'`，或 `ui_item_kind === 'status'` | 仅保留 status/content |
 
 `text/markdown` 由 `MessageMarkdown.tsx` 渲染（段落与单换行、标题、列表、引用、代码块、表格、强调、链接；链接仅允许 http(s) / mailto）。
 Agent 实体会话中对端发来的 `text/plain` 也按 Markdown 渲染，因为 OpenDAN 的 LLM 出口目前把 Markdown 回复标为 `text/plain`；
@@ -697,8 +698,8 @@ caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片
   （`window` 交给 Preview App，仅桌面窗口内可用）与 `autoplayGif`（关闭后消息流只显示 GIF 首帧）。
 - 显示加载、不可用、无权限与重试状态；单个附件失败不隐藏正文或其它引用；`service_did` 引用保留原样显示。
 
-`kind=notify` 也不能一概作为 typing 等易失运行态。当前原型将它投影为只剩正文的状态 pill；
-集成时只有明确的运行态来源进入独立状态通道，持久通知须保留记录上下文、内容与引用。
+`kind=notify` 不能一概作为 typing 等易失运行态：带 `buckyos.notify` 的持久通知渲染为通知卡片（§3.5.6），
+计入会话活跃；只有其余的 `notify`（原型里的运行态条目）才是状态 pill。
 
 #### 3.5.2 摘要生成规则（`MessagePreview.text`）
 
@@ -841,6 +842,43 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 - 回答态 / choice：输入框换成选项列表，点选即发送（正文 = label，带 `agent_ask.answer`）；`allow_text = true` 时多一个“其他…”，切到上面的锁定文本输入，横幅上可“返回选项”。草稿与已选附件保留，退出回答态后回到输入框。
 - `/stop`：回答态横幅 / 选项区右上角有“停止任务”，发送纯文本 `/stop`（无 `relates_to`，群里带提及），这是“我不想回答了”的出口；在锁定文本输入里键入 `/stop`（不带附件）同样作为顶层命令发出，而不是回答。之后最新一条是用户的 `/stop`，退出回答态；Agent 侧按现有 stop 路径结束 Turn。
 - 任务区：TaskMgr wait reason `code = 'input'`（Turn 在等回答）显示“等待你的回答”，不再重复 runner 的 “waiting for input” 原文。
+
+#### 3.5.6 系统通知：notify 投影、“系统通知”实体与 `?notify=` 深链（2026-10-11）
+
+来源：`notepads/opendan-agent-notify-todo.md` §3.1、§3.3、§3.4（N7）；接口契约 `doc/message_hub/System Notify.md`、`buckyos-api/src/msg_notify.rs`。
+
+**消息与状态**
+
+- 一条通知（Notify）在 msg-center 里是 `kind = notify` 的消息，`content.machine = {intent: 'buckyos.notify', data: NotifyMessageData}`（`protocol/msgobj.ts` 的 `messageNotify()` 宽松读取：缺 `notify_id`、kind 不是 `notice | input`、category 不是 `todo | agent | app`、edit 上的数据 → 不是通知；不认识的控件与不完整的选项丢弃，未知 level 按 `normal`）。`content.content` 是给不认识这个 intent 的客户端（Telegram）看的纯文本，卡片不用它。
+- 每条通知在用户 INBOX 的分类会话 `sysnotify:todo | agent | app` 里有一条主记录（`home = true`，`from` = 系统通知发送者，即 Zone DID）；Agent 来源的通知还可能按等级另投到用户与该 Agent 的会话里（副本，`home = false`，`from` = Agent DID）。主记录与副本的 `machine.data` 相同。
+- **卡片状态不在消息里**：一律读 `notify.get`（`NotifyView`：`status / result / closed_reason / closed_at_ms / acked_by / home / deliveries`）。`notify/watch.ts` 的 `NotifyWatch` 按 `notify_id` 缓存一份状态，主记录与所有副本的卡片读同一份，因此状态一致。被观察（卡片在屏）且未结束时：`input` 订阅 TaskMgr kevent `/task_mgr/<task_id>`（与任务区共用一条 kevent 流，只是“再读一次”的提示），并按 3 s → 30 s 退避轮询（覆盖 `notice` 的已读 / 过期与丢失的事件）；结束（`answered / dismissed / expired / canceled`）后不再订阅、不再轮询。页面重新可见 / 恢复联网时重读。
+- 状态：`open`、`read`（只用于 `notice`）未结束；其余四个是最终状态。`notice` 的 `open` 在卡片上显示为“新通知”，`input` 的 `open` 为“待回答”。
+
+**通知卡片（`notify/NotifyCard.tsx`，渲染器顺序在“已撤回”之后、附件之前）**
+
+- 显示：图标（`input` 为问号、`notice` 为铃铛）、真实来源（`source.agent_did` → 实体名，否则 `source.app_id`）+ Goal / Work 信息（`goal_id` → “目标：{operation ?? goal_id}”，`session_id` → “工作：{operation ?? session_id}”，否则 `operation`）、等级 chip、状态 chip、标题、说明、`source.link`（只放行 http(s) 与本 Zone 路径）。
+- 原地处理（仅 owner 自己的视角；观察者只看状态）：
+  - `input`：`Choice{id: 'option'}` 的每个选项是一个按钮，点选即提交；`TextInput{id: 'text'}` 是多行输入框加“提交”（Ctrl/⌘+Enter 也提交）；另有“忽略”（`action = dismiss`）。提交 = `NotifyWatch.answer()`：先 `get_task` 取最新快照，再 `commit_result{expected_revision}`，结果体与 `NotifyAnswer::to_task_result` 相同：`{kind: 'human', action: 'answer' | 'dismiss', values: {option?, text?}, submitted_by: <登录用户名>, submitted_at}`；`revision_conflict` 重读重试（最多 3 次），任务已结束 / `task_already_completed` 视为“别处已处理”；之后都重读 `notify.get`。
+  - `notice`：“知道了” → `notify.ack`（状态变为 `read`，按钮消失，“忽略”保留），“忽略” → `notify.dismiss`。
+- 结束后显示结果：回答（选项 label 与文字）、提交者（是登录用户时为“你”；`committed_by` 的 App 等于来源 Agent 的 App 时显示“{Agent} 代 {你} 提交”）、时间；忽略 / 过期 / 撤销（`closed_reason` 中 `ask_timeout`、`turn_stopped`、`goal_dropped` 有译文，其余原样）；`notice` 被代为确认时显示 `acked_by`。本次提交输给了别处时多一行“这条通知已在别处先处理，以下是最终结果”。
+- 卡片的消息操作按 `card` 模式：不复制、不转发、不置顶、不开详情；可“仅为我删除”。
+- **不改变所在会话的输入框**：`conversationInputState` 跳过所有 `kind = notify` 的消息，Agent 会话里的副本既不锁输入框，也不结束正在进行的 `agent_ask` 回答态。
+
+**“系统通知”实体与分类会话**
+
+- 归属：`sysnotify:*` 会话由 msg-center 登记（`origin = 'sysnotify'`，`peer_did` = 系统通知发送者），按 §3.2.1 归到该 DID 的实体。投影（`api/projection.ts`）把这个实体标为 `Entity.systemNotify = true`、`type = 'service'`、`domain = 'managed'`，名称取 i18n “系统通知 / System notifications”，头像为铃铛；它永远不被 §4.1 的隐藏账户规则隐藏。会话标题按分类取 i18n（待办 / Agent / 应用通知），不用登记标题；没有任何记录的分类会话不显示。
+- 排序：三个分类会话固定为 待办 → Agent → 应用通知（`sortSessions` 在活动排序后把通知会话按分类重排回原位置）；实体的默认会话是排在最前的那个。实体本身照常按活动时间排在实体列表里。
+- 未读：会话未读数即 msg-center 的 `unread_count`（等级规则决定未读落在主记录还是副本），就是“待处理”提示。
+- 不是对话：`access()` 返回 `read_only`，原因 `system_notify`；`creationReason()` 对该实体返回 `system_notify`（不能新建会话）；会话里不渲染输入框，也不渲染只读页脚；转发目标列表排除该实体。会话顶部是“全部 / 待处理 / 已处理”筛选（客户端过滤：`useNotifyFilteredReader` 读出已加载时间线里每张卡片的状态，`open / read` 为待处理，其余为已处理，状态未读到的卡片只出现在“全部”里；筛选不持久）。
+- `kind = notify` 计入会话活跃（`isMessageActivity`，与 msg-center `owner_session` 一致）；摘要取通知标题（`summarizeMessage` / mock `append`）。
+
+**深链**
+
+- `/messagehub?notify=<notify_id>`（`MessageHubRoute.tsx`）：先等 store 初始化，再 `notify.get` 取 `home = {owner, session_id, record_id, msg_id, from}`，然后按 `entityId = home.from`（实体存在时；否则只给 `sessionId`，由会话自己的实体打开）、`sessionId = home.session_id`、`messageId = home.msg_id` 打开，与 §3.5.4 的消息链接相同（定位并高亮该行），只是不自动打开消息详情（`linkedMessageDetails = false`），卡片原地处理。手机布局直接进入会话视图（Telegram 链接经 SSO 后同样可用）。读不到通知或没有 `home` 时，页顶提示“无法打开这条通知”，MessageHub 照常打开。
+
+**TaskCenter 兼容**：`input` 的 TaskMgr 任务（`human.input/v1`，`input.notify.notify_id`）在 TaskCenter 视图模型里带 `notifyId`；它不进入首页的 approve / reject “System Notifications”卡片，任务列表与详情给出“在 MessageHub 中处理”链接（`/messagehub?notify=<id>`）。列表刷新时也读取 `human.input/v1` 任务的详情，以便已结束的通知任务也能链接。
+
+**Mock**（`mock/notify.ts`）：三个分类会话各有数据——待办（一条待回答、一条已回答），Agent（Work 提问：CodeAssistant 会话 `session-coder-notify` 里的副本 + 主记录；Goal 提问；提醒 `notice`（也有副本）；已回答（Agent 代答）与超时撤销的历史），应用通知（备份完成 `notice`、同步冲突 `input`、已忽略与已过期的历史）。通知与任务状态存在 `localStorage`（`buckyos.messagehub.mock-notify.v1`），同一浏览器的两个标签页共享，`storage` 事件充当 kevent；测试钩子 `window.__messageHubMockNotify`（`configure({commitDelayMs, failNext})`、`answerElsewhere`、`close`、`view`）。
 
 ### 3.6 会话时间线投影模型
 
@@ -1564,6 +1602,8 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 请求记录及准入提示 | `msg.list_session` 的 box_kind / `msg.list_box_by_time` 的 REQUEST_BOX + `contact.get_contact` | 保留记录来源；当前已为 Friend 时不显示会话顶部待接收 / 拉黑提示，历史请求计数仍可在详情查看；请求处理状态与跨页计数待补齐 |
 | 群操作能力 | `group.check_access` | 按 actor 和 action（`session.post` 带 session_id）查询，不由 native / 本地托管推断 |
 | 回执详情 | `msg.list_read_receipts` | 独立于 mailbox 与 delivery；当前持久性限制见 6.5 |
+| 通知卡片状态 / `?notify=` 深链 | `notify.get { notify_id }` | `NotifyView`，见 3.5.6；`notify.list` 已封装（`datamodel/sessionApi.ts`），卡片未用 |
+| `input` 通知的任务快照 | TaskMgr `get_task`（登录用户自己的权限）+ kevent `/task_mgr/<task_id>` | 只取 `revision / phase / result`，用于提交前的 CAS |
 
 ### 9.2 写入路径
 
@@ -1573,6 +1613,8 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 本地标记已读 | `msg.update_record_state` | `{ record_id, new_state: 'READ' }`，自己的已展示入站记录；批量水位待补，见 6.5 |
 | 写入群消息回执 | `msg.set_read_state` | group_id / msg_id / reader_did / status；不清除邮箱未读，当前仅内存保存 |
 | 单条记录状态变更 | `msg.update_record_state` | RecipientState；不能代替 Session 生命周期 |
+| 通知：知道了 / 忽略（`notice`） | `notify.ack` / `notify.dismiss` | `{ notify_id }` → `NotifyView` |
+| 通知：回答 / 忽略（`input`） | TaskMgr `commit_result` | `{ task_id, result: {kind: 'human', action, values, submitted_by, submitted_at}, expected_revision }`；先到先得，见 3.5.6 |
 | 仅为我删除消息 | `msg.update_record_state` | `{ record_id, new_state: 'DELETED' }`；`msg.list_session` 不再返回该记录，对端不受影响 |
 | 转发消息 | `msg.post_send` | 目标 Session 的新消息，正文与 `data_obj` 引用取自原消息 |
 | 置顶消息 | `ui_session.update_state` | `{ owner, session_id, key: 'ui.pinned_message', value: PinnedMessage \| null }` |

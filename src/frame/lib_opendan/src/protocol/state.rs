@@ -95,6 +95,10 @@ pub struct WaitingFor {
     pub refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
+    /// TaskMgr human tasks the wait depends on: questions asked through a
+    /// notification (`ask-user` of a Work).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub human_tasks: Vec<String>,
 }
 
 /// Inputs of one logical Turn that entered a run. The input batch that

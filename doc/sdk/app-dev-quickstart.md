@@ -143,4 +143,5 @@ npx buckyos --profile dv --session-token-file ./.dv-session-token app status app
 - [PIKG Docker 样例](../../test/app_installer_test/pikg_samples/docker/)：复用目录和端点声明，业务 Server/Dockerfile 留在应用项目。
 - [PIKG 样例说明](../../test/app_installer_test/pikg_samples/README.md) 与 [安装测试](../../test/app_installer_test/README.md)：打包、安装和验收参考。
 - [SDK/CLI 源码](https://github.com/buckyos/buckyos-websdk)：`cli/modules/pikg.ts`、`app.ts`、`cli/core/auth.ts`；Server 接入系统能力参考 `examples/app_service_local_debug.ts`。
+- [System Notify](../message_hub/System%20Notify.md)：应用给自己的用户发通知、提问并等待回答（msg-center `notify.*`；Rust `MsgCenterClient::notify_*` 与 `runtime.wait_notify / answer_notify`，TS `MsgCenterClient.notifySend…`、`waitNotify`、`answerNotify`）。
 - [start.py](../../src/start.py)、[DV 配置](../../src/devenv_config.ts)、[安装目录规则](../../src/bucky_project.yaml)、[CI 构建](../../.github/workflows/build-macos.yml)：系统启动、重建和构建的事实来源。

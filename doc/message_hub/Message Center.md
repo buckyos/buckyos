@@ -109,6 +109,17 @@ Agent 在一个 Turn 内向用户提问（OpenDAN `agent-session ask-user`）时
 
 用户的回答同样是对占位（没有占位时对问题本身）的 `thread` 回复；从选项中选的回答另带 `content.machine = {intent: "agent_ask.answer", data: {call_id, option}}`。msg-center 与 tunnel 不解释这两个字段，原样存储与投递（读到的是正文；选项问题的正文附带选项列表）。只有 MessageHub（回答态、问答折叠，见 `UI_DATAMODEL.md` §3.5.5）和发出问题的 Agent 关心它们；Agent 把等待期间收到的下一条消息都当作答案，关系与 machine 只是线索。未读计数仍按记录：P、Q、A 与 edit 各一条（已知问题）。
 
+#### 2.1.3 `buckyos.notify`：系统通知（2026-10-11）
+
+App 给 Zone 用户发的通知（System Notify，对 App 的接口见 [System Notify.md](System%20Notify.md)）是 `kind = notify` 的 MsgObject，`content.machine = {intent: "buckyos.notify", data: NotifyMessageData}`（`version, notify_id, kind: notice|input, category: todo|agent|app, level, home, source, prompt, task_id?, url, expires_at_ms?`），正文是给不认识 intent 的客户端看的纯文本，最后一行是处理链接 `https://<zone host>/messagehub?notify=<id>`。
+
+- **主记录**：msg-center 以“系统通知发送者”（Zone DID）直接写进目标用户的 INBOX，不走联系人分级（否则会进 RequestBox），会话为用户自己的 `sysnotify:todo|agent|app`（首次用到时用 `msg.create_session` 那套登记，`origin = sysnotify`，peer 为系统通知发送者，标题“待办 / Agent / 应用通知”；不是对话，MessageHub 不给输入框）。幂等键 `notify:<id>:home`，`data.home = true`。
+- **另投**（只对 Agent 来源）：Agent 以自己的 DID `post_send` 到用户与它的已有私聊会话（原生或 Telegram，不进群），`data.home = false`；候选会话取自该 Agent 的 INBOX：用户在其中说过话的会话，回复坐标按用户最近一条消息（`to = 发送者 / ingress principal 对应的 endpoint`，`to_session` 同那条消息）。等级：`quiet` 不另投；`normal` 投 `source.conversation` 对应的会话；`timely` 再加最近活跃的会话；`urgent` 投全部。主记录 `quiet` 写入即已读、`urgent` 未读、`normal / timely` 有另投时已读否则未读：未读只落在用户最可能看的那一处。幂等键 `notify:<id>:<agent inbox session>`。
+- **观察记录**：每份另投成功后，msg-center 在 Agent 自己的 INBOX `<agent>/<会话>` 写一条 `kind = event`、`from = to = agent`、`intent = buckyos.notify.delivered` 的记录（`NotifyDeliveredData`：通知要点、`reply_route`、`delivered_msg_id`），同样不走联系人分级。OpenDAN Loader 把它转成该会话 UI Session 的 `_notify` 半订阅事件。
+- **状态的真相**：`notice` 看记录（主记录写入时未读、或原生副本，任一已读即 `read`；`notify.ack` 全部标已读；`notify.dismiss` 全部归档；过期 / 撤销也归档）；`input` 另挂 TaskMgr HumanSet 任务（`human.input/v1`，assignee 为目标用户，msg-center 为创建者并授权：用户 `ReadResult`，请求方 principal `ReadMeta/ReadInput/ReadResult/Control`），回答直接向 TaskMgr `commit_result`（`expected_revision`，先到先得），msg-center 只读任务。
+- `kind = notify` 计入会话活跃（§5.8 的 activity 口径、解除归档）。
+- 表 `notifies`（`notify_id, owner_did, requester, idempotency_key, state: delivering|delivered|closed, created_at_ms, row_json`）记录 msg-center 的决定与进度；`send` 每一步幂等、可从断点续做，30 s 一次的清扫补完中断的发送、处理过期（`notice` 归档，`input` 以 `expired` 撤销任务）、关闭任务已结束的行。
+
 **永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类、接收方分配的序号。
 本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；投递回执由 `ReceiptObj`（`cyrece`）单独表达。
 会话级生命周期需另有 owner 范围元数据（§5.8）。这些变化均不修改原始 MsgObject。
@@ -752,6 +763,10 @@ list_box_by_time(mailbox, box_kind, state_filter, limit, cursor_sort_key, cursor
 list_mailboxes(owner, box_kind)  # owner 集合授权；仅返回有 UNREAD 的地址
 move_record(record_id, mailbox)
 get_next_delivery(transport_did, lock_on_take, with_object)
+
+# 系统通知（§2.1.3；App 契约见 System Notify.md）
+notify.send(req) / notify.get(notify_id) / notify.list(filter)
+notify.ack(notify_id, on_behalf?) / notify.dismiss(notify_id) / notify.cancel(notify_id, reason?)
 ```
 
 群聊 read receipt（`MsgReceiptObj`，per-reader）见 Self-Host-Group 文档；其存储同样遵守"独立对象 + 索引"模式。

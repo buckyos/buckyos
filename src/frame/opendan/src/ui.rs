@@ -435,6 +435,7 @@ impl UiModule {
         route_key: &str,
         first: &MsgObject,
         key: &str,
+        binding: Option<OutboundBinding>,
     ) -> libopendan::Result<Option<String>> {
         let bound: Vec<RegistryEntry> = self
             .agent
@@ -478,27 +479,33 @@ impl UiModule {
         spec.prompt.llm_context = self.config.llm_context.clone();
         spec.freeze = true;
         // The conversation an inbox stands for does not change: where the
-        // replies go is fixed here and checked against every reply.
-        let ReplyRoute::Message {
-            to,
-            to_session,
-            kind,
-            ..
-        } = ReplyRoute::of_msg(
-            key,
-            &SessionMsg {
-                msg: first.clone(),
-                delivery: MsgDelivery::default(),
-            },
-        )
-        else {
-            return Ok(None);
+        // replies go is fixed here and checked against every reply. A
+        // notification shown first brings its conversation's coordinates.
+        spec.outbound = match binding {
+            Some(b) => Some(b),
+            None => {
+                let ReplyRoute::Message {
+                    to,
+                    to_session,
+                    kind,
+                    ..
+                } = ReplyRoute::of_msg(
+                    key,
+                    &SessionMsg {
+                        msg: first.clone(),
+                        delivery: MsgDelivery::default(),
+                    },
+                )
+                else {
+                    return Ok(None);
+                };
+                Some(OutboundBinding {
+                    to,
+                    to_session,
+                    kind,
+                })
+            }
         };
-        spec.outbound = Some(OutboundBinding {
-            to,
-            to_session,
-            kind,
-        });
         let sd = create_session(
             &self.sessions_dir,
             spec,
@@ -627,9 +634,15 @@ impl UiModule {
                 }
                 // No application command is registered: nothing to do.
                 MsgBridgeOutput::AppCommand { .. } => None,
-                MsgBridgeOutput::Deliver { .. } | MsgBridgeOutput::Control { .. } => {
+                MsgBridgeOutput::Deliver { .. }
+                | MsgBridgeOutput::Control { .. }
+                | MsgBridgeOutput::Observe { .. } => {
+                    let binding = match &output {
+                        MsgBridgeOutput::Observe { binding, .. } => Some(binding.clone()),
+                        _ => None,
+                    };
                     let Some(sid) = self
-                        .session_for(&route_key, &msg, &key)
+                        .session_for(&route_key, &msg, &key, binding)
                         .await
                         .map_err(|e| e.to_string())?
                     else {
@@ -645,7 +658,7 @@ impl UiModule {
                         .clone()
                         .into_input(&self.who, &msg)
                         .map_err(|e| e.to_string())?
-                        .expect("deliver / control produce a record");
+                        .expect("deliver / control / observe produce a record");
                     if !self.post(&route_key, &sid, &input).await? {
                         return Ok(());
                     }

@@ -172,6 +172,9 @@ fn status_of(s: &Session, tool: Option<String>) -> Option<(String, TurnTaskStatu
             WaitingKind::Children => format!("waiting for {} sub session(s)", w.refs.len().max(1)),
             WaitingKind::Tool => "waiting for a tool".to_string(),
             WaitingKind::Event => "waiting for an event".to_string(),
+            WaitingKind::Input if !w.human_tasks.is_empty() => {
+                "waiting for the user's answer (notification)".to_string()
+            }
             WaitingKind::Input if w.refs.iter().any(|r| r.starts_with(USER_INPUT_TASK_PREFIX)) => {
                 "waiting for the user's answer".to_string()
             }

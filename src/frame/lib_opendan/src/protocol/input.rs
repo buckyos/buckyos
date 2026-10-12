@@ -1071,7 +1071,27 @@ pub struct UserInputAnswer {
     pub option: Option<String>,
     /// The message replies to the question (`thread` on its anchor).
     pub in_reply_to_question: bool,
+    /// The message (empty when the answer came through a notification).
     pub msg_id: String,
     pub from: String,
     pub at_ms: u64,
+    /// `notification`: answered on the notification card, not by a
+    /// message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_id: Option<String>,
+}
+
+/// `run.json host.extra.asks[<call_id>].notify`: a question of a session
+/// nobody reads (a Work), asked through a notification. Recorded with the
+/// question (deadline), completed once the notification is sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AskNotify {
+    pub deadline_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_id: Option<String>,
+    /// The TaskMgr task the answer is committed to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }

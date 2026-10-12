@@ -350,6 +350,158 @@ export function agentAskQuestionText(text: string, ask: AgentAsk): string {
   return question || text.trim()
 }
 
+/**
+ * System Notify (`buckyos-api/src/msg_notify.rs`): a `kind = notify` message
+ * whose `content.machine` carries `NotifyMessageData`. The record in the
+ * user's notification session (`sysnotify:<category>`, `home = true`) and
+ * every copy in a conversation with the source Agent (`home = false`) carry
+ * the same data. The state of the notification is never in the message: it
+ * is read with `notify.get`.
+ */
+export const NOTIFY_INTENT = 'buckyos.notify'
+/** Owner-local sessions that hold a user's notifications by category. */
+export const NOTIFY_SESSION_PREFIX = 'sysnotify:'
+export type NotifyKind = 'notice' | 'input'
+export type NotifyCategory = 'todo' | 'agent' | 'app'
+export type NotifyLevel = 'quiet' | 'normal' | 'timely' | 'urgent'
+export type NotifyStatus = 'open' | 'read' | 'answered' | 'dismissed' | 'expired' | 'canceled'
+/** By importance to the user: the order of the category sessions. */
+export const NOTIFY_CATEGORIES: readonly NotifyCategory[] = ['todo', 'agent', 'app']
+export const NOTIFY_LEVELS: readonly NotifyLevel[] = ['quiet', 'normal', 'timely', 'urgent']
+export const NOTIFY_STATUSES: readonly NotifyStatus[] = ['open', 'read', 'answered', 'dismissed', 'expired', 'canceled']
+/** Control ids of an `input` prompt: the options and the free text. */
+export const NOTIFY_CHOICE_CONTROL_ID = 'option'
+export const NOTIFY_TEXT_CONTROL_ID = 'text'
+
+/** `HumanPromptOption` of TaskMgr (`taskdata.rs`). */
+export interface HumanPromptOption {
+  value: string
+  label: string
+  description?: string
+  style?: 'default' | 'primary' | 'danger'
+}
+
+export type HumanPromptControl =
+  | { kind: 'choice'; id: string; label?: string; options?: HumanPromptOption[]; multiple?: boolean; required?: boolean }
+  | { kind: 'text_input'; id: string; label?: string; placeholder?: string; default_value?: string; multiline?: boolean; required?: boolean }
+
+/** `HumanTaskPrompt` of TaskMgr: what a notification shows and asks. */
+export interface HumanTaskPrompt {
+  title?: string
+  message?: string
+  controls?: HumanPromptControl[]
+}
+
+export interface NotifyConversation {
+  to: string
+  to_session?: string
+}
+
+/** Where a notification comes from; `app_id` / `agent_did` are filled by msg-center, never claimed. */
+export interface NotifySource {
+  app_id?: string
+  agent_did?: string
+  session_id?: string
+  turn?: number
+  call_id?: string
+  goal_id?: string
+  /** One sentence: what this is for. */
+  operation?: string
+  /** A page of the App about this matter. */
+  link?: string
+  conversation?: NotifyConversation
+}
+
+export interface NotifyMessageData {
+  version: number
+  notify_id: string
+  kind: NotifyKind
+  category: NotifyCategory
+  level: NotifyLevel
+  /** `true`: the record in the user's notification session; `false`: a copy in a conversation. */
+  home: boolean
+  source: NotifySource
+  prompt: HumanTaskPrompt
+  /** The TaskMgr HumanSet task of an `input`. */
+  task_id?: string
+  url: string
+  expires_at_ms?: number
+}
+
+function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === 'string' && (values as readonly string[]).includes(value)
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function promptOf(value: unknown): HumanTaskPrompt {
+  const raw = asObject(value) ?? {}
+  const controls: HumanPromptControl[] = []
+  for (const item of Array.isArray(raw.controls) ? raw.controls : []) {
+    const control = asObject(item)
+    if (!control || typeof control.id !== 'string') continue
+    if (control.kind === 'choice') {
+      const options = (Array.isArray(control.options) ? control.options : []).map(asObject).filter((option): option is Record<string, unknown> => !!option && typeof option.value === 'string' && typeof option.label === 'string')
+        .map(option => ({ value: option.value as string, label: option.label as string, ...(typeof option.description === 'string' ? { description: option.description } : {}), ...(isOneOf(['default', 'primary', 'danger'] as const, option.style) ? { style: option.style } : {}) }))
+      controls.push({ kind: 'choice', id: control.id, ...(typeof control.label === 'string' ? { label: control.label } : {}), options, multiple: control.multiple === true, required: control.required === true })
+    } else if (control.kind === 'text_input') {
+      controls.push({ kind: 'text_input', id: control.id, ...(typeof control.label === 'string' ? { label: control.label } : {}), ...(typeof control.placeholder === 'string' ? { placeholder: control.placeholder } : {}), ...(typeof control.default_value === 'string' ? { default_value: control.default_value } : {}), multiline: control.multiline === true, required: control.required === true })
+    }
+  }
+  return { ...(typeof raw.title === 'string' ? { title: raw.title } : {}), ...(typeof raw.message === 'string' ? { message: raw.message } : {}), controls }
+}
+
+/** Reads a `HumanTaskPrompt` from untrusted JSON, dropping controls it does not understand. */
+export function parseHumanTaskPrompt(value: unknown): HumanTaskPrompt {
+  return promptOf(value)
+}
+
+/**
+ * The notification data of a `kind = notify` message (`intent =
+ * buckyos.notify`), or `undefined` when it is none or malformed. An edit
+ * never carries one.
+ */
+export function messageNotify(message: MessageObject): NotifyMessageData | undefined {
+  if (message.kind !== 'notify' || message.relates_to?.rel === 'edit') return undefined
+  const machine = message.content?.machine
+  if (machine?.intent !== NOTIFY_INTENT) return undefined
+  const data = asObject(machine.data)
+  if (!data || typeof data.notify_id !== 'string' || !data.notify_id.trim() || !isOneOf(['notice', 'input'] as const, data.kind) || !isOneOf(NOTIFY_CATEGORIES, data.category)) return undefined
+  const source = asObject(data.source) ?? {}
+  const text = (key: string) => typeof source[key] === 'string' && (source[key] as string).trim() ? { [key]: source[key] as string } : {}
+  const conversation = asObject(source.conversation)
+  return {
+    version: typeof data.version === 'number' ? data.version : 1,
+    notify_id: data.notify_id,
+    kind: data.kind,
+    category: data.category,
+    level: isOneOf(NOTIFY_LEVELS, data.level) ? data.level : 'normal',
+    home: data.home === true,
+    source: {
+      ...text('app_id'), ...text('agent_did'), ...text('session_id'), ...text('call_id'), ...text('goal_id'), ...text('operation'), ...text('link'),
+      ...(typeof source.turn === 'number' ? { turn: source.turn } : {}),
+      ...(conversation && typeof conversation.to === 'string' ? { conversation: { to: conversation.to, ...(typeof conversation.to_session === 'string' ? { to_session: conversation.to_session } : {}) } } : {}),
+    },
+    prompt: promptOf(data.prompt),
+    ...(typeof data.task_id === 'string' && data.task_id ? { task_id: data.task_id } : {}),
+    url: typeof data.url === 'string' ? data.url : `/messagehub?notify=${encodeURIComponent(data.notify_id)}`,
+    ...(typeof data.expires_at_ms === 'number' ? { expires_at_ms: data.expires_at_ms } : {}),
+  }
+}
+
+/** The category of a notification session (`sysnotify:<category>`), or `undefined` for any other session. */
+export function notifySessionCategory(sessionId: string): NotifyCategory | undefined {
+  if (!sessionId.startsWith(NOTIFY_SESSION_PREFIX)) return undefined
+  const category = sessionId.slice(NOTIFY_SESSION_PREFIX.length)
+  return isOneOf(NOTIFY_CATEGORIES, category) ? category : undefined
+}
+
+export function notifySessionId(category: NotifyCategory): string {
+  return `${NOTIFY_SESSION_PREFIX}${category}`
+}
+
 export type MessageDeliveryStatus =
   | 'sending'
   | 'sent'
@@ -418,9 +570,10 @@ export function getMessageStableId(
   )
 }
 
+/** A status pill: a transient `notify` or a UI status item. A System Notify message is a card, never a pill. */
 export function isStatusMessageObject(message: MessageObject): boolean {
   return (
-    message.kind === 'notify'
+    (message.kind === 'notify' && !messageNotify(message))
     || getMessageMetaString(message, 'ui_item_kind') === 'status'
   )
 }

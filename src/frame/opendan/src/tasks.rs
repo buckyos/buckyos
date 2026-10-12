@@ -286,6 +286,15 @@ pub struct TurnTasks {
 }
 
 fn wait_reason(w: &WaitingFor, message: &str) -> TaskWaitReason {
+    // A question asked through a notification: the user's human task.
+    if w.kind == WaitingKind::Input && !w.human_tasks.is_empty() {
+        return TaskWaitReason {
+            kind: TaskWaitReasonKind::HumanInput,
+            code: Some("ask_user".to_string()),
+            related_task_id: w.human_tasks.first().cloned(),
+            message: Some(message.to_string()),
+        };
+    }
     let (kind, code) = match w.kind {
         WaitingKind::Children => (TaskWaitReasonKind::ChildTask, "sub_sessions"),
         WaitingKind::Tool => (TaskWaitReasonKind::Dependency, "tool"),

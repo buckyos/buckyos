@@ -47,6 +47,8 @@ pub struct HostDeps {
     pub objects: Option<Arc<dyn crate::runner::ObjectStore>>,
     /// The task service Turns are reported to (`None`: no tasks).
     pub turn_tasks: Option<Arc<dyn crate::runner::TurnTaskSink>>,
+    /// Where a Work's questions to the user go (`None`: a Work cannot ask).
+    pub notify: Option<Arc<dyn crate::notify::NotifyHost>>,
     /// Binding identity required of the sessions driven directly (not of
     /// their sub sessions).
     pub runtime_id: Option<String>,
@@ -78,6 +80,7 @@ impl HostDeps {
         deps.outbound = self.outbound.clone();
         deps.objects = self.objects.clone();
         deps.turn_tasks = self.turn_tasks.clone();
+        deps.notify = self.notify.clone();
         deps.stop = stop;
         Ok(deps)
     }
@@ -130,6 +133,9 @@ pub struct ChildDriver {
     running: Arc<Mutex<HashMap<String, Child>>>,
     /// Last result per sub session that is not being driven right now.
     results: Arc<Mutex<HashMap<String, DriveResult>>>,
+    /// When a sub session waiting for an answer without a queue was looked
+    /// at last.
+    checked: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl ChildDriver {
@@ -139,6 +145,7 @@ impl ChildDriver {
             host,
             running: Arc::new(Mutex::new(HashMap::new())),
             results: Arc::new(Mutex::new(HashMap::new())),
+            checked: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -182,13 +189,33 @@ impl ChildDriver {
                 | DriveResult::RecoveryBlocked(_),
             ) => false,
             // Waiting for input it has no channel for: only its parent's
-            // answer (a new session input) can change that.
+            // answer (a new session input) or the answer to a question it
+            // asked through a notification can change that; the latter is
+            // looked at again every `recheck`.
             _ => {
-                !(e.status.run_state == RunState::Waiting
+                if !(e.status.run_state == RunState::Waiting
                     && e.status.waiting_for == Some(WaitingKind::Input)
                     && e.input_queue.is_none())
+                {
+                    return true;
+                }
+                if self.host.notify.is_none() {
+                    return false;
+                }
+                let mut checked = self.checked.lock().expect("checked");
+                match checked.get(&e.session_id) {
+                    Some(t) if t.elapsed() < self.recheck() => false,
+                    _ => {
+                        checked.insert(e.session_id.clone(), Instant::now());
+                        true
+                    }
+                }
             }
         }
+    }
+
+    fn recheck(&self) -> Duration {
+        self.host.options.poll_interval.saturating_mul(6)
     }
 
     /// One look at the registry: every sub session of `roots` (transitively)
@@ -867,8 +894,15 @@ impl Supervisor {
                     Some(_) if parent_stopped => "parent stopped",
                     Some(_) if blocked(last.as_ref()) => continue,
                     // Without a queue only its own progress moves it, and
-                    // that happens while it is hosted.
-                    Some(_) if e.input_queue.is_none() => continue,
+                    // that happens while it is hosted — except an answer
+                    // to a question asked through a notification (or its
+                    // deadline): looked at again every `recheck`.
+                    Some(_)
+                        if e.input_queue.is_none()
+                            && e.status.waiting_for != Some(WaitingKind::Input) =>
+                    {
+                        continue
+                    }
                     Some(s) => {
                         if s.unloaded_at.is_some_and(|t| t.elapsed() < self.recheck) {
                             continue;

@@ -278,6 +278,9 @@ pub struct GoalHostOptions {
     pub class: String,
     pub clock: Arc<dyn Clock>,
     pub backend: Arc<dyn ScheduleBackend>,
+    /// How often the notifications of a Goal's open questions are looked
+    /// at ([`GoalHost::recheck_answers`] looks at once).
+    pub answers_every: std::time::Duration,
 }
 
 impl GoalHostOptions {
@@ -288,6 +291,7 @@ impl GoalHostOptions {
             class: GOAL_CLASS.to_string(),
             clock: Arc::new(SystemClock),
             backend: Arc::new(LocalScheduleBackend),
+            answers_every: std::time::Duration::from_secs(30),
         }
     }
 }
@@ -322,6 +326,10 @@ pub struct GoalHost {
     status: Mutex<GoalHostStatus>,
     /// One reconcile at a time.
     busy: tokio::sync::Mutex<()>,
+    /// Answer inputs posted by this process.
+    answered: Mutex<std::collections::BTreeSet<String>>,
+    /// When the questions of a Goal were looked at last.
+    answers_checked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 fn push(list: &mut Vec<GoalEventRecord>, r: GoalEventRecord) {
@@ -344,7 +352,15 @@ impl GoalHost {
                 Arc::new(PeriodBudgetCheck),
             ],
             busy: tokio::sync::Mutex::new(()),
+            answered: Mutex::new(std::collections::BTreeSet::new()),
+            answers_checked: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// A notification may have changed (a task event): every Goal's
+    /// questions are looked at by the next tick.
+    pub fn recheck_answers(&self) {
+        self.answers_checked.lock().expect("answers checked").clear();
     }
 
     /// Another link at the end of the admission chain (phase 2: cheap
@@ -406,6 +422,56 @@ impl GoalHost {
             .await?
             .ok_or_else(|| OpenDanError::NotFound(format!("goal {goal_id}")))?;
         self.reconcile(sup, &goal).await
+    }
+
+    /// Questions of the Goal whose notification was answered (or closed)
+    /// since: the answer goes to the Goal Session as an `answer` run
+    /// opportunity (the key makes a repeat the same input). The session
+    /// records the answer when that Activation closes.
+    async fn collect_answers(&self, sup: &Supervisor, goal: &GoalDefinition) -> Result<()> {
+        let Some(notify) = sup.host.notify.clone() else {
+            return Ok(());
+        };
+        {
+            let mut checked = self.answers_checked.lock().expect("answers checked");
+            if checked
+                .get(&goal.goal_id)
+                .is_some_and(|t| t.elapsed() < self.options.answers_every)
+            {
+                return Ok(());
+            }
+            checked.insert(goal.goal_id.clone(), std::time::Instant::now());
+        }
+        let agent = sup.host.agent.as_ref();
+        let Some(state) = agent.goals().state(&goal.goal_id).await? else {
+            return Ok(());
+        };
+        for q in &state.questions {
+            let (Some(id), None | Some(GoalQuestionStatus::Open)) = (&q.notify_id, q.status) else {
+                continue;
+            };
+            let key = crate::goal::answer_key(&goal.goal_id, id);
+            if self.answered.lock().expect("answered").contains(&key) {
+                continue;
+            }
+            let view = notify.state(id).await?;
+            if !view.status.is_closed() {
+                continue;
+            }
+            let answer = view.result.as_ref().and_then(|r| {
+                r.text().map(str::to_string).or_else(|| r.option().map(str::to_string))
+            });
+            let note = match (view.status, answer) {
+                (crate::notify::NotifyStatus::Answered, Some(a)) => {
+                    format!("the user answered the question \"{}\": {a}", q.text)
+                }
+                (status, _) => format!("the question \"{}\" was {}", q.text, status.as_str()),
+            };
+            post_activation(agent, goal, &sup.host.who, ActivationReasonKind::Answer, &key, &note).await?;
+            self.answered.lock().expect("answered").insert(key);
+            self.drive(sup, &goal.session.sid, "goal question answered").await;
+        }
+        Ok(())
     }
 
     /// The session of an epoch is finished and published everything.
@@ -512,6 +578,9 @@ impl GoalHost {
                 "the goal session {sid} of epoch {epoch} finished while the goal is {}; restart the goal for a new context",
                 goal.status.as_str()
             )));
+        }
+        if let Err(e) = self.collect_answers(sup, goal).await {
+            self.error(&goal.goal_id, format!("answers: {e}"));
         }
         let now = self.now();
         // The start of the epoch: one event, posted once.

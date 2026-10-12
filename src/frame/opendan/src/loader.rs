@@ -18,7 +18,9 @@ use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
 use libopendan::protocol::builtin_runtimes;
 use libopendan::runner::{BehaviorAssembler, ObjectStore, OutboundSink, RunnerOptions};
-use libopendan::state::{register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient};
+use libopendan::state::{
+    register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient, WithNotify,
+};
 use name_lib::DID;
 use ndn_lib::ObjId;
 
@@ -69,6 +71,9 @@ pub struct LoaderEnv {
     /// `None`: no NamedStore (development host); report artifacts stay
     /// files and replies attach no local file.
     pub objects: Option<Arc<dyn ObjectStore>>,
+    /// The owner's notification service (msg-center; files with `--dev`).
+    /// `None`: a Work cannot ask, `agent-session notify` is not available.
+    pub notify: Option<Arc<dyn libopendan::notify::NotifyHost>>,
     pub access: Access,
     pub port: u16,
     pub web_dir: Option<PathBuf>,
@@ -180,7 +185,10 @@ impl Loader {
         if let Some(id) = &env.agent_id {
             fs = fs.with_agent_id(id);
         }
-        let agent: Arc<dyn AgentStateClient> = Arc::new(fs);
+        let agent: Arc<dyn AgentStateClient> = match &env.notify {
+            Some(notify) => Arc::new(WithNotify::new(Arc::new(fs), notify.clone())),
+            None => Arc::new(fs),
+        };
         register_in_process(agent.clone());
         // The runtimes every agent has, before anything can choose one.
         match agent
@@ -258,6 +266,7 @@ impl Loader {
             bridges,
             outbound,
             objects: env.objects.clone(),
+            notify: env.notify.clone(),
             turn_tasks: env.tasks.clone().map(|tasks| {
                 Arc::new(TurnTasks {
                     tasks,
@@ -401,6 +410,19 @@ impl Loader {
         // Recovery does not wait for something to touch a session: the
         // first registry scan hosts everything left unfinished.
         tasks.push(tokio::spawn(supervisor.clone().run()));
+        match &env.notify {
+            Some(notify) => {
+                module("notify", true, true, None);
+                tasks.push(tokio::spawn(crate::notify::watch_answers(
+                    notify.clone(),
+                    env.kevent.clone(),
+                    supervisor.clone(),
+                    env.agent_did.clone(),
+                    env.options.poll_interval.saturating_mul(6),
+                )));
+            }
+            None => module("notify", false, false, Some("no notification service")),
+        }
         if let Some(ui) = &ui {
             tasks.push(tokio::spawn(
                 ui.clone().run(

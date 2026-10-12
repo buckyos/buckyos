@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
+use crate::notify::NotifyStatus;
 use crate::session::{Session, SessionDir};
 
 use super::shared::{commit_and_report, Shared};
@@ -460,8 +461,24 @@ fn render_builtin(
         xml_list(&mut s, "unknowns", "unknown", &d.unknowns);
     }
     xml_list(&mut s, "pending", "item", &st.pending);
-    let questions: Vec<String> = st.questions.iter().map(|q| q.text.clone()).collect();
-    xml_list(&mut s, "open_questions", "question", &questions);
+    if !st.questions.is_empty() {
+        s.push_str("<open_questions>\n");
+        for q in &st.questions {
+            s.push_str("<question");
+            if let Some(status) = q.status {
+                s.push_str(&format!(" status=\"{}\"", status.as_str()));
+            }
+            s.push('>');
+            s.push_str(&escape_xml_text(&q.text));
+            if let Some(a) = &q.answer {
+                s.push_str("<answer>");
+                s.push_str(&escape_xml_text(a));
+                s.push_str("</answer>");
+            }
+            s.push_str("</question>\n");
+        }
+        s.push_str("</open_questions>\n");
+    }
     if let Some(e) = &st.last_error {
         s.push_str(&format!(
             "<last_error>{}</last_error>\n",
@@ -820,6 +837,7 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
     let sid = s.sid().to_string();
     let g = s.state.goal.as_mut().expect("goal state");
     let st = &mut g.state;
+    let mut dropped: Vec<GoalQuestion> = Vec::new();
     crate::goal::roll_usage(&mut st.usage, now, window);
     st.usage.tokens += tokens;
     st.usage.activations += 1;
@@ -868,14 +886,26 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
             st.pending = p.clone();
         }
         if let Some(q) = &r.questions {
+            // The same question again is the same notification.
+            let before = std::mem::take(&mut st.questions);
             st.questions = q
                 .iter()
-                .map(|t| GoalQuestion {
-                    text: t.clone(),
-                    at_ms: now,
-                    epoch: binding.epoch,
-                    activation: open.seq,
+                .map(|t| match before.iter().find(|b| &b.text == t) {
+                    Some(b) => b.clone(),
+                    None => GoalQuestion {
+                        text: t.clone(),
+                        at_ms: now,
+                        epoch: binding.epoch,
+                        activation: open.seq,
+                        notify_id: None,
+                        status: None,
+                        answer: None,
+                    },
                 })
+                .collect();
+            dropped = before
+                .into_iter()
+                .filter(|b| !st.questions.iter().any(|q| q.text == b.text))
                 .collect();
         }
         if let Some(k) = &r.skills {
@@ -884,15 +914,37 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
     }
     if outcome == ActivationOutcome::NeedsInput && result.as_ref().is_none_or(|r| r.questions.is_none()) {
         // The question is the Turn's last words; nobody is told (phase 1).
-        st.questions.push(GoalQuestion {
-            text: cut(end.answer.unwrap_or_default(), 1000),
-            at_ms: now,
-            epoch: binding.epoch,
-            activation: open.seq,
-        });
+        let text = cut(end.answer.unwrap_or_default(), 1000);
+        if !st.questions.iter().any(|q| q.text == text) {
+            st.questions.push(GoalQuestion {
+                text,
+                at_ms: now,
+                epoch: binding.epoch,
+                activation: open.seq,
+                notify_id: None,
+                status: None,
+                answer: None,
+            });
+        }
     }
     let extra = st.questions.len().saturating_sub(GOAL_QUESTIONS_KEEP);
-    st.questions.drain(..extra);
+    dropped.extend(st.questions.drain(..extra));
+    // The questions reach the user (and leave) before this commit; their
+    // answers taken in by this Activation are recorded.
+    if let Some(notify) = sh.deps.notify.clone() {
+        let title = goal.as_ref().map(|g| if g.title.trim().is_empty() { g.objective.clone() } else { g.title.clone() });
+        questions_to_user(
+            sh,
+            notify.as_ref(),
+            &binding.goal_id,
+            &sid,
+            title.as_deref(),
+            st,
+            &open.reasons,
+            &dropped,
+        )
+        .await;
+    }
     // Work not taken in yet, as the registry has it now.
     st.active_works = entries
         .iter()
@@ -923,6 +975,102 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
         decision.as_str()
     );
     Ok(())
+}
+
+fn question_key(goal_id: &str, text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(text.as_bytes()));
+    format!("goal:{goal_id}:q:{}", &digest[..16])
+}
+
+fn question_status(status: NotifyStatus) -> GoalQuestionStatus {
+    match status {
+        NotifyStatus::Open | NotifyStatus::Read => GoalQuestionStatus::Open,
+        NotifyStatus::Answered => GoalQuestionStatus::Answered,
+        NotifyStatus::Dismissed => GoalQuestionStatus::Dismissed,
+        NotifyStatus::Expired => GoalQuestionStatus::Expired,
+        NotifyStatus::Canceled => GoalQuestionStatus::Canceled,
+    }
+}
+
+/// Inside the commit that closes an Activation: questions the Goal no
+/// longer asks are canceled, new ones are sent (one notification per
+/// question text, whatever how often it is asked), answers this Activation
+/// took in are recorded. A failure leaves the question unsent: the next
+/// Activation that keeps it tries again.
+#[allow(clippy::too_many_arguments)]
+async fn questions_to_user(
+    sh: &Shared,
+    notify: &dyn crate::notify::NotifyHost,
+    goal_id: &str,
+    sid: &str,
+    title: Option<&str>,
+    st: &mut GoalState,
+    reasons: &[ActivationReason],
+    dropped: &[GoalQuestion],
+) {
+    for q in dropped {
+        if let (Some(id), None | Some(GoalQuestionStatus::Open)) = (&q.notify_id, q.status) {
+            if let Err(e) = notify.cancel(id, "goal_dropped").await {
+                log::warn!("goal {goal_id}: notification {id} not canceled: {e}");
+            }
+        }
+    }
+    for r in reasons.iter().filter(|r| r.kind == ActivationReasonKind::Answer) {
+        let Some(id) = r.reference.as_deref() else {
+            continue;
+        };
+        let Some(q) = st.questions.iter_mut().find(|q| q.notify_id.as_deref() == Some(id)) else {
+            continue;
+        };
+        match notify.state(id).await {
+            Ok(v) => {
+                q.status = Some(question_status(v.status));
+                q.answer = v.result.as_ref().and_then(|r| {
+                    r.text().map(str::to_string).or_else(|| {
+                        let o = r.option()?;
+                        Some(
+                            crate::notify::prompt_options(&v.prompt)
+                                .into_iter()
+                                .find(|x| x.value == o)
+                                .map(|x| x.label)
+                                .unwrap_or_else(|| o.to_string()),
+                        )
+                    })
+                });
+            }
+            Err(e) => log::warn!("goal {goal_id}: answer {id} not readable: {e}"),
+        }
+    }
+    for q in st.questions.iter_mut().filter(|q| q.notify_id.is_none()) {
+        let first = q.text.trim().lines().next().unwrap_or_default().trim().to_string();
+        let head = cut(&first, 120);
+        let message = if q.text.trim() == head { String::new() } else { q.text.trim().to_string() };
+        let mut source = crate::notify::NotifySource {
+            session_id: Some(sid.to_string()),
+            goal_id: Some(goal_id.to_string()),
+            operation: title.map(|t| cut(t, 200)),
+            ..Default::default()
+        };
+        crate::notify::complete_notify_source(sh.agent(), &mut source).await;
+        let req = crate::notify::NotifySendReq {
+            to_user: String::new(),
+            kind: crate::notify::NotifyKind::Input,
+            level: Some(crate::notify::NotifyLevel::Normal),
+            category: None,
+            prompt: crate::notify::input_prompt(head, message, Vec::new(), true),
+            source: Some(source),
+            expires_at_ms: None,
+            idempotency_key: question_key(goal_id, &q.text),
+        };
+        match notify.send(req).await {
+            Ok(v) => {
+                q.notify_id = Some(v.notify_id);
+                q.status = Some(question_status(v.status));
+            }
+            Err(e) => log::warn!("goal {goal_id}: question not sent yet: {e}"),
+        }
+    }
 }
 
 fn apply_skills(skills: &mut Vec<GoalSkill>, add: &[GoalSkill], remove: &[String]) {

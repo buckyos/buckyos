@@ -8,8 +8,10 @@ use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -35,10 +37,13 @@ pub(crate) fn new_system_package_env() -> PackageEnv {
 
 pub struct ServicePkg {
     pub pkg_id: String,
+    pub service_identity: String,
     pub pkg_env_path: PathBuf,
     pub current_dir: Option<PathBuf>,
     pub env_vars: HashMap<String, String>,
     pub media_info: Mutex<Option<MediaInfo>>,
+    #[cfg(test)]
+    before_native_spawn: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 struct NativeServiceSpec {
@@ -46,6 +51,72 @@ struct NativeServiceSpec {
     process_names: Vec<String>,
     status_port: Option<u16>,
     use_op_subcommand: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProcessIdentity {
+    pid: i32,
+    start_time: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ManagedProcess {
+    identity: ProcessIdentity,
+    executable: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ManagedServiceTarget {
+    pkg_id: String,
+    executable: String,
+}
+
+#[derive(Clone)]
+struct ManagedService {
+    target: ManagedServiceTarget,
+    processes: Vec<ManagedProcess>,
+}
+
+#[derive(Clone)]
+struct DiscoveredProcess {
+    managed: ManagedProcess,
+    executable: Option<String>,
+    cmd0: Option<String>,
+    cmd0_names: Vec<String>,
+    names: Vec<String>,
+}
+
+type ServiceProcessKey = (PathBuf, String);
+
+static MANAGED_PROCESSES: OnceLock<Mutex<HashMap<ServiceProcessKey, ManagedService>>> =
+    OnceLock::new();
+static PROCESS_DISCOVERY: OnceLock<Mutex<Option<Arc<Vec<DiscoveredProcess>>>>> = OnceLock::new();
+static PROCESS_SCAN_COUNT: AtomicU64 = AtomicU64::new(0);
+static PROCESS_PID_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+static PROCESS_FAST_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn managed_processes() -> &'static Mutex<HashMap<ServiceProcessKey, ManagedService>> {
+    MANAGED_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn process_discovery() -> &'static Mutex<Option<Arc<Vec<DiscoveredProcess>>>> {
+    PROCESS_DISCOVERY.get_or_init(|| Mutex::new(None))
+}
+
+pub async fn begin_service_process_round(service_names: &HashSet<String>) {
+    managed_processes()
+        .lock()
+        .await
+        .retain(|(_, name), _| service_names.contains(name));
+    *process_discovery().lock().await = None;
+}
+
+pub fn service_process_check_counts() -> (u64, u64, u64) {
+    (
+        PROCESS_SCAN_COUNT.load(Ordering::Relaxed),
+        PROCESS_PID_CHECK_COUNT.load(Ordering::Relaxed),
+        PROCESS_FAST_HIT_COUNT.load(Ordering::Relaxed),
+    )
 }
 
 struct CommandOutput {
@@ -63,21 +134,27 @@ impl Default for ServicePkg {
     fn default() -> Self {
         Self {
             pkg_id: "".to_string(),
+            service_identity: String::new(),
             pkg_env_path: PathBuf::from(""),
             current_dir: None,
             env_vars: HashMap::new(),
             media_info: Mutex::new(None),
+            #[cfg(test)]
+            before_native_spawn: Mutex::new(None),
         }
     }
 }
 impl ServicePkg {
     pub fn new(pkg_id: String, env_path: PathBuf) -> Self {
         Self {
+            service_identity: package_unique_name(&pkg_id),
             pkg_id,
             pkg_env_path: env_path,
             current_dir: None,
             env_vars: HashMap::new(),
             media_info: Mutex::new(None),
+            #[cfg(test)]
+            before_native_spawn: Mutex::new(None),
         }
     }
 
@@ -152,6 +229,11 @@ impl ServicePkg {
                 return ServiceControlError::ReasonError(e.to_string());
             })?;
 
+        if result == 0 && matches!(op_name, "start" | "stop") {
+            self.forget_managed_processes().await;
+            *process_discovery().lock().await = None;
+        }
+
         let params_str = params.map(|p| p.join(" ")).unwrap_or_default();
         if result == 0 {
             info!(
@@ -197,6 +279,7 @@ impl ServicePkg {
         let pkg_env = new_package_env(self.pkg_env_path.clone());
         let media_info = pkg_env.load(&self.pkg_id).await;
         if media_info.is_err() {
+            self.forget_managed_processes().await;
             info!("pkg {} not exist", self.pkg_id);
             return Ok(ServiceInstanceState::NotExist);
         }
@@ -328,8 +411,31 @@ impl ServicePkg {
             return Ok(exit_code(&output.status));
         }
 
-        self.native_stop(spec, media_root, None, env_vars).await?;
+        if !self.service_processes(spec, true).await?.is_empty() {
+            if spec.status_port.map(check_local_port).unwrap_or(true) {
+                return Ok(0);
+            }
+            self.native_stop(spec, media_root, None, env_vars).await?;
+            if !self.service_processes(spec, true).await?.is_empty() {
+                return Ok(1);
+            }
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.before_native_spawn.lock().await.take() {
+            hook();
+        }
         let pid = spawn_detached(spec.executable.as_path(), &args, env_vars, cwd)?;
+        if let Some(identity) = read_process_identity(pid as i32) {
+            self.remember_processes(
+                spec,
+                vec![ManagedProcess {
+                    identity,
+                    executable: Some(spec.executable.clone()),
+                }],
+            )
+            .await;
+        }
+        *process_discovery().lock().await = None;
         info!(
             "# run detached {} {} => pid {}",
             spec.executable.display(),
@@ -354,15 +460,19 @@ impl ServicePkg {
             return Ok(exit_code(&output.status));
         }
 
-        let pids = service_process_pids(spec);
-        if pids.is_empty() {
+        let processes = self.service_processes(spec, true).await?;
+        if processes.is_empty() {
             info!("service {} is not running", spec.executable.display());
             return Ok(0);
         }
 
-        for pid in pids {
-            stop_process_tree(pid).await?;
+        for process in processes {
+            if process_identity_is_current(&process.identity) {
+                stop_process_tree(process.identity.pid).await?;
+            }
         }
+        self.forget_managed_processes().await;
+        *process_discovery().lock().await = None;
         Ok(0)
     }
 
@@ -381,7 +491,7 @@ impl ServicePkg {
             return Ok(exit_code(&output.status));
         }
 
-        if service_process_pids(spec).is_empty() {
+        if self.service_processes(spec, false).await?.is_empty() {
             return Ok(1);
         }
 
@@ -392,6 +502,99 @@ impl ServicePkg {
         }
 
         Ok(0)
+    }
+
+    fn process_key(&self) -> ServiceProcessKey {
+        (self.pkg_env_path.clone(), self.service_identity.clone())
+    }
+
+    fn process_target(&self, spec: &NativeServiceSpec) -> ManagedServiceTarget {
+        ManagedServiceTarget {
+            pkg_id: self.pkg_id.clone(),
+            executable: normalize_path_value(&spec.executable),
+        }
+    }
+
+    async fn forget_managed_processes(&self) {
+        managed_processes().lock().await.remove(&self.process_key());
+    }
+
+    async fn remember_processes(&self, spec: &NativeServiceSpec, processes: Vec<ManagedProcess>) {
+        managed_processes().lock().await.insert(
+            self.process_key(),
+            ManagedService {
+                target: self.process_target(spec),
+                processes,
+            },
+        );
+    }
+
+    async fn service_processes(
+        &self,
+        spec: &NativeServiceSpec,
+        fresh_discovery: bool,
+    ) -> Result<Vec<ManagedProcess>> {
+        let target = self.process_target(spec);
+        let known = {
+            let mut registry = managed_processes().lock().await;
+            match registry.get(&self.process_key()) {
+                Some(known) if known.target == target => Some(known.processes.clone()),
+                Some(_) => {
+                    registry.remove(&self.process_key());
+                    None
+                }
+                None => None,
+            }
+        };
+
+        if !fresh_discovery {
+            if let Some(known) = known.as_ref() {
+                if !known.is_empty()
+                    && known
+                        .iter()
+                        .all(|process| process_identity_is_current(&process.identity))
+                {
+                    PROCESS_FAST_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Ok(known.clone());
+                }
+            }
+        }
+
+        let mut processes =
+            discover_service_processes(spec, &target.executable, fresh_discovery).await?;
+        if let Some(known) = known {
+            for process in known {
+                if !processes
+                    .iter()
+                    .any(|found| found.identity == process.identity)
+                    && process_identity_is_current(&process.identity)
+                {
+                    processes.push(process);
+                }
+            }
+        }
+        processes.sort_unstable_by_key(|process| process.identity.pid);
+        if processes.is_empty() {
+            self.forget_managed_processes().await;
+        } else {
+            for process in &processes {
+                debug!(
+                    "managed service {} pid={} start_time={} executable={:?}",
+                    self.service_identity,
+                    process.identity.pid,
+                    process.identity.start_time,
+                    process.executable
+                );
+            }
+            managed_processes().lock().await.insert(
+                self.process_key(),
+                ManagedService {
+                    target,
+                    processes: processes.clone(),
+                },
+            );
+        }
+        Ok(processes)
     }
 }
 
@@ -540,55 +743,130 @@ fn process_name_candidates(name: &str) -> Vec<String> {
     name_aliases(base)
 }
 
-fn process_matches(spec: &NativeServiceSpec, process: &sysinfo::Process) -> bool {
-    if let Some(exe) = process.exe() {
-        if normalize_path_value(exe) == normalize_path_value(spec.executable.as_path()) {
-            return true;
-        }
+fn process_matches(
+    spec: &NativeServiceSpec,
+    executable: &str,
+    process: &DiscoveredProcess,
+) -> bool {
+    if process.executable.as_deref() == Some(executable)
+        || process.cmd0.as_deref() == Some(executable)
+    {
+        return true;
     }
-
-    if let Some(cmd0) = process.cmd().first() {
-        let cmd0_path = Path::new(cmd0);
-        if cmd0_path.is_absolute()
-            && normalize_path_value(cmd0_path) == normalize_path_value(spec.executable.as_path())
-        {
-            return true;
-        }
-
-        let cmd0_name = cmd0.to_string_lossy();
-        if process_name_candidates(cmd0_name.as_ref())
-            .iter()
-            .any(|candidate| spec.process_names.iter().any(|name| name == candidate))
-        {
-            return true;
-        }
-    }
-
-    let process_name = process.name().to_string_lossy();
-    process_name_candidates(process_name.as_ref())
+    process
+        .cmd0_names
         .iter()
-        .any(|candidate| spec.process_names.iter().any(|name| name == candidate))
+        .chain(&process.names)
+        .any(|candidate| spec.process_names.contains(candidate))
 }
 
 fn is_active_process_status(status: ProcessStatus) -> bool {
     !matches!(status, ProcessStatus::Zombie | ProcessStatus::Dead)
 }
 
-fn service_process_pids(spec: &NativeServiceSpec) -> Vec<i32> {
-    let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All);
+fn read_process_identity(pid: i32) -> Option<ProcessIdentity> {
+    if pid <= 0 {
+        return None;
+    }
+    PROCESS_PID_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
+    let mut system = System::new();
+    let sys_pid = Pid::from_u32(pid as u32);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[sys_pid]),
+        ProcessRefreshKind::new(),
+    );
+    let process = system.process(sys_pid)?;
+    is_active_process_status(process.status()).then(|| ProcessIdentity {
+        pid,
+        start_time: process.start_time(),
+    })
+}
 
-    let mut pids = system
+// An established identity uses only PID and start time; replaced executables may be deleted.
+fn process_identity_is_current(identity: &ProcessIdentity) -> bool {
+    read_process_identity(identity.pid).as_ref() == Some(identity)
+}
+
+fn scan_processes() -> Vec<DiscoveredProcess> {
+    let scan_count = PROCESS_SCAN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let started = std::time::Instant::now();
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new()
+            .with_exe(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always),
+    );
+    let processes = system
         .processes()
         .iter()
-        .filter_map(|(pid, process)| {
-            (is_active_process_status(process.status()) && process_matches(spec, process))
-                .then_some(pid.as_u32() as i32)
+        .filter(|(_, process)| {
+            process.thread_kind().is_none() && is_active_process_status(process.status())
+        })
+        .map(|(pid, process)| {
+            let executable = process.exe().map(Path::to_path_buf);
+            let cmd0 = process.cmd().first();
+            DiscoveredProcess {
+                managed: ManagedProcess {
+                    identity: ProcessIdentity {
+                        pid: pid.as_u32() as i32,
+                        start_time: process.start_time(),
+                    },
+                    executable: executable.clone(),
+                },
+                executable: executable.as_deref().map(normalize_path_value),
+                cmd0: cmd0
+                    .map(Path::new)
+                    .filter(|path| path.is_absolute())
+                    .map(normalize_path_value),
+                cmd0_names: cmd0
+                    .map(|name| process_name_candidates(&name.to_string_lossy()))
+                    .unwrap_or_default(),
+                names: process_name_candidates(&process.name().to_string_lossy()),
+            }
         })
         .collect::<Vec<_>>();
-    pids.sort_unstable();
-    pids.dedup();
-    pids
+    debug!(
+        "service process discovery scan={} candidates={} elapsed_ms={}",
+        scan_count,
+        processes.len(),
+        started.elapsed().as_millis()
+    );
+    processes
+}
+
+async fn discover_service_processes(
+    spec: &NativeServiceSpec,
+    executable: &str,
+    fresh: bool,
+) -> Result<Vec<ManagedProcess>> {
+    let mut snapshot = process_discovery().lock().await;
+    let reused = !fresh && snapshot.is_some();
+    if fresh || snapshot.is_none() {
+        *snapshot = Some(Arc::new(
+            tokio::task::spawn_blocking(scan_processes)
+                .await
+                .map_err(|error| ServiceControlError::ReasonError(error.to_string()))?,
+        ));
+    }
+    let find_matches = |processes: &[DiscoveredProcess]| {
+        processes
+            .iter()
+            .filter(|process| process_matches(spec, executable, process))
+            .filter(|process| process_identity_is_current(&process.managed.identity))
+            .map(|process| process.managed.clone())
+            .collect::<Vec<_>>()
+    };
+    let processes = find_matches(snapshot.as_deref().unwrap());
+    if !processes.is_empty() || !reused {
+        return Ok(processes);
+    }
+    *snapshot = Some(Arc::new(
+        tokio::task::spawn_blocking(scan_processes)
+            .await
+            .map_err(|error| ServiceControlError::ReasonError(error.to_string()))?,
+    ));
+    Ok(find_matches(snapshot.as_deref().unwrap()))
 }
 
 fn check_local_port(port: u16) -> bool {
@@ -647,16 +925,7 @@ async fn stop_process_tree(pid: i32) -> Result<()> {
 }
 
 fn is_pid_running(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-
-    let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All);
-    system
-        .process(Pid::from_u32(pid as u32))
-        .map(|process| is_active_process_status(process.status()))
-        .unwrap_or(false)
+    read_process_identity(pid).is_some()
 }
 
 async fn run_command(
@@ -839,5 +1108,723 @@ mod tests {
         assert!(!is_active_process_status(ProcessStatus::Dead));
         assert!(is_active_process_status(ProcessStatus::Run));
         assert!(is_active_process_status(ProcessStatus::Sleep));
+    }
+
+    #[cfg(unix)]
+    static PROCESS_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+    #[cfg(unix)]
+    struct TestService {
+        directory: PathBuf,
+        pkg: ServicePkg,
+        spec: NativeServiceSpec,
+        child: Option<std::process::Child>,
+    }
+
+    #[cfg(unix)]
+    impl TestService {
+        fn new(name: &str) -> Self {
+            let directory = temp_dir(name);
+            let executable_name = directory.file_name().unwrap().to_string_lossy().to_string();
+            let executable = directory.join(&executable_name);
+            fs::copy("/bin/sleep", &executable).unwrap();
+            let pkg = ServicePkg::new(executable_name.clone(), directory.clone());
+            let spec = NativeServiceSpec {
+                executable,
+                process_names: name_aliases(&executable_name),
+                status_port: None,
+                use_op_subcommand: false,
+            };
+            Self {
+                directory,
+                pkg,
+                spec,
+                child: None,
+            }
+        }
+
+        fn spawn(&mut self) -> i32 {
+            use std::os::unix::process::CommandExt;
+            let mut command = std::process::Command::new(&self.spec.executable);
+            command.arg("60");
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn().unwrap();
+            let pid = child.id() as i32;
+            self.child = Some(child);
+            pid
+        }
+
+        fn reap(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                child.wait().unwrap();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TestService {
+        fn drop(&mut self) {
+            self.reap();
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shares_cold_discovery_and_reuses_pids_across_service_reconstruction() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut first = TestService::new("first");
+        let mut second = TestService::new("second");
+        let first_pid = first.spawn();
+        let second_pid = second.spawn();
+        begin_service_process_round(&HashSet::new()).await;
+        let scans = service_process_check_counts().0;
+        let (first_processes, second_processes) = tokio::join!(
+            first.pkg.service_processes(&first.spec, false),
+            second.pkg.service_processes(&second.spec, false)
+        );
+        assert_eq!(first_processes.unwrap()[0].identity.pid, first_pid);
+        assert_eq!(second_processes.unwrap()[0].identity.pid, second_pid);
+        assert_eq!(service_process_check_counts().0 - scans, 1);
+
+        let reconstructed = ServicePkg::new(first.pkg.pkg_id.clone(), first.directory.clone());
+        let retained = HashSet::from([first.pkg.service_identity.clone()]);
+        begin_service_process_round(&retained).await;
+        let scans = service_process_check_counts().0;
+        assert_eq!(
+            reconstructed
+                .service_processes(&first.spec, false)
+                .await
+                .unwrap()[0]
+                .identity
+                .pid,
+            first_pid
+        );
+        assert_eq!(service_process_check_counts().0, scans);
+        assert!(!managed_processes()
+            .lock()
+            .await
+            .contains_key(&second.pkg.process_key()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovers_manual_replacement_and_daemon_restart_without_duplicate_start() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("replacement");
+        let old_pid = service.spawn();
+        begin_service_process_round(&HashSet::new()).await;
+        assert_eq!(
+            service
+                .pkg
+                .service_processes(&service.spec, false)
+                .await
+                .unwrap()[0]
+                .identity
+                .pid,
+            old_pid
+        );
+        service.reap();
+        let new_pid = service.spawn();
+        assert_eq!(
+            service
+                .pkg
+                .service_processes(&service.spec, false)
+                .await
+                .unwrap()[0]
+                .identity
+                .pid,
+            new_pid
+        );
+        assert_eq!(
+            service
+                .pkg
+                .native_start(
+                    &service.spec,
+                    &service.directory,
+                    Some(&vec!["60".into()]),
+                    None
+                )
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(is_pid_running(new_pid));
+
+        begin_service_process_round(&HashSet::new()).await;
+        assert_eq!(
+            service
+                .pkg
+                .service_processes(&service.spec, false)
+                .await
+                .unwrap()[0]
+                .identity
+                .pid,
+            new_pid
+        );
+        assert_eq!(
+            service
+                .pkg
+                .service_processes(&service.spec, true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn start_refreshes_a_previous_negative_discovery() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("negative");
+        begin_service_process_round(&HashSet::new()).await;
+        assert!(service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap()
+            .is_empty());
+        let pid = service.spawn();
+        assert_eq!(
+            service
+                .pkg
+                .native_start(
+                    &service.spec,
+                    &service.directory,
+                    Some(&vec!["60".into()]),
+                    None
+                )
+                .await
+                .unwrap(),
+            0
+        );
+        let processes = service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap();
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].identity.pid, pid);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn version_and_path_changes_invalidate_managed_processes() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("target");
+        begin_service_process_round(&HashSet::new()).await;
+        let current = ManagedProcess {
+            identity: read_process_identity(std::process::id() as i32).unwrap(),
+            executable: std::env::current_exe().ok(),
+        };
+        service
+            .pkg
+            .remember_processes(&service.spec, vec![current.clone()])
+            .await;
+        assert_eq!(
+            service
+                .pkg
+                .service_processes(&service.spec, false)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        service.pkg.pkg_id.push_str("#2");
+        assert!(service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap()
+            .is_empty());
+
+        service
+            .pkg
+            .remember_processes(&service.spec, vec![current])
+            .await;
+        service.spec.executable = service.directory.join("other-target");
+        assert!(service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(!managed_processes()
+            .lock()
+            .await
+            .contains_key(&service.pkg.process_key()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn single_pid_checks_reject_changed_start_time_and_exited_processes() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("identity");
+        let pid = service.spawn();
+        let identity = read_process_identity(pid).unwrap();
+        assert!(process_identity_is_current(&identity));
+        let changed = ProcessIdentity {
+            start_time: identity.start_time + 1,
+            ..identity.clone()
+        };
+        assert!(!process_identity_is_current(&changed));
+        service.child.as_mut().unwrap().kill().unwrap();
+        for _ in 0..100 {
+            if !is_pid_running(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!process_identity_is_current(&identity));
+        service.reap();
+        assert!(!is_pid_running(pid));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn replacing_a_running_executable_keeps_the_pid_fast_path() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("deleted");
+        let pid = service.spawn();
+        begin_service_process_round(&HashSet::new()).await;
+        service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap();
+        fs::remove_file(&service.spec.executable).unwrap();
+        fs::copy("/bin/sleep", &service.spec.executable).unwrap();
+        let proc_exe = fs::read_link(format!("/proc/{pid}/exe")).unwrap();
+        assert!(proc_exe.to_string_lossy().ends_with(" (deleted)"));
+        let scans = service_process_check_counts().0;
+        for _ in 0..3 {
+            assert_eq!(
+                service
+                    .pkg
+                    .service_processes(&service.spec, false)
+                    .await
+                    .unwrap()[0]
+                    .identity
+                    .pid,
+                pid
+            );
+        }
+        assert_eq!(service_process_check_counts().0, scans);
+    }
+
+    #[cfg(unix)]
+    struct DetachedTestProcess(ProcessIdentity);
+
+    #[cfg(unix)]
+    impl Drop for DetachedTestProcess {
+        fn drop(&mut self) {
+            unsafe {
+                if process_identity_is_current(&self.0) {
+                    libc::kill(self.0.pid, libc::SIGKILL);
+                }
+                libc::waitpid(self.0.pid, std::ptr::null_mut(), 0);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_stop_and_status_do_not_restart_a_stopped_process() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("stop");
+        let pid = service.spawn();
+        begin_service_process_round(&HashSet::new()).await;
+        assert_eq!(
+            service
+                .pkg
+                .native_status(&service.spec, &service.directory, None, None)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            service
+                .pkg
+                .native_stop(&service.spec, &service.directory, None, None)
+                .await
+                .unwrap(),
+            0
+        );
+        for _ in 0..100 {
+            if !is_pid_running(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!is_pid_running(pid));
+        assert_eq!(
+            service
+                .pkg
+                .native_status(&service.spec, &service.directory, None, None)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!managed_processes()
+            .lock()
+            .await
+            .contains_key(&service.pkg.process_key()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unhealthy_status_port_still_restarts_the_running_process() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("unhealthy");
+        let port_reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        service.spec.status_port = Some(port_reservation.local_addr().unwrap().port());
+        drop(port_reservation);
+        let old_pid = service.spawn();
+        begin_service_process_round(&HashSet::new()).await;
+        assert_eq!(
+            service
+                .pkg
+                .native_status(&service.spec, &service.directory, None, None)
+                .await
+                .unwrap(),
+            1
+        );
+        for _ in 0..100 {
+            if service
+                .pkg
+                .native_start(
+                    &service.spec,
+                    &service.directory,
+                    Some(&vec!["60".into()]),
+                    None,
+                )
+                .await
+                .unwrap()
+                == 0
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let processes = service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap();
+        assert_eq!(processes.len(), 1);
+        let replacement = DetachedTestProcess(processes[0].identity.clone());
+        assert_ne!(replacement.0.pid, old_pid);
+        assert!(!is_pid_running(old_pid));
+        assert!(is_pid_running(replacement.0.pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "subprocess fixture for the native discovery/start race test"]
+    fn raced_native_service_fixture() {
+        let Ok(port) = std::env::var("BUCKYOS_TEST_NATIVE_RACE_PORT") else {
+            return;
+        };
+        let port = port.parse::<u16>().unwrap();
+        let attempts =
+            PathBuf::from(std::env::var_os("BUCKYOS_TEST_NATIVE_RACE_ATTEMPTS").unwrap());
+        fs::write(attempts.join(std::process::id().to_string()), "started").unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let ready = PathBuf::from(std::env::var_os("BUCKYOS_TEST_NATIVE_RACE_READY").unwrap());
+        let release = ready.with_extension("release");
+        let worker_release = release.clone();
+        let mut worker = Some(std::thread::spawn(move || {
+            while !worker_release.exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }));
+        fs::write(&ready, std::process::id().to_string()).unwrap();
+        loop {
+            let _ = listener.accept().unwrap();
+            if release.exists() {
+                if let Some(worker) = worker.take() {
+                    worker.join().unwrap();
+                    fs::write(ready.with_extension("exited"), "joined").unwrap();
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adopts_external_process_after_it_wins_the_discovery_spawn_race() {
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("spawn-race");
+        fs::remove_file(&service.spec.executable).unwrap();
+        let test_executable = std::env::current_exe().unwrap();
+        if fs::hard_link(&test_executable, &service.spec.executable).is_err() {
+            fs::copy(&test_executable, &service.spec.executable).unwrap();
+        }
+        let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        service.spec.status_port = Some(port);
+        drop(reservation);
+        let attempts = service.directory.join("attempts");
+        fs::create_dir(&attempts).unwrap();
+        let ready = service.directory.join("ready");
+        let envs = HashMap::from([
+            ("BUCKYOS_TEST_NATIVE_RACE_PORT".into(), port.to_string()),
+            (
+                "BUCKYOS_TEST_NATIVE_RACE_ATTEMPTS".into(),
+                attempts.to_string_lossy().into_owned(),
+            ),
+            (
+                "BUCKYOS_TEST_NATIVE_RACE_READY".into(),
+                ready.to_string_lossy().into_owned(),
+            ),
+        ]);
+        let args = vec![
+            "--exact".to_string(),
+            "service_pkg::tests::raced_native_service_fixture".to_string(),
+            "--ignored".to_string(),
+            "--nocapture".to_string(),
+        ];
+        let external_child = Arc::new(std::sync::Mutex::new(None::<OwnedChild>));
+        let hook_child = Arc::clone(&external_child);
+        let hook_executable = service.spec.executable.clone();
+        let hook_args = args.clone();
+        let hook_envs = envs.clone();
+        let hook_ready = ready.clone();
+        *service.pkg.before_native_spawn.lock().await = Some(Box::new(move || {
+            let child = std::process::Command::new(hook_executable)
+                .args(hook_args)
+                .envs(hook_envs)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id().to_string();
+            *hook_child.lock().unwrap() = Some(OwnedChild(child));
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while fs::read_to_string(&hook_ready).ok().as_deref() != Some(pid.as_str()) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "external service did not bind its port"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }));
+
+        begin_service_process_round(&HashSet::new()).await;
+        assert_eq!(
+            service
+                .pkg
+                .native_start(&service.spec, &service.directory, Some(&args), Some(&envs))
+                .await
+                .unwrap(),
+            0
+        );
+        let external_pid = external_child.lock().unwrap().as_ref().unwrap().0.id() as i32;
+        assert_eq!(
+            fs::read_to_string(&ready).unwrap(),
+            external_pid.to_string()
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let duplicate_pid = loop {
+            let duplicate = fs::read_dir(&attempts)
+                .unwrap()
+                .map(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .parse::<i32>()
+                        .unwrap()
+                })
+                .find(|pid| *pid != external_pid);
+            if let Some(pid) = duplicate {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "daemon did not attempt its detached start"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(duplicate_pid, &mut status, libc::WNOHANG) };
+            if waited == duplicate_pid {
+                break;
+            }
+            assert_eq!(waited, 0, "failed to reap duplicate daemon child");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "duplicate service did not exit after bind failure"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(libc::WIFEXITED(status));
+        assert_ne!(libc::WEXITSTATUS(status), 0);
+        assert!(is_pid_running(external_pid));
+        assert!(!is_pid_running(duplicate_pid));
+        assert_eq!(
+            service
+                .pkg
+                .native_status(&service.spec, &service.directory, None, None)
+                .await
+                .unwrap(),
+            0
+        );
+        let processes = service
+            .pkg
+            .service_processes(&service.spec, false)
+            .await
+            .unwrap();
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].identity.pid, external_pid);
+        let scans = service_process_check_counts().0;
+        fs::write(ready.with_extension("release"), "release worker").unwrap();
+        drop(TcpStream::connect(("127.0.0.1", port)).unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready.with_extension("exited").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker thread did not exit"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            service
+                .pkg
+                .native_status(&service.spec, &service.directory, None, None)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(service_process_check_counts().0, scans);
+        assert_eq!(
+            service
+                .pkg
+                .native_start(&service.spec, &service.directory, Some(&args), Some(&envs))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(fs::read_dir(&attempts).unwrap().count(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "manual CPU comparison using fourteen service checks"]
+    async fn benchmark_fourteen_managed_service_checks() {
+        fn cpu_ticks() -> u64 {
+            let stat = fs::read_to_string("/proc/self/stat").unwrap();
+            let fields = stat
+                .rsplit_once(") ")
+                .unwrap()
+                .1
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+        }
+        fn legacy_matches(spec: &NativeServiceSpec, process: &sysinfo::Process) -> bool {
+            if process.exe().is_some_and(|path| {
+                normalize_path_value(path) == normalize_path_value(&spec.executable)
+            }) {
+                return true;
+            }
+            if let Some(cmd0) = process.cmd().first() {
+                let path = Path::new(cmd0);
+                if path.is_absolute()
+                    && normalize_path_value(path) == normalize_path_value(&spec.executable)
+                {
+                    return true;
+                }
+                if process_name_candidates(&cmd0.to_string_lossy())
+                    .iter()
+                    .any(|name| spec.process_names.contains(name))
+                {
+                    return true;
+                }
+            }
+            process_name_candidates(&process.name().to_string_lossy())
+                .iter()
+                .any(|name| spec.process_names.contains(name))
+        }
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let services = (0..14)
+            .map(|index| {
+                let mut service = TestService::new(&format!("benchmark-{index}"));
+                service.spawn();
+                service
+            })
+            .collect::<Vec<_>>();
+        let rounds = 5;
+        let before_cpu = cpu_ticks();
+        let started = std::time::Instant::now();
+        let mut process_count = 0;
+        for _ in 0..rounds {
+            for service in &services {
+                let mut system = System::new_all();
+                system.refresh_processes(ProcessesToUpdate::All);
+                process_count = system.processes().len();
+                let found = system
+                    .processes()
+                    .iter()
+                    .filter(|(_, process)| {
+                        is_active_process_status(process.status())
+                            && legacy_matches(&service.spec, process)
+                    })
+                    .map(|(pid, _)| pid.as_u32())
+                    .collect::<Vec<_>>();
+                assert_eq!(found, vec![service.child.as_ref().unwrap().id()]);
+            }
+        }
+        let legacy_elapsed = started.elapsed();
+        let legacy_cpu = cpu_ticks() - before_cpu;
+        begin_service_process_round(&HashSet::new()).await;
+        for service in &services {
+            service
+                .pkg
+                .service_processes(&service.spec, false)
+                .await
+                .unwrap();
+        }
+        let scans = service_process_check_counts().0;
+        let before_cpu = cpu_ticks();
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            for service in &services {
+                assert_eq!(
+                    service
+                        .pkg
+                        .service_processes(&service.spec, false)
+                        .await
+                        .unwrap()[0]
+                        .identity
+                        .pid as u32,
+                    service.child.as_ref().unwrap().id()
+                );
+            }
+        }
+        let optimized_elapsed = started.elapsed();
+        let optimized_cpu = cpu_ticks() - before_cpu;
+        let optimized_scans = service_process_check_counts().0 - scans;
+        assert_eq!(optimized_scans, 0);
+        println!("processes={process_count} rounds={rounds} checks_per_round=14 legacy_wall_ms={:.3} legacy_cpu_ticks={legacy_cpu} legacy_scans={} optimized_wall_ms={:.3} optimized_cpu_ticks={optimized_cpu} optimized_scans={optimized_scans}", legacy_elapsed.as_secs_f64() * 1000.0, rounds * 28, optimized_elapsed.as_secs_f64() * 1000.0);
     }
 }

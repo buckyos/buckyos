@@ -1,17 +1,55 @@
+import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { messageHubRouteContext } from './launch'
 import { MessageHubView } from './MessageHubView'
+import { getNotifyWatch } from './notify'
+import { getMessageHubStore } from './store'
 import { useI18n } from '../../i18n/provider'
 import { useDocumentTitle } from '../../presentation/documentHead'
+
+interface NotifyLink {
+  notifyId: string
+  target?: { entityId: string | null; sessionId: string; messageId: string }
+}
+
+/**
+ * `?notify=<id>`: the card of a notification. `notify.get` names its home
+ * record (session and message), which then opens like an
+ * `entityId / sessionId / messageId` link.
+ */
+function useNotifyLink(notifyId: string | null): { loading: boolean; target?: NotifyLink['target']; failed: boolean } {
+  const [link, setLink] = useState<NotifyLink | null>(null)
+  useEffect(() => {
+    if (!notifyId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const store = getMessageHubStore()
+        await store.initialize()
+        const home = (await getNotifyWatch().load(notifyId)).view?.home
+        const context = store.defaultContext()
+        if (!cancelled) setLink(home ? { notifyId, target: { entityId: store.findEntity(context, home.from) ? home.from : null, sessionId: home.session_id, messageId: home.msg_id } } : { notifyId })
+      } catch {
+        if (!cancelled) setLink({ notifyId })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [notifyId])
+  if (!notifyId) return { loading: false, failed: false }
+  if (link?.notifyId !== notifyId) return { loading: true, failed: false }
+  return { loading: false, target: link.target, failed: !link.target }
+}
 
 export function MessageHubRoute() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const { t } = useI18n()
   useDocumentTitle(t('apps.messagehub'))
-  const entityId = searchParams.get('entityId')
-  const sessionId = searchParams.get('sessionId')
-  const messageId = searchParams.get('messageId')
+  const notifyId = searchParams.get('notify')
+  const notifyLink = useNotifyLink(notifyId)
+  const entityId = notifyLink.target ? notifyLink.target.entityId : searchParams.get('entityId')
+  const sessionId = notifyLink.target?.sessionId ?? searchParams.get('sessionId')
+  const messageId = notifyLink.target?.messageId ?? searchParams.get('messageId')
   const exitObserver = () => setSearchParams(previous => {
     const next = new URLSearchParams(previous)
     next.delete('ownerDid'); next.delete('mode'); next.delete('entityId'); next.delete('sessionId'); next.delete('messageId')
@@ -21,7 +59,7 @@ export function MessageHubRoute() {
   return (
     <main className="min-h-dvh bg-[color:var(--cp-bg)] p-0 md:p-5">
       <div
-        className="mx-auto h-dvh w-full overflow-hidden md:h-[calc(100dvh-2.5rem)] md:max-w-[1600px] md:rounded-[28px] md:border md:shadow-[var(--cp-window-shadow)]"
+        className="mx-auto flex h-dvh w-full flex-col overflow-hidden md:h-[calc(100dvh-2.5rem)] md:max-w-[1600px] md:rounded-[28px] md:border md:shadow-[var(--cp-window-shadow)]"
         style={{
           borderColor: 'var(--cp-border)',
           background:
@@ -29,7 +67,12 @@ export function MessageHubRoute() {
           backdropFilter: 'blur(20px)',
         }}
       >
-        <MessageHubView initialEntityId={entityId} initialSessionId={sessionId} initialMessageId={messageId} contextRequest={messageHubRouteContext(searchParams)} onHome={() => navigate('/')} onExitObserver={exitObserver} />
+        {notifyLink.failed ? <p role="alert" className="shrink-0 border-b border-[color:var(--cp-border)] px-4 py-2 text-[13px] text-[color:var(--cp-danger)]" data-testid="notify-link-failed">{t('messagehub.notify.linkFailed')}</p> : null}
+        <div className="min-h-0 flex-1">
+          {notifyLink.loading
+            ? <div className="flex h-full items-center justify-center"><p role="status">{t('messagehub.notify.opening')}</p></div>
+            : <MessageHubView key={notifyId ?? ''} initialEntityId={entityId} initialSessionId={sessionId} initialMessageId={messageId} linkedMessageDetails={!notifyLink.target} contextRequest={messageHubRouteContext(searchParams)} onHome={() => navigate('/')} onExitObserver={exitObserver} />}
+        </div>
       </div>
     </main>
   )

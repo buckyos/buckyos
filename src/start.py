@@ -1,11 +1,13 @@
 #!/usr/bin/env -S uv run
 
 import argparse
+from contextlib import contextmanager
 import os
 import shutil
 import subprocess
 import sys
 import platform
+import tempfile
 from pathlib import Path
 
 
@@ -57,7 +59,7 @@ def _print_help() -> int:
                 f"  cd {SCRIPT_DIR} && uv run ./start.py [options]",
                 "",
                 "Options:",
-                "  --all                 Fresh dev install before startup.",
+                "  --all                 Fresh dev install before startup; preserve etc/devenv.json.",
                 "  --reinstall [GROUP]   Fresh install before startup, optionally running make_config.ts GROUP.",
                 "  --skip-update         Skip file update and only restart BuckyOS.",
                 "  -h, --help            Show this help message.",
@@ -192,6 +194,28 @@ def resolve_buckyos_root() -> Path:
     print(f"BUCKYOS_ROOT not set, using default: {default_root}")
     return Path(default_root).expanduser()
 
+
+@contextmanager
+def _preserve_devenv_config(enabled: bool):
+    if not enabled:
+        yield None
+        return
+
+    devenv_path = resolve_buckyos_root() / "etc" / "devenv.json"
+    if not devenv_path.is_file():
+        yield None
+        return
+
+    with tempfile.TemporaryDirectory(prefix="buckyos-devenv-") as temporary:
+        backup_path = Path(temporary) / "devenv.json"
+        shutil.copy2(devenv_path, backup_path)
+        try:
+            yield devenv_path
+        finally:
+            devenv_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup_path, devenv_path)
+
+
 def kill_all_processes():
     """Kill all related BuckyOS processes"""
     print("Stopping all BuckyOS processes...")
@@ -292,17 +316,24 @@ def main(argv: list[str] | None = None) -> int:
     if need_update and not _sdk_tool_distribution_ready():
         return 2
     
-    # Step 1: Kill all processes
-    kill_all_processes()
-    
-    if install_all or need_update:
-        # Step 2: Update files
-        update_files(install_all,config_group_name)
+    with _preserve_devenv_config(options.all) as preserved_devenv:
+        # Step 1: Kill all processes
+        kill_all_processes()
+
+        if install_all or need_update:
+            # Step 2: Update files
+            update_files(install_all,config_group_name)
     
     # Step 3: Start system
     start_system()
     
     print("=== BuckyOS Startup Complete ===")
+    if preserved_devenv is not None:
+        print(f"Note: Preserved local development config: {preserved_devenv}")
+        print(
+            "Local image overrides in this file still apply. "
+            "Remove the aios/exttool overrides and restart to use the default images."
+        )
     return 0
 
 if __name__ == "__main__":

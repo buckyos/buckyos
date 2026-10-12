@@ -1,6 +1,6 @@
 /* ── TaskCenter mock store ── */
 
-import { WORKFLOW_SCHEDULE_TASK_SCHEMA_ID } from 'buckyos'
+import { HUMAN_INPUT_TASK_SCHEMA_ID, TaskExecutorKind, TaskPhase, WORKFLOW_SCHEDULE_TASK_SCHEMA_ID } from 'buckyos'
 import type {
   Task,
   TaskStatus,
@@ -419,6 +419,46 @@ const seedTasks: Task[] = [
     ],
   }),
 ]
+
+/**
+ * Two pending input tasks: a plain one, which gets an approve / reject card
+ * on the home page, and the task of a System Notify (MessageHub mock
+ * `nt-agent-work`), which is answered on its MessageHub card instead.
+ */
+seedTasks.push(
+  makeTask({
+    taskId: 'task-input-cleanup',
+    title: 'Confirm the temp file cleanup',
+    summary: 'Remove 3.2 GB of temporary files?',
+    type: 'one-time',
+    status: 'paused',
+    source: 'system',
+    schemaType: HUMAN_INPUT_TASK_SCHEMA_ID,
+    executorKind: TaskExecutorKind.HumanSet,
+    phase: TaskPhase.Waiting,
+    createdAt: '2026-04-04T09:05:00Z',
+    updatedAt: '2026-04-04T09:05:00Z',
+    payload: { prompt: { title: 'Confirm the temp file cleanup' } },
+  }),
+  makeTask({
+    taskId: 'task-nt-agent-work',
+    title: 'notify: Which branch should I deploy the docs preview from?',
+    summary: 'waiting for the user',
+    type: 'one-time',
+    status: 'paused',
+    source: 'agent',
+    schemaType: HUMAN_INPUT_TASK_SCHEMA_ID,
+    executorKind: TaskExecutorKind.HumanSet,
+    phase: TaskPhase.Waiting,
+    createdAt: '2026-04-04T09:10:00Z',
+    updatedAt: '2026-04-04T09:10:00Z',
+    notifyId: 'nt-agent-work',
+    payload: {
+      notify: { notify_id: 'nt-agent-work', kind: 'input', category: 'agent', level: 'timely', source: { agent_did: 'did:buckyos:agent:codeassistant', operation: 'Deploy the docs preview' }, url: '/messagehub?notify=nt-agent-work' },
+      prompt: { title: 'Which branch should I deploy the docs preview from?' },
+    },
+  }),
+)
 
 const seedNotifications: SystemNotification[] = [
   {

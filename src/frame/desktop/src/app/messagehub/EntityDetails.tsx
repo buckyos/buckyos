@@ -32,7 +32,7 @@ interface EntityDetailsProps {
 function DetailAvatar({ entity }: { entity: EntityDetail }) {
   return (
     <div className="mx-auto flex w-fit">
-      <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={80} />
+      <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={80} systemNotify={entity.systemNotify} />
     </div>
   )
 }
@@ -299,8 +299,9 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup }: Entit
           </button>
         </div>
 
-        {context && <AdmissionSection key={`admission:${entity.id}`} entity={entity} context={context} />}
-        {context && <CreationPolicyEditor key={entity.id} entity={entity} context={context} />}
+        {/* The system notify sender is neither a contact to admit nor a peer to start sessions with. */}
+        {context && !entity.systemNotify && <AdmissionSection key={`admission:${entity.id}`} entity={entity} context={context} />}
+        {context && !entity.systemNotify && <CreationPolicyEditor key={entity.id} entity={entity} context={context} />}
       </div>
     </div>
   )

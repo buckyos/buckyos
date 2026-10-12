@@ -51,6 +51,8 @@ interface MessageHubViewProps {
   initialSessionId?: string | null
   /** ObjId of a message of that session to locate; its details open on the desktop layout. */
   initialMessageId?: string | null
+  /** false: only locate the message (a notification card is handled in place, not in its details). */
+  linkedMessageDetails?: boolean
   contextRequest?: MessageHubContextRequest | MessageHubContext
   windowId?: string
   /** Standalone route only: leave MessageHub for the desktop. */
@@ -59,20 +61,20 @@ interface MessageHubViewProps {
   onExitObserver?: () => void
 }
 
-export function MessageHubView({ initialEntityId = null, initialSessionId = null, initialMessageId = null, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
+export function MessageHubView({ initialEntityId = null, initialSessionId = null, initialMessageId = null, linkedMessageDetails = true, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
   const { t } = useI18n()
   const [exitFrom, setExitFrom] = useState<string | null>(null)
   const { status, retry } = useMessageHubReady()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   if (status !== 'ready') return <div className="flex h-full items-center justify-center gap-3"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.loadFailed')}</p>{status === 'error' && <button type="button" className={hubButtonClass} onClick={retry}>{t('messagehub.retry')}</button>}</div>
   const exit = (value: string | null) => { setExitFrom(value); onExitObserver?.() }
-  return <MessageHubOwnerGate initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
+  return <MessageHubOwnerGate initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} linkedMessageDetails={linkedMessageDetails} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
 }
 
 /** How long a freshly created account may wait for its mailbox permission to propagate. */
 const SELF_DENIED_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000]
 
-function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessageId, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
+function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessageId, linkedMessageDetails, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; linkedMessageDetails: boolean; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
   const { t } = useI18n()
   const store = useMessageHubStore()
   const requested = resolveMessageHubContext(store.defaultContext(), contextRequest)
@@ -102,7 +104,7 @@ function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessage
   if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
     {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {didDisplayName(context.ownerDid)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
-    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}:${initialMessageId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
+    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}:${initialMessageId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} linkedMessageDetails={linkedMessageDetails} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
   </div>
 }
 
@@ -123,7 +125,7 @@ function HomeButton({ onHome }: { onHome: () => void }) {
   )
 }
 
-function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; context: MessageHubContext; onHome?: () => void }) {
+function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId, linkedMessageDetails, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; linkedMessageDetails: boolean; context: MessageHubContext; onHome?: () => void }) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   const store = useMessageHubStore()
@@ -169,7 +171,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const [showSessionSidebar, setShowSessionSidebar] = useState(false)
   // A message link only applies to the session it names: without that session the message is not looked up elsewhere.
   const [linkedMessageId] = useState(() => initialMessageId && findRequestedSession(resolvedInitialEntityId) ? initialMessageId : null)
-  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | 'message' | null>(() => linkedMessageId && isDesktop ? 'message' : null)
+  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | 'message' | null>(() => linkedMessageId && isDesktop && linkedMessageDetails ? 'message' : null)
   const [detailMessageId, setDetailMessageId] = useState<string | null>(linkedMessageId)
   const showDetails = detailsTarget !== null
   const [entityListDrilldownPath, setEntityListDrilldownPath] = useState<string[]>([])

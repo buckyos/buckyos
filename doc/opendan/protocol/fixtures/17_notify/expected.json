@@ -1,0 +1,121 @@
+{
+  "description": "Work work-notify asked the user with `ask-user` (call q1) and, nobody reading it, the question went out as an `input` notification (agent_root/state/notifies/, run.json host.extra.asks.q1.notify): state waits for input with the deadline and the notification's task. UI session ui-notify holds a `_notify` observation of that notification in its conversation, not injected yet (it opened no Turn).",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "ui": {
+      "action": "show_the_observation_with_the_next_message",
+      "snapshot_line_starts_with": "[notify nt-47c3e85a22384d20ab9152344d95effc] input/timely",
+      "turns_opened_by_the_observation": 0
+    },
+    "work": {
+      "action": "answer_the_notification_then_fill_q1_once",
+      "answer": {
+        "option": "pg"
+      },
+      "llm_calls": 1,
+      "report": "migrated to Postgres",
+      "tool_result_q1": {
+        "notify_id": "nt-47c3e85a22384d20ab9152344d95effc",
+        "option": "pg",
+        "text": "Postgres",
+        "via": "notification"
+      }
+    }
+  },
+  "scenario": "notify",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "host_commit_pending": null,
+        "inflight": [
+          "q1"
+        ],
+        "run_id": "20261011-192229-2e4b4a",
+        "run_status": "paused"
+      },
+      "runs_on_disk": [
+        "20261011-192229-2e4b4a"
+      ],
+      "session_id": "work-notify",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "open_turn": 1,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 3,
+        "run_state": "waiting",
+        "turn_seq": 1,
+        "turns_completed": 0
+      },
+      "waiting_for": {
+        "deadline_ms": 1791782549151,
+        "human_tasks": [
+          "local-task-nt-47c3e85a22384d20ab9152344d95effc"
+        ],
+        "kind": "input",
+        "refs": [
+          "userinput:q1"
+        ]
+      },
+      "worklog": {
+        "committed_bytes": 158,
+        "committed_seq": 1,
+        "file_bytes": 158,
+        "uncommitted_tail": false
+      }
+    },
+    {
+      "live_run": null,
+      "pending_events": [
+        {
+          "latest": {
+            "data_ref": null,
+            "event": "delivered",
+            "input": {
+              "index": 1,
+              "src": "q"
+            },
+            "key": "notify:nt-47c3e85a22384d20ab9152344d95effc:dm:did:bns:alice",
+            "received_at_ms": 1791771749219,
+            "seq": null,
+            "summary": "[notify nt-47c3e85a22384d20ab9152344d95effc] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-47c3e85a22384d20ab9152344d95effc`"
+          },
+          "source": {
+            "id": "notify:nt-47c3e85a22384d20ab9152344d95effc",
+            "kind": "system"
+          },
+          "subscription_id": "_notify",
+          "superseded": 0,
+          "terminal": null
+        }
+      ],
+      "runs_on_disk": [],
+      "session_id": "ui-notify",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {
+          "q": {
+            "acked_index": 1
+          }
+        },
+        "last_run": null,
+        "open_turn": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 2,
+        "run_state": "created",
+        "turn_seq": 0,
+        "turns_completed": 0
+      },
+      "worklog": {
+        "committed_bytes": 135,
+        "committed_seq": 1,
+        "file_bytes": 135,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

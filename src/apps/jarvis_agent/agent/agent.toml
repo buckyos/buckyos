@@ -58,6 +58,9 @@ max_process_depth = 4
 [session.work]
 default_behavior = "plan"
 max_process_depth = 8
+# A work session asks its user through a notification and waits this long
+# for the answer (0: work sessions do not ask).
+ask_user_timeout_secs = 10800
 
 # Goal Sessions: every activation is one Turn; what a goal leaves out of its
 # budget and schedule comes from here.

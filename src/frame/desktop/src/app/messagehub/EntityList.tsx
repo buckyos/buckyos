@@ -203,7 +203,7 @@ function EntityAvatar({
   entity: Entity
   size?: number
 }) {
-  return <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={size} isOnline={entity.isOnline} />
+  return <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={size} isOnline={entity.isOnline} systemNotify={entity.systemNotify} />
 }
 
 function TopLevelEntityItem({

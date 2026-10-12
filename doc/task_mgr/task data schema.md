@@ -500,6 +500,21 @@ legacy 兼容：
 - 旧 wrapper `human_input` 会拆成 request / result。
 - 当旧 `response` 为 `null` 或不存在时，`result = None`。
 
+### 系统通知的 `human.input/v1`（notify envelope，2026-10-11）
+
+msg-center 为 `input` 类系统通知创建的人工任务（HumanSet，assignee 为目标用户，`idempotency_key = notify:<notify_id>`，storage domain User）不使用上面的 `HumanInputTaskData`，而是：
+
+```json
+{
+  "notify": { "notify_id": "nt-…", "kind": "input", "category": "todo | agent | app", "level": "normal",
+              "source": { "app_id": "…", "agent_did": "…", "session_id": "…", "goal_id": "…", "operation": "…" },
+              "expires_at_ms": null, "url": "https://<zone host>/messagehub?notify=nt-…" },
+  "prompt": { "title": "…", "message": "…", "controls": [ { "kind": "choice", "id": "option", … }, { "kind": "text_input", "id": "text", … } ] }
+}
+```
+
+结果是 `TaskDataResult::Human`：`{"kind": "human", "action": "answer | dismiss", "values": {"option"?, "text"?}, "submitted_by": "<user>", "submitted_at": <ms>}`，提交时带 `expected_revision`，先到先得。代答（Agent 在会话里替用户回答）另写 task note `notify_proxy`：`answered by <agent> in session <sid> after input <key>`。带 `input.notify` 的任务由 MessageHub 处理（`/messagehub?notify=<id>`），TaskCenter 首页不为它生成 approve / reject 卡片。契约见 `doc/message_hub/System Notify.md`。
+
 ## `opendan.async_tool`
 
 强类型：

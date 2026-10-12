@@ -82,6 +82,14 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   runtime list [--available] | get <id> | check <id> | workspace ...
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
+  notify send --title <t> [--message <text>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
+  notify list [--open] [--any-source] [--session <sid>] [--goal <id>] | show <notify_id>
+  notify answer <notify_id> (--option <value> | --text <t>) | ack <notify_id> | cancel <notify_id> [--reason <r>]
+         (answer / ack: on the user's behalf, for a notification the user answered in this conversation;
+          never one this session sent; exit 5 when it is closed already, 6 when it is not yours to answer)
+
+  xagent notify list [--open] [--session <sid>] [--goal <id>] | show <id> | answer <id> (--option <v> | --text <t> | --dismiss)
+              | ack <id> | dismiss <id> | cancel <id> [--reason <r>]     (the owner's side; --dev and tests)
 
 identity and location (flags or environment):
   --agent <did>        [$OPENDAN_AGENT_DID]     --who <principal>  [$LIBOPENDAN_WHO]
@@ -119,7 +127,8 @@ impl From<OpenDanError> for Fail {
             OpenDanError::Busy { .. }
             | OpenDanError::RunBusy { .. }
             | OpenDanError::LeaseLost(_)
-            | OpenDanError::GoalConflict(_) => 5,
+            | OpenDanError::GoalConflict(_)
+            | OpenDanError::NotifyConflict(_) => 5,
             OpenDanError::GoalBudgetExhausted(_) => 3,
             OpenDanError::Forbidden(_) => 6,
             OpenDanError::NotDriver { .. }
@@ -171,6 +180,9 @@ const FLAGS: &[&str] = &[
     "carry-state",
     "allow-text",
     "available",
+    "open",
+    "any-source",
+    "dismiss",
 ];
 
 struct Args {
@@ -529,6 +541,7 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         outbound: None,
         objects: None,
         turn_tasks: None,
+        notify: libopendan::notify::StateNotify::of(c.agent.clone()),
         runtime_id: a.get("runtime"),
     })
 }
@@ -1762,6 +1775,213 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
 
 /// Host the agent's goals (and every session this identity drives) until
 /// interrupted: the Loader's goals module without the Loader.
+/// `30`, `30s`, `15m`, `3h`, `2d` → seconds.
+fn duration_secs(text: &str) -> R<u64> {
+    let t = text.trim();
+    let (num, unit) = match t.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => (&t[..i], &t[i..]),
+        None => (t, "s"),
+    };
+    let n: u64 = num.parse().map_err(|_| bad(format!("bad duration {text}")))?;
+    let mul = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return Err(bad(format!("bad duration {text} (<n>[s|m|h|d])"))),
+    };
+    Ok(n.saturating_mul(mul))
+}
+
+fn notify_brief(v: &libopendan::notify::NotifyView) -> Value {
+    json!({
+        "notify_id": v.notify_id,
+        "url": v.url,
+        "kind": v.kind,
+        "status": v.status,
+        "category": v.category,
+        "level": v.level,
+        "title": v.prompt.title,
+        "source": v.source,
+        "result": v.result,
+        "closed_reason": v.closed_reason,
+        "deliveries": v.deliveries,
+    })
+}
+
+/// The open Turn and the input it is answering, of the session this
+/// command runs in.
+fn session_position() -> (Option<u64>, Option<String>) {
+    let Some(state) = std::env::var("OPENDAN_SESSION_DIR")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .and_then(|d| SessionDir::open(&d).ok())
+        .and_then(|sd| sd.state().ok())
+    else {
+        return (None, None);
+    };
+    let input = state
+        .open_turn
+        .as_ref()
+        .and_then(|t| t.inputs.last().cloned());
+    (Some(state.current_turn()), input)
+}
+
+async fn cmd_notify(mut a: Args) -> R<i32> {
+    use libopendan::notify::*;
+    let sub = a.next("notify command")?;
+    let c = ctx(&a, None, false).await?;
+    let notify = c.agent.notifies().ok_or_else(|| Fail {
+        code: 1,
+        msg: "notifications are not available here".into(),
+    })?;
+    let inside = env_sid();
+    let agent_did = c.agent.agent_did().to_string();
+    // A request about a notification that is not open any more prints its
+    // state and exits 5.
+    let conflict = |e: OpenDanError| -> Fail {
+        match &e {
+            OpenDanError::NotifyConflict(state) => {
+                println!("{state}");
+                Fail { code: 5, msg: "the notification is closed".into() }
+            }
+            _ => e.into(),
+        }
+    };
+    match sub.as_str() {
+        "send" => {
+            let sid = inside.ok_or_else(|| bad("notify send runs inside a session ($OPENDAN_SESSION_ID)"))?;
+            let title = a.get("title").ok_or_else(|| bad("missing --title"))?;
+            let level: Option<NotifyLevel> = a
+                .get("level")
+                .map(|l| serde_json::from_value(json!(l)).map_err(|_| bad(format!("bad --level {l}"))))
+                .transpose()?;
+            let expires_at_ms = a
+                .get("expires-in")
+                .map(|d| duration_secs(&d))
+                .transpose()?
+                .map(|s| libopendan::now_ms() + s * 1000);
+            let call_id = std::env::var(agent_tool::llm_bash::ENV_CALL_ID).ok().filter(|c| !c.is_empty());
+            let (turn, _) = session_position();
+            let key = a.get("key").unwrap_or_else(|| {
+                format!(
+                    "{sid}:{}:notify:{}",
+                    turn.unwrap_or(0),
+                    call_id.clone().unwrap_or_else(|| uuid_like())
+                )
+            });
+            let mut req = NotifySendReq::notice(String::new(), title, a.get("message").unwrap_or_default(), key);
+            req.level = level;
+            req.expires_at_ms = expires_at_ms;
+            let mut source = NotifySource {
+                session_id: Some(sid),
+                turn,
+                call_id,
+                ..Default::default()
+            };
+            if c.agent.agent_root().is_some() {
+                complete_notify_source(c.agent.as_ref(), &mut source).await;
+            }
+            req.source = Some(source);
+            let v = notify.send(req).await?;
+            print(&json!({
+                "notify_id": v.notify_id, "url": v.url, "status": v.status,
+                "category": v.category, "deliveries": v.deliveries,
+            }));
+            Ok(0)
+        }
+        "list" => {
+            let mut req = NotifyListReq {
+                session_id: a.get("session"),
+                goal_id: a.get("goal"),
+                ..Default::default()
+            };
+            if a.has("open") || (inside.is_some() && !a.has("any-source")) {
+                req.status = Some(vec![NotifyStatus::Open, NotifyStatus::Read]);
+            }
+            if inside.is_some() && !a.has("any-source") {
+                req.agent_did = Some(agent_did);
+            }
+            let items = notify.list(req).await?;
+            print(&items.iter().map(notify_brief).collect::<Vec<_>>());
+            Ok(0)
+        }
+        "show" => {
+            let id = a.next("<notify_id>")?;
+            print(&notify.state(&id).await?);
+            Ok(0)
+        }
+        "answer" | "ack" | "dismiss" => {
+            let id = a.next("<notify_id>")?;
+            let current = notify.state(&id).await?;
+            let mut answer = NotifyAnswer {
+                dismiss: sub == "dismiss" || a.has("dismiss"),
+                option: a.get("option"),
+                text: a.get("text"),
+            };
+            match (sub.as_str(), current.kind) {
+                ("answer", NotifyKind::Notice) => {
+                    return Err(bad(format!("{id} is a notice: acknowledge it with `notify ack {id}`")))
+                }
+                ("ack", NotifyKind::Input) => {
+                    return Err(bad(format!("{id} asks a question: answer it with `notify answer {id} --option|--text`")))
+                }
+                ("ack", _) => answer = NotifyAnswer::default(),
+                _ => {}
+            }
+            let via = match &inside {
+                Some(sid) => {
+                    if sub == "dismiss" || answer.dismiss {
+                        return Err(bad("dismissing is the user's decision"));
+                    }
+                    if current.source.session_id.as_deref() == Some(sid.as_str()) {
+                        print(&notify_brief(&current));
+                        return Err(Fail { code: 6, msg: "this session sent the notification: it cannot answer it for the user".into() });
+                    }
+                    if current.status.is_closed() {
+                        print(&notify_brief(&current));
+                        return Err(Fail { code: 5, msg: "the notification is closed".into() });
+                    }
+                    let (_, input) = session_position();
+                    Some(NotifyVia {
+                        agent_did: agent_did.clone(),
+                        session_id: Some(sid.clone()),
+                        input,
+                    })
+                }
+                None => None,
+            };
+            if current.kind == NotifyKind::Input && !answer.dismiss {
+                if let Err(e) = answer.validate(&current.prompt) {
+                    print(&notify_brief(&current));
+                    return Err(bad(e));
+                }
+            }
+            let v = notify.answer(&id, answer, via).await.map_err(conflict)?;
+            print(&notify_brief(&v));
+            Ok(0)
+        }
+        "cancel" => {
+            let id = a.next("<notify_id>")?;
+            if inside.is_some() {
+                let current = notify.state(&id).await?;
+                if current.source.agent_did.as_deref() != Some(agent_did.as_str()) {
+                    print(&notify_brief(&current));
+                    return Err(Fail { code: 6, msg: "only notifications of this agent can be canceled".into() });
+                }
+            }
+            let reason = a.get("reason").unwrap_or_else(|| "canceled".into());
+            print(&notify_brief(&notify.cancel(&id, &reason).await?));
+            Ok(0)
+        }
+        other => Err(bad(format!("unknown notify command `{other}`"))),
+    }
+}
+
+fn uuid_like() -> String {
+    format!("{:x}", libopendan::now_ms())
+}
+
 async fn cmd_goal_serve(a: Args) -> R<i32> {
     let c = ctx(&a, None, true).await?;
     let root = c
@@ -1825,6 +2045,7 @@ async fn real_main() -> R<i32> {
         "ask-user" => cmd_ask_user(a),
         "wait" => cmd_wait(a).await,
         "goal" => cmd_goal(a).await,
+        "notify" => cmd_notify(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");
             Ok(2)

@@ -30,6 +30,11 @@ You are in DO mode of a durable work session. Your only job is to complete the s
 - On the first failure, identify the cause and retry with a changed approach or reduce uncertainty.
 - If the same cause fails twice without new evidence or a new strategy, stop and report failure.
 
+## Asking the User
+
+- Nobody reads this session. When a key premise is missing, prefer ending with a failure report that says exactly what is missing.
+- Ask only when a lot of work is already done and one answer decides the rest: `agent-session ask-user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification. Its result is the answer, or `{"answered": false, "reason": ...}` when the user does not answer in time (at most 3 hours); then decide with what you have or end with a failure report.
+
 ## Hard Rules
 
 - Do not present unverified guesses as facts.

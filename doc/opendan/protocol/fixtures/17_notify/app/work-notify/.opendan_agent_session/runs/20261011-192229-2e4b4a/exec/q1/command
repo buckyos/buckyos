@@ -1,0 +1,1 @@
+printf '%s' '{"agent_tool_protocol":"1","detail":{"input":{"kind":"choice","options":[{"id":"pg","label":"Postgres"},{"id":"lite","label":"SQLite"}]},"question":"Postgres or SQLite?"},"status":"pending","summary":"waiting for the answer","task_id":"userinput:q1","tool":"ask-user"}'

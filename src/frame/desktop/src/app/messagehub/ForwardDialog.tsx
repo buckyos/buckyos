@@ -17,7 +17,7 @@ export function ForwardMessageForm({ context, message, confirmationFor, onDone, 
   const [error, setError] = useState('')
   const busy = useRef(false)
   const needle = query.trim().toLowerCase()
-  const targets = store.entities(context).flatMap(entity => [entity, ...(entity.children ?? [])]).filter(entity => !needle || entity.name.toLowerCase().includes(needle))
+  const targets = store.entities(context).flatMap(entity => [entity, ...(entity.children ?? [])]).filter(entity => !entity.systemNotify && (!needle || entity.name.toLowerCase().includes(needle)))
   const send = async (entity: Entity) => {
     if (busy.current) return
     busy.current = true; setPending(entity.id); setError('')

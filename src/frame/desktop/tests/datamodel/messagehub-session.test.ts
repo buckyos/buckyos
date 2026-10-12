@@ -10,7 +10,7 @@ const session: Session = { id: 'same-id', ownerDid: context.ownerDid, entityId: 
 const message: MessageObject = { from: entity.id, to: [context.ownerDid], kind: 'chat', created_at_ms: now, content: { content: 'Hello' } }
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 
-Deno.test('message activity excludes state logs, notify, delivery-only events and status rows', () => {
+Deno.test('message activity excludes state logs, delivery-only events and status rows; a notification counts', () => {
   equal(isMessageActivity(message), true)
   equal(isMessageActivity({ ...message, kind: 'group_msg' }), true)
   equal(isMessageActivity({ ...message, kind: 'deliver' }), true)
@@ -18,7 +18,9 @@ Deno.test('message activity excludes state logs, notify, delivery-only events an
   equal(isMessageActivity({ ...message, kind: 'deliver', content: {} }), false)
   equal(isMessageActivity({ ...message, kind: 'deliver', content: { refs: [{ role: 'output', target: { type: 'data_obj', obj_id: 'cyfile:photo' } }] } }), true)
   equal(isMessageActivity({ ...message, kind: 'deliver', content: { refs: [{ role: 'input', target: { type: 'data_obj', obj_id: 'cyfile:photo' } }] } }), false)
-  equal(isMessageActivity({ ...message, kind: 'notify' }), false)
+  // System Notify: `kind = notify` counts as activity (msg-center does the same); an unreadable record does not.
+  equal(isMessageActivity({ ...message, kind: 'notify' }), true)
+  equal(isMessageActivity({ ...message, kind: 'notify', ui_unavailable: true }), false)
   equal(isMessageActivity({ ...message, ui_item_kind: 'status' }), false)
   equal(isMessageActivity({ ...message, kind: 'event', content: { content: 'Result', machine: { intent: 'buckyos.action_log', data: { schema_version: 99 } } } }), false)
   equal(isActionMessage({ ...message, kind: 'event' }), false)

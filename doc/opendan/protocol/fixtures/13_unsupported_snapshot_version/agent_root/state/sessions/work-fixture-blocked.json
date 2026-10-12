@@ -23,16 +23,16 @@
     "turn_open": true,
     "activity": {
       "summary": "x",
-      "heartbeat_ms": 1791742052962
+      "heartbeat_ms": 1791771748591
     },
     "last_runner": {
-      "runner_id": "rn-4458c91cc17c40c0",
+      "runner_id": "rn-d8bbed50aa154de0",
       "host": "${FIXTURE_HOST}",
-      "pid": 2500048,
+      "pid": 3504370,
       "lock_epoch": 1,
-      "at_ms": 1791742052964
+      "at_ms": 1791771748592
     },
-    "updated_at_ms": 1791742052962
+    "updated_at_ms": 1791771748591
   },
   "location_rev": 0
 }

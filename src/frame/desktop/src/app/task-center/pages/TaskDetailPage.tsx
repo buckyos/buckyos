@@ -9,10 +9,11 @@ import {
   Clock,
   Pause,
   AlertTriangle,
+  MessageSquare,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
-import type { Task } from '../../../api/task_mgr'
+import { notifyCardPath, type Task } from '../../../api/task_mgr'
 import type { TaskCenterNav, TaskCenterPage } from '../components/layout/navigation'
 
 function statusIcon(status: Task['status'], size = 16) {
@@ -224,6 +225,30 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
           <div className="text-xs mt-1" style={{ color: 'var(--cp-muted)' }}>
             {task.progress}% complete
           </div>
+        </div>
+      )}
+
+      {/* The task of a System Notify is answered on its MessageHub card */}
+      {task.notifyId && (
+        <div
+          className="flex flex-wrap items-center gap-3 rounded-xl p-3 text-sm"
+          style={{
+            background: 'color-mix(in srgb, var(--cp-accent-soft) 14%, var(--cp-surface))',
+            border: '1px solid color-mix(in srgb, var(--cp-accent) 22%, var(--cp-border))',
+            color: 'var(--cp-text)',
+          }}
+          data-testid="task-notify"
+        >
+          <span className="min-w-0 flex-1">{t('taskCenter.notify.hint', 'This task is the answer to a notification. Handle it on its card in MessageHub.')}</span>
+          <a
+            href={notifyCardPath(task.notifyId)}
+            className="inline-flex items-center gap-1.5 font-medium"
+            style={{ color: 'var(--cp-accent)' }}
+            data-testid="task-notify-link"
+          >
+            <MessageSquare size={15} />
+            {t('taskCenter.notify.open', 'Handle in MessageHub')}
+          </a>
         </div>
       )}
 

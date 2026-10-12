@@ -306,7 +306,7 @@ Goal 的明确性不等于一次性完成所有未来行动的规划。它需要
 - 分支结束以 `report({report, result, is_end: true})` 返回；UI 收到 `{status, behavior, submission: {report, result}}`，`result.outcome` 为 `work_created / goal_created / direct / declined / needs_confirmation / unsupported`。`report` 因此必须在 UI 的工具列表里（fork 继承工具集），UI 自己不用它作答。
 - 分支的 transcript 不进入 UI 之后重建的历史，UI 只留下一次函数调用与它的结果；用户在澄清里说的话靠 `result.clarifications` 回到 UI。
 
-**反问用户：`ask-user` 是挂起的工具调用。** `agent-session ask-user "<问题>" [--option id=label]... [--allow-text]` 打印 `Pending{task_id: "userinput:<call_id>"}`，run 以 PendingTool 挂起在这次调用上。只有 Session 解析 `userinput:`：它把问题发出去，状态写 `waiting_for = {kind: input, refs: ["userinput:<call_id>"]}`，Turn 保持打开；输入队列里下一条 msg（只取一条，context 消息除外）就是这次调用的工具结果 `{text, attachments, option, in_reply_to_question, msg_id, from, at_ms}`，以一张不注入消息的输入回执消费，与结果同一快照提交。事件、子 Session 状态和半订阅观察照旧留给调用方。只有“有输入队列、`wait_user_msg = allowed`、不是子 Session”的 Session 能问，其它 Session（Work、Goal）得到错误结果。这条路径与主 context 的 `WAIT_USER_MSG`、子 context 的哨兵路径（交回调用方）互不相干，D2 规则（xAgent §11.5 第 1 条：等待前已交付回复即完成该 Turn）不变：提问不是交付，不关 Turn，也不计入 `turns_completed`。xllm 不能解析 `userinput:`，拒绝接手这样的 run。stop 时挂起的提问以“用户未回答”结束。
+**反问用户：`ask-user` 是挂起的工具调用。** `agent-session ask-user "<问题>" [--option id=label]... [--allow-text]` 打印 `Pending{task_id: "userinput:<call_id>"}`，run 以 PendingTool 挂起在这次调用上。只有 Session 解析 `userinput:`：它把问题发出去，状态写 `waiting_for = {kind: input, refs: ["userinput:<call_id>"]}`，Turn 保持打开；输入队列里下一条 msg（只取一条，context 消息除外）就是这次调用的工具结果 `{text, attachments, option, in_reply_to_question, msg_id, from, at_ms}`，以一张不注入消息的输入回执消费，与结果同一快照提交。事件、子 Session 状态和半订阅观察照旧留给调用方。只有“有输入队列、`wait_user_msg = allowed`、不是子 Session”的 Session 原地问。2026-10-11 起（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md)）没有队列的 Work 在宿主有通知服务时改走 System Notify：同一个 `ask-user`，由 runner 把问题作为 `input` 通知发给用户（等级 `timely`，截止 `[session.work] ask_user_timeout_secs`，缺省 3 小时），run 照旧挂在 `userinput:<call_id>` 上，`waiting_for` 带截止时间与通知的人工任务；回答（含 `via: "notification"`）、忽略、过期、撤销、超时都作为这次调用的工具结果，未回答用 `{"answered": false, "reason"}` 而不是错误。Goal 内调用得到“把问题写进 `questions`”的错误结果；Goal 的 `questions` 由驱动者在 Activation 关闭前发成通知，回答以原因 `answer` 的 Activation 回来。交互式子 Session 与 self_* 仍得到错误结果。这条路径与主 context 的 `WAIT_USER_MSG`、子 context 的哨兵路径（交回调用方）互不相干，D2 规则（xAgent §11.5 第 1 条：等待前已交付回复即完成该 Turn）不变：提问不是交付，不关 Turn，也不计入 `turns_completed`。xllm 不能解析 `userinput:`，拒绝接手这样的 run。stop 时挂起的提问以“用户未回答”结束。
 
 **问答消息流（P / Q / A / R）。** 在能编辑消息的频道上：
 
@@ -1113,6 +1113,7 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 | 用 PendingTool 等待数小时或数天后的用户审批 | 长期保留执行依赖，审批前的文件读取等结果可能已经失效。 | UI / Goal 发出审批请求并建立主动订阅与必要超时检查，本次执行结束；恢复业务时重读必要状态，条件成熟后创建 Work。 |
 | 每次位置变化都主动唤醒 Agent | 高频推理成本增加，主上下文堆积大量低价值消息。 | 位置走半订阅，在订票等已有推理前按相关性、变化阈值和预算提供环境。 |
 | 委派任务后只靠半订阅获知完成 | 没有新的推理机会就不会处理结果，无法保证通知、催办或继续执行。 | 需要主动后续动作时建立主动完成事件或业务超时订阅；当前有界调用的返回依赖也可以由 PendingTool 承接。 |
+| Work 为一个必须的前提无限期等用户 | Work 失去“有界”，占着名额与执行资源。 | Work 的 `ask-user` 走通知，有界等待（缺省 3 小时），超时作为工具结果交还模型；它与“长时间 PendingTool 等审批”不同：等的是当前调用的一个答案，截止时间写在 run 里，到期即回填，不保留开放的业务等待。 |
 
 选择顺序是：先判断这是当前调用必须返回的结果，还是跨运行的业务变化；再判断是否需要主动响应；最后按等待期间的信息有效性、事件频率和上下文成本设置消费策略。三种模式应并存，不能用“所有变化都转主动消息”或“所有等待都变长 Tool”统一替代。
 
@@ -1136,7 +1137,7 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 |---|---|
 | 就绪 / 空闲 | 有已提交任务或有效运行机会时推进；没有实际工作时不空转推理。 |
 | 正在运行 | 一个执行者推进模型、工具与上下文切换，遵守检查点和提交规则。 |
-| 等待调用依赖 | 保存调用身份与期限，以结果或到期状态回填当前执行，不能转成普通聊天等待。 |
+| 等待调用依赖 | 保存调用身份与期限，以结果或到期状态回填当前执行，不能转成普通聊天等待。Work 经通知向用户提问也属于这一类（`waiting_for = input`，带截止时间与人工任务 id，Turn task 的等待原因为 `HumanInput`）：没有队列，卸载后由宿主按 recheck 与通知任务的 kevent 重新装载，到期以“未回答”回填。 |
 | 等待新运行机会 | UI 等交互，Goal 等调度或订阅事件；不为 Work 保留开放的需求确认等待。 |
 | 暂停 / 预算不足 | 保存原因及未完成事项；是否恢复由授权控制和预算策略决定，不伪报完成。 |
 | 错误 / 恢复阻塞 | 保留证据，区分可恢复执行错误、未知副作用和不可满足的任务前提，再选择恢复或失败。 |
@@ -1468,6 +1469,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |
 | 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；PendingTool 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |
 | 意图分析 | 2026-10-11 起（[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)）：behavior `[tool]` 声明生成 `try_analyze_user_intent`；`analyze_intent` 为 fork 子 context；`ask-user` 以 PendingTool `userinput:` 挂起，下一条消息回填为工具结果；问答以 `thread → 占位` + `agent_ask` 出站；Work 有 `plan` 与 `work_simple` 两种形态；Runtime 登记 `container` / `host`。见 §5.6。 | 计划任务（未来执行的 Work）；宿主机执行器；Task 修订；Anthropic `cache_control` 断点（前缀缓存命中依赖 provider 链路）。 |
+| System Notify | 2026-10-11 起（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md) 第一段）：通知是 msg-center 的 `kind = notify` 消息（`buckyos.notify`），`input` 另挂 TaskMgr HumanSet 任务；libopendan `NotifyHost`（zone：Loader 的 `ZoneNotify`；`--dev` / 测试：`LocalNotify` 文件实现）；Work 的 `ask-user` 经通知有界等待；Goal `questions` 发成通知、回答以 `answer` Activation 回流；UI Session 以隐式半订阅 `_notify`（`system:notify:<id>`）观察在本会话呈现过的通知，并可经 `agent-session notify answer / ack` 代用户处理（审批除外、本 Session 发起的除外）。 | 第二段：`post-message` 与回复关联、机械审批、触达设置与升级、状态变化的观察事件。 |
 | Goal 的现有实现 | 2026-10-11 起（[Goal Session TODO](../../notepads/opendan-goal-session-todo.md) 第一段）：Goal 对象在 Agent State（`state/goals/`，定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度），模板 `goal`；宿主按 Goal 列表补建 Goal Session，运行机会为 epoch 开始、本地定时（`every_secs`，可替换的 `ScheduleBackend`）、手动、Work 结束、UI 转交的消息；一个 Activation = 一个 Turn，Goal 头在批次提交前冻结；结束只关闭 Turn，结果按 Goal 格式写回；Work 带 `origin.goal`，按 `goal_id` 吸收。 | 第二段：workflow 计划任务接入（cron、时区、一次性）、Memory 整理 Goal 与删除 self_improve、self_check 退役、WebUI Goals 视图、follow_up 与对象订阅驱动、通知人。 |
 
 实现核对入口：
@@ -1593,6 +1595,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 | 事项 | 当前方向 | 尚需确定 |
 |---|---|---|
+| Agent 主动通知人 | **第一段已采用**（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md)）：System Notify 在 msg-center（App 稳定接口 `notify.*`）；Work `ask-user` 经通知有界等待（缺省 3 小时）；Goal `questions` 发成通知；UI 观察 `_notify` 与代理回答 | `post-message` 与回复关联、机械审批（先单列 llm_context TODO）、触达设置、状态变化的观察事件。 |
 | 意图分析接口名称 | **已采用**（§5.6）：`try_analyze_user_intent(request)`，由 behavior `analyze_intent` 的 `[tool]` 声明；旧 `task_route` 已删除；返回 `{status, behavior, submission: {report, result}}`，`result.outcome` 六种；创建在分析内部完成，不拆分创建调用 | `result` 字段目前只由引导文字约定，宿主不校验。 |
 | 自动创建与二次确认 | **已采用**：条件齐备时在分析内自动创建；需要用户拍板的单个选择作为 `ask-user` 问题问完仍自动创建；无法用一个问题问清的整体方案返回 `needs_confirmation`，UI 讲清后再调一次 | 哪些权限条件必须二次确认（目前只靠引导文字约束，按“先能力后安全”记为已知风险）。 |
 | Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续。**当前实现（2026-10-11，Goal Session TODO 第一段）**：同一时刻一个 Goal 一个 Goal Session，按 `(goal_id, epoch)` 确定性派生；reopen / restart 开新 epoch（旧 Session 结束、Goal State 存档），Work 按 `goal_id` 归属、跨 epoch 由新 Session 接管 | 多 Session 协作、跨节点所有权。 |

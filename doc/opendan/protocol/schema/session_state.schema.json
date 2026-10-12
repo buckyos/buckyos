@@ -156,6 +156,13 @@
             "event"
           ],
           "type": "string"
+        },
+        {
+          "description": "A question of the Goal was answered (or closed) by the user: `ref` is its notification.",
+          "enum": [
+            "answer"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -508,6 +515,12 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "answer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "at_ms": {
           "format": "uint64",
           "minimum": 0.0,
@@ -517,6 +530,23 @@
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "notify_id": {
+          "description": "The notification that asks it (none: not sent, or no notification service).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalQuestionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "text": {
           "type": "string"
@@ -529,6 +559,16 @@
         "text"
       ],
       "type": "object"
+    },
+    "GoalQuestionStatus": {
+      "enum": [
+        "open",
+        "answered",
+        "dismissed",
+        "expired",
+        "canceled"
+      ],
+      "type": "string"
     },
     "GoalSessionState": {
       "description": "`state.json.goal` of a Goal Session: the Goal State the session owns (committed with the session, published to `state/goals/<id>/state.json` afterwards), Activation records not appended yet, the open Activation.",
@@ -681,7 +721,7 @@
           "type": "array"
         },
         "questions": {
-          "description": "Recorded only; nobody is notified (phase 1).",
+          "description": "Questions for the user: sent as notifications when the host has a notification service; answers come back as `answer` Activations.",
           "items": {
             "$ref": "#/definitions/GoalQuestion"
           },
@@ -1802,6 +1842,13 @@
             "integer",
             "null"
           ]
+        },
+        "human_tasks": {
+          "description": "TaskMgr human tasks the wait depends on: questions asked through a notification (`ask-user` of a Work).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "kind": {
           "$ref": "#/definitions/WaitingKind"

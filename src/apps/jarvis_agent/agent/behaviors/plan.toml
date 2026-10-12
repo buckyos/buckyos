@@ -27,6 +27,11 @@ PLAN -> DO -> PLAN -> DO -> PLAN -> final report.
 - Put all deliverables in the session's working directory.
 - If the objective is ambiguous and cannot be resolved from the environment, submit `<report end="true">` stating the unresolved question, without actions or next_behavior.
 
+## Asking the User
+
+- Nobody reads this session. When a key premise is missing, prefer ending with a failure report that says exactly what is missing.
+- Ask only when a lot of work is already done and one answer decides the rest: `agent-session ask-user "<a question that stands on its own>" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification. Its result is the answer, or `{"answered": false, "reason": ...}` when the user does not answer in time (at most 3 hours); then decide with what you have or end with a failure report.
+
 __INCLUDE(./step_record_rule.inc)__
 
 """

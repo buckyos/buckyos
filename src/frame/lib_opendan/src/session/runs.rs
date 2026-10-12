@@ -371,6 +371,33 @@ impl RunHandle {
         })
     }
 
+    /// How a question goes out when it is asked through a notification
+    /// (`asks[<call_id>].notify`).
+    pub fn save_ask_notify(&self, call_id: &str, notify: &crate::protocol::AskNotify) -> Result<()> {
+        let value = serde_json::to_value(notify).map_err(|e| OpenDanError::Other(e.to_string()))?;
+        self.update(|r| {
+            if let Some(ask) = r
+                .host
+                .as_mut()
+                .and_then(|h| h.extra.get_mut("asks"))
+                .and_then(|a| a.get_mut(call_id))
+                .filter(|a| a.is_object())
+            {
+                ask["notify"] = value;
+            }
+        })
+    }
+
+    pub fn ask_notify(&self, call_id: &str) -> Option<crate::protocol::AskNotify> {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("asks"))
+            .and_then(|a| a.get(call_id))
+            .and_then(|a| a.get("notify"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
     pub fn ask(&self, call_id: &str) -> Option<crate::protocol::UserInputRequest> {
         self.record()
             .host

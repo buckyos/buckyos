@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1791742053001,
+    "created_at_ms": 1791771748629,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -29,7 +29,8 @@
       "load_hints": true,
       "max_process_depth": 4,
       "max_sub_sessions": 4,
-      "max_session_depth": 2
+      "max_session_depth": 2,
+      "ask_user_timeout_secs": 10800
     }
   },
   "prompt": {

@@ -1,11 +1,12 @@
 import { buckyos } from 'buckyos'
 import { fetchUserDetail } from '../../../api/user_mgr'
-import type { DID, MsgObject } from '../protocol/msgobj'
+import type { DID, MsgObject, NotifyCategory, NotifyKind, NotifyStatus } from '../protocol/msgobj'
+import type { NotifyView } from '../notify/model'
 
 /**
  * Thin client for the msg-center RPC surface used by MessageHub. Wire shapes
  * mirror the Rust structs in src/kernel/buckyos-api/src/msg_center_client.rs
- * (`msg.*`, `ui_session.*`, `contact.*`, `group.*`).
+ * (`msg.*`, `ui_session.*`, `contact.*`, `group.*`) and msg_notify.rs (`notify.*`).
  */
 
 const MSG_CENTER_SERVICE = 'msg-center'
@@ -462,3 +463,26 @@ export function groupErrorReason(error: unknown): string {
   if (message.includes('agent_group_disabled')) return 'agent-group-disabled'
   return message.match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? 'unknown'
 }
+
+/* ── System Notify (`msg_notify.rs`) ── */
+
+/** `NotifyListReq`; only the caller's own notifications are listed. */
+export interface NotifyListRequest {
+  status?: NotifyStatus[]
+  kind?: NotifyKind
+  category?: NotifyCategory
+  agent_did?: DID
+  app_id?: string
+  session_id?: string
+  goal_id?: string
+  since_ms?: number
+  cursor?: string
+  limit?: number
+}
+
+export const getNotify = (notifyId: string) => call<NotifyView>('notify.get', { notify_id: notifyId })
+export const listNotify = (request: NotifyListRequest) => call<{ items?: NotifyView[]; next_cursor?: string } | null>('notify.list', request as unknown as Record<string, unknown>).then(result => ({ items: result?.items ?? [], next_cursor: result?.next_cursor }))
+/** Marks a `notice` read (every record of it). */
+export const ackNotify = (notifyId: string) => call<NotifyView>('notify.ack', { notify_id: notifyId })
+/** Dismisses a `notice` (archives every record of it). */
+export const dismissNotify = (notifyId: string) => call<NotifyView>('notify.dismiss', { notify_id: notifyId })

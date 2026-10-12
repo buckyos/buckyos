@@ -54,6 +54,21 @@ uv run stop.py
 
 `debug_jarvis.sh` 会构建 `opendan`、`libopendan`、`agent_tool_cli_dev`，停止该 Agent 的构造 App 容器并占用其服务端口；退出后由 node-daemon 恢复容器。Agent 包读取 `src/apps/jarvis_agent/agent/`。更多参数和独立 `--dev` 模式见 `src/frame/opendan/README.md`。
 
+### paios 镜像的本地开发迭代
+
+涉及容器内的 OpenDAN、`agent_tool`、`xagent`、OpenDAN WebUI、Worker 工具或入口脚本时，需要重建 `paios/aios` 镜像。以下命令在 **`buckyos/` 仓库根目录**运行：
+
+```bash
+./build_aios --local-test
+uv run src/start.py --skip-update
+```
+
+`--local-test` 默认只构建本机架构，使用 `local/aios-test` 镜像仓库名，复用 Cargo 构建产物且不推送镜像；构建成功后为已安装的 BuckyOS 写入 `$BUCKYOS_ROOT/etc/devenv.json` 的 `aios` 覆盖（未设置 `BUCKYOS_ROOT` 时为 `/opt/buckyos`）。随后重启会重建应用容器，使其使用新镜像；每轮修改重复上述命令即可。需要同步更新宿主机服务时，先构建对应模块，再运行不带 `--skip-update` 的 `start.py`。
+
+区分两份本地配置：仓库根目录的 `devenv.json` 为普通 `build_aios` / `build_exttool` 提供默认镜像仓库名；node-daemon 实际读取的是 `$BUCKYOS_ROOT/etc/devenv.json`，例如 `{"aios": "local/aios-test", "exttool": "local/exttool-test"}`。字段填写不带 tag 的仓库名，运行时自动追加 `:latest-amd64` 或 `:latest-aarch64`。这些是个人开发配置，通常不提交到 Git。`start.py --all` 会保留含本地镜像覆盖的运行时 `devenv.json`，并在命令末尾提示；要恢复默认的 `paios/aios` / `paios/exttool`，手动删除对应覆盖键后重启。
+
+修改 ExtTool 内容时，使用 `./build_exttool --image local/exttool-test --arch amd64`（ARM64 使用 `aarch64`），并在运行时 `devenv.json` 设置 `exttool`。已有的 `buckyos-exttool` Docker 卷不会因镜像重建而自动刷新；需要停止相关容器、确认卷内容可丢弃后移除该卷，再启动以重新填充。
+
 ### 测试与验证
 
 **以下命令在 `buckyos/src/` 下运行。**

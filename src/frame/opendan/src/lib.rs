@@ -15,6 +15,7 @@
 pub mod config;
 pub mod home;
 pub mod loader;
+pub mod notify;
 pub mod objects;
 pub mod records;
 pub mod rootfs;

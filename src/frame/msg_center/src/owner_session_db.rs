@@ -294,7 +294,7 @@ LIMIT 1
 SELECT
     r.session_id AS session_id,
     MAX(r.updated_at_ms) AS last_updated_at_ms,
-    MAX(CASE WHEN r.msg_kind IN ('chat', 'group_msg', 'deliver') THEN r.sort_key ELSE 0 END) AS last_activity_ms,
+    MAX(CASE WHEN r.msg_kind IN ('chat', 'group_msg', 'deliver', 'notify') THEN r.sort_key ELSE 0 END) AS last_activity_ms,
     SUM(CASE WHEN r.state = 'UNREAD' THEN 1 ELSE 0 END) AS unread_count,
     SUM(CASE WHEN r.box_kind = 'REQUEST_BOX' THEN 1 ELSE 0 END) AS request_count
 FROM mailbox_records r

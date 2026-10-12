@@ -24,6 +24,7 @@ use name_client::*;
 use name_lib::*;
 use named_store::NamedDataMgr;
 
+use crate::{commit_notify_answer, wait_notify_loop, NotifyAnswer, NotifyKind, NotifyView};
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
@@ -2192,6 +2193,87 @@ impl BuckyOSRuntime {
             } else {
                 FIRST_SWEEP_INTERVAL
             };
+        }
+    }
+
+    /// Wait until the notification `notify_id` is closed (answered,
+    /// dismissed, expired, canceled) or `deadline_ms` passes, and return its
+    /// latest view either way. An `input` is followed through its task's
+    /// kevent; polling backs it up.
+    pub async fn wait_notify(&self, notify_id: &str, deadline_ms: u64) -> Result<NotifyView> {
+        let first = self
+            .get_msg_center_client()
+            .await?
+            .notify_get(notify_id)
+            .await?;
+        let reader = match first.task_id.as_deref() {
+            Some(task_id) => match self.get_kevent_client().await {
+                Ok(client) => client
+                    .create_event_reader(vec![task_mgr_task_event_path(task_id)])
+                    .await
+                    .ok()
+                    .map(|reader| (client, reader)),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        wait_notify_loop(
+            || async { self.get_msg_center_client().await?.notify_get(notify_id).await },
+            deadline_ms,
+            |d| {
+                let reader = reader.as_ref();
+                async move {
+                    match reader {
+                        Some((_client, reader)) => {
+                            let _ = reader.pull_event(Some(d.as_millis() as u64)).await;
+                        }
+                        None => tokio::time::sleep(d).await,
+                    }
+                }
+            },
+        )
+        .await
+    }
+
+    /// Answer an `input` as this runtime's user (or dismiss it); for a
+    /// `notice` acknowledge or dismiss it. Returns the final view: when
+    /// someone else answered first, theirs.
+    pub async fn answer_notify(&self, notify_id: &str, answer: NotifyAnswer) -> Result<NotifyView> {
+        let msg_center = self.get_msg_center_client().await?;
+        let view = msg_center.notify_get(notify_id).await?;
+        match view.kind {
+            NotifyKind::Notice => {
+                if answer.dismiss {
+                    msg_center.notify_dismiss(notify_id).await
+                } else {
+                    msg_center.notify_ack(notify_id, None).await
+                }
+            }
+            NotifyKind::Input => {
+                let task_id = view.task_id.clone().ok_or_else(|| {
+                    RPCErrors::ReasonError(format!("notification {notify_id} has no task"))
+                })?;
+                if view.status.is_closed() {
+                    return Ok(view);
+                }
+                answer
+                    .validate(&view.prompt)
+                    .map_err(RPCErrors::ParseRequestError)?;
+                let submitted_by = self
+                    .user_id
+                    .clone()
+                    .or_else(|| self.app_owner_id.clone())
+                    .unwrap_or_default();
+                commit_notify_answer(
+                    &self.get_task_mgr_client().await?,
+                    &task_id,
+                    &answer,
+                    &submitted_by,
+                    buckyos_get_unix_timestamp() * 1000,
+                )
+                .await?;
+                msg_center.notify_get(notify_id).await
+            }
         }
     }
 

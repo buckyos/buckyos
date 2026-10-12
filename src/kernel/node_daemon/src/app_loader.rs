@@ -20,7 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
@@ -63,6 +63,10 @@ const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
 const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
 
 static EXTTOOL_PREPARE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+const IMAGE_REPO_DIGEST_CACHE_TTL: Duration = Duration::from_secs(300);
+const IMAGE_REPO_DIGEST_CACHE_LIMIT: usize = 256;
+static IMAGE_REPO_DIGESTS: OnceLock<std::sync::Mutex<HashMap<String, (Instant, Vec<String>)>>> =
+    OnceLock::new();
 
 pub(crate) fn exttool_prepare_lock() -> &'static tokio::sync::Mutex<()> {
     EXTTOOL_PREPARE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -212,9 +216,29 @@ pub(crate) struct DockerRuntimeIdentity {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DockerContainerRuntime {
+    container_id: Option<String>,
     running: bool,
     health: DeploymentHealth,
     identity: DockerRuntimeIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AppDeploymentObservation {
+    pub state: ServiceInstanceState,
+    pub health: DeploymentHealth,
+    pub container_id: Option<String>,
+    pub identity: Option<DockerRuntimeIdentity>,
+}
+
+impl AppDeploymentObservation {
+    fn without_container(state: ServiceInstanceState) -> Self {
+        Self {
+            state,
+            health: DeploymentHealth::Unknown,
+            container_id: None,
+            identity: None,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -268,6 +292,8 @@ pub(crate) struct DockerInspectConfig {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DockerContainerInspectDoc {
+    #[serde(rename = "Id", default)]
+    pub(crate) id: Option<String>,
     #[serde(rename = "State", default)]
     pub(crate) state: DockerInspectState,
     #[serde(rename = "Config", default)]
@@ -427,39 +453,98 @@ impl AppLoader {
     }
 
     pub async fn status(&self) -> Result<ServiceInstanceState> {
+        Ok(self.observe_deployment().await?.state)
+    }
+
+    pub(crate) async fn observe_deployment(&self) -> Result<AppDeploymentObservation> {
         let runtime = self.resolve_runtime()?;
         debug!(
             "app_loader status app={} user={} runtime={:?}",
             self.app_id, self.owner_user_id, runtime
         );
 
-        match runtime {
-            RuntimeType::Docker => self.status_docker().await,
-            RuntimeType::HostScript => self.status_host_script().await,
-            RuntimeType::Agent => self.status_agent().await,
-            RuntimeType::Vm => Err(ControlRuntItemErrors::NotSupport(
-                "vm runtime is reserved but not implemented".to_string(),
-            )),
-        }
-    }
-
-    pub async fn deployment_health(&self) -> Result<DeploymentHealth> {
-        let runtime = self.resolve_runtime()?;
-        if runtime == RuntimeType::Docker {
-            let desc = self
+        let desc = match runtime {
+            RuntimeType::Docker => self
                 .docker_image_desc()
-                .ok_or_else(|| self.pkg_not_found("docker image"))?;
-            return Ok(match self.inspect_current_docker_container().await? {
-                Some(container) if self.runtime_matches_target(&container.identity, desc) => {
-                    container.health
+                .ok_or_else(|| self.pkg_not_found("docker image"))?,
+            RuntimeType::HostScript | RuntimeType::Agent => {
+                let (desc, pkg_id) = if runtime == RuntimeType::Agent {
+                    (self.agent_desc(), self.agent_pkg_id())
+                } else {
+                    (self.host_script_desc(), self.host_script_pkg_id())
+                };
+                let (Some(desc), Some(pkg_id)) = (desc, pkg_id) else {
+                    return Ok(AppDeploymentObservation::without_container(
+                        ServiceInstanceState::NotExist,
+                    ));
+                };
+                if self.try_load_pkg(&pkg_id).await.is_none() {
+                    return Ok(AppDeploymentObservation::without_container(
+                        ServiceInstanceState::NotExist,
+                    ));
                 }
-                _ => DeploymentHealth::Unknown,
-            });
-        }
-        Ok(match self.status().await? {
-            ServiceInstanceState::Started => DeploymentHealth::Healthy,
-            ServiceInstanceState::Exited => DeploymentHealth::Unhealthy,
-            _ => DeploymentHealth::Unknown,
+                desc
+            }
+            RuntimeType::Vm => {
+                return Err(ControlRuntItemErrors::NotSupport(
+                    "vm runtime is reserved but not implemented".to_string(),
+                ));
+            }
+        };
+
+        let container = if let Some(mut container) = self.inspect_current_docker_container().await?
+        {
+            if self
+                .resolve_runtime_identity(&mut container.identity, desc)
+                .await?
+            {
+                let state = if container.running {
+                    ServiceInstanceState::Started
+                } else {
+                    ServiceInstanceState::Exited
+                };
+                let health = if runtime == RuntimeType::Docker {
+                    container.health
+                } else if container.running {
+                    DeploymentHealth::Healthy
+                } else {
+                    DeploymentHealth::Unhealthy
+                };
+                return Ok(AppDeploymentObservation {
+                    state,
+                    health,
+                    container_id: container.container_id,
+                    identity: Some(container.identity),
+                });
+            }
+            Some(container)
+        } else {
+            None
+        };
+
+        let (image_name, digest) = if runtime == RuntimeType::Docker {
+            let image_name = desc.docker_image_name.clone().ok_or_else(|| {
+                ControlRuntItemErrors::ParserConfigError(format!(
+                    "docker_image_name is missing for app {}",
+                    self.app_id
+                ))
+            })?;
+            (image_name, desc.docker_image_digest.as_deref())
+        } else {
+            (self.worker_image_name(), None)
+        };
+        let state = if self.check_docker_image_exists(&image_name, digest).await? {
+            ServiceInstanceState::Stopped
+        } else {
+            ServiceInstanceState::NotExist
+        };
+        Ok(AppDeploymentObservation {
+            state,
+            health: DeploymentHealth::Unknown,
+            container_id: container
+                .as_ref()
+                .and_then(|value| value.container_id.clone()),
+            identity: container.map(|value| value.identity),
         })
     }
 
@@ -562,6 +647,65 @@ impl AppLoader {
     fn runtime_matches_target(&self, identity: &DockerRuntimeIdentity, desc: &SubPkgDesc) -> bool {
         docker_runtime_matches_target(identity, desc)
             && docker_runtime_matches_deployment(identity, self.deployment())
+    }
+
+    async fn resolve_runtime_identity(
+        &self,
+        identity: &mut DockerRuntimeIdentity,
+        desc: &SubPkgDesc,
+    ) -> Result<bool> {
+        if self.runtime_matches_target(identity, desc) {
+            return Ok(true);
+        }
+        let Some(expected_digest) = normalize_digest(desc.docker_image_digest.as_deref()) else {
+            return Ok(false);
+        };
+        if !docker_runtime_package_matches(identity, desc)
+            || !docker_runtime_matches_deployment(identity, self.deployment())
+        {
+            return Ok(false);
+        }
+        let Some(image_id) = identity.image_id.as_deref() else {
+            return Ok(false);
+        };
+        let cache = IMAGE_REPO_DIGESTS.get_or_init(Default::default);
+        let cached = cache
+            .lock()
+            .unwrap()
+            .get(image_id)
+            .filter(|(observed_at, _)| observed_at.elapsed() < IMAGE_REPO_DIGEST_CACHE_TTL)
+            .map(|(_, digests)| digests.clone());
+        if let Some(repo_digests) = cached {
+            identity.repo_digests = repo_digests;
+            if self.runtime_matches_target(identity, desc) {
+                return Ok(true);
+            }
+        }
+        identity.repo_digests = self.inspect_docker_image_repo_digests(image_id).await?;
+        if identity.repo_digests.is_empty() {
+            cache.lock().unwrap().remove(image_id);
+        } else {
+            let mut cache = cache.lock().unwrap();
+            cache.retain(|_, (observed_at, _)| observed_at.elapsed() < IMAGE_REPO_DIGEST_CACHE_TTL);
+            if cache.len() >= IMAGE_REPO_DIGEST_CACHE_LIMIT && !cache.contains_key(image_id) {
+                let oldest = cache
+                    .iter()
+                    .min_by_key(|(_, (observed_at, _))| *observed_at)
+                    .map(|(key, _)| key.clone());
+                if let Some(oldest) = oldest {
+                    cache.remove(&oldest);
+                }
+            }
+            cache.insert(
+                image_id.to_string(),
+                (Instant::now(), identity.repo_digests.clone()),
+            );
+        }
+        debug!(
+            "resolved docker image {} for digest {}",
+            image_id, expected_digest
+        );
+        Ok(self.runtime_matches_target(identity, desc))
     }
 
     fn install_config(&self) -> &ServiceSpecConfig {
@@ -966,38 +1110,6 @@ impl AppLoader {
         self.remove_current_docker_container().await
     }
 
-    async fn status_docker(&self) -> Result<ServiceInstanceState> {
-        let desc = self
-            .docker_image_desc()
-            .ok_or_else(|| self.pkg_not_found("docker image"))?;
-        if let Some(runtime) = self.inspect_current_docker_container().await? {
-            if !self.runtime_matches_target(&runtime.identity, desc) {
-                // A stale container with the current name exists but does not match the target package.
-                // Treat it as stopped and let the subsequent start path replace it.
-            } else if runtime.running {
-                return Ok(ServiceInstanceState::Started);
-            } else {
-                return Ok(ServiceInstanceState::Exited);
-            }
-        }
-
-        let image_name = desc.docker_image_name.clone().ok_or_else(|| {
-            ControlRuntItemErrors::ParserConfigError(format!(
-                "docker_image_name is missing for app {}",
-                self.app_id
-            ))
-        })?;
-
-        if self
-            .check_docker_image_exists(image_name.as_str(), desc.docker_image_digest.as_deref())
-            .await?
-        {
-            Ok(ServiceInstanceState::Stopped)
-        } else {
-            Ok(ServiceInstanceState::NotExist)
-        }
-    }
-
     async fn start_host_script(&self) -> Result<()> {
         // Mirror start_agent: re-run deploy so the worker image, pkg install
         // and the shared buckyos-exttool volume are all guaranteed before
@@ -1040,39 +1152,6 @@ impl AppLoader {
         self.remove_current_docker_container().await
     }
 
-    async fn status_host_script(&self) -> Result<ServiceInstanceState> {
-        let desc = match self.host_script_desc() {
-            Some(desc) => desc,
-            None => return Ok(ServiceInstanceState::NotExist),
-        };
-        let pkg_id = match self.host_script_pkg_id() {
-            Some(pkg_id) => pkg_id,
-            None => return Ok(ServiceInstanceState::NotExist),
-        };
-        if self.try_load_pkg(pkg_id.as_str()).await.is_none() {
-            return Ok(ServiceInstanceState::NotExist);
-        }
-
-        if let Some(runtime) = self.inspect_current_docker_container().await? {
-            if self.runtime_matches_target(&runtime.identity, desc) {
-                if runtime.running {
-                    return Ok(ServiceInstanceState::Started);
-                }
-                return Ok(ServiceInstanceState::Exited);
-            }
-        }
-
-        let image_name = self.worker_image_name();
-        if self
-            .check_docker_image_exists(image_name.as_str(), None)
-            .await?
-        {
-            Ok(ServiceInstanceState::Stopped)
-        } else {
-            Ok(ServiceInstanceState::NotExist)
-        }
-    }
-
     async fn start_agent(&self) -> Result<()> {
         let _ = self.deploy().await?;
 
@@ -1106,40 +1185,6 @@ impl AppLoader {
 
     async fn stop_agent(&self) -> Result<()> {
         self.remove_current_docker_container().await
-    }
-
-    async fn status_agent(&self) -> Result<ServiceInstanceState> {
-        let desc = match self.agent_desc() {
-            Some(desc) => desc,
-            None => return Ok(ServiceInstanceState::NotExist),
-        };
-        let media_info = match self.agent_pkg_id() {
-            Some(pkg_id) => self.try_load_pkg(pkg_id.as_str()).await,
-            None => None,
-        };
-        if media_info.is_none() {
-            return Ok(ServiceInstanceState::NotExist);
-        }
-
-        if let Some(runtime) = self.inspect_current_docker_container().await? {
-            if !self.runtime_matches_target(&runtime.identity, desc) {
-                // An old generation container is still occupying the canonical name.
-                // Leave it to the start path to replace it.
-            } else if runtime.running {
-                return Ok(ServiceInstanceState::Started);
-            } else {
-                return Ok(ServiceInstanceState::Exited);
-            }
-        }
-
-        if self
-            .check_docker_image_exists(self.worker_image_name().as_str(), None)
-            .await?
-        {
-            Ok(ServiceInstanceState::Stopped)
-        } else {
-            Ok(ServiceInstanceState::NotExist)
-        }
     }
 
     /// Build + launch a worker container (paios/aios) with the unified
@@ -1636,18 +1681,14 @@ impl AppLoader {
             }
         }
 
-        let id_output = run_command(
-            "docker",
-            &[
+        let id_output = self
+            .run_docker(&[
                 "image".to_string(),
                 "inspect".to_string(),
                 "--format={{.Id}}".to_string(),
                 image_name.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+            ])
+            .await?;
         ensure_success("docker image inspect Id", &id_output)?;
         let image_id = id_output.stdout.trim();
         if image_id == expected_digest {
@@ -2261,9 +2302,8 @@ impl AppLoader {
 
     async fn has_current_docker_container_name(&self) -> Result<bool> {
         let container_name = self.container_name();
-        let output = run_command(
-            "docker",
-            &[
+        let output = self
+            .run_docker(&[
                 "container".to_string(),
                 "ls".to_string(),
                 "-a".to_string(),
@@ -2271,11 +2311,8 @@ impl AppLoader {
                 "{{.Names}}".to_string(),
                 "--filter".to_string(),
                 format!("name={container_name}"),
-            ],
-            None,
-            None,
-        )
-        .await?;
+            ])
+            .await?;
         ensure_success("docker container ls -a", &output)?;
         Ok(container_list_contains_name(
             output.stdout.as_str(),
@@ -2285,18 +2322,14 @@ impl AppLoader {
 
     async fn inspect_current_docker_container(&self) -> Result<Option<DockerContainerRuntime>> {
         let container_name = self.container_name();
-        let inspect_output = run_command(
-            "docker",
-            &[
+        let inspect_output = self
+            .run_docker(&[
                 "container".to_string(),
                 "inspect".to_string(),
                 "--format={{json .}}".to_string(),
                 container_name.clone(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+            ])
+            .await?;
         if !inspect_output.status.success() {
             if matches!(self.has_current_docker_container_name().await, Ok(false)) {
                 return Ok(None);
@@ -2310,35 +2343,27 @@ impl AppLoader {
         let inspect_doc = parse_docker_container_inspect(inspect_output.stdout.trim())?;
         let health = docker_deployment_health(&inspect_doc.state);
         let image_id = inspect_doc.image.as_deref().and_then(trim_to_option);
-        let repo_digests = match image_id.as_deref() {
-            Some(image_id) => self.inspect_docker_image_repo_digests(image_id).await?,
-            None => Vec::new(),
-        };
-
         Ok(Some(DockerContainerRuntime {
+            container_id: inspect_doc.id,
             running: inspect_doc.state.running,
             health,
             identity: DockerRuntimeIdentity {
                 image_id,
-                repo_digests,
+                repo_digests: Vec::new(),
                 labels: inspect_doc.config.labels.unwrap_or_default(),
             },
         }))
     }
 
     async fn inspect_docker_image_repo_digests(&self, image_ref: &str) -> Result<Vec<String>> {
-        let output = run_command(
-            "docker",
-            &[
+        let output = self
+            .run_docker(&[
                 "image".to_string(),
                 "inspect".to_string(),
                 "--format={{json .RepoDigests}}".to_string(),
                 image_ref.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+            ])
+            .await?;
         if docker_object_missing(&output) {
             return Ok(Vec::new());
         }
@@ -3023,10 +3048,7 @@ pub(crate) fn docker_desc_requires_exact_match(desc: &SubPkgDesc) -> bool {
         || normalize_digest(desc.docker_image_digest.as_deref()).is_some()
 }
 
-pub(crate) fn docker_runtime_matches_target(
-    identity: &DockerRuntimeIdentity,
-    desc: &SubPkgDesc,
-) -> bool {
+fn docker_runtime_package_matches(identity: &DockerRuntimeIdentity, desc: &SubPkgDesc) -> bool {
     if !desc.pkg_id.trim().is_empty()
         && identity.labels.get(DOCKER_LABEL_PKG_ID).map(String::as_str)
             != Some(desc.pkg_id.as_str())
@@ -3041,6 +3063,17 @@ pub(crate) fn docker_runtime_matches_target(
         if actual_pkg_objid != expected_pkg_objid.to_string().as_str() {
             return false;
         }
+    }
+
+    true
+}
+
+pub(crate) fn docker_runtime_matches_target(
+    identity: &DockerRuntimeIdentity,
+    desc: &SubPkgDesc,
+) -> bool {
+    if !docker_runtime_package_matches(identity, desc) {
+        return false;
     }
 
     let Some(expected_digest) = normalize_digest(desc.docker_image_digest.as_deref()) else {

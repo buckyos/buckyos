@@ -91,6 +91,7 @@ pub fn error_from_wire(text: &str) -> OpenDanError {
             OpenDanError::GoalBudgetExhausted(detail("goal budget exhausted: "))
         }
         "forbidden" => OpenDanError::Forbidden(detail("forbidden: ")),
+        "notify_conflict" => OpenDanError::NotifyConflict(detail("notify conflict: ")),
         "channel" => OpenDanError::Channel(detail("input channel error: ")),
         _ => OpenDanError::Other(message),
     }
@@ -131,6 +132,9 @@ pub fn is_write(method: &str) -> bool {
             | "goals.set_status"
             | "goals.reopen"
             | "goals.restart"
+            | "notify.send"
+            | "notify.cancel"
+            | "notify.answer"
     )
 }
 
@@ -400,8 +404,44 @@ pub async fn serve_call(
             Err(e) => Err(e),
         },
         m if GOAL_DRIVER_ONLY.contains(&m) => Err(driver_only(m)),
+        m if m.starts_with("notify.") => serve_notify(agent, m, params).await,
         _ => return None,
     })
+}
+
+/// `notify.*` onto the host's notification service. The source of a
+/// notification is completed here, from the session it names.
+async fn serve_notify(agent: &dyn AgentStateClient, method: &str, params: &Value) -> Result<Value> {
+    let Some(notify) = agent.notifies() else {
+        return Err(crate::notify::unavailable());
+    };
+    match method {
+        "notify.send" => {
+            let mut req: crate::notify::NotifySendReq = arg(params, "request")?;
+            let mut source = req.source.take().unwrap_or_default();
+            crate::notify::complete_notify_source(agent, &mut source).await;
+            req.source = Some(source);
+            notify.send(req).await.and_then(out)
+        }
+        "notify.state" => notify.state(&arg::<String>(params, "notify_id")?).await.and_then(out),
+        "notify.list" => notify
+            .list(arg::<Option<crate::notify::NotifyListReq>>(params, "request")?.unwrap_or_default())
+            .await
+            .and_then(out),
+        "notify.cancel" => notify
+            .cancel(&arg::<String>(params, "notify_id")?, &arg::<String>(params, "reason")?)
+            .await
+            .and_then(out),
+        "notify.answer" => notify
+            .answer(
+                &arg::<String>(params, "notify_id")?,
+                arg(params, "answer")?,
+                arg(params, "via")?,
+            )
+            .await
+            .and_then(out),
+        other => Err(OpenDanError::InvalidArgument(format!("unknown method {other}"))),
+    }
 }
 
 /// accept / discard on behalf of `who`: the serving side takes the
@@ -699,6 +739,38 @@ impl AgentStateClient for KrpcAgentStateClient {
     }
     fn goals(&self) -> &dyn GoalStore {
         self
+    }
+    fn notifies(&self) -> Option<&dyn crate::notify::NotifyHost> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl crate::notify::NotifyHost for KrpcAgentStateClient {
+    async fn send(&self, req: crate::notify::NotifySendReq) -> Result<crate::notify::NotifyView> {
+        self.call("notify.send", json!({ "request": req })).await
+    }
+    async fn state(&self, notify_id: &str) -> Result<crate::notify::NotifyView> {
+        self.call("notify.state", json!({ "notify_id": notify_id })).await
+    }
+    async fn list(&self, req: crate::notify::NotifyListReq) -> Result<Vec<crate::notify::NotifyView>> {
+        self.call("notify.list", json!({ "request": req })).await
+    }
+    async fn cancel(&self, notify_id: &str, reason: &str) -> Result<crate::notify::NotifyView> {
+        self.call("notify.cancel", json!({ "notify_id": notify_id, "reason": reason }))
+            .await
+    }
+    async fn answer(
+        &self,
+        notify_id: &str,
+        answer: crate::notify::NotifyAnswer,
+        via: Option<crate::notify::NotifyVia>,
+    ) -> Result<crate::notify::NotifyView> {
+        self.call(
+            "notify.answer",
+            json!({ "notify_id": notify_id, "answer": answer, "via": via }),
+        )
+        .await
     }
 }
 

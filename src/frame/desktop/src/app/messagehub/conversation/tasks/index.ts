@@ -1,10 +1,16 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { createTaskWatchSource } from '../../../../api/task_mgr'
+import { createTaskWatchSource, type TaskWatchSource } from '../../../../api/task_mgr'
 import { MockTaskSource } from '../../mock/tasks'
 import { isMessageHubMock } from '../../store'
 import { TaskWatch, type TaskChildren, type TaskEvents, type TaskSnapshot } from './taskWatch'
 
 let instance: TaskWatch | null = null
+let source: TaskWatchSource | null = null
+
+/** TaskMgr reads and `/task_mgr/<id>` hints of MessageHub: one kevent stream for every follower (task areas, notification cards). */
+export function getTaskWatchSource(): TaskWatchSource {
+  return source ??= isMessageHubMock() ? new MockTaskSource() : createTaskWatchSource()
+}
 
 /**
  * One task cache for every MessageHub view. Reads use the logged-in user's
@@ -13,13 +19,13 @@ let instance: TaskWatch | null = null
  */
 export function getTaskWatch(): TaskWatch {
   if (instance) return instance
-  const mock = isMessageHubMock() ? new MockTaskSource() : null
-  const watch = new TaskWatch(mock ?? createTaskWatchSource())
+  const tasks = getTaskWatchSource()
+  const watch = new TaskWatch(tasks)
   instance = watch
   if (typeof window !== 'undefined') {
     window.addEventListener('online', () => watch.resync())
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') watch.resync() })
-    if (import.meta.env.DEV) Object.assign(window, { __messageHubTaskWatch: watch, ...(mock ? { __messageHubMockTasks: mock } : {}) })
+    if (import.meta.env.DEV) Object.assign(window, { __messageHubTaskWatch: watch, ...(tasks instanceof MockTaskSource ? { __messageHubMockTasks: tasks } : {}) })
   }
   return watch
 }

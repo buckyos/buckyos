@@ -63,6 +63,14 @@ pub enum MsgBridgeOutput {
     AppCommand { name: String, args: String },
     /// Acknowledge the msg-center record without posting.
     Drop { reason: &'static str },
+    /// A notification of the agent was shown in this conversation: an
+    /// observation (`_notify` event), never a message. `binding`: where the
+    /// conversation's replies go when it has no session yet.
+    Observe {
+        key: String,
+        event: AgentEvent,
+        binding: OutboundBinding,
+    },
 }
 
 /// `/name` or `/name args` when `text` is exactly that and `name` is
@@ -150,6 +158,25 @@ pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx)
     if let Some(reason) = noise(record, msg, ctx) {
         return MsgBridgeOutput::Drop { reason };
     }
+    // The agent's own record of a notification shown in this conversation.
+    if ctx.agent_did.as_ref() == Some(&msg.from) && msg.kind != MsgObjKind::GroupMsg {
+        if let Some(data) = buckyos_api::machine_data::<buckyos_api::NotifyDeliveredData>(
+            msg,
+            buckyos_api::NOTIFY_DELIVERED_INTENT,
+        ) {
+            let session = record.session_id.clone().unwrap_or_default();
+            let (key, event) = crate::notify::notify_event(&data, &session);
+            return MsgBridgeOutput::Observe {
+                key,
+                event,
+                binding: OutboundBinding {
+                    to: data.reply_route.to.clone(),
+                    to_session: data.reply_route.to_session.clone(),
+                    kind: msg_kind_name(&MsgObjKind::Chat),
+                },
+            };
+        }
+    }
     if record_sender(record) != ctx.owner {
         return MsgBridgeOutput::Drop {
             reason: "sender is not the owner",
@@ -217,6 +244,7 @@ impl MsgBridgeOutput {
             MsgBridgeOutput::Control { key, command } => {
                 Some(PostedInput::control(poster, key, command))
             }
+            MsgBridgeOutput::Observe { key, event, .. } => Some(PostedInput::event(poster, key, event)),
             MsgBridgeOutput::AppCommand { .. } | MsgBridgeOutput::Drop { .. } => None,
         })
     }

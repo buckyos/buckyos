@@ -23,16 +23,16 @@
     "turn_open": true,
     "activity": {
       "summary": "long command",
-      "heartbeat_ms": 1791742051743
+      "heartbeat_ms": 1791771747468
     },
     "last_runner": {
-      "runner_id": "rn-6a6cc39b7127401b",
+      "runner_id": "rn-61950bb965f84152",
       "host": "${FIXTURE_HOST}",
-      "pid": 2498882,
+      "pid": 3503645,
       "lock_epoch": 1,
-      "at_ms": 1791742051745
+      "at_ms": 1791771747469
     },
-    "updated_at_ms": 1791742051743
+    "updated_at_ms": 1791771747468
   },
   "location_rev": 0
 }
