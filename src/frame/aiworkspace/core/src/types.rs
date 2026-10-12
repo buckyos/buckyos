@@ -783,7 +783,7 @@ fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
     // replay keeps what a newer backend accepted
     let strict = !p.env.import;
     if strict {
-        check_keys(&e.payload, &["target", "range", "context", "kind", "body", "style", "author"], "annotation")?;
+        check_keys(&e.payload, &["target", "range", "context", "kind", "body", "style", "author", "author_name"], "annotation")?;
     }
     let anchor_changed = match before {
         None => true,

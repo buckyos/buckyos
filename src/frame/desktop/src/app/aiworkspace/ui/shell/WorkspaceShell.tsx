@@ -61,14 +61,15 @@ export interface ShellProps {
   onClose: () => void
   onOpenWorkspace: (workspaceId: string) => void
   offline: OfflineActions
-  identity: { principal: string | null; dev: boolean }
+  identity: { principal: string | null; dev: boolean; guest: boolean }
   onLogout: () => void
+  onLogin: () => void
   onHome: (() => void) | null
   devTools: boolean
   target?: LaunchTarget | null
 }
 
-export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, identity, onLogout, onHome, devTools, target }: ShellProps) {
+export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, identity, onLogout, onLogin, onHome, devTools, target }: ShellProps) {
   const store = useStore()
   const outlineVersion = useOutlineVersion()
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -254,7 +255,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
 
   const shell: ShellApi = {
     client, close: onClose, openWorkspace: onOpenWorkspace, offline, topMode: showSession ? 'show' : mode, setTopMode, surfaces, activeSurface, selectSurface,
-    side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, phone, devTools, identity, logout: onLogout, home: onHome,
+    side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, phone, devTools, identity, logout: onLogout, login: onLogin, home: onHome,
     runOffline, offlineBusy, offlineError, clearOfflineError: () => setOfflineError(null),
     startShow: (request) => setStartRequest({ pathId: request?.pathId ?? null, stepId: request?.stepId ?? null }),
     guide, setGuide,

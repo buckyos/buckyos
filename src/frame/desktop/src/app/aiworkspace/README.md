@@ -174,11 +174,15 @@ AIWS_BACKEND=http://127.0.0.1:4120 pnpm run dev
 
 Open `http://localhost:5174/?scenario=normal&aiwsDevToken=tok-alice` and start "AI Workspace" from the
 desktop, or `http://localhost:5174/workspace?aiwsDevToken=tok-alice` for the app in a tab of its own. `aiwsDevToken` stores `localStorage['aiworkspace.dev'] = {"token":"tok-alice"}` (optional
-`baseUrl`, `principal`); remove that key to go back to the zone path. Without `AIWS_BACKEND` the Vite
-config is unchanged.
+`baseUrl`, `principal`); remove that key to go back to the zone path. `{"guest":true}` instead of a
+token plays a visitor of a public link (no identity of its own; see below). Without `AIWS_BACKEND` the
+Vite config is unchanged.
 
 In a real zone nothing is configured: the app uses `buckyos.getServiceRpcClient('aiworkspace')` and
-sends `Authorization: Bearer <session token>` to the upload / asset / export routes.
+sends `Authorization: Bearer <session token>` to the upload / asset / export routes. Without a signed-in
+account (`/workspace/<id>` is a login-optional route) it sends a guest token instead — `gt_` + 26 base32
+chars kept in `localStorage['aiworkspace.guest']` — which reaches a workspace's `public` grant only (the
+"一键公开分享" of the share panel); a guest whose link is not public is sent to `/login` and comes back.
 
 ## Tests
 

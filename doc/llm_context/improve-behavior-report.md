@@ -163,7 +163,7 @@ WorkSession -> UI Session 的上行对象建议作为 `PendingInput::Event` 投�
 - `process_entry` / `parent_process_entry`：用于解释 report 来自哪个 behavior process，以及它原本应交给谁。
 - `source_session_id` / `target_session_id`：用于前端做关联展示和去重。
 
-不建议把完整 `assistant_text` 放进 envelope。Behavior XML 响应可能包含 `<thinking>` / `<actions>` / `<next_behavior>`，不是 UI 需要消费的正文。
+不建议把完整 `assistant_text` 放进 envelope。Behavior XML 响应可能包含 `<intent>` / `<actions>` / `<next_behavior>`，不是 UI 需要消费的正文。
 
 ## Session 层处理流程
 

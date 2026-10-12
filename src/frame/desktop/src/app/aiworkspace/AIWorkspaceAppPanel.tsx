@@ -12,8 +12,9 @@ import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { AppContentLoaderProps } from '../types'
 import { AiwsClient, ServiceFailure } from './api/client'
 import { describeError, OnlineWorkspaceSession, type WorkspaceSession } from './api/session'
-import { resolveTransport, TransportError } from './api/transport'
+import { isGuestPrincipal, resolveTransport, TransportError } from './api/transport'
 import { loadCore } from './api/wasm'
+import { loginUrl } from './links'
 import { OfflineUnavailable, openPreparedReplica, prepareOffline, type PrepareReport } from './offline/holder'
 import { ReplicaWorkspaceSession } from './offline/replicaSession'
 import { forgetRecent, readRecent, rememberRecent } from './state/recent'
@@ -103,6 +104,8 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       if (how.target) tabRef.current?.consumeTarget()
     } catch (failure) {
       if (seq !== openSeq.current) return
+      // a guest's link is not public: signing in is the only way on (a signed-in visitor sees the error below)
+      if (how.link && isGone(failure) && await client.transport.isGuest()) { window.location.replace(loginUrl()); return }
       if (how.auto && isGone(failure)) void forgetRecent(client.transport, workspaceId)
       setError(how.link ? `无法打开链接中的工作区：${isGone(failure) ? '它不存在，或你没有访问权限' : describeError(failure)}`
         : how.auto ? `没有恢复上次打开的工作区：${describeError(failure)}` : `无法打开工作区：${describeError(failure)}`)
@@ -239,6 +242,7 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
     ? () => leaveThen('退出登录', () => { tab.signOut().catch((failure: unknown) => setError(`退出登录失败：${describeError(failure)}`)) })
     : () => window.dispatchEvent(new CustomEvent(LOGOUT_REQUEST_EVENT))
   const goHome = tab ? () => leaveThen('返回桌面', () => { dispose(); tab.home() }) : null
+  const login = () => leaveThen('登录', () => { window.location.assign(loginUrl()) })
 
   return (
     <div className="aiws-root" data-testid="aiws-root">
@@ -254,8 +258,8 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       )}
       {store
         ? <WorkspaceView key={store.session.workspaceId + store.session.sessionId} store={store} client={client} offline={actions} target={target}
-            onClose={closeWorkspace} onOpenWorkspace={switchTo} onLogout={logout} onHome={goHome}
-            identity={{ principal: store.session.principal, dev: client.transport.mode === 'dev-override' }}
+            onClose={closeWorkspace} onOpenWorkspace={switchTo} onLogout={logout} onLogin={login} onHome={goHome}
+            identity={{ principal: store.session.principal, dev: client.transport.mode === 'dev-override', guest: isGuestPrincipal(store.session.principal) }}
             devTools={import.meta.env.DEV || client.transport.mode === 'dev-override'} />
         : (opening || checkingRecent) && !error
           ? <div className="aiws-opening" role="status" data-testid="aiws-opening">正在打开工作区…</div>

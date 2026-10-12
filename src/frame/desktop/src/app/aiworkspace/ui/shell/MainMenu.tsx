@@ -67,10 +67,16 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
   const notCanvas = shell.topMode !== 'canvas' ? NOT_ON_CANVAS : null
   const presentations = pathsOf(store.outline, 'presentation')
   const guides = pathsOf(store.outline, 'guide')
+  const guest = shell.identity.guest
   return [
-    { id: 'new-canvas', label: '新建画布…', disabled: !caps.includes('structure'), reason: '没有新建画布的权限', run: () => shell.openDialog({ kind: 'new', tab: 'canvas' }) },
-    { id: 'new', label: '新建…', hint: '画布 / 工作区 / 模板', run: () => shell.openDialog({ kind: 'new', tab: caps.includes('structure') ? 'canvas' : 'workspace' }) },
-    { id: 'open-workspace', label: '打开工作区…', hint: '返回工作区列表', run: shell.close },
+    // a guest (a public link) owns no workspace: nothing to create or list, signing in is the way to more
+    ...(guest
+      ? [{ id: 'login', testId: 'aiws-menu-login', label: '登录 BuckyOS', hint: '访客只能查看和批注', run: shell.login } satisfies MenuItem]
+      : [
+        { id: 'new-canvas', label: '新建画布…', disabled: !caps.includes('structure'), reason: '没有新建画布的权限', run: () => shell.openDialog({ kind: 'new', tab: 'canvas' }) },
+        { id: 'new', label: '新建…', hint: '画布 / 工作区 / 模板', run: () => shell.openDialog({ kind: 'new', tab: caps.includes('structure') ? 'canvas' : 'workspace' }) },
+        { id: 'open-workspace', label: '打开工作区…', hint: '返回工作区列表', run: shell.close },
+      ] satisfies MenuItem[]),
     shell.home
       ? { id: 'home', label: '返回 BuckyOS 桌面', run: shell.home }
       : { id: 'new-tab', label: '在新标签页中打开', run: () => { window.open(workspaceUrl(store.session.workspaceId, { surfaceId: shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null }), '_blank', 'noopener') } },
@@ -147,7 +153,6 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     },
     ...(shell.devTools ? [{ id: 'dev', label: '开发工具', items: [{ id: 'mock', testId: 'aiws-side-mock', label: '受控加工（Mock）', run: () => shell.openDialog({ kind: 'mock' }) }] } satisfies MenuItem] : []),
     { id: 'help', label: '帮助', items: [{ id: 'shortcuts', label: '快捷键与操作说明', run: () => shell.openDialog({ kind: 'help' }) }] },
-    { id: 'sep-5', separator: true },
-    { id: 'close', testId: 'aiws-back', label: '关闭工作区', run: shell.close },
+    ...(guest ? [] : [{ id: 'sep-5', separator: true } satisfies MenuItem, { id: 'close', testId: 'aiws-back', label: '关闭工作区', run: shell.close } satisfies MenuItem]),
   ]
 }

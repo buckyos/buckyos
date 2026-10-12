@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "goal",
     "class": "goal",
-    "created_at_ms": 1791771748767,
+    "created_at_ms": 1791796112893,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "opendan"

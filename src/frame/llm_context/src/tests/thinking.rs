@@ -105,16 +105,16 @@ async fn behavior_step_keeps_thinking_across_sediment() {
         with_thinking(
             text_response(
                 r#"<response>
-<thinking>run it</thinking>
+<intent>run it</intent>
 <actions><shell>echo done</shell></actions>
 </response>"#,
             ),
             block.clone(),
         ),
         text_response(
-            "<response><thinking>next</thinking><actions><shell>echo again</shell></actions></response>",
+            "<response><intent>next</intent><actions><shell>echo again</shell></actions></response>",
         ),
-        text_response("<response><thinking>done</thinking><report end=\"true\">finished</report></response>"),
+        text_response("<response><intent>done</intent><report end=\"true\">finished</report></response>"),
     ]));
     let mut req = base_request();
     req.behavior_name = "plan".into();

@@ -2653,7 +2653,7 @@ pub fn build_runtime_protocol_for(
             let has_actions = tools.enabled && !tools.actions.is_empty();
             let has_native = tools.enabled && !tools.native.is_empty();
             s.push_str("\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n");
-            s.push_str("<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <thinking>brief reasoning about what to do next</thinking>\n");
+            s.push_str("<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n");
             if has_actions {
                 s.push_str("  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n");
             }
@@ -3421,7 +3421,8 @@ impl LLMResultParser for XllmActionParser {
                 .map(|e| e.text().trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        let thought = first_text("thinking");
+        // `<intent>` is the protocol tag; `<intent>` stays as a legacy alias.
+        let thought = first_text("intent").or_else(|| first_text("thinking"));
         let observation = first_text("observation");
         if region_children
             .iter()
@@ -9965,7 +9966,7 @@ tools:
         let parser = XllmActionParser::new(&tools);
         let xml = r#"```xml
 <response>
-  <thinking>plan</thinking>
+  <intent>plan</intent>
   <actions>
     <shell><![CDATA[ls -la && echo "<done>"]]></shell>
     <write_file path="a.txt"><![CDATA[hi
@@ -9993,6 +9994,13 @@ there]]></write_file>
         assert_eq!(r.thought.as_deref(), Some("plan"));
         assert!(r.next_behavior.is_none());
         assert!(r.self_report.is_none());
+        // Legacy alias: `<thinking>` still parses as the step intent.
+        let legacy = parser
+            .parse(&AiResponse::text(
+                "<response><thinking>old</thinking><actions><shell>ls</shell></actions></response>",
+            ))
+            .unwrap();
+        assert_eq!(legacy.thought.as_deref(), Some("old"));
 
         let done = parser
             .parse(&AiResponse::text(
@@ -10220,7 +10228,7 @@ there]]></write_file>
         let err = extract_result(r#"{"other":1}"#, &fmt).unwrap_err();
         assert!(err.to_string().contains("missing"), "{err}");
         let xml =
-            "<response><thinking>t</thinking><report><![CDATA[done & dusted]]></report></response>";
+            "<response><intent>t</intent><report><![CDATA[done & dusted]]></report></response>";
         let v = extract_result(xml, &fmt).unwrap();
         assert_eq!(
             v,
@@ -10826,7 +10834,7 @@ there]]></write_file>
             "loop_model: behavior\nresult_format: result.report\ntools:\n  enabled: true\n  tools2actions: true\n",
         );
         let llm = ScriptedLlm::new(vec![
-            text("<response><thinking>run</thinking><actions><shell><![CDATA[echo behavior-77]]></shell></actions></response>"),
+            text("<response><intent>run</intent><actions><shell><![CDATA[echo behavior-77]]></shell></actions></response>"),
             text("<response><observation>saw it</observation><report end=\"true\"><![CDATA[{\"report\":\"结论 77\"}]]></report></response>"),
         ]);
         let o = env
@@ -12029,7 +12037,7 @@ there]]></write_file>
             "loop_model: behavior\nresult_format: result.report\ntools:\n  enabled: true\n  tools2actions: true\n",
         );
         let llm = ScriptedLlm::new(vec![
-            text("<response><thinking>run</thinking><actions><shell><![CDATA[echo behavior-88]]></shell></actions></response>"),
+            text("<response><intent>run</intent><actions><shell><![CDATA[echo behavior-88]]></shell></actions></response>"),
             context_refusal(),
             text("<response><report end=\"true\"><![CDATA[{\"report\":\"ok 88\"}]]></report></response>"),
         ]);

@@ -1,137 +1,16 @@
-//! System Notify of a hosted agent: msg-center's `notify.*` as the
-//! sessions' [`NotifyHost`], answers committed to TaskMgr, and a watcher
-//! that wakes the sessions whose questions were answered (kevent on the
-//! notification's task; the Supervisor's and GoalHost's rechecks back it
-//! up).
+//! System Notify of a hosted agent: the watcher that wakes the sessions
+//! whose questions were answered (kevent on the notification's task; the
+//! Supervisor's and GoalHost's rechecks back it up). The notification
+//! service itself is [`ZoneNotify`] (libopendan).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use buckyos_api::{
-    commit_notify_answer, task_mgr_task_event_path, KEventClient, MsgCenterClient,
-    NotifyCommit, TaskManagerClient,
-};
+use buckyos_api::{task_mgr_task_event_path, KEventClient};
 use libopendan::host::Supervisor;
-use libopendan::notify::{
-    closed_conflict, NotifyAnswer, NotifyHost, NotifyKind, NotifyListReq, NotifySendReq,
-    NotifyStatus, NotifyVia, NotifyView,
-};
-use libopendan::{OpenDanError, Result};
-
-fn err(e: impl std::fmt::Display) -> OpenDanError {
-    OpenDanError::Channel(format!("notify: {e}"))
-}
-
-/// msg-center / TaskMgr of the zone, as the agent's owner's notification
-/// service. Clients are taken from the runtime for every call (the
-/// process's session token is renewed).
-pub struct ZoneNotify {
-    /// Zone user id of the agent's owner (`to_user` of every notification).
-    pub owner_user: String,
-}
-
-impl ZoneNotify {
-    async fn msg_center() -> Result<MsgCenterClient> {
-        buckyos_api::get_buckyos_api_runtime()
-            .map_err(err)?
-            .get_msg_center_client()
-            .await
-            .map_err(err)
-    }
-
-    async fn task_mgr() -> Result<TaskManagerClient> {
-        buckyos_api::get_buckyos_api_runtime()
-            .map_err(err)?
-            .get_task_mgr_client()
-            .await
-            .map_err(err)
-    }
-}
-
-#[async_trait]
-impl NotifyHost for ZoneNotify {
-    async fn send(&self, mut req: NotifySendReq) -> Result<NotifyView> {
-        req.to_user = self.owner_user.clone();
-        Self::msg_center().await?.notify_send(req).await.map_err(err)
-    }
-
-    async fn state(&self, notify_id: &str) -> Result<NotifyView> {
-        Self::msg_center().await?.notify_get(notify_id).await.map_err(err)
-    }
-
-    async fn list(&self, req: NotifyListReq) -> Result<Vec<NotifyView>> {
-        Ok(Self::msg_center()
-            .await?
-            .notify_list(req)
-            .await
-            .map_err(err)?
-            .items)
-    }
-
-    async fn cancel(&self, notify_id: &str, reason: &str) -> Result<NotifyView> {
-        Self::msg_center()
-            .await?
-            .notify_cancel(notify_id, Some(reason.to_string()))
-            .await
-            .map_err(err)
-    }
-
-    async fn answer(
-        &self,
-        notify_id: &str,
-        answer: NotifyAnswer,
-        via: Option<NotifyVia>,
-    ) -> Result<NotifyView> {
-        let mc = Self::msg_center().await?;
-        let view = mc.notify_get(notify_id).await.map_err(err)?;
-        if view.status.is_closed() {
-            return Err(closed_conflict(&view));
-        }
-        match view.kind {
-            NotifyKind::Notice if answer.dismiss => mc.notify_dismiss(notify_id).await.map_err(err),
-            NotifyKind::Notice => mc
-                .notify_ack(notify_id, via.as_ref().map(NotifyVia::note))
-                .await
-                .map_err(err),
-            NotifyKind::Input => {
-                answer
-                    .validate(&view.prompt)
-                    .map_err(OpenDanError::InvalidArgument)?;
-                let task_id = view
-                    .task_id
-                    .clone()
-                    .ok_or_else(|| err(format!("notification {notify_id} has no task")))?;
-                let tasks = Self::task_mgr().await?;
-                let committed = commit_notify_answer(
-                    &tasks,
-                    &task_id,
-                    &answer,
-                    &self.owner_user,
-                    libopendan::now_ms(),
-                )
-                .await
-                .map_err(err)?;
-                let now = mc.notify_get(notify_id).await.map_err(err)?;
-                match committed {
-                    NotifyCommit::Committed(_) => {
-                        if let Some(v) = &via {
-                            if let Err(e) = tasks
-                                .add_task_note(&task_id, Some("notify_proxy"), &v.note(), None)
-                                .await
-                            {
-                                log::warn!("notify {notify_id}: task note not written: {e}");
-                            }
-                        }
-                        Ok(now)
-                    }
-                    NotifyCommit::AlreadyClosed(_) => Err(closed_conflict(&now)),
-                }
-            }
-        }
-    }
-}
+pub use libopendan::notify::ZoneNotify;
+use libopendan::notify::{NotifyHost, NotifyKind, NotifyListReq, NotifyStatus};
 
 /// Wakes what waits for a notification of this agent once it is closed:
 /// the session that asked (a Work's `ask-user`) is hosted again, the Goals

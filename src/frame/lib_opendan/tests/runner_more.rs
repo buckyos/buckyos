@@ -322,7 +322,7 @@ async fn behavior_loop_session_runs_actions() {
     let sd = env.create_work(spec).await;
     let llm = ScriptedLlm::new(|req, n| {
         match n {
-        0 => text("<response><thinking>go</thinking><actions><shell><![CDATA[echo behavior-77 > out.txt; cat out.txt]]></shell></actions></response>"),
+        0 => text("<response><intent>go</intent><actions><shell><![CDATA[echo behavior-77 > out.txt; cat out.txt]]></shell></actions></response>"),
         _ => {
             let u = last_user_text(req);
             assert!(u.contains("behavior-77"), "{u}");
@@ -681,7 +681,7 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
         let all = render(&req.messages);
         match n {
             0 => text("<response><actions><shell><![CDATA[echo p1-output]]></shell></actions></response>"),
-            1 => text("<response><thinking>need research</thinking><next_behavior>research</next_behavior></response>"),
+            1 => text("<response><intent>need research</intent><next_behavior>research</next_behavior></response>"),
             2 => {
                 assert!(all.contains("p1-output"), "child inherits parent steps:\n{all}");
                 assert!(all.contains("context_switch to=\"research\""), "{all}");

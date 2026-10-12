@@ -25,16 +25,16 @@
     "turn_open": true,
     "activity": {
       "summary": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); eac",
-      "heartbeat_ms": 1791771748963
+      "heartbeat_ms": 1791796113092
     },
     "last_runner": {
-      "runner_id": "rn-e6006ab15ec34e44",
+      "runner_id": "rn-7b0edaf5d7a04340",
       "host": "${FIXTURE_HOST}",
-      "pid": 3504606,
+      "pid": 4187765,
       "lock_epoch": 1,
-      "at_ms": 1791771748965
+      "at_ms": 1791796113094
     },
-    "updated_at_ms": 1791771748963
+    "updated_at_ms": 1791796113092
   },
   "location_rev": 0
 }

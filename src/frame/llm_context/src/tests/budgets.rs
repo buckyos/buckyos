@@ -230,7 +230,7 @@ async fn behavior_inner_context_inherits_outer_budget() {
         AiResponse {
             message: AiMessage::text(
                 AiRole::Assistant,
-                "<response><thinking>go</thinking><actions><shell>echo a</shell></actions></response>",
+                "<response><intent>go</intent><actions><shell>echo a</shell></actions></response>",
             ),
             usage: usage(8),
             ..Default::default()
@@ -238,7 +238,7 @@ async fn behavior_inner_context_inherits_outer_budget() {
         AiResponse {
             message: AiMessage::text(
                 AiRole::Assistant,
-                "<response><thinking>done</thinking><report end=\"true\">finished</report></response>",
+                "<response><intent>done</intent><report end=\"true\">finished</report></response>",
             ),
             usage: usage(8),
             ..Default::default()

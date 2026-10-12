@@ -6,16 +6,18 @@
  * presentation path. On a phone (§16) it is the only toolbar and starts with the canvas switcher (icon, name, the
  * workspace's canvases). */
 
-import { useEffect, useState } from 'react'
-import { Link2, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
-import type { Json } from '../../api/types'
+import { useCallback, useEffect, useState } from 'react'
+import { Globe, Link2, LogIn, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
+import { describeError } from '../../api/session'
+import type { GrantList, Json } from '../../api/types'
 import { pathsOf } from '../../presentation/model'
-import { useOutlineVersion, useStore } from '../../state/hooks'
+import { guestLabel, readGuestName, writeGuestName } from '../../state/guest'
+import { useLoad, useOutlineVersion, useStore } from '../../state/hooks'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import { SurfaceSwitcher } from './MainToolbar'
 import { PopoverPanel, usePopover } from './popover'
-import { shareLink, useShell, ZOOM_PRESETS } from './shellContext'
+import { PUBLIC_LINK_CAPABILITIES, PUBLIC_SUBJECT, shareLink, useShell, ZOOM_PRESETS } from './shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
 
@@ -142,57 +144,105 @@ function IdentityButton() {
   const shell = useShell()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const principal = store.session.principal
+  const guest = shell.identity.guest
   const me = useCurrentUser()
+  const [guestName, setGuestName] = useState(readGuestName)
   // A Zone account's own picture; a development token identity has none.
-  const picture = !shell.identity.dev && me && me.userId === principal ? me.avatarUrl : undefined
+  const picture = !shell.identity.dev && !guest && me && me.userId === principal ? me.avatarUrl : undefined
+  const shown = guest ? guestName || guestLabel(principal ?? '') : me && me.userId === principal ? me.displayName : principal ?? '未知身份'
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-avatar" aria-haspopup="dialog" aria-expanded={open} aria-label={`当前身份：${principal ?? '未知'}`} title={principal ?? '当前身份'}
-        data-testid="aiws-principal" data-principal={principal ?? ''} onClick={toggle}>
-        <ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={initial(principal)} />
+      <button ref={bindTrigger} type="button" className="aiws-avatar" aria-haspopup="dialog" aria-expanded={open} aria-label={`当前身份：${guest ? '访客' : principal ?? '未知'}`} title={guest ? '访客（通过公开链接访问）' : principal ?? '当前身份'}
+        data-testid="aiws-principal" data-principal={principal ?? ''} data-guest={guest ? 'true' : undefined} onClick={toggle}>
+        <ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={guest ? '访' : initial(principal)} />
       </button>
       {open && (
         <PopoverPanel align="end" label="身份与在线成员" testId="aiws-identity-panel" className="aiws-identity-panel">
           <div className="aiws-panel-title">我的身份</div>
-          <div className="aiws-identity-row"><span className="aiws-avatar is-static" aria-hidden="true"><ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={initial(principal)} /></span><b>{me && me.userId === principal ? me.displayName : principal ?? '未知身份'}</b></div>
-          <div className="aiws-muted">{shell.identity.dev ? '开发直连身份：由本地测试令牌指定，不是 Zone 账号，不能在这里登出。' : 'Zone 账号'}</div>
-          <div className="aiws-panel-title">在线成员</div>
-          <div className="aiws-muted" data-testid="aiws-presence-unavailable">在线状态尚未接入：协作面板中的授权名单不等于在线成员。</div>
-          <button type="button" className="aiws-popover-item" data-testid="aiws-logout" disabled={shell.identity.dev} title={shell.identity.dev ? '开发直连身份没有登录会话' : undefined}
-            onClick={() => { close(); shell.logout() }}>
-            <LogOut size={16} /> 退出登录
-          </button>
+          <div className="aiws-identity-row"><span className="aiws-avatar is-static" aria-hidden="true"><ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={guest ? '访' : initial(principal)} /></span><b data-testid="aiws-identity-name">{shown}</b></div>
+          {guest ? (
+            <>
+              <div className="aiws-muted">通过公开链接访问，无需登录：可以查看和批注，不能修改内容。批注以下面的称呼署名。</div>
+              <label className="aiws-guest-name">称呼
+                <input value={guestName} maxLength={32} placeholder={guestLabel(principal ?? '')} aria-label="称呼" data-testid="aiws-guest-name"
+                  onChange={(event) => { setGuestName(event.target.value); writeGuestName(event.target.value) }} />
+              </label>
+              <button type="button" className="aiws-popover-item" data-testid="aiws-login" onClick={() => { close(); shell.login() }}>
+                <LogIn size={16} /> 登录 BuckyOS
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="aiws-muted">{shell.identity.dev ? '开发直连身份：由本地测试令牌指定，不是 Zone 账号，不能在这里登出。' : 'Zone 账号'}</div>
+              <div className="aiws-panel-title">在线成员</div>
+              <div className="aiws-muted" data-testid="aiws-presence-unavailable">在线状态尚未接入：协作面板中的授权名单不等于在线成员。</div>
+              <button type="button" className="aiws-popover-item" data-testid="aiws-logout" disabled={shell.identity.dev} title={shell.identity.dev ? '开发直连身份没有登录会话' : undefined}
+                onClick={() => { close(); shell.logout() }}>
+                <LogOut size={16} /> 退出登录
+              </button>
+            </>
+          )}
         </PopoverPanel>
       )}
     </span>
   )
 }
 
+
+/** The share panel (§8.3): the access link, and — for a manager — the one-click public link: a `public` grant
+ * (read + comment) that lets anyone with the link open it and annotate without signing in, until it is withdrawn. */
 function ShareButton() {
   const store = useStore()
   const shell = useShell()
   const { open, setOpen, close, bindAnchor, bindTrigger } = usePopover()
   const [copied, setCopied] = useState<'copied' | 'manual' | null>(null)
+  const [tick, setTick] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
   const link = shareLink(store.session.workspaceId, shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null)
+  const where = shell.topMode === 'canvas' && shell.activeSurface ? `画布「${shell.activeSurface.title ?? shell.activeSurface.name ?? ''}」` : '这个工作区'
+  const canManage = store.session.info().capabilities.includes('manage')
+  // the grants say whether the link is public; read when the panel opens, again after each change
+  const loadGrants = useCallback(() => (open ? store.session.listGrants() : Promise.resolve(null as GrantList | null)), [store, open])
+  const grants = useLoad(loadGrants, tick)
+  const isPublic = (grants.data?.grants ?? []).some((g) => g.subject === PUBLIC_SUBJECT && !g.scope_entity_id)
   const copy = async () => {
-    setOpen(true)
     try { await navigator.clipboard.writeText(link); setCopied('copied') } catch { setCopied('manual') }
   }
+  const change = (label: string, work: () => Promise<void>) => {
+    setBusy(true)
+    setFailure(null)
+    work().then(copy).catch((error: unknown) => setFailure(`${label}失败：${describeError(error)}`)).finally(() => { setBusy(false); setTick((n) => n + 1) })
+  }
+  const publish = () => change('公开', () => store.session.grant(PUBLIC_SUBJECT, [...PUBLIC_LINK_CAPABILITIES]))
+  const unpublish = () => change('停止公开', () => store.session.revoke(PUBLIC_SUBJECT))
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className={`aiws-tool${shell.size === 'narrow' || shell.phone ? '' : ' aiws-tool-text'} is-primary`} aria-label="分享链接" title="复制访问链接" data-testid="aiws-share" onClick={() => { void copy() }}>
+      <button ref={bindTrigger} type="button" className={`aiws-tool${shell.size === 'narrow' || shell.phone ? '' : ' aiws-tool-text'} is-primary`} aria-label="分享链接" title="复制访问链接" data-testid="aiws-share" onClick={() => { setOpen(true); void copy() }}>
         <Link2 size={18} />{shell.size !== 'narrow' && !shell.phone && <span>分享</span>}
       </button>
       {open && (
         <PopoverPanel align="end" label="分享链接" testId="aiws-share-panel" className="aiws-share-panel">
-          <div className="aiws-panel-title">{copied === 'copied' ? '已复制访问链接' : '访问链接'}</div>
+          <div className="aiws-panel-title">{copied === 'copied' ? (isPublic ? '已复制公开链接' : '已复制访问链接') : '访问链接'}</div>
           <input readOnly aria-label="访问链接" value={link} data-testid="aiws-share-link" onFocus={(event) => event.target.select()} />
           {copied === 'manual' && <div className="aiws-muted">浏览器不允许自动复制，请手动复制上面的链接。</div>}
-          <div className="aiws-muted">链接定位到{shell.topMode === 'canvas' && shell.activeSurface ? `画布「${shell.activeSurface.title ?? shell.activeSurface.name ?? ''}」` : '这个工作区'}。它不包含登录凭据，也不会授予权限：接收者需要登录，并且已有访问权限。</div>
+          {grants.data && (isPublic ? (
+            <div className="aiws-share-public" data-testid="aiws-share-public-state" data-public="true">
+              <Globe size={16} aria-hidden="true" />
+              <span>公开链接已开启：任何拿到链接的人都能打开{where}并添加批注，无需登录；不能修改内容。</span>
+            </div>
+          ) : (
+            <div className="aiws-muted" data-testid="aiws-share-public-state" data-public="false">链接定位到{where}。它不包含登录凭据，也不会授予权限：接收者需要登录，并且已有访问权限。</div>
+          ))}
+          {grants.error && <div className="aiws-error" role="alert">{grants.error}</div>}
+          {failure && <div className="aiws-error" role="alert" data-testid="aiws-share-error">{failure}</div>}
           <div className="aiws-dialog-actions">
-            <button type="button" data-testid="aiws-share-collab" onClick={() => { close(); shell.setSide('collab') }}>在协作中授权…</button>
+            {canManage && (isPublic
+              ? <button type="button" data-testid="aiws-share-unpublish" disabled={busy || grants.loading} onClick={unpublish}>停止公开</button>
+              : <button type="button" className="is-primary" data-testid="aiws-share-publish" disabled={busy || grants.loading} title="任何拿到链接的人都能打开并批注，无需登录" onClick={publish}><Globe size={16} aria-hidden="true" /> 一键公开分享</button>)}
+            {canManage && <button type="button" data-testid="aiws-share-collab" onClick={() => { close(); shell.setSide('collab') }}>在协作中授权…</button>}
           </div>
-          <div className="aiws-muted">导出分享包请用主菜单的“导出…”。</div>
+          {!shell.identity.guest && <div className="aiws-muted">导出分享包请用主菜单的“导出…”。</div>}
         </PopoverPanel>
       )}
     </span>

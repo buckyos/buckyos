@@ -232,7 +232,7 @@ pub fn bar() -> u32 { 42 }
 ```xml
 <response>
   <observation>...</observation>
-  <thinking>...</thinking>
+  <intent>...</intent>
 
   <actions>
     <shell>cargo test</shell>
@@ -249,7 +249,8 @@ pub fn bar() -> u32 { 42 }
 **关键变化：**
 
 1. 新增 `<actions>` 容器。所有 Action 是它的直接子元素，**一级标签即 Action 名**，不再用 `<action tool="...">`。
-2. **Self Report `<report>` 在 `<actions>` 外面**——它是当前 `LLMContext` 的 LastState 更新，跟 `<observation>` / `<thinking>` / `<next_behavior>` 同级。
+2. **Self Report `<report>` 在 `<actions>` 外面**——它是当前 `LLMContext` 的 LastState 更新，跟 `<observation>` / `<intent>` / `<next_behavior>` 同级。
+2.1 `<intent>` 只写下一步要做什么（一句话），不是推理过程。标签原名 `<thinking>`、提示词原文 "brief reasoning about what to do next"，2026-10-12 改名：OpenAI 推理模型（gpt-5/o 系列，含 Codex 后端）会把要求模型输出推理过程的提示词判为 `invalid_prompt`（"flagged as potentially violating our usage policy"），偶发但整步失败。解析器仍接受 `<thinking>` 作为旧别名；StepRecord 渲染同步改为 `<intent>`（原 `<thought>`）。
 3. **SendMessage 形态用 `<sendmsg target=...>` 放在 `<actions>` 里面**——它是这一步内执行的副作用动作之一。
 4. `<next_behavior>` 保留 behavior 切换和 `WAIT_USER_MSG` 等待输入的语义；切换前仍须观察 action 结果。完成改用 `<report end="true">`，不再输出 `<next_behavior>END</next_behavior>`。终结报告不能与 actions 同时出现；先执行动作、观察结果，再单独提交终结报告。
 5. LLM 不需要给每个 Action 输出 ID。运行时执行前会为 dispatchable action 分配上下文内唯一的自增 `call_id`；之后的推理把这个 Step 渲染成 assistant/user message pair 时，assistant 消息保持 LLM 原文，`last_step_action_results` 里每个结果的标题前加 `#<call_id>` 前缀（继承到 `<step_record>` 里的结果不带编号）。
@@ -279,7 +280,7 @@ pub fn bar() -> u32 { 42 }
 
 - `end` 只接受精确的 `true` / `false`，缺省 false；重复 report、重复 end、重复 next_behavior、空最终报告进入纠错。
 - 结束报告不得同时带非空 next_behavior、XML 动作、sendmsg 或同一 response 的原生 tool_calls。空 `<actions/>` 允许。冲突在原生工具派发、报告更新和其它副作用之前拒绝；此前 Round 已执行并观察的工具不构成冲突。
-- 无动作、报告、切换或等待的空决策 / 纯 thinking 进入纠错，不隐式完成。普通 report 即使没有动作也继续。
+- 无动作、报告、切换或等待的空决策 / 纯 intent 进入纠错，不隐式完成。普通 report 即使没有动作也继续。
 - 可选的兄弟节点 `<artifacts>` 是 JSON 字符串数组，`<result>` 是任意 JSON 值；两者必须与 report 同次出现，各最多一次。每项是工作目录内的显式文件，或对象 id（如 `cyfile:…`）。宿主把文件内容复制为稳定副本，有对象库时再放入对象库得到 obj_id；对象 id 原样登记。最终交付时，带 obj_id 的产物成为出站消息的附件。
 - `LLMBehaviorResult` / `StepRecord` 保存 `report_end`、`report_artifacts`、`report_result`；snapshot v5 保留完成意图。恢复交付本次 final Step / report journal 的正文，不提升旧阶段报告，也不交付 XML 控制文本。
 - Session 工具 `report` 的 `is_end=true` 被接受后，保存独立 journal，补齐同批未执行调用的结果配对，再由宿主收尾；不追加推理。XML 结束报告则从输入阶段禁止同批动作，两者使用相同的宿主报告与完成规则。

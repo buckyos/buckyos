@@ -252,7 +252,7 @@ Run <command>
 <<step_history>>
 <step_record behavior="<behavior_name>" index="<step_index>" started_at_ms="<started_at_ms>" ended_at_ms="<ended_at_ms>" compression="<full|compact|summary>">
 <observation>...</observation>
-<thought>...</thought>
+<intent>...</intent>
 <actions>
 - AgentToolResult.title
 

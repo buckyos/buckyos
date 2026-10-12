@@ -35,6 +35,8 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   show_lock?: ShowLockInfo | null
   /** `show` for the temporary clone of a show (§8.3). */
   purpose?: string | null
+  /** Who the service takes the caller for (a guest of a public link only learns its principal here). */
+  principal?: string
 }
 
 export interface ShowLockInfo { show_id: string; presenter: string; started_at: string }
@@ -545,6 +547,8 @@ export interface AnnotationPayload {
   body: string
   style?: Record<string, Json>
   author?: string
+  /** The name a guest chose to sign with (UI improvement §8.3); `author` stays the principal. */
+  author_name?: string
 }
 /** Where an annotation can be shown now (design §3.7): resolved at the recorded depth, degraded to a coarser one, … */
 export interface AnchorInfo {

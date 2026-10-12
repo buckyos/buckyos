@@ -228,11 +228,17 @@ kRPC: `POST /kapi/aiworkspace` with `{ "method", "params", "sys": [seq, session_
 or the three-state commit result (`status: accepted | conflict | rejected`). The kRPC `error`
 string is used only for an invalid token, an unknown method or an unparsable request.
 
+**Guests.** A public link's visitor has no session: `sys[1]` (or the bearer of the upload / asset / export
+routes) carries a guest token instead, `gt_` + 26 base32 chars the browser made up and keeps. The caller is
+then `guest:<26 chars>` (derived from the token's SHA-256, never the token itself), reaches only the grants
+of subject `public`, and cannot own anything: `ws.list` is empty, `ws.create` / `ws.fork` / `ws.import` /
+`ws.list_subjects` are denied. `ws.get_info` returns `principal` so a guest learns who it is.
+
 | Method | Params (besides `workspace_id`) |
 | --- | --- |
 | `ws.create` | `title`, `workspace_id?` |
 | `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | |
-| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row and the `owner` to a manager, only the caller's own rows otherwise (`complete: false`, no owner) |
+| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: a principal, `*` (any authenticated principal) or `public` (everyone, a public link; never `manage`) |
 | `ws.list_subjects` | principals a grant can name (static identities / zone users) |
 | `ws.get_user_state` / `ws.set_user_state` | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
 | `ws.begin_import` → PUT → `ws.import` | `upload_id`, `semantics: "restore" \| "new"`, `replace?` |

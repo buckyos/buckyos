@@ -157,9 +157,13 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
     let caller = match (prompter.is_some(), req["sys"][1].as_str().filter(|t| !t.trim().is_empty())) {
         (true, _) => None,
         (false, None) => return rpc_error(seq, "session token required"),
-        (false, Some(token)) => match state.auth.authenticate(token).await {
-            Ok(c) => Some(c),
-            Err(e) => return rpc_error(seq, &e),
+        (false, Some(token)) => match Caller::guest(token) {
+            // a public link's visitor: a guest token instead of a session (reaches `public` grants only)
+            Some(guest) => Some(guest),
+            None => match state.auth.authenticate(token).await {
+                Ok(c) => Some(c),
+                Err(e) => return rpc_error(seq, &e),
+            },
         },
     };
     let result = if let Some(token) = prompter {
@@ -224,11 +228,15 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null)))?,
         "ws.list_subjects" => {
             // zone-level: any authenticated principal may ask (the list itself is as public as the zone makes it)
+            aiworkspace_store::service::require_signed_in(caller)?;
             let subjects = tokio::runtime::Handle::current().block_on(state.auth.subjects());
             json!({ "ok": true, "subjects": subjects })
         }
         "ws.fork" => svc.fork(caller, ws_id()?)?,
-        "ws.begin_import" => begin_upload(state, "import", None, caller)?,
+        "ws.begin_import" => {
+            aiworkspace_store::service::require_signed_in(caller)?;
+            begin_upload(state, "import", None, caller)?
+        }
         "ws.import" => {
             let upload = take_upload(state, s(p, "upload_id")?, "import", caller)?;
             let r = svc.import(caller, &upload, s(p, "semantics")?, p.get("replace").and_then(Value::as_bool).unwrap_or(false));
@@ -415,6 +423,9 @@ async fn bearer(state: &AppState, headers: &HeaderMap) -> Result<Caller, Respons
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session token required").into_response())?;
+    if let Some(guest) = Caller::guest(token) {
+        return Ok(guest);
+    }
     state.auth.authenticate(token).await.map_err(|e| (StatusCode::UNAUTHORIZED, e).into_response())
 }
 

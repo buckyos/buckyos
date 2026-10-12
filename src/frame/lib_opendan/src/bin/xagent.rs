@@ -1831,10 +1831,21 @@ async fn cmd_notify(mut a: Args) -> R<i32> {
     use libopendan::notify::*;
     let sub = a.next("notify command")?;
     let c = ctx(&a, None, false).await?;
-    let notify = c.agent.notifies().ok_or_else(|| Fail {
-        code: 1,
-        msg: "notifications are not available here".into(),
-    })?;
+    // The host's service as the Agent State carries it (files with --dev,
+    // the host over kRPC); inside a session of a zone-hosted agent the
+    // zone's msg-center, as the agent's app.
+    let notify: Arc<dyn NotifyHost> = match StateNotify::of(c.agent.clone()) {
+        Some(n) => n,
+        None => match ZoneNotify::for_session_process().await {
+            Ok(z) => Arc::new(z),
+            Err(why) => {
+                return Err(Fail {
+                    code: 1,
+                    msg: format!("notifications are not available here: {why}"),
+                })
+            }
+        },
+    };
     let inside = env_sid();
     let agent_did = c.agent.agent_did().to_string();
     // A request about a notification that is not open any more prints its

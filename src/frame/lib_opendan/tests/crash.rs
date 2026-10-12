@@ -1188,7 +1188,7 @@ async fn asking_the_user_survives_a_crash_at_every_stage() {
 /// was committed, and after the commit: one notification, one result.
 #[tokio::test]
 async fn asking_through_a_notification_survives_a_crash_at_every_stage() {
-    use libopendan::notify::{NotifyAnswer, NotifyHost, NotifyListReq};
+    use libopendan::notify::{NotifyAnswer, NotifyListReq};
     for fault in [
         "outcome:after_checkpoint",
         "user_input:after_notify_send",

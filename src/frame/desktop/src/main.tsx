@@ -63,16 +63,20 @@ async function bootstrap() {
     console.log('[bootstrap] initBuckyOS done')
     // Login-optional internal pages (see publicRoutes.ts) skip the account
     // gate so they remain reachable in a logged-out state; so does `/` on the
-    // zone's short hosts, which opens the default HomeStation feed.
-    if (!isPublicRoute(window.location.pathname) && !isPortalRoot()) {
-      const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
-      console.log('[bootstrap] accountInfo:', accountInfo)
-      if (accountInfo == null || !(await ensureDesktopSession(accountInfo))) {
-        console.log('[bootstrap] accountInfo has no active session, redirect to login')
-        redirectToDesktopLogin()
-        return
-      }
-      setPresentationViewer(typeof accountInfo.user_id === 'string' ? accountInfo.user_id : null)
+    // zone's short hosts, which opens the default HomeStation feed. A signed-in
+    // viewer is still recognised there.
+    const optional = isPublicRoute(window.location.pathname) || isPortalRoot()
+    const accountInfo = optional
+      ? await (buckyos.getAccountInfo() as Promise<AccountInfo | null>).catch(() => null)
+      : await buckyos.getAccountInfo() as AccountInfo | null
+    console.log('[bootstrap] accountInfo:', accountInfo)
+    if (!optional && (accountInfo == null || !(await ensureDesktopSession(accountInfo)))) {
+      console.log('[bootstrap] accountInfo has no active session, redirect to login')
+      redirectToDesktopLogin()
+      return
+    }
+    if (!optional || accountSessionToken(accountInfo)) {
+      setPresentationViewer(typeof accountInfo?.user_id === 'string' ? accountInfo.user_id : null)
     }
   }
 

@@ -847,7 +847,7 @@ fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
         String::new()
     };
     format!(
-        "<step_record behavior=\"{}\" index=\"{}\"{} compression=\"{}\">\n<observation>{}</observation>\n<thought>{}</thought>\n<actions>\n{}\n</actions>\n</step_record>",
+        "<step_record behavior=\"{}\" index=\"{}\"{} compression=\"{}\">\n<observation>{}</observation>\n<intent>{}</intent>\n<actions>\n{}\n</actions>\n</step_record>",
         step.meta.behavior_name,
         step.meta.step_index,
         times,
@@ -961,7 +961,7 @@ mod tests {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
         step.assistant_text =
-            "<thinking>plan</thinking><actions><shell>ls</shell></actions>".into();
+            "<intent>plan</intent><actions><shell>ls</shell></actions>".into();
         step.actions = vec![tool_call("shell", "c-1")];
         step.action_results = vec![Observation::Success {
             call_id: "c-1".into(),
@@ -972,7 +972,7 @@ mod tests {
         }];
 
         let (a, u) = renderer.render(&step);
-        assert!(assistant_text_of(&a).contains("<thinking>plan</thinking>"));
+        assert!(assistant_text_of(&a).contains("<intent>plan</intent>"));
         let user_text = user_text_of(&u);
         assert!(user_text.starts_with("<<last_step_action_results"));
         assert!(user_text.contains("behavior=\"\""));
@@ -1366,7 +1366,7 @@ mod tests {
     #[test]
     fn history_without_timestamps_is_stable() {
         let mut step = StepRecord::default();
-        step.assistant_text = "<thinking>t</thinking>".into();
+        step.assistant_text = "<intent>t</intent>".into();
         step.meta.behavior_name = "plan".into();
         step.meta.started_at_ms = 123;
         step.meta.ended_at_ms = Some(456);
@@ -1408,7 +1408,7 @@ mod tests {
         let make_step = |idx: u32, body: &str| {
             let mut step = StepRecord::default();
             step.assistant_text = format!(
-                "<thinking>thought-{idx}</thinking><actions><shell>t</shell></actions>"
+                "<intent>thought-{idx}</intent><actions><shell>t</shell></actions>"
             );
             step.thought = Some(format!("thought-{idx}"));
             step.actions = vec![tool_call("shell", &format!("c-{idx}"))];
@@ -1451,7 +1451,7 @@ mod tests {
             step.meta.behavior_name = "execute".into();
             step.meta.step_index = idx;
             step.assistant_text = format!(
-                "<thinking>thought-{idx}</thinking><actions><shell>cmd-{idx}</shell></actions>"
+                "<intent>thought-{idx}</intent><actions><shell>cmd-{idx}</shell></actions>"
             );
             step.thought = Some(format!("thought-{idx}"));
             step.actions = vec![tool_call("shell", &format!("c-{idx}"))];
@@ -1528,7 +1528,7 @@ mod tests {
             let mut step = StepRecord::default();
             step.meta.behavior_name = behavior.to_string();
             step.meta.step_index = idx;
-            step.assistant_text = format!("<thinking>{behavior}-{idx}</thinking>");
+            step.assistant_text = format!("<intent>{behavior}-{idx}</intent>");
             step.observation = Some(format!("observed-{behavior}-{idx} <raw>"));
             step.thought = Some(format!("{behavior}-{idx} <thought>"));
             step.actions = vec![tool_call_with_args(
@@ -1560,7 +1560,7 @@ mod tests {
         assert!(!inherited.contains("<history_step"));
         assert!(inherited.contains("behavior=\"plan\""));
         assert!(inherited.contains("<observation>observed-plan-0 <raw></observation>"));
-        assert!(inherited.contains("<thought>plan-0 <thought></thought>"));
+        assert!(inherited.contains("<intent>plan-0 <thought></intent>"));
         assert!(inherited.contains("<actions>"));
         assert!(inherited.contains("- Run ls <raw>"));
         assert!(inherited.contains("```output\n<raw output>\n```"));

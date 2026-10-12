@@ -244,7 +244,7 @@ assistant/tool: 进行中 Step 的 inner transcript(Step 内原生工具 loop �
 <<step_history>>
 <step_record behavior="plan" index="1" started_at_ms="..." ended_at_ms="..." compression="full">
 <observation>Todos were created successfully.</observation>
-<thought>The plan is ready, so execution should start.</thought>
+<intent>The plan is ready, so execution should start.</intent>
 <actions>
 - Run todo add "T01"
 
@@ -528,14 +528,14 @@ user:
   <<step_history>>
   <step_record behavior="plan" index="0" compression="full">
   <observation></observation>
-  <thought>The task should be split into doc inspection, edit, and verification.</thought>
+  <intent>The task should be split into doc inspection, edit, and verification.</intent>
   <actions>
   - …(compact action result)
   </actions>
   </step_record>
   <step_record behavior="plan" index="1" compression="full">
   <observation>The edit scope is one Markdown document.</observation>
-  <thought>The plan phase is complete; execution should start.</thought>
+  <intent>The plan phase is complete; execution should start.</intent>
   <actions>
   No action.
   </actions>
@@ -543,7 +543,7 @@ user:
   <</step_history>>
 
 assistant:
-  <response><thinking>I should edit the document now.</thinking><actions>…</actions></response>
+  <response><intent>I should edit the document now.</intent><actions>…</actions></response>
 
 user:
   <<last_step_action_results behavior="do" step="2">>
@@ -556,7 +556,7 @@ assistant:
 
 关键点:
 
-- `plan` 的 step(包括最后一条带 `next_behavior=do` 的 step)以 `<step_record>` 形式进入 `do` 的 `step_history`,**不**作为 `do` 的 hot pair。`<step_record>` 只有 observation / thought / actions 三个槽位(没有 `<thinking>` 时 thought 回退为原始回复文本),没有单独的 `<report>` / `<next_behavior>` 字段。**不**要在 prompt / template 层人为造出跨 behavior 的 hot pair。
+- `plan` 的 step(包括最后一条带 `next_behavior=do` 的 step)以 `<step_record>` 形式进入 `do` 的 `step_history`,**不**作为 `do` 的 hot pair。`<step_record>` 只有 observation / intent / actions 三个槽位(没有 `<intent>` 时 thought 回退为原始回复文本),没有单独的 `<report>` / `<next_behavior>` 字段。**不**要在 prompt / template 层人为造出跨 behavior 的 hot pair。
 - `do` 的第一个 Step 编号接着 `plan`(这里是 2),不从 0 开始;继承的 step 不由 run_B 重复写入 worklog。
 - `inherit: none` 时没有 `<<step_history>>`,child 只有 system + 交接批次;`recent_dialogue` 时 system 之后是 `<session_history>`。由 `next_behavior` 触发时 `<sub_task>` 是固定文本,任务要靠继承的历史或共享状态理解;由 `call_behavior` 触发时是调用的 `task` 参数。
 
@@ -578,7 +578,7 @@ user:
   <<last_step_action_results behavior="plan" step="0">> … <</last_step_action_results>>
 
 assistant:
-  <response><thinking>start doing</thinking><next_behavior>do</next_behavior></response>   (plan step 1)
+  <response><intent>start doing</intent><next_behavior>do</next_behavior></response>   (plan step 1)
 
 user:
   <<last_step_action_results behavior="plan" step="1">>
@@ -619,7 +619,7 @@ user:
   Your result returns to the caller: finish with your report; do not ask the user.</sub_task></session_input>
 
 assistant:
-  <response><thinking>Run the research actions.</thinking><actions>…</actions></response>   (分支的 step 2)
+  <response><intent>Run the research actions.</intent><actions>…</actions></response>   (分支的 step 2)
 …
 assistant:
   <response><report><![CDATA[research result X]]></report></response>

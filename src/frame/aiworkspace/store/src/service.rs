@@ -108,6 +108,7 @@ impl Service {
 
     /// `ws.create`: built under a temporary name, renamed into place when complete.
     pub fn create_workspace(&self, caller: &Caller, title: &str, workspace_id: Option<&str>) -> WsResult<Value> {
+        require_signed_in(caller)?;
         let id = match workspace_id {
             Some(id) if is_prefixed_id("ws_", id) => id.to_string(),
             Some(_) => return Err(WsError::invalid_op("workspace_id must be ws_ + 26 base32 chars")),
@@ -130,6 +131,10 @@ impl Service {
     /// `ws.list`: Workspaces on which the caller holds any grant with `read`.
     pub fn list_workspaces(&self, caller: &Caller) -> WsResult<Value> {
         let mut out = Vec::new();
+        // a guest reaches public Workspaces by their links only, never by enumeration
+        if caller.is_guest() {
+            return Ok(json!({ "ok": true, "workspaces": out }));
+        }
         for entry in std::fs::read_dir(self.data_dir.join("workspaces")).map_err(io)? {
             let name = entry.map_err(io)?.file_name().to_string_lossy().to_string();
             if !is_prefixed_id("ws_", &name) {
@@ -174,6 +179,7 @@ impl Service {
     /// package's id; replacing an existing Workspace needs `replace: true` *and*
     /// `manage` on the existing one — nothing inside the package grants anything).
     pub fn import(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool) -> WsResult<Value> {
+        require_signed_in(caller)?;
         let pkg = open_package(package, &self.objects)?;
         let m = &pkg.manifest;
         let snapshot = m["snapshot"].as_str().ok_or_else(|| WsError::invalid_schema("manifest.snapshot missing"))?;
@@ -248,6 +254,7 @@ impl Service {
     /// Workspace. No grants, runs, uploads or personal entities are copied;
     /// rich texts start new lineages.
     pub fn fork(&self, caller: &Caller, source_id: &str) -> WsResult<Value> {
+        require_signed_in(caller)?;
         let (cp, title) = {
             let handle = self.workspace(source_id)?;
             let ws = handle.lock().unwrap();
@@ -277,4 +284,12 @@ impl Service {
         std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)
     }
+}
+
+/// Workspaces are created, imported and forked by signed-in principals only: a guest owns nothing.
+pub fn require_signed_in(caller: &Caller) -> WsResult<()> {
+    if caller.is_guest() {
+        return Err(WsError::denied("a guest cannot own a workspace"));
+    }
+    Ok(())
 }

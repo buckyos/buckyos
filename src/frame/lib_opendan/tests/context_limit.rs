@@ -154,7 +154,7 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
             return Err(refusal());
         }
         Ok(text(
-            "<response><thinking>go</thinking><actions><shell><![CDATA[echo behavior-1]]></shell></actions></response>",
+            "<response><intent>go</intent><actions><shell><![CDATA[echo behavior-1]]></shell></actions></response>",
         ))
     });
     let deps = env

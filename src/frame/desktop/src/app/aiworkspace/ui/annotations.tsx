@@ -3,6 +3,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Placement } from '../anchors/richtext'
 import type { AnnotationMark } from '../state/hooks'
+import { authorLabel } from '../state/guest'
 
 /** Where an editor placed it, when that is coarser or elsewhere than recorded. */
 function placementHint(mark: AnnotationMark, placement: Placement | undefined): string | null {
@@ -73,7 +74,7 @@ export function AnnotationGutter({ container, marks, placements, active, onActiv
           >
             <span className="aiws-anno-card-body">{mark.payload.body}</span>
             <span className="aiws-anno-card-meta">
-              {mark.payload.author && <span>{mark.payload.author}</span>}
+              {authorLabel(mark.payload) && <span>{authorLabel(mark.payload)}</span>}
               {hint && <span data-testid="aiws-anno-card-hint">{hint}</span>}
             </span>
           </button>
