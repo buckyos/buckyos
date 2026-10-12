@@ -2,7 +2,7 @@
 
 > **文档定位**：描述 OpenDAN Agent 与 MessageCenter 之间消息协议的**当前实际设计**。每一节先写现在代码怎么做，再列出与早期规划的差异。尚未落地的规划和已知缺口统一放在 §7。
 >
-> **实现范围**：`msg_parser` 属于 `llm_context`，是共享的协议边界。OpenDAN 一侧（pump、分发、session 输入组装、出站）描述的是旧 opendan Runtime（`src/frame/opendan`）的代码，待下一阶段 opendan 按 libopendan 的 Session / Turn 抽象重构接入；libopendan 的输入批次与 Turn 规则见 [readme.md](readme.md)。
+> **实现范围**：`msg_parser` 属于 `llm_context`，是共享的协议边界。OpenDAN 一侧（pump、分发、session 输入组装、出站信封）描述的是旧 opendan Runtime 的代码，待按 libopendan 的 Session / Turn 抽象重写；libopendan 的输入批次与 Turn 规则见 [readme.md](readme.md)。出站附件（§3.3–§3.6）已按当前 libopendan 与 OpenDAN Loader 改写（2026-10-11）。
 >
 > **名词说明**：“Agent Message”不是一种独立的消息类型。系统里只有两个消息模型：`MsgObject`（投递与存储）和 `AiMessage`（推理，LLMContext 直接使用）。本文描述的是二者之间的转换规则，以及 OpenDAN 在转换两侧附加的路由、命令和附件策略。
 >
@@ -36,11 +36,11 @@
 | Session 输入队列 | `PendingInput` / `SessionMeta.pending_inputs` | `frame/opendan/src/session_model.rs` |
 | 本次输入组装 | `compose_turn_message`、`render_on_wakeup_input_text` | `frame/opendan/src/agent_session.rs`、`prompt_env.rs` |
 | 出站 | `AgentSession::post_outbound_message` | `frame/opendan/src/agent_session.rs` |
-| 出站附件策略 | `WorkspaceAttachmentValidator`、`NamedStoreLocalLinkResolver` | `frame/opendan/src/attachment_policy.rs`、`attachment_resolver.rs` |
+| 出站附件 | `compose_reply`、`ObjectStore`；Loader 的对象库 `NamedStoreObjects` | `frame/lib_opendan/src/runner/outbound.rs`、`reports.rs`；`frame/opendan/src/objects.rs` |
 | 命令 | `BUILTIN_COMMANDS`、`run_command` | `frame/opendan/src/command_dispatcher.rs` |
 | Tunnel | `DeliveryExecutor` trait、Telegram 实现 | `frame/msg_center/src/msg_tunnel.rs`、`tg_tunnel.rs` |
 
-**职责划分**：`msg_parser` 只翻译协议形态。路由、授权、命令执行、回复策略都在调用方（OpenDAN）。路径校验和本地文件入库这类策略，由 OpenDAN 通过 `AttachmentValidator` / `LocalFileResolver` 两个 trait 注入。
+**职责划分**：`msg_parser` 只翻译协议形态。路由、授权、命令执行、回复策略都在调用方（OpenDAN）。路径校验和本地文件入库这类策略，由调用方通过 `AttachmentValidator` / `LocalFileResolver` 两个 trait 注入；libopendan 再把文件入库交给宿主的 `ObjectStore`。
 
 ---
 
@@ -83,8 +83,7 @@ Telegram update
        BudgetExhausted：partial 文本 -> AiMessage(Assistant) -> post_outbound_message
   -> post_outbound_message（仅 SessionKind::Ui）
        ai_message_to_msg_object_with_base_validated_async
-         + WorkspaceAttachmentValidator（路径 / URL 校验）
-         + NamedStoreLocalLinkResolver（本地文件 -> ObjId）
+         + 附件：报告产物与 <attachment> 标签都落成 ObjId（§3.3）
        -> msg_center.post_send(msg, None)
   -> msg-center post_send_internal：由目标 DID 决定路由
        SENT MailboxRecord + DeliveryRecord{state = Wait}，入 transport_did 名下的 DELIVERY_QUEUE
@@ -212,7 +211,7 @@ pump 使用的是 `*_structured` 版本：
 
 | AiContent | MsgObject |
 |---|---|
-| `Text` | 逐行扫描 `<attachment>` 标签（§3.3）；其余文本保留。多个 Text 块之间用空行拼接 |
+| `Text` | 逐行扫描 `<attachment>` 标签（§3.4）；其余文本保留。多个 Text 块之间用空行拼接 |
 | `Image` / `Document` + `NamedObject` | 经 `validate_obj_id` 校验后，生成 `RefItem::DataObj{role: Input}` |
 | `Image` / `Document` + `Url` | 经 `validate_url` 校验后，降级为文本 marker `<attachment kind=".." source="url" url=".." />` |
 | `Image` / `Document` + `Base64` | 降级为带 `data_base64` 的文本 marker（不经过校验） |
@@ -221,7 +220,20 @@ pump 使用的是 `*_structured` 版本：
 
 转换后会写入 `meta["llm_role"] = role.as_str()`。
 
-### 3.3 `<attachment>` 标签语法
+### 3.3 附件的两条路径
+
+系统原则是附件尽量用 obj_id：path 只是 LLM 的便利入口，由宿主立刻落成 obj_id，出站消息里不出现裸 path。
+
+**报告产物（主路径）**。Agent 用 `report({report, artifacts, is_end: true})` 结束 Turn，`artifacts` 的每一项是工作目录相对文件，或对象 id（如 `cyfile:…`）。Session 接受报告时登记产物：
+
+- 文件先复制为稳定副本，宿主有对象库时再放入对象库，得到 obj_id，对象名取产物的文件名。
+- 对象 id 原样登记，不读文件。
+
+这次 Turn 的回复正文就是报告正文；带 obj_id 的产物作为 `RefItem::DataObj{role: Input}` 附件随消息发出。label 是文件产物的文件名；对象 id 产物取对象库查到的文件对象名（`ObjectStore::name_of`），MessageHub 靠 label 显示名字和判断媒体类型。没有 obj_id 的产物（宿主没有对象库、或入库失败）在正文末尾注明未附上。Work Session 报告里的产物以 `[文件名](obj_id)` 出现，UI Session 转交时把这些 obj_id 填进自己的 artifacts，不需要再读对方工作目录里的文件。Jarvis 的 `chat_route` / `groupchat_route` 用这条路径发文件。登记与交付的持久格式见 [Session Directory Protocol §7.1](<../opendan/protocol/Session Directory Protocol.md>)。
+
+**正文标签**。`msg_parser` 仍按行解析回复正文里的 `<attachment>` 标签（§3.4），给普通回复和没有改用报告的 behavior 用。
+
+### 3.4 `<attachment>` 标签语法
 
 标签必须**独占一行**，因为解析是按行进行的。支持两种形态：
 
@@ -235,37 +247,31 @@ pump 使用的是 `*_structured` 版本：
 
 `kind` 缺省为 `document`。body 的判定规则：不含 `/`、`\`、空白，并且能被 `ObjId::new` 解析，就视为 obj_id；否则视为路径。
 
-### 3.4 校验（`AttachmentValidator`）
+### 3.5 校验与本地文件入库
 
-LLM 输出属于不可信输入。OpenDAN 在出站时注入 `WorkspaceAttachmentValidator`：
+libopendan 出站（`runner::outbound::compose_reply`）不做路径策略校验（`AllowAll`）。按“先能力后安全”，Session 进程读得到的文件都可以附上：
 
-| 引用 | 规则 |
+| 引用 | 处理 |
 |---|---|
-| 本地路径 | 一律拒绝 `..` 和盘符前缀。然后按 `[runtime] filesystem_policy` 处理：<br>`workspace`（默认）：路径（相对路径相对 workspace 根）经 canonicalize 解析符号链接后，必须仍在 `workspaces/<workspace_id>` 内；session 没有绑定 workspace 时一律拒绝。<br>`unrestricted`：允许宿主机上可读的绝对路径；相对路径仍然需要 workspace 作为锚点。Jarvis 使用的是 `unrestricted`。 |
-| `obj_id` | 目前直接放行。obj_id 基于内容寻址，无法伪造；ACL 裁决交给 msg-center 和接收方 zone，这里只保留扩展口 |
-| URL | 拒绝 `file:` scheme，防止把本地路径伪装成 URL 绕过路径校验 |
+| 本地路径 | 相对路径以 Session 工作目录为锚点，交给宿主对象库 `ObjectStore::put_file`，对象名取文件名。宿主没有对象库时拒绝 |
+| `obj_id` | 直接放行。obj_id 基于内容寻址，无法伪造；ACL 裁决交给 msg-center 和接收方 zone |
+| URL | 降级为文本 marker（§3.2） |
 
-校验失败时不丢弃附件，而是在出站文本里保留 `<!-- attachment rejected: <reason> -->` 加原标签，接收方能看到 LLM 的意图，日志里也留有记录。
+拒绝或入库失败时不丢弃附件，出站文本里保留 `<!-- attachment rejected: <reason> -->` 加原标签，接收方能看到 LLM 的意图。`obj_id` 字符串本身不合法（`ObjId::new` 失败）会让整条消息转换失败，`MsgCenterSink` 改发 `convert_failed` 提示，原回复留在 worklog。
 
-如果 `obj_id` 字符串本身不合法（`ObjId::new` 失败），会返回 `MsgParserError::InvalidObjId`。这会让整条消息转换失败，`post_outbound_message` 随即改发一条 `delivery_failure_notice`。
+OpenDAN Loader 的对象库是 `objects::NamedStoreObjects`，用 `cacl_file_object` 把文件放入本 Zone 的 NamedStore：
 
-### 3.5 本地文件入库
-
-通过校验的路径会交给 `NamedStoreLocalLinkResolver`，调用 `cacl_file_object` 注册到 NamedStore，得到 `ObjId` 后生成 `RefItem::DataObj`：
-
-- 文件不小于 12 KiB（`3 × 4096`）时，用 **LocalLink** 模式，不复制字节。
+- 文件不小于 12 KiB（`3 × 4096`）时用 **LocalLink**，不复制字节。报告产物链接的是不再变化的稳定副本。
 - 更小的文件没有 qcid，直接存入 NamedStore。
+- FileObject 的名字改成交付名。报告稳定副本的文件名是摘要，交付名取产物的文件名。
 
-这样，出站附件和外部上传的附件走的是同一条 `DataObj` 通道，Tunnel（如 Telegram）可以按统一方式上传。入库失败会降级为上面的 rejected 文本。
-
-长期方向不变：优先使用 obj_id，path 只作为 LLM 的便利入口，由 runtime 立即把它物化成 obj_id。跨 host 场景下，出站消息里不会出现裸 path。
+这样出站附件和外部上传的附件走同一条 `DataObj` 通道，Tunnel（如 Telegram）可以按统一方式上传。开发模式（`--dev`）没有 NamedStore：报告产物只保留文件形态，正文标签里的本地路径被拒绝。
 
 ### 3.6 标签去留
 
-- **默认删除**：已成功转换成 ref 的标签，会从 `MsgObject.content.content` 中移除。
-- **保留开关**：agent 级配置 `[runtime] preserve_attachment_tag_in_egress = true` 可以保留原标签。注意这是 **agent 级**，不是 session 级。
-- **不受开关影响的两类**：未转换的标签（只有 url 等）和 rejected 标签始终保留在文本中。
-- **Session History 不受影响**：`MsgObject` 是另外构造的，assistant `AiMessage` 原文（含标签）会原样留在 LLM 历史中。
+- 已转换成 ref 的标签从 `MsgObject.content.content` 中移除（`MsgEgressOptions::default()`；旧 Runtime 的 agent 级 `preserve_attachment_tag_in_egress` 开关已随旧代码删除）。
+- 未转换的标签（只有 url 等）和 rejected 标签保留在文本中。
+- Session History 不受影响：assistant 原文（含标签）原样留在 worklog；报告交付在历史里是带 `[文件名](obj_id)` 链接的机械消息。
 
 ### 3.7 出站消息与 Step、report、Done、Turn 的边界
 
@@ -524,12 +530,11 @@ pub enum SessionKind { Ui, Work, SelfCheck, SelfImprove }
 | 环境信息 | behavior `[prompt].on_wakeup`、`AgentSession::load_changed_background_hits` |
 | `from_user_did` | `AgentSession::current_from_user_did`、`OpendanToolAdapter::call_tool` |
 | AiMessage → MsgObject | `msg_parser::ai_message_to_msg_object_with_base_validated_async` |
-| 出站附件策略 | `attachment_policy::WorkspaceAttachmentValidator`、`attachment_resolver::NamedStoreLocalLinkResolver` |
+| 出站附件 | `libopendan::runner::{compose_reply, ObjectStore}`、`opendan::objects::NamedStoreObjects` |
 | 出站发送 | `AgentSession::{post_outbound_message, post_outbound_error}` |
-| 出站配置 | `agent.toml [runtime] preserve_attachment_tag_in_egress / filesystem_policy` |
 | TG 入站与命令菜单 | `tg_tunnel::{dispatch_incoming_message, register_tg_builtin_commands}` |
 | msg-center 分发与投递 | `msg_center::{dispatch_internal, derive_session_id, post_send_internal, build_delivery_envelope}`、`main::pump_delivery_queue_once` |
 
 ### H4 最终交付投影
 
-Session 将接受的 report、稳定产物引用和可选 result 保存为 `ReportSubmission`，工具来源关联 run / call_id，XML 来源关联 run / step_index。只有最终提交生成 `ReportDelivery` worklog 和一条机械生成的 assistant 消息，不增加推理 Round；阶段报告不产生交付消息。原始调用 / 回执保留，重建模型历史时同一最终交付不重复展示。子 context 的最终报告只返回调用方，不关闭父 Session。
+Session 将接受的 report、产物（稳定副本与 obj_id）和可选 result 保存为 `ReportSubmission`，工具来源关联 run / call_id，XML 来源关联 run / step_index。只有最终提交生成 `ReportDelivery` worklog 和一条机械生成的 assistant 消息，不增加推理 Round；出站回复是报告正文加产物附件（§3.3）；阶段报告不产生交付消息。原始调用 / 回执保留，重建模型历史时同一最终交付不重复展示。子 context 的最终报告只返回调用方，不关闭父 Session。

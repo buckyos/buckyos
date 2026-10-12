@@ -151,7 +151,7 @@ XML Behavior Loop 按 2026-10-10 定稿规则表达同一语义：
 
 结束报告与 actions 同现是协议冲突，应反馈纠错，不能先执行动作或先更新报告。`end=true` 与非空 next_behavior、原生 tool_calls / sendmsg 同现也拒绝；空 actions 允许。重复 report / end / next_behavior、非法布尔值、空最终报告和无行为的空决策进入纠错。
 
-工具参数：`report`（自由文本 / Markdown）、`artifacts`（可选，显式选择的产物引用，宿主校验并保存稳定引用）、`result`（可选 JSON，业务自定的机器可读结果）、`is_end`（可选 bool，缺省 false）。
+工具参数：`report`（自由文本 / Markdown）、`artifacts`（可选，显式选择的产物：工作目录相对文件或对象 id；宿主校验文件并保存稳定副本，有对象库时登记为 obj_id，最终交付时作为附件发出）、`result`（可选 JSON，业务自定的机器可读结果）、`is_end`（可选 bool，缺省 false）。
 
 当前 `EndConditionType` 只有 `LlmDeclaresDone`、`OutputSchema`、`MaxTurns`；function_call 的 `Done` 会按该配置收尾，默认 `LlmDeclaresDone` 会结束 Session。`session.policy.completion` 缺省 `natural` 保留原结束条件；`explicit_report` 要求获准结束报告才正常关闭 Session。单次输出型 WorkSession 可以继续使用现有结束条件，不要求所有 Session 增加这次调用。
 

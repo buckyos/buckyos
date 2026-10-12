@@ -339,7 +339,7 @@ Session 的 function_call 默认启用工具列表含宿主 `report`；自定义
 
 XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校验、报告归属及最终交付。`end` 缺省或 false 为阶段报告；true 与任何本次动作（XML actions、sendmsg、provider-native tool_calls）或非空 next_behavior 互斥。空 actions 允许；非法布尔值、重复 report、空结束报告，以及 END/done 终止指令均拒绝，副作用前反馈可修正错误。没有 report/动作/调度的空决策也反馈纠错。同层可带 `<artifacts>["out.txt"]</artifacts>` 和 `<result>{"ok":true}</result>`，须同次有 report；正文保持自由文本。
 
-产物是显式选择的工作目录相对文件路径，不从正文或目录扫描推断。拒绝绝对路径、上级路径、目录及逃逸工作目录的符号链接。宿主保存 `.opendan_agent_session/reports/<submission_id>/<index>-<sha256>` 稳定副本，记录 `{path, reference, digest}`；源文件随后变化不改变交付。JSON result 不固定业务 schema，显式 null 也保留。
+产物是显式选择的工作目录相对文件路径或对象 id（如 `cyfile:…`），不从正文或目录扫描推断。不含路径分隔符和空白、能解析为 ObjId 的项按对象 id 处理，原样登记，不读文件。文件项拒绝绝对路径、上级路径、目录及逃逸工作目录的符号链接；宿主保存 `.opendan_agent_session/reports/<submission_id>/<index>-<sha256>` 稳定副本，源文件随后变化不改变交付。宿主提供对象库（`RunnerDeps.objects`）时，接受报告时把稳定副本放入对象库，对象名取产物文件名。记录为 `{path, reference?, digest?, obj_id?}`：文件项有 reference / digest，放入成功或本来就是对象 id 时有 obj_id（规范的 `type:hex` 形式）。放入失败只记日志，报告照常接受，产物不带 obj_id。JSON result 不固定业务 schema，显式 null 也保留。
 
 `ReportSubmission` 的 schema 为 `report_submission.schema.json`：`{id, run_id, source, report, artifacts, result?, is_end, accepted_at_ms}`。source 是 `{kind:"tool", call_id}` 或 `{kind:"behavior", step_index}`；id 由 run 和 source 确定。`run.json.host.extra.reports` 保存已接受提交，结束意图独立于普通阶段报告。重复同源同参数返回已保存回执；同源变参拒绝。工具结果仅给出 accepted、report_id 和 is_end，不重复报告正文。
 
@@ -347,7 +347,7 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 
 提交顺序：工具派发前发布完整待执行批次快照 → 校验并持久化报告与稳定产物 → 返回工具回执 → 平滑让出并为余下每个调用记录未执行/Cancelled → 发布配对快照 → 保存终态 finish 决策 → worklog、report.md 与 state 提交。接受前已执行工具不回滚；拒绝报告不截断批次。XML 结束本身不能带动作，先发布结束 Step 快照再提交报告。已经接受的结束先于后到的 Stop 完成；先被宿主观察到的 Stop 拒绝新的结束提交。
 
-顶层最终交付是 `worklog.report_delivery{run_id,turn,submission,assistant}`：assistant 由报告正文与稳定产物链接机械生成，不是模型 Round；报告文件、Session result 和出站使用同一文本。原 assistant/工具回执仍用于审计；mechanical/3 构造模型历史时只渲染一份最终交付，隐藏来源 XML Step 的重复正文、将原工具参数替换为交付引用，不重新执行 report。阶段报告不生成该消息。finished Session 拒绝新输入，终态 Work 的修改创建新 Work。
+顶层最终交付是 `worklog.report_delivery{run_id,turn,submission,assistant}`：assistant 由报告正文与产物链接机械生成，不是模型 Round；链接形如 `[文件名](obj_id)`，没有 obj_id 时指向稳定副本。报告文件和 Session result 使用同一文本。出站消息的正文只有报告正文，有 obj_id 的产物作为 `RefItem::DataObj` 附件随消息发出（label 为文件产物的文件名，或对象库查到的对象名）；没有 obj_id 的产物在正文末尾注明未附上。原 assistant/工具回执仍用于审计；mechanical/3 构造模型历史时只渲染一份最终交付，隐藏来源 XML Step 的重复正文、将原工具参数替换为交付引用，不重新执行 report。阶段报告不生成该消息。finished Session 拒绝新输入，终态 Work 的修改创建新 Work。
 
 恢复读取同一报告 journal：报告已持久但尚无回执时，恢复原待执行批次，仅回填该提交的已保存回执；配对快照已持久但尚无终态时，直接平滑完成；终态与 worklog 提交之间崩溃时，截断未提交尾部并重做同一 finish。全过程不新增推理、不重复登记产物/交付/关闭 Turn。xllm 拒绝继续已接受结束意图的宿主 run，交回 Session；hosted XML 最终快照由 xllm 以 paused 交回 Session：宿主校验成功则从同一结束 Step 提交和交付，校验失败则回到同一 context 反馈纠错；独立 xllm 的有效结束仍为 completed。
 

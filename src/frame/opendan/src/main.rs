@@ -23,6 +23,7 @@ use libopendan::runner::RunnerOptions;
 use opendan::loader::{Loader, LoaderEnv, SpecRef};
 use opendan::records::{self, AgentRecords, LocalRecords, ZoneRecords};
 use opendan::service::Access;
+use opendan::objects::NamedStoreObjects;
 use opendan::tasks::ZoneTaskService;
 use opendan::ui::ZoneMailService;
 
@@ -315,6 +316,7 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         kevent,
         mail: Some(Arc::new(ZoneMailService)),
         tasks: Some(Arc::new(ZoneTaskService)),
+        objects: Some(Arc::new(NamedStoreObjects)),
         access: Access::Zone {
             owner,
             app_id: runtime.get_app_id(),
@@ -372,6 +374,7 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         kevent: None,
         mail: None,
         tasks: None,
+        objects: None,
         access: Access::Open { who },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),

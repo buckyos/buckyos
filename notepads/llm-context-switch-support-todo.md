@@ -183,7 +183,7 @@ Agent Homepage / BuckyOS CLI 即使提供“基于此结果继续工作”，也
 | 参数 | 已实现形态 | 含义 |
 |---|---|---|
 | `report` | 自由文本 / Markdown 字符串 | 明确提交的报告正文，不固定报告内部格式 |
-| `artifacts` | 可选的工作目录相对文件路径字符串列表 | 显式选择交付文件；宿主校验并保存稳定引用，不靠正文标签或目录扫描推断产物 |
+| `artifacts` | 可选的字符串列表：工作目录相对文件路径，或对象 id（2026-10-11 起，见 §10） | 显式选择交付文件；宿主校验并保存稳定副本、登记 obj_id，最终交付时作为出站附件，不靠正文标签或目录扫描推断产物 |
 | `result` | 可选 JSON 值 | 应用需要的机器可读结果；通用框架不固定业务 schema，具体 Session 可按需提供校验 |
 | `is_end` | 可选 bool，缺省 false | false 只提交报告；true 同时请求结束，由宿主按当前调用关系和 Session 策略裁决 |
 
@@ -331,3 +331,22 @@ S1 / S3 / S4 / S5 → H1 / H2 → H4 / H5 已完成。H3 / V8 继续暂缓，S2 
 
 未运行完整 `buckyos-build.py` 打包与在线 Zone DV；真实 SSH / 外部服务相关 ignored 测试未启用。未收齐子 Session 时拒绝 report、xllm → Session 最终报告完整交接尚无专用组合测试，相关宿主校验与接手边界已有部件测试。H3 / V8 继续暂缓。
 
+
+## 10. 报告产物改为 obj_id 交付（2026-10-11）
+
+起因：Jarvis 在 UI 会话里用正文 `<attachment path>` 发 HTML，用户看到 `attachment rejected: … the host has no file resolver`。Agent Loader 重写删掉了旧 Runtime 的 `NamedStoreLocalLinkResolver` / `WorkspaceAttachmentValidator`，新的 `MsgCenterSink` 没有接 resolver。同时 H4 的报告产物只拼成指向 session 内部稳定副本的 Markdown 链接，没变成附件。按系统原则（附件尽量用 obj_id），改为：
+
+- `report.artifacts` 每项是工作目录相对文件，或对象 id。对象 id 原样登记；文件照旧保存稳定副本，宿主有对象库（`RunnerDeps.objects: ObjectStore`）时再放入对象库，对象名取产物文件名。`ReportArtifact` 增加 `obj_id`，对象 id 产物没有 reference / digest。
+- 最终报告交付：worklog / report.md 的机械消息用 `[文件名](obj_id)`；出站回复正文只有报告正文，产物成为 `RefItem::DataObj` 附件，label 取文件名，或对象库查到的文件对象名（`ObjectStore::name_of`）。
+- `OutboundSink::compose` 增加 `objects` 参数，`compose_text` 改名 `compose_reply(base, reply, objects)`；正文 `<attachment path>` 也经对象库落成 obj_id，相对路径以 Session 工作目录为锚点。
+- OpenDAN Loader：`objects::NamedStoreObjects`（≥12 KiB LocalLink，小文件直接存入），`--dev` 不提供。
+- Jarvis `chat_route` / `groupchat_route` 改为用 `report({report, artifacts, is_end: true})` 发文件，转交 Work 报告时直接填 obj_id。
+- 文档：Agent Message §3.3–§3.6、Session Directory Protocol §7.1、Agent Actions、xAgent、消息示例；schema 与 fixtures 已重生成。
+
+验证（`src/` 下）：
+
+- `cargo test -p llm_context -p agent_tool -p libopendan -p opendan --no-fail-fast -- --test-threads=1`：815 通过、0 失败、7 ignored（其中 opendan 的 doctest 因运行中途改代码而编译失败）；改完后 `cargo test -p libopendan -p opendan --no-fail-fast -- --test-threads=1` 重跑：346 通过、0 失败、1 ignored。
+- 新增 `tests/outbound.rs` 3 个测试：文件 / 对象 id 产物作为附件、多 Turn 各自最终报告；无对象库时注明未附上且标签路径被拒；正文标签的相对 / 绝对路径落成对象。
+- `cargo run -p libopendan --example fixtures -- ../doc/opendan/protocol/fixtures` 重生成后 `cargo test -p libopendan --test fixtures` 19 通过。
+
+未做：真实 Zone DV。opendan 运行在容器里，需确认 LocalLink 指向的稳定副本路径对读取 NamedStore 的服务可见，以及 MessageHub / Telegram 对带 refs 的占位 edit 显示正常。

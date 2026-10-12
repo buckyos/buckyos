@@ -32,7 +32,7 @@ use libopendan::bridge::{
 use libopendan::channel::{InputChannelFactory, Waker};
 use libopendan::host::Supervisor;
 use libopendan::protocol::*;
-use libopendan::runner::{compose_text, OutboundSink, SendResult, TurnReply};
+use libopendan::runner::{compose_reply, ObjectStore, OutboundSink, SendResult, TurnReply};
 use libopendan::state::AgentStateClient;
 use libopendan::{OpenDanError, SessionTemplate};
 use name_lib::DID;
@@ -236,6 +236,7 @@ impl OutboundSink for MsgCenterSink {
         _cfg: &SessionConfig,
         base: MsgObject,
         reply: &TurnReply,
+        objects: Option<&dyn ObjectStore>,
     ) -> libopendan::Result<Option<MsgObject>> {
         match reply.status {
             TurnStatus::Completed => {}
@@ -255,8 +256,7 @@ impl OutboundSink for MsgCenterSink {
                     .flatten());
             }
         }
-        let answer = reply.answer.as_deref().unwrap_or_default();
-        match compose_text(base.clone(), answer, None, None).await {
+        match compose_reply(base.clone(), reply, objects).await {
             Ok(Some(mut msg)) => {
                 if let Some(text) = &self.texts.delivery_failure_notice {
                     msg.meta

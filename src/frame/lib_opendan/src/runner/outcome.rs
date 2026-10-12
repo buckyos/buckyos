@@ -766,6 +766,9 @@ async fn commit_run_end(
     // Close the Turn before the report renders the counters.
     let turn_closed = match (next.turn_end, s.state.open_turn.take()) {
         (Some(status), Some(open)) => {
+            // A delivered final report is the reply: its text, its artifacts
+            // as attachments.
+            let delivered = next.report.as_ref().filter(|_| next.kind != FinishKind::ProcessDone);
             super::outbound::queue_reply(
                 sh,
                 s,
@@ -773,7 +776,9 @@ async fn commit_run_end(
                 super::outbound::TurnReply {
                     turn,
                     status,
-                    answer: next.answer.clone(),
+                    answer: delivered.map(|r| r.report.clone()).or_else(|| next.answer.clone()),
+                    artifacts: delivered.map(|r| r.artifacts.clone()).unwrap_or_default(),
+                    workdir: None,
                     inputs: open.inputs,
                     has_msg: open.has_msg,
                     error: next.error.clone(),
@@ -1197,7 +1202,11 @@ fn register_outputs(
         outputs = report
             .artifacts
             .iter()
-            .map(|a| a.reference.clone())
+            // A file by its stable copy, an object by its id.
+            .map(|a| match &a.obj_id {
+                Some(id) if a.reference.is_empty() => id.clone(),
+                _ => a.reference.clone(),
+            })
             .collect();
     } else if let Ok(rd) = std::fs::read_dir(s.dir.path()) {
         for e in rd.flatten() {

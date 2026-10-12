@@ -181,3 +181,163 @@ async fn without_a_sink_no_outbox_is_kept() {
     drive(&sd, &deps, StopWhen::TurnClosed).await;
     assert!(sd.state().unwrap().outbox.is_empty());
 }
+
+/// Puts every file in as `cyfile:<sha256(name)>`, remembering what it got.
+#[derive(Default)]
+struct Objects {
+    put: Mutex<Vec<(std::path::PathBuf, String)>>,
+}
+
+impl Objects {
+    fn id_of(name: &str) -> ndn_lib::ObjId {
+        use sha2::Digest;
+        ndn_lib::ObjId::new_by_raw("cyfile".into(), sha2::Sha256::digest(name).to_vec())
+    }
+}
+
+#[async_trait]
+impl libopendan::runner::ObjectStore for Objects {
+    async fn put_file(&self, path: &std::path::Path, name: &str) -> Result<ndn_lib::ObjId, String> {
+        assert!(path.is_file(), "{}", path.display());
+        self.put.lock().unwrap().push((path.to_path_buf(), name.to_string()));
+        Ok(Self::id_of(name))
+    }
+
+    async fn name_of(&self, obj_id: &ndn_lib::ObjId) -> Option<String> {
+        (*obj_id == Self::id_of("from a work session")).then(|| "game.zip".to_string())
+    }
+}
+
+fn report_ui_spec() -> libopendan::api::SessionSpec {
+    let mut spec = ui_spec(Some(bob_binding()));
+    spec.prompt.llm_context = json!({
+        "tools": { "enabled": true, "tools": [{ "groupname": "bash" }, { "name": "report" }] }
+    });
+    spec
+}
+
+fn data_refs(msg: &ndn_lib::MsgObject) -> Vec<(String, Option<String>)> {
+    msg.content
+        .refs
+        .iter()
+        .map(|r| match &r.target {
+            ndn_lib::RefTarget::DataObj { obj_id, .. } => (obj_id.to_string(), r.label.clone()),
+            other => panic!("not a data object: {other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_final_report_is_the_reply_with_its_artifacts_as_objects() {
+    let env = Env::new();
+    let sd = env.create_work(report_ui_spec()).await;
+    std::fs::write(sd.path().join("star-link.html"), "<html></html>").unwrap();
+    let forwarded = Objects::id_of("from a work session").to_string();
+    let agent = env.agent();
+    let given = forwarded.clone();
+    let llm = ScriptedLlm::new(move |_, n| match n {
+        0 => final_report("r1", "here is the game", json!(["star-link.html", given])),
+        1 => final_report("r2", "nothing to attach", json!([])),
+        _ => panic!("unexpected inference {n}"),
+    });
+    let sink = Arc::new(Sink::default());
+    let objects = Arc::new(Objects::default());
+    let mut deps = env.deps(llm);
+    deps.outbound = Some(sink.clone());
+    deps.objects = Some(objects.clone());
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("make a game")).await.unwrap();
+    let r = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(r, DriveResult::TurnClosed { turn: 1, status: TurnStatus::Completed, .. }), "{r:?}");
+
+    // The file is put in once, from its stable copy, under its own name.
+    let report = sd.state().unwrap().final_report.unwrap();
+    let put = objects.put.lock().unwrap().clone();
+    assert_eq!(put, vec![(sd.path().join(&report.artifacts[0].reference), "star-link.html".to_string())]);
+    let stored = Objects::id_of("star-link.html").to_string();
+    assert_eq!(report.artifacts[0].obj_id.as_deref(), Some(stored.as_str()));
+    assert_eq!(report.artifacts[1].obj_id.as_deref(), Some(forwarded.as_str()));
+    assert!(report.artifacts[1].reference.is_empty());
+    assert!(report.delivery_text().contains(&format!("[star-link.html]({stored})")));
+
+    // The reply is the report's text; the artifacts are its attachments.
+    let sent = sink.sent.lock().unwrap()[0].msg.clone();
+    assert_eq!(sent.content.content, "here is the game");
+    assert_eq!(
+        data_refs(&sent),
+        vec![(stored, Some("star-link.html".to_string())), (forwarded, Some("game.zip".to_string()))]
+    );
+
+    // Every Turn of the dialogue may end with a final report of its own.
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("thanks")).await.unwrap();
+    let r = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(r, DriveResult::TurnClosed { turn: 2, status: TurnStatus::Completed, .. }), "{r:?}");
+    let sent = sink.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].msg.content.content, "nothing to attach");
+    assert!(sent[1].msg.content.refs.is_empty());
+}
+
+#[tokio::test]
+async fn without_an_object_store_artifacts_are_named_and_attached_paths_rejected() {
+    let env = Env::new();
+    let sd = env.create_work(report_ui_spec()).await;
+    std::fs::write(sd.path().join("notes.txt"), "notes").unwrap();
+    let agent = env.agent();
+    let llm = ScriptedLlm::new(|_, n| match n {
+        0 => final_report("r1", "see the notes", json!(["notes.txt"])),
+        1 => text("again\n<attachment path=\"notes.txt\" />"),
+        _ => panic!("unexpected inference {n}"),
+    });
+    let sink = Arc::new(Sink::default());
+    let mut deps = env.deps(llm);
+    deps.outbound = Some(sink.clone());
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("notes?")).await.unwrap();
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("once more")).await.unwrap();
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+    let sent = sink.sent.lock().unwrap();
+    assert_eq!(sent[0].msg.content.content, "see the notes\n\n[notes.txt] (not attached)");
+    assert!(sent[0].msg.content.refs.is_empty());
+    assert!(sent[1].msg.content.content.contains("no object store"), "{}", sent[1].msg.content.content);
+    assert!(sent[1].msg.content.refs.is_empty());
+}
+
+#[tokio::test]
+async fn attached_local_files_of_an_answer_become_objects() {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec(Some(bob_binding()))).await;
+    std::fs::write(sd.path().join("chart.png"), "png").unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let report = elsewhere.path().join("report.pdf");
+    std::fs::write(&report, "pdf").unwrap();
+    let answer = format!(
+        "both files\n<attachment path=\"chart.png\" />\n<attachment path=\"{}\" />",
+        report.display()
+    );
+    let agent = env.agent();
+    libopendan::post_input(agent.as_ref(), sd.sid(), &from_bob("files?")).await.unwrap();
+    let sink = Arc::new(Sink::default());
+    let objects = Arc::new(Objects::default());
+    let mut deps = env.deps(ScriptedLlm::new(move |_, _| text(&answer)));
+    deps.outbound = Some(sink.clone());
+    deps.objects = Some(objects.clone());
+    drive(&sd, &deps, StopWhen::TurnClosed).await;
+    let sent = sink.sent.lock().unwrap()[0].msg.clone();
+    assert_eq!(sent.content.content, "both files");
+    let ids: Vec<String> = data_refs(&sent).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(
+        ids,
+        vec![Objects::id_of("chart.png").to_string(), Objects::id_of("report.pdf").to_string()]
+    );
+    let put = objects.put.lock().unwrap();
+    assert_eq!(put[0].0, sd.path().canonicalize().unwrap().join("chart.png"));
+    assert_eq!(put[1].0, report);
+}
+
+fn final_report(call_id: &str, report: &str, artifacts: serde_json::Value) -> buckyos_api::AiResponse {
+    tool_call(
+        call_id,
+        "report",
+        json!({ "report": report, "artifacts": artifacts, "is_end": true }),
+    )
+}

@@ -19,11 +19,32 @@ pub enum ReportSource {
     Behavior { step_index: u32 },
 }
 
+/// One artifact of a report: a file of the work directory (`path`, copied
+/// to `reference`) or a named object (`path` is its id). `obj_id` is what
+/// leaves the session: the submitted id, or the file put into the host's
+/// object store (`None`: the host has none, or storing failed).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReportArtifact {
     pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reference: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obj_id: Option<String>,
+}
+
+impl ReportArtifact {
+    /// The name shown for the artifact: the file name, or the object id.
+    pub fn name(&self) -> &str {
+        if self.reference.is_empty() {
+            return &self.path;
+        }
+        std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -45,10 +66,12 @@ pub struct ReportSubmission {
 }
 
 impl ReportSubmission {
+    /// The report with its artifacts, by object id where there is one.
     pub fn delivery_text(&self) -> String {
         let mut text = self.report.clone();
         for a in &self.artifacts {
-            text.push_str(&format!("\n\n[{}]({})", a.path, a.reference));
+            let target = a.obj_id.as_deref().unwrap_or(&a.reference);
+            text.push_str(&format!("\n\n[{}]({target})", a.name()));
         }
         text
     }

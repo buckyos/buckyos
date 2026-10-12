@@ -47,6 +47,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
         max_child_concurrency: 4,
         bridges: Vec::new(),
         outbound: None,
+        objects: None,
         turn_tasks: None,
         runtime_id: None,
     }

@@ -17,7 +17,7 @@ use libopendan::channel::{KmsgChannels, Waker};
 use libopendan::host::goals::{GoalHost, GoalHostOptions};
 use libopendan::host::{HostDeps, Supervisor};
 use libopendan::protocol::builtin_runtimes;
-use libopendan::runner::{BehaviorAssembler, OutboundSink, RunnerOptions};
+use libopendan::runner::{BehaviorAssembler, ObjectStore, OutboundSink, RunnerOptions};
 use libopendan::state::{register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient};
 use name_lib::DID;
 use ndn_lib::ObjId;
@@ -66,6 +66,9 @@ pub struct LoaderEnv {
     pub mail: Option<Arc<dyn MailService>>,
     /// `None`: no TaskMgr (development host); Turns get no task.
     pub tasks: Option<Arc<dyn TaskService>>,
+    /// `None`: no NamedStore (development host); report artifacts stay
+    /// files and replies attach no local file.
+    pub objects: Option<Arc<dyn ObjectStore>>,
     pub access: Access,
     pub port: u16,
     pub web_dir: Option<PathBuf>,
@@ -254,6 +257,7 @@ impl Loader {
             max_child_concurrency: 4,
             bridges,
             outbound,
+            objects: env.objects.clone(),
             turn_tasks: env.tasks.clone().map(|tasks| {
                 Arc::new(TurnTasks {
                     tasks,

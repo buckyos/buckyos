@@ -280,7 +280,7 @@ pub fn bar() -> u32 { 42 }
 - `end` 只接受精确的 `true` / `false`，缺省 false；重复 report、重复 end、重复 next_behavior、空最终报告进入纠错。
 - 结束报告不得同时带非空 next_behavior、XML 动作、sendmsg 或同一 response 的原生 tool_calls。空 `<actions/>` 允许。冲突在原生工具派发、报告更新和其它副作用之前拒绝；此前 Round 已执行并观察的工具不构成冲突。
 - 无动作、报告、切换或等待的空决策 / 纯 thinking 进入纠错，不隐式完成。普通 report 即使没有动作也继续。
-- 可选的兄弟节点 `<artifacts>` 是 JSON 字符串数组，`<result>` 是任意 JSON 值；两者必须与 report 同次出现，各最多一次。宿主验证 artifacts 是工作目录内的显式文件，并将内容复制为稳定引用。
+- 可选的兄弟节点 `<artifacts>` 是 JSON 字符串数组，`<result>` 是任意 JSON 值；两者必须与 report 同次出现，各最多一次。每项是工作目录内的显式文件，或对象 id（如 `cyfile:…`）。宿主把文件内容复制为稳定副本，有对象库时再放入对象库得到 obj_id；对象 id 原样登记。最终交付时，带 obj_id 的产物成为出站消息的附件。
 - `LLMBehaviorResult` / `StepRecord` 保存 `report_end`、`report_artifacts`、`report_result`；snapshot v5 保留完成意图。恢复交付本次 final Step / report journal 的正文，不提升旧阶段报告，也不交付 XML 控制文本。
 - Session 工具 `report` 的 `is_end=true` 被接受后，保存独立 journal，补齐同批未执行调用的结果配对，再由宿主收尾；不追加推理。XML 结束报告则从输入阶段禁止同批动作，两者使用相同的宿主报告与完成规则。
 

@@ -43,6 +43,8 @@ pub struct HostDeps {
     pub bridges: Vec<Arc<dyn EventBridge>>,
     /// Where the replies of the sessions leave the process.
     pub outbound: Option<Arc<dyn crate::runner::OutboundSink>>,
+    /// Where report artifacts become objects.
+    pub objects: Option<Arc<dyn crate::runner::ObjectStore>>,
     /// The task service Turns are reported to (`None`: no tasks).
     pub turn_tasks: Option<Arc<dyn crate::runner::TurnTaskSink>>,
     /// Binding identity required of the sessions driven directly (not of
@@ -74,6 +76,7 @@ impl HostDeps {
         deps.session_cli = self.session_cli.clone();
         deps.app_tools = self.app_tools.clone();
         deps.outbound = self.outbound.clone();
+        deps.objects = self.objects.clone();
         deps.turn_tasks = self.turn_tasks.clone();
         deps.stop = stop;
         Ok(deps)

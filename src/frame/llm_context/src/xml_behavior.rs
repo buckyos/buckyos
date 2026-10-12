@@ -111,7 +111,7 @@ Message to the user; optional; SHOULD only be provided when there is important p
 - Never use END or done as next_behavior. To finish, submit a non-empty `<report end="true">final text</report>` with no actions, sendmsg, native tool_calls, or non-empty next_behavior.
 - `<report>` and `<report end="false">` submit a progress report and continue. Report text is free text or Markdown, not a message to the user.
 - Only one report is allowed per response; end accepts only true or false. Empty `<actions/>` is allowed with an ending report.
-- Optional report attachments use `<artifacts>["relative/file"]</artifacts>` and optional machine-readable output uses `<result>{"key":"value"}</result>`; both require a report in the same response.
+- Optional report attachments use `<artifacts>["relative/file", "cyfile:…"]</artifacts>` (files relative to the work directory, or object ids) and optional machine-readable output uses `<result>{"key":"value"}</result>`; both require a report in the same response.
 - A response must contain actions, a report, or next_behavior; thought-only output is a protocol error.
 
 ## <actions> Usage Rules

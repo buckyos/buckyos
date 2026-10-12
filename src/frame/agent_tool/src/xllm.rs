@@ -2636,7 +2636,7 @@ pub fn build_runtime_protocol_for(
                 s.push_str("- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n");
                 s.push_str("- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n");
                 if tools.native.iter().any(|tool| tool.name == "report") {
-                    s.push_str("- Submit a report with report({report: \"free text or Markdown\", artifacts: [\"relative/file\"], result: <optional JSON>, is_end: false}). Omitted is_end means false: it records progress without ending the context or sending a user message.\n");
+                    s.push_str("- Submit a report with report({report: \"free text or Markdown\", artifacts: [\"relative/file\" or \"cyfile:…\"], result: <optional JSON>, is_end: false}). Omitted is_end means false: it records progress without ending the context or sending a user message.\n");
                     s.push_str("- To request completion, call report with is_end: true and a nonempty final report. The host validates and persists it, returns the tool receipt, and completes the current context without another model reply. It skips later calls in that batch; a rejected report returns an error and can be corrected.\n");
                     s.push_str("- Final report delivery and Session completion follow the host policy. Child contexts return to their caller. Plain assistant text with no tool calls yields the current Turn; it completes a Session only when the host permits ordinary Done completion.\n");
                 } else {

@@ -1383,6 +1383,6 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 
 `session.policy.completion` 默认 `natural`，沿用 end_condition；可选 `explicit_report` 要求获准的结束报告才正常关闭 Session。普通 Done 在有输入队列的 Session 完成 Turn 并等待，在无输入队列的 WorkSession 按漏报失败。子 context 结束先交回调用方，父 Turn 保持打开；终态 Session 拒绝新增输入，后续修改创建新 Task / Work，H3 强制 reopen 不在本轮范围。
 
-工具结束报告按 run / call_id，XML 按 run / step_index 建立 `ReportSubmission`。先在 `run.json.host.extra.reports` 保存 accepted journal；产物为 `.opendan_agent_session/reports/{id}/{index}-{sha256}` 下的内容副本。state 分开保存 latest_report / final_report。工具接受结束后补齐同批未执行调用的回执并让出，宿主机械生成一次 `ReportDelivery` assistant message，与 report 文件共用正文和稳定引用，不增加推理 Round。恢复重复提交以同一身份重做，不重执行工具、不重复登记产物和交付。xllm 接手发现已接受的 final journal 会要求宿主继续完成。xllm 自行执行到宿主 XML 最终 Step 时只保存 paused + snapshot.state.report_end，不提前标记完成；宿主验证通过后交付，失败则将错误反馈给模型修正。
+工具结束报告按 run / call_id，XML 按 run / step_index 建立 `ReportSubmission`。先在 `run.json.host.extra.reports` 保存 accepted journal；文件产物为 `.opendan_agent_session/reports/{id}/{index}-{sha256}` 下的内容副本，宿主有对象库时再登记为 obj_id；对象 id 产物原样登记。state 分开保存 latest_report / final_report。工具接受结束后补齐同批未执行调用的回执并让出，宿主机械生成一次 `ReportDelivery` assistant message，与 report 文件共用正文和稳定引用，不增加推理 Round。恢复重复提交以同一身份重做，不重执行工具、不重复登记产物和交付。xllm 接手发现已接受的 final journal 会要求宿主继续完成。xllm 自行执行到宿主 XML 最终 Step 时只保存 paused + snapshot.state.report_end，不提前标记完成；宿主验证通过后交付，失败则将错误反馈给模型修正。
 
 当前持久版本：session_config / session_state 为 6，RunRecord 为 6，LLMContext snapshot 为 5，runtime protocol 为 xllm/2；不兼容旧 END / 隐式完成快照。

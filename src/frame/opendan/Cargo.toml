@@ -21,6 +21,7 @@ http-body-util = { workspace = true }
 kRPC = { workspace = true }
 name-lib = { workspace = true }
 ndn-lib = { workspace = true }
+ndn-toolkit = { workspace = true }
 buckyos-kit = { workspace = true }
 buckyos-http-server = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }

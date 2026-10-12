@@ -483,6 +483,7 @@ impl World {
             kevent: None,
             mail: Some(self.mail.clone()),
             tasks: self.tasks.clone().map(|t| t as Arc<dyn TaskService>),
+            objects: None,
             access: Access::Open { who: WHO.into() },
             port,
             web_dir: None,

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use llm_context::observation::Observation;
 use llm_context::state::LLMContextSnapshot;
+use ndn_lib::ObjId;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -32,6 +33,29 @@ pub(super) struct ReportArgs {
     pub is_end: bool,
 }
 
+/// The host's object store: report artifacts leave a session as named
+/// objects. A file artifact is put in when its report is accepted.
+#[async_trait]
+pub trait ObjectStore: Send + Sync {
+    /// Put the file at `path` in as an object named `name`.
+    async fn put_file(&self, path: &Path, name: &str) -> std::result::Result<ObjId, String>;
+
+    /// The name an object carries (a file object's name), when known.
+    async fn name_of(&self, obj_id: &ObjId) -> Option<String> {
+        let _ = obj_id;
+        None
+    }
+}
+
+/// An artifact given as an object id rather than a file: no path
+/// separator or whitespace, and a valid id (`cyfile:…`, `chunk:…`).
+fn artifact_obj_id(artifact: &str) -> Option<ObjId> {
+    if artifact.contains(['/', '\\']) || artifact.chars().any(char::is_whitespace) {
+        return None;
+    }
+    ObjId::new(artifact).ok()
+}
+
 pub(super) struct ReportTool;
 
 #[async_trait]
@@ -39,7 +63,7 @@ impl AgentTool for ReportTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_REPORT.into(),
-            description: "Submit a progress report, or finish this context with is_end=true. Final reports require all tasks and child work to be settled. Accepted completion skips remaining calls in the batch. Artifacts are explicit files relative to the work directory; result is optional application JSON. Reports are delivered by the host, not sent as messages by this tool.".into(),
+            description: "Submit a progress report, or finish this context with is_end=true. Final reports require all tasks and child work to be settled. Accepted completion skips remaining calls in the batch. Artifacts are explicit files relative to the work directory, or object ids (e.g. `cyfile:…` from another report); the host delivers them with the final report as attachments. Result is optional application JSON. Reports are delivered by the host, not sent as messages by this tool.".into(),
             args_schema: json!({"type":"object", "additionalProperties":false, "properties": {
                 "report":{"type":"string","minLength":1},
                 "artifacts":{"type":"array","items":{"type":"string"}},
@@ -102,6 +126,9 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
     for path in &args.artifacts {
         if !seen.insert(path) {
             return Err(invalid("duplicate artifact path"));
+        }
+        if artifact_obj_id(path).is_some() {
+            continue;
         }
         let cfg = sh.session.lock().await.config.clone();
         let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
@@ -189,15 +216,35 @@ pub(super) async fn submit(
     let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
     let mut artifacts = Vec::new();
     for (index, path) in args.artifacts.iter().enumerate() {
+        if let Some(obj_id) = artifact_obj_id(path) {
+            artifacts.push(ReportArtifact {
+                path: path.clone(),
+                reference: String::new(),
+                digest: String::new(),
+                obj_id: Some(obj_id.to_string()),
+            });
+            continue;
+        }
         let bytes = artifact_bytes(Path::new(&workdir), path)?;
         let digest = hex::encode(Sha256::digest(&bytes));
         let reference = format!("{STATE_DIR}/reports/{id}/{index}-{digest}");
-        crate::fsutil::atomic_replace(&sh.dir.path().join(&reference), &bytes)?;
-        artifacts.push(ReportArtifact {
+        let stable = sh.dir.path().join(&reference);
+        crate::fsutil::atomic_replace(&stable, &bytes)?;
+        let mut artifact = ReportArtifact {
             path: path.clone(),
             reference,
             digest,
-        });
+            obj_id: None,
+        };
+        // The stable copy is put in: it does not change after acceptance.
+        // Storing is the host's business; the report stands without it.
+        if let Some(store) = &sh.deps.objects {
+            match store.put_file(&stable, artifact.name()).await {
+                Ok(obj_id) => artifact.obj_id = Some(obj_id.to_string()),
+                Err(e) => log::warn!("session {}: artifact {path} not stored: {e}", sh.dir.sid()),
+            }
+        }
+        artifacts.push(artifact);
     }
     let submission = ReportSubmission {
         id,

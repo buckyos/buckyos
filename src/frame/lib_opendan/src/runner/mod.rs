@@ -45,8 +45,9 @@ pub use assembler::{
 pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
 pub use outbound::{
-    compose_text, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,
+    compose_reply, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,
 };
+pub use reports::ObjectStore;
 pub use turn_task::{
     has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
 };
@@ -237,6 +238,8 @@ pub struct RunnerDeps {
     pub notifier: Arc<dyn Notifier>,
     /// Where replies leave the process (`None`: no outbox is kept).
     pub outbound: Option<Arc<dyn OutboundSink>>,
+    /// Where report artifacts become objects (`None`: they stay files).
+    pub objects: Option<Arc<dyn ObjectStore>>,
     /// The host's task service (`None`: Turns get no task).
     pub turn_tasks: Option<Arc<dyn TurnTaskSink>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
@@ -267,6 +270,7 @@ impl RunnerDeps {
             summarizer: None,
             notifier: Arc::new(NoopNotifier),
             outbound: None,
+            objects: None,
             turn_tasks: None,
             session_cli: None,
             app_tools: Vec::new(),

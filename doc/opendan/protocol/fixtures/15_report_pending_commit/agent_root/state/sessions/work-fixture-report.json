@@ -23,16 +23,16 @@
     "turn_open": true,
     "activity": {
       "summary": "submit the verified answer",
-      "heartbeat_ms": 1791731447676
+      "heartbeat_ms": 1791742053088
     },
     "last_runner": {
-      "runner_id": "rn-7b03ffea8ed649e6",
+      "runner_id": "rn-79879d1d058245b0",
       "host": "${FIXTURE_HOST}",
-      "pid": 2157181,
+      "pid": 2500134,
       "lock_epoch": 1,
-      "at_ms": 1791731447678
+      "at_ms": 1791742053090
     },
-    "updated_at_ms": 1791731447676
+    "updated_at_ms": 1791742053088
   },
   "location_rev": 0
 }

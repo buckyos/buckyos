@@ -52,4 +52,4 @@ max_tool_iterations = 256
 max_consecutive_errors = 8
 
 [model]
-preferred = "llm.plan"
+preferred = "llm.code"
