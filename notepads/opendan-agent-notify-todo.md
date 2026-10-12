@@ -828,7 +828,13 @@ V01—V05：`test_notify.rs`（6 个）；V06、V19：Desktop datamodel 与 Play
 4. 驱动：`cd test/test_opendan && deno run --config ../deno.json --allow-net --allow-env --allow-read --allow-write --unsafely-ignore-certificate-errors test_agent_notify.ts send input "覆盖吗？" --option yes=覆盖 --option no=保留`，在 MessageHub 卡片回答后 `… wait <id>`（V20 ①、V21）；`… ask "<让 Work 中途 ask-user 的请求>"` 等待 Agent 的通知（V20 ②），再在卡片或会话里回答。
 5. 需要在 DV 上确认的点：msg-center 以 `system:msg-center` 创建 `human.input/v1`（storage domain User）并授权是否被 TaskMgr 接受；Agent App 主体 `notify.list` 的 `resolve_user_did`；观察记录经 Loader 路由；MessageHub 对系统通知发送者（Zone DID）的展示。
 
-### 12.6 遗留
+### 12.6 DV 发现并修正（2026-10-12）
+
+- 用户在 DV 让 Agent 发测试通知，`agent-session notify send` 报 `notifications are not available here`。原因：Session 的工具进程看得到 AgentRoot，连的是文件版 Agent State，而 `ZoneNotify` 只挂在 Loader 进程里（`WithNotify`）；库级测试都用 `LocalNotify`，没覆盖这个组合。Work 的 `ask-user` 与 Goal 提问走 runner（Loader 进程内），不受影响。
+- 修正：`ZoneNotify` 移到 `libopendan::notify`（opendan 重新导出）；`agent-session notify` 先用 Agent State 的通知服务，没有时 `ZoneNotify::for_session_process()`：取宿主交给工具进程的 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，`sub` 为收件人，`appid` 写入 `BUCKYOS_APP_ID` 后 `ensure_buckyos_runtime()`；失败时错误里带原因。
+- 验证：在 Jarvis 容器里以容器环境 + 会话 token 运行新 xagent，`notify send` 成功（测试通知随后撤销）；`libopendan` notify / xagent_cli / crash 与 `opendan` 全部测试通过。需要重建 aios 镜像（或用 `debug_jarvis.sh`）才会生效。
+
+### 12.7 遗留
 
 - DV 验收（上节）；V20 ① 的 Rust 小程序未写（TS 驱动覆盖同一契约）。
 - `notify_view` 对每个 `input` 读一次任务，`notify.list` 条数多时偏慢；Loader 监视器每 30 s 列一次本 Agent 的未结束提问。
