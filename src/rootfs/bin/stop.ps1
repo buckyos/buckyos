@@ -64,7 +64,8 @@ $processNames = @(
   "task_manager",
   "kmsg",
   "msg_center",
-  "opendan"
+  "opendan",
+  "workflow"
 )
 
 foreach ($name in $processNames) {
