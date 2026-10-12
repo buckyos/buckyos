@@ -12,7 +12,7 @@
 //! ```xml
 //! <response>
 //!   <observation>...reading of the previous action's result...</observation>
-//!   <thinking>...free-form reasoning...</thinking>
+//!   <intent>...the next move, in one short sentence...</intent>
 //!
 //!   <actions>
 //!     <shell>cargo test</shell>
@@ -77,7 +77,7 @@ The response MUST be parseable by XMLParser. Example:
 ```
 <response>
   <observation>follow process rules</observation>
-  <thinking>follow process rules</thinking>
+  <intent>follow process rules</intent>
   <actions>
     <write_file path="test.py"><![CDATA[
 print("test")
@@ -203,7 +203,9 @@ impl LLMResultParser for XmlBehaviorParser {
             None => unfenced.to_string(),
         };
 
-        let thought = scan_known_tags(&scan_region, &["thinking"])
+        // `<intent>` is the protocol tag; `<thinking>` is the legacy alias
+        // that older snapshots and scripted responses still carry.
+        let thought = scan_known_tags(&scan_region, &["intent", "thinking"])
             .into_iter()
             .next()
             .map(|node| node.body.trim().to_string())
@@ -437,7 +439,7 @@ fn scan_known_tags(input: &str, tags: &'static [&'static str]) -> Vec<RawActionT
                 .unwrap_or(input.len());
             continue;
         }
-        let skipped = ["report", "thinking", "observation", "artifacts", "result"]
+        let skipped = ["report", "intent", "thinking", "observation", "artifacts", "result"]
             .into_iter()
             .find(|tag| {
                 !tags.contains(tag)
@@ -720,7 +722,7 @@ fn strip_code_fences(input: &str) -> String {
 /// the opening tag to end-of-input. Returns `None` if no opening tag exists.
 ///
 /// This helper is **not** CDATA-aware — it's used for short, scalar-style
-/// tags (`<thinking>`, `<observation>`, `<next_behavior>`, `<actions>`,
+/// tags (`<intent>`, `<observation>`, `<next_behavior>`, `<actions>`,
 /// `<response>`) where CDATA collisions are not expected.
 pub(crate) fn extract_tag_body(input: &str, tag: &str) -> Option<String> {
     let lc_input = input.to_ascii_lowercase();
@@ -839,7 +841,7 @@ mod tests {
         let out = parser
             .parse(&resp(
                 r#"<response>
-<thinking>step 1</thinking>
+<intent>step 1</intent>
 <observation>previous run produced 3 files</observation>
 <next_behavior>plan_review</next_behavior>
 </response>"#,
@@ -1109,11 +1111,20 @@ mod tests {
     // ---- tolerance / quirks ----
 
     #[test]
+    fn legacy_thinking_tag_is_still_accepted() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp("<response><thinking>old</thinking><next_behavior>CHECK</next_behavior></response>"))
+            .unwrap();
+        assert_eq!(out.thought.as_deref(), Some("old"));
+    }
+
+    #[test]
     fn markdown_fences_are_stripped() {
         let parser = XmlBehaviorParser::new();
         let out = parser
             .parse(&resp(
-                "```xml\n<thinking>fenced</thinking>\n<next_behavior>CHECK</next_behavior>\n```",
+                "```xml\n<intent>fenced</intent>\n<next_behavior>CHECK</next_behavior>\n```",
             ))
             .unwrap();
         assert_eq!(out.thought.as_deref(), Some("fenced"));

@@ -17,6 +17,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use buckyos_api::{commit_notify_answer, MsgCenterClient, NotifyCommit, TaskManagerClient};
 pub use buckyos_api::{
     input_prompt, notify_url, prompt_options, HumanPromptOption, HumanTaskPrompt, NotifyAnswer,
     NotifyCategory, NotifyConversation, NotifyDeliveredData, NotifyKind, NotifyLevel,
@@ -86,6 +87,154 @@ pub fn closed_conflict(view: &NotifyView) -> OpenDanError {
         })
         .to_string(),
     )
+}
+
+// ----------------------------------------------------------------------
+// ZoneNotify
+// ----------------------------------------------------------------------
+
+fn zone_err(e: impl std::fmt::Display) -> OpenDanError {
+    OpenDanError::Channel(format!("notify: {e}"))
+}
+
+/// msg-center / TaskMgr of the zone, as the agent's owner's notification
+/// service. Clients are taken from the runtime for every call (the
+/// process's session token is renewed).
+pub struct ZoneNotify {
+    /// Zone user id of the agent's owner (`to_user` of every notification).
+    pub owner_user: String,
+}
+
+impl ZoneNotify {
+    /// The service a process inside one of the agent's sessions reaches (an
+    /// `agent-session` command): the zone's msg-center as the agent's app,
+    /// with the session token its host hands the session's tools. `None`
+    /// outside a zone.
+    pub async fn for_session_process() -> std::result::Result<Self, String> {
+        let token = std::env::var(agent_tool::BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV)
+            .ok()
+            .filter(|t| !t.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "no ${} (not a session of a zone-hosted agent)",
+                    agent_tool::BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                )
+            })?;
+        // An app's session token speaks for its owner (`sub`), as its app.
+        let claims = ::kRPC::RPCSessionToken::from_string(&token)
+            .map_err(|e| format!("session token: {e}"))?;
+        let owner_user = claims
+            .sub
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| "the session token has no subject".to_string())?;
+        if let Some(app) = claims.appid.filter(|a| !a.trim().is_empty()) {
+            // The runtime accepts the token only as the app it names.
+            std::env::set_var("BUCKYOS_APP_ID", app);
+        }
+        agent_tool::xllm::ensure_buckyos_runtime()
+            .await
+            .map_err(|e| format!("BuckyOS runtime: {e}"))?;
+        Ok(Self { owner_user })
+    }
+
+    async fn msg_center() -> Result<MsgCenterClient> {
+        buckyos_api::get_buckyos_api_runtime()
+            .map_err(zone_err)?
+            .get_msg_center_client()
+            .await
+            .map_err(zone_err)
+    }
+
+    async fn task_mgr() -> Result<TaskManagerClient> {
+        buckyos_api::get_buckyos_api_runtime()
+            .map_err(zone_err)?
+            .get_task_mgr_client()
+            .await
+            .map_err(zone_err)
+    }
+}
+
+#[async_trait]
+impl NotifyHost for ZoneNotify {
+    async fn send(&self, mut req: NotifySendReq) -> Result<NotifyView> {
+        req.to_user = self.owner_user.clone();
+        Self::msg_center().await?.notify_send(req).await.map_err(zone_err)
+    }
+
+    async fn state(&self, notify_id: &str) -> Result<NotifyView> {
+        Self::msg_center().await?.notify_get(notify_id).await.map_err(zone_err)
+    }
+
+    async fn list(&self, req: NotifyListReq) -> Result<Vec<NotifyView>> {
+        Ok(Self::msg_center()
+            .await?
+            .notify_list(req)
+            .await
+            .map_err(zone_err)?
+            .items)
+    }
+
+    async fn cancel(&self, notify_id: &str, reason: &str) -> Result<NotifyView> {
+        Self::msg_center()
+            .await?
+            .notify_cancel(notify_id, Some(reason.to_string()))
+            .await
+            .map_err(zone_err)
+    }
+
+    async fn answer(
+        &self,
+        notify_id: &str,
+        answer: NotifyAnswer,
+        via: Option<NotifyVia>,
+    ) -> Result<NotifyView> {
+        let mc = Self::msg_center().await?;
+        let view = mc.notify_get(notify_id).await.map_err(zone_err)?;
+        if view.status.is_closed() {
+            return Err(closed_conflict(&view));
+        }
+        match view.kind {
+            NotifyKind::Notice if answer.dismiss => mc.notify_dismiss(notify_id).await.map_err(zone_err),
+            NotifyKind::Notice => mc
+                .notify_ack(notify_id, via.as_ref().map(NotifyVia::note))
+                .await
+                .map_err(zone_err),
+            NotifyKind::Input => {
+                answer
+                    .validate(&view.prompt)
+                    .map_err(OpenDanError::InvalidArgument)?;
+                let task_id = view
+                    .task_id
+                    .clone()
+                    .ok_or_else(|| zone_err(format!("notification {notify_id} has no task")))?;
+                let tasks = Self::task_mgr().await?;
+                let committed = commit_notify_answer(
+                    &tasks,
+                    &task_id,
+                    &answer,
+                    &self.owner_user,
+                    crate::now_ms(),
+                )
+                .await
+                .map_err(zone_err)?;
+                let now = mc.notify_get(notify_id).await.map_err(zone_err)?;
+                match committed {
+                    NotifyCommit::Committed(_) => {
+                        if let Some(v) = &via {
+                            if let Err(e) = tasks
+                                .add_task_note(&task_id, Some("notify_proxy"), &v.note(), None)
+                                .await
+                            {
+                                log::warn!("notify {notify_id}: task note not written: {e}");
+                            }
+                        }
+                        Ok(now)
+                    }
+                    NotifyCommit::AlreadyClosed(_) => Err(closed_conflict(&now)),
+                }
+            }
+        }
+    }
 }
 
 pub fn unavailable() -> OpenDanError {

@@ -25,8 +25,8 @@ fn xml(body: &str) -> AiResponse {
 #[tokio::test]
 async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
     let llm = Llm::new(vec![
-        xml("<thinking>go</thinking><actions><shell>echo a</shell><shell>defer b</shell><shell>echo c</shell></actions>"),
-        xml("<thinking>saw all</thinking><actions><shell>echo d</shell></actions>"),
+        xml("<intent>go</intent><actions><shell>echo a</shell><shell>defer b</shell><shell>echo c</shell></actions>"),
+        xml("<intent>saw all</intent><actions><shell>echo d</shell></actions>"),
         xml("<report end=\"true\">finished</report>"),
     ]);
     let tools = Tools::new();
@@ -93,7 +93,7 @@ async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
 #[tokio::test]
 async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_tools() {
     let llm = Llm::new(vec![
-        xml("<thinking>step 0</thinking><actions><shell>echo a</shell></actions>"),
+        xml("<intent>step 0</intent><actions><shell>echo a</shell></actions>"),
         tools_response(vec![call("echo", "n1"), call("defer", "n2")]),
         xml("<report end=\"true\">finished</report>"),
     ]);
@@ -153,7 +153,7 @@ async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_
 async fn behavior_context_limit_measures_the_prompt_and_rewrites_steps() {
     let step = |n: u32, pad: usize| {
         xml(&format!(
-            "<thinking>step {n} {}</thinking><actions><shell>echo {n}</shell></actions>",
+            "<intent>step {n} {}</intent><actions><shell>echo {n}</shell></actions>",
             "z".repeat(pad)
         ))
     };
@@ -161,7 +161,7 @@ async fn behavior_context_limit_measures_the_prompt_and_rewrites_steps() {
         vec![
             step(0, 400),
             step(1, 0),
-            xml("<thinking>after rewrite</thinking><actions><shell>echo 2</shell></actions>"),
+            xml("<intent>after rewrite</intent><actions><shell>echo 2</shell></actions>"),
             xml("<report end=\"true\">finished</report>"),
         ]
     };

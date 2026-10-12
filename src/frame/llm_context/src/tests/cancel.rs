@@ -525,10 +525,10 @@ async fn finish_escalates_to_an_interrupt_after_the_grace_period() {
 async fn behavior_interrupt_during_an_action_sediments_the_step_and_does_not_rerun_it() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         text_response(
-            r#"<response><thinking>t</thinking><actions><shell>sleep 100</shell><shell>echo b</shell></actions></response>"#,
+            r#"<response><intent>t</intent><actions><shell>sleep 100</shell><shell>echo b</shell></actions></response>"#,
         ),
         text_response(
-            "<response><thinking>saw</thinking><report end=\"true\">finished</report></response>",
+            "<response><intent>saw</intent><report end=\"true\">finished</report></response>",
         ),
     ]));
     struct Route(Arc<CancelTools>);
@@ -598,10 +598,10 @@ async fn behavior_interrupt_during_an_action_sediments_the_step_and_does_not_rer
 async fn behavior_finish_during_a_step_pairs_the_rest_and_settles() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         text_response(
-            r#"<response><thinking>t</thinking><actions><shell>a</shell><shell>b</shell><shell>c</shell></actions></response>"#,
+            r#"<response><intent>t</intent><actions><shell>a</shell><shell>b</shell><shell>c</shell></actions></response>"#,
         ),
         text_response(
-            "<response><thinking>saw</thinking><report end=\"true\">finished</report></response>",
+            "<response><intent>saw</intent><report end=\"true\">finished</report></response>",
         ),
     ]));
     struct Route(Arc<CancelTools>);

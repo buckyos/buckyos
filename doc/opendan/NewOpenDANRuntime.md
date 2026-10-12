@@ -480,7 +480,7 @@ opendan 的 `agent_config` 负责把这份 TOML 翻译成 `LLMContextRequest` + 
 
 ```xml
 <response>
-  <thinking>...自由形式推理...</thinking>
+  <intent>...下一步要做什么，一句话...</intent>
   <observation>...对上一步 action_result 的解读...</observation>
   <action tool="shell" call_id="optional">
     {"command": "ls -la"}
@@ -505,7 +505,7 @@ opendan 的 `agent_config` 负责把这份 TOML 翻译成 `LLMContextRequest` + 
 
 **Renderer 行为**：
 - `render(step) → (assistant, user)`：assistant = verbatim `assistant_text`；user = `<action_result tool="X" call_id="Y" status="ok|error|pending"[ truncated="true"]>BODY</action_result>`（或 `<step_ack/>` 当 step 无 action）
-- `render_history(steps)`：两档压缩——最近 `recent_full_steps` 个步骤全量；更老的步骤用 `<thinking>summary</thinking>` 形式收敛 assistant_text，action_result body 截断
+- `render_history(steps)`：两档压缩——最近 `recent_full_steps` 个步骤全量；更老的步骤用 `<intent>summary</intent>` 形式收敛 assistant_text，action_result body 截断
 - 严格保持 `(assistant, user)` 交替，对所有 provider 都兼容
 
 **自定义实现**：worksession 想用别的协议（JSON 行、ReAct markdown、自定义 DSL……）时，

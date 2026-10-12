@@ -26,7 +26,7 @@ Memory 系统函数，通过配置实现，格式相对固定？
 
 <step n="14">
   <conclusion>第 4 章已成功写入。内容覆盖四方案的 Docker 支持方式、商店/模板生态、CLI 自由度三个子维度对比，含横向对比表格。报告前 4 章已完成，进入第 5 章"社区与文档质量对比"阶段。</conclusion>
-  <thinking>第 5 章需要量化四个方案的社区活跃度。需要逐一搜索每个方案的论坛、GitHub、Reddit 数据。TrueNAS 作为最大的开源 NAS 项目，先搜它作为基准线，后续方案可做对比参照。</thinking>
+  <intent>第 5 章需要量化四个方案的社区活跃度。需要逐一搜索每个方案的论坛、GitHub、Reddit 数据。TrueNAS 作为最大的开源 NAS 项目，先搜它作为基准线，后续方案可做对比参照。</intent>
   <next_action>web_search("TrueNAS SCALE community forum activity 2025")</next_action>
   <action_result>
     搜索返回 8 条结果：
@@ -45,7 +45,7 @@ Memory 系统函数，通过配置实现，格式相对固定？
 
 <step n="15">
   <conclusion>TrueNAS 社区在四个候选方案中活跃度最高：论坛月活 1200+ 帖、Reddit 85k 订阅、官方工程师深度参与。主要短板是文档更新滞后于版本发布。YouTube 教程生态丰富，降低了上手门槛。以此作为后续方案社区数据的对比基准线。</conclusion>
-  <thinking>TrueNAS 社区数据已足够，作为基准线建立完毕。下一步搜 OMV 的社区数据。OMV 基于 Debian 生态，它的社区有一部分和 Debian 社区重叠，搜索时需注意区分 OMV 专属社区和泛 Debian 讨论。优先搜 OMV 官方论坛和 GitHub 活跃度。</thinking>
+  <intent>TrueNAS 社区数据已足够，作为基准线建立完毕。下一步搜 OMV 的社区数据。OMV 基于 Debian 生态，它的社区有一部分和 Debian 社区重叠，搜索时需注意区分 OMV 专属社区和泛 Debian 讨论。优先搜 OMV 官方论坛和 GitHub 活跃度。</intent>
   <next_action>web_search("OpenMediaVault community forum GitHub activity 2025")</next_action>
   <action_result>
     搜索返回 6 条结果：
@@ -87,7 +87,7 @@ system: |
 
   Goal: Gather the information the next EXECUTE needs. Be efficient — batch reads.
 
-  `thinking`: analyze observations, plan write actions for EXECUTE.
+  `intent`: the next move for EXECUTE, decided from the observations.
   `reply`: brief status ("what I found, what I'll do next").
   `actions`/`shell_commands`: **READ-ONLY**.
   - `read_file`, `cat`, `ls`, `grep`, `git diff`, `cargo check`, `cargo test`, …
@@ -104,7 +104,7 @@ system: |
 
   Goal: Apply changes based on the preceding OBSERVE. Move fast.
 
-  `thinking`: derive execution plan from last_step_summary.
+  `intent`: the execution step taken from last_step_summary.
   `reply`: **motivation** — WHY you make these changes + expected outcome.
   `actions`/`shell_commands`: **WRITE allowed**.
   - `write_file`, `edit_file`, shell build/test, `todo start/done/fail/note`.

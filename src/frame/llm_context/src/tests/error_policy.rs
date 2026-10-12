@@ -335,11 +335,11 @@ async fn behavior_actions_stop_after_first_business_error_and_record_skipped() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         text_response(
             r#"<response>
-<thinking>three actions</thinking>
+<intent>three actions</intent>
 <actions><shell>echo a</shell><shell>echo b</shell><shell>echo c</shell></actions>
 </response>"#,
         ),
-        text_response("<response><thinking>saw it</thinking><report end=\"true\">finished</report></response>"),
+        text_response("<response><intent>saw it</intent><report end=\"true\">finished</report></response>"),
     ]));
     struct FailSecond {
         tools: Arc<ScriptedTools>,
@@ -404,7 +404,7 @@ async fn behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step(
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         text_response(
             r#"<response>
-<thinking>two actions</thinking>
+<intent>two actions</intent>
 <actions><shell>echo a</shell><shell>echo b</shell></actions>
 </response>"#,
         ),

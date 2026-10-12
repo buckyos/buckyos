@@ -16,7 +16,7 @@ use super::mocks::*;
 #[tokio::test]
 async fn behavior_loop_assigns_step_metadata() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_response(
-        "<response><thinking>done</thinking><report end=\"true\">finished</report></response>",
+        "<response><intent>done</intent><report end=\"true\">finished</report></response>",
     )]));
     let mut req = base_request();
     req.behavior_name = "plan".into();
@@ -49,7 +49,7 @@ async fn behavior_loop_assigns_step_metadata() {
 #[tokio::test]
 async fn inner_transcript_renders_after_inherited_steps_and_clears_after_inference() {
     let llm = Arc::new(RecordingLlm::new(text_response(
-        "<response><thinking>start do</thinking><report end=\"true\">finished</report></response>",
+        "<response><intent>start do</intent><report end=\"true\">finished</report></response>",
     )));
     let mut req = base_request();
     req.behavior_name = "do".into();
@@ -62,7 +62,7 @@ async fn inner_transcript_renders_after_inherited_steps_and_clears_after_inferen
             ended_at_ms: Some(20),
             compression_level: Default::default(),
         },
-        assistant_text: "<response><thinking>create todos</thinking></response>".into(),
+        assistant_text: "<response><intent>create todos</intent></response>".into(),
         thought: Some("created todos".into()),
         ..Default::default()
     });
@@ -74,7 +74,7 @@ async fn inner_transcript_renders_after_inherited_steps_and_clears_after_inferen
             ended_at_ms: Some(30),
             compression_level: Default::default(),
         },
-        assistant_text: "<response><thinking>switch to do</thinking><next_behavior>DO</next_behavior></response>".into(),
+        assistant_text: "<response><intent>switch to do</intent><next_behavior>DO</next_behavior></response>".into(),
         thought: Some("switch to do".into()),
         ..Default::default()
     });
@@ -130,7 +130,7 @@ async fn inner_transcript_renders_after_inherited_steps_and_clears_after_inferen
 #[tokio::test]
 async fn behavior_loop_provider_failure_ends_run_without_second_inference() {
     let llm = Arc::new(RecoverOnceLlm::new(text_response(
-        "<response><thinking>recovered</thinking><report end=\"true\">finished</report></response>",
+        "<response><intent>recovered</intent><report end=\"true\">finished</report></response>",
     )));
     let mut req = base_request();
     req.behavior_name = "do".into();
@@ -160,7 +160,7 @@ async fn behavior_loop_parse_error_feeds_back_as_user_message_and_recovers() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         text_response(""),
         text_response(
-            "<response><thinking>recovered</thinking><report end=\"true\">finished</report></response>",
+            "<response><intent>recovered</intent><report end=\"true\">finished</report></response>",
         ),
     ]));
     let mut req = base_request();
@@ -246,7 +246,7 @@ async fn behavior_loop_still_defers_jump_target_declared_with_actions() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         text_response(
             r#"<response>
-<thinking>run before switching</thinking>
+<intent>run before switching</intent>
 <actions><shell>echo done</shell></actions>
 <next_behavior>CHECK</next_behavior>
 </response>"#,
@@ -254,7 +254,7 @@ async fn behavior_loop_still_defers_jump_target_declared_with_actions() {
         text_response(
             r#"<response>
 <observation>action result observed</observation>
-<thinking>now switch</thinking>
+<intent>now switch</intent>
 <next_behavior>CHECK</next_behavior>
 </response>"#,
         ),
@@ -297,13 +297,13 @@ async fn behavior_loop_on_behavior_step_ob_overrides_next_user_message() {
     let llm = Arc::new(RecordingLlm::new(text_response(
         r#"<response>
 <observation>custom observed</observation>
-<thinking>now switch</thinking>
+<intent>now switch</intent>
 <report end="true">finished</report>
 </response>"#,
     )));
     let scripted = Arc::new(ScriptedLlm::new(vec![text_response(
         r#"<response>
-<thinking>run action</thinking>
+<intent>run action</intent>
 <actions><shell>echo done</shell></actions>
 </response>"#,
     )]));
@@ -353,7 +353,7 @@ async fn behavior_loop_on_behavior_step_ob_overrides_next_user_message() {
 async fn behavior_loop_on_behavior_step_ob_can_skip_next_inference() {
     let llm = Arc::new(RecordingLlm::new(text_response(
         r#"<response>
-<thinking>run action</thinking>
+<intent>run action</intent>
 <actions><shell>echo done</shell></actions>
 </response>"#,
     )));
@@ -401,7 +401,7 @@ async fn behavior_loop_observes_failed_action_before_final_report() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         text_response(
             r#"<response>
-<thinking>last step</thinking>
+<intent>last step</intent>
 <actions><shell>boom</shell></actions>
 </response>"#,
         ),
@@ -530,7 +530,7 @@ async fn progress_report_resumes_and_final_snapshot_returns_without_inference() 
 #[tokio::test]
 async fn thought_only_output_is_corrected_without_implicit_completion() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
-        text_response("<thinking>finished</thinking>"),
+        text_response("<intent>finished</intent>"),
         text_response(r#"<report end="true">explicit final</report>"#),
     ]));
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
