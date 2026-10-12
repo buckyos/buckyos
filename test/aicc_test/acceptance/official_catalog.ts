@@ -102,19 +102,22 @@ function configureRequest(
 function parsePage(
   config: OfficialCatalogConfig,
   body: unknown,
-): { ids: string[]; cursor?: string } {
+): {
+  models: Array<{ id: string; lifecycleStatus?: string; taskTypes?: string[] }>;
+  cursor?: string;
+} {
   const root = object(body);
   if (!root) throw new Error("official catalog returned a non-object response");
   if (config.format === "typesafe") {
     if (!Array.isArray(root.models)) throw new Error("TypeSafe models list is missing");
-    return { ids: root.models.map(entry => { const id = stringField(entry, "name"); if (!id) throw new Error("TypeSafe model name is missing"); return id; }) };
+    return { models: root.models.map(entry => { const id = stringField(entry, "name"); if (!id) throw new Error("TypeSafe model name is missing"); return { id }; }) };
   }
   if (config.format === "gemini") {
     const models = Array.isArray(root.models) ? root.models : [];
     return {
-      ids: models.flatMap((entry) => {
+      models: models.flatMap((entry) => {
         const name = stringField(entry, "name");
-        return name ? [name.replace(/^models\//, "")] : [];
+        return name ? [{ id: name.replace(/^models\//, "") }] : [];
       }),
       cursor: stringField(root, "nextPageToken"),
     };
@@ -122,26 +125,26 @@ function parsePage(
   if (config.format === "fal") {
     const models = Array.isArray(root.models) ? root.models : [];
     return {
-      ids: models.flatMap((entry) => {
+      models: models.flatMap((entry) => {
         const id = stringField(entry, "endpoint_id");
-        return id ? [id] : [];
+        return id ? [{ id }] : [];
       }),
       cursor: root.has_more === true ? stringField(root, "next_cursor") : undefined,
     };
   }
   if (config.format === "sn" && Array.isArray(root.models)) {
     return {
-      ids: root.models.flatMap((entry) => {
+      models: root.models.flatMap((entry) => {
         const id = stringField(entry, "provider_actual_model_id") ?? stringField(entry, "provider_model_id");
-        return id ? [id] : [];
+        return id ? [{ id }] : [];
       }),
     };
   }
   if (config.format === "sn" && Array.isArray(root.items)) {
     return {
-      ids: root.items.flatMap((entry) => {
+      models: root.items.flatMap((entry) => {
         const id = stringField(entry, "model") ?? stringField(entry, "id");
-        return id ? [id] : [];
+        return id ? [{ id }] : [];
       }),
     };
   }
@@ -158,9 +161,18 @@ function parsePage(
     }
   }
   const result = {
-    ids: data.flatMap((entry) => {
+    models: data.flatMap((entry) => {
       const id = stringField(entry, "id") ?? stringField(entry, "model");
-      return id ? [id] : [];
+      if (!id) return [];
+      const record = object(entry);
+      const taskTypes = Array.isArray(record?.task_type)
+        ? record.task_type.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : undefined;
+      return [{
+        id,
+        lifecycleStatus: stringField(entry, "status"),
+        taskTypes: taskTypes?.length ? taskTypes : undefined,
+      }];
     }),
     cursor: undefined as string | undefined,
   };
@@ -170,19 +182,26 @@ function parsePage(
   return result;
 }
 
-export async function fetchOfficialModelIds(input: {
+type OfficialCatalogModel = {
+  id: string;
+  lifecycleStatus?: string;
+  taskTypes?: string[];
+};
+
+async function fetchOfficialModels(input: {
   profile: CatalogProfile;
   token?: string;
   timeoutMs: number;
   fetcher?: Fetcher;
-}): Promise<string[]> {
+}): Promise<OfficialCatalogModel[]> {
   if (input.profile.official_catalog.format === "frozen") {
-    return [...(input.profile.official_catalog.model_ids ?? [])]
-      .sort((left, right) => left.localeCompare(right));
+    return [...(input.profile.official_catalog.model_ids ?? []), ...(input.profile.official_catalog.supplemental_model_ids ?? [])]
+      .sort((left, right) => left.localeCompare(right))
+      .map((id) => ({ id }));
   }
   const token = requireToken(input.profile, input.token);
   const fetcher = input.fetcher ?? fetch;
-  const ids = new Map<string, string>();
+  const models = new Map<string, OfficialCatalogModel>();
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < 100; page += 1) {
@@ -207,9 +226,7 @@ export async function fetchOfficialModelIds(input: {
     }
     if (!response) throw new Error(`official catalog request failed for ${input.profile.provider_driver}: network error`);
     if (!response.ok) {
-      throw new Error(
-        `official catalog request failed for ${input.profile.provider_driver}: HTTP ${response.status}`,
-      );
+      throw new Error(`official catalog request failed for ${input.profile.provider_driver}: HTTP ${response.status}`);
     }
     let body: unknown;
     try {
@@ -218,9 +235,9 @@ export async function fetchOfficialModelIds(input: {
       throw new Error(`official catalog returned invalid JSON for ${input.profile.provider_driver}`);
     }
     const parsed = parsePage(input.profile.official_catalog, body);
-    for (const rawId of parsed.ids) {
-      const id = rawId.trim();
-      if (id) ids.set(id.toLowerCase(), id);
+    for (const model of parsed.models) {
+      const id = model.id.trim();
+      if (id) models.set(id.toLowerCase(), { ...model, id });
     }
     if (!parsed.cursor) break;
     if (seenCursors.has(parsed.cursor)) {
@@ -228,26 +245,32 @@ export async function fetchOfficialModelIds(input: {
     }
     seenCursors.add(parsed.cursor);
     cursor = parsed.cursor;
-    if (page === 99) {
-      throw new Error(`official catalog pagination exceeded 100 pages for ${input.profile.provider_driver}`);
-    }
+    if (page === 99) throw new Error(`official catalog pagination exceeded 100 pages for ${input.profile.provider_driver}`);
   }
-  if (ids.size === 0) {
-    throw new Error(`official catalog returned no models for ${input.profile.provider_driver}`);
-  }
+  if (models.size === 0) throw new Error(`official catalog returned no models for ${input.profile.provider_driver}`);
   const endpointIds = input.profile.official_catalog.endpoint_ids ?? [];
   if (endpointIds.length > 0) {
     const expected = new Set(endpointIds.map((id) => id.toLowerCase()));
-    const missing = [...expected].filter((id) => !ids.has(id));
-    const unexpected = [...ids.keys()].filter((id) => !expected.has(id));
+    const missing = [...expected].filter((id) => !models.has(id));
+    const unexpected = [...models.keys()].filter((id) => !expected.has(id));
     if (missing.length > 0 || unexpected.length > 0) {
-      throw new Error(
-        `official catalog scope mismatch for ${input.profile.provider_driver}: ` +
-          `missing=${missing.join(",") || "none"} unexpected=${unexpected.join(",") || "none"}`,
-      );
+      throw new Error(`official catalog scope mismatch for ${input.profile.provider_driver}: missing=${missing.join(",") || "none"} unexpected=${unexpected.join(",") || "none"}`);
     }
   }
-  return [...ids.values()].sort((left, right) => left.localeCompare(right));
+  for (const id of input.profile.official_catalog.supplemental_model_ids ?? []) {
+    const normalized = id.trim();
+    if (normalized) models.set(normalized.toLowerCase(), { id: normalized });
+  }
+  return [...models.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export async function fetchOfficialModelIds(input: {
+  profile: CatalogProfile;
+  token?: string;
+  timeoutMs: number;
+  fetcher?: Fetcher;
+}): Promise<string[]> {
+  return (await fetchOfficialModels(input)).map((model) => model.id);
 }
 
 export async function fetchOfficialCatalogs(input: {
@@ -265,7 +288,7 @@ export async function fetchOfficialCatalogs(input: {
     const profile = profiles.get(driver);
     if (!profile) throw new Error(`missing provider baseline for ${driver}`);
     const instance = input.instanceNames[driver] || `${driver}-unresolved`;
-    const ids = await fetchOfficialModelIds({
+    const models = await fetchOfficialModels({
       profile,
       token: input.tokens[driver],
       timeoutMs: input.timeoutMs,
@@ -277,11 +300,13 @@ export async function fetchOfficialCatalogs(input: {
       inventory_revision: profile.official_catalog.format === "frozen"
         ? `official-frozen-${profile.official_catalog.checked_at}`
         : `official-snapshot-${fetchedAt}`,
-      models: ids.map((id) => ({
-        exact_model: `${id}@${instance}`,
-        provider_model_id: id,
+      models: models.map((model) => ({
+        exact_model: `${model.id}@${instance}`,
+        provider_model_id: model.id,
         api_types: [],
         logical_mounts: [],
+        official_lifecycle_status: model.lifecycleStatus,
+        official_task_types: model.taskTypes,
       })),
     });
   }
@@ -306,4 +331,27 @@ export function bindOfficialCatalogInstances(
       })),
     };
   });
+}
+
+function caseModelSegment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+}
+
+export function scopeInventoriesToRequestedCases(
+  inventories: ProviderInventory[],
+  caseIds: string[],
+): ProviderInventory[] {
+  if (caseIds.length === 0) return inventories;
+  const requested = caseIds.map((caseId) => caseId.toLowerCase());
+  return inventories.map((inventory) => ({
+    ...inventory,
+    models: inventory.models.filter((model) => {
+      const identities = [model.provider_model_id, model.provider_actual_model_id]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .map(caseModelSegment);
+      return identities.some((identity) =>
+        requested.some((caseId) => caseId.includes(`.${identity}.`))
+      );
+    }),
+  }));
 }

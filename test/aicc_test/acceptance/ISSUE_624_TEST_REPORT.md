@@ -1,7 +1,15 @@
 # Issue #624 / PR #634 Review 修复验证报告
 
-日期：2026-09-26。验证对象为合入提交 `704e81b2` 加本轮工作区修复，尚未生成新的提交或部署到 DV。
-本报告替换旧报告；旧报告引用的外部分支提交和历史 T1/T1.5/T2 结果不能证明当前工作区通过验收。
+> 2026-10-01 correction: official IAM documentation confirms that an API Key
+> created by Ark can be granted permissions for other Volcengine products.
+> After Doubao Voice is activated for the same project and identity, the
+> standard Provider may therefore use that key with the Voice V3 `X-Api-Key`
+> endpoint. Standard `audio.tts` metadata and protocol coverage were added on
+> that basis; `/api/v3/models` still does not discover speech products.
+
+For the final developer-facing model-by-model verdict merged from every T2 rerun, see [DOUBAO_T2_CONSOLIDATED_REPORT.md](DOUBAO_T2_CONSOLIDATED_REPORT.md).
+
+Test dates: 2026-09-25 through 2026-09-30
 
 ## 本轮结果
 
@@ -59,7 +67,7 @@ Mock/fixture 修改依据下列官方资料，非当前 AICC 实现的反向推�
 已从 `704e81b2` 导出独立基线目录、使用同一本地 SDK 重跑，复现相同的 30 条错误（`/tmp/aicc-pr634-deno-baseline.log`）。
 错误位于 `acceptance/gateway.ts`、`acceptance/run_t1_gateway.ts` 和 `test/jarvis_media_dv/jarvis_media_dv.ts` 的既有鉴权调用；本轮未改依赖或扩大到 SDK 修复。修改的协议契约/Mock 单独检查通过。
 
-本轮未执行当前代码经 DV 网关的 T1/T1.5，因此不再保留旧报告“129/188 项通过”作为当前结果。
+2026-10-04 更新：当前代码（`fix/624-improve-doubao-model-support` / `f53e0c2d`）已通过 DV 网关执行豆包语音渠道的 T1 / T1.5 / T2，因此不再保留旧报告“129/188 项通过”作为当前结果。结果：T1 为 142 通过 / 37 失败（豆包语音范围 4/4 通过，37 例为超范围预存缺陷）、T1.5 为 28 通过 / 0 失败、T2 为 2 待语义复核 / 2 失败。其余 Provider 的 T1/T1.5 仍需按受影响范围补跑。
 推送前须部署当前构建，按受影响 Provider 执行 T1/T1.5，并保存 manifest、逐 case evidence 与 cleanup 结果。
 参考 [验收 README](README.md) 的配置保护和命令；T1.5 需同时提供环境变量及命令行的 config-mutation 开关。
 
@@ -67,4 +75,89 @@ T2/T3（含 GLM 真实视频）未执行。[AICC E2E Skill](../../../harness/SKI
 “CodeAgent 开始执行任何 T2 或 T3 测试前，必须取得用户对本次执行的明确授权。”
 当前请求授权代码修复，未选定真实 Provider 调用范围和预算；官方文档核对及本地 Mock 通过不能替代真实服务验收。
 
-本机日志位于 `/tmp/aicc-pr634-{cargo,api,check,desktop-build,e2e,preflight,selftest,deno,deno-protocols,dvcheck}.log`，未将临时日志或本地配置提交到仓库。
+## 2026-09-29 Doubao coverage review and retest
+
+The Doubao T2 inventory and protocol coverage were reviewed again after resolving the branch conflicts. The standard ModelArk and Agent Plan account types were tested as separate Provider instances. The user explicitly excluded `doubao-seedance-2.5`, `doubao-seedance-2.0`, `doubao-seedance-2.0-mini`, and `doubao-seedance-2.0-fast`; their 16 video API cells remained visible in the generated full matrix but were not invoked.
+
+### Coverage and implementation updates
+
+- Standard ModelArk inventory is discovered dynamically from `/api/v3/models`; the reviewed inventory generated 63 physical-model/API cells, of which 47 remained after the explicit Seedance exclusions.
+- Agent Plan inventory generated 57 physical-model/API cells, of which 41 remained after the same exclusions.
+- Added a standard translation Responses cell for `doubao-seed-translation-250915`; `translation_options` is lowered into the user `input_text` content block and is validated by a fail-closed T1.5 contract.
+- Corrected Seedance duration lowering so integral durations are emitted as JSON integers and fractional durations are rejected before transport.
+- Standard ModelArk no longer advertises豆包语音 TTS. A ModelArk API Key and a cross-product IAM API Key are distinct credential entry points; speech requires a key with豆包语音 permission plus the corresponding speech service activation. Agent Plan TTS remains covered by its documented HTTP operation.
+- Provider/account differences remain configuration-driven through provider metadata, model rules, operations, and inventory filters; no vendor/model-name conditional was added to the Rust protocol implementation.
+- `AccountOverdueError` is reported as a Provider platform restriction rather than an AICC product failure.
+
+### Targeted T1.5 regression
+
+- Report: `reports/acceptance/t15-20260929140206-4035410/summary.json`.
+- Scope: standard translation Responses, Seedance 1.0 Fast text-to-video, and Seedance 1.0 Fast image-to-video.
+- Result: 3 passed, 0 failed; cleanup passed and all temporary Provider instances were removed.
+- This run exercised the deployed AICC binary through Zone Gateway against the high-fidelity MockProvider and verified the corrected wire protocol.
+
+### Agent Plan T2
+
+- Report: `reports/acceptance/aicc-2026-09-29T14-06-14-898Z-c836c51b/summary.json`.
+- Scope: 41 selected cells from the 57-cell complete matrix.
+- Result: 14 passed, 21 protocol/artifact successes requiring semantic review, 6 provider-restricted, 0 failed, and no product defects.
+- The six restrictions were `UnsupportedModel` for the LLM/caption/OCR cells of `doubao-seed-2.0-lite` and `kimi-k3`.
+- Cleanup passed; the generated output object was removed and temporary credentials were restored.
+
+### Standard ModelArk T2
+
+- Report: `reports/acceptance/aicc-2026-09-29T14-14-36-773Z-10e76d30/summary.json`.
+- Scope: 47 selected cells from the 63-cell complete matrix, executed with the newly created ModelArk API Key.
+- Result: 1 passed, 2 protocol/artifact successes requiring semantic review, 44 provider-restricted, 0 product defects.
+- `doubao-embedding-vision-251215` passed. Both Seedream 4.0 image cells returned valid artifacts and require semantic review because the Judge was disabled.
+- Thirty-five cells returned `AccountOverdueError`. This is an account-level billing restriction and prevents real-provider verification of those cells; changing from a cross-product IAM API Key to a ModelArk API Key did not change the account billing state.
+- `doubao-seed-evolving` returned `ModelNotOpen` for its LLM/caption/OCR cells.
+- GLM 4.5 Air and the five older Qwen models returned `InvalidEndpointOrModel.NotFound`.
+- Cleanup passed and temporary credentials were restored.
+
+### Billing recovery and targeted standard-account rerun (2026-09-30)
+
+- Report: `reports/acceptance/aicc-2026-09-30T04-45-42-713Z-8c2a4567/summary.json`.
+- Scope: only the 35 standard ModelArk cells previously blocked by `AccountOverdueError`.
+- Guardrails: at most 70 attempts, USD 0.70 budget, concurrency 2, 250 ms minimum Provider interval, Judge disabled.
+- Result: 13 passed, 18 protocol/artifact successes requiring semantic review, and 4 failed. The runner made 39 Provider calls and reported USD 0.39 estimated exposure; all 39 calls had unknown settled cost, so the estimate must not be represented as the final Volcengine bill.
+- Cleanup passed; temporary credentials were restored and no generated output object remained.
+- No call returned `AccountOverdueError`, confirming that the account balance blocker was removed.
+
+The four failures were analyzed against the Provider wire and official documentation:
+
+- `doubao-seed-translation-250915` rejected the configured target language `English`; the official Responses translation request requires a supported language code. The default and T1.5 fixture now use `en`.
+- Both Seedance 1.0 Fast cells completed remotely, but AICC rejected the official string-valued `content.video_url` because its decoder and the old Mock fixture expected a nested object. The decoder and both standard/Agent Plan fixtures now use the official string shape; video token usage is preserved when supplied.
+- `doubao-seed-character-251128` returned `BUCKYOS - AICC - 4827`. TaskMgr evidence showed a successful Provider/AICC response, so the original product-defect record was a test-harness false positive. The generic plain-text assertion now normalizes whitespace around marker separators while still rejecting a marker without separators; no model-name exception was added.
+
+### Post-fix build and T1.5 verification (2026-09-30)
+
+- AICC was rebuilt once with `uv run buckyos-build.py -s aicc`, installed as the runtime AICC binary, and BuckyOS was restarted with `/opt/buckyos/bin/stop.py` and `/opt/buckyos/bin/node-daemon/node_daemon`.
+- Runtime report: `reports/acceptance/t15-20260930053834-640745/summary.json`.
+- Scope: standard translation plus standard and Agent Plan Seedance text-to-video/image-to-video success and TaskMgr artifact persistence.
+- Result: 9 passed, 0 failed; cleanup passed and temporary Provider instances were removed.
+- Local gates: `cargo test -p aicc` 550/550, `acceptance:self-test` 91/91, `acceptance:preflight` 24 canonical APIs / 130 static cases / 691 T1.5 cases, `deno check acceptance/*.ts`, and `git diff --check` all passed.
+
+### Remaining real-provider verification
+
+The implementation and high-fidelity T1.5 protocol regressions are green. The four corrected cells were subsequently called again with the user's explicit authorization, as recorded below.
+
+### All previously unsuccessful standard-account cells retested (2026-09-30)
+
+- Report: `reports/acceptance/aicc-2026-09-30T06-54-40-209Z-49932e6d/summary.json`.
+- Scope: all 13 standard ModelArk cells that had either a real failure after billing recovery or an earlier non-billing Provider restriction. Protocol/artifact successes marked `review` were not failures and were not needlessly regenerated.
+- Credential: the configured ordinary ModelArk API Key was verified to match the newly supplied `ark-0638…` credential before execution; the complete credential is not stored in this report.
+- Guardrails: 13 calls maximum, one attempt, concurrency 1, 250 ms Provider interval, Judge disabled, USD 0.13 estimated budget.
+- Result: 2 passed, 2 protocol/artifact successes requiring semantic review, 9 Provider-restricted, 0 AICC product defects.
+- The corrected character and translation cells passed. Seedance 1.0 Fast text-to-video and image-to-video both returned valid downloadable artifacts and preserved official completion-token usage, proving the `content.video_url` decoder fix against the real Provider.
+- `doubao-seed-evolving` remained `ModelNotOpen` for LLM/caption/OCR. GLM 4.5 Air and five old Qwen snapshots remained `InvalidEndpointOrModel.NotFound`.
+- The live `/api/v3/models` response contained all seven restricted physical IDs among 135 entries but supplied no activation/lifecycle status for them. Official ModelArk control-plane documentation defines account activation separately through `ListModelActivations`/`GetModelActivation` (`Available`/`Unavailable`) and restricts those APIs to Access Key authentication. An inference API Key therefore cannot prove activation during inventory discovery. AICC correctly retains the Provider-discovered physical IDs and records invocation-time account restrictions instead of adding account-specific hardcoded exclusions.
+- Cleanup passed; temporary Provider credentials were restored, no generated output objects remained, and the report records 13 unknown-price calls with USD 0.13 estimated exposure rather than claiming it as the settled bill.
+
+After overlaying every standard-account case with its latest result, the 47 selected cells have 16 automatic passes, 22 successful protocol/artifact results requiring semantic review, 9 Provider restrictions, and no remaining failure. The separate Agent Plan run has 14 automatic passes, 21 successful results requiring semantic review, 6 Provider restrictions, and no failure. All run cleanups passed.
+
+### Previous external verification blocker
+
+At the end of the 2026-09-29 run, the implementation and T1.5 wire regressions were green and Agent Plan had no AICC product failure, but a complete standard real-provider verdict still required the owning火山引擎 account to clear its overdue balance. The 35 affected cells were subsequently rerun after billing recovered, as recorded above.
+
+At that point, local gates passed `acceptance:preflight` (24 canonical APIs, 130 static cases, 691 T1.5 cases), `acceptance:self-test` (90/90), `git diff --check`, and the AICC Rust suite (548/548). The workspace-wide Rust run encountered one transient, AICC-unrelated `node_daemon` process-lock test failure; its exact isolated rerun passed. No base-system implementation was changed in response.

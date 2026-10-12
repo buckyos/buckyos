@@ -108,6 +108,10 @@ struct QwenImageEditCodec {
 
 #[async_trait]
 impl OperationCodec for QwenImageEditCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -214,6 +218,12 @@ struct QwenMediaCodec {
 
 #[async_trait]
 impl NativeTaskCodec for QwenMediaCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // DashScope accepts media by URL; `resource_string` passes it through
+        // and only inlines bytes that were supplied as bytes.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -605,6 +615,12 @@ fn resource_string(
     resource: &ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(url.to_string());
+    }
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {

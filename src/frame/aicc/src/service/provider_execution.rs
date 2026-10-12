@@ -66,11 +66,41 @@ impl RuntimeProviderExecutionPort {
                 })?;
         }
         for (artifact_name, artifact_ref) in provider_artifact_refs {
-            let Some(content_digest) = output
+            let Some(artifact) = output
                 .artifacts
                 .iter()
                 .find(|artifact| artifact.name == artifact_name)
-                .and_then(|artifact| artifact.metadata.as_ref())
+            else {
+                continue;
+            };
+            let created_at_ms = now_ms() as i64;
+            // An object-form artifact is worth caching by object id even when no
+            // content digest was recorded. The object id is the object's own
+            // identity, so the entry can be looked up later without reading the
+            // payload back — which is the only way an object that was handed to
+            // the Provider by value (rather than downloaded from it) can ever
+            // produce a usable cache entry.
+            if let buckyos_api::ResourceRef::NamedObject { obj_id } = &artifact.resource {
+                storage
+                    .remember_provider_artifact(&ProviderArtifactRecord {
+                        key: ProviderArtifactKey::ObjectId(obj_id.to_string()),
+                        provider_instance_name: provider_instance_name.to_owned(),
+                        origin_provider: origin_provider.to_owned(),
+                        tenant_id: context.tenant_id.clone(),
+                        artifact_id: artifact_ref.id.clone(),
+                        expires_at_ms: artifact_ref.expires_at_ms,
+                        created_at_ms,
+                    })
+                    .await
+                    .map_err(|_| {
+                        ProtocolError::invalid_configuration(
+                            "Provider artifact object registration failed",
+                        )
+                    })?;
+            }
+            let Some(content_digest) = artifact
+                .metadata
+                .as_ref()
                 .and_then(|metadata| metadata.get("digest"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
@@ -78,13 +108,14 @@ impl RuntimeProviderExecutionPort {
                 continue;
             };
             storage
-                .remember_provider_artifact_id(&ProviderArtifactIdRecord {
-                    content_digest,
+                .remember_provider_artifact(&ProviderArtifactRecord {
+                    key: ProviderArtifactKey::ContentDigest(content_digest),
                     provider_instance_name: provider_instance_name.to_owned(),
                     origin_provider: origin_provider.to_owned(),
+                    tenant_id: context.tenant_id.clone(),
                     artifact_id: artifact_ref.id,
                     expires_at_ms: artifact_ref.expires_at_ms,
-                    created_at_ms: now_ms() as i64,
+                    created_at_ms,
                 })
                 .await
                 .map_err(|_| {
@@ -222,18 +253,41 @@ impl RuntimeProviderExecutionPort {
                 "artifact ProviderInstance Adapter has changed",
             ));
         }
+        let artifact_origin = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|parsed| {
+                let host = parsed.host_str()?;
+                Some(match parsed.port() {
+                    Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+                    None => format!("{}://{}", parsed.scheme(), host),
+                })
+            })
+            .unwrap_or_else(|| "<invalid>".to_owned());
         let mut reader = provider
             .open_artifact_url_reader(self.codecs.as_ref(), url)
             .await
-            .map_err(|error| AiccError {
-                code: AiccErrorCode::ProviderError,
-                message: error.message,
-                provider_code: error.provider_code,
-                retriable: matches!(
+            .map_err(|error| {
+                log::warn!(
+                    "open Provider artifact failed: provider={} adapter={} artifact_origin={} error_kind={:?} http_status={:?} provider_code={:?} request_id={:?} message={}",
+                    source.provider_instance_name,
+                    source.protocol_adapter_id,
+                    artifact_origin,
                     error.kind,
-                    ProtocolErrorKind::Timeout | ProtocolErrorKind::Transport
-                ),
-                details: None,
+                    error.http_status,
+                    error.provider_code,
+                    error.request_id,
+                    error.message
+                );
+                AiccError {
+                    code: AiccErrorCode::ProviderError,
+                    message: error.message,
+                    provider_code: error.provider_code,
+                    retriable: matches!(
+                        error.kind,
+                        ProtocolErrorKind::Timeout | ProtocolErrorKind::Transport
+                    ),
+                    details: None,
+                }
             })?;
         if source.content_digest.is_none() {
             let storage = self.storage.clone();
@@ -423,8 +477,6 @@ impl RuntimeProviderExecutionPort {
         if !Self::has_inline_artifacts(&output) {
             return Ok(output);
         }
-        let mut value_resources = Vec::new();
-        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {
                 tenant_id: context.tenant_id.clone(),
@@ -508,6 +560,8 @@ impl RuntimeProviderExecutionPort {
             );
             output.artifacts[index] = artifact;
         }
+        let mut value_resources = Vec::new();
+        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
         for resource in value_resources {
             let buckyos_api::ResourceRef::Base64 { mime, data_base64 } = &resource else {
                 continue;
@@ -1315,6 +1369,24 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_materialization_does_not_recollect_replaced_value_resource() {
+        let inline = buckyos_api::ResourceRef::Base64 {
+            mime: "audio/mpeg".to_owned(),
+            data_base64: "dGVzdA==".to_owned(),
+        };
+        let named = buckyos_api::ResourceRef::NamedObject {
+            obj_id: ndn_lib::ObjId::new("cyfile:010203").unwrap(),
+        };
+        let mut value = serde_json::to_value(&inline).unwrap();
+
+        replace_resource_ref_value(&mut value, &inline, &named).unwrap();
+
+        let mut remaining = Vec::new();
+        collect_inline_base64_resource_refs(&value, &mut remaining);
+        assert!(remaining.is_empty());
+    }
 
     #[test]
     fn decision_result_is_checked_before_success_including_alias_version_drift() {

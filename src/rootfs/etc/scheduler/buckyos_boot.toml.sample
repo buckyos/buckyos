@@ -54,7 +54,7 @@
             "base_url": "https://api.openai.com/v1",
             "credentials": {
                 "api_token": {
-                    "locked": "$OPEN_AI_API_TOKEN$"
+                    "inline_secret": "$OPEN_AI_API_TOKEN$"
                 }
             },
             "enabled": true,

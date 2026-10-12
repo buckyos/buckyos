@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 4,
+  "revision_seq": 9,
   "required_features": [],
   "models": [
     {
@@ -70,45 +70,114 @@
       }
     },
     {
+      "id": "doubao-seed-2-0-lite-260428",
+      "parameter_scale": "lite",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true,
+        "max_context_tokens": 256000,
+        "max_output_tokens": 128000
+      },
+      "llm": {
+        "spec": "doubao-lite",
+        "effort": "none",
+        "default_effort": "none",
+        "supported_efforts": ["none"],
+        "stability": "stable",
+        "weight": 20
+      }
+    },
+    {
+      "id": "doubao-seed-2-1-turbo-260628",
+      "parameter_scale": "turbo",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true,
+        "max_context_tokens": 1048576
+      },
+      "llm": {
+        "spec": "doubao-lite",
+        "effort": "none",
+        "default_effort": "none",
+        "supported_efforts": ["none"],
+        "stability": "stable",
+        "weight": 22
+      }
+    },
+    {
       "id": "doubao-seedream-5.0-lite",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
       "capabilities": {"image_generation": true}
     },
     {
       "id": "doubao-seedream-5-0-pro",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
       "capabilities": {"image_generation": true}
     },
     {
       "id": "doubao-seedance-2.0",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2.0-fast",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2.0-mini",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2.5",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "doubao-seedance-2-0-260128",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "doubao-seedance-2-0-fast-260128",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "doubao-seedance-2-0-mini-260615",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "doubao-seedance-2-5-260628",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
@@ -119,11 +188,74 @@
       "capabilities": {"vision": true}
     },
     {
+      "id": "doubao-seed-character",
+      "parameter_scale": "character",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "doubao-lite", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "doubao-seed-translation",
+      "parameter_scale": "translation",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "doubao-lite", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "doubao-seed-2.0-code-preview",
+      "parameter_scale": "code",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {"streaming": true, "vision": true},
+      "llm": {"spec": "doubao-code", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "experimental", "weight": 20}
+    },
+    {
+      "id": "doubao-seedream-4.0",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
+      "capabilities": {"image_generation": true}
+    },
+    {
+      "id": "doubao-seedream-5.0",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
+      "capabilities": {"image_generation": true}
+    },
+    {
+      "id": "doubao-seedance-1.0-pro-fast",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}"],
+      "capabilities": {}
+    },
+    {
       "id": "doubao-seed-tts-2.0",
       "parameter_scale": "audio",
       "api_types": ["audio.tts"],
-      "logical_mounts": ["audio.tts.doubao", "audio.tts.{model}"],
+      "logical_mounts": ["audio.tts", "audio.tts.doubao", "audio.tts.{model}"],
       "capabilities": {"streaming": true}
+    },
+    {
+      "id": "doubao-seed-icl-2.0",
+      "parameter_scale": "audio",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.doubao", "audio.tts.{model}"],
+      "capabilities": {"streaming": true}
+    },
+    {
+      "id": "doubao-seed-asr-2.0",
+      "parameter_scale": "audio",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr.doubao", "audio.asr.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "doubao-seed-asr-2.0-fast",
+      "parameter_scale": "audio",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr.doubao", "audio.asr.{model}"],
+      "capabilities": {}
     }
   ],
   "patterns": [],

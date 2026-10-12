@@ -18,6 +18,10 @@ use std::path::Component;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
+/// Label used when a URL form carries no MIME hint. The bytes are not present,
+/// so there is nothing to sniff; the codec needs *some* label to emit.
+pub(crate) const DEFAULT_RESOURCE_MIME: &str = "application/octet-stream";
+
 const ZIP_MIME_TYPES: [&str; 2] = ["application/zip", "application/x-zip-compressed"];
 const REJECTED_ARCHIVE_MIME_TYPES: [&str; 5] = [
     "application/gzip",
@@ -255,6 +259,100 @@ impl fmt::Debug for ResourceMetadata {
     }
 }
 
+/// What a Provider protocol accepts as the *form* of a resource input.
+///
+/// The wire grammar decides how far a `ResourceRef` may travel unchanged:
+///
+/// - `UrlOrBytes`: the field takes either an absolute URL or an inlined
+///   payload, so the reference keeps its native shape. A `Url` stays a URL
+///   (nothing is downloaded), a `Base64` stays bytes, and a `NamedObject` is
+///   handed over as the zone's NDN object URL whenever the zone serves named
+///   objects over HTTP — which avoids inlining a possibly large payload.
+/// - `UrlOnly`: the field is an absolute URL and nothing else. A `Base64`
+///   payload is published into the local NDN store first so that it gains an
+///   object URL of its own.
+/// - `BytesOnly`: the field carries the payload itself (multipart upload,
+///   `bytesBase64Encoded`, ...). A `Url` is downloaded and a `NamedObject` is
+///   read before encoding.
+///
+/// The default is `BytesOnly`: a codec that has not been audited keeps the
+/// historical behaviour of materializing every byte up front.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ResourceInputForm {
+    UrlOrBytes,
+    UrlOnly,
+    #[default]
+    BytesOnly,
+}
+
+impl ResourceInputForm {
+    /// `BytesOnly` protocols must download a `ResourceRef::Url` payload.
+    pub(crate) fn downloads_url_bytes(self) -> bool {
+        matches!(self, Self::BytesOnly)
+    }
+
+    /// `UrlOrBytes` / `UrlOnly` protocols can be handed a URL string.
+    pub(crate) fn accepts_url(self) -> bool {
+        !matches!(self, Self::BytesOnly)
+    }
+
+    /// `UrlOnly` protocols cannot be handed raw bytes at all.
+    pub(crate) fn requires_url(self) -> bool {
+        matches!(self, Self::UrlOnly)
+    }
+}
+
+/// Turns a locally stored object into a URL a third-party Provider can fetch.
+///
+/// A configured public endpoint serves named objects at `{base_url}/{obj_id}`.
+/// That URL is the only form in which an object can leave the zone without
+/// being inlined into the request body, so it is what a URL-accepting codec is
+/// given.
+///
+/// Returning `None` means this zone does not expose named objects over HTTP;
+/// the object then has to be inlined as bytes.
+pub(crate) trait NamedObjectUrlProvider: Send + Sync {
+    fn object_url(&self, obj_id: &ObjId) -> Option<String>;
+}
+
+/// This zone does not serve named objects over HTTP.
+pub(crate) struct DisabledNamedObjectUrlProvider;
+
+impl NamedObjectUrlProvider for DisabledNamedObjectUrlProvider {
+    fn object_url(&self, _obj_id: &ObjId) -> Option<String> {
+        None
+    }
+}
+
+/// Serves objects through an explicitly configured public endpoint.
+pub(crate) struct ZoneNamedObjectUrlProvider {
+    base_url: String,
+}
+
+impl ZoneNamedObjectUrlProvider {
+    pub(crate) fn new(base_url: impl Into<String>) -> Self {
+        let mut base_url = base_url.into();
+        if !base_url.ends_with('/') {
+            base_url.push('/');
+        }
+        Self { base_url }
+    }
+}
+
+impl NamedObjectUrlProvider for ZoneNamedObjectUrlProvider {
+    fn object_url(&self, obj_id: &ObjId) -> Option<String> {
+        let base = self.base_url.trim_end_matches('/');
+        if base.is_empty() {
+            return None;
+        }
+        // Use `ObjId`'s inherent `to_string`, which renders the canonical
+        // `{obj_type}:{hex}` spelling that the `/ndn/{obj_id}` data-plane route
+        // expects (the same form `Serialize` emits and `ObjId::new` round-trips).
+        // Its `Display` impl would instead emit base32, a different spelling.
+        Some(format!("{base}/{}", obj_id.to_string()))
+    }
+}
+
 struct InspectedResource {
     source: ResourceRef,
     metadata: ResourceMetadata,
@@ -287,6 +385,9 @@ pub(crate) struct MaterializedResource {
     key: ResourceKey,
     metadata: ResourceMetadata,
     bytes: Vec<u8>,
+    /// Set when the protocol consumes this resource as a URL. `bytes` is then
+    /// empty — the payload never entered this process.
+    url: Option<String>,
 }
 
 impl MaterializedResource {
@@ -298,19 +399,33 @@ impl MaterializedResource {
         &self.bytes
     }
 
+    /// The URL form of this resource, when the protocol takes one.
+    pub fn url(&self) -> Option<&str> {
+        self.url.as_deref()
+    }
+
     pub fn into_codec_parts(self) -> Result<CodecResourceParts, ResourceError> {
-        let mime = self.metadata.mime.ok_or_else(|| {
-            ResourceError::new(
-                ResourceFailure::MimeInvalid,
-                "materialized resource MIME is required by protocol codecs",
-            )
-        })?;
-        validate_resource_file_name(self.metadata.file_name.as_deref())?;
+        let mime = match self.metadata.mime {
+            Some(mime) => Some(mime),
+            // A URL form does not need a MIME type to be handed over; byte
+            // forms do, because the codec has to label the inline payload.
+            None if self.url.is_some() => None,
+            None => {
+                return Err(ResourceError::new(
+                    ResourceFailure::MimeInvalid,
+                    "materialized resource MIME is required by protocol codecs",
+                ))
+            }
+        };
+        if self.url.is_none() {
+            validate_resource_file_name(self.metadata.file_name.as_deref())?;
+        }
         Ok(CodecResourceParts {
             key: self.key,
             bytes: self.bytes,
             mime,
             file_name: self.metadata.file_name,
+            url: self.url,
         })
     }
 
@@ -335,6 +450,7 @@ impl fmt::Debug for MaterializedResource {
             .field("key", &self.key)
             .field("metadata", &self.metadata)
             .field("content", &"<redacted>")
+            .field("has_url", &self.url.is_some())
             .finish()
     }
 }
@@ -343,8 +459,10 @@ impl fmt::Debug for MaterializedResource {
 pub(crate) struct CodecResourceParts {
     pub key: ResourceKey,
     pub bytes: Vec<u8>,
-    pub mime: String,
+    /// `None` only for URL forms, where the codec supplies its own default.
+    pub mime: Option<String>,
     pub file_name: Option<String>,
+    pub url: Option<String>,
 }
 
 impl fmt::Debug for CodecResourceParts {
@@ -355,6 +473,7 @@ impl fmt::Debug for CodecResourceParts {
             .field("byte_len", &self.bytes.len())
             .field("mime", &self.mime)
             .field("file_name", &self.file_name)
+            .field("has_url", &self.url.is_some())
             .finish()
     }
 }
@@ -650,7 +769,9 @@ pub(crate) struct ResourceManager {
     authorizer: Arc<dyn ResourceAuthorizer>,
     store: Arc<dyn ResourceStore>,
     url_fetcher: Arc<dyn UrlResourceFetcher>,
+    object_urls: Arc<dyn NamedObjectUrlProvider>,
     limits: ResourceLimits,
+    input_form: ResourceInputForm,
 }
 
 impl ResourceManager {
@@ -665,8 +786,28 @@ impl ResourceManager {
             authorizer,
             store,
             url_fetcher,
+            object_urls: Arc::new(DisabledNamedObjectUrlProvider),
             limits,
+            input_form: ResourceInputForm::BytesOnly,
         })
+    }
+
+    /// Declares what the selected Provider protocol accepts as a resource
+    /// input form. The default `BytesOnly` materializes every payload before
+    /// encoding, which is what a codec that writes payload bytes needs.
+    pub fn with_input_form(mut self, input_form: ResourceInputForm) -> Self {
+        self.input_form = input_form;
+        self
+    }
+
+    /// Declares how a locally stored object is exposed to the Provider. Without
+    /// a provider the object can only be handed over as inlined bytes.
+    pub fn with_object_url_provider(
+        mut self,
+        object_urls: Arc<dyn NamedObjectUrlProvider>,
+    ) -> Self {
+        self.object_urls = object_urls;
+        self
     }
 
     pub async fn inspect(
@@ -815,6 +956,8 @@ impl ResourceManager {
         for inspected_resource in inspected.resources {
             let key = ResourceKey::from_ref(&inspected_resource.source);
             let mut metadata = inspected_resource.metadata;
+            // Set when the codec is handed a URL instead of a payload.
+            let mut resource_url: Option<String> = None;
             let bytes = match inspected_resource.source {
                 ResourceRef::Url { url, .. } => {
                     let parsed = reqwest::Url::parse(&url).map_err(|_| {
@@ -830,6 +973,33 @@ impl ResourceManager {
                     self.authorizer
                         .authorize(context, &target, ResourceAccessOperation::FetchUrl)
                         .await?;
+                    if self.input_form.accepts_url() {
+                        // The codec writes this URL into the Provider request
+                        // verbatim, so the payload is never needed on this
+                        // side: the Provider resolves the URL itself. The
+                        // static URL checks already ran in `inspect` — HTTPS
+                        // only, no credentials, no localhost, public literal
+                        // IPs — and the `FetchUrl` authorization above still
+                        // runs, so an operator policy that refuses URL
+                        // resources also refuses pass-through.
+                        //
+                        // No entry is published in `context.resources`: a codec
+                        // that declares a URL form and then still asks for
+                        // bytes fails loudly instead of uploading an empty
+                        // payload. The codec already holds this URL in the
+                        // `ResourceRef` itself, so it does not need the entry.
+                        //
+                        // The marker below is deliberate: this branch performs
+                        // no I/O, so a binary built from this tree is otherwise
+                        // indistinguishable from one that always downloads.
+                        log::debug!(
+                            "resource_url_passthrough: host={} resource_key={} form={:?}",
+                            parsed.host_str().unwrap_or_default(),
+                            key.as_str(),
+                            self.input_form
+                        );
+                        continue;
+                    }
                     let fetched = self
                         .url_fetcher
                         .fetch(&parsed, self.limits.max_single_bytes)
@@ -846,7 +1016,7 @@ impl ResourceManager {
                     metadata.file_name = fetched.file_name.or(metadata.file_name);
                     fetched.bytes
                 }
-                ResourceRef::Base64 { data_base64, .. } => {
+                ResourceRef::Base64 { data_base64, mime } => {
                     self.authorizer
                         .authorize(
                             context,
@@ -854,12 +1024,52 @@ impl ResourceManager {
                             ResourceAccessOperation::ReadContent,
                         )
                         .await?;
-                    BASE64_STANDARD.decode(data_base64).map_err(|_| {
+                    let decoded = BASE64_STANDARD.decode(data_base64).map_err(|_| {
                         ResourceError::new(
                             ResourceFailure::Base64Invalid,
                             "inline resource is not valid base64",
                         )
-                    })?
+                    })?;
+                    if self.input_form.requires_url() {
+                        // A URL-only protocol cannot take these bytes, so give
+                        // the payload an object identity of its own: publish it
+                        // into the local NDN store and hand over that object's
+                        // URL. `WriteArtifact` authorization covers the new
+                        // object, so the publication is accountable.
+                        self.authorizer
+                            .authorize(
+                                context,
+                                &ResourceTarget::Artifact,
+                                ResourceAccessOperation::WriteArtifact,
+                            )
+                            .await?;
+                        let spec = ArtifactSpec {
+                            name: inline_resource_name(&key, &mime),
+                            mime: mime.clone(),
+                            attributes: Map::new(),
+                            embedding: None,
+                        };
+                        validate_artifact_spec(&spec)?;
+                        let stored = self.store.write_artifact(&decoded, &spec).await?;
+                        let stored_url = self.object_urls.object_url(&stored.obj_id);
+                        let Some(stored_url) = stored_url else {
+                            return Err(ResourceError::new(
+                                ResourceFailure::Unavailable,
+                                "Provider protocol requires a URL but this zone does not serve named objects over HTTP",
+                            ));
+                        };
+                        log::debug!(
+                            "resource_inline_published: resource_key={} obj_id={}",
+                            key.as_str(),
+                            stored.obj_id
+                        );
+                        metadata.obj_id = Some(stored.obj_id);
+                        metadata.file_name = stored.file_name.or(metadata.file_name);
+                        resource_url = Some(stored_url);
+                        Vec::new()
+                    } else {
+                        decoded
+                    }
                 }
                 ResourceRef::NamedObject { obj_id } => {
                     let target = ResourceTarget::NamedObject {
@@ -868,25 +1078,56 @@ impl ResourceManager {
                     self.authorizer
                         .authorize(context, &target, ResourceAccessOperation::ReadContent)
                         .await?;
-                    self.store
-                        .read(&obj_id, self.limits.max_single_bytes)
-                        .await?
+                    match self
+                        .input_form
+                        .accepts_url()
+                        .then(|| self.object_urls.object_url(&obj_id))
+                        .flatten()
+                    {
+                        // A URL-accepting protocol prefers the object's own URL
+                        // over inlining its payload: the Provider fetches the
+                        // object from this zone, and the bytes never have to be
+                        // read, base64-encoded, and echoed back out.
+                        Some(object_url) => {
+                            log::debug!(
+                                "resource_named_object_url: obj_id={} resource_key={}",
+                                obj_id,
+                                key.as_str()
+                            );
+                            resource_url = Some(object_url);
+                            Vec::new()
+                        }
+                        None if self.input_form.requires_url() => {
+                            return Err(ResourceError::new(
+                                ResourceFailure::Unavailable,
+                                "Provider protocol requires a URL but this zone does not serve named objects over HTTP",
+                            ));
+                        }
+                        None => {
+                            self.store
+                                .read(&obj_id, self.limits.max_single_bytes)
+                                .await?
+                        }
+                    }
                 }
             };
-            self.validate_materialized(&mut metadata, &bytes)?;
-            total = total.checked_add(bytes.len() as u64).ok_or_else(|| {
-                ResourceError::new(ResourceFailure::LimitExceeded, "resource size overflow")
-            })?;
-            if total > self.limits.max_total_bytes {
-                return Err(ResourceError::new(
-                    ResourceFailure::LimitExceeded,
-                    "resource batch exceeds byte limit",
-                ));
+            if resource_url.is_none() {
+                self.validate_materialized(&mut metadata, &bytes)?;
+                total = total.checked_add(bytes.len() as u64).ok_or_else(|| {
+                    ResourceError::new(ResourceFailure::LimitExceeded, "resource size overflow")
+                })?;
+                if total > self.limits.max_total_bytes {
+                    return Err(ResourceError::new(
+                        ResourceFailure::LimitExceeded,
+                        "resource batch exceeds byte limit",
+                    ));
+                }
             }
             materialized.push(MaterializedResource {
                 key,
                 metadata,
                 bytes,
+                url: resource_url,
             });
         }
         Ok(materialized)
@@ -1450,6 +1691,28 @@ fn inspect_zip(
     Ok(())
 }
 
+/// Names the object under which a `ResourceRef::Base64` payload is published
+/// when the selected protocol needs a URL. The name only has to be a safe file
+/// name — the object's real identity is its content hash, not this string.
+fn inline_resource_name(key: &ResourceKey, mime: &str) -> String {
+    let extension = mime
+        .split_once('/')
+        .map(|(_, subtype)| subtype.split(';').next().unwrap_or_default())
+        .map(|subtype| subtype.trim().replace(['+', '.'], "-"))
+        .filter(|subtype| {
+            !subtype.is_empty()
+                && subtype.len() <= 16
+                && subtype
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        });
+    let digest = key.as_str().rsplit(':').next().unwrap_or("resource");
+    match extension {
+        Some(extension) => format!("resource-{digest}.{extension}"),
+        None => format!("resource-{digest}.bin"),
+    }
+}
+
 fn validate_artifact_spec(spec: &ArtifactSpec) -> Result<(), ResourceError> {
     if spec.name.trim().is_empty()
         || spec.name.len() > 255
@@ -1660,6 +1923,294 @@ mod tests {
         .unwrap()
     }
 
+    /// The zone gateway serves named objects, so objects have a public URL.
+    const ZONE_BASE_URL: &str = "https://zone.example.test/ndn/";
+
+    fn serving_manager(
+        authorizer: Arc<RecordingAuthorizer>,
+        store: Arc<FakeStore>,
+    ) -> ResourceManager {
+        manager(authorizer, store, ResourceLimits::default())
+            .with_object_url_provider(Arc::new(ZoneNamedObjectUrlProvider::new(ZONE_BASE_URL)))
+    }
+
+    #[tokio::test]
+    async fn url_or_bytes_form_passes_the_url_through_without_downloading() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let manager = manager(authorizer.clone(), store, ResourceLimits::default())
+            .with_input_form(ResourceInputForm::UrlOrBytes);
+
+        let source = ResourceRef::url(
+            "https://cdn.example.test/image.png".to_string(),
+            Some("image/png".to_string()),
+        );
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        assert_eq!(inspected.metadata()[0].kind, ResourceKind::Url);
+        assert_eq!(
+            inspected.metadata()[0].file_name.as_deref(),
+            Some("image.png")
+        );
+
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert!(materialized.is_empty());
+        // `FetchUrl` is still authorized: the URL does leave AICC, it is the
+        // Provider that resolves it. Only the network fetch is skipped.
+        assert_eq!(
+            authorizer.operations.lock().unwrap().as_slice(),
+            &[
+                ResourceAccessOperation::Inspect,
+                ResourceAccessOperation::FetchUrl
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn url_only_form_also_passes_the_url_through_without_downloading() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let manager = manager(authorizer.clone(), store, ResourceLimits::default())
+            .with_input_form(ResourceInputForm::UrlOnly);
+
+        let source = ResourceRef::url(
+            "https://cdn.example.test/image.png".to_string(),
+            Some("image/png".to_string()),
+        );
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert!(materialized.is_empty());
+        assert_eq!(
+            authorizer.operations.lock().unwrap().as_slice(),
+            &[
+                ResourceAccessOperation::Inspect,
+                ResourceAccessOperation::FetchUrl
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn bytes_only_form_still_downloads_before_encoding() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        // `BytesOnly` is the default: an unauthorized codec must not change
+        // behaviour.
+        let manager = manager(authorizer.clone(), store, ResourceLimits::default());
+
+        let source = ResourceRef::url(
+            "https://cdn.example.test/image.png".to_string(),
+            Some("image/png".to_string()),
+        );
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert_eq!(materialized[0].bytes(), b"url-data");
+        assert_eq!(materialized[0].url(), None);
+        assert_eq!(
+            authorizer.operations.lock().unwrap().as_slice(),
+            &[
+                ResourceAccessOperation::Inspect,
+                ResourceAccessOperation::FetchUrl
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn named_object_prefers_the_zone_url_over_inlining_its_bytes() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let bytes = b"named-content".to_vec();
+        let stored = stored_named(&bytes, "image/png");
+        let obj_id = stored.obj_id.clone();
+        store.insert(stored, bytes.clone());
+        let manager = serving_manager(authorizer.clone(), store)
+            .with_input_form(ResourceInputForm::UrlOrBytes);
+
+        let source = ResourceRef::NamedObject {
+            obj_id: obj_id.clone(),
+        };
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert_eq!(materialized.len(), 1);
+        // The payload never entered this process.
+        assert_eq!(materialized[0].bytes(), b"");
+        assert_eq!(
+            materialized[0].url(),
+            Some(format!("{ZONE_BASE_URL}{}", obj_id.to_string()).as_str())
+        );
+        assert_eq!(
+            authorizer.operations.lock().unwrap().as_slice(),
+            &[
+                ResourceAccessOperation::Inspect,
+                ResourceAccessOperation::ReadContent
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn named_object_falls_back_to_bytes_when_the_zone_serves_no_objects() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let bytes = b"named-content".to_vec();
+        let stored = stored_named(&bytes, "image/png");
+        let obj_id = stored.obj_id.clone();
+        store.insert(stored, bytes.clone());
+        // No object URL provider: this zone does not expose NDN objects.
+        let manager = manager(authorizer.clone(), store, ResourceLimits::default())
+            .with_input_form(ResourceInputForm::UrlOrBytes);
+
+        let source = ResourceRef::NamedObject { obj_id };
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert_eq!(materialized[0].bytes(), bytes.as_slice());
+        assert_eq!(materialized[0].url(), None);
+    }
+
+    #[tokio::test]
+    async fn url_only_form_rejects_a_named_object_when_the_zone_serves_no_objects() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let stored = stored_named(b"named-content", "image/png");
+        let obj_id = stored.obj_id.clone();
+        store.insert(stored, b"named-content".to_vec());
+        let manager = manager(authorizer, store, ResourceLimits::default())
+            .with_input_form(ResourceInputForm::UrlOnly);
+
+        let source = ResourceRef::NamedObject { obj_id };
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let error = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap_err();
+        assert_eq!(error.failure, ResourceFailure::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn url_only_form_publishes_base64_payloads_so_they_gain_an_object_url() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let manager = serving_manager(authorizer.clone(), store.clone())
+            .with_input_form(ResourceInputForm::UrlOnly);
+
+        let payload = b"inline-payload";
+        let source = ResourceRef::Base64 {
+            mime: "image/png".to_string(),
+            data_base64: BASE64_STANDARD.encode(payload),
+        };
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert_eq!(materialized[0].bytes(), b"");
+        let url = materialized[0].url().unwrap();
+        assert!(
+            url.starts_with(ZONE_BASE_URL),
+            "unexpected object URL: {url}"
+        );
+        // `WriteArtifact` is authorized for the object we just created.
+        assert_eq!(
+            authorizer.operations.lock().unwrap().as_slice(),
+            &[
+                ResourceAccessOperation::Inspect,
+                ResourceAccessOperation::ReadContent,
+                ResourceAccessOperation::WriteArtifact
+            ]
+        );
+        // The URL must carry the canonical `{obj_type}:{hex}` spelling (the one
+        // `ObjId::to_string` emits), not the base32 spelling of `Display`.
+        let advertised = url.strip_prefix(ZONE_BASE_URL).unwrap();
+        assert!(
+            advertised.contains(':'),
+            "object URL must use the `{{obj_type}}:{{hex}}` form, got {advertised}"
+        );
+        // The payload really landed in the store under the advertised object.
+        let stored = store.files.lock().unwrap().get(advertised).cloned();
+        assert_eq!(stored.map(|entry| entry.1), Some(payload.to_vec()));
+    }
+
+    #[tokio::test]
+    async fn url_or_bytes_and_bytes_only_forms_keep_base64_inline() {
+        for form in [ResourceInputForm::UrlOrBytes, ResourceInputForm::BytesOnly] {
+            let authorizer = Arc::new(RecordingAuthorizer::default());
+            let store = Arc::new(FakeStore::default());
+            let manager = serving_manager(authorizer.clone(), store).with_input_form(form);
+
+            let payload = b"inline-payload";
+            let source = ResourceRef::Base64 {
+                mime: "image/png".to_string(),
+                data_base64: BASE64_STANDARD.encode(payload),
+            };
+            let inspected = manager
+                .inspect(&context(), std::slice::from_ref(&source))
+                .await
+                .unwrap();
+            let materialized = manager
+                .materialize_after_provider_selected(&context(), "provider-call", inspected)
+                .await
+                .unwrap();
+            assert_eq!(materialized[0].bytes(), payload.as_slice(), "{form:?}");
+            assert_eq!(materialized[0].url(), None, "{form:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bytes_only_form_reads_named_object_bytes_even_when_the_zone_serves_objects() {
+        let authorizer = Arc::new(RecordingAuthorizer::default());
+        let store = Arc::new(FakeStore::default());
+        let bytes = b"named-content".to_vec();
+        let stored = stored_named(&bytes, "image/png");
+        let obj_id = stored.obj_id.clone();
+        store.insert(stored, bytes.clone());
+        let manager = serving_manager(authorizer, store);
+
+        let source = ResourceRef::NamedObject { obj_id };
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert_eq!(materialized[0].bytes(), bytes.as_slice());
+        assert_eq!(materialized[0].url(), None);
+    }
+
     #[tokio::test]
     async fn inspect_named_object_reads_metadata_only_then_materializes_after_selection() {
         let authorizer = Arc::new(RecordingAuthorizer::default());
@@ -1692,7 +2243,7 @@ mod tests {
         let parts = materialized[0].clone().into_codec_parts().unwrap();
         assert_eq!(parts.key, ResourceKey::from_ref(&source));
         assert_eq!(parts.bytes, bytes);
-        assert_eq!(parts.mime, "image/png");
+        assert_eq!(parts.mime.as_deref(), Some("image/png"));
         assert_eq!(parts.file_name.as_deref(), Some("input.bin"));
         assert_eq!(
             authorizer.operations.lock().unwrap().as_slice(),
@@ -1787,7 +2338,7 @@ mod tests {
             .unwrap();
         assert_eq!(parts.key, ResourceKey::from_ref(&source));
         assert_eq!(parts.bytes, b"url-data");
-        assert_eq!(parts.mime, "image/png");
+        assert_eq!(parts.mime.as_deref(), Some("image/png"));
         assert_eq!(parts.file_name.as_deref(), Some("image.png"));
         assert!(!format!("{parts:?}").contains("url-data"));
     }
@@ -2094,6 +2645,7 @@ mod tests {
                 attributes: Map::new(),
             },
             bytes: b"super-secret".to_vec(),
+            url: None,
         };
         let debug = format!("{resource:?}");
         assert!(!debug.contains("super-secret"));

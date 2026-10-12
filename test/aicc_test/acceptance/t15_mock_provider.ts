@@ -22,6 +22,7 @@ type DiscoveryContract = {
   required_headers?: Record<string, string>;
   response_shape?: "openai" | "anthropic" | "gemini" | "sn";
   openai_model_capabilities?: boolean;
+  volcengine_ark_capabilities?: boolean;
 };
 
 export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<
@@ -64,7 +65,14 @@ export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<
   },
   glm: { mode: "catalog_only" },
   deepseek: { mode: "machine_api", path: "/models", response_shape: "openai" },
-  doubao: { mode: "catalog_only" },
+  "doubao-agent-plan": { mode: "catalog_only" },
+  doubao: {
+    mode: "machine_api",
+    path: "/api/v3/models",
+    response_shape: "openai",
+    volcengine_ark_capabilities: true,
+  },
+  "doubao-speech": { mode: "catalog_only" },
   qwen: { mode: "catalog_only" },
   "sn-ai-provider": {
     mode: "machine_api",
@@ -149,22 +157,23 @@ function rewriteMockUrls(
   value: unknown,
   authority: string,
   endpoint: string,
+  artifactAuthority = authority,
 ): unknown {
   if (typeof value === "string") {
-    return value.replaceAll(
+    return value.replaceAll("http://mock-artifact", `http://${artifactAuthority}`).replaceAll(
       "http://mock/{endpoint}",
       `http://${authority}/${endpoint}`,
     )
       .replaceAll("http://mock", `http://${authority}`);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => rewriteMockUrls(item, authority, endpoint));
+    return value.map((item) => rewriteMockUrls(item, authority, endpoint, artifactAuthority));
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map((
         [key, item],
-      ) => [key, rewriteMockUrls(item, authority, endpoint)]),
+      ) => [key, rewriteMockUrls(item, authority, endpoint, artifactAuthority)]),
     );
   }
   return value;
@@ -179,7 +188,11 @@ function discoveryFixture(
     provider.official_first_party_model_ids ?? {},
   ).flat();
   const modelIds = [
-    ...new Set([...Object.values(provider.test_model_ids), ...officialModels]),
+    ...new Set([
+      ...Object.values(provider.test_model_ids),
+      ...provider.contracts.flatMap((contract) => Object.values(contract.test_model_ids ?? {})),
+      ...officialModels,
+    ]),
   ];
   if (shape === "sn") {
     return {
@@ -196,7 +209,7 @@ function discoveryFixture(
     return {
       models: modelIds.map((id) => ({
         name: `models/${id}`,
-        baseModelId: `models/${id}`,
+        baseModelId: id,
       })),
       nextPageToken: "",
     };
@@ -232,6 +245,46 @@ function discoveryFixture(
           supports_reasoning: (provider.official_variant_rules ?? []).some(
             (rule) => rule.model_ids.includes(id),
           ),
+        }
+        : {}),
+      ...(T15_PROVIDER_DISCOVERY_CONTRACTS[provider.provider_driver]
+          .volcengine_ark_capabilities
+        ? {
+          task_type: [
+            ...(provider.official_first_party_model_ids?.llm?.includes(id)
+              ? ["TextGeneration"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["vision.ocr"]?.includes(id)
+              ? ["VisualQuestionAnswering"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["embedding.multimodal"]?.includes(id)
+              ? ["ImageEmbedding"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["image.txt2img"]?.includes(id)
+              ? ["TextToImage"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["image.img2img"]?.includes(id)
+              ? ["ImageToImage"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["video.txt2video"]?.includes(id)
+              ? ["MultimodalToVideo"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["video.video2video"]?.includes(id)
+              ? ["VideoEditing"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["video.extend"]?.includes(id)
+              ? ["VideoExtension"]
+              : []),
+          ],
+          domain: id.includes("seedream")
+            ? "ImageGeneration"
+            : id.includes("seedance")
+            ? "VideoGeneration"
+            : id.includes("embedding")
+            ? "Embedding"
+            : id.startsWith("doubao-seed")
+            ? "VLM"
+            : "LLM",
         }
         : {}),
       ...(provider.provider_driver === "openrouter"
@@ -308,7 +361,10 @@ function streamFixture(contract: ProviderProtocolContract): string {
   }
 }
 
-export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
+export function createT15MockHandler(
+  catalog: ProviderProtocolCatalog,
+  options: { artifactPort?: number } = {},
+) {
   const catalogDrivers = new Set(
     catalog.providers.map((provider) => provider.provider_driver),
   );
@@ -336,6 +392,34 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
   ): Promise<void> => {
     try {
       const url = new URL(request.url ?? "/", "http://mock.invalid");
+      if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
+        if (request.headers.authorization) {
+          return json(response, 400, { error: "artifact request leaked Provider authorization" });
+        }
+        if (
+          url.pathname.startsWith("/artifacts/doubao") &&
+          url.searchParams.get("X-Tos-Signature") !== "t15-signature"
+        ) {
+          return json(response, 403, { error: "signed artifact query was not preserved" });
+        }
+        if (url.pathname.includes("unavailable")) {
+          return json(response, 404, { error: "artifact unavailable" });
+        }
+        const mime = url.pathname.endsWith(".png")
+          ? "image/png"
+          : url.pathname.endsWith(".jpg") || url.pathname.endsWith(".jpeg")
+          ? "image/jpeg"
+          : url.pathname.endsWith(".wav")
+          ? "audio/wav"
+          : "video/mp4";
+        response.writeHead(200, { "content-type": mime });
+        response.end(url.pathname.startsWith("/artifacts/doubao")
+          ? url.pathname.endsWith(".mp4")
+            ? Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0])
+            : Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+          : Buffer.from("mock-artifact"));
+        return;
+      }
       if (url.pathname === "/__mock/health") {
         return json(response, 200, { ok: true, revision: catalog.revision });
       }
@@ -583,6 +667,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
               contract.async_result_fixture ?? {},
               request.headers.host ?? "127.0.0.1",
               url.pathname.replace(/^\//, ""),
+              artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
             ),
           );
         }
@@ -627,13 +712,18 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           contract.async_result_fixture ?? {},
           request.headers.host ?? "127.0.0.1",
           url.pathname.replace(/^\//, ""),
+          artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
         ) as Record<string, unknown>;
         const task = (result.task ?? {}) as Record<string, unknown>;
         task.status = status;
         if (status === "failed") task.error = { code: "content_rejected", message: "Video content was rejected" };
         if (selection.scenario === "async_artifact_unavailable") {
           task.content = {
-            url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
+            url: artifactUrl(
+              request.headers.host ?? "127.0.0.1",
+              options.artifactPort,
+              "/artifacts/unavailable.mp4",
+            ),
           };
         }
         result.task = task;
@@ -698,17 +788,41 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         if (errors.length) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         if (selection.scenario === "async_failed") return json(response, 200, { output: { task_id: "qwen_task_mock_1", task_status: "FAILED", code: "DataInspectionFailed", message: "Generated media was blocked" } });
         if (selection.scenario === "async_poll_timeout") return json(response, 200, { output: { task_id: "qwen_task_mock_1", task_status: "RUNNING" } });
-        return json(response, 200, rewriteMockUrls(contract.async_result_fixture ?? {}, request.headers.host ?? "127.0.0.1", ""));
+        if (
+          selection.scenario === "async_artifact_unavailable" &&
+          prior.length > 0
+        ) {
+          return json(response, 200, {
+            request_id: "qwen_request_mock_1",
+            output: {
+              task_id: "qwen_task_mock_1",
+              task_status: "UNKNOWN",
+              code: "InvalidParameter",
+              message: "TaskId does not exist or has expired.",
+            },
+          });
+        }
+        const result = rewriteMockUrls(
+          contract.async_result_fixture ?? {},
+          request.headers.host ?? "127.0.0.1",
+          "",
+          artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
+        ) as Record<string, unknown>;
+        return json(response, 200, result);
       }
       if (
         contract.async_protocol === "doubao_video" &&
-        url.pathname === "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" &&
-        (request.method === "GET" || request.method === "DELETE")
+        contract.async_steps?.some((step) =>
+          step.path === url.pathname && step.http_method === request.method
+        )
       ) {
+        const taskId = typeof contract.success_fixture?.id === "string"
+          ? contract.success_fixture.id
+          : "doubao_video_mock_1";
         if (request.method === "DELETE") {
           const errors = captureAuxiliary("cancel");
           if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
-          return json(response, 200, { id: "doubao_video_mock_1", status: "cancelled" });
+          return json(response, 200, { id: taskId, status: "cancelled" });
         }
         const prior = requests.filter((captured) =>
           captured.selection.contract_id === selection!.contract_id &&
@@ -719,20 +833,24 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         const errors = captureAuxiliary(step);
         if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         if (selection.scenario === "async_failed") {
-          return json(response, 200, { id: "doubao_video_mock_1", status: "failed", error: { code: "OutputVideoSensitiveContentDetected", message: "Generated video failed content inspection" } });
+          return json(response, 200, { id: taskId, status: "failed", error: { code: "OutputVideoSensitiveContentDetected", message: "Generated video failed content inspection" } });
         }
         if (selection.scenario === "async_poll_timeout") {
-          return json(response, 200, { id: "doubao_video_mock_1", status: "processing" });
+          return json(response, 200, { id: taskId, status: "processing" });
         }
         return json(response, 200, step === "poll"
-          ? { id: "doubao_video_mock_1", status: "succeeded" }
+          ? { id: taskId, status: "succeeded" }
           : {
-            id: "doubao_video_mock_1",
+            id: taskId,
             status: "succeeded",
             duration: 5, usage: { completion_tokens: 100, total_tokens: 100 },
             content: { video_url: selection.scenario === "async_artifact_unavailable"
-              ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-              : `http://${request.headers.host}/artifacts/doubao.mp4` },
+              ? artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/unavailable.mp4",
+              )
+              : `http://${artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort)}/artifacts/doubao.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature` },
           });
       }
       if (
@@ -774,10 +892,15 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           contract.async_result_fixture ?? {},
           request.headers.host ?? "127.0.0.1",
           url.pathname.replace(/^\//, ""),
+          artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
         ) as Record<string, unknown>;
         if (selection.scenario === "async_artifact_unavailable") {
           result.video_result = [{
-            url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
+            url: artifactUrl(
+              request.headers.host ?? "127.0.0.1",
+              options.artifactPort,
+              "/artifacts/unavailable.mp4",
+            ),
           }];
         }
         return json(response, 200, result);
@@ -815,8 +938,16 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
               generatedSamples: [{
                 video: {
                   uri: selection.scenario === "async_artifact_unavailable"
-                    ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-                    : `http://${request.headers.host}/artifacts/result.mp4`,
+                    ? artifactUrl(
+                      request.headers.host ?? "127.0.0.1",
+                      options.artifactPort,
+                      "/artifacts/unavailable.mp4",
+                    )
+                    : artifactUrl(
+                      request.headers.host ?? "127.0.0.1",
+                      options.artifactPort,
+                      "/artifacts/result.mp4",
+                    ),
                 },
               }],
             },
@@ -883,26 +1014,171 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         return json(response, 200, {
           file: {
             download_url: selection.scenario === "async_artifact_unavailable"
-              ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-              : `http://${request.headers.host}/artifacts/result.mp4`,
+              ? artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/unavailable.mp4",
+              )
+              : artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/result.mp4",
+              ),
           },
           base_resp: { status_code: 0, status_msg: "success" },
         });
       }
-      if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
-        if (url.pathname.includes("unavailable")) {
-          return json(response, 404, { error: "artifact unavailable" });
+      if (
+        contract.async_protocol === "doubao_asr" &&
+        (url.pathname === contract.path ||
+          contract.async_steps?.some((step) =>
+            step.path === url.pathname && step.http_method === request.method
+          ))
+      ) {
+        // Doubao AUC speech recognition carries task state in response headers:
+        // submit only returns the task id, the query path reports status, and the
+        // JSON transcript body only ever arrives on the final query.
+        const asrErrorFixture = catalog.error_fixtures[
+          contract.error_fixture_key ?? selection.provider_driver
+        ]?.find((fixture) => fixture.scenario === selection?.scenario);
+        if (asrErrorFixture) {
+          // Record the wire before answering: the official error fixture is a
+          // real Provider response, so the audit must still show the request
+          // AICC sent rather than a phantom "no request received".
+          const bytes = await bodyBytes(request);
+          requests.push({
+            received_at: new Date().toISOString(),
+            selection,
+            method: request.method ?? "",
+            pathname: url.pathname,
+            query: Object.fromEntries(url.searchParams),
+            headers: safeHeaders(request.headers),
+            body: parseRequestBody(request, bytes),
+            validation_errors: [],
+          });
+          return json(
+            response,
+            asrErrorFixture.status,
+            asrErrorFixture.body,
+            asrErrorFixture.headers,
+          );
         }
-        const mime = url.pathname.endsWith(".png")
-          ? "image/png"
-          : url.pathname.endsWith(".jpg") || url.pathname.endsWith(".jpeg")
-          ? "image/jpeg"
-          : url.pathname.endsWith(".wav")
-          ? "audio/wav"
-          : "video/mp4";
-        response.writeHead(200, { "content-type": mime });
-        response.end(Buffer.from("mock-artifact"));
-        return;
+        if (url.pathname === contract.path) {
+          const bytes = await bodyBytes(request);
+          const parsedBody = parseRequestBody(request, bytes);
+          const captured: CapturedProviderRequest = {
+            method: request.method ?? "",
+            pathname: url.pathname,
+            query: url.searchParams,
+            headers: new Headers(request.headers as Record<string, string>),
+            body: parsedBody,
+          };
+          const submitErrors = validateProviderRequest(
+            contract,
+            captured,
+            selection.api_type ?? contract.api_types[0],
+          );
+          requests.push({
+            received_at: new Date().toISOString(),
+            selection,
+            method: captured.method,
+            pathname: captured.pathname,
+            query: Object.fromEntries(captured.query),
+            headers: safeHeaders(request.headers),
+            body: parsedBody,
+            validation_errors: submitErrors,
+          });
+          if (submitErrors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors: submitErrors,
+            });
+          }
+          const echoed = request.headers["x-api-request-id"];
+          return json(response, 200, {}, {
+            "x-api-status-code": "20000000",
+            "x-api-message": "OK",
+            "x-api-request-id": Array.isArray(echoed)
+              ? echoed[0]
+              : (echoed ?? "doubao-asr-task-mock"),
+          });
+        }
+        await bodyBytes(request);
+        const prior = requests.filter((captured) =>
+          captured.selection.contract_id === selection!.contract_id &&
+          captured.pathname === url.pathname && captured.method === request.method
+        );
+        if (selection.scenario === "async_failed") {
+          const errors = captureAuxiliary("poll");
+          if (errors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors,
+            });
+          }
+          return json(response, 200, {}, {
+            "x-api-status-code": "50000000",
+            "x-api-message": "mock speech recognition failed",
+            "x-tt-logid": "mock-doubao-asr-failed",
+          });
+        }
+        const step = prior.length === 0 ? "poll" : "result";
+        const errors = captureAuxiliary(step);
+        if (errors.length > 0) {
+          return json(response, 400, {
+            type: "t15_mock_contract_violation",
+            errors,
+          });
+        }
+        if (selection.scenario === "async_poll_timeout") {
+          return json(response, 200, {}, {
+            "x-api-status-code": "20000002",
+            "x-api-message": "queued",
+          });
+        }
+        // Response-corruption scenarios must reach the step that carries the
+        // transcript so the real Adapter has to reject a malformed/typed-wrong
+        // AUC result instead of the Mock silently returning a valid task.
+        if (step === "result") {
+          if (selection.scenario === "malformed_response") {
+            response.writeHead(200, {
+              "content-type": "application/json",
+              "x-api-status-code": "20000000",
+              "x-api-message": "OK",
+            });
+            response.end('{"malformed":');
+            return;
+          }
+          if (selection.scenario === "wrong_content_type") {
+            response.writeHead(200, {
+              "content-type": contract.success_content_type === "text/plain"
+                ? "application/octet-stream"
+                : "text/plain",
+              "x-api-status-code": "20000000",
+              "x-api-message": "OK",
+            });
+            response.end(JSON.stringify(contract.success_fixture ?? {}));
+            return;
+          }
+          if (selection.scenario === "missing_required_response_field") {
+            return json(response, 200, {}, {
+              "x-api-status-code": "20000000",
+              "x-api-message": "OK",
+            });
+          }
+        }
+        return json(
+          response,
+          200,
+          step === "poll"
+            ? {}
+            : structuredClone(contract.success_fixture ?? {}),
+          {
+            "x-api-status-code": step === "poll" ? "20000002" : "20000000",
+            "x-api-message": step === "poll" ? "queued" : "OK",
+            "x-tt-logid": "mock-doubao-asr-result",
+          },
+        );
       }
 
       const bytes = await bodyBytes(request);
@@ -919,6 +1195,22 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         captured,
         selection.api_type ?? contract.api_types[0],
       );
+      if (
+        ["doubao", "doubao-agent-plan"].includes(selection.provider_driver) &&
+        ["vision.ocr", "vision.caption"].includes(selection.api_type ?? "") &&
+        typeof parsedBody === "object" && parsedBody !== null &&
+        typeof (parsedBody as Record<string, unknown>).model === "string" &&
+        ((parsedBody as Record<string, unknown>).model as string).startsWith("doubao-seed-")
+      ) {
+        const body = parsedBody as Record<string, unknown>;
+        const reasoning = body.reasoning as Record<string, unknown> | undefined;
+        if (body.max_output_tokens !== 2048) {
+          validationErrors.push("Doubao Seed derived vision requests require max_output_tokens=2048");
+        }
+        if (reasoning?.effort !== "minimal") {
+          validationErrors.push("Doubao Seed derived vision requests require reasoning.effort=minimal");
+        }
+      }
       requests.push({
         received_at: new Date().toISOString(),
         selection,
@@ -1067,6 +1359,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         rawFixture,
         request.headers.host ?? "127.0.0.1",
         url.pathname.replace(/^\//, ""),
+        artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
       );
       return json(response, 200, fixture);
     } catch (error) {
@@ -1075,11 +1368,21 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
   };
 }
 
-function port(args: string[]): number {
-  const index = args.indexOf("--port");
-  const value = index >= 0 ? Number(args[index + 1]) : 18081;
+function artifactAuthority(authority: string, artifactPort?: number): string {
+  if (!artifactPort) return authority;
+  const hostname = new URL(`http://${authority}`).hostname;
+  return hostname.includes(":") ? `[${hostname}]:${artifactPort}` : `${hostname}:${artifactPort}`;
+}
+
+function artifactUrl(authority: string, artifactPort: number | undefined, path: string): string {
+  return `http://${artifactAuthority(authority, artifactPort)}${path}`;
+}
+
+function port(args: string[], name = "--port", fallback = 18081): number {
+  const index = args.indexOf(name);
+  const value = index >= 0 ? Number(args[index + 1]) : fallback;
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new Error("--port must be 1..65535");
+    throw new Error(`${name} must be 1..65535`);
   }
   return value;
 }
@@ -1090,13 +1393,22 @@ if (
 ) {
   const catalog = await loadProviderProtocolCatalog();
   const listenPort = port(process.argv.slice(2));
-  const handler = createT15MockHandler(catalog);
+  const artifactPort = port(process.argv.slice(2), "--artifact-port", listenPort + 1);
+  const handler = createT15MockHandler(catalog, { artifactPort });
   const server = createServer((request, response) =>
+    void handler(request, response)
+  );
+  const artifactServer = createServer((request, response) =>
     void handler(request, response)
   );
   server.listen(listenPort, "127.0.0.1", () => {
     process.stdout.write(
       `T1.5 Provider protocol mock listening on http://127.0.0.1:${listenPort}\n`,
+    );
+  });
+  artifactServer.listen(artifactPort, "127.0.0.1", () => {
+    process.stdout.write(
+      `T1.5 artifact mock listening on http://127.0.0.1:${artifactPort}\n`,
     );
   });
 }

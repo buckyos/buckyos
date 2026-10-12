@@ -8,6 +8,7 @@ export type ProviderInventoryRefreshEvidence = {
   before_inventory_revision?: string;
   refresh_inventory_revision?: string;
   after_inventory_revision?: string;
+  unmatched_count?: number;
 };
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -18,6 +19,12 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 export async function refreshProviderInventoriesUntilSuccess(input: {
@@ -61,6 +68,7 @@ export async function refreshProviderInventoriesUntilSuccess(input: {
           attempt_count: attempt,
           before_inventory_revision: optionalString(inventory.inventory_revision),
           refresh_inventory_revision: optionalString(raw.inventory_revision),
+          unmatched_count: optionalNonNegativeInteger(raw.unmatched_count),
         };
       } catch {
         if (attempt === input.maxAttempts) {

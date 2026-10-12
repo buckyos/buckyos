@@ -18,6 +18,33 @@ export type GatewaySession = {
   systemConfig: RpcClient;
 };
 
+export async function openAiccArtifact(input: {
+  gatewayUrl: string;
+  sessionToken: string;
+  url: string;
+  artifactId?: string;
+}): Promise<Response> {
+  const gatewayUrl = input.gatewayUrl.replace(/\/+$/, "");
+  const response = await fetch(`${gatewayUrl}/kapi/aicc/artifact/open`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${input.sessionToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      url: input.url,
+      ...(input.artifactId ? { artifact_id: input.artifactId } : {}),
+    }),
+  });
+  if (!response.ok) {
+    const detail = (await response.text()).trim().replace(/\s+/g, " ").slice(0, 512);
+    throw new Error(
+      `AICC artifact download failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  return response;
+}
+
 function chatMessages(
   payload: Record<string, unknown> | undefined,
   input: Record<string, unknown> | undefined,
@@ -342,6 +369,52 @@ export async function loginSudoSystemConfig(
     `${gatewayUrl}/kapi/system_config`,
     sessionToken,
   ) as RpcClient;
+}
+
+function isExpiredTokenError(error: unknown): boolean {
+  const diagnostic = String(error).toLowerCase();
+  return diagnostic.includes("expiredsignature") ||
+    (diagnostic.includes("invalid token") && diagnostic.includes("expired"));
+}
+
+export function reauthenticatingRpcClient(
+  initial: RpcClient,
+  reconnect: () => Promise<RpcClient>,
+): RpcClient {
+  let current = initial;
+  let refresh: Promise<RpcClient> | undefined;
+  const refreshClient = (expired: RpcClient): Promise<RpcClient> => {
+    if (current !== expired) return Promise.resolve(current);
+    if (!refresh) {
+      refresh = reconnect().then((client) => {
+        current = client;
+        return client;
+      }).finally(() => {
+        refresh = undefined;
+      });
+    }
+    return refresh;
+  };
+  return {
+    async call(method, params) {
+      const client = current;
+      try {
+        return await client.call(method, params);
+      } catch (error) {
+        if (!isExpiredTokenError(error)) throw error;
+        return await (await refreshClient(client)).call(method, params);
+      }
+    },
+  };
+}
+
+export async function loginRefreshingSudoSystemConfig(
+  credentials: GatewayCredentials,
+): Promise<RpcClient> {
+  return reauthenticatingRpcClient(
+    await loginSudoSystemConfig(credentials),
+    () => loginSudoSystemConfig(credentials),
+  );
 }
 
 export async function loginSudoToken(

@@ -13,7 +13,7 @@ import {
   callImagesGenerate,
   callLlmChatHelper,
   loginGateway,
-  loginSudoSystemConfig,
+  loginRefreshingSudoSystemConfig,
   loginSudoToken,
   type GatewaySession,
   type RpcClient,
@@ -34,6 +34,16 @@ import type {
 import { CANONICAL_API_TYPES, methodsForApiType } from "./canonical.ts";
 import { buildStaticManifest } from "./cases.ts";
 import { buildT1Coverage } from "./coverage.ts";
+import { validateProviderBaseline } from "./manifest.ts";
+import {
+  assertExactOnlyIsUnmounted,
+  assertRuntimeLogicalEntrypoint,
+  buildRouteExposureRuntimeCells,
+  loadLogicalEntrypointBaseline,
+  loadRouteExposureContract,
+  logicalDefinitionsFromModelsList,
+  type RuntimeLogicalDefinition,
+} from "./route_exposure.ts";
 import { queryRouteTraces, queryUsageEvents } from "./usage_audit.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
 import { withMockQuotaTruth } from "./quota_transaction.ts";
@@ -216,7 +226,7 @@ async function options(args: string[]): Promise<Options> {
 function wants(input: Pick<Options, "caseIds">, caseId: string): boolean {
   const isCurrentT1Case = buildStaticManifest().some((testCase) =>
     testCase.layer === "T1" && testCase.case_id === caseId
-  );
+  ) || caseId.startsWith("t1.route.exposure.");
   return isCurrentT1Case && (input.caseIds.length === 0 || input.caseIds.includes(caseId));
 }
 
@@ -291,7 +301,7 @@ async function restartAicc(session: GatewaySession, input: Options): Promise<str
     input.restartViaDocker ? "docker" : command,
     {
       args: input.restartViaDocker
-        ? ["run", "--rm", "--pid=host", "alpine:latest", command, ...args]
+        ? ["run", "--rm", "--pid=host", "--privileged", "alpine:latest", command, ...args]
         : args,
       stdout: "piped",
       stderr: "piped",
@@ -375,8 +385,18 @@ async function provisionSecondTenant(
   });
   input.otherTenantSessionToken = secondary.sessionToken;
   return async () => {
+    const cleanupToken = await loginSudoToken({
+      gatewayUrl: input.gatewayUrl,
+      username: input.username,
+      password: input.password,
+      appId: input.appId,
+    });
+    const cleanupControlPanel = new buckyos.kRPCClient(
+      `${input.gatewayUrl}/kapi/control-panel`,
+      cleanupToken,
+    ) as RpcClient;
     try {
-      await controlPanel.call("user.delete", { user_id: userId });
+      await cleanupControlPanel.call("user.delete", { user_id: userId });
     } catch (error) {
       if (!String(error).includes("scheduler")) throw error;
     }
@@ -493,6 +513,7 @@ async function waitForMockInventories(
     `dv-minimax-${suffix}`,
     `dv-openrouter-${suffix}`,
     `dv-typesafe-${suffix}`,
+    `dv-doubao-speech-${suffix}`,
     `dv-fal-${suffix}`,
     `dv-custom-openai-${suffix}`,
     `dv-custom-claude-${suffix}`,
@@ -528,6 +549,11 @@ async function waitForMockInventories(
       item.provider_instance_name === `dv-typesafe-${suffix}` &&
       item.models.some((model) => model.api_types.includes("decision"))
     );
+    const doubaoSpeechReady = selected.some((item) =>
+      item.provider_instance_name === `dv-doubao-speech-${suffix}` &&
+      item.models.some((model) => model.api_types.includes("audio.tts")) &&
+      item.models.some((model) => model.api_types.includes("audio.asr"))
+    );
     const customReady = ["openai", "claude", "gemini"].every((protocol) =>
       selected.some((item) =>
         item.provider_instance_name === `dv-custom-${protocol}-${suffix}` && item.models.length > 0
@@ -535,7 +561,8 @@ async function waitForMockInventories(
     );
     if (
       expected.every((name) => selected.some((item) => item.provider_instance_name === name)) &&
-      openAiReady && geminiReady && falReady && typesafeReady && customReady
+      openAiReady && geminiReady && falReady && typesafeReady && customReady &&
+      doubaoSpeechReady
     ) {
       return selected;
     }
@@ -746,6 +773,165 @@ function mockCells(values: ProviderInventory[]): MatrixCell[] {
     }
   }
   return cells;
+}
+
+function routeExposureCaseId(cell: {
+  provider_driver: string;
+  model_pattern: string;
+  api_type: string;
+}): string {
+  return `t1.route.exposure.${cell.provider_driver}.${cell.model_pattern}.${cell.api_type}`
+    .toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+}
+
+function routeExposurePatternMatches(pattern: string, value: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`, "i").test(value);
+}
+
+async function runRouteExposureContractCases(args: {
+  session: GatewaySession;
+  runId: string;
+  inventories: ProviderInventory[];
+  logicalDefinitions: RuntimeLogicalDefinition[];
+  input: Options;
+}): Promise<CaseReport[]> {
+  const baseline = validateProviderBaseline(JSON.parse(
+    await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
+  ));
+  const contract = await loadRouteExposureContract();
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
+  const cells = buildRouteExposureRuntimeCells({
+    baseline,
+    contract,
+    logicalEntrypoints,
+    inventories: args.inventories,
+  });
+  const reports: CaseReport[] = [];
+  for (const cell of cells) {
+    const caseId = routeExposureCaseId(cell);
+    if (!wants(args.input, caseId)) continue;
+    const report = await executeT1Probe({
+      runId: args.runId,
+      caseId,
+      method: cell.exposure.mode === "logical_routable"
+        ? "route.resolve"
+        : methodsForApiType(cell.api_type)[0],
+      apiType: cell.api_type,
+      failureClass: "baseline_mismatch",
+      execute: async () => {
+        if (cell.exposure.mode === "logical_routable") {
+          assertRuntimeLogicalEntrypoint(
+            cell.exposure.logical_entrypoint!,
+            cell.api_type,
+            args.logicalDefinitions,
+          );
+          const inventory = args.inventories.find((item) =>
+            item.provider_instance_name === cell.provider_instance
+          )!;
+          const exactModelWeights = Object.fromEntries(inventory.models
+            .filter((model) => model.api_types.includes(cell.api_type))
+            .map((model) => [model.exact_model, model.exact_model === cell.exact_model ? 1_000 : 0]));
+          const response = await args.session.aicc.call("route.resolve", {
+            request_id: `${args.runId}:${caseId}`,
+            api_type: cell.api_type,
+            logical_model: cell.exposure.logical_entrypoint,
+            requirements: {},
+            disable: {},
+            policy: { allowed_provider_instances: [cell.provider_instance] },
+            session_overlay: { global_exact_model_weights: exactModelWeights },
+          }) as Record<string, unknown>;
+          if (response.provider_instance_name !== cell.provider_instance) {
+            throw new Error(`logical entrypoint selected ${String(response.provider_instance_name)}, expected ${cell.provider_instance}`);
+          }
+          if (typeof response.selected_exact_model !== "string") {
+            throw new Error("logical entrypoint returned no exact model");
+          }
+          if (response.selected_exact_model !== cell.exact_model) {
+            throw new Error(`logical entrypoint did not expose representative ${cell.exact_model}; selected ${response.selected_exact_model}`);
+          }
+          if (response.provider_profile_id !== cell.provider_profile_id) {
+            throw new Error(`logical entrypoint selected profile ${String(response.provider_profile_id)}, expected ${cell.provider_profile_id}`);
+          }
+          if (typeof response.provider_model_id !== "string" ||
+            !routeExposurePatternMatches(cell.model_pattern, response.provider_model_id)) {
+            throw new Error(`logical entrypoint selected model rule ${String(response.provider_model_id)}, expected ${cell.model_pattern}`);
+          }
+          if (typeof response.protocol_adapter_id !== "string" || !response.protocol_adapter_id ||
+            typeof response.operation !== "string" || !response.operation) {
+            throw new Error("logical route has no protocol adapter or operation");
+          }
+          const trace = response.route_trace as { final_model?: unknown } | undefined;
+          if (!trace || trace.final_model !== response.selected_exact_model) {
+            throw new Error("logical route trace does not identify the selected exact model");
+          }
+          return `${cell.exposure.logical_entrypoint} closed through ${String(response.selected_exact_model)}`;
+        }
+        if (cell.exposure.mode === "exact_only") {
+          assertExactOnlyIsUnmounted(cell, args.logicalDefinitions);
+          try {
+            const routed = await args.session.aicc.call("route.resolve", {
+              request_id: `${args.runId}:${caseId}:negative-logical-probe`,
+              api_type: cell.api_type,
+              logical_model: logicalEntrypoints.api_type_defaults[cell.api_type],
+              requirements: {},
+              disable: {},
+              policy: { allowed_provider_instances: [cell.provider_instance] },
+            }) as Record<string, unknown>;
+            if (routed.selected_exact_model === cell.exact_model) {
+              throw new Error(`${cell.exact_model} entered the logical candidate set despite exact_only exposure`);
+            }
+          } catch (error) {
+            if (String(error).includes("entered the logical candidate set")) throw error;
+          }
+          const method = methodsForApiType(cell.api_type)[0];
+          const inventory = args.inventories.find((item) => item.provider_instance_name === cell.provider_instance)!;
+          const model = inventory.models.find((item) => item.exact_model === cell.exact_model)!;
+          const request = buildExactRequest({
+            cell: cellFor(inventory, model, cell.api_type, method),
+            runId: args.runId,
+            fixtures: {
+              image: { kind: "base64", mime: "image/png", data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" },
+              mask: { kind: "base64", mime: "image/png", data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" },
+              audio: { kind: "base64", mime: "audio/wav", data_base64: "dDEtYXVkaW8=" },
+              video: { kind: "base64", mime: "video/mp4", data_base64: "dDEtdmlkZW8=" },
+            },
+          });
+          const initial = await callInference(args.session.aicc, method, request) as AiMethodResponse;
+          await terminal(args.session, initial, args.input.timeoutMs);
+          return `${cell.exact_model} executed without a logical mount`;
+        }
+        return `${cell.exposure.mode}: ${cell.exposure.reason}`;
+      },
+    });
+    report.provider_driver = cell.provider_driver;
+    report.provider_profile_id = cell.provider_profile_id;
+    report.provider_instance = cell.provider_instance;
+    report.model_rule = cell.model_pattern;
+    report.exposure_mode = cell.exposure.mode;
+    reports.push(report);
+  }
+  return reports;
+}
+
+export function routeExposureCoverage(
+  cases: readonly CaseReport[],
+): NonNullable<AcceptanceReport["route_exposure_coverage"]> {
+  const cells = cases.filter((item) => item.case_id.startsWith("t1.route.exposure.")).map((item) => ({
+    case_id: item.case_id,
+    provider_profile_id: item.provider_profile_id ?? "unknown",
+    model_rule: item.model_rule ?? "unknown",
+    api_type: item.api_type ?? "unknown",
+    exposure_mode: item.exposure_mode ?? "not_applicable",
+    status: item.status,
+  }));
+  return {
+    planned: cells.length,
+    passed: cells.filter((item) => item.status === "passed").length,
+    failed: cells.filter((item) => item.status === "failed").length,
+    skipped: cells.filter((item) => item.status === "skipped").length,
+    cells,
+  };
 }
 
 async function runRouteCases(
@@ -1442,9 +1628,17 @@ async function runCases(
   mockBaseUrl: string,
   runId: string,
   mockInventories: ProviderInventory[],
+  logicalDefinitions: RuntimeLogicalDefinition[],
   input: Options,
 ): Promise<CaseReport[]> {
   const results: CaseReport[] = [];
+  results.push(...await runRouteExposureContractCases({
+    session,
+    runId,
+    inventories: mockInventories,
+    logicalDefinitions,
+    input,
+  }));
   const cells = mockCells(mockInventories);
   if (cells.length < 4) throw new Error(`expected at least four mock LLM adapters, found ${cells.length}`);
   const protocolCells = [...new Map(
@@ -2728,7 +2922,7 @@ async function runCases(
     providersIn(settings).push({
       ...structuredClone(template),
       provider_instance_name: addedProviderName,
-      credentials: { api_token: { locked: `mock-added-${runId}` } },
+      credentials: { api_token: { inline_secret: `mock-added-${runId}` } },
       base_url: `${mockBaseUrl}/instance-a/v1`,
     });
     return settings;
@@ -2900,7 +3094,7 @@ async function runCases(
         protocol_adapter_id: "openai-responses",
         provider_rules_id: CLOUD_TEST_RULES_ID,
         base_url: `${mockBaseUrl}/instance-a/v1`,
-        credentials: { api_token: { locked: `cloud-mock-${runId}` } },
+        credentials: { api_token: { inline_secret: `cloud-mock-${runId}` } },
         auto_sync_models: true,
       };
       const validation = await session.aicc.call("provider.validate", dynamicProvider) as Record<string, unknown>;
@@ -3140,7 +3334,9 @@ async function main(): Promise<void> {
   const input = await options(Deno.args);
   const knownCaseIds = new Set(buildStaticManifest().map((item) => item.case_id));
   for (const caseId of input.caseIds) {
-    if (!knownCaseIds.has(caseId)) throw new Error(`unknown T1 --case ${caseId}`);
+    if (!knownCaseIds.has(caseId) && !caseId.startsWith("t1.route.exposure.")) {
+      throw new Error(`unknown T1 --case ${caseId}`);
+    }
   }
   const runId = `aicc-t1-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
   let child: Deno.ChildProcess | undefined;
@@ -3161,14 +3357,14 @@ async function main(): Promise<void> {
       password: input.password,
       appId: input.appId,
     });
-    const sudoSystemConfig = await loginSudoSystemConfig({
+    const sudoSystemConfig = await loginRefreshingSudoSystemConfig({
       gatewayUrl: input.gatewayUrl,
       username: input.username,
       password: input.password,
       appId: input.appId,
     });
     const cleanupSecondTenant = await provisionSecondTenant(input, runId);
-    let cases: CaseReport[];
+    let cases: CaseReport[] = [];
     let cleanup: AcceptanceReport["cleanup"] = {
       status: "passed",
       details: ["services/aicc/settings restored byte-for-byte", "mock Provider uses zero real model calls"],
@@ -3181,13 +3377,23 @@ async function main(): Promise<void> {
           runId,
           execute: async () => {
             const mockInventories = await waitForMockInventories(session.aicc, runId, input.timeoutMs);
-            const quotaInventories = inventories(await session.aicc.call("models.list", {}));
+            const modelsList = await session.aicc.call("models.list", {});
+            const quotaInventories = inventories(modelsList);
+            const logicalDefinitions = logicalDefinitionsFromModelsList(modelsList);
             return await withMockQuotaTruth({
               systemConfig: sudoSystemConfig,
               userId: session.userId,
               appId: "system:control-panel",
               inventories: quotaInventories,
-              execute: () => runCases(session, sudoSystemConfig, input.mockBaseUrl, runId, mockInventories, input),
+              execute: () => runCases(
+                session,
+                sudoSystemConfig,
+                input.mockBaseUrl,
+                runId,
+                mockInventories,
+                logicalDefinitions,
+                input,
+              ),
             });
           },
           refreshClients: async () => {
@@ -3230,10 +3436,74 @@ async function main(): Promise<void> {
         }],
       }];
     } finally {
-      await cleanupSecondTenant();
+      try {
+        await cleanupSecondTenant();
+      } catch (error) {
+        cleanup = {
+          status: "failed",
+          details: [...cleanup.details, `second tenant cleanup failed: ${String(error)}`],
+        };
+        cases.push({
+          run_id: runId,
+          case_id: "t1.cleanup.second_tenant",
+          layer: "T1",
+          status: "failed",
+          method: "user.delete",
+          outbound_message_ids: [],
+          artifact_ids: [],
+          attempts: [{
+            attempt: 1,
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+            status: "failed",
+            failure_class: "cleanup_failed",
+            diagnostic: String(error),
+            estimated_cost_usd: 0,
+            cost_status: "not_called",
+          }],
+        });
+      }
     }
-    const residualInventories = inventories(await session.aicc.call("models.list", {}))
-      .filter((inventory) => inventory.provider_instance_name.includes(runId));
+    let residualInventories: ProviderInventory[] = [];
+    try {
+      const validationSession = input.username && input.password
+        ? await loginGateway({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        })
+        : session;
+      residualInventories = inventories(await validationSession.aicc.call("models.list", {}))
+        .filter((inventory) => inventory.provider_instance_name.includes(runId));
+    } catch (error) {
+      cleanup = {
+        status: "failed",
+        details: [
+          ...cleanup.details,
+          `AICC runtime inventory cleanup verification failed: ${String(error)}`,
+        ],
+      };
+      cases.push({
+        run_id: runId,
+        case_id: "t1.cleanup.runtime_inventory_restore",
+        layer: "T1",
+        status: "failed",
+        method: "models.list/service.reload_settings",
+        outbound_message_ids: [],
+        artifact_ids: [],
+        attempts: [{
+          attempt: 1,
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+          status: "failed",
+          failure_class: "cleanup_failed",
+          diagnostic: String(error),
+          estimated_cost_usd: 0,
+          cost_status: "not_called",
+        }],
+      });
+    }
     if (residualInventories.length > 0) {
       cleanup = {
         status: "failed",
@@ -3336,10 +3606,11 @@ async function main(): Promise<void> {
       product_defects: defects,
       manifest_coverage: manifestCoverage(cases),
       t1_requirement_coverage: buildT1Coverage(buildStaticManifest(), cases),
+      route_exposure_coverage: routeExposureCoverage(cases),
       cleanup,
       targeted_retest_command: (() => {
         const failed = [...new Set(cases.filter((item) => item.status === "failed").map(canonicalCaseId))]
-          .filter((caseId) => knownCaseIds.has(caseId))
+          .filter((caseId) => knownCaseIds.has(caseId) || caseId.startsWith("t1.route.exposure."))
           .slice(0, 20);
         return failed.length === 0
           ? undefined

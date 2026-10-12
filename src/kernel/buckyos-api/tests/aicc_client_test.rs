@@ -1,6 +1,7 @@
 use buckyos_api::{
     AiMessage, AiMethodStatus, AiRole, AiccError, AiccErrorCode, AiccExecutionMode,
-    LlmChatInvokeRequest, LlmChatInvokeResponse, ProviderAddRequest, ProviderInstanceType,
+    LlmChatInvokeRequest, LlmChatInvokeResponse, ProviderAddRequest, ProviderCredentials,
+    ProviderInstanceType,
 };
 use serde_json::{json, Value};
 
@@ -95,13 +96,13 @@ fn aicc_errors_round_trip_through_krpc() {
 }
 
 #[test]
-fn provider_add_accepts_only_the_current_locked_credential_schema() {
+fn provider_add_accepts_only_the_current_credential_source_schema() {
     let mut request = ProviderAddRequest::new(
         "t15-openai",
         ProviderInstanceType::CloudApi,
         "openai",
         "http://127.0.0.1:18081/v1",
-        serde_json::from_value(json!({"api_token": {"locked": "mock-secret"}})).unwrap(),
+        serde_json::from_value(json!({"api_token": {"inline_secret": "mock-secret"}})).unwrap(),
     );
     request.protocol_adapter_id = Some("openai-responses".to_owned());
     request.auto_sync_models = Some(true);
@@ -109,6 +110,31 @@ fn provider_add_accepts_only_the_current_locked_credential_schema() {
     let value = serde_json::to_value(&request).unwrap();
     assert_eq!(value["base_url"], "http://127.0.0.1:18081/v1");
     assert_eq!(ProviderAddRequest::from_json(value).unwrap(), request);
+    for credential in [
+        json!({"inline_secret": "mock-secret"}),
+        json!({"secret_ref": "vault://aicc/openai"}),
+        json!({"runtime_ref": "runtime://device-jwt"}),
+    ] {
+        let credentials: ProviderCredentials =
+            serde_json::from_value(json!({"credential": credential})).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ProviderCredentials>(
+                serde_json::to_value(&credentials).unwrap()
+            )
+            .unwrap(),
+            credentials
+        );
+        assert!(!format!("{credentials:?}").contains("mock-secret"));
+        assert!(!format!("{credentials:?}").contains("vault://"));
+        assert!(!format!("{credentials:?}").contains("runtime://"));
+    }
+    for invalid in [
+        json!({"credential": {"locked": "legacy"}}),
+        json!({"credential": "plaintext"}),
+        json!({"credential": {"inline_secret": "secret", "runtime_ref": "runtime://x"}}),
+    ] {
+        assert!(serde_json::from_value::<ProviderCredentials>(invalid).is_err());
+    }
     assert!(ProviderAddRequest::from_json(json!({
         "provider_instance_name": "t15-openai",
         "provider_type": "cloud_api",

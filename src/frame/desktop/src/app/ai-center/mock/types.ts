@@ -332,6 +332,13 @@ export interface WizardDraft {
   auth_mode: AuthMode
   api_key: string
   auto_sync_models: boolean
+  /** Subset of the profile's `selectable_inventory_models`; undefined publishes all of them. */
+  selected_inventory_models?: string[]
+}
+
+export interface SelectableInventoryModel {
+  id: string
+  label: string
 }
 
 export interface KnownProviderProfile {
@@ -345,6 +352,20 @@ export interface KnownProviderProfile {
   ui_hints: Record<string, unknown>
   endpoint_hints: Record<string, ProviderEndpointHint>
   connection_fields: Partial<Record<'region' | 'workspace' | 'account' | 'policy_region', ProviderConnectionField>>
+  setup_group?: ProviderSetupGroup
+  /**
+   * Operator-facing allowlist for profiles whose provider has no model discovery
+   * API. Absent means the provider discovers its own models.
+   */
+  selectable_inventory_models?: SelectableInventoryModel[]
+}
+
+export interface ProviderSetupGroup {
+  id: string
+  display_name: string
+  account_type: string
+  account_type_label: string
+  default: boolean
 }
 
 export interface ProviderEndpointHint {

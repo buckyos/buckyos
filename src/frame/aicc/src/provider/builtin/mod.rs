@@ -28,14 +28,22 @@ fn builtin_catalog_document<T: serde::de::DeserializeOwned>(
 
 #[cfg(test)]
 fn builtin_known_provider(profile_id: &str) -> crate::catalog::KnownProvider {
-    builtin_catalog_document::<crate::catalog::KnownProviderCatalog>(
-        crate::catalog::CatalogKind::KnownProvider,
-        profile_id,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == profile_id)
-    .unwrap_or_else(|| panic!("Known Provider catalog must contain `{profile_id}`"))
+    crate::settings::load_builtin_metadata()
+        .expect("WP-15 builtin metadata must load")
+        .into_iter()
+        .filter(|file| file.kind == crate::catalog::CatalogKind::KnownProvider)
+        .flat_map(|file| {
+            serde_json::from_slice::<crate::catalog::KnownProviderCatalog>(&file.contents)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "WP-15 builtin metadata `{}` is invalid: {error}",
+                        file.catalog_id
+                    )
+                })
+                .providers
+        })
+        .find(|provider| provider.provider_profile_id == profile_id)
+        .unwrap_or_else(|| panic!("Known Provider catalog must contain `{profile_id}`"))
 }
 
 #[cfg(test)]
@@ -162,7 +170,8 @@ pub(crate) use openai::openai_catalog_files;
 pub(crate) use openai::{OpenAiDiscovery, OPENAI_PROVIDER_PROFILE_ID};
 #[allow(unused_imports)]
 pub(crate) use openai_responses_compatible::{
-    openai_compatible_models_discovery, DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID,
+    openai_compatible_models_discovery, DEEPSEEK_PROFILE_ID, DOUBAO_AGENT_PLAN_PROFILE_ID,
+    DOUBAO_PROFILE_ID, QWEN_PROFILE_ID,
 };
 #[cfg(test)]
 use openrouter::{

@@ -219,6 +219,10 @@ impl GeminiInteractionCodec {
 
 #[async_trait]
 impl OperationCodec for GeminiInteractionCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -1198,6 +1202,19 @@ fn encode_resource(
     kind: &str,
     context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
+    if matches!(source, ResourceRef::NamedObject { .. }) {
+        let resource = context.materialized_resource(source)?;
+        if let Some(artifact_id) = resource.provider_artifact_id.as_deref() {
+            return Ok(provider_artifact_resource(kind, artifact_id));
+        }
+    }
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`). The object's own MIME is used
+    // as the label, since the request carries no payload to sniff.
+    if let Some(url) = context.materialized_url(source) {
+        let mime = context.materialized_resource(source)?.mime.clone();
+        return Ok(json!({"type":kind, "uri":url, "mime_type":mime}));
+    }
     match source {
         ResourceRef::Url { url, mime_hint } => {
             Ok(json!({"type":kind, "uri":url, "mime_type":mime_hint}))
@@ -1210,9 +1227,6 @@ fn encode_resource(
         }
         ResourceRef::NamedObject { .. } => {
             let resource = context.materialized_resource(source)?;
-            if let Some(artifact_id) = resource.provider_artifact_id.as_deref() {
-                return Ok(provider_artifact_resource(kind, artifact_id));
-            }
             Ok(
                 json!({"type":kind, "data":STANDARD.encode(&resource.bytes), "mime_type":resource.mime}),
             )
@@ -1270,6 +1284,10 @@ impl GeminiEmbeddingCodec {
 
 #[async_trait]
 impl OperationCodec for GeminiEmbeddingCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -1388,6 +1406,13 @@ fn embedding_resource_part(
     resource: &ResourceRef,
     context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`). The object's own MIME is used
+    // as the label, since the request carries no payload to sniff.
+    if let Some(url) = context.materialized_url(resource) {
+        let mime = context.materialized_resource(resource)?.mime.clone();
+        return Ok(json!({"fileData":{"fileUri":url,"mimeType":mime}}));
+    }
     match resource {
         ResourceRef::Url { url, mime_hint } => {
             Ok(json!({"fileData":{"fileUri":url,"mimeType":mime_hint}}))
@@ -2068,6 +2093,13 @@ impl GeminiVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for GeminiVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // The long-running predict API takes media as `{"uri":…,"mimeType":…}`,
+        // which `video_resource` fills with the URL when materialization
+        // supplied one.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -2254,6 +2286,19 @@ fn video_extend_instance(
 }
 
 fn video_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<Value> {
+    if matches!(resource, ResourceRef::NamedObject { .. }) {
+        let materialized = context.materialized_resource(resource)?;
+        if let Some(artifact_id) = materialized.provider_artifact_id.as_deref() {
+            return Ok(provider_video_artifact_resource(artifact_id));
+        }
+    }
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`). The object's own MIME is used
+    // as the label, since the request carries no payload to sniff.
+    if let Some(url) = context.materialized_url(resource) {
+        let mime = context.materialized_resource(resource)?.mime.clone();
+        return Ok(json!({"uri":url,"mimeType":mime}));
+    }
     match resource {
         ResourceRef::Url { url, mime_hint } => Ok(json!({"uri":url,"mimeType":mime_hint})),
         ResourceRef::Base64 { mime, data_base64 } => {
@@ -2264,9 +2309,6 @@ fn video_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolRes
         }
         ResourceRef::NamedObject { .. } => {
             let resource = context.materialized_resource(resource)?;
-            if let Some(artifact_id) = resource.provider_artifact_id.as_deref() {
-                return Ok(provider_video_artifact_resource(artifact_id));
-            }
             Ok(
                 json!({"bytesBase64Encoded":STANDARD.encode(&resource.bytes),"mimeType":resource.mime}),
             )
@@ -3409,6 +3451,30 @@ mod tests {
         };
         assert_eq!(body["input"][0]["id"], "gemini-video-1");
         assert!(body["input"][0].get("data").is_none());
+    }
+
+    #[test]
+    fn provider_artifact_id_takes_priority_over_materialized_url() {
+        let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
+        let mut context = context();
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&source).into_string(),
+            crate::protocol::MaterializedResource::from_url(
+                "http://test.buckyos.io/ndn/chunk:123456",
+                "image/png",
+                None,
+            )
+            .unwrap()
+            .with_provider_artifact_id(Some("gemini-image-1".to_string())),
+        );
+        assert_eq!(
+            encode_resource(&source, "image", &context).unwrap(),
+            json!({"type":"image","id":"gemini-image-1"})
+        );
+        assert_eq!(
+            video_resource(&source, &context).unwrap(),
+            json!({"id":"gemini-image-1"})
+        );
     }
 
     #[tokio::test]

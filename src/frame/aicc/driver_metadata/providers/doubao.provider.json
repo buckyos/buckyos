@@ -2,91 +2,84 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 5,
+  "revision_seq": 12,
   "provider_profile_id": "doubao",
-  "static_inventory_models": [
-    "doubao-seed-2.0-mini",
-    "doubao-seed-2.0-lite",
-    "doubao-seed-2.1-lite",
-    "doubao-seed-2.1-turbo",
-    "doubao-seed-2.1-pro",
-    "doubao-seed-evolving",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    "deepseek-v4.1-flash",
-    "glm-5.3",
-    "glm-5.3-flash",
-    "kimi-k2.7-code",
-    "kimi-k2.8-preview",
-    "kimi-k3",
-    "minimax-m3",
-    "doubao-seedream-5.0-lite",
-    "doubao-seedream-5-0-pro",
-    "doubao-seedance-2.0",
-    "doubao-seedance-2.0-fast",
-    "doubao-seedance-2.0-mini",
-    "doubao-seedance-2.5",
-    "doubao-embedding-vision",
-    "doubao-seed-tts-2.0"
-  ],
-  "supplemental_inventory_api_types": ["audio.tts", "embedding.multimodal", "image.txt2img", "image.img2img", "video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+  "model_driver_overrides": {
+    "deepseek-v4-1-flash-260910": "deepseek/deepseek-v4.1-flash",
+    "deepseek-v4-flash-260425": "deepseek/deepseek-v4-flash",
+    "deepseek-v4-flash-ga-260731": "deepseek/deepseek-v4-flash",
+    "deepseek-v4-pro-260425": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-pro-ga-260813": "deepseek/deepseek-v4-pro",
+    "doubao-seed-2-0-mini-260215": "doubao/doubao-seed-2.0-mini",
+    "doubao-seed-2-0-mini-260428": "doubao/doubao-seed-2.0-mini",
+    "doubao-seed-2-1-lite-260915": "doubao/doubao-seed-2.1-lite",
+    "doubao-seed-2-1-pro-260628": "doubao/doubao-seed-2.1-pro",
+    "doubao-seed-2-1-pro-260915": "doubao/doubao-seed-2.1-pro",
+    "doubao-seed-2-0-code-preview-260215": "doubao/doubao-seed-2.0-code-preview",
+    "doubao-seed-character-251128": "doubao/doubao-seed-character",
+    "doubao-seed-character-260628": "doubao/doubao-seed-character",
+    "doubao-seed-translation-250915": "doubao/doubao-seed-translation",
+    "doubao-embedding-vision-241215": "doubao/doubao-embedding-vision",
+    "doubao-embedding-vision-250328": "doubao/doubao-embedding-vision",
+    "doubao-embedding-vision-250615": "doubao/doubao-embedding-vision",
+    "doubao-embedding-vision-251215": "doubao/doubao-embedding-vision",
+    "doubao-seedream-5-0-pro-260628": "doubao/doubao-seedream-5-0-pro",
+    "doubao-seedream-4-0-250828": "doubao/doubao-seedream-4.0",
+    "doubao-seedream-4-0-20260415": "doubao/doubao-seedream-4.0",
+    "doubao-seedream-5-0-260128": "doubao/doubao-seedream-5.0",
+    "doubao-seedream-5-0-flash-260915": "doubao/doubao-seedream-5.0",
+    "doubao-seedance-1-0-pro-fast-251015": "doubao/doubao-seedance-1.0-pro-fast",
+    "glm-4-5-air-20250728": "glm/glm-4.5-air",
+    "glm-4-7-251222": "glm/glm-4.7",
+    "glm-5-2-260617": "glm/glm-5.2",
+    "glm-5-3-flash-260828": "glm/glm-5.3-flash"
+  },
   "models": [
-    {"id": "doubao-seedream-5.0-lite", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"id": "doubao-seedream-5-0-pro", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"id": "doubao-seedance-2.0", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.0-fast", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.0-mini", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.5", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-embedding-vision", "operations": {"embedding.multimodal": "ark.embeddings.multimodal"}},
-    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
+    {"id": "doubao-seed-translation-250915", "operations": {"llm": "responses.create"}, "request_rules": [
+      {"when": {"api_type": "llm", "operation": "responses.create"}, "defaults": {"translation_options": {"target_language": "en"}}}
+    ]},
+    {"id": "doubao-seedance-2-0-260128", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2-0-fast-260128", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2-0-mini-260615", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2-5-260628", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
+      {"when": {"api_type": "video.video2video", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
+      {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
+    ]}
   ],
   "patterns": [
-    {
-      "match": "doubao-seedream-*",
-      "operations": { "image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate" }
-    },
-    {
-      "match": "doubao-seedance-*",
-      "operations": { "video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate" }
-    },
-    {
-      "match": "*",
-      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
-    }
+    {"match": "doubao-smart-router-*", "exclude": true},
+    {"match": "*3d-*", "exclude": true},
+    {"match": "doubao-seedream-*", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
+    {"match": "doubao-seedance-*", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"match": "doubao-embedding-vision-*", "operations": {"embedding.multimodal": "ark.embeddings.multimodal"}},
+    {"match": "doubao-seed-*", "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"}, "request_rules": [
+      {"when": {"api_type": ["vision.ocr", "vision.caption"]}, "defaults": {"max_output_tokens": 2048, "reasoning": {"effort": "minimal"}}}
+    ]},
+    {"match": "*", "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"}}
   ],
   "variants": [
-    {"model_driver": "doubao", "variant": "reasoning-none", "match": {"origin_model_id": ["doubao-seed-2-0-lite-260215", "doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "minimal"}}},
+    {"model_driver": "doubao", "variant": "reasoning-none", "match": {"origin_model_id": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "doubao-seed-2-0-lite-260215", "doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "minimal"}}},
     {"model_driver": "deepseek", "variant": "reasoning-none", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
     {"model_driver": "deepseek", "variant": "reasoning-low", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
     {"model_driver": "deepseek", "variant": "reasoning-high", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
     {"model_driver": "deepseek", "variant": "reasoning-max", "match": {"origin_model_id": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
-    {"model_driver": "glm", "variant": "reasoning-low", "match": {"origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
-    {"model_driver": "glm", "variant": "reasoning-medium", "match": {"origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "glm", "variant": "reasoning-high", "match": {"origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}},
-    {"model_driver": "kimi", "variant": "reasoning-medium", "match": {"origin_model_id": "kimi-k2.7-code", "variant": "reasoning-medium"}, "provider_options": {"thinking": {"type": "enabled"}}},
-    {"model_driver": "kimi", "variant": "reasoning-low", "match": {"origin_model_id": "kimi-k3", "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
-    {"model_driver": "kimi", "variant": "reasoning-high", "match": {"origin_model_id": "kimi-k3", "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": "kimi-k3", "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}
+    {"model_driver": "glm", "variant": "reasoning-low", "match": {"origin_model_id": ["glm-5.3-flash"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
+    {"model_driver": "glm", "variant": "reasoning-medium", "match": {"origin_model_id": ["glm-5.3-flash"], "variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "glm", "variant": "reasoning-high", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
+    {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}
   ],
   "model_pricing": [
-    { "id": "doubao-seed-2.0-mini", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-7, "output_token": 0.000002, "cache_input_token": 4e-8 }, { "up_to": 131072, "input_token": 4e-7, "output_token": 0.000004, "cache_input_token": 4e-8 }, { "input_token": 8e-7, "output_token": 0.000008, "cache_input_token": 4e-8 }] } } },
-    { "id": "doubao-seed-2.0-lite", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-7, "output_token": 0.0000036, "cache_input_token": 1.2e-7 }, { "up_to": 131072, "input_token": 9e-7, "output_token": 0.0000054, "cache_input_token": 1.2e-7 }, { "input_token": 0.0000018, "output_token": 0.0000108, "cache_input_token": 1.2e-7 }] } } },
-    { "id": "doubao-seed-2.1-lite", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 8e-7, "output_token": 0.0000027, "cache_input_token": 1.6e-7 } },
-    { "id": "doubao-seed-2.1-turbo", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.000003, "output_token": 0.000015, "cache_input_token": 6e-7 } },
-    { "id": "doubao-seed-2.1-pro", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.000006, "output_token": 0.00003, "cache_input_token": 0.0000012 } },
-    { "id": "doubao-seed-evolving", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.000006, "output_token": 0.00003, "cache_input_token": 0.0000012 } },
-    { "id": "doubao-embedding-vision", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 7e-7, "image_input_token": 0.0000018 } },
-    { "id": "doubao-seedream-5.0-lite", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "amount": 0.22, "unit": "image" } },
-    { "id": "doubao-seedream-5-0-pro", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "amount": 0.3, "unit": "image" } },
-    { "id": "doubao-seedance-2.0", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "output_token": 0.000028 } },
-    { "id": "doubao-seedance-2.0-fast", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "output_token": 0.000022 } },
-    { "id": "doubao-seedance-2.0-mini", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "output_token": 0.000014 } },
-    { "id": "doubao-seedance-2.5", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "output_token": 0.000042 } },
-    { "id": "doubao-seed-tts-2.0", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "amount": 0.0003, "unit": "character" } },
-    { "id": "doubao-seed-asr-2.0", "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "amount": 0.00022222222222222223, "unit": "audio_second" } },
-    { "match": { "provider_model_id": "doubao-seed-2-0-mini*" }, "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-7, "output_token": 0.000002, "cache_input_token": 4e-8 }, { "up_to": 131072, "input_token": 4e-7, "output_token": 0.000004, "cache_input_token": 4e-8 }, { "input_token": 8e-7, "output_token": 0.000008, "cache_input_token": 4e-8 }] } } },
-    { "match": { "provider_model_id": "doubao-seed-2-0-lite*" }, "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-7, "output_token": 0.0000036, "cache_input_token": 1.2e-7 }, { "up_to": 131072, "input_token": 9e-7, "output_token": 0.0000054, "cache_input_token": 1.2e-7 }, { "input_token": 0.0000018, "output_token": 0.0000108, "cache_input_token": 1.2e-7 }] } } },
-    { "match": { "provider_model_id": ["doubao-seed-2-0-pro*", "doubao-seed-2-0-code*"] }, "pricing": { "source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 0.0000032, "output_token": 0.000016, "cache_input_token": 6.4e-7 }, { "up_to": 131072, "input_token": 0.0000048, "output_token": 0.000024, "cache_input_token": 6.4e-7 }, { "input_token": 0.0000096, "output_token": 0.000048, "cache_input_token": 6.4e-7 }] } } }
+    {"match": {"provider_model_id": ["doubao-seedream-4-0-250828", "doubao-seedream-4-0-20260415"]}, "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-30", "currency": "CNY", "unit": "image", "amount": 0.2}},
+    {"match": {"provider_model_id": "doubao-seed-2-0-lite*"}, "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "tiers": {"dimension": "input_tokens", "mode": "volume", "steps": [{"up_to": 32768, "input_token": 0.0000006, "output_token": 0.0000036, "cache_input_token": 0.00000012}, {"up_to": 131072, "input_token": 0.0000009, "output_token": 0.0000054, "cache_input_token": 0.00000012}, {"input_token": 0.0000018, "output_token": 0.0000108, "cache_input_token": 0.00000012}]}}},
+    {"id": "doubao-seed-2-1-turbo-260628", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.000003, "output_token": 0.000015, "cache_input_token": 0.0000006}},
+    {"id": "doubao-seedance-2-0-260128", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "output_token": 0.000028}},
+    {"id": "doubao-seedance-2-0-fast-260128", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "output_token": 0.000022}},
+    {"id": "doubao-seedance-2-0-mini-260615", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "output_token": 0.000014}},
+    {"id": "doubao-seedance-2-5-260628", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "output_token": 0.000042}},
+    {"id": "glm-5-3-flash-260828", "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.0000008, "cache_input_token": 0.00000023, "output_token": 0.0000028}},
+    {"id": "glm-5-2-260617", "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.000008, "cache_input_token": 0.000002, "output_token": 0.000028}},
+    {"id": "deepseek-v4-1-flash-260910", "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.000001, "cache_input_token": 0.00000002, "output_token": 0.000004, "time_windows": [{"from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 0.000002, "cache_input_token": 0.00000004, "output_token": 0.000008}, {"from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 0.000002, "cache_input_token": 0.00000004, "output_token": 0.000008}]}},
+    {"match": {"provider_model_id": ["deepseek-v4-flash-260425", "deepseek-v4-flash-ga-260731"]}, "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.000003, "cache_input_token": 0.0000001, "output_token": 0.000009}},
+    {"match": {"provider_model_id": ["deepseek-v4-pro-260425", "deepseek-v4-pro-ga-260813"]}, "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.000009, "cache_input_token": 0.0000003, "output_token": 0.000027}}
   ]
 }
