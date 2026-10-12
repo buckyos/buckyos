@@ -112,8 +112,8 @@
         "vision.ocr": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
         "vision.caption": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
         "embedding.text": ["text-embedding-3-small", "text-embedding-3-large"],
-        "image.txt2img": ["gpt-image-2"],
-        "image.img2img": ["gpt-image-2"],
+        "image.txt2img": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-image-2"],
+        "image.img2img": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-image-2"],
         "image.inpaint": ["gpt-image-2"],
         "audio.tts": ["gpt-4o-mini-tts"],
         "audio.asr": ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
@@ -2300,8 +2300,8 @@
           "MiniMax/MiniMax-M2.7",
           "MiniMax/MiniMax-M3"
         ],
-        "vision.ocr": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k3", "MiniMax/MiniMax-M3"],
-        "vision.caption": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k3", "MiniMax/MiniMax-M3"]
+        "vision.ocr": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"],
+        "vision.caption": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"]
       },
       "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin", "https://help.aliyun.com/zh/model-studio/glm-zhipu", "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai", "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"],
       "official_variant_rules": [{
