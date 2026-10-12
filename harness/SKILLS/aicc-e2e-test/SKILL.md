@@ -40,6 +40,18 @@ runner 的 `--yes` 选项仅用于已经获得授权的自动化；它本身不�
 - 当确认某个失败属于 AICC/Jarvis 缺陷时，应保持测试断言正确，并记录预期行为、实际行为和证据；没有单独请求时不得修改产品代码。
 - 修复 Provider API 协议缺陷（请求 lowering、字段名/路径、错误形态、streaming/async 事件顺序、响应解析等）时，必须同步更新并完善受影响的 T1.5 MockProvider 及其 wire fixture，使其继续按官方协议 fail-closed 地校验修复后的 wire 行为；不得只改产品实现而让旧 Mock 继续通过，也不得为迁就产品实现而放宽或跳过 Mock 断言。
 
+## 测试报告的 Git 提交范围
+
+`test/aicc_test/reports/acceptance/<run-id>/` 下的运行报告采用文件名白名单。每个需要提交的测试轮次只允许跟踪以下概要文件：
+
+- `effective_baseline.json`：该轮实际使用的测试目标和有效基线；
+- `finance.md`：财务与调用成本总结；
+- `summary.md`：测试结果总结。
+
+不得提交逐 case 文件或其他机器生成的明细，包括 `cases/`、`summary.json`、`finance.json`、`finance.csv`、原始响应、下载制品和临时诊断文件。该规则同时适用于新生成的文件和 Git 中已经存在的文件：整理或提交测试报告时，必须从 Git 删除所有不在白名单内的已跟踪报告；`.gitignore` 只能阻止新增文件，不能替代对历史已跟踪文件的清理。
+
+提交或推送前，使用 `git ls-files 'test/aicc_test/reports/acceptance/**'` 审计 Git 实际跟踪范围，不能只检查 `git status` 或本轮新生成的目录。除非用户明确要求，本规则不要求删除本地被忽略的运行报告，也不限制 `reports/acceptance/` 之外人工维护的合并总结文档。
+
 ## 开发与推送节奏
 
 - 每轮 coding 期间，只运行与本轮所修改实现相对应的单元测试。不得反复 build、deploy 或运行 T1/T1.5/T2/T3，以此替代内循环中的针对性单元测试。
