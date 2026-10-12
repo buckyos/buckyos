@@ -904,7 +904,7 @@ async fn stop_process_tree(pid: i32) -> Result<()> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let group_args = vec!["-TERM".to_string(), format!("-{pid}")];
+        let group_args = vec!["-TERM".to_string(), "--".to_string(), format!("-{pid}")];
         let group_output = run_command(Path::new("kill"), &group_args, None, None).await?;
         if group_output.status.success() || !is_pid_running(pid) {
             return Ok(());
@@ -1482,6 +1482,25 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn stopping_a_native_process_group_terminates_its_leader() {
+        let _guard = PROCESS_TEST_LOCK.lock().await;
+        let mut service = TestService::new("group-stop");
+        let pid = service.spawn();
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+        assert!(is_pid_running(pid));
+        stop_process_tree(pid).await.unwrap();
+        for _ in 0..100 {
+            if !is_pid_running(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!is_pid_running(pid));
+        service.reap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_unhealthy_status_port_still_restarts_the_running_process() {
         let _guard = PROCESS_TEST_LOCK.lock().await;
         let mut service = TestService::new("unhealthy");
@@ -1521,8 +1540,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(processes.len(), 1);
+        assert_ne!(processes[0].identity.pid, old_pid);
         let replacement = DetachedTestProcess(processes[0].identity.clone());
-        assert_ne!(replacement.0.pid, old_pid);
         assert!(!is_pid_running(old_pid));
         assert!(is_pid_running(replacement.0.pid));
     }
