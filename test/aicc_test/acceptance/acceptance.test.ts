@@ -253,6 +253,22 @@ function t15ProviderRequest(
     }
     target[tokens.at(-1)!] = value;
   }
+  for (const [pointer, value] of Object.entries(contract.json_string_body_values ?? {})) {
+    const tokens = pointer.split("/").slice(1).map((token) =>
+      token.replace(/~1/g, "/").replace(/~0/g, "~")
+    );
+    let target = fields as Record<string, unknown>;
+    for (const token of tokens.slice(0, -1)) {
+      if (
+        target[token] === null || typeof target[token] !== "object" ||
+        Array.isArray(target[token])
+      ) {
+        target[token] = {};
+      }
+      target = target[token] as Record<string, unknown>;
+    }
+    target[tokens.at(-1)!] = JSON.stringify(value);
+  }
   for (const pointer of contract.required_body_paths ?? []) {
     const tokens = pointer.split("/").slice(1).map((token) =>
       token.replace(/~1/g, "/").replace(/~0/g, "~")
