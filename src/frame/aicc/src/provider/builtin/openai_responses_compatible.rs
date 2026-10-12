@@ -936,7 +936,7 @@ mod tests {
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
                     DOUBAO_PROFILE_ID => 13,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 9,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 10,
                     DEEPSEEK_PROFILE_ID => 5,
                     QWEN_PROFILE_ID | "openai" => 4,
                     _ => 3,
