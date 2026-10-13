@@ -54,7 +54,12 @@ jobs:
       if: ${{ inputs.enable_tests }}
       run: cargo test -- --test-threads=1
     - name: Install BuckyOS devkit
-      run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
+      run: |
+        python -m pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
+        if ($LASTEXITCODE -ne 0) {
+          throw "Devkit installation failed with exit code $LASTEXITCODE"
+        }
+        python -c "import sys, yaml; print('Python:', sys.executable); print('PyYAML:', yaml.__version__)"
     - name: Prepare SDK/Tool distribution
       working-directory: ./src
       shell: pwsh
