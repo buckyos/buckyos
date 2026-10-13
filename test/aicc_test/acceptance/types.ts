@@ -206,6 +206,7 @@ export type OfficialCatalogConfig = {
   format: "openai" | "anthropic" | "gemini" | "fal" | "sn" | "typesafe" | "frozen";
   authentication: "bearer" | "x-api-key" | "query-key" | "fal-key" | "none";
   page_size?: number;
+  anthropic_version_header?: boolean;
   endpoint_ids?: string[];
   model_ids?: string[];
   supplemental_model_ids?: string[];

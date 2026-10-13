@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-10.2",
-  "checked_at": "2026-10-10",
+  "baseline_revision": "2026-10-13.1",
+  "checked_at": "2026-10-13",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -172,7 +172,7 @@
         "https://developers.openai.com/api/docs/models/all"
       ],
       "protocol_evidence": {
-        "documentation_version": "official documentation checked 2026-08-27",
+        "documentation_version": "official documentation checked 2026-10-13",
         "streaming_semantics": "Responses/chat models expose documented streaming events; applicability remains model and endpoint specific.",
         "async_operation_semantics": "Video and background-capable endpoints use asynchronous operation/task semantics; ordinary inference may be synchronous or streamed.",
         "usage_semantics": "Official responses expose model-specific token or request usage; T2 requires AICC durable usage and cost attribution.",
@@ -1111,9 +1111,10 @@
       "model_driver_ids": ["minimax"],
       "discovery": "official_catalog",
       "official_catalog": {
-        "endpoint": "https://api.minimax.io/v1/models",
-        "format": "openai",
-        "authentication": "bearer",
+        "endpoint": "https://api.minimax.io/anthropic/v1/models",
+        "format": "anthropic",
+        "authentication": "x-api-key",
+        "anthropic_version_header": false,
         "supplemental_model_ids": ["asr-1.0", "speech-2.8-hd", "speech-2.8-turbo", "image-01", "MiniMax-H3", "MiniMax-H3-Max"]
       },
       "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
@@ -1132,6 +1133,17 @@
       },
       "rules": [
         {
+          "model_pattern": "MiniMax-M3.1-Flash-Preview*",
+          "status": "preview",
+          "source_status": "preview_plan_only",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["chat.completions.create", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["text", "tool_call"],
+          "source_urls": ["https://platform.minimax.io/docs/guides/models-intro", "https://platform.minimax.io/docs/guides/text-generation"],
+          "evidence_summary": "MiniMax M3.1 Flash Preview is a plan-only preview model with a 1M-token context, up to 512K output, multimodal input, always-on reasoning, and low through max reasoning effort levels."
+        },
+        {
           "model_pattern": "MiniMax-M3*",
           "status": "active",
           "api_types": [
@@ -1146,7 +1158,8 @@
           ],
           "input_kinds": [
             "text",
-            "image"
+            "image",
+            "video"
           ],
           "output_kinds": [
             "text",
@@ -1155,7 +1168,7 @@
           "source_urls": [
             "https://platform.minimax.io/docs/guides/models-intro"
           ],
-          "evidence_summary": "Current MiniMax M models provide text generation, reasoning, streaming, tool calling, and model-specific vision input."
+          "evidence_summary": "MiniMax M3 provides text generation, optional adaptive reasoning, streaming, tool calling, a 1M-token context, up to 512K output, and text/image/video input."
         },
         {
           "model_pattern": "asr-*",
@@ -1168,7 +1181,7 @@
           "evidence_summary": "MiniMax ASR accepts multipart audio and returns transcription text and optional timestamps."
         },
         {
-          "model_pattern": "speech-*",
+          "model_pattern": "speech-2.8-*",
           "status": "active",
           "api_types": ["audio.tts"],
           "methods": ["audio.tts"],
@@ -1176,7 +1189,18 @@
           "output_kinds": ["audio"],
           "request_defaults": {"audio.tts": {"voice": {}}},
           "source_urls": ["https://platform.minimax.io/docs/api-reference/api-overview"],
-          "evidence_summary": "MiniMax speech models provide text-to-speech."
+          "evidence_summary": "MiniMax speech-2.8 HD and Turbo are the current text-to-speech models."
+        },
+        {
+          "model_pattern": "speech-*",
+          "status": "deprecated",
+          "source_status": "legacy",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
+          "evidence_summary": "Earlier speech-2.6 and speech-02 families are listed as legacy models."
         },
         {
           "model_pattern": "image-*",
@@ -1189,22 +1213,37 @@
           "evidence_summary": "MiniMax exposes text-to-image and image-to-image APIs."
         },
         {
-          "model_pattern": "MiniMax-H3*",
+          "model_pattern": "MiniMax-H3",
           "status": "active",
           "api_types": ["video.txt2video", "video.img2video"],
           "methods": ["video.txt2video", "video.img2video"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 5, "resolution": "480p"},
-            "video.img2video": {"duration_seconds": 5, "resolution": "480p"}
+            "video.txt2video": {"duration_seconds": 4, "resolution": "768p"},
+            "video.img2video": {"duration_seconds": 4, "resolution": "768p"}
           },
           "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
-          "evidence_summary": "MiniMax Hailuo models support text-to-video and model-specific image-to-video."
+          "evidence_summary": "MiniMax H3 supports text-to-video and image-to-video at 768P or 2K for integer durations from 4 through 15 seconds."
+        },
+        {
+          "model_pattern": "MiniMax-H3-Max",
+          "status": "active",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "methods": ["video.txt2video", "video.img2video"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 5, "resolution": "768p"},
+            "video.img2video": {"duration_seconds": 5, "resolution": "768p"}
+          },
+          "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
+          "evidence_summary": "MiniMax H3-Max supports text-to-video and image-to-video at 480P or 768P for integer durations from 5 through 15 seconds."
         },
         {
           "model_pattern": "MiniMax-M2*",
-          "status": "active",
+          "status": "deprecated",
+          "source_status": "legacy_or_scheduled_retirement",
           "api_types": [
             "llm"
           ],
@@ -1221,11 +1260,12 @@
           "source_urls": [
             "https://platform.minimax.io/docs/guides/models-intro"
           ],
-          "evidence_summary": "MiniMax M2 models accept text inputs."
+          "evidence_summary": "MiniMax M2.x models accept text input with a 200K context/output ceiling; M2.5 and older are legacy, and M2.7-family retirement is scheduled for 2026-11-18."
         },
         {
           "model_pattern": "music-*",
-          "status": "active",
+          "status": "deprecated",
+          "source_status": "existing_paid_accounts_only",
           "api_types": [
             "audio.music"
           ],

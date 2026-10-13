@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 6,
+  "revision_seq": 7,
   "provider_profile_id": "minimax",
   "static_inventory_models": [
     "asr-1.0",
@@ -54,14 +54,44 @@
       "operations": {
         "video.txt2video": "video_generation.v2.create",
         "video.img2video": "video_generation.v2.create"
-      }
+      },
+      "provider_options": {
+        "minimax_video_v2_constraints": {
+          "min_duration_seconds": 4,
+          "max_duration_seconds": 15,
+          "resolutions": ["768P", "2K"]
+        }
+      },
+      "request_rules": [
+        {
+          "defaults": {
+            "duration_seconds": 4,
+            "resolution": "768P"
+          }
+        }
+      ]
     },
     {
       "id": "MiniMax-H3-Max",
       "operations": {
         "video.txt2video": "video_generation.v2.create",
         "video.img2video": "video_generation.v2.create"
-      }
+      },
+      "provider_options": {
+        "minimax_video_v2_constraints": {
+          "min_duration_seconds": 5,
+          "max_duration_seconds": 15,
+          "resolutions": ["480P", "768P"]
+        }
+      },
+      "request_rules": [
+        {
+          "defaults": {
+            "duration_seconds": 5,
+            "resolution": "768P"
+          }
+        }
+      ]
     },
     {
       "id": "MiniMax-Hailuo-02",
@@ -89,7 +119,18 @@
         "llm": "messages.create",
         "vision.ocr": "messages.create",
         "vision.caption": "messages.create"
-      }
+      },
+      "request_rules": [
+        {
+          "defaults": {
+            "temperature": 1.0,
+            "top_p": 0.95
+          },
+          "remove": [
+            "/stop"
+          ]
+        }
+      ]
     },
     {
       "match": "MiniMax-M2*",
@@ -157,7 +198,101 @@
       ]
     }
   ],
-  "variants": [],
+  "variants": [
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-none",
+      "match": {
+        "origin_model_id": "MiniMax-M3",
+        "variant": "reasoning-none"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    },
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-low",
+      "match": {
+        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "variant": "reasoning-low"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "low"
+        }
+      }
+    },
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-medium",
+      "match": {
+        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "variant": "reasoning-medium"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "medium"
+        }
+      }
+    },
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-high",
+      "match": {
+        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "variant": "reasoning-high"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      }
+    },
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-xhigh",
+      "match": {
+        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "variant": "reasoning-xhigh"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "xhigh"
+        }
+      }
+    },
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-max",
+      "match": {
+        "origin_model_id": "MiniMax-M3.1-Flash-Preview",
+        "variant": "reasoning-max"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "max"
+        }
+      }
+    }
+  ],
   "model_pricing": [
     {
       "pricing": {

@@ -1207,8 +1207,47 @@ async function executeAcceptance(input: {
     });
     if (matches.length > 0) filteredRequestedCases.set(caseId, matches);
   }
+  const restrictedRequestedCases = new Map<string, {
+    providerDriver: string;
+    providerInstance: string;
+    providerModelId: string;
+    apiType: string;
+  }>();
+  for (const caseId of requestedCases) {
+    if (sortedCells.some((cell) => cell.case_id === caseId) || filteredRequestedCases.has(caseId)) {
+      continue;
+    }
+    for (const inventory of selectedInventories) {
+      const prefix = `t2.${inventory.provider_driver}.${inventory.provider_instance_name}.`
+        .toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+      if (!caseId.startsWith(prefix)) continue;
+      const profile = baseline.providers.find((candidate) =>
+        candidate.provider_driver === inventory.provider_driver
+      );
+      if (!profile) continue;
+      for (const rule of profile.rules) {
+        if (!rule.model_pattern.endsWith("*") || !["active", "preview"].includes(rule.status)) {
+          continue;
+        }
+        const providerModelId = rule.model_pattern.slice(0, -1);
+        const modelSegment = providerModelId.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+        for (const apiType of rule.api_types) {
+          const expected = `${prefix}${modelSegment}.${apiType}`;
+          if (caseId !== expected) continue;
+          restrictedRequestedCases.set(caseId, {
+            providerDriver: inventory.provider_driver,
+            providerInstance: inventory.provider_instance_name,
+            providerModelId,
+            apiType,
+          });
+        }
+      }
+    }
+  }
   const missingCases = [...requestedCases].filter((caseId) =>
-    !sortedCells.some((cell) => cell.case_id === caseId) && !filteredRequestedCases.has(caseId)
+    !sortedCells.some((cell) => cell.case_id === caseId) &&
+    !filteredRequestedCases.has(caseId) &&
+    !restrictedRequestedCases.has(caseId)
   );
   if (missingCases.length > 0) {
     throw new Error(`requested cases are not in the selected Provider matrix: ${missingCases.join(", ")}`);
@@ -1251,6 +1290,31 @@ async function executeAcceptance(input: {
         diagnostic: records.map((item) =>
           `${item.provider_model_id}: ${item.reason}; ${item.evidence_summary}`
         ).join(" | "),
+        estimated_cost_usd: 0,
+        cost_status: "not_called",
+      }],
+    });
+  }
+  for (const [caseId, restricted] of restrictedRequestedCases) {
+    cases.push({
+      run_id: runId,
+      case_id: caseId,
+      layer: "T2",
+      status: "provider_restricted",
+      provider_driver: restricted.providerDriver,
+      provider_instance: restricted.providerInstance,
+      exact_model: `${restricted.providerModelId}@${restricted.providerInstance}`,
+      api_type: restricted.apiType,
+      method: "models.list",
+      outbound_message_ids: [],
+      artifact_ids: [],
+      attempts: [{
+        attempt: 1,
+        started_at: new Date().toISOString(),
+        elapsed_ms: 0,
+        status: "provider_restricted",
+        failure_class: "platform_limitation",
+        diagnostic: `Provider restriction: ${restricted.providerModelId} is documented but absent from the official catalog for the selected credentials`,
         estimated_cost_usd: 0,
         cost_status: "not_called",
       }],

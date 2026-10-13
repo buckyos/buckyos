@@ -157,6 +157,11 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
       (!Number.isInteger(rawProvider.official_catalog.page_size) || Number(rawProvider.official_catalog.page_size) < 1)) {
       throw new Error(`${driver}.official_catalog.page_size must be a positive integer`);
     }
+    if (rawProvider.official_catalog.anthropic_version_header !== undefined &&
+      (rawProvider.official_catalog.format !== "anthropic" ||
+        typeof rawProvider.official_catalog.anthropic_version_header !== "boolean")) {
+      throw new Error(`${driver}.official_catalog.anthropic_version_header is only valid as a boolean for anthropic catalogs`);
+    }
     if (rawProvider.official_catalog.endpoint_ids !== undefined) {
       const endpointIds = requireStringArray(
         rawProvider.official_catalog.endpoint_ids,

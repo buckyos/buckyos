@@ -586,6 +586,7 @@ async function waitInventory(
   session: GatewaySession,
   instance: string,
   timeoutMs: number,
+  requiredModelIds: readonly string[] = [],
 ): Promise<ProviderInventory> {
   const deadline = Date.now() + timeoutMs;
   let last: ProviderInventory[] = [];
@@ -594,7 +595,15 @@ async function waitInventory(
     const found = last.find((inventory) =>
       inventory.provider_instance_name === instance
     );
-    if (found && found.models.length > 0) return found;
+    if (
+      found && found.models.length > 0 &&
+      requiredModelIds.every((modelId) =>
+        found.models.some((model) =>
+          model.provider_model_id === modelId ||
+          model.provider_actual_model_id === modelId
+        )
+      )
+    ) return found;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
   }
   throw new Error(
@@ -644,7 +653,18 @@ async function refreshProviderInventory(
   await session.aicc.call("provider.refresh_models", {
     provider_instance_name: instance,
   });
-  return await waitInventory(session, instance, timeoutMs);
+  const requiredModelIds = requiredVariantModelIds(provider);
+  return await waitInventory(session, instance, timeoutMs, requiredModelIds);
+}
+
+function requiredVariantModelIds(
+  provider: ProviderProtocolCatalog["providers"][number],
+): string[] {
+  return [
+    ...new Set(
+      (provider.official_variant_rules ?? []).flatMap((rule) => rule.model_ids),
+    ),
+  ];
 }
 
 async function refreshLogin(
@@ -2328,7 +2348,12 @@ async function main(): Promise<void> {
       await addProvider(session, catalog, driver, instance, input.mockBaseUrl);
       created.push(instance);
       phase = `provider:${driver}:inventory`;
-      let inventory = await waitInventory(session, instance, input.timeoutMs);
+      let inventory = await waitInventory(
+        session,
+        instance,
+        input.timeoutMs,
+        requiredVariantModelIds(provider),
+      );
       validateAggregatedInventory(catalog, driver, inventory);
       providerInstances.set(driver, instance);
       providerInventories.set(driver, inventory);

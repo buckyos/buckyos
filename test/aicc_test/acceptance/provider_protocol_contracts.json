@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-12.1",
-  "checked_at": "2026-10-12",
+  "revision": "official-provider-protocols-2026-10-13.1",
+  "checked_at": "2026-10-13",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -645,14 +645,22 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
+          "MiniMax-M3.1-Flash-Preview",
           "MiniMax-M3",
           "MiniMax-M2.7",
-          "MiniMax-M2.7-highspeed"
+          "MiniMax-M2.7-highspeed",
+          "MiniMax-M2.5",
+          "MiniMax-M2.5-highspeed",
+          "MiniMax-M2.1",
+          "MiniMax-M2.1-highspeed",
+          "MiniMax-M2"
         ],
         "vision.ocr": [
+          "MiniMax-M3.1-Flash-Preview",
           "MiniMax-M3"
         ],
         "vision.caption": [
+          "MiniMax-M3.1-Flash-Preview",
           "MiniMax-M3"
         ],
         "audio.tts": [
@@ -682,10 +690,18 @@
           "music-3.0"
         ]
       },
+      "official_variant_sources": [
+        "https://platform.minimax.io/docs/guides/text-generation",
+        "https://platform.minimax.io/docs/api-reference/text-chat-anthropic"
+      ],
+      "official_variant_rules": [
+        { "model_ids": ["MiniMax-M3.1-Flash-Preview"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } },
+        { "model_ids": ["MiniMax-M3"], "variants": { "reasoning-none": { "thinking": { "type": "disabled" } } } }
+      ],
       "test_model_ids": {
-        "llm": "MiniMax-M3",
-        "vision.ocr": "MiniMax-M3",
-        "vision.caption": "MiniMax-M3",
+        "llm": "MiniMax-M3.1-Flash-Preview",
+        "vision.ocr": "MiniMax-M3.1-Flash-Preview",
+        "vision.caption": "MiniMax-M3.1-Flash-Preview",
         "audio.tts": "speech-2.8-hd",
         "audio.asr": "asr-1.0",
         "image.txt2img": "image-01",
@@ -706,7 +722,7 @@
           "auth": { "kind": "header", "name": "x-api-key", "prefix": "" },
           "content_type": "application/json",
           "required_body_fields": ["model", "messages", "max_tokens"],
-          "allowed_body_fields": ["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_p"],
+          "allowed_body_fields": ["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_p", "output_config"],
           "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
           "stream_protocol": "claude_messages",
           "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "usage": { "input_tokens": 4, "output_tokens": 3 }, "base_resp": { "status_code": 0, "status_msg": "success" } },

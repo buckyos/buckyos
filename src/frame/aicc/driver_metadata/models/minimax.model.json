@@ -3,9 +3,34 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "minimax",
-  "revision_seq": 8,
+  "revision_seq": 9,
   "required_features": [],
   "models": [
+    {
+      "id": "MiniMax-M3.1-Flash-Preview",
+      "parameter_scale": "m3.1",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 524288,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "minimax-standard",
+        "effort": "max",
+        "default_effort": "max",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "experimental",
+        "weight": 31
+      }
+    },
     {
       "id": "MiniMax-M3",
       "parameter_scale": "m3",

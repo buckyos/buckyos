@@ -741,6 +741,7 @@ test("official catalog fetches paginated Provider inventory independently of AIC
 test("official catalog endpoint can follow an explicitly configured Provider region", async () => {
   const providerBaseline = await baseline();
   const requests: URL[] = [];
+  const requestHeaders: Headers[] = [];
   await fetchOfficialCatalogs({
     baseline: providerBaseline,
     drivers: ["minimax"],
@@ -750,15 +751,21 @@ test("official catalog endpoint can follow an explicitly configured Provider reg
       minimax: "https://api.minimaxi.com/anthropic/v1/models",
     },
     timeoutMs: 1_000,
-    fetcher: async (input) => {
+    fetcher: async (input, init) => {
       requests.push(new URL(input.toString()));
+      requestHeaders.push(new Headers(init?.headers));
       return new Response(JSON.stringify({ data: [{ id: "MiniMax-M3" }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     },
   });
-  assert.equal(requests[0].toString(), "https://api.minimaxi.com/anthropic/v1/models");
+  assert.equal(
+    requests[0].toString(),
+    "https://api.minimaxi.com/anthropic/v1/models?limit=1000",
+  );
+  assert.equal(requestHeaders[0].get("x-api-key"), "catalog-test-token");
+  assert.equal(requestHeaders[0].get("anthropic-version"), null);
 });
 
 test("MiniMax official documentation supplements media models omitted by models API", async () => {
@@ -2994,7 +3001,7 @@ test("T2 request defaults are driven by the capability baseline cell", () => {
       baseline_status: "active",
       input_kinds: ["text"],
       output_kinds: ["video"],
-      request_defaults: { duration_seconds: 5, resolution: "480p" },
+      request_defaults: { duration_seconds: 5, resolution: "768p" },
       source_urls: [],
     },
     runId: "run",
@@ -3006,7 +3013,7 @@ test("T2 request defaults are driven by the capability baseline cell", () => {
   );
   assert.equal(
     ((request.payload as { input_json: Record<string, unknown> }).input_json).resolution,
-    "480p",
+    "768p",
   );
 });
 
@@ -3044,7 +3051,6 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     generate_audio: false,
   }).input_json, {
     prompt: "A paper plane moving across a desk",
-    duration_seconds: 4,
     resolution: "480p",
     generate_audio: false,
   });
@@ -3067,9 +3073,13 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     duration_seconds: 4,
     resolution: "720p",
   });
-  assert.deepEqual(defaults("minimax", "MiniMax-H3*", "video.txt2video"), {
+  assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.txt2video"), {
+    duration_seconds: 4,
+    resolution: "768p",
+  });
+  assert.deepEqual(defaults("minimax", "MiniMax-H3-Max", "video.txt2video"), {
     duration_seconds: 5,
-    resolution: "480p",
+    resolution: "768p",
   });
   assert.deepEqual(defaults("doubao", "doubao-seedance-2-0-260128", "video.txt2video"), {
     duration_seconds: 4,

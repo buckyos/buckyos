@@ -146,9 +146,15 @@ function usage(): { input_tokens: number; output_tokens: number; total_tokens: n
 
 export function minimaxDiscoveryModelIds(): string[] {
   return [
+    "MiniMax-M3.1-Flash-Preview",
     "MiniMax-M3",
     "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
     "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "MiniMax-M2",
     "image-01",
     "MiniMax-H3",
     "MiniMax-H3-Max",

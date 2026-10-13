@@ -184,10 +184,10 @@ function io(
         resources: [],
       };
     case "video.txt2video":
-      return { input_json: { prompt: "A paper plane moving across a desk", duration_seconds: 4 }, resources: [] };
+      return { input_json: { prompt: "A paper plane moving across a desk" }, resources: [] };
     case "video.img2video":
       return {
-        input_json: { prompt: "Slow camera push with subtle motion", duration_seconds: 4 },
+        input_json: { prompt: "Slow camera push with subtle motion" },
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "video.video2video":

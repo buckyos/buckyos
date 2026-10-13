@@ -556,7 +556,11 @@ export function buildRouteExposureRuntimeCells(args: {
         );
         const key =
           `${provider.provider_driver}\u0000${modelPattern}\u0000${apiType}`;
-        if (!cells.has(key)) {
+        const current = cells.get(key);
+        const currentIsVariant = current?.exact_model.split("@")[0].includes(":") ?? false;
+        const modelIsVariant = model.exact_model.split("@")[0].includes(":");
+        if (!current ||
+          (provider.provider_driver === "minimax" && currentIsVariant && !modelIsVariant)) {
           cells.set(key, {
             provider_driver: provider.provider_driver,
             provider_profile_id: provider.provider_profile_id,
