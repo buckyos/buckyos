@@ -969,6 +969,34 @@ pub struct TaskSchemaDefinition {
     pub created_at: u64,
 }
 
+/// `presentation_schema` key that asks the desktop to show a schema's tasks
+/// in the creator's system notifications (the status-bar bell). Presentation
+/// only: it changes nothing about how a task runs, and like the rest of a
+/// published revision it is immutable, so turning it on for a schema means
+/// publishing a new `schema_version`.
+pub const TASK_PRESENTATION_SYSTEM_NOTIFY: &str = "system_notify";
+
+/// How a schema's tasks reach the creator's system notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSystemNotify {
+    /// Shown while running (with progress) and once finished.
+    Progress,
+    /// Shown once finished.
+    Completion,
+}
+
+impl TaskSchemaDefinition {
+    /// `presentation_schema.system_notify`, when the revision declares one.
+    pub fn system_notify(&self) -> Option<TaskSystemNotify> {
+        self.presentation_schema
+            .as_ref()?
+            .get(TASK_PRESENTATION_SYSTEM_NOTIFY)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Built-in task schema catalog
 // ---------------------------------------------------------------------------
@@ -992,6 +1020,9 @@ pub const RAW_TASK_SCHEMA_ID: &str = "raw/v1";
 pub const HUMAN_APPROVAL_SCHEMA_ID: &str = "human.approval/v1";
 
 pub const DOWNLOAD_TASK_SCHEMA_ID: &str = "download/v1";
+/// The revision of `download/v1` run by control-panel's URL downloader
+/// (`download.create`): user-creatable and shown in system notifications.
+pub const DOWNLOAD_TASK_SCHEMA_NOTIFY_VERSION: u32 = 2;
 pub const SCHEDULER_DISPATCH_THUNK_TASK_SCHEMA_ID: &str = "scheduler.dispatch_thunk/v1";
 pub const WORKFLOW_RUN_TREE_TASK_SCHEMA_ID: &str = "workflow.run_tree/v1";
 pub const WORKFLOW_STEP_TASK_SCHEMA_ID: &str = "workflow.step/v1";
@@ -1246,6 +1277,23 @@ pub fn builtin_task_schemas() -> Vec<TaskSchemaDefinition> {
             created_at: 0,
         },
     ));
+    // Revision 1 stays published for the tasks frozen on it; new downloads
+    // resolve to the highest enabled revision.
+    schemas.push(TaskSchemaDefinition {
+        schema_id: DOWNLOAD_TASK_SCHEMA_ID.to_string(),
+        schema_version: DOWNLOAD_TASK_SCHEMA_NOTIFY_VERSION,
+        input_schema: object.clone(),
+        output_schema: object.clone(),
+        presentation_schema: Some(json!({
+            (TASK_PRESENTATION_SYSTEM_NOTIFY): TaskSystemNotify::Progress,
+        })),
+        allowed_executor_kinds: vec![TaskExecutorKind::Unbound, TaskExecutorKind::App],
+        user_creatable: true,
+        default_storage_domain: StorageDomain::User,
+        publisher_app_id: crate::CONTROL_PANEL_SERVICE_NAME.to_string(),
+        enabled: true,
+        created_at: 0,
+    });
     schemas.push(crate::nfs_copy_task_schema());
     schemas
 }
@@ -3288,9 +3336,11 @@ mod tests {
     #[test]
     fn builtin_catalog_has_no_duplicate_ids() {
         let schemas = builtin_task_schemas();
-        let unique: std::collections::HashSet<&String> =
-            schemas.iter().map(|schema| &schema.schema_id).collect();
-        assert_eq!(unique.len(), schemas.len(), "duplicate built-in schema id");
+        let unique: std::collections::HashSet<(&String, u32)> = schemas
+            .iter()
+            .map(|schema| (&schema.schema_id, schema.schema_version))
+            .collect();
+        assert_eq!(unique.len(), schemas.len(), "duplicate built-in schema revision");
         for schema in &schemas {
             assert!(
                 !schema.allowed_executor_kinds.is_empty(),
@@ -3303,6 +3353,28 @@ mod tests {
                 schema.schema_id
             );
         }
+    }
+
+    #[test]
+    fn download_notify_revision_is_the_latest_and_marked() {
+        let schemas = builtin_task_schemas();
+        let downloads: Vec<&TaskSchemaDefinition> = schemas
+            .iter()
+            .filter(|schema| schema.schema_id == DOWNLOAD_TASK_SCHEMA_ID)
+            .collect();
+        let latest = downloads
+            .iter()
+            .max_by_key(|schema| schema.schema_version)
+            .unwrap();
+        assert_eq!(latest.schema_version, DOWNLOAD_TASK_SCHEMA_NOTIFY_VERSION);
+        assert_eq!(latest.system_notify(), Some(TaskSystemNotify::Progress));
+        assert!(latest.user_creatable);
+        let first = downloads.iter().find(|schema| schema.schema_version == 1).unwrap();
+        assert_eq!(first.system_notify(), None);
+        assert_eq!(
+            serde_json::to_value(TaskSystemNotify::Completion).unwrap(),
+            json!("completion")
+        );
     }
 
     #[test]

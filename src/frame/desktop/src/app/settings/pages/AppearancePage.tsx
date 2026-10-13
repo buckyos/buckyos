@@ -1,4 +1,4 @@
-import { Slider, TextField } from '@mui/material'
+import { FormControlLabel, Switch, Slider, TextField } from '@mui/material'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
@@ -70,7 +70,7 @@ function OpacitySlider({
 
 export function AppearancePage({ appProps }: AppearancePageProps) {
   const { t } = useI18n()
-  const { desktopIconSize } = useSettingsSnapshot()
+  const { desktopIconSize, messagePreview } = useSettingsSnapshot()
   const store = useSettingsStore()
   const save = (patch: Partial<SystemPreferencesInput>) => appProps.onSaveSettings({ ...currentPreferences(appProps), ...patch })
 
@@ -126,6 +126,23 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
             </option>
           ))}
         </TextField>
+      </Section>
+
+      <Section title={t('settings.appearance.notifications', 'Notifications')}>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={messagePreview}
+              onChange={(event) => store.setMessagePreview(event.target.checked)}
+              inputProps={{ 'aria-label': t('settings.appearance.messagePreview', 'Show message content in the status bar') }}
+              data-testid="settings-message-preview"
+            />
+          }
+          label={t('settings.appearance.messagePreview', 'Show message content in the status bar')}
+        />
+        <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+          {t('settings.appearance.messagePreviewHint', 'When off, the message list only says who wrote and how many messages are new. Applies to this device.')}
+        </p>
       </Section>
 
       <Section title={t('settings.appearance.windows', 'Windows')}>

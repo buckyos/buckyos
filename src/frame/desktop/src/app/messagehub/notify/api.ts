@@ -1,6 +1,6 @@
 import { buckyos, taskMgrErrorCode, TASK_ERR_NOT_FOUND, TASK_ERR_PERMISSION_DENIED } from 'buckyos'
 import { getTaskWatchSource } from '../conversation/tasks'
-import { ackNotify, dismissNotify, fetchAccountUsername, getNotify, MessageHubApiError } from '../datamodel/sessionApi'
+import { ackNotify, dismissNotify, fetchAccountUsername, getNotify, listNotify, MessageHubApiError } from '../datamodel/sessionApi'
 import { parseHumanTaskPrompt } from '../protocol/msgobj'
 import type { NotifyView } from './model'
 import type { NotifyBackend } from './watch'
@@ -20,6 +20,7 @@ export function createApiNotifyBackend(): NotifyBackend {
   let username: Promise<string> | null = null
   return {
     get: notifyId => getNotify(notifyId).then(normalized),
+    list: query => listNotify(query).then(page => page.items.map(normalized)),
     ack: notifyId => ackNotify(notifyId).then(normalized),
     dismiss: notifyId => dismissNotify(notifyId).then(normalized),
     async getTask(taskId) {

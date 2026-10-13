@@ -161,20 +161,20 @@ test('mobile demos exposes dialog trigger and opens centered dialog', async ({
   expect(Math.abs(dialogCenterY - viewportCenterY)).toBeLessThan(40)
 })
 
-test('mobile status tray tips stays within viewport and dismisses on blur', async ({
+test('mobile status tray panels stay within viewport and dismiss on blur', async ({
   page,
 }) => {
   await page.goto('/?scenario=normal')
 
-  const tipsButton = page.getByTestId('status-tray-tips-button')
-  await expect(tipsButton).toBeVisible()
-  await tipsButton.click({ force: true })
+  const bellButton = page.getByTestId('status-tray-notifications-button')
+  await expect(bellButton).toBeVisible()
+  await bellButton.click({ force: true })
 
-  const tipsPanel = page.getByTestId('status-tips-panel')
-  await expect(tipsPanel).toBeVisible()
-  await expect(page.getByTestId('status-tip-card-diagnostics-export')).toBeVisible()
+  const panel = page.getByTestId('status-tray-notifications-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel.getByTestId('tray-notify-row').first()).toBeVisible()
 
-  const panelBox = await tipsPanel.boundingBox()
+  const panelBox = await panel.boundingBox()
   const viewport = page.viewportSize()
   expect(panelBox).not.toBeNull()
   expect(viewport).not.toBeNull()
@@ -190,7 +190,7 @@ test('mobile status tray tips stays within viewport and dismisses on blur', asyn
     force: true,
     position: { x: 12, y: viewport ? viewport.height - 12 : 780 },
   })
-  await expect(tipsPanel).toHaveCount(0)
+  await expect(panel).toHaveCount(0)
 })
 
 test('mobile App Service opens without redundant back button on detail page', async ({

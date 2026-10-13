@@ -336,6 +336,8 @@ export class MessageHubMockStore implements MessageHubStore {
     return session
   }
   preferences(context: MessageHubContext, id: string) { return this.snapshot.preferences[viewerSessionKey(context, id)] ?? defaultPreferences }
+  /** Mock preferences are local and always loaded. */
+  async loadPreferences() {}
   policy(context: MessageHubContext, entityId: string) { return this.snapshot.policies[sessionKey(context.ownerDid, entityId)] ?? 'default' }
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']) {
     if (!this.canView(context)) return []

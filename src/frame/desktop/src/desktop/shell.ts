@@ -28,25 +28,6 @@ export function desktopWorkspaceInsets(taskbarPinned: boolean) {
 
 export type ConnectionState = 'online' | 'degraded' | 'offline'
 
-export type StatusTipTone = 'success' | 'error' | 'progress'
-
-export type StatusTip = {
-  id: string
-  tone: StatusTipTone
-  taskLabel: string
-  title: string
-  body: string
-  statusLabel: string
-  timeLabel: string
-}
-
-export type StatusTrayState = {
-  backupActive: boolean
-  messageCount: number
-  notificationCount: number
-  tips: StatusTip[]
-}
-
 export function mobileStatusBarMode(app?: AppDefinition) {
   return app?.manifest.mobileStatusBarMode ?? 'compact'
 }

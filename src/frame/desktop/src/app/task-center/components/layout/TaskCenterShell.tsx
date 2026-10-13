@@ -1,6 +1,6 @@
 /* ── TaskCenter shell – responsive layout ── */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { Sidebar } from './Sidebar'
 import { MobileTabBar } from './MobileTabBar'
@@ -22,6 +22,12 @@ export function TaskCenterShell({ initialTaskId, children }: TaskCenterShellProp
     initialTaskId ? { page: 'tasks', taskId: initialTaskId } : { page: 'home' },
   )
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const mainRef = useRef<HTMLElement | null>(null)
+
+  // Every page starts at its top, not where the previous one was scrolled to.
+  useLayoutEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 })
+  }, [currentNav])
 
   const handleNavigate = (nav: TaskCenterNav) => setCurrentNav(nav)
   const handlePageNavigate = (page: TaskCenterPage) => setCurrentNav({ page })
@@ -34,7 +40,7 @@ export function TaskCenterShell({ initialTaskId, children }: TaskCenterShellProp
       {isMobile ? (
         <>
           <MobileTabBar currentNav={currentNav} onNavigate={handlePageNavigate} />
-          <main className="flex-1 overflow-y-auto">
+          <main ref={mainRef} className="flex-1 overflow-y-auto">
             <div className="px-4 py-4">
               {children(currentNav, handleNavigate)}
             </div>
@@ -44,6 +50,7 @@ export function TaskCenterShell({ initialTaskId, children }: TaskCenterShellProp
         <div className="flex flex-1 min-h-0">
           <Sidebar currentPage={currentNav.page} onNavigate={handlePageNavigate} />
           <main
+            ref={mainRef}
             className="flex-1 overflow-y-auto desktop-scrollbar"
             style={{ background: 'var(--cp-bg)' }}
           >

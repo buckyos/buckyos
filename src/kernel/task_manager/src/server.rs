@@ -2429,12 +2429,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let store = service.store();
         for definition in builtin_task_schemas() {
             let stored = store
-                .get_schema(&definition.schema_id, None)
+                .get_schema(&definition.schema_id, Some(definition.schema_version))
                 .await
                 .unwrap_or_else(|err| {
                     panic!(
-                        "built-in schema {} not seeded: {:?}",
-                        definition.schema_id, err
+                        "built-in schema {}@{} not seeded: {:?}",
+                        definition.schema_id, definition.schema_version, err
                     )
                 });
             assert!(stored.enabled, "{} seeded disabled", definition.schema_id);
@@ -2442,7 +2442,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 stored.allowed_executor_kinds,
                 definition.allowed_executor_kinds
             );
+            assert_eq!(stored.presentation_schema, definition.presentation_schema);
         }
+        // New downloads resolve to the revision shown in system notifications.
+        let download = store.get_schema(DOWNLOAD_TASK_SCHEMA_ID, None).await.unwrap();
+        assert_eq!(download.schema_version, DOWNLOAD_TASK_SCHEMA_NOTIFY_VERSION);
+        assert_eq!(download.system_notify(), Some(TaskSystemNotify::Progress));
 
         // Re-running the bootstrap is a no-op, not an idempotency conflict.
         service.ensure_builtin_schemas().await.unwrap();

@@ -586,7 +586,7 @@ test('desktop taskbar slides out from the avatar, pins, and leaves windows the f
   await expect(avatar).toBeVisible()
   await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
   // The desktop has no status bar: no tray, no connection label.
-  await expect(page.getByTestId('status-tray-tips-button')).toHaveCount(0)
+  await expect(page.getByTestId('status-tray-notifications-button')).toHaveCount(0)
   await expect(page.getByLabel('Status bar')).toHaveCount(0)
 
   // Auto-hidden taskbar: a maximized window covers the whole viewport and

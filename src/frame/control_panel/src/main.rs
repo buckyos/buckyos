@@ -13,6 +13,7 @@ mod app_staging;
 mod cluster_mgr;
 mod dashboard;
 mod diagnostic_mgr;
+mod download_mgr;
 mod image_data_url;
 mod ndn_download;
 mod pikg;
@@ -212,6 +213,7 @@ struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     diagnostic_bundles: Arc<Mutex<HashMap<String, DiagnosticBundleEntry>>>,
     running_diagnostic_tasks: Arc<Mutex<HashSet<String>>>,
+    running_download_tasks: Arc<Mutex<HashSet<String>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
     docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
@@ -248,6 +250,7 @@ impl ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             diagnostic_bundles: Arc::new(Mutex::new(HashMap::new())),
             running_diagnostic_tasks: Arc::new(Mutex::new(HashSet::new())),
+            running_download_tasks: Arc::new(Mutex::new(HashSet::new())),
             metrics_snapshot,
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
             docker_overview_cache: Arc::new(Mutex::new(None)),
@@ -963,6 +966,7 @@ impl RPCHandler for ControlPanelServer {
                     .await
             }
             "diagnostic.export" => self.handle_diagnostic_export(req, principal.as_ref()).await,
+            "download.create" => self.handle_download_create(req, principal.as_ref()).await,
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
 
@@ -1152,6 +1156,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     control_panel_server.install_runner.start();
     control_panel_server.app_installer.start_lifecycle_runner();
     control_panel_server.start_update_batch_runner();
+    control_panel_server.start_download_recovery();
 
     // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）
     let runtime = get_buckyos_api_runtime()

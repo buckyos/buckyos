@@ -11,7 +11,7 @@
 | `notice` | 告诉用户一件事，不需要回答 | msg-center 中这条消息的记录（已读、归档） |
 | `input` | 向用户提问，需要回答 | 另挂的 TaskMgr 人工任务（HumanSet，schema `human.input/v1`）；回答就是任务结果 |
 
-用户在 MessageHub 的“系统通知”里看到通知：按对用户的重要程度分为三个会话——**待办**（`todo`）、**Agent**（`agent`）、**应用通知**（`app`），每条通知是其中一张卡片，可以原地回答、确认或忽略。统一链接 `https://<zone host>/messagehub?notify=<notify_id>` 打开这张卡片。
+Desktop 移动端状态栏的铃铛（蓝色计数）列出该用户所有 `open` 的通知（`notify.list {status: [open]}`），点击打开对应卡片。用户在 MessageHub 的“系统通知”里看到通知：按对用户的重要程度分为三个会话——**待办**（`todo`）、**Agent**（`agent`）、**应用通知**（`app`），每条通知是其中一张卡片，可以原地回答、确认或忽略。统一链接 `https://<zone host>/messagehub?notify=<notify_id>` 打开这张卡片。
 
 ## 2. 方法
 

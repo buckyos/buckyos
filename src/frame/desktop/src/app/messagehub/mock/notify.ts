@@ -8,7 +8,7 @@
  */
 import { NOTIFY_CHOICE_CONTROL_ID, NOTIFY_INTENT, NOTIFY_TEXT_CONTROL_ID, notifySessionId, type CanonValue, type HumanTaskPrompt, type MessageObject, type NotifyCategory, type NotifyKind, type NotifyLevel, type NotifyMessageData, type NotifySource, type NotifyStatus } from '../protocol/msgobj'
 import { isNotifyClosed, NOTIFY_ACTION_DISMISS, TASK_ERR_ALREADY_COMPLETED, TASK_ERR_REVISION_CONFLICT, type NotifyAnswer, type NotifyResult, type NotifyView } from '../notify/model'
-import type { NotifyBackend, NotifyTaskState } from '../notify/watch'
+import type { NotifyBackend, NotifyListQuery, NotifyTaskState } from '../notify/watch'
 import { sessionKey } from '../sessionModel'
 import type { Entity, Session } from '../types'
 import { getMockEntityDid, MOCK_SELF_DID } from './data'
@@ -303,6 +303,13 @@ export class MockNotifyBackend implements NotifyBackend {
   async get(notifyId: string) {
     this.reads.get++
     return this.viewOf(this.record(notifyId)[1])
+  }
+
+  async list(query: NotifyListQuery) {
+    const views = Object.values(this.load()).map(notify => this.viewOf(notify))
+      .filter(view => !query.status || query.status.includes(view.status))
+      .sort((a, b) => b.created_at_ms - a.created_at_ms)
+    return views.slice(0, query.limit ?? 50)
   }
 
   async ack(notifyId: string) {

@@ -10,6 +10,7 @@ import {
   Pause,
   AlertTriangle,
   MessageSquare,
+  CircleStop,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
@@ -122,6 +123,8 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
   const store = useTaskCenterStore()
   const { t } = useI18n()
   const [copyState, setCopyState] = useState('')
+  const [canceling, setCanceling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   // Lists carry metadata only; the payload/progress of a finished task is
   // fetched when its detail page opens.
   useEffect(() => {
@@ -162,6 +165,18 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
     task.error ?? (task.status === 'failed' && task.payload?.error
       ? String(task.payload.error)
       : null)
+
+  const cancel = async () => {
+    setCanceling(true)
+    setCancelError(null)
+    try {
+      await store.cancelTask(task.taskId)
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCanceling(false)
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -205,6 +220,33 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
             {task.summary}
           </p>
         )}
+        {task.cancellable && (
+          <button
+            type="button"
+            onClick={() => void cancel()}
+            disabled={canceling}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-60"
+            style={{
+              background: 'var(--cp-surface)',
+              color: 'var(--cp-danger)',
+              border: '1px solid color-mix(in srgb, var(--cp-danger) 30%, var(--cp-border))',
+            }}
+            data-testid="task-cancel"
+          >
+            <CircleStop size={14} />
+            {t('taskCenter.detail.cancel', 'Cancel Task')}
+          </button>
+        )}
+        {task.pendingControlAction === 'Cancel' && task.status !== 'cancelled' && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('taskCenter.detail.canceling', 'Canceling…')}
+          </p>
+        )}
+        {cancelError && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>
+            {cancelError}
+          </p>
+        )}
       </div>
 
       {/* Progress bar */}
@@ -226,6 +268,29 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
             {task.progress}% complete
           </div>
         </div>
+      )}
+
+      {/* A URL download: where from and where it was saved */}
+      {task.download && (
+        <section
+          className="rounded-2xl p-4"
+          style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+          data-testid="task-download-info"
+        >
+          <h2
+            className="text-xs font-semibold uppercase tracking-wide mb-2"
+            style={{ color: 'var(--cp-muted)' }}
+          >
+            {t('taskCenter.download.section', 'Download')}
+          </h2>
+          <InfoRow label={t('taskCenter.download.url', 'Link')} value={<span className="break-all">{task.download.url}</span>} />
+          {task.download.localPath && (
+            <InfoRow
+              label={t('taskCenter.download.savedTo', 'Saved to')}
+              value={<span className="break-all font-mono text-xs" data-testid="task-download-path">{task.download.localPath}</span>}
+            />
+          )}
+        </section>
       )}
 
       {/* The task of a System Notify is answered on its MessageHub card */}

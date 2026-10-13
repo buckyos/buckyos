@@ -219,6 +219,16 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 * **System Logs**：`system.logs.list` / `query` / `tail` / `download`（凭 token 经 `GET /kapi/control-panel/logs/download/{token}` 下载）。
 * **AICC Settings**：`ai.overview` / `ai.provider.*` / `ai.model.*` / `ai.policy.*` / `ai.diagnostics.list` / `ai.reload` 等，管理 AI 接入与路由策略。
 
+### 4.7 URL 下载 (`download.create`)
+
+用户在 Task Center 手工新建的下载由 control-panel 自己执行（与 `diagnostic.collect` 同一模式），实现在 `download_mgr.rs`：
+
+* 请求：`download.create {url, filename?, idempotency_key}`，需登录的 Zone 用户（用户名要能作为 `data/home` 下的目录名）。只接受 `http(s)` URL；`filename` 净化为单个路径段，缺省时依次取响应的 `Content-Disposition`、最终 URL 的最后一段、`download`。返回 `{task_id}`。
+* 任务：以调用者为 creator 调 `create_delegated_task`，schema `download/v1` 的第 2 版（`presentation_schema.system_notify = progress`，见 TaskMgr 2.0 §9.1），`storage_domain = User`，input 是 `DownloadTaskData`（只有 `request`，`options.local_path = /home/<user>/Downloads`）。task-manager 还没种下这一版时，control-panel 作为发布者自己 `register_task_schema` 后重试。
+* 执行：文件先写成 `data/home/<user>/Downloads/.download-<task_id>.part`，完成后改名为最终文件名（重名追加 ` (1)`、` (2)`…）。进度每 0.5 秒以 `TaskDataProgress {bytes: {completed, total}}` 写入，message 为 `已下载 / 总大小`。声明 `cancel = Safe`：收到取消请求后删除临时文件并 `ack_control(applied)`。超过 120 秒收不到数据即失败。结果是 `DownloadTaskResult {state: completed, local_path: /home/<user>/Downloads/<name>, downloaded_bytes, total_bytes, completed_at}`；失败码 `download_failed`。
+* 重启：不续传。control-panel 启动时把上次遗留的非终态下载以 `download_interrupted` 失败，并删除它们的临时文件。
+* 已知风险：服务端会去访问用户给的任意 URL（包括 Zone 内网地址），目前不做限制。
+
 ---
 
 ## 5. App 安装协议 (App Installer Protocol)

@@ -35,6 +35,8 @@ export type SettingsSnapshot = { [K in ResourceKey]: Resource<ResourceData[K]> }
   developerSaving: boolean
   /** Desktop icon grid density (the shell reads it for its grid). */
   desktopIconSize: GridDensity
+  /** Whether the status-bar message tray shows message text (this device only). */
+  messagePreview: boolean
 }
 
 function errorText(error: unknown, fallback: string): string {
@@ -70,6 +72,16 @@ function readIconSize(): GridDensity {
   }
 }
 
+const MESSAGE_PREVIEW_KEY = 'buckyos.desktop.messagePreview'
+
+function readMessagePreview(): boolean {
+  try {
+    return window.localStorage.getItem(MESSAGE_PREVIEW_KEY) !== 'hidden'
+  } catch {
+    return true
+  }
+}
+
 const idle = <T,>(): Resource<T> => ({ status: 'idle', data: null, error: null })
 
 export class SettingsStore {
@@ -82,6 +94,7 @@ export class SettingsStore {
     privacy: idle(),
     developerSaving: false,
     desktopIconSize: readIconSize(),
+    messagePreview: readMessagePreview(),
   }
   private listeners = new Set<() => void>()
   private inflight = new Map<ResourceKey, Promise<void>>()
@@ -149,7 +162,16 @@ export class SettingsStore {
     }
     this.patch({ desktopIconSize: size })
   }
+
+  setMessagePreview(shown: boolean) {
+    try {
+      window.localStorage.setItem(MESSAGE_PREVIEW_KEY, shown ? 'shown' : 'hidden')
+    } catch {
+      // Not persisted (private window); still applies to this page.
+    }
+    this.patch({ messagePreview: shown })
+  }
 }
 
-/** Shared by the Settings app and the desktop shell (icon size). */
+/** Shared by the Settings app and the desktop shell (icon size, message preview). */
 export const globalSettingsStore = new SettingsStore()

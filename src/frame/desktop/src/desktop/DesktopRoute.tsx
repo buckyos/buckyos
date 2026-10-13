@@ -62,8 +62,8 @@ import {
   mobileStatusBarHeight,
   mobileStatusBarMode,
   type ConnectionState,
-  type StatusTip,
 } from './shell'
+import { useTray } from './tray/trayModel'
 import { useI18n } from '../i18n/provider'
 import { useAppText } from '../presentation/appText'
 import type {
@@ -365,7 +365,6 @@ export function DesktopRoute() {
   const { appearance } = snap.syncData
   const { runtimeContainer, windowAppearance } = appearance
   const {
-    windows,
     activityLog,
     snackbar,
     isSystemSidebarOpen,
@@ -745,99 +744,9 @@ export function DesktopRoute() {
   )
   const taskbarApps = store.getTaskbarApps()
 
-  // Tray state depends on a few primitives derived from `windows`; derive
-  // them first so the memo is not invalidated by every geometry update.
-  const backupActive = windows.some(
-    (w) => w.appId === 'files' && w.state !== 'minimized',
-  )
-  const messageCount = Math.min(
-    windows.filter((w) => w.state !== 'minimized').length,
-    3,
-  )
-  const recentActivity = activityLog[0]
-  const trayState = useMemo(() => {
-    const statusTips: StatusTip[] = [
-      {
-        id: 'recent-shell-action',
-        tone: 'success' as const,
-        taskLabel: t('tips.task.shell'),
-        title: t('tips.card.recent.title'),
-        body: recentActivity ?? t('tips.card.recent.body'),
-        statusLabel: t('tips.status.completed'),
-        timeLabel: t('tips.time.justNow'),
-      },
-      {
-        id: 'mobile-touch-audit',
-        tone: 'error' as const,
-        taskLabel: t('tips.task.mobile'),
-        title: t('tips.card.touch.title'),
-        body: t('tips.card.touch.body'),
-        statusLabel: t('tips.status.failed'),
-        timeLabel: t('tips.time.twoMinutes'),
-      },
-      {
-        id: 'diagnostics-export',
-        tone: 'progress' as const,
-        taskLabel: t('tips.task.report'),
-        title: t('tips.card.report.title'),
-        body: t('tips.card.report.body'),
-        statusLabel: t('tips.status.running'),
-        timeLabel: t('tips.time.queue'),
-      },
-      {
-        id: 'runtime-cache-warmed',
-        tone: 'success' as const,
-        taskLabel: t('tips.task.runtime'),
-        title: t('tips.card.cache.title'),
-        body: t('tips.card.cache.body'),
-        statusLabel: t('tips.status.completed'),
-        timeLabel: '5m',
-      },
-      {
-        id: 'notes-sync-retry',
-        tone: 'error' as const,
-        taskLabel: t('tips.task.sync'),
-        title: t('tips.card.sync.title'),
-        body: t('tips.card.sync.body'),
-        statusLabel: t('tips.status.failed'),
-        timeLabel: '9m',
-      },
-      {
-        id: 'docs-index-refresh',
-        tone: 'progress' as const,
-        taskLabel: t('tips.task.index'),
-        title: t('tips.card.index.title'),
-        body: t('tips.card.index.body'),
-        statusLabel: t('tips.status.running'),
-        timeLabel: '12m',
-      },
-      {
-        id: 'launcher-metrics-pushed',
-        tone: 'success' as const,
-        taskLabel: t('tips.task.metrics'),
-        title: t('tips.card.metrics.title'),
-        body: t('tips.card.metrics.body'),
-        statusLabel: t('tips.status.completed'),
-        timeLabel: '18m',
-      },
-      {
-        id: 'widget-layout-reflow',
-        tone: 'progress' as const,
-        taskLabel: t('tips.task.layout'),
-        title: t('tips.card.layout.title'),
-        body: t('tips.card.layout.body'),
-        statusLabel: t('tips.status.running'),
-        timeLabel: '24m',
-      },
-    ]
-
-    return {
-      backupActive,
-      messageCount,
-      notificationCount: Math.min(statusTips.length, 9),
-      tips: statusTips,
-    }
-  }, [backupActive, messageCount, recentActivity, t])
+  // The status bar's message and notification trays read MessageHub,
+  // msg-center and TaskMgr only while the mobile shell is up.
+  const tray = useTray(isMobile && !isLoading && !hasError)
 
   // Background
   const backgroundWallpaper = useMemo(
@@ -906,12 +815,13 @@ export function DesktopRoute() {
                     safeAreaTop={safeArea.top}
                     onCycleLocale={handleCycleLocale}
                     onMinimizeWindow={handleMinimizeTopMobileWindow}
+                    onNavigate={navigate}
                     onOpenDiagnostics={handleOpenDiagnostics}
                     onOpenSettings={handleOpenSettings}
                     onOpenSidebar={toggleSidebar}
                     onToggleTheme={handleToggleTheme}
                     themeMode={themeMode}
-                    trayState={trayState}
+                    tray={tray}
                     user={currentUser}
                   />
                 </>

@@ -111,6 +111,8 @@ export interface MessageHubStore {
   create(context: MessageHubContext, input: z.infer<typeof createSessionSchema>): Promise<Session>
   manage(context: MessageHubContext, sessionId: string, action: ManageAction): Promise<void>
   preferences(context: MessageHubContext, sessionId: string): SessionPreferences
+  /** Loads the owner's preferences (title, pinned, muted) of these sessions once; `preferences` reads them. */
+  loadPreferences(context: MessageHubContext, sessionIds: string[]): Promise<void>
   updatePreferences(context: MessageHubContext, sessionId: string, patch: Partial<SessionPreferences>): Promise<void>
   updateState(context: MessageHubContext, sessionId: string, scope: 'shared' | 'member', input: unknown): Promise<void>
   /**

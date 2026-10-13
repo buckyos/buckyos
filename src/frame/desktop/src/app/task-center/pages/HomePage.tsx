@@ -9,11 +9,12 @@ import {
   Clock,
   ChevronRight,
   Shield,
-  Plus,
+  Download,
   Pause,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
+import { NewDownloadDialog } from '../components/NewDownloadDialog'
 import type { Task, SystemNotification } from '../../../api/task_mgr'
 import type { TaskCenterNav } from '../components/layout/navigation'
 
@@ -209,6 +210,7 @@ export function HomePage({ onNavigate }: HomePageProps) {
   const store = useTaskCenterStore()
   const { t } = useI18n()
   const [, setTick] = useState(0)
+  const [downloadOpen, setDownloadOpen] = useState(false)
 
   const runningTasks = store.getRunningTasks()
   const recentFinished = store.getRecentFinishedTasks().slice(0, 3)
@@ -284,21 +286,31 @@ export function HomePage({ onNavigate }: HomePageProps) {
         </section>
       )}
 
-      {/* Create Task */}
+      {/* New download */}
       <section>
         <button
           type="button"
+          onClick={() => setDownloadOpen(true)}
           className="flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-medium transition-colors"
           style={{
             background: 'var(--cp-surface)',
             color: 'var(--cp-accent)',
             border: '1px solid var(--cp-border)',
           }}
+          data-testid="task-center-new-download"
         >
-          <Plus size={16} />
-          {t('taskCenter.home.createTask', 'Create Task')}
+          <Download size={16} />
+          {t('taskCenter.download.new', 'New Download')}
         </button>
       </section>
+      <NewDownloadDialog
+        open={downloadOpen}
+        onClose={() => setDownloadOpen(false)}
+        onCreated={(taskId) => {
+          setDownloadOpen(false)
+          onNavigate({ page: 'tasks', taskId })
+        }}
+      />
 
       {/* Empty state */}
       {runningTasks.length === 0 && recentFinished.length === 0 && pendingNotifications.length === 0 && (

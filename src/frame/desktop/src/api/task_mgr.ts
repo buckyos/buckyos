@@ -1,5 +1,6 @@
 import {
   buckyos,
+  DOWNLOAD_TASK_SCHEMA_ID,
   taskMgrErrorCode,
   taskMgrTaskEventPath,
   taskMgrTreeEventPath,
@@ -8,6 +9,7 @@ import {
   TASK_ERR_NOT_FOUND,
   TASK_ERR_PERMISSION_DENIED,
   TASK_ERR_REVISION_CONFLICT,
+  TaskControlAction as TaskControlActionKind,
   TaskExecutorKind,
   TaskPhase,
   TaskOutcome,
@@ -25,6 +27,15 @@ import { fetchAgentList } from './user_mgr'
 import { getSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
 import type { InstallTask } from '../app/app-service/types'
 import { TaskCenterMockStore } from './task_mgr_mock.ts'
+import { createDownloadTask, type CreateDownloadInput } from './downloads.ts'
+import { toProgressPercent } from './task_progress.ts'
+import {
+  cancelMockDownload,
+  listMockDownloads,
+  mockDownloadState,
+  subscribeMockDownloads,
+  type MockDownload,
+} from './downloads_mock.ts'
 
 // The 2.0 protocol vocabulary is the websdk's; re-exported so Task Center
 // code has one import site for both the view model and the wire enums.
@@ -127,6 +138,16 @@ export interface Task {
    * (`/messagehub?notify=<id>`), never by an approve / reject card here.
    */
   notifyId?: string
+  /** The runner accepts a cancel request now (and none is pending). */
+  cancellable?: boolean
+  /** A URL download (`download/v1`): where from and, once done, where it was saved. */
+  download?: TaskDownloadInfo
+}
+
+export interface TaskDownloadInfo {
+  url: string
+  /** Path in the user's files (`/home/<user>/Downloads/<name>`) once complete. */
+  localPath?: string
 }
 
 export type SystemNotificationAction = 'confirm' | 'dismiss' | 'approve' | 'reject'
@@ -199,6 +220,10 @@ export interface TaskCenterModel {
   getPendingNotifications(): SystemNotification[]
   handleNotification(id: string, action: string): void
   getEvents(): SystemEvent[]
+  /** Starts a URL download into `~/Downloads`; resolves to its task id. */
+  createDownload(input: CreateDownloadInput): Promise<string>
+  /** Asks the task's runner to cancel it (a `Cancel` control request). */
+  cancelTask(taskId: string): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +244,8 @@ interface TaskCenterRpcProvider {
   listTasks(): Promise<TaskSnapshot[]>
   loadDetail(taskId: string): Promise<TaskMgrTask | null>
   handleNotificationAction(task: Task, action: string): Promise<void>
+  createDownload(input: CreateDownloadInput): Promise<string>
+  cancelTask(taskId: string): Promise<void>
 }
 
 /** Apps whose tasks are platform work rather than a user-installed app's. */
@@ -323,27 +350,22 @@ function toTaskSource(summary: TaskSummary, agentAppIds: ReadonlySet<string>): T
   return 'user'
 }
 
-/**
- * 2.0 progress is free-form JSON owned by the runner, so pull a percentage
- * out of the shapes the platform runners actually write and give up rather
- * than guess.
- */
-function toProgressPercent(progress: unknown): number | null {
-  const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
-  const direct = asNumber(progress)
-  if (direct !== null) return clamp(direct <= 1 ? direct * 100 : direct)
-  if (!isRecord(progress)) return null
+/** Source URL and saved path of a `download/v1` task, when its detail is loaded. */
+function downloadInfoOf(summary: TaskSummary, detail: TaskMgrTask | null): TaskDownloadInfo | undefined {
+  if (summary.schema_id !== DOWNLOAD_TASK_SCHEMA_ID || !detail) return undefined
+  const request = asRecord(asRecord(detail.input).request)
+  const url = asString(request.download_url) ?? (Array.isArray(request.urls) ? asString(request.urls[0]) : null)
+  if (!url) return undefined
+  const localPath = asString(asRecord(detail.result).local_path)
+  return { url, ...(localPath ? { localPath } : {}) }
+}
 
-  const percent = asNumber(progress.percent) ?? asNumber(progress.percentage)
-  if (percent !== null) return clamp(percent)
-
-  const ratio = asNumber(progress.ratio)
-  if (ratio !== null) return clamp(ratio * 100)
-
-  const completed = asNumber(progress.completed) ?? asNumber(progress.completed_items)
-  const total = asNumber(progress.total) ?? asNumber(progress.total_items)
-  if (completed !== null && total !== null && total > 0) return clamp((completed / total) * 100)
-  return null
+/** A live task whose runner declared it can be canceled, with no cancel already requested. */
+function isCancellable(summary: TaskSummary, detail: TaskMgrTask | null): boolean {
+  if (!detail || summary.phase === TaskPhase.Terminal) return false
+  if (detail.pending_control?.action === TaskControlActionKind.Cancel) return false
+  const cancel = detail.control_profile?.cancel?.kind
+  return cancel === 'Safe' || cancel === 'Interrupt'
 }
 
 /** The notification an input task answers (`input.notify.notify_id`), when it is one. */
@@ -447,6 +469,7 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot, agentAppIds:
   const errorMessage = detail?.error?.message ?? null
   const data = taskPayload(detail)
   const notifyId = notifyIdOf(detail)
+  const download = downloadInfoOf(summary, detail)
   const isSchedule = summary.schema_id === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID
 
   return {
@@ -487,6 +510,8 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot, agentAppIds:
     waitReason,
     error: errorMessage,
     ...(notifyId ? { notifyId } : {}),
+    cancellable: isCancellable(summary, detail),
+    ...(download ? { download } : {}),
   }
 }
 
@@ -669,10 +694,65 @@ class SubscribableModel {
     return () => this.listeners.delete(listener)
   }
 
+  protected hasListeners(): boolean {
+    return this.listeners.size > 0
+  }
+
   emitChange(): void {
     this.version += 1
     this.listeners.forEach((listener) => listener())
   }
+}
+
+/** A mock download as the Task Center shows a `download/v1` task. */
+function mockDownloadTaskView(download: MockDownload, now: number): Task {
+  const state = mockDownloadState(download, now)
+  const status: TaskStatus =
+    state.outcome === 'Succeeded'
+      ? 'completed'
+      : state.outcome === 'Failed'
+        ? 'failed'
+        : state.outcome === 'Canceled'
+          ? 'cancelled'
+          : 'running'
+  const created = new Date(download.createdAt).toISOString()
+  const updated = new Date(state.updatedAt).toISOString()
+  const localPath = state.outcome === 'Succeeded' ? `/home/self/Downloads/${download.filename}` : undefined
+  return {
+    rootTaskId: download.taskId,
+    taskId: download.taskId,
+    parentTaskId: null,
+    source: 'user',
+    type: 'download',
+    status,
+    title: `Download ${download.filename}`,
+    summary: state.error ?? `${formatMockBytes(state.completedBytes)} / ${formatMockBytes(download.totalBytes)}`,
+    createdAt: created,
+    updatedAt: updated,
+    startedAt: created,
+    endedAt: state.completedAt ? new Date(state.completedAt).toISOString() : null,
+    progress: Math.round((state.completedBytes / download.totalBytes) * 100),
+    schemaType: DOWNLOAD_TASK_SCHEMA_ID,
+    payload: localPath ? { state: 'completed', local_path: localPath } : { download_url: download.url },
+    children: [],
+    phase: state.phase === 'Terminal' ? TaskPhase.Terminal : TaskPhase.Running,
+    outcome: (state.outcome as TaskOutcome | undefined) ?? null,
+    error: state.error ?? null,
+    cancellable: state.phase === 'Running',
+    download: { url: download.url, ...(localPath ? { localPath } : {}) },
+  }
+}
+
+function formatMockBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(1)} ${units[unit]}`
 }
 
 function installationTaskView(task: InstallTask): Task {
@@ -727,10 +807,24 @@ export class TaskCenterMockModel
    * never listens) and released only by `dispose`.
    */
   private detachAppService: (() => void) | null = null
+  private detachDownloads: (() => void) | null = null
+  /** Re-renders running mock downloads, whose progress follows the clock. */
+  private downloadTimer: ReturnType<typeof setInterval> | null = null
 
   constructor() {
     super()
     this.syncInstallTasks()
+    this.syncDownloadTasks()
+  }
+
+  private syncDownloadTasks(): void {
+    const now = Date.now()
+    const downloads = listMockDownloads().map((download) => mockDownloadTaskView(download, now))
+    this.tasks = [
+      ...downloads.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      ...this.tasks.filter((task) => !task.taskId.startsWith('mock-dl-')),
+    ]
+    this.subscription.emitChange()
   }
 
   private syncInstallTasks(): void {
@@ -752,8 +846,15 @@ export class TaskCenterMockModel
     this.detachAppService = this.appServiceStore.subscribe(() =>
       this.syncInstallTasks(),
     )
+    this.detachDownloads = subscribeMockDownloads(() => this.syncDownloadTasks())
+    this.downloadTimer = setInterval(() => {
+      if (this.tasks.some((task) => task.taskId.startsWith('mock-dl-') && task.status === 'running')) {
+        this.syncDownloadTasks()
+      }
+    }, 500)
     // Catch up on anything that changed while detached.
     this.syncInstallTasks()
+    this.syncDownloadTasks()
   }
 
   getSnapshot(): number {
@@ -775,10 +876,25 @@ export class TaskCenterMockModel
   dispose(): void {
     this.detachAppService?.()
     this.detachAppService = null
+    this.detachDownloads?.()
+    this.detachDownloads = null
+    if (this.downloadTimer) clearInterval(this.downloadTimer)
+    this.downloadTimer = null
   }
 
   async refresh(): Promise<void> {
-    this.subscription.emitChange()
+    this.syncDownloadTasks()
+  }
+
+  async createDownload(input: CreateDownloadInput): Promise<string> {
+    const taskId = await createDownloadTask(input)
+    this.syncDownloadTasks()
+    return taskId
+  }
+
+  async cancelTask(taskId: string): Promise<void> {
+    cancelMockDownload(taskId)
+    this.syncDownloadTasks()
   }
 
   async loadTaskDetail(): Promise<void> {
@@ -802,6 +918,9 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   private readonly provider: TaskCenterRpcProvider
   /** The list fetch in flight, so detail loads can wait for it. */
   private pendingRefresh: Promise<void> | null = null
+  /** Keeps an open Task Center current: often while a task runs, rarely when idle. */
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
+  private lastRefreshAt = 0
 
   constructor(provider: TaskCenterRpcProvider = new BuckyOSTaskMgrProvider()) {
     super()
@@ -818,6 +937,7 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   }
 
   private async fetchTasks(): Promise<void> {
+    this.lastRefreshAt = Date.now()
     const agents = fetchAgentList().then(({ data }) => data?.agents ?? null)
     try {
       this.snapshots = await this.provider.listTasks()
@@ -831,8 +951,53 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
     this.rebuild()
   }
 
+  /** Polling runs only while someone is subscribed, and a later `subscribe` restarts it. */
+  override subscribe(listener: () => void): () => void {
+    const unsubscribe = super.subscribe(listener)
+    this.schedulePoll()
+    return () => {
+      unsubscribe()
+      if (!this.hasListeners()) this.stopPoll()
+    }
+  }
+
+  private schedulePoll(): void {
+    if (this.pollTimer || !this.hasListeners()) return
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null
+      if (!this.hasListeners()) return
+      const active = flattenTasks(this.tasks).some(
+        (task) =>
+          task.schemaType !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID &&
+          (task.status === 'running' || task.status === 'pending'),
+      )
+      const due = active || Date.now() - this.lastRefreshAt >= IDLE_POLL_MS
+      if (!due || (typeof document !== 'undefined' && document.hidden)) {
+        this.schedulePoll()
+        return
+      }
+      void this.refresh().finally(() => this.schedulePoll())
+    }, ACTIVE_POLL_MS)
+  }
+
+  private stopPoll(): void {
+    if (this.pollTimer) clearTimeout(this.pollTimer)
+    this.pollTimer = null
+  }
+
   dispose(): void {
-    // No timers or upstream subscriptions to release.
+    this.stopPoll()
+  }
+
+  async createDownload(input: CreateDownloadInput): Promise<string> {
+    const taskId = await this.provider.createDownload(input)
+    await this.refresh()
+    return taskId
+  }
+
+  async cancelTask(taskId: string): Promise<void> {
+    await this.provider.cancelTask(taskId)
+    await this.refresh()
   }
 
   async loadTaskDetail(taskId: string): Promise<void> {
@@ -946,6 +1111,10 @@ export function createTaskCenterModel(options: { useMock?: boolean } = {}): Task
   return (options.useMock ?? isMockRuntime()) ? new TaskCenterMockModel() : new TaskCenterRpcModel()
 }
 
+/** Refresh cadence of an open Task Center while a task runs / when nothing does. */
+const ACTIVE_POLL_MS = 3_000
+const IDLE_POLL_MS = 30_000
+
 /** Pages to walk before giving up; the Task Center is a human-scale list. */
 const LIST_PAGE_LIMIT = 200
 const MAX_LIST_PAGES = 10
@@ -997,6 +1166,19 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
       if (current.phase === TaskPhase.Terminal) return
       await this.commitResult(current, decision)
     }
+  }
+
+  createDownload(input: CreateDownloadInput): Promise<string> {
+    return createDownloadTask(input)
+  }
+
+  async cancelTask(taskId: string): Promise<void> {
+    await this.getClient().requestControl({
+      task_id: taskId,
+      action: TaskControlActionKind.Cancel,
+      request_id: crypto.randomUUID(),
+    })
+    this.details.delete(taskId)
   }
 
   private async commitResult(task: TaskMgrTask, decision: 'Approve' | 'Reject'): Promise<void> {

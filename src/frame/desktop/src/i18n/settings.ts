@@ -6,6 +6,9 @@ export const settingsEn: Record<string, string> = {
   'settings.appearance.iconSize.large': 'Large',
   'settings.appearance.iconSize.medium': 'Medium',
   'settings.appearance.iconSize.small': 'Small',
+  'settings.appearance.messagePreview': 'Show message content in the status bar',
+  'settings.appearance.messagePreviewHint': 'When off, the message list only says who wrote and how many messages are new. Applies to this device.',
+  'settings.appearance.notifications': 'Notifications',
   'settings.appearance.themeLanguage': 'Theme & Language',
   'settings.appearance.windows': 'Windows',
 
@@ -269,6 +272,9 @@ export const settingsZh: Record<string, string> = {
   'settings.appearance.iconSize.large': '大',
   'settings.appearance.iconSize.medium': '中',
   'settings.appearance.iconSize.small': '小',
+  'settings.appearance.messagePreview': '在状态栏显示消息内容',
+  'settings.appearance.messagePreviewHint': '关闭后，消息列表只显示发送者和新消息条数。仅对本设备生效。',
+  'settings.appearance.notifications': '通知',
   'settings.appearance.themeLanguage': '主题与语言',
   'settings.appearance.windows': '窗口',
 

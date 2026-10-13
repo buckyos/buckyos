@@ -108,6 +108,7 @@ class FakeBackend implements NotifyBackend {
     return { notify_id: 'nt-1', url: '/messagehub?notify=nt-1', to_user: 'alice', kind: 'input', category: 'agent', level: 'timely', status, prompt, source: { app_id: 'jarvis', agent_did: AGENT }, created_at_ms: now, task_id: 'task-1', ...(result ? { result: { ...result, committed_by: this.task.committedBy } } : {}), home: { owner: ME, session_id: 'sysnotify:agent', record_id: 'r', msg_id: 'm', from: ZONE } }
   }
   async get() { this.reads++; return this.view() }
+  async list() { return [this.view()] }
   async ack() { return this.view() }
   async dismiss() { return this.view() }
   async getTask() { return { ...this.task } }

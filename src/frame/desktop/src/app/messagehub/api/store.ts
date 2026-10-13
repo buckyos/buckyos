@@ -840,6 +840,10 @@ export class MessageHubApiStore implements MessageHubStore {
     if (entry.key === 'ui.pinned_message') { const pin = pinnedMessageSchema.safeParse(entry.value); prefs.pinnedMessage = pin.success ? pin.data : null }
   }
 
+  async loadPreferences(context: MessageHubContext, sessionIds: string[]) {
+    await Promise.all(sessionIds.map(sessionId => this.ensureSessionPrefs(context, sessionId)))
+  }
+
   preferences(context: MessageHubContext, sessionId: string): SessionPreferences {
     const data = this.owner(context.ownerDid)
     const stored = data.prefs[sessionId]

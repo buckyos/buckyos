@@ -715,6 +715,15 @@ pub struct TaskSchemaDefinition {
    默认值是 `app.*`、`workflow.*` 等系统内部类型用 `System`，用户自己发起的下载、导入导出和
    媒体处理类用 `User`。
 
+`presentation_schema` 目前约定一个键：`system_notify`（`progress` | `completion`，buckyos-api
+`TASK_PRESENTATION_SYSTEM_NOTIFY` / `TaskSystemNotify`），表示这一版 schema 的 Task 要出现在
+creator 用户的系统通知里（Desktop 移动端状态栏的铃铛）：`progress` 运行中就显示进度、结束后显示
+结果，`completion` 只在结束后显示。它只影响展示，不改变执行语义；和 schema 的其它内容一样发布后
+不可变，所以给已有 schema 打开它要发布新的 `schema_version`（例如 `download/v1` 第 2 版，由
+control-panel 的 URL 下载执行）。“标记”放在 schema 而不是 Task 上：Task 没有可扩展的展示字段
+（§15.8），而按 schema 过滤正好是现有 `list_tasks` 能做的查询。单个 Task 需要另行告知用户时，
+由 creator 发 System Notify。
+
 `schema_id` 同时作为 Dispatcher 的 operation route key，主版本直接包含在字符串中，例如
 `agent.command/v1`；Dispatcher 不再维护另一套 Task 类型名。`schema_version` 是该主版本下
 冻结到具体 Task 的 schema registry 修订号，不参与 OperationRoute 的主版本选择。破坏输入或
@@ -1367,6 +1376,14 @@ Task Center 侧的落地约束（`desktop/src/api/task_mgr.ts`）：
   `update_task_data` 通道。
 - schedule root task 永远保持非终态，UI 的 enabled/paused/archived/error 取自
   payload `request.status`，task phase 只作为兜底投影。
+- 进度条读 `progress` 的 `percent`/`ratio`/`completed+total`，以及 `TaskDataProgress` 的
+  `items`/`bytes` 计数（`desktop/src/api/task_progress.ts`）。
+
+状态栏铃铛（`desktop/src/desktop/tray/`）：先 `list_task_schemas` 找出带
+`presentation_schema.system_notify` 的 `(schema_id, schema_version)`，再按 schema 和
+`creator_user_id = 当前用户`、`created_after = 7 天前` 列出 Task；运行中的 Task 读 `get_task`
+取进度（有运行中的 Task 时每 2 秒一轮，否则 20 秒），结束超过 3 天的不再显示。用户在铃铛里移除
+已结束的 Task 只记在本设备（localStorage），不写 TaskMgr。
 
 ## 15. 持久数据设计
 

@@ -14,8 +14,16 @@ export type NotifyReadFailure = 'missing' | 'denied' | 'error'
  * implementations: the msg-center / TaskMgr client (`api.ts`) and the
  * scripted mock (`mock/notify.ts`).
  */
+/** `notify.list` filters the status-bar bell uses; newest first. */
+export interface NotifyListQuery {
+  status?: NotifyView['status'][]
+  limit?: number
+}
+
 export interface NotifyBackend {
   get(notifyId: string): Promise<NotifyView>
+  /** The caller's own notifications, newest first. */
+  list(query: NotifyListQuery): Promise<NotifyView[]>
   ack(notifyId: string): Promise<NotifyView>
   dismiss(notifyId: string): Promise<NotifyView>
   getTask(taskId: string): Promise<NotifyTaskState>
@@ -111,6 +119,8 @@ export class NotifyWatch {
   /** Changes so far: a snapshot for views that read many entries. */
   version = () => this.changes
   entry(notifyId: string): NotifyEntry | undefined { return this.entries.get(notifyId) }
+  /** A fresh `notify.list`, outside the per-notification cache. */
+  list(query: NotifyListQuery): Promise<NotifyView[]> { return this.backend.list(query) }
 
   private emit() {
     this.changes++

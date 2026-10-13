@@ -11,9 +11,11 @@ import {
   Filter,
   Pause,
   MessageSquare,
+  Download,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
+import { NewDownloadDialog } from '../components/NewDownloadDialog'
 import { notifyCardPath, type Task, type TaskStatus, type TaskType, type TaskSource } from '../../../api/task_mgr'
 import type { TaskCenterNav } from '../components/layout/navigation'
 
@@ -68,6 +70,7 @@ export function TasksPage({ onNavigate }: TasksPageProps) {
   const [filterType, setFilterType] = useState<TaskType | ''>('')
   const [filterSource, setFilterSource] = useState<TaskSource | ''>('')
   const [showFilters, setShowFilters] = useState(false)
+  const [downloadOpen, setDownloadOpen] = useState(false)
 
   // Not memoized: the store keeps its identity and notifies through
   // useSyncExternalStore, so a memo keyed on it would never recompute.
@@ -117,7 +120,29 @@ export function TasksPage({ onNavigate }: TasksPageProps) {
         >
           <Filter size={14} />
         </button>
+        <button
+          type="button"
+          onClick={() => setDownloadOpen(true)}
+          aria-label={t('taskCenter.download.new', 'New Download')}
+          title={t('taskCenter.download.new', 'New Download')}
+          className="flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-sm transition-colors"
+          style={{
+            background: 'var(--cp-surface)',
+            color: 'var(--cp-accent)',
+            border: '1px solid var(--cp-border)',
+          }}
+        >
+          <Download size={14} />
+        </button>
       </div>
+      <NewDownloadDialog
+        open={downloadOpen}
+        onClose={() => setDownloadOpen(false)}
+        onCreated={(taskId) => {
+          setDownloadOpen(false)
+          onNavigate({ page: 'tasks', taskId })
+        }}
+      />
 
       {/* Filters */}
       {showFilters && (
