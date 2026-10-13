@@ -332,6 +332,7 @@ export interface WizardDraft {
   auth_mode: AuthMode
   api_key: string
   auto_sync_models: boolean
+  discovery_behavior_id?: string
   /** Complete profile-owned list used to derive exclusions for live discovery. */
   selectable_inventory_models?: string[]
   /** Subset of `selectable_inventory_models`; undefined publishes all of them. */
@@ -350,6 +351,7 @@ export interface KnownProviderProfile {
   region_base_urls: Record<string, string>
   operation_base_urls?: Record<string, string>
   protocol_adapter_id: string
+  discovery_behavior_id: string
   provider_rules_id?: string
   ui_hints: Record<string, unknown>
   endpoint_hints: Record<string, ProviderEndpointHint>
