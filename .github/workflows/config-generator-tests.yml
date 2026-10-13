@@ -1,0 +1,29 @@
+name: Config Generator Tests
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/make_config*.ts", "src/devenv_config.ts", "src/deno.json", ".github/workflows/config-generator-tests.yml"]
+  pull_request:
+    paths: ["src/make_config*.ts", "src/devenv_config.ts", "src/deno.json", ".github/workflows/config-generator-tests.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.2
+      - run: mkdir -p "$GITHUB_WORKSPACE/.work/tmp"
+      - name: Check and test config generation
+        working-directory: src
+        env:
+          TMPDIR: ${{ github.workspace }}/.work/tmp
+        run: |
+          deno check make_config.ts
+          deno test -A make_config_test.ts
