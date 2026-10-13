@@ -95,6 +95,18 @@ jobs:
           throw "Unable to parse BuckyOS version from: $versionOutput"
         }
         Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$($versionMatch.Value)"
+    - name: Add installation descriptor
+      working-directory: ./src
+      shell: pwsh
+      env:
+        PAYLOAD_VERSION: ${{ steps.version.outputs.value }}
+        PAYLOAD_PLATFORM: ${{ inputs.arch == 'x86_64' && 'amd64-windows' || 'arm64-windows' }}
+      run: |
+        $payloadRoot = Join-Path $env:RUNNER_TEMP 'staged/buckyos'
+        python ../.github/scripts/write-install-descriptor.py --project bucky_project.yaml --component buckyos --root $payloadRoot --version $env:PAYLOAD_VERSION --platform $env:PAYLOAD_PLATFORM
+        if ($LASTEXITCODE -ne 0) {
+          throw "Installation descriptor generation failed with exit code $LASTEXITCODE"
+        }
     - name: Archive staged payload
       shell: pwsh
       run: |

@@ -78,6 +78,17 @@ jobs:
           exit 1
         fi
         echo "value=${BASH_REMATCH[0]}" >> "$GITHUB_OUTPUT"
+    - name: Add installation descriptor
+      working-directory: ./src
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+        PAYLOAD_VERSION: ${{ steps.version.outputs.value }}
+        PAYLOAD_PLATFORM: ${{ inputs.arch == 'x86_64' && 'amd64-macos' || 'arm64-macos' }}
+      run: |
+        python3 ../.github/scripts/write-install-descriptor.py \
+          --project bucky_project.yaml --component buckyos \
+          --root "$STAGE_ROOT/buckyos" --version "$PAYLOAD_VERSION" \
+          --platform "$PAYLOAD_PLATFORM"
     - name: Archive staged payload
       env:
         STAGE_ROOT: ${{ runner.temp }}/staged
