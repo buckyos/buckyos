@@ -3869,6 +3869,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  assert.equal((await fetch(`${baseUrl}/health`)).status, 200);
   assert.equal(
     (await fetch(`${baseUrl}/__mock/select`, {
       method: "POST",
@@ -3881,6 +3882,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
     })).status,
     200,
   );
+  assert.equal((await fetch(`${baseUrl}/health`)).status, 200);
   const qwenCatalog = await fetch(`${baseUrl}/compatible-mode/v1/models`, {
     headers: { authorization: "Bearer t15-secret-value" },
   });

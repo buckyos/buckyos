@@ -493,6 +493,9 @@ export function createT15MockHandler(
       if (url.pathname === "/__mock/health") {
         return json(response, 200, { ok: true, revision: catalog.revision });
       }
+      if (url.pathname === "/health" && request.method === "GET") {
+        return json(response, 200, { status: "ok" });
+      }
       if (url.pathname === "/__control/state") {
         return json(response, 200, { state: "running" });
       }
