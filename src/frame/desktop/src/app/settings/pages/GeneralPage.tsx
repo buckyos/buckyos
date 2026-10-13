@@ -1,169 +1,136 @@
-import { Copy, Download, RefreshCw } from 'lucide-react'
+import { Download } from 'lucide-react'
 import { Button } from '@mui/material'
-import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
-import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
-import { Section, InfoRow } from '../components/shared/Section'
-import { SettingsPageIntro } from '../components/shared/SettingsPageIntro'
+import type { BuckyOSInfo, ZoneDevicesResponse } from '../../../api/settings'
+import { useSettingsResource } from '../hooks/use-settings-store'
+import { Section, InfoRow, SectionNote, StatusBadge } from '../components/shared/Section'
+import { CopyButton } from '../components/shared/CopyButton'
+import { downloadText, formatDateTime, formatUsage } from '../components/shared/format'
+
+function releaseChannelStatus(channel: string): 'pass' | 'warn' | 'neutral' {
+  const normalized = channel.trim().toLowerCase()
+  if (normalized === 'stable') return 'pass'
+  return normalized ? 'warn' : 'neutral'
+}
+
+function unixToIso(value: number | null | undefined): string | null {
+  return value && value > 0 ? new Date(value * 1000).toISOString() : null
+}
+
+/** Totals over the nodes that reported their storage. */
+function storageTotals(zone: ZoneDevicesResponse | null) {
+  let used = 0
+  let total = 0
+  for (const device of zone?.devices ?? []) {
+    if (device.storage?.total_bytes) {
+      total += device.storage.total_bytes
+      used += device.storage.used_bytes ?? 0
+    }
+  }
+  return total > 0 ? { used, total } : null
+}
+
+function systemInfoJson(software: BuckyOSInfo | null, zone: ZoneDevicesResponse | null): string {
+  return JSON.stringify(
+    {
+      buckyos: software
+        ? {
+            version: software.version,
+            build: software.build_version ?? null,
+            channel: software.release_channel,
+            target: software.target,
+            installed_at: unixToIso(software.installed_at),
+            updated_at: unixToIso(software.updated_at),
+          }
+        : null,
+      zone: zone ? { did: zone.zone_did, hostname: zone.hostname ?? null, sn: zone.sn ?? null } : null,
+      nodes: (zone?.devices ?? []).map((device) => ({
+        name: device.name,
+        role: device.role,
+        online: device.online,
+        os: device.os_version ?? device.os ?? null,
+        arch: device.arch ?? null,
+        cpu: device.cpu?.model ?? null,
+        cpu_cores: device.cpu?.cores ?? null,
+        memory_total: device.memory?.total_bytes ?? null,
+        storage_total: device.storage?.total_bytes ?? null,
+        storage_used: device.storage?.used_bytes ?? null,
+      })),
+      generated_at: new Date().toISOString(),
+    },
+    null,
+    2,
+  )
+}
 
 export function GeneralPage() {
-  const { t } = useI18n()
-  const { general } = useSettingsSnapshot()
-  const store = useSettingsStore()
-  const { software, device, snapshot } = general
-  const [copied, setCopied] = useState(false)
-
-  const handleCopySystemInfo = () => {
-    navigator.clipboard.writeText(store.getSystemInfoJSON())
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+  const { t, locale } = useI18n()
+  const software = useSettingsResource('software')
+  const devices = useSettingsResource('devices')
+  const info = software.data
+  const zone = devices.data
+  const nodes = zone?.devices ?? []
+  const online = nodes.filter((device) => device.online).length
+  const storage = storageTotals(zone)
 
   return (
-    <div className="space-y-4">
-      <SettingsPageIntro
-        page="general"
-        title={t('settings.general.title', 'General')}
-        description={t(
-          'settings.general.description',
-          'System information, device details, and support tools.',
-        )}
-      />
-
-      <Section title={t('settings.general.softwareInfo', 'Software Info')}>
-        <div className="space-y-0.5">
-          <InfoRow label={t('settings.general.version', 'BuckyOS Version')} value={software.version} />
-          <InfoRow label={t('settings.general.buildVersion', 'Build Version')} value={software.buildVersion} />
-          <InfoRow
-            label={t('settings.general.releaseChannel', 'Release Channel')}
-            value={
-              <span
-                className="inline-block px-2 py-0.5 rounded-full text-xs font-medium"
-                style={{
-                  color: software.releaseChannel === 'stable'
-                    ? 'var(--cp-success)'
-                    : software.releaseChannel === 'unknown'
-                      ? 'var(--cp-muted)'
-                      : 'var(--cp-warning)',
-                  background: software.releaseChannel === 'stable'
-                    ? 'color-mix(in srgb, var(--cp-success) 14%, transparent)'
-                    : software.releaseChannel === 'unknown'
-                      ? 'color-mix(in srgb, var(--cp-muted) 14%, transparent)'
-                      : 'color-mix(in srgb, var(--cp-warning) 14%, transparent)',
-                }}
-              >
-                {software.releaseChannel === 'unknown'
-                  ? '—'
-                  : software.releaseChannel.charAt(0).toUpperCase() + software.releaseChannel.slice(1)}
-              </span>
-            }
-          />
-          {software.installedTime && (
+    <div className="space-y-4" data-testid="settings-general-page">
+      <Section title={t('settings.general.softwareInfo', 'Software Info')} testId="settings-software-info">
+        {info ? (
+          <div className="space-y-0.5">
+            <InfoRow label={t('settings.general.version', 'BuckyOS Version')} value={info.version} />
+            <InfoRow label={t('settings.general.buildVersion', 'Build Version')} value={info.build_version?.trim() || '—'} />
             <InfoRow
-              label={t('settings.general.installedAt', 'Installed')}
-              value={new Date(software.installedTime).toLocaleString()}
+              label={t('settings.general.releaseChannel', 'Release Channel')}
+              value={<StatusBadge status={releaseChannelStatus(info.release_channel)} label={info.release_channel || '—'} />}
             />
-          )}
-          {software.lastUpdateTime && (
+            <InfoRow label={t('settings.general.target', 'Platform')} value={<span className="font-mono text-xs">{info.target}</span>} />
+            <InfoRow label={t('settings.general.installedAt', 'Installed')} value={formatDateTime(info.installed_at, locale)} />
+            <InfoRow label={t('settings.general.lastUpdate', 'Last Update')} value={formatDateTime(info.updated_at, locale)} />
+          </div>
+        ) : software.status === 'error' ? (
+          <SectionNote tone="danger">{t('settings.general.softwareInfoUnavailable', 'System information is unavailable.')}</SectionNote>
+        ) : (
+          <SectionNote>{t('settings.general.loadingSoftwareInfo', 'Loading system information…')}</SectionNote>
+        )}
+      </Section>
+
+      <Section title={t('settings.general.systemSnapshot', 'System Snapshot')} testId="settings-system-snapshot">
+        {zone ? (
+          <div className="space-y-0.5">
+            <InfoRow label={t('settings.general.zoneDomain', 'Zone Domain')} value={<span className="break-all font-mono text-xs">{zone.hostname ?? '—'}</span>} />
             <InfoRow
-              label={t('settings.general.lastUpdate', 'Last Update')}
-              value={new Date(software.lastUpdateTime).toLocaleString()}
+              label={t('settings.general.nodeCount', 'Nodes')}
+              value={t('settings.general.nodesOnline', '{{online}} of {{total}} online', { online: String(online), total: String(nodes.length) })}
             />
-          )}
-        </div>
-        {software.loading && (
-          <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {t('settings.general.loadingSoftwareInfo', 'Loading system information…')}
-          </p>
-        )}
-        {software.loadError && (
-          <p className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>
-            {t('settings.general.softwareInfoUnavailable', 'System information is unavailable.')}
-          </p>
-        )}
-        {software.updateAvailable && (
-          <div
-            className="mt-3 flex items-center justify-between rounded-lg px-3 py-2"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-accent) 10%, transparent)',
-            }}
-          >
-            <span className="text-sm" style={{ color: 'var(--cp-accent)' }}>
-              {t('settings.general.updateAvailable', 'New version available: {{version}}', { version: software.latestVersion ?? '' })}
-            </span>
-            <Button size="small" startIcon={<RefreshCw size={14} />}>
-              {t('settings.general.updateNow', 'Update Now')}
-            </Button>
+            <InfoRow
+              label={t('settings.general.storageUsage', 'Storage Usage')}
+              value={storage ? formatUsage(storage.used, storage.total) : '—'}
+            />
           </div>
+        ) : devices.status === 'error' ? (
+          <SectionNote tone="danger">{t('settings.cluster.devicesUnavailable', 'The device list could not be loaded.')}</SectionNote>
+        ) : (
+          <SectionNote>{t('settings.common.loading', 'Loading…')}</SectionNote>
         )}
       </Section>
 
-      {/* Device Info */}
-      <Section title={t('settings.general.deviceInfo', 'Device Info')}>
-        <div className="space-y-0.5">
-          <InfoRow label={t('settings.general.os', 'Operating System')} value={`${device.osType} ${device.osVersion}`} />
-          <InfoRow label={t('settings.general.cpu', 'CPU')} value={`${device.cpuModel} (${device.cpuCores} cores)`} />
-          <InfoRow label={t('settings.general.memory', 'Memory')} value={device.totalMemory} />
-          <InfoRow label={t('settings.general.storage', 'Storage')} value={device.totalStorage} />
-        </div>
-      </Section>
-
-      {/* System Snapshot */}
-      <Section title={t('settings.general.systemSnapshot', 'System Snapshot')}>
-        <div className="space-y-0.5">
-          <InfoRow
-            label={t('settings.general.installMode', 'Install Mode')}
-            value={snapshot.installMode.charAt(0).toUpperCase() + snapshot.installMode.slice(1)}
-          />
-          <InfoRow label={t('settings.general.nodeCount', 'Node Count')} value={snapshot.nodeCount} />
-          <InfoRow
-            label={t('settings.general.storageUsage', 'Storage Usage')}
-            value={`${snapshot.storageUsed} / ${snapshot.storageTotal}`}
-          />
-        </div>
-        {snapshot.enabledModules.length > 0 && (
-          <div className="mt-3">
-            <p className="text-xs mb-2" style={{ color: 'var(--cp-muted)' }}>
-              {t('settings.general.enabledModules', 'Enabled Modules')}
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {snapshot.enabledModules.map((mod) => (
-                <span
-                  key={mod}
-                  className="px-2 py-0.5 rounded-full text-xs"
-                  style={{
-                    color: 'var(--cp-text)',
-                    background: 'color-mix(in srgb, var(--cp-surface) 82%, transparent)',
-                  }}
-                >
-                  {mod}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-      </Section>
-
-      {/* Support / Debug */}
       <Section
         title={t('settings.general.support', 'Support & Debug')}
-        description={t('settings.general.supportDesc', 'Copy system information for troubleshooting.')}
+        description={t('settings.general.supportDesc', 'Copy or export system information for troubleshooting.')}
       >
         <div className="flex flex-wrap gap-2">
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<Copy size={14} />}
-            onClick={handleCopySystemInfo}
-          >
-            {copied
-              ? t('settings.general.copied', 'Copied!')
-              : t('settings.general.copySystemInfo', 'Copy System Info')}
-          </Button>
+          <CopyButton
+            label={t('settings.general.copySystemInfo', 'Copy System Info')}
+            text={() => systemInfoJson(info, zone)}
+            testId="settings-copy-system-info"
+          />
           <Button
             size="small"
             variant="outlined"
             startIcon={<Download size={14} />}
+            onClick={() => downloadText(`buckyos-system-info-${new Date().toISOString().slice(0, 10)}.json`, systemInfoJson(info, zone))}
+            data-testid="settings-export-system-info"
           >
             {t('settings.general.exportJSON', 'Export as JSON')}
           </Button>

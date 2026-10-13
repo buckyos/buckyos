@@ -10,6 +10,7 @@ mod app_mutation;
 mod app_package_namespace;
 mod app_servcie_mgr;
 mod app_staging;
+mod cluster_mgr;
 mod dashboard;
 mod diagnostic_mgr;
 mod image_data_url;
@@ -1033,6 +1034,8 @@ impl RPCHandler for ControlPanelServer {
 
             //ZoneMgr
             "zone.overview" => self.handle_zone_overview(req).await,
+            "zone.devices.list" => self.handle_zone_devices_list(req).await,
+            "zone.certificates.list" => self.handle_zone_certificates_list(req).await,
             "zone.presentation.get" => self.handle_zone_presentation_get(req).await,
             "zone.presentation.set" => {
                 self.handle_zone_presentation_set(req, principal.as_ref())

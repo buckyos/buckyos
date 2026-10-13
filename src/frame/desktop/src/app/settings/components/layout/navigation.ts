@@ -38,7 +38,7 @@ export const settingsPageDefinitions = [
     group: 'system',
     icon: Globe,
     labelKey: 'settings.nav.zone',
-    label: 'Zone Name & Icon',
+    label: 'Zone Config',
   },
   {
     key: 'cluster',

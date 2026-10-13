@@ -9,7 +9,7 @@ const favicon = (page: Page) => page.locator('link[rel~="icon"]').getAttribute('
 async function openZoneSettings(page: Page) {
   await page.getByTestId('desktop-app-settings').click()
   const win = page.getByTestId('window-settings')
-  await win.getByRole('button', { name: 'Zone Name & Icon' }).click()
+  await win.getByRole('button', { name: 'Zone Config' }).click()
   await expect(win.getByTestId('settings-zone-page')).toBeVisible()
   return win
 }

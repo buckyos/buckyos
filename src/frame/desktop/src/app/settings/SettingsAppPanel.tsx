@@ -1,7 +1,6 @@
-import { useEffect } from 'react'
 import type { AppContentLoaderProps } from '../types'
 import { SettingsStoreContext } from './hooks/use-settings-store'
-import { globalSettingsStore } from './mock/store'
+import { globalSettingsStore } from './data/store'
 import { SettingsShell } from './components/layout/SettingsShell'
 import type { SettingsPage } from './components/layout/navigation'
 import { GeneralPage } from './pages/GeneralPage'
@@ -31,11 +30,6 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
 }
 
 export function SettingsAppPanel(props: AppContentLoaderProps) {
-  useEffect(() => {
-    void globalSettingsStore.reloadBuckyOSInfo()
-    void globalSettingsStore.reloadBuckyOSDevConfig()
-  }, [])
-
   return (
     <SettingsStoreContext.Provider value={globalSettingsStore}>
       <SettingsShell>

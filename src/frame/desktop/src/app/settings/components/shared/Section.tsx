@@ -4,19 +4,23 @@ interface SectionProps {
   title: string
   description?: string
   children: ReactNode
-  collapsible?: boolean
-  defaultCollapsed?: boolean
+  /** Controls at the right of the title (refresh, add, …). */
+  actions?: ReactNode
+  testId?: string
 }
 
-export function Section({ title, description, children }: SectionProps) {
+export function Section({ title, description, children, actions, testId }: SectionProps) {
   return (
-    <section className="shell-subtle-panel p-4 sm:p-5">
-      <h3
-        className="font-display text-base font-semibold"
-        style={{ color: 'var(--cp-text)' }}
-      >
-        {title}
-      </h3>
+    <section className="shell-subtle-panel p-4 sm:p-5" data-testid={testId}>
+      <div className="flex items-center justify-between gap-3">
+        <h3
+          className="font-display text-base font-semibold"
+          style={{ color: 'var(--cp-text)' }}
+        >
+          {title}
+        </h3>
+        {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+      </div>
       {description && (
         <p className="mt-1 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
           {description}
@@ -27,7 +31,10 @@ export function Section({ title, description, children }: SectionProps) {
   )
 }
 
-interface CollapsibleSectionProps extends SectionProps {
+interface CollapsibleSectionProps {
+  title: string
+  description?: string
+  children: ReactNode
   defaultCollapsed?: boolean
 }
 
@@ -70,8 +77,6 @@ export function CollapsibleSection({
 interface InfoRowProps {
   label: string
   value: ReactNode
-  copyable?: boolean
-  onCopy?: () => void
 }
 
 export function InfoRow({ label, value }: InfoRowProps) {
@@ -89,18 +94,17 @@ export function InfoRow({ label, value }: InfoRowProps) {
 }
 
 interface StatusBadgeProps {
-  status: 'pass' | 'warn' | 'fail' | 'trusted' | 'elevated' | 'high_risk'
+  status: 'pass' | 'warn' | 'fail' | 'info' | 'neutral'
   label: string
 }
 
 export function StatusBadge({ status, label }: StatusBadgeProps) {
-  const colorMap: Record<string, string> = {
+  const colorMap: Record<StatusBadgeProps['status'], string> = {
     pass: 'var(--cp-success)',
-    trusted: 'var(--cp-success)',
     warn: 'var(--cp-warning)',
-    elevated: 'var(--cp-warning)',
     fail: 'var(--cp-danger)',
-    high_risk: 'var(--cp-danger)',
+    info: 'var(--cp-accent)',
+    neutral: 'var(--cp-muted)',
   }
 
   const color = colorMap[status] ?? 'var(--cp-muted)'
@@ -119,5 +123,28 @@ export function StatusBadge({ status, label }: StatusBadgeProps) {
       />
       {label}
     </span>
+  )
+}
+
+/** A muted one-line state inside a section (loading, empty, failed). */
+export function SectionNote({ tone = 'muted', children }: { tone?: 'muted' | 'danger' | 'warning'; children: ReactNode }) {
+  const color = tone === 'danger' ? 'var(--cp-danger)' : tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-muted)'
+  return (
+    <p className="text-sm leading-6" style={{ color }} role={tone === 'danger' ? 'alert' : undefined}>
+      {children}
+    </p>
+  )
+}
+
+/** A rounded row inside a section's list. */
+export function ListCard({ children, testId }: { children: ReactNode; testId?: string }) {
+  return (
+    <div
+      className="rounded-lg p-3"
+      style={{ background: 'color-mix(in srgb, var(--cp-surface) 82%, transparent)' }}
+      data-testid={testId}
+    >
+      {children}
+    </div>
   )
 }

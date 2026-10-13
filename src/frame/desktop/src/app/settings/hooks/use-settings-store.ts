@@ -1,14 +1,23 @@
-import { createContext, useContext, useSyncExternalStore } from 'react'
-import { SettingsMockStore } from '../mock/store'
-import type { SettingsStoreSnapshot } from '../mock/types'
+import { createContext, useContext, useEffect, useSyncExternalStore } from 'react'
+import { globalSettingsStore, type ResourceKey, type SettingsSnapshot, type SettingsStore } from '../data/store'
 
-export const SettingsStoreContext = createContext<SettingsMockStore>(null!)
+export const SettingsStoreContext = createContext<SettingsStore>(globalSettingsStore)
 
-export function useSettingsStore(): SettingsMockStore {
+export function useSettingsStore(): SettingsStore {
   return useContext(SettingsStoreContext)
 }
 
-export function useSettingsSnapshot(): SettingsStoreSnapshot {
+export function useSettingsSnapshot(): SettingsSnapshot {
   const store = useSettingsStore()
   return useSyncExternalStore(store.subscribe, store.getSnapshot)
+}
+
+/** A store resource, loaded the first time a page asks for it. */
+export function useSettingsResource<K extends ResourceKey>(key: K): SettingsSnapshot[K] {
+  const store = useSettingsStore()
+  const snapshot = useSettingsSnapshot()
+  useEffect(() => {
+    void store.load(key)
+  }, [store, key])
+  return snapshot[key]
 }

@@ -18,7 +18,6 @@ import { ObjectAvatar } from '../../../presentation/ObjectIcon'
 import { ObjectTitle } from '../../../presentation/ObjectTitle'
 import { currentZoneHost, publishZonePresentation } from '../../../presentation/zone'
 import { InfoRow, Section } from '../components/shared/Section'
-import { SettingsPageIntro } from '../components/shared/SettingsPageIntro'
 
 interface Draft {
   display_name: string
@@ -125,12 +124,6 @@ export function ZonePage() {
 
   return (
     <div className="space-y-4" data-testid="settings-zone-page">
-      <SettingsPageIntro
-        page="zone"
-        title={t('settings.zone.title', 'Zone Name & Icon')}
-        description={t('settings.zone.description', 'How this Zone is shown on the sign-in page, in browser tabs and across the Desktop.')}
-      />
-
       <Section
         title={t('settings.zone.display', 'Display')}
         description={canEdit

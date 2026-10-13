@@ -3,10 +3,6 @@ export const presentationEn: Record<string, string> = {
   'presentation.image.errorType': 'Choose a PNG, JPEG, WebP, GIF or BMP image.',
   'presentation.image.errorSize': 'That image is too large.',
   'presentation.image.errorUnreadable': 'That image could not be read. The previous one is kept.',
-
-  'settings.nav.zone': 'Zone Name & Icon',
-  'settings.zone.title': 'Zone Name & Icon',
-  'settings.zone.description': 'How this Zone is shown on the sign-in page, in browser tabs and across the Desktop.',
   'settings.zone.display': 'Display',
   'settings.zone.displayHint': 'Leave a field empty to use the default from the Zone document or DID.',
   'settings.zone.readOnly': 'Only Zone administrators can change these settings.',
@@ -50,10 +46,6 @@ export const presentationZh: Record<string, string> = {
   'presentation.image.errorType': '请选择 PNG、JPEG、WebP、GIF 或 BMP 图片。',
   'presentation.image.errorSize': '图片太大。',
   'presentation.image.errorUnreadable': '无法读取这张图片，已保留原图。',
-
-  'settings.nav.zone': 'Zone 名称与图标',
-  'settings.zone.title': 'Zone 名称与图标',
-  'settings.zone.description': '设置登录页、浏览器标签页和桌面中显示的 Zone 名称与图标。',
   'settings.zone.display': '展示',
   'settings.zone.displayHint': '留空则使用 Zone 文档或 DID 中的默认值。',
   'settings.zone.readOnly': '只有 Zone 管理员可以修改这些设置。',

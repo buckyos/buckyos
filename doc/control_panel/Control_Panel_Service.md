@@ -54,9 +54,9 @@ Control Panel Service 是 Zone 内的**核心资源管理服务**，其本质是
 
 ### 2.2 Device（设备）
 
-* 当前为**只读实体**：Control Panel 不提供设备的增删改 RPC；设备身份在 OS 引导/置备阶段确定。
-* 设备元数据由 `zone_mgr` 从本地文件读取并聚合：`node_identity.json`、`{device_did}/did.json` 等，字段含 `device_name` / `device_did` / `device_type` / `net_id`。
-* 设备隶属于 Zone（当前设计下 Zone 通常对应一台 OOD 设备），通过 `zone.overview` 暴露其信息。
+* 当前为**只读实体**：Control Panel 不提供设备的增删改 RPC；设备身份在 OS 引导/置备阶段确定（Desktop 版的 Settings 里“添加设备”按钮只提示暂不支持）。
+* Zone 内全部设备由 `zone.devices.list` 列出（[cluster_mgr.rs](../../src/frame/control_panel/src/cluster_mgr.rs)）：取 `devices/` 下登记的设备与 ZoneDocument `oods` 的并集（OOD 按文档顺序在前），每台读 `devices/{name}/info`（node_daemon 约每 30 秒写一次的 `DeviceInfo`，含 OS、CPU、内存、存储、GPU、IP 与 `network_observation`）。`update_time` 超过 120 秒未刷新即判为离线；从未上报的 OOD 也会列出并带 `info_error`。
+* 本节点的本地文件（`node_identity.json`、`{device_did}/did.json` 等）仍由 `zone_mgr` 的 `zone.overview` 聚合，用于 SN/DNS 自检。
 
 ### 2.3 App（应用）
 
@@ -142,7 +142,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 ### 4.2 设备管理 (Device)
 
-* 无写接口。设备信息通过 `zone.overview`（见 §4.6）以只读形式暴露。设备的注册/绑定在 OS 引导与置备层完成，不在本服务范围。
+* 无写接口。设备信息通过 `zone.devices.list`（全部设备）与 `zone.overview`（本节点文件与 SN 自检）以只读形式暴露（见 §4.6）。设备的注册/绑定在 OS 引导与置备层完成，不在本服务范围。
 
 ### 4.3 智能体管理 (Agent — 身份维度)
 
@@ -211,6 +211,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 以下模块只读，服务于运维面板，列出以明确服务边界（不在“写功能”范畴）：
 
 * **Zone**：`zone.overview` / `zone.config` — 聚合 `start_config.json` / `node_identity.json` / `did.json`，输出 zone/device/SN/DNS 自检与文件清单。
+* **设备与证书**：`zone.devices.list` 返回 `{zone_did, hostname, owner_did, sn, local_device, online_window_secs, devices: [...]}`，每台设备含 `role`（`ood`/`gateway`/设备类型）、`online`、`last_seen`、`os_version`、`cpu`/`memory`/`storage`/`gpu`、`ips`、`endpoints`、`ipv6_state`（见 §2.2）。`zone.certificates.list` 用 name-client `IdentityRoots` 读取本节点身份库里 Zone 主机名及其通配符的 server 证书元数据（cyfs-gateway ACME 管理器写入），返回 `{hostname, node, certificates: [{host, source, issuer, not_before, not_after, days_remaining, dns_names, fingerprint_sha256, state, cert_pem}]}`；`state` 为 `valid`/`expired`/`not_yet_valid`/`unusable`/`unknown`，`cert_pem` 只是公开证书，不含私钥。两者只读，需登录。
 * **Gateway**：`gateway.overview` / `gateway.config` / `gateway.file.get` — 解析 `cyfs_gateway.json` / `boot_gateway.yaml` / `node_gateway.json` 等（白名单文件，单文件 ≤2MB），输出 stacks / routes / tlsDomains。
 * **Container**：`container.overview` / `container.action`（start/stop/restart，带缓存与刷新锁）。
 * **Zone 展示**：`zone.presentation.get`（**公开**）返回 `{zone_did, hostname, settings, document}`，`settings` 是管理员显式配置（SystemConfig `system/zone_presentation`，类型 `ZonePresentationConfig`），`document` 是 ZoneDocument 扩展字段中约定的 `display_name/description/icon` 候选；两者分开返回，由前端按「设置 → 文档 → DID 可读标识 → 默认」取值。`zone.presentation.set` 只接受 Admin/Root 的 Control Panel 用户 sudo session，以调用者 token 经 RBAC（`su_admin`）与 revision CAS 写入；字段三态同 `user.profile.set`，`icon` 只接受 ≤512px、≤512KB 的 base64 PNG/JPEG/WebP data URL。它只改显示元数据，不改 Zone DID、域名或 owner，也不签发/更新 ZoneDocument。键不存在即「未配置」。

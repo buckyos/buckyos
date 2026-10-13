@@ -30,7 +30,7 @@ import GridLayoutBase, {
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pagination } from 'swiper/modules'
 import { Swiper, SwiperSlide } from 'swiper/react'
-import { globalSettingsStore } from '../app/settings/mock/store'
+import { globalSettingsStore } from '../app/settings/data/store'
 import { findDesktopAppById } from '../app/registry'
 import type { DesktopAppItem } from '../app/types'
 import {
@@ -293,7 +293,7 @@ export function DesktopRoute() {
     globalSettingsStore.subscribe,
     globalSettingsStore.getSnapshot,
   )
-  const density = (settingsSnap.session.appearance.fontSize ?? 'medium') as GridDensity
+  const density = settingsSnap.desktopIconSize
   const gridSpec = useGridSpec(gridContainer, density, isMobile)
 
   // Sync grid spec into store
