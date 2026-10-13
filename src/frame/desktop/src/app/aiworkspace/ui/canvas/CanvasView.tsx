@@ -273,8 +273,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const insertReason = !policy.insert ? (mode === 'view' ? '查看模式不能插入' : '播放编辑占位中不能插入')
     : !surface.capabilities.includes('structure') ? '没有在这张画布上添加对象的权限'
       : readOnlyReason
-  /** Notes need only `comment` (a note is an annotation): a public link's guest adds them where it can insert nothing else. */
-  const noteReason = !policy.insert || surface.capabilities.includes('structure') || !surface.capabilities.includes('comment') ? insertReason : readOnlyReason
+  /** A note is an annotation: `comment` is enough (a public link's guest), and it can be added wherever annotating is —
+   * view mode and phones too, from the annotate menu and the canvas menu (a long press on a phone). */
+  const noteReason = !policy.annotate ? insertReason
+    : !surface.capabilities.includes('structure') && !surface.capabilities.includes('comment') ? '没有在这张画布上添加便签的权限'
+      : readOnlyReason
+  /** What the creation tools (edit mode only) offer for notes. */
+  const toolNoteReason = policy.insert ? noteReason : insertReason
   const insertReasonOf = (type: string) => (type === 'note' ? noteReason : insertReason)
 
   /** World point at the centre of the unobstructed visible area (top-left of a Block of `size` centred there). */
@@ -293,9 +298,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     /** A flow page: right after this sibling (null: first); appended when absent. */
     afterId?: string | null) => {
     const definition = request.entry.definition
-    if (!definition.create || insertReasonOf(definition.type)) return
+    if (!definition.create || insertReasonOf(definition.type)) return false
     // a flow page shows no connectors (连接线实现方案 §8.3)
-    if (definition.type === 'connector' && !isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return }
+    if (definition.type === 'connector' && !isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return false }
     let config = request.config
     if (request.file) {
       try {
@@ -303,7 +308,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         config = { ...(config ?? {}), file: { object_id: uploaded.object_id, file_name: request.file.name } }
       } catch (error) {
         store.notify('error', `上传“${request.file.name}”失败：${describeError(error)}。没有插入任何对象。`)
-        return
+        return false
       }
     }
     const contentFolderId = surface.content_folder_id ?? ''
@@ -320,22 +325,44 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       operations = definition.create({ store, surfaceId, contentFolderId, cellId, dataId, parentId: parent, orderKey, dataOrderKey, placement, title: request.title, existingSourceId: request.sourceId, config })
     } catch (error) {
       store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`)
-      return
+      return false
     }
     if (!isFree) for (const op of operations) if (op.op === 'entity.create' && op.entity_id === cellId) delete (op as Record<string, unknown>).placement
     if (also) {
-      try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`); return }
+      try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`); return false }
     }
     const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${request.entry.title}`, operations })
-    if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
-      if (isFree) setSelectionState(new Set([cellId]))
-      if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
-        // a new wish opens its task in the right panel (it is not laid out yet when this runs)
-        if (isFree && definition.type === 'wish') { setWishOpen({ wishId: dataId, cellId }); setSide('wish') } else { requestIntent(cellId, 'end'); setEditing(cellId) }
-      }
+    if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') return false
+    if (isFree) setSelectionState(new Set([cellId]))
+    if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
+      // a new wish opens its task in the right panel (it is not laid out yet when this runs)
+      if (isFree && definition.type === 'wish') { setWishOpen({ wishId: dataId, cellId }); setSide('wish') } else { requestIntent(cellId, 'end'); setEditing(cellId) }
     }
+    return true
     // eslint-disable-next-line react-hooks/exhaustive-deps -- centreSpot reads the camera at call time
   }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, noteReason, policy.editContent, setEditing, setSide])
+
+  /** Add a note at `world` (null: the centre of the view) on a free canvas: written in place where content is edited,
+   * else (view mode, a phone) written first in the annotations panel and placed when saved. */
+  const [noteDraft, setNoteDraft] = useState<{ world: { x: number; y: number } } | null>(null)
+  const noteEntry = registryEntries().find((entry) => entry.definition.type === 'note' && entry.catalog.standard)
+  const addNote = (world: { x: number; y: number } | null, parentId?: string) => {
+    if (!noteEntry || noteReason) { store.notify('info', noteReason ?? '没有便签对象'); return }
+    if (policy.editContent || !isFree) { void insert({ entry: noteEntry }, world, parentId); return }
+    setNoteDraft({ world: world ?? centreSpot(noteEntry.definition.defaultSize) })
+    setAnnotatePick(false)
+    setSide('annotations')
+  }
+  const saveNoteDraft = async (body: string) => {
+    if (!noteEntry || !noteDraft) return false
+    const saved = await insert({ entry: noteEntry, title: body }, noteDraft.world)
+    if (saved) {
+      setNoteDraft(null)
+      // the drawer covers a phone's canvas: show where the note went
+      if (phone) setSide(null)
+    }
+    return saved
+  }
 
   /** The toolbar's pick: a one-shot placement on a free Surface, an append on a flow page. */
   const pick = (request: InsertRequest) => {
@@ -759,7 +786,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     ...moreActions.map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })),
   ]
   const menuItems = menu ? (menu.blockId ? blockMenu : [
-    ...(insertReason === null ? quickEntries : noteReason === null ? quickEntries.filter((entry) => entry.definition.type === 'note') : []).map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { void insert({ entry }, menu.world, menu.parentId) } })),
+    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { if (entry.definition.type === 'note') addNote(menu.world, menu.parentId); else void insert({ entry }, menu.world, menu.parentId) } })) : []),
+    ...(insertReason !== null && noteReason === null && (isFree || policy.insert) ? [{ id: 'insert-note', label: policy.insert ? '插入便签' : '添加便签', run: () => addNote(menu.world, menu.parentId) }] : []),
     ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => insertGroup(menu.parentId ?? surfaceId) }] : []),
     ...(insertReason === null ? [
       { id: 'catalog', label: '插入对象…', run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
@@ -770,7 +798,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   ].filter((item, i) => !(i === 0 && 'separator' in item))) : []
 
   const commands: CanvasCommands = {
-    isFree, insertReason, noteReason,
+    isFree, insertReason, noteReason: toolNoteReason,
     insert: (entry) => {
       if (entry.definition.type === 'connector' && isFree) pickEntry(entry)
       else if (entry.catalog.needs === 'none') void insert({ entry }, null)
@@ -789,12 +817,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       setAnnotatePick((value) => !value)
       shell.setSide('annotations')
     },
+    // a free canvas also takes notes from here (they are annotations)
+    note: isFree ? { reason: noteReason, run: () => addNote(null) } : null,
   }
   const sideContent = (tab: SideTab) => {
     switch (tab) {
       case 'inspector': return single ? <SelectionInspector cell={single} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个对象查看属性。</div>
       case 'relations': return single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">选中一个数据对象查看它的引用与依赖。</div>
-      case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} />
+      case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} noteDraft={noteDraft ? { save: saveNoteDraft, cancel: () => setNoteDraft(null) } : null} />
       case 'collab': return <PermissionsPanel />
       case 'edits': return <StatusDetail />
       case 'wish': return wishOpen && store.outline.get(wishOpen.wishId)
@@ -846,7 +876,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
-                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason} noteReason={noteReason}
+                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason} noteReason={toolNoteReason}
                   onPick={pickEntry} onPickFile={(entry, file) => pick({ entry, file })} onOpenCatalog={(tab, key) => openCatalog(tab, key)} collapsed={collapsed} onCollapsed={setCollapsed} />
               </div>
             )}

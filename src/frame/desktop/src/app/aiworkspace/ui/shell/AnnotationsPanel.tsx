@@ -10,10 +10,14 @@ import { annotationOp } from '../creators'
 import { anchorStatus, annotationLabel, revealAnnotation } from '../annotationInfo'
 import { ShellContext } from './shellContext'
 
-export function AnnotationsPanel({ parentId, draft, onDraftDone }: { parentId: string | null; draft?: CapturedAnchor | null; onDraftDone?: () => void }) {
+/** A note being written before it is placed (view mode, a phone): `save` places it with this text. */
+export interface NoteDraft { save: (body: string) => Promise<boolean>; cancel: () => void }
+
+export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { parentId: string | null; draft?: CapturedAnchor | null; onDraftDone?: () => void; noteDraft?: NoteDraft | null }) {
   const store = useStore()
   const { annotations: all, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft, annotationFilter, showAnnotations } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: CapturedAnchor | null; clearDraft?: () => void }
   const [body, setBody] = useState('')
+  const [noteBody, setNoteBody] = useState('')
   const guest = useContext(ShellContext)?.identity.guest ?? false
   const pending = draft ?? uiDraft ?? null
   const done = onDraftDone ?? clearDraft ?? (() => undefined)
@@ -42,6 +46,18 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone }: { parentId: s
           <textarea aria-label="批注内容" autoFocus rows={2} value={body} onChange={(event) => setBody(event.target.value)} maxLength={4000} />
           <button type="submit" data-testid="aiws-annotation-save">保存批注</button>
           <button type="button" onClick={() => { setBody(''); done() }}>取消</button>
+        </form>
+      )}
+      {noteDraft && (
+        <form className="aiws-annotation-draft" data-testid="aiws-note-draft" onSubmit={(event) => {
+          event.preventDefault()
+          if (noteBody.trim() === '') return
+          void noteDraft.save(noteBody.trim()).then((saved) => { if (saved) setNoteBody('') })
+        }}>
+          <div>新便签：保存后放在画布上{guest && readGuestName() ? `，署名“${readGuestName()}”` : ''}</div>
+          <textarea aria-label="便签内容" autoFocus rows={3} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} maxLength={4000} />
+          <button type="submit" data-testid="aiws-note-draft-save">放到画布</button>
+          <button type="button" onClick={() => { setNoteBody(''); noteDraft.cancel() }}>取消</button>
         </form>
       )}
       {annotations.length === 0 && !pending && (

@@ -356,8 +356,9 @@ const note: BlockDefinition = {
     ]
   },
   create: (args) => (args.existingSourceId ? [cellOp(args, 'note', args.existingSourceId)] : [
+    // a title given at insertion is the note's text (a note written first, then placed): the Block itself has none
     createOp(args.dataId, 'buckyos.annotation', args.contentFolderId, args.dataOrderKey, { kind: 'note', body: args.title ?? '', style: { color: '#fff2cc' }, ...guestAuthorName(args.store) }),
-    cellOp(args, 'note', args.dataId),
+    cellOp({ ...args, title: undefined }, 'note', args.dataId),
   ]),
 }
 

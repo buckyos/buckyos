@@ -16,7 +16,7 @@ import { useLoad, useOutlineVersion, useStore } from '../../state/hooks'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import { SurfaceSwitcher } from './MainToolbar'
-import { PopoverPanel, usePopover } from './popover'
+import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
 import { PUBLIC_LINK_CAPABILITIES, PUBLIC_SUBJECT, shareLink, useShell, ZOOM_PRESETS } from './shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
@@ -27,8 +27,9 @@ export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, an
   hasSelection: boolean
   onFitAll: () => void
   onFitSelection: () => void
-  /** Absent where there is nothing to annotate (a workspace without canvases). */
-  annotate: { reason: string | null; active: boolean; run: () => void } | null
+  /** Absent where there is nothing to annotate (a workspace without canvases). `note`: a free canvas also takes notes
+   * from here (a note is an annotation), so the button opens a choice. */
+  annotate: { reason: string | null; active: boolean; run: () => void; note?: { reason: string | null; run: () => void } | null } | null
 }) {
   const shell = useShell()
   const compact = shell.size === 'narrow' || shell.phone
@@ -37,16 +38,34 @@ export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, an
       {shell.phone && <SurfaceSwitcher phone />}
       <GuideButton compact={compact} />
       {!shell.phone && <ShowButton />}
-      {annotate && (
-        <button type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-pressed={annotate.active} disabled={annotate.reason !== null} data-testid="aiws-annotate-start"
-          title={annotate.reason ?? (annotate.active ? '点选要批注的对象（Esc 取消）' : '添加批注：选中对象后批注；未选中时先点选目标')} aria-label="添加批注" onClick={annotate.run}>
-          <MessageSquarePlus size={18} />{!compact && <span>批注</span>}
-        </button>
-      )}
+      {annotate && <AnnotateButton annotate={annotate} compact={compact} />}
       {camera && <ZoomControl camera={camera} hasSelection={hasSelection} onFitAll={onFitAll} onFitSelection={onFitSelection} />}
       <IdentityButton />
       <ShareButton />
     </div>
+  )
+}
+
+/** Add an annotation; on a free canvas a menu first offers the other kind of annotation, a note. While a target is
+ * being picked the button cancels the pick. */
+function AnnotateButton({ annotate, compact }: { annotate: NonNullable<Parameters<typeof ViewToolbar>[0]['annotate']>; compact: boolean }) {
+  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  const note = annotate.note
+  const menu = Boolean(note) && !annotate.active
+  const items: MenuItem[] = note ? [
+    { id: 'annotate-object', testId: 'aiws-annotate-object', label: '批注对象', disabled: annotate.reason !== null, reason: annotate.reason, run: annotate.run },
+    { id: 'annotate-note', testId: 'aiws-annotate-note', label: '添加便签', disabled: note.reason !== null, reason: note.reason, explain: true, run: note.run },
+  ] : []
+  return (
+    <span ref={bindAnchor} className="aiws-anchor">
+      <button ref={bindTrigger} type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-pressed={annotate.active} disabled={annotate.reason !== null && note?.reason !== null}
+        data-testid="aiws-annotate-start" aria-haspopup={menu ? 'menu' : undefined} aria-expanded={menu ? open : undefined}
+        title={annotate.active ? '点选要批注的对象（Esc 取消）' : menu ? '添加批注或便签' : annotate.reason ?? '添加批注：选中对象后批注；未选中时先点选目标'} aria-label="添加批注"
+        onClick={menu ? toggle : annotate.run}>
+        <MessageSquarePlus size={18} />{!compact && <span>批注</span>}
+      </button>
+      {open && menu && <MenuList items={items} label="添加批注" className="aiws-popover aiws-popover-end" onDone={close} />}
+    </span>
   )
 }
 

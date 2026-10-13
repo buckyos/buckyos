@@ -425,6 +425,7 @@ P0、P1 按本文实施；P2（在线成员、跟随、演示场次与互动）�
 | 15-15 | §12.1 | 布局偏好统一放在用户工作状态的 `ui:` 前缀下（`ui:object-toolbar`、`ui:presenter-toolbar`、`ui:grid`、`ui:side`、`ui:pinned-defs`）；“恢复默认布局”只清除这些键。`pruneSurfaces` 除了清理各 Surface 的视口，也会清理指向已删除画布的 `surface:active`。 |
 | 15-19 | §8.3 | 公开链接（2026-10-11）：`/workspace/<id>` 成为登录可选路由（`publicRoutes.ts`；`/workspace` 列表仍需登录），Desktop 启动时对登录可选页面不再跳转登录，但仍识别已登录账号。`transport.ts` 在没有登录会话时改发访客令牌（`localStorage['aiworkspace.guest']`，`gt_` + 26 位 base32），上传／资产路由的 Bearer 同样用它；开发直连可用 `{"guest":true}` 模拟。服务端：grants 主体 `public` 对所有人生效、`*` 只对已登录主体生效，`ws.get_info` 返回 `principal`（访客只能由此得知自己的主体），访客不能 `ws.create / list / fork / import / list_subjects`（列表为空、其余拒绝），`public` 不能带 `manage`。前端：分享面板显示公开状态与“一键公开分享／停止公开”（只有管理者可操作）；访客的身份面板提供“称呼”和“登录 BuckyOS”，主菜单只保留登录、画布项与帮助；批注列表显示 `author_name`，访客主体显示为“访客 xxxxxx”。验收用例 UI-P16（`ui.spec.ts`）。 |
 | 15-20 | §8.3 | 公开链接便签（2026-10-12）：有 `comment` 就能添加便签。便签由一条 `kind: note` 的批注和一个展示它的 Block 组成，Block 需要的 `structure` 访客没有，因此 core 增加一条规则：**自己的便签 Block**（`view.type` 为 `note`、`source_ref` 指向本人写的共享批注的 Cell，`access.rs::own_note_block`）在缺少 `structure`／`update`／`delete` 时凭 `comment` 即可创建、`tree.place`／`tree.move`（含进出分组）、`entity.set_keys`、`entity.delete` 和 `entity.restore`，与批注一样不需要写锁；改 `source_ref` 或 `view` 使它不再是本人便签会被拒绝。本人批注的 `entity.restore` 同样凭 `comment`（撤销删除）。信封的 `capabilities` 改由 `Access::entity_caps` 计算：对本人批注加 `update`、`delete`，对本人便签 Block 再加 `structure`，前端据此判断，不另写作者判断。他人的便签与其他 Block 不受影响。前端：只有 `comment` 时对象工具栏、右键菜单和主菜单“插入”只提供便签（`noteReason`）；画布的移动、缩放、旋转、方向键、置顶置底、锁定和删除改为逐个 Block 判断（`RenderHost` 的 `canLayout` 由布尔值改为按 id 判断）；分组、粘贴、增加视图、移动到其他画布仍需 `structure`；新建时本地先按同一规则给自己的便签补能力，读回信封后以服务端为准；访客新建的便签带 `author_name`，便签署名按 `authorLabel` 显示。验收见 UI-P16。 |
+| 15-21 | §16.2 | 手机和查看模式添加便签（2026-10-12）：第二期 D13 说查看模式唯一开放的写入是批注；便签是批注，因此查看模式也能添加，只是同时写入展示它的 Block。`CanvasView` 的 `noteReason` 改按 `policy.annotate` 判断，`toolNoteReason`（对象工具栏、主菜单）仍按 `policy.insert`；`addNote` 在能编辑内容时直接插入并就地输入，否则在批注面板打开 `noteDraft` 表单（`AnnotationsPanel` 的“新便签”），保存时用 `insert({ title: 正文 })` 一次提交（便签定义把 `title` 当正文，Block 不带标题）。批注按钮在自由画布上变成菜单（`ViewToolbar` 的 `AnnotateButton`，测试 id `aiws-annotate-object`／`aiws-annotate-note`），正在点选目标时点它仍是取消；空白处右键／长按菜单在不能插入其他对象时给出 `insert-note`（查看模式叫“添加便签”）。验收用例 UI-M04。 |
 | 15-18 | §4 规则 7、§10 | 独立标签页是 Desktop 路由 `/workspace/:workspaceId?`（`AIWorkspaceRoute.tsx`），与 `/messagehub` 一样按需加载，页面上只有工作区，不渲染 Desktop 外壳。同一个 `AIWorkspaceAppPanel` 以 `tab` 方式运行：列表打开、切换、关闭、新建或 Fork 后打开都先过离开检查，再改地址；地址变化（含前进后退）在已打开工作区时同样先做离开检查，用户选择留下时把地址换回当前工作区。关闭标签页或重新载入时，只要有未保存、仅在内存或需要处理的修改，就由浏览器询问（`beforeunload`）。标签页标题是“工作区名 - AI Workspace”。主菜单在标签页中显示“返回 BuckyOS 桌面”，在 Desktop 窗口中显示“在新标签页中打开”（带上当前画布）。标签页中的退出登录先做离开检查，再走与 Desktop 相同的 `/sso_logout` 流程（`src/auth/signOut.ts`）。移动外壳启动本应用时跳转到 `/workspace`（`mobileRedirectPath`）。 |
 
 ## 16. 手机上的画布（2026-10-07）
@@ -444,6 +445,7 @@ P0、P1 按本文实施；P2（在线成员、跟随、演示场次与互动）�
 - 右侧面板一律以抽屉形式出现。就近工具栏和长按菜单里没有“复制”，因为手机上没有可以粘贴的地方。右下角的状态区保留。
 - **视口。** 手机的视口单独记在 `phone-viewport:<画布>`，不会覆盖电脑的 `viewport:<画布>`。在手机上第一次打开某张画布时适应全部，比例最大 100%。切换画布仍然写 `surface:active`，所以电脑下次会回到这张画布。
 - 工具栏和状态区避开 `env(safe-area-inset-*)`。工作区内禁止页面级双指缩放，因为 iOS 不遵守 `user-scalable=no`。
+- **便签（2026-10-12）。** 便签是批注，所以查看模式和手机上也能添加（有 `comment` 即可，公开链接的访客也行，见 15-20）。自由画布上有两个入口：长按空白处，菜单里有“添加便签”，便签放在手指位置；批注按钮先弹出“批注对象／添加便签”，从这里添加的便签放在视图中央。查看模式下不能在画布上直接编辑，因此先在批注抽屉里写好内容，点“放到画布”才创建便签（便签数据和 Block 在同一次提交中），手机随后收起抽屉。编辑模式下这两个入口与插入工具一样，放下便签后直接在画布上输入。电脑的查看模式也有这两个入口，但对象工具栏和主菜单“插入”仍按“查看模式隐藏创建”不提供便签。流式页不放便签，批注按钮仍直接进入批注。
 
 ### 16.3 手势
 
@@ -454,16 +456,16 @@ P0、P1 按本文实施；P2（在线成员、跟随、演示场次与互动）�
 | 单击 | 选中手指下的 Block 并显示就近工具栏；点空白处取消选中。Block 内的按钮和链接照常响应点击。 |
 | 双击 | 在 Block 上：缩放到该 Block。在空白处：以该点为中心放大 2 倍。两种情况都带动画。 |
 | 双指轻点 | 以两指中点为中心缩小 2 倍。 |
-| 长按（0.5 秒） | 打开该 Block 或该空白处的右键菜单，菜单始终留在屏幕内；不会出现浏览器自带的长按菜单和文字选择。 |
+| 长按（0.5 秒） | 打开该 Block 或该空白处的右键菜单，菜单始终留在屏幕内；不会出现浏览器自带的长按菜单和文字选择。空白处的菜单有“添加便签”（§16.2）。 |
 
 手势只改变视口或选区，不写文档，也不产生撤销步骤。
 
 画布及其内部元素都设为 `touch-action: none`，触摸手势全部由画布自己处理；正在编辑的 Block 保留浏览器的默认触摸行为。非手机的触屏设备处于编辑模式时：单指从 Block 上开始拖动会移动该 Block（与鼠标一致），从空白处开始拖动则平移画布（不是框选）；双击 Block 进入编辑；双指手势与上表相同。
 
-实现位置：`ui/canvas/render/touch.ts`（手势识别）、`RenderHost.tsx`（各手势的含义）、`camera.ts`（`animateTo`、`glide`）、`shellContext.ts`（`usePhone`）。验收用例为 `tests/aiworkspace/mobile.spec.ts` 的 UI-M01 和 UI-M02：在 Chromium 中仿真 Pixel 7，通过 CDP 输入真实的多点触摸。
+实现位置：`ui/canvas/render/touch.ts`（手势识别）、`RenderHost.tsx`（各手势的含义）、`camera.ts`（`animateTo`、`glide`）、`shellContext.ts`（`usePhone`）。验收用例为 `tests/aiworkspace/mobile.spec.ts` 的 UI-M01、UI-M02 和 UI-M04（公开链接访客在手机上长按和从批注按钮添加便签）：在 Chromium 中仿真 Pixel 7，通过 CDP 输入真实的多点触摸。
 
 ### 16.4 未做
 
 - 没有在真机（iOS Safari、Android Chrome）上验证，只在 Chromium 仿真中跑过。
-- 手机上不能编辑、插入，也没有数据源视图。平板上没有专门的触摸编辑：选择框手柄只有 8px，也没有触摸框选。
+- 手机上不能编辑、插入（便签除外），也没有数据源视图；在手机上放下的便签不能再改文字、移动或删除，要到电脑上的编辑模式处理。平板上没有专门的触摸编辑：选择框手柄只有 8px，也没有触摸框选。
 - 流式页只能用原生滚动，不支持捏合缩放。
