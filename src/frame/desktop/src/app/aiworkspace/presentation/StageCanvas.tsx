@@ -22,6 +22,8 @@ import type { Transition } from './controller'
 import { DEFAULT_BACKGROUND, eyeOf, FADE_MS, fitStage, flyPath, stageTheme, stageView, viewOfEye, type Rect, type ResolvedStep, type View } from './model'
 
 const READY_MAX_MS = 300
+/** On stage nothing is laid out. */
+const NO_LAYOUT = () => false
 
 export interface StageCanvasProps {
   stage: StageSize
@@ -86,7 +88,7 @@ function SurfaceLayer({ surfaceId, camera, active, focus, hide, editing, onEditi
   return (
     <div className={`aiws-stage-layer${active ? ' is-active' : ''}`} data-testid={`aiws-stage-layer-${surfaceId}`} data-active={active ? 'true' : undefined} aria-hidden={!active}>
       <RenderHost surfaceId={surfaceId} mode="show" camera={camera} laid={laid} index={index} selection={noSelection} onSelectionChange={() => undefined}
-        editing={active && !passive ? editing : null} onEditingChange={(id) => { if (!passive) onEditingChange(id) }} canLayout={false} onCommitLayout={() => undefined}
+        editing={active && !passive ? editing : null} onEditingChange={(id) => { if (!passive) onEditingChange(id) }} canLayout={NO_LAYOUT} onCommitLayout={() => undefined}
         onContextMenu={() => undefined} onOpenEntity={() => undefined} gesturesPaused={passive} prefetch={prefetch} hidden={hidden} />
     </div>
   )

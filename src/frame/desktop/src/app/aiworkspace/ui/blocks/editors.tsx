@@ -12,6 +12,7 @@ import type { AnnotationContent, AssetContent, EntityEnvelope, Json, RecordConte
 import type { RichTextCollab } from '../../richtext/collab'
 import { RichTextEditor } from '../../richtext/RichTextEditor'
 import { EDIT_STATE_LABEL } from '../../state/edits'
+import { authorLabel } from '../../state/guest'
 import { useDirectReadOnly, useEdit, useLoad, useLocksVersion, useStore, useVersion, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
 import { ConflictBox, TableViewCell } from '../TableViewCell'
 import { ValueEditor } from '../ValueEditor'
@@ -337,13 +338,13 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
       {onCanvas ? (
         <>
           <NoteReplies noteId={entityId} />
-          {payload.author && <span className="aiws-note-author">{payload.author}</span>}
+          {authorLabel(payload) && <span className="aiws-note-author">{authorLabel(payload)}</span>}
           {entry && entry.state !== 'committed' && <span className="aiws-note-dot" data-testid="aiws-edit-state" data-state={entry.state} title={EDIT_STATE_LABEL[entry.state]} />}
         </>
       ) : (
         <div className="aiws-note-meta">
           {payload.target && <span title="贴在数据上的便签">📎 {payload.target.entity_id}</span>}
-          {payload.author && <span>{payload.author}</span>}
+          {authorLabel(payload) && <span>{authorLabel(payload)}</span>}
           {entry && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state">{EDIT_STATE_LABEL[entry.state]}</span>}
           {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>编辑</button>}
         </div>

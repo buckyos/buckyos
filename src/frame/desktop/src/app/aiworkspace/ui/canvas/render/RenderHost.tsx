@@ -100,7 +100,8 @@ export interface RenderHostProps {
   onSelectionChange: (next: Set<string>) => void
   editing: string | null
   onEditingChange: (id: string | null) => void
-  canLayout: boolean
+  /** Can this user move, resize and rotate the Block (the canvas's editors: all; a commenter: its own notes)? */
+  canLayout: (id: string) => boolean
   onCommitLayout: (changes: LayoutChange[]) => void
   onContextMenu: (point: { screenX: number; screenY: number; worldX: number; worldY: number }, blockId: string | null) => void
   onOpenEntity: (entityId: string) => void
@@ -295,7 +296,7 @@ export function RenderHost(props: RenderHostProps) {
   }
   const frameEl = (id: string) => frames.current.get(id) ?? lines.get(id)?.el
   /** Can the user change this line's ends, bends and label here (mouse; touch only selects lines)? */
-  const lineEditable = (id: string) => policy.layout && canLayout && pointer === 'mouse' && !laid.get(id)?.locked && Boolean(store.outline.get(id)?.capabilities.includes('update'))
+  const lineEditable = (id: string) => policy.layout && canLayout(id) && pointer === 'mouse' && !laid.get(id)?.locked && Boolean(store.outline.get(id)?.capabilities.includes('update'))
   /** Hover changes at once (the outline); affordances follow after a short delay and leave at once. */
   const changeHover = (id: string | null) => {
     if (id === hover) return
@@ -625,7 +626,7 @@ export function RenderHost(props: RenderHostProps) {
         return
       }
       // locked Blocks are selected but never moved, also as part of a selection (§7.2)
-      const ids = policy.layout && canLayout ? topLevel(laid, wasSelected && !additive ? new Set(selection) : new Set([id])).filter((moved) => !laid.get(moved)?.locked) : []
+      const ids = policy.layout ? topLevel(laid, wasSelected && !additive ? new Set(selection) : new Set([id])).filter((moved) => !laid.get(moved)?.locked && canLayout(moved)) : []
       const affected = ids.flatMap((moved) => [moved, ...descendantsOf(moved)])
       const touching = linesTouching(affected)
       if (!wasSelected && !additive) props.onSelectionChange(new Set([id]))
@@ -679,7 +680,7 @@ export function RenderHost(props: RenderHostProps) {
     return again
   }
   const beginLineEnd = (event: ReactPointerEvent<Element>, id: string, which: 'start' | 'end') => {
-    if (dragRef.current || !lineEditable(id) && !(policy.layout && canLayout)) return
+    if (dragRef.current || !lineEditable(id) && !(policy.layout && canLayout(id))) return
     event.stopPropagation()
     event.preventDefault()
     if (secondPress(`end:${id}:${which}`, event)) {
@@ -973,7 +974,7 @@ export function RenderHost(props: RenderHostProps) {
     const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
     // edit mode: a drag that starts on a Block moves it, as with the mouse (a locked one is only selected; a line
     // is only selected — touch edits of lines come with touch editing, §6.5)
-    if (hit && !tappable && policy.layout && canLayout && !laid.get(hit.id)?.locked && !laid.get(hit.id)?.connector) { beginPointer(event); return { kind: 'delegate' } }
+    if (hit && !tappable && policy.layout && canLayout(hit.id) && !laid.get(hit.id)?.locked && !laid.get(hit.id)?.connector) { beginPointer(event); return { kind: 'delegate' } }
     // the selected Block's own scrollable content scrolls under the finger
     const scroller = hit && selection.has(hit.id) ? scrollerWithin(target, frames.current.get(hit.id)) : null
     return scroller ? { kind: 'scroll', element: scroller } : { kind: 'pan' }
@@ -1026,13 +1027,13 @@ export function RenderHost(props: RenderHostProps) {
   /** Double-clicking the rotation handle turns the Block back upright. */
   const resetRotation = (id: string) => {
     const l = laid.get(id)
-    if (l && l.rotation && !l.locked && policy.layout && canLayout) props.onCommitLayout([{ id, placement: relativeTo(laid, l.parentId, l.rect, 0) }])
+    if (l && l.rotation && !l.locked && policy.layout && canLayout(id)) props.onCommitLayout([{ id, placement: relativeTo(laid, l.parentId, l.rect, 0) }])
   }
   /** When a handle was last pressed: the root's double-click (retargeted there by pointer capture) is not an "edit". */
   const handleDownAt = useRef(0)
   const rotateDownAt = useRef(-1000)
   const beginResize = (event: ReactPointerEvent<Element>, id: string, handle: string) => {
-    if (!policy.layout || !canLayout || dragRef.current) return
+    if (!policy.layout || !canLayout(id) || dragRef.current) return
     const l = laid.get(id)
     if (!l || l.locked) return
     handleDownAt.current = event.timeStamp
@@ -1045,7 +1046,7 @@ export function RenderHost(props: RenderHostProps) {
     worldRef.current?.classList.add('is-moving')
   }
   const beginRotate = (event: ReactPointerEvent<Element>, id: string) => {
-    if (!policy.layout || !canLayout || dragRef.current) return
+    if (!policy.layout || !canLayout(id) || dragRef.current) return
     const l = laid.get(id)
     if (!l || l.locked || l.isGroup) return
     event.stopPropagation()
@@ -1141,7 +1142,7 @@ export function RenderHost(props: RenderHostProps) {
   const hoverLaid = hover && !selection.has(hover) ? laid.get(hover) : undefined
   const hoverShape = hoverLaid ? shapeFor(hoverLaid.entity.entity_id) : null
   const hoverMeta = hover ? metaSink.get(hover) : undefined
-  const single = selected.length === 1 && policy.layout && canLayout && !selected[0].locked && !selected[0].line && editing !== selected[0].id && !dragging ? selected[0] : null
+  const single = selected.length === 1 && policy.layout && canLayout(selected[0].id) && !selected[0].locked && !selected[0].line && editing !== selected[0].id && !dragging ? selected[0] : null
   const singleLaid = single ? laid.get(single.id) : undefined
   const handles = single ? (['nw', 'ne', 'se', 'sw'] as const).map((h, i) => ({ h, ...corners(single.rect, single.rotation)[i] })) : []
   const edges = single ? (['n', 'e', 's', 'w'] as const).map((h, i) => {
@@ -1180,7 +1181,7 @@ export function RenderHost(props: RenderHostProps) {
   const haloWidth = (id: string, extra: number) => lines.halfWidth(id) * 2 * camera.zoom + extra
   // a Block move re-routes lines without React: their halos would lag, so they hide until it ends
   const showHalos = !dragging || linePreview !== null
-  const lineId = selected.length === 1 && selected[0].line && mode === 'edit' && policy.layout && canLayout && !selected[0].locked && editing !== selected[0].id && !dragging ? selected[0].id : null
+  const lineId = selected.length === 1 && selected[0].line && mode === 'edit' && policy.layout && canLayout(selected[0].id) && !selected[0].locked && editing !== selected[0].id && !dragging ? selected[0].id : null
   const lineG = lineId ? lineGeom(lineId) : undefined
   const canBend = lineId ? lineEditable(lineId) : false
   const lineEnds = lineG && lineId ? (['start', 'end'] as const).map((which) => ({ which, end: lineG[which], at: toScreenPt(lineG[which].point), binding: laid.get(lineId)?.connector?.data[which] ?? null })) : []

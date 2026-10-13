@@ -24,6 +24,8 @@ export interface CanvasCommands {
   isFree: boolean
   /** Why inserting is not possible now, or null. */
   insertReason: string | null
+  /** The same for notes, which need only `comment` (公开链接便签). */
+  noteReason: string | null
   insert: (entry: CatalogEntry) => void
   openCatalog: (tab: CatalogTab, key?: string) => void
   copy: Command
@@ -44,18 +46,21 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
   const undo = store.undo.snapshot()
   const sessionMode = store.session.mode()
   const insertReason = canvas ? canvas.insertReason : NOT_ON_CANVAS
+  const noteReason = canvas ? canvas.noteReason : NOT_ON_CANVAS
+  const reasonOf = (entry: CatalogEntry) => (entry.definition.type === 'note' ? noteReason : insertReason)
   const groups: CatalogGroup[] = ['text', 'data', 'layout', 'ai']
   const entries = registryEntries()
   const extensions = extensionEntries(store)
   const insertItems: MenuItem[] = groups.map((group) => {
     const inGroup = entries.filter((entry) => entry.group === group || (group === 'data' && entry.group === 'sample'))
     return {
-      id: `insert-group-${group}`, label: CATALOG_GROUP_LABEL[group], disabled: inGroup.length === 0,
-      items: inGroup.map((entry) => ({ id: `insert-${entry.definition.type}`, testId: `aiws-main-insert-${entry.definition.type}`, label: `${entry.title}${entry.catalog.needs === 'none' ? '' : '…'}`, run: () => canvas?.insert(entry) })),
+      id: `insert-group-${group}`, label: CATALOG_GROUP_LABEL[group], disabled: inGroup.length === 0 || inGroup.every((entry) => reasonOf(entry) !== null), reason: insertReason,
+      items: inGroup.map((entry) => ({ id: `insert-${entry.definition.type}`, testId: `aiws-main-insert-${entry.definition.type}`, label: `${entry.title}${entry.catalog.needs === 'none' ? '' : '…'}`,
+        disabled: reasonOf(entry) !== null, reason: reasonOf(entry), run: () => canvas?.insert(entry) })),
     }
   })
   insertItems.push({
-    id: 'insert-group-extension', label: CATALOG_GROUP_LABEL.extension, disabled: extensions.length === 0, reason: '这个工作区还没有 Block 定义',
+    id: 'insert-group-extension', label: CATALOG_GROUP_LABEL.extension, disabled: extensions.length === 0 || insertReason !== null, reason: insertReason ?? '这个工作区还没有 Block 定义',
     items: extensions.map((entry) => ({ id: `insert-${entry.key}`, label: `${entry.title}…`, run: () => canvas?.openCatalog('extension', entry.key) })),
   })
   const side = (tab: SideTab): MenuItem => {
@@ -81,7 +86,7 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
       ? { id: 'home', label: '返回 BuckyOS 桌面', run: shell.home }
       : { id: 'new-tab', label: '在新标签页中打开', run: () => { window.open(workspaceUrl(store.session.workspaceId, { surfaceId: shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null }), '_blank', 'noopener') } },
     { id: 'sep-1', separator: true },
-    { id: 'insert', label: '插入', disabled: insertReason !== null, reason: insertReason, explain: true, items: insertItems },
+    { id: 'insert', label: '插入', disabled: insertReason !== null && noteReason !== null, reason: insertReason, explain: true, items: insertItems },
     { id: 'insert-catalog', label: '插入对象…', disabled: insertReason !== null, reason: insertReason, run: () => canvas?.openCatalog('all') },
     { id: 'add-data', label: '添加已有数据…', hint: '只创建视图', disabled: insertReason !== null, reason: insertReason, run: () => canvas?.openCatalog('existing') },
     {

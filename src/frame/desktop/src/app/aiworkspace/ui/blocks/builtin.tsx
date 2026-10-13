@@ -12,6 +12,8 @@ import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
 import type { AnnotationContent, CellPayload, Json, Reference, RichTextContent } from '../../api/types'
 import { StaticRichText } from '../../richtext/RichTextEditor'
+import { isGuestPrincipal } from '../../api/transport'
+import { authorLabel, readGuestName } from '../../state/guest'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { TableViewCell } from '../TableViewCell'
@@ -302,7 +304,7 @@ function NoteStatic(context: RenderContext) {
     <div className="aiws-note aiws-block-static" style={style} data-size={typeof payload?.style?.size === 'string' ? payload.style.size : 'm'} data-testid={`aiws-note-${id}`}>
       <div className="aiws-note-body">{payload?.body ?? '…'}</div>
       <NoteReplies noteId={id} />
-      {payload?.author && <span className="aiws-note-author">{payload.author}</span>}
+      {payload && authorLabel(payload) && <span className="aiws-note-author">{authorLabel(payload)}</span>}
       {entry && entry.state !== 'committed' && <span className="aiws-note-dot" data-testid="aiws-edit-state" data-state={entry.state} title={entry.detail ?? entry.state} />}
     </div>
   )
@@ -311,6 +313,12 @@ function NoteEditorView(context: RenderContext) {
   const onCanvas = useOnFreeCanvas()
   if (!context.source) return null
   return <NoteEditor entityId={context.source.entity_id} entity={context.source} readOnly={context.readOnlyReason !== null} startEditing={context.view === 'canvas'} intentKey={onCanvas ? context.cell.entity_id : undefined} />
+}
+
+/** A guest signs its notes with the name it chose, as its annotations (the principal stays `author`). */
+function guestAuthorName(store: WorkspaceStore): { author_name?: string } {
+  const name = isGuestPrincipal(store.session.principal ?? '') ? readGuestName() : ''
+  return name ? { author_name: name } : {}
 }
 
 /** Change the note's look (`style` of the annotation: the author's, or anyone's with `manage`). */
@@ -348,7 +356,7 @@ const note: BlockDefinition = {
     ]
   },
   create: (args) => (args.existingSourceId ? [cellOp(args, 'note', args.existingSourceId)] : [
-    createOp(args.dataId, 'buckyos.annotation', args.contentFolderId, args.dataOrderKey, { kind: 'note', body: args.title ?? '', style: { color: '#fff2cc' } }),
+    createOp(args.dataId, 'buckyos.annotation', args.contentFolderId, args.dataOrderKey, { kind: 'note', body: args.title ?? '', style: { color: '#fff2cc' }, ...guestAuthorName(args.store) }),
     cellOp(args, 'note', args.dataId),
   ]),
 }

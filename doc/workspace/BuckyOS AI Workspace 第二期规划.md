@@ -259,7 +259,7 @@ WorkspaceShell：模式入口、保存/同步状态、统一撤销、通知、�
 | 预设权限组 | 默认能力 |
 | --- | --- |
 | 阅读者 | `read` |
-| 评论者 | `read`、`comment` |
+| 评论者 | `read`、`comment`（可在画布上放置、移动、删除自己的便签，见 UI 改进 15-20） |
 | 编辑者 | `read`、`append`、`update`、`delete`、`structure`、`comment` |
 | 管理者 | 现有全部能力，包含 `export`、`manage` |
 | 自定义 | 展示实际 capability 集合；例如仅追加，或单独授予导出 |

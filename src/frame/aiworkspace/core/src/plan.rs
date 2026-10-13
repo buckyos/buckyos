@@ -5,7 +5,7 @@
 //! here against the current state. All detectable conflicts of a batch are
 //! collected; any hard error rejects the whole batch.
 
-use crate::access::{Access, Cap};
+use crate::access::{own_note_block, own_note_payload, Access, Cap};
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::{Code, WsError, WsResult};
 use crate::id::{check_id, check_idempotency_key, check_name};
@@ -311,6 +311,24 @@ impl<'a> Planner<'a> {
 
     pub fn can(&self, entity_id: &str, cap: Cap) -> WsResult<bool> {
         self.access.can(&self.ov, entity_id, cap)
+    }
+
+    /// A write to `e` that needs `cap` on `on`, made by the author of `e` holding only `comment` there: its own
+    /// note Block (and, with `annotations`, its own annotation) — see [`own_note_block`]. Such a write takes
+    /// no lock. False when the caller holds `cap` or `e` is not its own writing: the usual checks apply.
+    fn by_comment(&self, e: &EntityRow, on: &str, cap: Cap, annotations: bool) -> WsResult<bool> {
+        if self.can(on, cap)? {
+            return Ok(false);
+        }
+        let mine = if e.type_id == TYPE_ANNOTATION {
+            annotations && crate::types::annotation_author(e) == Some(self.env.principal.as_str())
+        } else {
+            own_note_block(&self.ov, &self.env.principal, e)?
+        };
+        if mine {
+            self.require(on, Cap::Comment)?;
+        }
+        Ok(mine)
     }
 
     /// Writing `e`'s content (or, for containers, its direct membership) needs
@@ -856,6 +874,9 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
     }
     if type_id == TYPE_ANNOTATION {
         p.require(parent_id, Cap::Comment)?;
+    } else if type_id == TYPE_CELL && !p.can(parent_id, Cap::Structure)? && own_note_payload(&p.ov, &p.env.principal, &payload)? {
+        // the caller's own note Block: `comment` puts it on the canvas (see `own_note_block`)
+        p.require(parent_id, Cap::Comment)?;
     } else {
         p.require(parent_id, Cap::Structure)?;
         p.need_lock(&parent);
@@ -935,7 +956,7 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
         // own annotations need `comment`; other people's shared ones need `manage`
         let mine = crate::types::annotation_author(&e) == Some(p.env.principal.as_str());
         p.require(id, if mine { Cap::Comment } else { Cap::Manage })?;
-    } else {
+    } else if !p.by_comment(&e, id, Cap::Delete, false)? {
         p.require(id, Cap::Delete)?;
         p.need_parent_lock(id)?;
     }
@@ -1013,7 +1034,11 @@ fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
     if e.alive() {
         return Err(WsError::invalid_op(format!("entity {id} is not deleted")));
     }
-    p.require(id, Cap::Delete)?;
+    // the author brings back its own annotation or note Block (undoing their deletion) with `comment`
+    let by_comment = p.by_comment(&e, id, Cap::Delete, true)?;
+    if !by_comment {
+        p.require(id, Cap::Delete)?;
+    }
     if !p.check_rev(op.get("expect"), e.life_rev, None, id, None, || None)? {
         return Ok((op.clone(), None));
     }
@@ -1022,7 +1047,9 @@ fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
         WsError::new(Code::ReferenceBroken, format!("parent {} is deleted", edge.parent_id))
             .with_data(json!({ "entity_id": edge.parent_id }))
     })?;
-    p.need_lock(&parent);
+    if !by_comment {
+        p.need_lock(&parent);
+    }
     if let Some(n) = &e.name {
         if e.scope == SCOPE_SHARED && p.name_taken(&edge.parent_id, n, id)? {
             return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} is taken again")));
@@ -1105,9 +1132,12 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     if e.type_id == TYPE_RICHTEXT {
         return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
     }
+    let mut by_comment = false;
     if e.type_id == TYPE_ANNOTATION {
         let mine = crate::types::annotation_author(&e) == Some(p.env.principal.as_str());
         p.require(id, if mine { Cap::Comment } else { Cap::Manage })?;
+    } else if p.by_comment(&e, id, Cap::Update, false)? {
+        by_comment = true;
     } else {
         p.require(id, Cap::Update)?;
         p.need_lock(&e);
@@ -1149,6 +1179,9 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         return Ok((op.clone(), None));
     }
     crate::types::validate_update(p, &before, &mut e, &changed)?;
+    if by_comment && !own_note_block(&p.ov, &p.env.principal, &e)? {
+        return Err(WsError::denied("update capability required: the note Block would no longer show your own note"));
+    }
     // keys the type derived or dropped as a consequence are versioned like explicit writes
     let derived: Vec<String> = before.payload.keys().chain(e.payload.keys()).filter(|k| !changed.contains(*k) && before.payload.get(*k) != e.payload.get(*k)).cloned().collect();
     for k in derived {
@@ -1231,8 +1264,14 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
         return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{} cannot be a child of {new_parent_id}", e.type_id)));
     }
     let mut edge = p.ov.edge(id)?.ok_or_else(|| WsError::invalid_op("entity has no tree edge"))?;
-    p.require(id, Cap::Structure)?;
-    p.require(new_parent_id, Cap::Structure)?;
+    let from_by_comment = p.by_comment(&e, id, Cap::Structure, false)?;
+    if !from_by_comment {
+        p.require(id, Cap::Structure)?;
+    }
+    let to_by_comment = p.by_comment(&e, new_parent_id, Cap::Structure, false)?;
+    if !to_by_comment {
+        p.require(new_parent_id, Cap::Structure)?;
+    }
     // cycle check: the new parent must not be the entity or inside its subtree
     let mut cur = new_parent_id.to_string();
     loop {
@@ -1252,8 +1291,12 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
             return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} already used under {new_parent_id}")));
         }
     }
-    p.need_parent_lock(id)?;
-    p.need_lock(&new_parent);
+    if !from_by_comment {
+        p.need_parent_lock(id)?;
+    }
+    if !to_by_comment {
+        p.need_lock(&new_parent);
+    }
     // a connector moved into a flow page keeps its data (not rendered there, §8.3): only the box is judged
     let placement = connector_placement(op, crate::types::is_connector(&e.type_id, &e.payload).then_some(&e.payload), p.env.internal)?;
     let seq = p.seq();
@@ -1277,8 +1320,10 @@ fn tree_place(p: &mut Planner, op: &Value) -> OpResult {
     }
     let connector = crate::types::is_connector(&e.type_id, &e.payload).then_some(&e.payload);
     let mut edge = p.ov.edge(id)?.ok_or_else(|| WsError::invalid_op("the root cannot be placed"))?;
-    p.require(&edge.parent_id, Cap::Structure)?;
-    p.need_parent_lock(id)?;
+    if !p.by_comment(&e, &edge.parent_id, Cap::Structure, false)? {
+        p.require(&edge.parent_id, Cap::Structure)?;
+        p.need_parent_lock(id)?;
+    }
     if !p.check_rev_opt(op.get("expect"), edge.struct_rev, None, id, None, || None)? {
         return Ok((op.clone(), None));
     }

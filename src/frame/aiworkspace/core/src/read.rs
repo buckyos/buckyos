@@ -55,7 +55,7 @@ pub fn envelope(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<V
             m.insert("placement".into(), p);
         }
     }
-    m.insert("capabilities".into(), json!(access.caps(ctx, &e.entity_id)?.names()));
+    m.insert("capabilities".into(), json!(access.entity_caps(ctx, e)?.names()));
     Ok(Value::Object(m))
 }
 

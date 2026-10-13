@@ -6,7 +6,7 @@
  * Every Block subscribes to its own entry (`subscribeEntity`), so one Block's change re-renders
  * that Block alone. Children lists are kept per parent for the trees and the RenderHost. */
 
-import type { CommitEvent, ConnectorProjection, EntityEnvelope, Operation, Placement } from '../api/types'
+import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, Operation, Placement } from '../api/types'
 import { Emitter } from './emitter'
 
 type Listener = () => void
@@ -213,6 +213,20 @@ export class OutlineModel {
     return true
   }
 
+  /** The capabilities of an entity this event created, until its envelope is read back: the parent's, and on the
+   * caller's own writing with `comment` what the backend adds (`entity_caps`, 公开链接便签) — an annotation is
+   * edited and deleted, a note Block shown with it in the same commit is also moved. */
+  private createdCapabilities(event: CommitEvent, op: NonNullable<CommitEvent['ops']>[number], inherited: Capability[]): Capability[] {
+    if (!this.principal || event.author !== this.principal || !inherited.includes('comment')) return inherited
+    const payload = (op.payload as Record<string, unknown> | undefined) ?? {}
+    const sourceId = (payload.source_ref as { entity_id?: string } | undefined)?.entity_id
+    const extra: Capability[] = op.type_id === 'buckyos.annotation' ? ['update', 'delete']
+      : op.type_id === 'buckyos.cell' && (payload.view as { type?: string } | undefined)?.type === 'note'
+        && (event.ops ?? []).some((other) => other.op === 'entity.create' && other.entity_id === sourceId && other.type_id === 'buckyos.annotation') ? ['update', 'delete', 'structure']
+        : []
+    return [...new Set([...inherited, ...extra])]
+  }
+
   /** Apply one change-stream event. Returns false when a full reload was scheduled instead. */
   applyEvent(event: CommitEvent): boolean {
     if (!this.loaded) return false
@@ -253,7 +267,7 @@ export class OutlineModel {
             name: (op.name as string | undefined) ?? null, parent_id: op.parent_id as string, order_key: op.order_key as string,
             placement: (op.placement as Placement | undefined) ?? undefined, scope: (op.scope as string | undefined) === 'personal' ? 'personal' : 'shared', deleted: false,
             content_rev: item.rev, meta_rev: item.rev, life_rev: item.rev, struct_rev: item.rev, write_policy: 'open',
-            capabilities: parent.capabilities, ...extras(op.type_id as string, payload),
+            capabilities: this.createdCapabilities(event, op, parent.capabilities), ...extras(op.type_id as string, payload),
           }
           this.entities.set(id, entity)
           this.link(entity)

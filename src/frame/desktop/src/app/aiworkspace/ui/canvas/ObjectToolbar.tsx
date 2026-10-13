@@ -13,7 +13,7 @@ const ICONS: Record<string, LucideIcon> = { richtext: Type, note: StickyNote, sh
 /** `connector`: press and drag draws a line (标准对象的交互改进 §6.1), one line at a time. */
 export type PointerTool = 'select' | 'hand' | 'connector'
 
-export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, onPick, onPickFile, onOpenCatalog, collapsed, onCollapsed }: {
+export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, noteReason, onPick, onPickFile, onOpenCatalog, collapsed, onCollapsed }: {
   isFree: boolean
   tool: PointerTool
   onTool: (tool: PointerTool) => void
@@ -21,6 +21,8 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
   placingKey: string | null
   /** Why inserting is not possible now (mode, capability, read-only), or null. */
   insertReason: string | null
+  /** The same for notes, which need only `comment` (公开链接便签): a commenter is offered the note alone. */
+  noteReason: string | null
   onPick: (entry: CatalogEntry) => void
   onPickFile: (entry: CatalogEntry, file: File) => void
   onOpenCatalog: (tab: 'all' | 'extension', key?: string) => void
@@ -47,6 +49,7 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
     onPick(entry)
   }
   const canInsert = insertReason === null
+  const offered = canInsert ? standard : noteReason === null ? standard.filter((entry) => entry.definition.type === 'note') : []
   return (
     <div className={`aiws-panel aiws-object-toolbar${collapsed ? ' is-collapsed' : ''}`} role="toolbar" aria-orientation="vertical" aria-label="对象工具" data-testid="aiws-object-toolbar">
       {!collapsed && (
@@ -57,9 +60,9 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
               <button type="button" className="aiws-tool" aria-pressed={tool === 'hand' && !placingKey} aria-label="移动视图" title="移动视图（H，或按住空格拖动）" data-testid="aiws-tool-hand" onClick={() => onTool('hand')}><Hand size={20} /></button>
             </div>
           )}
-          {canInsert && (
+          {offered.length > 0 && (
             <div className="aiws-tool-group">
-              {standard.map((entry) => {
+              {offered.map((entry) => {
                 const Icon = ICONS[entry.definition.type] ?? Plus
                 const ai = entry.group === 'ai'
                 return (

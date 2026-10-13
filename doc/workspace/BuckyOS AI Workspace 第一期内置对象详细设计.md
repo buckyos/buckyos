@@ -469,7 +469,7 @@ wait_changes(workspace_id, after_seq, timeout_ms) →
 
 **主体**：由服务运行时验证后的调用身份（用户 ID，以及可用时的应用 ID）。独立测试模式用配置文件中的固定测试身份表和静态 token。客户端请求体中任何自称的身份字段都被忽略。
 
-**能力**：`read`、`append`、`update`、`delete`、`structure`（创建/移动/改名/改 schema）、`comment`（创建和修改自己的注释）、`export`、`manage`（授权、撤销他人提交、Fork、删除 Workspace）。
+**能力**：`read`、`append`、`update`、`delete`、`structure`（创建/移动/改名/改 schema）、`comment`（创建和修改自己的注释，以及放置、移动、删除展示自己便签的 Block，见 UI 改进 15-20）、`export`、`manage`（授权、撤销他人提交、Fork、删除 Workspace）。
 
 **授权记录**存放在 Workspace 文件夹内的本地库 `local.sqlite`（不是文档库，不随普通导出带走，见 §4.1）：
 
@@ -1341,7 +1341,7 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 
 - `kind`：`note` | `highlight`。`body` 是纯文本（≤ 4000 字符）。`author` 由后台写入。
 - 实体的 `scope`（§2.9）：`shared` 或 `user:<主体>`，创建时确定，不可更改。个人注释的结构父节点记录为其目标所在的页面，但它不出现在其他主体的 `list_children`、变化流和导出中。
-- 权限：创建需要对目标有 `read` 且对 Workspace 有 `comment`；修改/删除自己的注释需要 `comment`，他人的共享注释需要 `manage`。对业务数据只读的主体可以有 `comment`。
+- 权限：创建需要对目标有 `read` 且对 Workspace 有 `comment`；修改/删除自己的注释需要 `comment`，他人的共享注释需要 `manage`。对业务数据只读的主体可以有 `comment`。展示自己共享注释的便签 Block（`view.type = note`）凭 `comment` 即可创建、移动、修改、删除和恢复，不需要写锁；信封的 `capabilities` 对自己的注释报告 `update`、`delete`，对这样的 Block 再报告 `structure`（UI 改进 15-20）。
 - 引用种类 `anchor`：边只记录目标实体，不阻止目标删除。
 - 排序、过滤、改列名、插入其他行、移动块都不使锚点挂到别的对象上，因为锚点的身份部分只含稳定 ID（V08）。
 

@@ -3,7 +3,10 @@
 //! the structural path. No deny rules, no field/record-level grants.
 
 use crate::error::{WsError, WsResult};
-use crate::model::{EntityRow, ReadCtx};
+use crate::model::{EntityRow, JsonMap, ReadCtx, TYPE_ANNOTATION, TYPE_CELL};
+use crate::types::annotation_author;
+use crate::value::{reference_entity_id, reference_is_local};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,4 +129,49 @@ impl Access {
     pub fn can_read(&self, ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<bool> {
         Ok(self.sees_scope(e) && self.can(ctx, &e.entity_id, Cap::Read)?)
     }
+
+    /// What the caller may do to `e`, as envelopes report it: the grants, and — with `comment` — what the
+    /// caller's own writing needs: editing and deleting its annotations, and also moving its note Blocks
+    /// (see [`own_note_block`]). The planner applies the same rules where those writes are checked.
+    pub fn entity_caps(&self, ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<CapSet> {
+        let caps = self.caps(ctx, &e.entity_id)?;
+        if !caps.has(Cap::Comment) {
+            return Ok(caps);
+        }
+        let mine = if e.type_id == TYPE_ANNOTATION {
+            annotation_author(e) == Some(self.principal.as_str())
+        } else {
+            own_note_block(ctx, &self.principal, e)?
+        };
+        if !mine {
+            return Ok(caps);
+        }
+        let mut extra = Cap::Update as u16 | Cap::Delete as u16;
+        if e.type_id == TYPE_CELL {
+            extra |= Cap::Structure as u16;
+        }
+        Ok(caps.union(CapSet(extra)))
+    }
+}
+
+/// A note Block `principal` wrote: a Cell showing (`view.type` note) a shared annotation by `principal`.
+/// Where it sits on a canvas belongs to the note as much as its text does, so `comment` is enough to put
+/// it there, move, resize or remove it (a public link's guest adds notes this way); it takes no lock, like
+/// the annotation itself. Other people's note Blocks need the usual capabilities.
+pub fn own_note_block(ctx: &dyn ReadCtx, principal: &str, e: &EntityRow) -> WsResult<bool> {
+    if e.type_id != TYPE_CELL {
+        return Ok(false);
+    }
+    own_note_payload(ctx, principal, &e.payload)
+}
+
+/// [`own_note_block`] for a Cell payload about to be created or written.
+pub fn own_note_payload(ctx: &dyn ReadCtx, principal: &str, payload: &JsonMap) -> WsResult<bool> {
+    if payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str) != Some("note") {
+        return Ok(false);
+    }
+    let Some(id) = payload.get("source_ref").filter(|r| reference_is_local(r)).and_then(reference_entity_id) else {
+        return Ok(false);
+    };
+    Ok(ctx.entity(id)?.is_some_and(|a| a.type_id == TYPE_ANNOTATION && a.owner().is_none() && annotation_author(&a) == Some(principal)))
 }

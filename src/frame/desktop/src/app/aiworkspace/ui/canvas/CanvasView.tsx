@@ -266,9 +266,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }, [store, laid, policy.layout, surfaceId])
 
   const canLayout = policy.layout && surface.capabilities.includes('structure') && !readOnlyNow
+  /** A Block this user may move, resize and remove: anything on a canvas it may restructure, and — with `comment`
+   * alone (a public link) — the notes it wrote, whose envelopes carry `structure` (公开链接便签). */
+  const canLayoutBlock = useCallback((id: string) => canLayout || (policy.layout && !readOnlyNow && Boolean(store.outline.get(id)?.capabilities.includes('structure'))),
+    [canLayout, policy.layout, readOnlyNow, store])
   const insertReason = !policy.insert ? (mode === 'view' ? '查看模式不能插入' : '播放编辑占位中不能插入')
     : !surface.capabilities.includes('structure') ? '没有在这张画布上添加对象的权限'
       : readOnlyReason
+  /** Notes need only `comment` (a note is an annotation): a public link's guest adds them where it can insert nothing else. */
+  const noteReason = !policy.insert || surface.capabilities.includes('structure') || !surface.capabilities.includes('comment') ? insertReason : readOnlyReason
+  const insertReasonOf = (type: string) => (type === 'note' ? noteReason : insertReason)
 
   /** World point at the centre of the unobstructed visible area (top-left of a Block of `size` centred there). */
   const centreSpot = (size: { w: number; h: number }) => {
@@ -286,7 +293,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     /** A flow page: right after this sibling (null: first); appended when absent. */
     afterId?: string | null) => {
     const definition = request.entry.definition
-    if (!definition.create || insertReason) return
+    if (!definition.create || insertReasonOf(definition.type)) return
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return }
     let config = request.config
@@ -328,11 +335,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- centreSpot reads the camera at call time
-  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, policy.editContent, setEditing, setSide])
+  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, noteReason, policy.editContent, setEditing, setSide])
 
   /** The toolbar's pick: a one-shot placement on a free Surface, an append on a flow page. */
   const pick = (request: InsertRequest) => {
-    if (insertReason) { store.notify('info', insertReason); return }
+    const reason = insertReasonOf(request.entry.definition.type)
+    if (reason) { store.notify('info', reason); return }
     // a line is drawn, not placed (标准对象的交互改进 §6.1)
     if (request.entry.definition.type === 'connector' && isFree) { setPlacing(null); setTool('connector'); return }
     if (isFree) { setPlacing(request); setTool('select') } else void insert(request, null)
@@ -357,7 +365,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     void store.submit({ editId: `insert:${groupId}`, label: '插入分组', operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: siblingKey(store, parent, afterId), payload: { kind: 'group', layout: { mode: 'flow' }, title: '分组' } }] })
   }
   const insertFlow = (entry: CatalogEntry, parent: string, afterId: string | null) => {
-    if (insertReason) { store.notify('info', insertReason); return }
+    const reason = insertReasonOf(entry.definition.type)
+    if (reason) { store.notify('info', reason); return }
     if (entry.catalog.needs === 'file') {
       const input = document.createElement('input')
       input.type = 'file'
@@ -371,6 +380,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- actions on the selection
   const selectedEntities = [...selection].map((id) => store.outline.get(id)).filter((e): e is EntityEnvelope => Boolean(e))
   const single = selectedEntities.length === 1 ? selectedEntities[0] : null
+  /** The selected Blocks this user may move and remove (all of them with `structure` on the canvas). */
+  const layoutable = topLevel(laid, selection).filter(canLayoutBlock)
   const selectedBlock = useBlockContext({
     cellId: single?.entity_id ?? null, mode, view: 'canvas', selected: true,
     editorActive: Boolean(single && editing === single.entity_id), zoom: camera.zoom,
@@ -383,10 +394,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     return kept
   }
   const deleteSelection = async () => {
-    if (!canLayout) return
     const ops: Operation[] = []
     const doomed = new Set<string>()
-    const targets = unlocked(topLevel(laid, selection), '删除')
+    const targets = unlocked(topLevel(laid, selection).filter(canLayoutBlock), '删除')
+    if (targets.length === 0) return
     for (const id of targets) {
       if (store.outline.get(id)?.capabilities.includes('delete')) for (const e of [id, ...store.outline.descendants(id).map((d) => d.entity_id)]) doomed.add(e)
     }
@@ -436,7 +447,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   const reorder = (direction: 'front' | 'back') => {
     const ops: Operation[] = []
-    for (const id of topLevel(laid, selection)) {
+    for (const id of topLevel(laid, selection).filter(canLayoutBlock)) {
       const l = laid.get(id)
       if (!l) continue
       const siblings = store.outline.childrenOf(l.parentId)
@@ -598,7 +609,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     reason: !clip ? '剪贴板是空的' : clip.workspaceId !== store.session.workspaceId ? '剪贴板中的对象来自另一个工作区' : insertReason ?? (canLayout ? null : '没有调整这张画布的权限'),
     run: () => pasteAt(null),
   }
-  const remove: Command = { reason: !canLayout ? (policy.layout ? '没有调整这张画布的权限' : '当前模式不能删除对象') : selection.size === 0 ? '没有选中的对象' : null, run: () => { void deleteSelection() } }
+  const remove: Command = { reason: !policy.layout ? '当前模式不能删除对象' : selection.size === 0 ? '没有选中的对象' : layoutable.length === 0 ? '没有调整这张画布的权限' : null, run: () => { void deleteSelection() } }
 
   const fitAll = () => { const b = surfaceBounds(laid); if (b) camera.fit(b); else camera.set({ x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 }) }
   const fitSelection = () => { const b = boundsOf(laid, selection); if (b) camera.fit(b, 80) }
@@ -647,22 +658,22 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (!isFree && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && single) {
         event.preventDefault()
         const direction = event.key === 'ArrowUp' ? -1 : 1
-        if (mod && event.shiftKey) { if (canLayout) moveInFlow(store, single, direction); return }
+        if (mod && event.shiftKey) { if (canLayoutBlock(single.entity_id)) moveInFlow(store, single, direction); return }
         const order = flowOrder(store, surfaceId)
         const next = order[order.indexOf(single.entity_id) + direction]
         if (next) setSelectionState(new Set([next]))
         return
       }
-      if (event.key.startsWith('Arrow') && selection.size > 0 && canLayout && isFree) {
+      if (event.key.startsWith('Arrow') && layoutable.length > 0 && isFree) {
         event.preventDefault()
         const step = event.shiftKey ? 10 : 1
         const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
         const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
         // a line with a bound end moves only by its ends (连接线实现方案 §7)
-        commitLayout(topLevel(laid, selection).flatMap((id) => { const l = laid.get(id); return l && !l.locked && !hasBoundEnd(l) ? [{ id, placement: movedPlacement(laid, l, dx, dy) }] : [] }))
+        commitLayout(layoutable.flatMap((id) => { const l = laid.get(id); return l && !l.locked && !hasBoundEnd(l) ? [{ id, placement: movedPlacement(laid, l, dx, dy) }] : [] }))
         return
       }
-      if (mod && (event.key === ']' || event.key === '[') && selection.size > 0 && canLayout) { event.preventDefault(); reorder(event.key === ']' ? 'front' : 'back'); return }
+      if (mod && (event.key === ']' || event.key === '[') && layoutable.length > 0) { event.preventDefault(); reorder(event.key === ']' ? 'front' : 'back'); return }
       if (mod && event.key.toLowerCase() === 'g' && canLayout) { event.preventDefault(); if (event.shiftKey) ungroup(); else group(); return }
       if (event.key === 'F2' && single && policy.layout) { event.preventDefault(); shell.setSide('inspector') }
     }
@@ -676,7 +687,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const typeItems: ToolbarItem[] = []
   const commonItems: ToolbarItem[] = []
   const topIds = topLevel(laid, selection)
-  const lockable = canLayout && topIds.length > 0 && topIds.every((id) => store.outline.get(id)?.capabilities.includes('update'))
+  const lockable = topIds.length > 0 && topIds.every((id) => canLayoutBlock(id) && store.outline.get(id)?.capabilities.includes('update'))
   const allLocked = topIds.length > 0 && topIds.every((id) => laid.get(id)?.locked)
   const lockedHere = topIds.every((id) => store.outline.get(id)?.locked)
   const singleLocked = single ? Boolean(laid.get(single.entity_id)?.locked) : false
@@ -727,9 +738,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     moreActions.push({ id: 'copy', label: '复制', key: 'Ctrl+C', run: copy.run })
     if (cut.reason === null && !allLocked) moreActions.push({ id: 'cut', label: '剪切', key: 'Ctrl+X', run: cut.run })
   }
-  if (selection.size > 0 && canLayout && !allLocked) {
+  if (layoutable.length > 0 && !allLocked) {
     moreActions.push({ id: 'front', label: '置顶', key: 'Ctrl+]', run: () => reorder('front') }, { id: 'back', label: '置底', key: 'Ctrl+[', run: () => reorder('back') })
-    if (surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: '移动到画布…', run: () => setPicker({ kind: 'move-surface' }) })
+    if (canLayout && surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: '移动到画布…', run: () => setPicker({ kind: 'move-surface' }) })
     moreActions.push({ id: 'delete', label: '删除', key: 'Delete', run: () => { void deleteSelection() } })
   }
   // a locked object offers "unlock" and reading only (§4.3): no type tools, nothing that moves or removes it
@@ -748,7 +759,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     ...moreActions.map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })),
   ]
   const menuItems = menu ? (menu.blockId ? blockMenu : [
-    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { void insert({ entry }, menu.world, menu.parentId) } })) : []),
+    ...(insertReason === null ? quickEntries : noteReason === null ? quickEntries.filter((entry) => entry.definition.type === 'note') : []).map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { void insert({ entry }, menu.world, menu.parentId) } })),
     ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => insertGroup(menu.parentId ?? surfaceId) }] : []),
     ...(insertReason === null ? [
       { id: 'catalog', label: '插入对象…', run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
@@ -759,7 +770,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   ].filter((item, i) => !(i === 0 && 'separator' in item))) : []
 
   const commands: CanvasCommands = {
-    isFree, insertReason,
+    isFree, insertReason, noteReason,
     insert: (entry) => {
       if (entry.definition.type === 'connector' && isFree) pickEntry(entry)
       else if (entry.catalog.needs === 'none') void insert({ entry }, null)
@@ -805,7 +816,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
-                canLayout={canLayout} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
+                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
                 tool={tool} placing={placing ? { ...placing.entry.definition.defaultSize, label: placingTitle } : null}
                 onPlace={(world) => { const request = placing; setPlacing(null); if (request) void insert(request, world) }}
                 onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
@@ -835,7 +846,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
-                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason}
+                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason} noteReason={noteReason}
                   onPick={pickEntry} onPickFile={(entry, file) => pick({ entry, file })} onOpenCatalog={(tab, key) => openCatalog(tab, key)} collapsed={collapsed} onCollapsed={setCollapsed} />
               </div>
             )}

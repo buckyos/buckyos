@@ -228,7 +228,7 @@ impl Workspace {
             return Err(WsError::deleted(format!("entity {id} is deleted")));
         }
         Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "type_id": e.type_id,
-                   "content_rev": e.content_rev, "capabilities": access.caps(&ctx, id)?.names() }))
+                   "content_rev": e.content_rev, "capabilities": access.entity_caps(&ctx, &e)?.names() }))
     }
 
     /// `doc.get_collab_state`: the only way CRDT bytes leave the backend
