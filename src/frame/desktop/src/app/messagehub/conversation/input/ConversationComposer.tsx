@@ -33,7 +33,7 @@ import {
   extractTransferFiles,
   filesFromInputList,
   formatAttachmentSize,
-  getAttachmentPathKey,
+  getAttachmentKey,
   MAX_ATTACHMENT_BYTES,
   revokeAttachmentItem,
   type ComposerAttachmentInput,
@@ -58,6 +58,8 @@ export interface ConversationComposerSubmitPayload {
   mentions?: MsgMentions
   /** `content.machine`: an answer that picked an option (`agent_ask.answer`). */
   machine?: MachineContent
+  localId?: string
+  submittedAt?: number
 }
 
 /** The question the conversation's input state locks the composer to, and who asked it. */
@@ -83,6 +85,8 @@ interface ConversationComposerProps {
   /** Max height for the entire composer (in px). Used to compute inner constraints. */
   maxHeight?: number
   onSendMessage: (payload: ConversationComposerSubmitPayload) => void | Promise<void>
+  /** Submitted payloads not sent yet, the one being sent included; called whenever that list changes. */
+  onQueueChange?: (queued: ConversationComposerSubmitPayload[]) => void
   initialDraft?: string
   initialAttachments?: ComposerAttachmentInput[]
   onAttachmentsChange?: (attachments: ComposerAttachmentInput[]) => Promise<void> | undefined
@@ -106,7 +110,7 @@ const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false },
+  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false },
   ref,
 ) {
   const { t } = useI18n()
@@ -133,6 +137,9 @@ const ConversationComposerInner = forwardRef<
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const sendCallback = useRef(onSendMessage)
   useEffect(() => { sendCallback.current = onSendMessage }, [onSendMessage])
+  const queueCallback = useRef(onQueueChange)
+  useEffect(() => { queueCallback.current = onQueueChange }, [onQueueChange])
+  const reportQueue = useCallback(() => queueCallback.current?.([...sendQueue.current]), [])
   const attachmentsCallback = useRef(onAttachmentsChange)
   useEffect(() => { attachmentsCallback.current = onAttachmentsChange }, [onAttachmentsChange])
   const draftCallback = useRef(onDraftChange)
@@ -166,6 +173,7 @@ const ConversationComposerInner = forwardRef<
     if (attachmentsCallback.current) void attachmentsCallback.current(inputs)?.catch(() => setSendError('true'))
   }, [attachments, flushDraft])
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [canPickFolder] = useState(() => 'webkitdirectory' in document.createElement('input') && !window.matchMedia?.('(pointer: coarse)').matches)
   const attachmentsRef = useRef<ComposerAttachmentItem[]>([])
   const composerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -279,17 +287,17 @@ const ConversationComposerInner = forwardRef<
     }
 
     setAttachments((previous) => {
-      const existingKeys = new Set(previous.map(getAttachmentPathKey))
+      const existingKeys = new Set(previous.map(getAttachmentKey))
       const nextInputs: ComposerAttachmentInput[] = []
 
       items.forEach((item) => {
-        const pathKey = getAttachmentPathKey(item)
+        const itemKey = getAttachmentKey(item)
 
-        if (existingKeys.has(pathKey)) {
+        if (existingKeys.has(itemKey)) {
           return
         }
 
-        existingKeys.add(pathKey)
+        existingKeys.add(itemKey)
         nextInputs.push(item)
       })
 
@@ -341,8 +349,8 @@ const ConversationComposerInner = forwardRef<
     }
     setInputValue(current => [text, current].filter(Boolean).join('\n'))
     setAttachments(current => {
-      const keys = new Set(current.map(getAttachmentPathKey))
-      return [...items.filter(item => !keys.has(getAttachmentPathKey(item))), ...current]
+      const keys = new Set(current.map(getAttachmentKey))
+      return [...items.filter(item => !keys.has(getAttachmentKey(item))), ...current]
     })
   }, [])
 
@@ -356,11 +364,13 @@ const ConversationComposerInner = forwardRef<
           await sendCallback.current(next)
         } catch (error) {
           const failed = sendQueue.current.splice(0)
+          reportQueue()
           restoreFailedSends(failed)
           if (mounted.current) setSendError(error instanceof Error && error.message ? error.message : 'true')
           break
         }
         sendQueue.current.shift()
+        reportQueue()
         next.attachments.forEach(revokeAttachmentItem)
         if (mounted.current) setPendingSends(sendQueue.current.length)
       }
@@ -368,7 +378,7 @@ const ConversationComposerInner = forwardRef<
       draining.current = false
       if (mounted.current) setPendingSends(sendQueue.current.length)
     }
-  }, [restoreFailedSends])
+  }, [reportQueue, restoreFailedSends])
 
   const handleSend = useCallback(() => {
     const text = inputValue.trim()
@@ -383,7 +393,8 @@ const ConversationComposerInner = forwardRef<
     const reply = answer && !(isStopCommand(text) && attachments.length === 0) ? buildAgentAskAnswer(answer.question, answer.ask, { text }) : undefined
     const relatesTo: MsgRelation | undefined = answer ? reply?.relates_to : relation && target ? { rel: relation.kind === 'edit' ? 'edit' : 'thread', target } : undefined
     const mentions = mergeMentions(collectMentions(text, picked, mentionAll), answer?.mentions)
-    sendQueue.current.push({ attachments: relation?.kind === 'edit' ? [] : attachments, content: text, ...(relatesTo ? { relatesTo } : {}), ...(mentions ? { mentions } : {}) })
+    sendQueue.current.push({ attachments: relation?.kind === 'edit' ? [] : attachments, content: text, ...(relatesTo ? { relatesTo } : {}), ...(mentions ? { mentions } : {}), localId: crypto.randomUUID(), submittedAt: Date.now() })
+    reportQueue()
     if (relation) onCancelRelation?.()
     setPicked([]); setMentionAll(false); setMentionQuery(null)
     setPendingSends(sendQueue.current.length)
@@ -395,7 +406,7 @@ const ConversationComposerInner = forwardRef<
     setAttachments([])
     inputRef.current?.focus()
     void drainSendQueue()
-  }, [attachments, drainSendQueue, flushDraft, inputValue, relation, onCancelRelation, picked, mentionAll, answer])
+  }, [attachments, drainSendQueue, flushDraft, inputValue, relation, onCancelRelation, picked, mentionAll, answer, reportQueue])
 
   /**
    * A picked option or the stop button: sent at once, apart from the typed
@@ -673,11 +684,11 @@ const ConversationComposerInner = forwardRef<
           <button
             className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"
             style={{ color: 'var(--cp-muted)' }}
-            onClick={() => setPickerOpen((previous) => !previous)}
+            onClick={() => { if (canPickFolder) setPickerOpen((previous) => !previous); else fileInputRef.current?.click() }}
             type="button"
             aria-label={t('messagehub.addAttachment', 'Add attachment')}
-            aria-haspopup="menu"
-            aria-expanded={pickerOpen}
+            aria-haspopup={canPickFolder ? 'menu' : undefined}
+            aria-expanded={canPickFolder ? pickerOpen : undefined}
             title={t('messagehub.addAttachment', 'Add attachment')}
           >
             <Paperclip size={18} />

@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -619,6 +619,11 @@ export interface MessageUiMeta {
   ui_item_kind?: 'status'
   /** 状态类型。 */
   ui_status_type?: ConversationStatusType
+  /** 待发气泡（§4.2）：提交时的 localId；仍在 Composer 队列里等待时带 ui_staged。 */
+  ui_local_id?: string
+  ui_staged?: boolean
+  /** 待发附件消息的进度：排队 / 准备 / 上传字节数。 */
+  ui_upload?: { phase: 'queued' } | { phase: 'preparing' } | { phase: 'uploading'; loaded: number; total: number }
 }
 
 export type MessageDeliveryStatus =
@@ -697,6 +702,9 @@ caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片
 - 媒体设置（`conversation/media/settings.ts`，localStorage `buckyos.messagehub.media.v1`）：`previewTarget: overlay | window`
   （`window` 交给 Preview App，仅桌面窗口内可用）与 `autoplayGif`（关闭后消息流只显示 GIF 首帧）。
 - 显示加载、不可用、无权限与重试状态；单个附件失败不隐藏正文或其它引用；`service_did` 引用保留原样显示。
+- 文件卡片右侧和视频 / 缩略图下方的文件名行带下载按钮（2026-10-12）：经 `ObjectAccess.contentUrl` 取内容后以原文件名下载，
+  不打开预览；取内容失败时按钮转为“下载失败 · 重试”。
+- 待发附件消息在附件下方显示进度条与文字（排队 / 处理中 / 上传百分比与字节数），附件本身半透明，完成后恢复。
 
 `kind=notify` 不能一概作为 typing 等易失运行态：带 `buckyos.notify` 的持久通知渲染为通知卡片（§3.5.6），
 计入会话活跃；只有其余的 `notify`（原型里的运行态条目）才是状态 pill。
@@ -1051,7 +1059,11 @@ export type ConversationComposerSubmitPayload = ComposerDraft
 约束说明：
 
 - `content` 上限 32 KiB，超出时禁用发送并显示计数提示，不做静默截断。
-- `attachments` 上限 64 项；附件按 `relativePath || file.name` 归一化后去重。
+- `attachments` 上限 64 项；附件按 `relativePath || file.name`、大小与 `lastModified` 去重，
+  同名不同内容的文件都保留（iOS 相机每张都叫 `image.jpg`，粘贴的截图都叫 `image.png`）。
+- 不支持选目录的环境（`webkitdirectory` 不可用或粗指针设备，如 iPhone）不显示“选择文件夹”，回形针直接打开系统文件选择器。
+- HEIC / HEIF 图片（按类型、扩展名或 `ftyp` 品牌识别）在上传前由浏览器解码并转成 JPEG（`conversation/input/imageNormalize.ts`，
+  画布像素上限 1600 万，超出等比缩小），文件名改为 `.jpg`；浏览器解不了（如桌面 Chrome）则原样上传。
 - 单个附件上限 32 MiB（`MAX_ATTACHMENT_BYTES`，2026-09-30）：WebSDK 把更大的文件切成 chunk list，
   但上传不保存 chunk list 对象，msg-center 对象路由也只能读单 chunk，发出去也无法打开。
   超限文件在选择时拒绝并提示名称与上限，`uploadAttachments` 在上传前再次拒绝（`attachment_too_large`）。
@@ -1062,6 +1074,12 @@ export type ConversationComposerSubmitPayload = ComposerDraft
   保证顺序；任一条失败即停止，把失败项与仍在排队的项按顺序放回输入框（位于当前输入之前）并提示，
   组件已卸载时写回持久草稿。草稿只由 Composer 写；`store.send` 成功后不得再清空持久草稿，否则会覆盖下一条。
   输入法组合中的 Enter 不提交。
+- 提交即出气泡（2026-10-12）：每次提交带 `localId` 与 `submittedAt`（作为消息 `created_at_ms`，msg-center 以它为 sort_key），
+  Composer 在队列变化时调用 `store.stageOutgoing(context, sessionId, queued)`，队列里尚未发出的每一项立即显示为待发气泡
+  （`ui_message_id = pending:<localId>`、`ui_staged`、`ui_delivery_status: 'sending'`，附件消息 `ui_upload.phase = 'queued'`）；
+  编辑 / 撤回 / 表情不显示待发气泡。`store.send` 开始后同一气泡转为发送中：附件消息先 `preparing`（HEIC 转换、计算对象 ID）
+  再 `uploading`（`loaded / total` 字节），上传完成后由带真实 `obj_id` 的乐观项（§4.2.1）替换；上传失败则移除气泡，
+  按上一条放回输入框。待发气泡的附件以页面内 `local:<uuid>` 对象 ID 引用本地文件，渲染与点开预览都走同一套附件组件。
 
 #### 4.2.1 草稿 → MsgObject 的构造规则
 
@@ -1074,7 +1092,7 @@ function buildOutgoingMessage(draft: ComposerDraft, ctx: OutgoingContext): MsgOb
 | 草稿部分 | 目标位置 |
 |---|---|
 | `content`（trim 后） | `content.content`，`content.format = 'text/plain'` |
-| 每个附件 | 先上传到 named_store 得到 `obj_id`，再追加一项 `content.refs[]`：`{ role: 'input', target: { type: 'data_obj', obj_id, uri_hint }, label: relativePath ?? file.name }` |
+| 每个附件 | 先上传到 named_store 得到 `obj_id`，再追加一项 `content.refs[]`：`{ role: 'input', target: { type: 'data_obj', obj_id, uri_hint }, label: relativePath ?? file.name }`；上传完成后本地文件登记为该 `obj_id` 的内容，自己刚发的附件显示、预览、下载都不再从服务端回读 |
 | 会话归属 | 原生具名会话使用 `to_session = session.id`（MsgObject v2）；默认会话（`dm:*`、与实体同 id 的会话）省略 `to_session`；`thread.topic` 不承载会话；目标连接 / 远端上下文映射见下 |
 | 发送者 | 首期仅自己的可写 Session：`from = context.sessionOwnerDid = context.viewerDid`；Agent 观察模式禁止构造出站消息 |
 | 目标 | `to` 使用当前 Session 的稳定 `binding.targetDid` / `binding.endpointDid`；群指向群 DID，不能自动选择联系人其它绑定 |
@@ -1290,7 +1308,7 @@ export interface DataState<T> {
 | 发送中 | 按钮 loading，输入框保持可编辑（允许连续发送） |
 | 提交失败 / 结果未知 | 保留可恢复输入与失败信息；未知结果使用同一对象和幂等键重试，见 4.2.1 |
 | 投递失败 / 部分失败 | 消息显示逐目标进度与原因；自动重试由 executor 管理，人工重投待契约补齐 |
-| 附件处理中 | 附件卡片显示进度；发送按钮在全部附件就绪前禁用 |
+| 附件处理中 | 提交后立即出待发气泡，在气泡内显示排队 / 处理 / 上传进度（§4.2）；输入框保持可编辑 |
 | 拖拽悬停 | 全区 drop overlay |
 
 ### 5.3 页面视图状态

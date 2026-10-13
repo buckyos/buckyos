@@ -114,10 +114,10 @@ export function createAttachmentItem(
   }
 }
 
-export function getAttachmentPathKey(
+export function getAttachmentKey(
   input: ComposerAttachmentInput,
 ): string {
-  return normalizeAttachmentPath(input.relativePath || input.file.name)
+  return [normalizeAttachmentPath(input.relativePath || input.file.name), input.file.size, input.file.lastModified].join(':')
 }
 
 export function revokeAttachmentItem(item: ComposerAttachmentItem) {

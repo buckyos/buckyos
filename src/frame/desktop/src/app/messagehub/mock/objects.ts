@@ -130,9 +130,16 @@ const MOCK_OBJECTS: Record<string, MockObject> = {
 
 const blobs = new Map<string, Promise<Blob>>()
 const urls = new Map<string, Promise<string>>()
+const uploads = new Map<string, MockObject>()
+
+export function registerMockUpload(objId: string, name: string, blob: Blob) {
+  uploads.set(objId, { name, mimeType: blob.type, make: async () => blob })
+}
+
+const specOf = (objId: string): MockObject | undefined => MOCK_OBJECTS[objId] ?? uploads.get(objId)
 
 function blobOf(objId: string): Promise<Blob> {
-  const spec = MOCK_OBJECTS[objId]
+  const spec = specOf(objId)
   if (!spec) return Promise.reject(new Error('404 object unavailable'))
   let pending = blobs.get(objId)
   if (!pending) {
@@ -145,7 +152,7 @@ function blobOf(objId: string): Promise<Blob> {
 
 export const mockObjectAccess: ObjectAccess = {
   async describe(objId) {
-    const spec = MOCK_OBJECTS[objId]
+    const spec = specOf(objId)
     if (!spec) throw new Error('404 object unavailable')
     const blob = await blobOf(objId).catch(() => null)
     return { objId, isFile: true, name: spec.name, mimeType: spec.mimeType, size: blob?.size } satisfies ObjectInfo

@@ -15,7 +15,7 @@ import { fetchAgentList } from '../../../api/user_mgr'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
-import { registerObjectAccess } from '../conversation/history/objectAccess'
+import { registerObjectAccess, rememberLocalObject } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
   acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, blockContact, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateContact, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
@@ -27,7 +27,8 @@ import { isValidMsgSessionId, notifySessionCategory, randomMsgNonce, type Messag
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
-import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
+import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus } from '../store/types'
+import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
 import { apiObjectAccess } from './objects'
 import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
@@ -173,6 +174,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private readonly local = new LocalStateStore()
   private readers = new Map<string, { revision: number; reader: ConversationMessageReader }>()
   private pendingSendKeys = new Map<string, string>()
+  private sendingLocalIds = new Set<string>()
   private deliveryFollowers = new Map<string, ReturnType<typeof setTimeout>>()
   private runtimeDenied = new Set<string>()
   private writeConfirmations = new Set<string>()
@@ -915,18 +917,67 @@ export class MessageHubApiStore implements MessageHubStore {
 
   async send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined) {
     const session = this.writableSession(context, sessionId, confirmation)
-    const text = payload.content.trim()
-    const attachmentSignature = payload.attachments.map(item => `${item.relativePath ?? item.file.name}:${item.file.size}:${item.file.lastModified}`).join('|')
-    const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null])
-    const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:${await hashKey(`${text}\n${attachmentSignature}\n${relationSignature}`)}`
-    // The idempotency key is reused when the composer retries the same payload,
-    // so an unknown result (timeout) can never produce a second message.
-    const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
-    this.pendingSendKeys.set(pendingKey, idempotencyKey)
-    const uploads = await uploadAttachments(payload.attachments)
-    const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
-    const meta: Pick<MsgObject, 'relates_to' | 'mentions'> = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}) }
-    await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta)
+    const data = this.owner(context.ownerDid)
+    const key = viewerSessionKey(context, sessionId)
+    const localId = canStage(payload) ? payload.localId : undefined
+    const placeholder = localId && payload.attachments.length > 0 ? this.pendingBubble(context, session, { ...payload, localId }, false) : undefined
+    const showUpload = (upload: OutgoingUpload) => {
+      if (!placeholder) return
+      data.histories.set(key, upsertMessages(data.histories.get(key) ?? { ...emptyHistory, loaded: true }, [{ ...placeholder, ui_upload: upload }]))
+      this.notify()
+    }
+    if (localId) this.sendingLocalIds.add(localId)
+    try {
+      showUpload({ phase: 'preparing' })
+      const text = payload.content.trim()
+      const attachmentSignature = payload.attachments.map(item => `${item.relativePath ?? item.file.name}:${item.file.size}:${item.file.lastModified}`).join('|')
+      const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null])
+      const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:${await hashKey(`${text}\n${attachmentSignature}\n${relationSignature}`)}`
+      // The idempotency key is reused when the composer retries the same payload,
+      // so an unknown result (timeout) can never produce a second message.
+      const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
+      this.pendingSendKeys.set(pendingKey, idempotencyKey)
+      let uploads
+      try {
+        uploads = await uploadAttachments(payload.attachments, showUpload)
+      } catch (error) {
+        if (placeholder && localId) { data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, pendingBubbleId(localId))); this.notify() }
+        throw error
+      }
+      uploads.forEach(upload => rememberLocalObject(upload.objId, upload.file, upload.name))
+      const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
+      const meta: Pick<MsgObject, 'relates_to' | 'mentions'> = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}) }
+      await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta, { createdAtMs: payload.submittedAt, replaces: localId && pendingBubbleId(localId) })
+    } finally {
+      if (localId) this.sendingLocalIds.delete(localId)
+    }
+  }
+
+  stageOutgoing(context: MessageHubContext, sessionId: string, queued: OutgoingPayload[]) {
+    if (context.mode !== 'self' || context.ownerDid !== context.viewerDid) return
+    const data = this.owner(context.ownerDid)
+    const key = viewerSessionKey(context, sessionId)
+    const session = this.projected(context).sessions.find(item => item.id === sessionId)
+    const stageable = queued.filter(canStage)
+    const keep = new Set(stageable.map(payload => payload.localId))
+    const staged = stageable.filter(payload => !this.sendingLocalIds.has(payload.localId))
+    const current = data.histories.get(key) ?? { ...emptyHistory, loaded: true }
+    let next = current
+    for (const message of current.messages) {
+      if (message.ui_staged === true && !keep.has(message.ui_local_id as string)) next = removeMessage(next, message.ui_message_id as string)
+    }
+    if (session) {
+      const bubbles = staged.flatMap(payload => { try { return [this.pendingBubble(context, session, payload, true)] } catch { return [] } })
+      next = upsertMessages(next, bubbles)
+    }
+    if (next === current) return
+    data.histories.set(key, next)
+    this.notify()
+  }
+
+  private pendingBubble(context: MessageHubContext, session: Session, payload: OutgoingPayload & { localId: string }, staged: boolean): MessageObject {
+    const target = this.sendTarget(session)
+    return pendingBubble(payload, { from: context.ownerDid, to: [target.to], kind: target.kind, to_session: target.toSession, sessionId: session.id, senderName: labels().you, now: this.now() }, staged ? { phase: 'queued' } : { phase: 'preparing' }, staged)
   }
 
   /** A failed outgoing message is posted again as a new message with the same content and attachment refs. */
@@ -967,7 +1018,7 @@ export class MessageHubApiStore implements MessageHubStore {
     this.bump(data)
   }
 
-  private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: Pick<MsgObject, 'relates_to' | 'mentions'> = {}) {
+  private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: Pick<MsgObject, 'relates_to' | 'mentions'> = {}, placement: { createdAtMs?: number; replaces?: string } = {}) {
     const data = this.owner(context.ownerDid)
     const sessionId = session.id
     const target = this.sendTarget(session)
@@ -979,14 +1030,15 @@ export class MessageHubApiStore implements MessageHubStore {
       kind: target.kind,
       ...(target.toSession !== undefined ? { to_session: target.toSession } : {}),
       ...meta,
-      created_at_ms: this.now(),
+      created_at_ms: placement.createdAtMs ?? this.now(),
       nonce: randomMsgNonce(),
       content,
     }
     const key = viewerSessionKey(context, sessionId)
     const optimisticId = `local:${idempotencyKey}`
     const optimistic: MessageObject = { ...message, ui_message_id: optimisticId, ui_session_id: sessionId, ui_delivery_status: 'sending', ui_sender_name: labels().you }
-    data.histories.set(key, upsertMessages(data.histories.get(key) ?? { ...emptyHistory, loaded: true }, [optimistic]))
+    const withOptimistic = upsertMessages(data.histories.get(key) ?? { ...emptyHistory, loaded: true }, [optimistic])
+    data.histories.set(key, placement.replaces ? removeMessage(withOptimistic, placement.replaces) : withOptimistic)
     this.notify()
     // Histories survive an owner refresh (epoch bump), so the outcome is always
     // applied: otherwise the optimistic bubble and its pending key would leak.

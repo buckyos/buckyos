@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { crc32, deflateSync } from 'node:zlib'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
 /**
@@ -210,14 +211,14 @@ test.describe('MessageHub on a real zone (mobile and attachments)', () => {
       await page.locator('input[type="file"]').first().setInputFiles('package.json')
       await page.locator('textarea').fill('attachment check')
       await page.locator('textarea').press('Enter')
-      const outcome = page.getByTestId('attachment-ready').first().or(page.getByRole('alert'))
-      await expect(outcome).toBeVisible({ timeout: 60_000 })
       const alert = page.getByRole('alert')
+      await expect.poll(async () => (await alert.count()) > 0 || ((await page.getByTestId('upload-progress').count()) === 0 && (await page.getByTestId('attachment-ready').count()) > 0), { timeout: 60_000 }).toBe(true)
       if (await alert.count()) {
         test.info().annotations.push({ type: 'attachment-upload', description: await alert.first().innerText() })
         throw new Error(`attachment send failed: ${await alert.first().innerText()}`)
       }
       await expect(page.getByTestId('attachment-ready').first()).toContainText('package.json')
+      await expect(page.getByTestId('conversation-history').getByTestId('delivery-status').first()).not.toHaveAttribute('data-status', 'sending', { timeout: 30_000 })
       const timeline = await rpc(request, baseURL!, 'msg-center', 'msg.list_session', { owner: selfDid, session_id: sessionId, with_object: true }, token)
       const item = (timeline.items as JsonRecord[])[0]
       const refs = ((item.msg as JsonRecord).content as JsonRecord).refs as JsonRecord[]
@@ -235,4 +236,73 @@ test.describe('MessageHub on a real zone (mobile and attachments)', () => {
       await rpc(request, baseURL!, 'msg-center', 'msg.delete_session', { owner: selfDid, session_id: sessionId }, token).catch(() => undefined)
     }
   })
+
+  test('on a slow uplink a picture shows at once with its upload progress, then becomes the stored message', async ({ page, request, baseURL }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    const token = await login(page, request, baseURL!)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/messagehub')
+    await page.getByRole('button', { name: 'New Session', exact: true }).first().click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('Entity').selectOption(agentDid)
+    await dialog.getByLabel('Title (optional)').fill('图片占位验收')
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    const sessionId = await page.evaluate(() => {
+      const store = (window as unknown as { __messageHubStore: { defaultContext(): unknown; sessions(context: unknown): Array<{ id: string; shared: { title: string } }> } }).__messageHubStore
+      return store.sessions(store.defaultContext()).find(session => session.shared.title === '图片占位验收')?.id ?? null
+    })
+    expect(sessionId).toBeTruthy()
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      await cdp.send('Network.enable')
+      await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: 256 * 1024, uploadThroughput: 64 * 1024 })
+      const history = page.getByTestId('conversation-history')
+      await page.locator('input[type="file"]').first().setInputFiles({ name: 'slow-uplink.png', mimeType: 'image/png', buffer: noisePng(320, 240) })
+      await page.locator('textarea').fill('slow uplink picture')
+      const started = Date.now()
+      await page.locator('textarea').press('Enter')
+      const progress = history.getByTestId('upload-progress')
+      await expect(progress).toBeVisible({ timeout: 2_000 })
+      await expect(history.getByRole('img', { name: 'slow-uplink.png', exact: true })).toBeVisible({ timeout: 2_000 })
+      await expect(progress).toHaveAttribute('data-phase', 'uploading', { timeout: 30_000 })
+      await expect.poll(async () => Number(await progress.getAttribute('data-percent') ?? 0), { timeout: 30_000 }).toBeGreaterThan(0)
+      await page.screenshot({ path: 'test-results-real/real-upload-progress-390.png' })
+      await expect(progress).toHaveCount(0, { timeout: 90_000 })
+      test.info().annotations.push({ type: 'upload-ms', description: String(Date.now() - started) })
+      await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 })
+      await expect(history.getByTestId('delivery-status').first()).not.toHaveAttribute('data-status', 'sending', { timeout: 30_000 })
+      await expect(history.getByRole('img', { name: 'slow-uplink.png', exact: true })).toBeVisible()
+      const timeline = await rpc(request, baseURL!, 'msg-center', 'msg.list_session', { owner: selfDid, session_id: sessionId, with_object: true }, token)
+      const msg = (timeline.items as JsonRecord[])[0].msg as JsonRecord
+      const refs = (msg.content as JsonRecord).refs as JsonRecord[]
+      expect(refs.map(ref => ref.label)).toEqual(['slow-uplink.png'])
+      expect(String((refs[0].target as JsonRecord).obj_id).startsWith('cyfile:')).toBe(true)
+      expect(Number(msg.created_at_ms)).toBeLessThanOrEqual(started + 1_000)
+      await page.screenshot({ path: 'test-results-real/real-upload-done-390.png' })
+      expect(errors).toEqual([])
+    } finally {
+      await cdp.detach().catch(() => undefined)
+      await rpc(request, baseURL!, 'msg-center', 'msg.delete_session', { owner: selfDid, session_id: sessionId }, token).catch(() => undefined)
+    }
+  })
 })
+
+function noisePng(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const length = Buffer.alloc(4)
+    length.writeUInt32BE(data.length)
+    const crc = Buffer.alloc(4)
+    crc.writeUInt32BE(crc32(body))
+    return Buffer.concat([length, body, crc])
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = 2
+  const rows = Array.from({ length: height }, () => Buffer.concat([Buffer.from([0]), randomBytes(width * 3)]))
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(rows))), chunk('IEND', Buffer.alloc(0))])
+}

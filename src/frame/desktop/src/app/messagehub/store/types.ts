@@ -18,7 +18,15 @@ export interface OutgoingPayload {
   relatesTo?: MsgRelation
   mentions?: MsgMentions
   machine?: MachineContent
+  localId?: string
+  submittedAt?: number
 }
+
+/** `ui_upload` of a pending outgoing bubble: waiting behind an earlier send, preparing the files, or uploading them. */
+export type OutgoingUpload =
+  | { phase: 'queued' }
+  | { phase: 'preparing' }
+  | { phase: 'uploading'; loaded: number; total: number }
 
 export interface ConnectionChoice {
   id: string
@@ -101,7 +109,13 @@ export interface MessageHubStore {
   preferences(context: MessageHubContext, sessionId: string): SessionPreferences
   updatePreferences(context: MessageHubContext, sessionId: string, patch: Partial<SessionPreferences>): Promise<void>
   updateState(context: MessageHubContext, sessionId: string, scope: 'shared' | 'member', input: unknown): Promise<void>
+  /**
+   * The bubble of a payload with a `localId` shows at once, at `submittedAt`,
+   * and stays while its attachments upload.
+   */
   send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined): Promise<void>
+  /** Pending bubbles for the composer's submitted payloads that have not been sent yet; replaces the previous set. */
+  stageOutgoing(context: MessageHubContext, sessionId: string, queued: OutgoingPayload[]): void
   /** Post a failed outgoing message again as a new message (same text and attachment refs). */
   resend(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
   /** Post a copy of `message` (displayed text and attachment refs) to another session of the owner. */

@@ -46,6 +46,7 @@ interface ConversationViewProps {
   onOpenSessionSidebar: () => void
   onOpenDetails: () => void
   onSendMessage: (payload: ConversationComposerSubmitPayload) => void | Promise<void>
+  onQueueChange?: (queued: ConversationComposerSubmitPayload[]) => void
   onResend?: (message: MessageObject) => Promise<void>
   context?: MessageHubContext
   access?: SessionAccess | null
@@ -91,6 +92,7 @@ export function ConversationView({
   onOpenSessionSidebar,
   onOpenDetails,
   onSendMessage,
+  onQueueChange,
   onResend,
   context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true,
   leadingPane = null,
@@ -397,6 +399,7 @@ export function ConversationView({
             placeholder={t('messagehub.inputPlaceholder', 'Message...')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
+            onQueueChange={onQueueChange}
             relation={answer ? null : relation}
             onCancelRelation={() => setRelation(null)}
             answer={answer}

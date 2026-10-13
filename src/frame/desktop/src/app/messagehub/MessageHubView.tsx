@@ -16,7 +16,7 @@ import { friendlyDidName } from './api/projection'
 import { EntityList } from './EntityList'
 import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest } from './launch'
-import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime } from './store'
+import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime, type OutgoingPayload } from './store'
 import { creationReason, viewerSessionKey } from './sessionModel'
 import { usePaneResizer } from './paneResize'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
@@ -354,9 +354,13 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const isResizingEntityList = entityListResizer.active
   const isResizingSessionSidebar = sessionSidebarResizer.active
 
+  const toOutgoing = (payload: ConversationComposerSubmitPayload): OutgoingPayload => ({ content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}), ...(payload.localId ? { localId: payload.localId, submittedAt: payload.submittedAt } : {}) })
   const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
     if (!activeSession || !selectedEntityId) throw Error('session_missing')
-    await store.send(context, activeSession.id, { content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}) }, writeConfirmations[activeSession.id])
+    await store.send(context, activeSession.id, toOutgoing(payload), writeConfirmations[activeSession.id])
+  }
+  const handleQueueChange = (queued: ConversationComposerSubmitPayload[]) => {
+    if (activeSession) store.stageOutgoing(context, activeSession.id, queued.map(toOutgoing))
   }
   const handleResend = async (message: import('./protocol/msgobj').MessageObject) => {
     if (!activeSession) throw Error('session_missing')
@@ -502,6 +506,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
               onBack={handleBack}
               onOpenSessionSidebar={() => setShowSessionSidebar(true)}
               onSendMessage={handleSendMessage}
+              onQueueChange={handleQueueChange}
               sessionCount={sessions.length}
             />
 
@@ -645,6 +650,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
             onBack={handleBack}
             onOpenSessionSidebar={() => setShowSessionSidebar((prev) => !prev)}
             onSendMessage={handleSendMessage}
+            onQueueChange={handleQueueChange}
             sessionCount={sessions.length}
             leadingPane={desktopSessionSidebarPane}
             isSessionSidebarOpen={showSessionSidebar}

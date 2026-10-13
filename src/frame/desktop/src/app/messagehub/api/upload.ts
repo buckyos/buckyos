@@ -6,13 +6,16 @@
  */
 import { buckyos, ndm, ndn } from 'buckyos'
 import { MAX_ATTACHMENT_BYTES, type ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
+import { jpegName, normalizeImageFile } from '../conversation/input/imageNormalize'
 import { currentSessionToken } from '../datamodel/sessionApi'
+import type { OutgoingUpload } from '../store/types'
 
 export interface UploadedAttachment {
   objId: string
   name: string
   size: number
   mimeType?: string
+  file: File
 }
 
 const UPLOAD_POLL_MS = 400
@@ -42,11 +45,13 @@ async function putFileObject(endpoint: string, objId: string, fileObject: Record
   }
 }
 
-export async function uploadAttachments(attachments: readonly ComposerAttachmentInput[]): Promise<UploadedAttachment[]> {
+export async function uploadAttachments(attachments: readonly ComposerAttachmentInput[], onProgress?: (progress: OutgoingUpload) => void): Promise<UploadedAttachment[]> {
   if (attachments.length === 0) return []
   const oversize = attachments.filter(item => item.file.size > MAX_ATTACHMENT_BYTES)
   if (oversize.length > 0) throw new Error(`attachment_too_large: ${oversize.map(item => item.relativePath || item.file.name).join(', ')}`)
-  const files = attachments.map(item => item.file)
+  onProgress?.({ phase: 'preparing' })
+  const files: File[] = []
+  for (const item of attachments) files.push(await normalizeImageFile(item.file))
   ndm.setImportProvider({
     // Pure browser runtime: nothing is materialized locally, so every file
     // must go through the TUS upload (`canUseNDMStore` would mark the import
@@ -62,6 +67,8 @@ export async function uploadAttachments(attachments: readonly ComposerAttachment
   }
   const imported = snapshot.selection
   if (imported.length !== files.length) throw new Error('attachment_upload_failed: incomplete import')
+  const total = files.reduce((sum, file) => sum + file.size, 0)
+  onProgress?.({ phase: 'uploading', loaded: 0, total })
   const status = await ndm.startUpload(snapshot.sessionId, { endpoint: ndmEndpoint(), priority: 'foreground' })
   if (status.uploadStatus !== 'completed' && status.uploadStatus !== 'not_required') {
     const started = Date.now()
@@ -69,6 +76,7 @@ export async function uploadAttachments(attachments: readonly ComposerAttachment
       await new Promise(resolve => setTimeout(resolve, UPLOAD_POLL_MS))
       const progress = await ndm.getUploadProgress(snapshot.sessionId)
       if (progress.uploadStatus === 'completed' || progress.uploadStatus === 'not_required') break
+      onProgress?.({ phase: 'uploading', loaded: Math.min(progress.uploadedBytes, total), total })
       if (progress.uploadStatus === 'failed') throw new Error('attachment_upload_failed')
       if (Date.now() - started > UPLOAD_TIMEOUT_MS) throw new Error('attachment_upload_failed: timeout')
     }
@@ -78,10 +86,16 @@ export async function uploadAttachments(attachments: readonly ComposerAttachment
     if (!object._ndnFileObject) throw new Error('attachment_upload_failed: missing file object')
     await putFileObject(endpoint, object.objectId, object._ndnFileObject)
   }
-  return imported.map((object, index) => ({
-    objId: object.objectId,
-    name: attachments[index].relativePath || object.name || files[index].name,
-    size: object.size,
-    mimeType: object.mimeType || files[index].type || undefined,
-  }))
+  onProgress?.({ phase: 'uploading', loaded: total, total })
+  return imported.map((object, index) => {
+    const converted = files[index] !== attachments[index].file
+    const relativePath = attachments[index].relativePath
+    return {
+      objId: object.objectId,
+      name: (relativePath && (converted ? jpegName(relativePath) : relativePath)) || object.name || files[index].name,
+      size: object.size,
+      mimeType: object.mimeType || files[index].type || undefined,
+      file: files[index],
+    }
+  })
 }

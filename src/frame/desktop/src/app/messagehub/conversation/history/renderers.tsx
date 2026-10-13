@@ -30,6 +30,9 @@ import {
 } from '../../protocol/msgobj'
 import { MessageAttachmentView } from '../media/MediaAttachment'
 import { knownAttachmentKind } from '../media/objectCache'
+import { outgoingUpload } from '../../store/outgoing'
+import type { OutgoingUpload } from '../../store/types'
+import { formatAttachmentSize } from '../input/attachmentDraft'
 import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, type AttachmentKind } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
@@ -592,13 +595,16 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const frameless = refs.length > 0 && refs.every((ref, index) => isMediaKind(resolved[index] ?? expectedKind(ref, `${messageId}#${index}`)))
   const sender = !isSelf && context.isGroup && !context.continued ? <p className="text-[13px] font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null
   const items = refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} isSelf={isSelf && !frameless} index={index} onKind={reportKind} />)
+  const upload = outgoingUpload(message)
+  const progress = upload ? <UploadProgress upload={upload} alignEnd={isSelf} /> : null
   if (frameless) {
     return (
       <div className={rowClass(isSelf, context.continued)}>
         <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media" data-message-id={messageObjId(message)} {...details}>
           {sender}
           <ReplyQuote message={message} />
-          <div className={`flex max-w-full flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`} data-no-details>{items}</div>
+          <div className={`flex max-w-full flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`} style={upload ? { opacity: 0.7 } : undefined} data-no-details>{items}</div>
+          {progress}
           {caption.length > 0 ? <div className={`${bodyTextClass} mt-1.5 max-w-full whitespace-pre-wrap break-words`} style={bubbleStyle(isSelf, true)} data-testid="message-media-caption">{captionBody}</div> : null}
           <div className="max-w-full">
             <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} frameless />
@@ -619,9 +625,26 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
         {sender}
         <ReplyQuote message={message} />
         <div className="flex flex-col gap-2" data-no-details>{items}</div>
+        {progress}
         {caption.length > 0 ? <div className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{captionBody}</div> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} />
       </div>
+    </div>
+  )
+}
+
+function UploadProgress({ upload, alignEnd }: { upload: OutgoingUpload; alignEnd: boolean }) {
+  const { t } = useI18n()
+  const percent = upload.phase === 'uploading' && upload.total > 0 ? Math.min(100, Math.round((upload.loaded / upload.total) * 100)) : undefined
+  const text = upload.phase === 'uploading'
+    ? t('messagehub.upload.uploading', undefined, { percent: percent ?? 0, loaded: formatAttachmentSize(upload.loaded), total: formatAttachmentSize(upload.total) })
+    : t(`messagehub.upload.${upload.phase}`)
+  return (
+    <div className="mt-1.5 flex w-full min-w-[160px] max-w-[320px] flex-col gap-1" role="status" data-testid="upload-progress" data-phase={upload.phase} data-percent={percent}>
+      <div className="h-1 overflow-hidden rounded-full" style={{ background: 'color-mix(in srgb, currentColor 16%, transparent)' }}>
+        <div className={`h-full rounded-full transition-[width] duration-300 ${percent === undefined && upload.phase === 'preparing' ? 'w-1/3 animate-pulse' : ''}`} style={{ background: 'var(--cp-accent)', ...(percent !== undefined ? { width: `${percent}%` } : upload.phase === 'queued' ? { width: 0 } : {}) }} />
+      </div>
+      <span className={`text-[11px] tabular-nums opacity-75 ${alignEnd ? 'text-right' : ''}`}>{text}</span>
     </div>
   )
 }

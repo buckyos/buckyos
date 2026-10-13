@@ -1,10 +1,10 @@
-import { File, FileArchive, FileText, Film, Loader2, Music, Play } from 'lucide-react'
+import { Download, File, FileArchive, FileText, Film, Loader2, Music, Play } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { usePreviewThumbnail } from '../../../../components/preview/thumbnail'
 import { useI18n } from '../../../../i18n/provider'
 import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
 import { useOpenAttachment } from './context'
-import { objectCacheKey, readyObjectKind, readyObjects, rememberReadyObject, type ReadyObjectState } from './objectCache'
+import { knownReadyObject, objectCacheKey, readyObjectKind, readyObjects, rememberReadyObject, type ReadyObjectState } from './objectCache'
 import { useMediaSettings } from './settings'
 import {
   attachmentMediaType,
@@ -48,7 +48,7 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
   const { t } = useI18n()
   const objId = attachment.objId ?? ''
   const cacheKey = objectCacheKey(attachment)
-  const [state, setState] = useState<ObjectState>(() => readyObjects.get(cacheKey) ?? { phase: 'loading' })
+  const [state, setState] = useState<ObjectState>(() => knownReadyObject(attachment) ?? { phase: 'loading' })
   const [retry, setRetry] = useState(0)
   useEffect(() => {
     if (readyObjects.has(cacheKey) && retry === 0) return
@@ -190,7 +190,10 @@ function ThumbnailTile({ attachment, kind, info }: { attachment: MessageAttachme
         ) : null}
         {duration !== undefined ? <span className="pointer-events-none absolute bottom-2 right-2 rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white" style={{ background: 'rgba(0,0,0,0.55)' }}>{formatDuration(duration)}</span> : null}
       </button>
-      <span className="truncate text-[11px] opacity-75">{info.name ?? attachment.label}{info.size !== undefined ? ` · ${formatBytes(info.size)}` : ''}</span>
+      <span className="flex max-w-[min(100%,420px)] items-center gap-1">
+        <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{info.name ?? attachment.label}{info.size !== undefined ? ` · ${formatBytes(info.size)}` : ''}</span>
+        <DownloadButton attachment={attachment} name={info.name ?? attachment.label} compact />
+      </span>
     </div>
   )
 }
@@ -206,21 +209,56 @@ function FileCard({ attachment, kind, info, mediaType, isSelf }: { attachment: M
   const { t } = useI18n()
   const open = useOpenAttachment()
   return (
+    <div className="flex w-full min-w-[200px] items-center rounded-xl pr-1" style={{ background: 'color-mix(in srgb, currentColor 9%, transparent)' }} data-testid="attachment-file">
+      <button
+        type="button"
+        onClick={() => open(attachment, kind)}
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-xl py-2 pl-3 pr-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)]"
+        title={t('messagehub.media.open', undefined, { name: attachment.label })}
+      >
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" style={{ background: 'color-mix(in srgb, currentColor 12%, transparent)', color: isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)' }}>
+          {fileIcon(kind, mediaType)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{info.name ?? attachment.label}</span>
+          <span className="block truncate text-[11px] opacity-75">{[info.size !== undefined ? formatBytes(info.size) : null, mediaType].filter(Boolean).join(' · ')}</span>
+        </span>
+      </button>
+      <DownloadButton attachment={attachment} name={info.name ?? attachment.label} />
+    </div>
+  )
+}
+
+function DownloadButton({ attachment, name, compact = false }: { attachment: MessageAttachment; name: string; compact?: boolean }) {
+  const { t } = useI18n()
+  const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const download = () => {
+    const access = getObjectAccess()
+    if (!access || !attachment.objId || state === 'loading') return
+    setState('loading')
+    access.contentUrl(attachment.objId).then(url => {
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = name.split('/').pop() || name
+      anchor.rel = 'noopener'
+      anchor.click()
+      setState('idle')
+    }, () => setState('failed'))
+  }
+  const label = state === 'failed' ? `${t('messagehub.media.downloadFailed')} · ${t('messagehub.retry')}` : t('messagehub.media.download', undefined, { name })
+  return (
     <button
       type="button"
-      onClick={() => open(attachment, kind)}
-      className="flex w-full min-w-[200px] items-center gap-3 rounded-xl px-3 py-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)]"
-      style={{ background: 'color-mix(in srgb, currentColor 9%, transparent)' }}
-      title={t('messagehub.media.open', undefined, { name: attachment.label })}
-      data-testid="attachment-file"
+      onClick={download}
+      className={`flex shrink-0 items-center justify-center rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)] ${compact ? 'h-8 w-8' : 'h-11 w-11'}`}
+      style={{ color: state === 'failed' ? 'var(--cp-danger)' : 'inherit', opacity: state === 'failed' ? 1 : 0.8 }}
+      aria-label={label}
+      title={label}
+      aria-busy={state === 'loading'}
+      data-testid="attachment-download"
+      data-state={state}
     >
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" style={{ background: 'color-mix(in srgb, currentColor 12%, transparent)', color: isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)' }}>
-        {fileIcon(kind, mediaType)}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{info.name ?? attachment.label}</span>
-        <span className="block truncate text-[11px] opacity-75">{[info.size !== undefined ? formatBytes(info.size) : null, mediaType].filter(Boolean).join(' · ')}</span>
-      </span>
+      {state === 'loading' ? <Loader2 size={compact ? 14 : 18} className="animate-spin" /> : <Download size={compact ? 14 : 18} />}
     </button>
   )
 }

@@ -244,6 +244,7 @@ for (const width of [1440, 375]) {
     await page.locator('textarea').fill('First message in its own session')
     await page.locator('textarea').press('Enter')
     await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '1')
+    await expect(page.getByTestId('conversation-history').getByTestId('delivery-status')).toHaveAttribute('data-status', 'sent')
     await expect(page.locator('textarea')).toHaveValue('')
     await page.reload()
     await expect(page.getByTestId('conversation-history').getByText('First message in its own session', { exact: true })).toBeVisible()
@@ -645,8 +646,7 @@ test('rapid sends are queued in order while typing continues; a failure returns 
     await expect(input).toHaveValue('')
   }
   await expect(history).toHaveAttribute('data-raw-count', '5')
-  const sent = await page.evaluate(async ({ context, id }) => (await window.__messageHubMock.reader(context, id).readRange(0, 10)).map(message => message.content.content), { context: OWN, id })
-  expect(sent).toEqual(['FAST1', 'FAST2', 'FAST3', 'FAST4', 'FAST5'])
+  await expect.poll(() => page.evaluate(async ({ context, id }) => (await window.__messageHubMock.reader(context, id).readRange(0, 10)).map(message => message.ui_local_id ? 'pending' : message.content.content), { context: OWN, id }), { timeout: 10_000 }).toEqual(['FAST1', 'FAST2', 'FAST3', 'FAST4', 'FAST5'])
   await expect.poll(() => page.evaluate(({ context, id }) => window.__messageHubMock.draft(context, id), { context: OWN, id })).toBe('')
 
   await page.evaluate(() => window.__messageHubMock.configure({ delayMs: 400, failNext: 'send_failure' }))

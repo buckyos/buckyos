@@ -374,9 +374,9 @@ test('a text question locks the input to answering it, without a way to cancel; 
   await composer.getByRole('textbox', { name: 'Type your answer…' }).press('Enter')
   await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
   expect((await lastSent(page, ASK_SESSION)).relates_to).toEqual({ rel: 'thread', target: 'msg-qa-bare' })
+  await expect.poll(() => anchors(page)).toHaveLength(4)
   const rows = await anchors(page)
   expect(rows.slice(0, 3)).toEqual(['msg-qa-1', ANCHOR, 'msg-qa-bare'])
-  expect(rows).toHaveLength(4)
   await expect(page.getByTestId('conversation-history').getByTestId('reply-quote').last()).toContainText('Which branch?')
 })
 
@@ -402,7 +402,7 @@ test('"Other…" turns a choice that accepts free text into the locked input; /s
   await composer.getByTestId('answer-stop').click()
   await expect(composer.getByTestId('composer-answer')).toHaveCount(0)
   expect(await lastSent(page, ASK_SESSION)).toEqual({ from: SELF, content: '/stop', relates_to: null, machine: null, mentions: null })
-  expect(await anchors(page)).toHaveLength(before + 1)
+  await expect.poll(() => anchors(page)).toHaveLength(before + 1)
   await expect(page.getByTestId('conversation-history').getByTestId('message-bubble').last()).toContainText('/stop')
 
   // Typed in a text answer, too.
