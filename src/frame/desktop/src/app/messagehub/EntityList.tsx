@@ -1,9 +1,10 @@
 import { useMessageHubClock } from './store'
 import { relativeActivity } from './sessionModel'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   BellOff,
+  Check,
   ChevronRight,
   Pin,
   Plus,
@@ -17,13 +18,26 @@ import type {
   EntityType,
 } from './types'
 import { HubAvatar } from './HubAvatar'
+import { EntityListHeader, type HeaderMenuItem, type HubIdentity } from './EntityListHeader'
+import { hubButtonClass } from './SessionDialogs'
+
+/** Pin and mute apply to every session of the chosen entities. */
+export type EntityPreferencePatch = { pinned: boolean } | { muted: boolean }
 
 interface EntityListProps {
   entities: Entity[]
   selectedEntityId: string | null
   filter: EntityFilter
   searchQuery: string
-  headerActions?: ReactNode
+  identity: HubIdentity
+  /** Shown in place of the identity while the list is not in sync. */
+  syncStatus?: string
+  createItems: HeaderMenuItem[]
+  moreItems: HeaderMenuItem[]
+  /** Edit mode is offered only with this; absent for an observer. */
+  onEntityPreferences?: (entityIds: string[], patch: EntityPreferencePatch) => Promise<void>
+  /** Whether an entity has sessions that pin and mute can apply to. */
+  isEditable?: (entity: Entity) => boolean
   enableDrilldownNavigation?: boolean
   useCompactInlineChildren?: boolean
   childNavigationTrigger?: 'row' | 'icon'
@@ -206,6 +220,112 @@ function EntityAvatar({
   return <HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={size} isOnline={entity.isOnline} systemNotify={entity.systemNotify} />
 }
 
+/** Name, flags and time over the last message and unread count. */
+function EntityRowBody({ entity }: { entity: Entity }) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            className="truncate text-[15px] font-semibold"
+            style={{ color: 'var(--cp-text)' }}
+          >
+            {entity.name}
+          </span>
+          {entity.isPinned ? (
+            <Pin size={12} style={{ color: 'var(--cp-muted)' }} />
+          ) : null}
+          {entity.isMuted ? (
+            <BellOff size={12} style={{ color: 'var(--cp-muted)' }} />
+          ) : null}
+        </div>
+        <div className="flex flex-shrink-0 items-center gap-1.5">
+          {entity.lastActiveAt ? (
+            <span
+              className="text-xs tabular-nums"
+              style={{ color: 'var(--cp-muted)' }}
+            >
+              <EntityActivityTime time={entity.lastActiveAt} />
+            </span>
+          ) : null}
+        </div>
+      </div>
+      {entity.lastMessage ? (
+        <div className="mt-0.5 flex items-center justify-between gap-2">
+          <p
+            className="truncate text-[13px]"
+            style={{ color: 'var(--cp-muted)' }}
+          >
+            {entity.lastMessage.senderName && entity.type !== 'person'
+              ? `${entity.lastMessage.senderName}: `
+              : ''}
+            {previewText(entity.lastMessage.text)}
+          </p>
+          {entity.unreadCount > 0 ? (
+            <span
+              className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+              style={{
+                background: entity.isMuted
+                  ? 'color-mix(in srgb, var(--cp-muted) 30%, transparent)'
+                  : 'var(--cp-accent)',
+                color: entity.isMuted ? 'var(--cp-muted)' : '#fff',
+              }}
+            >
+              {entity.unreadCount}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+/** A row in edit mode: the whole row toggles the entity's selection. */
+function SelectableEntityItem({
+  entity,
+  isSelected,
+  disabled,
+  disabledTitle,
+  onToggle,
+}: {
+  entity: Entity
+  isSelected: boolean
+  disabled: boolean
+  disabledTitle: string
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      aria-pressed={isSelected}
+      title={disabled ? disabledTitle : undefined}
+      className="relative flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors disabled:opacity-50"
+      style={{
+        background: isSelected
+          ? 'color-mix(in srgb, var(--cp-accent) 14%, transparent)'
+          : 'transparent',
+      }}
+      data-testid="entity-select-row"
+    >
+      <span
+        className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border"
+        style={isSelected
+          ? { background: 'var(--cp-accent)', borderColor: 'var(--cp-accent)', color: 'var(--cp-surface-opaque)' }
+          : { borderColor: 'color-mix(in srgb, var(--cp-muted) 70%, transparent)' }}
+        aria-hidden
+      >
+        {isSelected ? <Check size={13} strokeWidth={3} /> : null}
+      </span>
+      <EntityAvatar entity={entity} />
+      <div className="min-w-0 flex-1">
+        <EntityRowBody entity={entity} />
+      </div>
+    </button>
+  )
+}
+
 function TopLevelEntityItem({
   entity,
   isExpanded,
@@ -239,58 +359,7 @@ function TopLevelEntityItem({
         {hasInlineChildren(entity) ? <InlineExpandIndicator isExpanded={isExpanded} /> : null}
         <EntityAvatar entity={entity} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span
-                className="truncate text-[15px] font-semibold"
-                style={{ color: 'var(--cp-text)' }}
-              >
-                {entity.name}
-              </span>
-              {entity.isPinned ? (
-                <Pin size={12} style={{ color: 'var(--cp-muted)' }} />
-              ) : null}
-              {entity.isMuted ? (
-                <BellOff size={12} style={{ color: 'var(--cp-muted)' }} />
-              ) : null}
-            </div>
-            <div className="flex flex-shrink-0 items-center gap-1.5">
-              {entity.lastActiveAt ? (
-                <span
-                  className="text-xs tabular-nums"
-                  style={{ color: 'var(--cp-muted)' }}
-                >
-                  <EntityActivityTime time={entity.lastActiveAt} />
-                </span>
-              ) : null}
-            </div>
-          </div>
-          {entity.lastMessage ? (
-            <div className="mt-0.5 flex items-center justify-between gap-2">
-              <p
-                className="truncate text-[13px]"
-                style={{ color: 'var(--cp-muted)' }}
-              >
-                {entity.lastMessage.senderName && entity.type !== 'person'
-                  ? `${entity.lastMessage.senderName}: `
-                  : ''}
-                {previewText(entity.lastMessage.text)}
-              </p>
-              {entity.unreadCount > 0 ? (
-                <span
-                  className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
-                  style={{
-                    background: entity.isMuted
-                      ? 'color-mix(in srgb, var(--cp-muted) 30%, transparent)'
-                      : 'var(--cp-accent)',
-                    color: entity.isMuted ? 'var(--cp-muted)' : '#fff',
-                  }}
-                >
-                  {entity.unreadCount}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
+          <EntityRowBody entity={entity} />
         </div>
       </button>
     )
@@ -323,58 +392,7 @@ function TopLevelEntityItem({
         onClick={onSelect}
         className="min-w-0 flex-1 text-left"
       >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span
-              className="truncate text-[15px] font-semibold"
-              style={{ color: 'var(--cp-text)' }}
-            >
-              {entity.name}
-            </span>
-            {entity.isPinned ? (
-              <Pin size={12} style={{ color: 'var(--cp-muted)' }} />
-            ) : null}
-            {entity.isMuted ? (
-              <BellOff size={12} style={{ color: 'var(--cp-muted)' }} />
-            ) : null}
-          </div>
-          <div className="flex flex-shrink-0 items-center gap-1.5">
-            {entity.lastActiveAt ? (
-              <span
-                className="text-xs tabular-nums"
-                style={{ color: 'var(--cp-muted)' }}
-              >
-                <EntityActivityTime time={entity.lastActiveAt} />
-              </span>
-            ) : null}
-          </div>
-        </div>
-        {entity.lastMessage ? (
-          <div className="mt-0.5 flex items-center justify-between gap-2">
-            <p
-              className="truncate text-[13px]"
-              style={{ color: 'var(--cp-muted)' }}
-            >
-              {entity.lastMessage.senderName && entity.type !== 'person'
-                ? `${entity.lastMessage.senderName}: `
-                : ''}
-              {previewText(entity.lastMessage.text)}
-            </p>
-            {entity.unreadCount > 0 ? (
-              <span
-                className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
-                style={{
-                  background: entity.isMuted
-                    ? 'color-mix(in srgb, var(--cp-muted) 30%, transparent)'
-                    : 'var(--cp-accent)',
-                  color: entity.isMuted ? 'var(--cp-muted)' : '#fff',
-                }}
-              >
-                {entity.unreadCount}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
+        <EntityRowBody entity={entity} />
       </button>
     </div>
   )
@@ -726,7 +744,12 @@ export function EntityList({
   selectedEntityId,
   filter,
   searchQuery,
-  headerActions,
+  identity,
+  syncStatus,
+  createItems,
+  moreItems,
+  onEntityPreferences,
+  isEditable = () => true,
   enableDrilldownNavigation = true,
   useCompactInlineChildren = true,
   childNavigationTrigger = 'row',
@@ -744,6 +767,13 @@ export function EntityList({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [internalDrilldownPath, setInternalDrilldownPath] = useState<string[]>([])
   const resolvedDrilldownPath = drilldownPath ?? internalDrilldownPath
+  const [editing, setEditing] = useState(false)
+  const [editSelection, setEditSelection] = useState<Set<string>>(new Set())
+  const [editPending, setEditPending] = useState(false)
+  const [editFailed, setEditFailed] = useState(false)
+  const isEditing = editing && Boolean(onEntityPreferences)
+  const editTargets = isEditing ? entities.filter(entity => editSelection.has(entity.id) && isEditable(entity)) : []
+  const unreadTotal = entities.reduce((total, entity) => total + (entity.isMuted ? 0 : entity.unreadCount), 0)
 
   const setDrilldownPath = (next: string[] | ((prev: string[]) => string[])) => {
     const current = resolvedDrilldownPath
@@ -799,28 +829,64 @@ export function EntityList({
 
   const breadcrumbLabel = drilldownEntities.map((entity) => entity.name).join(' / ')
 
+  const stopEditing = () => {
+    setEditing(false)
+    setEditSelection(new Set())
+    setEditFailed(false)
+  }
+  const toggleEditing = () => {
+    if (isEditing) {
+      stopEditing()
+      return
+    }
+    setDrilldownPath([])
+    setEditing(true)
+  }
+  const toggleEditSelection = (id: string) => {
+    setEditFailed(false)
+    setEditSelection((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const applyEdit = (patch: EntityPreferencePatch) => {
+    if (!onEntityPreferences || editPending || editTargets.length === 0) return
+    setEditPending(true)
+    setEditFailed(false)
+    void onEntityPreferences(editTargets.map(entity => entity.id), patch)
+      .then(stopEditing, () => setEditFailed(true))
+      .finally(() => setEditPending(false))
+  }
+  const allPinned = editTargets.length > 0 && editTargets.every(entity => entity.isPinned)
+  const allMuted = editTargets.length > 0 && editTargets.every(entity => entity.isMuted)
+
   return (
     <div
       className="flex h-full flex-col"
       style={{ background: 'var(--cp-surface)' }}
+      onKeyDown={(event) => {
+        if (isEditing && event.key === 'Escape' && !event.defaultPrevented) {
+          event.preventDefault()
+          stopEditing()
+        }
+      }}
     >
       <div className="px-4 pt-4 pb-2">
-        <div className="mb-3 flex items-center gap-2">
-          <h1
-            className="min-w-0 flex-1 truncate text-lg font-bold"
-            style={{ color: 'var(--cp-text)' }}
-            title={t('messagehub.title', 'MessageHub')}
-          >
-            {t('messagehub.title', 'MessageHub')}
-          </h1>
-          {headerActions ? (
-            <div className="flex flex-shrink-0 items-center gap-1.5">
-              {headerActions}
-            </div>
-          ) : null}
-        </div>
+        <EntityListHeader
+          identity={identity}
+          unreadTotal={unreadTotal}
+          status={syncStatus}
+          editing={isEditing}
+          selectedCount={editTargets.length}
+          canEdit={Boolean(onEntityPreferences)}
+          onToggleEditing={toggleEditing}
+          createItems={createItems}
+          moreItems={moreItems}
+        />
 
-        {enableDrilldownNavigation && drilldownEntity ? (
+        {enableDrilldownNavigation && drilldownEntity && !isEditing ? (
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -861,7 +927,7 @@ export function EntityList({
         )}
       </div>
 
-      {enableDrilldownNavigation && drilldownEntity ? (
+      {enableDrilldownNavigation && drilldownEntity && !isEditing ? (
         <DrilldownPanel
           entity={drilldownEntity}
           selectedEntityId={selectedEntityId}
@@ -872,7 +938,7 @@ export function EntityList({
           <FilterStrip filter={filter} onFilterChange={onFilterChange} />
 
           <div className="flex-1 overflow-y-auto pb-2 pt-1 shell-scrollbar">
-            {filter === 'groups' && onCreateGroup ? (
+            {filter === 'groups' && onCreateGroup && !isEditing ? (
               <button
                 type="button"
                 onClick={onCreateGroup}
@@ -898,6 +964,18 @@ export function EntityList({
                   {t(searchQuery ? 'messagehub.noSearchResults' : filter === 'unread' ? 'messagehub.noUnread' : filter === 'requests' ? 'messagehub.noRequests' : 'messagehub.noResults')}
                 </p>
               </div>
+            ) : isEditing ? (
+              filtered.map((entity) => (
+                <div key={entity.id} className="mb-1">
+                  <SelectableEntityItem
+                    entity={entity}
+                    isSelected={editSelection.has(entity.id) && isEditable(entity)}
+                    disabled={!isEditable(entity)}
+                    disabledTitle={t('messagehub.edit.noSession')}
+                    onToggle={() => toggleEditSelection(entity.id)}
+                  />
+                </div>
+              ))
             ) : (
               filtered.map((entity) => {
                 const isExpanded = expandedGroups.has(entity.id)
@@ -983,6 +1061,37 @@ export function EntityList({
               </div>
             ) : null}
           </div>
+          {isEditing ? (
+            <div
+              className="flex flex-shrink-0 flex-col gap-2 border-t px-4 py-3"
+              style={{ borderColor: 'var(--cp-border)' }}
+              role="toolbar"
+              aria-label={t('messagehub.header.edit')}
+              data-testid="entity-edit-actions"
+            >
+              {editFailed ? <p role="alert" className="text-xs" style={{ color: 'var(--cp-danger)' }}>{t('messagehub.edit.failed')}</p> : null}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className={`${hubButtonClass} flex flex-1 items-center justify-center gap-1.5`}
+                  disabled={editTargets.length === 0 || editPending}
+                  onClick={() => applyEdit({ pinned: !allPinned })}
+                >
+                  <Pin size={15} />
+                  {t(allPinned ? 'messagehub.edit.unpin' : 'messagehub.pin')}
+                </button>
+                <button
+                  type="button"
+                  className={`${hubButtonClass} flex flex-1 items-center justify-center gap-1.5`}
+                  disabled={editTargets.length === 0 || editPending}
+                  onClick={() => applyEdit({ muted: !allMuted })}
+                >
+                  <BellOff size={15} />
+                  {t(allMuted ? 'messagehub.edit.unmute' : 'messagehub.mute')}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </>
       )}
     </div>

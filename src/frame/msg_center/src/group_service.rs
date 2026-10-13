@@ -465,10 +465,11 @@ impl MessageCenter {
         Ok(json!({"member_did":member,"attested_by":a.did,"source_event":input["source_event"]}))
     }
 
-    /// Entity kind of a member (`user`, `agent`, `device`), taken from its DID
-    /// Document. Shadow endpoints are platform users and `did:dev` keys are
-    /// devices; a document that cannot be fetched right now yields `unknown`
-    /// and is retried when the member becomes active.
+    /// Entity kind of a member (`user`, `agent`, `device`), taken from its
+    /// owner document, else its default DID Document. Shadow endpoints are
+    /// platform users and `did:dev` keys are devices; a document that cannot be
+    /// fetched right now yields `unknown` and is retried when the member
+    /// becomes active.
     async fn resolve_entity_kind(&self, d: &DID) -> Result<String> {
         if d.method == "msgtunnel" {
             return Ok("user".into());
@@ -486,50 +487,15 @@ impl MessageCenter {
         if d.method == "dev" {
             return Ok("device".into());
         }
-        let doc = match name_client::resolve_did(d, None).await {
-            Ok(doc) => doc.to_json_value().map_err(db_error)?,
-            Err(_) => return Ok("unknown".into()),
+        let doc = match name_client::resolve_did(d, Some(name_lib::DidDocType::Owner)).await {
+            Ok(doc) => doc,
+            Err(_) => match name_client::resolve_did(d, None).await {
+                Ok(doc) => doc,
+                Err(_) => return Ok("unknown".into()),
+            },
         };
-        let context: Option<name_lib::DIDContext> = doc
-            .get("@context")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(db_error)?;
-        let declared = doc
-            .get("entity_type")
-            .or_else(|| doc.get("type"))
-            .or_else(|| doc.get("doc_type"))
-            .and_then(Value::as_str);
-        let kind = match declared {
-            Some("user" | "owner") => "user",
-            Some("agent") => "agent",
-            Some("device") => "device",
-            Some(_) => return Err(denied("member-must-be-single-entity")),
-            None if context
-                .as_ref()
-                .is_some_and(|c| c.contains("https://buckyos.org/ns/owner/v1")) =>
-            {
-                "user"
-            }
-            None if context
-                .as_ref()
-                .is_some_and(|c| c.contains("https://buckyos.org/ns/agent/v1")) =>
-            {
-                "agent"
-            }
-            None if context
-                .as_ref()
-                .is_some_and(|c| c.contains("https://buckyos.org/ns/device/v1")) =>
-            {
-                "device"
-            }
-            _ => return Err(denied("member-must-be-single-entity")),
-        };
-        if doc["id"] != json!(d) {
-            return Err(denied("member-document-mismatch"));
-        }
-        Ok(kind.to_string())
+        let doc = doc.to_json_value().map_err(db_error)?;
+        Ok(member_entity_kind(d, &doc)?.to_string())
     }
 
     /// A zone Agent takes part in groups only while its `allow_group` setting
@@ -3268,4 +3234,34 @@ impl MessageCenter {
         }
         Ok(())
     }
+}
+
+/// Entity kind declared by a member's DID Document.
+pub(crate) fn member_entity_kind(d: &DID, doc: &Value) -> Result<&'static str> {
+    let context: Option<name_lib::DIDContext> = doc
+        .get("@context")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(db_error)?;
+    let has_context = |ns: &str| context.as_ref().is_some_and(|c| c.contains(ns));
+    let declared = doc
+        .get("entity_type")
+        .or_else(|| doc.get("type"))
+        .or_else(|| doc.get("doc_type"))
+        .and_then(Value::as_str);
+    let kind = match declared {
+        Some("user" | "owner") => "user",
+        Some("agent") => "agent",
+        Some("device") => "device",
+        Some(_) => return Err(denied("member-must-be-single-entity")),
+        None if has_context("https://buckyos.org/ns/owner/v1") => "user",
+        None if has_context("https://buckyos.org/ns/agent/v1") => "agent",
+        None if has_context("https://buckyos.org/ns/device/v1") => "device",
+        _ => return Err(denied("member-must-be-single-entity")),
+    };
+    if doc["id"] != json!(d) {
+        return Err(denied("member-document-mismatch"));
+    }
+    Ok(kind)
 }

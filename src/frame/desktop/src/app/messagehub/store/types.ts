@@ -42,6 +42,9 @@ export type OwnerStatus =
 
 export type ManageAction = 'archive' | 'restore' | 'delete'
 
+/** Whether the background refresh of the owner's session list reaches msg-center: `connecting` after a failed refresh until one succeeds. */
+export type SyncStatus = 'online' | 'connecting'
+
 /** Contact admission actions available for an entity in the current context. */
 export interface EntityAdmission {
   accessLevel?: 'block' | 'stranger' | 'temporary' | 'friend'
@@ -69,6 +72,7 @@ export interface MessageHubStore {
   defaultContext(): MessageHubContext
   canView(context: MessageHubContext): boolean
   ownerStatus(context: MessageHubContext): OwnerStatus
+  syncStatus(context: MessageHubContext): SyncStatus
   /** Ensure the owner's data is loaded (idempotent); `refresh` forces a reload. */
   ensureOwner(context: MessageHubContext, refresh?: boolean): Promise<void>
   /** Start / stop background synchronisation for a context (events + polling). */

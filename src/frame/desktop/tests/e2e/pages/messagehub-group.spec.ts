@@ -13,11 +13,12 @@ const TEAM = 'did:buckyos:group:product-team'
 async function openHub(page: Page, entityId?: string) {
   await page.route('https://upload.wikimedia.org/**', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>' }))
   await page.goto(entityId ? `/messagehub?entityId=${encodeURIComponent(entityId)}` : '/messagehub')
-  await expect(page.getByRole('button', { name: 'New group', exact: true }).first()).toBeVisible()
+  await expect(page.getByTestId('hub-create-menu')).toBeVisible()
 }
 
 test('a group is created from picked contacts and opens on its own conversation', async ({ page }) => {
   await openHub(page)
+  await page.getByTestId('hub-create-menu').click()
   await page.getByTestId('new-group').click()
   const dialog = page.getByRole('dialog', { name: 'New group' })
   const picker = dialog.getByTestId('group-member-picker')
@@ -129,6 +130,7 @@ test('group creation is a full-height sheet-friendly dialog on a phone', async (
   await page.setViewportSize({ width: 375, height: 812 })
   await page.goto('/messagehub')
   await page.getByRole('button', { name: 'Back to conversation list', exact: true }).click()
+  await page.getByTestId('hub-create-menu').click()
   await page.getByTestId('new-group').click()
   const dialog = page.getByRole('dialog', { name: 'New group' })
   await expect(dialog.getByTestId('group-member-picker')).toBeVisible()
@@ -204,6 +206,7 @@ test('the owner changes roles, mutes a member, edits the profile and issues an i
 
 test('a pasted invite link joins the group; a revoked or unknown token is rejected', async ({ page }) => {
   await openHub(page)
+  await page.getByTestId('hub-create-menu').click()
   await page.getByTestId('new-group').click()
   const dialog = page.getByRole('dialog', { name: 'New group' })
   const join = dialog.getByTestId('join-by-link')

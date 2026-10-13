@@ -2468,3 +2468,15 @@ async fn an_agent_runtime_app_posts_group_messages_as_its_agent() {
         assert!(err.to_string().contains("sender-mismatch"), "{err}");
     }
 }
+
+#[test]
+fn member_kind_comes_from_the_owner_document_not_the_zone_document() {
+    use crate::group_service::member_entity_kind;
+    let zone = DID::from_str("did:web:demo.buckyos.io").unwrap();
+    let zone_doc = json!({"@context":["https://www.w3.org/ns/did/v1","https://buckyos.org/ns/zone/v1"],"id":zone,"owner":zone,"hostname":"demo.buckyos.io"});
+    assert!(member_entity_kind(&zone, &zone_doc).is_err());
+    let owner_doc = json!({"@context":["https://www.w3.org/ns/did/v1","https://buckyos.org/ns/owner/v1"],"id":zone,"name":"waterflier"});
+    assert_eq!(member_entity_kind(&zone, &owner_doc).unwrap(), "user");
+    let lucy = DID::from_str("did:web:lucy.demo.buckyos.io").unwrap();
+    assert!(member_entity_kind(&lucy, &owner_doc).is_err());
+}

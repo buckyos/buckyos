@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -972,7 +972,7 @@ store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup 
 - **具名 Session 管理**（会话详情「群会话」一节）：归档 / 删除（`group.archive_session` / `group.delete_session`，带记录 `expected_revision`）、添加成员（`group.update_session { add_members }`）、邀请外部成员（`group.invite_session_guest`，对方在 `session_invite` 卡片上 `group.accept_session_invitation`，不需要 proof）、移出 / 退出（`group.remove_session_member` / `group.leave_session`）。`has_guests` 的 Session 在 Session 列表和详情显示「含外部成员」。
 - **共享状态与昵称**：群会话详情的共享标题 / 说明 / 公告走 `group.get_shared_state` + `group.update_shared_state { session_id?, expected_revision, set, unset, idempotency_key }`，昵称走 `group.get_member_state` + `group.update_member_state`；非群会话仍显示「尚未启用」。
 - **已读回执**：Session 规则 `receipts !== 'hidden'` 时，对本人最新一条群消息查 `group.list_messages` 得到 `session_seq`，再 `group.get_read_markers { session_id?, session_seq }` 显示「N 人已读」（`readers` 规则下附读者名）；标记已读时若已知 seq 则顺带 `group.update_read_marker`（host 也会按 READ 状态推进）。
-- **入口**：实体列表头「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。候选成员为可经 native 连接到达的人和 Agent，排除 `did:msgtunnel:*`、已拉黑者和自己。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。
+- **入口**：实体列表标题栏「+」菜单的「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。候选成员为可经 native 连接到达的人和 Agent，排除 `did:msgtunnel:*`、已拉黑者和自己。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。
 - **邀请与通知**：通知为 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'`，`machine.data = { group_did, action, data }`，投递到与发起者的会话（`dm:<inviter>`），群名取 `group.get_doc`。各 action 的卡片：
 
   | action | data | 卡片 |
@@ -1029,6 +1029,25 @@ mock store 同规则）。这些账号的会话仍可经 `entityById` / launch c
 - `searchQuery` 判定：大小写不敏感，匹配 `name` 或 `lastMessage.text`。
 - 二者是 **与** 关系。
 - 过滤只作用于顶层实体，子实体不参与顶层过滤（避免父项被过滤掉后子项悬空）。
+
+#### 4.1.1 标题栏与编辑模式
+
+标题栏（`EntityListHeader.tsx`）从左到右：编辑 / 身份区 / `+` / `⋮`。
+
+- **身份区**：自己的头像与昵称（`useCurrentUser`，取不到时退回 `avatarOf(ownerDid)` 与 DID 显示名）；
+  观察模式显示被观察 owner（viewer 自己实体列表里的名字与头像）。昵称过长时截断为省略号，`title` 保留全名。
+  昵称后的徽标为未读总数：未静音的顶层实体 `unreadCount` 之和。
+- **同步状态**：不在线时身份区的昵称与徽标换成状态（转圈 + 文字，`role="status"` 播报）：
+  浏览器离线 → “等待网络…”；`store.syncStatus(context) === 'connecting'` → “连接中…”。
+  真实 store 在会话列表刷新（`refreshSummaries`）失败后置为 `connecting`，下一次成功刷新恢复 `online`；
+  浏览器 `online` 事件会立刻补一次刷新。mock 用 `configure({ sync })` 切换。
+- **`+`**：新建会话、新建群聊；观察模式（`canManage` 为假）整组禁用。
+- **`⋮`**：返回桌面（仅独立路由）、媒体设置、收起列表（仅桌面布局）。
+- **编辑模式**：编辑按钮切换（再次点击或 Esc 退出），行首出现选择圈，点行即选择，顶部显示已选数量，
+  底部操作条为 置顶 / 静音（所选全部已置顶 / 已静音时变为取消）。没有任何 Session 的实体不可选。
+  写入的是 Session 个人偏好（§4.4 `ui.pinned` / `ui.muted`）：置顶只写实体的默认会话（实体在任一会话置顶时即置顶，
+  这样不打乱其它会话的排序）；取消置顶、静音、取消静音写该实体的全部会话（实体在全部会话静音时才算静音）。
+  观察模式不提供编辑。没有后端接口按会话批量标记已读，因此暂无“标为已读”。
 
 ### 4.2 Composer 草稿
 

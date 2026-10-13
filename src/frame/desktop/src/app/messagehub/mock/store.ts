@@ -17,7 +17,7 @@ import { mockObjectAccess, registerMockUpload } from './objects'
 import { mockAgentGroupAllowed } from '../../../api/control_panel_mock'
 import { MOCK_NOTIFY_SENDER, mockNotifyEntity, mockNotifyMessages, mockNotifySessions } from './notify'
 import { translate } from '../translate'
-import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus } from '../store/types'
+import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { canStage, pendingBubble } from '../store/outgoing'
 
 interface MockGroupSession {
@@ -60,6 +60,8 @@ type Snapshot = {
   drafts: Record<string, string>
   draftAttachments: Record<string, ComposerAttachmentInput[]>
   uploads: Record<string, { name: string; blob: Blob }>
+  /** The seed's pinned / muted entities; a flag holds until pin or mute is written for that entity, then its sessions' preferences decide as in the real store. */
+  seedFlags?: Record<string, { isPinned?: boolean; isMuted?: boolean }>
 }
 const allEntities = (entities: Entity[]): Entity[] => entities.flatMap(entity => [entity, ...allEntities(entity.children ?? [])])
 export const findEntity = (id: string) => allEntities(mockEntities).find(entity => entity.id === id)
@@ -139,7 +141,7 @@ function seedSnapshot(now: number): Snapshot {
   // System Notify: the three category sessions and a CodeAssistant conversation with copies.
   for (const session of mockNotifySessions(now)) sessions[sessionKey(session.ownerDid, session.id)] = session
   Object.assign(messages, mockNotifyMessages(now))
-  return { groups, sessions, deleted: {}, withoutSeed: {}, hidden: {}, messages, delivery: {}, preferences: {}, policies: {}, drafts: {}, draftAttachments: {}, uploads: {} }
+  return { groups, sessions, deleted: {}, withoutSeed: {}, hidden: {}, messages, delivery: {}, preferences: {}, seedFlags: Object.fromEntries(mockEntities.filter(entity => entity.isPinned || entity.isMuted).map(entity => [entity.id, { isPinned: !!entity.isPinned, isMuted: !!entity.isMuted }])), policies: {}, drafts: {}, draftAttachments: {}, uploads: {} }
 }
 
 function groupEvent(group: MockGroup, action: string, actorDid: string, at: number, subjectDid?: string): MessageObject {
@@ -179,6 +181,7 @@ export class MessageHubMockStore implements MessageHubStore {
   private pendingRevision = 0
   private sendingLocalIds = new Set<string>()
   private revokedOwners = new Set<string>()
+  private sync: SyncStatus = 'online'
   /** `groupSessionMembers` results per snapshot, so components see stable values between changes. */
   private sessionMemberLists = new WeakMap<Snapshot, Map<string, GroupSessionParticipants | null>>()
   constructor() {
@@ -186,6 +189,7 @@ export class MessageHubMockStore implements MessageHubStore {
   }
   defaultContext() { return defaultContext }
   ownerStatus(context: MessageHubContext): OwnerStatus { return this.canView(context) ? { phase: 'ready' } : { phase: 'denied' } }
+  syncStatus(): SyncStatus { return this.sync }
   ensureOwner() { return this.initialize() }
   startSync() { return () => {} }
   findEntity(_context: MessageHubContext, id: string) { return this.lookup(id) }
@@ -344,7 +348,10 @@ export class MessageHubMockStore implements MessageHubStore {
       const policy = this.policy(context, entity.id)
       const choices = this.connections(context, entity.id)
       const reason = choices.some(choice => !creationReason(context, entity, policy, choice.binding)) ? undefined : creationReason(context, entity, policy, choices[0]?.binding)
-      return { ...entity, unreadCount: sessions.reduce((sum, session) => sum + session.unreadCount, 0), lastActiveAt: latest?.lastActiveAt ?? 0, lastMessage: latest?.lastMessage, sessionCreation: { policy, canCreate: !reason, unavailableReason: reason }, children: entity.children?.map(project) }
+      const prefs = sessions.map(session => this.preferences(context, session.id))
+      const seed = this.snapshot.seedFlags?.[entity.id]
+      const flags = { isPinned: seed?.isPinned ?? prefs.some(item => item.pinned), isMuted: seed?.isMuted ?? (prefs.length > 0 && prefs.every(item => item.muted)) }
+      return { ...entity, ...flags, unreadCount: sessions.reduce((sum, session) => sum + session.unreadCount, 0), lastActiveAt: latest?.lastActiveAt ?? 0, lastMessage: latest?.lastMessage, sessionCreation: { policy, canCreate: !reason, unavailableReason: reason }, children: entity.children?.map(project) }
     }
     const dynamic = [...Object.keys(this.snapshot.groups).filter(id => !findEntity(id)), MOCK_NOTIFY_SENDER].map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
     return [...mockEntities.map(entity => this.lookup(entity.id) ?? entity), ...dynamic].filter(entity => !isHiddenAccount({ did: entity.id, name: entity.name, tags: entity.tags }, context.ownerDid, { dids: [MOCK_SELF_DID] })).map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
@@ -451,9 +458,11 @@ export class MessageHubMockStore implements MessageHubStore {
   }
   updatePreferences(context: MessageHubContext, id: string, patch: Partial<SessionPreferences>) {
     return this.mutate(next => {
-      this.requireSession(next, context, id)
+      const session = this.requireSession(next, context, id)
       if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw Error('permission_denied')
       if (Object.keys(patch).some(key => key !== 'showActions')) this.requireOwn(context)
+      const seed = next.seedFlags?.[session.entityId]
+      if (seed && ('pinned' in patch || 'muted' in patch)) next.seedFlags = { ...next.seedFlags, [session.entityId]: { ...seed, ...('pinned' in patch ? { isPinned: undefined } : {}), ...('muted' in patch ? { isMuted: undefined } : {}) } }
       const key = viewerSessionKey(context, id)
       const preferences = { ...defaultPreferences, ...next.preferences[key], ...patch }
       presentationSchema.parse(preferences)
@@ -654,7 +663,8 @@ export class MessageHubMockStore implements MessageHubStore {
     for (const key of this.runtime.keys()) if ((JSON.parse(key) as string[])[0] === ownerDid) this.runtime.delete(key)
     this.emitRuntime()
   }
-  configure = (options: { delayMs?: number; uploadMs?: number; failNext?: string; now?: number }) => {
+  configure = (options: { delayMs?: number; uploadMs?: number; failNext?: string; now?: number; sync?: SyncStatus }) => {
+    if (options.sync !== undefined) { this.sync = options.sync; this.snapshot = { ...this.snapshot }; this.listeners.forEach(listener => listener()) }
     if (options.delayMs !== undefined) this.delayMs = options.delayMs
     if (options.uploadMs !== undefined) this.uploadMs = options.uploadMs
     if (options.failNext !== undefined) this.failure = options.failNext

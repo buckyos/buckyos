@@ -90,7 +90,8 @@ test('a video the Runtime cannot play is converted by the Pipeline inside the po
 
 test('media settings: GIF autoplay off shows the first frame; the window target needs the desktop', async ({ page }) => {
   const history = await openAlice(page)
-  await page.getByRole('button', { name: 'Media settings', exact: true }).first().click()
+  await page.getByTestId('hub-more-menu').click()
+  await page.getByRole('menuitem', { name: 'Media settings', exact: true }).click()
   const dialog = page.getByTestId('messagehub-media-settings')
   await expect(dialog.getByRole('radio', { name: 'Preview window' })).toBeDisabled()
   await dialog.getByRole('switch', { name: 'Autoplay GIFs' }).click()

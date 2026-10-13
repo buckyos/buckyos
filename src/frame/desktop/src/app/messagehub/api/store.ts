@@ -27,7 +27,7 @@ import { isValidMsgSessionId, notifySessionCategory, randomMsgNonce, type Messag
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
-import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus } from '../store/types'
+import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
 import { apiObjectAccess } from './objects'
@@ -87,6 +87,8 @@ interface OwnerData {
   runtime: Map<string, RuntimeState[]>
   epoch: number
   loading?: Promise<void>
+  /** The last session list refresh failed. */
+  syncFailed?: boolean
 }
 
 /** `seq` ↔ `msg_id` of a group session plus the receipt of the latest own message. */
@@ -241,6 +243,8 @@ export class MessageHubApiStore implements MessageHubStore {
 
   ownerStatus(context: MessageHubContext): OwnerStatus { return this.owner(context.ownerDid).status }
 
+  syncStatus(context: MessageHubContext): SyncStatus { return this.owner(context.ownerDid).syncFailed ? 'connecting' : 'online' }
+
   private requireOwn(context: MessageHubContext) {
     if (!this.selfDid || context.viewerDid !== this.selfDid || context.mode !== 'self' || context.ownerDid !== this.selfDid) throw new Error('agent_observer')
   }
@@ -360,9 +364,14 @@ export class MessageHubApiStore implements MessageHubStore {
         data.groups = await this.fetchGroups().catch(() => data.groups)
       }
       if (data.epoch !== epoch) return
-      if (unknownGroup || JSON.stringify(data.summaries) !== before) this.bump(data)
+      const reconnected = data.syncFailed
+      data.syncFailed = false
+      if (reconnected || unknownGroup || JSON.stringify(data.summaries) !== before) this.bump(data)
     } catch (error) {
       console.warn('MessageHub summary refresh failed.', error)
+      if (data.epoch !== epoch || data.syncFailed) return
+      data.syncFailed = true
+      this.bump(data)
     }
   }
 
@@ -377,6 +386,8 @@ export class MessageHubApiStore implements MessageHubStore {
     const summaryTimer = setInterval(() => { void this.refreshSummaries(context) }, SUMMARY_POLL_MS)
     const peopleTimer = setInterval(() => { void this.refreshPeople(context) }, CONTACT_POLL_MS)
     const refreshPeople = () => { void this.refreshPeople(context) }
+    const reconnect = () => { void this.refreshSummaries(context) }
+    window.addEventListener('online', reconnect)
     const stopProfileListener = onOwnProfileChanged(refreshPeople)
     const stopAgentsListener = onAgentsChanged(refreshPeople)
     const tailTimer = activeSessionId ? setInterval(() => { void this.reconcileTail(context, activeSessionId) }, SUMMARY_POLL_MS) : null
@@ -396,6 +407,7 @@ export class MessageHubApiStore implements MessageHubStore {
     }).then(handle => { if (stopped) void handle.close(); else subscription = handle }).catch(() => { /* polling remains the baseline */ })
     return () => {
       stopped = true
+      window.removeEventListener('online', reconnect)
       clearInterval(summaryTimer)
       clearInterval(peopleTimer)
       stopProfileListener()
@@ -846,6 +858,7 @@ export class MessageHubApiStore implements MessageHubStore {
     delete ownerPatch.showActions
     if (Object.keys(ownerPatch).length > 0) {
       this.requireOwn(context)
+      await this.ensureSessionPrefs(context, sessionId)
       const merged = { ...this.preferences(context, sessionId), ...ownerPatch }
       presentationSchema.parse(merged)
       if (merged.pinnedMessage) pinnedMessageSchema.parse(merged.pinnedMessage)

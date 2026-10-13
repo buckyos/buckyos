@@ -17,7 +17,7 @@ const BOB_SESSION = 'session-bob-1'
 async function openHub(page: Page, entityId?: string) {
   await page.route('https://upload.wikimedia.org/**', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>' }))
   await page.goto(entityId ? `/messagehub?entityId=${encodeURIComponent(entityId)}` : '/messagehub')
-  await expect(entityId ? page.getByTestId('message-composer') : page.getByRole('button', { name: 'New group', exact: true }).first()).toBeVisible()
+  await expect(entityId ? page.getByTestId('message-composer') : page.getByTestId('hub-create-menu')).toBeVisible()
 }
 
 test('reactions in a direct session: quick bar, picker, own toggle, peer counts', async ({ page }) => {

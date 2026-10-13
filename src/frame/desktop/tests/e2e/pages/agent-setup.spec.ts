@@ -318,6 +318,7 @@ test.describe('Agent details and group chats', () => {
     await page.goto('/?scenario=normal')
     await page.getByTestId('desktop-app-messagehub').click()
     const hub = page.getByTestId('window-messagehub')
+    await hub.getByTestId('hub-create-menu').click()
     await hub.getByTestId('new-group').click()
     const form = hub.getByTestId('create-group-form')
     await form.getByRole('searchbox', { name: 'Search contacts' }).fill('Bucky')

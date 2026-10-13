@@ -165,7 +165,8 @@ async function details(page: import('@playwright/test').Page) {
 
 test('New Session includes native users and selecting an empty user creates one reusable default', async ({ page }) => {
   await openHub(page)
-  await page.getByRole('button', { name: 'New Session', exact: true }).first().click()
+  await page.getByTestId('hub-create-menu').click()
+  await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
   const dialog = page.getByRole('dialog')
   const target = dialog.getByRole('combobox').first()
   await expect(target.locator('option', { hasText: 'Bob Zhang' })).toHaveCount(1)
@@ -761,6 +762,7 @@ test('leaving an observed owner rewrites the address and the standalone route le
   await page.reload()
   await expect(page.getByTestId('owner-banner')).toHaveCount(0)
   await expect(page.locator('textarea')).toBeVisible()
-  await page.getByTestId('messagehub-home').first().click()
+  await page.getByTestId('hub-more-menu').click()
+  await page.getByTestId('messagehub-home').click()
   await expect.poll(() => new URL(page.url()).pathname).toBe('/')
 })

@@ -58,7 +58,7 @@ use log::*;
 use name_lib::*;
 
 use async_trait::async_trait;
-use buckyos_api::ZoneConfig;
+use buckyos_api::{ZoneConfig, ZONE_OWNER_USER_ID_KEY};
 use buckyos_http_server::{
     server_err, HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo,
 };
@@ -115,6 +115,11 @@ impl ZoneIdentity {
     // zone owner 在 zone 内的约定短名（users/{owner.id}/doc）。
     fn is_zone_owner_short(&self, short: &str) -> bool {
         self.zone_doc.owner.is_valid() && short == self.zone_doc.owner.id
+    }
+
+    fn self_owned_owner_query(&self, doc_type: &DidDocType) -> bool {
+        matches!(doc_type, DidDocType::Owner | DidDocType::User)
+            && self.is_zone_owner(&self.zone_doc.id)
     }
 }
 
@@ -691,6 +696,11 @@ impl ZoneDidResolver {
                 DidDocType::Zone | DidDocType::Boot => self.resolve_zone_itself(&zone, doc_type),
                 _ => match self.cache_lookup(&zone.zone_doc.id, doc_type).await {
                     Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer, doc_type),
+                    // owner DID 即 zone DID 时，zone 的 owner doc 就是这个 DID 的 owner doc
+                    Ok(None) if zone.self_owned_owner_query(doc_type) => {
+                        self.resolve_zone_owner(&zone, &zone.zone_doc.id, doc_type)
+                            .await
+                    }
                     // zone 对自己的命名空间是权威的，没有登记就是 Missing
                     Ok(None) => ZoneAnswer::Missing(doc_type.clone()),
                     Err(e) => {
@@ -923,7 +933,7 @@ impl ZoneDidResolver {
         let hit: Option<ZoneAnswer> = match doc_type {
             DidDocType::Owner | DidDocType::User => {
                 if zone.is_zone_owner(did) {
-                    return self.resolve_foreign_zone_owner(zone, did, doc_type).await;
+                    return self.resolve_zone_owner(zone, did, doc_type).await;
                 }
                 self.load_owner_doc(did.id.as_str())
                     .await
@@ -978,14 +988,20 @@ impl ZoneDidResolver {
     }
 
     // 当前 zone owner 的 owner doc（按真实 DID 查询，如 did:bns:alice?type=owner）：
-    // store 有且 id 一致 → 锚定后的回答；miss / corrupt / id 不一致 → 本地最小文档。
-    async fn resolve_foreign_zone_owner(
+    // 存在 users/{system/zone_owner_user_id}/doc。store 有且 id 一致 → 锚定后的回答；
+    // miss / corrupt / id 不一致 → 本地最小文档。
+    async fn resolve_zone_owner(
         &self,
         zone: &ZoneIdentity,
         did: &DID,
         doc_type: &DidDocType,
     ) -> ZoneAnswer {
-        match self.load_owner_doc(did.id.as_str()).await {
+        let user_id = match self.store_get(ZONE_OWNER_USER_ID_KEY).await {
+            Ok(Some(raw)) => serde_json::from_str::<String>(&raw).ok(),
+            _ => None,
+        }
+        .unwrap_or_else(|| did.id.clone());
+        match self.load_owner_doc(user_id.as_str()).await {
             Ok(Some((owner_doc, encoded))) if owner_doc.id == *did => {
                 Self::guarded_owner_active(zone, owner_doc, encoded, doc_type)
             }
@@ -993,7 +1009,7 @@ impl ZoneDidResolver {
                 if let Err(e) = &other {
                     error!(
                         "zone owner doc users/{}/doc unusable ({}); degrading to minimal owner doc",
-                        did.id, e
+                        user_id, e
                     );
                 }
                 match Self::minimal_zone_owner_doc(zone) {
@@ -1924,6 +1940,15 @@ mod tests {
         // keyScope 回落到本地基线（清空）：扩 key scope 必须走维护流程
         assert!(merged.get("keyScope").is_none());
         assert!(merged.get("buckyos:scopes").is_none());
+    }
+
+    #[test]
+    fn self_owned_zone_answers_owner_queries_for_itself() {
+        let self_owned = test_bns_zone_identity();
+        assert!(self_owned.self_owned_owner_query(&DidDocType::Owner));
+        assert!(self_owned.self_owned_owner_query(&DidDocType::User));
+        assert!(!self_owned.self_owned_owner_query(&DidDocType::Device));
+        assert!(!test_zone_identity().self_owned_owner_query(&DidDocType::Owner));
     }
 
     #[test]

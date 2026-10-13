@@ -533,7 +533,22 @@ export const messageHubEn: Record<string, string> = {
   "messagehub.notify.empty.pending": "Nothing is waiting for you.",
   "messagehub.notify.empty.done": "No handled notifications yet.",
   "messagehub.notify.linkFailed": "This notification could not be opened: it may no longer exist, or you may not have access to it.",
-  "messagehub.notify.opening": "Opening the notification…"
+  "messagehub.notify.opening": "Opening the notification…",
+  "messagehub.header.edit": "Edit chats",
+  "messagehub.header.done": "Done",
+  "messagehub.header.create": "New",
+  "messagehub.header.more": "More",
+  "messagehub.header.unread": "{{count}} unread",
+  "messagehub.header.selectChats": "Select chats",
+  "messagehub.header.selected": "{{count}} selected",
+  "messagehub.sync.connecting": "Connecting…",
+  "messagehub.sync.offline": "Waiting for network…",
+  "messagehub.edit.unpin": "Unpin",
+  "messagehub.edit.unmute": "Unmute",
+  "messagehub.edit.noSession": "No conversation with them yet",
+  "messagehub.edit.failed": "Could not update every selected chat. Please retry.",
+  "messagehub.collapseEntityList": "Collapse list",
+  "messagehub.expandEntityList": "Expand list"
 }
 
 export const messageHubZh: Record<string, string> = {
@@ -1071,5 +1086,20 @@ export const messageHubZh: Record<string, string> = {
   "messagehub.notify.empty.pending": "没有待处理的通知。",
   "messagehub.notify.empty.done": "还没有已处理的通知。",
   "messagehub.notify.linkFailed": "无法打开这条通知：它可能已不存在，或你无权查看。",
-  "messagehub.notify.opening": "正在打开通知…"
+  "messagehub.notify.opening": "正在打开通知…",
+  "messagehub.header.edit": "编辑会话",
+  "messagehub.header.done": "完成",
+  "messagehub.header.create": "新建",
+  "messagehub.header.more": "更多",
+  "messagehub.header.unread": "{{count}} 条未读",
+  "messagehub.header.selectChats": "选择会话",
+  "messagehub.header.selected": "已选 {{count}} 个",
+  "messagehub.sync.connecting": "连接中…",
+  "messagehub.sync.offline": "等待网络…",
+  "messagehub.edit.unpin": "取消置顶",
+  "messagehub.edit.unmute": "取消静音",
+  "messagehub.edit.noSession": "还没有与其的会话",
+  "messagehub.edit.failed": "部分会话未能更新，请重试。",
+  "messagehub.collapseEntityList": "收起列表",
+  "messagehub.expandEntityList": "展开列表"
 }

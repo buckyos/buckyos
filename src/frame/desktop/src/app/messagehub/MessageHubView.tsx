@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare, SquarePen, Users } from 'lucide-react'
+import { ChevronRight, House, ImagePlay, MessageSquare, MessageSquarePlus, PanelLeftClose, SquarePen, Users } from 'lucide-react'
 import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
@@ -13,7 +13,8 @@ import { EntityDetails } from './EntityDetails'
 import { MessageDetails } from './MessageDetails'
 import { messageObjId } from './conversation/history/relations'
 import { friendlyDidName } from './api/projection'
-import { EntityList } from './EntityList'
+import { EntityList, type EntityPreferencePatch } from './EntityList'
+import type { HeaderMenuItem, HubIdentity } from './EntityListHeader'
 import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest } from './launch'
 import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime, type OutgoingPayload } from './store'
@@ -21,7 +22,7 @@ import { creationReason, viewerSessionKey } from './sessionModel'
 import { usePaneResizer } from './paneResize'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
 import { SessionDetails } from './SessionDetails'
-import { CreateSessionForm, ManageSessionForm, hubButtonClass, hubIconButtonClass } from './SessionDialogs'
+import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
 import type { MessageHubContext, Session } from './types'
 import { SessionSidebar } from './SessionSidebar'
 import {
@@ -41,6 +42,7 @@ import type {
   MobileView,
 } from './types'
 import { didDisplayName } from '../../presentation/model'
+import { useCurrentUser } from '../../presentation/currentUser'
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 const EMPTY_SESSIONS: Session[] = []
@@ -108,21 +110,28 @@ function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessage
   </div>
 }
 
-function HomeButton({ onHome }: { onHome: () => void }) {
-  const { t } = useI18n()
-  const label = t('messagehub.home', 'Back to desktop')
-  return (
-    <button
-      type="button"
-      onClick={onHome}
-      className={hubIconButtonClass}
-      aria-label={label}
-      title={label}
-      data-testid="messagehub-home"
-    >
-      <House size={17} />
-    </button>
-  )
+const subscribeNetwork = (listener: () => void) => {
+  window.addEventListener('online', listener)
+  window.addEventListener('offline', listener)
+  return () => {
+    window.removeEventListener('online', listener)
+    window.removeEventListener('offline', listener)
+  }
+}
+
+function useNetworkOnline() {
+  return useSyncExternalStore(subscribeNetwork, () => navigator.onLine)
+}
+
+/** The signed-in user's own name and picture, or the observed owner's. */
+function useHubIdentity(context: MessageHubContext): HubIdentity {
+  const store = useMessageHubStore()
+  const me = useCurrentUser()
+  if (context.mode === 'observe') {
+    const entity = store.findEntity(store.defaultContext(), context.ownerDid)
+    return { type: entity?.type ?? 'agent', name: entity?.name ?? didDisplayName(context.ownerDid), avatar: entity?.avatar }
+  }
+  return { type: 'person', name: me?.displayName || didDisplayName(context.ownerDid), avatar: me?.avatarUrl ?? store.avatarOf(context, context.ownerDid) }
 }
 
 function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId, linkedMessageDetails, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; linkedMessageDetails: boolean; context: MessageHubContext; onHome?: () => void }) {
@@ -130,6 +139,9 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const isDesktop = useMediaQuery('(min-width: 769px)')
   const store = useMessageHubStore()
   const dialog = useWindowDialog()
+  const mediaHost = useMessageMediaHost()
+  const identity = useHubIdentity(context)
+  const networkOnline = useNetworkOnline()
   useMessageHubRuntime()
   // Without an explicit entity the most recent one opens (pinned first), which
   // is what the mock route did with the CodeAssistant seed.
@@ -400,9 +412,28 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const detailsPane = detailsTarget === 'message' && activeSession && selectedEntity && detailMessageId ? <MessageDetails key={`${viewerSessionKey(context, activeSession.id)}:${detailMessageId}`} context={context} entityId={selectedEntity.id} sessionId={activeSession.id} messageId={detailMessageId} reader={messageReader} displayName={did => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)} onClose={handleCloseDetails} /> : detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
   const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context), onCreateGroup: canManage ? () => openCreateGroup() : undefined }
   const newSessionLabel = t('messagehub.newSession')
-  const newSessionButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreate(null)} aria-label={newSessionLabel} title={newSessionLabel}><SquarePen size={17} /></button>
   const newGroupLabel = t('messagehub.group.create')
-  const newGroupButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreateGroup()} aria-label={newGroupLabel} title={newGroupLabel} data-testid="new-group"><Users size={17} /></button>
+  const createItems: HeaderMenuItem[] = [
+    { key: 'session', label: newSessionLabel, icon: <MessageSquarePlus size={16} />, onSelect: () => openCreate(null), disabled: !canManage, testId: 'new-session' },
+    { key: 'group', label: newGroupLabel, icon: <Users size={16} />, onSelect: () => openCreateGroup(), disabled: !canManage, testId: 'new-group' },
+  ]
+  const moreItems: HeaderMenuItem[] = [
+    ...(onHome ? [{ key: 'home', label: t('messagehub.home', 'Back to desktop'), icon: <House size={16} />, onSelect: onHome, testId: 'messagehub-home' }] : []),
+    ...(mediaHost ? [{ key: 'media', label: t('messagehub.media.settings', 'Media settings'), icon: <ImagePlay size={16} />, onSelect: () => mediaHost.openSettings(), testId: 'media-settings' }] : []),
+    ...(isDesktop ? [{ key: 'collapse', label: t('messagehub.collapseEntityList', 'Collapse entity list'), icon: <PanelLeftClose size={16} />, onSelect: handleCollapseEntityList, testId: 'collapse-entity-list' }] : []),
+  ]
+  const syncStatus = !networkOnline ? t('messagehub.sync.offline') : store.syncStatus(context) === 'connecting' ? t('messagehub.sync.connecting') : undefined
+  // Pinning the entity's default session is enough to lift the entity and leaves its other sessions' order alone;
+  // unpinning and muting cover every session, as the entity is pinned while any of them is and muted while all are.
+  const updateEntityPreferences = async (entityIds: string[], patch: EntityPreferencePatch) => {
+    const targets = entityIds.flatMap(id => 'pinned' in patch && patch.pinned ? [store.defaultSession(context, id) ?? store.sessions(context, id)[0]].filter((session): session is Session => Boolean(session)) : store.sessions(context, id))
+    await Promise.all(targets.map(session => store.updatePreferences(context, session.id, patch)))
+  }
+  const entityListHeader = {
+    identity, syncStatus, createItems, moreItems,
+    onEntityPreferences: canManage ? updateEntityPreferences : undefined,
+    isEditable: (entity: { id: string }) => store.sessions(context, entity.id).length > 0,
+  }
   const conversationSpace = layoutWidth - (isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : entityListWidth)
   const sessionSidebarInline = conversationSpace - sessionSidebarWidth >= CONVERSATION_MIN_READING_WIDTH
   const detailsWidth = detailsTarget === 'message' ? 640 : DETAILS_PANEL_WIDTH
@@ -481,7 +512,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
-            headerActions={<>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}{newGroupButton}<MediaSettingsButton /></>}
+            {...entityListHeader}
             enableDrilldownNavigation
             useCompactInlineChildren
             childNavigationTrigger="icon"
@@ -607,17 +638,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
             searchQuery={searchQuery}
             enableDrilldownNavigation
             useCompactInlineChildren
-            headerActions={(
-              <>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}{newGroupButton}<MediaSettingsButton /><button
-                type="button"
-                onClick={handleCollapseEntityList}
-                className={hubIconButtonClass}
-                aria-label={t('messagehub.collapseEntityList', 'Collapse entity list')}
-                title={t('messagehub.collapseEntityList', 'Collapse entity list')}
-              >
-                <ChevronLeft size={18} />
-              </button></>
-            )}
+            {...entityListHeader}
             {...entityListExtras}
             onSelectEntity={handleSelectEntity}
             onFilterChange={setFilter}
@@ -706,24 +727,6 @@ function EmptyConversation({ action }: { action?: React.ReactNode }) {
       </p>
       {action}
     </div>
-  )
-}
-
-function MediaSettingsButton() {
-  const { t } = useI18n()
-  const host = useMessageMediaHost()
-  if (!host) return null
-  const label = t('messagehub.media.settings', 'Media settings')
-  return (
-    <button
-      type="button"
-      onClick={() => host.openSettings()}
-      className={hubIconButtonClass}
-      aria-label={label}
-      title={label}
-    >
-      <ImagePlay size={17} />
-    </button>
   )
 }
 
