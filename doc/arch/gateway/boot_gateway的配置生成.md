@@ -591,7 +591,7 @@ Boot 阶段行为：
 6. 为其它 OOD 生成带 relay 的 tunnel URL，并把 direct route 标记为 primary、relay route 标记为 backup。
 7. 把需要长期保持的目标写入 RTCP `keep_tunnel`：
    - 其它 OOD direct candidate 或 direct 目标 DID。
-   - SN candidate，前提是本机不是稳定 WAN 可达。
+   - SN candidate：非 WAN 节点，以及没有 owner 签名固定 `DeviceConfig.ips` 的 WAN 节点，均保持 SN 隧道；`wan_dyn` 的动态地址尚未可解析时仍可通过显式 SN 回退访问。WAN 节点具有签名固定 IP 时保持直连策略，不新增 SN 保活。
    - ZoneGateway candidate，前提是该节点承担 relay/公网入口职责。
 8. 通过 cyfs-gateway 的 tunnel_mgr 批量查询接口，判断是否有足够多到其它 OOD 的 tunnel 已经建立。`2n+1` OOD 系统至少需要与 `n` 个其它 OOD 的 keep_tunnel 达到 `Reachable`，或在策略允许时达到 `Unknown/Probing` 并继续后台探测。
 9. 访问 `127.0.0.1:3180/kapi/system_config` 并获得 boot/config，这是进入后续 boot 流程的 gateway 闸门。

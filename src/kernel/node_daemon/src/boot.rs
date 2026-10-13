@@ -12,6 +12,7 @@ use name_lib::{DeviceDocument, ZoneDocument};
 use serde_json::{json, Value};
 
 use crate::finder::{DiscoveredNode, NodeFinderClient};
+use crate::sn_zone_info::device_requires_sn_keep_tunnel;
 
 const DEFAULT_RTCP_PORT: u32 = 2980;
 const SYSTEM_CONFIG_PORT: u16 = 3200;
@@ -327,12 +328,7 @@ pub fn build_keep_tunnel_targets(
 ) -> Vec<String> {
     let mut targets: Vec<String> = Vec::new();
 
-    let net_id_is_wan = device_doc
-        .net_id
-        .as_ref()
-        .map(|n| n.starts_with("wan"))
-        .unwrap_or(false);
-    if !net_id_is_wan {
+    if device_requires_sn_keep_tunnel(device_doc) {
         if let Some(sn) = sn_host_name {
             targets.push(sn.to_string());
         }
@@ -500,6 +496,68 @@ pub fn write_boot_node_gateway_info(content: &Value) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn address_test_device_and_zone() -> (DeviceDocument, ZoneDocument) {
+        use name_lib::DIDDocumentTrait;
+
+        let mut device = DeviceDocument::new("ood1", "test-key".to_string());
+        device.net_id = Some("wan_dyn".to_string());
+        let zone = ZoneDocument::new(
+            name_lib::DID::new("bns", "test-zone"),
+            name_lib::DID::new("bns", "test-owner"),
+            device.get_default_key().unwrap(),
+        );
+        (device, zone)
+    }
+
+    #[test]
+    fn addressless_wan_bootstrap_keeps_sn_for_every_node_role() {
+        let (device, zone) = address_test_device_and_zone();
+        for role in [NodeRole::Ood, NodeRole::ZoneGateway, NodeRole::Node] {
+            let targets = build_keep_tunnel_targets(
+                role,
+                &device,
+                &zone,
+                "test-zone.example",
+                Some("sn.example.com"),
+            );
+            assert_eq!(targets, vec!["sn.example.com".to_string()]);
+            let config = merge_keep_tunnel_into_gateway_config(json!({}), &targets);
+            assert_eq!(
+                config["stacks"]["node_rtcp"]["keep_tunnel"],
+                json!(["sn.example.com"])
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_wan_bootstrap_does_not_add_sn() {
+        let (mut device, zone) = address_test_device_and_zone();
+        device.ips = vec!["203.0.113.10".parse().unwrap()];
+        for role in [NodeRole::Ood, NodeRole::ZoneGateway, NodeRole::Node] {
+            assert!(build_keep_tunnel_targets(
+                role,
+                &device,
+                &zone,
+                "test-zone.example",
+                Some("sn.example.com"),
+            )
+            .is_empty());
+        }
+    }
+
+    #[test]
+    fn addressless_wan_bootstrap_does_not_invent_an_sn() {
+        let (device, zone) = address_test_device_and_zone();
+        assert!(build_keep_tunnel_targets(
+            NodeRole::Ood,
+            &device,
+            &zone,
+            "test-zone.example",
+            None,
+        )
+        .is_empty());
+    }
 
     #[test]
     fn merge_keep_tunnel_preserves_existing_gateway_config() {

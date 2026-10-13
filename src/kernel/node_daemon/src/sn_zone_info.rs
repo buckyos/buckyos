@@ -4,6 +4,7 @@ use std::path::Path;
 use buckyos_api::atomic_write;
 use buckyos_kit::get_buckyos_system_etc_dir;
 use cyfs_gateway_api::SnZoneInfoResp;
+use name_lib::DeviceDocument;
 
 const SN_ZONE_INFO_FILE_NAME: &str = "sn_zone_info.json";
 
@@ -34,8 +35,16 @@ fn save_sn_zone_info_in(etc_dir: &Path, zone_info: &SnZoneInfoResp) -> Result<()
     atomic_write(path.as_path(), &content)
 }
 
+pub fn device_requires_sn_keep_tunnel(device_doc: &DeviceDocument) -> bool {
+    let declared_wan = device_doc
+        .net_id
+        .as_deref()
+        .is_some_and(|net_id| net_id.starts_with("wan"));
+    !declared_wan || device_doc.ips.is_empty()
+}
+
 pub fn relay_node_for_keep_tunnel(
-    net_id: Option<&str>,
+    device_doc: &DeviceDocument,
     sn: Option<&str>,
     zone_info: Option<&SnZoneInfoResp>,
 ) -> Option<String> {
@@ -43,7 +52,7 @@ pub fn relay_node_for_keep_tunnel(
     if sn.is_empty() {
         return None;
     }
-    if net_id.is_some_and(|net_id| net_id.starts_with("wan")) {
+    if !device_requires_sn_keep_tunnel(device_doc) {
         return None;
     }
     let relay_node = zone_info
@@ -61,6 +70,13 @@ pub fn relay_node_for_keep_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device(net_id: Option<&str>, ips: &[&str]) -> DeviceDocument {
+        let mut device = DeviceDocument::new("ood1", "test-key".to_string());
+        device.net_id = net_id.map(ToString::to_string);
+        device.ips = ips.iter().map(|ip| ip.parse().unwrap()).collect();
+        device
+    }
 
     fn zone_info(relay_sn: Option<&str>) -> SnZoneInfoResp {
         SnZoneInfoResp {
@@ -88,35 +104,70 @@ mod tests {
     }
 
     #[test]
-    fn relay_node_is_only_used_for_non_wan_sn_keep_tunnel() {
-        let info = zone_info(Some(" relay.example.com "));
-        assert_eq!(
-            relay_node_for_keep_tunnel(Some("nat"), Some("sn.example.com"), Some(&info)),
-            Some("relay.example.com".to_string())
-        );
-        assert_eq!(
-            relay_node_for_keep_tunnel(Some("wan_dyn"), Some("sn.example.com"), Some(&info)),
-            None
-        );
-        assert_eq!(
-            relay_node_for_keep_tunnel(Some("nat"), None, Some(&info)),
-            None
-        );
+    fn addressless_wan_devices_keep_an_explicit_sn_fallback() {
+        for net_id in [Some("wan"), Some("wan_dyn"), Some("wan_custom")] {
+            let addressless = device(net_id, &[]);
+            assert!(device_requires_sn_keep_tunnel(&addressless));
+            assert_eq!(
+                relay_node_for_keep_tunnel(
+                    &addressless,
+                    Some("sn.example.com"),
+                    Some(&zone_info(Some(" relay.example.com "))),
+                ),
+                Some("relay.example.com".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn signed_fixed_wan_addresses_preserve_direct_only_bootstrap() {
+        for net_id in [Some("wan"), Some("wan_dyn"), Some("wan_custom")] {
+            for ip in ["203.0.113.10", "2001:db8::10"] {
+                let fixed = device(net_id, &[ip]);
+                assert!(!device_requires_sn_keep_tunnel(&fixed));
+                assert_eq!(
+                    relay_node_for_keep_tunnel(
+                        &fixed,
+                        Some("sn.example.com"),
+                        Some(&zone_info(Some("relay.example.com"))),
+                    ),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_wan_and_unknown_topologies_retain_sn_tunnels() {
+        for net_id in [None, Some(""), Some("nat"), Some("lan0"), Some("portmap")] {
+            for ips in [&[][..], &["192.168.1.10"][..]] {
+                let local = device(net_id, ips);
+                assert!(device_requires_sn_keep_tunnel(&local));
+                assert_eq!(
+                    relay_node_for_keep_tunnel(&local, Some("sn.example.com"), None),
+                    Some("sn.example.com".to_string())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn relay_assignment_falls_back_to_declared_sn_without_inventing_one() {
+        let dynamic = device(Some("wan_dyn"), &[]);
+        assert_eq!(relay_node_for_keep_tunnel(&dynamic, None, None), None);
         assert_eq!(
             relay_node_for_keep_tunnel(
-                Some("nat"),
-                Some("sn.example.com"),
-                Some(&zone_info(Some(" "))),
+                &dynamic,
+                Some(" "),
+                Some(&zone_info(Some("relay.example.com")))
             ),
-            Some("sn.example.com".to_string())
+            None
         );
-        assert_eq!(
-            relay_node_for_keep_tunnel(Some("nat"), Some("sn.example.com"), Some(&zone_info(None)),),
-            Some("sn.example.com".to_string())
-        );
-        assert_eq!(
-            relay_node_for_keep_tunnel(Some("nat"), Some("sn.example.com"), None),
-            Some("sn.example.com".to_string())
-        );
+        for info in [None, Some(zone_info(None)), Some(zone_info(Some(" ")))] {
+            assert_eq!(
+                relay_node_for_keep_tunnel(&dynamic, Some(" sn.example.com "), info.as_ref()),
+                Some("sn.example.com".to_string())
+            );
+        }
     }
 }

@@ -1437,14 +1437,14 @@ async fn node_daemon_main_loop(
         {
             last_zone_info_refresh = Some(Instant::now());
             let previous_relay_node = relay_node_for_keep_tunnel(
-                device_doc.net_id.as_deref(),
+                device_doc,
                 zone_document.sn.as_deref(),
                 sn_zone_info.as_ref(),
             );
             match refresh_sn_zone_info(device_doc, device_private_key, &zone_document).await {
                 Ok(new_zone_info) => {
                     let new_relay_node = relay_node_for_keep_tunnel(
-                        device_doc.net_id.as_deref(),
+                        device_doc,
                         zone_document.sn.as_deref(),
                         new_zone_info.as_ref(),
                     );
@@ -1584,7 +1584,7 @@ async fn node_daemon_main_loop(
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
                 let sn = zone_document.sn.clone();
                 let relay_node = relay_node_for_keep_tunnel(
-                    device_doc.net_id.as_deref(),
+                    device_doc,
                     sn.as_deref(),
                     sn_zone_info.as_ref(),
                 );
@@ -1954,7 +1954,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         }
     };
     let sn_host_name = relay_node_for_keep_tunnel(
-        device_doc.net_id.as_deref(),
+        &device_doc,
         zone_document.sn.as_deref(),
         sn_zone_info.as_ref(),
     );
