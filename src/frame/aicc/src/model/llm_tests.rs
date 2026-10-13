@@ -82,36 +82,10 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         ("glm", "emohaa", "max_context_tokens"),
         ("glm", "emohaa", "max_output_tokens"),
         ("glm", "glm-4-32b-0414-128k", "max_output_tokens"),
-        ("doubao", "doubao-seed-2.1-lite", "max_output_tokens"),
-        ("doubao", "doubao-seed-2.1-pro", "max_output_tokens"),
-        ("doubao", "doubao-seed-2.1-turbo", "max_output_tokens"),
-        (
-            "doubao",
-            "doubao-seed-2-1-turbo-260628",
-            "max_output_tokens",
-        ),
-        ("doubao", "doubao-seed-evolving", "max_output_tokens"),
-        (
-            "doubao",
-            "doubao-seed-2.0-code-preview",
-            "max_context_tokens",
-        ),
-        (
-            "doubao",
-            "doubao-seed-2.0-code-preview",
-            "max_output_tokens",
-        ),
-        ("doubao", "doubao-seed-character", "max_context_tokens"),
-        ("doubao", "doubao-seed-character", "max_output_tokens"),
-        ("doubao", "doubao-seed-translation", "max_context_tokens"),
-        ("doubao", "doubao-seed-translation", "max_output_tokens"),
         ("kimi", "kimi-k2.6", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code-highspeed", "max_output_tokens"),
         ("kimi", "kimi-k2.8-preview", "max_output_tokens"),
-        ("kimi", "kimi-k3", "max_output_tokens"),
-        ("minimax", "MiniMax-M3", "max_context_tokens"),
-        ("minimax", "MiniMax-M3", "max_output_tokens"),
         ("qwen", "qwen2-5-72b-20240919", "max_context_tokens"),
         ("qwen", "qwen2-5-72b-20240919", "max_output_tokens"),
         ("qwen", "qwen3-0-6b-20250429", "max_context_tokens"),
@@ -130,6 +104,39 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         missing, documented,
         "Check official model limits and doc/aicc/driver_metadata_review_20260926.md"
     );
+}
+
+#[test]
+fn reviewed_vendor_token_limits_match_official_hard_limits() {
+    let catalog = builtin_catalog();
+    let expected = [
+        ("kimi", "kimi-k3", 1_048_576, 1_048_576),
+        ("minimax", "MiniMax-M3", 1_000_000, 524_288),
+        ("doubao", "doubao-seed-2.1-lite", 1_048_576, 262_144),
+        ("doubao", "doubao-seed-2.1-turbo", 262_144, 262_144),
+        ("doubao", "doubao-seed-2.1-pro", 1_048_576, 262_144),
+        ("doubao", "doubao-seed-evolving", 1_048_576, 262_144),
+        ("doubao", "doubao-seed-2-1-turbo-260628", 262_144, 262_144),
+        ("doubao", "doubao-seed-character", 128_000, 32_000),
+        ("doubao", "doubao-seed-translation", 4_000, 3_000),
+        ("doubao", "doubao-seed-2.0-code-preview", 256_000, 128_000),
+    ];
+    for (driver, model, context, output) in expected {
+        let capabilities = catalog
+            .resolve_model(driver, model)
+            .unwrap()
+            .semantics
+            .capabilities
+            .unwrap();
+        assert_eq!(
+            capabilities["max_context_tokens"], context,
+            "{driver}/{model} context"
+        );
+        assert_eq!(
+            capabilities["max_output_tokens"], output,
+            "{driver}/{model} output"
+        );
+    }
 }
 
 pub(crate) fn definition(path: &str) -> LogicalModelDefinition {

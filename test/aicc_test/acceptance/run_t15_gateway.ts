@@ -287,7 +287,7 @@ async function selectMock(
       contract_id: testCase.protocol_contract_id,
       api_type: testCase.api_type,
       scenario: testCase.mock_scenario,
-      selection_seed: selectionSeed,
+      selection_seed: `${selectionSeed ?? "t15"}:${testCase.case_id}`,
     }),
   });
   if (!response.ok) {
@@ -1307,6 +1307,11 @@ async function executeCase(
   let terminalValue: unknown;
   try {
     selectedExactModel = exactModel(catalog, testCase, inventory);
+    const contract = protocolContract(
+      catalog,
+      testCase.provider_driver!,
+      testCase.protocol_contract_id!,
+    );
     let historyMessage: Record<string, unknown> | undefined;
     if (
       testCase.tags.includes("native_history") ||
@@ -1337,14 +1342,17 @@ async function executeCase(
     }
     const result = await session.aicc.call(
       testCase.method,
-      buildT15TypedParams(
-        testCase.api_type!,
-        selectedExactModel,
-        runId,
-        testCase.execution_mode,
-        testCase.case_id,
-        { historyMessage },
-      ),
+      {
+        ...buildT15TypedParams(
+          testCase.api_type!,
+          selectedExactModel,
+          runId,
+          testCase.execution_mode,
+          testCase.case_id,
+          { historyMessage },
+        ),
+        ...(contract.canonical_request_overrides ?? {}),
+      },
     ) as Record<string, unknown>;
     if (testCase.mock_scenario === "async_cancel") {
       if (result.status !== "running" || typeof result.task_id !== "string") {
@@ -1378,15 +1386,29 @@ async function executeCase(
             testCase.protocol_contract_id!,
           ),
         );
-        if (testCase.tags.includes("task_result_artifact")) {
-          const resultPayload = taskResultPayload(terminalValue);
-          if (containsBase64Resource(resultPayload)) {
-            throw new Error(
-              `TaskMgr result retained inline base64 resource instead of a stable artifact reference: ${
-                artifactResultSummary(terminalValue)
-              }`,
-            );
+        const resultPayload = taskResultPayload(terminalValue);
+        if (containsBase64Resource(resultPayload)) {
+          throw new Error(
+            `TaskMgr result retained inline base64 ResourceRef: ${artifactResultSummary(terminalValue)}`,
+          );
+        }
+        if (testCase.tags.includes("inline_artifact_provider_state")) {
+          for (const pointer of contract.inline_artifact_payload_paths ?? []) {
+            const payload = pointer.split("/").slice(1).reduce<unknown>((current, segment) => {
+              if (Array.isArray(current)) return current[Number(segment)];
+              if (current && typeof current === "object") {
+                return (current as Record<string, unknown>)[segment];
+              }
+              return undefined;
+            }, contract.inline_artifact_success_fixture);
+            if (typeof payload === "string" && containsString(resultPayload, payload)) {
+              throw new Error(
+                `TaskMgr result retained Provider inline artifact payload from ${pointer}`,
+              );
+            }
           }
+        }
+        if (testCase.tags.includes("task_result_artifact")) {
           if (!hasReferencedArtifact(resultPayload)) {
             throw new Error(
               `TaskMgr result did not expose a named object or URL artifact reference: ${

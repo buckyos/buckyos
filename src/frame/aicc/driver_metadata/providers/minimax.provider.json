@@ -2,8 +2,24 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 4,
+  "revision_seq": 6,
   "provider_profile_id": "minimax",
+  "static_inventory_models": [
+    "asr-1.0",
+    "speech-2.8-hd",
+    "speech-2.8-turbo",
+    "image-01",
+    "MiniMax-H3",
+    "MiniMax-H3-Max"
+  ],
+  "supplemental_inventory_api_types": [
+    "audio.asr",
+    "audio.tts",
+    "image.txt2img",
+    "image.img2img",
+    "video.txt2video",
+    "video.img2video"
+  ],
   "models": [
     {
       "id": "asr-1.0",
@@ -55,7 +71,7 @@
       }
     },
     {
-      "id": "music-2.0",
+      "id": "music-3.0",
       "operations": {
         "audio.music": "music_generation.create"
       }

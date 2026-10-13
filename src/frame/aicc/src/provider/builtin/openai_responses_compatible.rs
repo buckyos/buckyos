@@ -378,34 +378,6 @@ struct ModelObject {
 
 #[async_trait]
 impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
-    fn match_model_driver(
-        &self,
-        id: &str,
-        catalog: &crate::catalog::CatalogSnapshot,
-    ) -> crate::catalog::ProviderModelMatch {
-        use crate::catalog::{ModelIdentity, ModelMatchFailure, ProviderModelMatch};
-        if self.provider_profile_id == DEEPSEEK_PROFILE_ID {
-            if matches!(
-                id,
-                "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" | "deepseek-flash"
-            ) {
-                let model = "deepseek-v4.1-flash";
-                return if catalog.resolve_model("deepseek", model).is_ok() {
-                    ProviderModelMatch::Matched(ModelIdentity {
-                        model_driver_id: "deepseek".into(),
-                        model_id: model.into(),
-                    })
-                } else {
-                    ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
-                };
-            }
-            if matches!(id, "deepseek-chat" | "deepseek-reasoner") {
-                return ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias);
-            }
-        }
-        ProviderModelMatch::NotHandled
-    }
-
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,
@@ -963,19 +935,28 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 12,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 9,
-                    QWEN_PROFILE_ID | DEEPSEEK_PROFILE_ID | "openai" => 4,
+                    DOUBAO_PROFILE_ID => 13,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 10,
+                    DEEPSEEK_PROFILE_ID => 5,
+                    QWEN_PROFILE_ID | "openai" => 4,
                     _ => 3,
                 }
             );
             if matches!(
                 provider.profile.provider_profile_id.as_str(),
-                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID
+                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID | DEEPSEEK_PROFILE_ID | "minimax"
             ) {
-                assert!(!rules.models.is_empty());
+                assert!(
+                    !rules.models.is_empty(),
+                    "{}",
+                    provider.profile.provider_profile_id
+                );
             } else {
-                assert!(rules.models.is_empty());
+                assert!(
+                    rules.models.is_empty(),
+                    "{}",
+                    provider.profile.provider_profile_id
+                );
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
                 DOUBAO_PROFILE_ID => 7,
@@ -1225,6 +1206,16 @@ mod tests {
                 );
             }
         }
+        let doubao_rules = doubao().provider_rules(7);
+        let pro_260628 = doubao_rules
+            .models
+            .iter()
+            .find(|model| model.id == "doubao-seed-2-1-pro-260628")
+            .unwrap();
+        assert_eq!(
+            pro_260628.capability_limits["max_context_tokens"],
+            json!(262_144)
+        );
     }
 
     #[test]

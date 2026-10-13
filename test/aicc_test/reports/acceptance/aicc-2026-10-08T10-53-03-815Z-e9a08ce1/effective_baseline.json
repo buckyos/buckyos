@@ -1,0 +1,840 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-08T10:55:07.867Z",
+  "source_baseline_revision": "2026-10-08.3",
+  "official_catalog_fetched_at": "2026-10-08T10:53:04.048Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "154f089efa674c482c44d654434d4be5acfaa161ecd350d55870c00278980c3f",
+      "refresh_inventory_revision": "8:1791436096660",
+      "unmatched_count": 0,
+      "after_inventory_revision": "154f089efa674c482c44d654434d4be5acfaa161ecd350d55870c00278980c3f"
+    },
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "minimax-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+      "refresh_inventory_revision": "8:1791436096660",
+      "unmatched_count": 0,
+      "after_inventory_revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "10:1791436096660",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "glm-chat",
+        "provider_instance_name": "glm-main",
+        "provider_profile_id": "glm",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://openspeech.bytedance.com/api/v3/tts",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-speech-main",
+        "provider_profile_id": "doubao-speech",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-main",
+        "provider_profile_id": "doubao",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.deepseek.com",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "deepseek-responses",
+        "provider_instance_name": "deepseek-main",
+        "provider_profile_id": "deepseek",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimax.cn/anthropic",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-main",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimaxi.com/anthropic",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791456785867,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 14,
+          "revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "MiniMax-H3",
+            "MiniMax-H3-Max",
+            "MiniMax-M3",
+            "asr-1.0"
+          ],
+          "updated_at_ms": 1791456785867
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-t2",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.moonshot.cn/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791456786003,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 4,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-k3"
+          ],
+          "updated_at_ms": 1791456786003
+        },
+        "protocol_adapter_id": "kimi-chat",
+        "provider_instance_name": "kimi-t2",
+        "provider_profile_id": "kimi",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 423
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "inventory_revision": "official-snapshot-2026-10-08T10:53:04.048Z",
+      "models": [
+        {
+          "provider_model_id": "kimi-k2.7-code-highspeed"
+        },
+        {
+          "provider_model_id": "kimi-k3"
+        }
+      ]
+    },
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "minimax-t2",
+      "inventory_revision": "official-snapshot-2026-10-08T10:53:04.048Z",
+      "models": [
+        {
+          "provider_model_id": "asr-1.0"
+        },
+        {
+          "provider_model_id": "image-01"
+        },
+        {
+          "provider_model_id": "MiniMax-H3"
+        },
+        {
+          "provider_model_id": "MiniMax-H3-Max"
+        },
+        {
+          "provider_model_id": "speech-2.8-hd"
+        },
+        {
+          "provider_model_id": "speech-2.8-turbo"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "inventory_revision": "154f089efa674c482c44d654434d4be5acfaa161ecd350d55870c00278980c3f",
+      "models": [
+        {
+          "exact_model": "kimi-k2.6:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.6:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6:reasoning-none@kimi-t2",
+          "provider_model_id": "kimi-k2.6:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6@kimi-t2",
+          "provider_model_id": "kimi-k2.6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code-highspeed:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code-highspeed:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-high@kimi-t2",
+          "provider_model_id": "kimi-k3:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-low@kimi-t2",
+          "provider_model_id": "kimi-k3:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-max@kimi-t2",
+          "provider_model_id": "kimi-k3:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3@kimi-t2",
+          "provider_model_id": "kimi-k3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    },
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "minimax-t2",
+      "inventory_revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+      "models": [
+        {
+          "exact_model": "MiniMax-H3-Max@minimax-t2",
+          "provider_model_id": "MiniMax-H3-Max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.img2video",
+            "video.txt2video"
+          ],
+          "logical_mounts": [
+            "video.img2video.minimax",
+            "video.img2video.minimax-h3-max",
+            "video.img2video.minimax_h3",
+            "video.txt2video.minimax",
+            "video.txt2video.minimax-h3-max",
+            "video.txt2video.minimax.minimax-h3-max",
+            "video.txt2video.minimax_h3"
+          ]
+        },
+        {
+          "exact_model": "MiniMax-H3@minimax-t2",
+          "provider_model_id": "MiniMax-H3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.img2video",
+            "video.txt2video"
+          ],
+          "logical_mounts": [
+            "video.img2video.minimax",
+            "video.img2video.minimax-h3",
+            "video.img2video.minimax_h3",
+            "video.txt2video.minimax",
+            "video.txt2video.minimax-h3",
+            "video.txt2video.minimax.minimax-h3",
+            "video.txt2video.minimax_h3"
+          ]
+        },
+        {
+          "exact_model": "MiniMax-M2.1-highspeed@minimax-t2",
+          "provider_model_id": "MiniMax-M2.1-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.1@minimax-t2",
+          "provider_model_id": "MiniMax-M2.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5-highspeed@minimax-t2",
+          "provider_model_id": "MiniMax-M2.5-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5@minimax-t2",
+          "provider_model_id": "MiniMax-M2.5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.7-highspeed@minimax-t2",
+          "provider_model_id": "MiniMax-M2.7-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.7@minimax-t2",
+          "provider_model_id": "MiniMax-M2.7",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2@minimax-t2",
+          "provider_model_id": "MiniMax-M2",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M3@minimax-t2",
+          "provider_model_id": "MiniMax-M3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "asr-1.0@minimax-t2",
+          "provider_model_id": "asr-1.0",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr"
+          ],
+          "logical_mounts": [
+            "audio.asr.asr-1-0",
+            "audio.asr.minimax"
+          ]
+        },
+        {
+          "exact_model": "image-01@minimax-t2",
+          "provider_model_id": "image-01",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img"
+          ],
+          "logical_mounts": [
+            "image.img2img.image-01",
+            "image.img2img.minimax",
+            "image.txt2img.image-01",
+            "image.txt2img.minimax",
+            "image.txt2img.minimax.image-01"
+          ]
+        },
+        {
+          "exact_model": "speech-2.8-hd@minimax-t2",
+          "provider_model_id": "speech-2.8-hd",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.tts"
+          ],
+          "logical_mounts": [
+            "audio.tts.minimax",
+            "audio.tts.minimax.speech-2-8-hd",
+            "audio.tts.speech-2-8-hd"
+          ]
+        },
+        {
+          "exact_model": "speech-2.8-turbo@minimax-t2",
+          "provider_model_id": "speech-2.8-turbo",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.tts"
+          ],
+          "logical_mounts": [
+            "audio.tts.minimax-turbo",
+            "audio.tts.minimax.speech-2-8-turbo",
+            "audio.tts.speech-2-8-turbo"
+          ]
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "provider_model_id": "MiniMax-H3-Max",
+      "physical_model_id": "MiniMax-H3-Max",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "provider_model_id": "MiniMax-H3",
+      "physical_model_id": "MiniMax-H3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "provider_model_id": "MiniMax-H3-Max",
+      "physical_model_id": "MiniMax-H3-Max",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "provider_model_id": "MiniMax-H3",
+      "physical_model_id": "MiniMax-H3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-h3.video.img2video",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ]
+    }
+  ]
+}

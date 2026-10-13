@@ -126,9 +126,12 @@ import {
   validateNamedArtifact,
 } from "./artifact_validation.ts";
 import {
+  assertJudgeModelAvailable,
+  judgeProviderDriver,
   outputResources,
   parseJudgeVerdict,
   responseText,
+  runJudge,
   selectJudgeModel,
 } from "./judge.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
@@ -249,6 +252,22 @@ function t15ProviderRequest(
       target = target[token] as Record<string, unknown>;
     }
     target[tokens.at(-1)!] = value;
+  }
+  for (const [pointer, value] of Object.entries(contract.json_string_body_values ?? {})) {
+    const tokens = pointer.split("/").slice(1).map((token) =>
+      token.replace(/~1/g, "/").replace(/~0/g, "~")
+    );
+    let target = fields as Record<string, unknown>;
+    for (const token of tokens.slice(0, -1)) {
+      if (
+        target[token] === null || typeof target[token] !== "object" ||
+        Array.isArray(target[token])
+      ) {
+        target[token] = {};
+      }
+      target = target[token] as Record<string, unknown>;
+    }
+    target[tokens.at(-1)!] = JSON.stringify(value);
   }
   for (const pointer of contract.required_body_paths ?? []) {
     const tokens = pointer.split("/").slice(1).map((token) =>
@@ -455,6 +474,19 @@ test("judge model selection prefers current exact Gemini and honors overrides", 
     "gemini-3.7-flash@google-gemini-main",
   );
   assert.equal(selectJudgeModel("custom@judge", inventories), "custom@judge");
+  assert.doesNotThrow(() =>
+    assertJudgeModelAvailable("gemini-3.7-flash@google-gemini-main", inventories)
+  );
+  assert.throws(
+    () => assertJudgeModelAvailable("missing@judge", inventories),
+    /not present in the selected Provider inventories/,
+  );
+  assert.doesNotThrow(() => assertJudgeModelAvailable("llm.logical.judge", inventories));
+  assert.equal(
+    judgeProviderDriver("gemini-3.7-flash@google-gemini-main", inventories),
+    "google-gemini",
+  );
+  assert.equal(judgeProviderDriver("llm.logical.judge", inventories), "judge");
 });
 
 test("Judge verdict parser enforces the requested strict schema", () => {
@@ -483,6 +515,53 @@ test("Judge verdict parser enforces the requested strict schema", () => {
   );
 });
 
+test("Judge request uses the canonical nested JSON schema response format", async () => {
+  let captured: Record<string, unknown> | undefined;
+  await runJudge({
+    aicc: {} as never,
+    taskManager: {} as never,
+    model: "judge-model@judge-provider",
+    runId: "judge-run",
+    caseId: "judge-case",
+    rubricVersion: "test",
+    rubric: ["output is correct"],
+    testedModel: "tested-model@tested-provider",
+    testedProviderInstance: "tested-provider",
+    preferDifferentProvider: true,
+    threshold: 0.7,
+    testedRequest: {},
+    terminalResponse: {},
+    timeoutMs: 1_000,
+    invoke: (request) => {
+      captured = request;
+      return Promise.resolve({
+        task_id: "judge-task",
+        status: "succeeded",
+        result: { message: { content: '{"pass":true,"score":1,"reason":"ok"}' } },
+      });
+    },
+  });
+  const inputJson = ((captured?.payload as Record<string, unknown>).input_json as Record<string, unknown>);
+  assert.match(JSON.stringify(inputJson.messages), /do not require an output attachment/);
+  assert.deepEqual(inputJson.response_format, {
+    type: "json_schema",
+    json_schema: {
+      name: "aicc_t2_judge_verdict",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          pass: { type: "boolean" },
+          score: { type: "number", minimum: 0, maximum: 1 },
+          reason: { type: "string", maxLength: 240 },
+        },
+        required: ["pass", "score", "reason"],
+        additionalProperties: false,
+      },
+    },
+  });
+});
+
 test("shared TOML parser accepts finite decimal and exponent numbers", () => {
   assert.deepEqual(parseToml("cost = 0.01\nsmall = -2.5e-3\nwhole = 8\n"), {
     cost: 0.01,
@@ -495,7 +574,12 @@ test("shared TOML parser accepts finite decimal and exponent numbers", () => {
 test("Judge text extraction ignores echoed Provider request bodies", () => {
   const texts = responseText({
     result: {
-      message: { content: [{ type: "text", text: '{"pass":true}' }] },
+      message: {
+        content: [
+          { type: "text", text: '{"pass":true}' },
+          { type: "thinking", text: "untrusted private reasoning" },
+        ],
+      },
       extra: {
         candidate_text: "untrusted duplicated transcript",
         provider_io: {
@@ -603,6 +687,74 @@ test("official catalog fetches paginated Provider inventory independently of AIC
   });
   assert.deepEqual(ids, ["claude-fable-5", "claude-opus-5"]);
   assert.equal(requests[1].searchParams.get("after_id"), "page-1");
+});
+
+test("official catalog endpoint can follow an explicitly configured Provider region", async () => {
+  const providerBaseline = await baseline();
+  const requests: URL[] = [];
+  await fetchOfficialCatalogs({
+    baseline: providerBaseline,
+    drivers: ["minimax"],
+    instanceNames: { minimax: "minimax-cn" },
+    tokens: { minimax: "catalog-test-token" },
+    endpointOverrides: {
+      minimax: "https://api.minimaxi.com/anthropic/v1/models",
+    },
+    timeoutMs: 1_000,
+    fetcher: async (input) => {
+      requests.push(new URL(input.toString()));
+      return new Response(JSON.stringify({ data: [{ id: "MiniMax-M3" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  assert.equal(requests[0].toString(), "https://api.minimaxi.com/anthropic/v1/models");
+});
+
+test("MiniMax official documentation supplements media models omitted by models API", async () => {
+  const providerBaseline = await baseline();
+  const inventory = (await fetchOfficialCatalogs({
+    baseline: providerBaseline,
+    drivers: ["minimax"],
+    instanceNames: { minimax: "minimax-cn" },
+    tokens: { minimax: "catalog-test-token" },
+    timeoutMs: 1_000,
+    fetcher: async () => new Response(JSON.stringify({
+      data: [{ id: "MiniMax-M3" }],
+    }), { status: 200 }),
+  }))[0];
+  assert.deepEqual(
+    inventory.models.map((model) => model.provider_model_id),
+    [
+      "asr-1.0",
+      "image-01",
+      "MiniMax-H3",
+      "MiniMax-H3-Max",
+      "MiniMax-M3",
+      "speech-2.8-hd",
+      "speech-2.8-turbo",
+    ],
+  );
+});
+
+test("Kimi account inventory is never supplemented from public documentation", async () => {
+  const providerBaseline = await baseline();
+  const inventory = (await fetchOfficialCatalogs({
+    baseline: providerBaseline,
+    drivers: ["kimi"],
+    instanceNames: { kimi: "kimi-main" },
+    tokens: { kimi: "catalog-test-token" },
+    timeoutMs: 1_000,
+    fetcher: async () => new Response(JSON.stringify({
+      object: "list",
+      data: [{ id: "kimi-k2.6", object: "model" }],
+    }), { status: 200 }),
+  }))[0];
+  assert.deepEqual(
+    inventory.models.map((model) => model.provider_model_id),
+    ["kimi-k2.6"],
+  );
 });
 
 test("Doubao official catalog preserves lifecycle and task evidence without cross-product speech inventory", async () => {
@@ -1603,6 +1755,16 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
   assert.deepEqual(providers[1].credentials, {
     api_token: { inline_secret: "mock-a-run-one" },
   });
+  assert.deepEqual(providers[5].instance_rules, {
+    enabled_inventory_models: [
+      "asr-1.0",
+      "speech-2.8-hd",
+      "speech-2.8-turbo",
+      "image-01",
+      "MiniMax-H3",
+      "MiniMax-H3-Max",
+    ],
+  });
   assert.deepEqual(
     providers.slice(10).map((
       item,
@@ -1811,16 +1973,22 @@ test("Provider credentials accept TOML values or provider-specific environment v
   }, (name) => {
     if (name === "AICC_CLAUDE_API_TOKEN") return "env-claude";
     if (name === "AICC_GLM_API_TOKEN") return "env-glm";
+    if (name === "AICC_DEEPSEEK_API_TOKEN") return "env-deepseek";
+    if (name === "AICC_KIMI_API_TOKEN") return "env-kimi";
     if (name === "AICC_DOUBAO_API_TOKEN") return "env-doubao";
     if (name === "AICC_DOUBAO_AGENT_PLAN_API_TOKEN") return "env-doubao-agent-plan";
+    if (name === "AICC_QWEN_API_TOKEN") return "env-qwen";
     return undefined;
   });
   assert.deepEqual(tokens, {
     openai: "toml-openai",
     claude: "env-claude",
     glm: "env-glm",
+    deepseek: "env-deepseek",
+    kimi: "env-kimi",
     doubao: "env-doubao",
     "doubao-agent-plan": "env-doubao-agent-plan",
+    qwen: "env-qwen",
   });
 });
 
@@ -1857,6 +2025,17 @@ test("Provider credential overrides apply configured static inventory subsets", 
     "asr.recognize.flash": "https://openspeech.bytedance.com/api/v3/auc/bigmodel",
   });
 
+  const qwenRules = configuredProviderInstanceOverrides({
+    "provider_credentials.qwen.workspace": "qwen-workspace",
+  });
+  const qwenPatched = applyProviderTokens(
+    {},
+    { qwen: "qwen-token" },
+    { qwen: "qwen-t2" },
+    qwenRules,
+  ) as { providers: Array<Record<string, unknown>> };
+  assert.equal(qwenPatched.providers[0].workspace, "qwen-workspace");
+
   const scoped = scopeOfficialInventoriesToInstanceRules([{
     provider_driver: "doubao-speech",
     provider_instance_name: "doubao-speech-t2",
@@ -1876,15 +2055,17 @@ test("Provider credentials create one current-schema instance when the section i
   const patched = applyProviderTokens({}, {
     openai: "openai-token",
     "google-gemini": "gemini-token",
+    kimi: "kimi-token",
     openrouter: "router-token",
     glm: "glm-token",
+    deepseek: "deepseek-token",
     doubao: "doubao-token",
     "doubao-agent-plan": "doubao-agent-plan-token",
   }, {}) as { providers: Array<Record<string, unknown>> };
-  assert.equal(patched.providers.length, 6);
+  assert.equal(patched.providers.length, 8);
   assert.deepEqual(
     patched.providers.map((instance) => instance.provider_profile_id),
-    ["openai", "gemini", "openrouter", "glm", "doubao", "doubao-agent-plan"],
+    ["openai", "gemini", "kimi", "openrouter", "glm", "deepseek", "doubao", "doubao-agent-plan"],
   );
   assert.equal(
     patched.providers[1].provider_instance_name,
@@ -1894,20 +2075,26 @@ test("Provider credentials create one current-schema instance when the section i
     patched.providers[1].base_url,
     "https://generativelanguage.googleapis.com/v1beta",
   );
-  assert.equal(patched.providers[3].provider_instance_name, "glm-main");
-  assert.equal(patched.providers[3].base_url, "https://api.z.ai/api/paas/v4");
-  assert.equal(patched.providers[4].provider_instance_name, "doubao-main");
+  assert.equal(patched.providers[2].provider_instance_name, "kimi-main");
+  assert.equal(patched.providers[2].base_url, "https://api.moonshot.cn/v1");
+  assert.equal(patched.providers[2].protocol_adapter_id, "kimi-chat");
+  assert.equal(patched.providers[4].provider_instance_name, "glm-main");
+  assert.equal(patched.providers[4].base_url, "https://api.z.ai/api/paas/v4");
+  assert.equal(patched.providers[5].provider_instance_name, "deepseek-main");
+  assert.equal(patched.providers[5].base_url, "https://api.deepseek.com");
+  assert.equal(patched.providers[5].protocol_adapter_id, "deepseek-responses");
+  assert.equal(patched.providers[6].provider_instance_name, "doubao-main");
   assert.equal(
-    patched.providers[4].base_url,
+    patched.providers[6].base_url,
     "https://ark.cn-beijing.volces.com/api/v3",
   );
-  assert.equal(patched.providers[4].protocol_adapter_id, "doubao-responses");
-  assert.equal(patched.providers[5].provider_instance_name, "doubao-agent-plan-main");
+  assert.equal(patched.providers[6].protocol_adapter_id, "doubao-responses");
+  assert.equal(patched.providers[7].provider_instance_name, "doubao-agent-plan-main");
   assert.equal(
-    patched.providers[5].base_url,
+    patched.providers[7].base_url,
     "https://ark.cn-beijing.volces.com/api/plan/v3",
   );
-  assert.equal(patched.providers[5].protocol_adapter_id, "doubao-responses");
+  assert.equal(patched.providers[7].protocol_adapter_id, "doubao-responses");
 });
 
 test("Provider credentials create an explicitly named run-scoped instance without rewriting an existing account type", () => {
@@ -2632,6 +2819,103 @@ test("T2 artifact downloads go through the authenticated AICC endpoint", async (
       artifact_id: "provider-artifact-1",
     },
   }]);
+});
+
+test("T2 request defaults are driven by the capability baseline cell", () => {
+  const request = buildExactRequest({
+    cell: {
+      case_id: "minimax-video",
+      provider_driver: "minimax",
+      provider_instance: "minimax-main",
+      exact_model: "MiniMax-H3-Max@minimax-main",
+      provider_model_id: "MiniMax-H3-Max",
+      api_type: "video.txt2video",
+      method: "video.txt2video",
+      baseline_status: "active",
+      input_kinds: ["text"],
+      output_kinds: ["video"],
+      request_defaults: { duration_seconds: 5, resolution: "480p" },
+      source_urls: [],
+    },
+    runId: "run",
+    fixtures: {},
+  });
+  assert.equal(
+    ((request.payload as { input_json: Record<string, unknown> }).input_json).duration_seconds,
+    5,
+  );
+  assert.equal(
+    ((request.payload as { input_json: Record<string, unknown> }).input_json).resolution,
+    "480p",
+  );
+});
+
+test("T2 generated media requests use minimum-cost output settings", async () => {
+  const request = (apiType: string, requestDefaults?: Record<string, unknown>) => buildExactRequest({
+    cell: {
+      case_id: apiType,
+      provider_driver: "test",
+      provider_instance: "test-main",
+      exact_model: "model@test-main",
+      provider_model_id: "model",
+      api_type: apiType,
+      method: apiType === "image.txt2img" ? "images.generate" : apiType,
+      baseline_status: "active",
+      input_kinds: ["text"],
+      output_kinds: [apiType.split(".")[0]],
+      request_defaults: requestDefaults,
+      source_urls: [],
+    },
+    runId: "run",
+    fixtures: {},
+  }).payload as { input_json: Record<string, unknown> };
+
+  assert.deepEqual(request("image.txt2img", {
+    size: "1024x1024",
+    quality: "low",
+  }).input_json, {
+    prompt: "A blue square containing 4827",
+    n: 1,
+    size: "1024x1024",
+    quality: "low",
+  });
+  assert.deepEqual(request("video.txt2video", {
+    resolution: "480p",
+    generate_audio: false,
+  }).input_json, {
+    prompt: "A paper plane moving across a desk",
+    duration_seconds: 4,
+    resolution: "480p",
+    generate_audio: false,
+  });
+  assert.deepEqual(request("audio.music").input_json, {
+    prompt: "A four-second calm ambient instrumental test tone, very slow and quiet, with no vocals, no speech, no samples, no percussion, and no dance beat",
+    duration_seconds: 4,
+    instrumental: true,
+  });
+
+  const providerBaseline = await baseline();
+  const defaults = (provider: string, pattern: string, apiType: string) =>
+    providerBaseline.providers.find((item) => item.provider_driver === provider)?.rules
+      .find((rule) => rule.model_pattern === pattern)?.request_defaults?.[apiType];
+  assert.deepEqual(defaults("openai", "gpt-image-*", "image.txt2img"), {
+    n: 1,
+    size: "1024x1024",
+    quality: "low",
+  });
+  assert.deepEqual(defaults("google-gemini", "veo-3.1-*", "video.txt2video"), {
+    duration_seconds: 4,
+    resolution: "720p",
+  });
+  assert.deepEqual(defaults("minimax", "MiniMax-H3*", "video.txt2video"), {
+    duration_seconds: 5,
+    resolution: "480p",
+  });
+  assert.deepEqual(defaults("doubao", "doubao-seedance-2-0-260128", "video.txt2video"), {
+    duration_seconds: 4,
+    resolution: "480p",
+    generate_audio: false,
+  });
 });
 
 test("T2 multimodal embedding request honors the selected input combination", () => {
@@ -3602,6 +3886,7 @@ test("T1.5 URL artifact server preserves signed URLs and rejects Provider creden
       contract_id: "doubao.images.v3",
       api_type: "image.txt2img",
       scenario: "success",
+      selection_seed: "artifact-run-1",
     }),
   })).status, 200);
   const generated = await fetch(`${providerBase}/api/v3/images/generations`, {
@@ -3617,6 +3902,7 @@ test("T1.5 URL artifact server preserves signed URLs and rejects Provider creden
   const artifactUrl = ((await generated.json()) as { data: Array<{ url: string }> }).data[0].url;
   assert.equal(new URL(artifactUrl).port, String(artifactAddress.port));
   assert.notEqual(new URL(artifactUrl).origin, providerBase);
+  assert.equal(new URL(artifactUrl).searchParams.get("aicc_mock_selection"), "artifact-run-1");
   const artifact = await fetch(artifactUrl);
   assert.equal(artifact.status, 200);
   assert.deepEqual([...new Uint8Array(await artifact.arrayBuffer())], [0xff, 0xd8, 0xff, 0xd9]);
@@ -4620,6 +4906,10 @@ test("report redaction removes secrets and totals statuses", () => {
   );
   assert.equal(
     isProviderRestricted(new Error("Doubao TTS Authentication: Invalid X-Api-Key")),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(new Error("Not found the model kimi-k3 or Permission denied")),
     true,
   );
   assert.equal(

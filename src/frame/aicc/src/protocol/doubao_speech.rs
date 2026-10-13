@@ -217,16 +217,12 @@ impl OperationCodec for DoubaoTtsCodec {
             req_params.insert("model".to_owned(), json!(model));
         }
         if wire_profile == "standard" {
+            let mut additions = Map::new();
             if let Some(language) = &request.voice.language {
-                let additions = serde_json::to_string(&json!({
-                    "explicit_language": explicit_language(language)?
-                }))
-                .map_err(|_| {
-                    ProtocolError::invalid_configuration(
-                        "Doubao TTS additions could not be serialized",
-                    )
-                })?;
-                req_params.insert("additions".to_owned(), json!(additions));
+                additions.insert(
+                    "explicit_language".to_owned(),
+                    json!(explicit_language(language)?),
+                );
             }
             if let Some(instructions) = request
                 .voice
@@ -234,7 +230,15 @@ impl OperationCodec for DoubaoTtsCodec {
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
             {
-                req_params.insert("context_texts".to_owned(), json!([instructions]));
+                additions.insert("context_texts".to_owned(), json!([instructions]));
+            }
+            if !additions.is_empty() {
+                let additions = serde_json::to_string(&additions).map_err(|_| {
+                    ProtocolError::invalid_configuration(
+                        "Doubao TTS additions could not be serialized",
+                    )
+                })?;
+                req_params.insert("additions".to_owned(), json!(additions));
             }
         }
         let body = json!({"req_params": Value::Object(req_params)});
@@ -892,14 +896,21 @@ fn auc_error(response: &HttpResponse, code: Option<&str>) -> ProtocolError {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| response.request_id.clone());
-    ProtocolError::new(
-        super::protocol_error_kind_from_http_status(response.status),
-        message,
-    )
-    .with_provider_code(code.map(str::to_owned))
-    .with_http_status(response.status.as_u16())
-    .with_request_id(Some(logid))
-    .with_retry_after(response.retry_after)
+    let kind = match code {
+        Some("20000003" | "45000001" | "45000002" | "45000132" | "45000151") => {
+            ProtocolErrorKind::InvalidRequest
+        }
+        Some("45000010") => ProtocolErrorKind::Authentication,
+        Some("45000131") => ProtocolErrorKind::Transport,
+        Some(code) if code.starts_with("550") => ProtocolErrorKind::Transport,
+        Some(_) if response.status.is_success() => ProtocolErrorKind::ProviderRejected,
+        _ => super::protocol_error_kind_from_http_status(response.status),
+    };
+    ProtocolError::new(kind, message)
+        .with_provider_code(code.map(str::to_owned))
+        .with_http_status(response.status.as_u16())
+        .with_request_id(Some(logid))
+        .with_retry_after(response.retry_after)
 }
 
 fn ensure_auc_success(response: &HttpResponse) -> ProtocolResultValue<()> {
@@ -1391,11 +1402,45 @@ mod tests {
         assert_eq!(body["req_params"]["audio_params"]["format"], "ogg_opus");
         assert_eq!(body["req_params"]["audio_params"]["sample_rate"], 48000);
         assert_eq!(body["req_params"]["audio_params"]["speech_rate"], 25);
-        assert_eq!(body["req_params"]["context_texts"], json!(["Speak calmly"]));
+        assert!(body["req_params"]["context_texts"].is_null());
         assert_eq!(
             body["req_params"]["additions"],
-            json!("{\"explicit_language\":\"en\"}")
+            json!("{\"context_texts\":[\"Speak calmly\"],\"explicit_language\":\"en\"}")
         );
+    }
+
+    #[test]
+    fn auc_business_codes_override_successful_http_status() {
+        let response = |code: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_static("x-api-status-code"),
+                HeaderValue::from_static(code),
+            );
+            HttpResponse {
+                status: StatusCode::OK,
+                headers,
+                body: Bytes::new(),
+                request_id: "request-1".to_owned(),
+                retry_after: None,
+            }
+        };
+        for code in ["20000003", "45000002", "45000151"] {
+            let response = response(code);
+            let error = auc_error(&response, Some(code));
+            assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+            assert!(!error.retry_same_model());
+        }
+        for code in ["45000131", "55000031"] {
+            let response = response(code);
+            let error = auc_error(&response, Some(code));
+            assert_eq!(error.kind, ProtocolErrorKind::Transport);
+            assert!(error.retry_same_model());
+        }
+        let response = response("45000999");
+        let error = auc_error(&response, Some("45000999"));
+        assert_eq!(error.kind, ProtocolErrorKind::ProviderRejected);
+        assert!(!error.retry_same_model());
     }
 
     #[test]

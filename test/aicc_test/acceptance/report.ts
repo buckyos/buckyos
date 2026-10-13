@@ -50,6 +50,7 @@ export function isProviderRestricted(error: unknown): boolean {
     message.includes("accessdenied") ||
     message.includes("do not have access to the requested resource") ||
     message.includes("invalid x-api-key") ||
+    (message.includes("permission denied") && /not found (?:the )?model/.test(message)) ||
     (message.includes("invalidendpointormodel.notfound") &&
       message.includes("do not have access")) ||
     ((message.includes("unsupportedmodel") || message.includes("requested model does not support")) &&

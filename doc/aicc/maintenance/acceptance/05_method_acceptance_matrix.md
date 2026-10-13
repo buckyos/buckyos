@@ -89,6 +89,8 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 
 Protocol Adapter 的结构验收同时是发布门禁：OpenAI、Claude、Gemini 必须覆盖官方新接口；历史 API 代际只在首个真实 Provider 需求出现时按需实现，注册后由所有兼容 Provider 共享。每个实际注册的 API 代际使用不同 `protocol_adapter_id`，但只运行一套共享 contract test；第二、第三个 Provider 不得复制历史 wire protocol 实现或整套 contract test。不同 API 代际 Adapter 不得相互 fallback，只允许复用协议中立组件。自定义 Provider 必须验证接入测试优先选择新接口、按序尝试已注册历史接口、非协议错误停止探测并持久化 resolved Adapter；用户不选择 API 代际。派生 Adapter 必须暴露独立 ID 和 `base_adapter_id`，并只测试渠道差异及委托关系。SN 必须分别通过 API Key、动态登录、token 过期刷新和认证失败测试，并通过“移除 SN 后 `openai-responses` 测试与行为不变”的删除性测试。
 
+Adapter review checklist 还必须逐项检查：所有 provider-native 二进制响应字段是否在 decode 阶段转成 `ResourceRef`；同一原生 item 被保留为 ProviderState 时是否复用该引用；同坐标 replay 是否按字段要求选择 bytes 或 URL 并恢复官方 wire 形态；物化后的 typed output、artifact metadata 和 ProviderState 是否都不存在 inline payload；大结果是否在 usage/billing、staging 和 `runner_complete` 之前被公共大小门禁拦截。未知 opaque block 不得用“看起来像 base64”的正则误判，但新增官方二进制字段必须补 schema-aware fixture。
+
 真实模型输出不可完全确定，验收断言必须避开自然语言全文匹配。
 
 | 类型 | 可稳定断言 | 不应断言 |

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 4,
   "catalog_id": "minimax",
   "providers": [
     {
@@ -35,13 +35,30 @@
         },
         "instance_fields": {
           "region": {
-            "mode": "optional",
-            "default_value": "global",
+            "mode": "required",
             "allowed_values": ["china", "global"]
           },
           "workspace": { "mode": "unsupported" },
           "account": { "mode": "unsupported" }
-        }
+        },
+        "access_endpoints": {
+          "china": {
+            "label": "China",
+            "description": "Use API Keys created on the MiniMax China platform. China and global API Keys are not interchangeable."
+          },
+          "global": {
+            "label": "Global",
+            "description": "Use API Keys created on platform.minimax.io. China and global API Keys are not interchangeable."
+          }
+        },
+        "selectable_inventory_models": [
+          {"id": "asr-1.0", "label": "MiniMax Speech Recognition 1.0"},
+          {"id": "speech-2.8-hd", "label": "MiniMax Speech 2.8 HD"},
+          {"id": "speech-2.8-turbo", "label": "MiniMax Speech 2.8 Turbo"},
+          {"id": "image-01", "label": "MiniMax Image 01"},
+          {"id": "MiniMax-H3", "label": "MiniMax H3"},
+          {"id": "MiniMax-H3-Max", "label": "MiniMax H3 Max"}
+        ]
       }
     }
   ]

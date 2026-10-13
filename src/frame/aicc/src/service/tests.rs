@@ -1647,6 +1647,27 @@ fn task_manager_errors_are_redacted() {
 }
 
 #[test]
+fn task_manager_payload_and_transport_errors_are_classified_without_leaking_details() {
+    let oversized = task_manager_error(
+        "runner_complete task_id=t-secret",
+        RPCErrors::ReasonError("rpc call error: 413 Payload Too Large".to_string()),
+    );
+    assert_eq!(
+        oversized.message,
+        "TaskMgr rejected an oversized AICC result"
+    );
+    assert!(!oversized.retriable);
+
+    let unavailable = task_manager_error(
+        "runner_complete task_id=t-secret",
+        RPCErrors::S2sTransientError("top-secret transport detail".to_string()),
+    );
+    assert_eq!(unavailable.message, "TaskMgr is temporarily unavailable");
+    assert!(unavailable.retriable);
+    assert!(!format!("{unavailable:?}").contains("top-secret"));
+}
+
+#[test]
 fn inline_artifact_replacement_updates_nested_output_values() {
     let old = buckyos_api::ResourceRef::base64("image/png".to_string(), "cG5n".to_string());
     let new = buckyos_api::ResourceRef::url(
@@ -1682,6 +1703,26 @@ fn inline_artifact_collection_finds_nested_base64_resources() {
         &found[0],
         buckyos_api::ResourceRef::Base64 { mime, .. } if mime == "image/png"
     ));
+}
+
+#[test]
+fn materialized_output_rejects_known_payload_leaks_outside_resource_refs() {
+    let named = buckyos_api::ResourceRef::NamedObject {
+        obj_id: ndn_lib::ObjId::new("cyfile:010203").unwrap(),
+    };
+    let output = ProtocolOutput {
+        value: json!({
+            "image": named,
+            "provider_states": [{"value": {"result": "cG5n"}}]
+        }),
+        usage: None,
+        artifacts: Vec::new(),
+    };
+    let error = assert_materialized_output_has_no_inline_payloads(&output, &["cG5n".to_string()])
+        .unwrap_err();
+    assert!(error
+        .message
+        .contains("retained an inline artifact payload"));
 }
 
 fn quota_record() -> QuotaTruthRecord {
@@ -2055,6 +2096,40 @@ fn non_llm_tasks_use_explicit_spec_links_and_require_the_requested_api() {
 }
 
 #[test]
+fn deepseek_flash_vision_apis_are_explicitly_routable() {
+    let mut inventory = crate::model::llm_tests::inventory(
+        "deepseek",
+        "deepseek-v4.1-flash",
+        "deepseek-flash",
+        "deepseek-main",
+        &["high"],
+    );
+    inventory.models[0].api_types.extend([
+        buckyos_api::ApiType::VisionOcr,
+        buckyos_api::ApiType::VisionCaption,
+    ]);
+    let registry = builtin_tree(&[inventory]);
+    for (logical_model, api_type) in [
+        ("vision.ocr", buckyos_api::ApiType::VisionOcr),
+        ("vision.caption", buckyos_api::ApiType::VisionCaption),
+    ] {
+        let candidates = registry
+            .resolve_candidates(logical_model, api_type)
+            .unwrap();
+        assert_eq!(candidates.candidates.len(), 1, "{logical_model}");
+        assert_eq!(
+            candidates.candidates[0].model.exact_model.as_str(),
+            "deepseek-flash:reasoning-high@deepseek-main"
+        );
+        assert!(candidates.candidates[0].paths.iter().any(|path| {
+            path.logical_paths
+                .iter()
+                .any(|logical_path| logical_path == "llm.deepseek-flash")
+        }));
+    }
+}
+
+#[test]
 fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts() {
     let empty = builtin_tree(&[]);
     let directory = model_directory_json(&empty);
@@ -2072,7 +2147,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
             .unwrap()
             .starts_with(&format!("{task}."))));
     }
-    assert_eq!(media_count, 55);
+    assert_eq!(media_count, 57);
     let mut contract_count = 0;
     for line in include_str!("model_defaults.rs").lines() {
         let Some((left, right)) = line.split_once(" -> ") else {
@@ -2103,11 +2178,19 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         );
         contract_count += 1;
     }
-    assert_eq!(contract_count, 55);
+    assert_eq!(contract_count, 57);
 
     assert_eq!(
         dir_item(&directory, "image.txt2img", "gpt_image")["weight"],
         json!(3.0)
+    );
+    assert_eq!(
+        dir_item(&directory, "image.txt2img", "minimax")["weight"],
+        json!(1.0)
+    );
+    assert_eq!(
+        dir_item(&directory, "image.img2img", "minimax")["weight"],
+        json!(1.0)
     );
     let mut model =
         crate::model::llm_tests::inventory("openai", "gpt-image-2", "image", "provider", &[]);

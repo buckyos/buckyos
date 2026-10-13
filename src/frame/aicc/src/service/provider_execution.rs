@@ -489,6 +489,16 @@ impl RuntimeProviderExecutionPort {
         )
         .map_err(|_| ProtocolError::invalid_configuration("artifact writer is unavailable"))?;
 
+        let mut inline_payloads = Vec::new();
+        collect_inline_base64_payloads(&output.value, &mut inline_payloads);
+        for artifact in &output.artifacts {
+            if let buckyos_api::ResourceRef::Base64 { data_base64, .. } = &artifact.resource {
+                if !inline_payloads.contains(data_base64) {
+                    inline_payloads.push(data_base64.clone());
+                }
+            }
+        }
+
         for index in 0..output.artifacts.len() {
             let (old_resource, name, mime, bytes, previous_metadata) =
                 match &output.artifacts[index].resource {
@@ -610,6 +620,7 @@ impl RuntimeProviderExecutionPort {
             );
             output.artifacts.push(artifact);
         }
+        assert_materialized_output_has_no_inline_payloads(&output, &inline_payloads)?;
         Ok(output)
     }
 

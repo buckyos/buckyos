@@ -2,9 +2,23 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 4,
+  "revision_seq": 5,
   "provider_profile_id": "deepseek",
-  "models": [],
+  "model_driver_overrides": {
+    "deepseek-flash": "deepseek/deepseek-v4.1-flash",
+    "deepseek-v4-flash": "deepseek/deepseek-v4.1-flash",
+    "deepseek-v4-flash-vision-exp": "deepseek/deepseek-v4.1-flash"
+  },
+  "models": [
+    {
+      "id": "deepseek-chat",
+      "exclude": true
+    },
+    {
+      "id": "deepseek-reasoner",
+      "exclude": true
+    }
+  ],
   "patterns": [
     {
       "match": "*",

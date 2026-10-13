@@ -14,6 +14,7 @@ function provider(input: {
   timeoutMs: number;
   discovery?: JsonObject;
   providerRulesId?: string | null;
+  enabledInventoryModels?: string[];
 }): JsonObject {
   return {
     provider_instance_name: input.name,
@@ -29,6 +30,9 @@ function provider(input: {
     timeout_ms: input.timeoutMs,
     auto_sync_models: true,
     ...(input.discovery ? { discovery: input.discovery } : {}),
+    ...(input.enabledInventoryModels
+      ? { instance_rules: { enabled_inventory_models: input.enabledInventoryModels } }
+      : {}),
   };
 }
 
@@ -211,6 +215,14 @@ export function buildMockSettings(
       baseUrl: `${baseUrl}/v1`,
       token: `mock-${suffix}`,
       timeoutMs,
+      enabledInventoryModels: [
+        "asr-1.0",
+        "speech-2.8-hd",
+        "speech-2.8-turbo",
+        "image-01",
+        "MiniMax-H3",
+        "MiniMax-H3-Max",
+      ],
     }),
     provider({
       name: `dv-openrouter-${suffix}`,

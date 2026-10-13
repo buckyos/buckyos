@@ -236,7 +236,20 @@ mod tests {
                 .find_map(|rule| rule.operations.get("llm")),
             Some(&OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned())
         );
+        assert!(kimi_provider_rules(7).static_inventory_models.is_empty());
         assert_eq!(kimi_known_provider().base_url, "https://api.moonshot.ai/v1");
+        let known = kimi_known_provider();
+        assert_eq!(
+            known.ui_hints["instance_fields"]["region"]["mode"],
+            "required"
+        );
+        assert!(known.ui_hints["instance_fields"]["region"]
+            .get("default_value")
+            .is_none());
+        assert_eq!(
+            known.ui_hints["access_endpoints"]["china"]["label"],
+            "China"
+        );
     }
 
     #[tokio::test]

@@ -145,7 +145,7 @@ pub enum ResourceRef {
     /// 推荐：cyfs://...（权限/校验由系统资源机制负责）
     Url { url: String, mime_hint: Option<String> },
 
-    /// 小资源可内联；AICC 做大小和 MIME 强校验
+    /// 仅允许作为调用输入或 Adapter 解码后的瞬时中间态
     Base64 { mime: String, data_base64: String },
 
     /// 稳定资源引用，解析和读取必须携带租户上下文
@@ -155,10 +155,13 @@ pub enum ResourceRef {
 
 AICC 侧的硬性原则：
 
-* base64 必须强限制大小、mime 白名单
+* 输入 base64 必须强限制大小、mime 白名单
 * 任何日志/metrics/tracing 不记录原始 base64 或资源原文
-* 业务结果、Task Final event 和 ProviderState 必须精确保存，不得复用日志脱敏函数
+* Provider 响应中的内联二进制只允许存在于 Adapter 解码阶段；进入执行结果、Task Final event 或持久化 ProviderState 前必须物化为 `NamedObject`
+* ProviderState 的保存目标是协议语义可逆，不是逐字节复制原始 JSON；其中的二进制字段必须改写为 `ResourceRef`，同协议回放时再从对象恢复 provider-native base64/bytes
+* 物化后的公开结果优先使用 `NamedObject`；只有已登记来源、生命周期和访问策略且当前不需要下载内容的 Provider URL 才可保留，不得保留 `ResourceRef::Base64`、裸 base64 或 data URL
 * singular/array 数量、URL、Base64、MIME 和 NamedObject 必须经过公共 ResourceRef 校验层
+* TaskMgr 结果在计费和暂存前必须按实际 `runner_complete` 包装序列化并检查 kRPC body 上限；recovery 对历史暂存结果执行同一检查
 
 ---
 

@@ -1,0 +1,957 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-08T05:46:23.468Z",
+  "source_baseline_revision": "2026-10-08.1",
+  "official_catalog_fetched_at": "2026-10-08T05:44:41.430Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "minimax-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+      "refresh_inventory_revision": "704:1791436096660",
+      "unmatched_count": 0,
+      "after_inventory_revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208"
+    },
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "478ae31d439981df44100f314553330c129bbc9509b60cd05c6ba2f5b8729c27",
+      "refresh_inventory_revision": "704:1791436096660",
+      "unmatched_count": 0,
+      "after_inventory_revision": "478ae31d439981df44100f314553330c129bbc9509b60cd05c6ba2f5b8729c27"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "706:1791436096660",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "glm-chat",
+        "provider_instance_name": "glm-main",
+        "provider_profile_id": "glm",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://openspeech.bytedance.com/api/v3/tts",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-speech-main",
+        "provider_profile_id": "doubao-speech",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-main",
+        "provider_profile_id": "doubao",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.deepseek.com",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791438283885,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 2,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 1791438283885
+        },
+        "protocol_adapter_id": "deepseek-responses",
+        "provider_instance_name": "deepseek-main",
+        "provider_profile_id": "deepseek",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimaxi.com/anthropic",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791438285680,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 8,
+          "revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "MiniMax-M3"
+          ],
+          "updated_at_ms": 1791438285680
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-t2",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.moonshot.cn/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791438285942,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 2,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "kimi-k2.6",
+            "kimi-k2.7-code"
+          ],
+          "updated_at_ms": 1791438285942
+        },
+        "protocol_adapter_id": "kimi-chat",
+        "provider_instance_name": "kimi-t2",
+        "provider_profile_id": "kimi",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 386
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "minimax-t2",
+      "inventory_revision": "official-snapshot-2026-10-08T05:44:41.430Z",
+      "models": [
+        {
+          "provider_model_id": "MiniMax-M2"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.1"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.1-highspeed"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.5"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.5-highspeed"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.7"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.7-highspeed"
+        },
+        {
+          "provider_model_id": "MiniMax-M3"
+        }
+      ]
+    },
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "inventory_revision": "official-snapshot-2026-10-08T05:44:41.430Z",
+      "models": [
+        {
+          "provider_model_id": "kimi-k2.6"
+        },
+        {
+          "provider_model_id": "kimi-k2.7-code"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "minimax-t2",
+      "inventory_revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+      "models": [
+        {
+          "exact_model": "MiniMax-M2.1-highspeed@minimax-t2",
+          "provider_model_id": "MiniMax-M2.1-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.1@minimax-t2",
+          "provider_model_id": "MiniMax-M2.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5-highspeed@minimax-t2",
+          "provider_model_id": "MiniMax-M2.5-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5@minimax-t2",
+          "provider_model_id": "MiniMax-M2.5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.7-highspeed@minimax-t2",
+          "provider_model_id": "MiniMax-M2.7-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.7@minimax-t2",
+          "provider_model_id": "MiniMax-M2.7",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2@minimax-t2",
+          "provider_model_id": "MiniMax-M2",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M3@minimax-t2",
+          "provider_model_id": "MiniMax-M3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    },
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "inventory_revision": "478ae31d439981df44100f314553330c129bbc9509b60cd05c6ba2f5b8729c27",
+      "models": [
+        {
+          "exact_model": "kimi-k2.6:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.6:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6:reasoning-none@kimi-t2",
+          "provider_model_id": "kimi-k2.6:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6@kimi-t2",
+          "provider_model_id": "kimi-k2.6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.1-highspeed@minimax-t2",
+      "provider_model_id": "MiniMax-M2.1-highspeed",
+      "physical_model_id": "MiniMax-M2.1-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.1@minimax-t2",
+      "provider_model_id": "MiniMax-M2.1",
+      "physical_model_id": "MiniMax-M2.1",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.5-highspeed@minimax-t2",
+      "provider_model_id": "MiniMax-M2.5-highspeed",
+      "physical_model_id": "MiniMax-M2.5-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.5@minimax-t2",
+      "provider_model_id": "MiniMax-M2.5",
+      "physical_model_id": "MiniMax-M2.5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.7-highspeed@minimax-t2",
+      "provider_model_id": "MiniMax-M2.7-highspeed",
+      "physical_model_id": "MiniMax-M2.7-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.7@minimax-t2",
+      "provider_model_id": "MiniMax-M2.7",
+      "physical_model_id": "MiniMax-M2.7",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2@minimax-t2",
+      "provider_model_id": "MiniMax-M2",
+      "physical_model_id": "MiniMax-M2",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "provider_model_id": "MiniMax-M3",
+      "physical_model_id": "MiniMax-M3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.1-highspeed@minimax-t2",
+      "provider_model_id": "MiniMax-M2.1-highspeed",
+      "physical_model_id": "MiniMax-M2.1-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.1@minimax-t2",
+      "provider_model_id": "MiniMax-M2.1",
+      "physical_model_id": "MiniMax-M2.1",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.5-highspeed@minimax-t2",
+      "provider_model_id": "MiniMax-M2.5-highspeed",
+      "physical_model_id": "MiniMax-M2.5-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.5@minimax-t2",
+      "provider_model_id": "MiniMax-M2.5",
+      "physical_model_id": "MiniMax-M2.5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.7-highspeed@minimax-t2",
+      "provider_model_id": "MiniMax-M2.7-highspeed",
+      "physical_model_id": "MiniMax-M2.7-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.7@minimax-t2",
+      "provider_model_id": "MiniMax-M2.7",
+      "physical_model_id": "MiniMax-M2.7",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2@minimax-t2",
+      "provider_model_id": "MiniMax-M2",
+      "physical_model_id": "MiniMax-M2",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "provider_model_id": "MiniMax-M3",
+      "physical_model_id": "MiniMax-M3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.1-highspeed.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.1-highspeed@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.1.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.1@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.5-highspeed.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.5-highspeed@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.5.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.5@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.7-highspeed.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.7-highspeed@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.7.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2.7@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m2.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M2@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.llm",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.caption",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.ocr",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/models-intro"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-10.2",
-  "checked_at": "2026-10-10",
+  "revision": "official-provider-protocols-2026-10-12.1",
+  "checked_at": "2026-10-12",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -155,6 +155,8 @@
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
           "stream_protocol": "openai_responses",
           "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_success_fixture": { "id": "resp_inline_artifact_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "message", "id": "msg_inline_artifact_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }, { "type": "image_generation_call", "id": "ig_inline_artifact_mock_1", "status": "completed", "result": "aW1hZ2U=", "output_format": "png" }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_payload_paths": ["/output/1/result"],
           "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/tools-image-generation", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
           "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage. Compatible GPT variants can generate or edit images through the built-in image_generation tool."
         },
@@ -374,6 +376,8 @@
           },
           "stream_protocol": "gemini_interactions",
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_success_fixture": { "id": "interaction_inline_artifact_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }, { "type": "image", "id": "gemini_inline_artifact_mock_1", "mime_type": "image/png", "data": "aW1hZ2U=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "inline_artifact_payload_paths": ["/steps/0/content/1/data"],
           "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call."
         },
@@ -675,7 +679,7 @@
           "MiniMax-H3-Max"
         ],
         "audio.music": [
-          "music-2.0"
+          "music-3.0"
         ]
       },
       "test_model_ids": {
@@ -688,7 +692,7 @@
         "image.img2img": "image-01",
         "video.txt2video": "MiniMax-H3",
         "video.img2video": "MiniMax-H3",
-        "audio.music": "music-2.0"
+        "audio.music": "music-3.0"
       },
       "contracts": [
         {
@@ -757,7 +761,7 @@
           "required_body_fields_by_api_type": { "image.img2img": ["subject_reference"] },
           "allowed_body_fields": ["model", "prompt", "aspect_ratio", "height", "width", "response_format", "n", "prompt_optimizer", "subject_reference"],
           "body_field_types": { "model": ["string"], "prompt": ["string"], "subject_reference": ["array"] },
-          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock-artifact/artifacts/image.png"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock-artifact/artifacts/image.jpeg"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/image-generation-t2i", "https://platform.minimax.io/docs/api-reference/image-generation-i2i"],
           "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
         },
@@ -1399,7 +1403,7 @@
         "vision.ocr": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
         "vision.caption": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"]
       },
-      "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
+      "official_variant_sources": ["https://platform.kimi.com/docs/models", "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
       "official_variant_rules": [{
         "model_ids": ["kimi-k3"],
         "variants": {
@@ -1432,7 +1436,7 @@
         "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key", "temperature", "top_p", "n", "presence_penalty", "frequency_penalty"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "n": ["number"], "presence_penalty": ["number"], "frequency_penalty": ["number"] },
         "stream_protocol": "openai_chat",
-        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
+        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "The marker should be returned exactly." }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 10, "total_tokens": 14, "cached_tokens": 0 } },
         "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
         "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
       }]
@@ -1679,6 +1683,14 @@
           "variants": { "reasoning-medium": { "thinking": { "type": "enabled" } } }
         },
         {
+          "model_ids": ["kimi-k2.8-preview"],
+          "variants": {
+            "reasoning-low": { "reasoning": { "effort": "low" } },
+            "reasoning-high": { "reasoning": { "effort": "high" } },
+            "reasoning-max": { "reasoning": { "effort": "max" } }
+          }
+        },
+        {
           "model_ids": ["kimi-k3"],
           "variants": {
             "reasoning-low": { "reasoning": { "effort": "low" } },
@@ -1887,6 +1899,21 @@
           "required_body_values": {
             "/req_params/speaker": "zh_female_vv_uranus_bigtts"
           },
+          "json_string_body_values": {
+            "/req_params/additions": {
+              "context_texts": ["Speak calmly"],
+              "explicit_language": "en"
+            }
+          },
+          "forbidden_body_paths": [
+            "/req_params/context_texts"
+          ],
+          "canonical_request_overrides": {
+            "voice": {
+              "language": "en-US",
+              "instructions": "Speak calmly"
+            }
+          },
           "success_content_type": "text/plain",
           "success_chunk_fixtures": [
             {
@@ -1917,7 +1944,7 @@
         {
           "id": "doubao-speech.asr.flash.v3",
           "protocol_adapter_id": "doubao-responses",
-          "error_fixture_key": "doubao-speech",
+          "error_fixture_key": "doubao-asr",
           "api_version": "v3",
           "api_types": [
             "audio.asr"
@@ -1985,7 +2012,7 @@
         {
           "id": "doubao-speech.asr.task.v3",
           "protocol_adapter_id": "doubao-responses",
-          "error_fixture_key": "doubao-speech",
+          "error_fixture_key": "doubao-asr",
           "api_version": "v3",
           "api_types": [
             "audio.asr"
@@ -2567,6 +2594,15 @@
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
   "error_fixtures": {
+    "doubao-asr": [
+      { "scenario": "empty_audio", "status": 200, "body": {}, "headers": { "x-api-status-code": "45000002", "x-api-message": "empty audio" } },
+      { "scenario": "invalid_audio_format", "status": 200, "body": {}, "headers": { "x-api-status-code": "45000151", "x-api-message": "invalid audio format" } },
+      { "scenario": "server_busy", "status": 200, "body": {}, "headers": { "x-api-status-code": "55000031", "x-api-message": "server busy" } },
+      { "scenario": "invalid_request", "status": 400, "body": { "header": { "reqid": "mock-doubao-speech-invalid", "code": 40000000, "message": "invalid request" } }, "headers": { "x-api-status-code": "40000000", "x-api-message": "invalid request" } },
+      { "scenario": "authentication", "status": 401, "body": { "header": { "reqid": "mock-doubao-speech-auth", "code": 45000010, "message": "Invalid X-Api-Key" } }, "headers": { "x-api-status-code": "45000010", "x-api-message": "Invalid X-Api-Key" } },
+      { "scenario": "rate_limit", "status": 429, "body": { "header": { "reqid": "mock-doubao-speech-rate-limit", "code": 42900000, "message": "rate limit reached" } }, "headers": { "x-api-status-code": "42900000", "x-api-message": "rate limit reached" } },
+      { "scenario": "server_error", "status": 500, "body": { "header": { "reqid": "mock-doubao-speech-server", "code": 50000000, "message": "internal service error" } }, "headers": { "x-api-status-code": "50000000", "x-api-message": "internal service error" } }
+    ],
     "doubao-speech": [
       { "scenario": "invalid_request", "status": 400, "body": { "header": { "reqid": "mock-doubao-speech-invalid", "code": 40000000, "message": "invalid request" } }, "headers": { "x-api-status-code": "40000000", "x-api-message": "invalid request" } },
       { "scenario": "authentication", "status": 401, "body": { "header": { "reqid": "mock-doubao-speech-auth", "code": 45000010, "message": "Invalid X-Api-Key" } }, "headers": { "x-api-status-code": "45000010", "x-api-message": "Invalid X-Api-Key" } },

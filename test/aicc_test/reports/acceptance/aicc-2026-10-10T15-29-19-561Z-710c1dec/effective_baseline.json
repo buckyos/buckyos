@@ -1,0 +1,712 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-10T15:36:14.379Z",
+  "source_baseline_revision": "2026-10-10.2",
+  "official_catalog_fetched_at": "2026-10-10T15:29:19.817Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "154f089efa674c482c44d654434d4be5acfaa161ecd350d55870c00278980c3f",
+      "refresh_inventory_revision": "37:1791645806537",
+      "unmatched_count": 0,
+      "after_inventory_revision": "154f089efa674c482c44d654434d4be5acfaa161ecd350d55870c00278980c3f"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "38:1791645806537",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "glm-chat",
+        "provider_instance_name": "glm-main",
+        "provider_profile_id": "glm",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://openspeech.bytedance.com/api/v3/tts",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-speech-main",
+        "provider_profile_id": "doubao-speech",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-main",
+        "provider_profile_id": "doubao",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimax.cn/anthropic",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-main",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.deepseek.com",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "deepseek-responses",
+        "provider_instance_name": "deepseek-main",
+        "provider_profile_id": "deepseek",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimax.cn/anthropic",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791646160991,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 14,
+          "revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "MiniMax-M2",
+            "MiniMax-M2.1",
+            "MiniMax-M2.1-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed"
+          ],
+          "updated_at_ms": 1791646160991
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-main-2",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.moonshot.cn/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791646161583,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 4,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-k3"
+          ],
+          "updated_at_ms": 1791646161583
+        },
+        "protocol_adapter_id": "kimi-chat",
+        "provider_instance_name": "kimi-t2",
+        "provider_profile_id": "kimi",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 1439
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "inventory_revision": "official-snapshot-2026-10-10T15:29:19.817Z",
+      "models": [
+        {
+          "provider_model_id": "kimi-k2.6"
+        },
+        {
+          "provider_model_id": "kimi-k2.7-code"
+        },
+        {
+          "provider_model_id": "kimi-k2.7-code-highspeed"
+        },
+        {
+          "provider_model_id": "kimi-k3"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "kimi",
+      "provider_instance_name": "kimi-t2",
+      "inventory_revision": "154f089efa674c482c44d654434d4be5acfaa161ecd350d55870c00278980c3f",
+      "models": [
+        {
+          "exact_model": "kimi-k2.6:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.6:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6:reasoning-none@kimi-t2",
+          "provider_model_id": "kimi-k2.6:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6@kimi-t2",
+          "provider_model_id": "kimi-k2.6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code-highspeed:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code-highspeed:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code:reasoning-medium@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code@kimi-t2",
+          "provider_model_id": "kimi-k2.7-code",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-high@kimi-t2",
+          "provider_model_id": "kimi-k3:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-low@kimi-t2",
+          "provider_model_id": "kimi-k3:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-max@kimi-t2",
+          "provider_model_id": "kimi-k3:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3@kimi-t2",
+          "provider_model_id": "kimi-k3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ]
+    }
+  ]
+}
