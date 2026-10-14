@@ -1051,7 +1051,15 @@ async function main(): Promise<void> {
     }
   }
   if (options.applyProviderCredentials && tokenDrivers.length > 0) {
-    const extraRuntimeInstances = normalizeInventories(await session.aicc.call("models.list", {}))
+    const postExecutionSession = options.username && options.password
+      ? await loginGateway({
+        gatewayUrl: options.gatewayUrl,
+        username: options.username,
+        password: options.password,
+        appId: options.appId,
+      })
+      : session;
+    const extraRuntimeInstances = normalizeInventories(await postExecutionSession.aicc.call("models.list", {}))
       .map((inventory) => inventory.provider_instance_name)
       .filter((name) => !initialRuntimeInstances.has(name));
     if (extraRuntimeInstances.length > 0) {

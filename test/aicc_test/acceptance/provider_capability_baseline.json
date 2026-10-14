@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-13.1",
-  "checked_at": "2026-10-13",
+  "baseline_revision": "2026-10-14.1",
+  "checked_at": "2026-10-14",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -717,6 +717,13 @@
       },
       "coverage_rules": [
         {
+          "model_pattern": "gemini-2.5-computer-use-preview-10-2025",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "The Gemini 2.5 Computer Use preview endpoint is shut down and remains visible only as a previous model."
+        },
+        {
           "model_pattern": "gemini-2.5-flash-native-audio-preview-09-2025",
           "action": "exclude",
           "reason": "unsupported_canonical_protocol",
@@ -766,6 +773,27 @@
           "evidence_summary": "Antigravity is a managed remote computer-use agent whose Interactions lifecycle is not represented by the current AICC computer-use request contract."
         },
         {
+          "model_pattern": "antigravity-preview-09-2026",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/antigravity-agent"],
+          "evidence_summary": "Antigravity is a managed remote computer-use agent whose hosted environment and agent lifecycle are not represented by the current canonical AICC request types."
+        },
+        {
+          "model_pattern": "gemini-3.8-live*",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/live"],
+          "evidence_summary": "Gemini 3.8 Live models use the bidirectional Live API, which no current canonical AICC request type represents."
+        },
+        {
+          "model_pattern": "lyria-realtime-exp",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/music-generation"],
+          "evidence_summary": "Lyria RealTime uses a continuous bidirectional streaming protocol rather than the canonical AICC audio.music request contract."
+        },
+        {
           "model_pattern": "aqa",
           "action": "exclude",
           "reason": "unsupported_canonical_protocol",
@@ -787,6 +815,13 @@
           "evidence_summary": "The preview image model shut down on June 25, 2026; use gemini-3.1-flash-image."
         },
         {
+          "model_pattern": "gemini-3.1-flash-lite-preview",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
+          "evidence_summary": "Gemini 3.1 Flash-Lite Preview shut down on May 25, 2026; use gemini-3.1-flash-lite."
+        },
+        {
           "model_pattern": "gemini-3-pro-image-preview",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
@@ -799,6 +834,13 @@
           "reason": "deprecated_or_retiring",
           "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
           "evidence_summary": "Gemini Embedding 2 preview reached its shutdown date on August 10, 2026; use gemini-embedding-2."
+        },
+        {
+          "model_pattern": "gemini-omni-flash-preview",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
+          "evidence_summary": "Gemini Omni Flash Preview shut down on September 30, 2026; use gemini-omni-1.1-flash."
         },
         {
           "model_pattern": "gemini-robotics-er-1.6-preview",
