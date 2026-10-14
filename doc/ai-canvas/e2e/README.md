@@ -1,13 +1,13 @@
 # AI Canvas E2E 验收文档
 
-> 归档说明：Canvas 探索性原型已删除。本目录保留原型的历史验收需求与记录；下文的原型启动和执行步骤仅适用于删除前的版本。当前工作区实现见 [AI Workspace](../../../src/frame/desktop/src/app/aiworkspace/README.md)。
+> 归档说明：Canvas 探索性原型已在 [21d3a0a3e](https://github.com/buckyos/buckyos/commit/21d3a0a3e) 删除。本目录保留历史验收需求、S01–S07 与 W01–W20 用户目标；当前 `main` 无法执行旧 T-A 路径。目标移植到 AI Workspace 前需重新建立对象、协议、交付物与断言映射，不能沿用旧结果。当前工作区实现见 [AI Workspace](../../../src/frame/desktop/src/app/aiworkspace/README.md)，实际测试入口见 [BuckyOS E2E](../../testing/e2e.md)。
 
-本目录是 BuckyOS Desktop AI Canvas 通用 E2E 需求的维护入口。2026-09-28 从原应用侧测试文档
+本目录是 BuckyOS Desktop AI Canvas 历史 E2E 需求的维护入口。2026-09-28 从原应用侧测试文档
 迁入；后续修改通用原型验收直接改本目录，不在下游应用仓库保留第二份规范。
 
 先读场景，再让 Agent 对着当前 UI 完成任务；需要精确判定时查附录。
 
-1. [协作场景主文档](test-requirements.md)：七条完整旅程，说明参与者的问题、系统解决思路、可观察结果及今天的能力边界。
+1. [协作场景主文档](test-requirements.md)：七条完整旅程，说明参与者的问题、系统解决思路、可观察结果及原型删除前的能力边界。
 2. [浏览器执行约定](execution-guide.md)：Agent 通过 Playwright 等工具观察、操作和留证；首条可跑的资料 → 修订 → 文件交接任务包。
 3. [细粒度验收与追溯附录](assertions.md)：保留四组 PRD 验收、15 条 TC、3 条数据边界补充、23 条原型子断言、可观测性与八字段记录，逐条映射到场景。
 4. [覆盖缺口附录](coverage-gaps.md)：33 个待补设计（12 P0 / 21 P1）和六组交叉条件；当前执行范围和未完成项见附录状态说明。
@@ -50,5 +50,5 @@ UI 改版时更新当次操作轨迹，不随意改变场景的成功标准。20
 | CANVAS-L09 | 未知块数据保留但块体缺少回退说明；TA-F1 |
 | CANVAS-G01 | 浏览器 TSV 夹具已覆盖，真实 Excel 原应用复制未覆盖；TC-003 |
 
-这些编号的迁入说明不代表问题已修复，也不新增缺陷计数。Canvas 开发阶段新发现先记入本仓库
-执行记录，不自动创建或重开 GitHub issue。新执行记录必须写清被测版本并按 [附录 §8](assertions.md#8-结果记录与问题归属) 保留证据。
+这些编号的迁入说明不代表问题已修复，也不新增缺陷计数。若复测删除前的历史版本，问题先记入本地
+执行包，不自动创建或重开 GitHub issue。记录必须写清历史被测版本并按 [附录 §8](assertions.md#8-结果记录与问题归属) 保留证据；当前 AI Workspace 按其实际测试入口另建记录。

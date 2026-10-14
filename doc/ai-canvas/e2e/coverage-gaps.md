@@ -1,5 +1,7 @@
 # BuckyOS AI Canvas E2E 覆盖缺口与待补用例
 
+> 归档：Canvas 探索性原型已在 [21d3a0a3e](https://github.com/buckyos/buckyos/commit/21d3a0a3e) 删除。本文中的“当前／今天”、T-A 能力和操作步骤均对应删除前的原型，当前 `main` 无此入口。用户目标可作为待映射需求保留，历史断言和结果不自动适用于 AI Workspace；当前测试入口见 [BuckyOS E2E](../../testing/e2e.md)。
+
 本文是 [协作场景主文档](test-requirements.md) 的风险附录，保留详细变体供按需补测。
 [逐条场景映射](assertions.md#9-协作场景与既有断言的映射) 提供所有编号的名称和归属；
 执行入口见 [浏览器执行约定](execution-guide.md)。

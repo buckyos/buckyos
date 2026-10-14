@@ -1,5 +1,7 @@
 # BuckyOS AI Canvas PRD
 
+> 归档 PRD：探索性原型已在 [21d3a0a3e](https://github.com/buckyos/buckyos/commit/21d3a0a3e) 删除。以下为旧原型的需求，不表示当前产品能力；历史 E2E 见 [归档入口](e2e/README.md)，当前实现与测试路由见 [BuckyOS E2E](../testing/e2e.md)。
+
 > 面向 CodeAgent 的可执行原型开发说明  
 > 文档版本：v0.1  
 > 产品阶段：概念验证 / 可交互原型  

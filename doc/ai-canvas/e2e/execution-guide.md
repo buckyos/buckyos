@@ -1,5 +1,7 @@
 # AI Canvas：Agent 浏览器执行约定
 
+> 归档：Canvas 探索性原型已在 [21d3a0a3e](https://github.com/buckyos/buckyos/commit/21d3a0a3e) 删除。本文中的“当前／今天”、T-A 能力和操作步骤均对应删除前的原型，当前 `main` 无此入口。用户目标可作为待映射需求保留，历史断言和结果不自动适用于 AI Workspace；当前测试入口见 [BuckyOS E2E](../../testing/e2e.md)。
+
 本文件服务于 [七条协作场景](test-requirements.md)、[长文交付场景](long-form-writing.md) 和
 [交付物型场景目录](user-goal-scenarios.md)。目标是让测试设计在 UI 变化后继续适用，
 同时保留能复现当次运行的操作与证据。它不是自动化框架安装指南，也不引入产品实现改动。
@@ -11,8 +13,9 @@
 测试数据必须能独立核算，合成哨兵用来区分范围外信息；期望值不能调用被测聚合函数计算。
 
 执行前记录仓库 commit、相关未提交差异、入口地址、浏览器版本、视口、语言、适配器、数据集
-版本与账号性质。先核对原型 README；T-A 用 `src/frame/desktop` 的 `pnpm run dev` 和
-`/?scenario=normal` 桌面入口。复用已验证的现有依赖，不为文档或一次检查安装工具链。
+版本与账号性质。以下启动约定仅适用于删除前的历史 checkout：核对该版本的原型 README，再从
+`src/frame/desktop` 运行 `pnpm run dev`，使用 `/?scenario=normal` 桌面入口。当前 main 的桌面已移除 Canvas，
+该地址不能启动旧 T-A；当前工作区测试按 [E2E 路由](../../testing/e2e.md) 选择。复用现有依赖。
 运行产物、下载、日志、浏览器临时目录统一放工作区 `.work`，长进程 detached 启动并轮询。
 
 ## 2. 观察、行动、核对

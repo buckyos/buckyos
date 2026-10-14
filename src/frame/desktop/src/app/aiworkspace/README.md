@@ -3,8 +3,9 @@
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
 `doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below),
 `doc/workspace/BuckyOS AI Workspace 第二期规划.md` (the UI framework: data-source and canvas modes, Blocks,
-wishes) and `doc/workspace/BuckyOS AI Workspace UI改进.md` (the floating canvas chrome, see "UI improvement"). App id `aiworkspace`, panel `AIWorkspaceAppPanel.tsx`. The `canvas` prototype next to it is the
-source of the migrated demos only; nothing runs through it.
+wishes) and `doc/workspace/BuckyOS AI Workspace UI改进.md` (the floating canvas chrome, see "UI improvement"). App id `aiworkspace`, panel `AIWorkspaceAppPanel.tsx`. The demos originated from the retired Canvas prototype;
+its source directory and Desktop entry have been removed. Current test routing is in
+[BuckyOS E2E](../../../../../../doc/testing/e2e.md).
 
 There is **no mock backend**. In the Desktop's mock runtime the app says so and stays empty unless the
 dev override below points it at a real backend process.
@@ -172,9 +173,11 @@ worker; the app then says that only already open windows keep working.
 ```bash
 # backend (from buckyos/src)
 cargo build -p aiworkspace
-mkdir -p /tmp/aiws && echo '{"tokens":{"tok-alice":{"principal":"alice"},"tok-bob":{"principal":"bob"}}}' > /tmp/aiws/tokens.json
+AIWS_RUN_DIR="$(cd ../.. && pwd)/.work/aiws-standalone"
+mkdir -p "$AIWS_RUN_DIR"
+printf '%s\n' '{"tokens":{"tok-alice":{"principal":"alice"},"tok-bob":{"principal":"bob"}}}' > "$AIWS_RUN_DIR/tokens.json"
 $(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys;print(json.load(sys.stdin)["target_directory"])')/debug/aiworkspace \
-  --data-dir /tmp/aiws/data --listen 127.0.0.1:4120 --auth-file /tmp/aiws/tokens.json --fixture-sources
+  --data-dir "$AIWS_RUN_DIR/data" --listen 127.0.0.1:4120 --auth-file "$AIWS_RUN_DIR/tokens.json" --fixture-sources
 
 # desktop (from src/frame/desktop) — the service sends no CORS headers, so Vite forwards /kapi/aiworkspace
 AIWS_BACKEND=http://127.0.0.1:4120 pnpm run dev
@@ -203,6 +206,15 @@ One command runs everything. The config builds and starts the real backend on a 
 temporary data folder (`tests/aiworkspace/start-backend.mjs`), starts Vite with `AIWS_BACKEND`, and
 runs `tests/aiworkspace/*.spec.ts`. The Desktop shell stays on its mock runtime; the app talks to the
 real process. Assertions about persisted state go through kRPC directly, not only through the DOM.
+The standalone auth file supplies static `tok-alice` / `tok-bob` identities and `--fixture-sources`
+supplies controlled sources. `start-backend.mjs` starts a scripted OpenAI-compatible model for wish
+analyze/execute/map calls. This suite exercises the real Workspace server and xllm integration with
+controlled returns; it does not run Zone SSO/Gateway/RBAC, AICC or paid Provider inference.
+
+The default Desktop `pnpm run test:e2e` does not select this suite; its `testDir` is different.
+The backend temp folder uses Node `tmpdir()` (set `TMPDIR` to the project `.work` when needed),
+while Playwright and the preview build currently write under Desktop `test-results/`. Follow the
+project scratch-path rules before executing a long remote run, and launch it detached.
 
 The offline specs (`offline*.spec.ts`, V15–V17) additionally use a production build served by
 `vite preview` (built by the config into `test-results/aiworkspace-dist`), because only that has the

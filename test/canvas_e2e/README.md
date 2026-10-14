@@ -1,6 +1,8 @@
 # Canvas E2E 语义评估试验
 
-本目录给 [Canvas 浏览器 E2E](../../doc/ai-canvas/e2e/execution-guide.md) 增加可选的语义复核。
+> 历史证据工具：Canvas 原型已删除。本目录仍保留对 2026-09-28 本地证据包的评估实现；它不执行浏览器，也未适配 AI Workspace。缺少历史执行包时的跳过或 `E_EVIDENCE_MISSING` 是前置缺失，不能作为当前产品通过或失败。当前测试入口见 [BuckyOS E2E](../../doc/testing/e2e.md)。
+
+本目录为 [历史 Canvas 浏览器 E2E](../../doc/ai-canvas/e2e/execution-guide.md) 保留可选的语义复核。
 范围是测试工具；不改变 Canvas 代码、Agent 适配器、AICC 配置或原有通过/失败结论。
 先读 [评估约定与新增场景](../../doc/ai-canvas/e2e/semantic-evaluation.md)。
 

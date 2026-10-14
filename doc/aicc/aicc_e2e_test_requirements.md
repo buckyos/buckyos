@@ -9,7 +9,7 @@
 3. 通过各 Provider instance 的线上模型完成其支持的 API type 推理。
 4. 通过 message-tunnel、MessageHub、msg-center 和 Jarvis 完成真实多模态、多轮消息任务。
 
-本文是测试需求文档，不规定唯一的 runner 实现方式。具体 case manifest、Mock Provider、fixture、报告器和执行脚本可以复用 `doc/aicc/maintenance/acceptance` 与 `test/jarvis_media_dv` 中已有设计和实现。
+本文是测试需求文档，不规定唯一的 runner 实现方式。当前 T1/T1.5/T2 的 case manifest、Mock Provider、fixture、报告器和执行脚本见 [验收工具](../../test/aicc_test/acceptance/README.md)，T3 见 [Jarvis Media DV](../../test/jarvis_media_dv/README.md)。[maintenance/acceptance](maintenance/acceptance/README.md) 保留旧 L1–L4 设计拆分，仅用于历史追溯，不能替代当前分层与 runner。
 
 ## 2. 适用范围
 
