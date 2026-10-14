@@ -1069,6 +1069,7 @@
           "methods": ["image.upscale"],
           "input_kinds": ["image"],
           "output_kinds": ["image"],
+          "resource_representation": "url",
           "source_urls": ["https://fal.ai/models/fal-ai/esrgan/api"],
           "evidence_summary": "Real-ESRGAN upscales image input."
         },
@@ -1079,6 +1080,7 @@
           "methods": ["image.bg_remove"],
           "input_kinds": ["image"],
           "output_kinds": ["image"],
+          "resource_representation": "url",
           "source_urls": ["https://fal.ai/models/fal-ai/imageutils/rembg/api"],
           "evidence_summary": "Rembg removes image backgrounds."
         },
@@ -1089,6 +1091,7 @@
           "methods": ["audio.enhance"],
           "input_kinds": ["audio"],
           "output_kinds": ["audio"],
+          "resource_representation": "url",
           "source_urls": ["https://fal.ai/models/fal-ai/deepfilternet3/api"],
           "evidence_summary": "DeepFilterNet enhances and denoises audio."
         },
@@ -1099,6 +1102,7 @@
           "methods": ["video.upscale"],
           "input_kinds": ["video"],
           "output_kinds": ["video"],
+          "resource_representation": "url",
           "source_urls": ["https://fal.ai/models/fal-ai/video-upscaler/api"],
           "evidence_summary": "The fal video upscaler applies RealESRGAN to video frames."
         }

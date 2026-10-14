@@ -70,6 +70,7 @@ export type ProviderProtocolContract = {
     string,
     Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
+  body_field_formats?: Record<string, "http_url">;
   required_body_values?: Record<string, unknown>;
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
@@ -505,6 +506,23 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id}.body_field_types.${field} contains invalid type`,
           );
+        }
+      }
+      if (contract.body_field_formats !== undefined) {
+        const formats = object(
+          contract.body_field_formats,
+          `${id}.body_field_formats`,
+        );
+        for (const [field, format] of Object.entries(formats)) {
+          if (!allowed.has(field)) {
+            throw new Error(`${id} format field ${field} is not allowed`);
+          }
+          if (!(bodyFieldTypes[field] as unknown[] | undefined)?.includes("string")) {
+            throw new Error(`${id} format field ${field} must accept strings`);
+          }
+          if (format !== "http_url") {
+            throw new Error(`${id}.body_field_formats.${field} is invalid`);
+          }
         }
       }
       if (contract.generation_config !== undefined) {
@@ -1009,6 +1027,20 @@ export function validateProviderRequest(
         Number.isInteger(body[field])
     )) {
       errors.push(`body field ${field} has invalid type`);
+    }
+  }
+  for (const [field, format] of Object.entries(contract.body_field_formats ?? {})) {
+    const value = body[field];
+    if (value === undefined || value === null) continue;
+    if (format === "http_url") {
+      try {
+        const url = new URL(String(value));
+        if (typeof value !== "string" || !["http:", "https:"].includes(url.protocol)) {
+          errors.push(`body field ${field} must be an HTTP(S) URL`);
+        }
+      } catch {
+        errors.push(`body field ${field} must be an HTTP(S) URL`);
+      }
     }
   }
   if (contract.id === "doubao.translation.responses.v3") {

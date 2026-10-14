@@ -150,6 +150,9 @@ function t15FieldValue(
   model: string,
   apiType: string,
 ): unknown {
+  if (contract.body_field_formats?.[field] === "http_url") {
+    return `https://fixtures.example/${field}`;
+  }
   if (field === "model") return model;
   if (field === "messages") {
     return [{ role: "user", content: "BUCKYOS-AICC-4827" }];
@@ -2496,7 +2499,7 @@ test("T2 provider matrix has one minimal cell per physical model and API type", 
   assert.equal(cells.length, 1);
   assert.equal(cells[0].exact_model, "fal-ai/esrgan@fal-test-a");
   assert.equal(cells[0].method, "image.upscale");
-  assert.equal(cells[0].resource_representation, undefined);
+  assert.equal(cells[0].resource_representation, "url");
   assert.equal(cells[0].variant, undefined);
 });
 
@@ -4048,6 +4051,34 @@ test("T1.5 shared endpoints require API-specific media fields", async () => {
   }
 });
 
+test("T1.5 fal contracts reject inline data URLs", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const contractId of [
+    "fal.esrgan.queue-v1",
+    "fal.imageutils-rembg.queue-v1",
+    "fal.deepfilternet3.queue-v1",
+    "fal.video-upscaler.queue-v1",
+  ]) {
+    const contract = protocolContract(catalog, "fal", contractId);
+    const field = contract.required_body_fields[0];
+    const headers = new Headers({
+      "content-type": contract.content_type,
+      authorization: "Key t15-secret",
+    });
+    const errors = validateProviderRequest(contract, {
+      method: contract.http_method,
+      pathname: contract.path,
+      query: new URLSearchParams(),
+      headers,
+      body: { [field]: "data:image/png;base64,aW1hZ2U=" },
+    });
+    assert.ok(
+      errors.includes(`body field ${field} must be an HTTP(S) URL`),
+      `${contractId} accepted an inline data URL`,
+    );
+  }
+});
+
 test("T1.5 Provider mock implements each machine discovery contract and rejects catalog-only discovery", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
   const handler = createT15MockHandler(catalog);
@@ -4306,6 +4337,16 @@ test("T1.5 async lifecycle validates and captures official poll/result wire", as
     }).errors.join(";"),
     /authentication/,
   );
+  const rembg = protocolContract(catalog, "fal", "fal.imageutils-rembg.queue-v1");
+  assert.deepEqual(
+    validateProviderAuxiliaryRequest(rembg, {
+      method: "GET",
+      pathname: "/fal-ai/imageutils/requests/fal_mock_1/status",
+      query: new URLSearchParams(),
+      headers: new Headers({ authorization: "Key test-key" }),
+    }).errors,
+    [],
+  );
 
   const handler = createT15MockHandler(catalog);
   const server = createServer((request, response) =>
@@ -4347,18 +4388,11 @@ test("T1.5 async lifecycle validates and captures official poll/result wire", as
       .status,
     200,
   );
-  assert.equal(
-    (await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1/response`, {
-      headers,
-    })).status,
-    200,
-  );
   const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
     requests: Array<{ async_step?: string; validation_errors: string[] }>;
   };
   assert.deepEqual(audit.requests.map((request) => request.async_step), [
     "poll",
-    "result",
     "result",
   ]);
   assert.ok(
