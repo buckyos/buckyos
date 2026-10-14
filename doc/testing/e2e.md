@@ -29,14 +29,6 @@ OpenDAN WebUI 在 `src/frame/opendan/web` 下另有三套配置：默认 [playwr
 
 仓库根目录的 `uv run test/run.py --list` 只发现 runner 支持的模块；`-p <模块>` 会按检测到的入口执行。它不自动启动 Zone，不遍历所有嵌套测试，也不统一调度 Desktop Playwright 或 Canvas 评估器。Node 模块会安装依赖，依赖 `buckyos` 时还会更新该包，可能改变锁文件；执行前读对应 README。真实本机 DV 还需核对 `uv run src/check.py` 的激活和服务状态。
 
-## 旧 Canvas 与用户目标场景
-
-Canvas 探索性原型在 [21d3a0a3e](https://github.com/buckyos/buckyos/commit/21d3a0a3e) 删除，其 [历史需求](../ai-canvas/e2e/README.md)、S01–S07、W01–W20 和原始结果继续保留。当前产品从 AI Workspace 的实现与设计读取；旧 `CanvasPatch`、许愿格协议、IndexedDB 保存、`.aicanvas.json` 和 T-A 限额不能直接作为新实现的合同。
-
-小说、论文、绘本、复盘等用户目标可以复用，但移植时需要重新明确 Workspace 对象、输入、候选、应用、版本、包导出与角色会话，并建立新的执行包和追溯映射。旧编号不重置，历史 PASS/FAIL 不迁成新产品结论。当前版本找不到已删除的 Canvas 入口时，应记录对象已移除，不能当作新产品入口缺陷。
-
-[test/canvas_e2e](../../test/canvas_e2e/README.md) 是保留的历史证据语义评估器，固定读取本地 2026-09-28 执行包；没有该证据包时会跳过或返回 `E_EVIDENCE_MISSING`。它不操作浏览器，也未接入 AI Workspace；工具测试或外部 Jev 调用都不能证明当前产品 E2E 通过。
-
 ## CI、产物与结论
 
 [Dev Tests](../../.github/workflows/dev-tests.yml) 当前运行 Cargo 测试、AICC 静态契约门禁、多平台构建及单节点 `test_rbac`。配置中没有上述 Playwright 套件或 AICC 完整 T1–T3 执行命令；不能根据 CI 绿灯推断所有 E2E 完成。每次仍需核对实际工作流 revision 和运行日志。
