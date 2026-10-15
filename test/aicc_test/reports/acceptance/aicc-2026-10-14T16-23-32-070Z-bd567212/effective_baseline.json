@@ -1,0 +1,2241 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-14T16:27:54.529Z",
+  "source_baseline_revision": "2026-10-14.1",
+  "official_catalog_fetched_at": "2026-10-14T16:23:32.327Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "claude",
+      "provider_instance_name": "claude-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "sha256:1d65f082b8e291405fc6da708d505cb595df2e1894b751c4f138a84ce395deb1",
+      "refresh_inventory_revision": "64:1791991836171",
+      "unmatched_count": 0,
+      "after_inventory_revision": "sha256:1d65f082b8e291405fc6da708d505cb595df2e1894b751c4f138a84ce395deb1"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "65:1791991836171",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "http://127.0.0.1:18080/instance-custom-claude/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791886219200,
+          "state": "degraded"
+        },
+        "inventory": {
+          "model_count": 1,
+          "revision": "t1-custom-claude-aicc-t1-2026-10-13T10-10-17-561Z-bdd006f4",
+          "state": "loaded",
+          "unavailable_presets": [
+            {
+              "effort": "low",
+              "provider_model_id": "claude-sonnet-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "claude-sonnet-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "claude-sonnet-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "xhigh",
+              "provider_model_id": "claude-sonnet-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "claude-sonnet-5",
+              "reason": "missing_channel_mapping"
+            }
+          ],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "claude-sonnet-5"
+          ],
+          "updated_at_ms": 1791886219200
+        },
+        "protocol_adapter_id": "claude-messages",
+        "provider_instance_name": "dv-custom-claude-aicc-t1-2026-10-13T10-10-17-561Z-bdd006f4",
+        "provider_profile_id": "custom",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "http://127.0.0.1:18080/instance-custom-gemini/v1beta",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791886219200,
+          "state": "degraded"
+        },
+        "inventory": {
+          "model_count": 1,
+          "revision": "t1-custom-gemini-aicc-t1-2026-10-13T10-10-17-561Z-bdd006f4",
+          "state": "loaded",
+          "unavailable_presets": [
+            {
+              "effort": "minimal",
+              "provider_model_id": "gemini-3.5-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "gemini-3.5-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "gemini-3.5-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "gemini-3.5-flash",
+              "reason": "missing_channel_mapping"
+            }
+          ],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "gemini-3.5-flash"
+          ],
+          "updated_at_ms": 1791886219200
+        },
+        "protocol_adapter_id": "gemini-interactions",
+        "provider_instance_name": "dv-custom-gemini-aicc-t1-2026-10-13T10-10-17-561Z-bdd006f4",
+        "provider_profile_id": "custom",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.anthropic.com/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791995015875,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 14,
+          "revision": "sha256:1d65f082b8e291405fc6da708d505cb595df2e1894b751c4f138a84ce395deb1",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 1791995015875
+        },
+        "protocol_adapter_id": "claude-messages",
+        "provider_instance_name": "claude-t2",
+        "provider_profile_id": "claude",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 2405
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "claude",
+      "provider_instance_name": "claude-t2",
+      "inventory_revision": "official-snapshot-2026-10-14T16:23:32.327Z",
+      "models": [
+        {
+          "provider_model_id": "claude-fable-5"
+        },
+        {
+          "provider_model_id": "claude-fable-5-1"
+        },
+        {
+          "provider_model_id": "claude-haiku-4-5-20251001"
+        },
+        {
+          "provider_model_id": "claude-haiku-5-5"
+        },
+        {
+          "provider_model_id": "claude-opus-4-5-20251101"
+        },
+        {
+          "provider_model_id": "claude-opus-4-6"
+        },
+        {
+          "provider_model_id": "claude-opus-4-7"
+        },
+        {
+          "provider_model_id": "claude-opus-4-8"
+        },
+        {
+          "provider_model_id": "claude-opus-5"
+        },
+        {
+          "provider_model_id": "claude-opus-5-5"
+        },
+        {
+          "provider_model_id": "claude-sonnet-4-5-20250929"
+        },
+        {
+          "provider_model_id": "claude-sonnet-4-6"
+        },
+        {
+          "provider_model_id": "claude-sonnet-5"
+        },
+        {
+          "provider_model_id": "claude-sonnet-5-5"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "claude",
+      "provider_instance_name": "claude-t2",
+      "inventory_revision": "sha256:1d65f082b8e291405fc6da708d505cb595df2e1894b751c4f138a84ce395deb1",
+      "models": [
+        {
+          "exact_model": "claude-fable-5-1:reasoning-high@claude-t2",
+          "provider_model_id": "claude-fable-5-1:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5-1:reasoning-low@claude-t2",
+          "provider_model_id": "claude-fable-5-1:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5-1:reasoning-max@claude-t2",
+          "provider_model_id": "claude-fable-5-1:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5-1:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-fable-5-1:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5-1:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-fable-5-1:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5-1@claude-t2",
+          "provider_model_id": "claude-fable-5-1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5:reasoning-high@claude-t2",
+          "provider_model_id": "claude-fable-5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5:reasoning-low@claude-t2",
+          "provider_model_id": "claude-fable-5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5:reasoning-max@claude-t2",
+          "provider_model_id": "claude-fable-5:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-fable-5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-fable-5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-fable-5@claude-t2",
+          "provider_model_id": "claude-fable-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-4-5-20251001:reasoning-none@claude-t2",
+          "provider_model_id": "claude-haiku-4-5-20251001:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-4-5-20251001:reasoning-thinking@claude-t2",
+          "provider_model_id": "claude-haiku-4-5-20251001:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-4-5-20251001@claude-t2",
+          "provider_model_id": "claude-haiku-4-5-20251001",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-5-5:reasoning-high@claude-t2",
+          "provider_model_id": "claude-haiku-5-5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-5-5:reasoning-low@claude-t2",
+          "provider_model_id": "claude-haiku-5-5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-5-5:reasoning-max@claude-t2",
+          "provider_model_id": "claude-haiku-5-5:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-5-5:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-haiku-5-5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-5-5:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-haiku-5-5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-haiku-5-5@claude-t2",
+          "provider_model_id": "claude-haiku-5-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-5-20251101:reasoning-none@claude-t2",
+          "provider_model_id": "claude-opus-4-5-20251101:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-5-20251101:reasoning-thinking@claude-t2",
+          "provider_model_id": "claude-opus-4-5-20251101:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-5-20251101@claude-t2",
+          "provider_model_id": "claude-opus-4-5-20251101",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-6:reasoning-high@claude-t2",
+          "provider_model_id": "claude-opus-4-6:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-6:reasoning-low@claude-t2",
+          "provider_model_id": "claude-opus-4-6:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-6:reasoning-max@claude-t2",
+          "provider_model_id": "claude-opus-4-6:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-6:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-opus-4-6:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-6@claude-t2",
+          "provider_model_id": "claude-opus-4-6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-7:reasoning-high@claude-t2",
+          "provider_model_id": "claude-opus-4-7:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-7:reasoning-low@claude-t2",
+          "provider_model_id": "claude-opus-4-7:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-7:reasoning-max@claude-t2",
+          "provider_model_id": "claude-opus-4-7:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-7:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-opus-4-7:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-7:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-opus-4-7:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-7@claude-t2",
+          "provider_model_id": "claude-opus-4-7",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-8:reasoning-high@claude-t2",
+          "provider_model_id": "claude-opus-4-8:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-8:reasoning-low@claude-t2",
+          "provider_model_id": "claude-opus-4-8:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-8:reasoning-max@claude-t2",
+          "provider_model_id": "claude-opus-4-8:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-8:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-opus-4-8:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-8:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-opus-4-8:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-4-8@claude-t2",
+          "provider_model_id": "claude-opus-4-8",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5-5:reasoning-high@claude-t2",
+          "provider_model_id": "claude-opus-5-5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5-5:reasoning-low@claude-t2",
+          "provider_model_id": "claude-opus-5-5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5-5:reasoning-max@claude-t2",
+          "provider_model_id": "claude-opus-5-5:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5-5:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-opus-5-5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5-5:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-opus-5-5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5-5@claude-t2",
+          "provider_model_id": "claude-opus-5-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5:reasoning-high@claude-t2",
+          "provider_model_id": "claude-opus-5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5:reasoning-low@claude-t2",
+          "provider_model_id": "claude-opus-5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5:reasoning-max@claude-t2",
+          "provider_model_id": "claude-opus-5:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-opus-5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-opus-5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-opus-5@claude-t2",
+          "provider_model_id": "claude-opus-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-5-20250929:reasoning-none@claude-t2",
+          "provider_model_id": "claude-sonnet-4-5-20250929:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-5-20250929:reasoning-thinking@claude-t2",
+          "provider_model_id": "claude-sonnet-4-5-20250929:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-5-20250929@claude-t2",
+          "provider_model_id": "claude-sonnet-4-5-20250929",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-6:reasoning-high@claude-t2",
+          "provider_model_id": "claude-sonnet-4-6:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-6:reasoning-low@claude-t2",
+          "provider_model_id": "claude-sonnet-4-6:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-6:reasoning-max@claude-t2",
+          "provider_model_id": "claude-sonnet-4-6:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-6:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-sonnet-4-6:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-4-6@claude-t2",
+          "provider_model_id": "claude-sonnet-4-6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5-5:reasoning-high@claude-t2",
+          "provider_model_id": "claude-sonnet-5-5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5-5:reasoning-low@claude-t2",
+          "provider_model_id": "claude-sonnet-5-5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5-5:reasoning-max@claude-t2",
+          "provider_model_id": "claude-sonnet-5-5:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5-5:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-sonnet-5-5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5-5:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-sonnet-5-5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5-5@claude-t2",
+          "provider_model_id": "claude-sonnet-5-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5:reasoning-high@claude-t2",
+          "provider_model_id": "claude-sonnet-5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5:reasoning-low@claude-t2",
+          "provider_model_id": "claude-sonnet-5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5:reasoning-max@claude-t2",
+          "provider_model_id": "claude-sonnet-5:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5:reasoning-medium@claude-t2",
+          "provider_model_id": "claude-sonnet-5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5:reasoning-xhigh@claude-t2",
+          "provider_model_id": "claude-sonnet-5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "claude-sonnet-5@claude-t2",
+          "provider_model_id": "claude-sonnet-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5-1@claude-t2",
+      "provider_model_id": "claude-fable-5-1",
+      "physical_model_id": "claude-fable-5-1",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5@claude-t2",
+      "provider_model_id": "claude-fable-5",
+      "physical_model_id": "claude-fable-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-4-5-20251001@claude-t2",
+      "provider_model_id": "claude-haiku-4-5-20251001",
+      "physical_model_id": "claude-haiku-4-5-20251001",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-5-5@claude-t2",
+      "provider_model_id": "claude-haiku-5-5",
+      "physical_model_id": "claude-haiku-5-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-5-20251101@claude-t2",
+      "provider_model_id": "claude-opus-4-5-20251101",
+      "physical_model_id": "claude-opus-4-5-20251101",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-6@claude-t2",
+      "provider_model_id": "claude-opus-4-6",
+      "physical_model_id": "claude-opus-4-6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-7@claude-t2",
+      "provider_model_id": "claude-opus-4-7",
+      "physical_model_id": "claude-opus-4-7",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-8@claude-t2",
+      "provider_model_id": "claude-opus-4-8",
+      "physical_model_id": "claude-opus-4-8",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5-5@claude-t2",
+      "provider_model_id": "claude-opus-5-5",
+      "physical_model_id": "claude-opus-5-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5@claude-t2",
+      "provider_model_id": "claude-opus-5",
+      "physical_model_id": "claude-opus-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-5-20250929@claude-t2",
+      "provider_model_id": "claude-sonnet-4-5-20250929",
+      "physical_model_id": "claude-sonnet-4-5-20250929",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-6@claude-t2",
+      "provider_model_id": "claude-sonnet-4-6",
+      "physical_model_id": "claude-sonnet-4-6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5-5@claude-t2",
+      "provider_model_id": "claude-sonnet-5-5",
+      "physical_model_id": "claude-sonnet-5-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5@claude-t2",
+      "provider_model_id": "claude-sonnet-5",
+      "physical_model_id": "claude-sonnet-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5-1@claude-t2",
+      "provider_model_id": "claude-fable-5-1",
+      "physical_model_id": "claude-fable-5-1",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5@claude-t2",
+      "provider_model_id": "claude-fable-5",
+      "physical_model_id": "claude-fable-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-4-5-20251001@claude-t2",
+      "provider_model_id": "claude-haiku-4-5-20251001",
+      "physical_model_id": "claude-haiku-4-5-20251001",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-5-5@claude-t2",
+      "provider_model_id": "claude-haiku-5-5",
+      "physical_model_id": "claude-haiku-5-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-5-20251101@claude-t2",
+      "provider_model_id": "claude-opus-4-5-20251101",
+      "physical_model_id": "claude-opus-4-5-20251101",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-6@claude-t2",
+      "provider_model_id": "claude-opus-4-6",
+      "physical_model_id": "claude-opus-4-6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-7@claude-t2",
+      "provider_model_id": "claude-opus-4-7",
+      "physical_model_id": "claude-opus-4-7",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-8@claude-t2",
+      "provider_model_id": "claude-opus-4-8",
+      "physical_model_id": "claude-opus-4-8",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5-5@claude-t2",
+      "provider_model_id": "claude-opus-5-5",
+      "physical_model_id": "claude-opus-5-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5@claude-t2",
+      "provider_model_id": "claude-opus-5",
+      "physical_model_id": "claude-opus-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-5-20250929@claude-t2",
+      "provider_model_id": "claude-sonnet-4-5-20250929",
+      "physical_model_id": "claude-sonnet-4-5-20250929",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-6@claude-t2",
+      "provider_model_id": "claude-sonnet-4-6",
+      "physical_model_id": "claude-sonnet-4-6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5-5@claude-t2",
+      "provider_model_id": "claude-sonnet-5-5",
+      "physical_model_id": "claude-sonnet-5-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5@claude-t2",
+      "provider_model_id": "claude-sonnet-5",
+      "physical_model_id": "claude-sonnet-5",
+      "status": "included",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.claude.claude-t2.claude-fable-5-1.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5-1@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-fable-5-1.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5-1@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-fable-5-1.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5-1@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-fable-5.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-fable-5.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-fable-5.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-fable-5@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-haiku-4-5-20251001.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-4-5-20251001@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-haiku-4-5-20251001.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-4-5-20251001@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-haiku-4-5-20251001.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-4-5-20251001@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-haiku-5-5.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-5-5@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-haiku-5-5.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-5-5@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-haiku-5-5.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-haiku-5-5@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-5-20251101.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-5-20251101@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-5-20251101.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-5-20251101@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-5-20251101.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-5-20251101@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-6.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-6@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-6.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-6@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-6.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-6@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-7.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-7@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-7.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-7@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-7.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-7@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-8.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-8@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-8.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-8@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-4-8.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-4-8@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-5-5.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5-5@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-5-5.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5-5@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-5-5.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5-5@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-5.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-5.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-opus-5.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-opus-5@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-4-5-20250929.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-5-20250929@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-4-5-20250929.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-5-20250929@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-4-5-20250929.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-5-20250929@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-4-6.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-6@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-4-6.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-6@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-4-6.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-4-6@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-5-5.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5-5@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-5-5.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5-5@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-5-5.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5-5@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-5.llm",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5@claude-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-5.vision.caption",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5@claude-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    },
+    {
+      "case_id": "t2.claude.claude-t2.claude-sonnet-5.vision.ocr",
+      "provider_driver": "claude",
+      "provider_instance": "claude-t2",
+      "exact_model": "claude-sonnet-5@claude-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/pdf-support"
+      ]
+    }
+  ]
+}

@@ -1522,6 +1522,16 @@ function validateClaudeMessages(
     blocks.forEach((value, blockIndex) => {
       const block = recordValue(value);
       if (!block) return;
+      const source = recordValue(block.source);
+      const mediaType = source?.media_type;
+      if (block.type === "document" && typeof mediaType === "string" &&
+          !["application/pdf", "text/plain"].includes(mediaType)) {
+        errors.push(`body field messages[${index}].content[${blockIndex}] document media_type is invalid for Claude Messages`);
+      }
+      if (block.type === "image" && typeof mediaType === "string" &&
+          !["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mediaType)) {
+        errors.push(`body field messages[${index}].content[${blockIndex}] image media_type is invalid for Claude Messages`);
+      }
       if (block.type === "tool_use") {
         if (
           role !== "assistant" || typeof block.id !== "string" ||
@@ -1560,6 +1570,27 @@ function validateClaudeMessages(
     errors.push(
       "body field output_config.format must contain type=json_schema and an object schema",
     );
+  }
+  if (format?.type === "json_schema" && recordValue(format.schema)) {
+    const unsupported = new Set([
+      "minimum", "maximum", "multipleOf", "minLength", "maxLength",
+      "maxItems", "uniqueItems", "contains", "minContains", "maxContains",
+    ]);
+    const visit = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${path}[${index}]`));
+        return;
+      }
+      const record = recordValue(value);
+      if (!record) return;
+      for (const [key, child] of Object.entries(record)) {
+        if (unsupported.has(key) || key === "minItems" && child !== 0 && child !== 1) {
+          errors.push(`${path}.${key} is not supported by Claude structured outputs`);
+        }
+        visit(child, `${path}.${key}`);
+      }
+    };
+    visit(format.schema, "body field output_config.format.schema");
   }
   const thinking = recordValue(body.thinking);
   const allowedThinkingTypes = contract.thinking?.allowed_types;
