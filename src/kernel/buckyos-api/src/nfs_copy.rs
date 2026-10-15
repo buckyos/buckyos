@@ -98,12 +98,20 @@ impl NfsCopyTestConfig {
     }
 }
 
-pub async fn authenticate_nfs_copy_user(
+/// A verify-hub session token checked for NFSP: the runtime trust keys in
+/// service mode, or a fixed test key in standalone tests.
+pub struct NfsSessionClaims {
+    pub subject: String,
+    pub principal_kind: TokenPrincipalKind,
+    pub app_id: String,
+}
+
+pub async fn verify_nfs_session_token(
     token: &str,
-    test: Option<&NfsCopyTestConfig>,
-) -> ::kRPC::Result<ActorRef> {
-    let parsed = if let Some(test) = test {
-        let key = jsonwebtoken::DecodingKey::from_ed_components(&test.public_key)
+    test_public_key: Option<&str>,
+) -> ::kRPC::Result<NfsSessionClaims> {
+    let parsed = if let Some(public_key) = test_public_key {
+        let key = jsonwebtoken::DecodingKey::from_ed_components(public_key)
             .map_err(|e| ::kRPC::RPCErrors::InvalidToken(e.to_string()))?;
         let mut parsed = ::kRPC::RPCSessionToken::from_string(token)?;
         parsed.verify_by_key(&key)?;
@@ -114,15 +122,27 @@ pub async fn authenticate_nfs_copy_user(
             .await?
     };
     let claims = validate_verify_hub_token_claims(&parsed, TokenUse::Session)?;
+    let subject = parsed
+        .sub
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ::kRPC::RPCErrors::InvalidToken("missing subject".into()))?;
+    Ok(NfsSessionClaims {
+        subject: subject.clone(),
+        principal_kind: claims.principal_kind,
+        app_id: claims.target.canonical_key(),
+    })
+}
+
+pub async fn authenticate_nfs_copy_user(
+    token: &str,
+    test: Option<&NfsCopyTestConfig>,
+) -> ::kRPC::Result<ActorRef> {
+    let claims = verify_nfs_session_token(token, test.map(|t| t.public_key.as_str())).await?;
     if claims.principal_kind != TokenPrincipalKind::User {
         return Err(::kRPC::RPCErrors::NoPermission(
             "copy requires a user session".into(),
         ));
     }
-    let user = parsed
-        .sub
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ::kRPC::RPCErrors::InvalidToken("missing subject".into()))?;
-    Ok(ActorRef::new(user, claims.target.canonical_key()))
+    Ok(ActorRef::new(claims.subject, claims.app_id))
 }

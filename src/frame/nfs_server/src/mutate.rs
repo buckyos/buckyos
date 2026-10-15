@@ -6,6 +6,8 @@
 //! (server-local processes) are detected at commit via the (size, mtime)
 //! snapshot taken at open_write (nfs_server.md §4.2: 劝告性租约, 显式冲突).
 
+use crate::access::denied;
+use crate::acl::{Actor, Level};
 use crate::error::*;
 use crate::fsutil::*;
 use crate::handle::native_entry_ref;
@@ -20,14 +22,19 @@ use std::path::{Path, PathBuf};
 impl AppState {
     // ---------- helpers ----------
 
-    /// Resolves the parent directory for a write op from `at` or args.parent_ref.
-    fn parent_dir(&self, at: Option<&Locator>, args: &Value) -> NfsResult<Node> {
+    /// Resolves the parent directory for a write op from `at` or args.parent_ref;
+    /// the actor must be able to write into it.
+    fn parent_dir(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Node> {
+        self.parent_dir_min(actor, at, args, Level::Write)
+    }
+
+    fn parent_dir_min(&self, actor: &Actor, at: Option<&Locator>, args: &Value, min: Level) -> NfsResult<Node> {
         let node = if args.get("parent_ref").map(|v| !v.is_null()).unwrap_or(false) {
             let r: WireRef = serde_json::from_value(args["parent_ref"].clone())
                 .map_err(|_| invalid("bad parent_ref"))?;
-            self.resolve_ref(&r)?
+            self.resolve_ref_for(actor, &r, Level::Traverse, "write")?
         } else if let Some(at) = at {
-            self.resolve_locator(at)?
+            self.resolve_for(actor, at, Level::Traverse, "write")?
         } else {
             return Err(invalid("missing parent (at or parent_ref)"));
         };
@@ -36,7 +43,10 @@ impl AppState {
                 ErrorCode::PermissionDenied,
                 "the namespace root is read-only (export roots are static config)",
             )),
-            Node::Native { meta, .. } if meta.kind == "dir" => Ok(node),
+            Node::Native { meta, .. } if meta.kind == "dir" => {
+                self.require(actor, &node, min, "write")?;
+                Ok(node)
+            }
             Node::Native { .. } => Err(invalid("parent is not a directory")),
             _ => Err(invalid("parent must be a native directory")),
         }
@@ -80,6 +90,27 @@ impl AppState {
         revision
     }
 
+    /// Saving over an existing file needs `write` on that file (a per-file
+    /// grant is enough); creating one needs `write` on the directory.
+    fn require_file_write(&self, actor: &Actor, root: &str, rel: &str, target_rel: &str, exists: bool) -> NfsResult<()> {
+        let ok = if exists {
+            self.acls.level(actor, root, target_rel) >= Level::Write
+        } else {
+            self.acls.level(actor, root, rel) >= Level::Write && self.acls.level(actor, root, target_rel) >= Level::Write
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(denied("write", actor))
+        }
+    }
+
+    /// A path that did not exist may still carry records of an item removed
+    /// outside the protocol; a new item there must not inherit them.
+    fn clear_stale_acls(&self, root: &str, rel: &str) -> NfsResult<()> {
+        self.acls.delete_subtree(&self.db, root, rel)
+    }
+
     /// Checks that `name` does not collide with a virtual binding in this dir.
     fn check_no_binding(&self, parent: &Node, name: &str) -> NfsResult<()> {
         if let Node::Native { anchored: Some(e), .. } = parent {
@@ -97,15 +128,15 @@ impl AppState {
 
     // ---------- mkdir ----------
 
-    pub fn op_mkdir(&self, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
+    pub fn op_mkdir(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
         // Path form: mkdir -p along the whole path (idempotent, no CAS).
         let has_path = at.map(|l| l.r#ref.is_none() && (l.path.is_some() || l.uri.is_some()))
             .unwrap_or(false);
         if has_path && args.get("name").is_none() {
-            return self.mkdir_path(at.unwrap());
+            return self.mkdir_path(actor, at.unwrap());
         }
         // Ref form: single child under parent, optional CAS.
-        let parent = self.parent_dir(at, args)?;
+        let parent = self.parent_dir(actor, at, args)?;
         let name = args["name"].as_str().ok_or_else(|| invalid("mkdir requires name"))?;
         validate_name(name)?;
         self.check_dir_cas(
@@ -126,6 +157,7 @@ impl AppState {
             }
             Err(_) => {
                 std::fs::create_dir(&target)?;
+                self.clear_stale_acls(&root, &child_rel)?;
                 false
             }
         };
@@ -138,7 +170,7 @@ impl AppState {
         Ok(json!({"ref": self.node_ref(&node), "existed": existed, "revision": revision}))
     }
 
-    fn mkdir_path(&self, at: &Locator) -> NfsResult<Value> {
+    fn mkdir_path(&self, actor: &Actor, at: &Locator) -> NfsResult<Value> {
         let path = if let Some(path) = &at.path {
             path.clone()
         } else if let Some(uri) = &at.uri {
@@ -154,6 +186,9 @@ impl AppState {
             None if !rel_all.is_empty() => (rel_all.clone(), String::new()),
             _ => return Err(invalid("cannot mkdir the namespace root")),
         };
+        if self.acls.level(actor, &root_id, &rel) < Level::Traverse {
+            return Err(denied("write", actor));
+        }
         let root = self
             .config
             .root(&root_id)
@@ -173,7 +208,11 @@ impl AppState {
                         ))
                     }
                     Err(_) => {
+                        if self.acls.level(actor, &root_id, &cur) < Level::Write {
+                            return Err(denied("write", actor));
+                        }
                         std::fs::create_dir(&p)?;
+                        self.clear_stale_acls(&root_id, &next)?;
                         existed = false;
                         let parent = self.resolve_dfs_path(&format!(
                             "{}/{}",
@@ -192,11 +231,11 @@ impl AppState {
 
     // ---------- move ----------
 
-    pub fn op_move(&self, args: &Value) -> NfsResult<Value> {
+    pub fn op_move(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let from = args.get("from").ok_or_else(|| invalid("move requires from"))?;
         let to = args.get("to").ok_or_else(|| invalid("move requires to"))?;
-        let from_parent = self.parent_dir(None, from)?;
-        let to_parent = self.parent_dir(None, to)?;
+        let from_parent = self.parent_dir(actor, None, from)?;
+        let to_parent = self.parent_dir(actor, None, to)?;
         let from_name =
             from["name"].as_str().ok_or_else(|| invalid("move.from requires name"))?;
         let to_name = to["name"].as_str().ok_or_else(|| invalid("move.to requires name"))?;
@@ -214,11 +253,13 @@ impl AppState {
         }
         let (from_root, from_rel, from_full) = self.dir_parts(&from_parent)?;
         let (to_root, to_rel, to_full) = self.dir_parts(&to_parent)?;
+        validate_name(from_name)?;
         let src_rel = rel_join(&from_rel, from_name);
         let dst_rel = rel_join(&to_rel, to_name);
         if from_root == to_root && src_rel == dst_rel {
             return Err(invalid("source and destination are the same"));
         }
+        self.require_subtree(actor, &from_root, &src_rel, Level::Write, "write")?;
         let src = from_full.join(from_name);
         let dst = to_full.join(to_name);
         let src_meta = std::fs::symlink_metadata(&src)
@@ -237,6 +278,7 @@ impl AppState {
             ));
         }
         self.check_no_binding(&to_parent, to_name)?;
+        self.clear_stale_acls(&to_root, &dst_rel)?;
         std::fs::rename(&src, &dst).map_err(|e| {
             if e.raw_os_error() == Some(18) {
                 // EXDEV
@@ -248,6 +290,7 @@ impl AppState {
         // Anchors and the content cache follow the move (meta/LiveRefs survive).
         self.db.anchors_move_prefix(&from_root, &src_rel, &to_root, &dst_rel)?;
         self.db.content_index_move_prefix(&from_root, &src_rel, &to_root, &dst_rel)?;
+        self.acls.move_prefix(&self.db, &from_root, &src_rel, &to_root, &dst_rel)?;
         let from_revision =
             self.bump_dir(&from_parent, "entries_changed", Some(json!({"removed":[from_name]})));
         let to_revision = if from_parent.container_key() == to_parent.container_key() {
@@ -260,8 +303,8 @@ impl AppState {
 
     // ---------- delete / unlink ----------
 
-    pub fn op_delete(&self, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
-        let parent = self.parent_dir(at, args)?;
+    pub fn op_delete(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
+        let parent = self.parent_dir(actor, at, args)?;
         let name = args["name"].as_str().ok_or_else(|| invalid("delete requires name"))?;
         validate_name(name)?;
         let recursive = args["recursive"].as_bool().unwrap_or(false);
@@ -272,6 +315,7 @@ impl AppState {
         let (root, rel, full) = self.dir_parts(&parent)?;
         let target = full.join(name);
         let target_rel = rel_join(&rel, name);
+        self.require_subtree(actor, &root, &target_rel, Level::Write, "write")?;
         let meta = match std::fs::symlink_metadata(&target) {
             Ok(m) => m,
             Err(_) => {
@@ -310,13 +354,14 @@ impl AppState {
         }
         // Destroyed natives: anchors marked deleted, inbound references go stale.
         self.db.anchors_delete_subtree(&root, &target_rel)?;
+        self.acls.delete_subtree(&self.db, &root, &target_rel)?;
         let revision =
             self.bump_dir(&parent, "entries_changed", Some(json!({"removed":[name]})));
         Ok(json!({ "revision": revision }))
     }
 
-    pub fn op_bind_ref(&self, args: &Value) -> NfsResult<Value> {
-        let parent = self.parent_dir(None, args)?;
+    pub fn op_bind_ref(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
+        let parent = self.parent_dir(actor, None, args)?;
         let name = args["name"].as_str().ok_or_else(|| invalid("bind_ref requires name"))?;
         validate_name(name)?;
         let target_ref: WireRef = serde_json::from_value(args["target_ref"].clone())
@@ -343,7 +388,7 @@ impl AppState {
                     .binding_create(parent_ent.node_id, name, "object", None, Some(obj_id))?
             }
             live => {
-                let target = self.resolve_ref(live)?;
+                let target = self.resolve_ref_for(actor, live, Level::Traverse, "read")?;
                 let (target_id, _) = self.require_stable_node(&target)?;
                 self.db
                     .binding_create(parent_ent.node_id, name, "live", Some(target_id), None)?
@@ -356,7 +401,7 @@ impl AppState {
         Ok(json!({"entry_ref": format!("be_{}", entry_id), "revision": revision}))
     }
 
-    pub fn op_unlink(&self, args: &Value) -> NfsResult<Value> {
+    pub fn op_unlink(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let entry_ref = args["entry_ref"]
             .as_str()
             .ok_or_else(|| invalid("unlink requires entry_ref"))?;
@@ -378,6 +423,9 @@ impl AppState {
             .db
             .anchor_get(b.parent_node_id)?
             .ok_or_else(|| internal("binding parent has no anchor"))?;
+        if self.acls.level(actor, &parent_anchor.root_id, &parent_anchor.path) < Level::Write {
+            return Err(denied("write", actor));
+        }
         let parent_key = ContainerKey::Dir {
             root: parent_anchor.root_id.clone(),
             rel: parent_anchor.path.clone(),
@@ -405,24 +453,25 @@ impl AppState {
 
     // ---------- open_write / commit_file ----------
 
-    pub fn op_open_write(&self, args: &Value, session: &str) -> NfsResult<Value> {
+    pub fn op_open_write(&self, actor: &Actor, args: &Value, session: &str) -> NfsResult<Value> {
         let (root, rel, base) = if args.get("ref").map(|v| !v.is_null()).unwrap_or(false) {
             let r: WireRef = serde_json::from_value(args["ref"].clone())
                 .map_err(|_| invalid("bad ref"))?;
-            match self.resolve_ref(&r)? {
+            match self.resolve_ref_for(actor, &r, Level::Write, "write")? {
                 Node::Native { root, rel, meta, .. } if meta.kind == "file" => {
                     (root, rel, Some((meta.size, meta.mtime)))
                 }
                 _ => return Err(invalid("open_write ref must be a file")),
             }
         } else {
-            let parent = self.parent_dir(None, args)?;
+            let parent = self.parent_dir_min(actor, None, args, Level::Traverse)?;
             let name =
                 args["name"].as_str().ok_or_else(|| invalid("open_write requires name"))?;
             validate_name(name)?;
             self.check_no_binding(&parent, name)?;
             let (root, rel, full) = self.dir_parts(&parent)?;
             let target_rel = rel_join(&rel, name);
+            self.require_file_write(actor, &root, &rel, &target_rel, std::fs::symlink_metadata(full.join(name)).is_ok())?;
             let base = match std::fs::symlink_metadata(full.join(name)) {
                 Ok(m) if m.is_file() => {
                     let nm = node_meta(&m);
@@ -467,13 +516,14 @@ impl AppState {
         Ok(json!({ "aborted": true }))
     }
 
-    pub fn op_commit_file(&self, at: Option<&Locator>, args: &Value, session: &str) -> NfsResult<Value> {
-        let parent = self.parent_dir(at, args)?;
+    pub fn op_commit_file(&self, actor: &Actor, at: Option<&Locator>, args: &Value, session: &str) -> NfsResult<Value> {
+        let parent = self.parent_dir_min(actor, at, args, Level::Traverse)?;
         let name = args["name"].as_str().ok_or_else(|| invalid("commit_file requires name"))?;
         validate_name(name)?;
         self.check_no_binding(&parent, name)?;
         let (root, rel, full) = self.dir_parts(&parent)?;
         let target_rel = rel_join(&rel, name);
+        self.require_file_write(actor, &root, &rel, &target_rel, std::fs::symlink_metadata(full.join(name)).is_ok())?;
         let target_path = full.join(name);
         let overwrite = args["overwrite"].as_bool().unwrap_or(false);
         self.check_dir_cas(
@@ -542,7 +592,12 @@ impl AppState {
             (fin.path, fin.size, fin.sha256)
         } else if let Some(hash_arg) = args["hash"].as_str().or(args["obj_id"].as_str()) {
             let hex_hash = normalize_hash(hash_arg)?;
-            let (src_root, src_rel) = match self.db.content_index_get(&hex_hash)? {
+            // Dedup only draws from content the actor could read anyway.
+            let indexed = self
+                .db
+                .content_index_get(&hex_hash)?
+                .filter(|(r, p, _, _)| self.acls.level(actor, r, p) >= Level::Read);
+            let (src_root, src_rel) = match indexed {
                 Some((r, p, isize, imtime)) => {
                     match self.verify_content_source(&r, &p, isize, imtime, &hex_hash)? {
                         true => (r, p),
@@ -574,6 +629,9 @@ impl AppState {
             return Err(invalid("commit_file requires fb_handle or hash"));
         };
 
+        if current.is_none() {
+            self.clear_stale_acls(&root, &target_rel)?;
+        }
         // Atomic placement: rename into a temp in the target dir, then rename over.
         place_file(&staged_tmp, &target_path)?;
         let final_meta = lstat(&target_path)?;
@@ -641,7 +699,7 @@ impl AppState {
 
     // ---------- probe ----------
 
-    pub fn op_probe(&self, args: &Value) -> NfsResult<Value> {
+    pub fn op_probe(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let digests = args["digests"]
             .as_array()
             .ok_or_else(|| invalid("probe requires digests[]"))?;
@@ -653,7 +711,11 @@ impl AppState {
             let hash = d["hash"].as_str().ok_or_else(|| invalid("digest requires hash"))?;
             let size = d["size"].as_i64();
             let hex_hash = normalize_hash(hash)?;
-            let present = match self.db.content_index_get(&hex_hash)? {
+            let indexed = self
+                .db
+                .content_index_get(&hex_hash)?
+                .filter(|(r, p, _, _)| self.acls.level(actor, r, p) >= Level::Read);
+            let present = match indexed {
                 Some((root, rel, isize, imtime)) => {
                     if size.map(|s| s != isize).unwrap_or(false) {
                         false
@@ -679,8 +741,8 @@ impl AppState {
 
     // ---------- meta ----------
 
-    pub fn op_get_meta(&self, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
-        let node = self.meta_target(at, args)?;
+    pub fn op_get_meta(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
+        let node = self.meta_target(actor, at, args, Level::Read, "read")?;
         let ns: Vec<String> = args["ns"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -701,8 +763,8 @@ impl AppState {
         Ok(json!({ "records": records }))
     }
 
-    pub fn op_set_meta(&self, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
-        let node = self.meta_target(at, args)?;
+    pub fn op_set_meta(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
+        let node = self.meta_target(actor, at, args, Level::Write, "write")?;
         let records = args["records"]
             .as_array()
             .ok_or_else(|| invalid("set_meta requires records[]"))?;
@@ -746,13 +808,13 @@ impl AppState {
         Ok(json!({ "updated": count }))
     }
 
-    fn meta_target(&self, at: Option<&Locator>, args: &Value) -> NfsResult<Node> {
+    fn meta_target(&self, actor: &Actor, at: Option<&Locator>, args: &Value, min: Level, op: &str) -> NfsResult<Node> {
         if args.get("ref").map(|v| !v.is_null()).unwrap_or(false) {
             let r: WireRef =
                 serde_json::from_value(args["ref"].clone()).map_err(|_| invalid("bad ref"))?;
-            self.resolve_ref(&r)
+            self.resolve_ref_for(actor, &r, min, op)
         } else if let Some(at) = at {
-            self.resolve_locator(at)
+            self.resolve_for(actor, at, min, op)
         } else {
             Err(invalid("missing target (at or ref)"))
         }
@@ -769,11 +831,11 @@ impl AppState {
 
     // ---------- grant / revoke ----------
 
-    pub fn op_grant(&self, args: &Value) -> NfsResult<Value> {
+    pub fn op_grant(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let subtree = if let Some(s) = args.get("subtree").filter(|v| !v.is_null()) {
             let loc: Locator = serde_json::from_value(s.clone())
                 .map_err(|_| invalid("bad subtree locator"))?;
-            match self.resolve_locator(&loc)? {
+            match self.resolve_for(actor, &loc, Level::Manage, "manage")? {
                 Node::Native { root, rel, .. } => canonical_path(&root, &rel),
                 Node::Root => "cyfs:///".to_string(),
                 Node::View(v) => format!("view://{}", v.view_id),
@@ -783,7 +845,7 @@ impl AppState {
         } else if args.get("ref").map(|v| !v.is_null()).unwrap_or(false) {
             let r: WireRef =
                 serde_json::from_value(args["ref"].clone()).map_err(|_| invalid("bad ref"))?;
-            match self.resolve_ref(&r)? {
+            match self.resolve_ref_for(actor, &r, Level::Manage, "manage")? {
                 Node::Native { root, rel, .. } => canonical_path(&root, &rel),
                 Node::View(v) => format!("view://{}", v.view_id),
                 Node::Collection(c) => format!("collection://{}", c.collection_id),
@@ -815,9 +877,23 @@ impl AppState {
         Ok(out)
     }
 
-    pub fn op_revoke(&self, args: &Value) -> NfsResult<Value> {
+    pub fn op_revoke(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let cap_id =
             args["cap_id"].as_str().ok_or_else(|| invalid("revoke requires cap_id"))?;
+        let subtree = self
+            .db
+            .grant_subtree(cap_id)?
+            .ok_or_else(|| not_found(format!("cap '{}' not found", cap_id)))?;
+        let managed = match current_zone_cyfs_path(&subtree)? {
+            Some(path) => self.path_level(actor, &path)? >= Level::Manage,
+            None => self
+                .resolve_locator(&Locator { uri: Some(subtree), ..Default::default() })
+                .map(|n| self.node_level(actor, &n) >= Level::Manage)
+                .unwrap_or(actor.is_admin()),
+        };
+        if !managed {
+            return Err(denied("manage", actor));
+        }
         if !self.db.grant_revoke(cap_id)? {
             return Err(not_found(format!("cap '{}' not found", cap_id)));
         }

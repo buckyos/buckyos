@@ -98,6 +98,8 @@ export interface FileEntry {
   copyRef?: string
   id: FileEntryId
   operations?: import('./data/schemas').EntryOperations
+  /** The signed-in user's effective permission, when the backend reports it. */
+  accessLevel?: import('./data/permissions').AccessLevel
   thumbnailUrl?: string
   name: string
   kind: FileKind

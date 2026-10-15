@@ -177,6 +177,7 @@ pub const SERVER_FEATURES: &[&str] = &[
     "reference-binding",
     "watch.sse",
     "search.name",
+    "acl",
 ];
 
 pub const PROTOCOL_VERSION: &str = "nfsp/0";

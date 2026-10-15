@@ -10,6 +10,24 @@ pub struct ExportRoot {
     pub path: PathBuf,
 }
 
+/// How requests are authenticated (see auth.rs).
+#[derive(Debug, Clone, Default)]
+pub enum AuthMode {
+    /// Standalone without an auth config: every request acts with full access.
+    #[default]
+    Disabled,
+    /// BuckyOS service mode: verify-hub session tokens via the service runtime.
+    Runtime,
+    /// Standalone tests: tokens signed by a fixed key, `zone_owner` gets full access.
+    TestKey { public_key: String, zone_owner: String },
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AuthTestConfig {
+    pub public_key: String,
+    pub zone_owner: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub listen: String,
@@ -25,6 +43,7 @@ pub struct ServerConfig {
     pub replay_window: u64,
     pub lease_ttl_secs: u64,
     pub copy_test: Option<buckyos_api::NfsCopyTestConfig>,
+    pub auth: AuthMode,
 }
 
 impl ServerConfig {
@@ -40,6 +59,7 @@ impl ServerConfig {
             replay_window: 128,
             lease_ttl_secs: 600,
             copy_test: None,
+            auth: AuthMode::Disabled,
         }
     }
 

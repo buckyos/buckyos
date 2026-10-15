@@ -149,6 +149,7 @@ const transferProvider: FileMenuProvider = {
     }
     if (isItem(ctx)) {
       section.push(action('share', label('share', 'Share…'), { icon: 'share' }))
+      if (ctx.entries[0]?.path.startsWith('/')) section.push(action('permissions', label('permissions', 'Permissions…'), { icon: 'permissions' }))
     }
     return section.length ? [section] : []
   },
@@ -380,6 +381,14 @@ const viewDisplayProvider: FileMenuProvider = {
   ],
 }
 
+/** Blank-area: access control of the folder being shown. */
+const viewPermissionsProvider: FileMenuProvider = {
+  id: 'default.view-permissions',
+  order: 350,
+  when: (ctx) => isView(ctx) && ctx.capabilities.kind === 'folder' && !ctx.searching,
+  build: () => [[action('folder-permissions', label('folderPermissions', 'Folder permissions…'), { icon: 'permissions' })]],
+}
+
 /** Blank-area: selection helpers + current path. */
 const viewSelectProvider: FileMenuProvider = {
   id: 'default.view-select',
@@ -408,6 +417,7 @@ export function createDefaultFileMenuRegistry(): FileMenuRegistry {
   registry.register(collectionViewProvider)
   registry.register(viewDisplayProvider)
   registry.register(viewSelectProvider)
+  registry.register(viewPermissionsProvider)
   return registry
 }
 

@@ -11,6 +11,7 @@ import { usersAgentsEn, usersAgentsZh } from './users-agents'
 import { presentationEn, presentationZh } from './presentation'
 import { settingsEn, settingsZh } from './settings'
 import { trayEn, trayZh } from './tray'
+import { filePermissionsEn, filePermissionsZh } from './file-permissions'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -1697,8 +1698,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh },
   ja,
   ko,
   fr,

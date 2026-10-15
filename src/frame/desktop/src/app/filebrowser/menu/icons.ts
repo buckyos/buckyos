@@ -18,6 +18,7 @@ import {
   Library,
   Link2,
   List,
+  Lock,
   PanelRight,
   PencilLine,
   RefreshCw,
@@ -53,4 +54,5 @@ export const MENU_ICONS: Record<FileMenuIcon, React.ComponentType<{ size?: numbe
   broken: Unlink,
   'move-up': ArrowUp,
   'move-down': ArrowDown,
+  permissions: Lock,
 }

@@ -70,6 +70,8 @@ pub struct WatchEvent {
     pub data: Value,
     /// canonical container key, for watch-token filtering (None = broadcast)
     pub container: Option<String>,
+    /// the container itself, for per-subscriber permission filtering
+    pub key: Option<ContainerKey>,
 }
 
 pub struct EventBus {
@@ -101,6 +103,7 @@ impl EventBus {
             event: event.to_string(),
             data,
             container: container.map(|c| c.canonical()),
+            key: container.cloned(),
         };
         // No receivers is fine.
         let _ = self.tx.send(ev);

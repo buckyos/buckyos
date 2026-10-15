@@ -140,10 +140,16 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
 
   const isContainer =
     target.kind === 'dir' || target.kind === 'collection' || target.kind === 'group'
+  const level = target.access_level
+  const writable = !level || level === 'write' || level === 'manage'
   const fileEntry: FileEntry = {
     id: refIdOf(target.ref),
     copyRef: target.copy_ref ? JSON.stringify(target.copy_ref) : undefined,
-    operations: { copy: !broken && !!target.copy_ref && ['dir', 'file', 'symlink'].includes(target.kind) && path.startsWith('/') && !(context.containerDfsPath !== undefined && entry.binding === 'reference') ? 'available' : 'unsupported' },
+    operations: {
+      copy: !broken && !!target.copy_ref && ['dir', 'file', 'symlink'].includes(target.kind) && path.startsWith('/') && !(context.containerDfsPath !== undefined && entry.binding === 'reference') ? 'available' : 'unsupported',
+      ...(writable ? {} : { rename: 'denied', move: 'denied', delete: 'denied' } as const),
+    },
+    accessLevel: level,
     name: entry.name,
     kind: isContainer ? 'folder' : target.kind === 'file' ? classifyFileKind(entry.name) : 'other',
     path,

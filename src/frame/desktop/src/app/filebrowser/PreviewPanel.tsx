@@ -20,6 +20,7 @@ import type { FileItem } from './data/FolderReader'
 import { usePreview } from './data/usePreview'
 import { displayPath } from './data/urls'
 import type { Topic } from './types'
+import { levelLabel } from './dialogs/permissionLabels'
 
 interface PreviewPanelProps {
   item: FileItem | null
@@ -165,6 +166,11 @@ export function PreviewPanel({
               <Row label={t('filebrowser.preview.source', 'Source')}>
                 {entry.source?.label ?? '—'}
               </Row>
+              {entry.accessLevel ? (
+                <Row label={t('filebrowser.permissions.yourAccess', 'Your access')}>
+                  <span data-testid="preview-access-level">{levelLabel(t, entry.accessLevel)}</span>
+                </Row>
+              ) : null}
               {entry.publicUrl ? (
                 <Row label={t('filebrowser.preview.publicUrl', 'Public URL')}>
                   <a

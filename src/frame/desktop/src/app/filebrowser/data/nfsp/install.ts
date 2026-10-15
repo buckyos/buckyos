@@ -12,6 +12,7 @@ import { registerNfspCollectionReader } from './collections'
 import { registerNfspCollectionDirectory } from './collectionDirectory'
 import { registerNfspFolderOps } from './folderOps'
 import { applyMetaRecords } from './mapping'
+import { registerNfspPermissionSource } from './permissions'
 import { registerNfspReaders } from './readers'
 import { registerNfspSearchProvider } from './search'
 import { registerNfspSidebarSources } from './sidebar'
@@ -35,6 +36,7 @@ export function installNfspFileBrowserData() {
   registerNfspSearchProvider()
   registerNfspTransferExecutor()
   registerNfspFolderOps()
+  registerNfspPermissionSource()
   registerPreviewEnricher(enrichPreviewItem)
   // Establish the session (and auto-watch) eagerly so the first listings and
   // watch invalidation don't wait for a lazy hello.

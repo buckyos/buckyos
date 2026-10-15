@@ -1482,6 +1482,7 @@ Collection ID.
 | Read/write metadata | <code>get_meta/set_meta</code> | Only authorized writable namespaces |
 | Search | <code>search</code> | Cursor-based; v1 name mode, response remains extensible |
 | Share | <code>grant/revoke</code> | Do not expose as complete until data-plane cap enforcement exists |
+| Permissions | <code>get_acl/set_acl/list_acls</code> | "Permissions…" dialog and Settings › File Permissions; entries carry <code>access_level</code> (nfs_server.md §11) |
 
 ### 8.4 Revision, cache, and watch rules
 

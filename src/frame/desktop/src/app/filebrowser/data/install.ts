@@ -14,6 +14,7 @@
 import { isMockRuntime } from '../../../runtime'
 import { registerCollectionReader } from '../mock/collections'
 import { registerMockFolderOps } from '../mock/folderOps'
+import { registerMockPermissionSource } from '../mock/permissions'
 import { registerMockSearchProvider } from '../mock/search'
 import { registerMockSidebarSources } from '../mock/sidebar'
 import { registerMockTransferExecutor } from '../mock/transfers'
@@ -39,6 +40,7 @@ function installMockData() {
   registerMockSidebarSources()
   registerMockTransferExecutor()
   registerMockFolderOps()
+  registerMockPermissionSource()
   // Preview enrichment: simulated latency over the already-projected entry.
   registerPreviewEnricher(async (item) => {
     await mockDelay(50, 120)

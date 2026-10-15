@@ -1,6 +1,8 @@
 //! HTTP binding (NFSP §4): control plane `POST /nfs/v1/{method}`, batch,
 //! watch SSE, the data-plane read endpoint, and the minimal tus upload area.
 
+use crate::acl::{Actor, Level};
+use crate::auth::{authenticate, Credentials};
 use crate::error::*;
 use crate::fsutil::{content_type_for, join_root};
 use crate::namespace::{ListArgs, Node};
@@ -31,6 +33,7 @@ const WRITE_METHODS: &[&str] = &[
     "collection_patch",
     "grant",
     "revoke",
+    "set_acl",
 ];
 
 pub fn build_router(state: SharedState) -> Router {
@@ -77,30 +80,23 @@ async fn control_handler(
             );
         }
     }
+    let creds = Credentials::from_headers(&headers);
+    let actor = match authenticate(&state, &creds).await {
+        Ok(a) => a,
+        Err(e) => return envelope_error(&state, e),
+    };
     if method == "hello" {
-        return match op_hello(&state, &env) {
+        return match op_hello(&state, &env, actor) {
             Ok(v) => envelope_ok(&state, v),
             Err(e) => envelope_error(&state, e),
         };
     }
-    let session = match &env.session {
-        Some(s) if state.sessions.exists(s) => s.clone(),
-        Some(_) => {
-            return envelope_error(
-                &state,
-                NfsError::new(ErrorCode::PermissionDenied, "unknown or expired session; hello again"),
-            )
-        }
-        None => {
-            return envelope_error(
-                &state,
-                NfsError::new(ErrorCode::PermissionDenied, "missing session; call hello first"),
-            )
-        }
+    let session = match session_for(&state, env.session.as_deref(), &actor) {
+        Ok(s) => s,
+        Err(e) => return envelope_error(&state, e),
     };
     if method.starts_with("copy_") {
-        let token = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|h| h.strip_prefix("Bearer "));
-        return match crate::copy::dispatch(&state, &method, &env.args, token).await {
+        return match crate::copy::dispatch(&state, &actor, &method, &env.args, creds.bearer()).await {
             Ok(value) => envelope_ok(&state, value),
             Err(error) => envelope_error(&state, error),
         };
@@ -124,7 +120,7 @@ async fn control_handler(
             }
             Err(e) => return envelope_error(&state, e),
         }
-        let result = dispatch(&state, &method, &env, &session).await;
+        let result = dispatch(&state, &actor, &method, &env, &session).await;
         return match result {
             Ok(v) => {
                 state.sessions.record_seq(&session, env.seq.unwrap(), v.clone());
@@ -133,9 +129,28 @@ async fn control_handler(
             Err(e) => envelope_error(&state, e),
         };
     }
-    match dispatch(&state, &method, &env, &session).await {
+    match dispatch(&state, &actor, &method, &env, &session).await {
         Ok(v) => envelope_ok(&state, v),
         Err(e) => envelope_error(&state, e),
+    }
+}
+
+/// A hello session only serves the principal that created it.
+fn session_for(state: &SharedState, session: Option<&str>, actor: &Actor) -> NfsResult<String> {
+    let session = session.ok_or_else(|| {
+        NfsError::new(ErrorCode::PermissionDenied, "missing session; call hello first")
+    })?;
+    match state.sessions.actor(session) {
+        Some(owner) if &owner == actor => Ok(session.to_string()),
+        Some(_) => Err(NfsError::new(
+            ErrorCode::PermissionDenied,
+            "session belongs to another principal; hello again",
+        )
+        .with("reason", json!("session_principal_changed"))),
+        None => Err(NfsError::new(
+            ErrorCode::PermissionDenied,
+            "unknown or expired session; hello again",
+        )),
     }
 }
 
@@ -158,7 +173,7 @@ fn envelope_error(state: &SharedState, e: NfsError) -> Response {
     (status, axum::Json(body)).into_response()
 }
 
-fn op_hello(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
+fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Value> {
     if let Some(versions) = env.args["versions"].as_array() {
         if !versions.iter().any(|v| v.as_str() == Some(PROTOCOL_VERSION)) {
             return Err(NfsError::new(
@@ -176,10 +191,19 @@ fn op_hello(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
         .copied()
         .filter(|f| client_features.is_empty() || client_features.iter().any(|c| c == f))
         .collect();
-    let session = state.sessions.create();
+    let identity = json!({
+        "user_id": actor.user_id(),
+        "role": match &actor {
+            Actor::Admin(_) => "admin",
+            Actor::User(_) => "user",
+            Actor::Anonymous => "anonymous",
+        },
+    });
+    let session = state.sessions.create(actor);
     Ok(json!({
         "version": PROTOCOL_VERSION,
         "session": session,
+        "identity": identity,
         "features": features,
         "limits": {
             "max_batch": state.config.max_batch,
@@ -193,6 +217,7 @@ fn op_hello(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
 
 async fn dispatch(
     state: &SharedState,
+    actor: &Actor,
     method: &str,
     env: &Envelope,
     session: &str,
@@ -208,38 +233,41 @@ async fn dispatch(
         }
         "resolve" | "stat" => {
             let at = at.ok_or_else(|| invalid("resolve/stat requires at"))?;
-            let mut node = state.resolve_locator(at)?;
+            let mut node = state.resolve_for(actor, at, Level::Traverse, "read")?;
             if let Some(name) = args["name"].as_str() {
-                node = state.walk_child(&node, name)?;
+                node = state.walk_child_for(actor, &node, name, "read")?;
             }
-            state.node_info(&node, &want)
+            state.node_info(actor, &node, &want)
         }
         "list" => {
             let at = at.ok_or_else(|| invalid("list requires at"))?;
-            let node = state.resolve_locator(at)?;
+            let node = state.resolve_for(actor, at, Level::Traverse, "read")?;
             let list_args: ListArgs = serde_json::from_value(args.clone())
                 .map_err(|e| invalid(format!("bad list args: {}", e)))?;
-            state.list_node(&node, &list_args, &want)
+            state.list_node(actor, &node, &list_args, &want)
         }
-        "batch" => op_batch(state, env).await,
-        "mkdir" => state.op_mkdir(at, args),
-        "move" => state.op_move(args),
-        "delete" => state.op_delete(at, args),
-        "bind_ref" => state.op_bind_ref(args),
-        "unlink" => state.op_unlink(args),
+        "batch" => op_batch(state, actor, env).await,
+        "mkdir" => state.op_mkdir(actor, at, args),
+        "move" => state.op_move(actor, args),
+        "delete" => state.op_delete(actor, at, args),
+        "bind_ref" => state.op_bind_ref(actor, args),
+        "unlink" => state.op_unlink(actor, args),
         "abort_write" => state.op_abort_write(args, session),
-        "open_write" => state.op_open_write(args, session),
-        "commit_file" => state.op_commit_file(at, args, session),
-        "probe" => state.op_probe(args),
-        "get_meta" => state.op_get_meta(at, args),
-        "set_meta" => state.op_set_meta(at, args),
-        "search" => state.op_search(args, &want),
-        "open_view" => state.op_open_view(args, &want),
-        "create_collection" => state.op_create_collection(args, &want),
-        "open_collection" => state.op_open_collection(args, &want),
-        "collection_patch" => state.op_collection_patch(args),
-        "grant" => state.op_grant(args),
-        "revoke" => state.op_revoke(args),
+        "open_write" => state.op_open_write(actor, args, session),
+        "commit_file" => state.op_commit_file(actor, at, args, session),
+        "probe" => state.op_probe(actor, args),
+        "get_meta" => state.op_get_meta(actor, at, args),
+        "set_meta" => state.op_set_meta(actor, at, args),
+        "search" => state.op_search(actor, args, &want),
+        "open_view" => state.op_open_view(actor, args, &want),
+        "create_collection" => state.op_create_collection(actor, args, &want),
+        "open_collection" => state.op_open_collection(actor, args, &want),
+        "collection_patch" => state.op_collection_patch(actor, args),
+        "grant" => state.op_grant(actor, args),
+        "revoke" => state.op_revoke(actor, args),
+        "get_acl" => state.op_get_acl(actor, at, args),
+        "set_acl" => state.op_set_acl(actor, at, args),
+        "list_acls" => state.op_list_acls(actor),
         other => Err(NfsError::new(
             ErrorCode::Unsupported,
             format!("unknown method '{}'", other),
@@ -249,7 +277,7 @@ async fn dispatch(
 
 // ---------- batch (COMPOUND-lite, §4.3) ----------
 
-async fn op_batch(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
+async fn op_batch(state: &SharedState, actor: &Actor, env: &Envelope) -> NfsResult<Value> {
     let args = &env.args;
     let start: Locator = match args.get("start") {
         Some(s) if !s.is_null() => serde_json::from_value(s.clone())
@@ -261,7 +289,7 @@ async fn op_batch(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
         return Err(invalid(format!("batch too large (max {})", state.config.max_batch)));
     }
     let abort = args["on_error"].as_str().unwrap_or("abort") != "continue";
-    let mut cursor: Node = state.resolve_locator(&start)?;
+    let mut cursor: Node = state.resolve_for(actor, &start, Level::Traverse, "read")?;
     let mut results: Vec<Value> = Vec::new();
     let mut completed = 0usize;
     for op in ops {
@@ -283,14 +311,17 @@ async fn op_batch(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
                     for n in names {
                         let name =
                             n.as_str().ok_or_else(|| invalid("bad walk name"))?;
-                        cur = state.walk_child(&cur, name)?;
+                        cur = state.walk_child_for(actor, &cur, name, "read")?;
                         out = Ok(cur.clone());
                     }
                     out
                 } else if let Some(name) = op_args["name"].as_str() {
-                    state.walk_child(&cursor, name)
+                    state.walk_child_for(actor, &cursor, name, "read")
                 } else if let Some(er) = op_args["entry_ref"].as_str() {
-                    state.walk_entry_ref(&cursor, er)
+                    state.walk_entry_ref(&cursor, er).and_then(|n| {
+                        state.require(actor, &n, Level::Traverse, "read")?;
+                        Ok(n)
+                    })
                 } else {
                     Err(invalid("walk requires names, name or entry_ref"))
                 };
@@ -301,16 +332,16 @@ async fn op_batch(state: &SharedState, env: &Envelope) -> NfsResult<Value> {
             }
             "stat" | "resolve" => {
                 let node = if let Some(name) = op_args["name"].as_str() {
-                    state.walk_child(&cursor, name)
+                    state.walk_child_for(actor, &cursor, name, "read")
                 } else {
                     Ok(cursor.clone())
                 };
-                node.and_then(|n| state.node_info(&n, &want))
+                node.and_then(|n| state.node_info(actor, &n, &want))
             }
             "list" => {
                 let list_args: ListArgs = serde_json::from_value(op_args.clone())
                     .map_err(|e| invalid(format!("bad list args: {}", e)))?;
-                state.list_node(&cursor, &list_args, &want)
+                state.list_node(actor, &cursor, &list_args, &want)
             }
             other => Err(invalid(format!(
                 "batch supports walk/stat/list (write ops need their own request), got '{}'",
@@ -344,26 +375,29 @@ struct WatchQuery {
 async fn watch_handler(
     State(state): State<SharedState>,
     Query(q): Query<WatchQuery>,
+    headers: HeaderMap,
 ) -> Response {
-    match &q.session {
-        Some(s) if state.sessions.exists(s) => {}
-        _ => {
-            return envelope_error(
-                &state,
-                NfsError::new(ErrorCode::PermissionDenied, "watch requires a valid session"),
-            )
-        }
+    let actor = match authenticate(&state, &Credentials::from_headers(&headers)).await {
+        Ok(a) => a,
+        Err(e) => return envelope_error(&state, e),
+    };
+    if let Err(e) = session_for(&state, q.session.as_deref(), &actor) {
+        return envelope_error(&state, e);
     }
     let tokens: Option<std::collections::HashSet<String>> = q.tokens.map(|t| {
         t.split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
     });
     let rx = state.bus.subscribe();
     let watch_key = state.watch_key;
+    let st = state.clone();
     // Reconnects always start with resync; no event buffering (D11).
     let first = stream::iter(vec![Ok::<SseEvent, std::convert::Infallible>(
         SseEvent::default().event("resync").data(json!({"reason":"connect"}).to_string()),
     )]);
-    let rest = stream::unfold((rx, tokens), move |(mut rx, tokens)| async move {
+    let rest = stream::unfold((rx, tokens), move |(mut rx, tokens)| {
+        let st = st.clone();
+        let actor = actor.clone();
+        async move {
         loop {
             match rx.recv().await {
                 Ok(ev) => {
@@ -372,6 +406,9 @@ async fn watch_handler(
                         if !filter.contains(&token) {
                             continue;
                         }
+                    }
+                    if ev.event != "resync" && !st.event_visible(&actor, ev.key.as_ref(), &ev.data) {
+                        continue;
                     }
                     let sse = SseEvent::default()
                         .id(ev.server_rev.to_string())
@@ -389,6 +426,7 @@ async fn watch_handler(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
         }
+        }
     });
     Sse::new(first.chain(rest))
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
@@ -403,7 +441,11 @@ async fn read_handler(
     Query(q): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
-    let node = match state.resolve_ref(&WireRef::live(node_id, 0)) {
+    let actor = match authenticate(&state, &Credentials::from_headers(&headers)).await {
+        Ok(a) => a,
+        Err(e) => return envelope_error(&state, e),
+    };
+    let node = match state.resolve_ref_for(&actor, &WireRef::live(node_id, 0), Level::Read, "read") {
         Ok(n) => n,
         Err(e) => return envelope_error(&state, e),
     };
@@ -423,6 +465,11 @@ async fn read_handler(
         None => return envelope_error(&state, stale("root gone")),
     };
     let full = join_root(&cfg.path, &rel);
+    if matches!(&node, Node::Native { meta, .. } if meta.kind == "symlink") {
+        if let Err(e) = state.require_symlink_target(&actor, &full) {
+            return envelope_error(&state, e);
+        }
+    }
     // Follow the symlink at read time; take size from the followed target.
     let meta = match tokio::fs::metadata(&full).await {
         Ok(m) => m,
@@ -563,10 +610,24 @@ fn parse_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()>
 
 // ---------- uploads (minimal tus) ----------
 
+/// Upload chunks must come from the principal whose session holds the lease.
+async fn upload_owner_check(state: &SharedState, fb: &str, headers: &HeaderMap) -> NfsResult<()> {
+    let actor = authenticate(state, &Credentials::from_headers(headers)).await?;
+    let owner = state.leases.session_of_upload(fb).and_then(|s| state.sessions.actor(&s));
+    match owner {
+        Some(owner) if owner == actor => Ok(()),
+        _ => Err(not_found(format!("unknown upload '{}'", fb))),
+    }
+}
+
 async fn upload_head(
     State(state): State<SharedState>,
     AxPath(fb): AxPath<String>,
+    headers: HeaderMap,
 ) -> Response {
+    if let Err(e) = upload_owner_check(&state, &fb, &headers).await {
+        return envelope_error(&state, e);
+    }
     match state.uploads.offset(&fb) {
         Ok((offset, expected)) => {
             let mut builder = Response::builder()
@@ -589,6 +650,9 @@ async fn upload_patch(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(e) = upload_owner_check(&state, &fb, &headers).await {
+        return envelope_error(&state, e);
+    }
     let offset: u64 = match headers
         .get("Upload-Offset")
         .and_then(|v| v.to_str().ok())
@@ -623,8 +687,14 @@ async fn upload_patch(
 async fn debug_handler(
     State(state): State<SharedState>,
     AxPath(action): AxPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    match authenticate(&state, &Credentials::from_headers(&headers)).await {
+        Ok(actor) if actor.is_admin() => {}
+        Ok(actor) => return envelope_error(&state, crate::access::denied("manage", &actor)),
+        Err(e) => return envelope_error(&state, e),
+    }
     let args: Value = if body.is_empty() {
         json!({})
     } else {

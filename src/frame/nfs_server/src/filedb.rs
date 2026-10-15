@@ -3,7 +3,7 @@
 //! filesystem cannot express. Entity files/dirs get rows lazily (惰性锚定).
 //!
 //! Persistent tables: entities, anchors, namespace_bindings, views, view_groups,
-//! view_base, view_patch, collections, collection_nodes, meta_records, grants.
+//! view_base, view_patch, collections, collection_nodes, meta_records, grants, acls.
 //! Cache tables (rebuildable, may be lost): content_index.
 
 use crate::error::{internal, not_found, NfsResult};
@@ -90,6 +90,8 @@ pub struct CollectionRow {
     pub title: String,
     pub description: Option<String>,
     pub generation: i64,
+    /// Creating user; None = only the zone owner may use it.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +247,15 @@ CREATE TABLE IF NOT EXISTS grants(
   max_uses INTEGER,
   revoked INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS acls(
+  root_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  inherit INTEGER NOT NULL DEFAULT 1,
+  entries_json TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(root_id, path)
 );
 CREATE TABLE IF NOT EXISTS content_index(
   hash TEXT PRIMARY KEY,
@@ -542,10 +553,12 @@ impl FileDb {
         new_rel: &str,
     ) -> NfsResult<usize> {
         let conn = self.lock();
-        let like = format!("{}/%", old_rel.replace('%', "\\%").replace('_', "\\_"));
+        // Exact prefix (SQLite LIKE ignores ASCII case; substr counts characters).
+        let prefix = format!("{}/", old_rel);
+        let n_chars = prefix.chars().count() as i64;
         let n = conn.execute(
-            "UPDATE anchors SET root_id=?1, path = ?2 || substr(path, ?3) WHERE root_id=?4 AND path LIKE ?5 ESCAPE '\\' AND state != 'deleted'",
-            params![new_root, new_rel, old_rel.len() as i64 + 1, root, like],
+            "UPDATE anchors SET root_id=?1, path = ?2 || substr(path, ?3) WHERE root_id=?4 AND substr(path, 1, ?5) = ?6 AND state != 'deleted'",
+            params![new_root, new_rel, n_chars, root, n_chars, prefix],
         )?;
         let m = conn.execute(
             "UPDATE anchors SET root_id=?1, path=?2 WHERE root_id=?3 AND path=?4 AND state != 'deleted'",
@@ -557,20 +570,21 @@ impl FileDb {
     /// Marks anchors under a deleted subtree as deleted; returns affected node ids.
     pub fn anchors_delete_subtree(&self, root: &str, rel: &str) -> NfsResult<Vec<i64>> {
         let conn = self.lock();
-        let like = format!("{}/%", rel.replace('%', "\\%").replace('_', "\\_"));
+        let prefix = format!("{}/", rel);
+        let n_chars = prefix.chars().count() as i64;
         let mut ids: Vec<i64> = Vec::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT node_id FROM anchors WHERE root_id=?1 AND (path=?2 OR path LIKE ?3 ESCAPE '\\') AND state != 'deleted'",
+                "SELECT node_id FROM anchors WHERE root_id=?1 AND (path=?2 OR substr(path, 1, ?3) = ?4) AND state != 'deleted'",
             )?;
-            let rows = stmt.query_map(params![root, rel, like], |r| r.get::<_, i64>(0))?;
+            let rows = stmt.query_map(params![root, rel, n_chars, prefix], |r| r.get::<_, i64>(0))?;
             for r in rows {
                 ids.push(r?);
             }
         }
         conn.execute(
-            "UPDATE anchors SET state='deleted' WHERE root_id=?1 AND (path=?2 OR path LIKE ?3 ESCAPE '\\')",
-            params![root, rel, like],
+            "UPDATE anchors SET state='deleted' WHERE root_id=?1 AND (path=?2 OR substr(path, 1, ?3) = ?4)",
+            params![root, rel, n_chars, prefix],
         )?;
         for id in &ids {
             conn.execute(
@@ -895,18 +909,19 @@ impl FileDb {
             title: r.get(2)?,
             description: r.get(3)?,
             generation: r.get(4)?,
+            owner: r.get(5)?,
         })
     }
 
-    const COLLECTION_COLS: &'static str = "node_id, collection_id, title, description, generation";
+    const COLLECTION_COLS: &'static str = "node_id, collection_id, title, description, generation, owner";
 
-    pub fn collection_create(&self, collection_id: &str, title: &str) -> NfsResult<CollectionRow> {
+    pub fn collection_create(&self, collection_id: &str, title: &str, owner: Option<&str>) -> NfsResult<CollectionRow> {
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| internal(e.to_string()))?;
         let node_id = Self::entity_create_conn(&tx, "collection")?;
         tx.execute(
-            "INSERT INTO collections(node_id, collection_id, title) VALUES(?1,?2,?3)",
-            params![node_id, collection_id, title],
+            "INSERT INTO collections(node_id, collection_id, title, owner) VALUES(?1,?2,?3,?4)",
+            params![node_id, collection_id, title, owner],
         )
         .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(err, _)
@@ -926,6 +941,7 @@ impl FileDb {
             title: title.to_string(),
             description: None,
             generation: 1,
+            owner: owner.map(String::from),
         })
     }
 
@@ -1297,6 +1313,74 @@ impl FileDb {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    // ---------- acls ----------
+
+    pub fn acl_all(&self) -> NfsResult<Vec<crate::acl::AclRecord>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT root_id, path, inherit, entries_json, updated_by, updated_at FROM acls ORDER BY root_id, path",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::acl::AclRecord {
+                root: r.get(0)?,
+                path: r.get(1)?,
+                inherit: r.get::<_, i64>(2)? != 0,
+                entries: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
+                updated_by: r.get(4)?,
+                updated_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn acl_put(&self, rec: &crate::acl::AclRecord) -> NfsResult<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO acls(root_id, path, inherit, entries_json, updated_by, updated_at) VALUES(?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(root_id, path) DO UPDATE SET inherit=?3, entries_json=?4, updated_by=?5, updated_at=?6",
+            params![
+                rec.root,
+                rec.path,
+                rec.inherit as i64,
+                serde_json::to_string(&rec.entries).unwrap(),
+                rec.updated_by,
+                rec.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn acl_delete(&self, root: &str, rel: &str) -> NfsResult<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM acls WHERE root_id=?1 AND path=?2", params![root, rel])?;
+        Ok(())
+    }
+
+    pub fn acl_move_prefix(&self, root: &str, old_rel: &str, new_root: &str, new_rel: &str) -> NfsResult<()> {
+        let conn = self.lock();
+        let prefix = format!("{}/", old_rel);
+        let n = prefix.chars().count() as i64;
+        conn.execute(
+            "UPDATE acls SET root_id=?1, path = ?2 || substr(path, ?3) WHERE root_id=?4 AND substr(path, 1, ?5) = ?6",
+            params![new_root, new_rel, n, root, n, prefix],
+        )?;
+        conn.execute(
+            "UPDATE acls SET root_id=?1, path=?2 WHERE root_id=?3 AND path=?4",
+            params![new_root, new_rel, root, old_rel],
+        )?;
+        Ok(())
+    }
+
+    pub fn acl_delete_subtree(&self, root: &str, rel: &str) -> NfsResult<()> {
+        let conn = self.lock();
+        let prefix = format!("{}/", rel);
+        conn.execute(
+            "DELETE FROM acls WHERE root_id=?1 AND (path=?2 OR substr(path, 1, ?3) = ?4)",
+            params![root, rel, prefix.chars().count() as i64, prefix],
+        )?;
+        Ok(())
+    }
+
     // ---------- grants ----------
 
     pub fn grant_create(
@@ -1325,6 +1409,13 @@ impl FileDb {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn grant_subtree(&self, cap_id: &str) -> NfsResult<Option<String>> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row("SELECT subtree FROM grants WHERE cap_id=?1", params![cap_id], |r| r.get(0))
+            .optional()?)
     }
 
     pub fn grant_revoke(&self, cap_id: &str) -> NfsResult<bool> {
@@ -1397,10 +1488,11 @@ impl FileDb {
         new_rel: &str,
     ) -> NfsResult<()> {
         let conn = self.lock();
-        let like = format!("{}/%", old_rel.replace('%', "\\%").replace('_', "\\_"));
+        let prefix = format!("{}/", old_rel);
+        let n_chars = prefix.chars().count() as i64;
         conn.execute(
-            "UPDATE content_index SET root_id=?1, path = ?2 || substr(path, ?3) WHERE root_id=?4 AND path LIKE ?5 ESCAPE '\\'",
-            params![new_root, new_rel, old_rel.len() as i64 + 1, root, like],
+            "UPDATE content_index SET root_id=?1, path = ?2 || substr(path, ?3) WHERE root_id=?4 AND substr(path, 1, ?5) = ?6",
+            params![new_root, new_rel, n_chars, root, n_chars, prefix],
         )?;
         conn.execute(
             "UPDATE content_index SET root_id=?1, path=?2 WHERE root_id=?3 AND path=?4",
@@ -1516,7 +1608,7 @@ mod tests {
     #[test]
     fn collection_patch_order_and_cas() {
         let d = db();
-        let c = d.collection_create("reading", "Reading List").unwrap();
+        let c = d.collection_create("reading", "Reading List", None).unwrap();
         let t1 = d.ensure_anchor("file", "home", "1.pdf", 11, 1, 0, 0).unwrap();
         let t2 = d.ensure_anchor("file", "home", "2.pdf", 12, 1, 0, 0).unwrap();
         let g = d
@@ -1587,7 +1679,7 @@ mod tests {
     #[test]
     fn move_entries_reorders() {
         let d = db();
-        let c = d.collection_create("c", "C").unwrap();
+        let c = d.collection_create("c", "C", None).unwrap();
         let mut ids = Vec::new();
         for i in 0..4 {
             let t = d
@@ -1663,6 +1755,21 @@ mod tests {
         let user = d.meta_get(&["live:n_1".into()], &["user".into()]).unwrap();
         assert_eq!(user.len(), 1);
         assert_eq!(user[0].value, serde_json::json!(4));
+    }
+
+    #[test]
+    fn prefix_moves_are_exact_and_unicode_safe() {
+        let d = db();
+        let x = d.ensure_anchor("file", "home", "bob/Share/x", 1, 1, 0, 0).unwrap();
+        let y = d.ensure_anchor("file", "home", "bob/share/y", 2, 1, 0, 0).unwrap();
+        let p = d.ensure_anchor("file", "home", "bob/照片/a.jpg", 3, 1, 0, 0).unwrap();
+        d.anchors_move_prefix("home", "bob/share", "home", "bob/moved").unwrap();
+        d.anchors_move_prefix("home", "bob/照片", "home", "bob/相册").unwrap();
+        assert_eq!(d.anchor_get(x.node_id).unwrap().unwrap().path, "bob/Share/x");
+        assert_eq!(d.anchor_get(y.node_id).unwrap().unwrap().path, "bob/moved/y");
+        assert_eq!(d.anchor_get(p.node_id).unwrap().unwrap().path, "bob/相册/a.jpg");
+        assert_eq!(d.anchors_delete_subtree("home", "bob/share").unwrap(), Vec::<i64>::new());
+        assert_eq!(d.anchors_delete_subtree("home", "bob/Share").unwrap(), vec![x.node_id]);
     }
 
     #[test]

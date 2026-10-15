@@ -5,6 +5,7 @@
 //! sessions and leases; clients recover through SEQ_OUT_OF_WINDOW / STALE /
 //! watch resync — the same paths they must implement anyway.
 
+use crate::acl::Actor;
 use crate::error::{ErrorCode, NfsError, NfsResult};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -18,6 +19,8 @@ pub struct SessionMgr {
 }
 
 struct Session {
+    /// The principal that said hello; every later request must be the same one.
+    actor: Actor,
     /// seq → cached response body (write ops only)
     replay: HashMap<u64, Value>,
     max_seq: u64,
@@ -38,17 +41,21 @@ impl SessionMgr {
         SessionMgr { sessions: Mutex::new(HashMap::new()), replay_window }
     }
 
-    pub fn create(&self) -> String {
+    pub fn create(&self, actor: Actor) -> String {
         let id = format!("sess_{}", uuid::Uuid::new_v4().simple());
         self.sessions.lock().unwrap().insert(
             id.clone(),
-            Session { replay: HashMap::new(), max_seq: 0, created: Instant::now() },
+            Session { actor, replay: HashMap::new(), max_seq: 0, created: Instant::now() },
         );
         id
     }
 
     pub fn exists(&self, id: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(id)
+    }
+
+    pub fn actor(&self, id: &str) -> Option<Actor> {
+        self.sessions.lock().unwrap().get(id).map(|s| s.actor.clone())
     }
 
     pub fn remove(&self, id: &str) -> bool {
@@ -203,6 +210,12 @@ impl LeaseMgr {
         Ok(None)
     }
 
+    /// The session holding the lease an upload handle belongs to.
+    pub fn session_of_upload(&self, fb_handle: &str) -> Option<String> {
+        let map = self.leases.lock().unwrap();
+        map.values().find(|l| l.fb_handle == fb_handle).map(|l| l.session.clone())
+    }
+
     pub fn release_session(&self, session: &str) -> Vec<Lease> {
         let mut map = self.leases.lock().unwrap();
         let dropped: Vec<Lease> =
@@ -219,7 +232,8 @@ mod tests {
     #[test]
     fn replay_window() {
         let m = SessionMgr::new(4);
-        let s = m.create();
+        let s = m.create(Actor::Anonymous);
+        assert_eq!(m.actor(&s), Some(Actor::Anonymous));
         assert!(m.exists(&s));
         match m.check_seq(&s, 1).unwrap() {
             SeqDisposition::Execute => {}

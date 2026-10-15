@@ -9,6 +9,7 @@
 //! server state. The walk is capped; hitting the cap surfaces as a degraded
 //! source, never silently.
 
+use crate::acl::{Actor, Level};
 use crate::error::*;
 use crate::fsutil::*;
 use crate::namespace::{canonical_path, current_zone_cyfs_path, Node};
@@ -20,6 +21,7 @@ use std::time::Instant;
 const MAX_VISITED: usize = 200_000;
 
 struct SearchCtx<'a> {
+    actor: &'a Actor,
     needle: String,
     q: &'a str,
     limit: usize,
@@ -33,7 +35,7 @@ struct SearchCtx<'a> {
 }
 
 impl AppState {
-    pub fn op_search(&self, args: &Value, want: &WantMask) -> NfsResult<Value> {
+    pub fn op_search(&self, actor: &Actor, args: &Value, want: &WantMask) -> NfsResult<Value> {
         let q = args["q"].as_str().unwrap_or("").trim().to_string();
         if q.is_empty() {
             return Err(invalid("search requires q"));
@@ -56,17 +58,15 @@ impl AppState {
             Some(scope) => {
                 let loc: Locator = serde_json::from_value(scope.clone())
                     .map_err(|_| invalid("bad search scope"))?;
-                match self.resolve_locator(&loc)? {
-                    Node::Root => {
-                        self.config.exports.iter().map(|r| (r.id.clone(), String::new())).collect()
-                    }
+                match self.resolve_for(actor, &loc, Level::Traverse, "read")? {
+                    Node::Root => self.visible_exports(actor),
                     Node::Native { root, rel, meta, .. } if meta.kind == "dir" => {
                         vec![(root, rel)]
                     }
                     _ => return Err(invalid("search scope must be a directory")),
                 }
             }
-            None => self.config.exports.iter().map(|r| (r.id.clone(), String::new())).collect(),
+            None => self.visible_exports(actor),
         };
 
         let cursor_parsed: Option<(usize, Vec<String>)> = match args["cursor"].as_str() {
@@ -76,6 +76,7 @@ impl AppState {
 
         let started = Instant::now();
         let mut ctx = SearchCtx {
+            actor,
             needle: q.to_lowercase(),
             q: &q,
             limit,
@@ -155,6 +156,11 @@ impl AppState {
         children.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         for (name, meta) in &children {
             let child_rel = rel_join(rel, name);
+            let level = self.acls.level(ctx.actor, root_id, &child_rel);
+            let needed = if meta.kind == "dir" { Level::Traverse } else { Level::Read };
+            if level < needed {
+                continue;
+            }
             let parts: Vec<&str> = child_rel.split('/').collect();
             let after_cursor = match &ctx.cursor {
                 Some(cur) => {
@@ -178,6 +184,7 @@ impl AppState {
                     "ref": self.node_ref(&node),
                     "copy_ref": self.copy_ref(&node),
                     "kind": meta.kind,
+                    "access_level": level,
                     "name": name,
                     "canonical_path": canonical_path(root_id, &child_rel),
                     "match_source": "name",
@@ -210,6 +217,15 @@ impl AppState {
             }
         }
         true
+    }
+
+    fn visible_exports(&self, actor: &Actor) -> Vec<(String, String)> {
+        self.config
+            .exports
+            .iter()
+            .filter(|r| self.acls.level(actor, &r.id, "") >= Level::Traverse)
+            .map(|r| (r.id.clone(), String::new()))
+            .collect()
     }
 
     fn root_index(&self, root_id: &str) -> usize {

@@ -21,7 +21,9 @@ KernelService 身份 login(含心跳),读取 `services/nfs-server/settings`
 - 监听 `127.0.0.1:4110`(`NFS_SERVER_SERVICE_PORT`)。NFSP 是跨 zone 通用协议,
   网关把 zone 级根路径 `/nfs/v1/*` 原样转发到本服务(boot_gateway.yaml,
   与 /ndn 同级),不使用 `/kapi/<service>` 形态。
-- `copy_*` 方法验证实际用户 Bearer session token；其他 NFSP 方法尚未接入完整 SSO/cap 校验。
+- 每个请求验证调用者的 Verify Hub session token（Bearer 或 SSO cookie），再按路径 ACL 授权；
+  Zone owner 全权限，用户管理自己的 `home/<user_id>`，其余靠 ACL 记录授予，匿名只到 `public`。
+  详见下文“鉴权与权限”及产品文档 §11。
 
 集成点:`buckyos-api/src/nfs_server_client.rs`(常量 + Settings)、
 `scheduler/system_config_builder.rs::add_nfs_server()`、
@@ -38,13 +40,16 @@ nfs_server --listen 127.0.0.1:3260 \
            --data-dir /var/lib/nfs_server \
            --export home=/srv/home --export media=/srv/media \
            --scan-interval-secs 30 \
-           [--debug-api] [--log-level info]
+           [--debug-api] [--auth-test-config auth.json] [--log-level info]
 ```
 
 - `--export name=/abs/path`(可重复):每个 export root 成为当前 Zone 的 `cyfs:///` 命名空间一级子目录。
 - `--data-dir`:存放 `filedb.sqlite`、`copy.sqlite`、`copy-locks/` 与上传暂存区。复制日志及目标目录中的复制临时文件保留用于恢复；上传暂存区每次启动清空。
 - `--scan-interval-secs`:Reconciler 扫描周期,0 = 关闭。
 - `--debug-api`:开启 `POST /nfs/v1/debug/{reconcile|create_view}`(仅测试/开发)。
+- 不鉴权:独立模式默认所有请求全权限。`--auth-test-config`(须 loopback + `--debug-api`)给出
+  `{"public_key": "<ed25519 x>", "zone_owner": "<user_id>"}` 后,按该测试密钥验证 token,
+  规则与服务模式相同。
 
 ```bash
 cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
@@ -64,18 +69,20 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 | 视图 | `open_view` + 通用 `list(view_ref)` | ✅ 只读;base/patch overlay 合并已实现;内容经 debug API / filedb 灌入(v1 无 AI 生成器) |
 | 集合 | `create_collection` / `open_collection` / `collection_patch` + 通用 `list` | ✅ add_ref/remove_entry/move_entries/create_group/rename_group;成员只存 Ref,`canonical_path` 读取时批量补全 |
 | 搜索 | `search` | ✅ name mode;响应结构完整(`match_source`/`explain`/`sources[]`);先序遍历 + 路径游标 |
-| 分享 | `grant` / `revoke` | ⚠️ 签发/撤销/落库完整;**数据面尚不凭 cap 放行**(鉴权随 buckyos SSO 接入) |
+| 权限 | `get_acl` / `set_acl` / `list_acls` | ✅ 路径 ACL(实现扩展);继承/关闭继承、内置 owner 规则、owner 可列出全部记录 |
+| 分享 | `grant` / `revoke` | ⚠️ 需 `manage`;签发/撤销/落库完整,**数据面尚不凭 cap 放行** |
 | 派生 | `repr` | ❌ 未实现、不广告(依赖缩略图管线 + NamedStore) |
 | 通知 | `watch`(SSE) | ✅ `container_changed`/`meta_changed`/`resync`;连接首事件恒为 `resync`(D11);watch_token 过滤 |
 | 数据面 | `GET /nfs/v1/read/{node_id}` | ✅ Range/ETag(弱)/If-None-Match/Content-Disposition;**不发 immutable**(link 语义,§4.2) |
 
-`hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name`。
+`hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name` `acl`,
+并返回 `identity {user_id, role}`。
 不广告(未实现):`frozen-subtree` `search.semantic` `repr` `get_tree` `publish_dir`。
 
 ## filedb(§3.2 最小持久集)
 
 持久表:`entities` `anchors` `namespace_bindings` `views` `view_groups` `view_base`
-`view_patch` `collections` `collection_nodes` `meta_records` `grants` + `kv`(handle 签名密钥)。
+`view_patch` `collections` `collection_nodes` `meta_records` `grants` `acls` + `kv`(handle 签名密钥)。
 缓存表(可全量重建):`content_index`(hash → 本地路径,支撑 probe/秒传)。
 
 惰性锚定:只有进入 View/Collection、被写 meta、被分享、或作为 binding parent/target 时
@@ -124,7 +131,7 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 
 ## 后续接入(不在 v1)
 
-1. SSO 鉴权 + cap 校验(grant 数据面放行)。runtime/login/心跳/调度已接入;完整 NFSP 按请求鉴权未开；复制方法已验证用户。
+1. cap 校验(grant 数据面放行)与 App/Agent 主体的文件访问。按请求鉴权与路径 ACL 已完成。
 2. NamedStore link 模式(`add_chunk_by_link_to_local_file` / qcid 阶梯)替换 `content_index`。
 3. `repr` 缩略图、`view_patch`、`get_tree`、`publish_dir`/Frozen、referral 设备视图。
 4. NativeTree trait 冻结(M7):第二个实现(fs_meta)落地时从 `namespace.rs` 提取。
@@ -155,6 +162,20 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 该用户创建/控制 Task；hello 的随机 session 不是 Task creator。详细 Input、恢复状态、
 文件元数据和平台边界见 [产品协议 §10](../../../product/bucky_file/nfs_server.md#10-本地文件复制扩展fb-04-copy)。
 
+## 鉴权与权限
+
+- `auth.rs`:token 来源 Bearer > `buckyos_session_token` cookie > `<app_id>_token` cookie;无凭证为匿名。
+  User 主体按 `system/zone_owner_user_id` 区分 owner;System/Device 主体视同 owner。hello 会话绑定身份。
+- `acl.rs`:纯路径判定(不访问文件系统,无权与不存在不可区分)。级别 `traverse < read < write < manage`;
+  owner 与 `home/<user>` 主人为内置 `manage`;记录 `{inherit, entries[{principal, level}]}` 向下继承,
+  principal 为 `user:<id>` / `zone_users` / `public`(只读)。记录随 move 迁移、随 delete 删除。
+- `access.rs`:协议边界检查(路径 locator 先判权限再 lstat;非 owner 不经过符号链接目录,读文件链接按
+  真实路径授权)、引用目标交集、watch 事件过滤、ACL 方法。新建/移入路径前清理孤儿记录;复制每次运行重验。
+- 服务模式首次启动写入 `srv/library`(zone_users 可写)、`srv/publish`(公开只读)两条默认记录。
+- 回归:`cargo test -p nfs_server --test acl`(测试密钥签发 token,覆盖可见性、继承、公开、cookie、
+  会话绑定、probe/dedup 侧信道、collection、copy、watch、符号链接、单文件写、孤儿记录)。Desktop 真实后端用例见
+  `tests/e2e/pages/filebrowser.permissions.nfsp.spec.ts`(`FB_ACL_E2E=1`,文件头有命令)。
+
 ## 编辑器取消写入
 
-控制面写操作 `abort_write { lease_id }` 使用当前 NFSP `session` 与递增 `seq`。有效租约只能由所属会话取消；成功返回 `{ "aborted": true }`、释放租约并删除暂存上传。不存在或已提交的租约重复取消也成功，便于客户端在 `finally` 清理。跨会话取消返回 `LEASE_CONFLICT`。此检查约束 NFSP 会话，尚不代表用户/App RBAC 已覆盖全部 NFSP 接口。
+控制面写操作 `abort_write { lease_id }` 使用当前 NFSP `session` 与递增 `seq`。有效租约只能由所属会话取消；成功返回 `{ "aborted": true }`、释放租约并删除暂存上传。不存在或已提交的租约重复取消也成功，便于客户端在 `finally` 清理。跨会话取消返回 `LEASE_CONFLICT`。NFSP 会话绑定发起 hello 的身份，因此租约也只属于该用户。

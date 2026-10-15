@@ -1,3 +1,4 @@
+use crate::acl::{Actor, Level};
 use crate::error::*;
 use crate::fsutil::{file_id, join_root, normalize_rel, validate_name};
 use crate::namespace::Node;
@@ -261,6 +262,41 @@ fn native(state: &SharedState, value: &Value) -> NfsResult<(String, Identity)> {
         )),
     }
 }
+fn handle_path(state: &SharedState, value: &Value) -> Option<(String, String)> {
+    match serde_json::from_value::<WireRef>(value.clone()).ok()? {
+        WireRef::Live { node_id, .. } if node_id.starts_with("nh_") => {
+            state.handles.decode(&node_id).ok().map(|h| (h.r, h.p))
+        }
+        _ => None,
+    }
+}
+/// Checked on the paths the signed handles name, so stale sources still
+/// become per-item failures instead of rejecting the task.
+fn authorize_input(state: &SharedState, actor: &Actor, input: &NfsCopyInput) -> NfsResult<()> {
+    for source in &input.sources {
+        if let Some((root, rel)) = handle_path(state, &source.source_ref) {
+            state.require_subtree(actor, &root, &rel, Level::Read, "read")?;
+        }
+    }
+    if let Some((root, rel)) = handle_path(state, &input.destination_ref) {
+        if state.acls.level(actor, &root, &rel) < Level::Write {
+            return Err(crate::access::denied("write", actor));
+        }
+    }
+    Ok(())
+}
+/// Every run (including resume after restart) re-checks the creator's access,
+/// so a revoked grant does not keep working for queued tasks.
+async fn authorize_task(state: &SharedState, task: &Task) -> NfsResult<()> {
+    let input: NfsCopyInput = serde_json::from_value(task.input.clone())?;
+    let user = task.creator.user_id.clone();
+    let actor = if crate::auth::is_zone_owner(state, &user).await {
+        Actor::Admin(Some(user))
+    } else {
+        Actor::User(user)
+    };
+    authorize_input(state, &actor, &input)
+}
 fn local(state: &SharedState, path: &str) -> NfsResult<PathBuf> {
     let normalized = normalize_rel(path)?;
     let (root_id, rel) = normalized.split_once('/').unwrap_or((&normalized, ""));
@@ -319,6 +355,7 @@ fn keep_name(name: &str, n: usize, dir: bool) -> NfsResult<String> {
 
 pub async fn dispatch(
     state: &SharedState,
+    nfs_actor: &Actor,
     method: &str,
     args: &Value,
     token: Option<&str>,
@@ -359,6 +396,7 @@ pub async fn dispatch(
             for source in &input.sources {
                 validate_name(&source.name)?;
             }
+            authorize_input(state, nfs_actor, &input)?;
             let existing = api
                 .list_tasks(ListTasksReq {
                     creator_user_id: Some(actor.user_id.clone()),
@@ -765,6 +803,12 @@ async fn execute(state: &SharedState, id: &str) -> NfsResult<()> {
     let api = client(state).await?;
     let task = api.get_task(id).await.map_err(rpc_error)?;
     if task.phase.is_terminal() {
+        return Ok(());
+    }
+    if let Err(e) = authorize_task(state, &task).await {
+        api.runner_fail(id, "COPY_PERMISSION_DENIED", e.message, None)
+            .await
+            .map_err(rpc_error)?;
         return Ok(());
     }
     if let Err(e) = initialize(state, &task) {

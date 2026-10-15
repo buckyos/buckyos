@@ -7,14 +7,13 @@
  * NFSP is a cross-zone protocol rooted at /nfs/v1 (NamedFileSystem_Protocol_v0
  * §4.1); the gateway forwards it verbatim (boot_gateway.yaml).
  *
- * Covers: zone login (environment sanity), hello negotiation, root listing
- * (cyfs:/// = $BUCKYOS_ROOT/data), mkdir → upload → read → list → delete
- * round-trip, and the basic error paths (session gate, NOT_FOUND).
+ * Covers: zone login, hello negotiation with the caller's identity, root
+ * listing (cyfs:/// = $BUCKYOS_ROOT/data), mkdir → upload → read → list →
+ * delete round-trip, ACL read-back, and the error paths (session gate,
+ * NOT_FOUND, anonymous callers denied outside public paths).
  *
- * Note on auth: nfs-server currently runs WITHOUT per-request authentication
- * (the whole tree is visible by design for this milestone). The zone login
- * here validates the test environment and keeps the script shape ready for
- * the auth milestone; requests to nfs-server itself carry no token yet.
+ * Auth: every request carries the zone session token (Bearer); a client
+ * without one is anonymous and only reaches paths whose ACL grants `public`.
  *
  * Run: cd test/nfs_server_test && pnpm install && pnpm test
  * Env:
@@ -41,11 +40,13 @@ function getEnv(name: string): string | null {
 const SKIP_LOGIN = getEnv("NFS_SMOKE_SKIP_LOGIN") === "1";
 
 let zoneHost = getEnv("BUCKYOS_TEST_ZONE_HOST") ?? "test.buckyos.io";
+let sessionToken: string | null = null;
 if (!SKIP_LOGIN) {
   const { initTestRuntime } = await import("../test_helpers/buckyos_client.ts");
-  console.log("[auth] logging in to zone (environment sanity)...");
+  console.log("[auth] logging in to zone...");
   const rt = await initTestRuntime();
   zoneHost = rt.zoneHost;
+  sessionToken = (await rt.buckyos.getAccountInfo())?.session_token ?? null;
   console.log(`[auth] ok (user=${rt.userId}, zone=${zoneHost})`);
 }
 
@@ -69,13 +70,16 @@ async function test(name: string, fn: () => Promise<void>) {
   }
 }
 
-const c = new NfspClient({ baseUrl: BASE });
+const c = new NfspClient({ baseUrl: BASE, sessionToken: async () => sessionToken });
 
 await test("hello: reachable through gateway, protocol negotiated", async () => {
   const r = await c.hello();
   assert(r.version === "nfsp/0", `protocol version, got ${r.version}`);
   assert(r.session.length > 0, "session issued");
   assert(r.features.includes("watch.sse"), "features advertised");
+  assert(r.features.includes("acl"), "acl feature advertised");
+  console.log(`  identity: ${JSON.stringify(r.identity)}`);
+  assert(SKIP_LOGIN || r.identity?.role !== "anonymous", "token recognized");
 });
 
 let rootNames: string[] = [];
@@ -116,6 +120,9 @@ await test("write round-trip: mkdir → upload → read → list → delete", as
 
   const listing = await c.list(smokePath);
   assert(listing.entries.some((e) => e.name === "hello.txt"), "file listed");
+  assert(listing.container.access_level === "manage", `own access, got ${listing.container.access_level}`);
+  const acl = await c.getAcl(smokePath);
+  assert(acl.can_manage === true && Array.isArray(acl.entries), "acl readable by its manager");
 
   // Cleanup keeps the test repeatable.
   const rootRef = (await c.resolve(`/${smokeRoot}`)).ref as WireRef;
@@ -135,8 +142,7 @@ await test("error paths: missing path, session gate", async () => {
   } catch (e) {
     assert(e instanceof NfspError && e.code === "NOT_FOUND", `expected NOT_FOUND, got ${e}`);
   }
-  // A client that never said hello has no session → clean protocol error,
-  // not a 500. (Real per-user auth arrives with the auth milestone.)
+  // A client that never said hello has no session → clean protocol error, not a 500.
   try {
     await new NfspClient({ baseUrl: BASE }).list("/");
     assert(false, "expected PERMISSION_DENIED without a session");
@@ -146,6 +152,19 @@ await test("error paths: missing path, session gate", async () => {
       `expected PERMISSION_DENIED, got ${e}`,
     );
   }
+});
+
+await test("anonymous callers only reach public paths", async () => {
+  const anon = new NfspClient({ baseUrl: BASE });
+  const hello = await anon.hello();
+  assert(hello.identity?.role === "anonymous", `anonymous identity, got ${JSON.stringify(hello.identity)}`);
+  try {
+    await anon.list(`/${smokeRoot}`);
+    assert(smokeRoot !== "home", "home must not be listable anonymously");
+  } catch (e) {
+    assert(e instanceof NfspError && e.code === "PERMISSION_DENIED", `expected PERMISSION_DENIED, got ${e}`);
+  }
+  await anon.bye().catch(() => {});
 });
 
 await c.bye().catch(() => {});

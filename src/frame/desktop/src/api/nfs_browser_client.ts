@@ -320,6 +320,15 @@ export class NfsBrowserClient {
 
   async hello(): Promise<HelloResult> {
     const r = await this.raw.hello()
+    // 列表按身份过滤:换了身份(切换账号、登录/登出)就整体丢弃旧缓存,
+    // 不能把上一个用户能看到的内容 SWR 给下一个用户。
+    const who = `${r.identity?.role ?? ''}:${r.identity?.user_id ?? ''}`
+    const identityKey = `${this.sp}identity`
+    if ((await this.safe(() => this.store.get(identityKey), null)) !== who) {
+      await this.safe(() => this.store.deletePrefix(this.sp))
+      await this.safe(() => this.store.set(identityKey, who))
+      if (this.helloed) this.fire(null)
+    }
     this.helloed = true
     // 只有 re-hello(会话过期自愈)时才有旧流要踢:旧 session 上的 watch 流
     // 已失效,关掉让重连循环用新 session 重建。首次 hello 由 connectWatch 新开的

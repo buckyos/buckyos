@@ -50,6 +50,7 @@ export type FileMenuIcon =
   | 'broken'
   | 'move-up'
   | 'move-down'
+  | 'permissions'
 
 export interface FileMenuAction {
   type: 'action'

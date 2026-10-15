@@ -6,6 +6,7 @@
 //! Collections are user-managed ordered reference containers; members persist
 //! target Refs only, canonical_path is batch-resolved at read time (§3.2 红线).
 
+use crate::acl::{Actor, Level};
 use crate::error::*;
 use crate::filedb::{CollectionPatchOp, CollectionRow, ViewRow};
 use crate::namespace::{canonical_path, EntryRow, Node};
@@ -19,6 +20,7 @@ impl AppState {
 
     pub(crate) fn view_entries(
         &self,
+        actor: &Actor,
         view: &ViewRow,
         group: Option<i64>,
         want: &WantMask,
@@ -27,7 +29,12 @@ impl AppState {
         let mut idx: i64 = 0;
         if group.is_none() {
             for g in self.db.view_groups(view.node_id)? {
-                let member_count = self.db.view_members(view.node_id, Some(g.node_id))?.len();
+                let member_count = self
+                    .db
+                    .view_members(view.node_id, Some(g.node_id))?
+                    .iter()
+                    .filter(|m| self.member_readable(actor, m.target_type.as_str(), m.target_node_id))
+                    .count();
                 rows.push(EntryRow {
                     name: g.label.clone(),
                     kind: "group".to_string(),
@@ -50,11 +57,16 @@ impl AppState {
             }
         }
         for m in self.db.view_members(view.node_id, group)? {
+            // Derived results the actor cannot read are simply not part of its view.
+            if !self.member_readable(actor, m.target_type.as_str(), m.target_node_id) {
+                continue;
+            }
             let entry_ref = match m.layer {
                 "patch" => format!("ve_p{}", m.id),
                 _ => format!("ve_b{}", m.id),
             };
             let (target, name, canonical) = self.member_target_json(
+                actor,
                 m.target_type.as_str(),
                 m.target_node_id,
                 m.target_obj_id.as_deref(),
@@ -93,6 +105,7 @@ impl AppState {
 
     pub(crate) fn collection_entries_json(
         &self,
+        actor: &Actor,
         c: &CollectionRow,
         group: Option<i64>,
         want: &WantMask,
@@ -114,6 +127,7 @@ impl AppState {
                 })
             } else {
                 let (target, default_name, canonical) = self.member_target_json(
+                    actor,
                     e.target_type.as_deref().unwrap_or("live"),
                     e.target_node_id,
                     e.target_obj_id.as_deref(),
@@ -146,8 +160,20 @@ impl AppState {
     /// Resolves a stored member target into (target_json, display_name,
     /// canonical_path). Dead targets return target_state:"stale" — the entry is
     /// preserved, never silently dropped (NFSP §3.5.1).
+    /// Object members carry no path to check; only signed-in actors see them.
+    fn member_readable(&self, actor: &Actor, target_type: &str, target_node_id: Option<i64>) -> bool {
+        if target_type == "object" {
+            return !matches!(actor, Actor::Anonymous);
+        }
+        match self.resolve_node_id(target_node_id.unwrap_or(0), None) {
+            Ok(node) => Self::is_visible(&node, self.node_level(actor, &node)),
+            Err(_) => actor.is_admin(),
+        }
+    }
+
     fn member_target_json(
         &self,
+        actor: &Actor,
         target_type: &str,
         target_node_id: Option<i64>,
         target_obj_id: Option<&str>,
@@ -167,6 +193,9 @@ impl AppState {
         }
         let id = target_node_id.unwrap_or(0);
         match self.resolve_node_id(id, None) {
+            Ok(node) if !Self::is_visible(&node, self.node_level(actor, &node)) => {
+                Ok((Self::denied_target(id), format!("n_{}", id), None))
+            }
             Ok(node) => {
                 let mut attrs = serde_json::Map::new();
                 if let Node::Native { meta, .. } = &node {
@@ -190,6 +219,7 @@ impl AppState {
                         "copy_ref": self.copy_ref(&node),
                         "kind": node.kind(),
                         "attrs": Value::Object(attrs),
+                        "access_level": self.node_level(actor, &node),
                     }),
                     node.display_name(),
                     canonical,
@@ -211,7 +241,7 @@ impl AppState {
 
     // ---------- ops ----------
 
-    pub fn op_open_view(&self, args: &Value, want: &WantMask) -> NfsResult<Value> {
+    pub fn op_open_view(&self, actor: &Actor, args: &Value, want: &WantMask) -> NfsResult<Value> {
         let view_id = args["view_id"]
             .as_str()
             .ok_or_else(|| invalid("open_view requires view_id"))?;
@@ -219,10 +249,15 @@ impl AppState {
             .db
             .view_by_id(view_id)?
             .ok_or_else(|| not_found(format!("view '{}' not found", view_id)))?;
-        self.node_info(&Node::View(v), want)
+        let node = Node::View(v);
+        self.require(actor, &node, Level::Read, "read")?;
+        self.node_info(actor, &node, want)
     }
 
-    pub fn op_create_collection(&self, args: &Value, want: &WantMask) -> NfsResult<Value> {
+    pub fn op_create_collection(&self, actor: &Actor, args: &Value, want: &WantMask) -> NfsResult<Value> {
+        if matches!(actor, Actor::Anonymous) {
+            return Err(crate::access::denied("write", actor));
+        }
         let title = args["title"]
             .as_str()
             .ok_or_else(|| invalid("create_collection requires title"))?;
@@ -235,11 +270,11 @@ impl AppState {
             }
             None => format!("col_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
         };
-        let c = self.db.collection_create(&collection_id, title)?;
-        Ok(self.node_info(&Node::Collection(c), want)?)
+        let c = self.db.collection_create(&collection_id, title, actor.user_id())?;
+        self.node_info(actor, &Node::Collection(c), want)
     }
 
-    pub fn op_open_collection(&self, args: &Value, want: &WantMask) -> NfsResult<Value> {
+    pub fn op_open_collection(&self, actor: &Actor, args: &Value, want: &WantMask) -> NfsResult<Value> {
         let cid = args["collection_id"]
             .as_str()
             .ok_or_else(|| invalid("open_collection requires collection_id"))?;
@@ -247,13 +282,15 @@ impl AppState {
             .db
             .collection_by_id(cid)?
             .ok_or_else(|| not_found(format!("collection '{}' not found", cid)))?;
-        self.node_info(&Node::Collection(c), want)
+        let node = Node::Collection(c);
+        self.require(actor, &node, Level::Read, "read")?;
+        self.node_info(actor, &node, want)
     }
 
-    pub fn op_collection_patch(&self, args: &Value) -> NfsResult<Value> {
+    pub fn op_collection_patch(&self, actor: &Actor, args: &Value) -> NfsResult<Value> {
         let r: WireRef = serde_json::from_value(args["ref"].clone())
             .map_err(|_| invalid("collection_patch requires ref"))?;
-        let node = self.resolve_ref(&r)?;
+        let node = self.resolve_ref_for(actor, &r, Level::Write, "write")?;
         let c = match node {
             Node::Collection(c) => c,
             _ => return Err(invalid("ref is not a collection")),
@@ -267,7 +304,7 @@ impl AppState {
             .ok_or_else(|| invalid("collection_patch requires ops[]"))?;
         let mut ops = Vec::new();
         for op in ops_json {
-            ops.push(self.decode_collection_op(&c, op)?);
+            ops.push(self.decode_collection_op(actor, &c, op)?);
         }
         let new_gen = self.db.collection_patch(c.node_id, expected, &ops)?;
         let revision = format!("g-{}", new_gen);
@@ -283,7 +320,7 @@ impl AppState {
         Ok(json!({ "revision": revision }))
     }
 
-    fn decode_collection_op(&self, c: &CollectionRow, op: &Value) -> NfsResult<CollectionPatchOp> {
+    fn decode_collection_op(&self, actor: &Actor, c: &CollectionRow, op: &Value) -> NfsResult<CollectionPatchOp> {
         if let Some(add) = op.get("add_ref") {
             let target_ref: WireRef = serde_json::from_value(add["target_ref"].clone())
                 .map_err(|_| invalid("add_ref requires target_ref"))?;
@@ -305,7 +342,7 @@ impl AppState {
                 live => {
                     // Anchor native targets so the reference survives renames
                     // (§3.2: 目标列只能保存 Ref, 不得保存 path 作为身份).
-                    let node = self.resolve_ref(&live)?;
+                    let node = self.resolve_ref_for(actor, &live, Level::Traverse, "read")?;
                     let (node_id, default_name) = self.require_stable_node(&node)?;
                     CollectionPatchOp::AddRef {
                         parent_group,

@@ -30,3 +30,5 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 [dev-dependencies]
 tempfile = { workspace = true }
 reqwest = { workspace = true }
+kRPC = { workspace = true }
+jsonwebtoken = { workspace = true }

@@ -1,5 +1,7 @@
 import type { FileMenuContext } from './types'
 import { folderOps } from '../data/folderOps'
+import { permissionSource } from '../data/permissions'
+import { dfsPathOf } from '../data/urls'
 
 export interface CommandState {
   state: 'available' | 'denied' | 'unsupported' | 'loading'
@@ -10,6 +12,14 @@ export function commandState(command: string, ctx: FileMenuContext): CommandStat
   if (ctx.capabilities.availability === 'loading' && ['copy','copy-to','copy-other','cut','rename','move-to','move-other','delete','paste','upload','new-folder','remove-from-collection'].includes(command)) return { state: 'loading', reason: 'Permissions are loading' }
   const unsupported = (reason: string): CommandState => ({ state: 'unsupported', reason })
   if (['share', 'settings', 'new-file', 'camera'].includes(command)) return unsupported('This service does not support this action')
+  if (command === 'permissions' || command === 'folder-permissions') {
+    if (!permissionSource()) return unsupported('This service does not support permissions')
+    const path = command === 'permissions' ? ctx.entries[0]?.path : dfsPathOf(ctx.currentUrl)
+    if (command === 'permissions' && ctx.entries.length !== 1) return unsupported('Select one item to see its permissions')
+    if (!path || !path.startsWith('/') || path === '/') return unsupported('Permissions apply to files and folders in the file system')
+    if (ctx.items.some((item) => item.ref?.broken || item.entry.link?.broken)) return unsupported('The original file is unavailable')
+    return available
+  }
   if (['copy', 'copy-to', 'copy-other'].includes(command)) {
     if (!folderOps().supportsCopy) return unsupported(folderOps().copyUnavailableReason ?? 'File content copying is not supported')
     if (!ctx.entries.length) return unsupported('Select a file first')

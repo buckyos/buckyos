@@ -98,8 +98,8 @@ VirtualPlane 只在 NamespacePlane 内部按 Node kind 路由,WebUI 不得感知
 - frame 服务,依赖 `buckyos-kit` / `buckyos-api`,由 node_daemon 拉起,对齐 `smb_service`。
 - 导出根目录(export roots)由服务配置声明:哪些本地目录以哪个逻辑路径暴露。
   v1 至少支持多个 root 映射到当前 Zone 的 `cyfs:///` 命名空间一级子目录。
-- 鉴权:本 Zone 已登录用户经 buckyos SSO 换取 session(NFSP §7.1 第一行);
-  分享链接走 `grant` 签发的 bearer cap。`uid/gid` 不进协议。
+- 鉴权:每个请求带 Verify Hub session token(NFSP §7.1 第一行),无凭证即匿名;授权按路径 ACL,
+  见 §11。分享链接走 `grant` 签发的 bearer cap(数据面尚不放行)。`uid/gid` 不进协议。
 
 ---
 
@@ -381,7 +381,8 @@ Node/Entry/list 报文也不得退回 Folder-only 形态。
 runtime 可信 token 验证入口校验签名、issuer、有效期、TokenUse、主体类型及目标。
 Task creator 为该用户及 token 中的规范 app target；查询/控制同时核对这两个字段。
 NFSP hello session 不参与创建者推断。Web SDK token 只发向当前页面同源的 NFSP 地址。
-完整 NFSP 数据面权限/cap 授权不由此扩展实现；文件访问仍按 nfs-server 的 OS 权限执行。
+提交时另按 §11 的路径 ACL 检查：用户须能读取每个源（含其下关闭继承的子树）并能写入目标目录；
+检查对签名 copy_ref 中的路径进行，已失效的源仍按逐项失败报告。文件读写本身仍受 OS 权限约束。
 
 普通浏览的 `ref` 保持原有长期锚点语义。Native `stat/resolve` 和 `list.target` 另返回
 `copy_ref: WireRef | null`，是带 HMAC 签名的原生文件身份，锚定实体也返回独立 copy_ref。
@@ -475,3 +476,78 @@ UTF-8 边界截断到 255 字节。目标目录是自身或源的后代时拒绝
 复现命令、实际验证数量、128 MiB 内容/身份及恢复证据见
 [FB-04-COPY 验收记录](./filebrowser_copy_TODO.md)。完整网关 SSO、非 Unix 平台、整仓部署、
 百万实体磁盘性能与断电硬件故障不由该独立服务 E2E 证明。
+
+## 11. 身份与路径权限（ACL）
+
+2026-10-15 实现。实现见 `src/frame/nfs_server/src/{auth,acl,access}.rs`，客户端见 websdk
+`nfsp.ts`（`getAcl`/`setAcl`/`listAcls`）与 Desktop File Browser “权限…”对话框、设置“文件权限”页。
+
+### 11.1 身份
+
+- 每个请求单独认证：`Authorization: Bearer <Verify Hub session token>`；`<img>`/下载等无法带头的
+  同源请求用 SSO cookie（`buckyos_session_token` 优先，其次 `<app_id>_token`）。网关对 `/nfs/v1/*`
+  不做鉴权，nfs-server 是唯一检查点。
+- 无凭证 = 匿名，只能到达授予 `public` 的路径。显式 Bearer 无效时报错（`PERMISSION_DENIED`，
+  `reason: "unauthenticated"`）；失效 cookie 降级为匿名，保证公开内容可读。
+- User 主体按 `system/zone_owner_user_id` 区分 Zone owner 与普通用户；System/Device 主体
+  （Zone 服务、节点上的 CLI）视同 owner；App/Agent 主体暂不允许直接访问文件。
+- hello 会话绑定发起它的身份，hello 结果带 `identity {user_id, role: admin|user|anonymous}`；
+  之后身份不同的请求返回 `reason: "session_principal_changed"`，客户端重新 hello。watch、
+  上传分片同样核对身份。Desktop 的列表缓存在身份变化时整体清空。
+- 独立模式不给 `--auth-test-config` 时不鉴权（所有请求全权限，仅供本机开发/测试）；
+  给出 `{public_key, zone_owner}` 后按测试密钥验证 token，规则与服务模式相同。
+
+### 11.2 权限模型
+
+权限只由路径决定（NFSP §7.3：policy 保护的是命名空间入口），判定不触碰文件系统，
+因此对无权路径“不存在”与“无权”同样返回 `PERMISSION_DENIED`，无法借此探测名字。
+
+| 级别 | 含义 |
+|---|---|
+| `traverse` | 只是通往共享项的上级目录：可列出，但只显示通向可访问项的子项 |
+| `read` | 列目录、stat、读内容、get_meta、搜索命中 |
+| `write` | read + 在其中创建/上传/改名/移动/删除、set_meta |
+| `manage` | write + 查看与修改 ACL、grant/revoke |
+
+- 内置规则（不可被记录覆盖）：Zone owner 对一切 `manage`；用户对 `home/<user_id>/**` `manage`。
+- ACL 记录挂在路径上：`{inherit, entries[{principal, level}]}`，principal 为 `user:<id>`、
+  `zone_users`（任何已登录用户）或 `public`（任何人，只能 `read`）。授权沿目录向下继承，
+  多条取最高；`inherit=false` 的记录不再收集上级授权（内置规则仍生效），用于在共享目录中
+  保护子目录。
+- 结构操作：创建需目标目录 `write`；保存已有文件只需该文件 `write`（单文件授权可用）；改名/移动/
+  删除需父目录 `write` 且对象本身及其下所有关闭继承的记录处均 `write`；移动另需目的目录 `write`。
+  记录随协议内 move 迁移、随 delete 删除；旁路改名/删除会留下孤儿记录（设置页显示“路径已不存在”，
+  可移除），协议内在该路径新建目录/文件或移入时先清掉这些孤儿记录，新对象不会继承旧授权。
+- 符号链接：非 owner 主体的访问不经过路径中的符号链接目录（`reason: "symlink"`）；数据面读取
+  文件链接时按其真实路径授权，真实路径须在导出内。复制在每次运行（含重启恢复）时按任务创建者
+  重新检查权限。
+- 引用不提权：DFS binding、Collection 成员、View 成员的目标须对调用者可见，否则只返回
+  `target_state: "denied"` 占位（View 直接省略）；`bind_ref`/`add_ref` 要求能读目标。
+  Collection 归创建者所有（owner 外仅 Zone owner 可访问）。View 对已登录用户只读。
+- 侧信道：`probe` 与按 hash `commit_file` 只命中调用者可读的内容；watch 事件只投递给能读该
+  容器的订阅者，只有 `traverse` 的订阅者只收到不含名字提示的刷新。
+- 节点、列表项、搜索命中带 `access_level`；容器 `capabilities` 的可写位随之收紧。
+- 服务模式首次启动时写入两条默认记录（之后与普通记录无异，owner 可改）：
+  `srv/library` → `zone_users: write`，`srv/publish` → `public: read`（与 doc/path_usage.md 和
+  `public.<zone>` 一致）。
+
+### 11.3 方法（实现扩展，`hello` 广告 `acl`）
+
+| 方法 | args | 结果 |
+|---|---|---|
+| `get_acl` | `at` 或 `{ref}` | `{path, access_level, can_manage, revision}`；可管理者另得 `inherit, entries, inherited[{…, from}], builtin[{…, reason}], updated_by, updated_at` |
+| `set_acl`（写，需 seq） | `at`/`ref` + `{inherit, entries, expected_revision?}` | 需 `manage`；整体替换本节点记录，`inherit=true` 且无条目即删除；路径已不存在的孤儿记录也可如此清除 |
+| `list_acls` | `{}` | `{records[{path, inherit, entries, home_owner, updated_by, updated_at, revision, missing}], zone_owner, is_admin}`：调用者可管理的全部记录，Zone owner 得到所有用户的配置 |
+
+### 11.4 已知边界
+
+- 列表中的文件链接节点本身可见（名字与链接所在目录的权限一致），不暴露目标内容。
+- watch 连接建立后不随 token 过期而断开；`obj:sha256:` 锚点上的 meta 按内容共享（v1 用户 meta 只写
+  `live:` 锚点）。
+- App/Agent 主体的文件访问、`grant` cap 的数据面放行、`library` 中“只能删除自己的文件”尚未实现。
+- ACL 路径按字节精确匹配。大小写不敏感或做 Unicode 归一化的文件系统（macOS APFS、Windows NTFS）上，
+  换大小写/归一化形式可以绕开 `inherit=false` 的保护记录；当前只在 Linux 上提供该保证。
+- 独立模式未给 `--auth-test-config` 时不鉴权，非 loopback 监听会在启动时告警；debug API 只允许 owner 级主体。
+- 接受任意 target 的用户 token（与复制扩展一致），即同一用户在任何应用中拿到的 token 都可访问
+  其文件；按应用收窄需要 App 级授权模型。
+

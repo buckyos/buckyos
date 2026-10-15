@@ -7,6 +7,7 @@ import { GeneralPage } from './pages/GeneralPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { ClusterManagerPage } from './pages/ClusterManagerPage'
 import { PrivacyPage } from './pages/PrivacyPage'
+import { FilePermissionsPage } from './pages/FilePermissionsPage'
 import { DeveloperModePage } from './pages/DeveloperModePage'
 import { ZonePage } from './pages/ZonePage'
 
@@ -22,6 +23,8 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
       return <ClusterManagerPage />
     case 'privacy':
       return <PrivacyPage />
+    case 'file-permissions':
+      return <FilePermissionsPage />
     case 'developer':
       return <DeveloperModePage />
     default:

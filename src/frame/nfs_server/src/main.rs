@@ -13,8 +13,8 @@
 //! listens on NFS_SERVER_SERVICE_PORT. The zone gateway routes the NFSP
 //! zone-level protocol path `/nfs/v1/*` here verbatim (boot_gateway.yaml) —
 //! NFSP is a cross-zone protocol at the URL root, not a /kapi/<service> API.
-//! No per-request auth yet (the whole tree is visible); that arrives with the
-//! auth milestone.
+//! Every request is authenticated with the caller's verify-hub session token
+//! and authorized against path ACLs (the zone owner keeps full access).
 
 use buckyos_api::{
     init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, NfsServerSettings,
@@ -22,7 +22,7 @@ use buckyos_api::{
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use clap::{Arg, ArgAction, Command};
-use nfs_server::config::{config_from_data_root, parse_export_spec, ServerConfig};
+use nfs_server::config::{config_from_data_root, parse_export_spec, AuthMode, AuthTestConfig, ServerConfig};
 use nfs_server::state::AppState;
 
 fn main() {
@@ -59,6 +59,11 @@ fn main() {
             Arg::new("copy-test-config")
                 .long("copy-test-config")
                 .help("Signed test identity and TaskMgr endpoint JSON; standalone loopback + --debug-api only"),
+        )
+        .arg(
+            Arg::new("auth-test-config")
+                .long("auth-test-config")
+                .help("Test token key + zone owner JSON enabling ACL auth; standalone loopback + --debug-api only"),
         )
         .arg(
             Arg::new("log-level")
@@ -114,6 +119,14 @@ fn standalone_config(matches: &clap::ArgMatches) -> ServerConfig {
     if let Some(path) = matches.get_one::<String>("copy-test-config") {
         assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "copy test config requires standalone loopback and --debug-api");
         config.copy_test = Some(serde_json::from_slice(&std::fs::read(path).expect("copy test config")).expect("copy test config JSON"));
+    }
+    if !config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()) && matches.get_one::<String>("auth-test-config").is_none() {
+        eprintln!("warning: standalone mode without --auth-test-config does not authenticate; every client on {} gets full access", config.listen);
+    }
+    if let Some(path) = matches.get_one::<String>("auth-test-config") {
+        assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "auth test config requires standalone loopback and --debug-api");
+        let test: AuthTestConfig = serde_json::from_slice(&std::fs::read(path).expect("auth test config")).expect("auth test config JSON");
+        config.auth = AuthMode::TestKey { public_key: test.public_key, zone_owner: test.zone_owner };
     }
     config
 }
@@ -174,6 +187,7 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
         }
     };
     config.listen = format!("127.0.0.1:{}", NFS_SERVER_SERVICE_PORT);
+    config.auth = AuthMode::Runtime;
     config.scan_interval_secs = settings.scan_interval_secs;
     // CLI --debug-api / --scan-interval-secs still win over settings (dev use).
     config.debug_api = settings.debug_api || matches.get_flag("debug-api");

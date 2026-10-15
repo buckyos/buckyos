@@ -5,6 +5,7 @@
 //! entries win name conflicts, conflicting bindings surface via `conflicts[]`
 //! (never silently覆盖 or rebound — nfs_server.md §3.5).
 
+use crate::acl::{Actor, Level};
 use crate::error::*;
 use crate::filedb::{Anchor, BindingRow, CollectionRow, Entity, ViewGroupRow, ViewRow};
 use crate::fsutil::*;
@@ -431,20 +432,21 @@ impl AppState {
 
     // ---------- node info (resolve/stat result) ----------
 
-    pub fn node_info(&self, node: &Node, want: &WantMask) -> NfsResult<Value> {
+    pub fn node_info(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<Value> {
         let kind = node.kind();
-        let writable = !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. });
+        let level = self.node_level(actor, node);
         let mut out = json!({
             "kind": kind,
             "state": "live",
             "ref": self.node_ref(node),
             "copy_ref": self.copy_ref(node),
-            "capabilities": Capabilities::for_kind(kind, writable),
+            "capabilities": Capabilities::for_kind(kind, Self::writable(node, level)),
+            "access_level": level,
         });
         if let Some(rev) = self.node_revision(node) {
             out["revision"] = json!(rev);
         }
-        out["locations"] = json!(self.node_locations(node)?);
+        out["locations"] = json!(self.node_locations(actor, node)?);
         match node {
             Node::View(v) => {
                 out["view_id"] = json!(v.view_id);
@@ -499,6 +501,10 @@ impl AppState {
         Ok(out)
     }
 
+    fn writable(node: &Node, level: Level) -> bool {
+        level >= Level::Write && !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. })
+    }
+
     pub fn node_flags(&self, node: &Node) -> Vec<&'static str> {
         let mut flags = Vec::new();
         match node {
@@ -515,7 +521,7 @@ impl AppState {
 
     /// Location entries: the direct locator plus any DFS reference bindings
     /// pointing at this node (NFSP §3.1.1 locations[]).
-    fn node_locations(&self, node: &Node) -> NfsResult<Vec<Value>> {
+    fn node_locations(&self, actor: &Actor, node: &Node) -> NfsResult<Vec<Value>> {
         let mut out = Vec::new();
         let (direct, target_id): (Option<String>, Option<i64>) = match node {
             Node::Root => (Some("cyfs:///".to_string()), None),
@@ -539,7 +545,7 @@ impl AppState {
                     continue;
                 }
                 if let Some(pa) = self.db.anchor_get(b.parent_node_id)? {
-                    if pa.state == "ok" {
+                    if pa.state == "ok" && self.acls.level(actor, &pa.root_id, &pa.path) >= Level::Read {
                         out.push(json!({
                             "url": format!("{}/{}", canonical_path(&pa.root_id, &pa.path), b.name),
                             "via": "reference",
@@ -595,7 +601,7 @@ impl AppState {
 
     // ---------- unified list ----------
 
-    pub fn list_node(&self, node: &Node, args: &ListArgs, want: &WantMask) -> NfsResult<Value> {
+    pub fn list_node(&self, actor: &Actor, node: &Node, args: &ListArgs, want: &WantMask) -> NfsResult<Value> {
         if !node.is_container() {
             return Err(NfsError::new(
                 ErrorCode::NotAContainer,
@@ -607,21 +613,21 @@ impl AppState {
         let container_key = node.container_key().unwrap();
 
         let (default_order, mut rows, conflicts) = match node {
-            Node::Root => ("name", self.root_entries(want)?, Vec::new()),
+            Node::Root => ("name", self.root_entries(actor, want)?, Vec::new()),
             Node::Native { .. } => {
-                let (rows, conflicts) = self.dir_entries(node, want)?;
+                let (rows, conflicts) = self.dir_entries(actor, node, want)?;
                 ("name", rows, conflicts)
             }
-            Node::View(v) => ("manual", self.view_entries(v, None, want)?, Vec::new()),
+            Node::View(v) => ("manual", self.view_entries(actor, v, None, want)?, Vec::new()),
             Node::ViewGroup { group, view } => {
-                ("manual", self.view_entries(view, Some(group.node_id), want)?, Vec::new())
+                ("manual", self.view_entries(actor, view, Some(group.node_id), want)?, Vec::new())
             }
             Node::Collection(c) => {
-                ("manual", self.collection_entries_json(c, None, want)?, Vec::new())
+                ("manual", self.collection_entries_json(actor, c, None, want)?, Vec::new())
             }
             Node::CollectionGroup { entity, collection, .. } => (
                 "manual",
-                self.collection_entries_json(collection, Some(entity.node_id), want)?,
+                self.collection_entries_json(actor, collection, Some(entity.node_id), want)?,
                 Vec::new(),
             ),
         };
@@ -693,13 +699,14 @@ impl AppState {
 
         let entries: Vec<Value> = page.iter().map(|r| r.json.clone()).collect();
         let kind = node.kind();
-        let writable = !matches!(node, Node::Root | Node::View(_) | Node::ViewGroup { .. });
+        let level = self.node_level(actor, node);
         let mut out = json!({
             "container": {
                 "ref": self.node_ref(node),
                 "kind": kind,
                 "revision": revision,
-                "capabilities": Capabilities::for_kind(kind, writable),
+                "capabilities": Capabilities::for_kind(kind, Self::writable(node, level)),
+                "access_level": level,
             },
             "entries": entries,
             "truncated": truncated,
@@ -715,9 +722,12 @@ impl AppState {
         Ok(out)
     }
 
-    fn root_entries(&self, want: &WantMask) -> NfsResult<Vec<EntryRow>> {
+    fn root_entries(&self, actor: &Actor, want: &WantMask) -> NfsResult<Vec<EntryRow>> {
         let mut rows = Vec::new();
         for export in &self.config.exports {
+            if self.acls.level(actor, &export.id, "") < Level::Traverse {
+                continue;
+            }
             let meta = match lstat(&export.path) {
                 Ok(m) => m,
                 Err(_) => continue,
@@ -728,7 +738,7 @@ impl AppState {
                 meta: meta.clone(),
                 anchored: None,
             };
-            let target = self.target_json(&node, want)?;
+            let target = self.target_json(actor, &node, want)?;
             rows.push(EntryRow {
                 name: export.id.clone(),
                 kind: "dir".to_string(),
@@ -746,7 +756,7 @@ impl AppState {
         Ok(rows)
     }
 
-    fn dir_entries(&self, node: &Node, want: &WantMask) -> NfsResult<(Vec<EntryRow>, Vec<Value>)> {
+    fn dir_entries(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<(Vec<EntryRow>, Vec<Value>)> {
         let (root, rel, anchored) = match node {
             Node::Native { root, rel, meta, anchored } if meta.kind == "dir" => {
                 (root.clone(), rel.clone(), anchored.clone())
@@ -755,6 +765,7 @@ impl AppState {
         };
         let root_cfg = self.config.root(&root).ok_or_else(|| stale("root gone"))?;
         let full = join_root(&root_cfg.path, &rel);
+        let dir_level = self.acls.level(actor, &root, &rel);
         let mut rows = Vec::new();
         let mut native_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for dent in std::fs::read_dir(&full)? {
@@ -775,7 +786,10 @@ impl AppState {
                 meta: meta.clone(),
                 anchored: None, // attached below in batch for the emitted page
             };
-            let target = self.target_json(&child, want)?;
+            if !Self::is_visible(&child, self.node_level(actor, &child)) {
+                continue;
+            }
+            let target = self.target_json(actor, &child, want)?;
             rows.push(EntryRow {
                 name: name.clone(),
                 kind: meta.kind.to_string(),
@@ -792,19 +806,19 @@ impl AppState {
         }
         // Sidecar merge: virtual bindings of this dir (only when it is anchored).
         let mut conflicts = Vec::new();
-        if let Some(ent) = &anchored {
+        if let Some(ent) = anchored.as_ref().filter(|_| dir_level >= Level::Read) {
             for b in self.db.bindings_by_parent(ent.node_id)? {
                 if native_names.contains(&b.name) {
                     // Native item stays visible unchanged; binding surfaces as conflict.
                     conflicts.push(json!({
                         "name": b.name,
                         "entry_ref": format!("be_{}", b.entry_id),
-                        "target": self.binding_target_json(&b, want)?,
+                        "target": self.binding_target_json(actor, &b, want)?,
                         "reason": "native_shadow",
                     }));
                     continue;
                 }
-                let mut target = self.binding_target_json(&b, want)?;
+                let mut target = self.binding_target_json(actor, &b, want)?;
                 // canonical_path lives on the entry (consistent with View /
                 // Collection member envelopes).
                 let canonical = target.as_object_mut().and_then(|o| o.remove("canonical_path"));
@@ -869,7 +883,7 @@ impl AppState {
     }
 
     /// target JSON for a native child (handles want-mask attrs).
-    fn target_json(&self, node: &Node, want: &WantMask) -> NfsResult<Value> {
+    fn target_json(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<Value> {
         let mut attrs = serde_json::Map::new();
         if let Node::Native { meta, .. } = node {
             if want.has("base") {
@@ -893,11 +907,23 @@ impl AppState {
             "copy_ref": self.copy_ref(node),
             "kind": node.kind(),
             "attrs": Value::Object(attrs),
+            "access_level": self.node_level(actor, node),
         }))
     }
 
+    /// A reference target the actor may not see: nothing beyond the ref.
+    pub fn denied_target(id: i64) -> Value {
+        json!({
+            "ref": WireRef::live(format!("n_{}", id), 0),
+            "kind": Value::Null,
+            "attrs": {},
+            "target_state": "denied",
+            "access_level": Level::None,
+        })
+    }
+
     /// target JSON for a virtual binding row (live target may be stale).
-    pub fn binding_target_json(&self, b: &BindingRow, want: &WantMask) -> NfsResult<Value> {
+    pub fn binding_target_json(&self, actor: &Actor, b: &BindingRow, want: &WantMask) -> NfsResult<Value> {
         if b.target_type == "object" {
             return Ok(json!({
                 "ref": WireRef::Object { obj_id: b.target_obj_id.clone().unwrap_or_default(), inner_path: None },
@@ -915,8 +941,9 @@ impl AppState {
             }));
         }
         match self.resolve_node_id(id, None) {
+            Ok(target) if !Self::is_visible(&target, self.node_level(actor, &target)) => Ok(Self::denied_target(id)),
             Ok(target) => {
-                let mut v = self.target_json(&target, want)?;
+                let mut v = self.target_json(actor, &target, want)?;
                 if let Node::Native { root, rel, .. } = &target {
                     v["canonical_path"] = json!(canonical_path(root, rel));
                 }
