@@ -651,7 +651,17 @@ async function providerResponse(
   }
   if (path === "/v1beta/interactions" || path === "/interactions") {
     const serialized = JSON.stringify(body);
-    const structured = JSON.stringify({
+    const responseFormat = object(object(body)?.response_format ?? null);
+    const responseSchema = object(responseFormat?.schema ?? null);
+    const boxItems = object(object(object(responseSchema?.properties ?? null)?.boxes ?? null)?.items ?? null);
+    const boxProperties = object(boxItems?.properties ?? null);
+    const structured = JSON.stringify(boxProperties?.box_2d ? {
+      boxes: [{
+        box_2d: [100, 100, 900, 900],
+        ...(boxProperties.mask ? { mask: [[100, 100], [900, 100], [900, 900]] } : {}),
+        label: "marker",
+      }],
+    } : {
       text: "BUCKYOS-AICC-4827",
       captions: [{ text: "BUCKYOS-AICC-4827", confidence: 0.99 }],
       detections: [{
@@ -665,7 +675,7 @@ async function providerResponse(
         mask: { format: "polygon", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9]] },
       }],
     });
-    const responseType = object(object(body)?.response_format ?? null)?.type;
+    const responseType = responseFormat?.type;
     const output: Json = responseType === "video"
       ? { type: "video", id: `gemini-video-${state.calls}`, data: "bW9jay12aWRlbw==", mime_type: "video/mp4" }
       : responseType === "image"
@@ -744,6 +754,23 @@ async function providerResponse(
     return;
   }
   if (path === "/v1/messages") {
+    const messages = Array.isArray(object(body)?.messages) ? object(body)!.messages as Json[] : [];
+    for (const message of messages) {
+      const content = Array.isArray(object(message)?.content) ? object(message)!.content as Json[] : [];
+      for (const block of content) {
+        const item = object(block);
+        const source = object(item?.source ?? null);
+        const mediaType = source?.media_type;
+        if (item?.type === "document" && typeof mediaType === "string" && mediaType !== "application/pdf" && mediaType !== "text/plain") {
+          json(response, 400, {
+            type: "error",
+            error: { type: "invalid_request_error", message: "document base64 media_type must be application/pdf or text/plain" },
+            request_id: `req_mock_${state.calls}`,
+          });
+          return;
+        }
+      }
+    }
     json(response, 200, claudeResponse(body, includeUsage));
     return;
   }

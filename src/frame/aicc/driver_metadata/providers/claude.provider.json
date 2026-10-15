@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "claude",
   "custom_provider_adapters": ["claude-messages"],
   "patterns": [
@@ -62,6 +62,8 @@
           "claude-opus-5",
           "claude-opus-4-8",
           "claude-opus-4-7",
+          "claude-sonnet-5-5",
+          "claude-haiku-5-5",
           "claude-sonnet-5",
           "claude-opus-4-6",
           "claude-sonnet-4-6"
@@ -88,6 +90,8 @@
           "claude-opus-5",
           "claude-opus-4-8",
           "claude-opus-4-7",
+          "claude-sonnet-5-5",
+          "claude-haiku-5-5",
           "claude-sonnet-5",
           "claude-opus-4-6",
           "claude-sonnet-4-6"
@@ -114,6 +118,8 @@
           "claude-opus-5",
           "claude-opus-4-8",
           "claude-opus-4-7",
+          "claude-sonnet-5-5",
+          "claude-haiku-5-5",
           "claude-sonnet-5",
           "claude-opus-4-6",
           "claude-sonnet-4-6"
@@ -140,6 +146,8 @@
           "claude-opus-5",
           "claude-opus-4-8",
           "claude-opus-4-7",
+          "claude-sonnet-5-5",
+          "claude-haiku-5-5",
           "claude-sonnet-5"
         ],
         "variant": "reasoning-xhigh"
@@ -164,6 +172,8 @@
           "claude-opus-5",
           "claude-opus-4-8",
           "claude-opus-4-7",
+          "claude-sonnet-5-5",
+          "claude-haiku-5-5",
           "claude-sonnet-5",
           "claude-opus-4-6",
           "claude-sonnet-4-6"
@@ -181,6 +191,32 @@
     }
   ],
   "model_pricing": [
+    {
+      "id": "claude-sonnet-5-5",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 2e-06,
+        "output_token": 1e-05,
+        "cache_write_1h_input_token": 4e-06,
+        "cache_input_token": 1e-07,
+        "cache_write_input_token": 2.5e-06,
+        "source_url": "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+        "verified_at": "2026-10-14"
+      }
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 1e-07,
+        "output_token": 5e-07,
+        "cache_write_1h_input_token": 2e-07,
+        "cache_input_token": 1e-08,
+        "cache_write_input_token": 1.25e-07,
+        "source_url": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+        "verified_at": "2026-10-14"
+      }
+    },
     {
       "id": "claude-fable-5-1",
       "pricing": {
