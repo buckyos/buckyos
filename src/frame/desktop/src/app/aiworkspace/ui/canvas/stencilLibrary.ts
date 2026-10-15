@@ -65,4 +65,3 @@ export function libraryShapeConfig(shape: StencilPackShape): { size: { w: number
     },
   }
 }
-
