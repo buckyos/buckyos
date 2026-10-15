@@ -1221,18 +1221,10 @@ fn fake_docker_runner(state: FakeDockerState) -> DockerCommandRunner {
     })
 }
 
-fn missing_object(object: &str) -> DockerExecOutcome {
-    DockerExecOutcome {
-        ok: false,
-        stdout: String::new(),
-        stderr: format!("Error response from daemon: get {object}: no such volume"),
-    }
-}
-
 async fn fake_docker_outcome(args: &[String], state: &FakeDockerState) -> DockerExecOutcome {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let second = args.get(1).map(String::as_str).unwrap_or("");
-    if sub == "volume" && second == "inspect" {
+    if sub == "volume" && second == "ls" {
         if state.volume_created.load(Ordering::SeqCst) {
             DockerExecOutcome {
                 ok: true,
@@ -1240,7 +1232,11 @@ async fn fake_docker_outcome(args: &[String], state: &FakeDockerState) -> Docker
                 stderr: String::new(),
             }
         } else {
-            missing_object(args.get(2).map(String::as_str).unwrap_or(""))
+            DockerExecOutcome {
+                ok: true,
+                stdout: String::new(),
+                stderr: String::new(),
+            }
         }
     } else if sub == "volume" && second == "create" {
         state.volume_created.store(true, Ordering::SeqCst);
@@ -1331,7 +1327,7 @@ async fn concurrent_prepare_exttool_volume_runs_pull_and_seed_exactly_once() {
 
     let entries = state.log.lock().unwrap().clone();
     assert_eq!(
-        count_entries(&entries, "volume inspect"),
+        count_entries(&entries, "volume ls"),
         2,
         "both callers must run their own volume check: {entries:?}"
     );

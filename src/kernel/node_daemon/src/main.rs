@@ -21,6 +21,7 @@ mod sn_zone_info;
 #[cfg(test)]
 mod test_app_loader;
 mod zone_boot_resolve;
+mod wslc;
 
 #[cfg(target_os = "windows")]
 mod win_srv;

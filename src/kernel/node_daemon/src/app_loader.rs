@@ -1,5 +1,6 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
+use crate::wslc;
 use buckyos_api::{
     generate_service_login_assertion, get_buckyos_api_runtime, get_local_app_runtime_key,
     hide_child_console_async, AppDoc, AppServiceInstanceConfig, AppType, DeploymentHealth,
@@ -1346,14 +1347,11 @@ impl AppLoader {
         }
         env_vars.insert(
             "BUCKYOS_HOST_GATEWAY".to_string(),
-            AGENT_RUNTIME_HOST_GATEWAY.to_string(),
+            runtime_host_gateway()?.to_string(),
         );
         env_vars.insert(
             BUCKYOS_KEVENT_DAEMON_ADDR_ENV.to_string(),
-            format!(
-                "{}:{}",
-                AGENT_RUNTIME_HOST_GATEWAY, KEVENT_SERVICE_NATIVE_PORT
-            ),
+            format!("{}:{}", runtime_host_gateway()?, KEVENT_SERVICE_NATIVE_PORT),
         );
 
         if let Some(media_info) = self.package_media_info(role).await? {
@@ -1581,6 +1579,23 @@ impl AppLoader {
     }
 
     async fn docker_image_reference_exists(&self, image_ref: &str) -> Result<bool> {
+        if wslc::program()
+            .map_err(ControlRuntItemErrors::ParserConfigError)?
+            .is_some()
+        {
+            if !image_ref.starts_with("sha256:") {
+                return self.check_docker_image_exists(image_ref, None).await;
+            }
+            let output = self
+                .run_docker(&[
+                    "images".to_string(),
+                    "--quiet".to_string(),
+                    "--no-trunc".to_string(),
+                ])
+                .await?;
+            ensure_success("wslc images", &output)?;
+            return Ok(output.stdout.lines().any(|id| id.trim() == image_ref));
+        }
         let output = run_command(
             "docker",
             &[
@@ -2067,22 +2082,15 @@ impl AppLoader {
     }
 
     async fn check_docker_volume_exists(&self, volume: &str) -> Result<bool> {
-        let args = vec![
-            "volume".to_string(),
-            "inspect".to_string(),
-            volume.to_string(),
-        ];
-        let output = self.run_docker(&args).await?;
-        if output.status.success() {
-            return Ok(true);
-        }
-        if docker_object_missing(&output) {
-            return Ok(false);
-        }
-        Err(ControlRuntItemErrors::ExecuteError(
-            "docker volume inspect".to_string(),
-            format_command_failure("docker volume inspect", &output),
-        ))
+        let output = self
+            .run_docker(&[
+                "volume".to_string(),
+                "ls".to_string(),
+                "--format={{.Name}}".to_string(),
+            ])
+            .await?;
+        ensure_success("container volume ls", &output)?;
+        Ok(container_list_contains_name(&output.stdout, volume))
     }
 
     async fn ensure_docker_volume(&self, volume: &str) -> Result<()> {
@@ -3306,7 +3314,19 @@ fn split_shell_words(input: &str) -> Result<Vec<String>> {
     Ok(words)
 }
 
+fn runtime_host_gateway() -> Result<&'static str> {
+    let program = wslc::program().map_err(ControlRuntItemErrors::ParserConfigError)?;
+    Ok(if program.is_some() {
+        "host.wslc.internal"
+    } else {
+        AGENT_RUNTIME_HOST_GATEWAY
+    })
+}
+
 fn append_host_gateway_run_args(args: &mut Vec<String>) {
+    if matches!(wslc::program(), Ok(Some(_))) {
+        return;
+    }
     args.push("--add-host".to_string());
     args.push(format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"));
 }
@@ -3331,8 +3351,23 @@ async fn run_command(
     envs: Option<&HashMap<String, String>>,
     cwd: Option<&Path>,
 ) -> Result<CommandOutput> {
+    let wslc_program = if program == "docker" {
+        wslc::program().map_err(ControlRuntItemErrors::ParserConfigError)?
+    } else {
+        None
+    };
+    let (translated, projection) = if wslc_program.is_some() {
+        wslc::command(args).map_err(ControlRuntItemErrors::ParserConfigError)?
+    } else {
+        (args.to_vec(), wslc::Projection::Raw)
+    };
+    let program = wslc_program
+        .as_ref()
+        .and_then(|path| path.to_str())
+        .unwrap_or(program);
+    let args = &translated;
     let command_line = render_command_for_log(program, args);
-    if program == "docker" && matches!(args.first().map(String::as_str), Some("run")) {
+    if matches!(args.first().map(String::as_str), Some("run")) {
         info!("executing docker run: {}", command_line);
     }
 
@@ -3356,10 +3391,17 @@ async fn run_command(
         )
     })?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stdout = if output.status.success() {
+        wslc::project(&stdout, &projection)
+            .map_err(|error| ControlRuntItemErrors::ExecuteError(command_line.clone(), error))?
+    } else {
+        stdout
+    };
     Ok(CommandOutput {
         command_line,
         status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stdout,
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
 }
@@ -3574,3 +3616,7 @@ fn command_arg_value<'a>(cmd: &'a [String], key: &str) -> Option<&'a str> {
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
+
+#[cfg(all(test, windows))]
+#[path = "test_wslc.rs"]
+mod test_wslc;

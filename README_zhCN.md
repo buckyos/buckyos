@@ -44,7 +44,7 @@ cd buckyos
 
 需要开发 SDK/CLI 时，可在同一父目录执行 `git clone --branch main https://github.com/buckyos/buckyos-websdk.git`。该仓库是可选的；缺少时构建会使用 npm 已发布的 `buckyos@latest`。
 
-构建需要稳定版 Rust 工具链、当前平台的 C/C++ 构建工具、Python 3.12+、`uv`、Node.js 及 npm 和 pnpm，以及 Deno。容器应用需要 Docker，开发工具会用到 tmux。当前 CI 使用 Node.js 24、pnpm 10.13.1 和 Deno 2.9.2。
+构建需要稳定版 Rust 工具链、当前平台的 C/C++ 构建工具、Python 3.12+、`uv`、Node.js 及 npm 和 pnpm，以及 Deno。容器应用需要 Docker，Windows 可直接使用 [WSL containers](doc/windows_wslc.md)，无需安装 Docker Desktop；开发工具会用到 tmux。当前 CI 使用 Node.js 24、pnpm 10.13.1 和 Deno 2.9.2。
 
 可以先查看并运行 [`devenv.py`](devenv.py)，安装当前平台的基础依赖：
 
