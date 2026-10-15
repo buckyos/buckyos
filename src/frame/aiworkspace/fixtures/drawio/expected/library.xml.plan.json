@@ -1,0 +1,62 @@
+[
+ {
+  "name": "圆角卡片",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 120,
+   "h": 60
+  },
+  "background": null,
+  "pageSize": null,
+  "items": [
+   {
+    "key": "2",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 120,
+     "h": 60
+    },
+    "title": "卡片",
+    "shape": "rect",
+    "text": "卡片",
+    "fill": "#e1d5e7",
+    "stroke": "#9673a6"
+   }
+  ],
+  "report": []
+ },
+ {
+  "name": "决策",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 80,
+   "h": 80
+  },
+  "background": null,
+  "pageSize": null,
+  "items": [
+   {
+    "key": "2",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 80,
+     "h": 80
+    },
+    "title": "?",
+    "shape": "diamond",
+    "text": "?",
+    "fill": "auto",
+    "stroke": "auto"
+   }
+  ],
+  "report": []
+ }
+]

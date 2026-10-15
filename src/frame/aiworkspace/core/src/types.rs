@@ -678,9 +678,10 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
 /// in a BlockTree. `root` / `data` / `surfaces` exist only as system nodes. A Surface names its
 /// canvas content folder (`content_folder_id`, a folder under `canvas-content`); the folder may
 /// point back (`surface_id`, informative). A Surface may carry `icon`, the stable id of a preset
-/// icon chosen by the client (the client owns the preset list; an unknown id shows its default).
+/// icon chosen by the client (the client owns the preset list; an unknown id shows its default), and
+/// `config`, its page settings (background, page size; ≤ 64 KiB, checked by the client like a Cell's).
 fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked"], "container")?;
+    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked", "config"], "container")?;
     let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?.to_string();
     match (kind.as_str(), before) {
         ("folder" | "surface" | "group", None) => {}
@@ -721,6 +722,14 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
         });
         if kind != "surface" || !valid {
             return Err(bad("icon must be a preset id ([a-z][a-z0-9-]{0,31}) on a surface"));
+        }
+    }
+    if let Some(c) = e.payload.get("config") {
+        if kind != "surface" || !c.is_object() {
+            return Err(bad("config must be an object on a surface"));
+        }
+        if canonical_len(c) > MAX_CONFIG_BYTES {
+            return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
         }
     }
     match e.payload.get("content_folder_id") {

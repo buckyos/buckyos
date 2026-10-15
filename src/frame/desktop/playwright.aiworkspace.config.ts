@@ -35,6 +35,8 @@ process.env.AIWS_SHOW_LEASE_MS ??= '6000'
 
 export default defineConfig({
   testDir: './tests/aiworkspace',
+  // app modules the tests import resolve the shared draw.io module through its `@drawio/*` path mapping
+  tsconfig: './tsconfig.node.json',
   outputDir: './test-results/aiworkspace',
   fullyParallel: false,
   workers: 1,

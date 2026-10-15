@@ -18,9 +18,12 @@ server/    aiworkspace        process entry, kRPC dispatch, upload/download rout
                               wish/: run orchestration, xllm adapter and host tools, Deno program runner, llm.map
 aiws/      aiws v2 package    program host (aiws.js, run.js), API doc for the model, prompts, renderer catalog (deno test)
 wasm/      aiworkspace-wasm   wasm-bindgen facade of core for the browser replica (`wasm/build.sh` writes it into the Desktop app)
+import-drawio/                draw.io import/export and the canvas geometry shared with the Desktop (TypeScript, no
+                              dependencies, runs in the browser and Deno; see its README; `deno test -A`)
 schemas/   richtext.basic.v1.json (single source for the Rust validator and the ProseMirror schema)
 fixtures/  project-workspace/commits.json (the shared sample as a commit sequence), presentation/commits.json (the third
-           phase M0 fixture: a five-step mixed path and a guide), vectors/
+           phase M0 fixture: a five-step mixed path and a guide), vectors/, drawio/ (draw.io files and their expected
+           import plans)
 ```
 
 ## Run
@@ -62,7 +65,9 @@ holding the presentation paths and Viewports (below). They exist from
 Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
 take Cells and groups only. A Surface names its content folder (`content_folder_id`); the folder may point back
 (`surface_id`). A Surface may carry `icon`: the id of a client-side preset icon (`[a-z][a-z0-9-]{0,31}`, Surfaces
-only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
+only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. A Surface may also
+carry `config`, its page settings (`background`, `page_size`; an object of at most 64 KiB the client checks, read with
+`doc.read`, not projected; draw.io 导入 TODO §2.5). `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
 `[0, 360)`, absent = 0); stacking order is `order_key`. A Cell or a group may carry `locked: true`: a shared flag
 the client honours (no moves, resizing or deletion from the canvas) and the core only checks for being boolean.
 `FORMAT_VERSION` is 0.3 since these two keys (older kernels would refuse them on replay or import); stores and

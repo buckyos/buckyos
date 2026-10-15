@@ -15,7 +15,12 @@ import { union, type Rect } from './render/camera'
  * enclosing group is locked (标准对象的交互改进 §7.2). A connector (连接线实现方案 §9.2) has its stored box as
  * `rect` (what placement writes use; zero width or height allowed) and its routed path in `connector`, with
  * `bounds` around the path and label. */
-export interface Laid { entity: EntityEnvelope; rect: Rect; rotation: number; bounds: Rect; depth: number; parentId: string; isGroup: boolean; paint: number; locked: boolean; connector?: LaidConnector }
+export interface Laid { entity: EntityEnvelope; rect: Rect; rotation: number; bounds: Rect; depth: number; parentId: string; isGroup: boolean; paint: number; locked: boolean; connector?: LaidConnector
+  /** A group's first child when it is a frame or shape covering the group (its look: a swimlane, a container,
+   * draw.io 导入 TODO §2.2): pressing it selects and moves the group, resizing the group resizes it. */
+  backingId?: string
+  /** This Block is its group's backing. */
+  backing?: boolean }
 
 export const DEFAULT_PLACEMENT: Placement = { x: 0, y: 0, w: 320, h: 200 }
 
@@ -35,7 +40,16 @@ export function layoutSurface(outline: OutlineModel, surfaceId: string, forms: (
       const isGroup = entity.type_id === 'buckyos.container'
       const rotation = isGroup || line ? 0 : normalizeRotation(p.rotation ?? 0)
       const locked = lockedAbove || entity.locked === true
-      out.set(entity.entity_id, { entity, rect, rotation, bounds: rotatedBounds(rect, rotation), depth, parentId, isGroup, paint: paint++, locked })
+      const laid: Laid = { entity, rect, rotation, bounds: rotatedBounds(rect, rotation), depth, parentId, isGroup, paint: paint++, locked }
+      out.set(entity.entity_id, laid)
+      const parent = out.get(parentId)
+      // the first child of a group, a frame or shape covering it, is the group's look
+      if (parent?.isGroup && parent.backingId === undefined && !rotation && (entity.view_type === 'frame' || entity.view_type === 'shape')
+        && Math.abs(rect.x - parent.rect.x) <= 1 && Math.abs(rect.y - parent.rect.y) <= 1 && Math.abs(rect.w - parent.rect.w) <= 1 && Math.abs(rect.h - parent.rect.h) <= 1
+        && outline.childrenOf(parentId).find((c) => c.type_id === 'buckyos.cell' || c.kind === 'group')?.entity_id === entity.entity_id) {
+        parent.backingId = entity.entity_id
+        laid.backing = true
+      }
       if (isGroup) walk(entity.entity_id, { x: rect.x, y: rect.y }, depth + 1, locked)
     }
   }
@@ -62,6 +76,18 @@ export function placementOf(laid: Map<string, Laid>, l: Laid, parentId = l.paren
 /** The placement of a laid-out Block moved by (dx, dy), under `parentId` (its own parent by default). */
 export function movedPlacement(laid: Map<string, Laid>, l: Laid, dx: number, dy: number, parentId = l.parentId): Placement {
   return placementOf(laid, l, parentId, { ...l.rect, x: l.rect.x + dx, y: l.rect.y + dy })
+}
+
+/** The group an object centred on `p` belongs in (draw.io 导入 TODO §2.2): the top-most group under it that is not
+ * locked and not `excluded` (the moving objects themselves), else the Surface. */
+export function groupAt(laid: Map<string, Laid>, p: { x: number; y: number }, surfaceId: string, excluded: ReadonlySet<string> = new Set()): string {
+  let best: Laid | null = null
+  for (const g of laid.values()) {
+    if (!g.isGroup || excluded.has(g.entity.entity_id) || g.locked) continue
+    if (p.x < g.rect.x || p.x > g.rect.x + g.rect.w || p.y < g.rect.y || p.y > g.rect.y + g.rect.h) continue
+    if (!best || g.paint > best.paint) best = g
+  }
+  return best ? best.entity.entity_id : surfaceId
 }
 
 export function boundsOf(laid: Map<string, Laid>, ids: Iterable<string>): Rect | null {

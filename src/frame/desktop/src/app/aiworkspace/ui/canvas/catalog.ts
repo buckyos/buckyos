@@ -4,12 +4,17 @@
 
 import type { EntityEnvelope, Json } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
-import { blockRegistry, type BlockDefinition, type CatalogGroup, type CatalogInfo } from '../blocks/registry'
+import { blockRegistry, type BlockDefinition, type CatalogGroup, type CatalogInfo, type CatalogVariant } from '../blocks/registry'
 import { MOCK_WISH_DEF_ID } from '../wish/mockWishDef'
 
 export interface CatalogEntry {
-  /** `block:<type>` for a registered definition, `def:<entity id>` for a workspace definition. */
+  /** `block:<type>` for a registered definition (`block:<type>:<variant>` for a variant), `def:<entity id>` for a workspace definition. */
   key: string
+  /** A variant's id (its preset `config` and `size` below). */
+  variant?: string
+  config?: Record<string, Json>
+  size?: { w: number; h: number }
+  options?: CatalogVariant['options']
   definition: BlockDefinition
   catalog: CatalogInfo
   title: string
@@ -18,7 +23,12 @@ export interface CatalogEntry {
   defEntity?: EntityEnvelope
 }
 
-export const STANDARD_ORDER = ['richtext', 'note', 'shape', 'connector', 'frame', 'table', 'asset', 'wish']
+export const STANDARD_ORDER = ['richtext', 'shape:text', 'note', 'shape', 'connector', 'frame', 'table', 'asset', 'wish']
+
+/** An entry's id in test ids and menu ids: the type, or `type-variant`. */
+export const entryId = (entry: CatalogEntry) => (entry.variant ? `${entry.definition.type}-${entry.variant}` : entry.definition.type)
+/** The size an insertion of the entry takes. */
+export const entrySize = (entry: CatalogEntry) => entry.size ?? entry.definition.defaultSize
 
 /** Registered definitions offered for insertion; the HTML / declarative hosts are reached through workspace definitions. */
 export function registryEntries(): CatalogEntry[] {
@@ -29,8 +39,14 @@ export function registryEntries(): CatalogEntry[] {
     if (out.some((entry) => entry.definition.type === definition.type)) continue
     const latest = blockRegistry.get(definition.type) ?? definition
     out.push({ key: `block:${latest.type}`, definition: latest, catalog, title: latest.title, group: catalog.group })
+    for (const v of catalog.variants ?? []) {
+      out.push({
+        key: `block:${latest.type}:${v.id}`, variant: v.id, config: v.config, size: v.size, options: v.options, definition: latest, title: v.title, group: v.group,
+        catalog: { group: v.group, description: v.description, needs: 'none', editAfterInsert: v.editAfterInsert, standard: v.standard },
+      })
+    }
   }
-  const rank = (entry: CatalogEntry) => { const i = STANDARD_ORDER.indexOf(entry.definition.type); return i < 0 ? 100 : i }
+  const rank = (entry: CatalogEntry) => { const i = STANDARD_ORDER.indexOf(entry.variant ? `${entry.definition.type}:${entry.variant}` : entry.definition.type); return i < 0 ? 100 : i }
   return out.sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title))
 }
 

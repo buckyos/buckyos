@@ -1,0 +1,301 @@
+[
+ {
+  "name": "系统总览",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 704,
+   "h": 210
+  },
+  "background": "#fffbe6",
+  "pageSize": {
+   "w": 1169,
+   "h": 827
+  },
+  "items": [
+   {
+    "key": "gw",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 140,
+     "h": 70
+    },
+    "title": "网关",
+    "shape": "rect",
+    "text": "网关\nv2.3",
+    "fill": "#dae8fc",
+    "stroke": "#6c8ebf"
+   },
+   {
+    "key": "svc",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 240,
+     "y": 0,
+     "w": 180,
+     "h": 70
+    }
+   },
+   {
+    "key": "svc~box",
+    "parent": "svc",
+    "type": "shape",
+    "rect": {
+     "x": 240,
+     "y": 0,
+     "w": 180,
+     "h": 70
+    },
+    "title": "订单服务",
+    "shape": "rect",
+    "text": "",
+    "fill": "#f5f5f5",
+    "stroke": "#666666"
+   },
+   {
+    "key": "svc~image",
+    "parent": "svc",
+    "type": "asset",
+    "rect": {
+     "x": 270,
+     "y": 14,
+     "w": 42,
+     "h": 42
+    },
+    "image": "image/png"
+   },
+   {
+    "key": "svc~text",
+    "parent": "svc",
+    "type": "shape",
+    "rect": {
+     "x": 316,
+     "y": 0,
+     "w": 100,
+     "h": 70
+    },
+    "title": "订单服务",
+    "shape": "text",
+    "text": "订单服务",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "logo",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 520,
+     "y": 0,
+     "w": 64,
+     "h": 64
+    }
+   },
+   {
+    "key": "logo~image",
+    "parent": "logo",
+    "type": "asset",
+    "rect": {
+     "x": 520,
+     "y": 0,
+     "w": 64,
+     "h": 64
+    },
+    "image": "image/png"
+   },
+   {
+    "key": "logo~text",
+    "parent": "logo",
+    "type": "shape",
+    "rect": {
+     "x": 520,
+     "y": 0,
+     "w": 64,
+     "h": 64
+    },
+    "title": "部署图",
+    "shape": "text",
+    "text": "部署图",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "remote",
+    "parent": null,
+    "type": "asset",
+    "rect": {
+     "x": 640,
+     "y": 0,
+     "w": 64,
+     "h": 64
+    },
+    "image": "https://example.invalid/not-there.png"
+   },
+   {
+    "key": "c1",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 140,
+     "y": 35,
+     "w": 100,
+     "h": 0
+    },
+    "title": "HTTPS",
+    "start": {
+     "key": "gw",
+     "anchor": "e"
+    },
+    "end": {
+     "key": "svc",
+     "anchor": "w"
+    },
+    "route": "straight",
+    "controls": [],
+    "label": {
+     "t": 0.5,
+     "offset": 0
+    },
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "rich",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 120,
+     "w": 220,
+     "h": 90
+    },
+    "title": "注意：灰度发布时",
+    "shape": "text",
+    "text": "注意：灰度发布时\n• 先发 10%\n• 再全量",
+    "fill": "none",
+    "stroke": "none"
+   }
+  ],
+  "report": [
+   {
+    "kind": "rich_label",
+    "count": 1
+   },
+   {
+    "kind": "complex_html",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "部署",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 360,
+   "h": 180
+  },
+  "background": null,
+  "pageSize": {
+   "w": 827,
+   "h": 1169
+  },
+  "items": [
+   {
+    "key": "n1",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 40,
+     "w": 120,
+     "h": 80
+    },
+    "title": "节点 A",
+    "shape": "svg",
+    "text": "节点 A",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "n2",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 240,
+     "y": 40,
+     "w": 120,
+     "h": 80
+    },
+    "title": "节点 B",
+    "shape": "svg",
+    "text": "节点 B",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "sync",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 120,
+     "y": 40,
+     "w": 120,
+     "h": 0
+    },
+    "title": "同步",
+    "start": {
+     "key": "n1",
+     "anchor": "ne"
+    },
+    "end": {
+     "key": "n2",
+     "anchor": "nw"
+    },
+    "route": "curve",
+    "controls": [
+     {
+      "u": 0.5,
+      "v": 0,
+      "dy": -40
+     }
+    ],
+    "label": {
+     "t": 0.5,
+     "offset": 0
+    },
+    "caps": [
+     "triangle",
+     "triangle"
+    ]
+   },
+   {
+    "key": "loose",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 0,
+     "y": 180,
+     "w": 140,
+     "h": 0
+    },
+    "start": null,
+    "end": null,
+    "route": "straight",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   }
+  ],
+  "report": []
+ }
+]

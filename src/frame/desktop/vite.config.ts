@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import https from 'node:https'
 import { join, relative, resolve, sep } from 'node:path'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Desktop service worker (application resources for a cold start without the network): after the
@@ -34,6 +34,8 @@ function desktopServiceWorker(): Plugin {
     },
   }
 }
+
+const DRAWIO_DIR = resolve(import.meta.dirname, '../aiworkspace/import-drawio')
 
 // NFSP dev proxy: nfs-server has no CORS (in production the zone gateway
 // forwards the same-origin root path /nfs/v1/* to it), so dev mirrors that
@@ -98,9 +100,12 @@ export default defineConfig(() => {
       // loro-crdt's default browser entry imports its .wasm as an ES module, which Vite does not
       // support without an extra plugin. The `web` build is the same code with an explicit init()
       // (called in src/app/aiworkspace/richtext/loro.ts); loro-prosemirror must see the same instance.
-      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }],
+      // The draw.io importer and the canvas geometry it shares live outside the app (they also run in Deno):
+      // src/frame/aiworkspace/import-drawio (draw.io 导入 TODO §3).
+      alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }],
     },
     server: {
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

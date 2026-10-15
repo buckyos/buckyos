@@ -2,13 +2,53 @@
  * (AI) entry, the workspace's pinned extensions, "all objects", and undo / redo at the bottom. Picking
  * an object on a free Surface starts a one-shot placement; on a flow page it appends. */
 
-import { useRef, useSyncExternalStore } from 'react'
-import { ChevronsLeft, ChevronsRight, Frame, Hand, Image, MousePointer2, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
+import { useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { ChevronsLeft, ChevronsRight, Frame, Hand, Image, LetterText, Library, MousePointer2, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { blockRegistry } from '../blocks/registry'
-import { extensionEntries, registryEntries, type CatalogEntry } from './catalog'
+import { ShapePicker } from '../blocks/shapeBlock'
+import { PopoverPanel, usePopover } from '../shell/popover'
+import { entryId, extensionEntries, registryEntries, type CatalogEntry } from './catalog'
+import { ShapeLibraryPanel } from './ShapeLibraryPanel'
+import { libraryShapeConfig } from './stencilLibrary'
 
-const ICONS: Record<string, LucideIcon> = { richtext: Type, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, table: Table, asset: Image, wish: Sparkles }
+const ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, table: Table, asset: Image, wish: Sparkles }
+
+/** The shape library (§2.4): a picked shape is placed like any object. */
+function LibraryTool({ entry, onPick }: { entry: CatalogEntry; onPick: (entry: CatalogEntry) => void }) {
+  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  return (
+    <span ref={bindAnchor} className="aiws-anchor">
+      <button ref={bindTrigger} type="button" className="aiws-tool" aria-pressed={open} aria-label="图形库" title="图形库：流程图、BPMN、网络等 draw.io 图形，点击放置或拖到画布上" aria-haspopup="dialog" aria-expanded={open}
+        data-testid="aiws-tool-library" onClick={toggle}>
+        <Library size={20} />
+      </button>
+      {open && (
+        <PopoverPanel label="图形库" testId="aiws-tool-library-panel" className="aiws-popover-side aiws-library-popover">
+          <ShapeLibraryPanel onPick={(shape) => { close(); const { size, config } = libraryShapeConfig(shape); onPick({ ...entry, key: `${entry.key}:library`, title: shape.title, size, config }) }} />
+        </PopoverPanel>
+      )}
+    </span>
+  )
+}
+
+/** The shape tool: a grouped picker of the basic shapes (draw.io 导入 TODO §2.1), the pick is placed like any object. */
+function ShapeTool({ entry, pressed, title, onPick, extra }: { entry: CatalogEntry; pressed: boolean; title: string; onPick: (entry: CatalogEntry) => void; extra?: ReactNode }) {
+  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  return (
+    <span ref={bindAnchor} className="aiws-anchor">
+      <button ref={bindTrigger} type="button" className="aiws-tool" aria-pressed={pressed || open} aria-label={entry.title} title={title} aria-haspopup="dialog" aria-expanded={open}
+        data-testid={`aiws-tool-insert-${entryId(entry)}`} onClick={toggle}>
+        <Shapes size={20} />
+      </button>
+      {open && (
+        <PopoverPanel label="选择形状" testId="aiws-tool-shape-picker" className="aiws-popover-side">
+          <ShapePicker onPick={(kind) => { close(); onPick({ ...entry, config: { ...(entry.config ?? {}), shape: kind } }) }} extra={extra} />
+        </PopoverPanel>
+      )}
+    </span>
+  )
+}
 
 /** `connector`: press and drag draws a line (标准对象的交互改进 §6.1), one line at a time. */
 export type PointerTool = 'select' | 'hand' | 'connector'
@@ -63,12 +103,16 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
           {offered.length > 0 && (
             <div className="aiws-tool-group">
               {offered.map((entry) => {
-                const Icon = ICONS[entry.definition.type] ?? Plus
+                const Icon = ICONS[entryId(entry)] ?? Plus
                 const ai = entry.group === 'ai'
+                if (entryId(entry) === 'shape') return [
+                  <ShapeTool key={entry.key} entry={entry} pressed={placingKey === entry.key} title={isFree ? `${entry.title}：选择形状后在画布上放置（Esc 取消）` : `插入${entry.title}`} onPick={onPick} />,
+                  ...(canInsert ? [<LibraryTool key="library" entry={entry} onPick={onPick} />] : []),
+                ]
                 return (
                   <button key={entry.key} type="button" className={`aiws-tool${ai ? ' is-ai' : ''}`} aria-pressed={placingKey === entry.key} aria-label={entry.title}
                     title={ai ? `${entry.title}：描述任务，预览候选，再应用结果` : entry.definition.type === 'connector' ? `${entry.title}：在画布上按下并拖动画线，从对象上开始即连到该对象（L，Esc 取消）` : isFree ? `${entry.title}：点击后在画布上放置（Esc 取消）` : `插入${entry.title}`}
-                    data-testid={`aiws-tool-insert-${entry.definition.type}`} onClick={() => pick(entry)}>
+                    data-testid={`aiws-tool-insert-${entryId(entry)}`} onClick={() => pick(entry)}>
                     <Icon size={20} />
                   </button>
                 )

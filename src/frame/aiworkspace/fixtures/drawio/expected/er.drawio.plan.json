@@ -1,0 +1,357 @@
+[
+ {
+  "name": "订单 ER",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 520,
+   "h": 258
+  },
+  "background": null,
+  "pageSize": {
+   "w": 827,
+   "h": 1169
+  },
+  "items": [
+   {
+    "key": "cust",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 180,
+     "h": 90
+    }
+   },
+   {
+    "key": "cust~frame",
+    "parent": "cust",
+    "type": "frame",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 180,
+     "h": 90
+    },
+    "title": "customer",
+    "header": 30,
+    "orientation": "horizontal"
+   },
+   {
+    "key": "cust-r1",
+    "parent": "cust",
+    "type": "group",
+    "rect": {
+     "x": 0,
+     "y": 30,
+     "w": 180,
+     "h": 30
+    }
+   },
+   {
+    "key": "cust-r1-k",
+    "parent": "cust-r1",
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 30,
+     "w": 30,
+     "h": 30
+    },
+    "title": "PK",
+    "shape": "rect",
+    "text": "PK",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "cust-r1-v",
+    "parent": "cust-r1",
+    "type": "shape",
+    "rect": {
+     "x": 30,
+     "y": 30,
+     "w": 150,
+     "h": 30
+    },
+    "title": "id",
+    "shape": "rect",
+    "text": "id",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "cust-r2",
+    "parent": "cust",
+    "type": "group",
+    "rect": {
+     "x": 0,
+     "y": 60,
+     "w": 180,
+     "h": 30
+    }
+   },
+   {
+    "key": "cust-r2-k",
+    "parent": "cust-r2",
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 60,
+     "w": 30,
+     "h": 30
+    },
+    "shape": "rect",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "cust-r2-v",
+    "parent": "cust-r2",
+    "type": "shape",
+    "rect": {
+     "x": 30,
+     "y": 60,
+     "w": 150,
+     "h": 30
+    },
+    "title": "name",
+    "shape": "rect",
+    "text": "name",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "ord",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 340,
+     "y": 0,
+     "w": 180,
+     "h": 90
+    }
+   },
+   {
+    "key": "ord~frame",
+    "parent": "ord",
+    "type": "frame",
+    "rect": {
+     "x": 340,
+     "y": 0,
+     "w": 180,
+     "h": 90
+    },
+    "title": "order",
+    "header": 30,
+    "orientation": "horizontal"
+   },
+   {
+    "key": "ord-r1",
+    "parent": "ord",
+    "type": "group",
+    "rect": {
+     "x": 340,
+     "y": 30,
+     "w": 180,
+     "h": 30
+    }
+   },
+   {
+    "key": "ord-r1-k",
+    "parent": "ord-r1",
+    "type": "shape",
+    "rect": {
+     "x": 340,
+     "y": 30,
+     "w": 30,
+     "h": 30
+    },
+    "title": "PK",
+    "shape": "rect",
+    "text": "PK",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "ord-r1-v",
+    "parent": "ord-r1",
+    "type": "shape",
+    "rect": {
+     "x": 370,
+     "y": 30,
+     "w": 150,
+     "h": 30
+    },
+    "title": "id",
+    "shape": "rect",
+    "text": "id",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "ord-r2",
+    "parent": "ord",
+    "type": "group",
+    "rect": {
+     "x": 340,
+     "y": 60,
+     "w": 180,
+     "h": 30
+    }
+   },
+   {
+    "key": "ord-r2-k",
+    "parent": "ord-r2",
+    "type": "shape",
+    "rect": {
+     "x": 340,
+     "y": 60,
+     "w": 30,
+     "h": 30
+    },
+    "title": "FK",
+    "shape": "rect",
+    "text": "FK",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "ord-r2-v",
+    "parent": "ord-r2",
+    "type": "shape",
+    "rect": {
+     "x": 370,
+     "y": 60,
+     "w": 150,
+     "h": 30
+    },
+    "title": "customer_id",
+    "shape": "rect",
+    "text": "customer_id",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "rel",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 180,
+     "y": 45,
+     "w": 160,
+     "h": 30
+    },
+    "title": "下单",
+    "start": {
+     "key": "cust-r1",
+     "anchor": "e"
+    },
+    "end": {
+     "key": "ord-r2",
+     "anchor": "w"
+    },
+    "route": "curve",
+    "controls": [],
+    "label": {
+     "t": 0.5,
+     "offset": 0
+    },
+    "caps": [
+     "cardinality_exactly_one",
+     "cardinality_many"
+    ]
+   },
+   {
+    "key": "prod",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 340,
+     "y": 180,
+     "w": 180,
+     "h": 78
+    }
+   },
+   {
+    "key": "prod~frame",
+    "parent": "prod",
+    "type": "frame",
+    "rect": {
+     "x": 340,
+     "y": 180,
+     "w": 180,
+     "h": 78
+    },
+    "title": "product",
+    "header": 26,
+    "orientation": "horizontal"
+   },
+   {
+    "key": "prod-1",
+    "parent": "prod",
+    "type": "shape",
+    "rect": {
+     "x": 340,
+     "y": 206,
+     "w": 180,
+     "h": 26
+    },
+    "title": "sku",
+    "shape": "text",
+    "text": "sku",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "prod-2",
+    "parent": "prod",
+    "type": "shape",
+    "rect": {
+     "x": 340,
+     "y": 232,
+     "w": 180,
+     "h": 26
+    },
+    "title": "price",
+    "shape": "text",
+    "text": "price",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "rel2",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 520,
+     "y": 45,
+     "w": 0,
+     "h": 174
+    },
+    "start": {
+     "key": "ord-r1",
+     "anchor": "e"
+    },
+    "end": {
+     "key": "prod-1",
+     "anchor": "e"
+    },
+    "route": "curve",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "cardinality_exactly_one",
+     "cardinality_zero_or_many"
+    ]
+   }
+  ],
+  "report": [
+   {
+    "kind": "table",
+    "count": 6
+   }
+  ]
+ }
+]

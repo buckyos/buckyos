@@ -11,7 +11,7 @@ import { describeError } from '../../api/session'
 import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
 import { CANVAS_MODE_LABEL } from '../blocks/registry'
 import { SURFACE_ICONS, SurfaceIcon } from '../canvas/icons'
-import { accepted, renameBase, renameSurface, setSurfaceIcon, SurfaceDeleteDialog, surfaceWriteReason, type RenameBase } from '../canvas/surfaceManage'
+import { accepted, renameBase, renameSurface, setSurfaceBackground, setSurfaceIcon, SurfaceDeleteDialog, surfaceWriteReason, useSurfaceConfig, type RenameBase } from '../canvas/surfaceManage'
 import { buildMainMenu, type CanvasCommands } from './MainMenu'
 import { MenuButton, PopoverPanel, usePopover } from './popover'
 import { useCanvasMode, useShell } from './shellContext'
@@ -89,9 +89,32 @@ function SurfaceIconButton({ surface, reason }: { surface: EntityEnvelope; reaso
             ))}
           </div>
           <button type="button" className="aiws-popover-item" data-testid="aiws-icon-default" onClick={() => choose(null)}>使用默认图标</button>
+          {surface.layout?.mode === 'free' && <SurfaceBackground surface={surface} />}
         </PopoverPanel>
       )}
     </span>
+  )
+}
+
+/** The page background of a free canvas (draw.io 导入 TODO §2.5): none (the theme's), a preset or any colour. */
+const BACKGROUNDS = [{ value: '#ffffff', label: '白' }, { value: '#fffbe6', label: '米黄' }, { value: '#f5f5f5', label: '浅灰' }, { value: '#eef5ff', label: '浅蓝' }, { value: '#f1f8ee', label: '浅绿' }, { value: '#1e1e1e', label: '深色' }]
+
+function SurfaceBackground({ surface }: { surface: EntityEnvelope }) {
+  const store = useStore()
+  const { background } = useSurfaceConfig(surface.entity_id)
+  const pick = (value: string | null) => {
+    if (value === background) return
+    setSurfaceBackground(store, surface, value).catch((error: unknown) => store.notify('error', `更换背景失败：${describeError(error)}`))
+  }
+  return (
+    <div className="aiws-surface-background" data-testid="aiws-surface-background">
+      <div className="aiws-muted">画布背景</div>
+      <div className="aiws-palette-grid">
+        <button type="button" className="aiws-palette-swatch is-auto" aria-label="跟随主题" title="跟随主题" aria-pressed={background === null} data-testid="aiws-background-default" onClick={() => pick(null)} />
+        {BACKGROUNDS.map((b) => <button key={b.value} type="button" className="aiws-palette-swatch" aria-label={b.label} title={b.label} aria-pressed={background === b.value} style={{ background: b.value }} data-testid={`aiws-background-${b.value.slice(1)}`} onClick={() => pick(b.value)} />)}
+      </div>
+      <label className="aiws-palette-custom">自定义 <input type="color" aria-label="自定义背景色" defaultValue={background ?? '#ffffff'} onChange={(event) => pick(event.target.value)} /></label>
+    </div>
   )
 }
 

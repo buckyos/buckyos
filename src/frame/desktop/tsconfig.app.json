@@ -22,7 +22,10 @@
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+
+    /* The shared draw.io importer and canvas geometry (src/frame/aiworkspace/import-drawio) */
+    "paths": { "@drawio/*": ["../aiworkspace/import-drawio/*"] }
   },
   "include": ["src"],
   "exclude": ["src/api", "src/auth"]

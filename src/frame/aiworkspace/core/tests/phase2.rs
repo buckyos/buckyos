@@ -120,6 +120,22 @@ fn surface_icon_is_a_shared_preset_id() {
     assert!(ws.store.entities["s1"].payload.get("icon").is_none());
 }
 
+/// draw.io 导入 TODO §2.5: a Surface's page settings live in `config` (an object the client checks, ≤ 64 KiB),
+/// on Surfaces only.
+#[test]
+fn surface_config_holds_page_settings() {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!(surface("s1", "free")));
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "s1", "keys": [{ "key": "config", "value": { "background": "#fffbe6", "page_size": { "w": 827, "h": 1169 } }, "expect": { "rev": 0 } }] }]));
+    let read = aiworkspace_core::read::read(&ws.store, &Access::full("alice"), "s1", None).unwrap();
+    assert_eq!(read["content"]["payload"]["config"]["background"], "#fffbe6");
+    let rev = read["content"]["key_revs"]["config"].clone();
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "s1", "keys": [{ "key": "config", "value": "#fff", "expect": { "rev": rev } }] }]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "s1", "keys": [{ "key": "config", "value": { "x": "y".repeat(70_000) }, "expect": { "rev": rev } }] }]))), "LIMIT_EXCEEDED");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "f-config", "type_id": TYPE_CONTAINER, "parent_id": DATA_ID, "order_key": "a",
+        "payload": { "kind": "folder", "config": {} } }]))), "INVALID_SCHEMA");
+}
+
 /// 标准对象的交互改进 §7.1–§7.2: `placement.rotation` is layout (same operations, same capability),
 /// `locked` is a boolean flag of Blocks and groups that the core checks but never enforces.
 #[test]

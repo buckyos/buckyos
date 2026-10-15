@@ -392,7 +392,7 @@ test('P3-10 a share export leaves the speaker notes out; captions and paths trav
   await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'guide:path-guide': { index: 2, done: false } } })
   // the dialog: a share package defaults to no notes, a personal backup to notes
   await openCanvas(page, ALICE, ws.workspace_id)
-  await mainMenu(page, 'aiws-menu-export')
+  await mainMenu(page, 'aiws-menu-export-menu', 'aiws-menu-export')
   await expect(page.getByTestId('aiws-export-notes')).not.toBeChecked()
   await page.getByTestId('aiws-export-dialog').getByLabel('导出方式').selectOption('personal_backup')
   await expect(page.getByTestId('aiws-export-notes')).toBeChecked()

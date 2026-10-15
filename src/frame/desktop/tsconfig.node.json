@@ -21,7 +21,10 @@
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+
+    /* The shared draw.io importer and canvas geometry (src/frame/aiworkspace/import-drawio) */
+    "paths": { "@drawio/*": ["../aiworkspace/import-drawio/*"] }
   },
   "include": ["vite.config.ts", "playwright.config.ts", "playwright.aiworkspace.config.ts", "tests/e2e/**/*.ts", "tests/aiworkspace/**/*.ts"]
 }

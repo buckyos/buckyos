@@ -4,12 +4,12 @@
  * (phase two §4.3: the BlockTree and the content folder go together; blocked references are listed,
  * readable ones only). */
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { describeError } from '../../api/session'
 import { SYSTEM_IDS, type CommitOutcome, type EntityEnvelope, type Json, type Operation } from '../../api/types'
 import { useOverlayMounted } from '../shell/popover'
 import type { WorkspaceStore } from '../../state/store'
-import { useStore } from '../../state/hooks'
+import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { surfacesOf } from './surfaceOps'
 
 export interface RenameBase { titleRev: number; metaRev: number }
@@ -35,6 +35,34 @@ export async function setSurfaceIcon(store: WorkspaceStore, surface: EntityEnvel
     ? { op: 'entity.set_keys', entity_id: surface.entity_id, keys: [{ key: 'icon', value: icon, expect: { rev } }] }
     : { op: 'entity.unset_keys', entity_id: surface.entity_id, keys: [{ key: 'icon', expect: { rev } }] }
   return store.submit({ editId: `surface:${surface.entity_id}:icon`, label: icon ? '更换画布图标' : '恢复默认画布图标', operations: [op] })
+}
+
+/** A Surface's page settings (`config`, draw.io 导入 TODO §2.5): background colour and page size, read wide. */
+export interface SurfaceLook { background: string | null; pageSize: { w: number; h: number } | null; config: Record<string, Json>; rev: number }
+
+export function useSurfaceConfig(surfaceId: string): SurfaceLook {
+  const store = useStore()
+  const version = useVersion(`e:${surfaceId}`)
+  const load = useCallback(() => store.readBatched<{ payload: { config?: Record<string, Json> }; key_revs?: Record<string, number> }>(surfaceId), [store, surfaceId])
+  const read = useLoad(load, version)
+  const config = read.data?.entity_id === surfaceId ? read.data.content.payload.config ?? {} : {}
+  const bg = typeof config.background === 'string' && /^#[0-9a-f]{6}$/i.test(config.background) ? config.background.toLowerCase() : null
+  const size = config.page_size as { w?: unknown; h?: unknown } | undefined
+  const pageSize = size && typeof size.w === 'number' && typeof size.h === 'number' && size.w > 0 && size.h > 0 ? { w: size.w, h: size.h } : null
+  return { background: bg, pageSize, config, rev: read.data?.entity_id === surfaceId ? read.data.content.key_revs?.config ?? 0 : 0 }
+}
+
+/** Set (null: remove) the Surface's background colour. */
+export async function setSurfaceBackground(store: WorkspaceStore, surface: EntityEnvelope, background: string | null): Promise<CommitOutcome> {
+  const read = await store.session.read<{ payload: { config?: Record<string, Json> }; key_revs: Record<string, number> }>(surface.entity_id)
+  const config: Record<string, Json> = { ...(read.content.payload.config ?? {}) }
+  if (background) config.background = background
+  else delete config.background
+  const rev = read.content.key_revs.config ?? 0
+  const op: Operation = Object.keys(config).length
+    ? { op: 'entity.set_keys', entity_id: surface.entity_id, keys: [{ key: 'config', value: config, expect: { rev } }] }
+    : { op: 'entity.unset_keys', entity_id: surface.entity_id, keys: [{ key: 'config', expect: { rev } }] }
+  return store.submit({ editId: `surface:${surface.entity_id}:background`, label: background ? '画布背景色' : '恢复默认画布背景', operations: [op] })
 }
 
 export function accepted(outcome: CommitOutcome): boolean {

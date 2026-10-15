@@ -9,7 +9,7 @@ import { TriangleAlert } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { CellPayload, EntityEnvelope } from '../../api/types'
 import { useStore } from '../../state/hooks'
-import { shapeOf, sourceLabel } from './affordances'
+import { linkAffordance, shapeOf, sourceLabel } from './affordances'
 import { BudgetContext, type MountBudget } from './budget'
 import { BlockMetaContext } from './editorToolbar'
 import type { CanvasMode, RenderContext } from './registry'
@@ -104,6 +104,7 @@ function ResolvedBlock({ context: base, lod, registryVersion }: { context: Rende
     if (!published) { metaSink.set(cell.entity_id, null); return }
     let affordances = def.hover ? [] : sourceLabel(context)
     try { if (def.hover) affordances = def.hover(context, store) } catch (error) { console.error('[aiworkspace] hover affordances failed', error) }
+    affordances = [...affordances, ...linkAffordance(context)]
     metaSink.set(cell.entity_id, { shape: shapeOf(context), aspect: def.resize?.aspect ?? 'free', affordances, context })
   })
   useEffect(() => () => metaSink?.set(cell.entity_id, null), [metaSink, cell.entity_id])
@@ -114,7 +115,7 @@ function ResolvedBlock({ context: base, lod, registryVersion }: { context: Rende
   else if (depth === 0 && (mode === 'view' || mode === 'show') && def.View && lod !== 'simplified') { Impl = def.View; role = 'view' }
   const budgetNote = wantsEditor && !slot ? '同时激活的编辑器已达上限，此 Block 保持静态显示' : null
   return (
-    <div className="aiws-block-body" data-testid={`aiws-block-${cell.entity_id}`} data-role={role} data-renderer={def.type} data-mode={mode} data-data-state={dataState} data-chrome={def.chrome ?? 'clip'}>
+    <div className="aiws-block-body" data-testid={`aiws-block-${cell.entity_id}`} title={typeof base.payload.config?.tooltip === 'string' && role !== 'editor' ? base.payload.config.tooltip : undefined} data-role={role} data-renderer={def.type} data-mode={mode} data-data-state={dataState} data-chrome={def.chrome ?? 'clip'}>
       {budgetNote && <div className="aiws-warning" data-testid="aiws-block-budget">{budgetNote}</div>}
       <BlockBoundary resetKey={`${cell.entity_id}:${role}:${cell.content_rev}:${registryVersion}`} fallback={(error, reset) => (
         <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${cell.entity_id}`} data-reason="renderer_error">

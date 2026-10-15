@@ -1,0 +1,477 @@
+[
+ {
+  "name": "基本图形",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 780,
+   "h": 520
+  },
+  "background": null,
+  "pageSize": {
+   "w": 1169,
+   "h": 827
+  },
+  "items": [
+   {
+    "key": "k1",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 100,
+     "h": 60
+    },
+    "title": "rect",
+    "shape": "rect",
+    "text": "rect",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k2",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 140,
+     "y": 0,
+     "w": 100,
+     "h": 60
+    },
+    "title": "rounded",
+    "shape": "rect",
+    "text": "rounded",
+    "fill": "#dae8fc",
+    "stroke": "#6c8ebf"
+   },
+   {
+    "key": "k3",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 280,
+     "y": 0,
+     "w": 100,
+     "h": 60
+    },
+    "title": "ellipse",
+    "shape": "ellipse",
+    "text": "ellipse",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k4",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 420,
+     "y": 0,
+     "w": 100,
+     "h": 60
+    },
+    "title": "rhombus",
+    "shape": "diamond",
+    "text": "rhombus",
+    "fill": "#fff2cc",
+    "stroke": "#d6b656"
+   },
+   {
+    "key": "k5",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 560,
+     "y": 0,
+     "w": 60,
+     "h": 80
+    },
+    "title": "triangle",
+    "shape": "triangle",
+    "text": "triangle",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k6",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 660,
+     "y": 0,
+     "w": 80,
+     "h": 60
+    },
+    "title": "tri-n",
+    "shape": "triangle",
+    "text": "tri-n",
+    "fill": "#f8cecc",
+    "stroke": "#b85450"
+   },
+   {
+    "key": "k7",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 120,
+     "w": 100,
+     "h": 60
+    },
+    "title": "hexagon",
+    "shape": "hexagon",
+    "text": "hexagon",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k8",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 140,
+     "y": 120,
+     "w": 100,
+     "h": 60
+    },
+    "title": "para",
+    "shape": "parallelogram",
+    "text": "para",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k9",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 280,
+     "y": 120,
+     "w": 100,
+     "h": 60
+    },
+    "title": "trapezoid",
+    "shape": "trapezoid",
+    "text": "trapezoid",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k10",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 420,
+     "y": 110,
+     "w": 60,
+     "h": 80
+    },
+    "title": "cylinder",
+    "shape": "cylinder",
+    "text": "cylinder",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k11",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 520,
+     "y": 120,
+     "w": 100,
+     "h": 60
+    },
+    "title": "cloud",
+    "shape": "cloud",
+    "text": "cloud",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k12",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 660,
+     "y": 120,
+     "w": 100,
+     "h": 60
+    },
+    "title": "document",
+    "shape": "document",
+    "text": "document",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k13",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 240,
+     "w": 100,
+     "h": 60
+    },
+    "title": "process",
+    "shape": "process",
+    "text": "process",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k14",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 140,
+     "y": 240,
+     "w": 80,
+     "h": 80
+    },
+    "title": "card",
+    "shape": "card",
+    "text": "card",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k15",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 260,
+     "y": 240,
+     "w": 80,
+     "h": 80
+    },
+    "title": "note",
+    "shape": "note",
+    "text": "note",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k16",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 380,
+     "y": 240,
+     "w": 100,
+     "h": 80
+    },
+    "title": "callout",
+    "shape": "callout",
+    "text": "callout",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k17",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 520,
+     "y": 240,
+     "w": 80,
+     "h": 80
+    },
+    "shape": "cross",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k18",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 640,
+     "y": 240,
+     "w": 100,
+     "h": 60
+    },
+    "title": "step",
+    "shape": "step",
+    "text": "step",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k19",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 360,
+     "w": 100,
+     "h": 60
+    },
+    "shape": "arrow",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k20",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 140,
+     "y": 360,
+     "w": 100,
+     "h": 60
+    },
+    "shape": "double_arrow",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k21",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 280,
+     "y": 380,
+     "w": 100,
+     "h": 10
+    },
+    "shape": "line",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k22",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 420,
+     "y": 360,
+     "w": 140,
+     "h": 50
+    },
+    "title": "纯文字，左对齐，多行",
+    "shape": "text",
+    "text": "纯文字，左对齐，多行\n第二行",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "k23",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 600,
+     "y": 360,
+     "w": 100,
+     "h": 60
+    },
+    "rotation": 15,
+    "title": "dashed",
+    "shape": "rect",
+    "text": "dashed",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k24",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 740,
+     "y": 350,
+     "w": 40,
+     "h": 60
+    },
+    "title": "actor",
+    "shape": "svg",
+    "text": "actor",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k25",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 460,
+     "w": 100,
+     "h": 60
+    },
+    "title": "tape",
+    "shape": "svg",
+    "text": "tape",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k26",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 140,
+     "y": 460,
+     "w": 100,
+     "h": 60
+    },
+    "title": "delay",
+    "shape": "svg",
+    "text": "delay",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k27",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 280,
+     "y": 460,
+     "w": 100,
+     "h": 60
+    },
+    "title": "mystery",
+    "shape": "rect",
+    "text": "mystery",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "k28",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 420,
+     "y": 460,
+     "w": 100,
+     "h": 60
+    },
+    "title": "gradient",
+    "shape": "rect",
+    "text": "gradient",
+    "fill": "#dae8fc",
+    "stroke": "#6c8ebf"
+   }
+  ],
+  "report": [
+   {
+    "kind": "rich_label",
+    "count": 1
+   },
+   {
+    "kind": "unknown_shape",
+    "count": 1
+   },
+   {
+    "kind": "gradient",
+    "count": 1
+   },
+   {
+    "kind": "shadow",
+    "count": 1
+   }
+  ]
+ }
+]

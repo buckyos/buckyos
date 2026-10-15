@@ -1,16 +1,16 @@
 /* eslint-disable react-refresh/only-export-components -- a registry of definitions, not a component module */
 /* Built-in Block definitions (phase two §10.1): table, rich text, record, asset, note (content
- * Blocks pairing with a data entity) and frame / shape (pure UI Blocks). Each declares what it
+ * Blocks pairing with a data entity) and frame / shape (pure UI Blocks; the shape in shapeBlock.tsx). Each declares what it
  * accepts, its static rendering, its editor (mounted only after activation), view-mode behaviour,
  * actions and inspector, and — 标准对象的交互改进 §4–§5 — its own look (the host frame draws none),
  * what hovering it offers and the type section of the near toolbar. They are registered like any
  * extension would be. */
 
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react'
-import { ALargeSmall, Baseline, Circle, Columns3, Eye, Image as ImageIcon, ListFilter, ListTree, Pencil, Plus, Replace, Reply, Scan, Square, Table, Type } from 'lucide-react'
+import { ALargeSmall, Columns3, Eye, Image as ImageIcon, ListFilter, ListTree, Plus, Replace, Reply, Scan, Table, Type } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { AnnotationContent, CellPayload, Json, Reference, RichTextContent } from '../../api/types'
+import type { AnnotationContent, Json, Reference, RichTextContent } from '../../api/types'
 import { StaticRichText } from '../../richtext/RichTextEditor'
 import { isGuestPrincipal } from '../../api/transport'
 import { authorLabel, readGuestName } from '../../state/guest'
@@ -20,8 +20,10 @@ import { TableViewCell } from '../TableViewCell'
 import { sourceLabel } from './affordances'
 import { consumeIntent, requestIntent, useIntent, useOnFreeCanvas } from './editorToolbar'
 import { AssetCell, LockScope, NoteEditor, NoteReplies, RecordCell, RichTextCell, TableEditor } from './editors'
-import { cellOp, createOp, MAX_EMBED_DEPTH, replaceAsset, setCellConfig, setCellKey } from './ops'
+import { cellOp, createOp, MAX_EMBED_DEPTH, replaceAsset, setCellConfig } from './ops'
 import { blockRegistry, type BlockDefinition, type RenderContext, type ToolbarItem } from './registry'
+import { frameDefinition } from './frameBlock'
+import { shapeDefinition } from './shapeBlock'
 
 const TEXT_SIZES = [{ value: 's', label: '小' }, { value: 'm', label: '中' }, { value: 'l', label: '大' }, { value: 'xl', label: '特大' }]
 
@@ -362,127 +364,7 @@ const note: BlockDefinition = {
   ]),
 }
 
-// ---- frame & shape (pure UI Blocks, D3 / D10): the title or label is edited in place (§4.4)
-
-/** A one-line title typed where it is shown; Enter or leaving saves, Esc keeps the old one. */
-function InPlaceTitle({ context, className, placeholder }: { context: RenderContext; className: string; placeholder: string }) {
-  const store = useStore()
-  const [text, setText] = useState(context.payload.title ?? '')
-  const done = (save: boolean) => {
-    const next = text.trim()
-    if (save && next !== (context.payload.title ?? '')) setCellKey(context, store, 'title', next || null, `标题 → ${next || '（清除）'}`)
-    context.deactivateEditor()
-  }
-  return (
-    <input className={className} aria-label="标题" data-testid={`aiws-title-edit-${context.cell.entity_id}`} autoFocus value={text} placeholder={placeholder} onChange={(event) => setText(event.target.value)}
-      onBlur={() => done(true)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); done(true) } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done(false) } }} />
-  )
-}
-
-function frameColor(context: RenderContext) {
-  return typeof context.payload.config?.color === 'string' ? context.payload.config.color : 'var(--cp-accent)'
-}
-
-function FrameStatic(context: RenderContext) {
-  const color = frameColor(context)
-  return (
-    <div className="aiws-frame" style={{ borderColor: color }} data-testid={`aiws-frame-${context.cell.entity_id}`}>
-      <div className="aiws-frame-title" style={{ background: color }}>{context.payload.title ?? '框'}</div>
-    </div>
-  )
-}
-function FrameEditor(context: RenderContext) {
-  const color = frameColor(context)
-  return (
-    <div className="aiws-frame" style={{ borderColor: color }} data-testid={`aiws-frame-${context.cell.entity_id}`}>
-      <div className="aiws-frame-title is-editing" style={{ background: color }}><InPlaceTitle context={context} className="aiws-title-input" placeholder="框" /></div>
-    </div>
-  )
-}
-
-const canChangeLook = (context: RenderContext): string | false => (context.capabilities.includes('update') && context.mode === 'edit' ? false : '没有修改此 Block 的权限')
-
-const frame: BlockDefinition = {
-  type: 'frame', version: 1, title: '框', accepts: [], allowNoSource: true, pureUi: true,
-  defaultSize: { w: 600, h: 400 }, cost: { editor: false, html: false },
-  Static: FrameStatic, Editor: FrameEditor, chrome: 'none',
-  catalog: { group: 'layout', description: '带标题的区域框，用来在画布上圈出一组内容。', needs: 'none', standard: true },
-  actions: [{ id: 'rename', label: '重命名', modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
-  toolbar: (context, store) => [
-    { kind: 'color', id: 'frame-color', label: '颜色', palette: 'ink', value: typeof context.payload.config?.color === 'string' ? context.payload.config.color : undefined, disabled: canChangeLook(context), onPick: (value) => setCellConfig(context, store, { color: value || null }, '框的颜色') },
-    { kind: 'button', id: 'frame-rename', icon: Pencil, label: '重命名', disabled: canChangeLook(context), run: () => context.activateEditor() },
-  ],
-  configFields: [{ key: 'color', label: '颜色', kind: 'color' }],
-  create: (args) => [cellOp(args, 'frame', undefined, { config: { color: (args.config?.color as string) ?? '#4f8df7' } })],
-}
-
-/** Text on a filled shape: dark on a light fill, light on a dark one (whatever the theme). */
-function inkOn(fill: string): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(fill)
-  if (!m) return 'inherit'
-  const n = parseInt(m[1], 16)
-  const luminance = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255
-  return luminance > 0.6 ? '#1f2328' : '#ffffff'
-}
-
-function shapeKind(payload: CellPayload): 'rect' | 'ellipse' {
-  return payload.config?.shape === 'ellipse' ? 'ellipse' : 'rect'
-}
-
-function shapeLook(context: RenderContext) {
-  const config = context.payload.config ?? {}
-  const fill = typeof config.fill === 'string' ? config.fill : '#e8f0fe'
-  return {
-    kind: shapeKind(context.payload),
-    fill,
-    stroke: typeof config.stroke === 'string' ? config.stroke : '#4f8df7',
-    ink: inkOn(fill),
-  }
-}
-
-function ShapeStatic(context: RenderContext) {
-  const { kind, fill, stroke, ink } = shapeLook(context)
-  return (
-    <div className={`aiws-shape aiws-shape-${kind}`} style={{ background: fill, borderColor: stroke, color: ink }} data-testid={`aiws-shape-${context.cell.entity_id}`}>
-      {context.payload.title && <span className="aiws-shape-label">{context.payload.title}</span>}
-    </div>
-  )
-}
-function ShapeEditor(context: RenderContext) {
-  const { kind, fill, stroke, ink } = shapeLook(context)
-  return (
-    <div className={`aiws-shape aiws-shape-${kind}`} style={{ background: fill, borderColor: stroke, color: ink }} data-testid={`aiws-shape-${context.cell.entity_id}`}>
-      <InPlaceTitle context={context} className="aiws-title-input aiws-shape-label" placeholder="文字" />
-    </div>
-  )
-}
-
-const shape: BlockDefinition = {
-  type: 'shape', version: 1, title: '形状', accepts: [], allowNoSource: true, pureUi: true,
-  defaultSize: { w: 160, h: 120 }, cost: { editor: false, html: false },
-  Static: ShapeStatic, Editor: ShapeEditor, chrome: 'none',
-  shape: shapeKind,
-  catalog: { group: 'layout', description: '矩形或椭圆，可在属性中改颜色和形状。', needs: 'none', standard: true },
-  actions: [{ id: 'label', label: '编辑文字', modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
-  toolbar: (context, store) => {
-    const look = shapeLook(context)
-    const reason = canChangeLook(context)
-    return [
-      { kind: 'menu', id: 'shape-kind', icon: look.kind === 'ellipse' ? Circle : Square, label: '形状', value: look.kind, disabled: reason,
-        items: [{ value: 'rect', label: '矩形', icon: Square }, { value: 'ellipse', label: '椭圆', icon: Circle }], onPick: (value) => setCellConfig(context, store, { shape: value }, `形状 → ${value === 'ellipse' ? '椭圆' : '矩形'}`) },
-      { kind: 'color', id: 'shape-fill', label: '填充', palette: 'fill', value: look.fill, disabled: reason, onPick: (value) => setCellConfig(context, store, { fill: value || null }, '形状填充') },
-      { kind: 'color', id: 'shape-stroke', label: '描边', palette: 'ink', value: look.stroke, disabled: reason, onPick: (value) => setCellConfig(context, store, { stroke: value || null }, '形状描边') },
-      { kind: 'button', id: 'shape-text', icon: Baseline, label: '文字', disabled: reason, run: () => context.activateEditor() },
-    ]
-  },
-  configFields: [
-    { key: 'shape', label: '形状', kind: 'select', options: [{ value: 'rect', label: '矩形' }, { value: 'ellipse', label: '椭圆' }] },
-    { key: 'fill', label: '填充', kind: 'color' }, { key: 'stroke', label: '边框', kind: 'color' },
-  ],
-  create: (args) => [cellOp(args, 'shape', undefined, { config: { shape: (args.config?.shape as string) ?? 'rect', fill: '#e8f0fe', stroke: '#4f8df7' } })],
-}
-
-export const BUILTIN_BLOCKS: BlockDefinition[] = [table, richtext, record, asset, note, frame, shape]
+export const BUILTIN_BLOCKS: BlockDefinition[] = [table, richtext, record, asset, note, frameDefinition, shapeDefinition]
 
 let registered = false
 /** Register the built-ins once (idempotent). Extensions register themselves the same way. */

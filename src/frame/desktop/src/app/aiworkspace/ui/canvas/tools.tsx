@@ -28,6 +28,10 @@ const PALETTES: Record<'fill' | 'ink', { value: string; label: string }[]> = {
   ],
 }
 
+/** Special colour values: no colour (`none`), the theme's colour (`auto`, or empty for "默认"). */
+const swatchClass = (value: string) => (value === 'none' ? ' is-none' : value === 'auto' ? ' is-auto' : '')
+const swatchStyle = (value: string) => (value === 'none' || value === 'auto' ? undefined : { background: value || 'var(--cp-text)' })
+
 /** Buttons keep the editor's focus and selection: the press never moves the focus. */
 const keepFocus = (event: { preventDefault: () => void }) => event.preventDefault()
 
@@ -54,23 +58,23 @@ function NearMenu({ item }: { item: Extract<ToolbarItem, { kind: 'menu' }> }) {
 
 function NearColor({ item }: { item: Extract<ToolbarItem, { kind: 'color' }> }) {
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
-  const palette = PALETTES[item.palette ?? 'fill']
+  const palette = [...(item.extras ?? []), ...PALETTES[item.palette ?? 'fill']]
   const pick = (value: string) => { close(); item.onPick(value) }
   return (
     <span ref={bindAnchor} className="aiws-anchor">
       <button ref={bindTrigger} type="button" className="aiws-near-btn" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(item.label, undefined, item.disabled)}
         aria-haspopup="dialog" aria-expanded={open} disabled={Boolean(item.disabled)} onMouseDown={keepFocus} onClick={toggle}>
-        {item.value === undefined ? <Palette size={18} aria-hidden="true" /> : <span className="aiws-swatch" style={{ background: item.value || 'var(--cp-text)' }} aria-hidden="true" />}
+        {item.value === undefined ? <Palette size={18} aria-hidden="true" /> : <span className={`aiws-swatch${swatchClass(item.value)}`} style={swatchStyle(item.value)} aria-hidden="true" />}
       </button>
       {open && (
         <PopoverPanel label={item.label} testId={`aiws-palette-${item.id}`} className="aiws-palette">
           <div className="aiws-palette-grid">
             {palette.map((color) => (
-              <button key={color.value || 'default'} type="button" className="aiws-palette-swatch" aria-label={color.label} title={color.label} aria-pressed={(item.value ?? '') === color.value}
-                data-testid={`aiws-color-${color.value.replace('#', '') || 'default'}`} style={{ background: color.value || 'var(--cp-text)' }} onClick={() => pick(color.value)} />
+              <button key={color.value || 'default'} type="button" className={`aiws-palette-swatch${swatchClass(color.value)}`} aria-label={color.label} title={color.label} aria-pressed={(item.value ?? '') === color.value}
+                data-testid={`aiws-color-${color.value.replace('#', '') || 'default'}`} style={swatchStyle(color.value)} onClick={() => pick(color.value)} />
             ))}
           </div>
-          <label className="aiws-palette-custom">自定义 <input type="color" aria-label="自定义颜色" defaultValue={item.value || '#4f8df7'} onChange={(event) => item.onPick(event.target.value)} /></label>
+          <label className="aiws-palette-custom">自定义 <input type="color" aria-label="自定义颜色" defaultValue={item.value && item.value.startsWith('#') ? item.value : '#4f8df7'} onChange={(event) => item.onPick(event.target.value)} /></label>
         </PopoverPanel>
       )}
     </span>
@@ -111,7 +115,7 @@ function asMenuItem(item: ToolbarItem): MenuItem | null {
     case 'separator': return null
     case 'button': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, hint: item.key, disabled: Boolean(item.disabled), reason: item.disabled || null, checked: item.active, run: item.run }
     case 'menu': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, disabled: Boolean(item.disabled), items: item.items.map((o) => ({ id: o.value, label: o.label, checked: o.value === item.value, run: () => item.onPick(o.value) })) }
-    case 'color': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, disabled: Boolean(item.disabled), items: PALETTES[item.palette ?? 'fill'].map((c) => ({ id: c.value || 'default', label: c.label, checked: (item.value ?? '') === c.value, run: () => item.onPick(c.value) })) }
+    case 'color': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, disabled: Boolean(item.disabled), items: [...(item.extras ?? []), ...PALETTES[item.palette ?? 'fill']].map((c) => ({ id: c.value || 'default', label: c.label, checked: (item.value ?? '') === c.value, run: () => item.onPick(c.value) })) }
     case 'panel': return null
   }
 }

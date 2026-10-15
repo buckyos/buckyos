@@ -8,6 +8,7 @@
 
 import { createContext, useContext, useEffect, useSyncExternalStore } from 'react'
 import { Emitter } from '../../state/emitter'
+import type { Shape } from '../canvas/connectors/anchors'
 import type { HoverAffordance, RenderContext, ToolbarItem } from './registry'
 
 export class ToolbarSink {
@@ -75,7 +76,7 @@ export function consumeIntent(key: string, intent: Intent) {
 
 // ---- what a hovered or selected Block tells the canvas overlay (§4.2): its outline, resize rule and affordances
 
-export interface BlockMeta { shape: 'rect' | 'ellipse'; aspect: 'free' | 'locked'; affordances: HoverAffordance[]; context: RenderContext }
+export interface BlockMeta { shape: Shape; aspect: 'free' | 'locked'; affordances: HoverAffordance[]; context: RenderContext }
 
 export class BlockMetaSink {
   private readonly metas = new Map<string, BlockMeta>()

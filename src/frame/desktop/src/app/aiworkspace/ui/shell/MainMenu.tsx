@@ -10,7 +10,7 @@ import { pathsOf } from '../../presentation/model'
 import { workspaceUrl } from '../../links'
 import type { WorkspaceStore } from '../../state/store'
 import { CANVAS_MODE_LABEL, CANVAS_MODES, CATALOG_GROUP_LABEL, type CanvasMode, type CatalogGroup } from '../blocks/registry'
-import { extensionEntries, registryEntries, type CatalogEntry } from '../canvas/catalog'
+import { entryId, extensionEntries, registryEntries, type CatalogEntry } from '../canvas/catalog'
 import type { CatalogTab } from '../canvas/InsertCatalog'
 import type { Camera } from '../canvas/render/camera'
 import type { MenuItem } from './popover'
@@ -32,6 +32,9 @@ export interface CanvasCommands {
   cut: Command
   paste: Command
   remove: Command
+  /** draw.io files (draw.io 导入 TODO §3): import into this canvas or new ones; export this canvas. */
+  importDrawio: Command
+  exportDrawio: Command
   /** Free Surfaces only. */
   view: { camera: Camera; fitAll: () => void; fitSelection: () => void; hasSelection: boolean } | null
   canvasTabs: SideTab[]
@@ -55,13 +58,17 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     const inGroup = entries.filter((entry) => entry.group === group || (group === 'data' && entry.group === 'sample'))
     return {
       id: `insert-group-${group}`, label: CATALOG_GROUP_LABEL[group], disabled: inGroup.length === 0 || inGroup.every((entry) => reasonOf(entry) !== null), reason: insertReason,
-      items: inGroup.map((entry) => ({ id: `insert-${entry.definition.type}`, testId: `aiws-main-insert-${entry.definition.type}`, label: `${entry.title}${entry.catalog.needs === 'none' ? '' : '…'}`,
+      items: inGroup.map((entry) => ({ id: `insert-${entryId(entry)}`, testId: `aiws-main-insert-${entryId(entry)}`, label: `${entry.title}${entry.catalog.needs === 'none' ? '' : '…'}`,
         disabled: reasonOf(entry) !== null, reason: reasonOf(entry), run: () => canvas?.insert(entry) })),
     }
   })
   insertItems.push({
     id: 'insert-group-extension', label: CATALOG_GROUP_LABEL.extension, disabled: extensions.length === 0 || insertReason !== null, reason: insertReason ?? '这个工作区还没有 Block 定义',
     items: extensions.map((entry) => ({ id: `insert-${entry.key}`, label: `${entry.title}…`, run: () => canvas?.openCatalog('extension', entry.key) })),
+  })
+  // draw.io files (draw.io 导入 TODO §3): the file picker; dropping or pasting a file does the same
+  insertItems.push({ id: 'sep-import', separator: true }, {
+    id: 'import-drawio', testId: 'aiws-menu-import-drawio', label: '导入 draw.io…', hint: '.drawio .png .svg', disabled: !canvas || canvas.importDrawio.reason !== null, reason: canvas?.importDrawio.reason ?? NOT_ON_CANVAS, run: () => canvas?.importDrawio.run(),
   })
   const side = (tab: SideTab): MenuItem => {
     const reason = canvas || tab === 'collab' || tab === 'edits' ? null : NOT_ON_CANVAS
@@ -135,7 +142,13 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     },
     { id: 'sep-4', separator: true },
     { id: 'import', label: '导入工作区包…', run: () => shell.openDialog({ kind: 'import' }) },
-    { id: 'export', label: '导出…', hint: '分享包 / 个人备份', disabled: !caps.includes('export'), reason: '没有导出权限', run: () => shell.openDialog({ kind: 'export' }) },
+    // one entry for both exports: the menu must not grow past a small window (the last items would fall outside it)
+    {
+      id: 'export-menu', label: '导出', items: [
+        { id: 'export', label: '工作区包…', hint: '分享包 / 个人备份', disabled: !caps.includes('export'), reason: '没有导出权限', run: () => shell.openDialog({ kind: 'export' }) },
+        { id: 'export-drawio', testId: 'aiws-menu-export-drawio', label: 'draw.io 文件…', hint: '当前画布', disabled: !canvas || canvas.exportDrawio.reason !== null, reason: canvas?.exportDrawio.reason ?? NOT_ON_CANVAS, run: () => canvas?.exportDrawio.run() },
+      ],
+    },
     {
       id: 'fork', label: '创建工作区副本（Fork）', disabled: !caps.includes('manage') || !live, reason: !caps.includes('manage') ? '需要管理权限' : '需要联网',
       run: () => {

@@ -6,27 +6,12 @@
  * falls back to the default); the core checks what is written. */
 
 import type { Json } from '../../../api/types'
+import type { Anchor, Binding, Control, ConnectorData, Flip, Route } from '@drawio/connector'
 import { ANCHOR_ID } from './anchors'
 
+export type { Anchor, Binding, Control, ConnectorData, Flip, LabelPos, Route } from '@drawio/connector'
+
 export const CONNECTOR_VIEW = 'connector'
-
-/** One of the target's anchors, by id (§4.3); where it sits is the target's definition's business. */
-export interface Anchor { kind: 'named'; id: string }
-export interface Binding { entity_id: string; anchor: Anchor }
-export type Route = 'straight' | 'elbow' | 'curve'
-/** A control point in the endpoint frame (§4.4): `P = S + (u·(E−S) + dx, v·(E−S) + dy)` per axis. */
-export interface Control { u: number; v: number; dx?: number; dy?: number }
-export interface LabelPos { t: number; offset: number }
-export interface Flip { h?: boolean; v?: boolean }
-
-export interface ConnectorData {
-  start: Binding | null
-  end: Binding | null
-  flip: Flip
-  route: Route
-  controls: Control[]
-  label: LabelPos
-}
 
 export const ROUTES: { value: Route; label: string }[] = [{ value: 'straight', label: '直线' }, { value: 'elbow', label: '直角' }, { value: 'curve', label: '曲线' }]
 export const MAX_CONTROLS = 64

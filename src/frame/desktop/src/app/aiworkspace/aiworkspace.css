@@ -532,10 +532,40 @@
 .aiws-frame-title.is-editing, .aiws-title-input { pointer-events: auto; }
 .aiws-root input.aiws-title-input { border: none; background: transparent; color: inherit; padding: 0; min-width: 40px; font: inherit; box-shadow: none; }
 .aiws-frame-title input.aiws-title-input { width: 160px; }
-.aiws-shape input.aiws-title-input { width: 80%; text-align: center; }
 .aiws-frame-title { position: absolute; left: -2px; top: -2px; color: #fff; font-size: 12px; padding: 1px 8px; border-radius: 6px 0 6px 0; }
-.aiws-shape { position: absolute; inset: 0; border: 2px solid; display: flex; align-items: center; justify-content: center; }
-.aiws-shape-ellipse { border-radius: 50%; }
+/* shapes (draw.io 导入 TODO §2.1): an SVG outline in the Block's box and the text over it; `auto` colours follow the theme */
+.aiws-root, .aiws-root .cp-theme-light, .aiws-root .cp-theme-dark {
+  --aiws-shape-auto-fill: var(--cp-surface-opaque, var(--cp-surface));
+  --aiws-shape-auto-stroke: var(--cp-text);
+}
+.aiws-shape { position: absolute; inset: 0; }
+.aiws-shape-art { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.aiws-shape-label { position: absolute; width: 100%; height: 100%; box-sizing: border-box; padding: 4px 6px; display: flex; flex-direction: column; line-height: 1.25; overflow-wrap: anywhere; pointer-events: none; }
+.aiws-shape-text { display: block; border-radius: 2px; }
+.aiws-shape-label > .aiws-shape-edit { pointer-events: auto; outline: none; min-height: 1.25em; cursor: text; user-select: text; -webkit-user-select: text; }
+.aiws-shape-edit:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
+.aiws-shape-picker { display: flex; flex-direction: column; gap: 8px; width: 236px; }
+.aiws-shape-picker-title { font-size: 12px; color: var(--cp-muted); margin-bottom: 4px; }
+.aiws-shape-picker-grid { display: grid; grid-template-columns: repeat(5, 40px); gap: 6px; }
+.aiws-root button.aiws-shape-picker-item { width: 40px; height: 34px; padding: 3px; display: flex; align-items: center; justify-content: center; border-radius: 6px; border-color: transparent; background: transparent; }
+.aiws-root button.aiws-shape-picker-item:hover:not(:disabled) { background: var(--aiws-pressed-bg); }
+.aiws-root button.aiws-shape-picker-item[aria-pressed='true'] { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+.aiws-shape-picker-art { position: relative; width: 34px; height: 24px; display: block; --aiws-shape-auto-fill: transparent; }
+.aiws-shape-picker-art .aiws-shape-art { --aiws-shape-auto-fill: transparent; }
+.aiws-shape-picker-text { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; }
+.aiws-shape-panel { display: flex; flex-direction: column; gap: 8px; min-width: 280px; }
+.aiws-shape-panel-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.aiws-segmented { display: inline-flex; border: 1px solid var(--cp-border); border-radius: 6px; overflow: hidden; }
+.aiws-root .aiws-segmented > button { border: none; border-radius: 0; padding: 2px 8px; font-size: 12px; background: transparent; }
+.aiws-root .aiws-segmented > button + button { border-left: 1px solid var(--cp-border); }
+.aiws-root .aiws-segmented > button[aria-pressed='true'] { background: var(--aiws-selected-bg); }
+.aiws-shape-inspector { display: flex; flex-direction: column; gap: 4px; }
+.aiws-color-field { display: inline-flex; align-items: center; gap: 4px; }
+.aiws-root .aiws-color-field > button { padding: 0 6px; font-size: 12px; }
+.aiws-root .aiws-color-field > button[aria-pressed='true'] { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+/* special swatches: no colour (a slash), the theme's colour (half surface, half ink) */
+.aiws-root .is-none.aiws-swatch, .aiws-root button.aiws-palette-swatch.is-none { background: linear-gradient(135deg, transparent 45%, #d1242f 45%, #d1242f 55%, transparent 55%), var(--cp-surface); }
+.aiws-root .is-auto.aiws-swatch, .aiws-root button.aiws-palette-swatch.is-auto { background: linear-gradient(135deg, var(--cp-surface) 50%, var(--cp-text) 50%); }
 .aiws-frame-block[data-view='frame'] { pointer-events: none; }
 /* the note is a coloured sheet; author and save state sit in its corners (§4.1) */
 .aiws-note { position: relative; box-sizing: border-box; background: #fff2cc; color: #3a3000; border-radius: 6px; padding: 8px 10px 18px; min-height: 60px; box-shadow: 0 1px 2px color-mix(in srgb, var(--cp-text) 12%, transparent); }
@@ -920,3 +950,34 @@
   background: color-mix(in srgb, var(--cp-surface-2) 55%, transparent); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Noto Sans Mono CJK SC', monospace; font-size: 13.5px; line-height: 1.7; tab-size: 4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .aiws-root textarea.aiws-md-source:focus-visible { box-shadow: none; background: color-mix(in srgb, var(--cp-surface-2) 80%, transparent); }
 .aiws-frame-block .aiws-root textarea.aiws-md-source, .aiws-frame-block textarea.aiws-md-source { min-height: 100%; }
+/* a popover of the vertical object toolbar opens beside it (the toolbar stops clipping while one is open) */
+.aiws-object-toolbar:has(.aiws-popover) { overflow: visible; }
+.aiws-chrome-left .aiws-popover.aiws-popover-side { left: calc(100% + 10px); top: 0; }
+/* a frame with a title bar (draw.io 导入 TODO §2.2: swimlanes, tables): on top, or down the left side */
+.aiws-frame.has-header { display: flex; flex-direction: column; box-sizing: border-box; overflow: hidden; }
+.aiws-frame.has-header.is-vertical { flex-direction: row; }
+.aiws-frame-header { flex: none; display: flex; align-items: center; justify-content: center; padding: 0 6px; box-sizing: border-box; border-bottom: 1px solid; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 1.2; }
+.aiws-frame.is-vertical > .aiws-frame-header { border-bottom: none; border-right: 1px solid; padding: 6px 0; }
+.aiws-frame.is-vertical > .aiws-frame-header > span, .aiws-frame.is-vertical > .aiws-frame-header > input { writing-mode: vertical-rl; text-orientation: sideways; transform: rotate(180deg); }
+.aiws-frame-header.is-editing { pointer-events: auto; }
+.aiws-frame-header input.aiws-title-input { width: 80%; text-align: center; }
+.aiws-meta-data { width: 100%; border-collapse: collapse; font-size: 12px; }
+.aiws-meta-data th { text-align: left; font-weight: 500; padding-right: 6px; white-space: nowrap; }
+.aiws-meta-data input { width: 100%; }
+.aiws-import-notes { margin: 0; padding-left: 18px; max-height: 50vh; overflow: auto; }
+.aiws-import-notes > li { margin: 4px 0; }
+.aiws-import-samples { font-size: 12px; overflow-wrap: anywhere; }
+.aiws-dialog.aiws-import-report { width: min(560px, 92vw); }
+/* the shape library (draw.io 导入 TODO §2.4) */
+.aiws-popover.aiws-library-popover { width: 344px; max-height: min(72vh, 620px); }
+.aiws-library { display: flex; flex-direction: column; gap: 8px; }
+.aiws-library-head { display: flex; gap: 6px; }
+.aiws-library-head > select { flex: none; max-width: 130px; }
+.aiws-library-head > input { flex: 1 1 auto; min-width: 0; }
+.aiws-library-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; max-height: 420px; overflow: auto; }
+.aiws-root button.aiws-library-item { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 2px; border-color: transparent; background: transparent; border-radius: 6px; min-width: 0; cursor: grab; }
+.aiws-root button.aiws-library-item:hover:not(:disabled) { background: var(--aiws-pressed-bg); }
+.aiws-library-art { position: relative; width: 40px; height: 40px; display: block; }
+.aiws-library-name { font-size: 10px; line-height: 1.2; color: var(--cp-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-library-note { font-size: 11px; }
+.aiws-surface-background { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--cp-border); display: flex; flex-direction: column; gap: 6px; }

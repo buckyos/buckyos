@@ -12,7 +12,7 @@ import { blockRegistry, type BlockDefinition } from '../../blocks/registry'
 import type { Laid } from '../layout'
 import type { Point } from '../geometry'
 import type { Rect } from '../render/camera'
-import { cleanAnchors, defaultAnchors, RECT_ANCHORS, type AnchorDef } from './anchors'
+import { cleanAnchors, defaultAnchors, RECT_ANCHORS, sameShape, type AnchorDef } from './anchors'
 import { routeConnector, storedEnds, type ConnectorGeometry, type Shape, type TargetGeom, type TargetLookup } from './geometry'
 import { CONNECTOR_VIEW, connectorData, LABEL_FONT, type ConnectorData } from './model'
 import { geometryKey } from './registry'
@@ -49,7 +49,7 @@ const decidesFromPayload = (def: BlockDefinition | undefined) => typeof def?.sha
 const staticForms = new WeakMap<BlockDefinition, TargetForm>()
 
 function sameForm(a: TargetForm | undefined, b: TargetForm): boolean {
-  return Boolean(a && a.shape === b.shape && (a.anchors === b.anchors || JSON.stringify(a.anchors) === JSON.stringify(b.anchors)))
+  return Boolean(a && sameShape(a.shape, b.shape) && (a.anchors === b.anchors || JSON.stringify(a.anchors) === JSON.stringify(b.anchors)))
 }
 
 /** The outline (rect or ellipse) and anchors a target Block declares. A definition that decides from the Cell's

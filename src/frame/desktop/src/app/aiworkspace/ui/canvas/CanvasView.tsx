@@ -9,6 +9,9 @@
  * viewport of its own. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { imageSize } from '@drawio/bytes'
+import { looksLikeDrawio } from '@drawio/file'
+import { svgShapeFromDocument } from '@drawio/svg'
 import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
@@ -16,6 +19,7 @@ import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placem
 import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { BlockBoundary } from '../blocks/BlockHost'
+import { setCellConfig } from '../blocks/ops'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
 import { EditorToolbarContext, requestIntent, ToolbarSink } from '../blocks/editorToolbar'
@@ -35,18 +39,24 @@ import { GuideOverlay } from '../../presentation/GuideOverlay'
 import { PathEditor } from '../../presentation/PathEditor'
 import { setLive } from '../../presentation/pathOps'
 import { WishPanel } from '../wish/WishPanel'
-import { registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
+import { entryId, entrySize, registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
 import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
 import { flowOrder, moveInFlow } from './flowOps'
 import { FlowSurface } from './FlowSurface'
+import { exportSurfaceDrawio, saveTextFile } from './drawioExport'
+import { classifyFile, importDrawio, importReports } from './drawioImport'
+import { ImportReportDialog } from './ImportReportDialog'
+import { MetadataForm } from './MetadataForm'
+import { libraryShapeConfig, SHAPE_DRAG_TYPE, stencilPack } from './stencilLibrary'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
-import { boundsOf, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
+import { boundsOf, groupAt, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
 import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
 import { RenderHost, type LayoutChange } from './render/RenderHost'
+import { useSurfaceConfig } from './surfaceManage'
 import { createSurfaceOps, surfacesOf } from './surfaceOps'
 import { useSurfaceLayout } from './useSurfaceLayout'
 import { BlockInspector, ContextMenu, NearToolbar, type NearAction } from './tools'
@@ -78,8 +88,13 @@ export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
   const shell = useShell()
   const mode = useCanvasMode()
   const active = shell.activeSurface
-  if (!active) return <EmptyCanvas mode={mode} />
-  return <SurfaceView key={active.entity_id} surface={active} mode={mode} focus={focus} />
+  const report = useSyncExternalStore(importReports.subscribe, importReports.snapshot)
+  return (
+    <>
+      {active ? <SurfaceView key={active.entity_id} surface={active} mode={mode} focus={focus} /> : <EmptyCanvas mode={mode} />}
+      {report && <ImportReportDialog outcome={report} onClose={() => importReports.show(null)} />}
+    </>
+  )
 }
 
 function EmptyCanvas({ mode }: { mode: CanvasMode }) {
@@ -129,6 +144,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const policy = modePolicy(mode)
   const [selection, setSelectionState] = useState<Set<string>>(new Set())
   const [editing, setEditingState] = useState<string | null>(null)
+  /** What was typed to open an editor, while it mounts. */
+  const [typeAhead] = useState(() => new Map<'typed', { id: string; text: string }>())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
   const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
@@ -143,6 +160,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
   const isFree = surface.layout?.mode === 'free'
   const { laid, index, shapeBook } = useSurfaceLayout(surfaceId)
+  /** The page settings of the Surface (draw.io 导入 TODO §2.5): its background colour. */
+  const surfaceLook = useSurfaceConfig(surfaceId)
   // the Editor of the Block being edited hands its tools to the near toolbar (标准对象的交互改进 §5.4)
   const [toolbarSink] = useState(() => new ToolbarSink())
   useSyncExternalStore(toolbarSink.subscribe, toolbarSink.snapshot)
@@ -171,6 +190,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // on a free canvas a wish opens in the right panel instead (its Block stays a card)
   const { setSide } = shell
   const setEditing = useCallback((id: string | null) => {
+    typeAhead.delete('typed')
     // a flow page has no editing state (流式页交互改进 §2.1): every editor is live, the caret goes where an intent puts it,
     // and the Block being typed in is not shown as selected
     if (!isFree) { setEditingState(null); if (id) setSelectionState(new Set()); return }
@@ -185,9 +205,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
     setEditingState(id)
     // editing is "selected + typing" (§4.4): an editor opened from an affordance selects its Block too
-    if (id) setSelectionState((current) => (current.size === 1 && current.has(id) ? current : new Set([id])))
+    // a group's backing (a swimlane's frame) is edited with its group selected
+    const owner = l?.backing ? l.parentId : id
+    if (id && owner) setSelectionState((current) => (current.size === 1 && (current.has(id) || current.has(owner)) ? current : new Set([owner])))
     if (l) camera.ensureVisible(l.bounds)
-  }, [laid, camera, isFree, setSide, store])
+  }, [laid, camera, isFree, setSide, store, typeAhead])
   const policyKey = `${policy.select}:${policy.editContent}:${policy.insert}`
   const [policySeen, setPolicySeen] = useState(policyKey)
   if (policySeen !== policyKey) {
@@ -253,15 +275,32 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- layout commits: one gesture, one commit (§8.2)
   const commitLayout = useCallback((changes: LayoutChange[]) => {
     if (!policy.layout) return
+    // a Block moved into another parent goes on top of its new siblings
+    const lastKey = new Map<string, string | undefined>()
     const ops: Operation[] = changes.map((change) => {
-      store.noteLayoutIntent(change.id, change.placement, undefined, change.parentId)
-      return change.parentId
-        ? { op: 'tree.move', entity_id: change.id, new_parent_id: change.parentId, order_key: laid.get(change.id)?.entity.order_key ?? store.core.order_key_between(undefined, undefined), placement: change.placement }
-        : { op: 'tree.place', entity_id: change.id, placement: change.placement }
+      if (!change.parentId) {
+        store.noteLayoutIntent(change.id, change.placement)
+        return { op: 'tree.place', entity_id: change.id, placement: change.placement }
+      }
+      const parent = change.parentId
+      const key = store.core.order_key_between(lastKey.has(parent) ? lastKey.get(parent) : store.outline.childrenOf(parent).at(-1)?.order_key ?? undefined, undefined)
+      lastKey.set(parent, key)
+      store.noteLayoutIntent(change.id, change.placement, key, parent)
+      return { op: 'tree.move', entity_id: change.id, new_parent_id: parent, order_key: key, placement: change.placement }
     })
+    // a group's backing (its frame or shape) keeps covering it (draw.io 导入 TODO §2.2)
+    for (const change of changes) {
+      const l = laid.get(change.id)
+      if (!l?.backingId || (Math.abs(l.rect.w - change.placement.w) < 0.5 && Math.abs(l.rect.h - change.placement.h) < 0.5)) continue
+      const placement = { x: 0, y: 0, w: change.placement.w, h: change.placement.h }
+      ops.push({ op: 'tree.place', entity_id: l.backingId, placement })
+      store.outline.patchLocal(l.backingId, { placement })
+    }
     // optimistic: the frames already moved; the stream confirms (or another client's later move overrides, D1)
     for (const change of changes) store.outline.patchLocal(change.id, { placement: change.placement, ...(change.parentId ? { parent_id: change.parentId } : {}) })
-    const label = changes.length === 1 ? `移动 ${laid.get(changes[0].id)?.entity.title ?? changes[0].id}` : `移动 ${changes.length} 个 Block`
+    const moved = changes.filter((c) => c.parentId).length
+    const label = moved > 0 ? (moved === 1 ? `移入${changes[0].parentId === surfaceId ? '画布' : '分组'}` : `移动 ${changes.length} 个 Block（${moved} 个换了所在分组）`)
+      : changes.length === 1 ? `移动 ${laid.get(changes[0].id)?.entity.title ?? changes[0].id}` : `移动 ${changes.length} 个 Block`
     void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label, operations: ops })
   }, [store, laid, policy.layout, surfaceId])
 
@@ -301,7 +340,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!definition.create || insertReasonOf(definition.type)) return false
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return false }
-    let config = request.config
+    let config = request.entry.config || request.config ? { ...(request.entry.config ?? {}), ...(request.config ?? {}) } : undefined
     if (request.file) {
       try {
         const uploaded = await store.session.uploadAsset(request.file, request.file.name)
@@ -312,9 +351,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }
     }
     const contentFolderId = surface.content_folder_id ?? ''
-    const parent = parentId ?? surfaceId
-    const size = definition.defaultSize
+    const size = entrySize(request.entry)
     const spot = world ?? centreSpot(size)
+    // placed inside a lane or another group, it joins it (draw.io 导入 TODO §2.2)
+    const parent = parentId ?? (isFree && world ? groupAt(laid, { x: spot.x + size.w / 2, y: spot.y + size.h / 2 }, surfaceId) : surfaceId)
     const placement: Placement = isFree ? relativeTo(laid, parent, { ...spot, ...size }) : { x: 0, y: 0, ...size }
     const cellId = randomId('c')
     const dataId = randomId('d')
@@ -407,12 +447,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- actions on the selection
   const selectedEntities = [...selection].map((id) => store.outline.get(id)).filter((e): e is EntityEnvelope => Boolean(e))
   const single = selectedEntities.length === 1 ? selectedEntities[0] : null
+  /** What the selection's tools, inspector and editing act on: a group with a backing (a swimlane, a container) is
+   * edited through its frame or shape (draw.io 导入 TODO §2.2). */
+  const backingId = single?.kind === 'group' ? laid.get(single.entity_id)?.backingId : undefined
+  const subject = (backingId ? store.outline.get(backingId) : undefined) ?? single
   /** The selected Blocks this user may move and remove (all of them with `structure` on the canvas). */
   const layoutable = topLevel(laid, selection).filter(canLayoutBlock)
   const selectedBlock = useBlockContext({
-    cellId: single?.entity_id ?? null, mode, view: 'canvas', selected: true,
-    editorActive: Boolean(single && editing === single.entity_id), zoom: camera.zoom,
-    onActivate: () => { if (single) setEditing(single.entity_id) }, onDeactivate: () => setEditing(null),
+    cellId: subject?.type_id === 'buckyos.cell' ? subject.entity_id : single?.entity_id ?? null, mode, view: 'canvas', selected: true,
+    editorActive: Boolean(subject && editing === subject.entity_id), zoom: camera.zoom,
+    onActivate: () => { if (subject) setEditing(subject.entity_id) }, onDeactivate: () => setEditing(null),
   })
   /** Locked objects stay where they are (§7.2): skipped by delete, moves and grouping, with a note. */
   const unlocked = (ids: string[], what: string) => {
@@ -565,7 +609,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const next = nextObject
     setNextObject(null)
     if (!next) return
-    const size = entry.definition.defaultSize
+    const size = entrySize(entry)
     const dir = axisOf(next.end.x - next.from.x, next.end.y - next.from.y)
     const spot = dir.x > 0 ? { x: next.end.x, y: next.end.y - size.h / 2 } : dir.x < 0 ? { x: next.end.x - size.w, y: next.end.y - size.h / 2 }
       : dir.y > 0 ? { x: next.end.x - size.w / 2, y: next.end.y } : { x: next.end.x - size.w / 2, y: next.end.y - size.h }
@@ -600,6 +644,101 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!source) return
     ui.annotate?.({ target: { entity_id: source.entity_id }, label: source.title ?? source.name ?? source.entity_id })
   }
+
+  // ---- draw.io import, dropped and pasted files (draw.io 导入 TODO §2.3, §2.4, §3)
+  const importBusy = useRef(false)
+  const importInput = useRef<HTMLInputElement>(null)
+  const canCreateSurfaces = store.session.info().capabilities.includes('structure')
+  const importReason = !isFree && !canCreateSurfaces ? '没有新建画布的权限' : insertReason
+  const runImport = async (input: { name: string; bytes?: Uint8Array; text?: string }, at: { x: number; y: number } | null) => {
+    if (importReason) { store.notify('info', importReason); return }
+    if (importBusy.current) { store.notify('info', '上一个导入还没有完成。'); return }
+    importBusy.current = true
+    const progress = store.notify('info', `正在导入 draw.io「${input.name}」…`)
+    const c = camera.center
+    try {
+      // an import never lands on what is already there: it goes right of the canvas's objects instead
+      const clear = (rect: { x: number; y: number; w: number; h: number }) => {
+        const all = surfaceBounds(laid)
+        const hit = [...laid.values()].some((l) => !l.isGroup && l.bounds.x < rect.x + rect.w && l.bounds.x + l.bounds.w > rect.x && l.bounds.y < rect.y + rect.h && l.bounds.y + l.bounds.h > rect.y)
+        return hit && all ? { x: Math.round(all.x + all.w + 80), y: Math.round(all.y) } : { x: rect.x, y: rect.y }
+      }
+      const outcome = await importDrawio(store, input, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y), clear })
+      if (outcome.surfaceId && outcome.surfaceId !== surfaceId) shell.selectSurface(outcome.surfaceId)
+      else if (outcome.created.length) { setSelectionState(new Set(outcome.created)); if (outcome.bounds) camera.fit(outcome.bounds, 60) }
+      const { report } = outcome
+      if (outcome.error || report.notes.size > 0) importReports.show(outcome)
+      else store.notify('info', `已导入 draw.io「${outcome.name}」：${report.pages} 页、${report.objects} 个对象、${report.lines} 条连接线，全部按原样导入。`)
+    } catch (error) {
+      store.notify('error', `导入 draw.io 失败：${describeError(error)}`)
+    } finally {
+      importBusy.current = false
+      store.dismissNotice(progress)
+    }
+  }
+  const importCommand: Command = { reason: importReason, run: () => importInput.current?.click() }
+  const exportCommand: Command = {
+    reason: !isFree ? '只有自由画布可以导出为 draw.io' : null,
+    run: () => {
+      void exportSurfaceDrawio(store, surface).then(({ xml, skipped }) => {
+        const name = (surface.title ?? surface.name ?? '画布').replace(/[\\/:*?"<>|]/g, '_')
+        saveTextFile(`${name}.drawio`, xml)
+        const lost = [...skipped.values()].reduce((a, b) => a + b, 0)
+        store.notify('info', lost ? `已导出「${name}.drawio」；${lost} 个 draw.io 没有对应图形的对象（富文本、便签、表格等）导出为带文字的框。` : `已导出「${name}.drawio」。`)
+      }, (error: unknown) => store.notify('error', `导出 draw.io 失败：${describeError(error)}`))
+    },
+  }
+  /** A picture as an image Block (its natural size, at most 480 wide or high), centred on `at` or the view. */
+  const insertImage = (file: File, bytes: Uint8Array, at: { x: number; y: number } | null) => {
+    const entry = registryEntries().find((e) => e.definition.type === 'asset' && !e.variant)
+    if (!entry) return
+    const natural = imageSize(bytes, file.type) ?? entry.definition.defaultSize
+    const nw = 'width' in natural ? natural.width : natural.w
+    const nh = 'height' in natural ? natural.height : natural.h
+    const k = Math.min(1, 480 / Math.max(nw, nh, 1))
+    const size = { w: Math.max(24, Math.round(nw * k)), h: Math.max(24, Math.round(nh * k)) }
+    void insert({ entry: { ...entry, size }, file }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
+  }
+  /** An SVG document as a recolourable SVG shape (§2.4); too large for a Block's configuration, it stays a picture. */
+  const insertSvg = (text: string, at: { x: number; y: number } | null, file?: File) => {
+    const parsed = svgShapeFromDocument(text)
+    const asPicture = () => { const f = file ?? new File([text], 'image.svg', { type: 'image/svg+xml' }); insertImage(f, new TextEncoder().encode(text), at) }
+    if (!parsed) { if (file) asPicture(); else store.notify('info', '剪贴板中的 SVG 无法解析。'); return }
+    if (parsed.svg.body.length > 48 * 1024) { store.notify('info', 'SVG 太大，作为图片插入（不能改色）。'); asPicture(); return }
+    const entry = registryEntries().find((e) => e.definition.type === 'shape' && !e.variant)
+    if (!entry) return
+    const k = Math.min(1, 320 / Math.max(parsed.w, parsed.h, 1))
+    const size = { w: Math.max(24, Math.round(parsed.w * k)), h: Math.max(24, Math.round(parsed.h * k)) }
+    const config: Record<string, Json> = { shape: 'svg', svg: parsed.svg as unknown as Json, fill: parsed.fill, stroke: parsed.stroke ?? 'none', stroke_width: 1 }
+    void insert({ entry: { ...entry, size, config } }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
+  }
+  const handleFiles = async (files: File[], at: { x: number; y: number } | null) => {
+    let spot = at
+    for (const file of files) {
+      const { kind, bytes, text } = await classifyFile(file)
+      if (kind === 'drawio') await runImport({ name: file.name, bytes }, spot)
+      else if (insertReason) { store.notify('info', insertReason); return }
+      else if (kind === 'svg' && text) insertSvg(text, spot, file)
+      else if (kind === 'image') insertImage(file, bytes, spot)
+      else store.notify('info', `不支持的文件「${file.name}」：可以放入 draw.io 文件（.drawio、.drawio.png、.drawio.svg）、SVG 或图片。`)
+      spot = spot ? { x: spot.x + 24, y: spot.y + 24 } : null
+    }
+  }
+  /** A library shape dragged from the shape library onto the canvas (§2.4). */
+  const dropLibraryShape = async (data: string, at: { x: number; y: number } | null) => {
+    const entry = registryEntries().find((e) => e.definition.type === 'shape' && !e.variant)
+    let ref: { lib?: string; name?: string } = {}
+    try { ref = JSON.parse(data) as typeof ref } catch { return }
+    const shape = ref.lib ? (await stencilPack(ref.lib))?.shapes.find((s) => s.name === ref.name) : undefined
+    if (!entry || !shape) return
+    const { size, config } = libraryShapeConfig(shape)
+    void insert({ entry: { ...entry, title: shape.title, size, config } }, at ? { x: Math.round(at.x - size.w / 2), y: Math.round(at.y - size.h / 2) } : null)
+  }
+  /** The canvas clipboard leaves a marker in the system clipboard: a later paste of it is ours, anything else is a
+   * file, a picture, an SVG or a draw.io model from outside. */
+  const copyMarker = useRef<string | null>(null)
+  const pendingCopy = useRef<string | null>(null)
+  const pendingPaste = useRef(false)
 
   // ---- clipboard (UI improvement §6.4)
   const copy: Command = {
@@ -667,20 +806,40 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }
       if (placing && event.key === 'Enter') { event.preventDefault(); void insert(placing, null); setPlacing(null); return }
       // a selected text or note takes typing at once (§4.4): the key starts the editor (single-letter shortcuts yield)
-      const typable = single && !editing && policy.editContent && (single.view_type === 'richtext' || single.view_type === 'note') && !laid.get(single.entity_id)?.locked
-      if (typable && !mod && !event.altKey && event.key.length === 1 && event.key !== ' ') { event.preventDefault(); requestIntent(single.entity_id, `type:${event.key}`); setEditing(single.entity_id); return }
+      const typable = subject && !editing && policy.editContent && (subject.view_type === 'richtext' || subject.view_type === 'note' || subject.view_type === 'shape') && !laid.get(subject.entity_id)?.locked
+      // keys typed before the editor that typing opened has mounted (its Block still loading) are passed on to it
+      const typed = typeAhead.get('typed')
+      if (editing && typed?.id === editing && !mod && !event.altKey && event.key.length === 1) {
+        event.preventDefault()
+        typeAhead.set('typed', { id: editing, text: typed.text + event.key })
+        requestIntent(editing, `type:${typed.text}${event.key}`)
+        return
+      }
+      if (typable && !mod && !event.altKey && event.key.length === 1 && event.key !== ' ') {
+        event.preventDefault()
+        requestIntent(subject.entity_id, `type:${event.key}`)
+        setEditing(subject.entity_id)
+        typeAhead.set('typed', { id: subject.entity_id, text: event.key })
+        return
+      }
       if (!mod && !event.altKey && isFree && (event.key === 'v' || event.key === 'V')) { setTool('select'); setPlacing(null); return }
       if (!mod && !event.altKey && isFree && (event.key === 'h' || event.key === 'H')) { setTool('hand'); setPlacing(null); return }
       if (!mod && !event.altKey && isFree && (event.key === 'l' || event.key === 'L') && insertReason === null) { setTool('connector'); setPlacing(null); return }
       if (mod && !event.altKey && !event.shiftKey) {
         const key = event.key.toLowerCase()
-        if (key === 'c' && copy.reason === null) { event.preventDefault(); copy.run(); return }
-        if (key === 'x' && cut.reason === null) { event.preventDefault(); cut.run(); return }
-        if (key === 'v' && paste.reason === null) { event.preventDefault(); paste.run(); return }
+        // copy and cut let the browser's copy event run (it writes the marker); a paste waits for the paste event,
+        // which brings outside content, and falls back to the canvas clipboard when there is none
+        if (key === 'c' && copy.reason === null) { pendingCopy.current = `aiws-clipboard:${randomId()}`; copy.run(); return }
+        if (key === 'x' && cut.reason === null) { pendingCopy.current = `aiws-clipboard:${randomId()}`; cut.run(); return }
+        if (key === 'v') {
+          pendingPaste.current = paste.reason === null
+          window.setTimeout(() => { if (pendingPaste.current) { pendingPaste.current = false; paste.run() } }, 0)
+          return
+        }
       }
       if (!policy.select) return
       if ((event.key === 'Delete' || event.key === 'Backspace') && remove.reason === null) { event.preventDefault(); remove.run(); return }
-      if (event.key === 'Enter' && single && policy.editContent && !editing) { event.preventDefault(); requestIntent(single.entity_id, 'end'); setEditing(single.entity_id); return }
+      if (event.key === 'Enter' && subject && policy.editContent && !editing) { event.preventDefault(); requestIntent(subject.entity_id, 'end'); setEditing(subject.entity_id); return }
       // a flow page (流式页交互改进 §2.4): ↑ ↓ walk the Blocks, Ctrl+Shift+↑ ↓ move the selected one
       if (!isFree && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && single) {
         event.preventDefault()
@@ -707,6 +866,43 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+  useEffect(() => {
+    const outside = (target: EventTarget | null) => {
+      const el = target instanceof Element ? target : null
+      if (el?.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"], [data-role="editor"], .aiws-panel, .aiws-popover, .aiws-dialog, .aiws-menu, .aiws-side, .aiws-near')) return true
+      return !hostRef.current?.contains(el) && el !== document.body
+    }
+    const onCopy = (event: ClipboardEvent) => {
+      const marker = pendingCopy.current
+      pendingCopy.current = null
+      if (!marker || outside(event.target) || !event.clipboardData) return
+      event.clipboardData.setData('text/plain', marker)
+      event.preventDefault()
+      copyMarker.current = marker
+    }
+    const onPaste = (event: ClipboardEvent) => {
+      if (outside(event.target) || !event.clipboardData) return
+      const data = event.clipboardData
+      const files = [...data.files]
+      const text = data.getData('text/plain')
+      const svg = /^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(text)
+      const foreign = files.length > 0 || (text !== '' && text !== copyMarker.current && (looksLikeDrawio(text) || svg))
+      if (!foreign) {
+        if (pendingPaste.current) { pendingPaste.current = false; event.preventDefault(); paste.run() }
+        return
+      }
+      event.preventDefault()
+      pendingPaste.current = false
+      if (files.length > 0) void handleFiles(files, null)
+      else if (looksLikeDrawio(text)) void runImport({ name: '粘贴的 draw.io 图', text }, null)
+      else if (insertReason) store.notify('info', insertReason)
+      else insertSvg(text, null)
+    }
+    window.addEventListener('copy', onCopy)
+    window.addEventListener('cut', onCopy)
+    window.addEventListener('paste', onPaste)
+    return () => { window.removeEventListener('copy', onCopy); window.removeEventListener('cut', onCopy); window.removeEventListener('paste', onPaste) }
+  })
 
   // ---- near toolbar (§9.2; 标准对象的交互改进 §5): the Editor's tools while editing → the type's tools → common
   // tools (annotate, lock, AI) → "more" (the same list as the context menu)
@@ -722,7 +918,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   if (single && policy.select) {
     const context = selectedBlock.context
     const definition = selectedBlock.resolution?.ok ? context?.definition : undefined
-    const source = single.source_id ? store.outline.get(single.source_id) : undefined
+    const source = subject?.source_id ? store.outline.get(subject.source_id) : undefined
     if (definition?.actions && context && !singleLocked) {
       for (const action of definition.actions) {
         if (!action.modes.includes(mode) || (action.views && !action.views.includes('canvas'))) continue
@@ -771,7 +967,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     moreActions.push({ id: 'delete', label: '删除', key: 'Delete', run: () => { void deleteSelection() } })
   }
   // a locked object offers "unlock" and reading only (§4.3): no type tools, nothing that moves or removes it
-  const editorItems = single && editing === single.entity_id ? toolbarSink.items() : []
+  const editorItems = subject && editing === subject.entity_id ? toolbarSink.items() : []
   const nearItems: ToolbarItem[] = []
   for (const part of [editorItems, typeItems, commonItems]) {
     if (part.length === 0) continue
@@ -786,7 +982,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     ...moreActions.map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })),
   ]
   const menuItems = menu ? (menu.blockId ? blockMenu : [
-    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { if (entry.definition.type === 'note') addNote(menu.world, menu.parentId); else void insert({ entry }, menu.world, menu.parentId) } })) : []),
+    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entryId(entry)}`, label: `插入${entry.title}`, run: () => { if (entry.definition.type === 'note') addNote(menu.world, menu.parentId); else void insert({ entry }, menu.world, menu.parentId) } })) : []),
     ...(insertReason !== null && noteReason === null && (isFree || policy.insert) ? [{ id: 'insert-note', label: policy.insert ? '插入便签' : '添加便签', run: () => addNote(menu.world, menu.parentId) }] : []),
     ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => insertGroup(menu.parentId ?? surfaceId) }] : []),
     ...(insertReason === null ? [
@@ -806,6 +1002,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     },
     openCatalog: (tab, key) => openCatalog(tab, key),
     copy, cut, paste, remove,
+    importDrawio: importCommand,
+    exportDrawio: exportCommand,
     view: isFree ? { camera, fitAll, fitSelection, hasSelection: selection.size > 0 } : null,
     canvasTabs: CANVAS_SIDE_TABS,
   }
@@ -822,7 +1020,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   const sideContent = (tab: SideTab) => {
     switch (tab) {
-      case 'inspector': return single ? <SelectionInspector cell={single} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个对象查看属性。</div>
+      case 'inspector': return subject ? <SelectionInspector cell={subject} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个对象查看属性。</div>
       case 'relations': return single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">选中一个数据对象查看它的引用与依赖。</div>
       case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} noteDraft={noteDraft ? { save: saveNoteDraft, cancel: () => setNoteDraft(null) } : null} />
       case 'collab': return <PermissionsPanel />
@@ -841,17 +1039,37 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     <BudgetContext.Provider value={budget}>
       <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
         <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
-          <div ref={mainRef} className={`aiws-canvas-main${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}>
+          <div ref={mainRef} className={`aiws-canvas-main${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}
+            onDragOver={(event) => {
+              const types = event.dataTransfer.types
+              if ((types.includes('Files') && (insertReason === null || importReason === null)) || (types.includes(SHAPE_DRAG_TYPE) && insertReason === null)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }
+            }}
+            onDrop={(event) => {
+              const r = mainRef.current?.getBoundingClientRect()
+              const at = isFree && r ? camera.toWorld(event.clientX - r.left, event.clientY - r.top) : null
+              const libraryDrop = event.dataTransfer.getData(SHAPE_DRAG_TYPE)
+              if (libraryDrop) { event.preventDefault(); void dropLibraryShape(libraryDrop, at); return }
+              const files = [...event.dataTransfer.files]
+              if (files.length === 0) return
+              event.preventDefault()
+              void handleFiles(files, at)
+            }}>
             {isFree ? (
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
                 canLayout={canLayoutBlock} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
-                tool={tool} placing={placing ? { ...placing.entry.definition.defaultSize, label: placingTitle } : null}
-                onPlace={(world) => { const request = placing; setPlacing(null); if (request) void insert(request, world) }}
+                tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
+                onPlace={(world) => {
+                  const request = placing
+                  setPlacing(null)
+                  // the tool button keeps no focus: typing goes to the placed object (标准对象的交互改进 §4.4)
+                  if (document.activeElement instanceof HTMLElement && document.activeElement.closest('.aiws-panel')) document.activeElement.blur()
+                  if (request) void insert(request, world)
+                }}
                 onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
                 cutIds={cutIds} renderNear={(bbox) => <NearToolbar bbox={bbox} items={nearItems} more={moreActions} viewport={viewportSize} insets={insets} />}
-                formOf={(id) => shapeBook.get(store.outline.get(id))} onConnectorCreate={policy.insert && insertReason === null ? createConnector : undefined} onConnectorChange={changeConnector} />
+                background={surfaceLook.background} formOf={(id) => shapeBook.get(store.outline.get(id))} onConnectorCreate={policy.insert && insertReason === null ? createConnector : undefined} onConnectorChange={changeConnector} />
               </OpenWishContext.Provider>
               </EditorToolbarContext.Provider>
             ) : (
@@ -887,8 +1105,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               </div>
             )}
             {nextObject && <ContextMenu at={nextObject.at} onClose={() => setNextObject(null)}
-              items={NEXT_OBJECTS.flatMap((type) => { const entry = registryEntries().find((e) => e.definition.type === type); return entry ? [{ id: `next-${type}`, label: entry.title, run: () => insertAtLineEnd(entry) }] : [] })} />}
+              items={NEXT_OBJECTS.flatMap((type) => { const entry = registryEntries().find((e) => e.definition.type === type && !e.variant); return entry ? [{ id: `next-${type}`, label: entry.title, run: () => insertAtLineEnd(entry) }] : [] })} />}
             <StatusDock />
+            <input ref={importInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".drawio,.xml,.png,.svg,application/xml,text/xml,image/png,image/svg+xml" data-testid="aiws-import-drawio-file"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void file.arrayBuffer().then((buffer) => runImport({ name: file.name, bytes: new Uint8Array(buffer) }, null)) }} />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)
@@ -899,7 +1119,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               }
             }} />}
             {catalog && (
-              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree} onClose={() => setCatalog(null)} onInsert={(request, how) => {
+              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree} onClose={() => setCatalog(null)} onImport={importReason === null ? () => { setCatalog(null); importCommand.run() } : undefined} onInsert={(request, how) => {
                 const at = catalog.world
                 const parentId = catalog.parentId
                 setCatalog(null)
@@ -956,6 +1176,9 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
               : <input type={field.kind === 'color' ? 'color' : field.kind === 'number' ? 'number' : 'text'} value={String(payload.config?.[field.key] ?? (field.kind === 'color' ? '#4f8df7' : ''))} disabled={readOnly} onChange={(event) => setConfig(field.key, field.kind === 'number' ? Number(event.target.value) : event.target.value)} />}
         </label>
       ))}
+      {payload && cell.type_id === 'buckyos.cell' && (
+        <MetadataForm config={payload.config ?? {}} readOnly={readOnly} onChange={(patch, label) => { if (!readOnly && context) setCellConfig(context, store, patch, label) }} />
+      )}
       {Inspector && context && (
         <BlockBoundary resetKey={`${cell.entity_id}:${mode}:${live.content_rev}:${registryVersion}`} fallback={(error, reset) => (
           <div className="aiws-block-fallback" data-testid="aiws-inspector-error"><div className="aiws-error" role="alert">属性面板出错：{describeError(error)}</div><button type="button" onClick={reset}>重试</button></div>

@@ -15,7 +15,7 @@ import { z } from 'zod'
 import type { CapturedAnchor } from '../../anchors/registry'
 import type { BlockDefPayload, Capability, CellPayload, EntityEnvelope, Json, Operation, Placement } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
-import type { AnchorDef } from '../canvas/connectors/anchors'
+import type { AnchorDef, Shape } from '../canvas/connectors/anchors'
 import { HTML_API_VERSION } from '../extensions/htmlRuntime'
 
 /** `show` is not a sub-mode the user picks: it is the stage of a show (第三期规划 §10.1). */
@@ -67,7 +67,8 @@ export interface RenderContext {
 export type ToolbarItem =
   | { kind: 'button'; id: string; /** Without an icon the label is shown (an extension's actions until it declares tools). */ icon?: LucideIcon; label: string; key?: string; active?: boolean; disabled?: string | false; ai?: boolean; run: () => void }
   | { kind: 'menu'; id: string; icon?: LucideIcon; label: string; value?: string; items: { value: string; label: string; icon?: LucideIcon }[]; onPick: (value: string) => void; disabled?: string | false }
-  | { kind: 'color'; id: string; label: string; value: string | undefined; palette?: 'fill' | 'ink'; onPick: (hex: string) => void; disabled?: string | false }
+  /** `extras`: special values offered before the palette, e.g. `none` (no fill) or `auto` (the theme's colour). */
+  | { kind: 'color'; id: string; label: string; value: string | undefined; palette?: 'fill' | 'ink'; extras?: { value: string; label: string }[]; onPick: (hex: string) => void; disabled?: string | false }
   | { kind: 'panel'; id: string; icon: LucideIcon; label: string; active?: boolean; disabled?: string | false; render: (close: () => void) => ReactNode }
   | { kind: 'separator'; id: string }
 
@@ -118,6 +119,22 @@ export interface CatalogInfo {
   editAfterInsert?: boolean
   /** Offered directly on the object toolbar. */
   standard?: boolean
+  /** Further entries of the same definition with preset configuration (a shape's "text"). */
+  variants?: CatalogVariant[]
+}
+
+/** A catalog entry of a definition with a preset `config` (and its own size, group, text). */
+export interface CatalogVariant {
+  id: string
+  title: string
+  group: CatalogGroup
+  description: string
+  config: Record<string, Json>
+  size?: { w: number; h: number }
+  editAfterInsert?: boolean
+  standard?: boolean
+  /** Choices the insert catalog offers before inserting (merged into `config`). */
+  options?: { key: string; label: string; choices: { value: string; label: string }[] }[]
 }
 
 export interface BlockDefinition {
@@ -157,7 +174,7 @@ export interface BlockDefinition {
   chrome?: 'none' | 'clip'
   /** The outline the hover state follows and connector ends meet (连接线实现方案 §4.3); a function reads the
    * Cell's payload only, so the canvas can resolve a target that is not mounted. */
-  shape?: 'rect' | 'ellipse' | ((payload: CellPayload) => 'rect' | 'ellipse')
+  shape?: Shape | ((payload: CellPayload) => Shape)
   /** The anchors line ends attach to (连接线实现方案 §4.3); without it, the outline's 16 compass anchors. Ids must
    * stay stable: a line stores the id. A function reads the Cell's payload only, like `shape`. */
   anchors?: readonly AnchorDef[] | ((payload: CellPayload) => readonly AnchorDef[])

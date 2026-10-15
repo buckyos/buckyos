@@ -1,0 +1,368 @@
+[
+ {
+  "name": "审批流程",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 570,
+   "h": 580
+  },
+  "background": null,
+  "pageSize": {
+   "w": 827,
+   "h": 1169
+  },
+  "items": [
+   {
+    "key": "start",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 10,
+     "y": 0,
+     "w": 120,
+     "h": 60
+    },
+    "title": "开始",
+    "shape": "ellipse",
+    "text": "开始",
+    "fill": "#d5e8d4",
+    "stroke": "#82b366"
+   },
+   {
+    "key": "submit",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 10,
+     "y": 110,
+     "w": 120,
+     "h": 60
+    },
+    "title": "提交申请",
+    "shape": "rect",
+    "text": "提交申请",
+    "fill": "#dae8fc",
+    "stroke": "#6c8ebf"
+   },
+   {
+    "key": "check",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 220,
+     "w": 140,
+     "h": 90
+    },
+    "title": "金额 > 1 万？",
+    "shape": "diamond",
+    "text": "金额 > 1 万？",
+    "fill": "#fff2cc",
+    "stroke": "#d6b656"
+   },
+   {
+    "key": "manager",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 230,
+     "y": 235,
+     "w": 120,
+     "h": 60
+    },
+    "title": "经理审批",
+    "shape": "rect",
+    "text": "经理审批",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "archive",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 40,
+     "y": 370,
+     "w": 60,
+     "h": 80
+    },
+    "title": "归档",
+    "shape": "cylinder",
+    "text": "归档",
+    "fill": "#f5f5f5",
+    "stroke": "#666666"
+   },
+   {
+    "key": "report",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 230,
+     "y": 370,
+     "w": 120,
+     "h": 80
+    },
+    "title": "审批单",
+    "shape": "document",
+    "text": "审批单",
+    "fill": "#ffe6cc",
+    "stroke": "#d79b00"
+   },
+   {
+    "key": "end",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 10,
+     "y": 520,
+     "w": 120,
+     "h": 60
+    },
+    "title": "结束",
+    "shape": "ellipse",
+    "text": "结束",
+    "fill": "#f8cecc",
+    "stroke": "#b85450"
+   },
+   {
+    "key": "note",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 400,
+     "y": 230,
+     "w": 170,
+     "h": 40
+    },
+    "title": "超过 1 万元需要经理签字，",
+    "shape": "text",
+    "text": "超过 1 万元需要经理签字，\n其余直接归档。",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "e1",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 70,
+     "y": 60,
+     "w": 0,
+     "h": 50
+    },
+    "start": {
+     "key": "start",
+     "anchor": "s"
+    },
+    "end": {
+     "key": "submit",
+     "anchor": "n"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e2",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 70,
+     "y": 170,
+     "w": 0,
+     "h": 50
+    },
+    "start": {
+     "key": "submit",
+     "anchor": "s"
+    },
+    "end": {
+     "key": "check",
+     "anchor": "n"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e3",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 140,
+     "y": 265,
+     "w": 90,
+     "h": 0
+    },
+    "title": "是",
+    "start": {
+     "key": "check",
+     "anchor": "e"
+    },
+    "end": {
+     "key": "manager",
+     "anchor": "w"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": {
+     "t": 0.5,
+     "offset": 0
+    },
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e4",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 70,
+     "y": 310,
+     "w": 0,
+     "h": 60
+    },
+    "title": "否",
+    "start": {
+     "key": "check",
+     "anchor": "s"
+    },
+    "end": {
+     "key": "archive",
+     "anchor": "n"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": {
+     "t": 0.5,
+     "offset": 0
+    },
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e5",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 290,
+     "y": 295,
+     "w": 0,
+     "h": 75
+    },
+    "start": {
+     "key": "manager",
+     "anchor": "s"
+    },
+    "end": {
+     "key": "report",
+     "anchor": "n"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e6",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 130,
+     "y": 438,
+     "w": 160,
+     "h": 112
+    },
+    "start": {
+     "key": "report",
+     "anchor": "s"
+    },
+    "end": {
+     "key": "end",
+     "anchor": "e"
+    },
+    "route": "elbow",
+    "controls": [
+     {
+      "u": 0,
+      "v": 1
+     }
+    ],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e7",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 70,
+     "y": 450,
+     "w": 0,
+     "h": 70
+    },
+    "start": {
+     "key": "archive",
+     "anchor": "s"
+    },
+    "end": {
+     "key": "end",
+     "anchor": "n"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle"
+    ]
+   },
+   {
+    "key": "e8",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 350,
+     "y": 260,
+     "w": 50,
+     "h": 5
+    },
+    "start": {
+     "key": "note",
+     "anchor": "wsw"
+    },
+    "end": {
+     "key": "manager",
+     "anchor": "e"
+    },
+    "route": "straight",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "none"
+    ]
+   }
+  ],
+  "report": []
+ }
+]

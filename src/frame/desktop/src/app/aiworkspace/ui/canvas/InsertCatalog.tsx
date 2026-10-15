@@ -4,21 +4,26 @@
  * "Existing data" only creates a view: the new Block shares the data, its view configuration is its own. */
 
 import { useCallback, useRef, useState, useSyncExternalStore } from 'react'
-import type { BlockDefPayload, EntityEnvelope } from '../../api/types'
+import type { BlockDefPayload, EntityEnvelope, Json } from '../../api/types'
 import type { ReadOk } from '../../api/session'
 import { useLoad, useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { blockRegistry, CATALOG_GROUP_LABEL, type CatalogGroup } from '../blocks/registry'
 import { defaultRendererFor } from '../blocks/ops'
 import { useOverlayMounted } from '../shell/popover'
-import { allEntries, dataFor, type CatalogEntry, type InsertRequest } from './catalog'
+import { ShapePicker } from '../blocks/shapeBlock'
+import { svgShapeFromDocument } from '@drawio/svg'
+import type { ShapeKind } from '@drawio/shapes'
+import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type InsertRequest } from './catalog'
 
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
 const TAB_LABEL: Record<CatalogTab, string> = { all: '全部', ...CATALOG_GROUP_LABEL, existing: '已有数据' }
 
-export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert }: {
+export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport }: {
   initialTab?: CatalogTab
   initialKey?: string
+  /** "Import draw.io…" (draw.io 导入 TODO §3), when importing is possible here. */
+  onImport?: () => void
   /** A free Surface: the entry can also be placed by a click on the canvas. */
   canPlace: boolean
   onClose: () => void
@@ -45,6 +50,7 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
           <b>插入对象</b>
           <input className="aiws-catalog-search" type="search" aria-label="搜索对象" placeholder="搜索对象…" autoFocus value={query} data-testid="aiws-catalog-search"
             onChange={(event) => { setQuery(event.target.value); if (tab === 'existing') setTab('all') }} />
+          {onImport && <button type="button" className="aiws-link" data-testid="aiws-catalog-import-drawio" onClick={onImport}>导入 draw.io…</button>}
           <button type="button" className="aiws-link" onClick={onClose}>关闭</button>
         </div>
         <div className="aiws-catalog-body">
@@ -82,6 +88,10 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
   const [title, setTitle] = useState('')
   const [sourceId, setSourceId] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [kind, setKind] = useState<ShapeKind>('rect')
+  const [choices, setChoices] = useState<Record<string, string>>({})
+  const [svgText, setSvgText] = useState('')
+  const svg = entryId(entry) === 'shape-svg' && svgText.trim() ? svgShapeFromDocument(svgText) : null
   const pinned = useUserState<string[]>('ui:pinned-defs') ?? []
   const defId = entry.defEntity?.entity_id ?? ''
   const loadDef = useCallback(async () => (defId ? store.readBatched<{ payload: BlockDefPayload }>(defId) : null), [store, defId])
@@ -91,10 +101,11 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
   const optionalData = entry.defEntity !== undefined && def?.allow_no_source === true && accepts.length > 0
   const data = needsData || optionalData ? dataFor(store, accepts) : []
   const needsFile = entry.catalog.needs === 'file'
-  const ready = (!needsData || sourceId !== '') && (!needsFile || file !== null) && (!entry.defEntity || def !== undefined)
-  const request = (): InsertRequest => ({
+  const ready = (!needsData || sourceId !== '') && (!needsFile || file !== null) && (!entry.defEntity || def !== undefined) && (entryId(entry) !== 'shape-svg' || (svg !== null && svg.svg.body.length <= 48 * 1024))
+  const svgSize = svg ? (() => { const k = Math.min(1, 320 / Math.max(svg.w, svg.h, 1)); return { w: Math.max(24, Math.round(svg.w * k)), h: Math.max(24, Math.round(svg.h * k)) } })() : null
+  const request = (): InsertRequest => svg && svgSize ? ({ entry: { ...entry, size: svgSize }, title: title.trim() || undefined, config: { shape: 'svg', svg: svg.svg as unknown as Json, fill: svg.fill, stroke: svg.stroke ?? 'none', stroke_width: 1 } }) : ({
     entry, title: title.trim() || undefined, sourceId: sourceId || undefined, file: file ?? undefined,
-    config: entry.defEntity ? { def_id: entry.defEntity.entity_id } : undefined,
+    config: entry.defEntity ? { def_id: entry.defEntity.entity_id } : entryId(entry) === 'shape' ? { shape: kind } : Object.keys(choices).length ? choices : undefined,
   })
   const missing = needsData && sourceId === '' ? '先选择要显示的数据' : needsFile && !file ? '先选择文件' : null
   return (
@@ -105,8 +116,24 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
         <dt>类型</dt><dd><code>{entry.definition.type}</code> v{entry.defEntity ? (def?.version ?? '…') : entry.definition.version}</dd>
         {entry.defEntity && <><dt>定义</dt><dd>{entry.defEntity.title ?? entry.defEntity.name}（{entry.defEntity.def_kind === 'html' ? 'HTML' : '声明式'}）</dd></>}
         {accepts.length > 0 && <><dt>支持的数据</dt><dd>{accepts.map((t) => t.replace('buckyos.', '')).join('、')}</dd></>}
-        <dt>默认尺寸</dt><dd>{(def?.default_size ?? entry.definition.defaultSize).w} × {(def?.default_size ?? entry.definition.defaultSize).h}</dd>
+        <dt>默认尺寸</dt><dd>{(def?.default_size ?? entrySize(entry)).w} × {(def?.default_size ?? entrySize(entry)).h}</dd>
       </dl>
+      {entryId(entry) === 'shape' && <ShapePicker value={kind} onPick={setKind} />}
+      {entryId(entry) === 'shape-svg' && (
+        <>
+          <label className="aiws-field">SVG 代码<textarea rows={5} value={svgText} placeholder="<svg …>…</svg>" data-testid="aiws-catalog-svg-text" onChange={(e) => setSvgText(e.target.value)} /></label>
+          <label className="aiws-field">或选择 .svg 文件<input type="file" accept=".svg,image/svg+xml" data-testid="aiws-catalog-svg-file" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setSvgText) }} /></label>
+          {svgText.trim() && !svg && <div className="aiws-warning">这不是可用的 SVG。</div>}
+          {svg && svg.svg.body.length > 48 * 1024 && <div className="aiws-warning">SVG 太大（超过 48 KiB），请改用“图片 / 附件”插入。</div>}
+        </>
+      )}
+      {(entry.options ?? []).map((option) => (
+        <label key={option.key} className="aiws-field">{option.label}
+          <select aria-label={option.label} data-testid={`aiws-catalog-option-${option.key}`} value={choices[option.key] ?? String(entry.config?.[option.key] ?? '')} onChange={(event) => setChoices({ ...choices, [option.key]: event.target.value })}>
+            {option.choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </label>
+      ))}
       {entry.catalog.needs === 'none' && !entry.defEntity && (
         <label className="aiws-field">标题（可留空）<input aria-label="对象标题" value={title} data-testid="aiws-catalog-title" onChange={(event) => setTitle(event.target.value)} /></label>
       )}

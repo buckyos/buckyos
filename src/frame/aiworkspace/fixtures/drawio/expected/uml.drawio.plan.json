@@ -1,0 +1,383 @@
+[
+ {
+  "name": "类图",
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "w": 640,
+   "h": 240
+  },
+  "background": null,
+  "pageSize": {
+   "w": 827,
+   "h": 1169
+  },
+  "items": [
+   {
+    "key": "animal",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 200,
+     "y": 0,
+     "w": 160,
+     "h": 86
+    }
+   },
+   {
+    "key": "animal~frame",
+    "parent": "animal",
+    "type": "frame",
+    "rect": {
+     "x": 200,
+     "y": 0,
+     "w": 160,
+     "h": 86
+    },
+    "title": "Animal",
+    "header": 26,
+    "orientation": "horizontal"
+   },
+   {
+    "key": "animal-f",
+    "parent": "animal",
+    "type": "shape",
+    "rect": {
+     "x": 200,
+     "y": 26,
+     "w": 160,
+     "h": 26
+    },
+    "title": "+ name: String",
+    "shape": "text",
+    "text": "+ name: String",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "animal-l",
+    "parent": "animal",
+    "type": "shape",
+    "rect": {
+     "x": 200,
+     "y": 52,
+     "w": 160,
+     "h": 8
+    },
+    "shape": "line",
+    "fill": "none",
+    "stroke": "auto"
+   },
+   {
+    "key": "animal-m",
+    "parent": "animal",
+    "type": "shape",
+    "rect": {
+     "x": 200,
+     "y": 60,
+     "w": 160,
+     "h": 26
+    },
+    "title": "+ speak(): void",
+    "shape": "text",
+    "text": "+ speak(): void",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "dog",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 80,
+     "y": 180,
+     "w": 160,
+     "h": 60
+    }
+   },
+   {
+    "key": "dog~frame",
+    "parent": "dog",
+    "type": "frame",
+    "rect": {
+     "x": 80,
+     "y": 180,
+     "w": 160,
+     "h": 60
+    },
+    "title": "Dog",
+    "header": 26,
+    "orientation": "horizontal"
+   },
+   {
+    "key": "dog-m",
+    "parent": "dog",
+    "type": "shape",
+    "rect": {
+     "x": 80,
+     "y": 206,
+     "w": 160,
+     "h": 26
+    },
+    "title": "+ fetch(): void",
+    "shape": "text",
+    "text": "+ fetch(): void",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "cat",
+    "parent": null,
+    "type": "group",
+    "rect": {
+     "x": 320,
+     "y": 180,
+     "w": 160,
+     "h": 60
+    }
+   },
+   {
+    "key": "cat~frame",
+    "parent": "cat",
+    "type": "frame",
+    "rect": {
+     "x": 320,
+     "y": 180,
+     "w": 160,
+     "h": 60
+    },
+    "title": "Cat",
+    "header": 26,
+    "orientation": "horizontal"
+   },
+   {
+    "key": "cat-m",
+    "parent": "cat",
+    "type": "shape",
+    "rect": {
+     "x": 320,
+     "y": 206,
+     "w": 160,
+     "h": 26
+    },
+    "title": "+ purr(): void",
+    "shape": "text",
+    "text": "+ purr(): void",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "inh1",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 200,
+     "y": 86,
+     "w": 40,
+     "h": 94
+    },
+    "title": "Extends",
+    "start": {
+     "key": "dog",
+     "anchor": "nne"
+    },
+    "end": {
+     "key": "animal",
+     "anchor": "ssw"
+    },
+    "route": "straight",
+    "controls": [],
+    "label": {
+     "t": 0.5,
+     "offset": 0
+    },
+    "caps": [
+     "none",
+     "triangle_outline"
+    ]
+   },
+   {
+    "key": "inh2",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 280,
+     "y": 86,
+     "w": 120,
+     "h": 94
+    },
+    "start": {
+     "key": "cat",
+     "anchor": "n"
+    },
+    "end": {
+     "key": "animal",
+     "anchor": "s"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "triangle_outline"
+    ]
+   },
+   {
+    "key": "user",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 0,
+     "y": 0,
+     "w": 30,
+     "h": 60
+    },
+    "title": "用户",
+    "shape": "svg",
+    "text": "用户",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "comp",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 520,
+     "y": 0,
+     "w": 120,
+     "h": 60
+    },
+    "title": "Zoo",
+    "shape": "svg",
+    "text": "Zoo",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "memo",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 520,
+     "y": 120,
+     "w": 120,
+     "h": 60
+    },
+    "title": "所有动物都会叫",
+    "shape": "note",
+    "text": "所有动物都会叫",
+    "fill": "auto",
+    "stroke": "auto"
+   },
+   {
+    "key": "dep",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 30,
+     "y": 30,
+     "w": 170,
+     "h": 13
+    },
+    "start": {
+     "key": "user",
+     "anchor": "e"
+    },
+    "end": {
+     "key": "animal",
+     "anchor": "w"
+    },
+    "route": "straight",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "arrow"
+    ]
+   },
+   {
+    "key": "assoc",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 360,
+     "y": 30,
+     "w": 160,
+     "h": 13
+    },
+    "title": "1",
+    "start": {
+     "key": "comp",
+     "anchor": "w"
+    },
+    "end": {
+     "key": "animal",
+     "anchor": "e"
+    },
+    "route": "elbow",
+    "controls": [],
+    "label": {
+     "t": 0,
+     "offset": 3
+    },
+    "caps": [
+     "diamond",
+     "arrow"
+    ]
+   },
+   {
+    "key": "assoc-l",
+    "parent": null,
+    "type": "shape",
+    "rect": {
+     "x": 342.5,
+     "y": 33.5,
+     "w": 35,
+     "h": 19
+    },
+    "title": "0..*",
+    "shape": "text",
+    "text": "0..*",
+    "fill": "none",
+    "stroke": "none"
+   },
+   {
+    "key": "memo-l",
+    "parent": null,
+    "type": "connector",
+    "rect": {
+     "x": 320,
+     "y": 86,
+     "w": 200,
+     "h": 49
+    },
+    "start": {
+     "key": "memo",
+     "anchor": "wnw"
+    },
+    "end": {
+     "key": "animal-m",
+     "anchor": "sse"
+    },
+    "route": "straight",
+    "controls": [],
+    "label": null,
+    "caps": [
+     "none",
+     "none"
+    ]
+   }
+  ],
+  "report": [
+   {
+    "kind": "cap_size",
+    "count": 4
+   },
+   {
+    "kind": "extra_labels",
+    "count": 1
+   }
+  ]
+ }
+]
