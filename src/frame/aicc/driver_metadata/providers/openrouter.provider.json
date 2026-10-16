@@ -2,12 +2,33 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 2,
+  "revision_seq": 9,
   "provider_profile_id": "openrouter",
   "reported_cost": {"currency": "USD", "semantics": "total_request_cost"},
+  "model_driver_overrides": {
+    "anthropic/claude-fable-5.1": "claude/claude-fable-5-1",
+    "anthropic/claude-opus-5.5": "claude/claude-opus-5-5",
+    "anthropic/claude-sonnet-5.5": "claude/claude-sonnet-5-5",
+    "anthropic/claude-opus-4.8": "claude/claude-opus-4-8",
+    "anthropic/claude-opus-4.7": "claude/claude-opus-4-7",
+    "anthropic/claude-opus-4.6": "claude/claude-opus-4-6",
+    "anthropic/claude-opus-4.5": "claude/claude-opus-4-5-20251101",
+    "anthropic/claude-sonnet-4.6": "claude/claude-sonnet-4-6",
+    "anthropic/claude-sonnet-4.5": "claude/claude-sonnet-4-5-20250929",
+    "anthropic/claude-haiku-5.5": "claude/claude-haiku-5-5",
+    "anthropic/claude-haiku-4.5": "claude/claude-haiku-4-5-20251001",
+    "minimax/hailuo-2.3": "minimax/MiniMax-Hailuo-2.3",
+    "qwen/qwen3.8-max-0902": "qwen/qwen3.8-max"
+  },
   "models": [
     {"id": "typesafe/jev-1.13", "operations": {"decision": "decisions.create"}, "capability_limits": {"max_context_tokens": 32000, "decision.max_input_bytes": 32000, "decision.max_state_question_bytes": 32000}},
-    {"id": "~typesafe/jev-latest", "operations": {"decision": "decisions.create"}, "capability_limits": {"max_context_tokens": 32000, "decision.max_input_bytes": 32000, "decision.max_state_question_bytes": 32000}}
+    {"id": "google/gemini-3.8-flash-lite-tts", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "set": {"openrouter_voice": "Kore"}}]},
+    {"id": "google/gemini-3.1-flash-tts-preview", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "set": {"openrouter_voice": "Kore"}}]},
+    {"id": "google/gemini-3.8-flash-tts", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "set": {"openrouter_voice": "Kore"}}]},
+    {"id": "minimax/speech-2.8-hd", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "set": {"openrouter_voice": "English_expressive_narrator", "openrouter_response_format": "mp3"}}]},
+    {"id": "minimax/speech-2.8-turbo", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "set": {"openrouter_voice": "English_expressive_narrator", "openrouter_response_format": "mp3"}}]},
+    {"id": "google/gemini-nano-banana-2.1", "operations": {"image.txt2img": "images.generate", "image.img2img": "images.generate"}, "capability_limits": {"max_context_tokens": 65536}},
+    {"id": "google/gemini-2.5-flash-image", "operations": {"image.txt2img": "images.generate", "image.img2img": "images.generate"}, "capability_limits": {"max_context_tokens": 32768, "max_output_tokens": 8192}}
   ],
   "patterns": [
     {
@@ -18,16 +39,48 @@
       "match": "*",
       "operations": {
         "llm": "responses.create",
-        "embedding.text": "embeddings.create"
-      }
+        "vision.ocr": "responses.create",
+        "vision.caption": "responses.create",
+        "image.txt2img": "images.generate",
+        "image.img2img": "images.generate",
+        "embedding.text": "embeddings.create",
+        "audio.music": "chat.completions.create",
+        "audio.tts": "audio.speech",
+        "audio.asr": "audio.transcriptions",
+        "video.txt2video": "videos.create",
+        "video.img2video": "videos.create"
+      },
+      "request_rules": [
+        {"when": {"api_type": ["llm", "vision.ocr", "vision.caption"], "operation": "responses.create"}, "set": {"modalities": ["text"]}}
+      ]
     }
   ],
   "variants": [
-    {"model_driver": "openai", "variant": "reasoning-none", "match": {"origin_model_id": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.6-sol", "gpt-5.6"], "variant": "reasoning-none"}, "provider_options": {"reasoning": {"effort": "none"}}},
-    {"model_driver": "openai", "variant": "reasoning-low", "match": {"origin_model_id": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.6-sol", "gpt-5.6", "gpt-5.3-codex"], "variant": "reasoning-low"}, "provider_options": {"reasoning": {"effort": "low"}}},
-    {"model_driver": "openai", "variant": "reasoning-medium", "match": {"origin_model_id": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.6-sol", "gpt-5.6", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.3-codex"], "variant": "reasoning-medium"}, "provider_options": {"reasoning": {"effort": "medium"}}},
-    {"model_driver": "openai", "variant": "reasoning-high", "match": {"origin_model_id": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.6-sol", "gpt-5.6", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.3-codex"], "variant": "reasoning-high"}, "provider_options": {"reasoning": {"effort": "high"}}},
-    {"model_driver": "openai", "variant": "reasoning-xhigh", "match": {"origin_model_id": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.6-sol", "gpt-5.6", "gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.3-codex"], "variant": "reasoning-xhigh"}, "provider_options": {"reasoning": {"effort": "xhigh"}}},
-    {"model_driver": "openai", "variant": "reasoning-max", "match": {"origin_model_id": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}
+    {"model_driver":"openai","variant":"reasoning-none","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4"],"variant":"reasoning-none"},"provider_options":{"reasoning":{"effort":"none"}}},
+    {"model_driver":"openai","variant":"reasoning-low","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"openai","variant":"reasoning-medium","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
+    {"model_driver":"openai","variant":"reasoning-high","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"openai","variant":"reasoning-xhigh","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol","gpt-5.5-pro","gpt-5.5","gpt-5.4-nano","gpt-5.4-mini","gpt-5.4-pro","gpt-5.4","gpt-5.3-codex"],"variant":"reasoning-xhigh"},"provider_options":{"reasoning":{"effort":"xhigh"}}},
+    {"model_driver":"openai","variant":"reasoning-max","match":{"origin_model_id":["gpt-6-luna","gpt-6-sol","gpt-6-astra","gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}},
+    {"model_driver":"claude","variant":"reasoning-low","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"claude","variant":"reasoning-medium","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
+    {"model_driver":"claude","variant":"reasoning-high","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"claude","variant":"reasoning-xhigh","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7"],"variant":"reasoning-xhigh"},"provider_options":{"reasoning":{"effort":"xhigh"}}},
+    {"model_driver":"claude","variant":"reasoning-max","match":{"origin_model_id":["claude-haiku-5-5","claude-sonnet-5-5","claude-opus-5-5","claude-fable-5-1","claude-opus-5","claude-sonnet-5","claude-fable-5","claude-opus-4-8","claude-opus-4-7","claude-sonnet-4-6","claude-opus-4-6"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}},
+    {"model_driver":"gemini","variant":"reasoning-low","match":{"origin_model_id":["gemini-4-argon","gemini-3.8-flash","gemini-3.7-flash","gemini-3.6-flash","gemini-3.5-flash-lite","gemini-3.5-flash","gemini-3.1-flash-lite","gemini-3.1-pro-preview-customtools","gemini-3.1-pro-preview","gemini-3-flash-preview"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"gemini","variant":"reasoning-medium","match":{"origin_model_id":["gemini-4-argon","gemini-3.8-flash","gemini-3.7-flash","gemini-3.6-flash","gemini-3.5-flash-lite","gemini-3.5-flash","gemini-3.1-flash-lite","gemini-3.1-pro-preview-customtools","gemini-3.1-pro-preview","gemini-3-flash-preview"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
+    {"model_driver":"gemini","variant":"reasoning-high","match":{"origin_model_id":["gemini-4-argon","gemini-3.8-flash","gemini-3.7-flash","gemini-3.6-flash","gemini-3.5-flash-lite","gemini-3.5-flash","gemini-3.1-flash-lite","gemini-3.1-pro-preview-customtools","gemini-3.1-pro-preview","gemini-3-flash-preview"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"deepseek","variant":"reasoning-low","match":{"origin_model_id":["deepseek-v4.1-flash"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"deepseek","variant":"reasoning-high","match":{"origin_model_id":["deepseek-v4.1-flash","deepseek-v4-flash-vision-exp","deepseek-v4-pro","deepseek-v4-flash"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"deepseek","variant":"reasoning-max","match":{"origin_model_id":["deepseek-v4.1-flash","deepseek-v4-flash-vision-exp"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}},
+    {"model_driver":"qwen","variant":"reasoning-low","match":{"origin_model_id":["qwen3.8-max","qwen3.8-27b","qwen3.8-2.4t-a95b"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"qwen","variant":"reasoning-medium","match":{"origin_model_id":["qwen3.8-max","qwen3.8-27b","qwen3.8-2.4t-a95b"],"variant":"reasoning-medium"},"provider_options":{"reasoning":{"effort":"medium"}}},
+    {"model_driver":"qwen","variant":"reasoning-xhigh","match":{"origin_model_id":["qwen3.8-max","qwen3.8-27b","qwen3.8-2.4t-a95b"],"variant":"reasoning-xhigh"},"provider_options":{"reasoning":{"effort":"xhigh"}}},
+    {"model_driver":"glm","variant":"reasoning-low","match":{"origin_model_id":["glm-5.3-flash","glm-5.3"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"glm","variant":"reasoning-high","match":{"origin_model_id":["glm-5.3-flash","glm-5.3","glm-5.2"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"glm","variant":"reasoning-max","match":{"origin_model_id":["glm-5.3-flash","glm-5.3"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}},
+    {"model_driver":"kimi","variant":"reasoning-low","match":{"origin_model_id":["kimi-k3"],"variant":"reasoning-low"},"provider_options":{"reasoning":{"effort":"low"}}},
+    {"model_driver":"kimi","variant":"reasoning-high","match":{"origin_model_id":["kimi-k3"],"variant":"reasoning-high"},"provider_options":{"reasoning":{"effort":"high"}}},
+    {"model_driver":"kimi","variant":"reasoning-max","match":{"origin_model_id":["kimi-k3"],"variant":"reasoning-max"},"provider_options":{"reasoning":{"effort":"max"}}}
   ]
 }

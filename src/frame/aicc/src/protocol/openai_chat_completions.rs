@@ -149,8 +149,20 @@ impl OpenAiChatCompletionsCodec {
         dialect: Arc<dyn OpenAiChatCompletionsDialect>,
         api_type: ApiType,
     ) -> Self {
+        Self::with_dialect_api_type_and_descriptor(
+            dialect,
+            api_type,
+            openai_chat_completions_operation_descriptor(),
+        )
+    }
+
+    pub(crate) fn with_dialect_api_type_and_descriptor(
+        dialect: Arc<dyn OpenAiChatCompletionsDialect>,
+        api_type: ApiType,
+        descriptor: OperationDescriptor,
+    ) -> Self {
         Self {
-            descriptor: openai_chat_completions_operation_descriptor(),
+            descriptor,
             dialect,
             api_type,
         }

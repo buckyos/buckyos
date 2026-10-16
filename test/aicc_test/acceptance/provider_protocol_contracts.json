@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-14.1",
+  "revision": "official-provider-protocols-2026-10-15.1",
   "checked_at": "2026-10-14",
   "providers": [
     {
@@ -342,7 +342,7 @@
         "image.txt2img": ["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
         "image.img2img": ["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
         "audio.tts": ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"],
-        "audio.music": ["lyria-3-pro-preview", "lyria-3-clip-preview"],
+        "audio.music": ["lyria-3.5", "lyria-3-pro-preview", "lyria-3-clip-preview"],
         "video.txt2video": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
         "video.img2video": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
         "video.video2video": ["gemini-omni-1.1-flash"],
@@ -350,12 +350,14 @@
       },
       "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking", "https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"],
       "official_variant_rules": [
-        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-flash-lite"], "variants": { "reasoning-none": {} } },
+        { "model_ids": ["gemini-2.5-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-flash-lite", "gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-4-argon", "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-robotics-er-2-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
-        ,{ "model_ids": ["gemma-4-26b-a4b-it", "gemma-4-31b-it"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+        { "model_ids": ["gemini-robotics-er-2-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemma-4-26b-a4b-it", "gemma-4-31b-it"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
       "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
@@ -933,13 +935,155 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
-          "openai/gpt-5.6",
+          "anthropic/claude-fable-5",
+          "anthropic/claude-fable-5.1",
+          "anthropic/claude-haiku-5.5",
+          "anthropic/claude-opus-4.6",
+          "anthropic/claude-opus-4.7",
+          "anthropic/claude-opus-4.8",
+          "anthropic/claude-opus-5",
+          "anthropic/claude-opus-5.5",
+          "anthropic/claude-sonnet-4.6",
+          "anthropic/claude-sonnet-5",
+          "anthropic/claude-sonnet-5.5",
+          "deepseek/deepseek-v4-flash",
+          "deepseek/deepseek-v4-flash-vision-exp",
+          "deepseek/deepseek-v4-pro",
+          "deepseek/deepseek-v4.1-flash",
+          "google/gemini-2.5-flash-lite",
+          "google/gemini-2.5-flash",
+          "google/gemini-2.5-pro",
+          "google/gemini-3-flash-preview",
+          "google/gemini-3.1-flash-lite",
+          "google/gemini-3.1-pro-preview",
+          "google/gemini-3.1-pro-preview-customtools",
+          "google/gemini-3.5-flash",
+          "google/gemini-3.5-flash-lite",
+          "google/gemini-3.6-flash",
+          "google/gemini-3.7-flash",
+          "google/gemini-3.8-flash",
+          "google/gemini-4-argon",
+          "moonshotai/kimi-k3",
+          "openai/gpt-5.3-codex",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.4-nano",
+          "openai/gpt-5.4-pro",
+          "openai/gpt-5.5-pro",
+          "openai/gpt-5.6-luna",
+          "openai/gpt-5.6-sol",
+          "openai/gpt-5.6-terra",
+          "openai/gpt-6-astra",
+          "openai/gpt-6-luna",
+          "openai/gpt-6-sol",
           "openai/gpt-5.5",
-          "openai/gpt-5.4"
+          "openai/gpt-5.4",
+          "qwen/qwen3.8-2.4t-a95b",
+          "qwen/qwen3.8-27b",
+          "qwen/qwen3.8-max-0902",
+          "z-ai/glm-4.5",
+          "z-ai/glm-4.7",
+          "z-ai/glm-5.2",
+          "z-ai/glm-5.3",
+          "z-ai/glm-5.3-flash"
         ],
+        "vision.ocr": [
+          "anthropic/claude-fable-5",
+          "anthropic/claude-fable-5.1",
+          "anthropic/claude-haiku-5.5",
+          "anthropic/claude-opus-4.6",
+          "anthropic/claude-opus-4.7",
+          "anthropic/claude-opus-4.8",
+          "anthropic/claude-opus-5",
+          "anthropic/claude-opus-5.5",
+          "anthropic/claude-sonnet-4.6",
+          "anthropic/claude-sonnet-5",
+          "anthropic/claude-sonnet-5.5",
+          "deepseek/deepseek-v4-flash-vision-exp",
+          "deepseek/deepseek-v4.1-flash",
+          "google/gemini-2.5-flash-lite",
+          "google/gemini-2.5-flash",
+          "google/gemini-2.5-pro",
+          "google/gemini-3-flash-preview",
+          "google/gemini-3.1-flash-lite",
+          "google/gemini-3.1-pro-preview",
+          "google/gemini-3.1-pro-preview-customtools",
+          "google/gemini-3.5-flash",
+          "google/gemini-3.5-flash-lite",
+          "google/gemini-3.6-flash",
+          "google/gemini-3.7-flash",
+          "google/gemini-3.8-flash",
+          "google/gemini-4-argon",
+          "moonshotai/kimi-k3",
+          "openai/gpt-5.3-codex",
+          "openai/gpt-5.4",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.4-nano",
+          "openai/gpt-5.4-pro",
+          "openai/gpt-5.5",
+          "openai/gpt-5.5-pro",
+          "openai/gpt-5.6-luna",
+          "openai/gpt-5.6-sol",
+          "openai/gpt-5.6-terra",
+          "openai/gpt-6-astra",
+          "openai/gpt-6-luna",
+          "openai/gpt-6-sol",
+          "qwen/qwen3.8-max-0902",
+          "z-ai/glm-5.3-flash"
+        ],
+        "vision.caption": [
+          "anthropic/claude-fable-5",
+          "anthropic/claude-fable-5.1",
+          "anthropic/claude-haiku-5.5",
+          "anthropic/claude-opus-4.6",
+          "anthropic/claude-opus-4.7",
+          "anthropic/claude-opus-4.8",
+          "anthropic/claude-opus-5",
+          "anthropic/claude-opus-5.5",
+          "anthropic/claude-sonnet-4.6",
+          "anthropic/claude-sonnet-5",
+          "anthropic/claude-sonnet-5.5",
+          "deepseek/deepseek-v4-flash-vision-exp",
+          "deepseek/deepseek-v4.1-flash",
+          "google/gemini-2.5-flash-lite",
+          "google/gemini-2.5-flash",
+          "google/gemini-2.5-pro",
+          "google/gemini-3-flash-preview",
+          "google/gemini-3.1-flash-lite",
+          "google/gemini-3.1-pro-preview",
+          "google/gemini-3.1-pro-preview-customtools",
+          "google/gemini-3.5-flash",
+          "google/gemini-3.5-flash-lite",
+          "google/gemini-3.6-flash",
+          "google/gemini-3.7-flash",
+          "google/gemini-3.8-flash",
+          "google/gemini-4-argon",
+          "moonshotai/kimi-k3",
+          "openai/gpt-5.3-codex",
+          "openai/gpt-5.4",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.4-nano",
+          "openai/gpt-5.4-pro",
+          "openai/gpt-5.5",
+          "openai/gpt-5.5-pro",
+          "openai/gpt-5.6-luna",
+          "openai/gpt-5.6-sol",
+          "openai/gpt-5.6-terra",
+          "openai/gpt-6-astra",
+          "openai/gpt-6-luna",
+          "openai/gpt-6-sol",
+          "qwen/qwen3.8-max-0902",
+          "z-ai/glm-5.3-flash"
+        ],
+        "image.txt2img": ["openai/gpt-image-2", "google/gemini-2.5-flash-image", "google/gemini-3-pro-image", "google/gemini-3.1-flash-image", "google/gemini-3.1-flash-lite-image", "google/gemini-nano-banana-2.1"],
+        "image.img2img": ["openai/gpt-image-2", "google/gemini-2.5-flash-image", "google/gemini-3-pro-image", "google/gemini-3.1-flash-image", "google/gemini-3.1-flash-lite-image", "google/gemini-nano-banana-2.1"],
         "embedding.text": [
           "openai/text-embedding-3-small"
         ],
+        "audio.tts": ["minimax/speech-2.8-hd", "minimax/speech-2.8-turbo", "google/gemini-3.1-flash-tts-preview", "google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"],
+        "audio.asr": ["openai/whisper-1"],
+        "audio.music": ["google/lyria-3-pro-preview", "google/lyria-3-clip-preview"],
+        "video.txt2video": ["minimax/hailuo-2.3"],
+        "video.img2video": ["minimax/hailuo-2.3"],
         "rerank": [
           "cohere/rerank-v3.5"
         ],
@@ -953,7 +1097,46 @@
       "official_variant_rules": [
         {
           "model_ids": [
-            "openai/gpt-5.6"
+            "openai/gpt-5.4",
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5.4-nano",
+            "openai/gpt-5.5"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-sol",
+            "openai/gpt-5.6-terra",
+            "openai/gpt-6-luna",
+            "openai/gpt-6-sol"
           ],
           "variants": {
             "reasoning-none": {
@@ -990,15 +1173,9 @@
         },
         {
           "model_ids": [
-            "openai/gpt-5.5",
-            "openai/gpt-5.4"
+            "openai/gpt-5.3-codex"
           ],
           "variants": {
-            "reasoning-none": {
-              "reasoning": {
-                "effort": "none"
-              }
-            },
             "reasoning-low": {
               "reasoning": {
                 "effort": "low"
@@ -1020,11 +1197,223 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "anthropic/claude-fable-5",
+            "anthropic/claude-fable-5.1",
+            "anthropic/claude-haiku-5.5",
+            "anthropic/claude-opus-4.7",
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-opus-5",
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-sonnet-5.5",
+            "openai/gpt-6-astra"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.4-pro",
+            "openai/gpt-5.5-pro"
+          ],
+          "variants": {
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "anthropic/claude-opus-4.6",
+            "anthropic/claude-sonnet-4.6"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-3.1-pro-preview-customtools",
+            "google/gemini-3.5-flash",
+            "google/gemini-3.5-flash-lite",
+            "google/gemini-3.6-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.8-flash",
+            "google/gemini-4-argon"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4.1-flash",
+            "moonshotai/kimi-k3",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro",
+            "z-ai/glm-5.2"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4-flash-vision-exp"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen/qwen3.8-2.4t-a95b",
+            "qwen/qwen3.8-27b",
+            "qwen/qwen3.8-max-0902"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
-        "llm": "openai/gpt-5.6",
+        "llm": "openai/gpt-5.6-sol",
+        "vision.ocr": "anthropic/claude-sonnet-5.5",
+        "vision.caption": "anthropic/claude-sonnet-5.5",
+        "image.txt2img": "openai/gpt-image-2",
+        "image.img2img": "openai/gpt-image-2",
         "embedding.text": "openai/text-embedding-3-small",
+        "audio.tts": "minimax/speech-2.8-hd",
+        "audio.asr": "openai/whisper-1",
+        "audio.music": "google/lyria-3-clip-preview",
+        "video.txt2video": "minimax/hailuo-2.3",
+        "video.img2video": "minimax/hailuo-2.3",
         "rerank": "cohere/rerank-v3.5",
         "decision": "typesafe/jev-1.13"
       },
@@ -1034,7 +1423,9 @@
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
           "api_types": [
-            "llm"
+            "llm",
+            "vision.ocr",
+            "vision.caption"
           ],
           "operation": "responses.create",
           "http_method": "POST",
@@ -1047,8 +1438,12 @@
           "content_type": "application/json",
           "required_body_fields": [
             "model",
-            "input"
+            "input",
+            "modalities"
           ],
+          "required_body_values": {
+            "/modalities": ["text"]
+          },
           "allowed_body_fields": [
             "model",
             "input",
@@ -1193,6 +1588,24 @@
           "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
         },
         {
+          "id": "openrouter.images.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "operation": "images.generate",
+          "http_method": "POST",
+          "path": "/api/v1/images",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model", "prompt"],
+          "required_body_fields_by_api_type": {"image.img2img": ["input_references"]},
+          "allowed_body_fields": ["model", "prompt", "n", "resolution", "aspect_ratio", "size", "quality", "output_format", "background", "output_compression", "seed", "input_references", "user", "provider"],
+          "body_field_types": {"model": ["string"], "prompt": ["string"], "n": ["number"], "resolution": ["string"], "aspect_ratio": ["string"], "size": ["string"], "quality": ["string"], "output_format": ["string"], "background": ["string"], "output_compression": ["number"], "seed": ["number"], "input_references": ["array"], "user": ["string"], "provider": ["object"]},
+          "success_fixture": {"created": 1748372400, "data": [{"b64_json": "aW1hZ2U=", "media_type": "image/png"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cost": 0.04}},
+          "official_sources": ["https://openrouter.ai/docs/guides/overview/multimodal/image-generation", "https://openrouter.ai/openapi.json"],
+          "evidence_summary": "OpenRouter dedicated Image API uses POST /api/v1/images, input_references for image-to-image, and data[].b64_json plus media_type for output."
+        },
+        {
           "id": "openrouter.embeddings.v1",
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
@@ -1324,6 +1737,94 @@
             "https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"
           ],
           "evidence_summary": "OpenRouter rerank uses POST /api/v1/rerank and returns ordered index/relevance_score results."
+        },
+        {
+          "id": "openrouter.audio.speech.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["audio.tts"],
+          "conformance_test_model_ids": {"audio.tts": ["minimax/speech-2.8-hd", "minimax/speech-2.8-turbo", "google/gemini-3.1-flash-tts-preview", "google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"]},
+          "operation": "audio.speech",
+          "http_method": "POST",
+          "path": "/api/v1/audio/speech",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "voice"],
+          "allowed_body_fields": ["model", "input", "input_references", "instructions", "provider", "response_format", "session_id", "speed", "trace", "user", "voice"],
+          "body_field_types": {"model": ["string"], "input": ["string"], "voice": ["string"]},
+          "required_body_values_by_model": {
+            "minimax/speech-2.8-hd": {"/response_format": "mp3"},
+            "minimax/speech-2.8-turbo": {"/response_format": "mp3"}
+          },
+          "success_content_type": "audio/mpeg",
+          "success_fixture_base64": "SUQzAwAAAAA=",
+          "official_sources": ["https://openrouter.ai/openapi.json", "https://ai.google.dev/gemini-api/docs/speech-generation", "https://platform.minimax.io/docs/api-reference/speech-t2a-http.md"],
+          "evidence_summary": "OpenRouter speech uses JSON POST /api/v1/audio/speech; aggregated TTS providers require a provider-supported voice string, and the response is raw audio bytes."
+        },
+        {
+          "id": "openrouter.audio.transcriptions.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["audio.asr"],
+          "operation": "audio.transcriptions",
+          "http_method": "POST",
+          "path": "/api/v1/audio/transcriptions",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["file", "model"],
+          "allowed_body_fields": ["file", "model", "chunking_strategy", "language", "prompt", "response_format", "temperature", "timestamp_granularities"],
+          "body_field_types": {"file": ["object"], "model": ["string"]},
+          "success_fixture": {"text": "BUCKYOS-AICC-4827", "usage": {"type": "tokens", "input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
+          "official_sources": ["https://openrouter.ai/openapi.json"],
+          "evidence_summary": "OpenRouter transcription accepts OpenAI-compatible multipart file/model input and returns transcript text with optional usage."
+        },
+        {
+          "id": "openrouter.chat.audio.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["audio.music"],
+          "operation": "chat.completions.create",
+          "http_method": "POST",
+          "path": "/api/v1/chat/completions",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model", "messages", "modalities", "stream"],
+          "allowed_body_fields": ["model", "messages", "modalities", "seed", "stream"],
+          "body_field_types": {"model": ["string"], "messages": ["array"], "modalities": ["array"], "seed": ["number"], "stream": ["boolean"]},
+          "required_body_values": {"/stream": true},
+          "success_content_type": "text/event-stream",
+          "success_chunk_fixtures": [
+            {"id": "chatcmpl-openrouter-music-mock", "choices": [{"index": 0, "delta": {"audio": {"data": "UklG", "transcript": "BUCKYOS-"}}, "finish_reason": null}]},
+            {"id": "chatcmpl-openrouter-music-mock", "choices": [{"index": 0, "delta": {"audio": {"data": "RgAAAAA=", "transcript": "AICC-4827"}}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cost": 0}}
+          ],
+          "success_chunk_string_expansions": [
+            {"chunk_index": 0, "path": ["choices", 0, "delta", "audio", "data"], "value": "UklG", "repeat": 70000}
+          ],
+          "official_sources": ["https://openrouter.ai/docs/guides/overview/multimodal/audio", "https://openrouter.ai/openapi.json"],
+          "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE]."
+        },
+        {
+          "id": "openrouter.videos.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/api/v1/videos",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model"],
+          "required_body_fields_by_api_type": {"video.txt2video": ["prompt"], "video.img2video": ["frame_images"]},
+          "allowed_body_fields": ["aspect_ratio", "callback_url", "creativity", "duration", "frame_images", "generate_audio", "input_references", "model", "previous_job_id", "prompt", "provider", "resolution", "seed", "session_id", "size", "trace", "upscale_factor", "user"],
+          "body_field_types": {"model": ["string"], "prompt": ["string"], "frame_images": ["array"], "duration": ["number"], "resolution": ["string"], "generate_audio": ["boolean"], "seed": ["number"]},
+          "async_protocol": "openrouter_video",
+          "async_steps": [
+            {"name": "poll", "http_method": "GET", "path": "/api/v1/videos/{operation_id}"},
+            {"name": "result", "http_method": "GET", "path": "/api/v1/videos/{operation_id}/content"}
+          ],
+          "success_fixture": {"id": "gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt", "generation_id": "gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt", "polling_url": "/api/v1/videos/gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt", "status": "pending"},
+          "official_sources": ["https://openrouter.ai/openapi.json"],
+          "evidence_summary": "OpenRouter video generation uses JSON submit, polls the returned job ID, and downloads raw video bytes from the content endpoint; cancellation is not published."
         },
         {
           "id": "openrouter.decisions.alpha",
@@ -2273,23 +2774,12 @@
       "instance_fields": { "region": "cn-beijing", "workspace": "t15-workspace" },
       "official_first_party_model_ids": {
         "llm": [
-          "qwen3.8-max",
-          "qwen3.8-flash",
-          "qwen3.7-plus",
-          "qwen3.8-omni-flash"
+          "qwen3.8-27b", "qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash",
+          "qwen3.7-plus", "qwen3.7-flash", "qwen3.6-35b-a3b", "qwen3.6-plus", "qwen3.6-flash",
+          "qwen3.5-397b-a17b", "qwen3.5-122b-a10b", "qwen3.5-35b-a3b", "qwen3.5-27b"
         ],
-        "vision.ocr": [
-          "qwen3.8-max",
-          "qwen3.8-flash",
-          "qwen3.7-plus",
-          "qwen3.8-omni-flash"
-        ],
-        "vision.caption": [
-          "qwen3.8-max",
-          "qwen3.8-flash",
-          "qwen3.7-plus",
-          "qwen3.8-omni-flash"
-        ],
+        "vision.ocr": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash", "qwen3.7-plus"],
+        "vision.caption": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash", "qwen3.7-plus"],
         "image.txt2img": [
           "wanx2.1-t2i-turbo"
         ],
@@ -2425,6 +2915,9 @@
         "protocol_adapter_id": "qwen-responses",
         "api_version": "compatible-v1",
         "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "conformance_test_model_ids": {
+          "llm": ["qwen3.8-27b", "qwen3.6-35b-a3b", "qwen3.7-flash", "qwen3.6-plus", "qwen3.6-flash", "qwen3.5-397b-a17b", "qwen3.5-122b-a10b", "qwen3.5-35b-a3b", "qwen3.5-27b"]
+        },
         "operation": "responses.create",
         "http_method": "POST",
         "path": "/compatible-mode/v1/responses",

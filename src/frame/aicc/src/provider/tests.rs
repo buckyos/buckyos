@@ -8,7 +8,7 @@ use crate::protocol::{
     OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
     ProtocolResultValue,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
 
@@ -722,6 +722,10 @@ fn web_search_inventory_requires_model_adapter_and_discovery_support() {
             let mut discovered = discovery(model);
             discovered.models[0].supported_features = None;
             discovered.models[0].remote_methods = None;
+            if provider == "openrouter" {
+                discovered.models[0].remote_methods =
+                    Some(BTreeSet::from(["responses.create".to_owned()]));
+            }
             if discovery_disables {
                 discovered.models[0]
                     .unsupported_features

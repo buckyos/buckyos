@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-14.1",
-  "checked_at": "2026-10-14",
+  "baseline_revision": "2026-10-16.2",
+  "checked_at": "2026-10-16",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -935,12 +935,23 @@
           "evidence_summary": "Gemini TTS preview models generate speech audio from text."
         },
         {
+          "model_pattern": "lyria-3.5",
+          "status": "active",
+          "source_status": "stable",
+          "api_types": ["audio.music"],
+          "methods": ["audio.music"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["audio", "text"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models/lyria-3.5"],
+          "evidence_summary": "Lyria 3.5 accepts text and image prompts and returns generated music with text metadata."
+        },
+        {
           "model_pattern": "lyria-*",
           "status": "preview",
           "api_types": ["audio.music"],
           "methods": ["audio.music"],
-          "input_kinds": ["text", "audio"],
-          "output_kinds": ["audio"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["audio", "text"],
           "source_urls": ["https://ai.google.dev/gemini-api/docs/music-generation"],
           "evidence_summary": "Lyria models generate music from prompts and supported references."
         },
@@ -1349,7 +1360,134 @@
       "official_catalog": {
         "endpoint": "https://openrouter.ai/api/v1/models?output_modalities=all",
         "format": "openai",
-        "authentication": "bearer"
+        "authentication": "bearer",
+        "task_type_api_types": {
+          "decision": ["decision"],
+          "llm": ["llm"],
+          "embedding.text": ["embedding.text"],
+          "rerank": ["rerank"],
+          "image.txt2img": ["image.txt2img"],
+          "image.img2img": ["image.img2img"],
+          "audio.music": ["audio.music"],
+          "audio.tts": ["audio.tts"],
+          "audio.asr": ["audio.asr"],
+          "video.txt2video": ["video.txt2video"],
+          "video.img2video": ["video.img2video"],
+          "vision.ocr": ["vision.ocr"],
+          "vision.caption": ["vision.caption"]
+        },
+        "include_model_ids": [
+          "anthropic/claude-fable-5",
+          "anthropic/claude-fable-5.1",
+          "anthropic/claude-haiku-4.5",
+          "anthropic/claude-haiku-5.5",
+          "anthropic/claude-opus-4.5",
+          "anthropic/claude-opus-4.6",
+          "anthropic/claude-opus-4.7",
+          "anthropic/claude-opus-4.8",
+          "anthropic/claude-opus-5",
+          "anthropic/claude-opus-5.5",
+          "anthropic/claude-sonnet-4.5",
+          "anthropic/claude-sonnet-4.6",
+          "anthropic/claude-sonnet-5",
+          "anthropic/claude-sonnet-5.5",
+          "cohere/rerank-v3.5",
+          "deepseek/deepseek-v4-flash",
+          "deepseek/deepseek-v4-flash-vision-exp",
+          "deepseek/deepseek-v4-pro",
+          "deepseek/deepseek-v4.1-flash",
+          "google/gemini-2.5-flash",
+          "google/gemini-2.5-flash-image",
+          "google/gemini-2.5-flash-lite",
+          "google/gemini-2.5-pro",
+          "google/gemini-3-flash-preview",
+          "google/gemini-3-pro-image",
+          "google/gemini-3.1-flash-image",
+          "google/gemini-3.1-flash-lite",
+          "google/gemini-3.1-flash-lite-image",
+          "google/gemini-3.1-flash-tts-preview",
+          "google/gemini-3.1-pro-preview",
+          "google/gemini-3.1-pro-preview-customtools",
+          "google/gemini-3.5-flash",
+          "google/gemini-3.5-flash-lite",
+          "google/gemini-3.5-transcribe",
+          "google/gemini-3.6-flash",
+          "google/gemini-3.7-flash",
+          "google/gemini-3.8-flash",
+          "google/gemini-3.8-flash-lite-tts",
+          "google/gemini-3.8-flash-tts",
+          "google/gemini-4-argon",
+          "google/gemini-embedding-001",
+          "google/gemini-embedding-2",
+          "google/gemini-embedding-2-preview",
+          "google/gemini-nano-banana-2.1",
+          "google/gemma-4-26b-a4b-it",
+          "google/gemma-4-31b-it",
+          "google/lyria-3-clip-preview",
+          "google/lyria-3-pro-preview",
+          "minimax/hailuo-2.3",
+          "minimax/minimax-m2",
+          "minimax/minimax-m2.1",
+          "minimax/minimax-m2.5",
+          "minimax/minimax-m2.7",
+          "minimax/minimax-m3",
+          "minimax/speech-2.8-hd",
+          "minimax/speech-2.8-turbo",
+          "moonshotai/kimi-k2.6",
+          "moonshotai/kimi-k2.7-code",
+          "moonshotai/kimi-k3",
+          "openai/gpt-4o-mini-transcribe",
+          "openai/gpt-4o-transcribe",
+          "openai/gpt-5.3-codex",
+          "openai/gpt-5.4",
+          "openai/gpt-5.4-mini",
+          "openai/gpt-5.4-nano",
+          "openai/gpt-5.4-pro",
+          "openai/gpt-5.5",
+          "openai/gpt-5.5-pro",
+          "openai/gpt-5.6-luna",
+          "openai/gpt-5.6-sol",
+          "openai/gpt-5.6-terra",
+          "openai/gpt-6-astra",
+          "openai/gpt-6-luna",
+          "openai/gpt-6-sol",
+          "openai/gpt-image-2",
+          "openai/gpt-transcribe",
+          "openai/text-embedding-3-large",
+          "openai/text-embedding-3-small",
+          "openai/text-embedding-ada-002",
+          "openai/whisper-1",
+          "qwen/qwen3.5-122b-a10b",
+          "qwen/qwen3.5-27b",
+          "qwen/qwen3.5-35b-a3b",
+          "qwen/qwen3.5-397b-a17b",
+          "qwen/qwen3.6-35b-a3b",
+          "qwen/qwen3.6-flash",
+          "qwen/qwen3.6-plus",
+          "qwen/qwen3.7-flash",
+          "qwen/qwen3.7-max",
+          "qwen/qwen3.7-plus",
+          "qwen/qwen3.8-2.4t-a95b",
+          "qwen/qwen3.8-27b",
+          "qwen/qwen3.8-flash",
+          "qwen/qwen3.8-max-0902",
+          "qwen/qwen3.8-omni-flash",
+          "typesafe/jev-1.13",
+          "z-ai/glm-4.5",
+          "z-ai/glm-4.5-air",
+          "z-ai/glm-4.5v",
+          "z-ai/glm-4.6",
+          "z-ai/glm-4.6v",
+          "z-ai/glm-4.7",
+          "z-ai/glm-4.7-flash",
+          "z-ai/glm-5",
+          "z-ai/glm-5-turbo",
+          "z-ai/glm-5.1",
+          "z-ai/glm-5.2",
+          "z-ai/glm-5.3",
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5v-turbo"
+        ]
       },
       "source_urls": [
         "https://openrouter.ai/docs/api/api-reference/models/get-models",
@@ -1357,44 +1495,87 @@
         "https://openrouter.ai/blog/tutorials/how-to-use-jev/"
       ],
       "protocol_evidence": {
-        "documentation_version": "official documentation checked 2026-09-13",
+        "documentation_version": "official Models API and OpenAPI checked 2026-10-15",
         "streaming_semantics": "OpenRouter Responses exposes OpenResponses SSE events subject to the selected upstream model/provider.",
         "async_operation_semantics": "Lifecycle behavior is inherited from the selected model endpoint; unsupported async behavior is not inferred.",
         "usage_semantics": "Models API exposes pricing and requests expose normalized usage subject to upstream support. Decisions usage has input_tokens/output_tokens and optional total-request USD cost; free output tokens remain in usage.",
         "input_output_formats": "Runtime Models API output_modalities, architecture, and supported_parameters are the per-model source of truth; LLM wire requests use OpenRouter Responses.",
         "item_request_batch_limits": "Models API per_request_limits and upstream provider metadata are authoritative; null remains explicitly unknown.",
         "image_audio_video_limits": "Media constraints are inherited from the selected upstream model/provider and must be present in runtime metadata or official upstream evidence.",
-        "context_output_limits": "Models API publishes context_length and top-provider limits per canonical physical model. Jev channel context is 32000; 255 choice options and 2..10 score levels. AICC byte guards do not measure tokens.",
+        "context_output_limits": "Models API publishes context_length and top-provider limits per canonical physical model. OpenRouter publishes 262144 context tokens for the fixed Jev 1.13 build; AICC retains the origin model's stricter 32000-byte decision guards, 255 choice options, and 2..10 score levels.",
         "region_restrictions": "Provider routing and sovereign/private-provider choices can impose region restrictions.",
         "account_tier_restrictions": "Workspace budget, credit, provider availability, and service tier can restrict execution.",
         "preview_allowlist": "Private/preview models require account access and aliases are resolved before physical-model coverage."
       },
       "rules": [
         {
-          "model_pattern": "typesafe/jev-1.13",
+          "model_pattern": "google/gemini-*-image",
           "status": "active",
-          "api_types": [
-            "decision"
-          ],
-          "methods": [
-            "decision.evaluate"
-          ],
-          "input_kinds": [
-            "text",
-            "json"
-          ],
-          "output_kinds": [
-            "json"
-          ],
-          "source_urls": [
-            "https://openrouter.ai/openapi.json",
-            "https://openrouter.ai/blog/tutorials/how-to-use-jev/",
-            "https://openrouter.ai/api/v1/models?output_modalities=all"
-          ],
-          "evidence_summary": "Finite Jev 1.13 mapping; shared-state mixed independent questions, immediate only."
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["images.generate", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://openrouter.ai/api/v1/models?output_modalities=all", "https://ai.google.dev/gemini-api/docs/image-generation"],
+          "evidence_summary": "OpenRouter catalog membership is intersected with the Gemini publisher model card; Gemini image models expose image generation and editing, not text LLM or visual-understanding API types."
         },
         {
-          "model_pattern": "~typesafe/jev-latest",
+          "model_pattern": "google/gemini-nano-banana-2.1",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["images.generate", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://openrouter.ai/api/v1/models?output_modalities=all", "https://ai.google.dev/gemini-api/docs/image-generation"],
+          "evidence_summary": "OpenRouter catalog membership is intersected with the Gemini publisher model card; Nano Banana 2.1 exposes image generation and editing, not text LLM or visual-understanding API types."
+        },
+        {
+          "model_pattern": "qwen/qwen3.5-*",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://openrouter.ai/api/v1/models?output_modalities=all", "https://www.alibabacloud.com/help/en/model-studio/models"],
+          "evidence_summary": "OpenRouter catalog membership is intersected with the Qwen publisher model table; these Qwen 3.5 physical models are text LLMs."
+        },
+        {
+          "model_pattern": "qwen/qwen3.6-*",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://openrouter.ai/api/v1/models?output_modalities=all", "https://www.alibabacloud.com/help/en/model-studio/models"],
+          "evidence_summary": "OpenRouter catalog membership is intersected with the Qwen publisher model table; these Qwen 3.6 physical models are text LLMs."
+        },
+        {
+          "model_pattern": "qwen/qwen3.7-flash",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://openrouter.ai/api/v1/models?output_modalities=all", "https://www.alibabacloud.com/help/en/model-studio/models"],
+          "evidence_summary": "OpenRouter catalog membership is intersected with the Qwen publisher model table; Qwen 3.7 Flash is a text LLM."
+        },
+        {
+          "model_pattern": "qwen/qwen3.8-27b",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://openrouter.ai/api/v1/models?output_modalities=all", "https://www.alibabacloud.com/help/en/model-studio/models"],
+          "evidence_summary": "OpenRouter catalog membership is intersected with the Qwen publisher model table; Qwen 3.8 27B is a text LLM."
+        },
+        {
+          "model_pattern": "typesafe/jev-1.13",
           "status": "active",
           "api_types": [
             "decision"
@@ -1437,69 +1618,26 @@
             "https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"
           ],
           "evidence_summary": "OpenRouter exposes a native rerank endpoint whose results preserve document indices and relevance scores."
-        },
-        {
-          "model_pattern": "*",
-          "status": "active",
-          "source_status": "openrouter_models_api_runtime_membership",
-          "api_types": [
-            "llm"
-          ],
-          "methods": [
-            "chat.completions.create"
-          ],
-          "input_kinds": [
-            "text"
-          ],
-          "output_kinds": [
-            "text",
-            "json",
-            "tool_call"
-          ],
-          "source_urls": [
-            "https://openrouter.ai/docs/api/api-reference/models/get-models"
-          ],
-          "evidence_summary": "OpenRouter model capabilities must be refined from the live official model catalog before execution."
         }
       ],
       "coverage_rules": [
         {
-          "model_pattern": "typesafe/jev-1.13",
-          "action": "alias",
-          "physical_model_id": "typesafe/jev-1.13",
-          "reason": "logical_alias",
-          "source_urls": [
-            "https://openrouter.ai/api/v1/models?output_modalities=all"
-          ],
-          "evidence_summary": "Catalog canonical_slug=typesafe/jev-1.13-20260917; alias_target.slug=typesafe/jev-1.13. Recheck before planning; one physical invocation."
-        },
-        {
-          "model_pattern": "~typesafe/jev-latest",
-          "action": "alias",
-          "physical_model_id": "typesafe/jev-1.13",
-          "reason": "logical_alias",
-          "source_urls": [
-            "https://openrouter.ai/api/v1/models?output_modalities=all"
-          ],
-          "evidence_summary": "Catalog canonical_slug=typesafe/jev-1.13-20260917; alias_target.slug=typesafe/jev-1.13. Recheck before planning; one physical invocation."
-        },
-        {
-          "model_pattern": "typesafe/*",
+          "model_pattern": "typesafe/jev-router",
           "action": "exclude",
-          "reason": "unsupported_canonical_protocol",
+          "reason": "not_physical_model",
           "source_urls": [
             "https://openrouter.ai/api/v1/models?output_modalities=all"
           ],
-          "evidence_summary": "Unknown Jev identity or Jev Router; not part of the verified decision scope."
+          "evidence_summary": "OpenRouter Jev Router is a logical router and is not a physical model."
         },
         {
           "model_pattern": "~typesafe/*",
           "action": "exclude",
-          "reason": "unsupported_canonical_protocol",
+          "reason": "logical_alias",
           "source_urls": [
             "https://openrouter.ai/api/v1/models?output_modalities=all"
           ],
-          "evidence_summary": "Unknown Jev identity or Jev Router; not part of the verified decision scope."
+          "evidence_summary": "Tilde-prefixed OpenRouter model IDs are moving aliases and are excluded from physical-model coverage."
         }
       ]
     },

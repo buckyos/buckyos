@@ -5,10 +5,12 @@
 | 层级 | 最终结果 | 汇总 |
 | --- | --- | --- |
 | T1 | 通过 | 189 / 189 passed |
-| T1.5 | 通过 | 全 Provider 1806 / 1806 passed；更新后的 Gemini 414 / 414 passed |
-| T2 | 未全通过 | 123 个 Gemini 用例：16 passed、82 review、13 provider_restricted、12 failed |
+| T1.5 | 通过 | 最新全量 2510 / 2510 passed；更新后的 Gemini 414 / 414 passed |
+| T2 | 未全通过 | 当前完整矩阵 36 个物理模型、123 个用例：16 passed、83 review、13 provider_restricted、11 failed |
 
-T2 的 12 个 failed 中，7 个因 Gemini 拒绝抓取当前 NDN 私网/排除 IP URL，3 个因 cyfs-gateway 的 60 秒响应头超时，2 个 Veo extension 被 Provider 以 `durationSeconds` 越界拒绝。修复后的真实文本 Embedding 为 2 / 2 passed，Omni 视频为 2 个 review。最新 123 用例矩阵预检无 capability baseline mismatch。
+T2 的 11 个 failed 中，7 个因 Gemini 拒绝抓取当前 NDN 私网/排除 IP URL，1 个同步请求返回网关 500，1 个后台 custom-tools agent 不接受图像输入，2 个 Veo extension 被 Provider 以 `durationSeconds` 越界拒绝。修复后的真实文本 Embedding 为 2 / 2 passed。当前 123 个 `<model, api-type>` 均已有非 skipped 的 T2 结果，矩阵预检无 capability baseline mismatch。
+
+Google 当前 Thinking 文档仍声明 `gemini-3.8-flash` 与 `gemini-2.5-flash` 支持 `medium`。线上参数回归中，3.8 接受真实 `medium`；2.5 仍返回 HTTP 400 并仅允许 `high/low`，因此保留模型级 `reasoning-medium`，仅在 Google Gemini 渠道把其底层参数映射为 `high`。Lyria 用例补测将原先的 skipped 单元补齐为 `review`，当前矩阵总数仍为 123；真实生成、产物下载与完整性校验均成功，按要求未启用 Judge。
 
 ### `vision.detect` / `vision.segment` 专项汇总
 
@@ -24,6 +26,8 @@ T2 的 12 个 failed 中，7 个因 Gemini 拒绝抓取当前 NDN 私网/排除 
 ## T1 详细报告
 
 - [T1 全量：189 / 189](test/aicc_test/reports/acceptance/aicc-t1-2026-10-14T10-13-42-029Z-22fc0ff2/summary.md)
+- [最新 T1 全量：189 / 189](test/aicc_test/reports/acceptance/aicc-t1-2026-10-16T07-42-46-007Z-845ce456/summary.md)
+- [能力基线修正后 T1 全量：189 / 189](test/aicc_test/reports/acceptance/aicc-t1-2026-10-16T08-43-15-887Z-8631ec17/summary.md)
 
 ## T1.5 详细报告
 
@@ -46,6 +50,8 @@ T2 的 12 个 failed 中，7 个因 Gemini 拒绝抓取当前 NDN 私网/排除 
 - [t15-20261014140217-595207：检测/分割 2 / 2](test/aicc_test/reports/acceptance/t15-20261014140217-595207/summary.md)
 - [t15-20261014142249-625300：检测/分割 2 / 2](test/aicc_test/reports/acceptance/t15-20261014142249-625300/summary.md)
 - [t15-20261014144406-655193：最终部署版本检测/分割 2 / 2](test/aicc_test/reports/acceptance/t15-20261014144406-655193/summary.md)
+- [最新 T1.5 全量：2510 / 2510](test/aicc_test/reports/acceptance/t15-20261016074720-4116059/summary.md)
+- [能力基线修正后 T1.5 全量：2510 / 2510](test/aicc_test/reports/acceptance/t15-20261016084809-10062/summary.md)
 
 ## T2 详细报告
 
@@ -67,3 +73,6 @@ T2 的 12 个 failed 中，7 个因 Gemini 拒绝抓取当前 NDN 私网/排除 
 - [aicc-2026-10-14T13-26-55-952Z-2ec28919：13 cases](test/aicc_test/reports/acceptance/aicc-2026-10-14T13-26-55-952Z-2ec28919/summary.md)
 - [aicc-2026-10-14T14-03-14-352Z-54ec94b5：检测/分割 28 cases](test/aicc_test/reports/acceptance/aicc-2026-10-14T14-03-14-352Z-54ec94b5/summary.md)
 - [aicc-2026-10-14T14-36-17-432Z-81486ca8：后台交互能力复核 1 case](test/aicc_test/reports/acceptance/aicc-2026-10-14T14-36-17-432Z-81486ca8/summary.md)
+- [medium 变体线上回归：2 个指定模型](test/aicc_test/reports/acceptance/gemini-medium-regression-20261016/summary.md)
+- [新增 `lyria-3.5 + audio.music`：真实调用与产物校验完成，未启用 Judge](test/aicc_test/reports/acceptance/aicc-2026-10-16T08-31-29-380Z-efecfea8/summary.md)
+- [最终矩阵预检：123 个组合，0 baseline mismatch](test/aicc_test/reports/acceptance/aicc-2026-10-16T09-31-42-766Z-38912391/summary.md)

@@ -48,7 +48,7 @@ impl ModelHealthRegistry {
     pub(crate) fn record_success(
         &self,
         exact_model: &str,
-        provider_instance_name: &str,
+        _provider_instance_name: &str,
         latency_ms: f64,
         at_ms: u64,
     ) {
@@ -56,7 +56,7 @@ impl ModelHealthRegistry {
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        for key in [model_key(exact_model), provider_key(provider_instance_name)] {
+        for key in [model_key(exact_model)] {
             let entry = entries.entry(key).or_default();
             prune(entry, at_ms);
             entry.samples.push_back(HealthSample {
@@ -73,7 +73,7 @@ impl ModelHealthRegistry {
     pub(crate) fn record_failure(
         &self,
         exact_model: &str,
-        provider_instance_name: &str,
+        _provider_instance_name: &str,
         latency_ms: f64,
         kind: HealthFailureKind,
         at_ms: u64,
@@ -85,11 +85,7 @@ impl ModelHealthRegistry {
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let keys = if kind == HealthFailureKind::ModelUnavailable {
-            vec![model_key(exact_model)]
-        } else {
-            vec![model_key(exact_model), provider_key(provider_instance_name)]
-        };
+        let keys = [model_key(exact_model)];
         for key in keys {
             let entry = entries.entry(key).or_default();
             prune(entry, at_ms);
@@ -110,7 +106,7 @@ impl ModelHealthRegistry {
     pub(crate) fn snapshot(
         &self,
         exact_model: &str,
-        provider_instance_name: &str,
+        _provider_instance_name: &str,
         at_ms: u64,
     ) -> ModelHealthSnapshot {
         let mut entries = self
@@ -118,18 +114,14 @@ impl ModelHealthRegistry {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let model = snapshot_entry(entries.get_mut(&model_key(exact_model)), at_ms);
-        let provider = snapshot_entry(
-            entries.get_mut(&provider_key(provider_instance_name)),
-            at_ms,
-        );
         ModelHealthSnapshot {
             model_available: model.model_available,
-            degraded: model.degraded || provider.degraded,
-            circuit_open: model.circuit_open || provider.circuit_open,
-            p50_latency_ms: max_option(model.p50_latency_ms, provider.p50_latency_ms),
-            p95_latency_ms: max_option(model.p95_latency_ms, provider.p95_latency_ms),
-            error_rate_5m: max_option(model.error_rate_5m, provider.error_rate_5m),
-            recent_failures: model.recent_failures.max(provider.recent_failures),
+            degraded: model.degraded,
+            circuit_open: model.circuit_open,
+            p50_latency_ms: model.p50_latency_ms,
+            p95_latency_ms: model.p95_latency_ms,
+            error_rate_5m: model.error_rate_5m,
+            recent_failures: model.recent_failures,
         }
     }
 }
@@ -201,24 +193,12 @@ fn model_key(exact_model: &str) -> String {
     format!("model:{exact_model}")
 }
 
-fn provider_key(provider_instance_name: &str) -> String {
-    format!("provider:{provider_instance_name}")
-}
-
-fn max_option(left: Option<f64>, right: Option<f64>) -> Option<f64> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn computes_windowed_health_and_provider_circuit() {
+    fn computes_windowed_health_and_model_circuit() {
         let health = ModelHealthRegistry::default();
         for (at_ms, latency_ms) in [(1, 100.0), (2, 200.0), (3, 300.0)] {
             health.record_failure(
@@ -229,13 +209,16 @@ mod tests {
                 at_ms,
             );
         }
-        let open = health.snapshot("model-b@provider", "provider", 3);
+        let open = health.snapshot("model-a@provider", "provider", 3);
         assert!(open.circuit_open);
         assert_eq!(open.error_rate_5m, Some(1.0));
         assert_eq!(open.p50_latency_ms, Some(200.0));
         assert_eq!(open.p95_latency_ms, Some(300.0));
+        let unaffected = health.snapshot("model-b@provider", "provider", 3);
+        assert!(!unaffected.circuit_open);
+        assert_eq!(unaffected.error_rate_5m, None);
         health.record_success("model-a@provider", "provider", 50.0, 4);
-        let recovered = health.snapshot("model-b@provider", "provider", 4);
+        let recovered = health.snapshot("model-a@provider", "provider", 4);
         assert!(!recovered.circuit_open);
         assert_eq!(recovered.recent_failures, 0);
         assert_eq!(recovered.error_rate_5m, Some(0.75));
