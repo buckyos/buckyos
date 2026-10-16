@@ -579,7 +579,11 @@ fn encode_video_submit(
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("MiniMax video submit requires canonical input")
     })?;
-    require_only_model(input.resolved_parameters)?;
+    if v2 {
+        require_parameters(input.resolved_parameters, &["minimax_video_v2_constraints"])?;
+    } else {
+        require_only_model(input.resolved_parameters)?;
+    }
     let model = provider_model_id(input.resolved_parameters)?;
     let mut body = match (&codec_input.canonical_request, api_type) {
         (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => Map::from_iter([
@@ -643,23 +647,42 @@ fn encode_video_submit(
         let duration = body
             .get("duration")
             .and_then(Value::as_f64)
-            .unwrap_or(5.0)
-            .round() as u64;
+            .ok_or_else(|| {
+                ProtocolError::invalid_configuration(
+                    "MiniMax V2 video duration default is missing from provider rules",
+                )
+            })?;
+        if !duration.is_finite() || duration.fract() != 0.0 {
+            return Err(ProtocolError::invalid_request(
+                "MiniMax V2 duration must be an integer number of seconds",
+            ));
+        }
+        let duration = duration as u64;
         body.insert("duration".to_string(), json!(duration));
         let resolution = body
             .get("resolution")
             .and_then(Value::as_str)
-            .unwrap_or("768P");
-        let resolution = match resolution.to_ascii_lowercase().as_str() {
-            "480p" => "480P",
-            "720p" | "768p" => "768P",
-            "2k" | "1440p" => "2K",
-            _ => {
-                return Err(ProtocolError::invalid_request(
-                    "MiniMax V2 resolution must be 480P, 768P, or 2K",
-                ));
-            }
-        };
+            .ok_or_else(|| {
+                ProtocolError::invalid_configuration(
+                    "MiniMax V2 video resolution default is missing from provider rules",
+                )
+            })?;
+        let resolution = resolution.to_ascii_uppercase();
+        let constraints = minimax_video_v2_constraints(input.resolved_parameters)?;
+        if !(constraints.min_duration_seconds..=constraints.max_duration_seconds)
+            .contains(&duration)
+        {
+            return Err(ProtocolError::invalid_request(format!(
+                "MiniMax V2 duration must be between {} and {} seconds",
+                constraints.min_duration_seconds, constraints.max_duration_seconds
+            )));
+        }
+        if !constraints.resolutions.contains(&resolution) {
+            return Err(ProtocolError::invalid_request(format!(
+                "MiniMax V2 resolution must be one of {}",
+                constraints.resolutions.join(", ")
+            )));
+        }
         body.insert("resolution".to_string(), json!(resolution));
         let ratio = match &codec_input.canonical_request {
             AiccCall::VideoTextToVideo(request) => {
@@ -1032,6 +1055,63 @@ fn require_parameters(
     Ok(())
 }
 
+struct MiniMaxVideoV2Constraints {
+    min_duration_seconds: u64,
+    max_duration_seconds: u64,
+    resolutions: Vec<String>,
+}
+
+fn minimax_video_v2_constraints(
+    parameters: &BTreeMap<String, Value>,
+) -> ProtocolResultValue<MiniMaxVideoV2Constraints> {
+    let constraints = parameters
+        .get("minimax_video_v2_constraints")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            ProtocolError::invalid_configuration(
+                "MiniMax V2 video constraints are missing from provider rules",
+            )
+        })?;
+    let min_duration_seconds = constraints
+        .get("min_duration_seconds")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            ProtocolError::invalid_configuration(
+                "MiniMax V2 minimum duration is missing from provider rules",
+            )
+        })?;
+    let max_duration_seconds = constraints
+        .get("max_duration_seconds")
+        .and_then(Value::as_u64)
+        .filter(|value| *value >= min_duration_seconds)
+        .ok_or_else(|| {
+            ProtocolError::invalid_configuration(
+                "MiniMax V2 maximum duration is invalid in provider rules",
+            )
+        })?;
+    let resolutions = constraints
+        .get("resolutions")
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty())
+        .and_then(|values| {
+            values
+                .iter()
+                .map(Value::as_str)
+                .map(|value| value.map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| {
+            ProtocolError::invalid_configuration(
+                "MiniMax V2 resolutions are invalid in provider rules",
+            )
+        })?;
+    Ok(MiniMaxVideoV2Constraints {
+        min_duration_seconds,
+        max_duration_seconds,
+        resolutions,
+    })
+}
+
 fn resource_string(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
     // Materialization may have handed this resource over as a URL because the
     // protocol takes one (`ResourceInputForm`), in which case there are no
@@ -1223,8 +1303,18 @@ mod tests {
         let mut request = VideoTextToVideoRequest::new("ignored", "ocean".to_owned());
         request.duration_seconds = Some(6.0);
         request.aspect_ratio = Some("9:16".to_owned());
-        request.resolution = Some("720p".to_owned());
-        let parameters = BTreeMap::from([("provider_model_id".to_owned(), json!("MiniMax-H3"))]);
+        request.resolution = Some("768p".to_owned());
+        let parameters = BTreeMap::from([
+            ("provider_model_id".to_owned(), json!("MiniMax-H3")),
+            (
+                "minimax_video_v2_constraints".to_owned(),
+                json!({
+                    "min_duration_seconds": 4,
+                    "max_duration_seconds": 15,
+                    "resolutions": ["768P", "2K"]
+                }),
+            ),
+        ]);
         let codec_input = CodecInput {
             canonical_request: AiccCall::VideoTextToVideo(request),
             resolved_parameters: parameters.clone(),
@@ -1321,5 +1411,84 @@ mod tests {
                 .unwrap(),
             NativeTaskOutput::Cancelled { accepted: true }
         ));
+    }
+
+    #[test]
+    fn video_v2_enforces_model_specific_duration_and_resolution() {
+        let descriptor = minimax_media_adapter().0.operations[VIDEO_V2_OPERATION_ID].clone();
+        let codec = MiniMaxVideoCodec {
+            descriptor,
+            api_type: ApiType::VideoTextToVideo,
+            v2: true,
+        };
+        let context = context();
+        let encode =
+            |model: &str, duration: Option<f64>, resolution: Option<&str>, constraints: Value| {
+                let mut request = VideoTextToVideoRequest::new("ignored", "ocean".to_owned());
+                request.duration_seconds = duration;
+                request.resolution = resolution.map(str::to_owned);
+                let parameters = BTreeMap::from([
+                    ("provider_model_id".to_owned(), json!(model)),
+                    ("minimax_video_v2_constraints".to_owned(), constraints),
+                ]);
+                let codec_input = CodecInput {
+                    canonical_request: AiccCall::VideoTextToVideo(request),
+                    resolved_parameters: parameters.clone(),
+                };
+                codec.encode_native(&NativeTaskInput {
+                    operation: NativeTaskOperation::Submit,
+                    remote_task_id: None,
+                    codec_input: Some(&codec_input),
+                    resolved_parameters: &parameters,
+                    context: &context,
+                })
+            };
+
+        let h3_constraints = || {
+            json!({
+                "min_duration_seconds": 4,
+                "max_duration_seconds": 15,
+                "resolutions": ["768P", "2K"]
+            })
+        };
+        let h3_max_constraints = || {
+            json!({
+                "min_duration_seconds": 5,
+                "max_duration_seconds": 15,
+                "resolutions": ["480P", "768P"]
+            })
+        };
+
+        assert!(encode("MiniMax-H3", None, None, h3_constraints()).is_err());
+
+        let h3 = encode("MiniMax-H3", Some(4.0), Some("768P"), h3_constraints()).unwrap();
+        let HttpBody::Json(h3) = h3.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(h3["duration"], 4);
+        assert_eq!(h3["resolution"], "768P");
+
+        let h3_max = encode(
+            "MiniMax-H3-Max",
+            Some(5.0),
+            Some("768P"),
+            h3_max_constraints(),
+        )
+        .unwrap();
+        let HttpBody::Json(h3_max) = h3_max.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(h3_max["duration"], 5);
+        assert_eq!(h3_max["resolution"], "768P");
+
+        assert!(encode("MiniMax-H3", Some(4.5), Some("768P"), h3_constraints()).is_err());
+        assert!(encode("MiniMax-H3", Some(4.0), Some("480P"), h3_constraints()).is_err());
+        assert!(encode(
+            "MiniMax-H3-Max",
+            Some(5.0),
+            Some("2K"),
+            h3_max_constraints()
+        )
+        .is_err());
     }
 }

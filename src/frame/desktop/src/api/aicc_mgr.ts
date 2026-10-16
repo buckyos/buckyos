@@ -16,6 +16,7 @@ import type {
 } from '../app/ai-center/datamodel/routing'
 import { normalizeFinanceTotals } from '../app/ai-center/datamodel/transforms'
 import { toAiccRpcCallOptions } from './aicc_rpc_options'
+import { toProviderInstanceRules } from './provider_model_selection'
 import type {
   AIStatus,
   ApiNamespace,
@@ -192,6 +193,9 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
         } as Record<string, string>
       : undefined,
     protocol_adapter_id,
+    discovery_behavior_id: provider_profile_id === 'doubao-speech' || provider_profile_id === 'fal'
+      ? 'catalog-only'
+      : `${provider_profile_id}-models`,
     provider_rules_id: provider_profile_id,
     ui_hints: isDoubaoProfile(provider_profile_id)
       ? {
@@ -1251,24 +1255,6 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
     account: draft.account?.trim() || undefined,
     instance_rules: toProviderInstanceRules(draft),
     auto_sync_models: draft.auto_sync_models,
-  }
-}
-
-/**
- * `enabled_inventory_models` is only emitted when the wizard actually collected a
- * selection. An absent key keeps the provider's whole static catalog published,
- * which is the pre-existing behaviour for every profile.
- */
-function toProviderInstanceRules(draft: WizardDraft): Record<string, unknown> | undefined {
-  const policyRegion = draft.policy_region?.trim()
-  const selection = draft.selected_inventory_models
-  const hasSelection = Array.isArray(selection)
-  if (!policyRegion && !hasSelection) return undefined
-  return {
-    policy_region: policyRegion || undefined,
-    exclude_models: [],
-    model_driver_overrides: {},
-    enabled_inventory_models: hasSelection ? [...selection].sort() : undefined,
   }
 }
 
@@ -2549,6 +2535,7 @@ function toProviderSetupCatalog(
         region_base_urls: asStringRecord(entry.region_base_urls),
         operation_base_urls: asStringRecord(entry.operation_base_urls),
         protocol_adapter_id: asNonEmptyString(entry.protocol_adapter_id, ''),
+        discovery_behavior_id: asNonEmptyString(entry.discovery_behavior_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
         ui_hints: asRecord(entry.ui_hints),
         setup_group: toProviderSetupGroup(entry.ui_hints),

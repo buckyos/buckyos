@@ -353,11 +353,23 @@ async function addProvider(
         [apiType, modelId],
       ) => [apiType, [modelId]]),
     );
+  const discoveryModels = Object.fromEntries(
+    [...new Set([
+      ...Object.keys(catalogModels),
+      ...Object.keys(provider.official_aggregated_model_ids ?? {}),
+    ])].map((apiType) => [
+      apiType,
+      [...new Set([
+        ...(catalogModels[apiType] ?? []),
+        ...(provider.official_aggregated_model_ids?.[apiType] ?? []),
+      ])],
+    ]),
+  );
   const configuredModels = new Map<
     string,
     { apiTypes: Set<string>; remoteMethods: Set<string> }
   >();
-  for (const [apiType, modelIds] of Object.entries(catalogModels)) {
+  for (const [apiType, modelIds] of Object.entries(discoveryModels)) {
     for (const providerModelId of modelIds) {
       const model = configuredModels.get(providerModelId) ?? {
         apiTypes: new Set<string>(),
@@ -527,6 +539,45 @@ async function addCustomProvider(
   }
 }
 
+function validateAggregatedInventory(
+  catalog: ProviderProtocolCatalog,
+  driver: string,
+  inventory: ProviderInventory,
+): void {
+  const declared = catalog.providers.find((provider) =>
+    provider.provider_driver === driver
+  )?.official_aggregated_model_ids;
+  if (!declared) return;
+  const expected = new Map<string, Set<string>>();
+  for (const [apiType, modelIds] of Object.entries(declared)) {
+    for (const modelId of modelIds) {
+      const apiTypes = expected.get(modelId) ?? new Set<string>();
+      apiTypes.add(apiType);
+      expected.set(modelId, apiTypes);
+    }
+  }
+  for (const [modelId, expectedApiTypes] of expected) {
+    const model = inventory.models.find((candidate) =>
+      candidate.provider_model_id === modelId
+    );
+    if (!model) {
+      throw new Error(`aggregated model ${modelId} is absent from ${driver} inventory`);
+    }
+    const actualApiTypes = new Set(model.api_types);
+    const missing = [...expectedApiTypes].filter((apiType) =>
+      !actualApiTypes.has(apiType)
+    );
+    const extra = [...actualApiTypes].filter((apiType) =>
+      !expectedApiTypes.has(apiType)
+    );
+    if (missing.length > 0 || extra.length > 0) {
+      throw new Error(
+        `aggregated model ${modelId} API types differ: missing=[${missing.join(",")}] extra=[${extra.join(",")}]`,
+      );
+    }
+  }
+}
+
 function inventories(value: unknown): ProviderInventory[] {
   return inventoriesFromModelsList(value);
 }
@@ -535,6 +586,7 @@ async function waitInventory(
   session: GatewaySession,
   instance: string,
   timeoutMs: number,
+  requiredModelIds: readonly string[] = [],
 ): Promise<ProviderInventory> {
   const deadline = Date.now() + timeoutMs;
   let last: ProviderInventory[] = [];
@@ -543,7 +595,15 @@ async function waitInventory(
     const found = last.find((inventory) =>
       inventory.provider_instance_name === instance
     );
-    if (found && found.models.length > 0) return found;
+    if (
+      found && found.models.length > 0 &&
+      requiredModelIds.every((modelId) =>
+        found.models.some((model) =>
+          model.provider_model_id === modelId ||
+          model.provider_actual_model_id === modelId
+        )
+      )
+    ) return found;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
   }
   throw new Error(
@@ -593,7 +653,18 @@ async function refreshProviderInventory(
   await session.aicc.call("provider.refresh_models", {
     provider_instance_name: instance,
   });
-  return await waitInventory(session, instance, timeoutMs);
+  const requiredModelIds = requiredVariantModelIds(provider);
+  return await waitInventory(session, instance, timeoutMs, requiredModelIds);
+}
+
+function requiredVariantModelIds(
+  provider: ProviderProtocolCatalog["providers"][number],
+): string[] {
+  return [
+    ...new Set(
+      (provider.official_variant_rules ?? []).flatMap((rule) => rule.model_ids),
+    ),
+  ];
 }
 
 async function refreshLogin(
@@ -691,6 +762,7 @@ export function buildT15TypedParams(
         : "openai";
       const structuredOutput = requestKey.endsWith(".structured-output");
       const providerSwitch = requestKey.endsWith(".provider-switch");
+      const videoInput = requestKey.endsWith(".video-input");
       const providerState = typedOptions.foreignProviderState;
       return {
         ...common,
@@ -830,6 +902,22 @@ export function buildT15TypedParams(
               content: [{ type: "text", text: "Return the marker now." }],
             },
           ]
+          : videoInput
+          ? [{
+            role: "user",
+            content: [
+              { type: "text", text: "Describe the video." },
+              {
+                type: "document",
+                source: {
+                  kind: "url",
+                  url: "https://example.test/video.mp4",
+                  mime_hint: "video/mp4",
+                },
+                title: "video.mp4",
+              },
+            ],
+          }]
           : [{
             role: "user",
             content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }],
@@ -2033,13 +2121,30 @@ export function variantCells(
   }
   return runtimeVariants.flatMap((model) =>
     model.api_types.map((apiType) => {
-      const contract = catalog.providers.find((provider) =>
-        provider.provider_driver === inventory.provider_driver
-      )
-        ?.contracts.find((candidate) =>
+      const candidates = provider.contracts.filter((candidate) =>
           candidate.api_types.includes(apiType) ||
           candidate.variant_api_types?.includes(apiType)
         );
+      const baseModelId = model.provider_actual_model_id ??
+        model.provider_model_id.slice(0, model.provider_model_id.lastIndexOf(":"));
+      const aggregated = new Set(
+        provider.official_aggregated_model_ids?.[apiType] ?? [],
+      );
+      const firstParty = new Set(
+        provider.official_first_party_model_ids?.[apiType] ?? [],
+      );
+      const contract = candidates.length <= 1
+        ? candidates[0]
+        : candidates.find((candidate) => {
+          const testModelId = candidate.test_model_ids?.[apiType];
+          if (aggregated.has(baseModelId)) {
+            return testModelId !== undefined && aggregated.has(testModelId);
+          }
+          if (firstParty.has(baseModelId)) {
+            return testModelId === undefined || firstParty.has(testModelId);
+          }
+          return false;
+        });
       if (!contract) {
         throw new Error(
           `${inventory.provider_driver} metadata variant ${model.provider_model_id} has no T1.5 contract for ${apiType}`,
@@ -2243,7 +2348,13 @@ async function main(): Promise<void> {
       await addProvider(session, catalog, driver, instance, input.mockBaseUrl);
       created.push(instance);
       phase = `provider:${driver}:inventory`;
-      let inventory = await waitInventory(session, instance, input.timeoutMs);
+      let inventory = await waitInventory(
+        session,
+        instance,
+        input.timeoutMs,
+        requiredVariantModelIds(provider),
+      );
+      validateAggregatedInventory(catalog, driver, inventory);
       providerInstances.set(driver, instance);
       providerInventories.set(driver, inventory);
       const manifest = validateCaseManifest(
@@ -2262,6 +2373,12 @@ async function main(): Promise<void> {
       }
       await withMockQuotaTruth({
         systemConfig: sudoSystemConfig,
+        refreshSystemConfig: () => loginRefreshingSudoSystemConfig({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        }),
         userId: session.userId,
         appId: "system:control-panel",
         inventories: [inventory],
@@ -2458,6 +2575,12 @@ async function main(): Promise<void> {
       session = await refreshLogin(input, session);
       await withMockQuotaTruth({
         systemConfig: sudoSystemConfig,
+        refreshSystemConfig: () => loginRefreshingSudoSystemConfig({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        }),
         userId: session.userId,
         appId: "system:control-panel",
         inventories: [...providerInventories.values()],
@@ -2567,6 +2690,12 @@ async function main(): Promise<void> {
       const inventory = await waitInventory(session, instance, input.timeoutMs);
       await withMockQuotaTruth({
         systemConfig: sudoSystemConfig,
+        refreshSystemConfig: () => loginRefreshingSudoSystemConfig({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        }),
         userId: session.userId,
         appId: "system:control-panel",
         inventories: [inventory],

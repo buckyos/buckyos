@@ -411,7 +411,7 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
         canonical_request: AiccCall::ImagesGenerate(image),
         resolved_parameters: BTreeMap::from([(
             "provider_model_id".into(),
-            json!("wan2.1-t2i-turbo"),
+            json!("wanx2.1-t2i-turbo"),
         )]),
     };
     let HttpBody::Json(body) = registry

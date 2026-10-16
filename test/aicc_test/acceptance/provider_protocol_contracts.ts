@@ -138,6 +138,7 @@ export type ProviderProtocolCatalog = {
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
     official_first_party_model_ids?: Record<string, string[]>;
+    official_aggregated_model_ids?: Record<string, string[]>;
     wire_distinct_model_ids?: Record<string, string[]>;
     official_variant_sources?: string[];
     official_variant_rules?: Array<{
@@ -274,6 +275,15 @@ export function validateProviderProtocolCatalog(
         }
       }
     }
+    if (provider.official_aggregated_model_ids !== undefined) {
+      const aggregatedModelIds = object(
+        provider.official_aggregated_model_ids,
+        `${driver}.official_aggregated_model_ids`,
+      );
+      for (const [apiType, modelIds] of Object.entries(aggregatedModelIds)) {
+        stringArray(modelIds, `${driver}.official_aggregated_model_ids.${apiType}`);
+      }
+    }
     if (provider.wire_distinct_model_ids !== undefined) {
       const distinctModels = object(
         provider.wire_distinct_model_ids,
@@ -390,10 +400,17 @@ export function validateProviderProtocolCatalog(
           throw new Error(`${id}.test_model_ids.${apiType} is not declared by the contract`);
         }
         nonEmptyString(modelId, `${id}.test_model_ids.${apiType}`);
-        const officialPool = (provider.official_first_party_model_ids as
-          | Record<string, string[]>
-          | undefined)?.[apiType];
-        if (officialPool && !officialPool.includes(String(modelId))) {
+        const hasOfficialPool = provider.official_first_party_model_ids !== undefined ||
+          provider.official_aggregated_model_ids !== undefined;
+        const officialPool = [
+          ...((provider.official_first_party_model_ids as
+            | Record<string, string[]>
+            | undefined)?.[apiType] ?? []),
+          ...((provider.official_aggregated_model_ids as
+            | Record<string, string[]>
+            | undefined)?.[apiType] ?? []),
+        ];
+        if (hasOfficialPool && !officialPool.includes(String(modelId))) {
           throw new Error(`${id}.test_model_ids.${apiType} is absent from its official model pool`);
         }
       }
@@ -1202,7 +1219,11 @@ function validateNestedProviderBody(
     );
   }
   if (contract.operation === "responses.create" && Array.isArray(body.input)) {
-    validateOpenAiResponsesInput(body.input, errors);
+    validateOpenAiResponsesInput(
+      body.input,
+      errors,
+      contract.id === "qwen.responses.compatible-v1",
+    );
   }
   if (
     contract.operation === "chat.completions.create" &&
@@ -1298,6 +1319,7 @@ function validateNestedProviderBody(
 function validateOpenAiResponsesInput(
   input: unknown[],
   errors: string[],
+  allowInputVideo = false,
 ): void {
   input.forEach((item, index) => {
     const message = recordValue(item);
@@ -1366,7 +1388,12 @@ function validateOpenAiResponsesInput(
       }
       if (
         role !== "assistant" &&
-        !["input_text", "input_image", "input_file"].includes(type)
+        ![
+          "input_text",
+          "input_image",
+          "input_file",
+          ...(allowInputVideo ? ["input_video"] : []),
+        ].includes(type)
       ) {
         errors.push(
           `body field input[${index}].content[${partIndex}].type=${type}; ${role} message content is invalid`,
@@ -2195,6 +2222,23 @@ export function buildT15Manifest(
     case_id: "t1.5.openai.openai.responses.v1.llm.cloud-update",
     tags: [...cloudUpdateBase.tags, "cloud_update"],
     cleanup: [...cloudUpdateBase.cleanup, "restore_cloud_provider_rules"],
+  });
+  const qwenResponsesBase = cases.find((testCase) =>
+    testCase.provider_driver === "qwen" &&
+    testCase.protocol_contract_id === "qwen.responses.compatible-v1" &&
+    testCase.api_type === "llm" &&
+    testCase.mock_scenario === "success"
+  );
+  if (!qwenResponsesBase) {
+    throw new Error("Qwen Responses LLM contract is required for the video input case");
+  }
+  cases.push({
+    ...qwenResponsesBase,
+    case_id: "t1.5.qwen.qwen.responses.compatible-v1.llm.video-input",
+    tags: [...qwenResponsesBase.tags, "video_input"],
+    model_selector: { kind: "exact", value: "qwen3.8-omni-flash" },
+    expected_wire_fixture:
+      "qwen.responses.compatible-v1.request.video-input",
   });
   const historyProviders = new Set([
     "openai",

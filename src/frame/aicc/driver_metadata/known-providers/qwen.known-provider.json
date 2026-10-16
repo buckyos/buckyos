@@ -2,13 +2,13 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 4,
   "catalog_id": "qwen",
   "providers": [
     {
       "provider_profile_id": "qwen",
       "display_name": "Qwen（阿里云百炼）",
-      "base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "protocol_adapter_id": "qwen-responses",
       "discovery_behavior_id": "openai-compatible-models",
       "provider_rules_id": "qwen",
@@ -26,12 +26,12 @@
             "cn-hongkong"
           ]
         },
-        "workspace": { "mode": "required" },
+        "workspace": { "mode": "optional" },
         "account": { "mode": "unsupported" },
         "region_base_urls": {
-          "cn-beijing": "https://{workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+          "cn-beijing": "https://dashscope.aliyuncs.com/compatible-mode/v1",
           "ap-southeast-1": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-          "us-east-1": "https://{workspace}.us-east-1.maas.aliyuncs.com/compatible-mode/v1",
+          "us-east-1": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
           "eu-central-1": "https://{workspace}.eu-central-1.maas.aliyuncs.com/compatible-mode/v1",
           "ap-northeast-1": "https://{workspace}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1",
           "cn-hongkong": "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1"
@@ -40,8 +40,27 @@
       "ui_hints": {
         "credential_label": "DashScope API key",
         "credential_type": "bearer",
+        "selectable_inventory_models": [
+          { "id": "kimi/kimi-k2.6", "label": "Kimi K2.6" },
+          { "id": "kimi/kimi-k2.7-code", "label": "Kimi K2.7 Code" },
+          { "id": "kimi/kimi-k2.7-code-highspeed", "label": "Kimi K2.7 Code Highspeed" },
+          { "id": "kimi/kimi-k2.8-preview", "label": "Kimi K2.8 Preview" },
+          { "id": "kimi/kimi-k3", "label": "Kimi K3" },
+          { "id": "MiniMax/MiniMax-M2.1", "label": "MiniMax M2.1" },
+          { "id": "MiniMax/MiniMax-M2.5", "label": "MiniMax M2.5" },
+          { "id": "MiniMax/MiniMax-M2.7", "label": "MiniMax M2.7" },
+          { "id": "MiniMax/MiniMax-M3", "label": "MiniMax M3" },
+          { "id": "vanchin/deepseek-v4-pro-0813", "label": "DeepSeek V4 Pro 0813" },
+          { "id": "vanchin/deepseek-v4-pro", "label": "DeepSeek V4 Pro" },
+          { "id": "vanchin/deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash" },
+          { "id": "ZHIPU/GLM-5", "label": "GLM-5" },
+          { "id": "ZHIPU/GLM-5.1", "label": "GLM-5.1" },
+          { "id": "ZHIPU/GLM-5.2", "label": "GLM-5.2" },
+          { "id": "ZHIPU/GLM-5.3", "label": "GLM-5.3" },
+          { "id": "ZHIPU/GLM-5.3-Flash", "label": "GLM-5.3 Flash" }
+        ],
         "instance_fields": {
-          "default_base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+          "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
           "region": {
             "mode": "optional",
             "default_value": "cn-beijing",
@@ -54,7 +73,7 @@
               "cn-hongkong"
             ]
           },
-          "workspace": { "mode": "required" },
+          "workspace": { "mode": "optional" },
           "account": { "mode": "unsupported" }
         }
       }

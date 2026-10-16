@@ -904,8 +904,8 @@ mod tests {
                 assert!(
                     !model.logical_mounts.is_empty()
                         || catalog
-                            .llm_model(&model.model_driver_id, &model.origin_model_id)
-                            .is_some(),
+                            .resolve_model(&model.model_driver_id, &model.origin_model_id)
+                            .is_ok(),
                     "{}:{} produced no logical mounts",
                     profile.provider_profile_id,
                     model.provider_model_id

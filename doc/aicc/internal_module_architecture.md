@@ -213,9 +213,11 @@ ResolvedProviderCall
 | `glm-chat` | `openai-chat-completions` | thinking、tool stream、reasoning 与错误扩展 |
 | `deepseek-responses` | `openai-responses` | DeepSeek thinking/tool 约束和扩展事件 |
 | `doubao-responses` | `openai-responses` | 方舟内置工具、事件与参数差异 |
-| `qwen-responses` | `openai-responses` | 支持参数子集、session cache、事件差异 |
+| `qwen-responses` | `openai-responses` | 支持参数子集、session cache、视频输入差异和 ProviderState namespace；输出媒体归一化与回放沿用基础 codec |
 
 每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。实现前必须先用 `.provider.json` 表达参数、header、operation、能力限制等可声明差异；统一 schema 能表达时应删除 dialect 并直接绑定 base。现有 schema 不足不自动构成写代码的理由，应先评审是否值得增加一个有界、可复用、可校验的声明字段。
+
+派生 Responses adapter 同样受结果资源契约约束。基础 codec 将响应内联媒体转换为 `ResourceRef`，派生层只能改写 ProviderState 的来源坐标，不得把 provider 原始 base64 恢复到公开 output。公共结果物化后，artifact 和 ProviderState 中的资源都必须是 `named_object`；仅在同坐标请求回放的编码阶段，才允许基础 codec 从已物化资源恢复 provider wire 要求的 bytes/base64。Qwen Responses 必须通过专属 T1.5 fixture 覆盖这条委托链路；DashScope 图片和视频协议的官方结果为 URL，保留 URL artifact，不强制下载为 NamedObject。
 
 ### 4.3 原生异步协议
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-12.1",
-  "checked_at": "2026-10-12",
+  "revision": "official-provider-protocols-2026-10-13.1",
+  "checked_at": "2026-10-13",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -112,8 +112,8 @@
         "vision.ocr": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
         "vision.caption": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
         "embedding.text": ["text-embedding-3-small", "text-embedding-3-large"],
-        "image.txt2img": ["gpt-image-2"],
-        "image.img2img": ["gpt-image-2"],
+        "image.txt2img": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-image-2"],
+        "image.img2img": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-image-2"],
         "image.inpaint": ["gpt-image-2"],
         "audio.tts": ["gpt-4o-mini-tts"],
         "audio.asr": ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
@@ -645,14 +645,22 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
+          "MiniMax-M3.1-Flash-Preview",
           "MiniMax-M3",
           "MiniMax-M2.7",
-          "MiniMax-M2.7-highspeed"
+          "MiniMax-M2.7-highspeed",
+          "MiniMax-M2.5",
+          "MiniMax-M2.5-highspeed",
+          "MiniMax-M2.1",
+          "MiniMax-M2.1-highspeed",
+          "MiniMax-M2"
         ],
         "vision.ocr": [
+          "MiniMax-M3.1-Flash-Preview",
           "MiniMax-M3"
         ],
         "vision.caption": [
+          "MiniMax-M3.1-Flash-Preview",
           "MiniMax-M3"
         ],
         "audio.tts": [
@@ -682,10 +690,18 @@
           "music-3.0"
         ]
       },
+      "official_variant_sources": [
+        "https://platform.minimax.io/docs/guides/text-generation",
+        "https://platform.minimax.io/docs/api-reference/text-chat-anthropic"
+      ],
+      "official_variant_rules": [
+        { "model_ids": ["MiniMax-M3.1-Flash-Preview"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } },
+        { "model_ids": ["MiniMax-M3"], "variants": { "reasoning-none": { "thinking": { "type": "disabled" } } } }
+      ],
       "test_model_ids": {
-        "llm": "MiniMax-M3",
-        "vision.ocr": "MiniMax-M3",
-        "vision.caption": "MiniMax-M3",
+        "llm": "MiniMax-M3.1-Flash-Preview",
+        "vision.ocr": "MiniMax-M3.1-Flash-Preview",
+        "vision.caption": "MiniMax-M3.1-Flash-Preview",
         "audio.tts": "speech-2.8-hd",
         "audio.asr": "asr-1.0",
         "image.txt2img": "image-01",
@@ -706,7 +722,7 @@
           "auth": { "kind": "header", "name": "x-api-key", "prefix": "" },
           "content_type": "application/json",
           "required_body_fields": ["model", "messages", "max_tokens"],
-          "allowed_body_fields": ["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_p"],
+          "allowed_body_fields": ["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_p", "output_config"],
           "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
           "stream_protocol": "claude_messages",
           "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "usage": { "input_tokens": 4, "output_tokens": 3 }, "base_resp": { "status_code": 0, "status_msg": "success" } },
@@ -2246,15 +2262,17 @@
         "vision.ocr": [
           "qwen3.8-max",
           "qwen3.8-flash",
+          "qwen3.7-plus",
           "qwen3.8-omni-flash"
         ],
         "vision.caption": [
           "qwen3.8-max",
           "qwen3.8-flash",
+          "qwen3.7-plus",
           "qwen3.8-omni-flash"
         ],
         "image.txt2img": [
-          "wan2.1-t2i-turbo"
+          "wanx2.1-t2i-turbo"
         ],
         "image.img2img": [
           "qwen-image-edit"
@@ -2263,7 +2281,45 @@
           "wan2.6-t2v"
         ]
       },
-      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"],
+      "official_aggregated_model_ids": {
+        "llm": [
+          "deepseek-v4-flash-0731",
+          "deepseek-v4-flash",
+          "deepseek-v4-pro-0813",
+          "deepseek-v4-pro",
+          "deepseek-v4.1-flash",
+          "vanchin/deepseek-v4-pro-0813",
+          "vanchin/deepseek-v4-pro",
+          "vanchin/deepseek-v4.1-flash",
+          "glm-4.7",
+          "glm-5",
+          "glm-5.1",
+          "glm-5.2",
+          "glm-5.3",
+          "ZHIPU/GLM-5",
+          "ZHIPU/GLM-5.1",
+          "ZHIPU/GLM-5.2",
+          "ZHIPU/GLM-5.3",
+          "ZHIPU/GLM-5.3-Flash",
+          "kimi-k2.6",
+          "kimi-k2.7-code",
+          "kimi-k3",
+          "kimi/kimi-k2.6",
+          "kimi/kimi-k2.7-code",
+          "kimi/kimi-k2.7-code-highspeed",
+          "kimi/kimi-k2.8-preview",
+          "kimi/kimi-k3",
+          "MiniMax-M2.1",
+          "MiniMax-M2.5",
+          "MiniMax/MiniMax-M2.1",
+          "MiniMax/MiniMax-M2.5",
+          "MiniMax/MiniMax-M2.7",
+          "MiniMax/MiniMax-M3"
+        ],
+        "vision.ocr": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"],
+        "vision.caption": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"]
+      },
+      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin", "https://help.aliyun.com/zh/model-studio/glm-zhipu", "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai", "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"],
       "official_variant_rules": [{
         "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"],
         "variants": {
@@ -2278,12 +2334,64 @@
           "reasoning-none": { "reasoning": { "effort": "none" } },
           "reasoning-thinking": { "reasoning": { "effort": "xhigh" } }
         }
+      }, {
+        "model_ids": ["deepseek-v4-flash-0731", "deepseek-v4-flash", "deepseek-v4-pro-0813", "deepseek-v4-pro", "deepseek-v4.1-flash", "vanchin/deepseek-v4-pro-0813", "vanchin/deepseek-v4-pro", "vanchin/deepseek-v4.1-flash"],
+        "variants": {
+          "reasoning-none": { "enable_thinking": false },
+          "reasoning-low": { "enable_thinking": true, "reasoning_effort": "low" },
+          "reasoning-high": { "enable_thinking": true, "reasoning_effort": "high" },
+          "reasoning-max": { "enable_thinking": true, "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["glm-5", "glm-5.1", "ZHIPU/GLM-5", "ZHIPU/GLM-5.1"],
+        "variants": {
+          "reasoning-none": { "enable_thinking": false },
+          "reasoning-thinking": { "enable_thinking": true }
+        }
+      }, {
+        "model_ids": ["glm-5.2", "ZHIPU/GLM-5.2"],
+        "variants": {
+          "reasoning-none": { "enable_thinking": false },
+          "reasoning-thinking": { "enable_thinking": true },
+          "reasoning-high": { "enable_thinking": true, "reasoning_effort": "high" },
+          "reasoning-max": { "enable_thinking": true, "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["glm-5.3", "ZHIPU/GLM-5.3", "ZHIPU/GLM-5.3-Flash"],
+        "variants": {
+          "reasoning-low": { "enable_thinking": true, "reasoning_effort": "low" },
+          "reasoning-high": { "enable_thinking": true, "reasoning_effort": "high" },
+          "reasoning-max": { "enable_thinking": true, "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["kimi-k2.6", "kimi/kimi-k2.6"],
+        "variants": {
+          "reasoning-none": { "enable_thinking": false },
+          "reasoning-medium": { "enable_thinking": true }
+        }
+      }, {
+        "model_ids": ["kimi-k2.7-code", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed"],
+        "variants": {
+          "reasoning-medium": { "enable_thinking": true, "preserve_thinking": true }
+        }
+      }, {
+        "model_ids": ["kimi-k3", "kimi/kimi-k2.8-preview", "kimi/kimi-k3"],
+        "variants": {
+          "reasoning-low": { "reasoning_effort": "low" },
+          "reasoning-high": { "reasoning_effort": "high" },
+          "reasoning-max": { "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["MiniMax/MiniMax-M3"],
+        "variants": {
+          "reasoning-none": { "thinking": { "type": "disabled" } }
+        }
       }],
       "test_model_ids": {
         "llm": "qwen3.8-max",
         "vision.ocr": "qwen3.8-max",
         "vision.caption": "qwen3.8-max",
-        "image.txt2img": "wan2.1-t2i-turbo",
+        "image.txt2img": "wanx2.1-t2i-turbo",
         "image.img2img": "qwen-image-edit",
         "video.txt2video": "wan2.6-t2v"
       },
@@ -2303,9 +2411,30 @@
         "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
         "stream_protocol": "openai_responses",
         "success_fixture": { "id": "resp_qwen_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.8-max", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "inline_artifact_success_fixture": { "id": "resp_qwen_inline_artifact_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.8-max", "output": [{ "type": "message", "id": "msg_qwen_inline_artifact_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }, { "type": "image_generation_call", "id": "ig_qwen_inline_artifact_mock_1", "status": "completed", "result": "aW1hZ2U=", "output_format": "png" }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "inline_artifact_payload_paths": ["/output/1/result"],
         "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
-        "evidence_summary": "Qwen workspace-compatible Responses uses POST /compatible-mode/v1/responses with Bearer authentication and JSON model/input, returning OpenAI-style response output."
+        "evidence_summary": "Qwen workspace-compatible Responses uses POST /compatible-mode/v1/responses with Bearer authentication and JSON model/input, returning OpenAI-style response output. The inline artifact fixture is an adapter regression fixture for the delegated OpenAI Responses output shape, not a declaration that every Qwen model supports image generation."
       },
+        {
+          "id": "qwen.chat-completions.compatible-v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "test_model_ids": {"llm": "deepseek-v4-flash", "vision.ocr": "kimi/kimi-k2.6", "vision.caption": "kimi/kimi-k2.6"},
+          "operation": "chat.completions.create",
+          "http_method": "POST",
+          "path": "/compatible-mode/v1/chat/completions",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model", "messages"],
+          "allowed_body_fields": ["model", "messages", "max_completion_tokens", "max_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "enable_thinking", "preserve_thinking", "thinking", "tool_stream", "thinking_budget", "reasoning_effort", "temperature", "top_p", "seed", "presence_penalty", "frequency_penalty", "n", "logprobs", "top_logprobs"],
+          "body_field_types": {"model": ["string"], "messages": ["array"], "max_completion_tokens": ["integer"], "max_tokens": ["integer"], "stream": ["boolean"], "enable_thinking": ["boolean"], "preserve_thinking": ["boolean"], "thinking": ["object"], "tool_stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "seed": ["integer"]},
+          "stream_protocol": "openai_chat",
+          "success_fixture": {"id": "chatcmpl_qwen_aggregated_mock_1", "object": "chat.completion", "created": 1770000000, "model": "deepseek-v4-flash", "choices": [{"index": 0, "message": {"role": "assistant", "content": "BUCKYOS-AICC-4827"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}},
+          "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions", "https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
+          "evidence_summary": "Alibaba Cloud Model Studio exposes DeepSeek, Kimi, GLM, and MiniMax through POST /compatible-mode/v1/chat/completions with Bearer authentication and OpenAI-compatible chat responses."
+        },
         {
           "id": "qwen.dashscope.image_synthesis.v1",
           "protocol_adapter_id": "qwen-responses",

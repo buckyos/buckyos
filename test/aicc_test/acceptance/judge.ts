@@ -68,6 +68,7 @@ function judgeResource(
   return {
     type: typeof mime === "string" && mime.startsWith("image/") ? "image" : "document",
     source: normalizedSource,
+    ...(typeof mime === "string" && mime.startsWith("video/") ? { title: "video.mp4" } : {}),
   };
 }
 
@@ -88,14 +89,32 @@ export function parseJudgeVerdict(text: string, threshold: number): {
     typeof record.pass !== "boolean" || typeof record.score !== "number" ||
     !Number.isFinite(record.score) || record.score < 0 || record.score > 1 ||
     typeof record.reason !== "string" || record.reason.trim().length === 0 ||
-    record.reason.length > 240 || (record.score < threshold && record.pass)) {
+    (record.score < threshold && record.pass)) {
     throw new JudgeError(`Judge verdict has invalid schema: ${JSON.stringify(verdict)}`);
   }
   return {
     passed: record.pass && record.score >= threshold,
     score: record.score,
-    reason: record.reason,
+    reason: record.reason.slice(0, 240),
   };
+}
+
+export function parseJudgeVerdictTexts(texts: string[], threshold: number): {
+  passed: boolean;
+  score: number;
+  reason: string;
+} {
+  let lastError: unknown;
+  for (const text of [...texts].reverse()) {
+    try {
+      return parseJudgeVerdict(text, threshold);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new JudgeError(
+    `Judge returned no strict JSON verdict in ${texts.length} output text item(s): ${String(lastError)}`,
+  );
 }
 
 export function selectJudgeModel(configuredModel: string, inventories: ProviderInventory[]): string {
@@ -156,7 +175,9 @@ export function outputResources(value: unknown, depth = 0): Array<Record<string,
 
 async function terminal(taskManager: RpcClient, initial: AiMethodResponse, timeoutMs: number): Promise<unknown> {
   if (!initial.task_id) throw new JudgeError("Judge response omitted task_id");
-  if (initial.status === "failed") throw new JudgeError("Judge request failed immediately");
+  if (initial.status === "failed") {
+    throw new JudgeError(`Judge request failed immediately: ${JSON.stringify(initial.result ?? {})}`);
+  }
   if (initial.status === "succeeded") return initial;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -249,8 +270,7 @@ export async function runJudge(input: {
   };
   const initial = await input.invoke(request);
   const result = await terminal(input.taskManager, initial, input.timeoutMs);
-  const text = responseText(result).join("\n");
-  const verdict = parseJudgeVerdict(text, input.threshold);
+  const verdict = parseJudgeVerdictTexts(responseText(result), input.threshold);
   return {
     taskId: initial.task_id,
     terminalResponse: result,

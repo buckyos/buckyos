@@ -383,6 +383,7 @@ fn validate_provider_rule_data(
             || !matches!(
                 key.as_str(),
                 "max_context_tokens"
+                    | "max_output_tokens"
                     | "decision.max_questions"
                     | "decision.max_options"
                     | "decision.max_levels"

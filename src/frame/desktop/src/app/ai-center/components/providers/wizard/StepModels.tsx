@@ -9,11 +9,9 @@ interface StepModelsProps {
 }
 
 /**
- * Some providers (for example the Volcengine Doubao speech endpoints) expose no
- * model discovery API, so AICC ships a static catalog. The account may only have
- * a subset of those models provisioned, and there is no way to detect it, so the
- * operator picks the subset here. Everything is selected by default; only the
- * checked models join the provider inventory and become routable.
+ * Some Provider catalog APIs list models that the current account has not
+ * activated, while other providers expose no discovery API. In both cases the
+ * operator selects the models that should become routable.
  */
 export function StepModels({ draft, profile, onUpdate }: StepModelsProps) {
   const { t } = useI18n()
@@ -56,7 +54,7 @@ export function StepModels({ draft, profile, onUpdate }: StepModelsProps) {
             <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
               {t(
                 'aiCenter.wizard.selectModelsHint',
-                'This provider has no model discovery API. Only the models selected here join the inventory and become routable.',
+                'The provider cannot reliably report account entitlement for these models. Only selected models become routable.',
               )}
             </p>
           </div>

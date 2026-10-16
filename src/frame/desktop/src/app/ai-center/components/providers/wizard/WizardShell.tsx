@@ -150,6 +150,8 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         : undefined,
       auth_mode: 'api_key',
       api_key: '',
+      discovery_behavior_id: profile?.discovery_behavior_id,
+      selectable_inventory_models: profile?.selectable_inventory_models?.map((model) => model.id),
       selected_inventory_models: profile?.selectable_inventory_models?.length
         ? profile.selectable_inventory_models.map((model) => model.id)
         : undefined,
@@ -352,10 +354,15 @@ function providerConnectionFieldsValid(
   profile: ProviderSetupCatalog['providers'][number] | undefined,
 ): boolean {
   if (!profile) return draft.provider_profile_id === 'custom'
-  return (['region', 'workspace', 'account', 'policy_region'] as const).every((name) =>
-    profile.connection_fields[name]?.mode !== 'required'
-      || (Boolean(draft[name]?.trim()) && draft[name] !== 'unknown'),
-  )
+  return (['region', 'workspace', 'account', 'policy_region'] as const).every((name) => {
+    const field = profile.connection_fields[name]
+    if (!field) return true
+    const placeholder = `{${name}}`
+    const usedByEndpoint = draft.base_url.includes(placeholder)
+      || Object.values(draft.operation_base_urls).some((url) => url.includes(placeholder))
+    return (field.mode !== 'required' && !usedByEndpoint)
+      || (Boolean(draft[name]?.trim()) && draft[name] !== 'unknown')
+  })
 }
 
 function nextProviderInstanceName(providerType: ProviderType, name: string, existing: string[]): string {

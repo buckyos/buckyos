@@ -19,6 +19,10 @@ pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
 pub(crate) const KIMI_CHAT_ADAPTER_ID: &str = "kimi-chat";
 pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
 
+pub(crate) fn qwen_aggregated_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    derived_adapter("qwen-aggregated-chat", Arc::new(QwenAggregatedDialect))
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChatCompletionsDialectContract {
@@ -462,6 +466,54 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         chunk: &mut Map<String, Value>,
     ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
         normalize_glm_tool_stream(chunk)?;
+        reasoning_from_stream(chunk)
+    }
+}
+
+#[derive(Debug)]
+struct QwenAggregatedDialect;
+
+impl OpenAiChatCompletionsDialect for QwenAggregatedDialect {
+    fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
+        ChatCompletionsTokenLimitParameter::MaxTokens
+    }
+
+    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
+        role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
+    }
+
+    fn transform_resolved_parameter(
+        &self,
+        name: &str,
+        value: &Value,
+    ) -> ProtocolResultValue<Option<(String, Value)>> {
+        let valid = match name {
+            "enable_thinking" | "preserve_thinking" | "tool_stream" => value.is_boolean(),
+            "thinking" => value
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "enabled" | "disabled" | "adaptive")),
+            _ => return Ok(None),
+        };
+        if !valid {
+            return Err(ProtocolError::invalid_request(format!(
+                "Qwen aggregated Chat Completions parameter `{name}` has an invalid value"
+            )));
+        }
+        Ok(Some((name.to_owned(), value.clone())))
+    }
+
+    fn transform_immediate_response(
+        &self,
+        response: &mut Map<String, Value>,
+    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
+        reasoning_from_response(response, "qwen")
+    }
+
+    fn transform_stream_chunk(
+        &self,
+        chunk: &mut Map<String, Value>,
+    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
         reasoning_from_stream(chunk)
     }
 }

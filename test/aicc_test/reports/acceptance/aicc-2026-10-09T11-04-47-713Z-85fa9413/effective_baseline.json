@@ -1,0 +1,4152 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-09T11:05:22.222Z",
+  "source_baseline_revision": "2026-10-09.2",
+  "official_catalog_fetched_at": "2026-10-09T11:04:47.970Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "qwen",
+      "provider_instance_name": "qwen-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "88c55339bd5ac688772aafa96f7824c5df5f872e496d6448efd9909ccdf68151",
+      "refresh_inventory_revision": "32:1791541247325",
+      "unmatched_count": 193,
+      "after_inventory_revision": "88c55339bd5ac688772aafa96f7824c5df5f872e496d6448efd9909ccdf68151"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "33:1791541247325",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "glm-chat",
+        "provider_instance_name": "glm-main",
+        "provider_profile_id": "glm",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://openspeech.bytedance.com/api/v3/tts",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-speech-main",
+        "provider_profile_id": "doubao-speech",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-main",
+        "provider_profile_id": "doubao",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimax.cn/anthropic",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-main",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.deepseek.com",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "deepseek-responses",
+        "provider_instance_name": "deepseek-main",
+        "provider_profile_id": "deepseek",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimax.cn/anthropic",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791543889108,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 14,
+          "revision": "sha256:551cbeccd2497cade6f3526f905fbdb0363205ed56cbf1a04bd6a1e0bcf13208",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "MiniMax-M2",
+            "MiniMax-M2.1",
+            "MiniMax-M2.1-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed"
+          ],
+          "updated_at_ms": 1791543889108
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-main-2",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791543889823,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 66,
+          "state": "loaded",
+          "unavailable_presets": [
+            {
+              "effort": "thinking",
+              "provider_model_id": "ZHIPU/GLM-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "ZHIPU/GLM-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "ZHIPU/GLM-5.1",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "ZHIPU/GLM-5.1",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "ZHIPU/GLM-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "ZHIPU/GLM-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "ZHIPU/GLM-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "ZHIPU/GLM-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "ZHIPU/GLM-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "ZHIPU/GLM-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "ZHIPU/GLM-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "ZHIPU/GLM-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "ZHIPU/GLM-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "deepseek-v4-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "deepseek-v4-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "deepseek-v4-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "deepseek-v4-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "deepseek-v4-flash-0731",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "deepseek-v4-flash-0731",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "deepseek-v4-flash-0731",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "deepseek-v4-flash-0731",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-4.7",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "glm-5",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-5.1",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "glm-5.1",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "glm-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "glm-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "glm-5.2",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "glm-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "glm-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "glm-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "glm-5.3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "kimi-k2.6",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "kimi-k2.6",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "kimi-k2.7-code",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "kimi-k3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "kimi-k3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "kimi-k3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "kimi/kimi-k2.6",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "kimi/kimi-k2.6",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "kimi/kimi-k2.7-code",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "kimi/kimi-k2.7-code-highspeed",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "kimi/kimi-k3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "kimi/kimi-k3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "kimi/kimi-k3",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-max",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "qwen3-max",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-max-2025-09-23",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "qwen3-max-2025-09-23",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-max-2026-01-23",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "qwen3-max-2026-01-23",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "vanchin/deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "vanchin/deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "vanchin/deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "vanchin/deepseek-v4-pro",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "vanchin/deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "vanchin/deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "vanchin/deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "vanchin/deepseek-v4-pro-0813",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "vanchin/deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "vanchin/deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "high",
+              "provider_model_id": "vanchin/deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "max",
+              "provider_model_id": "vanchin/deepseek-v4.1-flash",
+              "reason": "missing_channel_mapping"
+            }
+          ],
+          "unmatched_models": [
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "MiniMax/speech-02-hd",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "MiniMax/speech-02-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "ZHIPU/GLM-5.3-FlashX",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "codeqwen1.5-7b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1-distill-llama-70b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1-distill-llama-8b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1-distill-qwen-1.5b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1-distill-qwen-14b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1-distill-qwen-32b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-r1-distill-qwen-7b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-v3",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-v3.1",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "deepseek-v3.2",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "fun-asr-flash-2026-06-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "glm-5.2-fast-preview",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "glm-5.3-prime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "gui-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "kimi-k2-thinking",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "kimi-k2.5",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qvq-max",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qvq-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-1.8b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-1.8b-longcontext-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-14b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-72b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-7b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-audio-3.0-asr-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-audio-3.0-realtime-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-audio-3.0-realtime-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-audio-3.1-realtime-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-coder-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-coder-plus-1106",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-coder-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-deep-research-2025-12-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-deep-search-planning",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-flash-character",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-flash-character-2026-02-26",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.0",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.0-2026-03-03",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.0-pro",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.0-pro-2026-03-03",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.0-pro-2026-04-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.0-pro-2026-06-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-2.1-pro",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-3.0",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-3.0-pro",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-edit-max",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-edit-max-2026-01-16",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-edit-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-edit-plus-2025-10-30",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-edit-plus-2025-12-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-max",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-max-2025-12-30",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-image-plus-2026-01-09",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-long",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-math-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-math-plus-0919",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-math-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-max",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-max-0107",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-max-1201",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-max-longcontext",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-mt-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-mt-lite",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-mt-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-mt-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-mt-uni",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-omni-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus-2025-01-25",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus-2025-04-28",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus-2025-07-14",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus-2025-09-11",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus-2025-11-05",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-plus-2025-12-01",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-tts-2025-05-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-turbo-0919",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-turbo-2024-11-01",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-vl-max",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-vl-ocr",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-vl-ocr-2025-11-20",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen-vl-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-0.5b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-1.8b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-110b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-14b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-32b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-72b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen1.5-7b-chat",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2-0.5b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2-1.5b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2-57b-a14b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2-7b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2.5-0.5b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2.5-1.5b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen2.5-math-1.5b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-14b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-235b-a22b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-235b-a22b-instruct-2507",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-235b-a22b-thinking-2507",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-30b-a3b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-30b-a3b-instruct-2507",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-30b-a3b-thinking-2507",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-32b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-8b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-asr-flash-2026-02-10",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-asr-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-asr-flash-realtime-2025-10-27",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-asr-flash-realtime-2026-02-10",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-coder-480b-a35b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-coder-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-coder-next",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-coder-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-coder-plus-2025-07-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-coder-plus-2025-09-23",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-livetranslate-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-livetranslate-flash-2025-12-01",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-livetranslate-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-livetranslate-flash-realtime-2025-09-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-max-preview",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-next-80b-a3b-instruct",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-next-80b-a3b-thinking",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-omni-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-omni-flash-2025-09-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-omni-flash-2025-12-01",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-omni-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-omni-flash-realtime-2025-09-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-omni-flash-realtime-2025-12-01",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-s2s-flash-realtime-2025-09-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-flash-2025-09-18",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-flash-2025-11-27",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-flash-realtime-2025-09-18",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-flash-realtime-2025-11-27",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-instruct-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-instruct-flash-2026-01-26",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-instruct-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-instruct-flash-realtime-2026-01-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-vc-2026-01-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-vc-realtime-2025-11-27",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-vc-realtime-2026-01-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-vd-2026-01-26",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-vd-realtime-2025-12-16",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-tts-vd-realtime-2026-01-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-vl-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-vl-flash-2025-10-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-vl-flash-2026-01-22",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-vl-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-vl-plus-2025-09-23",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3-vl-plus-2025-12-19",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-livetranslate-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-livetranslate-flash-realtime-2026-05-19",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-ocr",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-flash-2026-03-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-flash-realtime-2026-03-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-plus-2026-03-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-plus-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.5-omni-plus-realtime-2026-03-15",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.6-27b",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.7-max-preview",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.7-text-embedding",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.7-text-embedding-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.7-text-rerank",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.8-livetranslate-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwen3.8-omni-flash-realtime",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "qwq-plus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "siliconflow/deepseek-r1-0528",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "siliconflow/deepseek-v3-0324",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "siliconflow/deepseek-v3.1-terminus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "siliconflow/deepseek-v3.2",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "sre-gpu-auto-handle",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "stepfun/step-3.7-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "stepfun/step-5-preview",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "test-sre-gpu-auto-handle",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "tongyi-xiaomi-analysis-flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "tongyi-xiaomi-analysis-pro",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "unisound/unisound-u2",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "vanchin/deepseek-ocr",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "vanchin/deepseek-r1",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "vanchin/deepseek-v3",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "vanchin/deepseek-v3.1-terminus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "vanchin/deepseek-v3.2-think",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "wan2.7-image",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "wan2.7-image-pro",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "xiaomi/mimo-v2.5-pro",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1791543889823,
+              "provider_model_id": "z-image-turbo",
+              "reason": {
+                "kind": "no_match"
+              }
+            }
+          ],
+          "unpriced_models": [
+            "MiniMax-M2.1",
+            "MiniMax-M2.5",
+            "MiniMax/MiniMax-M2.1",
+            "MiniMax/MiniMax-M2.5",
+            "MiniMax/MiniMax-M2.7",
+            "MiniMax/MiniMax-M3",
+            "MiniMax/speech-2.8-hd",
+            "MiniMax/speech-2.8-turbo",
+            "ZHIPU/GLM-5",
+            "ZHIPU/GLM-5.1",
+            "ZHIPU/GLM-5.2",
+            "ZHIPU/GLM-5.3",
+            "ZHIPU/GLM-5.3-Flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-0731",
+            "deepseek-v4-pro",
+            "deepseek-v4-pro-0813",
+            "deepseek-v4.1-flash",
+            "glm-4.7",
+            "glm-5",
+            "glm-5.1",
+            "glm-5.2",
+            "glm-5.3",
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "kimi-k3",
+            "kimi/kimi-k2.6",
+            "kimi/kimi-k2.7-code",
+            "kimi/kimi-k2.7-code-highspeed",
+            "kimi/kimi-k2.8-preview",
+            "kimi/kimi-k3",
+            "vanchin/deepseek-v4-pro",
+            "vanchin/deepseek-v4-pro-0813",
+            "vanchin/deepseek-v4.1-flash"
+          ],
+          "updated_at_ms": 1791543889823
+        },
+        "protocol_adapter_id": "qwen-responses",
+        "provider_instance_name": "qwen-t2",
+        "provider_profile_id": "qwen",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 624
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "qwen",
+      "provider_instance_name": "qwen-t2",
+      "inventory_revision": "official-snapshot-2026-10-09T11:04:47.970Z",
+      "models": [
+        {
+          "provider_model_id": "codeqwen1.5-7b-chat"
+        },
+        {
+          "provider_model_id": "deepseek-r1"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-llama-70b"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-llama-8b"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-qwen-1.5b"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-qwen-14b"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-qwen-32b"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-qwen-7b"
+        },
+        {
+          "provider_model_id": "deepseek-v3"
+        },
+        {
+          "provider_model_id": "deepseek-v3.1"
+        },
+        {
+          "provider_model_id": "deepseek-v3.2"
+        },
+        {
+          "provider_model_id": "deepseek-v4-flash"
+        },
+        {
+          "provider_model_id": "deepseek-v4-flash-0731"
+        },
+        {
+          "provider_model_id": "deepseek-v4-pro"
+        },
+        {
+          "provider_model_id": "deepseek-v4-pro-0813"
+        },
+        {
+          "provider_model_id": "deepseek-v4.1-flash"
+        },
+        {
+          "provider_model_id": "fun-asr-flash-2026-06-15"
+        },
+        {
+          "provider_model_id": "glm-4.7"
+        },
+        {
+          "provider_model_id": "glm-5"
+        },
+        {
+          "provider_model_id": "glm-5.1"
+        },
+        {
+          "provider_model_id": "glm-5.2"
+        },
+        {
+          "provider_model_id": "glm-5.2-fast-preview"
+        },
+        {
+          "provider_model_id": "glm-5.3"
+        },
+        {
+          "provider_model_id": "glm-5.3-prime"
+        },
+        {
+          "provider_model_id": "gui-plus"
+        },
+        {
+          "provider_model_id": "kimi-k2-thinking"
+        },
+        {
+          "provider_model_id": "kimi-k2.5"
+        },
+        {
+          "provider_model_id": "kimi-k2.6"
+        },
+        {
+          "provider_model_id": "kimi-k2.7-code"
+        },
+        {
+          "provider_model_id": "kimi-k3"
+        },
+        {
+          "provider_model_id": "kimi/kimi-k2.6"
+        },
+        {
+          "provider_model_id": "kimi/kimi-k2.7-code"
+        },
+        {
+          "provider_model_id": "kimi/kimi-k2.7-code-highspeed"
+        },
+        {
+          "provider_model_id": "kimi/kimi-k2.8-preview"
+        },
+        {
+          "provider_model_id": "kimi/kimi-k3"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.1"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.5"
+        },
+        {
+          "provider_model_id": "MiniMax/MiniMax-M2.1"
+        },
+        {
+          "provider_model_id": "MiniMax/MiniMax-M2.5"
+        },
+        {
+          "provider_model_id": "MiniMax/MiniMax-M2.7"
+        },
+        {
+          "provider_model_id": "MiniMax/MiniMax-M3"
+        },
+        {
+          "provider_model_id": "MiniMax/speech-02-hd"
+        },
+        {
+          "provider_model_id": "MiniMax/speech-02-turbo"
+        },
+        {
+          "provider_model_id": "MiniMax/speech-2.8-hd"
+        },
+        {
+          "provider_model_id": "MiniMax/speech-2.8-turbo"
+        },
+        {
+          "provider_model_id": "qvq-max"
+        },
+        {
+          "provider_model_id": "qvq-plus"
+        },
+        {
+          "provider_model_id": "qwen-1.8b-chat"
+        },
+        {
+          "provider_model_id": "qwen-1.8b-longcontext-chat"
+        },
+        {
+          "provider_model_id": "qwen-14b-chat"
+        },
+        {
+          "provider_model_id": "qwen-72b-chat"
+        },
+        {
+          "provider_model_id": "qwen-7b-chat"
+        },
+        {
+          "provider_model_id": "qwen-audio-3.0-asr-flash"
+        },
+        {
+          "provider_model_id": "qwen-audio-3.0-realtime-flash"
+        },
+        {
+          "provider_model_id": "qwen-audio-3.0-realtime-plus"
+        },
+        {
+          "provider_model_id": "qwen-audio-3.1-realtime-plus"
+        },
+        {
+          "provider_model_id": "qwen-coder-plus"
+        },
+        {
+          "provider_model_id": "qwen-coder-plus-1106"
+        },
+        {
+          "provider_model_id": "qwen-coder-turbo"
+        },
+        {
+          "provider_model_id": "qwen-deep-research-2025-12-15"
+        },
+        {
+          "provider_model_id": "qwen-deep-search-planning"
+        },
+        {
+          "provider_model_id": "qwen-flash"
+        },
+        {
+          "provider_model_id": "qwen-flash-character"
+        },
+        {
+          "provider_model_id": "qwen-flash-character-2026-02-26"
+        },
+        {
+          "provider_model_id": "qwen-image-2.0"
+        },
+        {
+          "provider_model_id": "qwen-image-2.0-2026-03-03"
+        },
+        {
+          "provider_model_id": "qwen-image-2.0-pro"
+        },
+        {
+          "provider_model_id": "qwen-image-2.0-pro-2026-03-03"
+        },
+        {
+          "provider_model_id": "qwen-image-2.0-pro-2026-04-22"
+        },
+        {
+          "provider_model_id": "qwen-image-2.0-pro-2026-06-22"
+        },
+        {
+          "provider_model_id": "qwen-image-2.1-pro"
+        },
+        {
+          "provider_model_id": "qwen-image-3.0"
+        },
+        {
+          "provider_model_id": "qwen-image-3.0-pro"
+        },
+        {
+          "provider_model_id": "qwen-image-edit-max"
+        },
+        {
+          "provider_model_id": "qwen-image-edit-max-2026-01-16"
+        },
+        {
+          "provider_model_id": "qwen-image-edit-plus"
+        },
+        {
+          "provider_model_id": "qwen-image-edit-plus-2025-10-30"
+        },
+        {
+          "provider_model_id": "qwen-image-edit-plus-2025-12-15"
+        },
+        {
+          "provider_model_id": "qwen-image-max"
+        },
+        {
+          "provider_model_id": "qwen-image-max-2025-12-30"
+        },
+        {
+          "provider_model_id": "qwen-image-plus-2026-01-09"
+        },
+        {
+          "provider_model_id": "qwen-long"
+        },
+        {
+          "provider_model_id": "qwen-math-plus"
+        },
+        {
+          "provider_model_id": "qwen-math-plus-0919"
+        },
+        {
+          "provider_model_id": "qwen-math-plus-latest"
+        },
+        {
+          "provider_model_id": "qwen-math-turbo"
+        },
+        {
+          "provider_model_id": "qwen-max"
+        },
+        {
+          "provider_model_id": "qwen-max-0107"
+        },
+        {
+          "provider_model_id": "qwen-max-1201"
+        },
+        {
+          "provider_model_id": "qwen-max-longcontext"
+        },
+        {
+          "provider_model_id": "qwen-mt-flash"
+        },
+        {
+          "provider_model_id": "qwen-mt-lite"
+        },
+        {
+          "provider_model_id": "qwen-mt-plus"
+        },
+        {
+          "provider_model_id": "qwen-mt-turbo"
+        },
+        {
+          "provider_model_id": "qwen-mt-uni"
+        },
+        {
+          "provider_model_id": "qwen-omni-turbo"
+        },
+        {
+          "provider_model_id": "qwen-plus"
+        },
+        {
+          "provider_model_id": "qwen-plus-2025-01-25"
+        },
+        {
+          "provider_model_id": "qwen-plus-2025-04-28"
+        },
+        {
+          "provider_model_id": "qwen-plus-2025-07-14"
+        },
+        {
+          "provider_model_id": "qwen-plus-2025-09-11"
+        },
+        {
+          "provider_model_id": "qwen-plus-2025-11-05"
+        },
+        {
+          "provider_model_id": "qwen-plus-2025-12-01"
+        },
+        {
+          "provider_model_id": "qwen-plus-latest"
+        },
+        {
+          "provider_model_id": "qwen-tts-2025-05-22"
+        },
+        {
+          "provider_model_id": "qwen-turbo"
+        },
+        {
+          "provider_model_id": "qwen-turbo-0919"
+        },
+        {
+          "provider_model_id": "qwen-turbo-2024-11-01"
+        },
+        {
+          "provider_model_id": "qwen-vl-max"
+        },
+        {
+          "provider_model_id": "qwen-vl-ocr"
+        },
+        {
+          "provider_model_id": "qwen-vl-ocr-2025-11-20"
+        },
+        {
+          "provider_model_id": "qwen-vl-ocr-latest"
+        },
+        {
+          "provider_model_id": "qwen-vl-plus"
+        },
+        {
+          "provider_model_id": "qwen1.5-0.5b-chat"
+        },
+        {
+          "provider_model_id": "qwen1.5-1.8b-chat"
+        },
+        {
+          "provider_model_id": "qwen1.5-110b-chat"
+        },
+        {
+          "provider_model_id": "qwen1.5-14b-chat"
+        },
+        {
+          "provider_model_id": "qwen1.5-32b-chat"
+        },
+        {
+          "provider_model_id": "qwen1.5-72b-chat"
+        },
+        {
+          "provider_model_id": "qwen1.5-7b-chat"
+        },
+        {
+          "provider_model_id": "qwen2-0.5b-instruct"
+        },
+        {
+          "provider_model_id": "qwen2-1.5b-instruct"
+        },
+        {
+          "provider_model_id": "qwen2-57b-a14b-instruct"
+        },
+        {
+          "provider_model_id": "qwen2-7b-instruct"
+        },
+        {
+          "provider_model_id": "qwen2.5-0.5b-instruct"
+        },
+        {
+          "provider_model_id": "qwen2.5-1.5b-instruct"
+        },
+        {
+          "provider_model_id": "qwen2.5-math-1.5b-instruct"
+        },
+        {
+          "provider_model_id": "qwen3-14b"
+        },
+        {
+          "provider_model_id": "qwen3-235b-a22b"
+        },
+        {
+          "provider_model_id": "qwen3-235b-a22b-instruct-2507"
+        },
+        {
+          "provider_model_id": "qwen3-235b-a22b-thinking-2507"
+        },
+        {
+          "provider_model_id": "qwen3-30b-a3b"
+        },
+        {
+          "provider_model_id": "qwen3-30b-a3b-instruct-2507"
+        },
+        {
+          "provider_model_id": "qwen3-30b-a3b-thinking-2507"
+        },
+        {
+          "provider_model_id": "qwen3-32b"
+        },
+        {
+          "provider_model_id": "qwen3-8b"
+        },
+        {
+          "provider_model_id": "qwen3-asr-flash-2026-02-10"
+        },
+        {
+          "provider_model_id": "qwen3-asr-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3-asr-flash-realtime-2025-10-27"
+        },
+        {
+          "provider_model_id": "qwen3-asr-flash-realtime-2026-02-10"
+        },
+        {
+          "provider_model_id": "qwen3-coder-480b-a35b-instruct"
+        },
+        {
+          "provider_model_id": "qwen3-coder-flash"
+        },
+        {
+          "provider_model_id": "qwen3-coder-next"
+        },
+        {
+          "provider_model_id": "qwen3-coder-plus"
+        },
+        {
+          "provider_model_id": "qwen3-coder-plus-2025-07-22"
+        },
+        {
+          "provider_model_id": "qwen3-coder-plus-2025-09-23"
+        },
+        {
+          "provider_model_id": "qwen3-livetranslate-flash"
+        },
+        {
+          "provider_model_id": "qwen3-livetranslate-flash-2025-12-01"
+        },
+        {
+          "provider_model_id": "qwen3-livetranslate-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3-livetranslate-flash-realtime-2025-09-22"
+        },
+        {
+          "provider_model_id": "qwen3-max"
+        },
+        {
+          "provider_model_id": "qwen3-max-2025-09-23"
+        },
+        {
+          "provider_model_id": "qwen3-max-2026-01-23"
+        },
+        {
+          "provider_model_id": "qwen3-max-preview"
+        },
+        {
+          "provider_model_id": "qwen3-next-80b-a3b-instruct"
+        },
+        {
+          "provider_model_id": "qwen3-next-80b-a3b-thinking"
+        },
+        {
+          "provider_model_id": "qwen3-omni-flash"
+        },
+        {
+          "provider_model_id": "qwen3-omni-flash-2025-09-15"
+        },
+        {
+          "provider_model_id": "qwen3-omni-flash-2025-12-01"
+        },
+        {
+          "provider_model_id": "qwen3-omni-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3-omni-flash-realtime-2025-09-15"
+        },
+        {
+          "provider_model_id": "qwen3-omni-flash-realtime-2025-12-01"
+        },
+        {
+          "provider_model_id": "qwen3-s2s-flash-realtime-2025-09-22"
+        },
+        {
+          "provider_model_id": "qwen3-tts-flash"
+        },
+        {
+          "provider_model_id": "qwen3-tts-flash-2025-09-18"
+        },
+        {
+          "provider_model_id": "qwen3-tts-flash-2025-11-27"
+        },
+        {
+          "provider_model_id": "qwen3-tts-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3-tts-flash-realtime-2025-09-18"
+        },
+        {
+          "provider_model_id": "qwen3-tts-flash-realtime-2025-11-27"
+        },
+        {
+          "provider_model_id": "qwen3-tts-instruct-flash"
+        },
+        {
+          "provider_model_id": "qwen3-tts-instruct-flash-2026-01-26"
+        },
+        {
+          "provider_model_id": "qwen3-tts-instruct-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3-tts-instruct-flash-realtime-2026-01-22"
+        },
+        {
+          "provider_model_id": "qwen3-tts-vc-2026-01-22"
+        },
+        {
+          "provider_model_id": "qwen3-tts-vc-realtime-2025-11-27"
+        },
+        {
+          "provider_model_id": "qwen3-tts-vc-realtime-2026-01-15"
+        },
+        {
+          "provider_model_id": "qwen3-tts-vd-2026-01-26"
+        },
+        {
+          "provider_model_id": "qwen3-tts-vd-realtime-2025-12-16"
+        },
+        {
+          "provider_model_id": "qwen3-tts-vd-realtime-2026-01-15"
+        },
+        {
+          "provider_model_id": "qwen3-vl-flash"
+        },
+        {
+          "provider_model_id": "qwen3-vl-flash-2025-10-15"
+        },
+        {
+          "provider_model_id": "qwen3-vl-flash-2026-01-22"
+        },
+        {
+          "provider_model_id": "qwen3-vl-plus"
+        },
+        {
+          "provider_model_id": "qwen3-vl-plus-2025-09-23"
+        },
+        {
+          "provider_model_id": "qwen3-vl-plus-2025-12-19"
+        },
+        {
+          "provider_model_id": "qwen3.5-122b-a10b"
+        },
+        {
+          "provider_model_id": "qwen3.5-27b"
+        },
+        {
+          "provider_model_id": "qwen3.5-35b-a3b"
+        },
+        {
+          "provider_model_id": "qwen3.5-397b-a17b"
+        },
+        {
+          "provider_model_id": "qwen3.5-flash"
+        },
+        {
+          "provider_model_id": "qwen3.5-flash-2026-02-23"
+        },
+        {
+          "provider_model_id": "qwen3.5-livetranslate-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3.5-livetranslate-flash-realtime-2026-05-19"
+        },
+        {
+          "provider_model_id": "qwen3.5-ocr"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-flash"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-flash-2026-03-15"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-flash-realtime-2026-03-15"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-plus"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-plus-2026-03-15"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-plus-realtime"
+        },
+        {
+          "provider_model_id": "qwen3.5-omni-plus-realtime-2026-03-15"
+        },
+        {
+          "provider_model_id": "qwen3.5-plus"
+        },
+        {
+          "provider_model_id": "qwen3.5-plus-2026-02-15"
+        },
+        {
+          "provider_model_id": "qwen3.5-plus-2026-04-20"
+        },
+        {
+          "provider_model_id": "qwen3.6-27b"
+        },
+        {
+          "provider_model_id": "qwen3.6-35b-a3b"
+        },
+        {
+          "provider_model_id": "qwen3.6-flash"
+        },
+        {
+          "provider_model_id": "qwen3.6-flash-2026-04-16"
+        },
+        {
+          "provider_model_id": "qwen3.6-max-preview"
+        },
+        {
+          "provider_model_id": "qwen3.6-plus"
+        },
+        {
+          "provider_model_id": "qwen3.6-plus-2026-04-02"
+        },
+        {
+          "provider_model_id": "qwen3.7-flash"
+        },
+        {
+          "provider_model_id": "qwen3.7-flash-2026-07-15"
+        },
+        {
+          "provider_model_id": "qwen3.7-max"
+        },
+        {
+          "provider_model_id": "qwen3.7-max-2026-05-17"
+        },
+        {
+          "provider_model_id": "qwen3.7-max-2026-05-20"
+        },
+        {
+          "provider_model_id": "qwen3.7-max-2026-06-08"
+        },
+        {
+          "provider_model_id": "qwen3.7-max-preview"
+        },
+        {
+          "provider_model_id": "qwen3.7-plus"
+        },
+        {
+          "provider_model_id": "qwen3.7-plus-2026-05-26"
+        },
+        {
+          "provider_model_id": "qwen3.7-text-embedding"
+        },
+        {
+          "provider_model_id": "qwen3.7-text-embedding-flash"
+        },
+        {
+          "provider_model_id": "qwen3.7-text-rerank"
+        },
+        {
+          "provider_model_id": "qwen3.8-2.4t-a95b"
+        },
+        {
+          "provider_model_id": "qwen3.8-27b"
+        },
+        {
+          "provider_model_id": "qwen3.8-flash"
+        },
+        {
+          "provider_model_id": "qwen3.8-livetranslate-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwen3.8-max"
+        },
+        {
+          "provider_model_id": "qwen3.8-max-0902"
+        },
+        {
+          "provider_model_id": "qwen3.8-omni-flash"
+        },
+        {
+          "provider_model_id": "qwen3.8-omni-flash-realtime"
+        },
+        {
+          "provider_model_id": "qwq-plus"
+        },
+        {
+          "provider_model_id": "siliconflow/deepseek-r1-0528"
+        },
+        {
+          "provider_model_id": "siliconflow/deepseek-v3-0324"
+        },
+        {
+          "provider_model_id": "siliconflow/deepseek-v3.1-terminus"
+        },
+        {
+          "provider_model_id": "siliconflow/deepseek-v3.2"
+        },
+        {
+          "provider_model_id": "sre-gpu-auto-handle"
+        },
+        {
+          "provider_model_id": "stepfun/step-3.7-flash"
+        },
+        {
+          "provider_model_id": "stepfun/step-5-preview"
+        },
+        {
+          "provider_model_id": "test-sre-gpu-auto-handle"
+        },
+        {
+          "provider_model_id": "tongyi-xiaomi-analysis-flash"
+        },
+        {
+          "provider_model_id": "tongyi-xiaomi-analysis-pro"
+        },
+        {
+          "provider_model_id": "unisound/unisound-u2"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-ocr"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-r1"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-v3"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-v3.1-terminus"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-v3.2-think"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-v4-pro"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-v4-pro-0813"
+        },
+        {
+          "provider_model_id": "vanchin/deepseek-v4.1-flash"
+        },
+        {
+          "provider_model_id": "wan2.7-image"
+        },
+        {
+          "provider_model_id": "wan2.7-image-pro"
+        },
+        {
+          "provider_model_id": "xiaomi/mimo-v2.5-pro"
+        },
+        {
+          "provider_model_id": "z-image-turbo"
+        },
+        {
+          "provider_model_id": "ZHIPU/GLM-5"
+        },
+        {
+          "provider_model_id": "ZHIPU/GLM-5.1"
+        },
+        {
+          "provider_model_id": "ZHIPU/GLM-5.2"
+        },
+        {
+          "provider_model_id": "ZHIPU/GLM-5.3"
+        },
+        {
+          "provider_model_id": "ZHIPU/GLM-5.3-Flash"
+        },
+        {
+          "provider_model_id": "ZHIPU/GLM-5.3-FlashX"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "qwen",
+      "provider_instance_name": "qwen-t2",
+      "inventory_revision": "88c55339bd5ac688772aafa96f7824c5df5f872e496d6448efd9909ccdf68151",
+      "models": [
+        {
+          "exact_model": "MiniMax-M2.1@qwen-t2",
+          "provider_model_id": "MiniMax-M2.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5@qwen-t2",
+          "provider_model_id": "MiniMax-M2.5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax/MiniMax-M2.1@qwen-t2",
+          "provider_model_id": "MiniMax/MiniMax-M2.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax/MiniMax-M2.5@qwen-t2",
+          "provider_model_id": "MiniMax/MiniMax-M2.5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax/MiniMax-M2.7@qwen-t2",
+          "provider_model_id": "MiniMax/MiniMax-M2.7",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax/MiniMax-M3@qwen-t2",
+          "provider_model_id": "MiniMax/MiniMax-M3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "ZHIPU/GLM-5.1@qwen-t2",
+          "provider_model_id": "ZHIPU/GLM-5.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "ZHIPU/GLM-5.2@qwen-t2",
+          "provider_model_id": "ZHIPU/GLM-5.2",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "ZHIPU/GLM-5.3-Flash@qwen-t2",
+          "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "ZHIPU/GLM-5.3@qwen-t2",
+          "provider_model_id": "ZHIPU/GLM-5.3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "ZHIPU/GLM-5@qwen-t2",
+          "provider_model_id": "ZHIPU/GLM-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash-0731@qwen-t2",
+          "provider_model_id": "deepseek-v4-flash-0731",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash@qwen-t2",
+          "provider_model_id": "deepseek-v4-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro-0813@qwen-t2",
+          "provider_model_id": "deepseek-v4-pro-0813",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro@qwen-t2",
+          "provider_model_id": "deepseek-v4-pro",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4.1-flash@qwen-t2",
+          "provider_model_id": "deepseek-v4.1-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-4.7@qwen-t2",
+          "provider_model_id": "glm-4.7",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.1@qwen-t2",
+          "provider_model_id": "glm-5.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.2@qwen-t2",
+          "provider_model_id": "glm-5.2",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3@qwen-t2",
+          "provider_model_id": "glm-5.3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5@qwen-t2",
+          "provider_model_id": "glm-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.6@qwen-t2",
+          "provider_model_id": "kimi-k2.6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k2.7-code@qwen-t2",
+          "provider_model_id": "kimi-k2.7-code",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3@qwen-t2",
+          "provider_model_id": "kimi-k3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi/kimi-k2.6@qwen-t2",
+          "provider_model_id": "kimi/kimi-k2.6",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi/kimi-k2.7-code-highspeed@qwen-t2",
+          "provider_model_id": "kimi/kimi-k2.7-code-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi/kimi-k2.7-code@qwen-t2",
+          "provider_model_id": "kimi/kimi-k2.7-code",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi/kimi-k2.8-preview@qwen-t2",
+          "provider_model_id": "kimi/kimi-k2.8-preview",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi/kimi-k3@qwen-t2",
+          "provider_model_id": "kimi/kimi-k3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-max-2025-09-23@qwen-t2",
+          "provider_model_id": "qwen3-max-2025-09-23",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-max-2026-01-23@qwen-t2",
+          "provider_model_id": "qwen3-max-2026-01-23",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-max@qwen-t2",
+          "provider_model_id": "qwen3-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-122b-a10b:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-122b-a10b:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-122b-a10b:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-122b-a10b:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-122b-a10b@qwen-t2",
+          "provider_model_id": "qwen3.5-122b-a10b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-27b:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-27b:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-27b:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-27b:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-27b@qwen-t2",
+          "provider_model_id": "qwen3.5-27b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-35b-a3b:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-35b-a3b:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-35b-a3b:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-35b-a3b:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-35b-a3b@qwen-t2",
+          "provider_model_id": "qwen3.5-35b-a3b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-397b-a17b:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-397b-a17b:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-397b-a17b:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-397b-a17b:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-397b-a17b@qwen-t2",
+          "provider_model_id": "qwen3.5-397b-a17b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-flash-2026-02-23:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-flash-2026-02-23:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-flash-2026-02-23:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-flash-2026-02-23:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-flash-2026-02-23@qwen-t2",
+          "provider_model_id": "qwen3.5-flash-2026-02-23",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-flash:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-flash:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-flash:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-flash:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-flash@qwen-t2",
+          "provider_model_id": "qwen3.5-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus-2026-02-15:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-plus-2026-02-15:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus-2026-02-15:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-plus-2026-02-15:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus-2026-02-15@qwen-t2",
+          "provider_model_id": "qwen3.5-plus-2026-02-15",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus-2026-04-20:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-plus-2026-04-20:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus-2026-04-20:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-plus-2026-04-20:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus-2026-04-20@qwen-t2",
+          "provider_model_id": "qwen3.5-plus-2026-04-20",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.5-plus:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.5-plus:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.5-plus@qwen-t2",
+          "provider_model_id": "qwen3.5-plus",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-35b-a3b:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.6-35b-a3b:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-35b-a3b:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.6-35b-a3b:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-35b-a3b@qwen-t2",
+          "provider_model_id": "qwen3.6-35b-a3b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-flash-2026-04-16:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.6-flash-2026-04-16:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-flash-2026-04-16:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.6-flash-2026-04-16:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-flash-2026-04-16@qwen-t2",
+          "provider_model_id": "qwen3.6-flash-2026-04-16",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-flash:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.6-flash:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-flash:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.6-flash:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-flash@qwen-t2",
+          "provider_model_id": "qwen3.6-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-max-preview:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.6-max-preview:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-max-preview:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.6-max-preview:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-max-preview@qwen-t2",
+          "provider_model_id": "qwen3.6-max-preview",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus-2026-04-02:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.6-plus-2026-04-02:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus-2026-04-02:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.6-plus-2026-04-02:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus-2026-04-02@qwen-t2",
+          "provider_model_id": "qwen3.6-plus-2026-04-02",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.6-plus:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.6-plus:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus@qwen-t2",
+          "provider_model_id": "qwen3.6-plus",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-flash-2026-07-15:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-flash-2026-07-15:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-flash-2026-07-15:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-flash-2026-07-15:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-flash-2026-07-15@qwen-t2",
+          "provider_model_id": "qwen3.7-flash-2026-07-15",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-flash:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-flash:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-flash:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-flash:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-flash@qwen-t2",
+          "provider_model_id": "qwen3.7-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-05-17:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-05-17:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-05-17:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-05-17:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-05-17@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-05-17",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-05-20:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-05-20:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-05-20:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-05-20:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-05-20@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-05-20",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-06-08:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-06-08:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-06-08:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-06-08:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max-2026-06-08@qwen-t2",
+          "provider_model_id": "qwen3.7-max-2026-06-08",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-max:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-max:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-max@qwen-t2",
+          "provider_model_id": "qwen3.7-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus-2026-05-26:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-plus-2026-05-26:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus-2026-05-26:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-plus-2026-05-26:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus-2026-05-26@qwen-t2",
+          "provider_model_id": "qwen3.7-plus-2026-05-26",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.7-plus:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus:reasoning-thinking@qwen-t2",
+          "provider_model_id": "qwen3.7-plus:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus@qwen-t2",
+          "provider_model_id": "qwen3.7-plus",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-2.4t-a95b:reasoning-low@qwen-t2",
+          "provider_model_id": "qwen3.8-2.4t-a95b:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-2.4t-a95b:reasoning-medium@qwen-t2",
+          "provider_model_id": "qwen3.8-2.4t-a95b:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-2.4t-a95b:reasoning-xhigh@qwen-t2",
+          "provider_model_id": "qwen3.8-2.4t-a95b:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-2.4t-a95b@qwen-t2",
+          "provider_model_id": "qwen3.8-2.4t-a95b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-27b:reasoning-low@qwen-t2",
+          "provider_model_id": "qwen3.8-27b:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-27b:reasoning-medium@qwen-t2",
+          "provider_model_id": "qwen3.8-27b:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-27b:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.8-27b:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-27b:reasoning-xhigh@qwen-t2",
+          "provider_model_id": "qwen3.8-27b:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-27b@qwen-t2",
+          "provider_model_id": "qwen3.8-27b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-flash:reasoning-low@qwen-t2",
+          "provider_model_id": "qwen3.8-flash:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-flash:reasoning-medium@qwen-t2",
+          "provider_model_id": "qwen3.8-flash:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-flash:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.8-flash:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-flash:reasoning-xhigh@qwen-t2",
+          "provider_model_id": "qwen3.8-flash:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-flash@qwen-t2",
+          "provider_model_id": "qwen3.8-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-low@qwen-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-medium@qwen-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-xhigh@qwen-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902@qwen-t2",
+          "provider_model_id": "qwen3.8-max-0902",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max:reasoning-low@qwen-t2",
+          "provider_model_id": "qwen3.8-max:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max:reasoning-medium@qwen-t2",
+          "provider_model_id": "qwen3.8-max:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.8-max:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max:reasoning-xhigh@qwen-t2",
+          "provider_model_id": "qwen3.8-max:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max@qwen-t2",
+          "provider_model_id": "qwen3.8-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-omni-flash:reasoning-low@qwen-t2",
+          "provider_model_id": "qwen3.8-omni-flash:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-omni-flash:reasoning-medium@qwen-t2",
+          "provider_model_id": "qwen3.8-omni-flash:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-omni-flash:reasoning-none@qwen-t2",
+          "provider_model_id": "qwen3.8-omni-flash:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-omni-flash:reasoning-xhigh@qwen-t2",
+          "provider_model_id": "qwen3.8-omni-flash:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-omni-flash@qwen-t2",
+          "provider_model_id": "qwen3.8-omni-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "vanchin/deepseek-v4-pro-0813@qwen-t2",
+          "provider_model_id": "vanchin/deepseek-v4-pro-0813",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "vanchin/deepseek-v4-pro@qwen-t2",
+          "provider_model_id": "vanchin/deepseek-v4-pro",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "vanchin/deepseek-v4.1-flash@qwen-t2",
+          "provider_model_id": "vanchin/deepseek-v4.1-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "qwen",
+      "provider_instance": "qwen-t2",
+      "exact_model": "qwen3.8-omni-flash@qwen-t2",
+      "provider_model_id": "qwen3.8-omni-flash",
+      "physical_model_id": "qwen3.8-omni-flash",
+      "status": "included",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash",
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "qwen",
+      "provider_instance": "qwen-t2",
+      "exact_model": "qwen3.8-omni-flash@qwen-t2",
+      "provider_model_id": "qwen3.8-omni-flash",
+      "physical_model_id": "qwen3.8-omni-flash",
+      "status": "included",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash",
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.qwen.qwen-t2.qwen3.8-omni-flash.llm",
+      "provider_driver": "qwen",
+      "provider_instance": "qwen-t2",
+      "exact_model": "qwen3.8-omni-flash@qwen-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash",
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"
+      ]
+    },
+    {
+      "case_id": "t2.qwen.qwen-t2.qwen3.8-omni-flash.vision.caption",
+      "provider_driver": "qwen",
+      "provider_instance": "qwen-t2",
+      "exact_model": "qwen3.8-omni-flash@qwen-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash",
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"
+      ]
+    },
+    {
+      "case_id": "t2.qwen.qwen-t2.qwen3.8-omni-flash.vision.ocr",
+      "provider_driver": "qwen",
+      "provider_instance": "qwen-t2",
+      "exact_model": "qwen3.8-omni-flash@qwen-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash",
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"
+      ]
+    }
+  ]
+}
