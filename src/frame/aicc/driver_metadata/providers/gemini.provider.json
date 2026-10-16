@@ -190,6 +190,15 @@
   "variants": [
     {
       "model_driver": "gemini",
+      "variant": "reasoning-none",
+      "match": {
+        "origin_model_id": "gemini-2.5-flash-lite",
+        "variant": "reasoning-none"
+      },
+      "provider_options": {}
+    },
+    {
+      "model_driver": "gemini",
       "variant": "reasoning-minimal",
       "match": {
         "origin_model_id": [
@@ -240,6 +249,19 @@
       "model_driver": "gemini",
       "variant": "reasoning-medium",
       "match": {
+        "origin_model_id": "gemini-2.5-flash",
+        "variant": "reasoning-medium"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "high"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-medium",
+      "match": {
         "origin_model_id": [
           "gemini-3.8-flash",
           "gemini-4-argon"
@@ -265,7 +287,6 @@
           "gemini-3.1-pro-preview-customtools",
           "gemini-robotics-er-2-preview",
           "gemini-3-flash-preview",
-          "gemini-2.5-flash",
           "gemini-2.5-flash-lite",
           "gemini-2.5-pro"
         ],

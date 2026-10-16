@@ -58,6 +58,41 @@ function stringField(value: unknown, field: string): string | undefined {
   return typeof result === "string" && result.trim() ? result.trim() : undefined;
 }
 
+export function openRouterTaskTypes(entry: unknown): string[] | undefined {
+  const architecture = object(object(entry)?.architecture);
+  const input = Array.isArray(architecture?.input_modalities)
+    ? architecture.input_modalities.filter((value): value is string => typeof value === "string")
+    : [];
+  const output = Array.isArray(architecture?.output_modalities)
+    ? architecture.output_modalities.filter((value): value is string => typeof value === "string")
+    : [];
+  const result: string[] = [];
+  if (output.length === 1 && output[0] === "decisions") result.push("decision");
+  else if (output.length === 1 && output[0] === "rerank") result.push("rerank");
+  else if (output.length === 1 && output[0] === "embeddings") result.push("embedding.text");
+  else if (output.length === 1 && output[0] === "speech") result.push("audio.tts");
+  else if (output.length === 1 && output[0] === "transcription") result.push("audio.asr");
+  else if (output.length === 1 && output[0] === "video") {
+    if (input.includes("text")) result.push("video.txt2video");
+    if (input.includes("image")) result.push("video.img2video");
+  } else if (
+    output.includes("audio") &&
+    output.every((value) => ["text", "image", "audio"].includes(value))
+  ) {
+    result.push("audio.music");
+  } else if (output.every((value) => ["text", "image"].includes(value))) {
+    if (output.includes("text")) {
+      result.push("llm");
+      if (input.includes("image")) result.push("vision.ocr", "vision.caption");
+    }
+    if (output.includes("image")) {
+      if (input.includes("text")) result.push("image.txt2img");
+      if (input.includes("image")) result.push("image.img2img");
+    }
+  }
+  return result.length > 0 ? result : undefined;
+}
+
 function requireToken(profile: CatalogProfile, token: string | undefined): string {
   if (profile.official_catalog.authentication === "none") return "";
   if (!token?.trim()) {
@@ -154,20 +189,19 @@ function parsePage(
   if (new URL(config.endpoint).hostname === "openrouter.ai") {
     const target = data.find(entry => stringField(entry, "id") === "typesafe/jev-1.13");
     const verified = (entry: unknown) => stringField(entry, "canonical_slug") === "typesafe/jev-1.13-20260917"
-      && object(entry)?.context_length === 32000
+      && object(entry)?.context_length === 262144
+      && JSON.stringify(object(object(entry)?.architecture)?.input_modalities) === '["text","image"]'
       && JSON.stringify(object(object(entry)?.architecture)?.output_modalities) === '["decisions"]';
     if (target && !verified(target)) throw new Error("OpenRouter Jev build or capability drift; reverify baseline");
-    const alias = data.find(entry => stringField(entry, "id") === "~typesafe/jev-latest");
-    if (alias && (!target || !verified(target) || stringField(object(alias)?.alias_target, "slug") !== "typesafe/jev-1.13")) {
-      throw new Error("OpenRouter Jev alias drift; reverify baseline");
-    }
   }
   const result = {
     models: data.flatMap((entry) => {
       const id = stringField(entry, "id") ?? stringField(entry, "model");
       if (!id) return [];
       const record = object(entry);
-      const taskTypes = Array.isArray(record?.task_type)
+      const taskTypes = new URL(config.endpoint).hostname === "openrouter.ai"
+        ? openRouterTaskTypes(entry)
+        : Array.isArray(record?.task_type)
         ? record.task_type.filter((value): value is string => typeof value === "string" && value.length > 0)
         : undefined;
       return [{
@@ -250,6 +284,17 @@ async function fetchOfficialModels(input: {
     if (page === 99) throw new Error(`official catalog pagination exceeded 100 pages for ${input.profile.provider_driver}`);
   }
   if (models.size === 0) throw new Error(`official catalog returned no models for ${input.profile.provider_driver}`);
+  const includeModelIds = input.profile.official_catalog.include_model_ids ?? [];
+  if (includeModelIds.length > 0) {
+    const expected = new Map(includeModelIds.map((id) => [id.toLowerCase(), id]));
+    const missing = [...expected.keys()].filter((id) => !models.has(id));
+    if (missing.length > 0) {
+      throw new Error(`official catalog scope mismatch for ${input.profile.provider_driver}: missing=${missing.join(",")}`);
+    }
+    for (const id of [...models.keys()]) {
+      if (!expected.has(id)) models.delete(id);
+    }
+  }
   const endpointIds = input.profile.official_catalog.endpoint_ids ?? [];
   if (endpointIds.length > 0) {
     const expected = new Set(endpointIds.map((id) => id.toLowerCase()));

@@ -45,43 +45,52 @@ export async function refreshProviderInventoriesUntilSuccess(input: {
   if (!Number.isFinite(input.retryDelayMs) || input.retryDelayMs < 0) {
     throw new Error("inventory refresh retryDelayMs must be non-negative");
   }
-  const sleep = input.sleep ?? ((delayMs: number) =>
-    new Promise((resolve) => setTimeout(resolve, delayMs)));
-  const refreshed = await Promise.all(input.selectedInventories.map(async (inventory) => {
-    const baseDelayMs = Math.max(
-      input.retryDelayMs,
-      input.providerRetryDelayMs?.[inventory.provider_driver] ?? 0,
-    );
-    for (let attempt = 1; attempt <= input.maxAttempts; attempt += 1) {
-      try {
-        const raw = object(await input.aicc.call("provider.refresh_models", {
-          provider_instance_name: inventory.provider_instance_name,
-        }));
-        if (!raw || raw.ok !== true) throw new Error("refresh rejected");
-        const returnedInstance = optionalString(raw.provider_instance_name);
-        if (returnedInstance !== inventory.provider_instance_name) {
-          throw new Error("refresh returned unexpected instance");
-        }
-        return {
-          provider_driver: inventory.provider_driver,
-          provider_instance_name: inventory.provider_instance_name,
-          attempt_count: attempt,
-          before_inventory_revision: optionalString(inventory.inventory_revision),
-          refresh_inventory_revision: optionalString(raw.inventory_revision),
-          unmatched_count: optionalNonNegativeInteger(raw.unmatched_count),
-        };
-      } catch {
-        if (attempt === input.maxAttempts) {
-          throw new Error(
-            `provider inventory refresh failed after ${attempt} attempt(s) for ${inventory.provider_driver}/${inventory.provider_instance_name}`,
+  const sleep = input.sleep ??
+    ((delayMs: number) =>
+      new Promise((resolve) => setTimeout(resolve, delayMs)));
+  const refreshed = await Promise.all(
+    input.selectedInventories.map(async (inventory) => {
+      const baseDelayMs = Math.max(
+        input.retryDelayMs,
+        input.providerRetryDelayMs?.[inventory.provider_driver] ?? 0,
+      );
+      let lastError = "unknown refresh error";
+      for (let attempt = 1; attempt <= input.maxAttempts; attempt += 1) {
+        try {
+          const raw = object(
+            await input.aicc.call("provider.refresh_models", {
+              provider_instance_name: inventory.provider_instance_name,
+            }),
           );
+          if (!raw || raw.ok !== true) throw new Error("refresh rejected");
+          const returnedInstance = optionalString(raw.provider_instance_name);
+          if (returnedInstance !== inventory.provider_instance_name) {
+            throw new Error("refresh returned unexpected instance");
+          }
+          return {
+            provider_driver: inventory.provider_driver,
+            provider_instance_name: inventory.provider_instance_name,
+            attempt_count: attempt,
+            before_inventory_revision: optionalString(
+              inventory.inventory_revision,
+            ),
+            refresh_inventory_revision: optionalString(raw.inventory_revision),
+            unmatched_count: optionalNonNegativeInteger(raw.unmatched_count),
+          };
+        } catch (error) {
+          lastError = String(error);
+          if (attempt === input.maxAttempts) {
+            throw new Error(
+              `provider inventory refresh failed after ${attempt} attempt(s) for ${inventory.provider_driver}/${inventory.provider_instance_name}: ${lastError}`,
+            );
+          }
+          const delayMs = Math.min(baseDelayMs * 2 ** (attempt - 1), 30_000);
+          if (delayMs > 0) await sleep(delayMs);
         }
-        const delayMs = Math.min(baseDelayMs * 2 ** (attempt - 1), 30_000);
-        if (delayMs > 0) await sleep(delayMs);
       }
-    }
-    throw new Error("provider inventory refresh exhausted unexpectedly");
-  }));
+      throw new Error("provider inventory refresh exhausted unexpectedly");
+    }),
+  );
   const inventories = await input.readInventories();
   const evidence = refreshed.map((item) => {
     const after = inventories.find((inventory) =>

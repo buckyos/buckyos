@@ -1,4 +1,4 @@
-# Driver metadata 核对记录（更新至 2026-10-08）
+# Driver metadata 核对记录（更新至 2026-10-16）
 
 本次盘点最初覆盖 `src/frame/aicc/driver_metadata` 的 38 份文件；豆包普通账号与 Agent Plan 拆分后为 39 份：12 份 model-driver、14 份 provider rules、13 份 known-provider。两个豆包 profile 合并在同一份 known-provider catalog 中，账号专属规则仍分别保存。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
 
@@ -49,13 +49,18 @@ Opus 5.5 的默认 effort 按模型表改为 `medium`。Batch API 专用的 300K
 
 ## Gemini
 
-补齐以下模型：上下文 1,048,576、输出 65,536。其他现有 LLM 的这两个字段保持。
+2026-10-16 以 Google 当前逐型号模型卡为主、带鉴权的官方 `models.list` 为辅，重新复核全部 Gemini model-driver 条目。Google 将 input token limit 与 output token limit 分列；AICC 当前仍用 `max_context_tokens` 对总预算做保守路由检查，不改变这层语义。
 
-- [Gemini 3.7 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash)
-- [Gemini 3.5 Flash Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)
-- [Gemini 3 Flash Preview](https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview)
+- 通用 Gemini LLM 均显式声明 Google Search grounding。按[思考文档](https://ai.google.dev/gemini-api/docs/thinking/)修正默认档位：3.8/3.7/3.6/3.5 Flash 为 `medium`，3.5/3.1 Flash-Lite 为 `minimal`，3.1 Pro、3 Flash Preview、2.5 Flash/Pro 与 Robotics ER 为 `high`；2.5 Flash-Lite 默认关闭，表示为 `none`，同时保留 low/medium/high。
+- 2026-10-16 线上回归确认官方文档仍声明 `gemini-3.8-flash` 与 `gemini-2.5-flash` 支持 medium。Interactions API 已接受 3.8 的 `thinking_level=medium`，但 2.5 仍以 400 明确只接受 low/high；因此基础模型继续声明 medium，仅 Google Gemini Provider 将 2.5 的 `reasoning-medium` 底层参数兼容映射为 high。OpenRouter 对两个型号的 `reasoning.effort=medium` 均返回 200，不做降级。
+- [Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)保留 1,048,576 输入与 1,048,576 最大输出；后者是 [Long Decode](https://ai.google.dev/gemini-api/docs/long-decode) 经后台 Interactions API 提供的原厂硬上限，不用同步请求的 65,536 默认上限覆盖基础模型能力。
+- [Gemma 4 on Gemini API](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api) 两个型号均为 262,144 / 32,768，支持图片理解、函数调用、Google Search 和 minimal/high 两档 reasoning，默认 high。
+- 图像模型按各自模型卡分别配置，不能从 Nano Banana 2.1 外推：3.1 Flash Image 与 Nano Banana 2.1 为 131,072 / 32,768，支持 reasoning/search；3 Pro Image 为 65,536 / 32,768，支持 reasoning/search；3.1 Flash-Lite Image 为 65,536 / 4,096，仅支持 reasoning；2.5 Flash Image 为 65,536 / 32,768，不声明 reasoning/search。
+- TTS 五个型号统一为 8,192 / 16,384；3.5 Transcribe 为 98,304 / 32,768。来源：[TTS 模型卡](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts)、[Transcribe 模型卡](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-transcribe)。
+- Veo 3.1 三个型号的文本输入上限为 1,024；Gemini Omni 1.1 Flash 上下文为 1,048,576；Lyria 3.5、3 Pro Preview、3 Clip Preview 的输入上限均为 131,072。Lyria 的高保真 Provider 基线同时修正为 text/image 输入与 audio/text 输出，稳定版 3.5 不再继承 preview 状态。
+- Gemini Embedding 2/Preview 保持 8,192，Embedding 001 保持 2,048；它们没有可确认的生成 token 上限，不添加 LLM 输出字段。
 
-Google 将第一个数称为 input token limit；AICC 当前用 `max_context_tokens` 对总预算做保守路由检查。本次不改变这层语义。非 LLM 的图片、TTS、embedding 条目不强制添加 LLM 输出限制。
+基础 `*.model.json` 只登记原厂模型硬能力。Gemini Provider Rules 和高保真 MockProvider 负责协议/变体映射；OpenRouter 等聚合渠道只能在此基础上收窄，不能补出原厂未声明的 API 类型或能力。
 
 ## Qwen
 

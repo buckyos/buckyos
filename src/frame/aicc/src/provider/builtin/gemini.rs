@@ -637,6 +637,317 @@ mod tests {
     }
 
     #[test]
+    fn image_model_capabilities_match_official_model_cards() {
+        let catalog = CatalogSnapshot::from_current_files(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            gemini_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        let (adapter, codecs) = gemini_interactions_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(adapter, codecs).unwrap();
+
+        for (model_id, context, output, reasoning, web_search) in [
+            ("gemini-3.1-flash-image", 131_072, 32_768, true, true),
+            ("gemini-nano-banana-2.1", 131_072, 32_768, true, true),
+            ("gemini-3.1-flash-lite-image", 65_536, 4_096, true, false),
+            ("gemini-3-pro-image", 65_536, 32_768, true, true),
+            ("gemini-2.5-flash-image", 65_536, 32_768, false, false),
+        ] {
+            let inventory = InventoryBuilder::build(
+                &gemini_profile(),
+                &instance(),
+                ProviderDiscoverySnapshot {
+                    revision: Some("models-v1".to_owned()),
+                    discovered_at_ms: 1,
+                    health: ProviderHealthState::Healthy,
+                    models: vec![DiscoveredModel {
+                        provider_model_id: model_id.to_owned(),
+                        api_types: None,
+                        supported_features: None,
+                        unsupported_features: BTreeSet::new(),
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    }],
+                },
+                &catalog,
+                &registry,
+            )
+            .unwrap();
+            let capabilities = &inventory.models[0].capabilities;
+            assert_eq!(capabilities["image_generation"], true, "{model_id}");
+            assert_eq!(capabilities["max_context_tokens"], context, "{model_id}");
+            assert_eq!(capabilities["max_output_tokens"], output, "{model_id}");
+            assert_eq!(
+                capabilities.get("reasoning").and_then(Value::as_bool),
+                reasoning.then_some(true),
+                "{model_id}"
+            );
+            assert_eq!(
+                capabilities.get("web_search").and_then(Value::as_bool),
+                web_search.then_some(true),
+                "{model_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn remaining_model_metadata_matches_official_model_cards_and_catalog() {
+        use crate::catalog::Effort;
+
+        let catalog = CatalogSnapshot::from_current_files(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            gemini_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+
+        for (model_id, context, output, default_effort, efforts) in [
+            (
+                "gemini-4-argon",
+                1_048_576,
+                1_048_576,
+                Effort::Medium,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.8-flash",
+                1_048_576,
+                65_536,
+                Effort::Medium,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.7-flash",
+                1_048_576,
+                65_536,
+                Effort::Medium,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.6-flash",
+                1_048_576,
+                65_536,
+                Effort::Medium,
+                vec![Effort::Minimal, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.5-flash",
+                1_048_576,
+                65_536,
+                Effort::Medium,
+                vec![Effort::Minimal, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.5-flash-lite",
+                1_048_576,
+                65_536,
+                Effort::Minimal,
+                vec![Effort::Minimal, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.1-flash-lite",
+                1_048_576,
+                65_536,
+                Effort::Minimal,
+                vec![Effort::Minimal, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.1-pro-preview",
+                1_048_576,
+                65_536,
+                Effort::High,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3-flash-preview",
+                1_048_576,
+                65_536,
+                Effort::High,
+                vec![Effort::Minimal, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-2.5-flash",
+                1_048_576,
+                65_536,
+                Effort::High,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-2.5-flash-lite",
+                1_048_576,
+                65_536,
+                Effort::None,
+                vec![Effort::None, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-2.5-pro",
+                1_048_576,
+                65_536,
+                Effort::High,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-3.1-pro-preview-customtools",
+                1_048_576,
+                65_536,
+                Effort::High,
+                vec![Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemini-robotics-er-2-preview",
+                131_072,
+                65_536,
+                Effort::High,
+                vec![Effort::Minimal, Effort::Low, Effort::Medium, Effort::High],
+            ),
+            (
+                "gemma-4-26b-a4b-it",
+                262_144,
+                32_768,
+                Effort::High,
+                vec![Effort::Minimal, Effort::High],
+            ),
+            (
+                "gemma-4-31b-it",
+                262_144,
+                32_768,
+                Effort::High,
+                vec![Effort::Minimal, Effort::High],
+            ),
+        ] {
+            let model = catalog.resolve_model("gemini", model_id).unwrap();
+            let capabilities = model.semantics.capabilities.unwrap();
+            assert_eq!(capabilities["max_context_tokens"], context, "{model_id}");
+            assert_eq!(capabilities["max_output_tokens"], output, "{model_id}");
+            assert_eq!(capabilities["reasoning"], true, "{model_id}");
+            assert_eq!(capabilities["web_search"], true, "{model_id}");
+            let llm = model.semantics.llm.unwrap();
+            assert_eq!(llm.default_effort, default_effort, "{model_id}");
+            assert_eq!(llm.supported_efforts, efforts, "{model_id}");
+        }
+
+        for (model_id, context, output) in [
+            ("gemini-3.1-flash-tts-preview", 8_192, Some(16_384)),
+            ("gemini-3.8-flash-tts", 8_192, Some(16_384)),
+            ("gemini-3.8-flash-lite-tts", 8_192, Some(16_384)),
+            ("gemini-2.5-flash-preview-tts", 8_192, Some(16_384)),
+            ("gemini-2.5-pro-preview-tts", 8_192, Some(16_384)),
+            ("gemini-3.5-transcribe", 98_304, Some(32_768)),
+            ("veo-3.1-generate-preview", 1_024, None),
+            ("veo-3.1-fast-generate-preview", 1_024, None),
+            ("veo-3.1-lite-generate-preview", 1_024, None),
+            ("gemini-omni-1.1-flash", 1_048_576, None),
+            ("lyria-3.5", 131_072, None),
+            ("lyria-3-pro-preview", 131_072, None),
+            ("lyria-3-clip-preview", 131_072, None),
+            ("gemini-embedding-2", 8_192, None),
+            ("gemini-embedding-2-preview", 8_192, None),
+            ("gemini-embedding-001", 2_048, None),
+        ] {
+            let model = catalog.resolve_model("gemini", model_id).unwrap();
+            let capabilities = model.semantics.capabilities.unwrap();
+            assert_eq!(capabilities["max_context_tokens"], context, "{model_id}");
+            assert_eq!(
+                capabilities
+                    .get("max_output_tokens")
+                    .and_then(Value::as_u64),
+                output,
+                "{model_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn gemma_4_inventory_exposes_only_official_reasoning_variants() {
+        let catalog = CatalogSnapshot::from_current_files(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            gemini_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        let (adapter, codecs) = gemini_interactions_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(adapter, codecs).unwrap();
+
+        for model_id in ["gemma-4-26b-a4b-it", "gemma-4-31b-it"] {
+            let inventory = InventoryBuilder::build(
+                &gemini_profile(),
+                &instance(),
+                ProviderDiscoverySnapshot {
+                    revision: Some("models-v1".to_owned()),
+                    discovered_at_ms: 1,
+                    health: ProviderHealthState::Healthy,
+                    models: vec![DiscoveredModel {
+                        provider_model_id: model_id.to_owned(),
+                        api_types: None,
+                        supported_features: None,
+                        unsupported_features: BTreeSet::new(),
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    }],
+                },
+                &catalog,
+                &registry,
+            )
+            .unwrap();
+            let variants = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == model_id)
+                .unwrap()
+                .variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                variants,
+                BTreeSet::from(["reasoning-high", "reasoning-minimal"]),
+                "{model_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn medium_variant_uses_the_live_provider_compatible_thinking_level() {
+        let rules = gemini_provider_rules(5);
+
+        let thinking_level = |model_id: &str| {
+            rules
+                .variants
+                .iter()
+                .find(|rule| {
+                    if rule.variant != "reasoning-medium" {
+                        return false;
+                    }
+                    let crate::matching::MatchRule::Object(matcher) = &rule.match_rule else {
+                        return false;
+                    };
+                    match matcher.get("origin_model_id") {
+                        Some(Value::String(value)) => value == model_id,
+                        Some(Value::Array(values)) => {
+                            values.iter().any(|value| value.as_str() == Some(model_id))
+                        }
+                        _ => false,
+                    }
+                })
+                .unwrap()
+                .provider_options["generation_config"]["thinking_level"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+
+        assert_eq!(thinking_level("gemini-2.5-flash"), "high");
+        assert_eq!(thinking_level("gemini-3.8-flash"), "medium");
+    }
+
+    #[test]
     fn mock_catalog_models_resolve_one_operation_per_api_type() {
         let catalog = CatalogSnapshot::from_current_files(
             crate::settings::BUILTIN_CATALOG_REVISION_SEQ,

@@ -75,12 +75,20 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             binding(
                 ApiType::ImageTextToImage,
                 [ExecutionMode::Immediate],
-                [features::IMAGE_GENERATION],
+                [
+                    features::IMAGE_GENERATION,
+                    features::WEB_SEARCH,
+                    "reasoning",
+                ],
             ),
             binding(
                 ApiType::ImageImageToImage,
                 [ExecutionMode::Immediate],
-                [features::IMAGE_GENERATION],
+                [
+                    features::IMAGE_GENERATION,
+                    features::WEB_SEARCH,
+                    "reasoning",
+                ],
             ),
             binding(
                 ApiType::AudioTextToSpeech,
@@ -3384,10 +3392,17 @@ mod tests {
         image.seed = Some(7);
         let input = CodecInput {
             canonical_request: AiccCall::ImagesGenerate(image),
-            resolved_parameters: BTreeMap::from([(
-                "provider_model_id".to_string(),
-                json!("gemini-image"),
-            )]),
+            resolved_parameters: BTreeMap::from([
+                (
+                    "provider_model_id".to_string(),
+                    json!("gemini-3.1-flash-image"),
+                ),
+                ("web_search".to_string(), json!(true)),
+                (
+                    "generation_config".to_string(),
+                    json!({"seed": 7, "thinking_level": "high"}),
+                ),
+            ]),
         };
         let value = encode_interaction(
             &CodecCall {
@@ -3400,6 +3415,8 @@ mod tests {
         .unwrap();
         assert_eq!(value["response_format"]["aspect_ratio"], "1:1");
         assert_eq!(value["generation_config"]["seed"], 7);
+        assert_eq!(value["generation_config"]["thinking_level"], "high");
+        assert_eq!(value["tools"][0]["type"], "google_search");
         assert!(value["generation_config"].get("aspect_ratio").is_none());
     }
 

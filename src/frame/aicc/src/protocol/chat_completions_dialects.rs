@@ -4,7 +4,8 @@ use super::{
     ChatCompletionsTokenLimitParameter, CodecCall, CodecRegistration, ExecutionMode, HttpBody,
     HttpRequest, HttpResponse, OpenAiChatCompletionsCodec, OpenAiChatCompletionsDialect,
     OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
-    ProtocolOutput, ProtocolResultValue, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+    ProtocolOutput, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
+    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
     OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_PROTOCOL_FAMILY_ID,
 };
 use async_trait::async_trait;
@@ -18,6 +19,75 @@ use std::sync::Arc;
 pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
 pub(crate) const KIMI_CHAT_ADAPTER_ID: &str = "kimi-chat";
 pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
+
+#[derive(Debug, Default)]
+struct OpenRouterChatDialect;
+
+impl OpenAiChatCompletionsDialect for OpenRouterChatDialect {
+    fn transform_resolved_parameter(
+        &self,
+        name: &str,
+        value: &Value,
+    ) -> ProtocolResultValue<Option<(String, Value)>> {
+        if name != "modalities" {
+            return Ok(None);
+        }
+        if value != &json!(["text"]) {
+            return Err(ProtocolError::invalid_request(
+                "OpenRouter Chat Completions only supports the configured text modality",
+            ));
+        }
+        Ok(Some((name.to_owned(), value.clone())))
+    }
+
+    fn transform_request(
+        &self,
+        _request: &LlmChatInvokeRequest,
+        body: &mut Map<String, Value>,
+        _headers: &mut HeaderMap,
+        _context: &super::CodecContext,
+    ) -> ProtocolResultValue<()> {
+        if body.get("modalities") == Some(&json!(["text"])) {
+            require_text_only_for_image_input(body);
+        }
+        Ok(())
+    }
+}
+
+fn require_text_only_for_image_input(body: &mut Map<String, Value>) {
+    const INSTRUCTION: &str = "Return text only and do not generate an image.";
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let Some(content) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|message| message.get_mut("content"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    if !content
+        .iter()
+        .any(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
+    {
+        return;
+    }
+    if let Some(text_index) = content
+        .iter()
+        .position(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+    {
+        let text = content[text_index]
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !text.contains(INSTRUCTION) {
+            content[text_index]["text"] = Value::String(format!("{} {INSTRUCTION}", text.trim()));
+        }
+    }
+}
 
 pub(crate) fn qwen_aggregated_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
     derived_adapter("qwen-aggregated-chat", Arc::new(QwenAggregatedDialect))
@@ -67,20 +137,71 @@ pub(crate) fn openrouter_responses_adapter() -> (AdapterDescriptor, CodecRegistr
     )
     .expect("OpenRouter Responses adapter must be valid");
     let (openai_descriptor, openai_registration) = openai_responses_adapter();
-    let embeddings = openai_descriptor
-        .operations
-        .get(OPENAI_EMBEDDINGS_OPERATION_ID)
-        .expect("OpenAI embeddings operation must exist")
-        .clone();
-    descriptor
-        .operations
-        .insert(embeddings.operation_id.clone(), embeddings);
+    let compatible_operations = BTreeSet::from([
+        OPENAI_EMBEDDINGS_OPERATION_ID,
+        OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+    ]);
+    for operation_id in &compatible_operations {
+        let operation = openai_descriptor
+            .operations
+            .get(*operation_id)
+            .unwrap_or_else(|| panic!("OpenAI {operation_id} operation must exist"))
+            .clone();
+        descriptor
+            .operations
+            .insert(operation.operation_id.clone(), operation);
+    }
     registration.operation_codecs.extend(
         openai_registration
             .operation_codecs
             .into_iter()
-            .filter(|codec| codec.descriptor().operation_id == OPENAI_EMBEDDINGS_OPERATION_ID),
+            .filter(|codec| {
+                compatible_operations.contains(codec.descriptor().operation_id.as_str())
+            }),
     );
+    let speech = openai_descriptor
+        .operations
+        .get(OPENAI_AUDIO_SPEECH_OPERATION_ID)
+        .expect("OpenAI speech operation must exist")
+        .clone();
+    descriptor
+        .operations
+        .insert(speech.operation_id.clone(), speech.clone());
+    registration
+        .operation_codecs
+        .push(super::openrouter_media::speech_codec(speech));
+    let mut music = openai_chat_completions_operation_descriptor();
+    music
+        .bindings
+        .extend(super::openrouter_media::music_descriptor().bindings);
+    music.max_response_bytes = music.max_response_bytes.max(64 * 1024 * 1024);
+    descriptor
+        .operations
+        .insert(music.operation_id.clone(), music.clone());
+    let chat_dialect: Arc<dyn OpenAiChatCompletionsDialect> = Arc::new(OpenRouterChatDialect);
+    registration.operation_codecs.extend(
+        [ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]
+            .into_iter()
+            .map(|api_type| {
+                Arc::new(
+                    OpenAiChatCompletionsCodec::with_dialect_api_type_and_descriptor(
+                        Arc::clone(&chat_dialect),
+                        api_type,
+                        music.clone(),
+                    ),
+                ) as Arc<dyn OperationCodec>
+            }),
+    );
+    registration
+        .operation_codecs
+        .push(super::openrouter_media::music_codec(music));
+    let images = super::openrouter_media::image_descriptor();
+    descriptor
+        .operations
+        .insert(images.operation_id.clone(), images.clone());
+    registration
+        .operation_codecs
+        .extend(super::openrouter_media::image_codecs(images));
     let rerank = openrouter_rerank_descriptor();
     descriptor
         .operations

@@ -13,9 +13,12 @@ use crate::protocol::openrouter_decisions::{
     DECISION_FEATURES, JEV_ALIAS_ID, JEV_BUILD_ID, JEV_CHANNEL_ID, JEV_ORIGIN_ID,
     OPENROUTER_DECISIONS_OPERATION_ID,
 };
+use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
 use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_EMBEDDINGS_OPERATION_ID,
-    OPENAI_RESPONSES_OPERATION_ID, OPENROUTER_RERANK_OPERATION_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
+    CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_AUDIO_SPEECH_OPERATION_ID,
+    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
+    OPENAI_RESPONSES_OPERATION_ID, OPENROUTER_IMAGES_OPERATION_ID, OPENROUTER_MUSIC_OPERATION_ID,
+    OPENROUTER_RERANK_OPERATION_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
     OPENROUTER_VIDEOS_OPERATION_ID,
 };
 use async_trait::async_trait;
@@ -92,7 +95,7 @@ impl OpenRouterDiscovery {
 #[async_trait]
 impl ProviderDiscovery for OpenRouterDiscovery {
     fn match_model_driver(&self, id: &str, catalog: &CatalogSnapshot) -> ProviderModelMatch {
-        if matches!(id, JEV_CHANNEL_ID | JEV_ALIAS_ID) {
+        if id == JEV_CHANNEL_ID {
             return ProviderModelMatch::Matched(ModelIdentity {
                 model_driver_id: "typesafe".into(),
                 model_id: JEV_ORIGIN_ID.into(),
@@ -168,6 +171,9 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                     })
             });
         for model in wire.data {
+            if is_logical_model_id(&model.id) {
+                continue;
+            }
             let mut supported_features = BTreeSet::new();
             if model
                 .supported_parameters
@@ -191,19 +197,15 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             }) {
                 supported_features.insert(features::VISION.to_owned());
             }
-            let classification = classify_modalities(model.architecture.as_ref());
-            let (api_types, remote_methods) = match classification {
-                Some((api_type, operation)) => {
-                    (vec![api_type], BTreeSet::from([operation.to_owned()]))
-                }
-                None => {
-                    log::warn!(
-                        "OpenRouter model {} has unknown or conflicting output modalities",
-                        model.id
-                    );
-                    (Vec::new(), BTreeSet::new())
-                }
-            };
+            let (api_types, remote_methods) = classify_modalities(model.architecture.as_ref());
+            if api_types.iter().any(|api_type| {
+                matches!(
+                    api_type,
+                    ApiType::ImageTextToImage | ApiType::ImageImageToImage
+                )
+            }) {
+                supported_features.insert(features::IMAGE_GENERATION.to_owned());
+            }
             let decision = api_types == [ApiType::Decision];
             let video = api_types == [ApiType::VideoGenerate];
             let mut availability = ModelAvailability::Available;
@@ -468,26 +470,54 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     };
     let input_token = parse_nonnegative_price("prompt", pricing.prompt.as_deref())?;
     let output_token = parse_nonnegative_price("completion", pricing.completion.as_deref())?;
-    if input_token.is_none() && output_token.is_none() {
+    let cache_input_token =
+        parse_nonnegative_price("input_cache_read", pricing.input_cache_read.as_deref())?;
+    let cache_write_input_token =
+        parse_nonnegative_price("input_cache_write", pricing.input_cache_write.as_deref())?;
+    let cache_write_1h_input_token = parse_nonnegative_price(
+        "input_cache_write_1h",
+        pricing.input_cache_write_1h.as_deref(),
+    )?;
+    let audio_input_token = parse_nonnegative_price("audio", pricing.audio.as_deref())?;
+    let audio_output_token =
+        parse_nonnegative_price("audio_output", pricing.audio_output.as_deref())?;
+    let amount = parse_nonnegative_price("request", pricing.request.as_deref())?;
+    if input_token.is_none()
+        && output_token.is_none()
+        && cache_input_token.is_none()
+        && cache_write_input_token.is_none()
+        && cache_write_1h_input_token.is_none()
+        && audio_input_token.is_none()
+        && audio_output_token.is_none()
+        && amount.is_none()
+    {
         return Ok(None);
     }
+    let ratio_exception = input_token.filter(|value| *value > 0.0).and_then(|input| {
+        let anomalous = cache_input_token.is_some_and(|value| value > input)
+            || cache_write_input_token.is_some_and(|value| value / input > 10.0)
+            || cache_write_1h_input_token.is_some_and(|value| value / input > 10.0)
+            || output_token.is_some_and(|value| value / input > 100.0);
+        anomalous
+            .then(|| "OpenRouter official model catalog reports this token price ratio".to_owned())
+    });
     Ok(Some(Pricing {
         currency: "USD".to_owned(),
         source_url: Some("https://openrouter.ai/api/v1/models?output_modalities=all".into()),
         verified_at: Some(super::super::now_ms()?.to_string()),
-        ratio_exception: None,
-        cache_write_input_token: None,
-        audio_input_token: None,
+        ratio_exception,
+        cache_write_input_token,
+        audio_input_token,
         image_input_token: None,
-        cache_write_1h_input_token: None,
-        audio_output_token: None,
+        cache_write_1h_input_token,
+        audio_output_token,
         image_output_token: None,
         input_token,
         output_token,
-        cache_input_token: None,
+        cache_input_token,
         estimated_cost: None,
-        unit: None,
-        amount: None,
+        unit: amount.map(|_| crate::catalog::PricingUnit::Request),
+        amount,
         rules: Vec::new(),
         tiers: None,
 
@@ -598,40 +628,80 @@ struct ModelsResponse {
 struct ModelObject {
     id: String,
     canonical_slug: Option<String>,
-    alias_target: Option<AliasTarget>,
     context_length: Option<u64>,
     #[serde(default)]
     supported_parameters: Vec<String>,
     architecture: Option<ModelArchitecture>,
     pricing: Option<ModelPricing>,
-    expiration_date: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct AliasTarget {
-    slug: String,
+fn is_logical_model_id(id: &str) -> bool {
+    id.starts_with('~')
+        || id.starts_with("openrouter/")
+        || id
+            .rsplit_once('/')
+            .is_some_and(|(_, model)| model.contains(':'))
 }
 
 fn classify_modalities(
     architecture: Option<&ModelArchitecture>,
-) -> Option<(ApiType, &'static str)> {
-    let output = &architecture?.output_modalities;
-    match output.as_slice() {
-        [one] if one == "decisions" => Some((ApiType::Decision, OPENROUTER_DECISIONS_OPERATION_ID)),
-        [one] if one == "rerank" => Some((ApiType::Rerank, OPENROUTER_RERANK_OPERATION_ID)),
-        [one] if one == "embeddings" => {
-            Some((ApiType::EmbeddingText, OPENAI_EMBEDDINGS_OPERATION_ID))
+) -> (Vec<ApiType>, BTreeSet<String>) {
+    let Some(architecture) = architecture else {
+        return (Vec::new(), BTreeSet::new());
+    };
+    let input = &architecture.input_modalities;
+    let output = &architecture.output_modalities;
+    let mut api_types = Vec::new();
+    let mut operations = BTreeSet::new();
+    if output.as_slice() == ["decisions"] {
+        api_types.push(ApiType::Decision);
+        operations.insert(OPENROUTER_DECISIONS_OPERATION_ID.to_owned());
+    } else if output.as_slice() == ["rerank"] {
+        api_types.push(ApiType::Rerank);
+        operations.insert(OPENROUTER_RERANK_OPERATION_ID.to_owned());
+    } else if output.as_slice() == ["embeddings"] {
+        api_types.push(ApiType::EmbeddingText);
+        operations.insert(OPENAI_EMBEDDINGS_OPERATION_ID.to_owned());
+    } else if output.as_slice() == ["speech"] {
+        api_types.push(ApiType::AudioTextToSpeech);
+        operations.insert(OPENAI_AUDIO_SPEECH_OPERATION_ID.to_owned());
+    } else if output.as_slice() == ["transcription"] {
+        api_types.push(ApiType::AudioSpeechRecognition);
+        operations.insert(OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID.to_owned());
+    } else if output.as_slice() == ["video"] {
+        api_types.push(ApiType::VideoGenerate);
+        operations.insert(OPENROUTER_VIDEOS_OPERATION_ID.to_owned());
+    } else if output.iter().any(|item| item == "audio")
+        && output
+            .iter()
+            .all(|item| matches!(item.as_str(), "text" | "image" | "audio"))
+    {
+        api_types.push(ApiType::AudioMusic);
+        operations.insert(OPENROUTER_MUSIC_OPERATION_ID.to_owned());
+    } else if output
+        .iter()
+        .all(|item| matches!(item.as_str(), "text" | "image"))
+    {
+        if output.iter().any(|item| item == "text") {
+            api_types.push(ApiType::Llm);
+            operations.insert(OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned());
+            operations.insert(OPENAI_RESPONSES_OPERATION_ID.to_owned());
+            if input.iter().any(|item| item == "image") {
+                api_types.push(ApiType::VisionOcr);
+                api_types.push(ApiType::VisionCaption);
+            }
         }
-        [one] if one == "video" => Some((ApiType::VideoGenerate, OPENROUTER_VIDEOS_OPERATION_ID)),
-        _ if output.iter().any(|m| m == "text")
-            && output
-                .iter()
-                .all(|m| matches!(m.as_str(), "text" | "image" | "audio")) =>
-        {
-            Some((ApiType::Llm, OPENAI_RESPONSES_OPERATION_ID))
+        if output.iter().any(|item| item == "image") {
+            if input.iter().any(|item| item == "text") {
+                api_types.push(ApiType::ImageTextToImage);
+            }
+            if input.iter().any(|item| item == "image") {
+                api_types.push(ApiType::ImageImageToImage);
+            }
+            operations.insert(OPENROUTER_IMAGES_OPERATION_ID.to_owned());
         }
-        _ => None,
     }
+    (api_types, operations)
 }
 
 #[derive(Deserialize)]
@@ -661,10 +731,16 @@ struct VideoModelObject {
     pricing_skus: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct ModelPricing {
     prompt: Option<String>,
     completion: Option<String>,
+    input_cache_read: Option<String>,
+    input_cache_write: Option<String>,
+    input_cache_write_1h: Option<String>,
+    audio: Option<String>,
+    audio_output: Option<String>,
+    request: Option<String>,
 }
 
 #[cfg(test)]
@@ -694,6 +770,21 @@ mod tests {
     }
 
     #[test]
+    fn official_extreme_token_price_ratio_is_preserved_with_source_explanation() {
+        let pricing = parse_pricing(Some(ModelPricing {
+            prompt: Some("0.000000037".into()),
+            completion: Some("0.000007".into()),
+            ..Default::default()
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(pricing.input_token, Some(0.000000037));
+        assert_eq!(pricing.output_token, Some(0.000007));
+        assert!(pricing.ratio_exception.is_some());
+        crate::catalog::validate_pricing("z-ai/glm-5.2", &pricing).unwrap();
+    }
+
+    #[test]
     fn connection_resolves_sovereign_region_base_urls() {
         let contract = super::super::builtin_connection_contract(OPENROUTER_PROVIDER_PROFILE_ID);
         assert_eq!(
@@ -719,6 +810,69 @@ mod tests {
                 .unwrap()
                 .base_url,
             "https://eu.openrouter.ai/api/v1"
+        );
+    }
+
+    #[test]
+    fn provider_rules_narrow_gemini_images_without_changing_vendor_limits() {
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let vendor = catalog
+            .resolve_model("gemini", "gemini-2.5-flash-image")
+            .unwrap()
+            .semantics
+            .capabilities
+            .unwrap();
+        assert_eq!(vendor["image_generation"], true);
+        assert_eq!(vendor["max_context_tokens"], 65_536);
+        assert_eq!(vendor["max_output_tokens"], 32_768);
+
+        let rule = catalog
+            .resolve_provider_rule(
+                OPENROUTER_PROVIDER_PROFILE_ID,
+                "google/gemini-2.5-flash-image",
+                &Default::default(),
+            )
+            .unwrap()
+            .unwrap();
+        let narrowed = rule.action.narrow(&Default::default(), &vendor);
+        assert_eq!(narrowed.capabilities["image_generation"], true);
+        assert_eq!(narrowed.capabilities["max_context_tokens"], 32_768);
+        assert_eq!(narrowed.capabilities["max_output_tokens"], 8_192);
+        assert_eq!(
+            rule.action.operations["image.txt2img"],
+            OPENROUTER_IMAGES_OPERATION_ID
+        );
+
+        let vendor = catalog
+            .resolve_model("gemini", "gemini-nano-banana-2.1")
+            .unwrap()
+            .semantics
+            .capabilities
+            .unwrap();
+        assert_eq!(vendor["max_context_tokens"], 131_072);
+        assert_eq!(vendor["max_output_tokens"], 32_768);
+        let rule = catalog
+            .resolve_provider_rule(
+                OPENROUTER_PROVIDER_PROFILE_ID,
+                "google/gemini-nano-banana-2.1",
+                &Default::default(),
+            )
+            .unwrap()
+            .unwrap();
+        let narrowed = rule.action.narrow(&Default::default(), &vendor);
+        assert_eq!(narrowed.capabilities["max_context_tokens"], 65_536);
+        assert_eq!(narrowed.capabilities["max_output_tokens"], 32_768);
+        assert_eq!(
+            rule.action.operations["image.img2img"],
+            OPENROUTER_IMAGES_OPERATION_ID
         );
     }
 
@@ -763,7 +917,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(snapshot.models.len(), 5);
+        assert_eq!(snapshot.models.len(), 3);
         let language_model = snapshot
             .models
             .iter()
@@ -801,10 +955,8 @@ mod tests {
         assert!(snapshot
             .models
             .iter()
-            .find(|model| model.provider_model_id == "openrouter/auto")
-            .unwrap()
-            .pricing
-            .is_none());
+            .all(|model| model.provider_model_id != "openrouter/auto"
+                && !model.provider_model_id.contains(':')));
         let catalog = crate::settings::MetadataSources {
             builtin: crate::settings::load_builtin_metadata().unwrap(),
             ..Default::default()
@@ -825,10 +977,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inventory.models.len(), 3);
-        assert!(inventory
-            .unmatched_models
-            .iter()
-            .any(|model| model.provider_model_id == "openrouter/auto"));
+        assert!(inventory.unmatched_models.is_empty());
         let registry =
             crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
         let candidates = registry
@@ -1163,7 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn openrouter_decision_discovery_requires_verified_inventory_and_narrows_limits() {
         let inventory = jev_inventory(jev_fixture()).await.unwrap();
-        assert_eq!(inventory.models.len(), 2);
+        assert_eq!(inventory.models.len(), 1);
         for model in &inventory.models {
             assert_eq!(model.origin_model_id, JEV_ORIGIN_ID);
             assert_eq!(model.api_types, vec![ApiType::Decision]);
@@ -1212,30 +1361,11 @@ mod tests {
                 .iter()
                 .all(|m| m.api_types.is_empty()));
         }
-        let mut fixture = jev_fixture();
-        fixture["data"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|m| m["id"] == JEV_ALIAS_ID)
-            .unwrap()["alias_target"]["slug"] = serde_json::json!("typesafe/jev-1.14");
-        let drift = jev_inventory(fixture).await.unwrap();
-        assert!(drift
+        assert!(inventory
             .models
             .iter()
-            .find(|m| m.provider_model_id == JEV_ALIAS_ID)
-            .unwrap()
-            .api_types
-            .is_empty());
-        assert_eq!(
-            drift
-                .models
-                .iter()
-                .find(|m| m.provider_model_id == JEV_CHANNEL_ID)
-                .unwrap()
-                .api_types,
-            vec![ApiType::Decision]
-        );
+            .all(|model| model.provider_model_id
+                != crate::protocol::openrouter_decisions::JEV_ALIAS_ID));
         let mut fixture = jev_fixture();
         for model in fixture["data"].as_array_mut().unwrap() {
             model["pricing"] = serde_json::Value::Null;
@@ -1252,8 +1382,79 @@ mod tests {
         assert!(jev_inventory(fixture).await.is_err());
     }
 
+    #[tokio::test]
+    async fn openrouter_discovery_cannot_expand_vendor_model_api_types() {
+        let inventory = jev_inventory(serde_json::json!({"data": [
+            {
+                "id": "google/gemini-2.5-flash-image",
+                "canonical_slug": "google/gemini-2.5-flash-image",
+                "context_length": 65536,
+                "supported_parameters": [],
+                "architecture": {
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text", "image"]
+                },
+                "pricing": null
+            },
+            {
+                "id": "qwen/qwen3.8-27b",
+                "canonical_slug": "qwen/qwen3.8-27b",
+                "context_length": 1000000,
+                "supported_parameters": [],
+                "architecture": {
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"]
+                },
+                "pricing": null
+            }
+        ]}))
+        .await
+        .unwrap();
+        let api_types = |model_id: &str| {
+            inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == model_id)
+                .unwrap()
+                .api_types
+                .clone()
+        };
+        let image_api_types = api_types("google/gemini-2.5-flash-image");
+        assert_eq!(image_api_types.len(), 2);
+        assert!(image_api_types.contains(&ApiType::ImageTextToImage));
+        assert!(image_api_types.contains(&ApiType::ImageImageToImage));
+        assert_eq!(api_types("qwen/qwen3.8-27b"), vec![ApiType::Llm]);
+    }
+
     #[test]
     fn openrouter_unknown_modalities_and_future_identities_fail_closed() {
+        let (api_types, operations) = classify_modalities(Some(&ModelArchitecture {
+            input_modalities: vec!["text".into(), "image".into()],
+            output_modalities: vec!["text".into(), "image".into()],
+        }));
+        assert_eq!(
+            api_types,
+            vec![
+                ApiType::Llm,
+                ApiType::VisionOcr,
+                ApiType::VisionCaption,
+                ApiType::ImageTextToImage,
+                ApiType::ImageImageToImage,
+            ]
+        );
+        assert!(operations.contains(OPENAI_CHAT_COMPLETIONS_OPERATION_ID));
+        assert!(operations.contains(OPENAI_RESPONSES_OPERATION_ID));
+        assert!(operations.contains(OPENROUTER_IMAGES_OPERATION_ID));
+
+        let (api_types, operations) = classify_modalities(Some(&ModelArchitecture {
+            input_modalities: vec!["text".into(), "image".into()],
+            output_modalities: vec!["text".into(), "audio".into()],
+        }));
+        assert_eq!(api_types, vec![ApiType::AudioMusic]);
+        assert_eq!(
+            operations,
+            BTreeSet::from([crate::protocol::OPENROUTER_MUSIC_OPERATION_ID.to_owned()])
+        );
         for output in [
             vec!["decisions", "text"],
             vec!["rerank", "embeddings"],
@@ -1264,7 +1465,8 @@ mod tests {
                 input_modalities: vec!["text".into()],
                 output_modalities: output.into_iter().map(str::to_owned).collect()
             }))
-            .is_none());
+            .0
+            .is_empty());
         }
         let catalog = crate::settings::MetadataSources {
             builtin: crate::settings::load_builtin_metadata().unwrap(),
@@ -1328,6 +1530,7 @@ mod tests {
         let partial = parse_pricing(Some(ModelPricing {
             prompt: Some("-1".into()),
             completion: Some("0.000002".into()),
+            ..Default::default()
         }))
         .unwrap()
         .unwrap();
