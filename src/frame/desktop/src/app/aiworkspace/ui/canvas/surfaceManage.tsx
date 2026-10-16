@@ -6,6 +6,8 @@
 
 import { useCallback, useState } from 'react'
 import { describeError } from '../../api/session'
+import { aiwsT } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 import { SYSTEM_IDS, type CommitOutcome, type EntityEnvelope, type Json, type Operation } from '../../api/types'
 import { useOverlayMounted } from '../shell/popover'
 import type { WorkspaceStore } from '../../state/store'
@@ -25,7 +27,7 @@ export function renameSurface(store: WorkspaceStore, surface: EntityEnvelope, ti
     { op: 'entity.set_keys', entity_id: surface.entity_id, keys: [{ key: 'title', value: title, expect: { rev: base.titleRev } }] },
     { op: 'entity.rename', entity_id: surface.entity_id, name: title, expect: { rev: base.metaRev } },
   ]
-  return store.submit({ editId: `surface:${surface.entity_id}:title`, label: `重命名画布 → ${title}`, mine: title, hasMine: true, operations: ops })
+  return store.submit({ editId: `surface:${surface.entity_id}:title`, label: aiwsT('aiworkspace.canvas.surface.renameLabel', { title }), mine: title, hasMine: true, operations: ops })
 }
 
 export async function setSurfaceIcon(store: WorkspaceStore, surface: EntityEnvelope, icon: string | null): Promise<CommitOutcome> {
@@ -34,7 +36,7 @@ export async function setSurfaceIcon(store: WorkspaceStore, surface: EntityEnvel
   const op: Operation = icon
     ? { op: 'entity.set_keys', entity_id: surface.entity_id, keys: [{ key: 'icon', value: icon, expect: { rev } }] }
     : { op: 'entity.unset_keys', entity_id: surface.entity_id, keys: [{ key: 'icon', expect: { rev } }] }
-  return store.submit({ editId: `surface:${surface.entity_id}:icon`, label: icon ? '更换画布图标' : '恢复默认画布图标', operations: [op] })
+  return store.submit({ editId: `surface:${surface.entity_id}:icon`, label: aiwsT(icon ? 'aiworkspace.canvas.surface.iconLabel' : 'aiworkspace.canvas.surface.iconResetLabel'), operations: [op] })
 }
 
 /** A Surface's page settings (`config`, draw.io 导入 TODO §2.5): background colour and page size, read wide. */
@@ -62,7 +64,7 @@ export async function setSurfaceBackground(store: WorkspaceStore, surface: Entit
   const op: Operation = Object.keys(config).length
     ? { op: 'entity.set_keys', entity_id: surface.entity_id, keys: [{ key: 'config', value: config, expect: { rev } }] }
     : { op: 'entity.unset_keys', entity_id: surface.entity_id, keys: [{ key: 'config', expect: { rev } }] }
-  return store.submit({ editId: `surface:${surface.entity_id}:background`, label: background ? '画布背景色' : '恢复默认画布背景', operations: [op] })
+  return store.submit({ editId: `surface:${surface.entity_id}:background`, label: aiwsT(background ? 'aiworkspace.canvas.surface.backgroundLabel' : 'aiworkspace.canvas.surface.backgroundResetLabel'), operations: [op] })
 }
 
 export function accepted(outcome: CommitOutcome): boolean {
@@ -71,16 +73,17 @@ export function accepted(outcome: CommitOutcome): boolean {
 
 /** Why a Surface's own properties (name, icon) cannot be changed now, or null. */
 export function surfaceWriteReason(store: WorkspaceStore, surface: EntityEnvelope | null | undefined, viewOnly: boolean, readOnlyNow: string | null): string | null {
-  if (!surface) return '没有画布'
-  if (!surface.capabilities.includes('structure')) return '没有修改这张画布的权限'
+  if (!surface) return aiwsT('aiworkspace.canvas.surface.none')
+  if (!surface.capabilities.includes('structure')) return aiwsT('aiworkspace.canvas.surface.noPermission')
   if (readOnlyNow) return readOnlyNow
-  if (viewOnly) return '当前不是编辑模式'
+  if (viewOnly) return aiwsT('aiworkspace.canvas.surface.notEditMode')
   void store
   return null
 }
 
 export function SurfaceDeleteDialog({ surface, onClose, onDeleted }: { surface: EntityEnvelope; onClose: () => void; onDeleted: (nextSurfaceId: string | null) => void }) {
   const store = useStore()
+  const { t, clauses } = useAiwsText()
   useOverlayMounted()
   const [state, setState] = useState<{ referrers: { entity_id: string; target: string }[] | null; hidden: boolean; busy: boolean }>({ referrers: null, hidden: false, busy: true })
   const [started, setStarted] = useState(false)
@@ -99,7 +102,7 @@ export function SurfaceDeleteDialog({ surface, onClose, onDeleted }: { surface: 
       const data = result.status === 'rejected' ? (result.errors?.[0]?.data as { referrers?: { entity_id: string; target: string }[]; hidden_referrers?: boolean } | undefined) : undefined
       setState({ referrers: data?.referrers ?? [{ entity_id: result.code, target: '' }], hidden: Boolean(data?.hidden_referrers), busy: false })
     }, (error: unknown) => {
-      store.notify('error', `删除预检失败：${describeError(error)}`)
+      store.notify('error', aiwsT('aiworkspace.canvas.surface.precheckFailed', { reason: describeError(error) }))
       onClose()
     })
   }
@@ -118,28 +121,27 @@ export function SurfaceDeleteDialog({ surface, onClose, onDeleted }: { surface: 
       const rest = moveFirst ? [] : store.outline.descendants(folder.entity_id).map((e) => e.entity_id)
       ops.push({ op: 'entity.delete', entity_id: folder.entity_id, ...(rest.length ? { subtree: { delete: rest } } : {}), expect: { rev: folder.life_rev } })
     }
-    const outcome = await store.submit({ editId: `surface:${surface.entity_id}:delete`, label: `删除画布 ${surface.title ?? surface.name ?? ''}`, operations: ops })
+    const outcome = await store.submit({ editId: `surface:${surface.entity_id}:delete`, label: aiwsT('aiworkspace.canvas.surface.deleteLabel', { name: surface.title ?? surface.name ?? '' }), operations: ops })
     onClose()
     if (accepted(outcome)) onDeleted(surfacesOf(store).find((s) => s.entity_id !== surface.entity_id)?.entity_id ?? null)
   }
   const blocked = state.referrers !== null && (state.referrers.length > 0 || state.hidden)
   return (
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div className="aiws-dialog" role="alertdialog" aria-modal="true" aria-label="删除画布" data-testid="aiws-surface-delete-dialog" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
-        <b>删除画布「{surface.title ?? surface.name}」</b>
-        <div className="aiws-muted">画布上的 Block 和它的画布内容区会在同一次提交中删除；工作区和其他画布不受影响。</div>
-        {state.busy && <div className="aiws-muted">正在预检…</div>}
+      <div className="aiws-dialog" role="alertdialog" aria-modal="true" aria-label={t('aiworkspace.canvas.surface.delete')} data-testid="aiws-surface-delete-dialog" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
+        <b>{t('aiworkspace.canvas.surface.deleteTitle', { name: surface.title ?? surface.name ?? '' })}</b>
+        <div className="aiws-muted">{t('aiworkspace.canvas.surface.deleteNote')}</div>
+        {state.busy && <div className="aiws-muted">{t('aiworkspace.canvas.surface.prechecking')}</div>}
         {state.referrers && state.referrers.length > 0 && (
           <div className="aiws-warning" data-testid="aiws-surface-delete-blocked">
-            其中的数据仍被引用，不能直接删除：{state.referrers.map((r) => `${store.outline.get(r.entity_id)?.title ?? store.outline.get(r.entity_id)?.name ?? r.entity_id} → ${r.target}`).join('；')}
-            {state.hidden && '；另有无权查看的引用'}
+            {t('aiworkspace.canvas.surface.deleteBlocked', { list: clauses([...state.referrers.map((r) => `${store.outline.get(r.entity_id)?.title ?? store.outline.get(r.entity_id)?.name ?? r.entity_id} → ${r.target}`), ...(state.hidden ? [t('aiworkspace.canvas.surface.hiddenReferrers')] : [])]) })}
           </div>
         )}
-        {state.referrers && state.referrers.length === 0 && state.hidden && <div className="aiws-warning">存在受限引用（你无权查看），不能直接删除。</div>}
+        {state.referrers && state.referrers.length === 0 && state.hidden && <div className="aiws-warning">{t('aiworkspace.canvas.surface.restrictedReferrers')}</div>}
         <div className="aiws-dialog-actions">
-          {state.referrers && !blocked && <button type="button" className="is-danger" data-testid="aiws-surface-delete-confirm" autoFocus onClick={() => { void remove(false) }}>删除画布</button>}
-          {blocked && <button type="button" data-testid="aiws-surface-delete-move" onClick={() => { void remove(true) }}>把画布内容移到数据树后再删除</button>}
-          <button type="button" onClick={onClose}>取消</button>
+          {state.referrers && !blocked && <button type="button" className="is-danger" data-testid="aiws-surface-delete-confirm" autoFocus onClick={() => { void remove(false) }}>{t('aiworkspace.canvas.surface.delete')}</button>}
+          {blocked && <button type="button" data-testid="aiws-surface-delete-move" onClick={() => { void remove(true) }}>{t('aiworkspace.canvas.surface.moveThenDelete')}</button>}
+          <button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button>
         </div>
       </div>
     </div>

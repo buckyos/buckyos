@@ -1,6 +1,7 @@
 /* Operation builders shared by Block definitions and insertion. */
 
 import { describeError } from '../../api/session'
+import { aiwsT } from '../../i18n'
 import type { AssetContent, CellPayload, Json, KeyedContent, Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
 import type { CreateArgs, RenderContext } from './registry'
@@ -37,15 +38,15 @@ export async function replaceAsset(store: WorkspaceStore, entityId: string, file
     const uploaded = await store.session.uploadAsset(file, file.name)
     const revs = current.content.key_revs ?? {}
     const outcome = await store.submit({
-      editId: `key:${entityId}:object_id`, label: `替换资产 ${current.content.payload.file_name ?? entityId}`,
+      editId: `key:${entityId}:object_id`, label: aiwsT('aiworkspace.blocks.edit.replaceAsset', { name: current.content.payload.file_name ?? entityId }),
       operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: [
         { key: 'object_id', value: uploaded.object_id, expect: { rev: revs.object_id ?? 0 } },
         { key: 'file_name', value: file.name, expect: { rev: revs.file_name ?? 0 } },
       ] }],
     })
-    return outcome.status === 'accepted' || outcome.status === 'saved_locally' ? null : '替换未被接受，见“需要处理”'
+    return outcome.status === 'accepted' || outcome.status === 'saved_locally' ? null : aiwsT('aiworkspace.blocks.asset.replaceRejected')
   } catch (error) {
-    return `上传失败：${describeError(error)}`
+    return aiwsT('aiworkspace.blocks.asset.uploadFailed', { error: describeError(error) })
   }
 }
 

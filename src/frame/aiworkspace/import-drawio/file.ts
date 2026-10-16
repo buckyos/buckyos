@@ -22,7 +22,19 @@ export interface DrawioFile {
   library: LibraryEntry[]
 }
 
-export class DrawioFormatError extends Error {}
+/** Why a file cannot be read: `code` for the host's own text (with `detail`, e.g. the root element's name); the
+ * message is English, for developers. */
+export type DrawioFormatCode = 'no_pages' | 'library_not_json' | 'svg_without_diagram' | 'unknown_root' | 'png_without_diagram' | 'empty'
+
+export class DrawioFormatError extends Error {
+  readonly code: DrawioFormatCode
+  readonly detail?: string
+  constructor(code: DrawioFormatCode, message: string, detail?: string) {
+    super(message)
+    this.code = code
+    if (detail !== undefined) this.detail = detail
+  }
+}
 
 /** `Graph.decompress`: base64 → inflateRaw → decodeURIComponent. Plain XML passes through. */
 export async function decompressDiagram(text: string): Promise<string> {
@@ -53,12 +65,12 @@ async function fromRoot(root: XmlElement, source: DrawioFile['source']): Promise
       if (!model || model.name !== 'mxGraphModel') continue
       pages.push({ id: diagram.attrs.id || `page-${n}`, name: diagram.attrs.name || `Page-${n}`, model })
     }
-    if (pages.length === 0) throw new DrawioFormatError('文件中没有可读的 draw.io 页面')
+    if (pages.length === 0) throw new DrawioFormatError('no_pages', 'The file has no readable draw.io page')
     return { source, pages, library: [] }
   }
   if (root.name === 'mxlibrary') {
     let list: { xml?: string; w?: number; h?: number; title?: string; data?: string }[]
-    try { list = JSON.parse(textOf(root)) } catch { throw new DrawioFormatError('图形库内容不是 JSON') }
+    try { list = JSON.parse(textOf(root)) } catch { throw new DrawioFormatError('library_not_json', 'The shape library content is not JSON') }
     const library: LibraryEntry[] = []
     for (const item of Array.isArray(list) ? list : []) {
       let model: XmlElement | null = null
@@ -71,11 +83,11 @@ async function fromRoot(root: XmlElement, source: DrawioFile['source']): Promise
   }
   if (root.name === 'svg') {
     const content = root.attrs.content
-    if (!content) throw new DrawioFormatError('这个 SVG 不含 draw.io 图（没有 content 属性）')
+    if (!content) throw new DrawioFormatError('svg_without_diagram', 'This SVG contains no draw.io diagram (no content attribute)')
     const xml = content.trim().startsWith('<') ? content : await decompressDiagram(content)
     return fromRoot(parseXml(xml), 'svg')
   }
-  throw new DrawioFormatError(`不认识的根元素 <${root.name}>`)
+  throw new DrawioFormatError('unknown_root', `Unknown root element <${root.name}>`, root.name)
 }
 
 /** Is this text a draw.io model or file (a paste, a dropped file's text)? */
@@ -90,13 +102,13 @@ export async function readDrawio(input: { bytes?: Uint8Array; text?: string }): 
   if (input.bytes && isPng(input.bytes)) {
     const chunks = await pngTextChunks(input.bytes)
     const value = chunks.get('mxfile') ?? chunks.get('mxGraphModel')
-    if (!value) throw new DrawioFormatError('这张 PNG 不含 draw.io 图（没有 mxfile 文本块）')
+    if (!value) throw new DrawioFormatError('png_without_diagram', 'This PNG contains no draw.io diagram (no mxfile text chunk)')
     let xml = value
     try { xml = decodeURIComponent(value) } catch { /* already plain */ }
     return fromRoot(parseXml(xml), 'png')
   }
   if (text === undefined && input.bytes) text = utf8.decode(input.bytes)
-  if (text === undefined) throw new DrawioFormatError('没有内容')
+  if (text === undefined) throw new DrawioFormatError('empty', 'No content')
   let t = text.trim()
   if (/^%3C/i.test(t)) { try { t = decodeURIComponent(t) } catch { /* keep */ } }
   return fromRoot(parseXml(t), 'mxfile')

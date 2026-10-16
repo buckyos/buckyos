@@ -4,6 +4,7 @@ import type { CapturedAnchor } from '../anchors/registry'
 import { randomId } from '../api/ids'
 import type { EntityEnvelope, Json, Operation, Reference } from '../api/types'
 import { orderKeyBetween, type AiwsCore } from '../api/wasm'
+import { aiwsT } from '../i18n'
 
 export function entityLabel(entity: EntityEnvelope): string {
   return entity.name ?? entity.title ?? entity.entity_id
@@ -58,7 +59,7 @@ export function describeTarget(target: Reference): string {
   if (!selector || selector.kind === 'entity') return target.entity_id
   if (selector.kind === 'table_cell') return `${target.entity_id} / ${selector.record_id} / ${selector.field_id}`
   if (selector.kind === 'table_record') return `${target.entity_id} / ${selector.record_id}`
-  if (selector.kind === 'table_field') return `${target.entity_id} / 字段 ${selector.field_id}`
-  if (selector.kind === 'richtext_block') return `${target.entity_id} / 块 ${selector.block_id}`
+  if (selector.kind === 'table_field') return aiwsT('aiworkspace.data.target.field', { entity: target.entity_id, field: String(selector.field_id) })
+  if (selector.kind === 'richtext_block') return aiwsT('aiworkspace.data.target.block', { entity: target.entity_id, block: String(selector.block_id) })
   return `${target.entity_id} / ${selector.kind}`
 }

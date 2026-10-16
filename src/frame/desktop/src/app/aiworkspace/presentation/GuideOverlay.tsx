@@ -10,6 +10,7 @@ import type { Json, KeyedContent, PresentationProps, ShowPathPayload, ViewportPa
 import { useLoad, useOutlineVersion, useStore, useVersion } from '../state/hooks'
 import type { Camera } from '../ui/canvas/render/camera'
 import { useShell } from '../ui/shell/shellContext'
+import { useAiwsText } from '../useAiwsText'
 import { playable, resolveSteps, type Rect } from './model'
 import './presentation.css'
 
@@ -21,6 +22,7 @@ const BUBBLE_H = 130
 export function GuideOverlay({ camera, surfaceId }: { camera: Camera; surfaceId: string }) {
   const store = useStore()
   const shell = useShell()
+  const { t } = useAiwsText()
   const guide = shell.guide!
   const outlineVersion = useOutlineVersion()
   const pathVersion = useVersion(`e:${guide.pathId}`)
@@ -96,8 +98,8 @@ export function GuideOverlay({ camera, surfaceId }: { camera: Camera; surfaceId:
     return (
       <div className="aiws-guide" data-testid="aiws-guide" onPointerDown={(event) => event.stopPropagation()}>
         <div className="aiws-guide-bubble aiws-panel" style={{ left: '50%', top: '40%', transform: 'translate(-50%, -50%)' }}>
-          <div>这个使用引导没有可以显示的步骤。</div>
-          <div className="aiws-dialog-actions"><button type="button" onClick={() => shell.setGuide(null)}>结束</button></div>
+          <div>{t('aiworkspace.presentation.guide.empty')}</div>
+          <div className="aiws-dialog-actions"><button type="button" onClick={() => shell.setGuide(null)}>{t('aiworkspace.presentation.guide.end')}</button></div>
         </div>
       </div>
     )
@@ -124,19 +126,19 @@ export function GuideOverlay({ camera, surfaceId }: { camera: Camera; surfaceId:
         </svg>
       )}
       {hole && <div className="aiws-guide-ring" style={{ left: hole.x - 3, top: hole.y - 3, width: hole.w + 6, height: hole.h + 6 }} />}
-      <div className="aiws-guide-bubble aiws-panel" role="dialog" aria-label="使用引导" data-testid="aiws-guide-bubble" style={{ left: bubbleLeft, top: bubbleTop, width: bubbleW }}>
+      <div className="aiws-guide-bubble aiws-panel" role="dialog" aria-label={t('aiworkspace.presentation.guide.title')} data-testid="aiws-guide-bubble" style={{ left: bubbleLeft, top: bubbleTop, width: bubbleW }}>
         <div className="aiws-guide-bubble-head">
-          <b className="aiws-grow">{step?.title ?? path.title ?? '使用引导'}</b>
+          <b className="aiws-grow">{step?.title ?? path.title ?? t('aiworkspace.presentation.guide.title')}</b>
           <span className="aiws-guide-count" data-testid="aiws-guide-count">{index + 1} / {steps.length}</span>
-          <button type="button" className="aiws-icon" aria-label="结束引导" title="结束引导（Esc），停在这里" data-testid="aiws-guide-close" onClick={() => end(false)}><X size={14} /></button>
+          <button type="button" className="aiws-icon" aria-label={t('aiworkspace.presentation.guide.close')} title={t('aiworkspace.presentation.guide.closeTitle')} data-testid="aiws-guide-close" onClick={() => end(false)}><X size={14} /></button>
         </div>
-        <div className="aiws-guide-bubble-text" data-testid="aiws-guide-caption">{caption ?? <span className="aiws-muted">（这一步没有说明）</span>}</div>
+        <div className="aiws-guide-bubble-text" data-testid="aiws-guide-caption">{caption ?? <span className="aiws-muted">{t('aiworkspace.presentation.guide.noCaption')}</span>}</div>
         <div className="aiws-dialog-actions">
-          <button type="button" data-testid="aiws-guide-prev" disabled={index === 0} onClick={() => go(index - 1)}><ChevronLeft size={14} aria-hidden="true" /> 上一项</button>
+          <button type="button" data-testid="aiws-guide-prev" disabled={index === 0} onClick={() => go(index - 1)}><ChevronLeft size={14} aria-hidden="true" /> {t('aiworkspace.presentation.show.prev')}</button>
           <span className="aiws-grow" />
           {last
-            ? <button type="button" className="is-primary" data-testid="aiws-guide-done" onClick={() => end(true)}>完成</button>
-            : <button type="button" className="is-primary" data-testid="aiws-guide-next" onClick={() => go(index + 1)}>下一项 <ChevronRight size={14} aria-hidden="true" /></button>}
+            ? <button type="button" className="is-primary" data-testid="aiws-guide-done" onClick={() => end(true)}>{t('aiworkspace.presentation.guide.done')}</button>
+            : <button type="button" className="is-primary" data-testid="aiws-guide-next" onClick={() => go(index + 1)}>{t('aiworkspace.presentation.show.next')} <ChevronRight size={14} aria-hidden="true" /></button>}
         </div>
       </div>
     </div>

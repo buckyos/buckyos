@@ -36,13 +36,15 @@ import { Lock, RotateCw } from 'lucide-react'
 import type { Placement } from '../../../api/types'
 import { ConnectorFrame } from '../connectors/ConnectorFrame'
 import { LineRegistry } from '../connectors/registry'
-import { anchorLabel, findAnchor, SIDE_VEC, type Shape } from '../connectors/anchors'
+import { findAnchor, SIDE_VEC, type Shape } from '../connectors/anchors'
 import { anchorsOf, anchorWorld, cubicAt, decompose, dist, ELBOW_STUB, facingAnchor, leftOf, materialize, nearest, pathData, routeBetween, routeConnector, sideAnchor, visibleAnchors, type ConnectorGeometry, type Seg, type TargetGeom } from '../connectors/geometry'
 import { CONNECTOR_PAD, connectorAdjacency, hasBoundEnd, lookupIn, RECT_FORM, routeLaid, type Override, type TargetForm } from '../connectors/layout'
 import { LABEL_FONT, sameAnchor, type Anchor, type ConnectorData, type Route } from '../connectors/model'
 import type { ConnectorChange, EndSpec, NewConnector } from '../connectors/ops'
 import { paintConnector } from '../connectors/paint'
 import { describeError } from '../../../api/session'
+import { aiwsT } from '../../../i18n'
+import { useAiwsText } from '../../../useAiwsText'
 import { testHooks } from '../../../api/testHooks'
 import { useStore } from '../../../state/hooks'
 import { BlockHost, type Lod } from '../../blocks/BlockHost'
@@ -51,6 +53,7 @@ import { BlockMetaContext, BlockMetaSink, requestIntent, type BlockMeta } from '
 import { blockRegistry, modePolicy, type CanvasMode, type HoverAffordance } from '../../blocks/registry'
 import { usePointerType } from '../../blocks/useBlockContext'
 import { FreshnessBadge } from '../../sources/FreshnessBadge'
+import { anchorName } from '../drawioText'
 import { angleFrom, centerOf, containsPoint, corners, normalizeRotation, resizeRotated, rotatePoint } from '../geometry'
 import { groupAt, movedPlacement, relativeTo, topLevel, type Laid } from '../layout'
 import { Camera, intersects, type Rect } from './camera'
@@ -251,6 +254,7 @@ function lodFor(rect: Rect, zoom: number, pinned: boolean): Lod {
 export function RenderHost(props: RenderHostProps) {
   const { camera, laid, index, selection, mode, editing, canLayout } = props
   const store = useStore()
+  const { t } = useAiwsText()
   const budget = useContext(BudgetContext)
   const rootRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
@@ -571,7 +575,7 @@ export function RenderHost(props: RenderHostProps) {
       const to = drag.end.binding
       // a loop needs two different anchors the pointer was on (§4.3)
       if (from && to && from.entity_id === to.entity_id && (drag.loose || !drag.endExact || sameAnchor(from.anchor, to.anchor))) {
-        store.notify('info', '首尾连在同一个对象上时，两端要放在它两个不同的锚点上。')
+        store.notify('info', aiwsT('aiworkspace.canvas.line.loopNeedsTwoAnchors'))
         return
       }
       // the stored corners are where the ends are now (an `auto` start depends on where the end went)
@@ -587,7 +591,7 @@ export function RenderHost(props: RenderHostProps) {
       const other = drag.which === 'start' ? data.end : data.start
       const mine = drag.end.binding
       if (mine && other && mine.entity_id === other.entity_id && (!drag.endExact || sameAnchor(mine.anchor, other.anchor))) {
-        store.notify('info', '首尾连在同一个对象上时，两端要放在它两个不同的锚点上。')
+        store.notify('info', aiwsT('aiworkspace.canvas.line.loopNeedsTwoAnchors'))
         return
       }
       const geom = l.connector.geom
@@ -716,7 +720,7 @@ export function RenderHost(props: RenderHostProps) {
     event.preventDefault()
     if (secondPress(`end:${id}:${which}`, event)) {
       const l = laid.get(id)
-      if ((which === 'start' ? l?.connector?.geom.start : l?.connector?.geom.end)?.state === 'broken') store.notify('info', '这一端连接的对象已不在这张画布上或无法访问。拖动这个端点到一个对象上即可重新连接，拖到空白处则改为普通端点。')
+      if ((which === 'start' ? l?.connector?.geom.start : l?.connector?.geom.end)?.state === 'broken') store.notify('info', aiwsT('aiworkspace.canvas.line.brokenEnd'))
       return
     }
     rootRef.current?.setPointerCapture(event.pointerId)
@@ -1101,9 +1105,9 @@ export function RenderHost(props: RenderHostProps) {
     try {
       if (affordance.run) { affordance.run(meta.context); return }
       const action = meta.context.definition.actions?.find((candidate) => candidate.id === affordance.action)
-      if (action) void Promise.resolve(action.run(meta.context, store)).catch((error: unknown) => store.notify('error', `动作失败：${describeError(error)}`))
+      if (action) void Promise.resolve(action.run(meta.context, store)).catch((error: unknown) => store.notify('error', aiwsT('aiworkspace.canvas.actionFailed', { reason: describeError(error) })))
     } catch (error) {
-      store.notify('error', `动作失败：${describeError(error)}`)
+      store.notify('error', aiwsT('aiworkspace.canvas.actionFailed', { reason: describeError(error) }))
     }
   }
 
@@ -1224,10 +1228,10 @@ export function RenderHost(props: RenderHostProps) {
   /** Which anchor of which Block a bound end is on, in words. */
   const endPlace = (binding: { entity_id: string; anchor: Anchor } | null): string | null => {
     if (!binding) return null
-    const name = store.outline.get(binding.entity_id)?.title || '对象'
+    const name = store.outline.get(binding.entity_id)?.title || t('aiworkspace.canvas.line.object')
     const id = binding.anchor.id
     const target = targetOf(binding.entity_id)
-    return `连接在「${name}」的${anchorLabel(target ? findAnchor(anchorsOf(target), id) : undefined, id)}锚点`
+    return t('aiworkspace.canvas.line.endPlace', { name, anchor: anchorName(target ? findAnchor(anchorsOf(target), id) : undefined, id, t) })
   }
   const lineControls = lineG && canBend && lineG.route !== 'elbow' && !lineG.auto ? lineG.pts.slice(1, -1).map(toScreenPt) : []
   const lineMids = lineG && canBend ? (lineG.route === 'curve'
@@ -1345,24 +1349,24 @@ export function RenderHost(props: RenderHostProps) {
         {linePreview && linePreview.id === null && <path className="aiws-line-preview" data-testid="aiws-line-preview" d={pathData(screenSegs(linePreview.geom.segs))} />}
         {lineId && lineG && (
           <g className="aiws-line-handles" data-testid={`aiws-line-handles-${lineId}`}>
-            {lineLabel && <rect className="aiws-line-label-handle" data-testid="aiws-line-label-handle" x={lineLabel.x - 3} y={lineLabel.y - 2} width={lineLabel.w + 6} height={lineLabel.h + 4} rx={4} onPointerDown={(event) => beginLabelDrag(event, lineId)}><title>拖动标签；双击编辑</title></rect>}
+            {lineLabel && <rect className="aiws-line-label-handle" data-testid="aiws-line-label-handle" x={lineLabel.x - 3} y={lineLabel.y - 2} width={lineLabel.w + 6} height={lineLabel.h + 4} rx={4} onPointerDown={(event) => beginLabelDrag(event, lineId)}><title>{t('aiworkspace.canvas.line.labelHandle')}</title></rect>}
             {lineMids.map(({ at, long }, i) => long && !underLabel(at) && (
               <g key={`mid:${i}`} className="aiws-line-handle aiws-line-mid" data-testid={`aiws-line-mid-${i}`} onPointerDown={(event) => beginLineHandle(event, lineId, i, true)}>
                 <circle className="aiws-line-handle-hit" cx={at.x} cy={at.y} r={8} /><circle className="aiws-line-dot" cx={at.x} cy={at.y} r={4} />
-                <title>{lineG.route === 'elbow' ? '拖动这一段' : '拖动添加折点'}</title>
+                <title>{t(lineG.route === 'elbow' ? 'aiworkspace.canvas.line.segmentHandle' : 'aiworkspace.canvas.line.midHandle')}</title>
               </g>
             ))}
             {lineControls.map((at, i) => (
               <g key={`ctl:${i}`} className="aiws-line-handle aiws-line-control" data-testid={`aiws-line-control-${i}`} onPointerDown={(event) => beginLineHandle(event, lineId, i, false)}>
                 <circle className="aiws-line-handle-hit" cx={at.x} cy={at.y} r={8} /><circle className="aiws-line-dot" cx={at.x} cy={at.y} r={4} />
-                <title>拖动折点（Shift 水平 / 垂直）；双击删除</title>
+                <title>{t('aiworkspace.canvas.line.controlHandle')}</title>
               </g>
             ))}
             {lineEnds.map(({ which, end, at, binding }) => (
               <g key={which} className={`aiws-line-handle aiws-line-end is-${end.state}`} data-testid={`aiws-line-end-${which}`} data-state={end.state} data-anchor={binding?.anchor.id} onPointerDown={(event) => beginLineEnd(event, lineId, which)}>
                 <circle className="aiws-line-handle-hit" cx={at.x} cy={at.y} r={9} /><circle className="aiws-line-dot" cx={at.x} cy={at.y} r={5} />
                 {end.state === 'broken' && <text className="aiws-line-bang" x={at.x} y={at.y}>!</text>}
-                <title>{end.state === 'broken' ? '端点不可用：拖到对象上重新连接（双击查看说明）' : `${end.state === 'bound' ? `${endPlace(binding)}。` : ''}拖动重新连接；拖到空白处断开`}</title>
+                <title>{end.state === 'broken' ? t('aiworkspace.canvas.line.brokenEndTip') : end.state === 'bound' ? t('aiworkspace.canvas.line.boundEndTip', { place: endPlace(binding) ?? '' }) : t('aiworkspace.canvas.line.freeEndTip')}</title>
               </g>
             ))}
           </g>
@@ -1370,19 +1374,19 @@ export function RenderHost(props: RenderHostProps) {
         {connectHandles.map(({ side, anchor, x, y }) => (
           <g key={`connect:${side}`} className="aiws-connect-handle" data-testid={`aiws-connect-${side}`} onPointerDown={(event) => beginConnectFrom(event, single!.id, anchor)}>
             <circle className="aiws-connect-hit" cx={x} cy={y} r={CONNECT_DOT + 6} /><circle className="aiws-connect-dot" cx={x} cy={y} r={CONNECT_DOT} />
-            <title>拖出连接线</title>
+            <title>{t('aiworkspace.canvas.line.connectHandle')}</title>
           </g>
         ))}
       </svg>
       <div className="aiws-overlay-html">
         {rotateAt && single && (
-          <div className="aiws-rotate-handle" role="button" aria-label="旋转（Shift 吸附 15°，双击归零）" title="旋转（Shift 吸附 15°，双击归零）" data-testid="aiws-rotate-handle"
+          <div className="aiws-rotate-handle" role="button" aria-label={t('aiworkspace.canvas.rotateHandle')} title={t('aiworkspace.canvas.rotateHandle')} data-testid="aiws-rotate-handle"
             style={{ left: rotateAt.x, top: rotateAt.y, width: sizes.rotate, height: sizes.rotate }}
             onPointerDown={(event) => beginRotate(event, single.id)}>
             <RotateCw size={pointer === 'touch' ? 18 : 14} aria-hidden="true" />
           </div>
         )}
-        {lockBadge && <div className="aiws-lock-badge" data-testid="aiws-lock-badge" title="已锁定：不能移动、缩放或删除" style={{ left: lockBadge.x, top: lockBadge.y }}><Lock size={12} aria-hidden="true" /></div>}
+        {lockBadge && <div className="aiws-lock-badge" data-testid="aiws-lock-badge" title={t('aiworkspace.canvas.lockedBadge')} style={{ left: lockBadge.x, top: lockBadge.y }}><Lock size={12} aria-hidden="true" /></div>}
         {affordMeta && affordances.map(({ a, at }) => a.kind === 'label' ? (
           <div key={a.id} className={`aiws-afford aiws-afford-label at-${a.at}`} data-testid={`aiws-afford-${a.id}`} style={at}>
             {a.icon && <a.icon size={12} aria-hidden="true" />}<span className="aiws-afford-text">{a.label}</span>

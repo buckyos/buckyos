@@ -14,10 +14,12 @@ import { OnlineWorkspaceSession } from '../api/session'
 import { prompterCall, resolveTransport, TransportError } from '../api/transport'
 import type { KeyedContent, Result, ShowCommand, ShowNotes, ShowPathPayload, ShowState, ShowWatch } from '../api/types'
 import { loadCore } from '../api/wasm'
+import { aiwsT } from '../i18n'
 import { StoreContext, useOutlineVersion, WorkspaceUiContext, type WorkspaceUi } from '../state/hooks'
 import { WorkspaceStore } from '../state/store'
 import { BlockHost } from '../ui/blocks/BlockHost'
 import { registerDefaultBlocks } from '../ui/blocks/registerAll'
+import { useAiwsText } from '../useAiwsText'
 import { command } from './controller'
 import { playable, resolveSteps, fitStage } from './model'
 import { StageCanvas } from './StageCanvas'
@@ -55,11 +57,12 @@ function clock(since: string, now: number): string {
 
 export function PrompterRoute() {
   const { workspaceId = '', showId = '' } = useParams()
+  const { t } = useAiwsText()
   const [token] = useState(() => tokenOf(window.location.hash))
   if (!token) {
     return (
       <div className="aiws-root aiws-prompter" data-testid="aiws-prompter">
-        <div className="aiws-prompter-ended" data-testid="aiws-prompter-invalid"><b>提示器链接不完整</b><span className="aiws-muted">请从舞台的“复制提示器链接”重新获取完整链接（# 之后的部分不能缺少）。</span></div>
+        <div className="aiws-prompter-ended" data-testid="aiws-prompter-invalid"><b>{t('aiworkspace.presentation.prompter.invalidTitle')}</b><span className="aiws-muted">{t('aiworkspace.presentation.prompter.invalidDetail')}</span></div>
       </div>
     )
   }
@@ -67,6 +70,7 @@ export function PrompterRoute() {
 }
 
 function Prompter({ workspaceId, showId, token }: { workspaceId: string; showId: string; token: string }) {
+  const { t } = useAiwsText()
   const params = useMemo(() => ({ workspace_id: workspaceId, show_id: showId }), [workspaceId, showId])
   const [notes, setNotes] = useState<ShowNotes | null>(null)
   const [state, setState] = useState<ShowState | null>(null)
@@ -99,7 +103,7 @@ function Prompter({ workspaceId, showId, token }: { workspaceId: string; showId:
           if (!live) return
           if (ended(error)) { setOver(true); return }
           if (!(error instanceof TransportError) && !(error instanceof ServiceFailure)) throw error
-          setTrouble('连接中断，正在重连…')
+          setTrouble(aiwsT('aiworkspace.presentation.prompter.reconnecting'))
           await new Promise((resolve) => window.setTimeout(resolve, backoff))
           backoff = Math.min(backoff * 2, 8000)
         }
@@ -112,8 +116,8 @@ function Prompter({ workspaceId, showId, token }: { workspaceId: string; showId:
   useEffect(() => { try { window.localStorage.setItem(FONT_KEY, String(font)) } catch { /* per device only */ } }, [font])
 
   const send = useCallback((cmd: ShowCommand) => {
-    void call<{ cursor: number }>('show.command', { ...params, command: cmd }, token).catch((error: unknown) => { if (ended(error)) setOver(true); else setTrouble('命令没有送达，请重试') })
-  }, [params, token])
+    void call<{ cursor: number }>('show.command', { ...params, command: cmd }, token).catch((error: unknown) => { if (ended(error)) setOver(true); else setTrouble(t('aiworkspace.presentation.prompter.commandFailed')) })
+  }, [params, token, t])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -130,7 +134,7 @@ function Prompter({ workspaceId, showId, token }: { workspaceId: string; showId:
   if (over) {
     return (
       <div className="aiws-root aiws-prompter" data-testid="aiws-prompter">
-        <div className="aiws-prompter-ended" data-testid="aiws-prompter-ended"><b>放映已结束</b><span className="aiws-muted">这个提示器链接已失效。</span></div>
+        <div className="aiws-prompter-ended" data-testid="aiws-prompter-ended"><b>{t('aiworkspace.presentation.prompter.endedTitle')}</b><span className="aiws-muted">{t('aiworkspace.presentation.prompter.endedDetail')}</span></div>
       </div>
     )
   }
@@ -144,25 +148,25 @@ function Prompter({ workspaceId, showId, token }: { workspaceId: string; showId:
       {large && state && <PrompterStage workspaceId={workspaceId} state={state} />}
       <div className="aiws-prompter-panel">
         <div className="aiws-prompter-head">
-          <span className="aiws-prompter-title" data-testid="aiws-prompter-title">{current?.title ?? (state ? '' : '等待舞台…')}</span>
+          <span className="aiws-prompter-title" data-testid="aiws-prompter-title">{current?.title ?? (state ? '' : t('aiworkspace.presentation.prompter.waiting'))}</span>
           <span className="aiws-muted" data-testid="aiws-prompter-count">{state ? `${state.index + 1} / ${state.count}` : ''}</span>
           <span className="aiws-prompter-clock" data-testid="aiws-prompter-clock">{state ? clock(state.started_at, now) : ''}</span>
         </div>
-        {state?.black && <div className="aiws-warning">舞台黑屏中</div>}
-        {state?.free && <div className="aiws-warning">舞台正在自由浏览</div>}
+        {state?.black && <div className="aiws-warning">{t('aiworkspace.presentation.prompter.black')}</div>}
+        {state?.free && <div className="aiws-warning">{t('aiworkspace.presentation.prompter.free')}</div>}
         {trouble && <div className="aiws-warning" role="status">{trouble}</div>}
-        <div className="aiws-prompter-notes" data-testid="aiws-prompter-notes" style={{ fontSize: font }}>{current?.notes || <span className="aiws-muted">这一步没有讲解备注。</span>}</div>
-        <div className="aiws-prompter-next" data-testid="aiws-prompter-next">{next ? `下一步：${next.title ?? ''}` : state ? '这是最后一步' : ''}</div>
+        <div className="aiws-prompter-notes" data-testid="aiws-prompter-notes" style={{ fontSize: font }}>{current?.notes || <span className="aiws-muted">{t('aiworkspace.presentation.show.noNotes')}</span>}</div>
+        <div className="aiws-prompter-next" data-testid="aiws-prompter-next">{next ? t('aiworkspace.presentation.show.nextStep', { title: next.title ?? '' }) : state ? t('aiworkspace.presentation.prompter.lastStep') : ''}</div>
         <div className="aiws-prompter-controls">
-          <button type="button" data-testid="aiws-prompter-prev" disabled={!state || state.index === 0} onClick={() => send(command('prev'))}>上一项</button>
-          <button type="button" className="is-primary" data-testid="aiws-prompter-next-button" disabled={!state || state.index >= state.count - 1} onClick={() => send(command('next'))}>下一项</button>
+          <button type="button" data-testid="aiws-prompter-prev" disabled={!state || state.index === 0} onClick={() => send(command('prev'))}>{t('aiworkspace.presentation.show.prev')}</button>
+          <button type="button" className="is-primary" data-testid="aiws-prompter-next-button" disabled={!state || state.index >= state.count - 1} onClick={() => send(command('next'))}>{t('aiworkspace.presentation.show.next')}</button>
         </div>
         <div className="aiws-prompter-row">
-          <button type="button" data-testid="aiws-prompter-black" aria-pressed={state?.black ?? false} onClick={() => send(command('black'))}>{state?.black ? '取消黑屏' : '黑屏'}</button>
-          <button type="button" data-testid="aiws-prompter-back" disabled={!state?.free} onClick={() => send(command('back'))}>回到本步骤</button>
-          <button type="button" data-testid="aiws-prompter-list" aria-pressed={list} onClick={() => setList(!list)}>目录</button>
-          <button type="button" aria-label="缩小字号" onClick={() => setFont(Math.max(14, font - 2))}>A−</button>
-          <button type="button" aria-label="放大字号" onClick={() => setFont(Math.min(64, font + 2))}>A+</button>
+          <button type="button" data-testid="aiws-prompter-black" aria-pressed={state?.black ?? false} onClick={() => send(command('black'))}>{state?.black ? t('aiworkspace.presentation.prompter.unblack') : t('aiworkspace.presentation.show.black')}</button>
+          <button type="button" data-testid="aiws-prompter-back" disabled={!state?.free} onClick={() => send(command('back'))}>{t('aiworkspace.presentation.show.backToStep')}</button>
+          <button type="button" data-testid="aiws-prompter-list" aria-pressed={list} onClick={() => setList(!list)}>{t('aiworkspace.presentation.prompter.list')}</button>
+          <button type="button" aria-label={t('aiworkspace.presentation.prompter.smaller')} onClick={() => setFont(Math.max(14, font - 2))}>A−</button>
+          <button type="button" aria-label={t('aiworkspace.presentation.prompter.larger')} onClick={() => setFont(Math.min(64, font + 2))}>A+</button>
         </div>
         {list && (
           <div className="aiws-prompter-steps" data-testid="aiws-prompter-steps">

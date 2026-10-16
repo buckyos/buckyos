@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { SW_UPDATE_EVENT, serviceWorkerState, type ServiceWorkerState } from '../../../serviceWorker'
+import { SW_UPDATE_EVENT, serviceWorkerState, type ServiceWorkerState, type ServiceWorkerUnavailable } from '../../../serviceWorker'
 import { describeError, type SessionStatus } from '../api/session'
 import type { CapturedAnchor } from '../anchors/registry'
 import type { AnchorInfo, AnnotationPayload, AnnotationRead, EntityEnvelope, FreshnessInfo, Json, ShowLockInfo } from '../api/types'
+import { useAiwsText } from '../useAiwsText'
 import type { EditEntry } from './edits'
 import type { WorkspaceStore } from './store'
 
@@ -46,12 +47,13 @@ export function useShowLock(): ShowLockInfo | null {
 /** Why this window cannot write the document now, or null: the backend is unreachable for a window without the
  * replica (design §6.1), or the workspace is being presented (第三期规划 §8.1; a replica keeps its writes queued). */
 export function useReadOnlyReason(): string | null {
+  const { t } = useAiwsText()
   const { session } = useStore()
   const status = useSessionStatus()
   const lock = useShowLock()
   const mode = session.mode()
-  if (mode.kind === 'direct' && mode.reason !== 'not_prepared' && status.kind === 'offline') return '后台不可达且此窗口未启用离线：当前只读'
-  if (lock && mode.kind === 'direct') return `${lock.presenter} 正在放映这个工作区：放映期间关闭写入`
+  if (mode.kind === 'direct' && mode.reason !== 'not_prepared' && status.kind === 'offline') return t('aiworkspace.core.readOnly.unreachable')
+  if (lock && mode.kind === 'direct') return t('aiworkspace.core.readOnly.presenting', { presenter: lock.presenter })
   return null
 }
 
@@ -166,11 +168,30 @@ function subscribeServiceWorker(listener: () => void) {
 let lastServiceWorkerState: ServiceWorkerState = serviceWorkerState()
 function serviceWorkerSnapshot(): ServiceWorkerState {
   const next = serviceWorkerState()
-  if (next.unavailable !== lastServiceWorkerState.unavailable || next.updateWaiting !== lastServiceWorkerState.updateWaiting) lastServiceWorkerState = next
+  if (next.unavailable !== lastServiceWorkerState.unavailable || next.error !== lastServiceWorkerState.error || next.updateWaiting !== lastServiceWorkerState.updateWaiting) lastServiceWorkerState = next
   return lastServiceWorkerState
 }
 
+const APP_CACHE_UNAVAILABLE: Record<ServiceWorkerUnavailable, string> = {
+  not_registered: 'aiworkspace.core.appCache.notRegistered',
+  dev_server: 'aiworkspace.core.appCache.devServer',
+  insecure_context: 'aiworkspace.core.appCache.insecureContext',
+  unsupported: 'aiworkspace.core.appCache.unsupported',
+  incomplete: 'aiworkspace.core.appCache.incomplete',
+  registration_failed: 'aiworkspace.core.appCache.registrationFailed',
+}
+
+export interface AppCacheState {
+  /** Why application resources are not cached for offline start (in the app's language), or null. */
+  unavailable: string | null
+  /** A newer build is installed and waiting for the old pages to close. */
+  updateWaiting: boolean
+}
+
 /** Whether the application itself (HTML, scripts, WASM) is cached for a cold start without the network. */
-export function useAppCache(): ServiceWorkerState {
-  return useSyncExternalStore(subscribeServiceWorker, serviceWorkerSnapshot)
+export function useAppCache(): AppCacheState {
+  const { t } = useAiwsText()
+  const state = useSyncExternalStore(subscribeServiceWorker, serviceWorkerSnapshot)
+  const unavailable = state.unavailable && t(APP_CACHE_UNAVAILABLE[state.unavailable], { error: state.error ?? '' })
+  return { unavailable, updateWaiting: state.updateWaiting }
 }

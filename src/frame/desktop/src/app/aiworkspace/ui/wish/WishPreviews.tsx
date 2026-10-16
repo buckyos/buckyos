@@ -4,15 +4,18 @@
 
 import { useMemo, type ReactNode } from 'react'
 import type { Json, WishResult } from '../../api/types'
+import type { AiwsText } from '../../i18n'
 import { useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { AssetBlobImage } from '../extensions/AssetBlobImage'
 
 interface Node { type: string; attrs?: Record<string, Json>; content?: Node[]; text?: string; marks?: { type: string; attrs?: Record<string, Json> }[] }
 
-function inline(nodes: Node[] | undefined): ReactNode[] {
+/** `linkLabel`: what an object link without a label shows. */
+function inline(nodes: Node[] | undefined, linkLabel: string): ReactNode[] {
   return (nodes ?? []).map((n, i) => {
     if (n.type === 'hard_break') return <br key={i} />
-    if (n.type === 'object_link') return <span key={i} className="aiws-object-link">{String(n.attrs?.label || '链接')}</span>
+    if (n.type === 'object_link') return <span key={i} className="aiws-object-link">{String(n.attrs?.label || linkLabel)}</span>
     let out: ReactNode = n.text ?? ''
     for (const m of n.marks ?? []) {
       if (m.type === 'strong') out = <strong>{out}</strong>
@@ -25,22 +28,22 @@ function inline(nodes: Node[] | undefined): ReactNode[] {
   })
 }
 
-function blocks(nodes: Node[] | undefined): ReactNode[] {
+function blocks(nodes: Node[] | undefined, linkLabel: string): ReactNode[] {
   return (nodes ?? []).map((n, i) => {
     switch (n.type) {
-      case 'paragraph': return <p key={i}>{inline(n.content)}</p>
+      case 'paragraph': return <p key={i}>{inline(n.content, linkLabel)}</p>
       case 'heading': {
         const level = Number(n.attrs?.level ?? 1)
-        return level === 1 ? <h3 key={i}>{inline(n.content)}</h3> : level === 2 ? <h4 key={i}>{inline(n.content)}</h4> : <h5 key={i}>{inline(n.content)}</h5>
+        return level === 1 ? <h3 key={i}>{inline(n.content, linkLabel)}</h3> : level === 2 ? <h4 key={i}>{inline(n.content, linkLabel)}</h4> : <h5 key={i}>{inline(n.content, linkLabel)}</h5>
       }
-      case 'bullet_list': return <ul key={i}>{(n.content ?? []).map((li, j) => <li key={j}>{blocks(li.content)}</li>)}</ul>
-      case 'ordered_list': return <ol key={i} start={Number(n.attrs?.start ?? 1)}>{(n.content ?? []).map((li, j) => <li key={j}>{blocks(li.content)}</li>)}</ol>
-      case 'blockquote': return <blockquote key={i}>{blocks(n.content)}</blockquote>
+      case 'bullet_list': return <ul key={i}>{(n.content ?? []).map((li, j) => <li key={j}>{blocks(li.content, linkLabel)}</li>)}</ul>
+      case 'ordered_list': return <ol key={i} start={Number(n.attrs?.start ?? 1)}>{(n.content ?? []).map((li, j) => <li key={j}>{blocks(li.content, linkLabel)}</li>)}</ol>
+      case 'blockquote': return <blockquote key={i}>{blocks(n.content, linkLabel)}</blockquote>
       case 'code_block': return <pre key={i}><code>{(n.content ?? []).map((t) => t.text ?? '').join('')}</code></pre>
       case 'horizontal_rule': return <hr key={i} />
       case 'table': return (
         <table key={i}><tbody>{(n.content ?? []).map((row, r) => (
-          <tr key={r}>{(row.content ?? []).map((cell, c) => (cell.attrs?.header === 1 ? <th key={c}>{inline(cell.content)}</th> : <td key={c}>{inline(cell.content)}</td>))}</tr>
+          <tr key={r}>{(row.content ?? []).map((cell, c) => (cell.attrs?.header === 1 ? <th key={c}>{inline(cell.content, linkLabel)}</th> : <td key={c}>{inline(cell.content, linkLabel)}</td>))}</tr>
         ))}</tbody></table>
       )
       default: return null
@@ -50,34 +53,39 @@ function blocks(nodes: Node[] | undefined): ReactNode[] {
 
 export function MarkdownView({ markdown }: { markdown: string }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const ast = useMemo(() => {
     try { return JSON.parse(store.core.markdown_to_richtext(markdown, 'pv', undefined)) as Node } catch { return null }
   }, [store, markdown])
   if (!ast) return <pre className="aiws-wish-context">{markdown}</pre>
-  return <div className="aiws-md" data-testid="aiws-wish-preview-text">{blocks(ast.content)}</div>
+  return <div className="aiws-md" data-testid="aiws-wish-preview-text">{blocks(ast.content, t('aiworkspace.wish.preview.link'))}</div>
 }
 
-function cellText(v: Json | undefined): string {
+function cellText(v: Json | undefined, text: AiwsText): string {
   if (v === null || v === undefined) return ''
-  if (Array.isArray(v)) return v.map((x) => cellText(x)).join('、')
-  if (typeof v === 'number') return v.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
+  if (Array.isArray(v)) return text.list(v.map((x) => cellText(x, text)))
+  if (typeof v === 'number') return text.num(v, { maximumFractionDigits: 6 })
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
 }
 
 export function TablePreview({ fields, rows, total, keyFields, max = 8 }: { fields: { name: string; type?: string }[]; rows: Record<string, Json>[]; total?: number; keyFields?: string[]; max?: number }) {
+  const text = useAiwsText()
+  const count = total ?? rows.length
   return (
     <div className="aiws-wish-table-preview">
       <table className="aiws-rt-table" data-testid="aiws-wish-preview-table">
         <thead><tr>{fields.map((f) => <th key={f.name} title={f.type}>{f.name}{keyFields?.includes(f.name) ? ' 🔑' : ''}</th>)}</tr></thead>
-        <tbody>{rows.slice(0, max).map((r, i) => <tr key={i}>{fields.map((f) => <td key={f.name}>{cellText(r[f.name])}</td>)}</tr>)}</tbody>
+        <tbody>{rows.slice(0, max).map((r, i) => <tr key={i}>{fields.map((f) => <td key={f.name}>{cellText(r[f.name], text)}</td>)}</tr>)}</tbody>
       </table>
-      <div className="aiws-muted">共 {total ?? rows.length} 行{(total ?? rows.length) > max ? `，显示前 ${max} 行` : ''}</div>
+      <div className="aiws-muted">{text.t(count > max ? 'aiworkspace.wish.preview.rowsShown' : 'aiworkspace.wish.preview.rows', { count, max })}</div>
     </div>
   )
 }
 
 export function ResultPreview({ result }: { result: WishResult }) {
+  const text = useAiwsText()
+  const { t } = text
   switch (result.type) {
     case 'table': {
       const t = result.table
@@ -87,12 +95,13 @@ export function ResultPreview({ result }: { result: WishResult }) {
     case 'table_columns': {
       const c = result.columns
       if (!c) return null
-      const rows = Object.entries(c.values).map(([id, v]) => ({ 记录: id, ...v }))
-      return <TablePreview fields={[{ name: '记录' }, ...c.fields]} rows={rows} />
+      const record = t('aiworkspace.wish.preview.record')
+      const rows = Object.entries(c.values).map(([id, v]) => ({ [record]: id, ...v }))
+      return <TablePreview fields={[{ name: record }, ...c.fields]} rows={rows} />
     }
     case 'record': return (
       <dl className="aiws-wish-record-preview">
-        {Object.entries(result.record?.props ?? {}).map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{cellText(v)}</dd></div>)}
+        {Object.entries(result.record?.props ?? {}).map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{cellText(v, text)}</dd></div>)}
       </dl>
     )
     case 'richtext': return <MarkdownView markdown={result.markdown ?? ''} />
@@ -100,7 +109,7 @@ export function ResultPreview({ result }: { result: WishResult }) {
       const f = result.file
       if (!f) return null
       if (f.object_id && f.media_type.startsWith('image/')) return <div className="aiws-wish-image-preview"><AssetBlobImage objectId={f.object_id} mediaType={f.media_type} alt={result.title ?? result.name} /></div>
-      return <div className="aiws-muted">{f.media_type} · {f.size.toLocaleString()} 字节</div>
+      return <div className="aiws-muted">{f.media_type} · {t('aiworkspace.wish.preview.bytes', { size: text.num(f.size), count: f.size })}</div>
     }
     case 'html': {
       const h = result.html
@@ -109,7 +118,7 @@ export function ResultPreview({ result }: { result: WishResult }) {
       return (
         <div>
           <iframe className="aiws-wish-html-preview" sandbox="" title={result.title ?? result.name} srcDoc={`<!doctype html><meta charset="utf-8"><style>${h.css ?? ''}</style>${h.html}`} />
-          <div className="aiws-muted">绑定：{Object.entries(h.bindings ?? {}).map(([k, v]) => `${k} → ${v}`).join('，') || '无'}</div>
+          <div className="aiws-muted">{t('aiworkspace.wish.preview.bindings', { bindings: Object.entries(h.bindings ?? {}).map(([k, v]) => `${k} → ${v}`).join(t('aiworkspace.wish.commaSeparator')) || t('aiworkspace.common.none') })}</div>
         </div>
       )
     }

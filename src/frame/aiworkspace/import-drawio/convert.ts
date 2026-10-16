@@ -32,6 +32,9 @@ export interface ConvertOptions {
   stencil?: (name: string) => Promise<ResolvedStencil | null>
   /** An inline stencil (`shape=stencil(…)`, the value inside the parentheses). */
   inlineStencil?: (value: string) => Promise<ResolvedStencil | null>
+  /** The text of the dashed box that stands in for a picture that cannot be had (its URL, if any), in the host's
+   * language; English by default. */
+  imageText?: (url: string | null) => string
 }
 
 /** An image the host uploads before writing (a data URI's bytes, or a URL to fetch). */
@@ -81,7 +84,9 @@ export interface PagePlan {
 
 export interface ReportNote { kind: string; message: string; count: number; samples: string[] }
 
-/** What an import kept and what it could not (§5): counted per kind with a few examples. */
+/** What an import kept and what it could not (§5): counted per kind with a few examples. `kind` is a stable code
+ * (`stencil:<instruction>` for a stencil instruction) the host words in its own language; `message` is English,
+ * for developers. */
 export class ImportReport {
   readonly notes = new Map<string, ReportNote>()
   objects = 0
@@ -202,8 +207,8 @@ function labelOf(cell: RawCell, map: Map<string, string>, report: ImportReport):
   let value = cell.value
   if (cell.placeholders || flag(map, 'placeholders')) value = fillPlaceholders(value, { id: cell.id, ...cell.data })
   const label = map.get('html') === '1' ? htmlLabel(value) : plainLabel(value)
-  if (label.complex) report.add('complex_html', '复杂 HTML 标签（列表、表格、图片等）按纯文本导入', firstLine(label.text) || cell.id)
-  else if (label.partial) report.add('rich_label', '标签中只作用于部分文字的格式（粗体、颜色等）未导入', firstLine(label.text) || cell.id)
+  if (label.complex) report.add('complex_html', 'Complex HTML labels (lists, tables, images…) imported as plain text', firstLine(label.text) || cell.id)
+  else if (label.partial) report.add('rich_label', 'Formatting on part of a label (bold, color…) not imported', firstLine(label.text) || cell.id)
   return label
 }
 
@@ -258,10 +263,10 @@ function lookKeys(map: Map<string, string>, kind: ShapeKind, rect: Rect, report:
   if (flag(map, 'flipV')) out.flip_v = true
   if (map.has('size')) out.shape_size = num(map, 'size', 0)
   const gradient = color(map, 'gradientColor')
-  if (gradient && gradient !== 'none') report.add('gradient', '渐变按填充色导入', id)
-  if (flag(map, 'shadow')) report.add('shadow', '阴影未导入', id)
-  if (flag(map, 'sketch') || flag(map, 'comic')) report.add('sketch', '手绘 / 漫画风格按普通线条导入', id)
-  if (flag(map, 'glass')) report.add('glass', '玻璃效果（glass）未导入', id)
+  if (gradient && gradient !== 'none') report.add('gradient', 'Gradients imported as the fill color', id)
+  if (flag(map, 'shadow')) report.add('shadow', 'Shadows not imported', id)
+  if (flag(map, 'sketch') || flag(map, 'comic')) report.add('sketch', 'Sketch / comic style imported as plain lines', id)
+  if (flag(map, 'glass')) report.add('glass', 'Glass effect not imported', id)
   return out
 }
 
@@ -413,7 +418,7 @@ function shapeItem(ctx: Ctx, cell: RawCell, map: Map<string, string>, parent: st
   }
   if (svg) config.svg = svg.body as unknown as Json
   if (map.get('shape') === 'partialRectangle' || map.get('shape') === 'tableRow') {
-    if (['top', 'left', 'bottom', 'right'].some((side) => map.get(side) !== '0')) ctx.report.add('partial_border', '只画部分边框的矩形（表格行、单元格）不画边框', cell.id)
+    if (['top', 'left', 'bottom', 'right'].some((side) => map.get(side) !== '0')) ctx.report.add('partial_border', 'Rectangles with only some borders drawn (table rows, cells) imported without borders', cell.id)
     config.stroke = 'none'
   }
   // own connection points: a stencil's named ports, then draw.io's `points`; none where the outline already has one
@@ -445,13 +450,13 @@ async function vertexItems(ctx: Ctx, cell: RawCell, parent: string | null, locke
   const kids = (ctx.children.get(cell.id) ?? []).filter((c) => c.vertex || c.edge)
   const shapeName = map.get('shape') ?? 'rectangle'
   const lock = locked || flag(map, 'locked')
-  if (cell.collapsed) ctx.report.add('collapsed', '折叠的容器按展开导入', cell.id)
-  if (shapeName === 'table' || shapeName === 'tableRow') ctx.report.add('table', 'draw.io 表格按形状分组导入（不转成表格数据）', cell.id)
+  if (cell.collapsed) ctx.report.add('collapsed', 'Collapsed containers imported expanded', cell.id)
+  if (shapeName === 'table' || shapeName === 'tableRow') ctx.report.add('table', 'draw.io tables imported as groups of shapes (not as table data)', cell.id)
 
   // a container: a group, a backing frame (swimlane) or shape, then the children
   if (kids.length > 0) {
     const rotation = normalizeRotation(num(map, 'rotation', 0))
-    if (rotation) ctx.report.add('group_rotation', '容器的旋转未导入', cell.id)
+    if (rotation) ctx.report.add('group_rotation', 'Rotation of containers not imported', cell.id)
     const label = labelOf(cell, map, ctx.report)
     // the group draws nothing: its look and label are its first child's
     const group: PlanItem = { key: cell.id, parent, type: 'group', rect, rotation: 0, config: {}, ...(lock ? { locked: true } : {}) }
@@ -510,12 +515,12 @@ async function leafItem(ctx: Ctx, cell: RawCell, map: Map<string, string>, paren
     // the picture: the whole box of an image shape, the icon spot of a `label` shape (left, vertically centred)
     const iw = num(map, 'imageWidth', 42), ih = num(map, 'imageHeight', 42)
     const pictureRect = plain ? rect : roundRect({ x: rect.x + num(map, 'spacingLeft', 2) / 2 + 4, y: rect.y + (rect.h - ih) / 2, w: iw, h: ih })
-    const fallbackConfig: Record<string, Json> = { shape: 'rect', fill: 'none', stroke: 'auto', stroke_width: 1, dash: 'dashed', text: image?.url ? `图片：${image.url}` : '图片', font_size: 11, ...(image?.url ? { link: image.url } : {}), ...meta(ctx, cell) }
+    const fallbackConfig: Record<string, Json> = { shape: 'rect', fill: 'none', stroke: 'auto', stroke_width: 1, dash: 'dashed', text: ctx.options.imageText?.(image?.url ?? null) ?? (image?.url ? `Image: ${image.url}` : 'Image'), font_size: 11, ...(image?.url ? { link: image.url } : {}), ...meta(ctx, cell) }
     const picture: PlanItem = image
       ? { key: plain && !label.text ? cell.id : `${cell.id}~image`, parent, type: 'asset', rect: pictureRect, rotation: normalizeRotation(num(map, 'rotation', 0)), config: { ...metadataKeys(cell), ...meta(ctx, cell) }, image, fallback: { config: fallbackConfig, ...(firstLine(label.text) ? { title: firstLine(label.text) } : {}) } }
       : { key: plain && !label.text ? cell.id : `${cell.id}~image`, parent, type: 'shape', rect: pictureRect, rotation: 0, config: fallbackConfig }
     if (image) ctx.images.push(image)
-    else ctx.report.add('image_missing', '取不到的图片以带链接的虚线框代替', cell.id)
+    else ctx.report.add('image_missing', 'Images that could not be fetched replaced by dashed boxes with a link', cell.id)
     if (plain && !label.text) return picture
     // with text: a group of the picture and the text (and the label shape's box)
     const group: PlanItem = { key: cell.id, parent, type: 'group', rect, rotation: 0, config: {} }
@@ -537,10 +542,10 @@ async function leafItem(ctx: Ctx, cell: RawCell, map: Map<string, string>, paren
   if (stencil || shapeName.startsWith('mxgraph.')) {
     const resolved = stencil ? await ctx.options.inlineStencil?.(stencil[1]) ?? null : await ctx.options.stencil?.(shapeName) ?? null
     if (resolved) {
-      for (const u of resolved.unsupported) ctx.report.add(`stencil:${u}`, `模板指令 ${u} 未导入`, cell.id)
+      for (const u of resolved.unsupported) ctx.report.add(`stencil:${u}`, `Stencil instruction ${u} not imported`, cell.id)
       if (resolved.svg.body.length <= SVG_BODY_LIMIT) return shapeItem(ctx, cell, map, parent, rect, cell.id, {}, { body: resolved.svg, anchors: cleanAnchors(resolved.anchors) ?? [] })
       // too large for a Block's configuration: the picture alone, as an image (no recolouring, no anchors of its own)
-      ctx.report.add('svg_too_large', 'SVG 形状超过配置上限，按图片导入（不能改色）', cell.id)
+      ctx.report.add('svg_too_large', 'SVG shapes over the configuration limit imported as images (cannot be recolored)', cell.id)
       const document = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${resolved.svg.viewBox}" preserveAspectRatio="none" style="--aiws-shape-fill:${hexOr(colorKey(map, 'fillColor'), '#ffffff')};--aiws-shape-stroke:${hexOr(colorKey(map, 'strokeColor'), '#000000')};--aiws-shape-stroke-width:${num(map, 'strokeWidth', 1)}">${resolved.svg.body}</svg>`
       const image: PlanImage = { key: cell.id, name: `drawio-${cell.id}.svg`, mediaType: 'image/svg+xml', bytes: new TextEncoder().encode(document) }
       ctx.images.push(image)
@@ -550,22 +555,22 @@ async function leafItem(ctx: Ctx, cell: RawCell, map: Map<string, string>, paren
     // shapes draw.io draws in script: the nearest basic outline where there is one
     const near = APPROXIMATE[shapeName]
     if (!stencil && near) {
-      ctx.report.add('approximated', 'draw.io 脚本绘制的图形按最接近的基本形状导入（内部图标未导入）', shapeName)
+      ctx.report.add('approximated', 'Shapes draw.io draws in script imported as the nearest basic shape (inner icons not imported)', shapeName)
       return shapeItem(ctx, cell, map, parent, rect, cell.id, near)
     }
-    ctx.report.add(stencil ? 'stencil_failed' : 'library_shape', stencil ? '无法解析的内嵌模板按矩形导入' : '未内置的图形库形状（多为 draw.io 脚本绘制）按矩形 + 名称导入', stencil ? cell.id : shapeName)
+    ctx.report.add(stencil ? 'stencil_failed' : 'library_shape', stencil ? 'Embedded stencils that could not be read imported as rectangles' : 'Library shapes that are not built in (mostly drawn in script by draw.io) imported as a rectangle with the name', stencil ? cell.id : shapeName)
     const item = shapeItem(ctx, cell, map, parent, rect, cell.id, { shape: 'rect' })
     if (!item.config.text) item.config.text = shapeName.replace(/^mxgraph\./, '')
     return item
   }
   const builtin = builtinSvg(shapeName)
   if (builtin) return shapeItem(ctx, cell, map, parent, rect, cell.id, {}, { body: builtin, anchors: [] })
-  if (!KIND_OF[shapeName]) ctx.report.add('unknown_shape', '未知形状按矩形导入', shapeName)
+  if (!KIND_OF[shapeName]) ctx.report.add('unknown_shape', 'Unknown shapes imported as rectangles', shapeName)
   return shapeItem(ctx, cell, map, parent, rect)
 }
 
 async function cellItems(ctx: Ctx, cell: RawCell, parent: string | null, locked: boolean): Promise<void> {
-  if (!cell.visible) { ctx.report.add('hidden_cell', '隐藏的对象未导入', cell.id); return }
+  if (!cell.visible) { ctx.report.add('hidden_cell', 'Hidden objects not imported', cell.id); return }
   if (cell.edge) {
     const map = styleMapOf(ctx, cell)
     push(ctx, { key: cell.id, parent, type: 'connector', rect: { x: 0, y: 0, w: 0, h: 0 }, rotation: 0, config: {}, ...(locked || flag(map, 'locked') ? { locked: true } : {}) })
@@ -591,7 +596,7 @@ function capOf(map: Map<string, string>, which: 'start' | 'end', report: ImportR
   const name = map.get(`${which}Arrow`) ?? (which === 'end' ? 'classic' : 'none')
   if (!name) return 'none'
   const pair = CAPS[name]
-  if (!pair) { report.add('cap', '不支持的线帽按普通箭头导入', name); return 'arrow' }
+  if (!pair) { report.add('cap', 'Unsupported line ends imported as plain arrows', name); return 'arrow' }
   return pair[map.get(`${which}Fill`) === '0' ? 1 : 0]
 }
 
@@ -635,7 +640,7 @@ function constraintAnchor(ctx: Ctx, key: string, x: number, y: number, dx: numbe
   if (item.type === 'shape') {
     const own = cleanAnchors(item.config.anchors) ?? []
     item.config.anchors = [...own.filter((a) => a.id !== anchor.id), anchor] as unknown as Json
-  } else ctx.report.add('anchor_on_box', '连到图片、框或分组上非默认位置的连接点按最近的锚点导入', key)
+  } else ctx.report.add('anchor_on_box', 'Connection points at non-default spots on images, boxes or groups imported as the nearest anchor', key)
   return item.type === 'shape' ? anchor.id : nearestAnchor(form.anchors.filter((a) => a.id !== anchor.id), { x: px, y: py }).id
 }
 
@@ -685,7 +690,7 @@ function edgeItem(ctx: Ctx, item: PlanItem) {
     if (!id) return null
     const other = ctx.cells.get(id)
     if (!other) return null
-    if (other.edge) { ctx.report.add('edge_to_edge', '连到另一条线上的端点改为坐标端点', cell.id); return null }
+    if (other.edge) { ctx.report.add('edge_to_edge', 'Line ends attached to another line changed to free ends', cell.id); return null }
     return ctx.byKey.has(id) && ctx.byKey.get(id)!.type !== 'connector' ? id : null
   }
   const sKey = bindable(cell.source)
@@ -782,9 +787,9 @@ function edgeItem(ctx: Ctx, item: PlanItem) {
     const lf = color(labelMap, 'labelBackgroundColor')
     if (lf && lf !== 'default' && lf !== 'none') config.label_fill = lf
   }
-  if (map.has('startSize') || map.has('endSize')) ctx.report.add('cap_size', '线帽的单独尺寸未导入（线帽随线宽缩放）', cell.id)
-  if (map.has('jumpStyle') && map.get('jumpStyle') !== 'none') ctx.report.add('jump', '跳线（交叉处的弧形跳过）未导入', cell.id)
-  if (flag(map, 'flowAnimation')) ctx.report.add('flow_animation', '流动动画未导入', cell.id)
+  if (map.has('startSize') || map.has('endSize')) ctx.report.add('cap_size', 'Separate line-end sizes not imported (line ends scale with the line width)', cell.id)
+  if (map.has('jumpStyle') && map.get('jumpStyle') !== 'none') ctx.report.add('jump', 'Line jumps (arcs over crossings) not imported', cell.id)
+  if (flag(map, 'flowAnimation')) ctx.report.add('flow_animation', 'Flow animation not imported', cell.id)
   Object.assign(config, metadataKeys(cell), meta(ctx, cell))
   const box = boxOf(s, e)
   item.rect = box.rect
@@ -795,7 +800,7 @@ function edgeItem(ctx: Ctx, item: PlanItem) {
   const after = ctx.items.indexOf(item)
   const texts: PlanItem[] = []
   for (const child of extra) {
-    ctx.report.add('extra_labels', '一条线上的第二个及以后的标签导入为不跟随线的文字', cell.id)
+    ctx.report.add('extra_labels', 'Second and later labels of a line imported as text that does not follow the line', cell.id)
     const childMap = styleMapOf(ctx, child)
     const label = labelOf(child, childMap, ctx.report)
     const pos = placeOf(child.geo)
@@ -839,7 +844,7 @@ export async function convertPage(page: DrawioPage, report: ImportReport, option
   }
   for (const layer of layers) {
     const info = ctx.layerOf.get(layer.id)!
-    if (!layer.visible) { report.add('hidden_layer', '隐藏的图层未导入', info.name); continue }
+    if (!layer.visible) { report.add('hidden_layer', 'Hidden layers not imported', info.name); continue }
     for (const cell of ctx.children.get(layer.id) ?? []) await cellItems(ctx, cell, null, info.locked)
   }
   for (const item of [...ctx.items]) if (item.type === 'connector') edgeItem(ctx, item)

@@ -9,7 +9,9 @@ import { CircleStop, Database, PanelRight, Play, Sparkles } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
 import { SYSTEM_IDS, type Json, type WishPayloadRead } from '../../api/types'
+import { aiwsT } from '../../i18n'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import type { WorkspaceStore } from '../../state/store'
 import { requestIntent } from '../blocks/editorToolbar'
 import { cellOp, createOp } from '../blocks/ops'
@@ -22,10 +24,17 @@ import { MOCK_WISH_DEF_ID, mockWishDefOp } from './mockWishDef'
 /** The wish Block whose flow is open in the right panel (its card shows that). */
 export const OpenWishContext = createContext<string | null>(null)
 
-const EXECUTOR_LABEL: Record<string, string> = { mock: '模拟', xllm: '模型' }
+const EXECUTOR_LABEL: Record<string, string> = { mock: 'aiworkspace.wish.executorShort.mock', xllm: 'aiworkspace.wish.executorShort.xllm' }
+
+/** The executor's short name (an unknown one is shown as its id). */
+function executorLabel(executor: string | null | undefined, t: (key: string) => string): string {
+  const key = EXECUTOR_LABEL[executor ?? '']
+  return key ? t(key) : executor ?? ''
+}
 
 function WishStatic(context: RenderContext) {
   const store = useStore()
+  const { t } = useAiwsText()
   const id = context.source?.entity_id ?? ''
   const version = useVersion(`e:${id}`)
   const load = useCallback(() => store.readBatched<WishPayloadRead>(id), [store, id])
@@ -37,13 +46,15 @@ function WishStatic(context: RenderContext) {
   return (
     <div className="aiws-wish-card aiws-block-static" data-testid={`aiws-wish-card-${id}`} data-open={open ? 'true' : 'false'}>
       <div className="aiws-wish-head">
-        <b>{context.payload.title ?? payload?.title ?? '许愿格'}</b>
-        <span className="aiws-chip aiws-chip-derived">{EXECUTOR_LABEL[payload?.executor ?? ''] ?? payload?.executor ?? ''}</span>
+        <b>{context.payload.title ?? payload?.title ?? t('aiworkspace.wish.blockTitle')}</b>
+        <span className="aiws-chip aiws-chip-derived">{executorLabel(payload?.executor, t)}</span>
         <FreshnessBadge entityId={id} />
       </div>
       <div className="aiws-wish-card-prompt">{payload?.prompt ?? '…'}</div>
-      <div className="aiws-muted">{payload?.inputs?.length ?? 0} 个输入 · {payload?.last_run ? `上次运行 ${Object.keys(payload.last_run.result_bindings?.results ?? {}).length || (payload.last_run.produced?.length ?? 0)} 项结果${payload.last_run.checks?.failed ? `，${payload.last_run.checks.failed} 项检查未通过` : ''}` : '尚未运行'}</div>
-      {(open || running) && <div className="aiws-wish-card-state" data-testid="aiws-wish-card-state">{running ? '运行中…' : '正在右侧面板中编辑'}</div>}
+      <div className="aiws-muted">{t('aiworkspace.wish.card.inputs', { count: payload?.inputs?.length ?? 0 })} · {payload?.last_run
+        ? t(payload.last_run.checks?.failed ? 'aiworkspace.wish.card.lastRunFailed' : 'aiworkspace.wish.card.lastRun', { count: Object.keys(payload.last_run.result_bindings?.results ?? {}).length || (payload.last_run.produced?.length ?? 0), failed: payload.last_run.checks?.failed ?? 0 })
+        : t('aiworkspace.wish.card.notRun')}</div>
+      {(open || running) && <div className="aiws-wish-card-state" data-testid="aiws-wish-card-state">{running ? t('aiworkspace.wish.card.running') : t('aiworkspace.wish.card.editingInPanel')}</div>}
     </div>
   )
 }
@@ -63,19 +74,19 @@ function runWish(context: RenderContext) {
 function runOrCancel(context: RenderContext, store: WorkspaceStore): ToolbarItem {
   const wishId = context.source?.entity_id ?? ''
   const run = store.wish.run(wishId)
-  if (isActive(run) && run) return { kind: 'button', id: 'wish-cancel', icon: CircleStop, label: '取消运行', run: () => { void store.wish.cancel(run) } }
+  if (isActive(run) && run) return { kind: 'button', id: 'wish-cancel', icon: CircleStop, label: aiwsT('aiworkspace.wish.cancelRun'), run: () => { void store.wish.cancel(run) } }
   const ran = store.outline.all().some((e) => !e.deleted && e.derived?.wish_id === wishId)
-  return { kind: 'button', id: 'wish-run', icon: Play, label: ran ? '重新运行' : '运行', ai: true, disabled: context.mode === 'edit' ? false : '查看模式不能运行', run: () => runWish(context) }
+  return { kind: 'button', id: 'wish-run', icon: Play, label: aiwsT(ran ? 'aiworkspace.wish.runAgain' : 'aiworkspace.wish.run'), ai: true, disabled: context.mode === 'edit' ? false : aiwsT('aiworkspace.wish.cannotRunInView'), run: () => runWish(context) }
 }
 
 export const wishBlock: BlockDefinition = {
-  type: 'wish', version: 1, title: '许愿格', accepts: ['buckyos.wish'], allowNoSource: false,
+  type: 'wish', version: 1, get title() { return aiwsT('aiworkspace.wish.blockTitle') }, accepts: ['buckyos.wish'], allowNoSource: false,
   defaultSize: { w: 420, h: 300 }, cost: { editor: true, html: false },
   Static: WishStatic, Editor: WishEditorView,
-  catalog: { group: 'ai', description: '描述要完成的任务，AI 分析当前画布和选中的数据后给出候选结果；预览、反馈后再应用，整次应用可撤销。', needs: 'none', editAfterInsert: true, standard: true },
+  catalog: { group: 'ai', get description() { return aiwsT('aiworkspace.wish.blockDescription') }, needs: 'none', editAfterInsert: true, standard: true },
   actions: [
-    { id: 'open', label: '打开许愿格', modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
-    { id: 'detail', label: '在数据源中查看', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } },
+    { id: 'open', get label() { return aiwsT('aiworkspace.wish.open') }, modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
+    { id: 'detail', get label() { return aiwsT('aiworkspace.wish.viewInSources') }, modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } },
   ],
   hover: (context, store) => {
     const wishId = context.source?.entity_id
@@ -83,24 +94,25 @@ export const wishBlock: BlockDefinition = {
     const run = runOrCancel(context, store)
     return [
       { id: 'name', kind: 'label', at: 'top-left-out', icon: Sparkles, modes: ['edit', 'view'], freshness: wishId,
-        label: `${context.payload.title ?? context.source?.title ?? '许愿格'} · ${EXECUTOR_LABEL[context.source?.executor ?? ''] ?? context.source?.executor ?? ''}` },
+        label: `${context.payload.title ?? context.source?.title ?? aiwsT('aiworkspace.wish.blockTitle')} · ${executorLabel(context.source?.executor, aiwsT)}` },
       ...(run.kind === 'button' && !run.disabled ? [{ id: run.id, kind: 'button' as const, at: 'top-right-in' as const, icon: run.icon, label: run.label, run: run.run }] : []),
-      { id: 'open', kind: 'button', at: 'bottom-right-in', icon: PanelRight, label: '打开许愿格', action: 'open' },
+      { id: 'open', kind: 'button', at: 'bottom-right-in', icon: PanelRight, label: aiwsT('aiworkspace.wish.open'), action: 'open' },
     ]
   },
   toolbar: (context, store) => [
     runOrCancel(context, store),
-    { kind: 'button', id: 'wish-open', icon: PanelRight, label: '打开许愿格', key: 'Enter', disabled: context.mode === 'edit' ? false : '查看模式不能编辑', run: () => context.activateEditor() },
-    { kind: 'button', id: 'wish-detail', icon: Database, label: '在数据源中查看', run: () => { if (context.source) context.openEntity(context.source.entity_id) } },
+    { kind: 'button', id: 'wish-open', icon: PanelRight, label: aiwsT('aiworkspace.wish.open'), key: 'Enter', disabled: context.mode === 'edit' ? false : aiwsT('aiworkspace.wish.cannotEditInView'), run: () => context.activateEditor() },
+    { kind: 'button', id: 'wish-detail', icon: Database, label: aiwsT('aiworkspace.wish.viewInSources'), run: () => { if (context.source) context.openEntity(context.source.entity_id) } },
   ],
   create: (args) => {
     const ops = []
     // the Mock executor's definition entity is created with the first wish of a Workspace (D9)
     if (!args.store.outline.get(MOCK_WISH_DEF_ID)) ops.push(mockWishDefOp(args.store.core.order_key_between(args.store.outline.childrenOf('data').filter((e) => !SYSTEM_IDS.has(e.entity_id)).at(-1)?.order_key ?? undefined, undefined)))
     if (args.existingSourceId) return [...ops, cellOp(args, 'wish', args.existingSourceId)]
+    const title = args.title || aiwsT('aiworkspace.wish.blockTitle')
     const payload: Record<string, Json> = {
-      title: args.title || '许愿格', prompt: args.title || '', executor: 'xllm', output_mode: 'overwrite',
-      output: { container_id: args.contentFolderId, surface_id: args.surfaceId, name: `${args.title || '许愿格'}的结果` },
+      title, prompt: args.title || '', executor: 'xllm', output_mode: 'overwrite',
+      output: { container_id: args.contentFolderId, surface_id: args.surfaceId, name: aiwsT('aiworkspace.wish.resultsFolder', { title }) },
     }
     return [...ops, createOp(args.dataId, 'buckyos.wish', args.contentFolderId, args.dataOrderKey, payload, args.title || `wish-${randomId().slice(0, 6)}`), cellOp(args, 'wish', args.dataId)]
   },

@@ -104,7 +104,8 @@ export interface ReplicaApi {
 
 export type ReplicaOp = keyof ReplicaApi
 
-export interface WorkerRequest { id: number; op: ReplicaOp; args: unknown[] }
+/** `locale`: the page's language — the Worker's reasons and details follow it (the Worker has no page storage). */
+export interface WorkerRequest { id: number; op: ReplicaOp; args: unknown[]; locale: string }
 
 export interface WorkerFailure {
   /** `storage`: the replica database could not be written (quota, transaction error). `service`: a structured engine error. */

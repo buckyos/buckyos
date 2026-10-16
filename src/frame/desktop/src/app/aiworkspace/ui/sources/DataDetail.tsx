@@ -5,6 +5,7 @@ import { useCallback, useState } from 'react'
 import type { ReadOk } from '../../api/session'
 import type { BlockDefRead, EntityEnvelope, Reference } from '../../api/types'
 import { useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { AssetCell, NoteEditor, RecordCell, RichTextCell, TableEditor } from '../blocks/editors'
 import { WishPanel } from '../wish/WishPanel'
 import { RelationsPanel } from './RelationsPanel'
@@ -12,6 +13,7 @@ import { TYPE_LABEL, entityLabel } from './dataOps'
 import { FreshnessBadge } from './FreshnessBadge'
 
 export function DataDetail({ entity }: { entity: EntityEnvelope }) {
+  const { t, tNode } = useAiwsText()
   const store = useStore()
   const ui = useWorkspaceUi()
   const [tab, setTab] = useState<'content' | 'relations'>('content')
@@ -25,15 +27,17 @@ export function DataDetail({ entity }: { entity: EntityEnvelope }) {
         <b>{entityLabel(entity)}</b>
         {entity.derived && <FreshnessBadge entityId={entity.entity_id} />}
         <span className="aiws-grow" />
-        <button type="button" role="tab" aria-selected={tab === 'content'} data-testid="aiws-detail-tab-content" onClick={() => setTab('content')}>内容</button>
-        <button type="button" role="tab" aria-selected={tab === 'relations'} data-testid="aiws-detail-tab-relations" onClick={() => setTab('relations')}>引用与依赖</button>
+        <button type="button" role="tab" aria-selected={tab === 'content'} data-testid="aiws-detail-tab-content" onClick={() => setTab('content')}>{t('aiworkspace.data.detail.content')}</button>
+        <button type="button" role="tab" aria-selected={tab === 'relations'} data-testid="aiws-detail-tab-relations" onClick={() => setTab('relations')}>{t('aiworkspace.data.detail.relations')}</button>
       </div>
       {tab === 'relations' ? <RelationsPanel entityId={entity.entity_id} /> : (
         <div className="aiws-detail-body">
           {blocks.length > 0 && (
-            <div className="aiws-muted aiws-detail-blocks" data-testid="aiws-detail-blocks">在画布中：{blocks.map((b) => {
-              const surface = store.outline.ancestors(b.entity_id).map((id) => store.outline.get(id)).find((e) => e?.kind === 'surface')
-              return <button key={b.entity_id} type="button" className="aiws-link" data-testid={`aiws-locate-${b.entity_id}`} onClick={() => ui.openEntity(b.entity_id)}>{surface?.title ?? surface?.name ?? '画布'} · {b.view_type}</button>
+            <div className="aiws-muted aiws-detail-blocks" data-testid="aiws-detail-blocks">{tNode('aiworkspace.data.detail.onCanvas', {
+              blocks: blocks.map((b) => {
+                const surface = store.outline.ancestors(b.entity_id).map((id) => store.outline.get(id)).find((e) => e?.kind === 'surface')
+                return <button key={b.entity_id} type="button" className="aiws-link" data-testid={`aiws-locate-${b.entity_id}`} onClick={() => ui.openEntity(b.entity_id)}>{surface?.title ?? surface?.name ?? t('aiworkspace.data.canvas')} · {b.view_type}</button>
+              }),
             })}</div>
           )}
           {entity.type_id === 'buckyos.table-source' && <TableEditor sourceId={entity.entity_id} source={entity} readOnly={readOnly} />}
@@ -52,44 +56,50 @@ export function DataDetail({ entity }: { entity: EntityEnvelope }) {
 }
 
 function FolderDetail({ entity }: { entity: EntityEnvelope }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const ui = useWorkspaceUi()
   const children = store.outline.childrenOf(entity.entity_id)
   const surface = entity.surface_id ? store.outline.get(entity.surface_id) : undefined
   return (
     <div className="aiws-folder-detail">
-      {entity.system === 'surface_content' && surface && <div className="aiws-muted">画布「{entityLabel(surface)}」上创建的内容都放在这里；它与画布同时创建、同时删除。</div>}
-      {entity.system === 'canvas_content' && <div className="aiws-muted">画布内容区：每张画布一个子文件夹。它不干扰第一层数据源。</div>}
-      {entity.system === 'shows' && <div className="aiws-muted">演讲路径与 Viewport：在画布的“路径编辑”中编排，放映与使用引导从这里读取。许愿格不读取这里的内容。</div>}
+      {entity.system === 'surface_content' && surface && <div className="aiws-muted">{t('aiworkspace.data.detail.surfaceContent', { name: entityLabel(surface) })}</div>}
+      {entity.system === 'canvas_content' && <div className="aiws-muted">{t('aiworkspace.data.detail.canvasContent')}</div>}
+      {entity.system === 'shows' && <div className="aiws-muted">{t('aiworkspace.data.detail.shows')}</div>}
       <ul>{children.map((c) => <li key={c.entity_id}><button type="button" className="aiws-link" onClick={() => ui.openEntity(c.entity_id)}>{entityLabel(c)}</button> <span className="aiws-muted">{TYPE_LABEL[c.type_id] ?? c.type_id}</span></li>)}</ul>
-      {children.length === 0 && <div className="aiws-muted">（空文件夹）</div>}
+      {children.length === 0 && <div className="aiws-muted">{t('aiworkspace.data.detail.emptyFolder')}</div>}
     </div>
   )
 }
 
 function BlockDefDetail({ entity }: { entity: EntityEnvelope }) {
+  const { t, tNode, list } = useAiwsText()
   const store = useStore()
   const version = useVersion(`e:${entity.entity_id}`)
   const load = useCallback(() => store.session.read<BlockDefRead>(entity.entity_id), [store, entity.entity_id])
   const read = useLoad<ReadOk<BlockDefRead>>(load, version)
-  if (!read.data) return <div className="aiws-muted">{read.error ?? '载入定义…'}</div>
+  if (!read.data) return <div className="aiws-muted">{read.error ?? t('aiworkspace.data.detail.defLoading')}</div>
   const payload = read.data.content.payload
   const users = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.def_id === entity.entity_id && !e.deleted)
   return (
     <div className="aiws-def-detail" data-testid="aiws-def-detail">
-      <div>定义 <code>{payload.def_id}</code> v{payload.version ?? 1} · {payload.kind === 'html' ? 'HTML 扩展' : '声明式'}{payload.accepts ? ` · 接受 ${payload.accepts.join('、')}` : ''}</div>
+      <div>{tNode(payload.accepts ? 'aiworkspace.data.detail.defSummaryAccepts' : 'aiworkspace.data.detail.defSummary', {
+        id: <code>{payload.def_id}</code>, version: payload.version ?? 1,
+        kind: payload.kind === 'html' ? t('aiworkspace.data.detail.defHtml') : t('aiworkspace.data.detail.defDeclarative'), accepts: list(payload.accepts ?? []),
+      })}</div>
       {payload.description && <div className="aiws-muted">{payload.description}</div>}
-      <div className="aiws-muted">被 {users.length} 个 Block 使用（引用阻止删除）。</div>
-      {payload.kind === 'html' && <div className="aiws-warning">HTML 定义以 Owner 的会话同源运行，不设沙盒（D16）；风险由 Owner 管理。</div>}
-      <details><summary>查看定义内容</summary><pre className="aiws-raw">{JSON.stringify(payload.kind === 'html' ? { ...payload, html: { ...payload.html, js: `(${payload.html?.js?.length ?? 0} 字符)` } } : payload, null, 2)}</pre></details>
+      <div className="aiws-muted">{t('aiworkspace.data.detail.defUsers', { count: users.length })}</div>
+      {payload.kind === 'html' && <div className="aiws-warning">{t('aiworkspace.data.detail.defHtmlRisk')}</div>}
+      <details><summary>{t('aiworkspace.data.detail.defShow')}</summary><pre className="aiws-raw">{JSON.stringify(payload.kind === 'html' ? { ...payload, html: { ...payload.html, js: t('aiworkspace.data.detail.defChars', { count: payload.html?.js?.length ?? 0 }) } } : payload, null, 2)}</pre></details>
     </div>
   )
 }
 
 function RawDetail({ entity }: { entity: EntityEnvelope }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const version = useVersion(`e:${entity.entity_id}`)
   const load = useCallback(() => store.session.read<{ payload: unknown }>(entity.entity_id), [store, entity.entity_id])
   const read = useLoad<ReadOk<{ payload: unknown }>>(load, version)
-  return <details open><summary>原始内容（{entity.degraded}，只读）</summary><pre className="aiws-raw">{JSON.stringify(read.data?.content.payload ?? null, null, 2)}</pre></details>
+  return <details open><summary>{t('aiworkspace.data.detail.raw', { reason: entity.degraded ?? '' })}</summary><pre className="aiws-raw">{JSON.stringify(read.data?.content.payload ?? null, null, 2)}</pre></details>
 }

@@ -4,9 +4,11 @@
 import { useEffect, useState } from 'react'
 import { describeError } from '../../api/session'
 import { useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 
 export function AssetBlobImage({ objectId, mediaType, alt, fit = 'contain' }: { objectId: string; mediaType: string; alt: string; fit?: 'contain' | 'cover' }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const [state, setState] = useState<{ url: string | null; error: string | null }>({ url: null, error: null })
   useEffect(() => {
     let live = true
@@ -22,6 +24,6 @@ export function AssetBlobImage({ objectId, mediaType, alt, fit = 'contain' }: { 
     return () => { live = false; if (url) URL.revokeObjectURL(url) }
   }, [store, objectId, mediaType])
   if (state.error) return <div className="aiws-error">{state.error}</div>
-  if (!state.url) return <div className="aiws-muted">读取图片…</div>
+  if (!state.url) return <div className="aiws-muted">{t('aiworkspace.extension.loadingImage')}</div>
   return <img className="aiws-blob-image" src={state.url} alt={alt} style={{ objectFit: fit }} data-object-id={objectId} />
 }

@@ -14,6 +14,7 @@
 
 import type { WorkspaceSession } from '../api/session'
 import type { CommitOutcome, Operation } from '../api/types'
+import { aiwsT } from '../i18n'
 import { Emitter } from './emitter'
 
 export type UndoEntry =
@@ -39,18 +40,42 @@ export interface UndoSnapshot {
   problem: string | null
 }
 
-function describeFailure(action: string, label: string, outcome: CommitOutcome): string {
+type Direction = 'undo' | 'redo'
+
+/** The messages of one direction: whole sentences per direction (the verb is part of each). */
+const TEXT: Record<Direction, { conflict: string; cannot: string; unknown: string; incomplete: string; noEditorStep: string; notPending: string; failed: string }> = {
+  undo: {
+    conflict: 'aiworkspace.core.undo.conflict.undo',
+    cannot: 'aiworkspace.core.undo.cannot.undo',
+    unknown: 'aiworkspace.core.undo.unknown.undo',
+    incomplete: 'aiworkspace.core.undo.incomplete.undo',
+    noEditorStep: 'aiworkspace.core.undo.noEditorStep.undo',
+    notPending: 'aiworkspace.core.undo.notPending.undo',
+    failed: 'aiworkspace.core.undo.failed.undo',
+  },
+  redo: {
+    conflict: 'aiworkspace.core.undo.conflict.redo',
+    cannot: 'aiworkspace.core.undo.cannot.redo',
+    unknown: 'aiworkspace.core.undo.unknown.redo',
+    incomplete: 'aiworkspace.core.undo.incomplete.redo',
+    noEditorStep: 'aiworkspace.core.undo.noEditorStep.redo',
+    notPending: 'aiworkspace.core.undo.notPending.redo',
+    failed: 'aiworkspace.core.undo.failed.redo',
+  },
+}
+
+function describeFailure(direction: Direction, label: string, outcome: CommitOutcome): string {
+  const text = TEXT[direction]
   if (outcome.status === 'conflict') {
-    const items = outcome.conflicts?.length ?? 0
-    return `无法${action}「${label}」：其中 ${items} 处内容之后已被修改（${outcome.code}）。未做任何改动。`
+    return aiwsT(text.conflict, { label, count: outcome.conflicts?.length ?? 0, code: outcome.code })
   }
   if (outcome.status === 'rejected') {
     const detail = outcome.errors?.[0]?.detail ?? outcome.detail ?? ''
-    if (outcome.code === 'NOT_UNDOABLE') return `「${label}」不可由后台撤销（NOT_UNDOABLE）${detail ? `：${detail}` : ''}`
-    return `无法${action}「${label}」：${outcome.code}${detail ? ` — ${detail}` : ''}`
+    if (outcome.code === 'NOT_UNDOABLE') return detail ? aiwsT('aiworkspace.core.undo.notUndoableDetail', { label, detail }) : aiwsT('aiworkspace.core.undo.notUndoable', { label })
+    return aiwsT(text.cannot, { label, reason: `${outcome.code}${detail ? ` — ${detail}` : ''}` })
   }
-  if (outcome.status === 'unknown') return `${action}「${label}」的结果未知（${outcome.detail}），请稍后重试。`
-  if (outcome.status === 'storage_failed') return `${action}「${label}」没有完成：${outcome.detail}`
+  if (outcome.status === 'unknown') return aiwsT(text.unknown, { label, detail: outcome.detail })
+  if (outcome.status === 'storage_failed') return aiwsT(text.incomplete, { label, detail: outcome.detail })
   return ''
 }
 
@@ -137,18 +162,18 @@ export class UndoCoordinator {
   undo(): Promise<void> { return this.enqueue('undo') }
   redo(): Promise<void> { return this.enqueue('redo') }
 
-  private enqueue(direction: 'undo' | 'redo'): Promise<void> {
+  private enqueue(direction: Direction): Promise<void> {
     const run = this.chain.then(() => this.step(direction))
     this.chain = run.catch(() => undefined)
     return run
   }
 
-  private async step(direction: 'undo' | 'redo') {
+  private async step(direction: Direction) {
     const from = direction === 'undo' ? this.undoStack : this.redoStack
     const to = direction === 'undo' ? this.redoStack : this.undoStack
     const entry = from.pop()
     if (!entry) return
-    const action = direction === 'undo' ? '撤销' : '重做'
+    const text = TEXT[direction]
     this.problem = null
     if (entry.kind === 'editor') {
       const handle = this.editors.get(entry.editor_id)
@@ -162,7 +187,7 @@ export class UndoCoordinator {
       } finally { this.replaying = false }
       // never extend a replayed entry with later typing
       if (done) to.push({ ...entry, last_at: 0 })
-      else this.problem = `编辑器中没有可${action}的步骤。`
+      else this.problem = aiwsT(text.noEditorStep)
       this.publish()
       return
     }
@@ -171,10 +196,10 @@ export class UndoCoordinator {
       try {
         const operations = await this.session.offline?.discardPending(entry.key)
         if (operations) to.push({ kind: 'resubmit', operations, label: entry.label })
-        else this.problem = `「${entry.label}」已不在待提交队列中，没有可${action}的内容。`
+        else this.problem = aiwsT(text.notPending, { label: entry.label })
       } catch (error) {
         from.push(entry)
-        this.problem = `无法${action}「${entry.label}」：${error instanceof Error ? error.message : String(error)}`
+        this.problem = aiwsT(text.cannot, { label: entry.label, reason: error instanceof Error ? error.message : String(error) })
       }
       this.publish()
       return
@@ -188,11 +213,11 @@ export class UndoCoordinator {
         else if (outcome.status === 'accepted') to.push({ kind: 'commit', commit_id: outcome.commit_id, label: entry.label })
         else {
           if (outcome.status === 'storage_failed') from.push(entry)
-          this.problem = describeFailure(action, entry.label, outcome)
+          this.problem = describeFailure(direction, entry.label, outcome)
         }
       } catch (error) {
         from.push(entry)
-        this.problem = `${action}失败：${error instanceof Error ? error.message : String(error)}`
+        this.problem = aiwsT(text.failed, { error: error instanceof Error ? error.message : String(error) })
       } finally {
         this.busy = false
         this.publish()
@@ -209,11 +234,11 @@ export class UndoCoordinator {
         await this.session.whenApplied(outcome.seq)
       } else {
         if (outcome.status === 'unknown') from.push(entry)
-        this.problem = describeFailure(action, entry.label, outcome)
+        this.problem = describeFailure(direction, entry.label, outcome)
       }
     } catch (error) {
       from.push(entry)
-      this.problem = `${action}失败：${error instanceof Error ? error.message : String(error)}`
+      this.problem = aiwsT(text.failed, { error: error instanceof Error ? error.message : String(error) })
     } finally {
       this.busy = false
       this.publish()

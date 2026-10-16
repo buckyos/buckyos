@@ -6,7 +6,9 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, Ellipsis, Palette } from 'lucide-react'
+import type { TextVars } from '../../i18n'
 import { useWorkspaceUi } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { modePolicy, type CanvasMode, type ToolbarItem } from '../blocks/registry'
 import { MenuButton, MenuList, PopoverPanel, usePopover, type MenuItem } from '../shell/popover'
 import type { Rect } from './render/camera'
@@ -17,16 +19,21 @@ export interface NearAction { id: string; label: string; run: () => void; disabl
 
 /** Colours offered by the toolbar's colour control: soft fills (notes, shapes) and inks (text, lines, frames).
  * Fixed values that read on both Desktop themes; "默认" (empty) means the theme's own colour. */
-const PALETTES: Record<'fill' | 'ink', { value: string; label: string }[]> = {
+const PALETTES: Record<'fill' | 'ink', { value: string; key: string }[]> = {
   fill: [
-    { value: '#fff2cc', label: '黄' }, { value: '#ffe2c6', label: '橙' }, { value: '#ffd9d9', label: '红' }, { value: '#f3dcff', label: '紫' },
-    { value: '#dbe8ff', label: '蓝' }, { value: '#d5f2ee', label: '青' }, { value: '#dcf3d6', label: '绿' }, { value: '#ececec', label: '灰' },
+    { value: '#fff2cc', key: 'aiworkspace.canvas.color.yellow' }, { value: '#ffe2c6', key: 'aiworkspace.canvas.color.orange' }, { value: '#ffd9d9', key: 'aiworkspace.canvas.color.red' }, { value: '#f3dcff', key: 'aiworkspace.canvas.color.purple' },
+    { value: '#dbe8ff', key: 'aiworkspace.canvas.color.blue' }, { value: '#d5f2ee', key: 'aiworkspace.canvas.color.teal' }, { value: '#dcf3d6', key: 'aiworkspace.canvas.color.green' }, { value: '#ececec', key: 'aiworkspace.canvas.color.gray' },
   ],
   ink: [
-    { value: '', label: '默认' }, { value: '#d1242f', label: '红' }, { value: '#d4600f', label: '橙' }, { value: '#9a6700', label: '黄褐' },
-    { value: '#1a7f37', label: '绿' }, { value: '#0969da', label: '蓝' }, { value: '#8250df', label: '紫' }, { value: '#6e7781', label: '灰' },
+    { value: '', key: 'aiworkspace.canvas.color.default' }, { value: '#d1242f', key: 'aiworkspace.canvas.color.red' }, { value: '#d4600f', key: 'aiworkspace.canvas.color.orange' }, { value: '#9a6700', key: 'aiworkspace.canvas.color.ochre' },
+    { value: '#1a7f37', key: 'aiworkspace.canvas.color.green' }, { value: '#0969da', key: 'aiworkspace.canvas.color.blue' }, { value: '#8250df', key: 'aiworkspace.canvas.color.purple' }, { value: '#6e7781', key: 'aiworkspace.canvas.color.gray' },
   ],
 }
+
+type Translate = (key: string, vars?: TextVars) => string
+
+/** The colours a colour control offers: its extras, then the palette, named in the current language. */
+const paletteOf = (item: Extract<ToolbarItem, { kind: 'color' }>, t: Translate) => [...(item.extras ?? []), ...PALETTES[item.palette ?? 'fill'].map((c) => ({ value: c.value, label: t(c.key) }))]
 
 /** Special colour values: no colour (`none`), the theme's colour (`auto`, or empty for "默认"). */
 const swatchClass = (value: string) => (value === 'none' ? ' is-none' : value === 'auto' ? ' is-auto' : '')
@@ -35,17 +42,18 @@ const swatchStyle = (value: string) => (value === 'none' || value === 'auto' ? u
 /** Buttons keep the editor's focus and selection: the press never moves the focus. */
 const keepFocus = (event: { preventDefault: () => void }) => event.preventDefault()
 
-function tip(label: string, key?: string, disabled?: string | false) {
-  return disabled ? `${label}：${disabled}` : key ? `${label}（${key}）` : label
+function tip(t: Translate, label: string, key?: string, disabled?: string | false) {
+  return disabled ? t('aiworkspace.canvas.tip.reason', { label, reason: disabled }) : key ? t('aiworkspace.canvas.tip.key', { label, key }) : label
 }
 
 function NearMenu({ item }: { item: Extract<ToolbarItem, { kind: 'menu' }> }) {
+  const { t } = useAiwsText()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const current = item.items.find((option) => option.value === item.value)
   const Icon = current?.icon ?? item.icon
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-near-btn aiws-near-menu" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(item.label, undefined, item.disabled)}
+      <button ref={bindTrigger} type="button" className="aiws-near-btn aiws-near-menu" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(t, item.label, undefined, item.disabled)}
         aria-haspopup="menu" aria-expanded={open} disabled={Boolean(item.disabled)} onMouseDown={keepFocus} onClick={toggle}>
         {Icon ? <Icon size={18} aria-hidden="true" /> : <span className="aiws-near-value">{current?.label ?? item.label}</span>}
         <ChevronDown size={12} aria-hidden="true" />
@@ -57,12 +65,13 @@ function NearMenu({ item }: { item: Extract<ToolbarItem, { kind: 'menu' }> }) {
 }
 
 function NearColor({ item }: { item: Extract<ToolbarItem, { kind: 'color' }> }) {
+  const { t } = useAiwsText()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
-  const palette = [...(item.extras ?? []), ...PALETTES[item.palette ?? 'fill']]
+  const palette = paletteOf(item, t)
   const pick = (value: string) => { close(); item.onPick(value) }
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-near-btn" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(item.label, undefined, item.disabled)}
+      <button ref={bindTrigger} type="button" className="aiws-near-btn" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(t, item.label, undefined, item.disabled)}
         aria-haspopup="dialog" aria-expanded={open} disabled={Boolean(item.disabled)} onMouseDown={keepFocus} onClick={toggle}>
         {item.value === undefined ? <Palette size={18} aria-hidden="true" /> : <span className={`aiws-swatch${swatchClass(item.value)}`} style={swatchStyle(item.value)} aria-hidden="true" />}
       </button>
@@ -74,7 +83,7 @@ function NearColor({ item }: { item: Extract<ToolbarItem, { kind: 'color' }> }) 
                 data-testid={`aiws-color-${color.value.replace('#', '') || 'default'}`} style={swatchStyle(color.value)} onClick={() => pick(color.value)} />
             ))}
           </div>
-          <label className="aiws-palette-custom">自定义 <input type="color" aria-label="自定义颜色" defaultValue={item.value && item.value.startsWith('#') ? item.value : '#4f8df7'} onChange={(event) => item.onPick(event.target.value)} /></label>
+          <label className="aiws-palette-custom">{t('aiworkspace.canvas.color.custom')} <input type="color" aria-label={t('aiworkspace.canvas.color.customColor')} defaultValue={item.value && item.value.startsWith('#') ? item.value : '#4f8df7'} onChange={(event) => item.onPick(event.target.value)} /></label>
         </PopoverPanel>
       )}
     </span>
@@ -82,10 +91,11 @@ function NearColor({ item }: { item: Extract<ToolbarItem, { kind: 'color' }> }) 
 }
 
 function NearPanel({ item }: { item: Extract<ToolbarItem, { kind: 'panel' }> }) {
+  const { t } = useAiwsText()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-near-btn" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(item.label, undefined, item.disabled)}
+      <button ref={bindTrigger} type="button" className="aiws-near-btn" data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(t, item.label, undefined, item.disabled)}
         aria-haspopup="dialog" aria-expanded={open} aria-pressed={item.active} disabled={Boolean(item.disabled)} onMouseDown={keepFocus} onClick={toggle}>
         <item.icon size={18} aria-hidden="true" />
       </button>
@@ -95,13 +105,14 @@ function NearPanel({ item }: { item: Extract<ToolbarItem, { kind: 'panel' }> }) 
 }
 
 function NearItem({ item }: { item: ToolbarItem }) {
+  const { t } = useAiwsText()
   switch (item.kind) {
     case 'separator': return <span className="aiws-toolbar-sep" />
     case 'menu': return <NearMenu item={item} />
     case 'color': return <NearColor item={item} />
     case 'panel': return <NearPanel item={item} />
     case 'button': return (
-      <button type="button" className={`aiws-near-btn${item.ai ? ' is-ai' : ''}${item.icon ? '' : ' is-text'}`} data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(item.label, item.key, item.disabled)}
+      <button type="button" className={`aiws-near-btn${item.ai ? ' is-ai' : ''}${item.icon ? '' : ' is-text'}`} data-testid={`aiws-near-${item.id}`} aria-label={item.label} title={tip(t, item.label, item.key, item.disabled)}
         aria-pressed={item.active} disabled={Boolean(item.disabled)} onMouseDown={keepFocus} onClick={item.run}>
         {item.icon ? <item.icon size={18} aria-hidden="true" /> : item.label}
       </button>
@@ -110,12 +121,12 @@ function NearItem({ item }: { item: ToolbarItem }) {
 }
 
 /** What an item that did not fit becomes in "more". */
-function asMenuItem(item: ToolbarItem): MenuItem | null {
+function asMenuItem(item: ToolbarItem, t: Translate): MenuItem | null {
   switch (item.kind) {
     case 'separator': return null
     case 'button': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, hint: item.key, disabled: Boolean(item.disabled), reason: item.disabled || null, checked: item.active, run: item.run }
     case 'menu': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, disabled: Boolean(item.disabled), items: item.items.map((o) => ({ id: o.value, label: o.label, checked: o.value === item.value, run: () => item.onPick(o.value) })) }
-    case 'color': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, disabled: Boolean(item.disabled), items: [...(item.extras ?? []), ...PALETTES[item.palette ?? 'fill']].map((c) => ({ id: c.value || 'default', label: c.label, checked: (item.value ?? '') === c.value, run: () => item.onPick(c.value) })) }
+    case 'color': return { id: item.id, testId: `aiws-near-${item.id}`, label: item.label, disabled: Boolean(item.disabled), items: paletteOf(item, t).map((c) => ({ id: c.value || 'default', label: c.label, checked: (item.value ?? '') === c.value, run: () => item.onPick(c.value) })) }
     case 'panel': return null
   }
 }
@@ -128,6 +139,7 @@ export function NearToolbar({ bbox, items, more = [], viewport, insets = { top: 
   /** Screen margins covered by the floating toolbars. */
   insets?: { top: number; right: number; bottom: number; left: number }
 }) {
+  const { t } = useAiwsText()
   const ref = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
   // what fits: all items first, then as many as the clear width allows (the rest go to "more")
@@ -157,7 +169,7 @@ export function NearToolbar({ bbox, items, more = [], viewport, insets = { top: 
   left = Math.max(insets.left + 4, Math.min(left, viewport.w - insets.right - size.w - 4))
   const shown = items.slice(0, count)
   while (shown.length > 0 && shown[shown.length - 1].kind === 'separator') shown.pop()
-  const overflow = items.slice(count).map(asMenuItem).filter((item): item is MenuItem => item !== null)
+  const overflow = items.slice(count).map((item) => asMenuItem(item, t)).filter((item): item is MenuItem => item !== null)
   const moreItems: MenuItem[] = [
     ...overflow,
     ...(overflow.length > 0 && more.length > 0 ? [{ id: 'sep-overflow', separator: true }] : []),
@@ -165,10 +177,10 @@ export function NearToolbar({ bbox, items, more = [], viewport, insets = { top: 
   ]
   if (shown.length === 0 && moreItems.length === 0) return null
   return (
-    <div ref={ref} className="aiws-near" role="toolbar" aria-label="就近工具" data-testid="aiws-near-toolbar" style={{ left, top }} onPointerDown={(event) => event.stopPropagation()}>
+    <div ref={ref} className="aiws-near" role="toolbar" aria-label={t('aiworkspace.canvas.near.label')} data-testid="aiws-near-toolbar" style={{ left, top }} onPointerDown={(event) => event.stopPropagation()}>
       {shown.map((item, i) => <span key={item.id} className="aiws-near-slot" data-near-index={i}><NearItem item={item} /></span>)}
       {moreItems.length > 0 && (
-        <MenuButton label="更多操作" title="更多操作" className="aiws-near-btn aiws-near-more" testId="aiws-near-more" align="end" items={moreItems}>
+        <MenuButton label={t('aiworkspace.canvas.near.more')} title={t('aiworkspace.canvas.near.more')} className="aiws-near-btn aiws-near-more" testId="aiws-near-more" align="end" items={moreItems}>
           <Ellipsis size={18} />
         </MenuButton>
       )}
@@ -218,14 +230,15 @@ export function ContextMenu({ at, items, onClose }: { at: { x: number; y: number
 
 export function BlockInspector({ cellId, mode, children }: { cellId: string; mode: CanvasMode; children?: ReactNode }) {
   const ui = useWorkspaceUi()
+  const { t } = useAiwsText()
   const entity = ui.byId.get(cellId)
   const policy = modePolicy(mode)
   if (!entity) return null
   return (
     <div className="aiws-inspector" data-testid="aiws-inspector" data-mode={mode}>
-      <div className="aiws-panel-title">属性 <span className="aiws-muted">{entity.view_type ?? entity.kind}{entity.view_version ? ` v${entity.view_version}` : ''}</span></div>
-      <div className="aiws-muted">{cellId}{entity.source_id ? ` · 数据 ${entity.source_id}` : ' · 纯 UI Block'}</div>
-      {!policy.writes && <div className="aiws-muted">{mode === 'view' ? '查看模式：属性只读' : '播放编辑占位：只读'}</div>}
+      <div className="aiws-panel-title">{t('aiworkspace.canvas.inspector.title')} <span className="aiws-muted">{entity.view_type ?? entity.kind}{entity.view_version ? ` v${entity.view_version}` : ''}</span></div>
+      <div className="aiws-muted">{entity.source_id ? t('aiworkspace.canvas.inspector.withData', { id: cellId, source: entity.source_id }) : t('aiworkspace.canvas.inspector.uiOnly', { id: cellId })}</div>
+      {!policy.writes && <div className="aiws-muted">{t(mode === 'view' ? 'aiworkspace.canvas.inspector.viewReadOnly' : 'aiworkspace.canvas.inspector.presentationReadOnly')}</div>}
       {children}
     </div>
   )

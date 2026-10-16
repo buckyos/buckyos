@@ -2,14 +2,16 @@
 
 import { randomId } from '../../api/ids'
 import { SYSTEM_IDS, type EntityEnvelope, type Json, type Operation } from '../../api/types'
+import { aiwsT, localizedLabels } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { MOCK_WISH_DEF_ID, mockWishDefOp } from '../wish/mockWishDef'
 
-export const TYPE_LABEL: Record<string, string> = {
-  'buckyos.container': '文件夹', 'buckyos.record': '记录', 'buckyos.richtext': '富文本', 'buckyos.table-source': '表',
-  'buckyos.cell': 'Block', 'buckyos.asset-ref': '资产', 'buckyos.annotation': '便签/批注', 'buckyos.wish': '许愿格', 'buckyos.block-def': 'Block 定义',
-  'buckyos.viewport': 'Viewport', 'buckyos.show-path': '演讲路径',
-}
+export const TYPE_LABEL: Readonly<Record<string, string>> = localizedLabels({
+  'buckyos.container': 'aiworkspace.data.type.container', 'buckyos.record': 'aiworkspace.data.type.record', 'buckyos.richtext': 'aiworkspace.data.type.richtext',
+  'buckyos.table-source': 'aiworkspace.data.type.tableSource', 'buckyos.cell': 'aiworkspace.data.type.cell', 'buckyos.asset-ref': 'aiworkspace.data.type.assetRef',
+  'buckyos.annotation': 'aiworkspace.data.type.annotation', 'buckyos.wish': 'aiworkspace.data.type.wish', 'buckyos.block-def': 'aiworkspace.data.type.blockDef',
+  'buckyos.viewport': 'aiworkspace.data.type.viewport', 'buckyos.show-path': 'aiworkspace.data.type.showPath',
+})
 
 export function entityLabel(entity: EntityEnvelope): string {
   return entity.title ?? entity.name ?? entity.entity_id
@@ -23,15 +25,19 @@ export function newDataOps(store: WorkspaceStore, parentId: string, kind: NewDat
   const name = title.trim() || undefined
   const create = (id: string, typeId: string, payload: Record<string, Json>): Operation => ({ op: 'entity.create', entity_id: id, type_id: typeId, parent_id: parentId, order_key: key, ...(name ? { name } : {}), payload })
   switch (kind) {
-    case 'folder': return [create(randomId('f'), 'buckyos.container', { kind: 'folder', title: title || '文件夹' })]
-    case 'table': return [create(randomId('s'), 'buckyos.table-source', { title_field_id: 'title', fields: [{ field_id: 'title', name: '标题', type: 'text', required: true }, { field_id: 'done', name: '完成', type: 'boolean' }] })]
+    case 'folder': return [create(randomId('f'), 'buckyos.container', { kind: 'folder', title: title || aiwsT('aiworkspace.data.default.folder') })]
+    case 'table': return [create(randomId('s'), 'buckyos.table-source', { title_field_id: 'title', fields: [{ field_id: 'title', name: aiwsT('aiworkspace.data.default.title'), type: 'text', required: true }, { field_id: 'done', name: aiwsT('aiworkspace.data.default.done'), type: 'boolean' }] })]
     case 'richtext': return [create(randomId('t'), 'buckyos.richtext', { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: randomId('b') }, content: title ? [{ type: 'text', text: title }] : [] }] } })]
-    case 'record': return [create(randomId('o'), 'buckyos.record', { schema: { properties: [{ key: 'name', name: '名称', type: 'text' }, { key: 'date', name: '日期', type: 'date' }, { key: 'amount', name: '金额', type: 'decimal', scale: 2 }] }, props: { name: title } })]
-    case 'note': return [create(randomId('n'), 'buckyos.annotation', { kind: 'note', body: title || '便签', style: { color: '#fff2cc' } })]
+    case 'record': return [create(randomId('o'), 'buckyos.record', { schema: { properties: [
+      { key: 'name', name: aiwsT('aiworkspace.data.default.name'), type: 'text' }, { key: 'date', name: aiwsT('aiworkspace.data.default.date'), type: 'date' },
+      { key: 'amount', name: aiwsT('aiworkspace.data.default.amount'), type: 'decimal', scale: 2 },
+    ] }, props: { name: title } })]
+    case 'note': return [create(randomId('n'), 'buckyos.annotation', { kind: 'note', body: title || aiwsT('aiworkspace.data.stickyNote'), style: { color: '#fff2cc' } })]
     case 'wish': {
       const ops: Operation[] = []
       if (!store.outline.get(MOCK_WISH_DEF_ID)) ops.push(mockWishDefOp(store.core.order_key_between(store.outline.childrenOf('data').filter((e) => !SYSTEM_IDS.has(e.entity_id)).at(-1)?.order_key ?? undefined, undefined)) as Operation)
-      ops.push(create(randomId('w'), 'buckyos.wish', { title: title || '许愿格', prompt: title, executor: 'mock', output_mode: 'overwrite', output: { container_id: parentId, name: `${title || '许愿格'}的结果` } }))
+      const wishTitle = title || aiwsT('aiworkspace.data.default.wish')
+      ops.push(create(randomId('w'), 'buckyos.wish', { title: wishTitle, prompt: title, executor: 'mock', output_mode: 'overwrite', output: { container_id: parentId, name: aiwsT('aiworkspace.data.default.wishResult', { name: wishTitle }) } }))
       return ops
     }
   }

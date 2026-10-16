@@ -7,10 +7,12 @@ import { useCallback, useState } from 'react'
 import { describeError } from '../../api/session'
 import type { Capability, Grant, GrantList, Subject } from '../../api/types'
 import { useLoad, useOutlineVersion, useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { entityLabel } from './dataOps'
 import { PRESETS, presetOf } from './presets'
 
 export function PermissionsPanel() {
+  const { t, list } = useAiwsText()
   const store = useStore()
   useOutlineVersion()
   const [tick, setTick] = useState(0)
@@ -27,26 +29,26 @@ export function PermissionsPanel() {
   const surfaces = store.outline.childrenOf('surfaces').filter((e) => e.kind === 'surface')
   const complete = grants.data?.complete ?? false
   const caps = preset === 'custom' ? custom : (PRESETS.find((p) => p.id === preset)?.caps ?? ['read'])
-  const act = async (label: string, work: () => Promise<void>) => {
+  const act = async (failed: (error: string) => string, work: () => Promise<void>) => {
     setMessage(null)
-    try { await work(); setTick((n) => n + 1) } catch (error) { setMessage(`${label}失败：${describeError(error)}`) }
+    try { await work(); setTick((n) => n + 1) } catch (error) { setMessage(failed(describeError(error))) }
   }
-  const grant = () => act('授权', async () => {
+  const grant = () => act((error) => t('aiworkspace.data.perm.grantFailed', { error }), async () => {
     const target = subject.trim()
-    if (!target) throw new Error('请选择或输入主体')
+    if (!target) throw new Error(t('aiworkspace.data.perm.subjectRequired'))
     if (scope) {
       // a canvas permission: the Surface subtree and its content folder (§6.3)
       const surface = store.outline.get(scope)
       await store.session.grant(target, caps, scope)
       if (surface?.content_folder_id) await store.session.grant(target, caps, surface.content_folder_id)
     } else await store.session.grant(target, caps)
-    setMessage(`已授予 ${target}：${caps.join('、')}${scope ? '（画布）' : ''}。界面显示的是后台返回的实际能力。`)
+    setMessage(t(scope ? 'aiworkspace.data.perm.grantedCanvas' : 'aiworkspace.data.perm.granted', { subject: target, caps: list(caps) }))
   })
-  const revoke = (g: Grant) => act('撤回', async () => {
+  const revoke = (g: Grant) => act((error) => t('aiworkspace.data.perm.revokeFailed', { error }), async () => {
     await store.session.revoke(g.subject, g.scope_entity_id ?? undefined)
     const surface = g.scope_entity_id ? store.outline.get(g.scope_entity_id) : undefined
     if (surface?.kind === 'surface' && surface.content_folder_id) await store.session.revoke(g.subject, surface.content_folder_id)
-    setMessage(`已撤回 ${g.subject} 在${g.scope_entity_id ? '该范围' : '工作区'}的授权；祖先或工作区授权可能仍使其有效。`)
+    setMessage(t(g.scope_entity_id ? 'aiworkspace.data.perm.revokedScope' : 'aiworkspace.data.perm.revokedWorkspace', { subject: g.subject }))
   })
   // group rows: workspace-level by preset; canvas permissions as one row per subject+surface (content folder rows folded in)
   const rows = grants.data?.grants ?? []
@@ -54,23 +56,24 @@ export function PermissionsPanel() {
   const shown = rows.filter((g) => !(g.scope_entity_id && folderOf.has(g.scope_entity_id) && rows.some((o) => o.subject === g.subject && o.scope_entity_id === folderOf.get(g.scope_entity_id ?? ''))))
   return (
     <div className="aiws-permissions" data-testid="aiws-permissions">
-      <div className="aiws-panel-title">权限管理 <span className="aiws-muted">{complete ? '全部授权' : '只显示对我生效的授权'}</span></div>
-      {!online && <div className="aiws-warning" data-testid="aiws-permissions-offline">后台不可达：显示的是最近已知状态，权限管理需要联网。</div>}
+      <div className="aiws-panel-title">{t('aiworkspace.data.perm.title')} <span className="aiws-muted">{complete ? t('aiworkspace.data.perm.complete') : t('aiworkspace.data.perm.mineOnly')}</span></div>
+      {!online && <div className="aiws-warning" data-testid="aiws-permissions-offline">{t('aiworkspace.data.perm.offline')}</div>}
       {grants.error && <div className="aiws-error" role="alert">{grants.error}</div>}
-      <div className="aiws-muted">分享以整个工作区为单位：授予工作区级能力（至少 read）。画布权限在此基础上对某张画布额外授权。</div>
+      <div className="aiws-muted">{t('aiworkspace.data.perm.intro')}</div>
       <table className="aiws-grants">
-        <thead><tr><th>主体</th><th>范围</th><th>预设</th><th>实际能力</th><th /></tr></thead>
+        <thead><tr><th>{t('aiworkspace.data.perm.subject')}</th><th>{t('aiworkspace.data.perm.scope')}</th><th>{t('aiworkspace.data.perm.preset')}</th><th>{t('aiworkspace.data.perm.actual')}</th><th /></tr></thead>
         <tbody>
           {shown.map((g) => {
             const surface = g.scope_entity_id ? store.outline.get(g.scope_entity_id) : undefined
-            const scopeLabel = !g.scope_entity_id ? '工作区' : surface?.kind === 'surface' ? `画布：${entityLabel(surface)}` : `子树：${surface ? entityLabel(surface) : g.scope_entity_id}`
+            const scopeLabel = !g.scope_entity_id ? t('aiworkspace.data.perm.scopeWorkspace') : surface?.kind === 'surface' ? t('aiworkspace.data.perm.scopeCanvas', { name: entityLabel(surface) })
+              : t('aiworkspace.data.perm.scopeSubtree', { name: surface ? entityLabel(surface) : g.scope_entity_id })
             return (
               <tr key={`${g.subject}:${g.scope_entity_id ?? ''}`} data-testid="aiws-grant" data-subject={g.subject} data-scope={g.scope_entity_id ?? ''}>
-                <td>{g.subject === '*' ? '任意已登录主体（*）' : g.subject === 'public' ? '任何拿到链接的人（public，无需登录）' : g.subject}{g.subject === grants.data?.owner ? <span className="aiws-chip">所有者</span> : null}</td>
+                <td>{g.subject === '*' ? t('aiworkspace.data.perm.anySignedIn') : g.subject === 'public' ? t('aiworkspace.data.perm.public') : g.subject}{g.subject === grants.data?.owner ? <span className="aiws-chip">{t('aiworkspace.data.perm.owner')}</span> : null}</td>
                 <td>{scopeLabel}</td>
                 <td data-testid="aiws-grant-preset">{presetOf(g.capabilities)}</td>
-                <td data-testid="aiws-grant-caps">{g.capabilities.join('、')}</td>
-                <td>{complete && !(g.subject === grants.data?.owner && !g.scope_entity_id) && <button type="button" className="aiws-link" data-testid="aiws-revoke" onClick={() => { void revoke(g) }}>撤回</button>}</td>
+                <td data-testid="aiws-grant-caps">{list(g.capabilities)}</td>
+                <td>{complete && !(g.subject === grants.data?.owner && !g.scope_entity_id) && <button type="button" className="aiws-link" data-testid="aiws-revoke" onClick={() => { void revoke(g) }}>{t('aiworkspace.data.perm.revoke')}</button>}</td>
               </tr>
             )
           })}
@@ -78,28 +81,28 @@ export function PermissionsPanel() {
       </table>
       {complete && (
         <form className="aiws-inline-form aiws-grant-form" data-testid="aiws-grant-form" onSubmit={(event) => { event.preventDefault(); void grant() }}>
-          <input aria-label="主体" list="aiws-subjects" placeholder="用户或 Agent 标识" value={subject} onChange={(event) => setSubject(event.target.value)} data-testid="aiws-grant-subject" />
+          <input aria-label={t('aiworkspace.data.perm.subject')} list="aiws-subjects" placeholder={t('aiworkspace.data.perm.subjectPlaceholder')} value={subject} onChange={(event) => setSubject(event.target.value)} data-testid="aiws-grant-subject" />
           <datalist id="aiws-subjects">
-            <option value="public">任何拿到链接的人（无需登录）</option>
-            <option value="*">任意已登录主体</option>
+            <option value="public">{t('aiworkspace.data.perm.publicOption')}</option>
+            <option value="*">{t('aiworkspace.data.perm.anySignedInOption')}</option>
             {(subjects.data ?? []).map((s) => <option key={s.subject} value={s.subject}>{s.kind}</option>)}
           </datalist>
-          <select aria-label="预设权限组" value={preset} data-testid="aiws-grant-preset-select" onChange={(event) => setPreset(event.target.value)}>
-            {PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}（{p.caps.join('、')}）</option>)}
-            <option value="custom">自定义…</option>
+          <select aria-label={t('aiworkspace.data.perm.presetGroup')} value={preset} data-testid="aiws-grant-preset-select" onChange={(event) => setPreset(event.target.value)}>
+            {PRESETS.map((p) => <option key={p.id} value={p.id}>{t('aiworkspace.data.perm.presetOption', { label: p.label, caps: list(p.caps) })}</option>)}
+            <option value="custom">{t('aiworkspace.data.perm.customOption')}</option>
           </select>
           {preset === 'custom' && (['read', 'append', 'update', 'delete', 'structure', 'comment', 'export', 'manage'] as Capability[]).map((c) => (
             <label key={c}><input type="checkbox" checked={custom.includes(c)} onChange={(event) => setCustom(event.target.checked ? [...custom, c] : custom.filter((x) => x !== c))} /> {c}</label>
           ))}
-          <select aria-label="范围" value={scope} data-testid="aiws-grant-scope" onChange={(event) => setScope(event.target.value)}>
-            <option value="">整个工作区</option>
-            {surfaces.map((s) => <option key={s.entity_id} value={s.entity_id}>画布：{entityLabel(s)}</option>)}
+          <select aria-label={t('aiworkspace.data.perm.scope')} value={scope} data-testid="aiws-grant-scope" onChange={(event) => setScope(event.target.value)}>
+            <option value="">{t('aiworkspace.data.perm.wholeWorkspace')}</option>
+            {surfaces.map((s) => <option key={s.entity_id} value={s.entity_id}>{t('aiworkspace.data.perm.scopeCanvas', { name: entityLabel(s) })}</option>)}
           </select>
-          <button type="submit" data-testid="aiws-grant-submit" disabled={!online}>授权</button>
+          <button type="submit" data-testid="aiws-grant-submit" disabled={!online}>{t('aiworkspace.data.perm.grant')}</button>
         </form>
       )}
       {message && <div className="aiws-warning" role="status" data-testid="aiws-permissions-message">{message}</div>}
-      {(subjects.data ?? []).length === 0 && complete && <div className="aiws-muted">没有可选的主体列表（后台未提供）：直接输入经认证的主体标识。</div>}
+      {(subjects.data ?? []).length === 0 && complete && <div className="aiws-muted">{t('aiworkspace.data.perm.noSubjects')}</div>}
     </div>
   )
 }

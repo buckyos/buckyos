@@ -3,6 +3,7 @@
  * menus, the object toolbar, the context menu and the catalog dialog all read this one list. */
 
 import type { EntityEnvelope, Json } from '../../api/types'
+import { aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { blockRegistry, type BlockDefinition, type CatalogGroup, type CatalogInfo, type CatalogVariant } from '../blocks/registry'
 import { MOCK_WISH_DEF_ID } from '../wish/mockWishDef'
@@ -47,7 +48,8 @@ export function registryEntries(): CatalogEntry[] {
     }
   }
   const rank = (entry: CatalogEntry) => { const i = STANDARD_ORDER.indexOf(entry.variant ? `${entry.definition.type}:${entry.variant}` : entry.definition.type); return i < 0 ? 100 : i }
-  return out.sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title))
+  const { compare } = aiwsText()
+  return out.sort((a, b) => rank(a) - rank(b) || compare(a.title, b.title))
 }
 
 /** The workspace's Block definitions (extensions), as insertable entries. */
@@ -60,7 +62,8 @@ export function extensionEntries(store: WorkspaceStore): CatalogEntry[] {
     if (!host?.catalog || !host.create) continue
     out.push({ key: `def:${entity.entity_id}`, definition: host, catalog: host.catalog, title: entity.title ?? entity.name ?? entity.entity_id, group: 'extension', defEntity: entity })
   }
-  return out.sort((a, b) => a.title.localeCompare(b.title))
+  const { compare } = aiwsText()
+  return out.sort((a, b) => compare(a.title, b.title))
 }
 
 export function allEntries(store: WorkspaceStore): CatalogEntry[] {

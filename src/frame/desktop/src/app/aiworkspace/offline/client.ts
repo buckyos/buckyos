@@ -3,6 +3,7 @@
  * every later call fails with a StorageFailure — nothing is ever reported saved by this side. */
 
 import { ServiceFailure } from '../api/client'
+import { aiwsT, currentAiwsLocale } from '../i18n'
 import type { InitResult, ReplicaApi, ReplicaOp, WorkerRequest, WorkerResponse } from './protocol'
 
 /** The replica database could not be written or reached: the edit is NOT saved on this device. */
@@ -16,9 +17,9 @@ export class StorageFailure extends Error {
 }
 
 export function describeStorageFailure(failure: StorageFailure): string {
-  if (failure.kind === 'quota') return `本机存储空间不足（配额已满）：${failure.message}`
-  if (failure.kind === 'worker') return `本地存储进程（Replica Worker）已退出或无响应：${failure.message}`
-  return `本地数据库事务失败：${failure.message}`
+  if (failure.kind === 'quota') return aiwsT('aiworkspace.core.storage.quota', { error: failure.message })
+  if (failure.kind === 'worker') return aiwsT('aiworkspace.core.storage.worker', { error: failure.message })
+  return aiwsT('aiworkspace.core.storage.transaction', { error: failure.message })
 }
 
 const SLOW_OPS = new Set<ReplicaOp>(['init', 'importReplica', 'open', 'destroy', 'applyRemote', 'putAsset', 'exportLocal'])
@@ -39,13 +40,13 @@ export class ReplicaClient {
     this.workspaceId = workspaceId
     this.worker = new Worker(new URL('./replica.worker.ts', import.meta.url), { type: 'module', name: `aiworkspace-replica:${workspaceId}` })
     this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.onMessage(event.data)
-    this.worker.onerror = (event) => { event.preventDefault(); this.die(event.message || 'Worker 载入或运行出错') }
-    this.worker.onmessageerror = () => this.die('无法解码 Worker 的消息')
+    this.worker.onerror = (event) => { event.preventDefault(); this.die(event.message || aiwsT('aiworkspace.core.worker.loadError')) }
+    this.worker.onmessageerror = () => this.die(aiwsT('aiworkspace.core.worker.decodeError'))
   }
 
   /** Start the Worker and its storage. `ok: false` carries the reason offline is unavailable here. */
   static async start(workspaceId: string, testHooks: boolean): Promise<{ client: ReplicaClient; init: InitResult }> {
-    if (typeof Worker === 'undefined') throw new StorageFailure('worker', '此浏览器不支持 Web Worker')
+    if (typeof Worker === 'undefined') throw new StorageFailure('worker', aiwsT('aiworkspace.core.worker.unsupported'))
     const client = new ReplicaClient(workspaceId)
     try {
       const init = await client.call('init', { workspaceId, testHooks })
@@ -70,10 +71,11 @@ export class ReplicaClient {
     return new Promise<ReturnType<ReplicaApi[K]>>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         // No answer: a crashed or terminated Worker raises no event, silence is the only signal.
-        this.die(`操作 ${op} 在 ${(SLOW_OPS.has(op) ? SLOW_TIMEOUT_MS : TIMEOUT_MS) / 1000} 秒内没有应答`)
+        this.die(aiwsT('aiworkspace.core.worker.timeout', { op, seconds: (SLOW_OPS.has(op) ? SLOW_TIMEOUT_MS : TIMEOUT_MS) / 1000 }))
       }, SLOW_OPS.has(op) ? SLOW_TIMEOUT_MS : TIMEOUT_MS)
       this.waiters.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
-      const request: WorkerRequest = { id, op, args }
+      // the Worker has no page storage: each request tells it the language for the reasons it returns
+      const request: WorkerRequest = { id, op, args, locale: currentAiwsLocale() }
       const transfer = args.filter((value): value is ArrayBuffer => value instanceof ArrayBuffer)
       try {
         this.worker.postMessage(request, transfer)
@@ -118,7 +120,7 @@ export class ReplicaClient {
   }
 
   terminate() {
-    if (this.deadReason === null) this.deadReason = '本地存储已关闭'
+    if (this.deadReason === null) this.deadReason = aiwsT('aiworkspace.core.worker.closed')
     try { this.worker.terminate() } catch { /* already gone */ }
     for (const waiter of this.waiters.values()) {
       window.clearTimeout(waiter.timer)

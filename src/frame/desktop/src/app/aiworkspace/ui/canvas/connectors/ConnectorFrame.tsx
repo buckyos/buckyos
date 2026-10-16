@@ -8,10 +8,11 @@ import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { ALargeSmall } from 'lucide-react'
 import type { CellPayload, Json, KeyedContent } from '../../../api/types'
 import { useLoad, useStore, useVersion } from '../../../state/hooks'
+import { useAiwsText } from '../../../useAiwsText'
 import { useEditorToolbar } from '../../blocks/editorToolbar'
 import type { CanvasMode, ToolbarItem } from '../../blocks/registry'
 import type { ConnectorGeometry } from './geometry'
-import { connectorStyle, DEFAULT_STYLE, LABEL_SIZES } from './model'
+import { connectorStyle, DEFAULT_STYLE } from './model'
 import { connectorMarkup, frameBox, labelFont, type PaintOptions } from './paint'
 import { LINE_SIMPLIFIED_ZOOM, type LineRegistry } from './registry'
 
@@ -63,6 +64,7 @@ export const ConnectorFrame = memo(ConnectorFrameImpl, (a, b) => a.geomKey === b
 
 /** The label typed where it is shown: Enter (without Shift) or leaving saves, Esc keeps the old one. */
 function LabelEditor({ id, title, style, keyRevs, config, onDone }: { id: string; title: string | null; style: React.CSSProperties; keyRevs: Record<string, number>; config: Record<string, Json> | undefined; onDone: () => void }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const [text, setText] = useState(title ?? '')
   const closed = useRef(false)
@@ -72,7 +74,7 @@ function LabelEditor({ id, title, style, keyRevs, config, onDone }: { id: string
     const next = text.trim().slice(0, 256)
     if (save && next !== (title ?? '')) {
       const expect = { rev: keyRevs.title ?? 0 }
-      void store.submit({ editId: `key:${id}:title`, label: `连接线标签 → ${next || '（清除）'}`, operations: [next
+      void store.submit({ editId: `key:${id}:title`, label: t('aiworkspace.blocks.edit.change', { label: t('aiworkspace.connector.labelText'), value: next || t('aiworkspace.blocks.edit.cleared') }), operations: [next
         ? { op: 'entity.set_keys', entity_id: id, keys: [{ key: 'title', value: next, expect }] }
         : { op: 'entity.unset_keys', entity_id: id, keys: [{ key: 'title', expect }] }] })
     }
@@ -85,13 +87,15 @@ function LabelEditor({ id, title, style, keyRevs, config, onDone }: { id: string
   }
   const size = typeof config?.label_size === 'string' ? config.label_size : 'm'
   const tools: ToolbarItem[] = [
-    { kind: 'menu', id: 'line-label-size', icon: ALargeSmall, label: '标签字号', value: size, items: LABEL_SIZES, onPick: (value) => setConfig({ label_size: value === 'm' ? null : value }, '标签字号') },
-    { kind: 'color', id: 'line-label-color', label: '标签颜色', palette: 'ink', value: typeof config?.label_color === 'string' ? config.label_color : '', onPick: (value) => setConfig({ label_color: value || null }, '标签颜色') },
+    { kind: 'menu', id: 'line-label-size', icon: ALargeSmall, label: t('aiworkspace.connector.labelSize'), value: size,
+      items: [{ value: 's', label: t('aiworkspace.blocks.size.s') }, { value: 'm', label: t('aiworkspace.blocks.size.m') }, { value: 'l', label: t('aiworkspace.blocks.size.l') }],
+      onPick: (value) => setConfig({ label_size: value === 'm' ? null : value }, t('aiworkspace.connector.labelSize')) },
+    { kind: 'color', id: 'line-label-color', label: t('aiworkspace.connector.labelColor'), palette: 'ink', value: typeof config?.label_color === 'string' ? config.label_color : '', onPick: (value) => setConfig({ label_color: value || null }, t('aiworkspace.connector.labelColor')) },
   ]
   useEditorToolbar(`connector-label:${id}`, tools)
   return (
-    <textarea className="aiws-connector-label aiws-connector-label-edit" data-role="editor" data-testid={`aiws-connector-label-edit-${id}`} aria-label="连接线标签" autoFocus rows={1}
-      value={text} placeholder="标签" style={style} onChange={(event) => setText(event.target.value)} onBlur={() => done(true)}
+    <textarea className="aiws-connector-label aiws-connector-label-edit" data-role="editor" data-testid={`aiws-connector-label-edit-${id}`} aria-label={t('aiworkspace.connector.labelText')} autoFocus rows={1}
+      value={text} placeholder={t('aiworkspace.connector.label')} style={style} onChange={(event) => setText(event.target.value)} onBlur={() => done(true)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); done(true) }
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done(false) }

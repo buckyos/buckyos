@@ -7,6 +7,7 @@ import { useCallback, useRef, useState, useSyncExternalStore } from 'react'
 import type { BlockDefPayload, EntityEnvelope, Json } from '../../api/types'
 import type { ReadOk } from '../../api/session'
 import { useLoad, useOutlineVersion, useStore, useUserState } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry, CATALOG_GROUP_LABEL, type CatalogGroup } from '../blocks/registry'
 import { defaultRendererFor } from '../blocks/ops'
 import { useOverlayMounted } from '../shell/popover'
@@ -17,7 +18,6 @@ import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type Insert
 
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
-const TAB_LABEL: Record<CatalogTab, string> = { all: '全部', ...CATALOG_GROUP_LABEL, existing: '已有数据' }
 
 export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport }: {
   initialTab?: CatalogTab
@@ -30,9 +30,11 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
   onInsert: (request: InsertRequest, how: 'center' | 'place') => void
 }) {
   const store = useStore()
+  const { t } = useAiwsText()
   useOutlineVersion()
   useOverlayMounted()
   useSyncExternalStore(blockRegistry.subscribe, blockRegistry.snapshot)
+  const tabLabel = (item: CatalogTab) => (item === 'all' ? t('aiworkspace.canvas.catalog.all') : item === 'existing' ? t('aiworkspace.canvas.catalog.existing') : CATALOG_GROUP_LABEL[item])
   const [tab, setTab] = useState<CatalogTab>(initialTab)
   const [query, setQuery] = useState('')
   const entries = allEntries(store)
@@ -44,37 +46,37 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
   const dialogRef = useRef<HTMLDivElement>(null)
   return (
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div ref={dialogRef} className="aiws-dialog aiws-catalog" role="dialog" aria-modal="true" aria-label="插入对象" data-testid="aiws-catalog"
+      <div ref={dialogRef} className="aiws-dialog aiws-catalog" role="dialog" aria-modal="true" aria-label={t('aiworkspace.canvas.catalog.title')} data-testid="aiws-catalog"
         onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
         <div className="aiws-dialog-head">
-          <b>插入对象</b>
-          <input className="aiws-catalog-search" type="search" aria-label="搜索对象" placeholder="搜索对象…" autoFocus value={query} data-testid="aiws-catalog-search"
+          <b>{t('aiworkspace.canvas.catalog.title')}</b>
+          <input className="aiws-catalog-search" type="search" aria-label={t('aiworkspace.canvas.catalog.search')} placeholder={t('aiworkspace.canvas.catalog.searchPlaceholder')} autoFocus value={query} data-testid="aiws-catalog-search"
             onChange={(event) => { setQuery(event.target.value); if (tab === 'existing') setTab('all') }} />
-          {onImport && <button type="button" className="aiws-link" data-testid="aiws-catalog-import-drawio" onClick={onImport}>导入 draw.io…</button>}
-          <button type="button" className="aiws-link" onClick={onClose}>关闭</button>
+          {onImport && <button type="button" className="aiws-link" data-testid="aiws-catalog-import-drawio" onClick={onImport}>{t('aiworkspace.canvas.catalog.importDrawio')}</button>}
+          <button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button>
         </div>
         <div className="aiws-catalog-body">
-          <nav className="aiws-catalog-tabs" role="tablist" aria-label="对象分类">
-            {TABS.map((t) => (
-              <button key={t} type="button" role="tab" aria-selected={tab === t} data-testid={`aiws-catalog-tab-${t}`} onClick={() => { setTab(t); setChosenKey(null) }}>{TAB_LABEL[t]}</button>
+          <nav className="aiws-catalog-tabs" role="tablist" aria-label={t('aiworkspace.canvas.catalog.categories')}>
+            {TABS.map((item) => (
+              <button key={item} type="button" role="tab" aria-selected={tab === item} data-testid={`aiws-catalog-tab-${item}`} onClick={() => { setTab(item); setChosenKey(null) }}>{tabLabel(item)}</button>
             ))}
           </nav>
           {tab === 'existing' ? <ExistingData onInsert={onInsert} canPlace={canPlace} /> : (
             <>
-              <ul className="aiws-catalog-list" role="listbox" aria-label="对象" data-testid="aiws-catalog-list">
-                {shown.length === 0 && <li className="aiws-muted">{tab === 'extension' ? '这个工作区还没有 Block 定义（扩展）。可在数据源中导入或由许愿格生成。' : '没有匹配的对象。'}</li>}
+              <ul className="aiws-catalog-list" role="listbox" aria-label={t('aiworkspace.canvas.catalog.objects')} data-testid="aiws-catalog-list">
+                {shown.length === 0 && <li className="aiws-muted">{t(tab === 'extension' ? 'aiworkspace.canvas.catalog.noExtensions' : 'aiworkspace.canvas.catalog.noMatch')}</li>}
                 {shown.map((entry) => (
                   <li key={entry.key} role="option" aria-selected={chosen?.key === entry.key}>
                     <button type="button" data-testid={`aiws-catalog-entry-${entry.key.replace(':', '-')}`} className={chosen?.key === entry.key ? 'is-active' : undefined}
                       onClick={() => setChosenKey(entry.key)} onDoubleClick={() => { if (entry.catalog.needs === 'none') onInsert({ entry }, 'center') }}>
                       <span>{entry.title}</span>
-                      {entry.group === 'sample' && <span className="aiws-chip">样本</span>}
-                      {entry.group === 'extension' && <span className="aiws-chip">扩展</span>}
+                      {entry.group === 'sample' && <span className="aiws-chip">{t('aiworkspace.canvas.catalog.sample')}</span>}
+                      {entry.group === 'extension' && <span className="aiws-chip">{t('aiworkspace.canvas.catalog.extension')}</span>}
                     </button>
                   </li>
                 ))}
               </ul>
-              {chosen ? <EntryDetail key={chosen.key} entry={chosen} canPlace={canPlace} onInsert={onInsert} /> : <div className="aiws-catalog-detail aiws-muted">选择一个对象查看说明。</div>}
+              {chosen ? <EntryDetail key={chosen.key} entry={chosen} canPlace={canPlace} onInsert={onInsert} /> : <div className="aiws-catalog-detail aiws-muted">{t('aiworkspace.canvas.catalog.chooseEntry')}</div>}
             </>
           )}
         </div>
@@ -85,6 +87,7 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
 
 function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPlace: boolean; onInsert: (request: InsertRequest, how: 'center' | 'place') => void }) {
   const store = useStore()
+  const { t, list } = useAiwsText()
   const [title, setTitle] = useState('')
   const [sourceId, setSourceId] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -107,24 +110,24 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
     entry, title: title.trim() || undefined, sourceId: sourceId || undefined, file: file ?? undefined,
     config: entry.defEntity ? { def_id: entry.defEntity.entity_id } : entryId(entry) === 'shape' ? { shape: kind } : Object.keys(choices).length ? choices : undefined,
   })
-  const missing = needsData && sourceId === '' ? '先选择要显示的数据' : needsFile && !file ? '先选择文件' : null
+  const missing = needsData && sourceId === '' ? t('aiworkspace.canvas.catalog.missingData') : needsFile && !file ? t('aiworkspace.canvas.catalog.missingFile') : null
   return (
     <div className="aiws-catalog-detail" data-testid="aiws-catalog-detail" data-entry={entry.key}>
-      <div className="aiws-catalog-title">{entry.title}{entry.group === 'sample' && <span className="aiws-chip">样本</span>}</div>
+      <div className="aiws-catalog-title">{entry.title}{entry.group === 'sample' && <span className="aiws-chip">{t('aiworkspace.canvas.catalog.sample')}</span>}</div>
       <p>{entry.defEntity ? (def?.description ?? entry.catalog.description) : entry.catalog.description}</p>
       <dl className="aiws-catalog-meta">
-        <dt>类型</dt><dd><code>{entry.definition.type}</code> v{entry.defEntity ? (def?.version ?? '…') : entry.definition.version}</dd>
-        {entry.defEntity && <><dt>定义</dt><dd>{entry.defEntity.title ?? entry.defEntity.name}（{entry.defEntity.def_kind === 'html' ? 'HTML' : '声明式'}）</dd></>}
-        {accepts.length > 0 && <><dt>支持的数据</dt><dd>{accepts.map((t) => t.replace('buckyos.', '')).join('、')}</dd></>}
-        <dt>默认尺寸</dt><dd>{(def?.default_size ?? entrySize(entry)).w} × {(def?.default_size ?? entrySize(entry)).h}</dd>
+        <dt>{t('aiworkspace.canvas.catalog.type')}</dt><dd><code>{entry.definition.type}</code> v{entry.defEntity ? (def?.version ?? '…') : entry.definition.version}</dd>
+        {entry.defEntity && <><dt>{t('aiworkspace.canvas.catalog.definition')}</dt><dd>{t('aiworkspace.canvas.catalog.nameWithType', { name: entry.defEntity.title ?? entry.defEntity.name ?? '', type: entry.defEntity.def_kind === 'html' ? 'HTML' : t('aiworkspace.canvas.catalog.declarative') })}</dd></>}
+        {accepts.length > 0 && <><dt>{t('aiworkspace.canvas.catalog.accepts')}</dt><dd>{list(accepts.map((type) => type.replace('buckyos.', '')))}</dd></>}
+        <dt>{t('aiworkspace.canvas.catalog.defaultSize')}</dt><dd>{(def?.default_size ?? entrySize(entry)).w} × {(def?.default_size ?? entrySize(entry)).h}</dd>
       </dl>
       {entryId(entry) === 'shape' && <ShapePicker value={kind} onPick={setKind} />}
       {entryId(entry) === 'shape-svg' && (
         <>
-          <label className="aiws-field">SVG 代码<textarea rows={5} value={svgText} placeholder="<svg …>…</svg>" data-testid="aiws-catalog-svg-text" onChange={(e) => setSvgText(e.target.value)} /></label>
-          <label className="aiws-field">或选择 .svg 文件<input type="file" accept=".svg,image/svg+xml" data-testid="aiws-catalog-svg-file" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setSvgText) }} /></label>
-          {svgText.trim() && !svg && <div className="aiws-warning">这不是可用的 SVG。</div>}
-          {svg && svg.svg.body.length > 48 * 1024 && <div className="aiws-warning">SVG 太大（超过 48 KiB），请改用“图片 / 附件”插入。</div>}
+          <label className="aiws-field">{t('aiworkspace.canvas.catalog.svgCode')}<textarea rows={5} value={svgText} placeholder="<svg …>…</svg>" data-testid="aiws-catalog-svg-text" onChange={(e) => setSvgText(e.target.value)} /></label>
+          <label className="aiws-field">{t('aiworkspace.canvas.catalog.svgFile')}<input type="file" accept=".svg,image/svg+xml" data-testid="aiws-catalog-svg-file" onChange={(e) => { const f = e.target.files?.[0]; if (f) void f.text().then(setSvgText) }} /></label>
+          {svgText.trim() && !svg && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.svgInvalid')}</div>}
+          {svg && svg.svg.body.length > 48 * 1024 && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.svgTooLarge')}</div>}
         </>
       )}
       {(entry.options ?? []).map((option) => (
@@ -135,27 +138,27 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
         </label>
       ))}
       {entry.catalog.needs === 'none' && !entry.defEntity && (
-        <label className="aiws-field">标题（可留空）<input aria-label="对象标题" value={title} data-testid="aiws-catalog-title" onChange={(event) => setTitle(event.target.value)} /></label>
+        <label className="aiws-field">{t('aiworkspace.canvas.catalog.titleOptional')}<input aria-label={t('aiworkspace.canvas.catalog.objectTitle')} value={title} data-testid="aiws-catalog-title" onChange={(event) => setTitle(event.target.value)} /></label>
       )}
       {(needsData || optionalData) && (
-        <label className="aiws-field">{needsData ? '显示哪份数据' : '绑定数据（可选）'}
-          <select aria-label="数据" data-testid="aiws-catalog-data" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
-            <option value="">{data.length === 0 ? '没有可用的数据' : '选择数据…'}</option>
-            {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{e.title ?? e.name ?? e.entity_id}（{e.type_id.replace('buckyos.', '')}）</option>)}
+        <label className="aiws-field">{t(needsData ? 'aiworkspace.canvas.catalog.dataToShow' : 'aiworkspace.canvas.catalog.bindData')}
+          <select aria-label={t('aiworkspace.canvas.catalog.data')} data-testid="aiws-catalog-data" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+            <option value="">{t(data.length === 0 ? 'aiworkspace.canvas.catalog.noData' : 'aiworkspace.canvas.catalog.chooseData')}</option>
+            {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{t('aiworkspace.canvas.catalog.nameWithType', { name: e.title ?? e.name ?? e.entity_id, type: e.type_id.replace('buckyos.', '') })}</option>)}
           </select>
-          <span className="aiws-muted">新 Block 与原数据共享内容，视图配置独立。</span>
+          <span className="aiws-muted">{t('aiworkspace.canvas.catalog.sharesData')}</span>
         </label>
       )}
       {needsFile && (
-        <label className="aiws-field">文件<input type="file" aria-label="选择文件" data-testid="aiws-catalog-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
+        <label className="aiws-field">{t('aiworkspace.canvas.catalog.file')}<input type="file" aria-label={t('aiworkspace.canvas.catalog.chooseFile')} data-testid="aiws-catalog-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
       )}
       {missing && <div className="aiws-muted" data-testid="aiws-catalog-missing">{missing}</div>}
       <div className="aiws-dialog-actions">
-        <button type="button" className="is-primary" data-testid="aiws-catalog-insert" disabled={!ready} onClick={() => onInsert(request(), 'center')}>插入到视图中央</button>
-        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!ready} onClick={() => onInsert(request(), 'place')}>在画布上放置</button>}
+        <button type="button" className="is-primary" data-testid="aiws-catalog-insert" disabled={!ready} onClick={() => onInsert(request(), 'center')}>{t('aiworkspace.canvas.catalog.insertCenter')}</button>
+        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!ready} onClick={() => onInsert(request(), 'place')}>{t('aiworkspace.canvas.catalog.place')}</button>}
         {entry.defEntity && (
           <button type="button" className="aiws-link" data-testid="aiws-catalog-pin" onClick={() => store.userState.set('ui:pinned-defs', pinned.includes(defId) ? pinned.filter((id) => id !== defId) : [...pinned, defId].slice(-6))}>
-            {pinned.includes(defId) ? '从工具栏取消固定' : '固定到工具栏'}
+            {t(pinned.includes(defId) ? 'aiworkspace.canvas.catalog.unpin' : 'aiworkspace.canvas.catalog.pin')}
           </button>
         )}
       </div>
@@ -165,6 +168,7 @@ function EntryDetail({ entry, canPlace, onInsert }: { entry: CatalogEntry; canPl
 
 function ExistingData({ canPlace, onInsert }: { canPlace: boolean; onInsert: (request: InsertRequest, how: 'center' | 'place') => void }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const [chosen, setChosen] = useState('')
   const [renderer, setRenderer] = useState('')
   const data = dataFor(store, null)
@@ -174,26 +178,26 @@ function ExistingData({ canPlace, onInsert }: { canPlace: boolean; onInsert: (re
   const request = (): InsertRequest | null => definition?.catalog ? ({ entry: { key: `block:${definition.type}`, definition, catalog: definition.catalog, title: definition.title, group: definition.catalog.group }, sourceId: chosen }) : null
   return (
     <div className="aiws-catalog-detail aiws-catalog-existing" data-testid="aiws-catalog-existing">
-      <div className="aiws-catalog-title">添加已有数据</div>
-      <p>只创建引用这份数据的视图：与原视图共享数据，视图配置独立。不会复制数据。</p>
-      <label className="aiws-field">数据
-        <select aria-label="数据" data-testid="aiws-picker-data" value={chosen} onChange={(event) => { setChosen(event.target.value); setRenderer('') }}>
-          <option value="">选择数据…</option>
-          {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{e.title ?? e.name ?? e.entity_id}（{e.type_id.replace('buckyos.', '')}）</option>)}
+      <div className="aiws-catalog-title">{t('aiworkspace.canvas.catalog.addExisting')}</div>
+      <p>{t('aiworkspace.canvas.catalog.addExistingNote')}</p>
+      <label className="aiws-field">{t('aiworkspace.canvas.catalog.data')}
+        <select aria-label={t('aiworkspace.canvas.catalog.data')} data-testid="aiws-picker-data" value={chosen} onChange={(event) => { setChosen(event.target.value); setRenderer('') }}>
+          <option value="">{t('aiworkspace.canvas.catalog.chooseData')}</option>
+          {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{t('aiworkspace.canvas.catalog.nameWithType', { name: e.title ?? e.name ?? e.entity_id, type: e.type_id.replace('buckyos.', '') })}</option>)}
         </select>
       </label>
       {renderers.length > 1 && (
-        <label className="aiws-field">展现方式
-          <select aria-label="展现方式" data-testid="aiws-picker-renderer" value={renderer} onChange={(event) => setRenderer(event.target.value)}>
-            <option value="">默认展现</option>
+        <label className="aiws-field">{t('aiworkspace.canvas.catalog.renderer')}
+          <select aria-label={t('aiworkspace.canvas.catalog.renderer')} data-testid="aiws-picker-renderer" value={renderer} onChange={(event) => setRenderer(event.target.value)}>
+            <option value="">{t('aiworkspace.canvas.catalog.defaultRenderer')}</option>
             {renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}
           </select>
         </label>
       )}
-      {entity && !definition && <div className="aiws-warning">这类数据没有可用的展现方式。</div>}
+      {entity && !definition && <div className="aiws-warning">{t('aiworkspace.canvas.catalog.noRenderer')}</div>}
       <div className="aiws-dialog-actions">
-        <button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'center') }}>添加</button>
-        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'place') }}>在画布上放置</button>}
+        <button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'center') }}>{t('aiworkspace.canvas.catalog.add')}</button>
+        {canPlace && <button type="button" data-testid="aiws-catalog-place" disabled={!request()} onClick={() => { const r = request(); if (r) onInsert(r, 'place') }}>{t('aiworkspace.canvas.catalog.place')}</button>}
       </div>
     </div>
   )

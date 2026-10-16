@@ -20,6 +20,7 @@ import { base64ToBytes, bytesToBase64, randomId } from '../api/ids'
 import type { SubmissionEvent } from '../api/session'
 import type { CollabState, CommitEvent, CommitOutcome, Operation } from '../api/types'
 import { Emitter } from '../state/emitter'
+import { aiwsT } from '../i18n'
 import type { WorkspaceStore } from '../state/store'
 import { astPlainText, saveDraft } from './drafts'
 import { loadLoro } from './loro'
@@ -113,7 +114,7 @@ export class RichTextCollab {
   get blocked(): string | null { return this.blockedReason }
 
   private get editId() { return `rt:${this.entityId}` }
-  private get label() { return `富文本 ${this.entityId}` }
+  private get label() { return aiwsT('aiworkspace.richtext.collab.label', { id: this.entityId }) }
 
   private setPhase(phase: CollabPhase) {
     if (phase === this.currentPhase) return
@@ -209,7 +210,7 @@ export class RichTextCollab {
     let outcome: CommitOutcome
     try {
       outcome = await this.store.session.commit([operation], {
-        message: '编辑富文本',
+        message: aiwsT('aiworkspace.richtext.collab.commitMessage'),
         meta: this.replicaMode ? { editId: this.editId, label: this.label, kind: 'richtext', entity_id: this.entityId, undoable: false, mine: this.preview(), hasMine: true } : undefined,
       })
     } catch (error) {
@@ -235,7 +236,7 @@ export class RichTextCollab {
       let ast: unknown = null
       try { ast = this.editorJson ? this.editorJson() : null } catch { ast = null }
       this.store.noteUnsaved(this.editId, { label: this.label, operations: [operation], mine: (ast ?? null) as never, reason: outcome.detail, at: new Date().toISOString() })
-      this.store.edits.set({ id: this.editId, label: this.label, state: 'unsaved', storageFailed: true, detail: `没有保存：${outcome.detail}。内容仍在编辑器中，可以导出。` })
+      this.store.edits.set({ id: this.editId, label: this.label, state: 'unsaved', storageFailed: true, detail: aiwsT('aiworkspace.richtext.collab.storageFailed', { detail: outcome.detail }) })
       this.setPhase('dirty')
       this.schedule(5000)
       return
@@ -256,7 +257,7 @@ export class RichTextCollab {
     if (outcome.status === 'unknown') {
       // Not known to be refused: keep the edits, try again. A superset of an already accepted update
       // is harmless (CRDT import is idempotent), so no same-key bookkeeping is needed here.
-      this.store.edits.set({ id: this.editId, label: this.label, state: 'unsaved', detail: `尚未送达后台：${outcome.detail}` })
+      this.store.edits.set({ id: this.editId, label: this.label, state: 'unsaved', detail: aiwsT('aiworkspace.richtext.collab.notDelivered', { detail: outcome.detail }) })
       this.setPhase('dirty')
       this.schedule(3000)
       return
@@ -272,9 +273,9 @@ export class RichTextCollab {
     }
     if (code.startsWith('LOCK_')) {
       // The edits are valid, only the lock is missing: keep them in the working doc as pending.
-      this.blockedReason = code === 'LOCK_HELD' ? '写锁由他人持有' : '写锁已失去或尚未取得'
+      this.blockedReason = code === 'LOCK_HELD' ? aiwsT('aiworkspace.richtext.collab.lockHeld') : aiwsT('aiworkspace.richtext.collab.lockMissing')
       this.store.locks.noteLost(this.entityId, this.blockedReason)
-      this.store.edits.set({ id: this.editId, label: this.label, state: 'needs_attention', code, detail: `${this.blockedReason}，修改保留在本窗口；重新取得写锁后会再次提交。` })
+      this.store.edits.set({ id: this.editId, label: this.label, state: 'needs_attention', code, detail: aiwsT('aiworkspace.richtext.collab.blocked', { reason: this.blockedReason }) })
       this.currentPhase = 'blocked'
       this.emitter.emit()
       return
@@ -308,10 +309,12 @@ export class RichTextCollab {
       id: this.editId, label: this.label, state: 'needs_attention', code,
       pendingKey: pendingRow ? previous?.pendingKey : undefined, mine: previous?.mine, hasMine: previous?.hasMine,
       detail: kept
-        ? `修改未被接受（${code}${detail ? `：${detail}` : ''}），已保留为草稿；编辑器已恢复到已确认内容。`
-        : `修改未被接受（${code}${detail ? `：${detail}` : ''}），且草稿无法写入本机存储；编辑器已恢复到已确认内容。`,
+        ? detail ? aiwsT('aiworkspace.richtext.collab.refusedKeptDetail', { code, detail }) : aiwsT('aiworkspace.richtext.collab.refusedKept', { code })
+        : detail ? aiwsT('aiworkspace.richtext.collab.refusedLostDetail', { code, detail }) : aiwsT('aiworkspace.richtext.collab.refusedLost', { code }),
     })
-    this.store.notify('error', `富文本 ${this.entityId} 的修改未被接受（${code}）${kept ? '，已保留为草稿' : '，草稿保存失败'}。`)
+    this.store.notify('error', kept
+      ? aiwsT('aiworkspace.richtext.collab.refusedNoticeKept', { id: this.entityId, code })
+      : aiwsT('aiworkspace.richtext.collab.refusedNoticeLost', { id: this.entityId, code }))
     if (!this.replicaMode) {
       const working = this.confirmedDoc.fork()
       working.configTextStyle(loroTextStyles(this.store.schemaDef))
@@ -327,7 +330,7 @@ export class RichTextCollab {
       this.adoptDocuments(RichTextCollab.documents(this.store, state))
     }, (error: unknown) => {
       this.rebuilding = false
-      this.store.notify('error', `无法从本机副本重建富文本 ${this.entityId}：${error instanceof Error ? error.message : String(error)}`)
+      this.store.notify('error', aiwsT('aiworkspace.richtext.collab.rebuildFailed', { id: this.entityId, detail: error instanceof Error ? error.message : String(error) }))
     })
   }
 

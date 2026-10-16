@@ -7,15 +7,32 @@ import { useState } from 'react'
 import { describeError } from '../../api/session'
 import type { WishChoices, WishRunView } from '../../api/types'
 import { useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { ResultPreview } from './WishPreviews'
 import { applyMessage } from './WishService'
 
-const ACTION_LABEL: Record<string, string> = { create: '新建', update: '更新', unchanged: '未变化', keep_manual: '保留人工修改', new_copy: '另存一份' }
-const CHECK_LABEL: Record<string, string> = { passed: '通过', failed: '未通过', not_run: '未执行', review: '请确认' }
-const TYPE_LABEL: Record<string, string> = { table: '表格', table_columns: '派生列', record: '记录', richtext: '文本', image: '图片', asset: '文件', html: 'HTML Block', video: '逐帧预览' }
+const ACTION_LABEL: Record<string, string> = {
+  create: 'aiworkspace.wish.action.create', update: 'aiworkspace.wish.action.update', unchanged: 'aiworkspace.wish.action.unchanged',
+  keep_manual: 'aiworkspace.wish.action.keepManual', new_copy: 'aiworkspace.wish.action.newCopy',
+}
+const CHECK_LABEL: Record<string, string> = {
+  passed: 'aiworkspace.wish.check.passed', failed: 'aiworkspace.wish.check.failed', not_run: 'aiworkspace.wish.check.notRun', review: 'aiworkspace.wish.check.review',
+}
+const TYPE_LABEL: Record<string, string> = {
+  table: 'aiworkspace.wish.type.table', table_columns: 'aiworkspace.wish.type.tableColumns', record: 'aiworkspace.wish.type.record', richtext: 'aiworkspace.wish.type.richtext',
+  image: 'aiworkspace.wish.type.image', asset: 'aiworkspace.wish.type.asset', html: 'aiworkspace.wish.type.html', video: 'aiworkspace.wish.type.video',
+}
+const CHANGE_LABEL: Record<string, string> = {
+  add_field: 'aiworkspace.wish.change.addField', delete_field: 'aiworkspace.wish.change.deleteField', change_type: 'aiworkspace.wish.change.changeType',
+  delete_rows: 'aiworkspace.wish.change.deleteRows', insert_rows: 'aiworkspace.wish.change.insertRows', update_values: 'aiworkspace.wish.change.updateValues',
+  clear_values: 'aiworkspace.wish.change.clearValues', key_changed: 'aiworkspace.wish.change.keyChanged', recreate_field: 'aiworkspace.wish.change.recreateField',
+  widen_scale: 'aiworkspace.wish.change.widenScale',
+}
 
 export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; canApply: boolean; onMessage: (kind: 'info' | 'error', text: string) => void }) {
   const store = useStore()
+  const { t, list, clauses } = useAiwsText()
+  const label = (labels: Record<string, string>, id: string) => (labels[id] ? t(labels[id]) : id)
   const [choices, setChoices] = useState<WishChoices>({})
   const [feedback, setFeedback] = useState('')
   const [open, setOpen] = useState<Record<string, boolean>>({})
@@ -34,10 +51,10 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
     if (!preview) return
     try {
       const next = await store.wish.apply(run, preview.plan_digest)
-      if (next.applied?.status === 'accepted') onMessage('info', run.stage === 'analyze' ? '分析已写回。' : applyMessage(next))
-      else if (next.applied?.status === 'conflict') onMessage('error', `应用冲突：运行之后输入、许愿格或结果已变化（${next.applied.commit.status === 'conflict' ? next.applied.commit.code : ''}）。旧结果保持不变；请重新预览或重新执行。`)
-      else onMessage('error', `应用未被接受（${next.applied?.commit && 'code' in next.applied.commit ? next.applied.commit.code : next.state}）：旧结果保持不变。`)
-    } catch (error) { onMessage('error', `应用未被接受：${describeError(error)}`) }
+      if (next.applied?.status === 'accepted') onMessage('info', run.stage === 'analyze' ? t('aiworkspace.wish.analysisWritten') : applyMessage(next))
+      else if (next.applied?.status === 'conflict') onMessage('error', t('aiworkspace.wish.applyConflict', { code: next.applied.commit.status === 'conflict' ? next.applied.commit.code : '' }))
+      else onMessage('error', t('aiworkspace.wish.applyRejected', { code: next.applied?.commit && 'code' in next.applied.commit ? next.applied.commit.code : next.state }))
+    } catch (error) { onMessage('error', t('aiworkspace.wish.applyFailed', { error: describeError(error) })) }
   }
   const sendFeedback = async () => {
     if (!feedback.trim()) return
@@ -53,14 +70,15 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
   const manual = summary?.manual ?? []
   const needsChoice = manual.some((m) => !choices.results?.[m.name])
   const destructive = Boolean(summary?.destructive)
+  // i18n-exempt: matches the service's problem text (the server reports structure changes in Chinese)
   const blocking = (summary?.problems ?? []).filter((p) => !(destructive && p.includes('结构变化')))
-  const title = run.stage === 'analyze' ? '分析结果（待写回）' : run.stage === 'rerun_program' ? '只重跑程序的候选' : run.stage === 'repair_program' ? '修复后的候选' : '候选结果'
+  const title = t(run.stage === 'analyze' ? 'aiworkspace.wish.candidate.analysis' : run.stage === 'rerun_program' ? 'aiworkspace.wish.candidate.rerun' : run.stage === 'repair_program' ? 'aiworkspace.wish.candidate.repair' : 'aiworkspace.wish.candidate.results')
   return (
     <div className="aiws-wish-candidate" data-testid="aiws-wish-candidate" data-run-id={run.run_id} data-state={run.state} data-ready={preview?.ready ? 'true' : 'false'}>
       <div className="aiws-wish-head">
         <b>{title}</b>
-        <span className="aiws-chip aiws-chip-derived">{run.simulated ? '模拟' : cand.mode === 'program' ? '程序（未调用模型）' : '生成'}</span>
-        {run.feedback && <span className="aiws-chip" title={run.feedback}>按反馈修改</span>}
+        <span className="aiws-chip aiws-chip-derived">{t(run.simulated ? 'aiworkspace.wish.simulated' : cand.mode === 'program' ? 'aiworkspace.wish.candidate.programMode' : 'aiworkspace.wish.candidate.generated')}</span>
+        {run.feedback && <span className="aiws-chip" title={run.feedback}>{t('aiworkspace.wish.reviseWithFeedback')}</span>}
         {cand.summary && <span className="aiws-muted">{cand.summary}</span>}
       </div>
       {run.stage === 'analyze' && cand.analysis && (
@@ -75,11 +93,11 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
               <li key={r.name} data-testid="aiws-wish-result" data-name={r.name} data-action={p?.action ?? ''}>
                 <div className="aiws-wish-result-head">
                   <button type="button" className="aiws-link" onClick={() => setOpen((o) => ({ ...o, [r.name]: !isOpen }))}>{isOpen ? '▾' : '▸'} {r.title ?? r.name}</button>
-                  <span className="aiws-muted">{TYPE_LABEL[r.type] ?? r.type}</span>
-                  <span className="aiws-chip" title={r.approach === 'program' ? '由程序产生，数字可复算' : '由模型直接书写'}>{r.approach === 'program' ? '程序' : '书写'}</span>
-                  {p && <span className="aiws-chip aiws-chip-derived">{ACTION_LABEL[p.action] ?? p.action}{p.reordered ? ' · 行序更新' : ''}</span>}
-                  {cand.model_judgment?.includes(r.name) && <span className="aiws-chip aiws-chip-warn" title="使用了逐项模型判断（llm.map），请抽查">含模型判断</span>}
-                  {r.approach === 'program' && (cand.external_data?.length ?? 0) > 0 && <span className="aiws-chip aiws-chip-warn" title={cand.external_data?.join('\n')}>含外部数据</span>}
+                  <span className="aiws-muted">{label(TYPE_LABEL, r.type)}</span>
+                  <span className="aiws-chip" title={t(r.approach === 'program' ? 'aiworkspace.wish.approach.programHint' : 'aiworkspace.wish.approach.directHint')}>{t(r.approach === 'program' ? 'aiworkspace.wish.approach.program' : 'aiworkspace.wish.approach.direct')}</span>
+                  {p && <span className="aiws-chip aiws-chip-derived">{label(ACTION_LABEL, p.action)}{p.reordered ? ` · ${t('aiworkspace.wish.rowOrderUpdated')}` : ''}</span>}
+                  {cand.model_judgment?.includes(r.name) && <span className="aiws-chip aiws-chip-warn" title={t('aiworkspace.wish.modelJudgmentHint')}>{t('aiworkspace.wish.modelJudgment')}</span>}
+                  {r.approach === 'program' && (cand.external_data?.length ?? 0) > 0 && <span className="aiws-chip aiws-chip-warn" title={cand.external_data?.join('\n')}>{t('aiworkspace.wish.externalData')}</span>}
                 </div>
                 {isOpen && <ResultPreview result={r} />}
               </li>
@@ -89,67 +107,71 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
       )}
       {checks.length > 0 && (
         <div className="aiws-wish-checks" data-testid="aiws-wish-checks">
-          <div className="aiws-muted">验收检查</div>
+          <div className="aiws-muted">{t('aiworkspace.wish.acceptanceChecks')}</div>
           {checks.map((c) => (
             <div key={c.id} className={`aiws-wish-check is-${c.status}`} data-testid="aiws-wish-check" data-check={c.id} data-status={c.status}>
-              <span className="aiws-chip">{CHECK_LABEL[c.status] ?? c.status}</span> {c.text}
+              <span className="aiws-chip">{label(CHECK_LABEL, c.status)}</span> {c.text}
               {c.detail !== undefined && c.detail !== null && <span className="aiws-muted"> · {typeof c.detail === 'string' ? c.detail : JSON.stringify(c.detail)}</span>}
-              {c.self_assessment !== undefined && <span className="aiws-muted"> · 自评：{typeof c.self_assessment === 'string' ? c.self_assessment : JSON.stringify(c.self_assessment)}</span>}
+              {c.self_assessment !== undefined && <span className="aiws-muted"> · {t('aiworkspace.wish.selfAssessment', { text: typeof c.self_assessment === 'string' ? c.self_assessment : JSON.stringify(c.self_assessment) })}</span>}
             </div>
           ))}
         </div>
       )}
       {failed.length > 0 && (
         <label className="aiws-error" role="alert" data-testid="aiws-wish-failed-checks">
-          <input type="checkbox" data-testid="aiws-wish-accept-failed" checked={acceptFailed} onChange={(e) => setAcceptFailed(e.target.checked)} /> 有 {failed.length} 项检查未通过：我已确认结果仍然可用
+          <input type="checkbox" data-testid="aiws-wish-accept-failed" checked={acceptFailed} onChange={(e) => setAcceptFailed(e.target.checked)} /> {t('aiworkspace.wish.acceptFailedChecks', { count: failed.length })}
         </label>
       )}
       {(cand.uncited_numbers?.length ?? 0) > 0 && (
-        <div className="aiws-warning" data-testid="aiws-wish-uncited">文字中有数字无法在程序输出中找到，请核对：{cand.uncited_numbers?.map((u) => `${u.result}：${u.numbers.join('、')}`).join('；')}</div>
+        <div className="aiws-warning" data-testid="aiws-wish-uncited">{t('aiworkspace.wish.uncitedNumbers', { items: clauses((cand.uncited_numbers ?? []).map((u) => t('aiworkspace.wish.uncitedItem', { result: u.result, numbers: list(u.numbers) }))) })}</div>
       )}
-      {(cand.assumptions?.length ?? 0) > 0 && <div className="aiws-muted">假设：{cand.assumptions?.join('；')}</div>}
-      {(cand.warnings?.length ?? 0) > 0 && <div className="aiws-warning" data-testid="aiws-wish-warnings">{cand.warnings?.join('；')}</div>}
+      {(cand.assumptions?.length ?? 0) > 0 && <div className="aiws-muted">{t('aiworkspace.wish.assumptions', { items: clauses(cand.assumptions ?? []) })}</div>}
+      {(cand.warnings?.length ?? 0) > 0 && <div className="aiws-warning" data-testid="aiws-wish-warnings">{clauses(cand.warnings ?? [])}</div>}
       {(summary?.appended_inputs?.length ?? 0) > 0 && (
-        <div className="aiws-muted" data-testid="aiws-wish-appended">执行时追加的输入（应用后加入许愿格）：{summary?.appended_inputs?.map((i) => i.label ?? store.outline.get(i.entity_id)?.title ?? i.entity_id).join('、')}</div>
+        <div className="aiws-muted" data-testid="aiws-wish-appended">{t('aiworkspace.wish.appendedInputs', { names: list((summary?.appended_inputs ?? []).map((i) => i.label ?? store.outline.get(i.entity_id)?.title ?? i.entity_id)) })}</div>
       )}
       {(summary?.structure?.length ?? 0) > 0 && (
         <div className="aiws-wish-section" data-testid="aiws-wish-structure">
-          <div className="aiws-muted">结构变化</div>
+          <div className="aiws-muted">{t('aiworkspace.wish.structureChanges')}</div>
           {summary?.structure?.map((s) => (
-            <div key={s.name}>{s.name}：{s.changes.map((c) => `${{ add_field: '新增字段', delete_field: '删除字段', change_type: '改类型', delete_rows: '删除行', insert_rows: '新增行', update_values: '更新值', clear_values: '清空值', key_changed: '键改变', recreate_field: '重建字段', widen_scale: '增加小数位' }[c.kind] ?? c.kind}${c.field ? ` ${c.field}` : ''}${c.count ? ` ${c.count}` : ''}${c.from ? `（${c.from} → ${c.to}）` : c.kind === 'widen_scale' ? `（${c.to} 位）` : ''}`).join('，')}{s.rows_before !== undefined ? `（${s.rows_before} → ${s.rows_after} 行）` : ''}</div>
+            <div key={s.name}>{t('aiworkspace.wish.structureLine', {
+              name: s.name,
+              changes: s.changes.map((c) => `${label(CHANGE_LABEL, c.kind)}${c.field ? ` ${c.field}` : ''}${c.count ? ` ${c.count}` : ''}${c.from ? t('aiworkspace.wish.changeFromTo', { from: c.from, to: String(c.to) }) : c.kind === 'widen_scale' ? t('aiworkspace.wish.changeScale', { to: String(c.to) }) : ''}`).join(t('aiworkspace.wish.commaSeparator')),
+              rows: s.rows_before !== undefined ? t('aiworkspace.wish.structureRows', { before: s.rows_before, after: String(s.rows_after), count: s.rows_after ?? 0 }) : '',
+            })}</div>
           ))}
           {destructive && (
-            <label className="aiws-warning"><input type="checkbox" data-testid="aiws-wish-confirm-structure" checked={Boolean(choices.confirm_structure)} onChange={(e) => choose({ ...choices, confirm_structure: e.target.checked })} /> 我已看过：会删除行或字段</label>
+            <label className="aiws-warning"><input type="checkbox" data-testid="aiws-wish-confirm-structure" checked={Boolean(choices.confirm_structure)} onChange={(e) => choose({ ...choices, confirm_structure: e.target.checked })} /> {t('aiworkspace.wish.confirmStructure')}</label>
           )}
         </div>
       )}
       {manual.length > 0 && (
         <div className="aiws-warning" data-testid="aiws-wish-manual">
-          以下结果在生成后被人工修改过，请逐项选择：
+          {t('aiworkspace.wish.manualIntro')}
           {manual.map((m) => (
             <div key={m.name} className="aiws-inline-form" data-testid={`aiws-wish-manual-${m.name}`}>
-              <span>{m.name}{m.cells ? `（${m.cells} 个单元格）` : ''}{m.field_deleted ? `（列「${m.field_deleted}」已被删除）` : ''}</span>
+              <span>{m.name}{m.cells ? t('aiworkspace.wish.manualCells', { count: m.cells }) : ''}{m.field_deleted ? t('aiworkspace.wish.manualFieldDeleted', { field: m.field_deleted }) : ''}</span>
               {(['keep', 'replace', 'new'] as const).map((choice) => (
-                <label key={choice}><input type="radio" name={`manual-${run.run_id}-${m.name}`} checked={choices.results?.[m.name] === choice} onChange={() => choose({ ...choices, results: { ...(choices.results ?? {}), [m.name]: choice } })} /> {choice === 'keep' ? '保留人工修改' : choice === 'replace' ? '显式替换' : '新建一份'}</label>
+                <label key={choice}><input type="radio" name={`manual-${run.run_id}-${m.name}`} checked={choices.results?.[m.name] === choice} onChange={() => choose({ ...choices, results: { ...(choices.results ?? {}), [m.name]: choice } })} /> {t(choice === 'keep' ? 'aiworkspace.wish.action.keepManual' : choice === 'replace' ? 'aiworkspace.wish.manualReplace' : 'aiworkspace.wish.manualNew')}</label>
               ))}
             </div>
           ))}
         </div>
       )}
-      {(summary?.missing?.length ?? 0) > 0 && <div className="aiws-warning">上次存在、本次未生成：{summary?.missing?.map((m) => m.name).join('、')}（不会被删除）</div>}
-      {summary?.program && <div className="aiws-muted" data-testid="aiws-wish-program-change">应用后保存新的程序（{summary.program.from ? '修改' : '首次'}）</div>}
-      {(summary?.refinements?.length ?? 0) > 0 && <div className="aiws-muted">应用后记入修改意见：{summary?.refinements?.map((r) => r.text).join('；')}</div>}
-      {blocking.length > 0 && !needsChoice && <div className="aiws-error" data-testid="aiws-wish-problems">{blocking.join('；')}</div>}
-      {run.state === 'conflict' && <div className="aiws-error">上次应用冲突：可以重新预览后再应用，或重新执行。</div>}
+      {(summary?.missing?.length ?? 0) > 0 && <div className="aiws-warning">{t('aiworkspace.wish.missingNotDeleted', { names: list((summary?.missing ?? []).map((m) => m.name)) })}</div>}
+      {summary?.program && <div className="aiws-muted" data-testid="aiws-wish-program-change">{t(summary.program.from ? 'aiworkspace.wish.programChangeEdit' : 'aiworkspace.wish.programChangeFirst')}</div>}
+      {(summary?.refinements?.length ?? 0) > 0 && <div className="aiws-muted">{t('aiworkspace.wish.refinementsOnApply', { items: clauses((summary?.refinements ?? []).map((r) => r.text)) })}</div>}
+      {blocking.length > 0 && !needsChoice && <div className="aiws-error" data-testid="aiws-wish-problems">{clauses(blocking)}</div>}
+      {run.state === 'conflict' && <div className="aiws-error">{t('aiworkspace.wish.lastApplyConflict')}</div>}
       {run.stage !== 'analyze' && !run.simulated && canApply && (
         <div className="aiws-wish-feedback">
-          <textarea data-testid="aiws-wish-feedback" rows={2} placeholder="对这组结果提修改意见（如“把华东拆成上海和其他”“图换成折线图”）：在已有程序上修改，应用时记入许愿格" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
-          <button type="button" data-testid="aiws-wish-feedback-send" disabled={Boolean(busy) || !feedback.trim()} onClick={() => { void sendFeedback() }}>按反馈修改</button>
+          <textarea data-testid="aiws-wish-feedback" rows={2} placeholder={t('aiworkspace.wish.feedbackPlaceholder')} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          <button type="button" data-testid="aiws-wish-feedback-send" disabled={Boolean(busy) || !feedback.trim()} onClick={() => { void sendFeedback() }}>{t('aiworkspace.wish.reviseWithFeedback')}</button>
         </div>
       )}
       <div className="aiws-inline-form">
-        <button type="button" data-testid="aiws-wish-apply" disabled={Boolean(busy) || !canApply || !preview?.ready || needsChoice || (failed.length > 0 && !acceptFailed)} title={needsChoice ? '先对人工修改过的结果作出选择' : !preview?.ready ? '预览有未解决的问题' : failed.length > 0 && !acceptFailed ? '先确认未通过的检查' : '一次提交，可整体撤销'} onClick={() => { void apply() }}>{run.stage === 'analyze' ? '写回分析' : '应用'}</button>
-        <button type="button" data-testid="aiws-wish-discard" disabled={Boolean(busy)} onClick={() => store.wish.discard(run.wish_id)}>放弃</button>
+        <button type="button" data-testid="aiws-wish-apply" disabled={Boolean(busy) || !canApply || !preview?.ready || needsChoice || (failed.length > 0 && !acceptFailed)} title={t(needsChoice ? 'aiworkspace.wish.applyHint.choose' : !preview?.ready ? 'aiworkspace.wish.applyHint.problems' : failed.length > 0 && !acceptFailed ? 'aiworkspace.wish.applyHint.confirmChecks' : 'aiworkspace.wish.applyHint.ready')} onClick={() => { void apply() }}>{t(run.stage === 'analyze' ? 'aiworkspace.wish.writeBackAnalysis' : 'aiworkspace.common.apply')}</button>
+        <button type="button" data-testid="aiws-wish-discard" disabled={Boolean(busy)} onClick={() => store.wish.discard(run.wish_id)}>{t('aiworkspace.wish.discard')}</button>
       </div>
     </div>
   )

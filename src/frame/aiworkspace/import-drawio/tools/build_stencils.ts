@@ -23,6 +23,8 @@ export const DEFAULT_SOURCE = 'https://raw.githubusercontent.com/jgraph/drawio/d
 export const DEFAULT_LICENSE = 'https://raw.githubusercontent.com/jgraph/drawio/dev/LICENSE'
 export const DEFAULT_LIBS = ['flowchart', 'basic', 'arrows', 'bpmn', 'networks']
 
+/** The packs' titles. The Desktop names a library by its id in the viewer's language (aiworkspace.drawio.library.*);
+ * a title is shown only for a library it does not know. */
 const LIB_TITLES: Record<string, string> = { flowchart: '流程图', basic: '基本图形', arrows: '箭头', bpmn: 'BPMN', networks: '网络' }
 
 /** `f['<file>'] = '<base64>';` entries of a stencils.min.js. */

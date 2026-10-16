@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { signOutToLogin } from '../../auth/signOut'
+import { useI18n } from '../../i18n/provider'
 import { useDocumentTitle } from '../../presentation/documentHead'
 import { AIWorkspaceAppPanel, type TabHost } from './AIWorkspaceAppPanel'
 import { targetOf, workspacePath } from './links'
@@ -12,8 +13,10 @@ export function AIWorkspaceRoute() {
   const search = searchParams.toString()
   const target = useMemo(() => targetOf(new URLSearchParams(search)), [search])
 
+  const { t } = useI18n()
+  const appName = t('apps.aiworkspace')
   const [shownTitle, setShownTitle] = useState<string | null>(null)
-  useDocumentTitle(shownTitle ? `${shownTitle} · AI Workspace` : 'AI Workspace')
+  useDocumentTitle(shownTitle ? `${shownTitle} · ${appName}` : appName)
 
   const tab: TabHost = {
     workspaceId,

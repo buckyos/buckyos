@@ -9,6 +9,8 @@ import { createSampleWorkspace } from '../../api/sample'
 import { describeError } from '../../api/session'
 import type { ExportResult, WorkspaceSummary } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
+import type { AiwsText } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 import { SURFACE_ICONS } from '../canvas/icons'
 import { accepted } from '../canvas/surfaceManage'
 import { createSurfaceOps, surfacesOf } from '../canvas/surfaceOps'
@@ -42,10 +44,11 @@ function saveBlob(blob: Blob, fileName: string) {
 
 export type NewTab = 'canvas' | 'workspace' | 'template'
 
+/** Text keys: the title, description and preview are read in the current language when shown. */
 const TEMPLATES = [
-  { id: 'sample' as const, title: '项目工作区样例', description: '任务表、会议纪要（富文本）、项目记录、图片附件和批注：看看各类对象如何协作。', preview: '流式页 1 张 · 表格 · 富文本 · 记录 · 图片 · 批注', mock: false },
-  { id: 'quarterly' as const, title: '季度经营分析', description: '销售表、两张自由画布、模拟许愿格与声明式指标卡。', preview: '自由画布 2 张 · 销售表 · 图表 · 许愿格（模拟）· 声明式扩展', mock: true },
-  { id: 'film' as const, title: 'AI 短片工作流', description: '剧本、角色表、风格设定，经三个串联的模拟许愿格生成分镜与预览。', preview: '自由画布 1 张 · 剧本 · 角色表 · 3 个串联许愿格（模拟）', mock: true },
+  { id: 'sample' as const, title: 'aiworkspace.shell.template.sample.title', description: 'aiworkspace.shell.template.sample.description', preview: 'aiworkspace.shell.template.sample.preview', mock: false },
+  { id: 'quarterly' as const, title: 'aiworkspace.shell.template.quarterly.title', description: 'aiworkspace.shell.template.quarterly.description', preview: 'aiworkspace.shell.template.quarterly.preview', mock: true },
+  { id: 'film' as const, title: 'aiworkspace.shell.template.film.title', description: 'aiworkspace.shell.template.film.description', preview: 'aiworkspace.shell.template.film.preview', mock: true },
 ]
 
 export function NewDialog({ client, store, initialTab, onClose, onCreatedSurface, onOpenWorkspace }: {
@@ -57,15 +60,16 @@ export function NewDialog({ client, store, initialTab, onClose, onCreatedSurface
   onCreatedSurface?: (surfaceId: string) => void
   onOpenWorkspace: (workspaceId: string) => void
 }) {
+  const { t } = useAiwsText()
   const canCanvas = Boolean(store?.session.info().capabilities.includes('structure'))
   const [tab, setTab] = useState<NewTab>(initialTab === 'canvas' && !canCanvas ? 'workspace' : initialTab)
   const tabs: NewTab[] = store ? ['canvas', 'workspace', 'template'] : ['workspace', 'template']
-  const label: Record<NewTab, string> = { canvas: '画布', workspace: '工作区', template: '模板' }
+  const label: Record<NewTab, string> = { canvas: t('aiworkspace.shell.new.tab.canvas'), workspace: t('aiworkspace.shell.new.tab.workspace'), template: t('aiworkspace.shell.new.tab.template') }
   return (
-    <Modal label="新建" testId="aiws-new-dialog" onClose={onClose} className="aiws-new-dialog">
-      <div className="aiws-dialog-head"><b>新建</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>关闭</button></div>
-      <div className="aiws-tabs" role="tablist" aria-label="新建什么">
-        {tabs.map((t) => <button key={t} type="button" role="tab" aria-selected={tab === t} data-testid={`aiws-new-tab-${t}`} disabled={t === 'canvas' && !canCanvas} title={t === 'canvas' && !canCanvas ? '没有新建画布的权限' : undefined} onClick={() => setTab(t)}>{label[t]}</button>)}
+    <Modal label={t('aiworkspace.shell.new.title')} testId="aiws-new-dialog" onClose={onClose} className="aiws-new-dialog">
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.new.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-tabs" role="tablist" aria-label={t('aiworkspace.shell.new.tabs')}>
+        {tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} data-testid={`aiws-new-tab-${item}`} disabled={item === 'canvas' && !canCanvas} title={item === 'canvas' && !canCanvas ? t('aiworkspace.shell.noStructurePermission') : undefined} onClick={() => setTab(item)}>{label[item]}</button>)}
       </div>
       {tab === 'canvas' && store && <NewCanvas store={store} onDone={(id) => { onClose(); onCreatedSurface?.(id) }} />}
       {tab === 'workspace' && <NewWorkspace client={client} onOpen={(id) => { onClose(); onOpenWorkspace(id) }} />}
@@ -75,43 +79,45 @@ export function NewDialog({ client, store, initialTab, onClose, onCreatedSurface
 }
 
 function NewCanvas({ store, onDone }: { store: WorkspaceStore; onDone: (surfaceId: string) => void }) {
+  const { t } = useAiwsText()
   const [title, setTitle] = useState('')
   const [layout, setLayout] = useState<'free' | 'flow'>('free')
   const [icon, setIcon] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const create = async () => {
-    const name = title.trim() || `画布 ${surfacesOf(store).length + 1}`
+    const name = title.trim() || t('aiworkspace.shell.new.canvas.defaultName', { n: surfacesOf(store).length + 1 })
     setBusy(true)
     setError(null)
     const { ops, surfaceId } = createSurfaceOps(store, name, layout, icon)
-    const outcome = await store.submit({ editId: 'surface:new', label: `新建画布 ${name}`, operations: ops })
+    const outcome = await store.submit({ editId: 'surface:new', label: t('aiworkspace.shell.new.canvas.editLabel', { name }), operations: ops })
     setBusy(false)
     if (accepted(outcome)) onDone(surfaceId)
-    else setError(`没有创建：${'code' in outcome ? outcome.code : outcome.status}`)
+    else setError(t('aiworkspace.shell.new.canvas.notCreated', { code: 'code' in outcome ? outcome.code : outcome.status }))
   }
   return (
     <form className="aiws-form" onSubmit={(event) => { event.preventDefault(); void create() }}>
-      <label className="aiws-field">名称<input autoFocus aria-label="新画布标题" placeholder={`画布 ${surfacesOf(store).length + 1}`} value={title} maxLength={256} onChange={(event) => setTitle(event.target.value)} /></label>
+      <label className="aiws-field">{t('aiworkspace.shell.new.name')}<input autoFocus aria-label={t('aiworkspace.shell.new.canvas.titleInput')} placeholder={t('aiworkspace.shell.new.canvas.defaultName', { n: surfacesOf(store).length + 1 })} value={title} maxLength={256} onChange={(event) => setTitle(event.target.value)} /></label>
       <fieldset className="aiws-field">
-        <legend>布局</legend>
-        <label><input type="radio" name="aiws-new-layout" checked={layout === 'free'} onChange={() => setLayout('free')} /> 自由画布（任意摆放、缩放）</label>
-        <label><input type="radio" name="aiws-new-layout" checked={layout === 'flow'} onChange={() => setLayout('flow')} data-testid="aiws-new-flow" /> 流式页（按顺序排列）</label>
+        <legend>{t('aiworkspace.shell.new.canvas.layout')}</legend>
+        <label><input type="radio" name="aiws-new-layout" checked={layout === 'free'} onChange={() => setLayout('free')} /> {t('aiworkspace.shell.new.canvas.layoutFree')}</label>
+        <label><input type="radio" name="aiws-new-layout" checked={layout === 'flow'} onChange={() => setLayout('flow')} data-testid="aiws-new-flow" /> {t('aiworkspace.shell.new.canvas.layoutFlow')}</label>
       </fieldset>
       <fieldset className="aiws-field">
-        <legend>图标</legend>
-        <div className="aiws-icon-grid" role="listbox" aria-label="预设图标">
+        <legend>{t('aiworkspace.shell.new.canvas.icon')}</legend>
+        <div className="aiws-icon-grid" role="listbox" aria-label={t('aiworkspace.shell.presetIcons')}>
           {SURFACE_ICONS.map(({ id, label, Icon }) => <button key={id} type="button" role="option" aria-selected={icon === id} aria-label={label} title={label} onClick={() => setIcon(icon === id ? null : id)}><Icon size={18} /></button>)}
         </div>
       </fieldset>
-      <div className="aiws-muted">画布和它的内容区在同一次提交中创建，完成后切换到新画布。</div>
+      <div className="aiws-muted">{t('aiworkspace.shell.new.canvas.note')}</div>
       {error && <div className="aiws-error" role="alert">{error}</div>}
-      <div className="aiws-dialog-actions"><button type="submit" className="is-primary" data-testid="aiws-surface-create" disabled={busy}>创建画布</button></div>
+      <div className="aiws-dialog-actions"><button type="submit" className="is-primary" data-testid="aiws-surface-create" disabled={busy}>{t('aiworkspace.shell.new.canvas.create')}</button></div>
     </form>
   )
 }
 
 function NewWorkspace({ client, onOpen }: { client: AiwsClient; onOpen: (workspaceId: string) => void }) {
+  const { t } = useAiwsText()
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -119,72 +125,73 @@ function NewWorkspace({ client, onOpen }: { client: AiwsClient; onOpen: (workspa
     setBusy(true)
     setError(null)
     try {
-      const created = unwrap(await client.wsCreate(title.trim() || '未命名工作区'))
+      const created = unwrap(await client.wsCreate(title.trim() || t('aiworkspace.shell.new.workspace.defaultName')))
       onOpen(created.workspace_id)
     } catch (failure) {
-      setError(`创建失败：${describeError(failure)}`)
+      setError(t('aiworkspace.shell.new.createFailed', { error: describeError(failure) }))
       setBusy(false)
     }
   }
   return (
     <form className="aiws-form" onSubmit={(event) => { event.preventDefault(); void create() }}>
-      <label className="aiws-field">名称<input autoFocus aria-label="工作区标题" placeholder="未命名工作区" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-      <div className="aiws-muted">创建空白工作区并打开；打开后可新建第一张自由画布或流式页。</div>
+      <label className="aiws-field">{t('aiworkspace.shell.new.name')}<input autoFocus aria-label={t('aiworkspace.shell.new.workspace.titleInput')} placeholder={t('aiworkspace.shell.new.workspace.defaultName')} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      <div className="aiws-muted">{t('aiworkspace.shell.new.workspace.note')}</div>
       {error && <div className="aiws-error" role="alert" data-testid="aiws-new-error">{error}</div>}
-      <div className="aiws-dialog-actions"><button type="submit" className="is-primary" data-testid="aiws-create" disabled={busy}>{busy ? '创建中…' : '创建并打开'}</button></div>
+      <div className="aiws-dialog-actions"><button type="submit" className="is-primary" data-testid="aiws-create" disabled={busy}>{busy ? t('aiworkspace.shell.new.workspace.creating') : t('aiworkspace.shell.new.workspace.create')}</button></div>
     </form>
   )
 }
 
 function NewFromTemplate({ client, onOpen }: { client: AiwsClient; onOpen: (workspaceId: string) => void }) {
+  const { t, tNode } = useAiwsText()
   const [chosen, setChosen] = useState<(typeof TEMPLATES)[number]['id']>('sample')
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<{ text: string; workspace: WorkspaceSummary | null } | null>(null)
-  const template = TEMPLATES.find((t) => t.id === chosen) ?? TEMPLATES[0]
+  const template = TEMPLATES.find((item) => item.id === chosen) ?? TEMPLATES[0]
   const create = async () => {
     setBusy(true)
     setFailure(null)
-    const name = title.trim() || template.title
+    const name = title.trim() || t(template.title)
     try {
       const created = template.id === 'sample' ? await createSampleWorkspace(client, name) : await createDemoWorkspace(client, template.id, name)
       onOpen(created.workspace_id)
     } catch (error) {
-      setFailure(error instanceof TemplateFailure ? { text: `模板没有完整创建（${error.message}）`, workspace: error.workspace } : { text: `创建失败：${describeError(error)}`, workspace: null })
+      setFailure(error instanceof TemplateFailure ? { text: t('aiworkspace.shell.new.template.incomplete', { error: error.message }), workspace: error.workspace } : { text: t('aiworkspace.shell.new.createFailed', { error: describeError(error) }), workspace: null })
       setBusy(false)
     }
   }
   const removePartial = async (workspace: WorkspaceSummary) => {
-    try { unwrap(await client.wsDelete({ workspace_id: workspace.workspace_id })); setFailure({ text: `已删除不完整的工作区「${workspace.title}」（移入回收目录）。`, workspace: null }) } catch (error) { setFailure({ text: `删除失败：${describeError(error)}`, workspace }) }
+    try { unwrap(await client.wsDelete({ workspace_id: workspace.workspace_id })); setFailure({ text: t('aiworkspace.shell.new.template.partialDeleted', { name: workspace.title }), workspace: null }) } catch (error) { setFailure({ text: t('aiworkspace.shell.new.template.deleteFailed', { error: describeError(error) }), workspace }) }
   }
   return (
     <form className="aiws-form" onSubmit={(event) => { event.preventDefault(); void create() }}>
-      <div className="aiws-template-list" role="radiogroup" aria-label="模板">
-        {TEMPLATES.map((t) => (
-          <label key={t.id} className={`aiws-template${chosen === t.id ? ' is-active' : ''}`} data-testid={`aiws-template-${t.id}`}>
-            <input type="radio" name="aiws-template" checked={chosen === t.id} onChange={() => setChosen(t.id)} />
+      <div className="aiws-template-list" role="radiogroup" aria-label={t('aiworkspace.shell.new.tab.template')}>
+        {TEMPLATES.map((item) => (
+          <label key={item.id} className={`aiws-template${chosen === item.id ? ' is-active' : ''}`} data-testid={`aiws-template-${item.id}`}>
+            <input type="radio" name="aiws-template" checked={chosen === item.id} onChange={() => setChosen(item.id)} />
             <span className="aiws-template-text">
-              <span className="aiws-template-title"><b>{t.title}</b>{t.mock && <span className="aiws-chip aiws-chip-derived" title="其中的许愿格使用模拟执行器，结果是预先准备的">含模拟内容</span>}</span>
-              <span>{t.description}</span>
-              <span className="aiws-muted">{t.preview}</span>
+              <span className="aiws-template-title"><b>{t(item.title)}</b>{item.mock && <span className="aiws-chip aiws-chip-derived" title={t('aiworkspace.shell.new.template.mockHint')}>{t('aiworkspace.shell.new.template.mock')}</span>}</span>
+              <span>{t(item.description)}</span>
+              <span className="aiws-muted">{t(item.preview)}</span>
             </span>
           </label>
         ))}
       </div>
-      <label className="aiws-field">新工作区名称<input aria-label="工作区标题" placeholder={template.title} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-      <div className="aiws-muted">从模板创建<b>新的工作区</b>并打开它；不会改动当前工作区。打开模板不会自动运行许愿格。</div>
+      <label className="aiws-field">{t('aiworkspace.shell.new.template.name')}<input aria-label={t('aiworkspace.shell.new.workspace.titleInput')} placeholder={t(template.title)} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      <div className="aiws-muted">{tNode('aiworkspace.shell.new.template.note', { workspace: <b>{t('aiworkspace.shell.new.template.noteWorkspace')}</b> })}</div>
       {failure && (
         <div className="aiws-error" role="alert" data-testid="aiws-template-failure">
           {failure.text}
           {failure.workspace && (
             <>
-              <button type="button" onClick={() => onOpen(failure.workspace?.workspace_id ?? '')}>打开已创建的部分</button>
-              <button type="button" onClick={() => { if (failure.workspace) void removePartial(failure.workspace) }}>删除它</button>
+              <button type="button" onClick={() => onOpen(failure.workspace?.workspace_id ?? '')}>{t('aiworkspace.shell.new.template.openPartial')}</button>
+              <button type="button" onClick={() => { if (failure.workspace) void removePartial(failure.workspace) }}>{t('aiworkspace.shell.new.template.deletePartial')}</button>
             </>
           )}
         </div>
       )}
-      <div className="aiws-dialog-actions"><button type="submit" className="is-primary" data-testid="aiws-create-template" disabled={busy}>{busy ? '正在创建…' : '从模板创建工作区'}</button></div>
+      <div className="aiws-dialog-actions"><button type="submit" className="is-primary" data-testid="aiws-create-template" disabled={busy}>{busy ? t('aiworkspace.shell.new.template.creating') : t('aiworkspace.shell.new.template.create')}</button></div>
     </form>
   )
 }
@@ -192,6 +199,7 @@ function NewFromTemplate({ client, onOpen }: { client: AiwsClient; onOpen: (work
 // ---- export / import
 
 export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; workspace: { workspace_id: string; title: string }; onDone?: (message: string) => void }) {
+  const { t } = useAiwsText()
   const [mode, setMode] = useState<'share' | 'personal_backup'>('share')
   const [selfContained, setSelfContained] = useState(true)
   // speaker notes travel in a personal backup, not in what goes to other people (第三期规划 §6.4)
@@ -208,30 +216,30 @@ export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; 
       const blob = await client.transport.download(`export/${workspace.workspace_id}/${result.export_id}`)
       saveBlob(blob, `${workspace.title}-${mode === 'share' ? 'share' : 'backup'}.zip`)
       setExported(result)
-      const text = `已导出「${workspace.title}」（${blob.size} 字节）。`
+      const text = t('aiworkspace.shell.export.done', { name: workspace.title, size: blob.size })
       setMessage({ kind: 'info', text })
       onDone?.(text)
     } catch (error) {
-      setMessage({ kind: 'error', text: `导出失败：${describeError(error)}` })
+      setMessage({ kind: 'error', text: t('aiworkspace.shell.export.failed', { error: describeError(error) }) })
     } finally {
       setBusy(false)
     }
   }
   return (
     <div className="aiws-inline-form">
-      <select aria-label="导出方式" value={mode} onChange={(event) => { setMode(event.target.value === 'personal_backup' ? 'personal_backup' : 'share'); setNotesChoice(null) }}>
-        <option value="share">分享包（不含协作历史）</option>
-        <option value="personal_backup">个人恢复备份（含协作历史）</option>
+      <select aria-label={t('aiworkspace.shell.export.mode')} value={mode} onChange={(event) => { setMode(event.target.value === 'personal_backup' ? 'personal_backup' : 'share'); setNotesChoice(null) }}>
+        <option value="share">{t('aiworkspace.shell.export.modeShare')}</option>
+        <option value="personal_backup">{t('aiworkspace.shell.export.modeBackup')}</option>
       </select>
-      <label><input type="checkbox" checked={selfContained} onChange={(event) => setSelfContained(event.target.checked)} /> 自包含</label>
-      <label title="Frame 和 Viewport 的讲解备注只给演讲者看：分享给他人时默认不包含；说明（引导气泡）总是包含"><input type="checkbox" data-testid="aiws-export-notes" checked={notes} onChange={(event) => setNotesChoice(event.target.checked)} /> 包含讲解备注</label>
-      <button type="button" data-testid="aiws-export" disabled={busy} onClick={() => { void run() }}>{busy ? '导出中…' : '导出并下载'}</button>
+      <label><input type="checkbox" checked={selfContained} onChange={(event) => setSelfContained(event.target.checked)} /> {t('aiworkspace.shell.export.selfContained')}</label>
+      <label title={t('aiworkspace.shell.export.notesHint')}><input type="checkbox" data-testid="aiws-export-notes" checked={notes} onChange={(event) => setNotesChoice(event.target.checked)} /> {t('aiworkspace.shell.export.notes')}</label>
+      <button type="button" data-testid="aiws-export" disabled={busy} onClick={() => { void run() }}>{busy ? t('aiworkspace.shell.export.exporting') : t('aiworkspace.shell.export.run')}</button>
       {message && <div className={message.kind === 'error' ? 'aiws-error' : 'aiws-muted'} role={message.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-export-message">{message.text}</div>}
       {exported && (
         <div className="aiws-muted" data-testid="aiws-export-manifest">
-          上次导出：{exported.manifest.export_mode === 'share' ? '分享包' : '个人恢复备份'} · 内容根 {exported.manifest.content_root}
-          {exported.manifest.missing.length > 0 && ` · 缺失 ${exported.manifest.missing.length} 项`}
-          {exported.manifest.excluded_entities > 0 && ` · 未包含 ${exported.manifest.excluded_entities} 个无权读取的对象`}
+          {t('aiworkspace.shell.export.last', { mode: exported.manifest.export_mode === 'share' ? t('aiworkspace.shell.export.share') : t('aiworkspace.shell.export.backup'), root: exported.manifest.content_root })}
+          {exported.manifest.missing.length > 0 && ` · ${t('aiworkspace.shell.export.missing', { count: exported.manifest.missing.length })}`}
+          {exported.manifest.excluded_entities > 0 && ` · ${t('aiworkspace.shell.export.excluded', { count: exported.manifest.excluded_entities })}`}
         </div>
       )}
     </div>
@@ -239,6 +247,7 @@ export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; 
 }
 
 export function ImportForm({ client, onDone }: { client: AiwsClient; onDone: (message: string, workspaceId: string) => void }) {
+  const { t } = useAiwsText()
   const [semantics, setSemantics] = useState<'' | 'new' | 'restore'>('')
   const [replace, setReplace] = useState(false)
   const [file, setFile] = useState<File | null>(null)
@@ -253,48 +262,50 @@ export function ImportForm({ client, onDone }: { client: AiwsClient; onDone: (me
       await client.transport.upload(begin.upload_id, file)
       const result = unwrap(await client.wsImport(begin.upload_id, semantics, semantics === 'restore' && replace))
       setFile(null)
-      onDone(semantics === 'new' ? `已导入为新的工作区 ${result.workspace_id}。` : `已恢复工作区 ${result.workspace_id}（历史代次已更换，旧窗口需重新打开）。`, result.workspace_id)
+      onDone(semantics === 'new' ? t('aiworkspace.shell.import.doneNew', { id: result.workspace_id }) : t('aiworkspace.shell.import.doneRestore', { id: result.workspace_id }), result.workspace_id)
     } catch (failure) {
-      setError(`导入失败：${describeError(failure)}`)
+      setError(t('aiworkspace.shell.import.failed', { error: describeError(failure) }))
     } finally {
       setBusy(false)
     }
   }
   return (
     <form className="aiws-import" data-testid="aiws-import" onSubmit={(event) => { event.preventDefault(); void run() }}>
-      <div className="aiws-panel-title">导入工作区包</div>
-      <input type="file" aria-label="工作区包" accept=".zip,application/zip" data-testid="aiws-import-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+      <div className="aiws-panel-title">{t('aiworkspace.shell.import.title')}</div>
+      <input type="file" aria-label={t('aiworkspace.shell.import.file')} accept=".zip,application/zip" data-testid="aiws-import-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
       <fieldset>
-        <legend>导入语义（必须选择）</legend>
-        <label><input type="radio" name="aiws-semantics" value="new" checked={semantics === 'new'} onChange={() => setSemantics('new')} /> 作为新的工作区（新 ID、新协作历史）</label>
-        <label><input type="radio" name="aiws-semantics" value="restore" checked={semantics === 'restore'} onChange={() => setSemantics('restore')} /> 恢复为包内的同一工作区（个人恢复备份）</label>
-        {semantics === 'restore' && <label><input type="checkbox" checked={replace} onChange={(event) => setReplace(event.target.checked)} /> 若该工作区已存在则替换（现有内容移入回收目录）</label>}
+        <legend>{t('aiworkspace.shell.import.semantics')}</legend>
+        <label><input type="radio" name="aiws-semantics" value="new" checked={semantics === 'new'} onChange={() => setSemantics('new')} /> {t('aiworkspace.shell.import.asNew')}</label>
+        <label><input type="radio" name="aiws-semantics" value="restore" checked={semantics === 'restore'} onChange={() => setSemantics('restore')} /> {t('aiworkspace.shell.import.asRestore')}</label>
+        {semantics === 'restore' && <label><input type="checkbox" checked={replace} onChange={(event) => setReplace(event.target.checked)} /> {t('aiworkspace.shell.import.replace')}</label>}
       </fieldset>
       {error && <div className="aiws-error" role="alert" data-testid="aiws-import-error">{error}</div>}
-      <button type="submit" data-testid="aiws-import-submit" disabled={!file || semantics === '' || busy}>{busy ? '导入中…' : '导入'}</button>
+      <button type="submit" data-testid="aiws-import-submit" disabled={!file || semantics === '' || busy}>{busy ? t('aiworkspace.shell.import.importing') : t('aiworkspace.shell.import.run')}</button>
     </form>
   )
 }
 
 export function ExportDialog({ client, workspace, onClose }: { client: AiwsClient; workspace: { workspace_id: string; title: string }; onClose: () => void }) {
+  const { t } = useAiwsText()
   return (
-    <Modal label="导出工作区" testId="aiws-export-dialog" onClose={onClose}>
-      <div className="aiws-dialog-head"><b>导出「{workspace.title}」</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>关闭</button></div>
-      <div className="aiws-muted">分享包给别人导入成新的工作区，不含协作历史和无权读取的对象；个人恢复备份用于恢复同一个工作区。这与“分享链接”不同：链接只指向线上工作区，不复制内容。</div>
+    <Modal label={t('aiworkspace.shell.export.dialog')} testId="aiws-export-dialog" onClose={onClose}>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.export.dialogTitle', { name: workspace.title })}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <div className="aiws-muted">{t('aiworkspace.shell.export.explain')}</div>
       <ExportForm client={client} workspace={workspace} />
     </Modal>
   )
 }
 
 export function ImportDialog({ client, onClose, onOpenWorkspace }: { client: AiwsClient; onClose: () => void; onOpenWorkspace: (workspaceId: string) => void }) {
+  const { t } = useAiwsText()
   const [done, setDone] = useState<{ text: string; workspaceId: string } | null>(null)
   return (
-    <Modal label="导入工作区包" testId="aiws-import-dialog" onClose={onClose}>
-      <div className="aiws-dialog-head"><b>导入工作区包</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>关闭</button></div>
+    <Modal label={t('aiworkspace.shell.import.title')} testId="aiws-import-dialog" onClose={onClose}>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.import.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
       {done ? (
         <>
           <div role="status">{done.text}</div>
-          <div className="aiws-dialog-actions"><button type="button" className="is-primary" onClick={() => { onClose(); onOpenWorkspace(done.workspaceId) }}>打开导入的工作区</button><button type="button" onClick={onClose}>留在当前工作区</button></div>
+          <div className="aiws-dialog-actions"><button type="button" className="is-primary" onClick={() => { onClose(); onOpenWorkspace(done.workspaceId) }}>{t('aiworkspace.shell.import.open')}</button><button type="button" onClick={onClose}>{t('aiworkspace.shell.import.stay')}</button></div>
         </>
       ) : <ImportForm client={client} onDone={(text, workspaceId) => setDone({ text, workspaceId })} />}
     </Modal>
@@ -303,31 +314,34 @@ export function ImportDialog({ client, onClose, onOpenWorkspace }: { client: Aiw
 
 // ---- help, developer tools, leave check
 
-const SHORTCUTS: [string, string][] = [
-  ['Ctrl/⌘ + Z', '撤销（一次一步）'], ['Ctrl/⌘ + Shift + Z，Ctrl/⌘ + Y', '重做'],
-  ['Ctrl/⌘ + C / X / V', '复制 / 剪切 / 粘贴画布对象（焦点在文字或表格中时由编辑器处理）'], ['Delete / Backspace', '删除选中的对象'],
-  ['Enter', '编辑选中对象的内容'], ['Esc', '逐层退出：菜单、放置、编辑、选择'], ['方向键（Shift 加速）', '移动选中的对象'],
-  ['Ctrl/⌘ + G，Ctrl/⌘ + Shift + G', '分组 / 解组'], ['F2', '打开属性'], ['V / H', '选择工具 / 移动视图工具'],
-  ['按住空格拖动，鼠标中键拖动', '临时移动视图'], ['Ctrl/⌘ + 滚轮', '以指针为中心缩放'], ['滚轮，Shift + 滚轮', '上下 / 左右移动视图'],
-  ['放映：→ ↓ PageDown 空格 Enter', '下一项'], ['放映：← ↑ PageUp Backspace', '上一项'], ['放映：Home / End', '第一项 / 最后一项'],
-  ['放映：B 或 .', '黑屏'], ['放映：Esc', '自由浏览时回到本步骤，否则退出放映；操作 Block 时交还按键'],
-  ['使用引导：→ ← Esc', '下一项、上一项、结束引导'], ['路径编辑：Alt + ↑ / ↓，Delete', '调整选中步骤的顺序、移除步骤'],
+/** The keyboard help rows: keys (translated where they contain words) and what they do. */
+const shortcuts = (t: AiwsText['t']): [string, string][] => [
+  ['Ctrl/⌘ + Z', t('aiworkspace.shell.help.undo')], [t('aiworkspace.shell.help.redoKeys'), t('aiworkspace.shell.help.redo')],
+  ['Ctrl/⌘ + C / X / V', t('aiworkspace.shell.help.clipboard')], ['Delete / Backspace', t('aiworkspace.shell.help.delete')],
+  ['Enter', t('aiworkspace.shell.help.edit')], ['Esc', t('aiworkspace.shell.help.escape')], [t('aiworkspace.shell.help.arrowKeys'), t('aiworkspace.shell.help.move')],
+  [t('aiworkspace.shell.help.groupKeys'), t('aiworkspace.shell.help.group')], ['F2', t('aiworkspace.shell.help.properties')], ['V / H', t('aiworkspace.shell.help.tools')],
+  [t('aiworkspace.shell.help.panKeys'), t('aiworkspace.shell.help.pan')], [t('aiworkspace.shell.help.zoomKeys'), t('aiworkspace.shell.help.zoom')], [t('aiworkspace.shell.help.scrollKeys'), t('aiworkspace.shell.help.scroll')],
+  [t('aiworkspace.shell.help.showNextKeys'), t('aiworkspace.shell.help.showNext')], [t('aiworkspace.shell.help.showPrevKeys'), t('aiworkspace.shell.help.showPrev')], [t('aiworkspace.shell.help.showEndsKeys'), t('aiworkspace.shell.help.showEnds')],
+  [t('aiworkspace.shell.help.showBlackKeys'), t('aiworkspace.shell.help.showBlack')], [t('aiworkspace.shell.help.showEscKeys'), t('aiworkspace.shell.help.showEsc')],
+  [t('aiworkspace.shell.help.guideKeys'), t('aiworkspace.shell.help.guide')], [t('aiworkspace.shell.help.pathKeys'), t('aiworkspace.shell.help.path')],
 ]
 
 export function HelpDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useAiwsText()
   return (
-    <Modal label="快捷键与操作说明" testId="aiws-help-dialog" onClose={onClose}>
-      <div className="aiws-dialog-head"><b>快捷键与操作说明</b><span className="aiws-grow" /><button type="button" className="aiws-link" autoFocus onClick={onClose}>关闭</button></div>
-      <table className="aiws-shortcuts"><tbody>{SHORTCUTS.map(([keys, text]) => <tr key={keys}><th scope="row"><kbd>{keys}</kbd></th><td>{text}</td></tr>)}</tbody></table>
-      <div className="aiws-muted">画布快捷键只在画布获得焦点时生效；输入法组合输入期间不响应。缩放与视图导航在右上角的比例菜单中。</div>
+    <Modal label={t('aiworkspace.shell.help.title')} testId="aiws-help-dialog" onClose={onClose}>
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.help.title')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" autoFocus onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
+      <table className="aiws-shortcuts"><tbody>{shortcuts(t).map(([keys, text]) => <tr key={keys}><th scope="row"><kbd>{keys}</kbd></th><td>{text}</td></tr>)}</tbody></table>
+      <div className="aiws-muted">{t('aiworkspace.shell.help.note')}</div>
     </Modal>
   )
 }
 
 export function MockDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useAiwsText()
   return (
-    <Modal label="受控加工（开发工具）" testId="aiws-mock-dialog" onClose={onClose} modal={false} className="aiws-floating-dialog">
-      <div className="aiws-dialog-head"><b>开发工具</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>关闭</button></div>
+    <Modal label={t('aiworkspace.shell.mock.dialog')} testId="aiws-mock-dialog" onClose={onClose} modal={false} className="aiws-floating-dialog">
+      <div className="aiws-dialog-head"><b>{t('aiworkspace.shell.devTools')}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
       <MockRunPanel />
     </Modal>
   )
@@ -336,18 +350,19 @@ export function MockDialog({ onClose }: { onClose: () => void }) {
 export interface LeaveSummary { unsaved: number; attention: number; memoryOnly: number }
 
 export function LeaveDialog({ summary, reason, onStay, onExportAndLeave, onLeave }: { summary: LeaveSummary; reason: string; onStay: () => void; onExportAndLeave: () => void; onLeave: () => void }) {
+  const { t } = useAiwsText()
   return (
-    <Modal label="还有没保存的修改" testId="aiws-leave-dialog" onClose={onStay}>
-      <b>{reason}前还有没保存好的内容</b>
+    <Modal label={t('aiworkspace.shell.leave.dialog')} testId="aiws-leave-dialog" onClose={onStay}>
+      <b>{t('aiworkspace.shell.leave.title', { reason })}</b>
       <ul>
-        {summary.memoryOnly > 0 && <li>{summary.memoryOnly} 项输入只在这个窗口的内存中，离开后会丢失。</li>}
-        {summary.unsaved > 0 && <li>{summary.unsaved} 项修改还在发送或保存中。</li>}
-        {summary.attention > 0 && <li>{summary.attention} 项修改需要处理（冲突或被拒绝）。</li>}
+        {summary.memoryOnly > 0 && <li>{t('aiworkspace.shell.leave.memoryOnly', { count: summary.memoryOnly })}</li>}
+        {summary.unsaved > 0 && <li>{t('aiworkspace.shell.leave.unsaved', { count: summary.unsaved })}</li>}
+        {summary.attention > 0 && <li>{t('aiworkspace.shell.leave.attention', { count: summary.attention })}</li>}
       </ul>
       <div className="aiws-dialog-actions">
-        <button type="button" className="is-primary" autoFocus data-testid="aiws-leave-stay" onClick={onStay}>返回处理</button>
-        <button type="button" data-testid="aiws-leave-export" onClick={onExportAndLeave}>导出后离开</button>
-        <button type="button" className="is-danger" data-testid="aiws-leave-anyway" onClick={onLeave}>仍然离开</button>
+        <button type="button" className="is-primary" autoFocus data-testid="aiws-leave-stay" onClick={onStay}>{t('aiworkspace.shell.leave.stay')}</button>
+        <button type="button" data-testid="aiws-leave-export" onClick={onExportAndLeave}>{t('aiworkspace.shell.leave.exportAndLeave')}</button>
+        <button type="button" className="is-danger" data-testid="aiws-leave-anyway" onClick={onLeave}>{t('aiworkspace.shell.leave.anyway')}</button>
       </div>
     </Modal>
   )

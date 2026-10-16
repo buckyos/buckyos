@@ -9,6 +9,7 @@ import type { CapturedAnchor } from '../../anchors/registry'
 import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope } from '../../api/types'
 import { WorkspaceUiContext, useEdits, useLoad, useOutlineVersion, useStore, useUserState, useVersion, type AnnotationMark, type WorkspaceUi } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { BlockHost } from '../blocks/BlockHost'
 import { CanvasView, type CanvasFocus } from '../canvas/CanvasView'
 import { surfacesOf } from '../canvas/surfaceOps'
@@ -71,6 +72,7 @@ export interface ShellProps {
 
 export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, identity, onLogout, onLogin, onHome, devTools, target }: ShellProps) {
   const store = useStore()
+  const { t } = useAiwsText()
   const outlineVersion = useOutlineVersion()
   const [loadError, setLoadError] = useState<string | null>(null)
   useEffect(() => {
@@ -156,7 +158,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
       const offer = pathsOf(store.outline, 'guide').find((g) => store.userState.get(`guide:${g.entity_id}`) === undefined)
       if (!offer) return
       store.userState.set(`guide:${offer.entity_id}`, { index: 0, prompted: true } satisfies Json)
-      offerNotice.current = store.notify('info', `这个作品带有使用引导「${offer.title ?? offer.name ?? ''}」。`, { label: '开始引导', run: () => setGuide({ pathId: offer.entity_id, index: 0 }) })
+      offerNotice.current = store.notify('info', t('aiworkspace.shell.workspace.guideOffer', { name: offer.title ?? offer.name ?? '' }), { label: t('aiworkspace.shell.workspace.startGuide'), run: () => setGuide({ pathId: offer.entity_id, index: 0 }) })
     })
     return () => { live = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opened workspace, when the outline is there
@@ -171,9 +173,9 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
       store.userState.set('surface:active', surface.entity_id)
       store.userState.set('mode', 'canvas')
     } else if (target.surfaceId) {
-      store.notify('info', surfaces.length > 0 ? '链接指向的画布已不存在或你无权查看，已打开这个工作区的第一张画布。' : '链接指向的画布已不存在或你无权查看。')
+      store.notify('info', surfaces.length > 0 ? t('aiworkspace.shell.workspace.targetGoneFallback') : t('aiworkspace.shell.workspace.targetGone'))
     }
-  }, [loaded, target, surfaces, store])
+  }, [loaded, target, surfaces, store, t])
 
   // a new problem that needs a decision opens the save-state panel: problems stay visible (§10)
   const edits = useEdits()
@@ -215,12 +217,12 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
       const views = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.source_id === entityId && !e.deleted && surfaceOf(e.entity_id))
       const view = views.find((e) => surfaceOf(e.entity_id) === store.userState.get('surface:active')) ?? views[0]
       if (view) focusBlock(view.entity_id)
-      else store.notify('info', `「${entity.title ?? entity.name ?? entityId}」没有显示在任何画布上；手机上不提供数据源视图，请在电脑上查看。`)
+      else store.notify('info', t('aiworkspace.shell.workspace.notOnCanvas', { name: entity.title ?? entity.name ?? entityId }))
       return
     }
     setSelected(entityId)
     setTopMode('sources')
-  }, [store, setTopMode, phone])
+  }, [store, setTopMode, phone, t])
   const annotate = useCallback((anchor: CapturedAnchor) => {
     setDraft(anchor)
     if (store.userState.get('mode') !== 'sources') store.userState.set('ui:side', 'annotations')
@@ -232,15 +234,15 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   }, [store])
   const renderCell = useCallback((cellId: string, depth: number) => {
     const embedded = store.outline.get(cellId)
-    if (!embedded || embedded.deleted) return <div className="aiws-warning">嵌入的 Block 不存在或已删除（{cellId}）</div>
-    if (embedded.type_id !== 'buckyos.cell') return <div className="aiws-warning">嵌入目标不是 Block（{cellId}）</div>
+    if (!embedded || embedded.deleted) return <div className="aiws-warning">{t('aiworkspace.shell.workspace.embedMissing', { id: cellId })}</div>
+    if (embedded.type_id !== 'buckyos.cell') return <div className="aiws-warning">{t('aiworkspace.shell.workspace.embedNotBlock', { id: cellId })}</div>
     return (
       <div className="aiws-embedded" data-testid={`aiws-embed-${cellId}`}>
-        <div className="aiws-embedded-title" title="嵌入的 Block（只读）：到它所在的地方修改">↗ {embedded.title ?? embedded.name ?? cellId}</div>
+        <div className="aiws-embedded-title" title={t('aiworkspace.shell.workspace.embedTitle')}>↗ {embedded.title ?? embedded.name ?? cellId}</div>
         <BlockHost cellId={cellId} mode="view" view="source" depth={depth} />
       </div>
     )
-  }, [store])
+  }, [store, t])
   const ui = useMemo<WorkspaceUi & { draft: CapturedAnchor | null; clearDraft: () => void }>(() => ({
     entities, byId: new Map(entities.map((entity) => [entity.entity_id, entity])), annotations, openEntity,
     annotate: canComment ? annotate : null, activeAnnotation, setActiveAnnotation, renderCell, draft, clearDraft: () => setDraft(null),
@@ -290,7 +292,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   return (
     <div ref={rootRef} className="aiws-workspace" data-testid="aiws-workspace" data-workspace-id={store.session.workspaceId} data-session-id={store.session.sessionId} data-top-mode={mode} data-size={size} data-phone={phone ? 'true' : undefined}>
       <ShellContext.Provider value={shell}>
-        {loadError && !loaded && <div className="aiws-error" role="alert">无法读取工作区：{loadError}</div>}
+        {loadError && !loaded && <div className="aiws-error" role="alert">{t('aiworkspace.shell.workspace.loadError', { error: loadError })}</div>}
         {loaded && (
           <WorkspaceUiContext.Provider value={ui}>
             <div className="aiws-stage">

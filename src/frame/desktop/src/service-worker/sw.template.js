@@ -72,16 +72,23 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]))
 }
 
-/** The entry cannot be served: say so instead of a blank page or a half-loaded application. */
+/** The entry cannot be served: say so instead of a blank page or a half-loaded application. The worker cannot read
+ * the Desktop's language setting, so the page says it in Chinese and English, the browser's language first. */
 function unavailablePage(reason) {
-  const body = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>BuckyOS — 离线不可用</title></head>
+  const zh = `<p style="font-size:1.25rem;font-weight:600;margin:0 0 .5rem">无法离线启动 BuckyOS Desktop</p>
+<p>连接不到服务器，而本机缓存的应用资源不完整：${escapeHtml(reason.zh)}。</p>
+<p>缓存可能被浏览器清理过，或者这个版本从未在联网时完整载入。本机保存的离线数据没有被改动；请在恢复网络连接后重新载入。</p>`
+  const en = `<p style="font-size:1.25rem;font-weight:600;margin:0 0 .5rem">BuckyOS Desktop cannot start offline</p>
+<p>The server cannot be reached, and the application resources cached on this device are incomplete: ${escapeHtml(reason.en)}.</p>
+<p>The browser may have cleared the cache, or this version was never fully loaded while online. Offline data stored on this device was not touched; reload once you are connected again.</p>`
+  const chineseFirst = /^zh\b/i.test(self.navigator.language || '')
+  const [first, second] = chineseFirst ? [zh, en] : [en, zh]
+  const body = `<!doctype html><html lang="${chineseFirst ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>BuckyOS — ${chineseFirst ? '离线不可用' : 'Unavailable offline'}</title></head>
 <body style="font:14px/1.7 system-ui,sans-serif;max-width:36rem;margin:15vh auto 0;padding:1.5rem">
 <div role="alert" data-testid="desktop-offline-unavailable">
-<p style="font-size:1.25rem;font-weight:600;margin:0 0 .5rem">无法离线启动 BuckyOS Desktop</p>
-<p>连接不到服务器，而本机缓存的应用资源不完整：${escapeHtml(reason)}。</p>
-<p>缓存可能被浏览器清理过，或者这个版本从未在联网时完整载入。本机保存的离线数据没有被改动；请在恢复网络连接后重新载入。</p>
-<p style="color:#666">BuckyOS Desktop cannot start offline: the application resources cached on this device are incomplete. Reconnect and reload. Offline data stored on this device was not touched.</p>
-<button type="button" onclick="location.reload()" style="padding:.5rem 1rem;font:inherit;cursor:pointer">重新载入 / Reload</button>
+${first}
+<div style="color:#666">${second}</div>
+<button type="button" onclick="location.reload()" style="padding:.5rem 1rem;font:inherit;cursor:pointer">${chineseFirst ? '重新载入 / Reload' : 'Reload / 重新载入'}</button>
 </div></body></html>`
   return new Response(body, { status: 503, statusText: 'Offline resources unavailable', headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
 }
@@ -100,11 +107,11 @@ async function navigation(request) {
   }
   const cache = await caches.open(CACHE)
   const cached = await cache.match(INDEX)
-  if (!cached) return unavailablePage('入口页面 index.html 不在缓存中')
+  if (!cached) return unavailablePage({ zh: '入口页面 index.html 不在缓存中', en: 'the entry page index.html is not in the cache' })
   // The page is only useful with its scripts, styles and WASM modules: check before starting it.
   const have = new Set((await cache.keys()).map((entry) => entry.url))
   const missing = [...ASSETS.keys()].filter((url) => !have.has(url))
-  if (missing.length > 0) return unavailablePage(`缺少 ${missing.length} 个文件（例如 ${ASSETS.get(missing[0])}）`)
+  if (missing.length > 0) return unavailablePage({ zh: `缺少 ${missing.length} 个文件（例如 ${ASSETS.get(missing[0])}）`, en: `${missing.length} file(s) missing (e.g. ${ASSETS.get(missing[0])})` })
   return cached
 }
 

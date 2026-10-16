@@ -16,6 +16,7 @@ import type { WorkspaceStore } from '../state/store'
 import { BlockHost } from '../ui/blocks/BlockHost'
 import type { Camera } from '../ui/canvas/render/camera'
 import { WishPanel } from '../ui/wish/WishPanel'
+import { useAiwsText } from '../useAiwsText'
 import { command, ShowController } from './controller'
 import { fitStage, playable, resolveSteps, type ResolvedStep } from './model'
 import { InkLayer, PointerLayer, type InkStroke, type MarkTool } from './overlays'
@@ -87,6 +88,7 @@ export function StageView({ session, client, onExit }: { session: ShowSession; c
 
 function Stage({ session, client, onExit }: { session: ShowSession; client: AiwsClient; onExit: (reason?: string) => void }) {
   const { store } = session
+  const { t } = useAiwsText()
   const outlineVersion = useOutlineVersion()
   const pathVersion = useVersion(`e:${session.pathId}`)
   const loadPath = useCallback(() => store.session.read<KeyedContent<ShowPathPayload>>(session.pathId).then((r) => r.content.payload), [store, session.pathId])
@@ -101,14 +103,14 @@ function Stage({ session, client, onExit }: { session: ShowSession; client: Aiws
   }
   // a read-only show follows the live document: steps that change or go away are followed, not crashed into
   useEffect(() => { controller?.updateSteps(steps) }, [controller, steps])
-  if (!path) return <div className="aiws-show aiws-show-loading" data-testid="aiws-show">正在准备放映…</div>
+  if (!path) return <div className="aiws-show aiws-show-loading" data-testid="aiws-show">{t('aiworkspace.presentation.show.preparing')}</div>
   if (!controller) {
     return (
       <div className="aiws-show aiws-show-loading" data-testid="aiws-show">
         <div className="aiws-panel aiws-show-empty">
-          <b>这条路径没有可以放映的步骤</b>
-          <div className="aiws-muted">步骤都已停用，或它们的目标已删除。请在“路径编辑”中检查失效项。</div>
-          <button type="button" data-testid="aiws-show-exit" onClick={() => onExit()}>退出放映</button>
+          <b>{t('aiworkspace.presentation.show.emptyTitle')}</b>
+          <div className="aiws-muted">{t('aiworkspace.presentation.show.emptyDetail')}</div>
+          <button type="button" data-testid="aiws-show-exit" onClick={() => onExit()}>{t('aiworkspace.presentation.show.exitShow')}</button>
         </div>
       </div>
     )
@@ -118,6 +120,7 @@ function Stage({ session, client, onExit }: { session: ShowSession; client: Aiws
 
 function StageRunning({ session, client, onExit, controller, path }: { session: ShowSession; client: AiwsClient; onExit: (reason?: string) => void; controller: ShowController; path: ShowPathPayload }) {
   const { store } = session
+  const { t } = useAiwsText()
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot)
   const current = controller.current()
   const next = controller.next()
@@ -147,7 +150,7 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
     relayRef.current = relay
     relay.onCommand = (cmd) => controller.apply(cmd)
     relay.onEnded = (reason) => { clearActiveShow(session.workspaceId); exitRef.current(reason) }
-    relay.onTrouble = (detail) => setProblem(detail ? `提示器连接不稳定：${detail}` : null)
+    relay.onTrouble = (detail) => setProblem(detail)
     relay.run()
     const publish = () => {
       relay.publish(controller.published(relay.showId, session.pathId, startedAt))
@@ -243,13 +246,13 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
       const other = details.screens.find((s) => !s.isPrimary) ?? details.currentScreen
       await rootRef.current?.requestFullscreen({ screen: other } as FullscreenOptions)
     } catch (error) {
-      store.notify('error', `无法放到其他屏幕：${describeError(error)}`)
+      store.notify('error', t('aiworkspace.presentation.show.otherScreenFailed', { detail: describeError(error) }))
     }
   }
 
   const steps = controller.playable()
   const live = session.start?.live ?? false
-  const statusText = live ? '非公开放映：可操作的 Block 写入临时副本，本场修改不会保存' : '非公开放映：本场修改不会保存'
+  const statusText = live ? t('aiworkspace.presentation.show.statusLive') : t('aiworkspace.presentation.show.statusReadOnly')
   const visibleControls = controlsShown || panel !== 'none' || tool === 'pen' || tool === 'eraser'
   return (
     <div ref={rootRef} className={`aiws-show${visibleControls ? '' : ' is-idle'}${tool !== 'none' ? ` has-tool-${tool}` : ''}`} data-testid="aiws-show" data-show-id={session.start?.show_id}
@@ -263,43 +266,43 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
 
       {state.free && (
         <button type="button" className="aiws-show-back aiws-stage-ui" data-testid="aiws-show-back" onClick={() => controller.apply(command('back'))}>
-          <RotateCcw size={16} aria-hidden="true" />回到本步骤
+          <RotateCcw size={16} aria-hidden="true" />{t('aiworkspace.presentation.show.backToStep')}
         </button>
       )}
-      {editing && <div className="aiws-show-hint aiws-stage-ui" role="status">正在操作这个 Block：按键交给它；Esc 交还给放映</div>}
+      {editing && <div className="aiws-show-hint aiws-stage-ui" role="status">{t('aiworkspace.presentation.show.operatingBlock')}</div>}
 
-      <div className="aiws-show-bar aiws-panel aiws-stage-ui" role="toolbar" aria-label="放映控制" data-testid="aiws-show-bar">
-        <button type="button" className="aiws-tool" aria-label="上一项" title="上一项（← PageUp）" data-testid="aiws-show-prev" disabled={state.index === 0 && !state.free} onClick={() => controller.apply(command('prev'))}><ChevronLeft size={18} /></button>
-        <button type="button" className="aiws-tool aiws-show-counter" aria-label="步骤目录" title="步骤目录" aria-pressed={panel === 'steps'} data-testid="aiws-show-counter" onClick={() => setPanel(panel === 'steps' ? 'none' : 'steps')}>
+      <div className="aiws-show-bar aiws-panel aiws-stage-ui" role="toolbar" aria-label={t('aiworkspace.presentation.show.controls')} data-testid="aiws-show-bar">
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.prev')} title={t('aiworkspace.presentation.show.prevTitle')} data-testid="aiws-show-prev" disabled={state.index === 0 && !state.free} onClick={() => controller.apply(command('prev'))}><ChevronLeft size={18} /></button>
+        <button type="button" className="aiws-tool aiws-show-counter" aria-label={t('aiworkspace.presentation.show.stepList')} title={t('aiworkspace.presentation.show.stepList')} aria-pressed={panel === 'steps'} data-testid="aiws-show-counter" onClick={() => setPanel(panel === 'steps' ? 'none' : 'steps')}>
           <ListOrdered size={16} aria-hidden="true" /><span>{state.index + 1} / {steps.length}</span>
         </button>
-        <button type="button" className="aiws-tool" aria-label="下一项" title="下一项（→ PageDown 空格）" data-testid="aiws-show-next" disabled={state.index >= steps.length - 1 && !state.free} onClick={() => controller.apply(command('next'))}><ChevronRight size={18} /></button>
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.next')} title={t('aiworkspace.presentation.show.nextTitle')} data-testid="aiws-show-next" disabled={state.index >= steps.length - 1 && !state.free} onClick={() => controller.apply(command('next'))}><ChevronRight size={18} /></button>
         <span className="aiws-show-sep" />
-        <button type="button" className="aiws-tool" aria-label="黑屏" title="黑屏（B）" aria-pressed={state.black} data-testid="aiws-show-black" onClick={() => controller.apply(command('black'))}><Square size={16} fill={state.black ? 'currentColor' : 'none'} /></button>
-        <button type="button" className="aiws-tool" aria-label="激光笔" title="激光笔" aria-pressed={tool === 'pointer'} data-testid="aiws-show-pointer" onClick={() => setTool(tool === 'pointer' ? 'none' : 'pointer')}><MousePointer2 size={16} /></button>
-        <button type="button" className="aiws-tool" aria-label="板书" title="板书（触控笔或鼠标）" aria-pressed={tool === 'pen'} data-testid="aiws-show-pen" onClick={() => setTool(tool === 'pen' ? 'none' : 'pen')}><Pencil size={16} /></button>
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.black')} title={t('aiworkspace.presentation.show.blackTitle')} aria-pressed={state.black} data-testid="aiws-show-black" onClick={() => controller.apply(command('black'))}><Square size={16} fill={state.black ? 'currentColor' : 'none'} /></button>
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.pointer')} title={t('aiworkspace.presentation.show.pointer')} aria-pressed={tool === 'pointer'} data-testid="aiws-show-pointer" onClick={() => setTool(tool === 'pointer' ? 'none' : 'pointer')}><MousePointer2 size={16} /></button>
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.pen')} title={t('aiworkspace.presentation.show.penTitle')} aria-pressed={tool === 'pen'} data-testid="aiws-show-pen" onClick={() => setTool(tool === 'pen' ? 'none' : 'pen')}><Pencil size={16} /></button>
         {(tool === 'pen' || tool === 'eraser') && (
           <span className="aiws-show-ink-tools" data-testid="aiws-show-ink-tools">
-            {INK_COLORS.map((color) => <button key={color} type="button" className={`aiws-show-swatch${inkColor === color && tool === 'pen' ? ' is-on' : ''}`} style={{ background: color }} aria-label={`笔色 ${color}`} onClick={() => { setInkColor(color); setTool('pen') }} />)}
-            <button type="button" className="aiws-tool" aria-label="橡皮" title="橡皮" aria-pressed={tool === 'eraser'} data-testid="aiws-show-eraser" onClick={() => setTool(tool === 'eraser' ? 'pen' : 'eraser')}><Eraser size={16} /></button>
-            <button type="button" className="aiws-tool" aria-label="撤销一笔" title="撤销一笔" disabled={ink.length === 0} data-testid="aiws-show-ink-undo" onClick={() => setInk(ink.slice(0, -1))}><Undo2 size={16} /></button>
-            <button type="button" className="aiws-tool" aria-label="清除板书" title="清除板书" disabled={ink.length === 0} data-testid="aiws-show-ink-clear" onClick={() => setInk([])}><Trash2 size={16} /></button>
+            {INK_COLORS.map((color) => <button key={color} type="button" className={`aiws-show-swatch${inkColor === color && tool === 'pen' ? ' is-on' : ''}`} style={{ background: color }} aria-label={t('aiworkspace.presentation.show.penColor', { color })} onClick={() => { setInkColor(color); setTool('pen') }} />)}
+            <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.eraser')} title={t('aiworkspace.presentation.show.eraser')} aria-pressed={tool === 'eraser'} data-testid="aiws-show-eraser" onClick={() => setTool(tool === 'eraser' ? 'pen' : 'eraser')}><Eraser size={16} /></button>
+            <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.undoStroke')} title={t('aiworkspace.presentation.show.undoStroke')} disabled={ink.length === 0} data-testid="aiws-show-ink-undo" onClick={() => setInk(ink.slice(0, -1))}><Undo2 size={16} /></button>
+            <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.clearInk')} title={t('aiworkspace.presentation.show.clearInk')} disabled={ink.length === 0} data-testid="aiws-show-ink-clear" onClick={() => setInk([])}><Trash2 size={16} /></button>
           </span>
         )}
         <span className="aiws-show-sep" />
-        <button type="button" className="aiws-tool" aria-label="讲解备注" title="展开当前步骤的备注（单屏排练）" aria-pressed={panel === 'notes'} data-testid="aiws-show-notes" onClick={() => setPanel(panel === 'notes' ? 'none' : 'notes')}><NotebookText size={16} /></button>
-        <button type="button" className="aiws-tool" aria-label="复制提示器链接" title={link ? (copied ? '已复制' : '复制提示器链接：任何浏览器打开即可翻页并看备注') : '离线放映没有提示器链接'} disabled={!link} data-testid="aiws-show-link"
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.notes')} title={t('aiworkspace.presentation.show.notesTitle')} aria-pressed={panel === 'notes'} data-testid="aiws-show-notes" onClick={() => setPanel(panel === 'notes' ? 'none' : 'notes')}><NotebookText size={16} /></button>
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.copyLink')} title={link ? (copied ? t('aiworkspace.presentation.show.copied') : t('aiworkspace.presentation.show.copyLinkTitle')) : t('aiworkspace.presentation.show.noLinkOffline')} disabled={!link} data-testid="aiws-show-link"
           onClick={() => { copyLink(); setPanel(panel === 'link' ? 'none' : 'link') }}><Link2 size={16} /></button>
-        <button type="button" className="aiws-tool" aria-label="全屏" title="全屏" data-testid="aiws-show-fullscreen" onClick={fullscreen}><Expand size={16} /></button>
-        {screens && <button type="button" className="aiws-tool" aria-label="放到其他屏幕" title="全屏显示到另一块屏幕" onClick={() => { void toOtherScreen() }}><Monitor size={16} /></button>}
+        <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.fullscreen')} title={t('aiworkspace.presentation.show.fullscreen')} data-testid="aiws-show-fullscreen" onClick={fullscreen}><Expand size={16} /></button>
+        {screens && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.otherScreen')} title={t('aiworkspace.presentation.show.otherScreenTitle')} onClick={() => { void toOtherScreen() }}><Monitor size={16} /></button>}
         <span className="aiws-show-sep" />
-        <span className="aiws-show-status" data-testid="aiws-show-status" title={statusText}>{live ? '临时副本' : session.start?.locked ? '只读放映 · 已关闭写入' : session.start ? '只读放映' : '本地放映'}</span>
-        <button type="button" className="aiws-tool aiws-tool-text" data-testid="aiws-show-exit" title="退出放映（Esc）" onClick={exit}><LogOut size={16} /><span>退出</span></button>
+        <span className="aiws-show-status" data-testid="aiws-show-status" title={statusText}>{live ? t('aiworkspace.presentation.show.modeClone') : session.start?.locked ? t('aiworkspace.presentation.show.modeLocked') : session.start ? t('aiworkspace.presentation.show.modeReadOnly') : t('aiworkspace.presentation.show.modeLocal')}</span>
+        <button type="button" className="aiws-tool aiws-tool-text" data-testid="aiws-show-exit" title={t('aiworkspace.presentation.show.exitTitle')} onClick={exit}><LogOut size={16} /><span>{t('aiworkspace.presentation.show.exit')}</span></button>
       </div>
-      {panel === 'none' && <div className="aiws-show-note aiws-stage-ui" role="note" data-testid="aiws-show-note">{statusText}{problem ? ` · ${problem}` : ''}</div>}
+      {panel === 'none' && <div className="aiws-show-note aiws-stage-ui" role="note" data-testid="aiws-show-note">{statusText}{problem ? ` · ${t('aiworkspace.presentation.show.prompterTrouble', { detail: problem })}` : ''}</div>}
 
       {panel === 'steps' && (
-        <div className="aiws-show-panel aiws-panel aiws-stage-ui" data-testid="aiws-show-steps" role="listbox" aria-label="步骤目录">
+        <div className="aiws-show-panel aiws-panel aiws-stage-ui" data-testid="aiws-show-steps" role="listbox" aria-label={t('aiworkspace.presentation.show.stepList')}>
           {steps.map((s, i) => (
             <button key={s.step.id} type="button" role="option" aria-selected={i === state.index} className={`aiws-show-step${i === state.index ? ' is-current' : ''}`} data-testid={`aiws-show-step-${s.step.id}`}
               onClick={() => { controller.apply(command('goto', { step_id: s.step.id })); setPanel('none') }}>
@@ -311,24 +314,24 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
       {panel === 'notes' && (
         <div className="aiws-show-panel aiws-show-notes aiws-panel aiws-stage-ui" data-testid="aiws-show-notes-panel">
           <div className="aiws-show-notes-title">{current?.title}</div>
-          <div className="aiws-show-notes-body">{target?.notes || <span className="aiws-muted">这一步没有讲解备注。</span>}</div>
-          {next && <div className="aiws-muted">下一步：{next.title}{nextTarget?.notes ? '（有备注）' : ''}</div>}
+          <div className="aiws-show-notes-body">{target?.notes || <span className="aiws-muted">{t('aiworkspace.presentation.show.noNotes')}</span>}</div>
+          {next && <div className="aiws-muted">{nextTarget?.notes ? t('aiworkspace.presentation.show.nextStepWithNotes', { title: next.title }) : t('aiworkspace.presentation.show.nextStep', { title: next.title })}</div>}
         </div>
       )}
       {panel === 'link' && link && (
         <div className="aiws-show-panel aiws-panel aiws-stage-ui" data-testid="aiws-show-link-panel">
-          <b>提示器链接</b>
-          <div className="aiws-muted">在任何浏览器（手机、平板、另一台电脑）打开它，即进入本场的演讲者控制面板。持有链接的人可以翻页并看到备注；放映结束后链接立即失效。</div>
-          <input readOnly value={link} aria-label="提示器链接" data-testid="aiws-show-link-input" onFocus={(event) => event.currentTarget.select()} />
+          <b>{t('aiworkspace.presentation.show.link')}</b>
+          <div className="aiws-muted">{t('aiworkspace.presentation.show.linkHelp')}</div>
+          <input readOnly value={link} aria-label={t('aiworkspace.presentation.show.link')} data-testid="aiws-show-link-input" onFocus={(event) => event.currentTarget.select()} />
           <div className="aiws-dialog-actions">
-            <button type="button" className="is-primary" onClick={copyLink}>{copied ? '已复制' : '复制'}</button>
-            <button type="button" onClick={() => window.open(link, '_blank', 'noopener')}>在新窗口打开</button>
+            <button type="button" className="is-primary" onClick={copyLink}>{copied ? t('aiworkspace.presentation.show.copied') : t('aiworkspace.presentation.show.copy')}</button>
+            <button type="button" onClick={() => window.open(link, '_blank', 'noopener')}>{t('aiworkspace.presentation.show.openInWindow')}</button>
           </div>
         </div>
       )}
       {wish && (
         <div className="aiws-show-drawer aiws-panel aiws-stage-ui" data-testid="aiws-show-wish">
-          <div className="aiws-dialog-head"><b>许愿格</b><span className="aiws-grow" /><button type="button" onClick={() => setWish(null)}>关闭</button></div>
+          <div className="aiws-dialog-head"><b>{t('aiworkspace.presentation.show.wish')}</b><span className="aiws-grow" /><button type="button" onClick={() => setWish(null)}>{t('aiworkspace.common.close')}</button></div>
           <WishPanel wishId={wish.wishId} cellId={wish.cellId} readOnly={!live} />
         </div>
       )}

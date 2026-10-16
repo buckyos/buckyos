@@ -18,6 +18,7 @@ import { Node as PMNode, type Schema } from 'prosemirror-model'
 import type { EditorView } from 'prosemirror-view'
 import { randomId } from '../api/ids'
 import type { AiwsCore } from '../api/wasm'
+import { aiwsT } from '../i18n'
 import { newBlockId } from './blockId'
 
 export interface MdSeg {
@@ -44,7 +45,7 @@ export function markdownCodec(core: AiwsCore, nameOf: (entityId: string) => stri
     toMd: (node) => {
       if (node.type.name === 'object_embed') {
         const id = String((node.attrs.ref as { entity_id?: string } | null)?.entity_id ?? '')
-        return `![嵌入 · ${nameOf(id).replace(/[[\]]/g, '')}](embed:${id})`
+        return `![${aiwsT('aiworkspace.richtext.markdown.embed', { name: nameOf(id).replace(/[[\]]/g, '') })}](embed:${id})`
       }
       return core.richtext_to_markdown(JSON.stringify({ type: 'doc', content: [node.toJSON()] })).replace(/\s+$/, '')
     },

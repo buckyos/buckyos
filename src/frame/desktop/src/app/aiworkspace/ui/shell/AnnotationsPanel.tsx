@@ -6,6 +6,7 @@ import { useContext, useState } from 'react'
 import type { CapturedAnchor } from '../../anchors/registry'
 import { authorLabel, readGuestName } from '../../state/guest'
 import { useStore, useWorkspaceUi } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { annotationOp } from '../creators'
 import { anchorStatus, annotationLabel, revealAnnotation } from '../annotationInfo'
 import { ShellContext } from './shellContext'
@@ -15,6 +16,7 @@ export interface NoteDraft { save: (body: string) => Promise<boolean>; cancel: (
 
 export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { parentId: string | null; draft?: CapturedAnchor | null; onDraftDone?: () => void; noteDraft?: NoteDraft | null }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const { annotations: all, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft, annotationFilter, showAnnotations } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: CapturedAnchor | null; clearDraft?: () => void }
   const [body, setBody] = useState('')
   const [noteBody, setNoteBody] = useState('')
@@ -27,25 +29,25 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { 
   const filterLabel = annotationFilter ? store.outline.get(annotationFilter) : undefined
   return (
     <div className="aiws-annotations" data-testid="aiws-annotations">
-      <div className="aiws-panel-title">批注 <span className="aiws-muted">{annotations.length}</span></div>
+      <div className="aiws-panel-title">{t('aiworkspace.shell.side.annotations')} <span className="aiws-muted">{annotations.length}</span></div>
       {annotationFilter && (
         <div className="aiws-inline-form" data-testid="aiws-annotations-filter">
-          <span className="aiws-muted">只看「{filterLabel?.title ?? '便签'}」的回复</span>
-          <button type="button" className="aiws-link" data-testid="aiws-annotations-filter-clear" onClick={() => showAnnotations(null)}>显示全部</button>
+          <span className="aiws-muted">{t('aiworkspace.shell.annotations.filter', { name: filterLabel?.title ?? t('aiworkspace.shell.annotations.note') })}</span>
+          <button type="button" className="aiws-link" data-testid="aiws-annotations-filter-clear" onClick={() => showAnnotations(null)}>{t('aiworkspace.shell.annotations.showAll')}</button>
         </div>
       )}
       {pending && (
         <form className="aiws-annotation-draft" onSubmit={(event) => {
           event.preventDefault()
           if (body.trim() === '') return
-          void store.submit({ editId: `annotation:new`, label: `批注 ${pending.label}`, mine: body, hasMine: true, operations: [annotationOp(store.core, store.outline.childrenOf(target), target, pending, body.trim(), guest ? readGuestName() : undefined)] })
+          void store.submit({ editId: `annotation:new`, label: t('aiworkspace.shell.annotations.editLabel', { target: pending.label }), mine: body, hasMine: true, operations: [annotationOp(store.core, store.outline.childrenOf(target), target, pending, body.trim(), guest ? readGuestName() : undefined)] })
             .then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { setBody(''); done() } })
         }}>
-          <div data-testid="aiws-annotation-draft-target">批注对象：{pending.label}</div>
+          <div data-testid="aiws-annotation-draft-target">{t('aiworkspace.shell.annotations.target', { target: pending.label })}</div>
           {pending.context?.quote && pending.range && <div className="aiws-annotation-quote">{pending.context.quote.exact}</div>}
-          <textarea aria-label="批注内容" autoFocus rows={2} value={body} onChange={(event) => setBody(event.target.value)} maxLength={4000} />
-          <button type="submit" data-testid="aiws-annotation-save">保存批注</button>
-          <button type="button" onClick={() => { setBody(''); done() }}>取消</button>
+          <textarea aria-label={t('aiworkspace.shell.annotations.body')} autoFocus rows={2} value={body} onChange={(event) => setBody(event.target.value)} maxLength={4000} />
+          <button type="submit" data-testid="aiws-annotation-save">{t('aiworkspace.shell.annotations.save')}</button>
+          <button type="button" onClick={() => { setBody(''); done() }}>{t('aiworkspace.common.cancel')}</button>
         </form>
       )}
       {noteDraft && (
@@ -54,14 +56,14 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { 
           if (noteBody.trim() === '') return
           void noteDraft.save(noteBody.trim()).then((saved) => { if (saved) setNoteBody('') })
         }}>
-          <div>新便签：保存后放在画布上{guest && readGuestName() ? `，署名“${readGuestName()}”` : ''}</div>
-          <textarea aria-label="便签内容" autoFocus rows={3} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} maxLength={4000} />
-          <button type="submit" data-testid="aiws-note-draft-save">放到画布</button>
-          <button type="button" onClick={() => { setNoteBody(''); noteDraft.cancel() }}>取消</button>
+          <div>{guest && readGuestName() ? t('aiworkspace.shell.annotations.noteDraftSigned', { name: readGuestName() }) : t('aiworkspace.shell.annotations.noteDraft')}</div>
+          <textarea aria-label={t('aiworkspace.shell.annotations.noteBody')} autoFocus rows={3} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} maxLength={4000} />
+          <button type="submit" data-testid="aiws-note-draft-save">{t('aiworkspace.shell.annotations.placeNote')}</button>
+          <button type="button" onClick={() => { setNoteBody(''); noteDraft.cancel() }}>{t('aiworkspace.common.cancel')}</button>
         </form>
       )}
       {annotations.length === 0 && !pending && (
-        <div className="aiws-muted">{annotate ? '还没有批注。在表格单元格上点 ✎，在富文本里选中文字后点“批注”，或在画布上选中 Block 后点“批注”。' : '还没有批注。'}</div>
+        <div className="aiws-muted">{annotate ? t('aiworkspace.shell.annotations.emptyHint') : t('aiworkspace.shell.annotations.empty')}</div>
       )}
       {annotations.map((mark) => {
         const capabilities = mark.envelope.capabilities
@@ -79,16 +81,16 @@ export function AnnotationsPanel({ parentId, draft, onDraftDone, noteDraft }: { 
             onClick={() => { setActiveAnnotation(mark.entityId); revealAnnotation(mark.entityId) }}
           >
             <div className="aiws-annotation-body">{mark.payload.body}</div>
-            {quote && mark.payload.range && mark.anchor.level !== 'range' && <div className="aiws-annotation-quote" title="批注时选中的原文">{quote}</div>}
+            {quote && mark.payload.range && mark.anchor.level !== 'range' && <div className="aiws-annotation-quote" title={t('aiworkspace.shell.annotations.quote')}>{quote}</div>}
             <div className="aiws-annotation-meta">
-              <span>{free ? '自由便签' : annotationLabel(mark)}</span>
+              <span>{free ? t('aiworkspace.shell.annotations.freeNote') : annotationLabel(mark)}</span>
               {!free && <span data-testid="aiws-anchor-state">{anchorStatus(mark.anchor)}</span>}
               {authorLabel(mark.payload) && <span data-testid="aiws-annotation-author">{authorLabel(mark.payload)}</span>}
               {(capabilities.includes('comment') || capabilities.includes('manage')) && (
                 <button type="button" className="aiws-link" onClick={(event) => {
                   event.stopPropagation()
-                  void store.submit({ editId: `entity:${mark.entityId}`, label: '删除批注', operations: [{ op: 'entity.delete', entity_id: mark.entityId, expect: { rev: mark.envelope.life_rev } }] })
-                }}>删除</button>
+                  void store.submit({ editId: `entity:${mark.entityId}`, label: t('aiworkspace.shell.annotations.deleteLabel'), operations: [{ op: 'entity.delete', entity_id: mark.entityId, expect: { rev: mark.envelope.life_rev } }] })
+                }}>{t('aiworkspace.common.delete')}</button>
               )}
             </div>
           </div>

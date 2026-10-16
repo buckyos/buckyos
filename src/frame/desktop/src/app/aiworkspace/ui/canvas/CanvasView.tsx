@@ -16,6 +16,8 @@ import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'luc
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
 import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../api/types'
+import { aiwsT } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { BlockBoundary } from '../blocks/BlockHost'
@@ -100,10 +102,11 @@ export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
 function EmptyCanvas({ mode }: { mode: CanvasMode }) {
   const store = useStore()
   const shell = useShell()
+  const { t } = useAiwsText()
   const canStructure = store.session.info().capabilities.includes('structure') && !shell.phone
   const create = async (layout: 'free' | 'flow') => {
-    const { ops, surfaceId } = createSurfaceOps(store, layout === 'free' ? '画布 1' : '页 1', layout)
-    const outcome = await store.submit({ editId: 'surface:new', label: '创建画布', operations: ops })
+    const { ops, surfaceId } = createSurfaceOps(store, layout === 'free' ? t('aiworkspace.canvas.empty.firstCanvas') : t('aiworkspace.canvas.empty.firstPage'), layout)
+    const outcome = await store.submit({ editId: 'surface:new', label: t('aiworkspace.canvas.empty.createLabel'), operations: ops })
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') shell.selectSurface(surfaceId)
   }
   return (
@@ -111,13 +114,13 @@ function EmptyCanvas({ mode }: { mode: CanvasMode }) {
       <div className="aiws-canvas-body">
         <div className="aiws-canvas-main is-empty">
           <div className="aiws-empty" data-testid="aiws-no-surface">
-            <p>这个工作区还没有画布。</p>
+            <p>{t('aiworkspace.canvas.empty.noCanvas')}</p>
             {canStructure ? (
               <div className="aiws-dialog-actions">
-                <button type="button" className="is-primary" data-testid="aiws-create-first-surface" onClick={() => { void create('free') }}>新建自由画布</button>
-                <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void create('flow') }}>新建流式页</button>
+                <button type="button" className="is-primary" data-testid="aiws-create-first-surface" onClick={() => { void create('free') }}>{t('aiworkspace.canvas.empty.newFree')}</button>
+                <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void create('flow') }}>{t('aiworkspace.canvas.empty.newFlow')}</button>
               </div>
-            ) : <p className="aiws-muted">{shell.phone ? '手机上只能查看；新建画布请在电脑上打开这个工作区。' : '你没有新建画布的权限；数据源中的数据仍可查看。'}</p>}
+            ) : <p className="aiws-muted">{t(shell.phone ? 'aiworkspace.canvas.empty.phoneViewOnly' : 'aiworkspace.canvas.empty.noPermission')}</p>}
           </div>
           <div className="aiws-chrome-top">
             {shell.phone ? <ViewToolbar camera={null} hasSelection={false} onFitAll={() => undefined} onFitSelection={() => undefined} annotate={null} /> : <MainToolbar canvas={null} />}
@@ -136,6 +139,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const store = useStore()
   const ui = useWorkspaceUi()
   const shell = useShell()
+  const { t, list } = useAiwsText()
   const readOnlyReason = useReadOnlyReason()
   const readOnlyNow = readOnlyReason !== null
   const overlayOpen = useOverlayOpen()
@@ -180,7 +184,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!annotatePick || next.size !== 1) return
     const picked = store.outline.get([...next][0])
     const source = picked?.source_id ? store.outline.get(picked.source_id) : undefined
-    if (!source) { store.notify('info', '这个对象没有数据，暂不支持批注：请点选表格、富文本、记录等数据对象。'); return }
+    if (!source) { store.notify('info', t('aiworkspace.canvas.annotate.noData')); return }
     setAnnotatePick(false)
     ui.annotate?.({ target: { entity_id: source.entity_id }, label: source.title ?? source.name ?? source.entity_id })
   }
@@ -299,8 +303,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // optimistic: the frames already moved; the stream confirms (or another client's later move overrides, D1)
     for (const change of changes) store.outline.patchLocal(change.id, { placement: change.placement, ...(change.parentId ? { parent_id: change.parentId } : {}) })
     const moved = changes.filter((c) => c.parentId).length
-    const label = moved > 0 ? (moved === 1 ? `移入${changes[0].parentId === surfaceId ? '画布' : '分组'}` : `移动 ${changes.length} 个 Block（${moved} 个换了所在分组）`)
-      : changes.length === 1 ? `移动 ${laid.get(changes[0].id)?.entity.title ?? changes[0].id}` : `移动 ${changes.length} 个 Block`
+    const label = moved > 0 ? (moved === 1 ? aiwsT(changes[0].parentId === surfaceId ? 'aiworkspace.canvas.layout.moveIntoCanvas' : 'aiworkspace.canvas.layout.moveIntoGroup') : aiwsT('aiworkspace.canvas.layout.moveRegrouped', { count: changes.length, moved }))
+      : changes.length === 1 ? aiwsT('aiworkspace.canvas.moveNamedLabel', { name: laid.get(changes[0].id)?.entity.title ?? changes[0].id }) : aiwsT('aiworkspace.canvas.layout.moveBlocks', { count: changes.length })
     void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label, operations: ops })
   }, [store, laid, policy.layout, surfaceId])
 
@@ -309,13 +313,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
    * alone (a public link) — the notes it wrote, whose envelopes carry `structure` (公开链接便签). */
   const canLayoutBlock = useCallback((id: string) => canLayout || (policy.layout && !readOnlyNow && Boolean(store.outline.get(id)?.capabilities.includes('structure'))),
     [canLayout, policy.layout, readOnlyNow, store])
-  const insertReason = !policy.insert ? (mode === 'view' ? '查看模式不能插入' : '播放编辑占位中不能插入')
-    : !surface.capabilities.includes('structure') ? '没有在这张画布上添加对象的权限'
+  const insertReason = !policy.insert ? t(mode === 'view' ? 'aiworkspace.canvas.reason.viewModeInsert' : 'aiworkspace.canvas.reason.presentationInsert')
+    : !surface.capabilities.includes('structure') ? t('aiworkspace.canvas.reason.noInsertPermission')
       : readOnlyReason
   /** A note is an annotation: `comment` is enough (a public link's guest), and it can be added wherever annotating is —
    * view mode and phones too, from the annotate menu and the canvas menu (a long press on a phone). */
   const noteReason = !policy.annotate ? insertReason
-    : !surface.capabilities.includes('structure') && !surface.capabilities.includes('comment') ? '没有在这张画布上添加便签的权限'
+    : !surface.capabilities.includes('structure') && !surface.capabilities.includes('comment') ? t('aiworkspace.canvas.reason.noNotePermission')
       : readOnlyReason
   /** What the creation tools (edit mode only) offer for notes. */
   const toolNoteReason = policy.insert ? noteReason : insertReason
@@ -339,14 +343,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const definition = request.entry.definition
     if (!definition.create || insertReasonOf(definition.type)) return false
     // a flow page shows no connectors (连接线实现方案 §8.3)
-    if (definition.type === 'connector' && !isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return false }
+    if (definition.type === 'connector' && !isFree) { store.notify('info', aiwsT('aiworkspace.canvas.flowNoConnectors')); return false }
     let config = request.entry.config || request.config ? { ...(request.entry.config ?? {}), ...(request.config ?? {}) } : undefined
     if (request.file) {
       try {
         const uploaded = await store.session.uploadAsset(request.file, request.file.name)
         config = { ...(config ?? {}), file: { object_id: uploaded.object_id, file_name: request.file.name } }
       } catch (error) {
-        store.notify('error', `上传“${request.file.name}”失败：${describeError(error)}。没有插入任何对象。`)
+        store.notify('error', aiwsT('aiworkspace.canvas.uploadFailed', { name: request.file.name, reason: describeError(error) }))
         return false
       }
     }
@@ -364,14 +368,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     try {
       operations = definition.create({ store, surfaceId, contentFolderId, cellId, dataId, parentId: parent, orderKey, dataOrderKey, placement, title: request.title, existingSourceId: request.sourceId, config })
     } catch (error) {
-      store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`)
+      store.notify('error', aiwsT('aiworkspace.canvas.insertFailed', { name: request.entry.title, reason: describeError(error) }))
       return false
     }
     if (!isFree) for (const op of operations) if (op.op === 'entity.create' && op.entity_id === cellId) delete (op as Record<string, unknown>).placement
     if (also) {
-      try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`); return false }
+      try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', aiwsT('aiworkspace.canvas.insertFailed', { name: request.entry.title, reason: describeError(error) })); return false }
     }
-    const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${request.entry.title}`, operations })
+    const outcome = await store.submit({ editId: `insert:${cellId}`, label: aiwsT('aiworkspace.canvas.insertNamed', { name: request.entry.title }), operations })
     if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') return false
     if (isFree) setSelectionState(new Set([cellId]))
     if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
@@ -387,7 +391,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [noteDraft, setNoteDraft] = useState<{ world: { x: number; y: number } } | null>(null)
   const noteEntry = registryEntries().find((entry) => entry.definition.type === 'note' && entry.catalog.standard)
   const addNote = (world: { x: number; y: number } | null, parentId?: string) => {
-    if (!noteEntry || noteReason) { store.notify('info', noteReason ?? '没有便签对象'); return }
+    if (!noteEntry || noteReason) { store.notify('info', noteReason ?? t('aiworkspace.canvas.noNoteEntry')); return }
     if (policy.editContent || !isFree) { void insert({ entry: noteEntry }, world, parentId); return }
     setNoteDraft({ world: world ?? centreSpot(noteEntry.definition.defaultSize) })
     setAnnotatePick(false)
@@ -417,7 +421,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // the connector entry is a tool: press and drag on the canvas draws a line (标准对象的交互改进 §6.1)
     if (entry.definition.type === 'connector') {
       if (insertReason) { store.notify('info', insertReason); return }
-      if (!isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return }
+      if (!isFree) { store.notify('info', t('aiworkspace.canvas.flowNoConnectors')); return }
       setPlacing(null)
       setTool((current) => (current === 'connector' ? 'select' : 'connector'))
       return
@@ -429,7 +433,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- a flow page inserts where the user is (流式页交互改进 §2.3): after a Block, a file asked for first when needed
   const insertGroup = (parent: string, afterId?: string | null) => {
     const groupId = randomId('g')
-    void store.submit({ editId: `insert:${groupId}`, label: '插入分组', operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: siblingKey(store, parent, afterId), payload: { kind: 'group', layout: { mode: 'flow' }, title: '分组' } }] })
+    void store.submit({ editId: `insert:${groupId}`, label: t('aiworkspace.canvas.insertGroup'), operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: siblingKey(store, parent, afterId), payload: { kind: 'group', layout: { mode: 'flow' }, title: t('aiworkspace.canvas.group') } }] })
   }
   const insertFlow = (entry: CatalogEntry, parent: string, afterId: string | null) => {
     const reason = insertReasonOf(entry.definition.type)
@@ -459,15 +463,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     onActivate: () => { if (subject) setEditing(subject.entity_id) }, onDeactivate: () => setEditing(null),
   })
   /** Locked objects stay where they are (§7.2): skipped by delete, moves and grouping, with a note. */
-  const unlocked = (ids: string[], what: string) => {
+  const unlocked = (ids: string[], what: 'delete' | 'group' | 'move') => {
     const kept = ids.filter((id) => !laid.get(id)?.locked)
-    if (kept.length < ids.length) store.notify('info', `${ids.length - kept.length} 个已锁定的对象没有${what}；先解锁。`)
+    const note = { delete: 'aiworkspace.canvas.locked.notDeleted', group: 'aiworkspace.canvas.locked.notGrouped', move: 'aiworkspace.canvas.locked.notMoved' }[what]
+    if (kept.length < ids.length) store.notify('info', t(note, { count: ids.length - kept.length }))
     return kept
   }
   const deleteSelection = async () => {
     const ops: Operation[] = []
     const doomed = new Set<string>()
-    const targets = unlocked(topLevel(laid, selection).filter(canLayoutBlock), '删除')
+    const targets = unlocked(topLevel(laid, selection).filter(canLayoutBlock), 'delete')
     if (targets.length === 0) return
     for (const id of targets) {
       if (store.outline.get(id)?.capabilities.includes('delete')) for (const e of [id, ...store.outline.descendants(id).map((d) => d.entity_id)]) doomed.add(e)
@@ -488,17 +493,17 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         if (inContent && !otherBlocks && !ops.some((op) => op.entity_id === source.entity_id)) {
           const kids = store.outline.descendants(source.entity_id)
           ops.push({ op: 'entity.delete', entity_id: source.entity_id, ...(kids.length ? { subtree: { delete: kids.map((d) => d.entity_id) } } : {}), expect: { rev: source.life_rev } })
-        } else if (inContent && otherBlocks) store.notify('info', `「${source.title ?? source.name ?? source.entity_id}」仍被其他 Block 使用，只删除了这个 Block。`)
+        } else if (inContent && otherBlocks) store.notify('info', t('aiworkspace.canvas.delete.stillUsed', { name: source.title ?? source.name ?? source.entity_id }))
       }
     }
     if (ops.length === 0) return
     if (!ops.some((op) => op.op === 'entity.delete')) return
-    const outcome = await store.submit({ editId: `delete:${randomId().slice(0, 8)}`, label: `删除 ${ops.filter((o) => o.op === 'entity.delete').length} 项`, operations: ops })
+    const outcome = await store.submit({ editId: `delete:${randomId().slice(0, 8)}`, label: t('aiworkspace.canvas.delete.label', { count: ops.filter((o) => o.op === 'entity.delete').length }), operations: ops })
     if (outcome.status === 'rejected' && outcome.code === 'REFERENCE_BROKEN') {
       const data = outcome.errors?.[0]?.data as { referrers?: { entity_id: string }[]; hidden_referrers?: boolean } | undefined
-      store.notify('error', `数据仍被引用，没有删除：${(data?.referrers ?? []).map((r) => store.outline.get(r.entity_id)?.title ?? r.entity_id).join('、')}${data?.hidden_referrers ? '（另有无权查看的引用）' : ''}。先删除引用它的 Block，或只删除 Block。`)
+      store.notify('error', t(data?.hidden_referrers ? 'aiworkspace.canvas.delete.referencedHidden' : 'aiworkspace.canvas.delete.referenced', { list: list((data?.referrers ?? []).map((r) => store.outline.get(r.entity_id)?.title ?? r.entity_id)) }))
     } else if (outcome.status === 'rejected') {
-      store.notify('error', `没有删除：${outcome.code}${outcome.detail ? `（${outcome.detail}）` : ''}`)
+      store.notify('error', t('aiworkspace.canvas.delete.failed', { reason: outcome.detail ? t('aiworkspace.canvas.codeWithDetail', { code: outcome.code, detail: outcome.detail }) : outcome.code }))
     } else if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
       // only what was deleted leaves the selection (something picked meanwhile stays picked)
       setSelectionState((current) => { const next = new Set([...current].filter((id) => !doomed.has(id))); return next.size === current.size ? current : next })
@@ -514,7 +519,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const expect = { rev: read.content.key_revs.locked ?? 0 }
       ops.push(locked ? { op: 'entity.set_keys', entity_id: id, keys: [{ key: 'locked', value: true, expect }] } : { op: 'entity.unset_keys', entity_id: id, keys: [{ key: 'locked', expect }] })
     }
-    if (ops.length) void store.submit({ editId: `lock:${randomId().slice(0, 8)}`, label: locked ? `锁定 ${ops.length} 个对象` : `解锁 ${ops.length} 个对象`, operations: ops })
+    if (ops.length) void store.submit({ editId: `lock:${randomId().slice(0, 8)}`, label: t(locked ? 'aiworkspace.canvas.lock.label' : 'aiworkspace.canvas.lock.unlockLabel', { count: ops.length }), operations: ops })
   }
   const reorder = (direction: 'front' | 'back') => {
     const ops: Operation[] = []
@@ -525,24 +530,24 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const key = direction === 'front' ? store.core.order_key_between(siblings.at(-1)?.order_key ?? undefined, undefined) : store.core.order_key_between(undefined, siblings[0]?.order_key ?? undefined)
       ops.push({ op: 'tree.place', entity_id: id, order_key: key })
     }
-    if (ops.length) void store.submit({ editId: `order:${randomId().slice(0, 8)}`, label: direction === 'front' ? '置顶' : '置底', operations: ops })
+    if (ops.length) void store.submit({ editId: `order:${randomId().slice(0, 8)}`, label: t(direction === 'front' ? 'aiworkspace.canvas.order.front' : 'aiworkspace.canvas.order.back'), operations: ops })
   }
   const group = () => {
-    const ids = unlocked(topLevel(laid, selection), '加入分组')
+    const ids = unlocked(topLevel(laid, selection), 'group')
     if (ids.length < 2) return
     const bounds = boundsOf(laid, ids)
     if (!bounds) return
     const parentId = laid.get(ids[0])?.parentId ?? surfaceId
     const groupId = randomId('g')
     const rect = { x: bounds.x - 16, y: bounds.y - 40, w: bounds.w + 32, h: bounds.h + 56 }
-    const ops: Operation[] = [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parentId, order_key: store.core.order_key_between(store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined, undefined), placement: relativeTo(laid, parentId, rect), payload: { kind: 'group', layout: { mode: 'free' }, title: '分组' } }]
+    const ops: Operation[] = [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parentId, order_key: store.core.order_key_between(store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined, undefined), placement: relativeTo(laid, parentId, rect), payload: { kind: 'group', layout: { mode: 'free' }, title: t('aiworkspace.canvas.group') } }]
     let key: string | undefined
     for (const id of ids) {
       const l = laid.get(id)!
       key = store.core.order_key_between(key, undefined)
       ops.push({ op: 'tree.move', entity_id: id, new_parent_id: groupId, order_key: key, placement: { x: Math.round(l.rect.x - rect.x), y: Math.round(l.rect.y - rect.y), w: l.rect.w, h: l.rect.h, ...(l.rotation ? { rotation: l.rotation } : {}) } })
     }
-    void store.submit({ editId: `group:${groupId}`, label: `分组 ${ids.length} 个 Block`, operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set([groupId])) })
+    void store.submit({ editId: `group:${groupId}`, label: t('aiworkspace.canvas.groupLabel', { count: ids.length }), operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set([groupId])) })
   }
   const ungroup = () => {
     if (!single || single.kind !== 'group') return
@@ -559,7 +564,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       moved.push(child.entity_id)
     }
     ops.push({ op: 'entity.delete', entity_id: single.entity_id, expect: { rev: single.life_rev } })
-    void store.submit({ editId: `ungroup:${single.entity_id}`, label: '解组', operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set(moved)) })
+    void store.submit({ editId: `ungroup:${single.entity_id}`, label: t('aiworkspace.canvas.ungroup'), operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set(moved)) })
   }
   const moveToSurface = (targetId: string) => {
     const target = store.outline.get(targetId)
@@ -568,16 +573,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     let key = store.outline.childrenOf(targetId).at(-1)?.order_key
     const toFlow = target.layout?.mode !== 'free'
     const carried = (l: Laid) => [l.entity, ...store.outline.descendants(l.entity.entity_id)].some((e) => isConnector(e))
-    for (const id of unlocked(topLevel(laid, selection), '移动')) {
+    for (const id of unlocked(topLevel(laid, selection), 'move')) {
       const l = laid.get(id)
       if (!l) continue
-      if (toFlow && carried(l)) { store.notify('info', '流式页不显示连接线：连接线（及含连接线的分组）没有移动。'); continue }
+      if (toFlow && carried(l)) { store.notify('info', t('aiworkspace.canvas.flowConnectorsNotMoved')); continue }
       key = store.core.order_key_between(key, undefined)
       const placement = movedPlacement(laid, l, 0, 0, '')
       store.noteLayoutIntent(id, placement, key, targetId)
       ops.push({ op: 'tree.move', entity_id: id, new_parent_id: targetId, order_key: key, placement })
     }
-    if (ops.length) void store.submit({ editId: `move-surface:${randomId().slice(0, 8)}`, label: `移动到画布 ${target.title ?? target.name ?? ''}`, operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set()) })
+    if (ops.length) void store.submit({ editId: `move-surface:${randomId().slice(0, 8)}`, label: t('aiworkspace.canvas.moveToCanvasLabel', { name: target.title ?? target.name ?? '' }), operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set()) })
     setPicker(null)
   }
   // ---- connectors (连接线实现方案 §7): drawing one is one commit; an edit of one is one commit
@@ -585,11 +590,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     setTool('select')
     if (insertReason) { store.notify('info', insertReason); return }
     const { op, id } = createConnectorOp(store, laid, surfaceId, spec)
-    void store.submit({ editId: `insert:${id}`, label: '插入连接线', operations: [op] }).then((outcome) => {
+    void store.submit({ editId: `insert:${id}`, label: t('aiworkspace.canvas.insertConnector'), operations: [op] }).then((outcome) => {
       if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
         setSelectionState(new Set([id]))
         if (release.blank && policy.insert) setNextObject({ connectorId: id, at: release.screen, from: spec.start.point, end: spec.end.point })
-      } else if (outcome.status === 'rejected') store.notify('error', `没有创建连接线：${outcome.code}${outcome.detail ? `（${outcome.detail}）` : ''}`)
+      } else if (outcome.status === 'rejected') store.notify('error', t('aiworkspace.canvas.connectorCreateFailed', { reason: outcome.detail ? t('aiworkspace.canvas.codeWithDetail', { code: outcome.code, detail: outcome.detail }) : outcome.code }))
     })
   }
   const changeConnector = (id: string, change: ConnectorChange) => {
@@ -602,7 +607,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       store.outline.patchLocal(id, write.patch)
       const outcome = await store.submit({ editId: `line:${id}:${randomId().slice(0, 6)}`, label: write.label, operations: write.operations })
       if (outcome.status === 'rejected' || outcome.status === 'conflict') store.outline.patchLocal(id, write.before)
-    }, (error: unknown) => store.notify('error', `连接线没有修改：${describeError(error)}`))
+    }, (error: unknown) => store.notify('error', t('aiworkspace.canvas.connectorChangeFailed', { reason: describeError(error) })))
   }
   /** The "next object" picked at the end of a line drawn to blank space: created there, the line's end bound to it. */
   const insertAtLineEnd = (entry: CatalogEntry) => {
@@ -649,12 +654,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const importBusy = useRef(false)
   const importInput = useRef<HTMLInputElement>(null)
   const canCreateSurfaces = store.session.info().capabilities.includes('structure')
-  const importReason = !isFree && !canCreateSurfaces ? '没有新建画布的权限' : insertReason
+  const importReason = !isFree && !canCreateSurfaces ? t('aiworkspace.canvas.reason.noCreateCanvas') : insertReason
   const runImport = async (input: { name: string; bytes?: Uint8Array; text?: string }, at: { x: number; y: number } | null) => {
     if (importReason) { store.notify('info', importReason); return }
-    if (importBusy.current) { store.notify('info', '上一个导入还没有完成。'); return }
+    if (importBusy.current) { store.notify('info', t('aiworkspace.canvas.import.busy')); return }
     importBusy.current = true
-    const progress = store.notify('info', `正在导入 draw.io「${input.name}」…`)
+    const progress = store.notify('info', t('aiworkspace.canvas.import.progress', { name: input.name }))
     const c = camera.center
     try {
       // an import never lands on what is already there: it goes right of the canvas's objects instead
@@ -668,9 +673,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       else if (outcome.created.length) { setSelectionState(new Set(outcome.created)); if (outcome.bounds) camera.fit(outcome.bounds, 60) }
       const { report } = outcome
       if (outcome.error || report.notes.size > 0) importReports.show(outcome)
-      else store.notify('info', `已导入 draw.io「${outcome.name}」：${report.pages} 页、${report.objects} 个对象、${report.lines} 条连接线，全部按原样导入。`)
+      else store.notify('info', t('aiworkspace.canvas.import.done', { name: outcome.name, pages: t('aiworkspace.drawio.count.pages', { count: report.pages }), objects: t('aiworkspace.drawio.count.objects', { count: report.objects }), lines: t('aiworkspace.drawio.count.lines', { count: report.lines }) }))
     } catch (error) {
-      store.notify('error', `导入 draw.io 失败：${describeError(error)}`)
+      store.notify('error', t('aiworkspace.canvas.import.failed', { reason: describeError(error) }))
     } finally {
       importBusy.current = false
       store.dismissNotice(progress)
@@ -678,14 +683,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   const importCommand: Command = { reason: importReason, run: () => importInput.current?.click() }
   const exportCommand: Command = {
-    reason: !isFree ? '只有自由画布可以导出为 draw.io' : null,
+    reason: !isFree ? t('aiworkspace.canvas.export.onlyFree') : null,
     run: () => {
       void exportSurfaceDrawio(store, surface).then(({ xml, skipped }) => {
-        const name = (surface.title ?? surface.name ?? '画布').replace(/[\\/:*?"<>|]/g, '_')
+        const name = (surface.title ?? surface.name ?? t('aiworkspace.canvas.defaultName')).replace(/[\\/:*?"<>|]/g, '_')
         saveTextFile(`${name}.drawio`, xml)
         const lost = [...skipped.values()].reduce((a, b) => a + b, 0)
-        store.notify('info', lost ? `已导出「${name}.drawio」；${lost} 个 draw.io 没有对应图形的对象（富文本、便签、表格等）导出为带文字的框。` : `已导出「${name}.drawio」。`)
-      }, (error: unknown) => store.notify('error', `导出 draw.io 失败：${describeError(error)}`))
+        store.notify('info', lost ? t('aiworkspace.canvas.export.doneLossy', { file: `${name}.drawio`, count: lost }) : t('aiworkspace.canvas.export.done', { file: `${name}.drawio` }))
+      }, (error: unknown) => store.notify('error', t('aiworkspace.canvas.export.failed', { reason: describeError(error) })))
     },
   }
   /** A picture as an image Block (its natural size, at most 480 wide or high), centred on `at` or the view. */
@@ -703,8 +708,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const insertSvg = (text: string, at: { x: number; y: number } | null, file?: File) => {
     const parsed = svgShapeFromDocument(text)
     const asPicture = () => { const f = file ?? new File([text], 'image.svg', { type: 'image/svg+xml' }); insertImage(f, new TextEncoder().encode(text), at) }
-    if (!parsed) { if (file) asPicture(); else store.notify('info', '剪贴板中的 SVG 无法解析。'); return }
-    if (parsed.svg.body.length > 48 * 1024) { store.notify('info', 'SVG 太大，作为图片插入（不能改色）。'); asPicture(); return }
+    if (!parsed) { if (file) asPicture(); else store.notify('info', t('aiworkspace.canvas.svg.unreadable')); return }
+    if (parsed.svg.body.length > 48 * 1024) { store.notify('info', t('aiworkspace.canvas.svg.tooLarge')); asPicture(); return }
     const entry = registryEntries().find((e) => e.definition.type === 'shape' && !e.variant)
     if (!entry) return
     const k = Math.min(1, 320 / Math.max(parsed.w, parsed.h, 1))
@@ -720,7 +725,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       else if (insertReason) { store.notify('info', insertReason); return }
       else if (kind === 'svg' && text) insertSvg(text, spot, file)
       else if (kind === 'image') insertImage(file, bytes, spot)
-      else store.notify('info', `不支持的文件「${file.name}」：可以放入 draw.io 文件（.drawio、.drawio.png、.drawio.svg）、SVG 或图片。`)
+      else store.notify('info', t('aiworkspace.canvas.unsupportedFile', { name: file.name }))
       spot = spot ? { x: spot.x + 24, y: spot.y + 24 } : null
     }
   }
@@ -742,40 +747,40 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
 
   // ---- clipboard (UI improvement §6.4)
   const copy: Command = {
-    reason: !policy.select ? '当前模式不能选择对象' : selection.size === 0 ? '没有选中的对象' : null,
+    reason: !policy.select ? t('aiworkspace.canvas.reason.cannotSelect') : selection.size === 0 ? t('aiworkspace.canvas.reason.noSelection') : null,
     run: () => {
       void copyToClipboard(store, surfaceId, laid, selection, 'copy').then(
-        (n) => { if (n > 0) store.notify('info', `已复制 ${n} 个对象。粘贴得到新的视图，数据与原对象共享。`) },
-        (error: unknown) => store.notify('error', `复制失败：${describeError(error)}`))
+        (n) => { if (n > 0) store.notify('info', t('aiworkspace.canvas.clipboard.copied', { count: n })) },
+        (error: unknown) => store.notify('error', t('aiworkspace.canvas.clipboard.copyFailed', { reason: describeError(error) })))
     },
   }
   const cut: Command = {
-    reason: !canLayout ? (policy.layout ? '没有调整这张画布的权限' : '当前模式不能移动对象') : selection.size === 0 ? '没有选中的对象' : null,
-    run: () => { void copyToClipboard(store, surfaceId, laid, selection, 'cut').then((n) => { if (n > 0) store.notify('info', `已剪切 ${n} 个对象：粘贴时移动到目标位置，取消或粘贴失败时原对象保留。`) }) },
+    reason: !canLayout ? t(policy.layout ? 'aiworkspace.canvas.reason.noLayoutPermission' : 'aiworkspace.canvas.reason.cannotMove') : selection.size === 0 ? t('aiworkspace.canvas.reason.noSelection') : null,
+    run: () => { void copyToClipboard(store, surfaceId, laid, selection, 'cut').then((n) => { if (n > 0) store.notify('info', t('aiworkspace.canvas.clipboard.cut', { count: n })) }) },
   }
   const pasteAt = (at: { x: number; y: number } | null) => {
     const current = canvasClipboard.snapshot()
     if (!current) return
-    if (current.workspaceId !== store.session.workspaceId) { store.notify('info', '暂不支持跨工作区粘贴：需要完整导入与引用重映射。'); return }
+    if (current.workspaceId !== store.session.workspaceId) { store.notify('info', t('aiworkspace.canvas.clipboard.crossWorkspace')); return }
     const c = camera.center
     const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y) })
     if (refused) { store.notify('info', refused); return }
-    if (operations.length === 0) { store.notify('info', '剪切的对象已不存在。'); canvasClipboard.set(null); return }
+    if (operations.length === 0) { store.notify('info', t('aiworkspace.canvas.clipboard.cutGone')); canvasClipboard.set(null); return }
     void store.submit({ editId: `paste:${randomId().slice(0, 8)}`, label, operations }).then((outcome) => {
       if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
         setSelectionState(new Set(newIds))
         if (current.kind === 'cut') canvasClipboard.set(null)
         else canvasClipboard.notePaste()
       } else if (outcome.status === 'rejected' || outcome.status === 'conflict') {
-        store.notify('error', `粘贴没有完成（${outcome.code}）${current.kind === 'cut' ? '：原对象保留在原处。' : '。'}`)
+        store.notify('error', t(current.kind === 'cut' ? 'aiworkspace.canvas.clipboard.pasteFailedCut' : 'aiworkspace.canvas.clipboard.pasteFailed', { code: outcome.code }))
       }
     })
   }
   const paste: Command = {
-    reason: !clip ? '剪贴板是空的' : clip.workspaceId !== store.session.workspaceId ? '剪贴板中的对象来自另一个工作区' : insertReason ?? (canLayout ? null : '没有调整这张画布的权限'),
+    reason: !clip ? t('aiworkspace.canvas.clipboard.empty') : clip.workspaceId !== store.session.workspaceId ? t('aiworkspace.canvas.clipboard.otherWorkspace') : insertReason ?? (canLayout ? null : t('aiworkspace.canvas.reason.noLayoutPermission')),
     run: () => pasteAt(null),
   }
-  const remove: Command = { reason: !policy.layout ? '当前模式不能删除对象' : selection.size === 0 ? '没有选中的对象' : layoutable.length === 0 ? '没有调整这张画布的权限' : null, run: () => { void deleteSelection() } }
+  const remove: Command = { reason: !policy.layout ? t('aiworkspace.canvas.reason.cannotDelete') : selection.size === 0 ? t('aiworkspace.canvas.reason.noSelection') : layoutable.length === 0 ? t('aiworkspace.canvas.reason.noLayoutPermission') : null, run: () => { void deleteSelection() } }
 
   const fitAll = () => { const b = surfaceBounds(laid); if (b) camera.fit(b); else camera.set({ x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 }) }
   const fitSelection = () => { const b = boundsOf(laid, selection); if (b) camera.fit(b, 80) }
@@ -894,7 +899,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       event.preventDefault()
       pendingPaste.current = false
       if (files.length > 0) void handleFiles(files, null)
-      else if (looksLikeDrawio(text)) void runImport({ name: '粘贴的 draw.io 图', text }, null)
+      else if (looksLikeDrawio(text)) void runImport({ name: t('aiworkspace.canvas.import.pastedName'), text }, null)
       else if (insertReason) store.notify('info', insertReason)
       else insertSvg(text, null)
     }
@@ -931,7 +936,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         const asTool = !definition.toolbar
         try {
           if (action.when && !action.when(context)) continue
-          const run = () => { void Promise.resolve().then(() => action.run(context, store)).catch((error: unknown) => store.notify('error', `扩展动作失败：${describeError(error)}`)) }
+          const run = () => { void Promise.resolve().then(() => action.run(context, store)).catch((error: unknown) => store.notify('error', t('aiworkspace.canvas.extensionActionFailed', { reason: describeError(error) }))) }
           if (asTool) typeItems.push({ kind: 'button', id: action.id, label: action.label, key: action.key, run })
           else moreActions.push({ id: action.id, label: action.label, key: action.key, run })
         } catch (error) {
@@ -944,27 +949,27 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (definition?.toolbar && context && mode === 'edit' && !singleLocked) {
       try { typeItems.push(...definition.toolbar(context, store)) } catch (error) { console.error('[aiworkspace] block toolbar failed', error) }
     }
-    if (single.kind === 'group' && canLayout && !singleLocked) typeItems.push({ kind: 'button', id: 'ungroup', icon: Ungroup, label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
-    if (definition?.Inspector || definition?.configFields || single.kind === 'group') moreActions.push({ id: 'inspector', label: '属性', key: 'F2', run: () => shell.setSide('inspector') })
-    if (policy.annotate && source && ui.annotate) commonItems.push({ kind: 'button', id: 'annotate', icon: MessageSquarePlus, label: '批注', run: annotateSelection })
-    if (source) moreActions.push({ id: 'relations', label: '查看数据与依赖', run: () => shell.setSide('relations') })
-    if (source && canLayout && !singleLocked) moreActions.push({ id: 'add-view', label: '增加视图…', run: () => setPicker({ kind: 'add-view' }) })
-    if (single.kind === 'group' && canLayout && !singleLocked) moreActions.push({ id: 'ungroup', label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
+    if (single.kind === 'group' && canLayout && !singleLocked) typeItems.push({ kind: 'button', id: 'ungroup', icon: Ungroup, label: t('aiworkspace.canvas.ungroup'), key: 'Ctrl+Shift+G', run: ungroup })
+    if (definition?.Inspector || definition?.configFields || single.kind === 'group') moreActions.push({ id: 'inspector', label: t('aiworkspace.canvas.inspector.title'), key: 'F2', run: () => shell.setSide('inspector') })
+    if (policy.annotate && source && ui.annotate) commonItems.push({ kind: 'button', id: 'annotate', icon: MessageSquarePlus, label: t('aiworkspace.canvas.annotate.label'), run: annotateSelection })
+    if (source) moreActions.push({ id: 'relations', label: t('aiworkspace.canvas.relations'), run: () => shell.setSide('relations') })
+    if (source && canLayout && !singleLocked) moreActions.push({ id: 'add-view', label: t('aiworkspace.canvas.addView'), run: () => setPicker({ kind: 'add-view' }) })
+    if (single.kind === 'group' && canLayout && !singleLocked) moreActions.push({ id: 'ungroup', label: t('aiworkspace.canvas.ungroup'), key: 'Ctrl+Shift+G', run: ungroup })
   }
-  if (selection.size > 1 && canLayout && mode === 'edit') typeItems.push({ kind: 'button', id: 'group', icon: Group, label: '分组', key: 'Ctrl+G', run: group })
-  if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: '分组', key: 'Ctrl+G', run: group })
+  if (selection.size > 1 && canLayout && mode === 'edit') typeItems.push({ kind: 'button', id: 'group', icon: Group, label: t('aiworkspace.canvas.group'), key: 'Ctrl+G', run: group })
+  if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: t('aiworkspace.canvas.group'), key: 'Ctrl+G', run: group })
   if (lockable && mode === 'edit') commonItems.push(allLocked
-    ? { kind: 'button', id: 'unlock', icon: LockOpen, label: '解锁', disabled: lockedHere ? false : '所在分组已锁定：先解锁分组', run: () => { void setLocked(topIds, false) } }
-    : { kind: 'button', id: 'lock', icon: Lock, label: '锁定（不能移动、缩放或删除）', run: () => { void setLocked(topIds, true) } })
-  if (wishEntry && selection.size > 0 && policy.insert && insertReason === null && !allLocked) commonItems.push({ kind: 'button', id: 'ai', icon: Sparkles, label: single?.view_type === 'wish' ? '打开许愿格' : '对选中的对象许愿', ai: true, run: () => pickEntry(wishEntry) })
+    ? { kind: 'button', id: 'unlock', icon: LockOpen, label: t('aiworkspace.canvas.lock.unlock'), disabled: lockedHere ? false : t('aiworkspace.canvas.lock.groupLocked'), run: () => { void setLocked(topIds, false) } }
+    : { kind: 'button', id: 'lock', icon: Lock, label: t('aiworkspace.canvas.lock.lock'), run: () => { void setLocked(topIds, true) } })
+  if (wishEntry && selection.size > 0 && policy.insert && insertReason === null && !allLocked) commonItems.push({ kind: 'button', id: 'ai', icon: Sparkles, label: t(single?.view_type === 'wish' ? 'aiworkspace.canvas.wish.open' : 'aiworkspace.canvas.wish.forSelection'), ai: true, run: () => pickEntry(wishEntry) })
   if (selection.size > 0 && policy.select && !phone) {
-    moreActions.push({ id: 'copy', label: '复制', key: 'Ctrl+C', run: copy.run })
-    if (cut.reason === null && !allLocked) moreActions.push({ id: 'cut', label: '剪切', key: 'Ctrl+X', run: cut.run })
+    moreActions.push({ id: 'copy', label: t('aiworkspace.canvas.clipboard.copy'), key: 'Ctrl+C', run: copy.run })
+    if (cut.reason === null && !allLocked) moreActions.push({ id: 'cut', label: t('aiworkspace.canvas.clipboard.cutAction'), key: 'Ctrl+X', run: cut.run })
   }
   if (layoutable.length > 0 && !allLocked) {
-    moreActions.push({ id: 'front', label: '置顶', key: 'Ctrl+]', run: () => reorder('front') }, { id: 'back', label: '置底', key: 'Ctrl+[', run: () => reorder('back') })
-    if (canLayout && surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: '移动到画布…', run: () => setPicker({ kind: 'move-surface' }) })
-    moreActions.push({ id: 'delete', label: '删除', key: 'Delete', run: () => { void deleteSelection() } })
+    moreActions.push({ id: 'front', label: t('aiworkspace.canvas.order.front'), key: 'Ctrl+]', run: () => reorder('front') }, { id: 'back', label: t('aiworkspace.canvas.order.back'), key: 'Ctrl+[', run: () => reorder('back') })
+    if (canLayout && surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: t('aiworkspace.canvas.moveToCanvasMenu'), run: () => setPicker({ kind: 'move-surface' }) })
+    moreActions.push({ id: 'delete', label: t('aiworkspace.common.delete'), key: 'Delete', run: () => { void deleteSelection() } })
   }
   // a locked object offers "unlock" and reading only (§4.3): no type tools, nothing that moves or removes it
   const editorItems = subject && editing === subject.entity_id ? toolbarSink.items() : []
@@ -982,15 +987,15 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     ...moreActions.map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })),
   ]
   const menuItems = menu ? (menu.blockId ? blockMenu : [
-    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entryId(entry)}`, label: `插入${entry.title}`, run: () => { if (entry.definition.type === 'note') addNote(menu.world, menu.parentId); else void insert({ entry }, menu.world, menu.parentId) } })) : []),
-    ...(insertReason !== null && noteReason === null && (isFree || policy.insert) ? [{ id: 'insert-note', label: policy.insert ? '插入便签' : '添加便签', run: () => addNote(menu.world, menu.parentId) }] : []),
-    ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => insertGroup(menu.parentId ?? surfaceId) }] : []),
+    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entryId(entry)}`, label: t('aiworkspace.canvas.insertNamed', { name: entry.title }), run: () => { if (entry.definition.type === 'note') addNote(menu.world, menu.parentId); else void insert({ entry }, menu.world, menu.parentId) } })) : []),
+    ...(insertReason !== null && noteReason === null && (isFree || policy.insert) ? [{ id: 'insert-note', label: t(policy.insert ? 'aiworkspace.canvas.menu.insertNote' : 'aiworkspace.canvas.menu.addNote'), run: () => addNote(menu.world, menu.parentId) }] : []),
+    ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: t('aiworkspace.canvas.insertGroup'), run: () => insertGroup(menu.parentId ?? surfaceId) }] : []),
     ...(insertReason === null ? [
-      { id: 'catalog', label: '插入对象…', run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
-      { id: 'add-data', label: '添加已有数据…', run: () => openCatalog('existing', undefined, menu.world, menu.parentId) },
+      { id: 'catalog', label: t('aiworkspace.canvas.menu.insertObject'), run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
+      { id: 'add-data', label: t('aiworkspace.canvas.menu.addExisting'), run: () => openCatalog('existing', undefined, menu.world, menu.parentId) },
     ] : []),
-    ...(paste.reason === null ? [{ id: 'paste', label: '粘贴', run: () => pasteAt(menu.world) }] : []),
-    ...(isFree ? [{ id: 'sep', label: '', run: () => undefined, separator: true }, { id: 'fit', label: '适应全部', run: fitAll }] : []),
+    ...(paste.reason === null ? [{ id: 'paste', label: t('aiworkspace.canvas.clipboard.paste'), run: () => pasteAt(menu.world) }] : []),
+    ...(isFree ? [{ id: 'sep', label: '', run: () => undefined, separator: true }, { id: 'fit', label: t('aiworkspace.canvas.menu.fitAll'), run: fitAll }] : []),
   ].filter((item, i) => !(i === 0 && 'separator' in item))) : []
 
   const commands: CanvasCommands = {
@@ -1008,7 +1013,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     canvasTabs: CANVAS_SIDE_TABS,
   }
   const annotateCommand = {
-    reason: !canComment ? '没有批注权限' : !policy.annotate ? '当前模式不能批注' : null,
+    reason: !canComment ? t('aiworkspace.canvas.annotate.noPermission') : !policy.annotate ? t('aiworkspace.canvas.annotate.notInMode') : null,
     active: annotatePick,
     run: () => {
       if (single?.source_id) { annotateSelection(); return }
@@ -1020,14 +1025,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   const sideContent = (tab: SideTab) => {
     switch (tab) {
-      case 'inspector': return subject ? <SelectionInspector cell={subject} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个对象查看属性。</div>
-      case 'relations': return single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">选中一个数据对象查看它的引用与依赖。</div>
+      case 'inspector': return subject ? <SelectionInspector cell={subject} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">{t('aiworkspace.canvas.side.noSelection')}</div>
+      case 'relations': return single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">{t('aiworkspace.canvas.side.noDataSelection')}</div>
       case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} noteDraft={noteDraft ? { save: saveNoteDraft, cancel: () => setNoteDraft(null) } : null} />
       case 'collab': return <PermissionsPanel />
       case 'edits': return <StatusDetail />
       case 'wish': return wishOpen && store.outline.get(wishOpen.wishId)
         ? <WishPanel key={wishOpen.wishId} wishId={wishOpen.wishId} cellId={wishOpen.cellId} readOnly={readOnlyNow || !policy.writes} canvasSelection={[...selection].filter((id) => id !== wishOpen.cellId)} />
-        : <div className="aiws-muted">在画布上双击许愿格，或点它的“打开”，在这里编辑和运行。</div>
+        : <div className="aiws-muted">{t('aiworkspace.canvas.side.noWish')}</div>
     }
   }
   const sideTabs = wishOpen ? [...CANVAS_SIDE_TABS, 'wish' as const] : CANVAS_SIDE_TABS
@@ -1083,8 +1088,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               ? <PathEditor surface={surface} camera={camera} laid={laid} />
               : (
                 <div className="aiws-presentation-placeholder" role="status" data-testid="aiws-presentation-placeholder">
-                  <b>流式页没有演讲路径</b>
-                  <div>Frame 和 Viewport 只放在自由画布上：切换到一张自由画布来编排演讲路径。</div>
+                  <b>{t('aiworkspace.canvas.presentation.flowNoPath')}</b>
+                  <div>{t('aiworkspace.canvas.presentation.flowNoPathNote')}</div>
                 </div>
               ))}
             {shell.guide && <GuideOverlay key={shell.guide.pathId} camera={camera} surfaceId={surfaceId} />}
@@ -1100,8 +1105,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             )}
             {(placing || annotatePick || tool === 'connector') && (
               <div className="aiws-hint" role="status" data-testid="aiws-tool-hint">
-                {placing ? `点击画布放置${placingTitle}；Enter 放到视图中央，Esc 取消` : tool === 'connector' ? '按下并拖动画连接线；从对象上开始或松开在对象上即连到该对象；Esc 取消'
-                  : phone ? '点按要批注的对象；再点一次“批注”取消' : '点选要批注的对象；Esc 取消'}
+                {placing ? t('aiworkspace.canvas.hint.place', { name: placingTitle }) : tool === 'connector' ? t('aiworkspace.canvas.hint.connector')
+                  : t(phone ? 'aiworkspace.canvas.hint.annotatePhone' : 'aiworkspace.canvas.hint.annotate')}
               </div>
             )}
             {nextObject && <ContextMenu at={nextObject.at} onClose={() => setNextObject(null)}
@@ -1138,6 +1143,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
 function SelectionInspector({ cell, mode, context, resolved, registryVersion }: { cell: EntityEnvelope; mode: CanvasMode; context: RenderContext | null; resolved: boolean; registryVersion: number }) {
   const store = useStore()
   const ui = useWorkspaceUi()
+  const { t, tNode } = useAiwsText()
   const live = context?.cell ?? cell
   const definition = resolved ? context?.definition : undefined
   const source = context?.source
@@ -1147,26 +1153,26 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
   const setConfig = (key: string, value: Json) => {
     if (!payload || readOnly) return
     const config = { ...(payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${cell.entity_id}`, label: `属性 ${key}`, operations: [{ op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: keyRevs.config ?? 0 } }] }] })
+    void store.submit({ editId: `config:${cell.entity_id}`, label: t('aiworkspace.canvas.inspector.configLabel', { key }), operations: [{ op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: keyRevs.config ?? 0 } }] }] })
   }
   const setTitle = (title: string) => {
     if (!payload || readOnly || title === (payload.title ?? '')) return
-    void store.submit({ editId: `key:${cell.entity_id}:title`, label: `Block 标题 → ${title || '（清除）'}`, operations: [title ? { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: title, expect: { rev: keyRevs.title ?? 0 } }] } : { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev: keyRevs.title ?? 0 } }] }] })
+    void store.submit({ editId: `key:${cell.entity_id}:title`, label: title ? t('aiworkspace.canvas.blockTitleLabel', { title }) : t('aiworkspace.canvas.blockTitleClearedLabel'), operations: [title ? { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: title, expect: { rev: keyRevs.title ?? 0 } }] } : { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev: keyRevs.title ?? 0 } }] }] })
   }
   const Inspector = definition?.Inspector
   const operable = cell.view_type !== 'frame' && cell.view_type !== 'connector' && cell.type_id === 'buckyos.cell'
   return (
     <BlockInspector cellId={cell.entity_id} mode={mode}>
       {operable && payload && (
-        <label className="aiws-inline-form" title="放映时，只有勾选了这一项的 Block 可以输入、运行和操作；现场写入进入临时副本，放映结束后丢弃。">
+        <label className="aiws-inline-form" title={t('aiworkspace.canvas.inspector.liveTip')}>
           <input type="checkbox" data-testid="aiws-inspector-live" checked={payload.presentation?.live === true} disabled={readOnly}
-            onChange={(event) => { void setLive(store, cell.entity_id, event.target.checked) }} />放映时可操作
+            onChange={(event) => { void setLive(store, cell.entity_id, event.target.checked) }} />{t('aiworkspace.canvas.inspector.live')}
         </label>
       )}
       {payload && (
-        <label className="aiws-inline-form">标题 <input aria-label="Block 标题" defaultValue={payload.title ?? ''} disabled={readOnly} onBlur={(event) => setTitle(event.target.value.trim())} /></label>
+        <label className="aiws-inline-form">{t('aiworkspace.canvas.inspector.titleField')} <input aria-label={t('aiworkspace.canvas.blockTitle')} defaultValue={payload.title ?? ''} disabled={readOnly} onBlur={(event) => setTitle(event.target.value.trim())} /></label>
       )}
-      {source && <div className="aiws-muted">数据：<button type="button" className="aiws-link" onClick={() => ui.openEntity(source.entity_id)}>{source.title ?? source.name ?? source.entity_id}</button>（{source.type_id.replace('buckyos.', '')}）</div>}
+      {source && <div className="aiws-muted">{tNode('aiworkspace.canvas.inspector.source', { name: <button type="button" className="aiws-link" onClick={() => ui.openEntity(source.entity_id)}>{source.title ?? source.name ?? source.entity_id}</button>, type: source.type_id.replace('buckyos.', '') })}</div>}
       {definition?.configFields && payload && definition.configFields.map((field) => (
         <label key={field.key} className="aiws-inline-form">{field.label}
           {field.kind === 'select'
@@ -1181,14 +1187,14 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
       )}
       {Inspector && context && (
         <BlockBoundary resetKey={`${cell.entity_id}:${mode}:${live.content_rev}:${registryVersion}`} fallback={(error, reset) => (
-          <div className="aiws-block-fallback" data-testid="aiws-inspector-error"><div className="aiws-error" role="alert">属性面板出错：{describeError(error)}</div><button type="button" onClick={reset}>重试</button></div>
+          <div className="aiws-block-fallback" data-testid="aiws-inspector-error"><div className="aiws-error" role="alert">{t('aiworkspace.canvas.inspector.error', { reason: describeError(error) })}</div><button type="button" onClick={reset}>{t('aiworkspace.common.retry')}</button></div>
         )}>
           <Inspector {...context} />
         </BlockBoundary>
       )}
       <details className="aiws-details">
-        <summary>详情</summary>
-        {live.placement && <div className="aiws-muted">位置 {live.placement.x}, {live.placement.y} · 尺寸 {live.placement.w} × {live.placement.h} · 顺序 {live.order_key}</div>}
+        <summary>{t('aiworkspace.canvas.inspector.details')}</summary>
+        {live.placement && <div className="aiws-muted">{t('aiworkspace.canvas.inspector.placement', { x: live.placement.x, y: live.placement.y, w: live.placement.w, h: live.placement.h, order: live.order_key ?? '' })}</div>}
       </details>
     </BlockInspector>
   )
@@ -1196,6 +1202,7 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
 
 function Picker({ kind, selection, surfaceId, onClose, onPick }: { kind: 'add-view' | 'move-surface'; selection: EntityEnvelope[]; surfaceId: string; onClose: () => void; onPick: (id: string) => void }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const [chosen, setChosen] = useState('')
   const single = selection[0]
   const source = single?.source_id ? store.outline.get(single.source_id) : undefined
@@ -1203,21 +1210,21 @@ function Picker({ kind, selection, surfaceId, onClose, onPick }: { kind: 'add-vi
   const targets = surfacesOf(store).filter((s) => s.entity_id !== surfaceId)
   return (
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div className="aiws-dialog" role="dialog" aria-modal="true" aria-label={kind === 'add-view' ? '增加视图' : '移动到画布'} data-testid={`aiws-picker-${kind}`} onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
+      <div className="aiws-dialog" role="dialog" aria-modal="true" aria-label={t(kind === 'add-view' ? 'aiworkspace.canvas.picker.addView' : 'aiworkspace.canvas.picker.moveToCanvas')} data-testid={`aiws-picker-${kind}`} onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
         {kind === 'add-view' && (
           <>
-            <b>为「{source?.title ?? source?.name ?? ''}」增加视图</b>
-            <div className="aiws-muted">新 Block 与原视图共享数据，视图配置独立。</div>
-            <select aria-label="展现方式" data-testid="aiws-picker-renderer" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">选择展现…</option>{renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}</select>
-            <div className="aiws-dialog-actions"><button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick(chosen)}>增加</button><button type="button" onClick={onClose}>取消</button></div>
+            <b>{t('aiworkspace.canvas.picker.addViewTitle', { name: source?.title ?? source?.name ?? '' })}</b>
+            <div className="aiws-muted">{t('aiworkspace.canvas.picker.addViewNote')}</div>
+            <select aria-label={t('aiworkspace.canvas.catalog.renderer')} data-testid="aiws-picker-renderer" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">{t('aiworkspace.canvas.picker.chooseRenderer')}</option>{renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}</select>
+            <div className="aiws-dialog-actions"><button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick(chosen)}>{t('aiworkspace.canvas.picker.add')}</button><button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button></div>
           </>
         )}
         {kind === 'move-surface' && (
           <>
-            <b>移动 {selection.length} 个对象到另一张画布</b>
-            <div className="aiws-muted">对象的身份、数据绑定和依赖记录不变；数据留在原画布内容区。</div>
-            <select aria-label="目标画布" data-testid="aiws-picker-surface" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">选择画布…</option>{targets.map((s) => <option key={s.entity_id} value={s.entity_id}>{s.title ?? s.name ?? s.entity_id}</option>)}</select>
-            <div className="aiws-dialog-actions"><button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick(chosen)}>移动</button><button type="button" onClick={onClose}>取消</button></div>
+            <b>{t('aiworkspace.canvas.picker.moveTitle', { count: selection.length })}</b>
+            <div className="aiws-muted">{t('aiworkspace.canvas.picker.moveNote')}</div>
+            <select aria-label={t('aiworkspace.canvas.picker.targetCanvas')} data-testid="aiws-picker-surface" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">{t('aiworkspace.canvas.picker.chooseCanvas')}</option>{targets.map((s) => <option key={s.entity_id} value={s.entity_id}>{s.title ?? s.name ?? s.entity_id}</option>)}</select>
+            <div className="aiws-dialog-actions"><button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick(chosen)}>{t('aiworkspace.canvas.picker.move')}</button><button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button></div>
           </>
         )}
       </div>

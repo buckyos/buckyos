@@ -22,6 +22,7 @@ import { ServiceFailure, type AiwsClient } from '../api/client'
 import { OnlineWorkspaceSession, SESSION_STOP_CODES, SESSION_STOP_TEXT, browserOffline, refusedVersion, versionMismatch } from '../api/session'
 import type { CommitOptions, OfflineControls, ReadOk, SessionMode, SessionStatus, SubmissionEvent, WorkspaceSession } from '../api/session'
 import { TransportError } from '../api/transport'
+import { aiwsT, localizedLabels } from '../i18n'
 import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
@@ -32,14 +33,14 @@ import { StorageFailure, describeStorageFailure, type ReplicaClient } from './cl
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
 import { ASSET_SIZE_CAP, type LocalExport, type LocalRefused, type LocalSaved, type PendingRow, type PendingState } from './protocol'
 
-const STOP_TEXT: Record<string, string> = {
-  EPOCH_MISMATCH: '此工作区的历史已被恢复操作替换：本机副本与其中的待提交修改是针对旧历史的，已停止发送，什么都没有丢弃。请导出待提交内容，然后删除本机副本并重新准备离线。',
-  BASE_TOO_OLD: '后台的变化流已不覆盖本机副本的基准：已停止发送，什么都没有丢弃。请导出待提交内容，然后删除本机副本并重新准备离线。',
-  PERMISSION_DENIED: '你对此工作区的访问权限已被撤回：已停止发送，本机的待提交修改全部保留，可以查看和导出。',
-  NOT_FOUND: '此工作区在后台已不存在，或你已无权访问：已停止发送，本机的待提交修改全部保留，可以查看和导出。',
-  REPLICA_BROKEN: '本机副本无法应用后台已接受的提交：已停止同步，什么都没有丢弃。请导出待提交内容，然后删除本机副本并重新准备离线。',
-  VERSION_MISMATCH: '后台已升级到新版本的 AI Workspace，本页面是旧版本：已停止同步，本机的待提交修改全部保留。请刷新页面。',
-}
+const STOP_TEXT: Readonly<Record<string, string>> = localizedLabels({
+  EPOCH_MISMATCH: 'aiworkspace.core.replica.stop.epochMismatch',
+  BASE_TOO_OLD: 'aiworkspace.core.replica.stop.baseTooOld',
+  PERMISSION_DENIED: 'aiworkspace.core.replica.stop.permissionDenied',
+  NOT_FOUND: 'aiworkspace.core.replica.stop.notFound',
+  REPLICA_BROKEN: 'aiworkspace.core.replica.stop.replicaBroken',
+  VERSION_MISMATCH: 'aiworkspace.core.replica.stop.versionMismatch',
+})
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -129,7 +130,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
       onStop: (code) => this.stop(code),
     })
     this.sessionId = this.direct.sessionId
-    this.offDeath = this.replica.onDeath(() => this.noteStorage(new StorageFailure('worker', this.replica.dead ?? 'Worker 已退出')))
+    this.offDeath = this.replica.onDeath(() => this.noteStorage(new StorageFailure('worker', this.replica.dead ?? aiwsT('aiworkspace.core.worker.exited'))))
     this.offline = {
       pending: () => this.rows,
       subscribeSubmissions: (listener) => {
@@ -470,7 +471,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
       if (!(error instanceof ServiceFailure) || error.code !== 'DEPENDENCY_UNAVAILABLE') throw error
       // a URL query table: its rows exist only at the source, the replica has none of them
       if (this.isLive()) return this.direct.query(params)
-      throw new ServiceFailure({ code: 'DEPENDENCY_UNAVAILABLE', detail: 'URL 查询表的数据只在数据源上，需要连接后台才能查询；当前离线，没有任何结果可显示' })
+      throw new ServiceFailure({ code: 'DEPENDENCY_UNAVAILABLE', detail: aiwsT('aiworkspace.core.replica.urlQueryOffline') })
     }
   }
 
@@ -480,35 +481,35 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   }
   relations(entityId: string) { return this.replica.call('relations', entityId) }
   async listVersions(entityId: string) {
-    if (!this.isLive()) throw this.offlineFailure('版本历史保存在后台，现在无法读取')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.versions'))
     return this.direct.listVersions(entityId)
   }
   async restoreVersionPlan(entityId: string, contentRev: number) {
-    if (!this.isLive()) throw this.offlineFailure('恢复历史版本需要连接后台')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.restoreVersion'))
     return this.direct.restoreVersionPlan(entityId, contentRev)
   }
   async getUserState() {
-    if (!this.isLive()) throw this.offlineFailure('服务端的工作状态现在无法读取')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readUserState'))
     return this.direct.getUserState()
   }
   async setUserState(entries: Record<string, Json | null>) {
-    if (!this.isLive()) throw this.offlineFailure('服务端的工作状态现在无法写入')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.writeUserState'))
     return this.direct.setUserState(entries)
   }
   async listGrants() {
-    if (!this.isLive()) throw this.offlineFailure('权限管理在线执行，现在无法读取授权')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readGrants'))
     return this.direct.listGrants()
   }
   async grant(subject: string, capabilities: Capability[], scopeEntityId?: string) {
-    if (!this.isLive()) throw this.offlineFailure('权限管理在线执行，现在没有修改任何授权')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeGrants'))
     return this.direct.grant(subject, capabilities, scopeEntityId)
   }
   async revoke(subject: string, scopeEntityId?: string) {
-    if (!this.isLive()) throw this.offlineFailure('权限管理在线执行，现在没有修改任何授权')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeGrants'))
     return this.direct.revoke(subject, scopeEntityId)
   }
   async listSubjects() {
-    if (!this.isLive()) throw this.offlineFailure('主体列表需要连接后台')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.subjects'))
     return this.direct.listSubjects()
   }
 
@@ -529,8 +530,8 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
 
   private offlineFailure(what: string): ServiceFailure {
     const status = this.currentStatus
-    const why = status.kind === 'stopped' ? '同步已停止' : status.kind === 'offline' && status.browserOffline ? '浏览器处于离线状态' : '后台不可达'
-    return new ServiceFailure({ code: 'BACKEND_UNREACHABLE', detail: `${what}（${why}）` })
+    const why = aiwsT(status.kind === 'stopped' ? 'aiworkspace.core.replica.why.stopped' : status.kind === 'offline' && status.browserOffline ? 'aiworkspace.core.replica.why.browserOffline' : 'aiworkspace.core.replica.why.unreachable')
+    return new ServiceFailure({ code: 'BACKEND_UNREACHABLE', detail: aiwsT('aiworkspace.core.replica.offlineFailure', { what, why }) })
   }
 
   async commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome> {
@@ -573,7 +574,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
         // design §2.11: a `lock_required` object is not edited through the replica. Online, the commit goes
         // straight to the backend (which checks this session's lock); unreachable, the object is read-only.
         if (this.isLive()) return 'direct'
-        const detail = '此对象启用了写锁：后台不可达时它是只读的，这次修改没有保存'
+        const detail = aiwsT('aiworkspace.core.replica.lockedReadOnly')
         return { status: 'rejected', code: 'LOCK_REQUIRED', retryable: true, detail, errors: [{ code: 'LOCK_REQUIRED', detail }], idempotency_key: key }
       }
       return { ...(refused as unknown as CommitResult), idempotency_key: key }
@@ -584,7 +585,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   retryUnknown(idempotencyKey: string) { return this.direct.retryUnknown(idempotencyKey) }
 
   async prepare(operations: Operation[]): Promise<PrepareResult> {
-    if (!this.isLive()) throw this.offlineFailure('预检在后台执行，现在无法进行')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.prepare'))
     return this.direct.prepare(operations)
   }
 
@@ -620,7 +621,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   // ---- needs the backend: say so when it is not there
 
   async lockAcquire(entityId: string) {
-    if (!this.isLive()) throw this.offlineFailure('需要写锁的对象在后台不可达时只读')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.lockAcquire'))
     return this.direct.lockAcquire(entityId)
   }
   lockRenew(lockIds: string[]) { return this.direct.lockRenew(lockIds) }
@@ -629,53 +630,53 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   lockList() { return this.direct.lockList() }
 
   async uploadAsset(file: Blob, fileName?: string) {
-    if (!this.isLive()) throw this.offlineFailure('上传资产需要连接后台，现在没有上传（离线暂存后延迟上传尚未实现）')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.upload'))
     return this.direct.uploadAsset(file, fileName)
   }
 
   async fetchAsset(objectId: string): Promise<Blob> {
     const cached = this.replica.dead === null ? await this.replica.call('getAsset', objectId).catch(() => null) : null
     if (cached) return new Blob([cached])
-    if (!this.isLive()) throw this.offlineFailure('这个资产的内容没有缓存到本机（准备离线时被跳过，或之后才加入）')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.assetNotCached'))
     const blob = await this.direct.fetchAsset(objectId)
     if (blob.size <= ASSET_SIZE_CAP) void blob.arrayBuffer().then((bytes) => this.replica.call('putAsset', objectId, bytes)).catch(() => undefined)
     return blob
   }
 
   async procStart(program: string, params: Record<string, Json>): Promise<RunView> {
-    if (!this.isLive()) throw this.offlineFailure('受控加工在后台执行，现在没有运行，也没有生成任何结果')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.procStart'))
     return this.direct.procStart(program, params)
   }
   async procGet(runId: string) {
-    if (!this.isLive()) throw this.offlineFailure('无法读取运行状态')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readRun'))
     return this.direct.procGet(runId)
   }
   async procApply(runId: string) {
-    if (!this.isLive()) throw this.offlineFailure('受控加工的结果由后台应用，现在没有应用')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.procApply'))
     return this.direct.procApply(runId)
   }
   async procCancel(runId: string) {
-    if (!this.isLive()) throw this.offlineFailure('无法取消运行')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.cancelRun'))
     return this.direct.procCancel(runId)
   }
 
   // wish runs happen on the service: offline nothing is started, read or applied (许愿格 §14.2)
   async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>) {
-    if (!this.isLive()) throw this.offlineFailure('分析与执行在后台进行，现在没有开始')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
     // the service must see what this device saved first: a run never works from an older wish
-    if (this.offline.pending().some((row) => row.state === 'queued' || row.state === 'sending' || row.state === 'unknown')) throw new ServiceFailure({ code: 'PENDING_LOCAL_EDITS', retryable: true, detail: '本机还有未同步的修改：同步完成后再运行，避免后台按旧配置执行' })
+    if (this.offline.pending().some((row) => row.state === 'queued' || row.state === 'sending' || row.state === 'unknown')) throw new ServiceFailure({ code: 'PENDING_LOCAL_EDITS', retryable: true, detail: aiwsT('aiworkspace.core.replica.pendingLocalEdits') })
     return this.direct.wishStart(program, params)
   }
   async wishGet(runId: string, choices?: WishChoices) {
-    if (!this.isLive()) throw this.offlineFailure('无法读取运行状态')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readRun'))
     return this.direct.wishGet(runId, choices)
   }
   async wishApply(runId: string, planDigest: string) {
-    if (!this.isLive()) throw this.offlineFailure('结果由后台应用，现在没有应用')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishApply'))
     return this.direct.wishApply(runId, planDigest)
   }
   async wishList(wishId: string, limit?: number) {
-    if (!this.isLive()) throw this.offlineFailure('无法读取运行列表')
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.listRuns'))
     return this.direct.wishList(wishId, limit)
   }
 

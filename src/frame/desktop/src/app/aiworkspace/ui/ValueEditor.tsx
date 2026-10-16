@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import type { Json } from '../api/types'
+import { useAiwsText } from '../useAiwsText'
 import { UNSET, editText, parseInput, type Input, type ValueDef } from './values'
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 
 /** Inline editor for one value. Enter / blur commits, Escape cancels; nothing is committed when the text is unchanged. */
 export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCancel, onTab }: Props) {
+  const { t } = useAiwsText()
   const startText = initialText ?? editText(def, value)
   const [text, setText] = useState(startText)
   const [error, setError] = useState<string | null>(null)
@@ -29,7 +31,7 @@ export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCa
         <select aria-label={ariaLabel} autoFocus defaultValue={value === true ? 'true' : value === false ? 'false' : ''} onBlur={onCancel}
           onChange={(event) => onCommit(event.target.value === '' ? UNSET : event.target.value === 'true')}
           onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}>
-          <option value="">（未设置）</option><option value="true">是</option><option value="false">否</option>
+          <option value="">{t('aiworkspace.data.value.notSet')}</option><option value="true">{t('aiworkspace.common.yes')}</option><option value="false">{t('aiworkspace.common.no')}</option>
         </select>
       </span>
     )
@@ -40,7 +42,7 @@ export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCa
         <select aria-label={ariaLabel} autoFocus defaultValue={typeof value === 'string' ? value : ''} onBlur={onCancel}
           onChange={(event) => onCommit(event.target.value === '' ? UNSET : event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}>
-          <option value="">（未设置）</option>
+          <option value="">{t('aiworkspace.data.value.notSet')}</option>
           {(def.options ?? []).map((option) => <option key={option.option_id} value={option.option_id}>{option.label}</option>)}
         </select>
       </span>
@@ -56,13 +58,13 @@ export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCa
             {option.label}
           </label>
         ))}
-        <button type="button" onClick={() => onCommit(selected.length === 0 ? UNSET : selected)}>确定</button>
-        <button type="button" onClick={onCancel}>取消</button>
+        <button type="button" onClick={() => onCommit(selected.length === 0 ? UNSET : selected)}>{t('aiworkspace.common.ok')}</button>
+        <button type="button" onClick={onCancel}>{t('aiworkspace.common.cancel')}</button>
       </span>
     )
   }
   if (def.type === 'object_ref') {
-    return <span className="aiws-editor aiws-muted">对象引用暂不支持在此编辑 <button type="button" onClick={onCancel}>关闭</button></span>
+    return <span className="aiws-editor aiws-muted">{t('aiworkspace.data.value.objectRefNotEditable')} <button type="button" onClick={onCancel}>{t('aiworkspace.common.close')}</button></span>
   }
   const cancel = () => {
     if (settled.current) return

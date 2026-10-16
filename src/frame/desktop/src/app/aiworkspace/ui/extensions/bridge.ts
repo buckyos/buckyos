@@ -10,6 +10,7 @@ import { randomId } from '../../api/ids'
 import type {
   CellPayload, EntityEnvelope, FieldDef, Json, KeyedContent, Operation, QueryPage, QueryParams, QueryRow, RecordContent, RichTextContent, Selector, TableSourceContent,
 } from '../../api/types'
+import { aiwsT, aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { modePolicy, type CanvasMode } from '../blocks/registry'
 import type { HostBridge } from './htmlRuntime'
@@ -47,18 +48,18 @@ function stored(field: FieldDef, v: Json | undefined): Json | undefined {
   if (v === undefined || v === null || (v === '' && field.type !== 'text')) return undefined
   const option = (x: Json) => {
     const o = field.options?.find((opt) => opt.label === x || opt.option_id === x)
-    if (!o) throw new Error(`字段「${field.name}」没有选项「${String(x)}」`)
+    if (!o) throw new Error(aiwsT('aiworkspace.extension.noOption', { field: field.name, option: String(x) }))
     return o.option_id
   }
   switch (field.type) {
     case 'decimal': {
       const n = typeof v === 'number' ? v : Number(String(v).replace(/[,¥$\s]/g, ''))
-      if (!Number.isFinite(n)) throw new Error(`字段「${field.name}」需要数值，得到 ${JSON.stringify(v)}`)
+      if (!Number.isFinite(n)) throw new Error(aiwsT('aiworkspace.extension.needsNumber', { field: field.name, value: JSON.stringify(v) }))
       return n.toFixed(field.scale ?? 2)
     }
     case 'number': {
       const n = typeof v === 'number' ? v : Number(String(v).replace(/[,¥$\s]/g, ''))
-      if (!Number.isFinite(n)) throw new Error(`字段「${field.name}」需要数值，得到 ${JSON.stringify(v)}`)
+      if (!Number.isFinite(n)) throw new Error(aiwsT('aiworkspace.extension.needsNumber', { field: field.name, value: JSON.stringify(v) }))
       return n
     }
     case 'select': return option(v)
@@ -75,20 +76,23 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
   const batches = new Map<string, { label: string; operations: Operation[] }>()
   const binding = (name: string): Binding => {
     const b = bindings[name]
-    if (!b) throw new Error(`没有名为 ${name} 的绑定（有：${Object.keys(bindings).join('、') || '无'}）`)
+    if (!b) {
+      const names = Object.keys(bindings)
+      throw new Error(aiwsT('aiworkspace.extension.unknownBinding', { name, bindings: names.length ? aiwsText().list(names) : aiwsT('aiworkspace.common.none') }))
+    }
     return b
   }
-  const requireWrites = () => { if (!policy.writes) throw new Error(`当前子模式（${target.mode}）不允许扩展写入文档`) }
+  const requireWrites = () => { if (!policy.writes) throw new Error(aiwsT('aiworkspace.extension.writesNotAllowed', { mode: target.mode })) }
   const submit = async (operations: Operation[], label: string): Promise<Json> => {
     requireWrites()
-    if (!Array.isArray(operations) || operations.length === 0) throw new Error('operations 必须是非空数组')
-    const outcome = await store.submit({ editId: `ext:${target.cell.entity_id}:${Date.now()}`, label: label || `扩展 ${target.payload.view.type} 的修改`, operations })
+    if (!Array.isArray(operations) || operations.length === 0) throw new Error(aiwsT('aiworkspace.extension.emptyOperations'))
+    const outcome = await store.submit({ editId: `ext:${target.cell.entity_id}:${Date.now()}`, label: label || aiwsT('aiworkspace.extension.editLabel', { name: target.payload.view.type }), operations })
     return outcome as unknown as Json
   }
   const tableOf = async (name: string) => {
     const b = binding(name)
     const meta = await store.session.read<TableSourceContent>(b.entity_id)
-    if (meta.type_id !== 'buckyos.table-source') throw new Error(`绑定 ${name} 不是表格`)
+    if (meta.type_id !== 'buckyos.table-source') throw new Error(aiwsT('aiworkspace.extension.notTable', { name }))
     return { b, meta: meta.content }
   }
   const allRows = async (b: Binding): Promise<QueryRow[]> => {
@@ -110,7 +114,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
     if (operations.length === 0) return { status: 'unchanged' }
     if (batch) {
       const b = batches.get(batch)
-      if (!b) throw new Error('批量写入已结束')
+      if (!b) throw new Error(aiwsT('aiworkspace.extension.batchEnded'))
       b.operations.push(...operations)
       return { status: 'batched', operations: operations.length }
     }
@@ -145,7 +149,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       requireWrites()
       // the static snapshot is an asset: what the Block shows before it is activated (§10.4 lifecycle)
       const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(dataUrl)
-      if (!match) throw new Error('snapshot 需要 data URL')
+      if (!match) throw new Error(aiwsT('aiworkspace.extension.snapshotNeedsDataUrl'))
       const mediaType = match[1]
       const bytes = match[2] ? Uint8Array.from(atob(match[3]), (c) => c.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(match[3]))
       const uploaded = await store.session.uploadAsset(new Blob([bytes], { type: mediaType }), `snapshot.${mediaType.includes('svg') ? 'svg' : mediaType.includes('png') ? 'png' : 'bin'}`)
@@ -153,10 +157,10 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       // the snapshot is bookkeeping of the Block, not a user edit: no undo entry; a concurrent config edit wins
       const current = await store.session.read<KeyedContent<CellPayload>>(target.cell.entity_id)
       const outcome = await store.submit({
-        editId: `ext-snapshot:${target.cell.entity_id}`, label: '扩展快照', undoable: false,
+        editId: `ext-snapshot:${target.cell.entity_id}`, label: aiwsT('aiworkspace.extension.snapshotLabel'), undoable: false,
         operations: [{ op: 'entity.set_keys', entity_id: target.cell.entity_id, keys: [{ key: 'config', value: { ...(current.content.payload.config ?? {}), snapshot } as Json, expect: { rev: current.content.key_revs.config ?? 0 } }] }],
       })
-      if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') throw new Error('扩展快照未保存，请查看保存状态后重试')
+      if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') throw new Error(aiwsT('aiworkspace.extension.snapshotNotSaved'))
       onSnapshot?.(uploaded.object_id, uploaded.media_type)
     },
     notify: (text) => store.notify('info', text),
@@ -173,7 +177,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         case 'rows': {
           const { meta } = await tableOf(name)
           const byId = new Map(meta.fields.map((f) => [f.field_id, f]))
-          for (const f of a.fields ?? []) if (!meta.fields.some((x) => x.name === f)) throw new Error(`绑定 ${name} 没有字段 ${f}`)
+          for (const f of a.fields ?? []) if (!meta.fields.some((x) => x.name === f)) throw new Error(aiwsT('aiworkspace.extension.noBindingField', { name, field: f }))
           let rows = (await allRows(b)).map((r) => {
             const o: Record<string, Json> = { _id: r.record_id }
             for (const [fid, v] of Object.entries(r.values)) { const f = byId.get(fid); if (f) o[f.name] = plain(f, v) ?? null }
@@ -185,9 +189,10 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
           }
           if (a.sort) {
             const keys = (Array.isArray(a.sort) ? a.sort : [a.sort]).map((s) => (s.startsWith('-') ? { f: s.slice(1), d: -1 } : { f: s, d: 1 }))
+            const { compare } = aiwsText()
             rows = [...rows].sort((x, y) => {
               for (const k of keys) {
-                const c = String(x[k.f] ?? '').localeCompare(String(y[k.f] ?? ''), 'zh-CN', { numeric: true })
+                const c = compare(String(x[k.f] ?? ''), String(y[k.f] ?? ''))
                 if (c !== 0) return c * k.d
               }
               return 0
@@ -199,12 +204,12 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         }
         case 'markdown': {
           const rt = await store.session.read<RichTextContent>(b.entity_id)
-          if (rt.type_id !== 'buckyos.richtext') throw new Error(`绑定 ${name} 不是富文本`)
+          if (rt.type_id !== 'buckyos.richtext') throw new Error(aiwsT('aiworkspace.extension.notRichText', { name }))
           return store.core.richtext_to_markdown(JSON.stringify(rt.content.content))
         }
         case 'props': {
           const rec = await store.session.read<RecordContent>(b.entity_id)
-          if (rec.type_id !== 'buckyos.record') throw new Error(`绑定 ${name} 不是记录`)
+          if (rec.type_id !== 'buckyos.record') throw new Error(aiwsT('aiworkspace.extension.notRecord', { name }))
           return Object.fromEntries(rec.content.schema.properties.map((p) => [p.name, plain({ ...p, field_id: p.key, def_rev: 0, type_rev: 0, values_rev: 0 } as FieldDef, rec.content.props[p.key]) ?? null]))
         }
         case 'bytes': {
@@ -212,7 +217,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
           const blob = await store.session.fetchAsset(asset.content.payload.object_id)
           return Array.from(new Uint8Array(await blob.arrayBuffer()))
         }
-        default: throw new Error(`未知的读取 ${what}`)
+        default: throw new Error(aiwsT('aiworkspace.extension.unknownRead', { what }))
       }
     },
     outline: async (what, args) => {
@@ -244,18 +249,18 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
     write: async (kind, name, args, batch) => {
       requireWrites()
       const a = (args ?? {}) as Record<string, Json>
-      const label = `扩展 ${target.payload.title ?? target.payload.view.type} 的修改`
+      const label = aiwsT('aiworkspace.extension.editLabel', { name: target.payload.title ?? target.payload.view.type })
       switch (kind) {
         case 'upsert': {
           const { b, meta } = await tableOf(name)
           const rows = (a.rows as Record<string, Json>[] | null) ?? []
           const key = (a.key as string[] | null) ?? []
           const byName = new Map(meta.fields.map((f) => [f.name, f]))
-          for (const r of rows) for (const k of Object.keys(r)) if (k !== '_id' && !byName.has(k)) throw new Error(`表格没有字段 ${k}`)
+          for (const r of rows) for (const k of Object.keys(r)) if (k !== '_id' && !byName.has(k)) throw new Error(aiwsT('aiworkspace.extension.noTableField', { field: k }))
           const current = await allRows({ entity_id: b.entity_id })
           const keyOf = (values: Record<string, Json>, byField: boolean) => JSON.stringify(key.map((k) => {
             const f = byName.get(k)
-            if (!f) throw new Error(`键字段 ${k} 不存在`)
+            if (!f) throw new Error(aiwsT('aiworkspace.extension.noKeyField', { field: k }))
             return byField ? plain(f, values[f.field_id]) ?? null : values[k] ?? null
           }))
           const index = new Map(current.map((r) => [key.length ? keyOf(r.values, true) : r.record_id, r]))
@@ -285,12 +290,12 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         case 'setColumn': {
           const { b, meta } = await tableOf(name)
           const f = meta.fields.find((x) => x.name === a.field || x.field_id === a.field)
-          if (!f) throw new Error(`表格没有字段 ${String(a.field)}`)
+          if (!f) throw new Error(aiwsT('aiworkspace.extension.noTableField', { field: String(a.field) }))
           const current = new Map((await allRows({ entity_id: b.entity_id })).map((r) => [r.record_id, r]))
           const values: { record_id: string; field_id: string; value: Json; expect: { rev: number } }[] = []
           for (const [rid, v] of Object.entries((a.values ?? {}) as Record<string, Json>)) {
             const r = current.get(rid)
-            if (!r) throw new Error(`记录 ${rid} 不存在`)
+            if (!r) throw new Error(aiwsT('aiworkspace.extension.noRecord', { id: rid }))
             const s = stored(f, v)
             if (s === undefined || JSON.stringify(r.values[f.field_id]) === JSON.stringify(s)) continue
             values.push({ record_id: rid, field_id: f.field_id, value: s, expect: { rev: r.revs[f.field_id] ?? 0 } })
@@ -300,11 +305,11 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         case 'recordSet': {
           const b = binding(name)
           const rec = await store.session.read<RecordContent>(b.entity_id)
-          if (rec.type_id !== 'buckyos.record') throw new Error(`绑定 ${name} 不是记录`)
+          if (rec.type_id !== 'buckyos.record') throw new Error(aiwsT('aiworkspace.extension.notRecord', { name }))
           const keys: { key: string; value: Json; expect: { rev: number } }[] = []
           for (const [n, v] of Object.entries((a.props ?? {}) as Record<string, Json>)) {
             const p = rec.content.schema.properties.find((x) => x.name === n || x.key === n)
-            if (!p) throw new Error(`记录没有属性 ${n}`)
+            if (!p) throw new Error(aiwsT('aiworkspace.extension.noProperty', { property: n }))
             const s = stored({ ...p, field_id: p.key, def_rev: 0, type_rev: 0, values_rev: 0 } as FieldDef, v)
             if (s === undefined || JSON.stringify(rec.content.props[p.key]) === JSON.stringify(s)) continue
             keys.push({ key: `p:${p.key}`, value: s, expect: { rev: rec.content.key_revs[`p:${p.key}`] ?? 0 } })
@@ -314,7 +319,7 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         case 'setMarkdown': {
           const b = binding(name)
           const rt = await store.session.read<RichTextContent>(b.entity_id)
-          if (rt.type_id !== 'buckyos.richtext') throw new Error(`绑定 ${name} 不是富文本`)
+          if (rt.type_id !== 'buckyos.richtext') throw new Error(aiwsT('aiworkspace.extension.notRichText', { name }))
           const ast = store.core.markdown_to_richtext(String(a.markdown ?? ''), `x${randomId().slice(0, 6).toLowerCase()}`, undefined)
           const ops = JSON.parse(store.core.richtext_diff(b.entity_id, JSON.stringify(rt.content.content), ast, JSON.stringify(rt.content.blocks))) as Operation[]
           return emit(ops, label, batch)
@@ -322,9 +327,9 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         case 'createBlock': {
           const data = typeof a.data === 'string' ? (bindings[a.data]?.entity_id ?? a.data) : null
           const renderer = String(a.renderer ?? '')
-          if (!renderer) throw new Error('createBlock 需要 renderer')
+          if (!renderer) throw new Error(aiwsT('aiworkspace.extension.createBlockNeedsRenderer'))
           const parentId = target.cell.parent_id
-          if (!parentId) throw new Error('这个 Block 不在画布上')
+          if (!parentId) throw new Error(aiwsT('aiworkspace.extension.notOnCanvas'))
           const here = target.cell.placement ?? { x: 0, y: 0, w: 320, h: 200 }
           const p = (a.placement ?? {}) as { x?: number; y?: number; w?: number; h?: number }
           const last = store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined
@@ -337,18 +342,18 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
           const r = await emit([op], label, batch)
           return { ...(r as Record<string, Json>), entity_id: id }
         }
-        default: throw new Error(`未知的写入 ${kind}`)
+        default: throw new Error(aiwsT('aiworkspace.extension.unknownWrite', { kind }))
       }
     },
     batch: async (action, id, label) => {
       if (action === 'begin') {
         const key = randomId()
-        batches.set(key, { label: label || `扩展 ${target.payload.title ?? target.payload.view.type} 的修改`, operations: [] })
+        batches.set(key, { label: label || aiwsT('aiworkspace.extension.editLabel', { name: target.payload.title ?? target.payload.view.type }), operations: [] })
         return key
       }
       const b = id ? batches.get(id) : undefined
       if (id) batches.delete(id)
-      if (!b) throw new Error('批量写入不存在')
+      if (!b) throw new Error(aiwsT('aiworkspace.extension.noBatch'))
       if (action === 'abort' || b.operations.length === 0) return { status: action === 'abort' ? 'aborted' : 'unchanged' }
       return submit(b.operations, b.label)
     },

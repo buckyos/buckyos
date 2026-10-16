@@ -7,6 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { EditorView } from 'prosemirror-view'
 import type { ToolbarItem } from '../ui/blocks/registry'
 import { InlineTools } from '../ui/canvas/tools'
+import { useAiwsText } from '../useAiwsText'
 import { applyEdit, buildSource, changedRange, offsetOfBlock, rebase, segmentAt, sourceText, type MdCodec, type MdSource } from './markdownSource'
 import type { SlashKey, SlashState } from './slash'
 
@@ -61,6 +62,7 @@ export function SlashMenu({ view, state, items, container, bindKeys }: {
   /** Hands the menu's key handler to the editor plugin (↑ ↓ Enter while the caret stays in the text). */
   bindKeys: (handler: ((key: SlashKey) => boolean) | null) => void
 }) {
+  const { t } = useAiwsText()
   const shown = items.filter((item) => matches(item, state.query))
   const [active, setActive] = useState(0)
   const [query, setQuery] = useState(state.query)
@@ -107,9 +109,9 @@ export function SlashMenu({ view, state, items, container, bindKeys }: {
   const above = box.bottom + 330 > container.clientHeight && box.top > 330
   const left = Math.max(4, Math.min(box.left - 4, container.clientWidth - 264))
   return (
-    <div ref={listRef} className="aiws-slash" role="listbox" aria-label="插入或转换" data-testid="aiws-slash-menu" style={above ? { left, bottom: container.clientHeight - box.top + 4 } : { left, top: box.bottom + 4 }}
+    <div ref={listRef} className="aiws-slash" role="listbox" aria-label={t('aiworkspace.richtext.slash.menu')} data-testid="aiws-slash-menu" style={above ? { left, bottom: container.clientHeight - box.top + 4 } : { left, top: box.bottom + 4 }}
       onPointerDown={(event) => event.stopPropagation()}>
-      {rows.length > 0 ? rows : <div className="aiws-slash-empty">没有匹配的命令</div>}
+      {rows.length > 0 ? rows : <div className="aiws-slash-empty">{t('aiworkspace.richtext.slash.empty')}</div>}
     </div>
   )
 }
@@ -117,6 +119,7 @@ export function SlashMenu({ view, state, items, container, bindKeys }: {
 // ---- format bubble over a selection
 
 export function FormatBubble({ view, items, container, version }: { view: EditorView; items: ToolbarItem[]; container: HTMLElement; version: string }) {
+  const { t } = useAiwsText()
   const ref = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   useFollowScroll()
@@ -130,7 +133,7 @@ export function FormatBubble({ view, items, container, version }: { view: Editor
   const left = Math.max(4, Math.min(center - width / 2, container.clientWidth - width - 4))
   return (
     <div ref={ref} className="aiws-bubble" data-testid="aiws-format-bubble" style={{ left, top: top < 4 ? end.bottom + 8 : top }} onPointerDown={(event) => event.stopPropagation()}>
-      <InlineTools items={items} label="文字格式" />
+      <InlineTools items={items} label={t('aiworkspace.richtext.format.bubble')} />
     </div>
   )
 }
@@ -149,6 +152,7 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
   onExit: (blockId: string | null) => void
   subscribeDoc: (listener: () => void) => () => void
 }) {
+  const { t } = useAiwsText()
   const [initial] = useState(() => {
     const source = buildSource(view.state.doc, codec)
     return { source, text: sourceText(source), caret: offsetOfBlock(source, startBlockId) }
@@ -254,10 +258,10 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
         ref={areaRef}
         className="aiws-md-source"
         data-testid="aiws-md-source"
-        aria-label="Markdown 源码"
+        aria-label={t('aiworkspace.richtext.source.label')}
         spellCheck={false}
         readOnly={!editable}
-        placeholder="直接输入 Markdown：# 标题、- 列表、**加粗**、> 引用、``` 代码…"
+        placeholder={t('aiworkspace.richtext.source.placeholder')}
         onKeyDown={(event) => {
           const mod = event.ctrlKey || event.metaKey
           if (mod && event.key === '/') { event.preventDefault(); leave(); return }
@@ -268,7 +272,7 @@ export function MarkdownSourceEditor({ view, codec, editable, startBlockId, onEx
           }
         }}
       />
-      {failed && <div className="aiws-warning" role="status">这段 Markdown 暂时无法转换，继续输入后会再试。</div>}
+      {failed && <div className="aiws-warning" role="status">{t('aiworkspace.richtext.source.failed')}</div>}
     </div>
   )
 }

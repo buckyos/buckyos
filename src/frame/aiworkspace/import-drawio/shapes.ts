@@ -26,6 +26,7 @@ export type LabelPosition = 'inside' | 'top' | 'bottom' | 'left' | 'right'
 
 export interface KindInfo {
   kind: ShapeKind
+  /** English, for developers: a host shows its own name for `kind` (and for a group, `group`). */
   label: string
   group: 'basic' | 'flow' | 'arrow' | 'text'
   /** draw.io's default `size` for the kind, and whether it is a fraction of the length along the direction. */
@@ -33,30 +34,30 @@ export interface KindInfo {
 }
 
 export const SHAPE_KINDS: readonly KindInfo[] = [
-  { kind: 'rect', label: '矩形', group: 'basic' },
-  { kind: 'ellipse', label: '椭圆', group: 'basic' },
-  { kind: 'diamond', label: '菱形', group: 'basic' },
-  { kind: 'triangle', label: '三角形', group: 'basic' },
-  { kind: 'hexagon', label: '六边形', group: 'basic', size: { value: 0.25, relative: true } },
-  { kind: 'parallelogram', label: '平行四边形', group: 'basic', size: { value: 0.2, relative: true } },
-  { kind: 'trapezoid', label: '梯形', group: 'basic', size: { value: 0.2, relative: true } },
-  { kind: 'cross', label: '十字', group: 'basic', size: { value: 0.2, relative: true } },
-  { kind: 'cloud', label: '云', group: 'basic' },
-  { kind: 'cylinder', label: '圆柱（数据库）', group: 'flow', size: { value: 15, relative: false } },
-  { kind: 'document', label: '文档', group: 'flow', size: { value: 0.3, relative: true } },
-  { kind: 'process', label: '预定义过程', group: 'flow', size: { value: 0.1, relative: true } },
-  { kind: 'card', label: '卡片', group: 'flow', size: { value: 18, relative: false } },
-  { kind: 'note', label: '折角便笺', group: 'flow', size: { value: 30, relative: false } },
-  { kind: 'callout', label: '标注气泡', group: 'flow', size: { value: 30, relative: false } },
-  { kind: 'step', label: '步骤（V 形）', group: 'arrow', size: { value: 0.2, relative: true } },
-  { kind: 'arrow', label: '箭头', group: 'arrow' },
-  { kind: 'double_arrow', label: '双向箭头', group: 'arrow' },
-  { kind: 'line', label: '线条', group: 'arrow' },
-  { kind: 'text', label: '文字', group: 'text' },
+  { kind: 'rect', label: 'Rectangle', group: 'basic' },
+  { kind: 'ellipse', label: 'Ellipse', group: 'basic' },
+  { kind: 'diamond', label: 'Diamond', group: 'basic' },
+  { kind: 'triangle', label: 'Triangle', group: 'basic' },
+  { kind: 'hexagon', label: 'Hexagon', group: 'basic', size: { value: 0.25, relative: true } },
+  { kind: 'parallelogram', label: 'Parallelogram', group: 'basic', size: { value: 0.2, relative: true } },
+  { kind: 'trapezoid', label: 'Trapezoid', group: 'basic', size: { value: 0.2, relative: true } },
+  { kind: 'cross', label: 'Cross', group: 'basic', size: { value: 0.2, relative: true } },
+  { kind: 'cloud', label: 'Cloud', group: 'basic' },
+  { kind: 'cylinder', label: 'Cylinder (database)', group: 'flow', size: { value: 15, relative: false } },
+  { kind: 'document', label: 'Document', group: 'flow', size: { value: 0.3, relative: true } },
+  { kind: 'process', label: 'Predefined process', group: 'flow', size: { value: 0.1, relative: true } },
+  { kind: 'card', label: 'Card', group: 'flow', size: { value: 18, relative: false } },
+  { kind: 'note', label: 'Note (folded corner)', group: 'flow', size: { value: 30, relative: false } },
+  { kind: 'callout', label: 'Callout', group: 'flow', size: { value: 30, relative: false } },
+  { kind: 'step', label: 'Step (chevron)', group: 'arrow', size: { value: 0.2, relative: true } },
+  { kind: 'arrow', label: 'Arrow', group: 'arrow' },
+  { kind: 'double_arrow', label: 'Double arrow', group: 'arrow' },
+  { kind: 'line', label: 'Line', group: 'arrow' },
+  { kind: 'text', label: 'Text', group: 'text' },
 ]
 
 export const KIND_GROUPS: { group: KindInfo['group']; label: string }[] = [
-  { group: 'basic', label: '基本图形' }, { group: 'flow', label: '流程图' }, { group: 'arrow', label: '箭头与线' }, { group: 'text', label: '文字' },
+  { group: 'basic', label: 'Basic shapes' }, { group: 'flow', label: 'Flowchart' }, { group: 'arrow', label: 'Arrows and lines' }, { group: 'text', label: 'Text' },
 ]
 
 const KINDS = new Set<string>([...SHAPE_KINDS.map((k) => k.kind), 'svg'])

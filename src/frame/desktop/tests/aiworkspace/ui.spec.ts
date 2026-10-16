@@ -604,11 +604,11 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   // the list: no automatic restore in a tab
   await page.goto('/workspace')
   await expect(page.getByTestId('aiws-tab').getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
-  await expect(page).toHaveTitle('AI Workspace · alice')
+  await expect(page).toHaveTitle('AI 工作区 · alice')
   await card(a.workspace_id).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', a.workspace_id, { timeout: 30_000 })
   await expect.poll(() => pathOf(page)).toBe(`/workspace/${a.workspace_id}`)
-  await expect(page).toHaveTitle(/p14a .* · AI Workspace · alice/)
+  await expect(page).toHaveTitle(/p14a .* · AI 工作区 · alice/)
   // the workspace fills the tab
   const box = (await page.getByTestId('aiws-root').boundingBox())!
   const viewport = page.viewportSize()!
@@ -618,7 +618,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await closeWorkspace(page)
   await expect(page.getByTestId('aiws-list')).toBeVisible()
   await expect.poll(() => pathOf(page)).toBe('/workspace')
-  await expect(page).toHaveTitle('AI Workspace · alice')
+  await expect(page).toHaveTitle('AI 工作区 · alice')
   await card(b.workspace_id).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id, { timeout: 30_000 })
   await expect.poll(() => pathOf(page)).toBe(`/workspace/${b.workspace_id}`)

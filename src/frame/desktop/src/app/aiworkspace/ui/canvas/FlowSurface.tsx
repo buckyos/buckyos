@@ -9,7 +9,9 @@ import { GripVertical, Plus } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { EntityEnvelope } from '../../api/types'
 import { orderKeyBetween } from '../../api/wasm'
+import { aiwsT } from '../../i18n'
 import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { BlockHost } from '../blocks/BlockHost'
 import { requestIntent } from '../blocks/editorToolbar'
 import { FlowBlockContext, type FlowBlockApi } from '../blocks/flowContext'
@@ -44,6 +46,7 @@ export interface FlowSurfaceProps {
 export function FlowSurface(props: FlowSurfaceProps) {
   const { surfaceId, mode, onSelect } = props
   const store = useStore()
+  const { t } = useAiwsText()
   useOutlineVersion()
   const policy = modePolicy(mode)
   const surface = store.outline.get(surfaceId)
@@ -100,8 +103,8 @@ export function FlowSurface(props: FlowSurfaceProps) {
     const at = current.findIndex((item) => item.entity_id === id)
     if (entity.parent_id === target.parentId && at >= 0 && current[at - 1]?.order_key === beforeKey && current[at + 1]?.order_key === afterKey) return
     let key: string
-    try { key = orderKeyBetween(store.core, beforeKey, afterKey) } catch (error) { store.notify('error', `无法生成顺序键：${describeError(error)}`); return }
-    const label = `移动 ${entity.title ?? entity.name ?? entity.entity_id}`
+    try { key = orderKeyBetween(store.core, beforeKey, afterKey) } catch (error) { store.notify('error', aiwsT('aiworkspace.canvas.flow.orderKeyFailed', { reason: describeError(error) })); return }
+    const label = aiwsT('aiworkspace.canvas.moveNamedLabel', { name: entity.title ?? entity.name ?? entity.entity_id })
     void store.submit({ editId: `entity:${id}`, label, operations: [entity.parent_id === target.parentId
       ? { op: 'tree.place', entity_id: id, order_key: key }
       : { op: 'tree.move', entity_id: id, new_parent_id: target.parentId, order_key: key }] })
@@ -152,13 +155,13 @@ export function FlowSurface(props: FlowSurfaceProps) {
       <ContainerFlow container={surface} {...shared} />
       {canStructure ? (
         <div className="aiws-flow-tail">
-          <button type="button" className="aiws-flow-tail-add" aria-label="插入块" title="插入块：表格、图片、分组…" data-testid={`aiws-add-open-${surfaceId}`}
+          <button type="button" className="aiws-flow-tail-add" aria-label={t('aiworkspace.canvas.flow.insertBlock')} title={t('aiworkspace.canvas.flow.insertBlockTip')} data-testid={`aiws-add-open-${surfaceId}`}
             onClick={(event) => props.onInsertMenu(surfaceId, menuPoint(event.currentTarget))}><Plus size={16} aria-hidden="true" /></button>
           <button type="button" className="aiws-flow-continue" data-testid="aiws-flow-continue" onClick={continueWriting}>
-            {top.length === 0 ? '点击开始书写，输入“/”插入表格、图片等' : '点击继续书写'}
+            {t(top.length === 0 ? 'aiworkspace.canvas.flow.startWriting' : 'aiworkspace.canvas.flow.continueWriting')}
           </button>
         </div>
-      ) : top.length === 0 && <div className="aiws-muted aiws-flow-empty">这一页还没有内容。</div>}
+      ) : top.length === 0 && <div className="aiws-muted aiws-flow-empty">{t('aiworkspace.canvas.flow.empty')}</div>}
       {drag?.target && <div className="aiws-flow-drop" data-testid="aiws-flow-drop" style={{ top: drag.target.line.top - 1, left: drag.target.line.left, width: drag.target.line.width }} />}
     </div>
   )
@@ -175,9 +178,10 @@ function menuPoint(element: HTMLElement): { x: number; y: number } {
 /** The page title, renamed in place (UI improvement §5: the version read when editing starts is expected). */
 function PageTitle({ surface, mode }: { surface: EntityEnvelope; mode: CanvasMode }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const readOnlyNow = useReadOnlyReason()
   const [editing, setEditing] = useState<{ text: string; base: Awaited<ReturnType<typeof renameBase>> } | null>(null)
-  const title = surface.title ?? surface.name ?? '画布'
+  const title = surface.title ?? surface.name ?? t('aiworkspace.canvas.defaultName')
   const reason = surfaceWriteReason(store, surface, mode !== 'edit', readOnlyNow)
   const done = async (save: boolean) => {
     const current = editing
@@ -185,17 +189,17 @@ function PageTitle({ surface, mode }: { surface: EntityEnvelope; mode: CanvasMod
     const next = current?.text.trim() ?? ''
     if (!save || !current || !next || next === title) return
     const outcome = await renameSurface(store, surface, next, current.base)
-    if (!accepted(outcome)) store.notify('error', `没有重命名：${outcome.status === 'rejected' || outcome.status === 'conflict' ? outcome.code : outcome.status}`)
+    if (!accepted(outcome)) store.notify('error', aiwsT('aiworkspace.canvas.flow.renameFailed', { reason: outcome.status === 'rejected' || outcome.status === 'conflict' ? outcome.code : outcome.status }))
   }
   if (editing) {
     return (
-      <input className="aiws-page-title aiws-page-title-input" aria-label="页面标题" data-testid="aiws-page-title-input" autoFocus value={editing.text}
+      <input className="aiws-page-title aiws-page-title-input" aria-label={t('aiworkspace.canvas.flow.pageTitle')} data-testid="aiws-page-title-input" autoFocus value={editing.text}
         onChange={(event) => setEditing({ ...editing, text: event.target.value })} onBlur={() => { void done(true) }}
         onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void done(true) } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); void done(false) } }} />
     )
   }
   return (
-    <h1 className={`aiws-page-title${reason === null ? ' is-editable' : ''}`} data-testid="aiws-page-title" title={reason === null ? '点击重命名' : undefined}
+    <h1 className={`aiws-page-title${reason === null ? ' is-editable' : ''}`} data-testid="aiws-page-title" title={reason === null ? t('aiworkspace.canvas.clickToRename') : undefined}
       onClick={() => { if (reason === null) void renameBase(store, surface).then((base) => setEditing({ text: title, base }), (error: unknown) => store.notify('error', describeError(error))) }}>
       {title}
     </h1>
@@ -225,6 +229,7 @@ function ContainerFlow({ container, ...props }: ItemProps & { container: EntityE
 /** ＋ and ⋮⋮ in the left margin of a hovered Block or group, with the ＋ menu and the item menu. */
 function Gutter({ entity, siblings, index, kind, ...props }: ItemProps & { entity: EntityEnvelope; siblings: EntityEnvelope[]; index: number; kind: 'block' | 'group' }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const [open, setOpen] = useState<'add' | 'menu' | null>(null)
   useOverlayMounted(open !== null)
   const ref = useRef<HTMLDivElement>(null)
@@ -243,38 +248,38 @@ function Gutter({ entity, siblings, index, kind, ...props }: ItemProps & { entit
   const canMove = policy.layout && entity.capabilities.includes('structure')
   const canDelete = policy.layout && entity.capabilities.includes('delete')
   if (!policy.select && !canInsert) return null
-  const name = entity.title ?? entity.name ?? (kind === 'group' ? '分组' : entity.view_type ?? 'Block')
+  const name = entity.title ?? entity.name ?? (kind === 'group' ? t('aiworkspace.canvas.group') : entity.view_type ?? 'Block')
   const addItems: MenuItem[] = [
     ...registryEntries().filter((entry) => entry.catalog.standard && !FLOW_SKIP.has(entry.definition.type)).map((entry): MenuItem => ({
       id: `add-${entry.definition.type}`, testId: `aiws-flow-add-${entry.definition.type}`, label: entry.title, run: () => props.insertAt(entry, parentId, entity.entity_id),
     })),
-    { id: 'add-group', testId: 'aiws-flow-add-group', label: '分组', run: () => props.insertGroup(parentId, entity.entity_id) },
+    { id: 'add-group', testId: 'aiws-flow-add-group', label: t('aiworkspace.canvas.group'), run: () => props.insertGroup(parentId, entity.entity_id) },
     { id: 'sep-add', separator: true },
-    { id: 'add-more', testId: 'aiws-flow-add-more', label: '更多…', run: () => { if (ref.current) props.onInsertMenu(parentId, menuPoint(ref.current)) } },
+    { id: 'add-more', testId: 'aiws-flow-add-more', label: t('aiworkspace.canvas.flow.more'), run: () => { if (ref.current) props.onInsertMenu(parentId, menuPoint(ref.current)) } },
   ]
   const menuItems: MenuItem[] = [
-    { id: 'up', testId: `aiws-up-${entity.entity_id}`, label: '上移', hint: 'Ctrl+Shift+↑', disabled: !canMove || index === 0, run: () => moveInFlow(store, entity, -1) },
-    { id: 'down', testId: `aiws-down-${entity.entity_id}`, label: '下移', hint: 'Ctrl+Shift+↓', disabled: !canMove || index === siblings.length - 1, run: () => moveInFlow(store, entity, 1) },
-    { id: 'inspect', testId: `aiws-inspect-${entity.entity_id}`, label: '属性', hint: 'F2', run: () => props.onInspect(entity.entity_id) },
+    { id: 'up', testId: `aiws-up-${entity.entity_id}`, label: t('aiworkspace.canvas.flow.moveUp'), hint: 'Ctrl+Shift+↑', disabled: !canMove || index === 0, run: () => moveInFlow(store, entity, -1) },
+    { id: 'down', testId: `aiws-down-${entity.entity_id}`, label: t('aiworkspace.canvas.flow.moveDown'), hint: 'Ctrl+Shift+↓', disabled: !canMove || index === siblings.length - 1, run: () => moveInFlow(store, entity, 1) },
+    { id: 'inspect', testId: `aiws-inspect-${entity.entity_id}`, label: t('aiworkspace.canvas.inspector.title'), hint: 'F2', run: () => props.onInspect(entity.entity_id) },
     { id: 'sep-delete', separator: true },
     { id: 'delete', testId: kind === 'group' ? `aiws-delete-group-${entity.entity_id}` : `aiws-delete-block-${entity.entity_id}`, danger: true,
-      label: kind === 'group' ? '删除分组及其中的 Block' : '删除', hint: 'Delete', disabled: !canDelete,
-      run: () => { void store.submit({ editId: `entity:${entity.entity_id}`, label: `删除${kind === 'group' ? '分组' : ' Block'} ${name}`, operations: deleteOps(store, entity) }) } },
+      label: kind === 'group' ? t('aiworkspace.canvas.flow.deleteGroup') : t('aiworkspace.common.delete'), hint: 'Delete', disabled: !canDelete,
+      run: () => { void store.submit({ editId: `entity:${entity.entity_id}`, label: aiwsT(kind === 'group' ? 'aiworkspace.canvas.flow.deleteGroupLabel' : 'aiworkspace.canvas.flow.deleteBlockLabel', { name }), operations: deleteOps(store, entity) }) } },
   ]
   return (
     <div ref={ref} className={`aiws-flow-gutter${open ? ' is-open' : ''}`} onPointerDown={(event) => event.stopPropagation()}>
       {canInsert && (
-        <button type="button" className="aiws-flow-handle" aria-label="在下方插入" title="在下方插入" data-testid={`aiws-flow-plus-${entity.entity_id}`} aria-expanded={open === 'add'}
+        <button type="button" className="aiws-flow-handle" aria-label={t('aiworkspace.canvas.flow.insertBelow')} title={t('aiworkspace.canvas.flow.insertBelow')} data-testid={`aiws-flow-plus-${entity.entity_id}`} aria-expanded={open === 'add'}
           onMouseDown={(event) => event.preventDefault()} onClick={() => setOpen(open === 'add' ? null : 'add')}><Plus size={16} aria-hidden="true" /></button>
       )}
       {policy.select && (
-        <button type="button" className="aiws-flow-handle aiws-flow-grip" aria-label={`${name}：拖动以移动，点击打开菜单`} title="拖动以移动，点击打开菜单" data-testid={`aiws-flow-handle-${entity.entity_id}`}
+        <button type="button" className="aiws-flow-handle aiws-flow-grip" aria-label={t('aiworkspace.canvas.flow.handleNamed', { name })} title={t('aiworkspace.canvas.flow.handle')} data-testid={`aiws-flow-handle-${entity.entity_id}`}
           aria-expanded={open === 'menu'} onPointerDown={(event) => props.startHandle(event, entity, () => setOpen('menu'))}
           onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onSelect(new Set([entity.entity_id])); setOpen('menu') } }}>
           <GripVertical size={16} aria-hidden="true" />
         </button>
       )}
-      {open === 'add' && <MenuList items={addItems} label="在下方插入" className="aiws-popover aiws-popover-start aiws-flow-menu" testId="aiws-flow-add-menu" onDone={() => setOpen(null)} />}
+      {open === 'add' && <MenuList items={addItems} label={t('aiworkspace.canvas.flow.insertBelow')} className="aiws-popover aiws-popover-start aiws-flow-menu" testId="aiws-flow-add-menu" onDone={() => setOpen(null)} />}
       {open === 'menu' && <MenuList items={menuItems} label={name} className="aiws-popover aiws-popover-start aiws-flow-menu" testId="aiws-flow-block-menu" onDone={() => setOpen(null)} />}
     </div>
   )
@@ -282,6 +287,7 @@ function Gutter({ entity, siblings, index, kind, ...props }: ItemProps & { entit
 
 function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: EntityEnvelope; siblings: EntityEnvelope[]; index: number }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const { policy } = props
   const isSelected = props.selected.has(group.entity_id)
   const canInsert = policy.insert && group.capabilities.includes('structure')
@@ -290,12 +296,12 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
     <section className={`aiws-group aiws-fgroup${isSelected ? ' is-selected' : ''}${props.dragging === group.entity_id ? ' is-dragged' : ''}`} data-testid={`aiws-group-${group.entity_id}`}
       data-cell-id={group.entity_id} data-parent-id={group.parent_id ?? undefined} data-flow-item="group" tabIndex={-1}>
       <Gutter entity={group} siblings={siblings} index={index} kind="group" {...props} />
-      <div className="aiws-fgroup-title">{group.title ?? group.name ?? '分组'}</div>
+      <div className="aiws-fgroup-title">{group.title ?? group.name ?? t('aiworkspace.canvas.group')}</div>
       <ContainerFlow container={group} {...props} />
       {canInsert && (
         <div className="aiws-fgroup-tail" data-flow-item="tail" data-flow-into={group.entity_id}>
           <button type="button" className="aiws-link" data-testid={`aiws-add-open-${group.entity_id}`} onClick={(event) => props.onInsertMenu(group.entity_id, menuPoint(event.currentTarget))}>
-            {children.length === 0 ? '+ 添加到分组' : '+'}
+            {children.length === 0 ? t('aiworkspace.canvas.flow.addToGroup') : '+'}
           </button>
         </div>
       )}
@@ -352,6 +358,7 @@ function FlowBlock({ cell, siblings, index, ...props }: ItemProps & { cell: Enti
 /** The heading line of a table, record or wish on a page: the Block's title, renamed in place (an empty one clears it). */
 function BlockTitle({ cell, title, canRename }: { cell: EntityEnvelope; title: string; canRename: boolean }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const [text, setText] = useState<string | null>(null)
   const save = async (next: string) => {
     setText(null)
@@ -359,7 +366,7 @@ function BlockTitle({ cell, title, canRename }: { cell: EntityEnvelope; title: s
     const read = await store.session.read<{ key_revs: Record<string, number> }>(cell.entity_id)
     const rev = read.content.key_revs.title ?? 0
     void store.submit({
-      editId: `key:${cell.entity_id}:title`, label: `Block 标题 → ${next || '（清除）'}`, mine: next, hasMine: true,
+      editId: `key:${cell.entity_id}:title`, label: next ? aiwsT('aiworkspace.canvas.blockTitleLabel', { title: next }) : aiwsT('aiworkspace.canvas.blockTitleClearedLabel'), mine: next, hasMine: true,
       operations: [next === ''
         ? { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev } }] }
         : { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: next, expect: { rev } }] }],
@@ -367,15 +374,15 @@ function BlockTitle({ cell, title, canRename }: { cell: EntityEnvelope; title: s
   }
   if (text !== null) {
     return (
-      <input className="aiws-fblock-title aiws-fblock-title-input" aria-label="Block 标题" data-testid={`aiws-cell-title-input-${cell.entity_id}`} autoFocus value={text} placeholder="无标题"
+      <input className="aiws-fblock-title aiws-fblock-title-input" aria-label={t('aiworkspace.canvas.blockTitle')} data-testid={`aiws-cell-title-input-${cell.entity_id}`} autoFocus value={text} placeholder={t('aiworkspace.canvas.noTitle')}
         onChange={(event) => setText(event.target.value)} onBlur={() => { void save(text.trim()) }}
         onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void save(text.trim()) } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setText(null) } }} />
     )
   }
   return (
     <div className={`aiws-fblock-title${canRename ? ' is-editable' : ''}${title ? '' : ' is-empty'}`} data-testid={`aiws-cell-title-${cell.entity_id}`}
-      title={canRename ? '点击重命名' : undefined} onClick={() => { if (canRename) setText(title) }}>
-      {title || '无标题'}
+      title={canRename ? t('aiworkspace.canvas.clickToRename') : undefined} onClick={() => { if (canRename) setText(title) }}>
+      {title || t('aiworkspace.canvas.noTitle')}
     </div>
   )
 }

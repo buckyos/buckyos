@@ -7,7 +7,9 @@
 
 import { useCallback, useMemo, type ReactNode } from 'react'
 import type { Json, QueryPage, RecordContent } from '../../api/types'
+import { aiwsT, aiwsText, type AiwsText } from '../../i18n'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry, type BlockAction, type BlockDefinition, type RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
 
@@ -36,10 +38,11 @@ function num(v: unknown): number {
   return 0
 }
 
-export function formatNumber(n: number, format: Item['format']): string {
+/** Numbers in the language of `text` (default: the current one); the ¥ sign belongs to the data format. */
+export function formatNumber(n: number, format: Item['format'], text: Pick<AiwsText, 'num'> = aiwsText()): string {
   if (format === 'percent') return `${(n * 100).toFixed(1)}%`
-  if (format === 'currency') return `¥${n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
-  if (format === 'number') return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+  if (format === 'currency') return `¥${text.num(n, { maximumFractionDigits: 0 })}`
+  if (format === 'number') return text.num(n, { maximumFractionDigits: 2 })
   return String(n)
 }
 
@@ -91,6 +94,8 @@ function resolveBind(data: DataView | null, bind: string | undefined, fieldByNam
 }
 
 function Items({ items, data, accent, context }: { items: Item[]; data: DataView | null; accent: string; context: RenderContext }) {
+  const text = useAiwsText()
+  const { t } = text
   const byName = useMemo(() => {
     if (data?.kind !== 'table') return undefined
     const map = new Map<string, string>()
@@ -104,7 +109,7 @@ function Items({ items, data, accent, context }: { items: Item[]; data: DataView
         if (item.kind === 'badge') return <span key={index} className="aiws-chip" style={{ borderColor: accent, color: accent }}>{item.text ?? item.label}</span>
         if (item.kind === 'value' || item.kind === 'metric') {
           const { value } = resolveBind(data, item.bind, byName)
-          const shown = value === null ? '—' : typeof value === 'number' ? formatNumber(value, item.format) : value
+          const shown = value === null ? '—' : typeof value === 'number' ? formatNumber(value, item.format, text) : value
           return (
             <div key={index} className={item.kind === 'metric' ? 'aiws-decl-metric' : 'aiws-decl-value'} data-testid={`aiws-decl-${item.kind}`}>
               <div className="aiws-decl-label">{item.label ?? item.bind}</div>
@@ -113,12 +118,12 @@ function Items({ items, data, accent, context }: { items: Item[]; data: DataView
           )
         }
         if (item.kind === 'list') {
-          if (data?.kind !== 'table') return <div key={index} className="aiws-muted">列表需要表格数据</div>
+          if (data?.kind !== 'table') return <div key={index} className="aiws-muted">{t('aiworkspace.extension.decl.listNeedsTable')}</div>
           const f = byName?.(item.bind ?? '') ?? item.bind ?? ''
           return <ul key={index} className="aiws-decl-list">{data.rows.slice(0, item.limit ?? 5).map((r, i) => <li key={i}>{String(r[f] ?? '')}</li>)}</ul>
         }
         if (item.kind === 'bar') {
-          if (data?.kind !== 'table') return <div key={index} className="aiws-muted">柱图需要表格数据</div>
+          if (data?.kind !== 'table') return <div key={index} className="aiws-muted">{t('aiworkspace.extension.decl.barNeedsTable')}</div>
           const f = byName?.(item.bind ?? '') ?? item.bind ?? ''
           const by = byName?.(item.by ?? '') ?? item.by ?? ''
           const groups = new Map<string, number>()
@@ -127,7 +132,7 @@ function Items({ items, data, accent, context }: { items: Item[]; data: DataView
           return (
             <div key={index} className="aiws-decl-bars" data-testid="aiws-decl-bar">
               {[...groups].map(([label, value]) => (
-                <div key={label} className="aiws-decl-bar-row"><span className="aiws-decl-bar-label">{label}</span><span className="aiws-decl-bar" style={{ width: `${(value / max) * 100}%`, background: accent }} /><span className="aiws-decl-bar-value">{formatNumber(value, item.format ?? 'number')}</span></div>
+                <div key={label} className="aiws-decl-bar-row"><span className="aiws-decl-bar-label">{label}</span><span className="aiws-decl-bar" style={{ width: `${(value / max) * 100}%`, background: accent }} /><span className="aiws-decl-bar-value">{formatNumber(value, item.format ?? 'number', text)}</span></div>
               ))}
             </div>
           )
@@ -140,15 +145,17 @@ function Items({ items, data, accent, context }: { items: Item[]; data: DataView
 }
 
 function useSpec(context: RenderContext): { spec: Spec | null; error: string | null; title: string } {
+  const { t } = useAiwsText()
   const payload = context.documentDefinition
-  return { spec: (payload?.declarative as Spec | undefined) ?? null, error: null, title: payload?.title ?? context.payload.title ?? '声明式 Block' }
+  return { spec: (payload?.declarative as Spec | undefined) ?? null, error: null, title: payload?.title ?? context.payload.title ?? t('aiworkspace.extension.decl.title') }
 }
 
 function DeclarativeBody(context: RenderContext & { variant: 'edit' | 'view' }) {
+  const { t } = useAiwsText()
   const { spec, error, title } = useSpec(context)
   const { data, error: dataError } = useSourceData(context)
-  if (error) return <div className="aiws-error" role="alert">无法读取定义：{error}</div>
-  if (!spec) return <div className="aiws-muted">载入定义…</div>
+  if (error) return <div className="aiws-error" role="alert">{t('aiworkspace.extension.decl.readFailed', { error })}</div>
+  if (!spec) return <div className="aiws-muted">{t('aiworkspace.extension.decl.loading')}</div>
   const accent = typeof context.payload.config?.accent === 'string' ? context.payload.config.accent : spec.accent ?? 'var(--cp-accent)'
   const items = context.variant === 'view' && spec.view?.items ? spec.view.items : spec.items ?? []
   return (
@@ -165,6 +172,7 @@ const DeclarativeView = (context: RenderContext) => <DeclarativeBody {...context
 
 /** Actions declared by the definition, mapped to existing commands only. */
 function DeclarativeInspector(context: RenderContext) {
+  const { t } = useAiwsText()
   const { spec } = useSpec(context)
   const store = useStore()
   const fields = (spec?.inspector ?? []).filter((f) => !f.modes || f.modes.includes(context.mode === 'view' ? 'view' : 'edit'))
@@ -176,7 +184,7 @@ function DeclarativeInspector(context: RenderContext) {
   }
   const setConfig = (key: string, value: Json) => {
     const config = { ...(context.payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${context.cell.entity_id}`, label: `属性 ${key}`, operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
+    void store.submit({ editId: `config:${context.cell.entity_id}`, label: t('aiworkspace.extension.decl.propertyLabel', { key }), operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
   }
   return (
     <div className="aiws-decl-inspector" data-testid="aiws-decl-inspector" data-mode={context.mode}>
@@ -191,20 +199,20 @@ function DeclarativeInspector(context: RenderContext) {
         </label>
       ))}
       {actions.map((a) => <button key={a.id} type="button" data-testid={`aiws-decl-action-${a.id}`} onClick={() => run(a.command)}>{a.label}</button>)}
-      {fields.length === 0 && actions.length === 0 && <span className="aiws-muted">此定义在{context.mode === 'view' ? '查看' : '编辑'}模式下没有属性或动作。</span>}
+      {fields.length === 0 && actions.length === 0 && <span className="aiws-muted">{t(context.mode === 'view' ? 'aiworkspace.extension.decl.nothingInView' : 'aiworkspace.extension.decl.nothingInEdit')}</span>}
     </div>
   )
 }
 
 const declarativeActions: BlockAction[] = [
-  { id: 'open-source', label: '打开数据', modes: ['edit', 'view'], when: (context) => Boolean(context.source), run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } },
+  { id: 'open-source', get label() { return aiwsT('aiworkspace.extension.decl.openData') }, modes: ['edit', 'view'], when: (context) => Boolean(context.source), run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } },
 ]
 
 export const declarativeBlock: BlockDefinition = {
-  type: 'declarative', version: 1, definitionKind: 'declarative', title: '声明式 Block', accepts: ['buckyos.record', 'buckyos.table-source'], allowNoSource: false,
+  type: 'declarative', version: 1, definitionKind: 'declarative', get title() { return aiwsT('aiworkspace.extension.decl.title') }, accepts: ['buckyos.record', 'buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 320, h: 200 }, cost: { editor: false, html: false },
   Static: DeclarativeStatic, View: DeclarativeView, Inspector: DeclarativeInspector, actions: declarativeActions,
-  catalog: { group: 'extension', description: '按工作区中的声明式定义展示数据。', needs: 'definition' },
+  catalog: { group: 'extension', get description() { return aiwsT('aiworkspace.extension.decl.description') }, needs: 'definition' },
   create: (args) => {
     // the definition reference is the Cell's `def_ref`, never part of its configuration
     const { def_id: defId, ...config } = args.config ?? {}

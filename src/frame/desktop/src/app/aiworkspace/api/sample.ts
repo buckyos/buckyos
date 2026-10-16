@@ -6,6 +6,7 @@ import fixture from '../fixtures/project-workspace.commits.json'
 import { unwrap, type AiwsClient } from './client'
 import { TemplateFailure } from './demos'
 import { base64ToBytes } from './ids'
+import { aiwsT } from '../i18n'
 import { PROTOCOL_VERSION, type Operation, type WorkspaceSummary } from './types'
 
 interface Fixture {
@@ -18,7 +19,7 @@ export async function createSampleWorkspace(client: AiwsClient, title: string): 
   try {
     await fillSample(client, workspace)
   } catch (error) {
-    throw new TemplateFailure(workspace, '写入样例内容时失败', error)
+    throw new TemplateFailure(workspace, aiwsT('aiworkspace.core.sample.fillFailed'), error)
   }
   return workspace
 }
@@ -41,6 +42,6 @@ async function fillSample(client: AiwsClient, workspace: WorkspaceSummary) {
       protocol_version: PROTOCOL_VERSION, workspace_id: workspace.workspace_id, epoch: workspace.epoch,
       idempotency_key: `fixture/${index + 1}`, session_id: 'fixture', origin: 'human', message: commit.message, operations: commit.operations,
     })
-    if (result.status !== 'accepted') throw new Error(`样例的第 ${index + 1} 个提交未被接受：${result.code}`)
+    if (result.status !== 'accepted') throw new Error(aiwsT('aiworkspace.core.sample.commitRejected', { index: index + 1, code: result.code }))
   }
 }

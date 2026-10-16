@@ -17,6 +17,7 @@ AIWorkspaceAppPanel.tsx   entry: what opens (Desktop window: most recent workspa
                           the leave check, the Desktop close / logout guard, the tab's beforeunload
 AIWorkspaceRoute.tsx      the browser tab of its own: Desktop route `/workspace/:workspaceId?`
 links.ts                  the only definition of the tab / share address `/workspace/<id>?surface=&block=`
+i18n.ts, useAiwsText.ts   the app's text in the Desktop's language — see "Language" below
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
   client.ts               one typed method per kRPC method of the backend README
@@ -110,7 +111,8 @@ ui/
   annotations.tsx         cards next to a rich text, aligned with their anchors
   annotationInfo.ts       anchor states in words, labels, jump to an annotation
   ValueEditor.tsx, values.ts, creators.ts
-api/demos.ts              the two phase-two demos as commit sequences (季度经营分析, AI 短片工作流)
+api/demos.ts              the two phase-two demos as commit sequences (季度经营分析, AI 短片工作流), built in the
+                          language of the moment
 fixtures/project-workspace.commits.json   copy of the backend fixture (the e2e suite asserts they are identical)
 wasm/                     wasm-bindgen output of aiworkspace-wasm (src/frame/aiworkspace/wasm/build.sh)
 ```
@@ -122,6 +124,43 @@ Outside this directory: `src/serviceWorker.ts` (registration), `src/service-work
 (`api/session.ts`). `AIWorkspaceAppPanel.open()` picks the implementation: `ReplicaWorkspaceSession`
 when this device has a prepared replica of the workspace and this window gets its holder lock,
 `OnlineWorkspaceSession` otherwise (the top bar says which, and why).
+
+## Language (i18n)
+
+The app follows the Desktop's language (its I18nProvider); English and Chinese have full tables, the other
+Desktop languages read English, like the rest of the Desktop.
+
+- **Tables.** Every string a user can see is a key `aiworkspace.<area>.<name>` with an English and a Chinese
+  entry in `src/i18n/aiworkspace/<area>.ts` (common, shell, canvas + drawio, blocks + connector, wish + extension,
+  data, presentation, richtext, core, demo). Placeholders are `{{name}}`; an English singular is the `<key>_one`
+  entry, picked for `count: 1`. The tables are not part of the Desktop dictionaries (nothing else shows them).
+- **Use.** React code: `const { t, tNode, num, dateTime, list, clauses, compare } = useAiwsText()` — re-renders
+  when the language changes. Code outside React: `aiwsT(key, vars)` / `aiwsText()` from `i18n.ts`, called when
+  the text is produced, never at module load; an exported label map is `localizedLabels({...keys})` or has
+  getters, so it reads the current language when used. One template per sentence (no translated fragments
+  glued together); lists and clauses through `list` / `clauses`; numbers and times through `num` / `dateTime` /
+  `time` (never a hard-coded `'zh-CN'`). Keys are always written out as one literal — never assembled — so the
+  guard can see them.
+- **Where the language comes from.** The provider stores the choice before it re-renders (`src/i18n/provider.tsx`),
+  so text produced outside React during that render is already in the new language. The Replica Worker has no
+  page storage: every request carries the page's language (`WorkerRequest.locale`). HTML extensions get it as
+  `window.aiws.locale` and `<html lang>` (an extension shows English for a language it has no text for). The Mock
+  wish executor's script carries an English and a Chinese table, injected when its definition is created. The
+  shared draw.io module (`@drawio/*`) stays language-free: it returns ids and codes, `ui/canvas/drawioText.ts`
+  turns them into text. The offline start page of the service worker cannot read the Desktop's choice and says
+  it in both languages, the browser's first.
+- **Text that becomes document data** — demo content, default names of new objects and canvases, edit and commit
+  labels, Mock wish results — is written in the language of the moment, like anything a user types.
+- **Not translated:** `fixtures/project-workspace.commits.json` (byte-identical with the backend's fixture), and
+  text the backend produces (wish context maps and problem texts, the Mock processing's output) — Chinese.
+- **Checks.** `deno test --allow-read --allow-env tests/datamodel/aiworkspace-i18n.test.ts [-- <path prefix>…]`
+  (from `src/frame/desktop`): the two tables have the same keys and placeholders, no Chinese is left in string
+  literals or JSX text of this app or the draw.io module (a literal that must stay — Chinese words the Mock looks
+  for in user data — is marked `i18n-exempt: <reason>`), every key named in the source exists and every key is
+  used. The e2e suite runs in zh-CN (`tests/aiworkspace/fixtures.ts` sets the stored language for every browser
+  context) because its assertions match the Chinese UI; `i18n.spec.ts` runs the English UI — no Chinese on screen
+  through the list, a demo created in English, menus, panels, catalog, a Mock wish run, presentation and data
+  sources — and switches the language live and back.
 
 ## Offline (design §6, first-phase document §7)
 

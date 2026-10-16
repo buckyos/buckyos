@@ -6,6 +6,7 @@
 
 import { randomId } from '../../../api/ids'
 import type { CellPayload, ConnectorProjection, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../../api/types'
+import { aiwsT } from '../../../i18n'
 import type { WorkspaceStore } from '../../../state/store'
 import type { Point } from '../geometry'
 import { placementOf, relativeTo, type Laid } from '../layout'
@@ -80,27 +81,29 @@ export async function connectorChangeOps(store: WorkspaceStore, laid: Map<string
     const placement = placementOf(laid, l, l.parentId, rect)
     // the end key before the corner: a box that is a point is only valid once an end is bound
     const operations: Operation[] = [...(keys.length ? [{ op: 'entity.set_keys', entity_id: id, keys } as Operation] : []), { op: 'tree.place', entity_id: id, placement }]
-    const verb = change.spec.binding ? (data[change.which] ? (sameBinding(data[change.which], change.spec.binding) ? '移动连接点' : '重新连接') : '连接') : data[change.which] ? '断开' : '移动端点'
-    return { operations, label: `连接线：${verb}`, patch: { placement, connector: projectionOf(next) }, before, placement }
+    const label = aiwsT(change.spec.binding
+      ? (data[change.which] ? (sameBinding(data[change.which], change.spec.binding) ? 'aiworkspace.connector.edit.moveAnchor' : 'aiworkspace.connector.edit.reconnect') : 'aiworkspace.connector.edit.connect')
+      : data[change.which] ? 'aiworkspace.connector.edit.disconnect' : 'aiworkspace.connector.edit.moveEnd')
+    return { operations, label, patch: { placement, connector: projectionOf(next) }, before, placement }
   }
   if (change.kind === 'controls') {
     const s = geom.start.point
     const e = geom.end.point
     if (!change.points) {
       if (data.controls.length === 0) return null
-      return { operations: [{ op: 'entity.unset_keys', entity_id: id, keys: [{ key: 'controls', expect: expect('controls') }] }], label: '连接线：重置路由', patch: { connector: projectionOf({ ...data, controls: [] }) }, before }
+      return { operations: [{ op: 'entity.unset_keys', entity_id: id, keys: [{ key: 'controls', expect: expect('controls') }] }], label: aiwsT('aiworkspace.connector.edit.resetRoute'), patch: { connector: projectionOf({ ...data, controls: [] }) }, before }
     }
     const points = data.route === 'elbow' ? simplify([s, ...change.points, e]).slice(1, -1) : change.points
     const controls = points.slice(0, 64).map((p) => decompose(p, s, e))
     return {
       operations: [{ op: 'entity.set_keys', entity_id: id, keys: [{ key: 'controls', value: controls as unknown as Json, expect: expect('controls') }] }],
-      label: '连接线：调整路径', patch: { connector: projectionOf({ ...data, controls }) }, before,
+      label: aiwsT('aiworkspace.connector.edit.adjustPath'), patch: { connector: projectionOf({ ...data, controls }) }, before,
     }
   }
   const label = { t: Math.round(change.label.t * 10000) / 10000, offset: Math.round(change.label.offset * 10) / 10 }
   return {
     operations: [{ op: 'entity.set_keys', entity_id: id, keys: [{ key: 'label', value: { t: label.t, ...(label.offset ? { offset: label.offset } : {}) }, expect: expect('label') }] }],
-    label: '连接线：移动标签', patch: { connector: projectionOf({ ...data, label }) }, before,
+    label: aiwsT('aiworkspace.connector.edit.moveLabel'), patch: { connector: projectionOf({ ...data, label }) }, before,
   }
 }
 

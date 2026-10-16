@@ -13,6 +13,7 @@
 
 import { randomId } from '../../api/ids'
 import type { Json, Operation, Placement } from '../../api/types'
+import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { Emitter } from '../../state/emitter'
 import { boxOf } from './connectors/geometry'
@@ -118,7 +119,7 @@ export interface PasteTarget {
 /** The operations of one paste (one commit); `newIds` are the top-level identities to select afterwards;
  * `refused` says why nothing is pasted. */
 export function pasteOperations(store: WorkspaceStore, clip: Clip, target: PasteTarget): { operations: Operation[]; newIds: string[]; label: string; refused?: string } {
-  if (!target.isFree && hasLines(clip.items)) return { operations: [], newIds: [], label: '', refused: '流式页不显示连接线：剪贴板中有连接线（或含连接线的分组），没有粘贴。' }
+  if (!target.isFree && hasLines(clip.items)) return { operations: [], newIds: [], label: '', refused: aiwsT('aiworkspace.canvas.clipboard.linesOnFlowPage') }
   const step = clip.kind === 'copy' ? 24 * (clip.pastes + 1) : 0
   const anchor = target.at ?? { x: target.center.x - clip.bounds.w / 2 + step, y: target.center.y - clip.bounds.h / 2 + step }
   const dx = Math.round(anchor.x - clip.bounds.x)
@@ -139,7 +140,7 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
         : { op: 'tree.move', entity_id: item.id, new_parent_id: target.surfaceId, order_key: nextKey(), ...(target.isFree ? { placement } : {}) })
       newIds.push(item.id)
     }
-    return { operations, newIds, label: `移动 ${newIds.length} 个对象` }
+    return { operations, newIds, label: aiwsT('aiworkspace.canvas.clipboard.moveLabel', { count: newIds.length }) }
   }
   // every identity first, so a line can be rebound to the copy of an object it was copied with
   const fresh = new Map<string, string>()
@@ -177,5 +178,5 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
   }
   // lines after every object they may be bound to (§7: a binding needs its target to exist)
   operations.push(...lines)
-  return { operations, newIds, label: `粘贴 ${newIds.length} 个对象` }
+  return { operations, newIds, label: aiwsT('aiworkspace.canvas.clipboard.pasteLabel', { count: newIds.length }) }
 }

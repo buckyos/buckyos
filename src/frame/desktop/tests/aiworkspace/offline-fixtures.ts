@@ -1,6 +1,6 @@
 import { createServer, connect, type Server, type Socket } from 'node:net'
 import { chromium, type BrowserContext, type Page } from '@playwright/test'
-import { backToList, expect, test as base, type Api, openStatus } from './fixtures'
+import { backToList, expect, LOCALE_STORAGE_KEY, SPEC_LOCALE, test as base, type Api, openStatus } from './fixtures'
 
 /**
  * The network between the browser and BuckyOS, for real: a TCP relay in front of the production
@@ -123,10 +123,14 @@ export const test = base.extend<{ net: Network }>({
   // A regular (on-disk) browser profile per test: Chromium never grants persistent storage to the
   // off-the-record contexts Playwright creates by default, and a replica is not offered without it.
   context: async ({ viewport }, use, testInfo) => {
+    // each relay is its own origin, so the spec language (fixtures.ts) is set by script rather than by storage state
     const context = await chromium.launchPersistentContext(testInfo.outputPath('profile'), { viewport, acceptDownloads: true })
+    await context.addInitScript(([key, value]) => window.localStorage.setItem(key, value), [LOCALE_STORAGE_KEY, SPEC_LOCALE])
     await use(context)
     await context.close()
   },
+  // a persistent profile takes no storage state
+  storageState: async ({}, use) => { await use(undefined) },
   page: async ({ context }, use) => {
     await use(context.pages()[0] ?? await context.newPage())
   },

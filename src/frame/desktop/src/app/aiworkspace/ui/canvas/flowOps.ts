@@ -3,6 +3,7 @@
 
 import { describeError } from '../../api/session'
 import type { EntityEnvelope, Operation } from '../../api/types'
+import { aiwsT } from '../../i18n'
 import { orderKeyBetween } from '../../api/wasm'
 import type { WorkspaceStore } from '../../state/store'
 
@@ -36,8 +37,8 @@ export function moveInFlow(store: WorkspaceStore, entity: EntityEnvelope, direct
   const before = direction === -1 ? all[at - 1]?.order_key : all[at]?.order_key
   const after = direction === -1 ? all[at]?.order_key : all[at + 1]?.order_key
   let key: string
-  try { key = orderKeyBetween(store.core, before, after) } catch (error) { store.notify('error', `无法生成顺序键：${describeError(error)}`); return }
-  void store.submit({ editId: `entity:${entity.entity_id}`, label: `调整顺序 ${entity.title ?? entity.name ?? entity.entity_id}`, operations: [{ op: 'tree.place', entity_id: entity.entity_id, order_key: key }] })
+  try { key = orderKeyBetween(store.core, before, after) } catch (error) { store.notify('error', aiwsT('aiworkspace.canvas.flow.orderKeyFailed', { reason: describeError(error) })); return }
+  void store.submit({ editId: `entity:${entity.entity_id}`, label: aiwsT('aiworkspace.canvas.flow.reorderLabel', { name: entity.title ?? entity.name ?? entity.entity_id }), operations: [{ op: 'tree.place', entity_id: entity.entity_id, order_key: key }] })
 }
 
 export function deleteOps(store: WorkspaceStore, entity: EntityEnvelope): Operation[] {

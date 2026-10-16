@@ -7,12 +7,16 @@
  *   v2: bindings, input(name).rows/fields/markdown/props/bytes, resolve/outline/find, request,
  *       watch(name, cb), table(name).upsert/setColumn, record(name).set, text(name).setMarkdown,
  *       createBlock, batch(fn)
+ *   locale: the host's language when the iframe starts ('en', 'zh-CN', …; also the document's `lang`),
+ *       so an extension can show its own text in it; a language the extension has no text for should
+ *       read English, as the host does.
  *
  * Every write goes through WorkspaceStore and therefore through permissions, locks, undo and save
  * states. Errors, crashes and silence are localised: a call that does not answer in time rejects,
  * and the Block falls back to its static snapshot. */
 
 import type { Json, Operation } from '../../api/types'
+import { aiwsT, currentAiwsLocale } from '../../i18n'
 
 export const HTML_API_VERSION = 2
 const READY_TIMEOUT_MS = 8000
@@ -42,11 +46,12 @@ export interface HtmlSource { html: string; css?: string; js?: string; api_versi
 type Pending = { resolve: (value: Json) => void; reject: (error: Error) => void; timer: number }
 
 /** The script that becomes `window.aiws` inside the iframe. Kept in a string so a definition ships as data. */
-function bootstrap(nonce: string): string {
+function bootstrap(nonce: string, locale: string): string {
   return `
 (function(){
   var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null;
   var nonce = ${JSON.stringify(nonce)};
+  var noHandler = ${JSON.stringify(aiwsT('aiworkspace.extension.noHandler'))};
   function send(type, payload, id){ parent.postMessage({ aiws: nonce, type: type, id: id, payload: payload }, '*'); }
   function call(type, payload){
     return new Promise(function(resolve, reject){
@@ -60,7 +65,7 @@ function bootstrap(nonce: string): string {
     if (m.type === 'event') { var list = watchers[m.payload && m.payload.name] || []; list.forEach(function(cb){ try { cb(m.payload); } catch (e) { setTimeout(function(){ throw e; }, 0); } }); return; }
     if (m.type === 'request') {
       var h = handlers[m.name];
-      if (!h) { send('response', { error: 'no handler for ' + m.name }, m.id); return; }
+      if (!h) { send('response', { error: noHandler.replace('{{name}}', function(){ return m.name; }) }, m.id); return; }
       Promise.resolve().then(function(){ return h(m.payload); }).then(function(r){ send('response', { value: r }, m.id); }, function(e){ send('response', { error: String(e && e.message || e) }, m.id); });
     }
   });
@@ -81,6 +86,7 @@ function bootstrap(nonce: string): string {
   window.aiws = {
     version: ${HTML_API_VERSION},
     host: 'block',
+    locale: ${JSON.stringify(locale)},
     context: context,
     request: context,
     bindings: context.bindings || {},
@@ -144,35 +150,36 @@ export class HtmlRuntime {
   onCrash: ((message: string) => void) | null = null
 
   constructor(source: HtmlSource, bridge: HostBridge) {
-    if ((source.api_version ?? HTML_API_VERSION) !== HTML_API_VERSION) throw new Error(`不支持 HTML API 版本 ${source.api_version}`)
+    if ((source.api_version ?? HTML_API_VERSION) !== HTML_API_VERSION) throw new Error(aiwsT('aiworkspace.extension.unsupportedApi', { version: String(source.api_version) }))
     this.source = source
     this.bridge = bridge
     this.readyPromise = new Promise((resolve, reject) => { this.readyResolve = resolve; this.readyReject = reject })
     void this.readyPromise.catch(() => undefined)
   }
 
-  /** Build the document: markup + style + bootstrap + the definition's script. */
+  /** Build the document: markup + style + bootstrap + the definition's script, in the host's current language. */
   private document(): string {
+    const locale = currentAiwsLocale().replace(/[^\w-]/g, '')
     const context = JSON.stringify(this.bridge.context()).replace(/<\//g, '<\\/')
-    const boot = bootstrap(this.nonce).replace(JSON.stringify('__CONTEXT__'), context)
+    const boot = bootstrap(this.nonce, locale).replace(JSON.stringify('__CONTEXT__'), context)
     const css = this.source.css ? `<style>${this.source.css}</style>` : ''
     const js = this.source.js ? `<script>${this.source.js.replace(/<\/script/gi, '<\\/script')}</script>` : ''
-    return `<!doctype html><html><head><meta charset="utf-8">${css}<script>${boot}</script></head><body>${this.source.html}${js}</body></html>`
+    return `<!doctype html><html lang="${locale}"><head><meta charset="utf-8">${css}<script>${boot}</script></head><body>${this.source.html}${js}</body></html>`
   }
 
   /** Mount into `container` (visible) or into the body hidden (headless executor). */
   mount(container: HTMLElement | null): Promise<void> {
-    if (this.disposed) return Promise.reject(new Error('扩展已卸载'))
+    if (this.disposed) return Promise.reject(new Error(aiwsT('aiworkspace.extension.unloaded')))
     if (this.frame) return this.readyPromise
     const frame = document.createElement('iframe')
     frame.className = 'aiws-html-frame'
-    frame.setAttribute('title', 'HTML 扩展')
+    frame.setAttribute('title', aiwsT('aiworkspace.extension.html.title'))
     if (!container) { frame.style.position = 'fixed'; frame.style.width = '1px'; frame.style.height = '1px'; frame.style.opacity = '0'; frame.style.pointerEvents = 'none'; frame.setAttribute('aria-hidden', 'true') }
     window.addEventListener('message', this.listener)
     frame.srcdoc = this.document()
     ;(container ?? document.body).appendChild(frame)
     this.frame = frame
-    this.readyTimer = window.setTimeout(() => this.failAll(new Error('扩展在 8 秒内没有报告就绪（无响应）')), READY_TIMEOUT_MS)
+    this.readyTimer = window.setTimeout(() => this.failAll(new Error(aiwsT('aiworkspace.extension.readyTimeout', { seconds: READY_TIMEOUT_MS / 1000 }))), READY_TIMEOUT_MS)
     return this.readyPromise
   }
 
@@ -196,11 +203,11 @@ export class HtmlRuntime {
 
   /** Ask the extension to handle `name` (e.g. `analyze`, `execute`, `render`). */
   request(name: string, payload: Json, timeoutMs = CALL_TIMEOUT_MS): Promise<Json> {
-    if (this.disposed) return Promise.reject(new Error('扩展已卸载'))
+    if (this.disposed) return Promise.reject(new Error(aiwsT('aiworkspace.extension.unloaded')))
     return this.readyPromise.then(() => new Promise<Json>((resolve, reject) => {
-      if (this.disposed) { reject(new Error('扩展已卸载')); return }
+      if (this.disposed) { reject(new Error(aiwsT('aiworkspace.extension.unloaded'))); return }
       const id = ++this.seq
-      const timer = window.setTimeout(() => this.failAll(new Error(`扩展处理 ${name} 超时（${Math.round(timeoutMs / 1000)} 秒无响应）`)), timeoutMs)
+      const timer = window.setTimeout(() => this.failAll(new Error(aiwsT('aiworkspace.extension.requestTimeout', { name, seconds: Math.round(timeoutMs / 1000) }))), timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       this.frame?.contentWindow?.postMessage({ aiws: this.nonce, type: 'request', id, name, payload }, '*')
     }))
@@ -251,7 +258,7 @@ export class HtmlRuntime {
 
   private async handle(type: string, payload: Json): Promise<Json> {
     const p = (payload ?? {}) as Record<string, Json>
-    const need = <T>(f: T | undefined): T => { if (!f) throw new Error(`这个宿主不提供 ${type}`); return f }
+    const need = <T>(f: T | undefined): T => { if (!f) throw new Error(aiwsT('aiworkspace.extension.notProvided', { type })); return f }
     switch (type) {
       case 'read': return this.bridge.read(String(p.entity_id ?? ''), p.selector ?? undefined)
       case 'query': return this.bridge.query(payload)
@@ -270,12 +277,12 @@ export class HtmlRuntime {
       case 'watch': {
         const name = String(p.name ?? '')
         const off = need(this.bridge.watch)(name, () => this.post('event', null, { name } as Json))
-        if (!off) throw new Error(`没有名为 ${name} 的绑定`)
+        if (!off) throw new Error(aiwsT('aiworkspace.extension.noBinding', { name }))
         this.unwatch.push(off)
         return null
       }
       default:
-        throw new Error(`unknown bridge call ${type}`)
+        throw new Error(aiwsT('aiworkspace.extension.unknownCall', { type }))
     }
   }
 
@@ -284,7 +291,7 @@ export class HtmlRuntime {
     this.disposed = true
     window.removeEventListener('message', this.listener)
     for (const off of this.unwatch.splice(0)) off()
-    this.rejectWaiting(new Error('扩展已卸载'))
+    this.rejectWaiting(new Error(aiwsT('aiworkspace.extension.unloaded')))
     this.frame?.remove()
     this.frame = null
   }

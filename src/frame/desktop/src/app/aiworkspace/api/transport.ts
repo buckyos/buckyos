@@ -19,6 +19,7 @@
 
 import { buckyos } from 'buckyos'
 import { isMockRuntime } from '../../../runtime'
+import { aiwsT } from '../i18n'
 
 export const SERVICE_NAME = 'aiworkspace'
 export const DEV_OVERRIDE_KEY = 'aiworkspace.dev'
@@ -255,7 +256,7 @@ export function resolveTransport(): TransportAvailability {
   if (isMockRuntime()) {
     return {
       ok: false,
-      reason: `Desktop 正在 Mock 运行时中运行，没有可用的 aiworkspace 服务。AI 工作区没有 Mock 后台：请启动独立后台并设置 localStorage['${DEV_OVERRIDE_KEY}'] = {"token":"<测试令牌>"}（见应用 README），或在真实 Zone 中打开。`,
+      reason: aiwsT('aiworkspace.core.transport.mockRuntime', { key: DEV_OVERRIDE_KEY }),
     }
   }
   const transport = new ZoneTransport()

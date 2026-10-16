@@ -2,6 +2,7 @@
  * what an annotation is about, jumping to where it is shown. */
 
 import type { AnchorInfo } from '../api/types'
+import { aiwsT } from '../i18n'
 import type { AnnotationMark } from '../state/hooks'
 import { describeTarget } from './creators'
 
@@ -9,23 +10,23 @@ import { describeTarget } from './creators'
 export function anchorStatus(anchor: AnchorInfo): string {
   switch (anchor.state) {
     case 'resolved':
-      if (anchor.range_status === 'relocated') return '已按原文重新定位'
-      if (anchor.range_status === 'unchecked') return '锚点有效（由应用定位）'
-      return '锚点有效'
+      if (anchor.range_status === 'relocated') return aiwsT('aiworkspace.data.anchor.relocated')
+      if (anchor.range_status === 'unchecked') return aiwsT('aiworkspace.data.anchor.validByApp')
+      return aiwsT('aiworkspace.data.anchor.valid')
     case 'degraded':
-      if (anchor.level === 'range') return '原位置已删除，已按原文重新定位'
-      if (anchor.level === 'target' && anchor.position) return '原块已删除，已按原文找到所在块'
-      if (anchor.level === 'target') return '精确位置已失效，显示在所在块'
-      return '原位置已删除，显示在对象上'
+      if (anchor.level === 'range') return aiwsT('aiworkspace.data.anchor.rangeDeleted')
+      if (anchor.level === 'target' && anchor.position) return aiwsT('aiworkspace.data.anchor.blockDeleted')
+      if (anchor.level === 'target') return aiwsT('aiworkspace.data.anchor.exactLostOnBlock')
+      return aiwsT('aiworkspace.data.anchor.deletedOnObject')
     case 'target_deleted':
-      return '目标已删除'
+      return aiwsT('aiworkspace.data.anchor.targetDeleted')
     default:
-      return '当前版本无法定位，显示在对象上'
+      return aiwsT('aiworkspace.data.anchor.unresolved')
   }
 }
 
 export function annotationLabel(mark: AnnotationMark): string {
-  return mark.payload.context?.label ?? (mark.payload.target ? describeTarget(mark.payload.target) : '便签')
+  return mark.payload.context?.label ?? (mark.payload.target ? describeTarget(mark.payload.target) : aiwsT('aiworkspace.data.stickyNote'))
 }
 
 /** Scroll to where the annotation is shown, if it is shown. */

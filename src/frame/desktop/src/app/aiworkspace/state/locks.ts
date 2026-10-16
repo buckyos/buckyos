@@ -4,6 +4,7 @@
 import { ServiceFailure } from '../api/client'
 import type { WorkspaceSession } from '../api/session'
 import { TransportError } from '../api/transport'
+import { aiwsT } from '../i18n'
 import { Emitter } from './emitter'
 
 const RENEW_MS = 20_000
@@ -78,10 +79,10 @@ export class LockManager {
         if (current) current.expiresAt = Date.now() + 60_000
       } catch (error) {
         if (error instanceof ServiceFailure && error.code === 'LOCK_LOST') {
-          this.noteLost(entityId, '写锁已失去（租约过期、空闲释放或被管理员解除）')
+          this.noteLost(entityId, aiwsT('aiworkspace.core.lock.lost'))
         } else if (error instanceof TransportError && Date.now() > lock.expiresAt) {
           // Unreachable until the lease ran out by our own clock: assume it is gone.
-          this.noteLost(entityId, '后台不可达，写锁租约已过期')
+          this.noteLost(entityId, aiwsT('aiworkspace.core.lock.expiredOffline'))
         }
       }
     }

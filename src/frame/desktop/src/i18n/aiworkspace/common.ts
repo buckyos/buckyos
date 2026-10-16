@@ -1,0 +1,43 @@
+/* AI Workspace: words shared by every area. Area-specific text lives in the area's own file. */
+
+export const en: Record<string, string> = {
+  'aiworkspace.common.listSeparator': ', ',
+  'aiworkspace.common.clauseSeparator': '; ',
+  'aiworkspace.common.cancel': 'Cancel',
+  'aiworkspace.common.close': 'Close',
+  'aiworkspace.common.ok': 'OK',
+  'aiworkspace.common.save': 'Save',
+  'aiworkspace.common.delete': 'Delete',
+  'aiworkspace.common.rename': 'Rename',
+  'aiworkspace.common.edit': 'Edit',
+  'aiworkspace.common.apply': 'Apply',
+  'aiworkspace.common.retry': 'Retry',
+  'aiworkspace.common.refresh': 'Refresh',
+  'aiworkspace.common.export': 'Export',
+  'aiworkspace.common.unknown': 'Unknown',
+  'aiworkspace.common.none': 'None',
+  'aiworkspace.common.yes': 'Yes',
+  'aiworkspace.common.no': 'No',
+  'aiworkspace.common.others': 'someone else',
+}
+
+export const zh: Record<string, string> = {
+  'aiworkspace.common.listSeparator': '、',
+  'aiworkspace.common.clauseSeparator': '；',
+  'aiworkspace.common.cancel': '取消',
+  'aiworkspace.common.close': '关闭',
+  'aiworkspace.common.ok': '确定',
+  'aiworkspace.common.save': '保存',
+  'aiworkspace.common.delete': '删除',
+  'aiworkspace.common.rename': '重命名',
+  'aiworkspace.common.edit': '编辑',
+  'aiworkspace.common.apply': '应用',
+  'aiworkspace.common.retry': '重试',
+  'aiworkspace.common.refresh': '刷新',
+  'aiworkspace.common.export': '导出',
+  'aiworkspace.common.unknown': '未知',
+  'aiworkspace.common.none': '无',
+  'aiworkspace.common.yes': '是',
+  'aiworkspace.common.no': '否',
+  'aiworkspace.common.others': '他人',
+}

@@ -6,6 +6,7 @@
  * falls back to the default); the core checks what is written. */
 
 import type { Json } from '../../../api/types'
+import { aiwsT } from '../../../i18n'
 import type { Anchor, Binding, Control, ConnectorData, Flip, Route } from '@drawio/connector'
 import { ANCHOR_ID } from './anchors'
 
@@ -13,7 +14,12 @@ export type { Anchor, Binding, Control, ConnectorData, Flip, LabelPos, Route } f
 
 export const CONNECTOR_VIEW = 'connector'
 
-export const ROUTES: { value: Route; label: string }[] = [{ value: 'straight', label: '直线' }, { value: 'elbow', label: '直角' }, { value: 'curve', label: '曲线' }]
+/** A choice of a menu: its label is read in the current language when it is shown. */
+const choice = <V extends string>(value: V, key: string) => ({ value, get label() { return aiwsT(key) } })
+
+export const ROUTES: { value: Route; label: string }[] = [
+  choice('straight', 'aiworkspace.connector.routes.straight'), choice('elbow', 'aiworkspace.connector.routes.elbow'), choice('curve', 'aiworkspace.connector.routes.curve'),
+]
 export const MAX_CONTROLS = 64
 
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -65,15 +71,17 @@ export type Dash = 'solid' | 'dashed' | 'dotted'
 export type LabelSize = 's' | 'm' | 'l'
 
 export const CAPS: { value: Cap; label: string }[] = [
-  { value: 'none', label: '无' }, { value: 'arrow', label: '箭头' }, { value: 'triangle', label: '实心三角' }, { value: 'triangle_outline', label: '空心三角' },
-  { value: 'diamond', label: '实心菱形' }, { value: 'diamond_outline', label: '空心菱形' }, { value: 'circle', label: '实心圆' }, { value: 'circle_outline', label: '空心圆' },
-  { value: 'bar', label: '短横' },
-  { value: 'cardinality_one', label: 'ER：一' }, { value: 'cardinality_many', label: 'ER：多' }, { value: 'cardinality_one_or_many', label: 'ER：一或多' },
-  { value: 'cardinality_exactly_one', label: 'ER：有且仅有一' }, { value: 'cardinality_zero_or_one', label: 'ER：零或一' }, { value: 'cardinality_zero_or_many', label: 'ER：零或多' },
+  choice('none', 'aiworkspace.common.none'), choice('arrow', 'aiworkspace.connector.cap.arrow'), choice('triangle', 'aiworkspace.connector.cap.triangle'),
+  choice('triangle_outline', 'aiworkspace.connector.cap.triangleOutline'), choice('diamond', 'aiworkspace.connector.cap.diamond'),
+  choice('diamond_outline', 'aiworkspace.connector.cap.diamondOutline'), choice('circle', 'aiworkspace.connector.cap.circle'),
+  choice('circle_outline', 'aiworkspace.connector.cap.circleOutline'), choice('bar', 'aiworkspace.connector.cap.bar'),
+  choice('cardinality_one', 'aiworkspace.connector.cap.one'), choice('cardinality_many', 'aiworkspace.connector.cap.many'),
+  choice('cardinality_one_or_many', 'aiworkspace.connector.cap.oneOrMany'), choice('cardinality_exactly_one', 'aiworkspace.connector.cap.exactlyOne'),
+  choice('cardinality_zero_or_one', 'aiworkspace.connector.cap.zeroOrOne'), choice('cardinality_zero_or_many', 'aiworkspace.connector.cap.zeroOrMany'),
 ]
-export const DASHES: { value: Dash; label: string }[] = [{ value: 'solid', label: '实线' }, { value: 'dashed', label: '虚线' }, { value: 'dotted', label: '点线' }]
-export const WIDTHS: { value: string; label: string }[] = [{ value: '1', label: '细' }, { value: '2', label: '中' }, { value: '4', label: '粗' }]
-export const LABEL_SIZES: { value: LabelSize; label: string }[] = [{ value: 's', label: '小' }, { value: 'm', label: '中' }, { value: 'l', label: '大' }]
+export const DASHES: { value: Dash; label: string }[] = [choice('solid', 'aiworkspace.blocks.dash.solid'), choice('dashed', 'aiworkspace.blocks.dash.dashed'), choice('dotted', 'aiworkspace.blocks.dash.dotted')]
+export const WIDTHS: { value: string; label: string }[] = [choice('1', 'aiworkspace.connector.widths.thin'), choice('2', 'aiworkspace.connector.widths.medium'), choice('4', 'aiworkspace.connector.widths.thick')]
+export const LABEL_SIZES: { value: LabelSize; label: string }[] = [choice('s', 'aiworkspace.blocks.size.s'), choice('m', 'aiworkspace.blocks.size.m'), choice('l', 'aiworkspace.blocks.size.l')]
 /** Label font size in world units. */
 export const LABEL_FONT: Record<LabelSize, number> = { s: 12, m: 14, l: 18 }
 

@@ -7,6 +7,12 @@ export const VECTORS_PATH = resolve('../aiworkspace/fixtures/vectors/object-ids.
 export const BUNDLED_FIXTURE = resolve('src/app/aiworkspace/fixtures/project-workspace.commits.json')
 export { BACKEND_FIXTURE }
 
+/** The specs match the Chinese UI, while the Desktop starts in English: every browser context of a test starts in
+ * zh-CN (the I18nProvider's stored language), on the dev server and on the production preview alike, and the demos
+ * built here are Chinese. i18n.spec.ts covers the English UI. */
+export const LOCALE_STORAGE_KEY = 'buckyos.prototype.locale.v1'
+export const SPEC_LOCALE = 'zh-CN'
+
 // The backend's JSON results are inspected ad hoc in assertions.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
@@ -56,6 +62,8 @@ export class Api {
   /** One of the phase-two demos (§11), replayed through the public interface like the app does. */
   async demo(token: string, kind: 'quarterly' | 'film', title: string): Promise<{ workspace_id: string; epoch: string }> {
     const { quarterlyDemoCommits, filmDemoCommits } = await import('../../src/app/aiworkspace/api/demos')
+    const { setAiwsLocale } = await import('../../src/app/aiworkspace/i18n')
+    setAiwsLocale(SPEC_LOCALE)
     const commits = kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()
     const ws = await this.rpc(token, 'ws.create', { title })
     for (const [index, commit] of commits.entries()) {
@@ -94,7 +102,7 @@ export async function openApp(page: Page, token: string) {
   await page.goto('/?scenario=normal')
   await page.getByTestId('desktop-app-aiworkspace').click()
   // the window opens maximised: the canvas has the room the specs' coordinates assume
-  await page.getByTestId('window-aiworkspace').getByRole('button', { name: 'Maximize' }).click()
+  await page.getByTestId('window-aiworkspace').getByRole('button', { name: /^(Maximize|最大化)$/ }).click()
   await backToList(page)
 }
 
@@ -194,5 +202,9 @@ export async function hooks(page: Page): Promise<{ commits: number; canvas: { bl
 
 export const test = base.extend<{ api: Api }>({
   api: async ({}, use) => { await use(new Api()) },
+  storageState: async ({}, use) => {
+    const ports = [process.env.AIWS_E2E_WEB_PORT, process.env.AIWS_E2E_PREVIEW_PORT].filter(Boolean)
+    await use({ cookies: [], origins: ports.map((port) => ({ origin: `http://127.0.0.1:${port}`, localStorage: [{ name: LOCALE_STORAGE_KEY, value: SPEC_LOCALE }] })) })
+  },
 })
 export { expect }

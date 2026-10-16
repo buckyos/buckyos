@@ -6,6 +6,7 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope } from '../../api/types'
+import { localizedLabels } from '../../i18n'
 import { workspaceUrl } from '../../links'
 import { useUserState } from '../../state/hooks'
 import { CANVAS_MODES, type CanvasMode } from '../blocks/registry'
@@ -16,7 +17,10 @@ export type TopMode = 'sources' | 'canvas' | 'show'
 
 /** The right panel shows one kind of content at a time (§3.2). */
 export type SideTab = 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits' | 'wish'
-export const SIDE_TAB_LABEL: Record<SideTab, string> = { inspector: '属性', relations: '引用与依赖', annotations: '批注', collab: '协作', edits: '修改状态', wish: '许愿格' }
+export const SIDE_TAB_LABEL: Readonly<Record<SideTab, string>> = localizedLabels({
+  inspector: 'aiworkspace.shell.side.inspector', relations: 'aiworkspace.shell.side.relations', annotations: 'aiworkspace.shell.side.annotations',
+  collab: 'aiworkspace.shell.side.collab', edits: 'aiworkspace.shell.side.edits', wish: 'aiworkspace.shell.side.wish',
+})
 export const CANVAS_SIDE_TABS: SideTab[] = ['inspector', 'relations', 'annotations', 'collab', 'edits']
 export const SOURCES_SIDE_TABS: SideTab[] = ['collab', 'edits']
 

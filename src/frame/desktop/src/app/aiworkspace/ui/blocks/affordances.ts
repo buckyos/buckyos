@@ -1,6 +1,7 @@
 /* Shared hover affordances (标准对象的交互改进 §4.2): the name of the data a Block shows, with its freshness. */
 
 import { Database, Link2, type LucideIcon } from 'lucide-react'
+import { aiwsT } from '../../i18n'
 import type { Shape } from '../canvas/connectors/anchors'
 import type { HoverAffordance, RenderContext } from './registry'
 
@@ -32,5 +33,5 @@ export function openLink(context: RenderContext, link: string) {
 export function linkAffordance(context: RenderContext): HoverAffordance[] {
   const link = context.payload.config?.link
   if (typeof link !== 'string' || !link) return []
-  return [{ id: 'link', kind: 'button', at: 'top-right-in', icon: Link2, label: `打开链接：${link}`, modes: ['edit', 'view', 'show'], run: (c) => openLink(c, link) }]
+  return [{ id: 'link', kind: 'button', at: 'top-right-in', icon: Link2, label: aiwsT('aiworkspace.blocks.openLink', { link }), modes: ['edit', 'view', 'show'], run: (c) => openLink(c, link) }]
 }

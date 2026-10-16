@@ -5,30 +5,34 @@
 import { createElement } from 'react'
 import { BookOpen, Briefcase, Calendar, ChartColumn, Clapperboard, Code, Compass, FileText, Flag, Globe, Heart, Kanban, LayoutDashboard, Lightbulb, ListTodo, Map as MapIcon, NotebookPen, Palette, Rocket, Sparkles, Star, Target, type LucideIcon } from 'lucide-react'
 import type { EntityEnvelope } from '../../api/types'
+import { aiwsT } from '../../i18n'
+
+/** A preset whose name is read in the current language. */
+const preset = (id: string, key: string, Icon: LucideIcon) => ({ id, get label() { return aiwsT(key) }, Icon })
 
 export const SURFACE_ICONS: { id: string; label: string; Icon: LucideIcon }[] = [
-  { id: 'board', label: '白板', Icon: LayoutDashboard },
-  { id: 'page', label: '页面', Icon: FileText },
-  { id: 'chart', label: '图表', Icon: ChartColumn },
-  { id: 'kanban', label: '看板', Icon: Kanban },
-  { id: 'todo', label: '清单', Icon: ListTodo },
-  { id: 'notes', label: '笔记', Icon: NotebookPen },
-  { id: 'book', label: '资料', Icon: BookOpen },
-  { id: 'idea', label: '想法', Icon: Lightbulb },
+  preset('board', 'aiworkspace.canvas.icon.board', LayoutDashboard),
+  preset('page', 'aiworkspace.canvas.icon.page', FileText),
+  preset('chart', 'aiworkspace.canvas.icon.chart', ChartColumn),
+  preset('kanban', 'aiworkspace.canvas.icon.kanban', Kanban),
+  preset('todo', 'aiworkspace.canvas.icon.todo', ListTodo),
+  preset('notes', 'aiworkspace.canvas.icon.notes', NotebookPen),
+  preset('book', 'aiworkspace.canvas.icon.book', BookOpen),
+  preset('idea', 'aiworkspace.canvas.icon.idea', Lightbulb),
   { id: 'ai', label: 'AI', Icon: Sparkles },
-  { id: 'rocket', label: '项目', Icon: Rocket },
-  { id: 'target', label: '目标', Icon: Target },
-  { id: 'flag', label: '里程碑', Icon: Flag },
-  { id: 'calendar', label: '日程', Icon: Calendar },
-  { id: 'map', label: '地图', Icon: MapIcon },
-  { id: 'compass', label: '探索', Icon: Compass },
-  { id: 'globe', label: '市场', Icon: Globe },
-  { id: 'work', label: '工作', Icon: Briefcase },
-  { id: 'code', label: '代码', Icon: Code },
-  { id: 'film', label: '影像', Icon: Clapperboard },
-  { id: 'design', label: '设计', Icon: Palette },
-  { id: 'star', label: '收藏', Icon: Star },
-  { id: 'heart', label: '生活', Icon: Heart },
+  preset('rocket', 'aiworkspace.canvas.icon.rocket', Rocket),
+  preset('target', 'aiworkspace.canvas.icon.target', Target),
+  preset('flag', 'aiworkspace.canvas.icon.flag', Flag),
+  preset('calendar', 'aiworkspace.canvas.icon.calendar', Calendar),
+  preset('map', 'aiworkspace.canvas.icon.map', MapIcon),
+  preset('compass', 'aiworkspace.canvas.icon.compass', Compass),
+  preset('globe', 'aiworkspace.canvas.icon.globe', Globe),
+  preset('work', 'aiworkspace.canvas.icon.work', Briefcase),
+  preset('code', 'aiworkspace.canvas.icon.code', Code),
+  preset('film', 'aiworkspace.canvas.icon.film', Clapperboard),
+  preset('design', 'aiworkspace.canvas.icon.design', Palette),
+  preset('star', 'aiworkspace.canvas.icon.star', Star),
+  preset('heart', 'aiworkspace.canvas.icon.heart', Heart),
 ]
 
 const BY_ID = new Map(SURFACE_ICONS.map((icon) => [icon.id, icon]))

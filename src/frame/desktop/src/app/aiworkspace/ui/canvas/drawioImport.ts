@@ -7,9 +7,11 @@
 import { buildOperations, batches, convertPage, ImportReport, readDrawio, type ConvertOptions, type DrawioPage, type PagePlan, type UploadedAsset } from '@drawio/mod'
 import { decodeStencilStyle, stencilToSvg } from '@drawio/stencil'
 import { describeError } from '../../api/session'
+import { aiwsT } from '../../i18n'
 import type { Json, Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
 import { Emitter } from '../../state/emitter'
+import { formatErrorText, imageFallbackText } from './drawioText'
 import { libraryShape } from './stencilLibrary'
 import { createSurfaceOps } from './surfaceOps'
 
@@ -54,6 +56,7 @@ const OPTIONS: ConvertOptions = {
     const s = stencilToSvg(shape)
     return { title: s.title, svg: s.svg, anchors: s.anchors, unsupported: s.unsupported }
   },
+  imageText: (url) => imageFallbackText(url),
 }
 
 const MARGIN = 40
@@ -79,7 +82,7 @@ async function uploadImages(store: WorkspaceStore, plans: PagePlan[], report: Im
             const uploaded = await store.session.uploadAsset(blob, image.name)
             return { object_id: uploaded.object_id, file_name: image.name }
           } catch {
-            report.add('image_missing', '取不到的图片以带链接的虚线框代替', image.url ?? image.name)
+            report.add('image_missing', 'Images that could not be fetched replaced by dashed boxes with a link', image.url ?? image.name)
             return null
           }
         })()
@@ -104,10 +107,10 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
   try {
     const file = await readDrawio(input)
     // a shape library: its entries side by side on one canvas
-    pages = file.pages.length ? file.pages : file.library.flatMap((entry, i) => (entry.model ? [{ id: `lib-${i}`, name: entry.title || `图形 ${i + 1}`, model: entry.model }] : []))
-    if (pages.length === 0) throw new Error('文件里没有可导入的页面或图形')
+    pages = file.pages.length ? file.pages : file.library.flatMap((entry, i) => (entry.model ? [{ id: `lib-${i}`, name: entry.title || aiwsT('aiworkspace.drawio.libraryEntry', { n: i + 1 }), model: entry.model }] : []))
+    if (pages.length === 0) throw new Error(aiwsT('aiworkspace.drawio.nothingToImport'))
   } catch (error) {
-    return { ...outcome, error: `读不出这个 draw.io 文件：${describeError(error)}` }
+    return { ...outcome, error: aiwsT('aiworkspace.drawio.unreadable', { reason: formatErrorText(error) ?? describeError(error) }) }
   }
   const library = pages[0]?.id.startsWith('lib-')
   const plans: PagePlan[] = []
@@ -118,7 +121,7 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
   let row = 0
   let firstBase: { x: number; y: number } | null = null
   const totalW = library ? plans.reduce((w, p) => w + p.bounds.w + MARGIN, -MARGIN) : 0
-  const label = `导入 draw.io「${name}」`
+  const label = aiwsT('aiworkspace.drawio.importLabel', { name })
   for (const [i, plan] of plans.entries()) {
     let surfaceId: string
     let contentFolderId: string
@@ -138,8 +141,8 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
       const { ops, surfaceId: created } = createSurfaceOps(store, plan.name.slice(0, 120) || `${name} ${i + 1}`, 'free')
       const surfaceOp = ops.find((op) => op.op === 'entity.create' && op.entity_id === created) as (Operation & { payload: Record<string, Json> }) | undefined
       if (surfaceOp && Object.keys(config).length) surfaceOp.payload.config = config
-      const result = await store.submit({ editId: `import:${created}`, label: `${label}：新建画布「${plan.name}」`, operations: ops })
-      if (result.status !== 'accepted' && result.status !== 'saved_locally') return { ...outcome, error: `新建画布没有成功（${result.status === 'rejected' || result.status === 'conflict' ? result.code : result.status}）` }
+      const result = await store.submit({ editId: `import:${created}`, label: aiwsT('aiworkspace.drawio.importNewCanvasLabel', { name, canvas: plan.name }), operations: ops })
+      if (result.status !== 'accepted' && result.status !== 'saved_locally') return { ...outcome, error: aiwsT('aiworkspace.drawio.newCanvasFailed', { reason: result.status === 'rejected' || result.status === 'conflict' ? result.code : result.status }) }
       surfaceId = created
       contentFolderId = `${created}-content`
       origin = { x: MARGIN, y: MARGIN }
@@ -147,9 +150,10 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
     const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey: lastKey(store, surfaceId), contentFolderId, contentAfterKey: lastKey(store, contentFolderId), assets })
     const parts = [...batches(built.objects), ...batches(built.lines)]
     for (const [k, operations] of parts.entries()) {
-      const result = await store.submit({ editId: `import:${surfaceId}:${i}:${k}`, label: parts.length > 1 ? `${label}（${k + 1}/${parts.length}）` : label, operations: operations as unknown as Operation[] })
+      const result = await store.submit({ editId: `import:${surfaceId}:${i}:${k}`, label: parts.length > 1 ? aiwsT('aiworkspace.drawio.importBatchLabel', { name, part: k + 1, parts: parts.length }) : label, operations: operations as unknown as Operation[] })
       if (result.status !== 'accepted' && result.status !== 'saved_locally') {
-        return { ...outcome, error: `导入在第 ${k + 1}/${parts.length} 批停止：${result.status === 'rejected' || result.status === 'conflict' ? `${result.code}${result.detail ? `（${result.detail}）` : ''}` : result.status}` }
+        const reason = result.status === 'rejected' || result.status === 'conflict' ? (result.detail ? aiwsT('aiworkspace.canvas.codeWithDetail', { code: result.code, detail: String(result.detail) }) : result.code) : result.status
+        return { ...outcome, error: aiwsT('aiworkspace.drawio.importStopped', { part: k + 1, parts: parts.length, reason }) }
       }
     }
     if (outcome.surfaceId === null || outcome.surfaceId === surfaceId) {

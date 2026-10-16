@@ -25,6 +25,7 @@ import {
   type AssetRow, type InitResult, type LocalExport, type LocalRefused, type LocalSaved, type PendingMeta, type PendingRow, type PendingState,
   type ReadEntry, type ReplicaApi, type ReplicaMeta, type RichTextDraftRow, type WorkerFailure, type WorkerRequest, type WorkerResponse,
 } from './protocol'
+import { aiwsT, setAiwsLocale } from '../i18n'
 
 const DB_NAME = '/replica.sqlite'
 const CONFIRMED_TABLES = ['entities', 'tree_edges', 'table_fields', 'table_records', 'richtext_states', 'refs', 'assets'] as const
@@ -292,10 +293,10 @@ const handlers: Handlers = {
   async init(options): Promise<InitResult> {
     workspaceId = options.workspaceId
     testHooks = options.testHooks
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(workspaceId)) return { ok: false, reason: `非法的工作区标识：${workspaceId}` }
-    if (typeof navigator.storage?.getDirectory !== 'function') return { ok: false, reason: '此浏览器没有 OPFS（Origin Private File System）' }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(workspaceId)) return { ok: false, reason: aiwsT('aiworkspace.core.worker.badWorkspaceId', { id: workspaceId }) }
+    if (typeof navigator.storage?.getDirectory !== 'function') return { ok: false, reason: aiwsT('aiworkspace.core.offline.noOpfs') }
     if (typeof FileSystemFileHandle === 'undefined' || !('createSyncAccessHandle' in FileSystemFileHandle.prototype)) {
-      return { ok: false, reason: '此浏览器的 Worker 不支持 OPFS 同步访问句柄（createSyncAccessHandle）' }
+      return { ok: false, reason: aiwsT('aiworkspace.core.worker.noSyncHandle') }
     }
     try {
       await initCore({ module_or_path: coreWasmUrl })
@@ -314,7 +315,7 @@ const handlers: Handlers = {
         }
       }
     } catch (error) {
-      return { ok: false, reason: `无法初始化本地数据库（SQLite WASM / opfs-sahpool）：${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, reason: aiwsT('aiworkspace.core.worker.initFailed', { error: error instanceof Error ? error.message : String(error) }) }
     }
     let prepared: ReplicaMeta | null = null
     let pendingCount = 0
@@ -325,7 +326,7 @@ const handlers: Handlers = {
         if (prepared) pendingCount = Number(select('SELECT COUNT(*) AS n FROM pending_submissions')[0].n)
       } catch (error) {
         await closeDatabase()
-        return { ok: false, reason: `本机的离线副本无法打开：${error instanceof Error ? error.message : String(error)}` }
+        return { ok: false, reason: aiwsT('aiworkspace.core.offline.cannotOpen', { error: error instanceof Error ? error.message : String(error) }) }
       }
     }
     return { ok: true, prepared, pendingCount, sqlite: sqlite3.version.libVersion, vfs: 'opfs-sahpool' }
@@ -335,7 +336,7 @@ const handlers: Handlers = {
     if (!pool) throw new Error('storage is not initialised')
     if (db) {
       const count = readMeta() ? Number(select('SELECT COUNT(*) AS n FROM pending_submissions')[0].n) : 0
-      if (count > 0 && !args.discardLocal) throw new EngineError({ code: 'LOCAL_PENDING', detail: `本机副本里还有 ${count} 条未提交的修改；请先导出或处理它们` })
+      if (count > 0 && !args.discardLocal) throw new EngineError({ code: 'LOCAL_PENDING', detail: aiwsT('aiworkspace.core.worker.pendingLeft', { count }) })
     }
     await closeDatabase()
     try {
@@ -453,7 +454,7 @@ const handlers: Handlers = {
     const before = pendingRows().find((row) => row.idempotency_key === key) ?? null
     if (!before) return { removed: null, pending: pendingRows() }
     if (unsentOnly && (before.state === 'sending' || before.state === 'unknown')) {
-      throw new EngineError({ code: 'IN_FLIGHT', detail: '这条修改正在发送或结果未知，后台可能已经接受它，暂时不能撤回' })
+      throw new EngineError({ code: 'IN_FLIGHT', detail: aiwsT('aiworkspace.core.worker.inFlight') })
     }
     core().discard(key)
     const rows = pendingRows()
@@ -605,8 +606,9 @@ function failure(error: unknown): WorkerFailure {
 let chain: Promise<void> = Promise.resolve()
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const { id, op, args } = event.data
+  const { id, op, args, locale } = event.data
   chain = chain.then(async () => {
+    setAiwsLocale(locale)
     let response: WorkerResponse
     try {
       const handler = handlers[op] as (...values: unknown[]) => unknown

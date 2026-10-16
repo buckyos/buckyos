@@ -1,6 +1,8 @@
 import { useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import type { BlockDefRead, CellPayload, EntityEnvelope, KeyedContent } from '../../api/types'
+import { aiwsT } from '../../i18n'
 import { useEntity, useLoad, useReadOnlyReason, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { EditorToolbarContext } from './editorToolbar'
 import { blockRegistry, modePolicy, type BlockDefinition, type CanvasMode, type DataState, type RenderContext, type Resolution, type ToolbarItem } from './registry'
 
@@ -30,7 +32,7 @@ export interface BlockContextOptions {
 }
 
 const MISSING_DEF: BlockDefinition = {
-  type: 'missing', version: 0, title: '（缺失）', accepts: [], allowNoSource: true, defaultSize: { w: 240, h: 120 }, cost: { editor: false, html: false },
+  type: 'missing', version: 0, get title() { return aiwsT('aiworkspace.blocks.missing') }, accepts: [], allowNoSource: true, defaultSize: { w: 240, h: 120 }, cost: { editor: false, html: false },
   Static: () => null,
 }
 
@@ -44,6 +46,7 @@ function dataStateOf(payload: CellPayload, source: EntityEnvelope | undefined): 
 
 export function useBlockContext(options: BlockContextOptions) {
   const { cellId, mode, view, depth = 0 } = options
+  const { t } = useAiwsText()
   const store = useStore()
   const ui = useWorkspaceUi()
   const cellEntity = useEntity(cellId ?? '')
@@ -64,10 +67,10 @@ export function useBlockContext(options: BlockContextOptions) {
     if (!payload?.view) return null
     const registered = blockRegistry.get(payload.view.type, payload.view.version ?? 1)
     if (registered?.definitionKind && defId && !documentDefinition && !definitionRead.error) return null
-    if (registered?.definitionKind && definitionRead.data?.degraded) return { ok: false, reason: 'invalid_definition', detail: '不支持此 Block 定义的数据版本' }
+    if (registered?.definitionKind && definitionRead.data?.degraded) return { ok: false, reason: 'invalid_definition', detail: t('aiworkspace.blocks.resolve.defDataVersion') }
     return blockRegistry.resolve(payload, source?.type_id, documentDefinition)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload, source?.type_id, documentDefinition, definitionRead.error, definitionRead.data?.degraded, defId, registryVersion])
+  }, [payload, source?.type_id, documentDefinition, definitionRead.error, definitionRead.data?.degraded, defId, registryVersion, t])
   const readOnlyNow = useReadOnlyReason()
   const toolbarSink = useContext(EditorToolbarContext)
   const pointerType = usePointerType()
@@ -77,12 +80,12 @@ export function useBlockContext(options: BlockContextOptions) {
   // on stage only the Blocks marked "operable on stage" take input (第三期规划 §10.2)
   const editable = policy.editContent && (mode !== 'show' || payload.presentation?.live === true)
   const readOnlyReason = readOnlyNow ? readOnlyNow
-    : depth > 0 ? '嵌入的 Block 只读'
-      : !policy.writes ? mode === 'view' ? '查看模式：除批注外不修改文档' : '路径编辑中不修改对象内容'
-        : !editable ? '放映中：这个 Block 没有开放现场操作'
-        : !cell.capabilities.includes('update') ? '没有修改此 Block 的权限'
-          : dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded' ? '绑定的数据不可用'
-            : source && !source.capabilities.some((c) => c === 'update' || c === 'append') ? '没有修改其数据的权限' : null
+    : depth > 0 ? t('aiworkspace.blocks.readOnly.embedded')
+      : !policy.writes ? mode === 'view' ? t('aiworkspace.blocks.readOnly.viewMode') : t('aiworkspace.blocks.readOnly.pathEdit')
+        : !editable ? t('aiworkspace.blocks.readOnly.show')
+        : !cell.capabilities.includes('update') ? t('aiworkspace.blocks.noPermission')
+          : dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded' ? t('aiworkspace.blocks.readOnly.dataUnavailable')
+            : source && !source.capabilities.some((c) => c === 'update' || c === 'append') ? t('aiworkspace.blocks.readOnly.noDataPermission') : null
   const context: RenderContext = {
     cell, payload, keyRevs: current.content.key_revs, source, definition: resolution?.ok ? resolution.definition : MISSING_DEF, documentDefinition, depth,
     mode, view, selected: Boolean(options.selected), hovered: Boolean(options.hovered), editorActive: Boolean(options.editorActive) && editable && depth === 0,
@@ -93,7 +96,7 @@ export function useBlockContext(options: BlockContextOptions) {
     annotate: ui.annotate, showAnnotations: ui.showAnnotations,
   }
   const availableResolution: Resolution | null = dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded'
-    ? { ok: false, reason: 'data_unavailable', detail: `绑定数据${dataState === 'missing' ? '不存在或已删除' : dataState === 'unreadable' ? '无读取权限' : '的 Schema 版本不受支持'}` }
+    ? { ok: false, reason: 'data_unavailable', detail: t(dataState === 'missing' ? 'aiworkspace.blocks.data.missing' : dataState === 'unreadable' ? 'aiworkspace.blocks.data.unreadable' : 'aiworkspace.blocks.data.degraded') }
     : resolution
   return { context, resolution: availableResolution, error: read.error, registryVersion }
 }

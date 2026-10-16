@@ -14,6 +14,7 @@ import type {
   AssetContent, CellPayload, DerivedInput, EntityEnvelope, Json, KeyedContent, QueryPage, RecordContent, RichTextContent, TableSourceContent,
   WishChoices, WishPayload, WishPayloadRead, WishRunView, WishStage,
 } from '../../api/types'
+import { aiwsT, aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { makeBridge } from '../extensions/bridge'
 import { HtmlRuntime } from '../extensions/htmlRuntime'
@@ -44,9 +45,12 @@ export function applyMessage(run: WishRunView): string {
   const results = run.preview?.summary.results ?? []
   const count = (a: string) => results.filter((r) => r.action === a).length
   const missing = run.preview?.summary.missing?.length ?? 0
-  const parts = [`新建 ${count('create') + count('new_copy')} 项`, `更新 ${count('update')} 项`]
-  if (count('keep_manual')) parts.push(`保留 ${count('keep_manual')} 项人工修改`)
-  return `已应用：${parts.join('，')}${missing ? `；上次存在、本次未生成 ${missing} 项（未删除）` : ''}。可整体撤销。`
+  const { t } = aiwsText()
+  return t('aiworkspace.wish.applied', {
+    created: count('create') + count('new_copy'), updated: count('update'),
+    kept: count('keep_manual') ? t('aiworkspace.wish.appliedKept', { count: count('keep_manual') }) : '',
+    missing: missing ? t('aiworkspace.wish.appliedMissing', { count: missing }) : '',
+  })
 }
 
 /** Where the run was started from (§5.2): a hint for the context map, never a dependency. */
@@ -75,12 +79,12 @@ class HtmlExecutor {
   }
 
   private async mount(): Promise<HtmlRuntime> {
-    if (this.disposed) throw new Error('执行器已卸载')
+    if (this.disposed) throw new Error(aiwsT('aiworkspace.wish.error.executorUnloaded'))
     this.mountPromise ??= (async () => {
       const def = await this.store.session.read<KeyedContent<{ html?: { html: string; css?: string; js?: string; api_version?: number } }>>(this.defId)
-      if (this.disposed) throw new Error('执行器已卸载')
+      if (this.disposed) throw new Error(aiwsT('aiworkspace.wish.error.executorUnloaded'))
       const html = def.content.payload.html
-      if (!html) throw new Error(`定义 ${this.defId} 不是 HTML 定义`)
+      if (!html) throw new Error(aiwsT('aiworkspace.wish.error.notHtmlDefinition', { id: this.defId }))
       const cell: EntityEnvelope = { ...this.wish, entity_id: `exec:${this.wish.entity_id}`, type_id: 'buckyos.cell' }
       const payload: CellPayload = { view: { type: 'html' }, source_ref: { entity_id: this.wish.entity_id }, title: this.wish.title ?? undefined }
       const runtime = new HtmlRuntime(html, makeBridge(this.store, { cell, payload, keyRevs: {}, source: this.wish, mode: 'edit', extra: { role: 'executor', wish_id: this.wish.entity_id } }))
@@ -88,7 +92,7 @@ class HtmlExecutor {
       runtime.onCrash = (message) => {
         this.runtime = null
         this.mountPromise = null
-        this.store.notify('error', `执行器出错：${message}`)
+        this.store.notify('error', aiwsT('aiworkspace.wish.error.executorCrashed', { error: message }))
       }
       await runtime.mount(null)
       return runtime
@@ -98,13 +102,13 @@ class HtmlExecutor {
 
   async analyze(request: AnalyzeRequest): Promise<AnalyzeResult> {
     const result = await (await this.mount()).request('analyze', request as unknown as Json) as unknown as AnalyzeResult
-    if (!result || typeof result.context_prompt !== 'string' || !Array.isArray(result.inputs)) throw new Error('执行器的分析结果格式不正确')
+    if (!result || typeof result.context_prompt !== 'string' || !Array.isArray(result.inputs)) throw new Error(aiwsT('aiworkspace.wish.error.badAnalyzeResult'))
     return { ...result, warnings: Array.isArray(result.warnings) ? result.warnings : [] }
   }
 
   async execute(request: ExecuteRequest): Promise<ExecuteResult> {
     const result = await (await this.mount()).request('execute', request as unknown as Json, 60_000) as unknown as ExecuteResult
-    if (!result || !Array.isArray(result.results)) throw new Error('执行器的执行结果格式不正确')
+    if (!result || !Array.isArray(result.results)) throw new Error(aiwsT('aiworkspace.wish.error.badExecuteResult'))
     return { ...result, warnings: result.warnings ?? [], assumptions: result.assumptions ?? [], summary: result.summary ?? '' }
   }
 
@@ -205,7 +209,7 @@ export class WishService {
     try {
       let delay = 250
       for (;;) {
-        if (this.disposed) throw new Error('窗口已关闭')
+        if (this.disposed) throw new Error(aiwsT('aiworkspace.wish.error.windowClosed'))
         const run = await this.store.session.wishGet(runId)
         if (this.runs.get(wishId)?.run_id === runId || !this.runs.has(wishId) || run.created_at >= (this.runs.get(wishId)?.created_at ?? '')) this.setRun(run)
         if (!ACTIVE.has(run.state)) return run
@@ -234,15 +238,15 @@ export class WishService {
     return this.guard(wishId, 'analyzing', async () => {
       const read = await this.payload(wishId)
       if (read.payload.executor === 'mock') { await this.analyzeMock(wishId, read); return null }
-      if (read.payload.executor !== 'xllm') throw new Error(`执行器 ${read.payload.executor} 本期未接入`)
+      if (read.payload.executor !== 'xllm') throw new Error(aiwsT('aiworkspace.wish.error.executorNotAvailable', { executor: read.payload.executor }))
       this.autoApply.add(wishId)
       const run = await this.start(wishId, 'wish.xllm@1', 'analyze', {}, cellId)
       if (run.state === 'waiting_confirmation' && run.preview) {
         // clicking 分析 is the write-back (§7.3): no second confirmation
-        if (!run.preview.ready) throw new Error(`分析没有写回：${run.preview.summary.problems.join('；')}`)
-        await this.applyRun(run, run.preview.plan_digest, `分析许愿格`)
+        if (!run.preview.ready) throw new Error(aiwsT('aiworkspace.wish.error.analysisNotWritten', { problems: aiwsText().clauses(run.preview.summary.problems) }))
+        await this.applyRun(run, run.preview.plan_digest, aiwsT('aiworkspace.wish.edit.analyze'))
       } else if (run.state === 'failed') {
-        throw new Error(run.error?.detail ?? '分析失败')
+        throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.analysisFailed'))
       }
       return this.runs.get(wishId) ?? run
     })
@@ -252,7 +256,7 @@ export class WishService {
     const existing = this.executors.get(wish.entity_id)
     if (existing) return existing
     const def = this.store.outline.all().find((e) => e.type_id === 'buckyos.block-def' && e.def_id === MOCK_WISH_RENDERER && !e.deleted)
-    if (!def) throw new Error('工作区中没有 Mock 许愿格的定义实体（def_id buckyos.mock-wish）')
+    if (!def) throw new Error(aiwsT('aiworkspace.wish.error.noMockDefinition'))
     const created = new HtmlExecutor(this.store, def.entity_id, wish)
     this.executors.set(wish.entity_id, created)
     return created
@@ -262,7 +266,7 @@ export class WishService {
 
   private async analyzeMock(wishId: string, read: WishPayloadRead) {
     const wish = this.store.outline.get(wishId)
-    if (!wish) throw new Error('许愿格不存在')
+    if (!wish) throw new Error(aiwsT('aiworkspace.wish.error.wishMissing'))
     const payload = read.payload
     const declared = (payload.inputs ?? []).flatMap((input) => {
       const e = this.store.outline.get(input.entity_id)
@@ -278,8 +282,8 @@ export class WishService {
     const problems: string[] = []
     const inputs = result.inputs.filter((input) => {
       const e = this.store.outline.get(input.entity_id)
-      if (!e || e.deleted) { problems.push(`输入 ${input.entity_id} 不存在`); return false }
-      if (!e.capabilities.includes('read')) { problems.push(`输入 ${input.entity_id} 不可读`); return false }
+      if (!e || e.deleted) { problems.push(aiwsT('aiworkspace.wish.error.inputMissing', { input: input.entity_id })); return false }
+      if (!e.capabilities.includes('read')) { problems.push(aiwsT('aiworkspace.wish.error.inputUnreadable', { input: input.entity_id })); return false }
       return input.entity_id !== wishId
     }).map((input) => ({ entity_id: input.entity_id, ...(input.label ? { label: input.label } : {}), version: { mode: 'follow' as const } }))
     // the Mock decides its results while executing: a dynamic contract (§8.5)
@@ -288,13 +292,13 @@ export class WishService {
       output_contract: { results: [], dynamic: true }, checks: [], blockers: [], warnings: [...result.warnings, ...problems], executor: 'mock', at: new Date().toISOString(),
     }
     const outcome = await this.store.submit({
-      editId: `wish:${wishId}:analysis`, label: `分析许愿格 ${wish.title ?? wish.name ?? wishId}`,
+      editId: `wish:${wishId}:analysis`, label: aiwsT('aiworkspace.wish.edit.analyzeNamed', { name: wish.title ?? wish.name ?? wishId }),
       operations: [{ op: 'entity.set_keys', entity_id: wishId, keys: [
         { key: 'analysis', value: analysis as unknown as Json, expect: { rev: read.key_revs.analysis ?? 0 } },
         { key: 'inputs', value: inputs as unknown as Json, expect: { rev: read.key_revs.inputs ?? 0 } },
       ] }],
     })
-    if (outcome.status === 'conflict' || outcome.status === 'rejected') throw new Error(`分析结果没有写回许愿格（${outcome.code}）`)
+    if (outcome.status === 'conflict' || outcome.status === 'rejected') throw new Error(aiwsT('aiworkspace.wish.error.analysisNotSaved', { code: outcome.code }))
   }
 
   // ---- execution
@@ -307,7 +311,7 @@ export class WishService {
       if (options.parentRunId) extra.parent_run_id = options.parentRunId
       if (options.feedback) extra.feedback = options.feedback
       const run = await this.start(wishId, 'wish.xllm@1', 'execute', extra, options.cellId)
-      if (run.state === 'failed') throw new Error(run.error?.detail ?? '执行失败')
+      if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.executeFailed'))
       return run
     })
   }
@@ -315,7 +319,7 @@ export class WishService {
   async rerunProgram(wishId: string, cellId?: string): Promise<WishRunView> {
     return this.guard(wishId, 'rerunning', async () => {
       const run = await this.start(wishId, 'wish.xllm@1', 'rerun_program', {}, cellId)
-      if (run.state === 'failed') throw new Error(run.error?.detail ?? '只重跑程序失败')
+      if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.rerunFailed'))
       return run
     })
   }
@@ -323,7 +327,7 @@ export class WishService {
   async repairProgram(wishId: string, failedRunId: string, cellId?: string): Promise<WishRunView> {
     return this.guard(wishId, 'repairing', async () => {
       const run = await this.start(wishId, 'wish.xllm@1', 'repair_program', { parent_run_id: failedRunId }, cellId)
-      if (run.state === 'failed') throw new Error(run.error?.detail ?? '修复程序失败')
+      if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.repairFailed'))
       return run
     })
   }
@@ -386,15 +390,15 @@ export class WishService {
 
   private async executeMock(wishId: string, payload: WishPayload, cellId?: string): Promise<WishRunView> {
     const wish = this.store.outline.get(wishId)
-    if (!wish) throw new Error('许愿格不存在')
+    if (!wish) throw new Error(aiwsT('aiworkspace.wish.error.wishMissing'))
     const fresh = (await this.store.session.freshness([wishId]))[0]
-    if (!payload.analysis || fresh?.needs_analysis) throw new Error('提示词或输入在分析之后改变了：需要先重新分析')
+    if (!payload.analysis || fresh?.needs_analysis) throw new Error(aiwsT('aiworkspace.wish.error.needsAnalysis'))
     for (const input of payload.inputs ?? []) {
       const e = this.store.outline.get(input.entity_id)
-      if (!e || e.deleted) throw new Error(`输入 ${input.label ?? input.entity_id} 不存在或已删除，不能执行`)
-      if (!e.capabilities.includes('read')) throw new Error(`输入 ${input.label ?? input.entity_id} 不可读，不能执行`)
-      if (e.type_id === 'buckyos.wish') throw new Error('许愿格不能直接以许愿格为输入（请引用它的结果）')
-      if (e.derived?.wish_id === wishId || this.store.outline.childrenOf(e.entity_id).some((c) => c.derived?.wish_id === wishId)) throw new Error(`输入 ${input.label ?? input.entity_id} 是本许愿格的结果：输入成环，拒绝执行`)
+      if (!e || e.deleted) throw new Error(aiwsT('aiworkspace.wish.error.executeInputMissing', { input: input.label ?? input.entity_id }))
+      if (!e.capabilities.includes('read')) throw new Error(aiwsT('aiworkspace.wish.error.executeInputUnreadable', { input: input.label ?? input.entity_id }))
+      if (e.type_id === 'buckyos.wish') throw new Error(aiwsT('aiworkspace.wish.error.wishAsInput'))
+      if (e.derived?.wish_id === wishId || this.store.outline.childrenOf(e.entity_id).some((c) => c.derived?.wish_id === wishId)) throw new Error(aiwsT('aiworkspace.wish.error.inputCycle', { input: input.label ?? input.entity_id }))
     }
     const readSet: DerivedInput[] = []
     const snapshots: InputSnapshot[] = []
@@ -402,7 +406,7 @@ export class WishService {
     const result = await this.executorFor(wish).execute({ prompt: payload.prompt, context_prompt: payload.analysis.context_prompt, run_id: `mock-${Date.now().toString(36)}`, inputs: snapshots, executor_config: payload.executor_config ?? {} })
     const provided = { results: result.results, read_set: readSet, summary: result.summary, warnings: result.warnings, assumptions: result.assumptions }
     const run = await this.start(wishId, 'wish.mock@1', 'execute', { provided: provided as unknown as Json }, cellId)
-    if (run.state === 'failed') throw new Error(run.error?.detail ?? '模拟执行失败')
+    if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.mockFailed'))
     return run
   }
 
@@ -420,7 +424,8 @@ export class WishService {
   /** Apply exactly the previewed plan; the accepted commit joins this window's undo stack (§11.4). */
   async apply(run: WishRunView, planDigest: string): Promise<WishRunView> {
     const wish = this.store.outline.get(run.wish_id)
-    return this.guard(run.wish_id, 'applying', () => this.applyRun(run, planDigest, `应用许愿格结果 ${wish?.title ?? wish?.name ?? run.wish_id}${run.simulated ? '（模拟）' : ''}`))
+    const name = wish?.title ?? wish?.name ?? run.wish_id
+    return this.guard(run.wish_id, 'applying', () => this.applyRun(run, planDigest, aiwsT(run.simulated ? 'aiworkspace.wish.edit.applySimulated' : 'aiworkspace.wish.edit.apply', { name })))
   }
 
   private async applyRun(run: WishRunView, planDigest: string, label: string): Promise<WishRunView> {
@@ -475,10 +480,10 @@ export class WishService {
     const uploaded = await this.store.session.uploadAsset(new Blob([bytes], { type: 'text/plain' }), 'main.js')
     const program = { language: 'js', api_version: 2, source: uploaded.object_id, digest, produces: read.payload.program?.produces ?? [], edited_by: this.store.session.principal ?? 'user' }
     const outcome = await this.store.submit({
-      editId: `wish:${wishId}:program`, label: '修改许愿格程序',
+      editId: `wish:${wishId}:program`, label: aiwsT('aiworkspace.wish.edit.program'),
       operations: [{ op: 'entity.set_keys', entity_id: wishId, keys: [{ key: 'program', value: program as unknown as Json, expect: { rev: read.key_revs.program ?? 0 } }] }],
     })
-    if (outcome.status === 'conflict' || outcome.status === 'rejected') throw new Error(`程序没有保存（${outcome.code}）`)
+    if (outcome.status === 'conflict' || outcome.status === 'rejected') throw new Error(aiwsT('aiworkspace.wish.error.programNotSaved', { code: outcome.code }))
   }
 
   dispose() {

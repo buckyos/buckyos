@@ -4,12 +4,13 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import type { Placement } from '../anchors/richtext'
 import type { AnnotationMark } from '../state/hooks'
 import { authorLabel } from '../state/guest'
+import { useAiwsText, type AiwsUiText } from '../useAiwsText'
 
 /** Where an editor placed it, when that is coarser or elsewhere than recorded. */
-function placementHint(mark: AnnotationMark, placement: Placement | undefined): string | null {
-  if (!placement || placement.level === 'entity') return mark.payload.target.selector ? '原位置已不存在' : null
-  if (placement.relocated) return '已按原文重新定位'
-  if (mark.payload.range && placement.level === 'target') return '精确位置已失效'
+function placementHint(t: AiwsUiText['t'], mark: AnnotationMark, placement: Placement | undefined): string | null {
+  if (!placement || placement.level === 'entity') return mark.payload.target.selector ? t('aiworkspace.data.anchor.positionGone') : null
+  if (placement.relocated) return t('aiworkspace.data.anchor.relocated')
+  if (mark.payload.range && placement.level === 'target') return t('aiworkspace.data.anchor.exactLost')
   return null
 }
 
@@ -23,6 +24,7 @@ export function AnnotationGutter({ container, marks, placements, active, onActiv
   /** Changes whenever the placed content may have moved. */
   version: number
 }) {
+  const { t } = useAiwsText()
   const ref = useRef<HTMLDivElement>(null)
   const [narrow, setNarrow] = useState(false)
   const byId = new Map(marks.map((mark) => [mark.entityId, mark]))
@@ -60,7 +62,7 @@ export function AnnotationGutter({ container, marks, placements, active, onActiv
     <div ref={ref} className={`aiws-anno-gutter${narrow ? ' is-narrow' : ''}`} data-testid="aiws-anno-gutter">
       {ordered.map((placement) => {
         const mark = byId.get(placement.id) as AnnotationMark
-        const hint = placementHint(mark, placement)
+        const hint = placementHint(t, mark, placement)
         return (
           <button
             key={placement.id}

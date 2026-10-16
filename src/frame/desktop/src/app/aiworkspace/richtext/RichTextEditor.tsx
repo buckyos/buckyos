@@ -17,6 +17,7 @@ import type { AstNode, EntityEnvelope, Reference, RichTextContent } from '../api
 import { useLoad, useStore, useVersion, type AnnotationMark } from '../state/hooks'
 import { Emitter } from '../state/emitter'
 import type { WorkspaceStore } from '../state/store'
+import { aiwsT } from '../i18n'
 import type { CapturedAnchor } from '../anchors/registry'
 import { annotationsPlugin, captureAnchor, makeHost, richTextAnchors, selectionOf, setAnnotations, type Placement } from '../anchors/richtext'
 import { AnnotationGutter } from '../ui/annotations'
@@ -24,6 +25,7 @@ import { consumeIntent, useEditorToolbar, useIntent } from '../ui/blocks/editorT
 import { useFlowBlock } from '../ui/blocks/flowContext'
 import type { ToolbarItem } from '../ui/blocks/registry'
 import { registryEntries } from '../ui/canvas/catalog'
+import { useAiwsText } from '../useAiwsText'
 import { blockIdAt, blockIdPlugin } from './blockId'
 import { RichTextCollab } from './collab'
 import { astPlainText, deleteDraft, listDrafts, type RichTextDraft } from './drafts'
@@ -54,6 +56,7 @@ export interface RichTextEditorProps {
 
 export function RichTextEditor(props: RichTextEditorProps) {
   const store = useStore()
+  const { t } = useAiwsText()
   const { entityId, onCollab } = props
   const [opened, setOpened] = useState<{ collab: RichTextCollab | null; error: string | null }>({ collab: null, error: null })
   useEffect(() => {
@@ -74,7 +77,7 @@ export function RichTextEditor(props: RichTextEditorProps) {
       if (mine) void mine.close()
     }
   }, [store, entityId, onCollab])
-  if (opened.error) return <div className="aiws-error" role="alert">无法打开富文本：{opened.error}</div>
+  if (opened.error) return <div className="aiws-error" role="alert">{t('aiworkspace.richtext.openFailed', { detail: opened.error })}</div>
   // the text is shown as it is while the collaborative document opens: no flash of a loading line
   if (!opened.collab) return <div className="aiws-richtext-loading" data-testid="aiws-richtext-loading"><StaticRichText entityId={entityId} renderEmbed={props.renderEmbed} /></div>
   return <CollabSurface {...props} collab={opened.collab} />
@@ -375,6 +378,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   const annotations = props.annotations ?? NO_ANNOTATIONS
   const activeAnnotation = props.activeAnnotation ?? null
   const store = useStore()
+  const { t } = useAiwsText()
   const flow = useFlowBlock()
   const hostRef = useRef<HTMLDivElement>(null)
   const [root, bindRoot] = useState<HTMLDivElement | null>(null)
@@ -538,7 +542,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     if (!view || view.isDestroyed || !onAnnotate) return
     const anchor = captureAnchor(makeHost(collab.entityId, view.state.doc, collab.working, selectionOf(view)))
     if (anchor) onAnnotate(anchor)
-    else store.notify('info', '请先选中要批注的文字，或把光标放在要批注的块里。')
+    else store.notify('info', t('aiworkspace.richtext.annotate.nothingSelected'))
   }
 
   useEffect(() => { escapeHolder.set('a', () => { if (!onAnnotate) return false; annotate(); return true }) })
@@ -554,30 +558,33 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   const linkable = entities.filter((entity) => entity.type_id !== 'buckyos.container' && !entity.deleted)
   const nameOf = (entity: EntityEnvelope) => entity.name ?? entity.title ?? entity.entity_id
   const pickLink = (kind: 'link' | 'embed', target: EntityEnvelope) => run(kind === 'embed' ? insertEmbed(schema, target.entity_id) : insertLink(schema, target.entity_id, nameOf(target)))
-  const blockItems = [{ value: 'p', label: '正文' }, { value: 'h1', label: '标题 1' }, { value: 'h2', label: '标题 2' }, { value: 'h3', label: '标题 3' }]
+  const blockItems = [
+    { value: 'p', label: t('aiworkspace.richtext.block.text') }, { value: 'h1', label: t('aiworkspace.richtext.block.heading', { level: 1 }) },
+    { value: 'h2', label: t('aiworkspace.richtext.block.heading', { level: 2 }) }, { value: 'h3', label: t('aiworkspace.richtext.block.heading', { level: 3 }) },
+  ]
   const toBlock = (value: string) => run(value === 'p' ? setBlock(schema.nodes.paragraph, {}) : setBlock(schema.nodes.heading, { level: Number(value.slice(1)) }))
 
   // the format tools (标准对象的交互改进 §5.2): in the near toolbar on a canvas; elsewhere a bubble over a text selection
   const tools: ToolbarItem[] = []
   if (editable) {
     tools.push(
-      { kind: 'menu', id: 'block-type', icon: at.block === 'p' ? Pilcrow : Heading, label: '段落格式', value: at.block, items: blockItems, onPick: toBlock },
+      { kind: 'menu', id: 'block-type', icon: at.block === 'p' ? Pilcrow : Heading, label: t('aiworkspace.richtext.format.blockType'), value: at.block, items: blockItems, onPick: toBlock },
       { kind: 'separator', id: 'sep-type' },
-      { kind: 'button', id: 'bold', icon: Bold, label: '加粗', key: 'Ctrl+B', active: at.strong, run: () => run(toggleMark(schema.marks.strong)) },
-      { kind: 'button', id: 'italic', icon: Italic, label: '斜体', key: 'Ctrl+I', active: at.em, run: () => run(toggleMark(schema.marks.em)) },
-      { kind: 'button', id: 'strike', icon: Strikethrough, label: '删除线', key: 'Ctrl+Shift+S', active: at.strike, run: () => run(toggleMark(schema.marks.strike)) },
-      { kind: 'button', id: 'code', icon: Code, label: '行内代码', key: 'Ctrl+E', active: at.code, run: () => run(toggleMark(schema.marks.code)) },
-      { kind: 'menu', id: 'list', icon: at.list === 'ordered' ? ListOrdered : List, label: '列表', value: at.list,
-        items: [{ value: 'bullet', label: '无序列表', icon: List }, { value: 'ordered', label: '有序列表', icon: ListOrdered }, { value: 'lift', label: '移出列表' }],
+      { kind: 'button', id: 'bold', icon: Bold, label: t('aiworkspace.richtext.format.bold'), key: 'Ctrl+B', active: at.strong, run: () => run(toggleMark(schema.marks.strong)) },
+      { kind: 'button', id: 'italic', icon: Italic, label: t('aiworkspace.richtext.format.italic'), key: 'Ctrl+I', active: at.em, run: () => run(toggleMark(schema.marks.em)) },
+      { kind: 'button', id: 'strike', icon: Strikethrough, label: t('aiworkspace.richtext.format.strike'), key: 'Ctrl+Shift+S', active: at.strike, run: () => run(toggleMark(schema.marks.strike)) },
+      { kind: 'button', id: 'code', icon: Code, label: t('aiworkspace.richtext.format.code'), key: 'Ctrl+E', active: at.code, run: () => run(toggleMark(schema.marks.code)) },
+      { kind: 'menu', id: 'list', icon: at.list === 'ordered' ? ListOrdered : List, label: t('aiworkspace.richtext.block.list'), value: at.list,
+        items: [{ value: 'bullet', label: t('aiworkspace.richtext.block.bullet'), icon: List }, { value: 'ordered', label: t('aiworkspace.richtext.block.ordered'), icon: ListOrdered }, { value: 'lift', label: t('aiworkspace.richtext.format.liftList') }],
         onPick: (value) => run(value === 'lift' ? liftListItem(schema.nodes.list_item) : wrapInList(value === 'ordered' ? schema.nodes.ordered_list : schema.nodes.bullet_list)) },
-      { kind: 'panel', id: 'link', icon: Link2, label: '链接对象或嵌入单元', render: (close) => (
+      { kind: 'panel', id: 'link', icon: Link2, label: t('aiworkspace.richtext.format.link'), render: (close) => (
         <LinkPicker objects={linkable} cells={cells} nameOf={nameOf} onPick={(kind, target) => { close(); pickLink(kind, target) }} />
       ) },
     )
   }
-  if (onAnnotate) tools.push(...(tools.length ? [{ kind: 'separator' as const, id: 'sep-annotate' }] : []), { kind: 'button', id: 'annotate-text', icon: MessageSquarePlus, label: '批注选中的文字（没有选中时批注光标所在的块）', key: 'Ctrl+Alt+M', run: annotate })
+  if (onAnnotate) tools.push(...(tools.length ? [{ kind: 'separator' as const, id: 'sep-annotate' }] : []), { kind: 'button', id: 'annotate-text', icon: MessageSquarePlus, label: t('aiworkspace.richtext.format.annotate'), key: 'Ctrl+Alt+M', run: annotate })
   // the input mode is a tool of its own on a canvas (on a page it sits in the text's corner)
-  const nearTools: ToolbarItem[] = editable ? [...tools, { kind: 'separator', id: 'sep-source' }, { kind: 'button', id: 'markdown-source', icon: FileCode, label: 'Markdown 源码（心流输入）', key: 'Ctrl+/', active: source.on, run: toggleSource }] : tools
+  const nearTools: ToolbarItem[] = editable ? [...tools, { kind: 'separator', id: 'sep-source' }, { kind: 'button', id: 'markdown-source', icon: FileCode, label: t('aiworkspace.richtext.source.mode'), key: 'Ctrl+/', active: source.on, run: toggleSource }] : tools
   const inNearToolbar = useEditorToolbar('richtext', nearTools)
 
   // ---- `/` menu: turn the line into another kind, or put another Block after this text (on a page)
@@ -591,24 +598,26 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     view.focus()
     then?.()
   }
+  const basic = t('aiworkspace.richtext.slash.groupBasic')
+  const inputMode = t('aiworkspace.richtext.slash.groupInput')
   const slashItems: SlashItem[] = editable ? [
-    { id: 'text', label: '正文', icon: Type, keywords: 'text paragraph zw zhengwen p', group: '基本', run: () => slashRun(setBlock(schema.nodes.paragraph, {})) },
-    { id: 'h1', label: '标题 1', icon: Heading1, keywords: 'h1 heading bt biaoti #', hint: '#', group: '基本', run: () => slashRun(setBlock(schema.nodes.heading, { level: 1 })) },
-    { id: 'h2', label: '标题 2', icon: Heading2, keywords: 'h2 heading bt biaoti ##', hint: '##', group: '基本', run: () => slashRun(setBlock(schema.nodes.heading, { level: 2 })) },
-    { id: 'h3', label: '标题 3', icon: Heading3, keywords: 'h3 heading bt biaoti ###', hint: '###', group: '基本', run: () => slashRun(setBlock(schema.nodes.heading, { level: 3 })) },
-    { id: 'bullet', label: '无序列表', icon: List, keywords: 'bullet list ul lb liebiao -', hint: '-', group: '基本', run: () => slashRun(wrapInList(schema.nodes.bullet_list)) },
-    { id: 'ordered', label: '有序列表', icon: ListOrdered, keywords: 'ordered number list ol bh bianhao 1.', hint: '1.', group: '基本', run: () => slashRun(wrapInList(schema.nodes.ordered_list)) },
-    { id: 'quote', label: '引用', icon: TextQuote, keywords: 'quote blockquote yy yinyong >', hint: '>', group: '基本', run: () => slashRun(wrapIn(schema.nodes.blockquote)) },
-    { id: 'code', label: '代码块', icon: CodeXml, keywords: 'code pre dm daima ```', hint: '```', group: '基本', run: () => slashRun(setBlock(schema.nodes.code_block, { language: '' })) },
-    { id: 'divider', label: '分割线', icon: Minus, keywords: 'divider hr line fgx fengexian ---', hint: '---', group: '基本', run: () => slashRun(insertDivider(schema)) },
-    { id: 'link', label: '链接对象 / 嵌入 Block…', icon: Link2, keywords: 'link embed object lj lianjie qr qianru', group: '基本', run: () => slashRun(null, () => setLinkAt(true)) },
+    { id: 'text', label: t('aiworkspace.richtext.block.text'), icon: Type, keywords: 'text paragraph zw zhengwen p', group: basic, run: () => slashRun(setBlock(schema.nodes.paragraph, {})) },
+    { id: 'h1', label: t('aiworkspace.richtext.block.heading', { level: 1 }), icon: Heading1, keywords: 'h1 heading bt biaoti #', hint: '#', group: basic, run: () => slashRun(setBlock(schema.nodes.heading, { level: 1 })) },
+    { id: 'h2', label: t('aiworkspace.richtext.block.heading', { level: 2 }), icon: Heading2, keywords: 'h2 heading bt biaoti ##', hint: '##', group: basic, run: () => slashRun(setBlock(schema.nodes.heading, { level: 2 })) },
+    { id: 'h3', label: t('aiworkspace.richtext.block.heading', { level: 3 }), icon: Heading3, keywords: 'h3 heading bt biaoti ###', hint: '###', group: basic, run: () => slashRun(setBlock(schema.nodes.heading, { level: 3 })) },
+    { id: 'bullet', label: t('aiworkspace.richtext.block.bullet'), icon: List, keywords: 'bullet list ul lb liebiao -', hint: '-', group: basic, run: () => slashRun(wrapInList(schema.nodes.bullet_list)) },
+    { id: 'ordered', label: t('aiworkspace.richtext.block.ordered'), icon: ListOrdered, keywords: 'ordered number list ol bh bianhao 1.', hint: '1.', group: basic, run: () => slashRun(wrapInList(schema.nodes.ordered_list)) },
+    { id: 'quote', label: t('aiworkspace.richtext.block.quote'), icon: TextQuote, keywords: 'quote blockquote yy yinyong >', hint: '>', group: basic, run: () => slashRun(wrapIn(schema.nodes.blockquote)) },
+    { id: 'code', label: t('aiworkspace.richtext.block.code'), icon: CodeXml, keywords: 'code pre dm daima ```', hint: '```', group: basic, run: () => slashRun(setBlock(schema.nodes.code_block, { language: '' })) },
+    { id: 'divider', label: t('aiworkspace.richtext.block.divider'), icon: Minus, keywords: 'divider hr line fgx fengexian ---', hint: '---', group: basic, run: () => slashRun(insertDivider(schema)) },
+    { id: 'link', label: t('aiworkspace.richtext.slash.link'), icon: Link2, keywords: 'link embed object lj lianjie qr qianru', group: basic, run: () => slashRun(null, () => setLinkAt(true)) },
     ...(flow ? registryEntries().filter((entry) => entry.catalog.standard && !FLOW_SLASH_SKIP.has(entry.definition.type)).map((entry): SlashItem => ({
       id: `block-${entry.definition.type}`, label: entry.title, icon: SLASH_ICONS[entry.definition.type] ?? Table,
       keywords: `${entry.definition.type} block ${entry.definition.type === 'table' ? 'bg biaoge database' : entry.definition.type === 'asset' ? 'tp tupian image picture file' : entry.definition.type === 'wish' ? 'xyg xuyuan ai wish' : ''}`,
-      group: '在下方插入', run: () => slashRun(null, () => flow.insertAfter(entry)),
+      group: t('aiworkspace.richtext.slash.groupInsertBelow'), run: () => slashRun(null, () => flow.insertAfter(entry)),
     })) : []),
-    { id: 'markdown', label: 'Markdown 源码（心流输入）', icon: FileCode, keywords: 'markdown md source ym yuanma xl xinliu notepad', hint: 'Ctrl+/', group: '输入方式', run: () => slashRun(null, toggleSource) },
-    ...(onAnnotate ? [{ id: 'annotate', label: '批注这一段', icon: MessageSquarePlus, keywords: 'comment annotate pz pizhu', hint: 'Ctrl+Alt+M', group: '输入方式', run: () => slashRun(null, annotate) }] : []),
+    { id: 'markdown', label: t('aiworkspace.richtext.source.mode'), icon: FileCode, keywords: 'markdown md source ym yuanma xl xinliu notepad', hint: 'Ctrl+/', group: inputMode, run: () => slashRun(null, toggleSource) },
+    ...(onAnnotate ? [{ id: 'annotate', label: t('aiworkspace.richtext.slash.annotate'), icon: MessageSquarePlus, keywords: 'comment annotate pz pizhu', hint: 'Ctrl+Alt+M', group: inputMode, run: () => slashRun(null, annotate) }] : []),
   ] : []
 
   const showBubble = !inNearToolbar && !source.on && built !== null && float.focused && float.from !== float.to && tools.length > 0
@@ -617,8 +626,8 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     <div ref={bindRoot} className="aiws-richtext" data-editable={editable ? 'true' : 'false'} data-source={source.on ? 'true' : 'false'}>
       {!inNearToolbar && editable && (
         <button type="button" className={`aiws-md-toggle${source.on ? ' is-on' : ''}`} data-testid="aiws-md-toggle" aria-pressed={source.on}
-          title={source.on ? '回到排版视图（Ctrl+/）' : 'Markdown 源码：像记事本一样直接输入（Ctrl+/）'} onMouseDown={(event) => event.preventDefault()} onClick={toggleSource}>
-          {source.on ? '排版' : 'MD'}
+          title={source.on ? t('aiworkspace.richtext.source.leaveTitle') : t('aiworkspace.richtext.source.enterTitle')} onMouseDown={(event) => event.preventDefault()} onClick={toggleSource}>
+          {source.on ? t('aiworkspace.richtext.source.leave') : 'MD'}
         </button>
       )}
       <div className="aiws-richtext-body">
@@ -639,7 +648,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       {linkAt && editable && (
         <div className="aiws-link-float" onPointerDown={(event) => event.stopPropagation()}>
           <LinkPicker objects={linkable} cells={cells} nameOf={nameOf} onPick={(kind, target) => { setLinkAt(false); pickLink(kind, target) }} />
-          <button type="button" className="aiws-link" onClick={() => { setLinkAt(false); built?.view.focus() }}>取消</button>
+          <button type="button" className="aiws-link" onClick={() => { setLinkAt(false); built?.view.focus() }}>{t('aiworkspace.common.cancel')}</button>
         </div>
       )}
       {[...embeds].map(([dom, reference]) => createPortal(renderEmbed(reference), dom))}
@@ -650,23 +659,24 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
 
 /** "Link an object" / "embed a Block": a searchable list instead of a native select (§4.4). */
 function LinkPicker({ objects, cells, nameOf, onPick }: { objects: EntityEnvelope[]; cells: EntityEnvelope[]; nameOf: (entity: EntityEnvelope) => string; onPick: (kind: 'link' | 'embed', target: EntityEnvelope) => void }) {
+  const { t } = useAiwsText()
   const [kind, setKind] = useState<'link' | 'embed'>('link')
   const [query, setQuery] = useState('')
   const list = (kind === 'embed' ? cells : objects).filter((entity) => !query || `${nameOf(entity)} ${entity.entity_id}`.toLowerCase().includes(query.toLowerCase())).slice(0, 80)
   return (
     <div className="aiws-near-panel" data-testid="aiws-link-picker">
       <div className="aiws-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={kind === 'link'} data-testid="aiws-link-kind-link" onClick={() => setKind('link')}>对象链接</button>
-        <button type="button" role="tab" aria-selected={kind === 'embed'} data-testid="aiws-link-kind-embed" onClick={() => setKind('embed')}>嵌入单元</button>
+        <button type="button" role="tab" aria-selected={kind === 'link'} data-testid="aiws-link-kind-link" onClick={() => setKind('link')}>{t('aiworkspace.richtext.link.object')}</button>
+        <button type="button" role="tab" aria-selected={kind === 'embed'} data-testid="aiws-link-kind-embed" onClick={() => setKind('embed')}>{t('aiworkspace.richtext.link.embed')}</button>
       </div>
-      <input type="search" aria-label="搜索对象" placeholder="搜索名称或 ID" autoFocus value={query} data-testid="aiws-link-search" onChange={(event) => setQuery(event.target.value)} />
+      <input type="search" aria-label={t('aiworkspace.richtext.link.search')} placeholder={t('aiworkspace.richtext.link.searchPlaceholder')} autoFocus value={query} data-testid="aiws-link-search" onChange={(event) => setQuery(event.target.value)} />
       <div className="aiws-near-panel-list">
         {list.map((entity) => (
           <button key={entity.entity_id} type="button" className="aiws-popover-item" data-testid={`aiws-link-pick-${entity.entity_id}`} onClick={() => onPick(kind, entity)}>
             {nameOf(entity)} <span className="aiws-muted">{entity.type_id === 'buckyos.cell' ? entity.view_type : entity.type_id.replace('buckyos.', '')}</span>
           </button>
         ))}
-        {list.length === 0 && <div className="aiws-muted">没有匹配的对象</div>}
+        {list.length === 0 && <div className="aiws-muted">{t('aiworkspace.richtext.link.empty')}</div>}
       </div>
     </div>
   )
@@ -674,6 +684,7 @@ function LinkPicker({ objects, cells, nameOf, onPick }: { objects: EntityEnvelop
 
 function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string; open: boolean; onToggle: () => void; generation: number }) {
   const store = useStore()
+  const { t, dateTime } = useAiwsText()
   const [tick, setTick] = useState(0)
   const [drafts, setDrafts] = useState<RichTextDraft[]>([])
   useEffect(() => {
@@ -683,13 +694,13 @@ function DraftsBar({ entityId, open, onToggle, generation }: { entityId: string;
   if (drafts.length === 0) return null
   return (
     <div className="aiws-drafts" data-testid="aiws-drafts">
-      <button type="button" onClick={onToggle}>未被接受的修改已保留为草稿（{drafts.length}）{open ? ' ▾' : ' ▸'}</button>
+      <button type="button" onClick={onToggle}>{t('aiworkspace.richtext.drafts.toggle', { count: drafts.length })}{open ? ' ▾' : ' ▸'}</button>
       {open && drafts.map((draft) => (
         <div key={draft.draft_id} className="aiws-draft">
-          <div className="aiws-muted">{new Date(draft.saved_at).toLocaleString()} · {draft.reason}</div>
+          <div className="aiws-muted">{dateTime(draft.saved_at)} · {draft.reason}</div>
           <pre>{astPlainText(draft.ast) || JSON.stringify(draft.ast)}</pre>
-          <details><summary>导出 JSON</summary><textarea readOnly rows={6} value={JSON.stringify(draft.ast, null, 2)} /></details>
-          <button type="button" onClick={() => { deleteDraft(draft.draft_id); setTick((value) => value + 1) }}>删除草稿</button>
+          <details><summary>{t('aiworkspace.richtext.drafts.exportJson')}</summary><textarea readOnly rows={6} value={JSON.stringify(draft.ast, null, 2)} /></details>
+          <button type="button" onClick={() => { deleteDraft(draft.draft_id); setTick((value) => value + 1) }}>{t('aiworkspace.richtext.drafts.delete')}</button>
         </div>
       ))}
     </div>
@@ -716,7 +727,7 @@ export function StaticRichText({ entityId, renderEmbed }: { entityId: string; re
         try { found.set(element, JSON.parse(element.getAttribute('data-ref') ?? '') as Reference) } catch { /* shown as an empty box */ }
       })
     } catch (failure) {
-      host.textContent = `无法渲染：${describeError(failure)}`
+      host.textContent = aiwsT('aiworkspace.richtext.renderFailed', { detail: describeError(failure) })
       found = new Map()
     }
     const id = window.setTimeout(() => setEmbeds(found), 0)

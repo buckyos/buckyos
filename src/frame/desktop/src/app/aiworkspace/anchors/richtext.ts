@@ -17,6 +17,7 @@ import { Plugin, PluginKey, type EditorState, NodeSelection } from 'prosemirror-
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view'
 import { base64ToBytes, bytesToBase64 } from '../api/ids'
 import type { AnnotationRange, Json } from '../api/types'
+import { aiwsT } from '../i18n'
 import type { AnnotationMark } from '../state/hooks'
 import { blockIdAt } from '../richtext/blockId'
 import { ATOM_CHAR, BLOCK_SEPARATOR, MAX_QUOTE_CHARS, QUOTE_SIDE_CHARS, findBest, findUnique, head, tail } from './quote'
@@ -180,7 +181,7 @@ richTextAnchors.register({
       prefix: tail(blockText($from.parent).slice(0, $from.parentOffset), QUOTE_SIDE_CHARS),
       suffix: head(blockText($to.parent).slice($to.parentOffset), QUOTE_SIDE_CHARS),
     }
-    const label = `「${head(exact.replace(/\s+/g, ' '), 24)}${Array.from(exact).length > 24 ? '…' : ''}」`
+    const label = aiwsT('aiworkspace.richtext.anchor.quote', { text: `${head(exact.replace(/\s+/g, ' '), 24)}${Array.from(exact).length > 24 ? '…' : ''}` })
     return { target: { entity_id: host.entityId, selector: { kind: 'richtext_block', block_id: startId } }, range, context: { ...(quote ? { quote } : {}), label }, label }
   },
   locate(host, mark) {
@@ -214,7 +215,9 @@ export function captureAnchor(host: RichTextAnchorHost): CapturedAnchor | null {
   if (!blockId || !at) return null
   const text = at.node.textBetween(0, at.node.content.size, BLOCK_SEPARATOR, ATOM_CHAR)
   const exact = head(text, 200)
-  const label = exact.trim() ? `块「${head(exact.replace(/\s+/g, ' '), 16)}${Array.from(exact).length > 16 ? '…' : ''}」` : `块 ${blockId}`
+  const label = exact.trim()
+    ? aiwsT('aiworkspace.richtext.anchor.block', { text: `${head(exact.replace(/\s+/g, ' '), 16)}${Array.from(exact).length > 16 ? '…' : ''}` })
+    : aiwsT('aiworkspace.richtext.anchor.blockId', { id: blockId })
   return {
     target: { entity_id: host.entityId, selector: { kind: 'richtext_block', block_id: blockId } },
     context: exact.trim() ? { quote: { exact }, label } : { label },

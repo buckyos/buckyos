@@ -23,6 +23,7 @@ import { LeaveDialog, type LeaveSummary } from './ui/shell/dialogs'
 import type { LaunchTarget } from './ui/shell/WorkspaceShell'
 import { WorkspaceList } from './ui/WorkspaceList'
 import { WorkspaceView, type OfflineActions } from './ui/WorkspaceView'
+import { useAiwsText } from './useAiwsText'
 
 /** Asked by the identity menu: the Desktop runs its own sign-out flow (close guards included). */
 export const LOGOUT_REQUEST_EVENT = 'buckyos:request-logout'
@@ -43,6 +44,7 @@ function isGone(failure: unknown): boolean {
 }
 
 export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { tab?: TabHost } = {}) {
+  const { t, tNode, clauses } = useAiwsText()
   const tab = props.tab ?? null
   const [availability] = useState(resolveTransport)
   const [client] = useState(() => (availability.ok ? new AiwsClient(availability.transport) : null))
@@ -90,7 +92,7 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
           session = await OnlineWorkspaceSession.open(client, workspaceId, attempt)
         } catch (failure) {
           if (failure instanceof TransportError && attempt.reason !== 'not_prepared') {
-            throw new Error(`后台不可达，且此窗口不能使用离线副本（${attempt.detail}）`, { cause: failure })
+            throw new Error(t('aiworkspace.core.app.unreachableNoReplica', { detail: attempt.detail }), { cause: failure })
           }
           throw failure
         }
@@ -107,12 +109,12 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       // a guest's link is not public: signing in is the only way on (a signed-in visitor sees the error below)
       if (how.link && isGone(failure) && await client.transport.isGuest()) { window.location.replace(loginUrl()); return }
       if (how.auto && isGone(failure)) void forgetRecent(client.transport, workspaceId)
-      setError(how.link ? `无法打开链接中的工作区：${isGone(failure) ? '它不存在，或你没有访问权限' : describeError(failure)}`
-        : how.auto ? `没有恢复上次打开的工作区：${describeError(failure)}` : `无法打开工作区：${describeError(failure)}`)
+      setError(how.link ? (isGone(failure) ? t('aiworkspace.core.app.openLinkGone') : t('aiworkspace.core.app.openLinkFailed', { error: describeError(failure) }))
+        : how.auto ? t('aiworkspace.core.app.restoreFailed', { error: describeError(failure) }) : t('aiworkspace.core.app.openFailed', { error: describeError(failure) }))
     } finally {
       if (seq === openSeq.current) setOpening(null)
     }
-  }, [client])
+  }, [client, t])
 
   /** Close the current session completely (its replica lock and database included). */
   const dispose = useCallback(() => {
@@ -153,11 +155,11 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       else { openSeq.current += 1; setOpening(null) }
     }
     if (!storeRef.current) { go(); return }
-    void confirmLeave(routed ? '切换工作区' : '关闭工作区').then((ok) => {
+    void confirmLeave(routed ? t('aiworkspace.core.app.leave.switch') : t('aiworkspace.core.app.leave.close')).then((ok) => {
       if (ok) go()
       else host.navigate(current, { replace: true })
     })
-  }, [client, routed, open, dispose, confirmLeave])
+  }, [client, routed, open, dispose, confirmLeave, t])
 
   const shownId = store?.session.workspaceId ?? null
   const shownTitle = store?.session.info().title ?? null
@@ -196,8 +198,8 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
   const windowId = props.windowId
   useEffect(() => {
     if (!windowId) return
-    return desktopUIStore.registerCloseGuard(windowId, async (reason = 'user') => confirmLeave(reason === 'logout' ? '退出登录' : '关闭窗口'))
-  }, [windowId, confirmLeave])
+    return desktopUIStore.registerCloseGuard(windowId, async (reason = 'user') => confirmLeave(reason === 'logout' ? t('aiworkspace.core.app.leave.logout') : t('aiworkspace.core.app.leave.closeWindow')))
+  }, [windowId, confirmLeave, t])
 
   if (!client || !availability.ok) {
     return (
@@ -219,10 +221,10 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       await reopen(workspaceId)
     },
     reopen,
-    describe: (failure) => (failure instanceof OfflineUnavailable ? `离线不可用：${failure.message}` : `准备离线失败：${describeError(failure)}`),
+    describe: (failure) => (failure instanceof OfflineUnavailable ? t('aiworkspace.core.app.offlineUnavailable', { reason: failure.message }) : t('aiworkspace.core.app.prepareFailed', { error: describeError(failure) })),
   }
 
-  const closeWorkspace = () => leaveThen('关闭工作区', () => {
+  const closeWorkspace = () => leaveThen(t('aiworkspace.core.app.leave.close'), () => {
     autoRestore.current = false
     dispose()
     setReport(null)
@@ -232,28 +234,34 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
     if (tab && workspaceId !== tab.workspaceId) tab.navigate(workspaceId)
     else void open(workspaceId)
   }
-  const switchTo = (workspaceId: string) => leaveThen('切换工作区', () => {
+  const switchTo = (workspaceId: string) => leaveThen(t('aiworkspace.core.app.leave.switch'), () => {
     dispose()
     setReport(null)
     show(workspaceId)
   })
   const pick = (workspaceId: string) => show(workspaceId)
   const logout = tab
-    ? () => leaveThen('退出登录', () => { tab.signOut().catch((failure: unknown) => setError(`退出登录失败：${describeError(failure)}`)) })
+    ? () => leaveThen(t('aiworkspace.core.app.leave.logout'), () => { tab.signOut().catch((failure: unknown) => setError(t('aiworkspace.core.app.signOutFailed', { error: describeError(failure) }))) })
     : () => window.dispatchEvent(new CustomEvent(LOGOUT_REQUEST_EVENT))
-  const goHome = tab ? () => leaveThen('返回桌面', () => { dispose(); tab.home() }) : null
-  const login = () => leaveThen('登录', () => { window.location.assign(loginUrl()) })
+  const goHome = tab ? () => leaveThen(t('aiworkspace.core.app.leave.home'), () => { dispose(); tab.home() }) : null
+  const login = () => leaveThen(t('aiworkspace.core.app.leave.login'), () => { window.location.assign(loginUrl()) })
 
   return (
     <div className="aiws-root" data-testid="aiws-root">
-      {error && <div className="aiws-error aiws-root-error" role="alert" data-testid="aiws-open-error">{error} <button type="button" className="aiws-link" onClick={() => setError(null)}>知道了</button></div>}
+      {error && <div className="aiws-error aiws-root-error" role="alert" data-testid="aiws-open-error">{error} <button type="button" className="aiws-link" onClick={() => setError(null)}>{t('aiworkspace.core.app.dismiss')}</button></div>}
       {report && store && (
         <div className="aiws-warning aiws-root-error" role="status" data-testid="aiws-prepare-report">
-          已为此工作区准备离线：副本基于第 {report.meta.confirmed_seq} 次提交；资产已缓存 {report.assets.stored.length} 个
-          {report.assets.skipped.length > 0 && (
-            <span data-testid="aiws-prepare-skipped">，跳过 {report.assets.skipped.length} 个（{report.assets.skipped.map((asset) => `${asset.object_id.slice(0, 18)}… ${asset.size} 字节：${asset.reason}`).join('；')}）</span>
-          )}
-          。 <button type="button" className="aiws-link" onClick={() => setReport(null)}>知道了</button>
+          {tNode('aiworkspace.core.app.prepareReport', {
+            seq: report.meta.confirmed_seq,
+            count: report.assets.stored.length,
+            skipped: report.assets.skipped.length > 0 && (
+              <span data-testid="aiws-prepare-skipped">{t('aiworkspace.core.app.prepareSkipped', {
+                count: report.assets.skipped.length,
+                list: clauses(report.assets.skipped.map((asset) => t('aiworkspace.core.app.skippedAsset', { id: asset.object_id.slice(0, 18), size: asset.size, reason: asset.reason }))),
+              })}</span>
+            ),
+          })}
+          {' '}<button type="button" className="aiws-link" onClick={() => setReport(null)}>{t('aiworkspace.core.app.dismiss')}</button>
         </div>
       )}
       {store
@@ -262,7 +270,7 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
             identity={{ principal: store.session.principal, dev: client.transport.mode === 'dev-override', guest: isGuestPrincipal(store.session.principal) }}
             devTools={import.meta.env.DEV || client.transport.mode === 'dev-override'} />
         : (opening || checkingRecent) && !error
-          ? <div className="aiws-opening" role="status" data-testid="aiws-opening">正在打开工作区…</div>
+          ? <div className="aiws-opening" role="status" data-testid="aiws-opening">{t('aiworkspace.core.app.opening')}</div>
           : <WorkspaceList client={client} onOpen={pick} opening={opening} />}
       {leave && (
         <LeaveDialog summary={leave.summary} reason={leave.reason}

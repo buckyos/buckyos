@@ -6,6 +6,7 @@
 
 import { randomId } from '../api/ids'
 import type { CommitOutcome, Json, KeyedContent, Operation, Placement, ShowPathPayload, ShowStep, StageSize } from '../api/types'
+import { aiwsT } from '../i18n'
 import type { WorkspaceStore } from '../state/store'
 import { applyStepCommands, DEFAULT_BACKGROUND, DEFAULT_STAGE, frameAtRatio, sameRatio, worldRectOf, type StepCommand } from './model'
 
@@ -33,10 +34,10 @@ export async function commitSteps(
   let outcome: CommitOutcome | null = null
   for (let attempt = 0; attempt <= REPLAYS; attempt++) {
     let path: { payload: ShowPathPayload; revs: Record<string, number> }
-    try { path = await readPath(store, pathId) } catch (error) { store.notify('error', `无法读取演讲路径：${error instanceof Error ? error.message : String(error)}`); return null }
+    try { path = await readPath(store, pathId) } catch (error) { store.notify('error', aiwsT('aiworkspace.presentation.path.readFailed', { detail: error instanceof Error ? error.message : String(error) })); return null }
     const next = applyStepCommands(path.payload.steps, commands)
     if ('unreplayable' in next) {
-      store.notify('error', `「${label}」无法应用到最新的路径上：${next.unreplayable}。请检查后重新操作。`)
+      store.notify('error', aiwsT('aiworkspace.presentation.path.unreplayable', { label, reason: next.unreplayable }))
       return outcome
     }
     const operations: Operation[] = [
@@ -116,7 +117,7 @@ export async function setStage(store: WorkspaceStore, pathId: string, stage: Sta
     { op: 'entity.set_keys', entity_id: pathId, keys: [{ key: 'stage', value: stage as unknown as Json, expect: { rev: revs.stage ?? 0 } }] },
     ...frames.flatMap((id) => (store.outline.get(id)?.capabilities.includes('structure') || store.outline.get(store.outline.get(id)?.parent_id ?? '')?.capabilities.includes('structure') ? fitFrameOps(store, id, stage) : [])),
   ]
-  return store.submit({ editId: `path:${pathId}:stage`, label: `舞台尺寸 → ${stage.w} × ${stage.h}`, operations })
+  return store.submit({ editId: `path:${pathId}:stage`, label: aiwsT('aiworkspace.presentation.edit.stageSize', { w: stage.w, h: stage.h }), operations })
 }
 
 /** Write a target's presentation property: a Frame's `presentation.<key>`, a Viewport's own key. */
@@ -141,8 +142,14 @@ export async function setTargetText(store: WorkspaceStore, targetId: string, key
     else next[key] = text
     operation = { op: 'entity.set_keys', entity_id: targetId, keys: [{ key: 'presentation', value: Object.keys(next).length ? next : null, expect: { rev: revs.presentation ?? 0 } }] }
   }
-  const label = { notes: '讲解备注', caption: '说明', title: '标题', background: '背景色' }[key]
-  return store.submit({ editId: `target:${targetId}:${key}`, label: `${label}：${target.title ?? target.entity_id}`, operations: [operation] })
+  const name = target.title ?? target.entity_id
+  const label = {
+    notes: aiwsT('aiworkspace.presentation.edit.targetNotes', { name }),
+    caption: aiwsT('aiworkspace.presentation.edit.targetCaption', { name }),
+    title: aiwsT('aiworkspace.presentation.edit.targetTitle', { name }),
+    background: aiwsT('aiworkspace.presentation.edit.targetBackground', { name }),
+  }[key]
+  return store.submit({ editId: `target:${targetId}:${key}`, label, operations: [operation] })
 }
 
 /** Turn "operable on stage" on or off for a Block (`presentation.live`, §10.2). */
@@ -153,7 +160,7 @@ export async function setLive(store: WorkspaceStore, cellId: string, live: boole
   if (live) next.live = true
   else delete next.live
   return store.submit({
-    editId: `live:${cellId}`, label: live ? '放映时可操作' : '放映时不可操作',
+    editId: `live:${cellId}`, label: live ? aiwsT('aiworkspace.presentation.edit.liveOn') : aiwsT('aiworkspace.presentation.edit.liveOff'),
     operations: [{ op: 'entity.set_keys', entity_id: cellId, keys: [{ key: 'presentation', value: Object.keys(next).length ? next : null, expect: { rev: read.content.key_revs?.presentation ?? 0 } }] }],
   })
 }

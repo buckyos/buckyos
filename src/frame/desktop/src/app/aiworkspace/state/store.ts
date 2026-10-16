@@ -8,6 +8,7 @@ import { testHooks } from '../api/testHooks'
 import type { CommitConflict, CommitOutcome, CommitRejected, EntityEnvelope, Json, Operation, Placement } from '../api/types'
 import type { PendingMeta, PendingRow } from '../offline/protocol'
 import { richTextSchemaDef, type AiwsCore } from '../api/wasm'
+import { aiwsT } from '../i18n'
 import { buildRichTextSchema, type RichTextSchemaDef } from '../richtext/schema'
 import { EditStore } from './edits'
 import { Emitter, VersionMap } from './emitter'
@@ -193,7 +194,7 @@ export class WorkspaceStore {
     const session = this.session
     let replica: unknown = null
     if (session.offline) {
-      try { replica = await session.offline.exportLocal() } catch (error) { replica = { error: `无法读取本机副本：${error instanceof Error ? error.message : String(error)}` } }
+      try { replica = await session.offline.exportLocal() } catch (error) { replica = { error: aiwsT('aiworkspace.core.store.replicaReadFailed', { error: error instanceof Error ? error.message : String(error) }) } }
     }
     saveJsonFile(`aiworkspace-local-${session.workspaceId}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, {
       format: 'buckyos.aiworkspace.local-export/1',
@@ -212,13 +213,14 @@ export class WorkspaceStore {
     if (outcome.status === 'conflict') {
       const first = outcome.conflicts?.[0]
       return {
-        code, detail: `冲突（${code}）：${code === 'TARGET_DELETED' ? '目标在你编辑期间已被删除' : '此内容在你编辑期间已被修改'}`,
+        code, detail: aiwsT(code === 'TARGET_DELETED' ? 'aiworkspace.core.store.conflictDeleted' : 'aiworkspace.core.store.conflictChanged', { code }),
         theirs: first?.current_value, hasTheirs: first !== undefined && 'current_value' in first, currentRev: first?.current_rev,
       }
     }
     const first = outcome.errors?.[0]
     const text = first?.detail ?? outcome.detail
-    return { code, detail: `未被接受（${code}${outcome.sub_code ? `/${outcome.sub_code}` : ''}）${text ? `：${text}` : ''}`, hasTheirs: false }
+    const shown = `${code}${outcome.sub_code ? `/${outcome.sub_code}` : ''}`
+    return { code, detail: text ? aiwsT('aiworkspace.core.store.notAcceptedDetail', { code: shown, detail: text }) : aiwsT('aiworkspace.core.store.notAccepted', { code: shown }), hasTheirs: false }
   }
 
   /** Reflect one pending submission of the replica in the save-state list. */
@@ -233,7 +235,7 @@ export class WorkspaceStore {
     } else {
       this.edits.set({
         ...base, state: 'saved_locally',
-        detail: state === 'unknown' ? '已发送但没有收到应答：重新连接后按幂等键确认，不会重复应用' : state === 'blocked_asset' ? '等待依赖的资产上传' : '已保存到本设备，等待发送到后台',
+        detail: aiwsT(state === 'unknown' ? 'aiworkspace.core.store.pendingUnknown' : state === 'blocked_asset' ? 'aiworkspace.core.store.pendingBlockedAsset' : 'aiworkspace.core.store.pendingQueued'),
       })
     }
   }
@@ -260,7 +262,7 @@ export class WorkspaceStore {
     for (const row of this.session.offline.pending()) {
       const editId = row.meta?.editId
       if (!editId || this.edits.get(editId)?.state === 'needs_attention') continue
-      this.edits.set({ id: editId, label: row.meta?.label ?? editId, state: 'needs_attention', code: status.code, mine: row.meta?.mine, hasMine: row.meta?.hasMine, pendingKey: row.idempotency_key, detail: `不会再自动发送（${status.code}）：${status.detail}` })
+      this.edits.set({ id: editId, label: row.meta?.label ?? editId, state: 'needs_attention', code: status.code, mine: row.meta?.mine, hasMine: row.meta?.hasMine, pendingKey: row.idempotency_key, detail: aiwsT('aiworkspace.core.store.stopped', { code: status.code, detail: status.detail }) })
     }
   }
 
@@ -271,7 +273,7 @@ export class WorkspaceStore {
       try {
         await this.session.offline.discardPending(entry.pendingKey, { force: entry.state === 'needs_attention' })
       } catch (error) {
-        this.notify('error', `无法移除「${entry.label}」：${error instanceof Error ? error.message : String(error)}`)
+        this.notify('error', aiwsT('aiworkspace.core.store.removeFailed', { label: entry.label, error: error instanceof Error ? error.message : String(error) }))
         return
       }
     }
@@ -303,15 +305,15 @@ export class WorkspaceStore {
     this.layoutIntents.delete(entityId)
     const entity = this.outline.get(entityId)
     const label = entity?.title ?? entity?.name ?? entityId
-    this.notify('info', `「${label}」的位置已被${author ? ` ${author}` : '他人'}修改（后到者生效）。`, {
-      label: '重新应用我的位置',
+    this.notify('info', author ? aiwsT('aiworkspace.core.store.layoutChanged', { label, author }) : aiwsT('aiworkspace.core.store.layoutChangedOther', { label }), {
+      label: aiwsT('aiworkspace.core.store.reapplyPosition'),
       run: () => {
         const current = this.outline.get(entityId)
         const operations: Operation[] = [current && intent.parentId && current.parent_id !== intent.parentId
           ? { op: 'tree.move', entity_id: entityId, new_parent_id: intent.parentId, order_key: intent.orderKey ?? current.order_key, placement: intent.placement }
           : { op: 'tree.place', entity_id: entityId, placement: intent.placement, ...(intent.orderKey ? { order_key: intent.orderKey } : {}) }]
         this.noteLayoutIntent(entityId, intent.placement, intent.orderKey, intent.parentId)
-        void this.submit({ editId: `layout:${entityId}`, label: `重新应用位置 ${label}`, operations })
+        void this.submit({ editId: `layout:${entityId}`, label: aiwsT('aiworkspace.core.store.reapplyPositionEdit', { label }), operations })
       },
     })
   }
@@ -363,7 +365,7 @@ export class WorkspaceStore {
       if (options.undoable !== false && now) this.undo.pushPending(outcome.idempotency_key, label)
     } else if (outcome.status === 'storage_failed') {
       this.setUnsaved(editId, { label, operations: options.operations, mine, reason: outcome.detail, at: new Date().toISOString() })
-      this.edits.set({ id: editId, label, state: 'unsaved', mine, hasMine, storageFailed: true, detail: `没有保存：${outcome.detail}。输入仍在本窗口内存中，可以导出。` })
+      this.edits.set({ id: editId, label, state: 'unsaved', mine, hasMine, storageFailed: true, detail: aiwsT('aiworkspace.core.store.notSaved', { detail: outcome.detail }) })
     } else if (outcome.status === 'accepted') {
       this.edits.set({ id: editId, label, state: 'committed' })
       if (options.undoable !== false) this.undo.pushCommit(outcome.commit_id, label)
@@ -372,25 +374,28 @@ export class WorkspaceStore {
       const first = outcome.conflicts?.[0]
       this.edits.set({
         id: editId, label, state: 'needs_attention', code: outcome.code, mine, hasMine,
-        detail: `冲突（${outcome.code}）：此内容在你编辑期间已被修改`,
+        detail: aiwsT('aiworkspace.core.store.conflictChanged', { code: outcome.code }),
         theirs: first?.current_value, hasTheirs: first !== undefined && 'current_value' in first, currentRev: first?.current_rev,
       })
     } else if (outcome.status === 'rejected') {
       const first = outcome.errors?.[0]
       if (outcome.code.startsWith('LOCK_')) {
         const locks = (first?.data?.locks ?? []) as { entity_id?: string; holder?: string }[]
-        for (const lock of locks) if (lock.entity_id) this.locks.noteLost(lock.entity_id, outcome.code === 'LOCK_HELD' ? `写锁由 ${lock.holder ?? '他人'} 持有` : '写锁已失去或尚未取得')
+        for (const lock of locks) if (lock.entity_id) this.locks.noteLost(lock.entity_id, outcome.code === 'LOCK_HELD' ? aiwsT('aiworkspace.core.store.lockHeld', { holder: lock.holder ?? aiwsT('aiworkspace.common.others') }) : aiwsT('aiworkspace.core.store.lockMissing'))
       }
-      const presenter = outcome.code === 'SHOW_LOCKED' ? (first?.data?.presenter as string | undefined) ?? '他人' : null
+      const presenter = outcome.code === 'SHOW_LOCKED' ? (first?.data?.presenter as string | undefined) ?? aiwsT('aiworkspace.common.others') : null
+      const refusal = first?.detail ?? outcome.detail
+      const shown = `${outcome.code}${outcome.sub_code ? `/${outcome.sub_code}` : ''}`
       this.edits.set({
         id: editId, label, state: 'needs_attention', code: outcome.code, mine, hasMine,
         detail: presenter !== null
-          ? `没有保存：${presenter} 正在放映这个工作区，放映期间关闭写入（第三期规划 §8.1）。放映结束后再修改一次即可。`
-          : `未被接受（${outcome.code}${outcome.sub_code ? `/${outcome.sub_code}` : ''}）${first?.detail ?? outcome.detail ? `：${first?.detail ?? outcome.detail}` : ''}`,
+          ? aiwsT('aiworkspace.core.store.showLocked', { presenter })
+          : refusal ? aiwsT('aiworkspace.core.store.notAcceptedDetail', { code: shown, detail: refusal }) : aiwsT('aiworkspace.core.store.notAccepted', { code: shown }),
       })
     } else {
-      this.setUnsaved(editId, { label, operations: options.operations, mine, reason: `结果未知：${outcome.detail}`, at: new Date().toISOString() })
-      this.edits.set({ id: editId, label, state: 'unsaved', mine, hasMine, detail: `结果未知：${outcome.detail}`, unknownKey: outcome.idempotency_key || undefined })
+      const unknown = aiwsT('aiworkspace.core.store.resultUnknown', { detail: outcome.detail })
+      this.setUnsaved(editId, { label, operations: options.operations, mine, reason: unknown, at: new Date().toISOString() })
+      this.edits.set({ id: editId, label, state: 'unsaved', mine, hasMine, detail: unknown, unknownKey: outcome.idempotency_key || undefined })
     }
     return outcome
   }

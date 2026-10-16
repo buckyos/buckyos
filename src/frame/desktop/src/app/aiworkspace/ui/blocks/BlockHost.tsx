@@ -9,6 +9,7 @@ import { TriangleAlert } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { CellPayload, EntityEnvelope } from '../../api/types'
 import { useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { linkAffordance, shapeOf, sourceLabel } from './affordances'
 import { BudgetContext, type MountBudget } from './budget'
 import { BlockMetaContext } from './editorToolbar'
@@ -68,29 +69,35 @@ export class BlockBoundary extends Component<BoundaryProps, BoundaryState> {
 /** The generic read-only fallback (D6, §10.3): raw content stays visible and exportable; the warning is a corner
  * badge whose explanation shows on hover (标准对象的交互改进 §4.1). */
 export function GenericFallback({ cell, payload, reason, detail, source }: { cell: EntityEnvelope; payload: CellPayload | null; reason: string; detail: string; source?: EntityEnvelope }) {
+  const { t } = useAiwsText()
+  const version = payload?.view.version ? ` v${payload.view.version}` : ''
   return (
     <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${cell.entity_id}`} data-reason={reason}>
       <span className="aiws-fallback-badge" title={detail} aria-label={detail}><TriangleAlert size={12} aria-hidden="true" /></span>
       <div className="aiws-block-fallback-title">{cell.title ?? payload?.title ?? cell.entity_id}</div>
       <div className="aiws-fallback-detail">{detail}</div>
-      {payload && <div className="aiws-muted">渲染器 {payload.view.type}{payload.view.version ? ` v${payload.view.version}` : ''}{source ? ` · 数据 ${source.name ?? source.entity_id}（${source.type_id}）` : ''}</div>}
-      {payload?.config && <details><summary>原始配置</summary><pre>{JSON.stringify(payload.config, null, 2)}</pre></details>}
+      {payload && <div className="aiws-muted">{source
+        ? t('aiworkspace.blocks.fallback.rendererData', { type: payload.view.type, version, name: source.name ?? source.entity_id, dataType: source.type_id })
+        : t('aiworkspace.blocks.fallback.renderer', { type: payload.view.type, version })}</div>}
+      {payload?.config && <details><summary>{t('aiworkspace.blocks.fallback.rawConfig')}</summary><pre>{JSON.stringify(payload.config, null, 2)}</pre></details>}
     </div>
   )
 }
 
 /** Memoised: pans and overlay updates re-render the frame list only; a Block re-renders when its own props change. */
 export const BlockHost = memo(function BlockHost(props: BlockHostProps) {
+  const { t } = useAiwsText()
   const { context, resolution, error, registryVersion } = useBlockContext(props)
-  if (!context && error) return <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${props.cellId}`} data-reason="read_failed"><div className="aiws-error" role="alert">无法读取 Block：{error}</div></div>
-  if (!context) return <div className="aiws-block-loading" data-testid={`aiws-block-loading-${props.cellId}`}>载入中…</div>
-  if (!resolution) return <div className="aiws-block-loading">载入定义…</div>
+  if (!context && error) return <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${props.cellId}`} data-reason="read_failed"><div className="aiws-error" role="alert">{t('aiworkspace.blocks.readFailed', { error })}</div></div>
+  if (!context) return <div className="aiws-block-loading" data-testid={`aiws-block-loading-${props.cellId}`}>{t('aiworkspace.blocks.loading')}</div>
+  if (!resolution) return <div className="aiws-block-loading">{t('aiworkspace.blocks.loadingDefinition')}</div>
   if (!resolution.ok) return <GenericFallback cell={context.cell} payload={context.payload} reason={resolution.reason} detail={resolution.detail} source={context.source} />
   return <ResolvedBlock context={context} lod={props.lod ?? 'full'} registryVersion={registryVersion} />
 })
 
 function ResolvedBlock({ context: base, lod, registryVersion }: { context: RenderContext; lod: Lod; registryVersion: number }) {
   const { cell, mode, definition: def, dataState, depth } = base
+  const { t } = useAiwsText()
   const store = useStore()
   const metaSink = useContext(BlockMetaContext)
   const wantsEditor = base.editorActive && Boolean(def.Editor)
@@ -113,14 +120,14 @@ function ResolvedBlock({ context: base, lod, registryVersion }: { context: Rende
   if (lod === 'simplified' && def.Simplified) { Impl = def.Simplified; role = 'simplified' }
   if (wantsEditor && slot && def.Editor) { Impl = def.Editor; role = 'editor' }
   else if (depth === 0 && (mode === 'view' || mode === 'show') && def.View && lod !== 'simplified') { Impl = def.View; role = 'view' }
-  const budgetNote = wantsEditor && !slot ? '同时激活的编辑器已达上限，此 Block 保持静态显示' : null
+  const budgetNote = wantsEditor && !slot ? t('aiworkspace.blocks.budgetNote') : null
   return (
     <div className="aiws-block-body" data-testid={`aiws-block-${cell.entity_id}`} title={typeof base.payload.config?.tooltip === 'string' && role !== 'editor' ? base.payload.config.tooltip : undefined} data-role={role} data-renderer={def.type} data-mode={mode} data-data-state={dataState} data-chrome={def.chrome ?? 'clip'}>
       {budgetNote && <div className="aiws-warning" data-testid="aiws-block-budget">{budgetNote}</div>}
       <BlockBoundary resetKey={`${cell.entity_id}:${role}:${cell.content_rev}:${registryVersion}`} fallback={(error, reset) => (
         <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${cell.entity_id}`} data-reason="renderer_error">
-          <div className="aiws-error" role="alert">渲染器 {def.type} 出错：{describeError(error)}</div>
-          <button type="button" className="aiws-link" onClick={reset}>重试</button>
+          <div className="aiws-error" role="alert">{t('aiworkspace.blocks.rendererFailed', { type: def.type, error: describeError(error) })}</div>
+          <button type="button" className="aiws-link" onClick={reset}>{t('aiworkspace.common.retry')}</button>
         </div>
       )}>
         <Impl {...context} />

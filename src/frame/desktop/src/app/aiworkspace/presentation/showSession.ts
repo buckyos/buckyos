@@ -7,6 +7,7 @@ import type { AiwsClient } from '../api/client'
 import { unwrap } from '../api/client'
 import { OnlineWorkspaceSession } from '../api/session'
 import type { KeyedContent, ShowPathPayload } from '../api/types'
+import { aiwsT } from '../i18n'
 import { WorkspaceStore } from '../state/store'
 import { hasLiveBlocks, playable, resolveSteps, surfacesOfSteps } from './model'
 import { clearActiveShow, loadActiveShow } from './relay'
@@ -27,7 +28,7 @@ export async function openShow(client: AiwsClient, store: WorkspaceStore, pathId
   const workspaceId = store.session.workspaceId
   const read = await store.session.read<KeyedContent<ShowPathPayload>>(pathId)
   const steps = playable(resolveSteps(store.outline, read.content.payload))
-  if (steps.length === 0) throw new Error('这条路径没有可以放映的步骤（步骤都已停用，或目标已删除）')
+  if (steps.length === 0) throw new Error(aiwsT('aiworkspace.presentation.show.noPlayableSteps'))
   if (store.session.status().kind !== 'live') {
     // offline: one window, read-only, no lock, no prompter, no clone (§8.4)
     return { workspaceId, pathId, startStepId: stepId, start: null, store }

@@ -7,7 +7,9 @@ import { useCallback, useState } from 'react'
 import { readLook } from '@drawio/shapes'
 import type { Json } from '../../api/types'
 import { useLoad } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { ShapeArt } from '../blocks/shapeBlock'
+import { libraryTitle } from './drawioText'
 import { SHAPE_DRAG_TYPE, stencilIndex, stencilPack, type StencilPack, type StencilPackShape } from './stencilLibrary'
 
 function Preview({ shape }: { shape: StencilPackShape }) {
@@ -16,6 +18,7 @@ function Preview({ shape }: { shape: StencilPackShape }) {
 }
 
 export function ShapeLibraryPanel({ onPick }: { onPick: (shape: StencilPackShape) => void }) {
+  const { t } = useAiwsText()
   const index = useLoad(useCallback(() => stencilIndex(), [])).data
   const [lib, setLib] = useState<string>('flowchart')
   const [query, setQuery] = useState('')
@@ -27,27 +30,27 @@ export function ShapeLibraryPanel({ onPick }: { onPick: (shape: StencilPackShape
   }, [index, lib, q])
   const packs = useLoad(loadPacks).data ?? []
   const shapes = packs.flatMap((p) => p.shapes.filter((s) => !q || s.title.toLowerCase().includes(q) || s.name.includes(q)).map((s) => ({ lib: p.lib, shape: s })))
-  if (index === null) return <div className="aiws-muted">图形库没有加载（离线或部署中缺少 aiworkspace/stencils）。</div>
+  if (index === null) return <div className="aiws-muted">{t('aiworkspace.canvas.library.unavailable')}</div>
   return (
     <div className="aiws-library" data-testid="aiws-shape-library">
       <div className="aiws-library-head">
-        <select aria-label="图形库" value={lib} data-testid="aiws-library-select" onChange={(e) => { setLib(e.target.value); setQuery('') }}>
-          {(index?.libs ?? []).map((l) => <option key={l.lib} value={l.lib}>{l.title}（{l.count}）</option>)}
+        <select aria-label={t('aiworkspace.canvas.library.title')} value={lib} data-testid="aiws-library-select" onChange={(e) => { setLib(e.target.value); setQuery('') }}>
+          {(index?.libs ?? []).map((l) => <option key={l.lib} value={l.lib}>{t('aiworkspace.canvas.library.option', { title: libraryTitle(l.lib, l.title, t), count: l.count })}</option>)}
         </select>
-        <input type="search" placeholder="搜索全部图形库…" aria-label="搜索图形" value={query} data-testid="aiws-library-search" onChange={(e) => setQuery(e.target.value)} />
+        <input type="search" placeholder={t('aiworkspace.canvas.library.searchPlaceholder')} aria-label={t('aiworkspace.canvas.library.search')} value={query} data-testid="aiws-library-search" onChange={(e) => setQuery(e.target.value)} />
       </div>
-      <div className="aiws-library-grid" role="listbox" aria-label="图形">
+      <div className="aiws-library-grid" role="listbox" aria-label={t('aiworkspace.canvas.library.shapes')}>
         {shapes.slice(0, 240).map(({ lib: l, shape }) => (
-          <button key={shape.name} type="button" role="option" aria-selected="false" className="aiws-library-item" title={`${shape.title}（${l}）：点击后在画布上放置，或拖到画布上`} data-testid={`aiws-library-shape-${shape.name}`}
+          <button key={shape.name} type="button" role="option" aria-selected="false" className="aiws-library-item" title={t('aiworkspace.canvas.library.shapeTip', { name: shape.title, library: l })} data-testid={`aiws-library-shape-${shape.name}`}
             draggable onDragStart={(event) => { event.dataTransfer.setData(SHAPE_DRAG_TYPE, JSON.stringify({ lib: l, name: shape.name })); event.dataTransfer.effectAllowed = 'copy' }}
             onClick={() => onPick(shape)}>
             <Preview shape={shape} />
             <span className="aiws-library-name">{shape.title}</span>
           </button>
         ))}
-        {shapes.length === 0 && <div className="aiws-muted">{index ? '没有匹配的图形。' : '正在加载…'}</div>}
+        {shapes.length === 0 && <div className="aiws-muted">{index ? t('aiworkspace.canvas.library.noMatch') : t('aiworkspace.canvas.library.loading')}</div>}
       </div>
-      <div className="aiws-muted aiws-library-note">图形来自 draw.io（jgraph/drawio，Apache-2.0）的模板库，转换为可改色的 SVG 形状。</div>
+      <div className="aiws-muted aiws-library-note">{t('aiworkspace.canvas.library.note')}</div>
     </div>
   )
 }

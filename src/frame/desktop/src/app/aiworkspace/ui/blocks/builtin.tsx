@@ -13,6 +13,8 @@ import type { ReadOk } from '../../api/session'
 import type { AnnotationContent, Json, Reference, RichTextContent } from '../../api/types'
 import { StaticRichText } from '../../richtext/RichTextEditor'
 import { isGuestPrincipal } from '../../api/transport'
+import { aiwsT } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 import { authorLabel, readGuestName } from '../../state/guest'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
@@ -25,7 +27,10 @@ import { blockRegistry, type BlockDefinition, type RenderContext, type ToolbarIt
 import { frameDefinition } from './frameBlock'
 import { shapeDefinition } from './shapeBlock'
 
-const TEXT_SIZES = [{ value: 's', label: '小' }, { value: 'm', label: '中' }, { value: 'l', label: '大' }, { value: 'xl', label: '特大' }]
+const textSizes = () => [
+  { value: 's', label: aiwsT('aiworkspace.blocks.size.s') }, { value: 'm', label: aiwsT('aiworkspace.blocks.size.m') },
+  { value: 'l', label: aiwsT('aiworkspace.blocks.size.l') }, { value: 'xl', label: aiwsT('aiworkspace.blocks.size.xl') },
+]
 
 /** Open the Block's editor with `intent` waiting for it (a panel to open, text typed into it). */
 function openWith(context: RenderContext, intent: string) {
@@ -36,10 +41,11 @@ function openWith(context: RenderContext, intent: string) {
 /** Rich text `object_embed` inside a Block: rendered read-only through the shell's renderer. */
 function useEmbedRenderer(depth: number) {
   const ui = useWorkspaceUi()
+  const { t } = useAiwsText()
   return useCallback((reference: Reference): ReactNode => {
-    if (depth >= MAX_EMBED_DEPTH) return <div className="aiws-muted">嵌入层级过深，未展开（{reference.entity_id}）</div>
+    if (depth >= MAX_EMBED_DEPTH) return <div className="aiws-muted">{t('aiworkspace.blocks.embedTooDeep', { id: reference.entity_id })}</div>
     return ui.renderCell(reference.entity_id, depth + 1)
-  }, [ui, depth])
+  }, [ui, depth, t])
 }
 
 // ---- table
@@ -60,30 +66,31 @@ function TableEditorView(context: RenderContext) {
 }
 
 function TableSimplified(context: RenderContext) {
-  return <div className="aiws-block-simplified">表格 · {context.source?.name ?? context.source?.title ?? context.payload.title ?? ''}</div>
+  const { t } = useAiwsText()
+  return <div className="aiws-block-simplified">{t('aiworkspace.blocks.table.simplified', { name: context.source?.name ?? context.source?.title ?? context.payload.title ?? '' })}</div>
 }
 
 const canAppend = (context: RenderContext) => context.readOnlyReason === null && Boolean(context.source?.capabilities.some((c) => c === 'append' || c === 'update'))
 
 const table: BlockDefinition = {
-  type: 'table', version: 1, title: '表格视图', accepts: ['buckyos.table-source'], allowNoSource: false,
+  type: 'table', version: 1, get title() { return aiwsT('aiworkspace.blocks.table.title') }, accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 640, h: 320 }, cost: { editor: true, html: false },
   Static: TableStatic, Simplified: TableSimplified, Editor: TableEditorView,
-  catalog: { group: 'data', description: '行与字段组成的数据表；新建时带“标题”“完成”两个字段，可在表格中继续加字段和记录。', needs: 'none', standard: true },
-  actions: [{ id: 'edit', label: '编辑内容', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
+  catalog: { group: 'data', get description() { return aiwsT('aiworkspace.blocks.table.description') }, needs: 'none', standard: true },
+  actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   hover: (context) => [
     ...sourceLabel(context, Table),
-    ...(canAppend(context) ? [{ id: 'add-row', kind: 'button' as const, at: 'bottom-out' as const, icon: Plus, label: '新增一行', run: (c: RenderContext) => openWith(c, 'add') }] : []),
+    ...(canAppend(context) ? [{ id: 'add-row', kind: 'button' as const, at: 'bottom-out' as const, icon: Plus, label: aiwsT('aiworkspace.blocks.table.addRow'), run: (c: RenderContext) => openWith(c, 'add') }] : []),
   ],
   // while editing, the table's own tools come from its editor (they also show which panel is open)
   toolbar: (context) => context.editorActive ? [] : [
-    { kind: 'button', id: 'table-filter', icon: ListFilter, label: '筛选 / 排序', run: () => openWith(context, 'filter') },
-    ...(context.readOnlyReason === null && context.source?.capabilities.includes('structure') ? [{ kind: 'button' as const, id: 'table-fields', icon: Columns3, label: '字段', run: () => openWith(context, 'fields') }] : []),
-    ...(canAppend(context) ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: '新增记录', run: () => openWith(context, 'add') }] : []),
+    { kind: 'button', id: 'table-filter', icon: ListFilter, label: aiwsT('aiworkspace.blocks.table.filter'), run: () => openWith(context, 'filter') },
+    ...(context.readOnlyReason === null && context.source?.capabilities.includes('structure') ? [{ kind: 'button' as const, id: 'table-fields', icon: Columns3, label: aiwsT('aiworkspace.blocks.table.fields'), run: () => openWith(context, 'fields') }] : []),
+    ...(canAppend(context) ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: aiwsT('aiworkspace.blocks.table.addRecord'), run: () => openWith(context, 'add') }] : []),
   ],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'table', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.table-source', args.contentFolderId, args.dataOrderKey, {
-      title_field_id: 'title', fields: [{ field_id: 'title', name: '标题', type: 'text', required: true }, { field_id: 'done', name: '完成', type: 'boolean' }],
+      title_field_id: 'title', fields: [{ field_id: 'title', name: aiwsT('aiworkspace.blocks.table.fieldTitle'), type: 'text', required: true }, { field_id: 'done', name: aiwsT('aiworkspace.blocks.table.fieldDone'), type: 'boolean' }],
     }, args.title || undefined),
     cellOp(args, 'table', args.dataId),
   ]),
@@ -116,13 +123,14 @@ function RichTextEditorView(context: RenderContext) {
 }
 
 function RichTextSimplified(context: RenderContext) {
+  const { t } = useAiwsText()
   const store = useStore()
   const id = context.source?.entity_id ?? ''
   const version = useVersion(`e:${id}`)
   const load = useCallback(() => store.readBatched<RichTextContent>(id), [store, id])
   const read = useLoad<ReadOk<RichTextContent>>(load, version)
   const text = read.data ? firstText(read.data.content.content) : ''
-  return <div className="aiws-block-simplified">{text || '富文本'}</div>
+  return <div className="aiws-block-simplified">{text || t('aiworkspace.blocks.richtext.title')}</div>
 }
 
 function firstText(node: { text?: string; content?: unknown[] } | undefined, limit = 80): string {
@@ -140,19 +148,21 @@ function textTools(context: RenderContext, store: WorkspaceStore): ToolbarItem[]
   const { size } = textStyle(context)
   const color = context.payload.config?.text_color
   // a Block's own configuration: the Cell, not the data, is written
-  const reason = context.capabilities.includes('update') && context.mode === 'edit' ? false : '没有修改此 Block 的权限'
+  const reason = context.capabilities.includes('update') && context.mode === 'edit' ? false : aiwsT('aiworkspace.blocks.noPermission')
+  const sizes = textSizes()
   return [
-    { kind: 'menu', id: 'text-size', icon: ALargeSmall, label: '字号', value: size, items: TEXT_SIZES, disabled: reason, onPick: (value) => setCellConfig(context, store, { text_size: value === 'm' ? null : value }, `字号 → ${TEXT_SIZES.find((t) => t.value === value)?.label ?? value}`) },
-    { kind: 'color', id: 'text-color', label: '文字颜色', palette: 'ink', value: typeof color === 'string' ? color : '', disabled: reason, onPick: (value) => setCellConfig(context, store, { text_color: value || null }, '文字颜色') },
+    { kind: 'menu', id: 'text-size', icon: ALargeSmall, label: aiwsT('aiworkspace.blocks.fontSize'), value: size, items: sizes, disabled: reason,
+      onPick: (value) => setCellConfig(context, store, { text_size: value === 'm' ? null : value }, aiwsT('aiworkspace.blocks.edit.change', { label: aiwsT('aiworkspace.blocks.fontSize'), value: sizes.find((t) => t.value === value)?.label ?? value })) },
+    { kind: 'color', id: 'text-color', label: aiwsT('aiworkspace.blocks.textColor'), palette: 'ink', value: typeof color === 'string' ? color : '', disabled: reason, onPick: (value) => setCellConfig(context, store, { text_color: value || null }, aiwsT('aiworkspace.blocks.textColor')) },
   ]
 }
 
 const richtext: BlockDefinition = {
-  type: 'richtext', version: 1, title: '富文本', accepts: ['buckyos.richtext'], allowNoSource: false,
+  type: 'richtext', version: 1, get title() { return aiwsT('aiworkspace.blocks.richtext.title') }, accepts: ['buckyos.richtext'], allowNoSource: false,
   defaultSize: { w: 420, h: 220 }, cost: { editor: true, html: false },
   Static: RichTextStatic, Simplified: RichTextSimplified, Editor: RichTextEditorView,
-  catalog: { group: 'text', description: '段落、标题、列表等格式化文本，支持多人同时编辑和按文字范围批注。', needs: 'none', editAfterInsert: true, standard: true },
-  actions: [{ id: 'edit', label: '编辑内容', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
+  catalog: { group: 'text', get description() { return aiwsT('aiworkspace.blocks.richtext.description') }, needs: 'none', editAfterInsert: true, standard: true },
+  actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   hover: (context) => sourceLabel(context, Type),
   toolbar: textTools,
   create: (args) => (args.existingSourceId ? [cellOp(args, 'richtext', args.existingSourceId)] : [
@@ -180,15 +190,15 @@ function RecordEditorView(context: RenderContext) {
 }
 
 const record: BlockDefinition = {
-  type: 'record', version: 1, title: '记录', accepts: ['buckyos.record'], allowNoSource: false,
+  type: 'record', version: 1, get title() { return aiwsT('aiworkspace.blocks.record.title') }, accepts: ['buckyos.record'], allowNoSource: false,
   defaultSize: { w: 360, h: 180 }, cost: { editor: false, html: false },
   Static: RecordStatic, Editor: RecordEditorView,
-  catalog: { group: 'data', description: '一组带名称的属性（名称、值），适合记录项目信息、参数等结构化内容。', needs: 'none', editAfterInsert: true },
-  actions: [{ id: 'edit', label: '编辑内容', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
+  catalog: { group: 'data', get description() { return aiwsT('aiworkspace.blocks.record.description') }, needs: 'none', editAfterInsert: true },
+  actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   hover: (context) => sourceLabel(context, ListTree),
   create: (args) => (args.existingSourceId ? [cellOp(args, 'record', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.record', args.contentFolderId, args.dataOrderKey, {
-      schema: { properties: [{ key: 'name', name: '名称', type: 'text' }, { key: 'value', name: '值', type: 'text' }] }, props: { name: args.title ?? '' },
+      schema: { properties: [{ key: 'name', name: aiwsT('aiworkspace.blocks.record.propName'), type: 'text' }, { key: 'value', name: aiwsT('aiworkspace.blocks.record.propValue'), type: 'text' }] }, props: { name: args.title ?? '' },
     }, args.title || undefined),
     cellOp(args, 'record', args.dataId),
   ]),
@@ -201,11 +211,12 @@ function fitOf(context: RenderContext): 'contain' | 'cover' {
 }
 
 function AssetPreview({ entityId, onClose }: { entityId: string; onClose: () => void }) {
+  const { t } = useAiwsText()
   return (
-    <div className="aiws-media-preview" role="dialog" aria-label="媒体预览" data-testid="aiws-media-preview" onClick={onClose}>
+    <div className="aiws-media-preview" role="dialog" aria-label={t('aiworkspace.blocks.asset.previewDialog')} data-testid="aiws-media-preview" onClick={onClose}>
       <div className="aiws-media-preview-body" onClick={(event) => event.stopPropagation()}>
         <AssetCell entityId={entityId} fit="contain" readOnly />
-        <button type="button" onClick={onClose}>关闭预览</button>
+        <button type="button" onClick={onClose}>{t('aiworkspace.blocks.asset.closePreview')}</button>
       </div>
     </div>
   )
@@ -235,13 +246,14 @@ function AssetStatic(context: RenderContext) {
 }
 /** View mode: a reading interaction (the explicit media preview, §8.3) without any write. */
 function AssetView(context: RenderContext) {
+  const { t } = useAiwsText()
   const [preview, setPreview] = usePreviewIntent(context.cell.entity_id)
   const bare = useOnFreeCanvas()
   if (!context.source) return null
   return (
     <div className="aiws-block-static aiws-block-asset" data-testid="aiws-asset-view">
       <AssetCell entityId={context.source.entity_id} fit={fitOf(context)} readOnly bare={bare} />
-      <button type="button" className="aiws-link aiws-block-view-action" data-testid="aiws-asset-preview" onClick={() => setPreview(true)}>预览</button>
+      <button type="button" className="aiws-link aiws-block-view-action" data-testid="aiws-asset-preview" onClick={() => setPreview(true)}>{t('aiworkspace.blocks.asset.preview')}</button>
       {preview && <AssetPreview entityId={context.source.entity_id} onClose={() => setPreview(false)} />}
     </div>
   )
@@ -261,25 +273,31 @@ function pickReplacement(context: RenderContext, store: WorkspaceStore) {
   input.click()
 }
 
+const FIT_OPTIONS = [
+  { value: 'contain', get label() { return aiwsT('aiworkspace.blocks.asset.fitContain') } },
+  { value: 'cover', get label() { return aiwsT('aiworkspace.blocks.asset.fitCover') } },
+]
+
 const asset: BlockDefinition = {
-  type: 'asset', version: 1, title: '图片 / 附件', accepts: ['buckyos.asset-ref'], allowNoSource: false,
+  type: 'asset', version: 1, get title() { return aiwsT('aiworkspace.blocks.asset.title') }, accepts: ['buckyos.asset-ref'], allowNoSource: false,
   defaultSize: { w: 320, h: 240 }, cost: { editor: false, html: false },
   Static: AssetStatic, View: AssetView,
   resize: { aspect: 'locked' },
-  catalog: { group: 'data', description: '上传图片或文件，作为工作区里的资产显示；文件先上传，再放到画布上。', needs: 'file', standard: true },
-  actions: [{ id: 'replace', label: '替换文件', modes: ['edit'], needs: ['update'], onSource: true, run: pickReplacement }],
+  catalog: { group: 'data', get description() { return aiwsT('aiworkspace.blocks.asset.description') }, needs: 'file', standard: true },
+  actions: [{ id: 'replace', get label() { return aiwsT('aiworkspace.blocks.asset.replaceFile') }, modes: ['edit'], needs: ['update'], onSource: true, run: pickReplacement }],
   hover: (context) => sourceLabel(context, ImageIcon),
   toolbar: (context, store) => [
-    ...(context.mode === 'edit' && context.source?.capabilities.includes('update') && context.readOnlyReason === null ? [{ kind: 'button' as const, id: 'asset-replace', icon: Replace, label: '替换', run: () => pickReplacement(context, store) }] : []),
-    { kind: 'menu', id: 'asset-fit', icon: Scan, label: '适应方式', value: fitOf(context), items: [{ value: 'contain', label: '完整显示' }, { value: 'cover', label: '填满' }],
-      disabled: context.capabilities.includes('update') && context.mode === 'edit' ? false : '没有修改此 Block 的权限', onPick: (value) => setCellConfig(context, store, { fit: value === 'contain' ? null : value }, `适应方式 → ${value === 'cover' ? '填满' : '完整显示'}`) },
-    { kind: 'button', id: 'asset-preview', icon: Eye, label: '预览', run: () => requestIntent(context.cell.entity_id, 'preview') },
+    ...(context.mode === 'edit' && context.source?.capabilities.includes('update') && context.readOnlyReason === null ? [{ kind: 'button' as const, id: 'asset-replace', icon: Replace, label: aiwsT('aiworkspace.blocks.asset.replace'), run: () => pickReplacement(context, store) }] : []),
+    { kind: 'menu', id: 'asset-fit', icon: Scan, label: aiwsT('aiworkspace.blocks.asset.fit'), value: fitOf(context), items: FIT_OPTIONS,
+      disabled: context.capabilities.includes('update') && context.mode === 'edit' ? false : aiwsT('aiworkspace.blocks.noPermission'),
+      onPick: (value) => setCellConfig(context, store, { fit: value === 'contain' ? null : value }, aiwsT('aiworkspace.blocks.edit.change', { label: aiwsT('aiworkspace.blocks.asset.fit'), value: aiwsT(value === 'cover' ? 'aiworkspace.blocks.asset.fitCover' : 'aiworkspace.blocks.asset.fitContain') })) },
+    { kind: 'button', id: 'asset-preview', icon: Eye, label: aiwsT('aiworkspace.blocks.asset.preview'), run: () => requestIntent(context.cell.entity_id, 'preview') },
   ],
-  configFields: [{ key: 'fit', label: '填充方式', kind: 'select', options: [{ value: 'contain', label: '完整显示' }, { value: 'cover', label: '填满' }] }],
+  configFields: [{ key: 'fit', get label() { return aiwsT('aiworkspace.blocks.asset.fitField') }, kind: 'select', options: FIT_OPTIONS }],
   create: (args) => {
     if (args.existingSourceId) return [cellOp(args, 'asset', args.existingSourceId)]
     const file = args.config?.file as { object_id: string; file_name: string } | undefined
-    if (!file) throw new Error('图片 / 附件需要先选择文件')
+    if (!file) throw new Error(aiwsT('aiworkspace.blocks.asset.fileRequired'))
     const { file: _file, ...rest } = args.config ?? {}
     void _file
     return [
@@ -291,7 +309,6 @@ const asset: BlockDefinition = {
 
 // ---- note (a free or attached annotation shown on the canvas): a coloured sheet; replies are annotations on it (§7.3)
 
-const NOTE_SIZES = TEXT_SIZES
 
 function NoteStatic(context: RenderContext) {
   const store = useStore()
@@ -328,33 +345,33 @@ async function setNoteStyle(store: WorkspaceStore, noteId: string, patch: Record
   const read = await store.session.read<AnnotationContent>(noteId)
   const style = { ...(read.content.payload.style ?? {}), ...patch }
   const outcome = await store.submit({ editId: `key:${noteId}:style`, label, operations: [{ op: 'entity.set_keys', entity_id: noteId, keys: [{ key: 'style', value: style, expect: { rev: read.content.key_revs.style ?? 0 } }] }] })
-  if (outcome.status === 'rejected') store.notify('error', `没有修改便签：${outcome.code}（只有作者或有管理权限的人可以修改）`)
+  if (outcome.status === 'rejected') store.notify('error', aiwsT('aiworkspace.blocks.note.notChanged', { code: outcome.code }))
 }
 
 /** Reply to a note: a new annotation whose target is the note (§7.3). */
 function replyTo(context: RenderContext) {
   const id = context.source?.entity_id
   if (!id || !context.annotate) return
-  context.annotate({ target: { entity_id: id }, label: '回复便签' })
+  context.annotate({ target: { entity_id: id }, label: aiwsT('aiworkspace.blocks.note.replyAnchor') })
   context.showAnnotations(id)
 }
 
 const note: BlockDefinition = {
-  type: 'note', version: 1, title: '便签', accepts: ['buckyos.annotation'], allowNoSource: false,
+  type: 'note', version: 1, get title() { return aiwsT('aiworkspace.blocks.note.title') }, accepts: ['buckyos.annotation'], allowNoSource: false,
   defaultSize: { w: 220, h: 160 }, cost: { editor: false, html: false },
   Static: NoteStatic, Editor: NoteEditorView,
   chrome: 'none', resize: { aspect: 'locked' },
-  catalog: { group: 'text', description: '画布上的自由便签，插入后直接输入内容。', needs: 'none', editAfterInsert: true, standard: true },
-  actions: [{ id: 'edit', label: '编辑便签', modes: ['edit'], needs: ['comment'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
-  hover: (context) => (context.annotate ? [{ id: 'reply', kind: 'button', at: 'bottom-right-in', icon: Reply, label: '回复', modes: ['edit', 'view'], run: replyTo }] : []),
+  catalog: { group: 'text', get description() { return aiwsT('aiworkspace.blocks.note.description') }, needs: 'none', editAfterInsert: true, standard: true },
+  actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.note.edit') }, modes: ['edit'], needs: ['comment'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
+  hover: (context) => (context.annotate ? [{ id: 'reply', kind: 'button', at: 'bottom-right-in', icon: Reply, label: aiwsT('aiworkspace.blocks.note.reply'), modes: ['edit', 'view'], run: replyTo }] : []),
   toolbar: (context, store) => {
     const noteId = context.source?.entity_id
     if (!noteId) return []
-    const reason = context.mode === 'edit' && context.source?.capabilities.some((c) => c === 'comment' || c === 'manage') ? false : '没有修改此便签的权限'
+    const reason = context.mode === 'edit' && context.source?.capabilities.some((c) => c === 'comment' || c === 'manage') ? false : aiwsT('aiworkspace.blocks.note.noPermission')
     return [
-      { kind: 'color', id: 'note-color', label: '便签颜色', palette: 'fill', value: undefined, disabled: reason, onPick: (value) => { if (value) void setNoteStyle(store, noteId, { color: value }, '便签颜色') } },
-      { kind: 'menu', id: 'note-size', icon: ALargeSmall, label: '字号', items: NOTE_SIZES, disabled: reason, onPick: (value) => { void setNoteStyle(store, noteId, { size: value }, '便签字号') } },
-      ...(context.annotate ? [{ kind: 'button' as const, id: 'note-reply', icon: Reply, label: '回复', run: () => replyTo(context) }] : []),
+      { kind: 'color', id: 'note-color', label: aiwsT('aiworkspace.blocks.note.color'), palette: 'fill', value: undefined, disabled: reason, onPick: (value) => { if (value) void setNoteStyle(store, noteId, { color: value }, aiwsT('aiworkspace.blocks.note.color')) } },
+      { kind: 'menu', id: 'note-size', icon: ALargeSmall, label: aiwsT('aiworkspace.blocks.fontSize'), items: textSizes(), disabled: reason, onPick: (value) => { void setNoteStyle(store, noteId, { size: value }, aiwsT('aiworkspace.blocks.note.fontSize')) } },
+      ...(context.annotate ? [{ kind: 'button' as const, id: 'note-reply', icon: Reply, label: aiwsT('aiworkspace.blocks.note.reply'), run: () => replyTo(context) }] : []),
     ]
   },
   create: (args) => (args.existingSourceId ? [cellOp(args, 'note', args.existingSourceId)] : [

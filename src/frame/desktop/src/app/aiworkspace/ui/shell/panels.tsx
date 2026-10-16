@@ -6,10 +6,13 @@ import { describeError } from '../../api/session'
 import type { CommitResult, RunView, ServiceError, Touched } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdits, useStore } from '../../state/hooks'
+import type { AiwsText } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 
 /** Save states (design §6.5): entries that need attention, unsaved inputs, local-only saves. */
 export function EditsPanel() {
   const store = useStore()
+  const { t, tNode } = useAiwsText()
   const edits = useEdits()
   const list = [...edits.values()].sort((a, b) => b.at - a.at)
   const attention = list.filter((entry) => entry.state === 'needs_attention')
@@ -19,24 +22,24 @@ export function EditsPanel() {
   const replica = store.session.offline
   return (
     <div className="aiws-edits" data-testid="aiws-edits">
-      <div className="aiws-panel-title">修改状态</div>
+      <div className="aiws-panel-title">{t('aiworkspace.shell.side.edits')}</div>
       {[...attention, ...unsaved, ...local].map((entry) => (
         <div key={entry.id} className={`aiws-edit aiws-edit-${entry.state}`} data-testid="aiws-edit-entry" data-state={entry.state} data-code={entry.code} data-edit-id={entry.id}>
           <span className={`aiws-state aiws-state-${entry.state}`}>{EDIT_STATE_LABEL[entry.state]}</span>
           <b>{entry.label}</b>
           {entry.detail && <div data-testid="aiws-edit-detail">{entry.detail}</div>}
-          {entry.hasMine && <div>我的输入：<code data-testid="aiws-edit-mine">{typeof entry.mine === 'string' ? entry.mine : JSON.stringify(entry.mine)}</code></div>}
+          {entry.hasMine && <div>{tNode('aiworkspace.shell.edits.mine', { value: <code data-testid="aiws-edit-mine">{typeof entry.mine === 'string' ? entry.mine : JSON.stringify(entry.mine)}</code> })}</div>}
           {entry.state === 'needs_attention' && (
             <>
               {replica && entry.pendingKey && entry.code !== 'REVISION_CONFLICT' && entry.code !== 'TARGET_DELETED' && store.session.status().kind !== 'stopped' && (
-                <button type="button" className="aiws-link" data-testid="aiws-edit-requeue" title="原样重新排队发送（同一个幂等键）"
-                  onClick={() => { void replica.requeuePending(entry.pendingKey ?? '').catch((error: unknown) => store.notify('error', describeError(error))) }}>重新发送</button>
+                <button type="button" className="aiws-link" data-testid="aiws-edit-requeue" title={t('aiworkspace.shell.edits.requeueHint')}
+                  onClick={() => { void replica.requeuePending(entry.pendingKey ?? '').catch((error: unknown) => store.notify('error', describeError(error))) }}>{t('aiworkspace.shell.edits.requeue')}</button>
               )}
-              <button type="button" className="aiws-link" data-testid="aiws-edit-dismiss" onClick={() => { void store.dismissEdit(entry.id) }}>{entry.pendingKey ? '放弃这条修改' : '知道了，移除此项'}</button>
+              <button type="button" className="aiws-link" data-testid="aiws-edit-dismiss" onClick={() => { void store.dismissEdit(entry.id) }}>{entry.pendingKey ? t('aiworkspace.shell.edits.discard') : t('aiworkspace.shell.edits.dismiss')}</button>
             </>
           )}
           {entry.state === 'unsaved' && entry.storageFailed && (
-            <button type="button" className="aiws-link" data-testid="aiws-edit-export" onClick={() => { void store.exportLocal() }}>导出未保存的输入</button>
+            <button type="button" className="aiws-link" data-testid="aiws-edit-export" onClick={() => { void store.exportLocal() }}>{t('aiworkspace.shell.exportUnsaved')}</button>
           )}
         </div>
       ))}
@@ -48,14 +51,15 @@ export function EditsPanel() {
 
 const MOCK_PROGRAM = 'mock.task-summary@1'
 
-function touchedText(item: Touched): string {
+function touchedText(t: AiwsText['t'], item: Touched): string {
   const selector = item.selector
-  const where = !selector ? '' : selector.kind === 'table_cell' ? ` / ${selector.record_id} / ${selector.field_id}` : selector.kind === 'richtext_block' ? ` / 块 ${selector.block_id}` : ` / ${selector.kind}`
-  return `${item.entity_id}${where}（${item.change}）`
+  const where = !selector ? '' : selector.kind === 'table_cell' ? ` / ${selector.record_id} / ${selector.field_id}` : selector.kind === 'richtext_block' ? t('aiworkspace.shell.mock.touchedBlock', { block: String(selector.block_id) }) : ` / ${selector.kind}`
+  return t('aiworkspace.shell.mock.touched', { entity: item.entity_id, where, change: item.change })
 }
 
 export function MockRunPanel() {
   const store = useStore()
+  const { t, tNode } = useAiwsText()
   const [today, setToday] = useState(() => new Date().toISOString().slice(0, 10))
   const [run, setRun] = useState<RunView | null>(null)
   const [busy, setBusy] = useState(false)
@@ -73,14 +77,14 @@ export function MockRunPanel() {
     setRun(next)
     const result = next.result
     if (result && result.status === 'accepted') {
-      store.undo.pushCommit(result.commit_id, '应用模拟加工结果')
+      store.undo.pushCommit(result.commit_id, t('aiworkspace.shell.mock.undoLabel'))
       await store.session.whenApplied(result.seq)
     }
   })
   const cancel = () => act(async () => {
     if (!run) return
     const result = await store.session.procCancel(run.run_id)
-    setMessage(result.already_applied ? `运行已应用（提交 ${result.commit_id ?? ''}），无法取消。` : '运行已取消，候选结果不会被应用。')
+    setMessage(result.already_applied ? t('aiworkspace.shell.mock.alreadyApplied', { commit: result.commit_id ?? '' }) : t('aiworkspace.shell.mock.cancelled'))
     setRun(await store.session.procGet(run.run_id))
   })
   const prepare = run?.prepare
@@ -90,26 +94,26 @@ export function MockRunPanel() {
   const applied = outcome?.status ? (outcome as CommitResult) : null
   return (
     <div className="aiws-mock" data-testid="aiws-mock">
-      <div className="aiws-panel-title">受控加工（内核回归用例） <span className="aiws-chip aiws-chip-derived" data-testid="aiws-mock-simulated">模拟结果</span></div>
-      <div className="aiws-muted">程序 {MOCK_PROGRAM} 是第一期的确定性模拟程序，保留为内核回归用例；许愿格请在画布或数据树中使用。</div>
+      <div className="aiws-panel-title">{t('aiworkspace.shell.mock.title')} <span className="aiws-chip aiws-chip-derived" data-testid="aiws-mock-simulated">{t('aiworkspace.shell.mock.simulated')}</span></div>
+      <div className="aiws-muted">{t('aiworkspace.shell.mock.note', { program: MOCK_PROGRAM })}</div>
       <div className="aiws-inline-form">
-        <label>今天 <input type="date" aria-label="今天" data-testid="aiws-mock-today" value={today} onChange={(event) => setToday(event.target.value)} /></label>
-        <button type="button" data-testid="aiws-mock-start" disabled={busy} onClick={() => { void start() }}>生成候选</button>
+        <label>{t('aiworkspace.shell.mock.today')} <input type="date" aria-label={t('aiworkspace.shell.mock.today')} data-testid="aiws-mock-today" value={today} onChange={(event) => setToday(event.target.value)} /></label>
+        <button type="button" data-testid="aiws-mock-start" disabled={busy} onClick={() => { void start() }}>{t('aiworkspace.shell.mock.start')}</button>
       </div>
       {message && <div className="aiws-warning" role="status" data-testid="aiws-mock-message">{message}</div>}
       {run && (
         <div className="aiws-mock-run" data-testid="aiws-mock-run" data-state={run.state}>
-          <div>运行 {run.run_id} · 状态 <b>{run.state}</b></div>
-          {prepare && prepare.status === 'ok' && <div data-testid="aiws-mock-prepare">候选预检通过，将影响 {prepare.touched.length} 处：<ul>{prepare.touched.slice(0, 20).map((item, index) => <li key={index}>{touchedText(item)}</li>)}</ul></div>}
-          {prepare && prepare.status !== 'ok' && <div className="aiws-error" role="alert" data-testid="aiws-mock-prepare">候选预检未通过（{prepare.code}）：{prepare.status === 'conflict' ? `${prepare.conflicts.length} 处冲突` : prepare.errors?.[0]?.detail ?? ''}</div>}
-          {runError && <div className="aiws-warning" role="status" data-testid="aiws-mock-failed">运行没有产生候选（{runError.code}）：{runError.detail ?? ''}。文档没有任何变化。</div>}
-          {run.warnings.length > 0 && <div className="aiws-warning" data-testid="aiws-mock-warnings">警告（{run.warnings.length}）：<ul>{run.warnings.map((warning, index) => <li key={index}>{typeof warning === 'string' ? warning : JSON.stringify(warning)}</li>)}</ul></div>}
-          {applied && applied.status !== 'accepted' && <div className="aiws-error" role="alert" data-testid="aiws-mock-result">应用未被接受：{applied.code}，文档没有任何变化。</div>}
-          {applied?.status === 'accepted' && <div data-testid="aiws-mock-result">已应用为提交 {applied.commit_id}（模拟结果，可用撤销整体回退）。</div>}
+          <div>{tNode('aiworkspace.shell.mock.run', { run: run.run_id, state: <b>{run.state}</b> })}</div>
+          {prepare && prepare.status === 'ok' && <div data-testid="aiws-mock-prepare">{t('aiworkspace.shell.mock.prepareOk', { count: prepare.touched.length })}<ul>{prepare.touched.slice(0, 20).map((item, index) => <li key={index}>{touchedText(t, item)}</li>)}</ul></div>}
+          {prepare && prepare.status !== 'ok' && <div className="aiws-error" role="alert" data-testid="aiws-mock-prepare">{t('aiworkspace.shell.mock.prepareFailed', { code: prepare.code, detail: prepare.status === 'conflict' ? t('aiworkspace.shell.mock.conflicts', { count: prepare.conflicts.length }) : prepare.errors?.[0]?.detail ?? '' })}</div>}
+          {runError && <div className="aiws-warning" role="status" data-testid="aiws-mock-failed">{t('aiworkspace.shell.mock.runFailed', { code: runError.code, detail: runError.detail ?? '' })}</div>}
+          {run.warnings.length > 0 && <div className="aiws-warning" data-testid="aiws-mock-warnings">{t('aiworkspace.shell.mock.warnings', { count: run.warnings.length })}<ul>{run.warnings.map((warning, index) => <li key={index}>{typeof warning === 'string' ? warning : JSON.stringify(warning)}</li>)}</ul></div>}
+          {applied && applied.status !== 'accepted' && <div className="aiws-error" role="alert" data-testid="aiws-mock-result">{t('aiworkspace.shell.mock.applyRefused', { code: applied.code })}</div>}
+          {applied?.status === 'accepted' && <div data-testid="aiws-mock-result">{t('aiworkspace.shell.mock.applied', { commit: applied.commit_id })}</div>}
           {waiting && (
             <div className="aiws-inline-form">
-              <button type="button" data-testid="aiws-mock-apply" disabled={busy} onClick={() => { void apply() }}>应用模拟结果</button>
-              <button type="button" data-testid="aiws-mock-cancel" disabled={busy} onClick={() => { void cancel() }}>取消运行</button>
+              <button type="button" data-testid="aiws-mock-apply" disabled={busy} onClick={() => { void apply() }}>{t('aiworkspace.shell.mock.apply')}</button>
+              <button type="button" data-testid="aiws-mock-cancel" disabled={busy} onClick={() => { void cancel() }}>{t('aiworkspace.shell.mock.cancel')}</button>
             </div>
           )}
         </div>

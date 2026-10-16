@@ -7,16 +7,17 @@
  *   需要处理        conflict / rejected / blocked — my input is kept until I decide */
 
 import type { Json } from '../api/types'
+import { localizedLabels } from '../i18n'
 import { Emitter } from './emitter'
 
 export type EditState = 'unsaved' | 'saved_locally' | 'committed' | 'needs_attention'
 
-export const EDIT_STATE_LABEL: Record<EditState, string> = {
-  unsaved: '未保存',
-  saved_locally: '已保存到本设备',
-  committed: '已提交',
-  needs_attention: '需要处理',
-}
+export const EDIT_STATE_LABEL: Record<EditState, string> = localizedLabels({
+  unsaved: 'aiworkspace.core.edit.unsaved',
+  saved_locally: 'aiworkspace.core.edit.savedLocally',
+  committed: 'aiworkspace.core.edit.committed',
+  needs_attention: 'aiworkspace.core.edit.needsAttention',
+})
 
 export interface EditEntry {
   id: string

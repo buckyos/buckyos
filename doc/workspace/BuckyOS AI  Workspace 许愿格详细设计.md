@@ -614,6 +614,7 @@ export default async function main(aiws) {
 | `aiws.createBlock({ renderer, data, placement })` | 在当前 Surface 新建 Block |
 | `aiws.batch(fn)` | 把多次写入合并为一次 submit、一个撤销单位 |
 | `aiws.read/query/submit/upload/snapshot` | v1 接口在 v2 中保持可用，作为底层通道 |
+| `aiws.locale` | 宿主的界面语言（iframe 启动时取得，如 `en`、`zh-CN`，也是文档的 `lang`）；扩展据此显示自己的文字，没有该语言的文字时用英文 |
 
 **具名绑定**：Cell config 新增 `bindings: { <name>: { entity_id, selector? } }`，与 `source_ref` 并存；`source_ref` 视为名为 `source` 的绑定。绑定进入 refs 索引，所以删除保护、重命名不失效、克隆与导入后重新绑定、新鲜度都成立，HTML Block 的代码只引用绑定名。AI 生成的 html 结果由宿主根据结果名和输入名生成绑定。
 

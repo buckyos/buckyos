@@ -4,12 +4,14 @@
 
 import { useEffect } from 'react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { DataDetail } from './DataDetail'
 import { DataTree, DataTreeActions } from './DataTree'
 import { PermissionsPanel } from './PermissionsPanel'
 import { PropertiesPanel } from './PropertiesPanel'
 
 export function DataSourceView({ selected, onSelect }: { selected: string | null; onSelect: (id: string | null) => void }) {
+  const { t } = useAiwsText()
   const store = useStore()
   useOutlineVersion()
   const entity = selected ? store.outline.get(selected) : undefined
@@ -20,10 +22,10 @@ export function DataSourceView({ selected, onSelect }: { selected: string | null
     <div className="aiws-sources" data-testid="aiws-sources">
       <aside className="aiws-sources-left" style={{ width: leftWidth }}>
         <div className="aiws-inline-form">
-          <button type="button" aria-pressed={panel === 'tree'} data-testid="aiws-left-tree" onClick={() => store.userState.set('sources:left', 'tree')}>数据树</button>
-          <button type="button" aria-pressed={panel === 'permissions'} data-testid="aiws-left-permissions" onClick={() => store.userState.set('sources:left', 'permissions')}>权限管理</button>
+          <button type="button" aria-pressed={panel === 'tree'} data-testid="aiws-left-tree" onClick={() => store.userState.set('sources:left', 'tree')}>{t('aiworkspace.data.tree.title')}</button>
+          <button type="button" aria-pressed={panel === 'permissions'} data-testid="aiws-left-permissions" onClick={() => store.userState.set('sources:left', 'permissions')}>{t('aiworkspace.data.perm.title')}</button>
           <span className="aiws-grow" />
-          <button type="button" className="aiws-icon" title="调整宽度" onClick={() => store.userState.set('sources:left-width', leftWidth >= 360 ? 240 : leftWidth + 60)}>⇔</button>
+          <button type="button" className="aiws-icon" title={t('aiworkspace.data.sources.resize')} onClick={() => store.userState.set('sources:left-width', leftWidth >= 360 ? 240 : leftWidth + 60)}>⇔</button>
         </div>
         {panel === 'tree' ? (
           <>
@@ -35,13 +37,13 @@ export function DataSourceView({ selected, onSelect }: { selected: string | null
       <main className="aiws-sources-main">
         {entity ? <DataDetail key={entity.entity_id} entity={entity} /> : (
           <div className="aiws-empty" data-testid="aiws-detail-empty">
-            <p>在左侧数据树中选择一项数据：中间显示它的内容与引用关系，右侧显示属性。</p>
-            <p className="aiws-muted">画布上创建的内容默认也是数据，放在“画布内容区”里（默认折叠）。</p>
+            <p>{t('aiworkspace.data.sources.empty')}</p>
+            <p className="aiws-muted">{t('aiworkspace.data.sources.emptyHint')}</p>
           </div>
         )}
       </main>
       <aside className="aiws-sources-right">
-        {entity ? <PropertiesPanel key={entity.entity_id} entity={entity} /> : <div className="aiws-muted">属性</div>}
+        {entity ? <PropertiesPanel key={entity.entity_id} entity={entity} /> : <div className="aiws-muted">{t('aiworkspace.data.props.title')}</div>}
       </aside>
     </div>
   )

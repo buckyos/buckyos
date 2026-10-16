@@ -6,6 +6,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Json, QueryPage } from '../../api/types'
+import { aiwsT } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { AssetBlobImage } from '../extensions/AssetBlobImage'
 import { cellOp } from './ops'
@@ -40,7 +42,12 @@ function fieldId(data: TableData | undefined, wanted: string | undefined, fallba
   return data.fields.find((f) => (fallbackType ? f.type === fallbackType : true))?.field_id
 }
 
+const METRIC_TITLE: Record<string, string> = {
+  sum: 'aiworkspace.blocks.metric.titleSum', avg: 'aiworkspace.blocks.metric.titleAvg', count: 'aiworkspace.blocks.metric.titleCount', max: 'aiworkspace.blocks.metric.titleMax',
+}
+
 function MetricStatic(context: RenderContext) {
+  const { t, num: formatNum } = useAiwsText()
   const { data, error } = useTable(context)
   const config = context.payload.config ?? {}
   const field = fieldId(data, typeof config.field === 'string' ? config.field : undefined, 'number') ?? fieldId(data, undefined, 'decimal')
@@ -50,42 +57,45 @@ function MetricStatic(context: RenderContext) {
   const name = data?.fields.find((f) => f.field_id === field)?.name ?? field ?? ''
   return (
     <div className="aiws-metric" data-testid={`aiws-metric-${context.cell.entity_id}`}>
-      <div className="aiws-decl-label">{context.payload.title ?? `${name} 的${agg === 'avg' ? '平均' : agg === 'count' ? '计数' : agg === 'max' ? '最大' : '合计'}`}</div>
-      {error ? <div className="aiws-error">{error}</div> : <div className="aiws-metric-value">{value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}</div>}
-      <div className="aiws-muted">{data ? `${data.rows.length} 行` : '…'}</div>
+      <div className="aiws-decl-label">{context.payload.title ?? t(METRIC_TITLE[agg] ?? METRIC_TITLE.sum, { field: name })}</div>
+      {error ? <div className="aiws-error">{error}</div> : <div className="aiws-metric-value">{formatNum(value, { maximumFractionDigits: 2 })}</div>}
+      <div className="aiws-muted">{data ? t('aiworkspace.blocks.metric.rows', { count: data.rows.length }) : '…'}</div>
     </div>
   )
 }
 
 function MetricInspector(context: RenderContext) {
+  const { t } = useAiwsText()
   const store = useStore()
   const { data } = useTable(context)
   const set = (key: string, value: Json) => {
     const config = { ...(context.payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${context.cell.entity_id}`, label: `指标属性 ${key}`, operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
+    void store.submit({ editId: `config:${context.cell.entity_id}`, label: t('aiworkspace.blocks.metric.editProperty', { key }), operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
   }
   const numeric = (data?.fields ?? []).filter((f) => f.type === 'number' || f.type === 'decimal')
   return (
     <div className="aiws-inline-form" data-testid="aiws-metric-inspector">
-      <label>字段 <select value={String(context.payload.config?.field ?? '')} disabled={context.readOnlyReason !== null} onChange={(event) => set('field', event.target.value)}>
-        <option value="">（第一个数值字段）</option>{numeric.map((f) => <option key={f.field_id} value={f.field_id}>{f.name}</option>)}
+      <label>{t('aiworkspace.blocks.metric.field')} <select value={String(context.payload.config?.field ?? '')} disabled={context.readOnlyReason !== null} onChange={(event) => set('field', event.target.value)}>
+        <option value="">{t('aiworkspace.blocks.metric.firstNumber')}</option>{numeric.map((f) => <option key={f.field_id} value={f.field_id}>{f.name}</option>)}
       </select></label>
-      <label>聚合 <select value={String(context.payload.config?.aggregation ?? 'sum')} disabled={context.readOnlyReason !== null} onChange={(event) => set('aggregation', event.target.value)}>
-        <option value="sum">合计</option><option value="avg">平均</option><option value="count">计数</option><option value="max">最大</option>
+      <label>{t('aiworkspace.blocks.metric.aggregation')} <select value={String(context.payload.config?.aggregation ?? 'sum')} disabled={context.readOnlyReason !== null} onChange={(event) => set('aggregation', event.target.value)}>
+        <option value="sum">{t('aiworkspace.blocks.metric.sum')}</option><option value="avg">{t('aiworkspace.blocks.metric.avg')}</option>
+        <option value="count">{t('aiworkspace.blocks.metric.count')}</option><option value="max">{t('aiworkspace.blocks.metric.max')}</option>
       </select></label>
     </div>
   )
 }
 
 export const metricBlock: BlockDefinition = {
-  type: 'sample.metric', version: 1, title: '指标（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
+  type: 'sample.metric', version: 1, get title() { return aiwsT('aiworkspace.blocks.metric.title') }, accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 220, h: 120 }, cost: { editor: false, html: false },
-  catalog: { group: 'sample', description: '把表格的一列汇总成一个数字（样本渲染器）。', needs: 'data' },
+  catalog: { group: 'sample', get description() { return aiwsT('aiworkspace.blocks.metric.description') }, needs: 'data' },
   Static: MetricStatic, Inspector: MetricInspector,
   create: (args) => [cellOp(args, 'sample.metric', args.existingSourceId, args.config ? { config: args.config } : {})],
 }
 
 function BarChart(context: RenderContext & { interactive: boolean }) {
+  const { t, num: formatNum } = useAiwsText()
   const { data, error } = useTable(context)
   const [hover, setHover] = useState<string | null>(null)
   const config = context.payload.config ?? {}
@@ -105,18 +115,18 @@ function BarChart(context: RenderContext & { interactive: boolean }) {
   const name = (id: string | undefined) => data?.fields.find((f) => f.field_id === id)?.name ?? id ?? ''
   return (
     <div className="aiws-chart" data-testid={`aiws-chart-${context.cell.entity_id}`} data-interactive={context.interactive ? 'true' : 'false'}>
-      <div className="aiws-decl-label">{context.payload.title ?? `${name(valueField)} 按 ${name(byField)}`}</div>
+      <div className="aiws-decl-label">{context.payload.title ?? t('aiworkspace.blocks.chart.titleBy', { value: name(valueField), group: name(byField) })}</div>
       {error && <div className="aiws-error">{error}</div>}
       <div className="aiws-decl-bars">
         {[...groups].map(([label, value]) => (
           <div key={label} className="aiws-decl-bar-row" onMouseEnter={context.interactive ? () => setHover(label) : undefined} onMouseLeave={context.interactive ? () => setHover(null) : undefined}>
-            <span className="aiws-decl-bar-label">{label || '（空）'}</span>
+            <span className="aiws-decl-bar-label">{label || t('aiworkspace.blocks.chart.empty')}</span>
             <span className="aiws-decl-bar" style={{ width: `${(value / max) * 100}%`, background: typeof config.color === 'string' ? config.color : 'var(--cp-accent)' }} />
-            {(!context.interactive || hover === label) && <span className="aiws-decl-bar-value" data-testid="aiws-chart-value">{value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}</span>}
+            {(!context.interactive || hover === label) && <span className="aiws-decl-bar-value" data-testid="aiws-chart-value">{formatNum(value, { maximumFractionDigits: 2 })}</span>}
           </div>
         ))}
       </div>
-      {context.interactive && <div className="aiws-muted">查看模式：悬停显示数值</div>}
+      {context.interactive && <div className="aiws-muted">{t('aiworkspace.blocks.chart.hoverHint')}</div>}
     </div>
   )
 }
@@ -125,37 +135,39 @@ const ChartStatic = (context: RenderContext) => <BarChart {...context} interacti
 const ChartView = (context: RenderContext) => <BarChart {...context} interactive />
 
 function ChartInspector(context: RenderContext) {
+  const { t } = useAiwsText()
   const store = useStore()
   const { data } = useTable(context)
   const set = (key: string, value: Json) => {
     const config = { ...(context.payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${context.cell.entity_id}`, label: `图表属性 ${key}`, operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
+    void store.submit({ editId: `config:${context.cell.entity_id}`, label: t('aiworkspace.blocks.chart.editProperty', { key }), operations: [{ op: 'entity.set_keys', entity_id: context.cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: context.keyRevs.config ?? 0 } }] }] })
   }
   const fields = data?.fields ?? []
   return (
     <div className="aiws-inline-form" data-testid="aiws-chart-inspector">
-      <label>数值 <select value={String(context.payload.config?.value ?? '')} disabled={context.readOnlyReason !== null} onChange={(event) => set('value', event.target.value)}>
-        <option value="">（自动）</option>{fields.filter((f) => f.type === 'number' || f.type === 'decimal').map((f) => <option key={f.field_id} value={f.field_id}>{f.name}</option>)}
+      <label>{t('aiworkspace.blocks.chart.value')} <select value={String(context.payload.config?.value ?? '')} disabled={context.readOnlyReason !== null} onChange={(event) => set('value', event.target.value)}>
+        <option value="">{t('aiworkspace.blocks.chart.auto')}</option>{fields.filter((f) => f.type === 'number' || f.type === 'decimal').map((f) => <option key={f.field_id} value={f.field_id}>{f.name}</option>)}
       </select></label>
-      <label>分组 <select value={String(context.payload.config?.by ?? '')} disabled={context.readOnlyReason !== null} onChange={(event) => set('by', event.target.value)}>
-        <option value="">（自动）</option>{fields.map((f) => <option key={f.field_id} value={f.field_id}>{f.name}</option>)}
+      <label>{t('aiworkspace.blocks.chart.group')} <select value={String(context.payload.config?.by ?? '')} disabled={context.readOnlyReason !== null} onChange={(event) => set('by', event.target.value)}>
+        <option value="">{t('aiworkspace.blocks.chart.auto')}</option>{fields.map((f) => <option key={f.field_id} value={f.field_id}>{f.name}</option>)}
       </select></label>
-      <label>颜色 <input type="color" value={String(context.payload.config?.color ?? '#4f8df7')} disabled={context.readOnlyReason !== null} onChange={(event) => set('color', event.target.value)} /></label>
+      <label>{t('aiworkspace.blocks.color')} <input type="color" value={String(context.payload.config?.color ?? '#4f8df7')} disabled={context.readOnlyReason !== null} onChange={(event) => set('color', event.target.value)} /></label>
     </div>
   )
 }
 
 export const chartBlock: BlockDefinition = {
-  type: 'sample.bar-chart', version: 1, title: '柱状图（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
+  type: 'sample.bar-chart', version: 1, get title() { return aiwsT('aiworkspace.blocks.chart.title') }, accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 420, h: 260 }, cost: { editor: false, html: false },
-  catalog: { group: 'sample', description: '把表格数据画成柱状图（样本渲染器）。', needs: 'data' },
+  catalog: { group: 'sample', get description() { return aiwsT('aiworkspace.blocks.chart.description') }, needs: 'data' },
   Static: ChartStatic, View: ChartView, Inspector: ChartInspector,
-  actions: [{ id: 'open-source', label: '打开数据表', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
+  actions: [{ id: 'open-source', get label() { return aiwsT('aiworkspace.blocks.chart.openSource') }, modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
   create: (args) => [cellOp(args, 'sample.bar-chart', args.existingSourceId, args.config ? { config: args.config } : {})],
 }
 
 /** A line over an ordered x field (dates, months, numbers): time series and trends. */
 function LineChart(context: RenderContext) {
+  const { t, num: formatNum, compare } = useAiwsText()
   const { data, error } = useTable(context)
   const config = context.payload.config ?? {}
   const xField = fieldId(data, typeof config.x === 'string' ? config.x : undefined, 'date') ?? fieldId(data, undefined, 'text')
@@ -164,8 +176,8 @@ function LineChart(context: RenderContext) {
     if (!data || !xField || !yField) return [] as { x: string; y: number }[]
     const sums = new Map<string, number>()
     for (const row of data.rows) { const x = String(row[xField] ?? ''); sums.set(x, (sums.get(x) ?? 0) + num(row[yField])) }
-    return [...sums].map(([x, y]) => ({ x, y })).sort((a, b) => a.x.localeCompare(b.x, 'zh-CN', { numeric: true }))
-  }, [data, xField, yField])
+    return [...sums].map(([x, y]) => ({ x, y })).sort((a, b) => compare(a.x, b.x))
+  }, [data, xField, yField, compare])
   const name = (id: string | undefined) => data?.fields.find((f) => f.field_id === id)?.name ?? id ?? ''
   const W = 400, H = 180, pad = 28
   const max = Math.max(1, ...points.map((p) => p.y))
@@ -175,14 +187,14 @@ function LineChart(context: RenderContext) {
   const color = typeof config.color === 'string' ? config.color : 'var(--cp-accent)'
   return (
     <div className="aiws-chart" data-testid={`aiws-line-${context.cell.entity_id}`}>
-      <div className="aiws-decl-label">{context.payload.title ?? `${name(yField)} 随 ${name(xField)}`}</div>
+      <div className="aiws-decl-label">{context.payload.title ?? t('aiworkspace.blocks.lineChart.titleOver', { y: name(yField), x: name(xField) })}</div>
       {error && <div className="aiws-error">{error}</div>}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`${name(yField)} 折线图`}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={t('aiworkspace.blocks.lineChart.aria', { name: name(yField) })}>
         <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="currentColor" opacity="0.3" />
         <polyline fill="none" stroke={color} strokeWidth="2" points={points.map((p, i) => `${sx(i)},${sy(p.y)}`).join(' ')} />
         {points.map((p, i) => (
           <g key={p.x}>
-            <circle cx={sx(i)} cy={sy(p.y)} r="3" fill={color}><title>{`${p.x}：${p.y.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`}</title></circle>
+            <circle cx={sx(i)} cy={sy(p.y)} r="3" fill={color}><title>{t('aiworkspace.blocks.lineChart.point', { x: p.x, value: formatNum(p.y, { maximumFractionDigits: 2 }) })}</title></circle>
             {(points.length <= 12 || i % Math.ceil(points.length / 12) === 0) && <text x={sx(i)} y={H - 8} fontSize="9" textAnchor="middle" fill="currentColor" opacity="0.7">{p.x}</text>}
           </g>
         ))}
@@ -192,11 +204,11 @@ function LineChart(context: RenderContext) {
 }
 
 export const lineChartBlock: BlockDefinition = {
-  type: 'sample.line-chart', version: 1, title: '折线图（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
+  type: 'sample.line-chart', version: 1, get title() { return aiwsT('aiworkspace.blocks.lineChart.title') }, accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 420, h: 260 }, cost: { editor: false, html: false },
-  catalog: { group: 'sample', description: '把表格数据画成折线图（样本渲染器）。', needs: 'data' },
+  catalog: { group: 'sample', get description() { return aiwsT('aiworkspace.blocks.lineChart.description') }, needs: 'data' },
   Static: LineChart,
-  actions: [{ id: 'open-source', label: '打开数据表', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
+  actions: [{ id: 'open-source', get label() { return aiwsT('aiworkspace.blocks.chart.openSource') }, modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
   create: (args) => [cellOp(args, 'sample.line-chart', args.existingSourceId, args.config ? { config: args.config } : {})],
 }
 
@@ -224,18 +236,20 @@ function useFrames(context: RenderContext) {
 }
 
 function VideoStatic(context: RenderContext) {
+  const { t } = useAiwsText()
   const { data, error } = useFrames(context)
   if (error) return <div className="aiws-error">{error}</div>
   const poster = data?.frames[0]
   return (
     <div className="aiws-video" data-testid={`aiws-video-${context.cell.entity_id}`}>
-      {poster ? <AssetBlobImage objectId={poster.object_id} mediaType={poster.media_type} alt={poster.caption} /> : <div className="aiws-html-placeholder">没有画面</div>}
-      <div className="aiws-video-caption">{data?.caption ?? ''}<span className="aiws-chip aiws-chip-derived">模拟 · 逐帧预览</span></div>
+      {poster ? <AssetBlobImage objectId={poster.object_id} mediaType={poster.media_type} alt={poster.caption} /> : <div className="aiws-html-placeholder">{t('aiworkspace.blocks.video.noFrames')}</div>}
+      <div className="aiws-video-caption">{data?.caption ?? ''}<span className="aiws-chip aiws-chip-derived">{t('aiworkspace.blocks.video.simulated')}</span></div>
     </div>
   )
 }
 
 function VideoView(context: RenderContext) {
+  const { t } = useAiwsText()
   const { data, error } = useFrames(context)
   const [playing, setPlaying] = useState(false)
   const [index, setIndex] = useState(0)
@@ -249,21 +263,21 @@ function VideoView(context: RenderContext) {
   const frame = frames[index]
   return (
     <div className="aiws-video" data-testid={`aiws-video-${context.cell.entity_id}`} data-playing={playing ? 'true' : 'false'}>
-      {frame ? <AssetBlobImage objectId={frame.object_id} mediaType={frame.media_type} alt={frame.caption} /> : <div className="aiws-html-placeholder">没有画面</div>}
+      {frame ? <AssetBlobImage objectId={frame.object_id} mediaType={frame.media_type} alt={frame.caption} /> : <div className="aiws-html-placeholder">{t('aiworkspace.blocks.video.noFrames')}</div>}
       <div className="aiws-video-caption">{frame?.caption ?? data?.caption ?? ''} · {index + 1}/{frames.length}</div>
       <div className="aiws-inline-form">
-        <button type="button" data-testid="aiws-video-play" onClick={() => setPlaying((p) => !p)}>{playing ? '暂停' : '播放预览'}</button>
-        <button type="button" onClick={() => { setPlaying(false); setIndex(0) }}>回到开头</button>
-        <span className="aiws-chip aiws-chip-derived">模拟 · 逐帧预览，不是真实视频</span>
+        <button type="button" data-testid="aiws-video-play" onClick={() => setPlaying((p) => !p)}>{t(playing ? 'aiworkspace.blocks.video.pause' : 'aiworkspace.blocks.video.play')}</button>
+        <button type="button" onClick={() => { setPlaying(false); setIndex(0) }}>{t('aiworkspace.blocks.video.rewind')}</button>
+        <span className="aiws-chip aiws-chip-derived">{t('aiworkspace.blocks.video.notReal')}</span>
       </div>
     </div>
   )
 }
 
 export const videoBlock: BlockDefinition = {
-  type: 'sample.video', version: 1, title: '逐帧预览（样本）', accepts: ['buckyos.record'], allowNoSource: false,
+  type: 'sample.video', version: 1, get title() { return aiwsT('aiworkspace.blocks.video.title') }, accepts: ['buckyos.record'], allowNoSource: false,
   defaultSize: { w: 640, h: 452 }, cost: { editor: false, html: false },
-  catalog: { group: 'sample', description: '按记录中的帧列表逐帧预览（样本渲染器）。', needs: 'data' },
+  catalog: { group: 'sample', get description() { return aiwsT('aiworkspace.blocks.video.description') }, needs: 'data' },
   Static: VideoStatic, View: VideoView,
 }
 

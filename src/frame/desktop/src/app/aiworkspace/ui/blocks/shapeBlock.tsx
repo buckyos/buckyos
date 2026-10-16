@@ -15,11 +15,29 @@ import { cleanAnchors, type AnchorDef } from '@drawio/anchors'
 import { DEFAULT_FILL, DEFAULT_STROKE, KIND_GROUPS, SHAPE_KINDS, dashArray, inkOn, labelBox, readLook, shapeAnchors, shapeOutline, shapePaths, type ShapeKind, type ShapeLook } from '@drawio/shapes'
 import { sanitizeSvgBody } from '@drawio/svg'
 import type { CellPayload, Json, Operation } from '../../api/types'
+import { aiwsT, type AiwsText } from '../../i18n'
+import { useAiwsText } from '../../useAiwsText'
 import { useStore } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { consumeIntent, useIntent } from './editorToolbar'
 import { cellOp, setCellConfig } from './ops'
 import type { BlockDefinition, RenderContext, ToolbarItem } from './registry'
+
+type T = AiwsText['t']
+
+/** The names shown for the kinds and the picker's groups (the shared module knows the kinds by id only). */
+const KIND_LABEL: Record<ShapeKind, string> = {
+  rect: 'aiworkspace.blocks.shape.kind.rect', ellipse: 'aiworkspace.blocks.shape.kind.ellipse', diamond: 'aiworkspace.blocks.shape.kind.diamond',
+  triangle: 'aiworkspace.blocks.shape.kind.triangle', hexagon: 'aiworkspace.blocks.shape.kind.hexagon', parallelogram: 'aiworkspace.blocks.shape.kind.parallelogram',
+  trapezoid: 'aiworkspace.blocks.shape.kind.trapezoid', cross: 'aiworkspace.blocks.shape.kind.cross', cloud: 'aiworkspace.blocks.shape.kind.cloud',
+  cylinder: 'aiworkspace.blocks.shape.kind.cylinder', document: 'aiworkspace.blocks.shape.kind.document', process: 'aiworkspace.blocks.shape.kind.process',
+  card: 'aiworkspace.blocks.shape.kind.card', note: 'aiworkspace.blocks.shape.kind.note', callout: 'aiworkspace.blocks.shape.kind.callout',
+  step: 'aiworkspace.blocks.shape.kind.step', arrow: 'aiworkspace.blocks.shape.kind.arrow', double_arrow: 'aiworkspace.blocks.shape.kind.doubleArrow',
+  line: 'aiworkspace.blocks.shape.kind.line', text: 'aiworkspace.blocks.shape.kind.text', svg: 'aiworkspace.blocks.shape.kind.svg',
+}
+const GROUP_LABEL: Record<(typeof SHAPE_KINDS)[number]['group'], string> = {
+  basic: 'aiworkspace.blocks.shape.group.basic', flow: 'aiworkspace.blocks.shape.group.flow', arrow: 'aiworkspace.blocks.shape.group.arrow', text: 'aiworkspace.blocks.shape.group.text',
+}
 
 // ---- drawing
 
@@ -102,10 +120,12 @@ function saveText(context: RenderContext, store: WorkspaceStore, next: string) {
   if (follows && firstLine(next) && firstLine(next) !== title) keys.push({ key: 'title', value: firstLine(next), expect: { rev: context.keyRevs.title ?? 0 } })
   operations.push({ op: 'entity.set_keys', entity_id: id, keys })
   if (follows && title && !firstLine(next)) operations.push({ op: 'entity.unset_keys', entity_id: id, keys: [{ key: 'title', expect: { rev: context.keyRevs.title ?? 0 } }] })
-  void store.submit({ editId: `key:${id}:text`, label: `文字 → ${firstLine(next) || '（清除）'}`, operations })
+  const label = aiwsT('aiworkspace.blocks.edit.change', { label: aiwsT('aiworkspace.blocks.shape.text'), value: firstLine(next) || aiwsT('aiworkspace.blocks.edit.cleared') })
+  void store.submit({ editId: `key:${id}:text`, label, operations })
 }
 
 function ShapeEditor(context: RenderContext) {
+  const { t } = useAiwsText()
   const store = useStore()
   const look = readLook(context.payload.config, context.payload.title)
   const ref = useRef<HTMLDivElement>(null)
@@ -136,8 +156,8 @@ function ShapeEditor(context: RenderContext) {
   }
   return (
     <ShapeFrame context={context}>
-      <div ref={ref} className="aiws-shape-text aiws-shape-edit" contentEditable="plaintext-only" suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label="形状文字"
-        data-role="editor" data-testid={`aiws-shape-edit-${context.cell.entity_id}`} data-placeholder="输入文字"
+      <div ref={ref} className="aiws-shape-text aiws-shape-edit" contentEditable="plaintext-only" suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={t('aiworkspace.blocks.shape.textAria')}
+        data-role="editor" data-testid={`aiws-shape-edit-${context.cell.entity_id}`} data-placeholder={t('aiworkspace.blocks.shape.typeText')}
         onBlur={() => done(true)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); done(true) }
@@ -150,17 +170,18 @@ function ShapeEditor(context: RenderContext) {
 // ---- picking a kind: the grouped picker of the object toolbar, the insert catalog and the near toolbar
 
 export function ShapePicker({ value, onPick, extra }: { value?: ShapeKind; onPick: (kind: ShapeKind) => void; extra?: ReactNode }) {
+  const { t } = useAiwsText()
   return (
     <div className="aiws-shape-picker" data-testid="aiws-shape-picker">
-      {KIND_GROUPS.map(({ group, label }) => (
+      {KIND_GROUPS.map(({ group }) => (
         <div key={group} className="aiws-shape-picker-group">
-          <div className="aiws-shape-picker-title">{label}</div>
+          <div className="aiws-shape-picker-title">{t(GROUP_LABEL[group])}</div>
           <div className="aiws-shape-picker-grid">
             {SHAPE_KINDS.filter((k) => k.group === group).map((k) => {
               // parts measured in world units (a note's fold, a cylinder's rim) are scaled down to the icon
               const look = readLook({ shape: k.kind, ...(k.kind === 'text' ? { text: 'Aa', font_size: 13 } : {}), ...(k.size && !k.size.relative ? { shape_size: 6 } : {}), stroke_width: 1.5 })
               return (
-                <button key={k.kind} type="button" className="aiws-shape-picker-item" title={k.label} aria-label={k.label} aria-pressed={value === k.kind} data-testid={`aiws-shape-kind-${k.kind}`}
+                <button key={k.kind} type="button" className="aiws-shape-picker-item" title={t(KIND_LABEL[k.kind])} aria-label={t(KIND_LABEL[k.kind])} aria-pressed={value === k.kind} data-testid={`aiws-shape-kind-${k.kind}`}
                   onMouseDown={(event) => event.preventDefault()} onClick={() => onPick(k.kind)}>
                   <span className="aiws-shape-picker-art">
                     <ShapeArt look={look} w={34} h={24} />
@@ -180,24 +201,47 @@ export function ShapePicker({ value, onPick, extra }: { value?: ShapeKind; onPic
 // ---- tools (标准对象的交互改进 §5.2): kind, fill, stroke, line, text
 
 const FONT_SIZES = [10, 12, 14, 16, 20, 24, 32, 48]
-const WIDTHS = [{ value: '0', label: '无' }, { value: '1', label: '细（1）' }, { value: '2', label: '中（2）' }, { value: '4', label: '粗（4）' }, { value: '8', label: '特粗（8）' }]
-const DASHES = [{ value: 'solid', label: '实线' }, { value: 'dashed', label: '虚线' }, { value: 'dotted', label: '点线' }]
+const widths = (t: T) => [
+  { value: '0', label: t('aiworkspace.common.none') }, { value: '1', label: t('aiworkspace.blocks.shape.width.thin') }, { value: '2', label: t('aiworkspace.blocks.shape.width.medium') },
+  { value: '4', label: t('aiworkspace.blocks.shape.width.thick') }, { value: '8', label: t('aiworkspace.blocks.shape.width.extraThick') },
+]
+const dashes = (t: T) => [{ value: 'solid', label: t('aiworkspace.blocks.dash.solid') }, { value: 'dashed', label: t('aiworkspace.blocks.dash.dashed') }, { value: 'dotted', label: t('aiworkspace.blocks.dash.dotted') }]
 const OPACITIES = [{ value: '1', label: '100%' }, { value: '0.75', label: '75%' }, { value: '0.5', label: '50%' }, { value: '0.25', label: '25%' }]
-const RADII = [{ value: '0', label: '直角' }, { value: '4', label: '小（4）' }, { value: '8', label: '中（8）' }, { value: '16', label: '大（16）' }, { value: '32', label: '特大（32）' }]
-const DIRECTIONS = [{ value: 'e', label: '向右' }, { value: 's', label: '向下' }, { value: 'w', label: '向左' }, { value: 'n', label: '向上' }]
-const ALIGNS = [{ value: 'left', label: '左对齐', icon: AlignLeft }, { value: 'center', label: '居中', icon: AlignCenter }, { value: 'right', label: '右对齐', icon: AlignRight }]
-const VALIGNS = [{ value: 'top', label: '顶端', icon: AlignVerticalJustifyStart }, { value: 'middle', label: '垂直居中', icon: AlignVerticalJustifyCenter }, { value: 'bottom', label: '底端', icon: AlignVerticalJustifyEnd }]
-const LABEL_POSITIONS = [{ value: 'inside', label: '形状内' }, { value: 'top', label: '上方' }, { value: 'bottom', label: '下方' }, { value: 'left', label: '左侧' }, { value: 'right', label: '右侧' }]
-const FILL_EXTRAS = [{ value: 'none', label: '无填充' }, { value: 'auto', label: '跟随主题' }]
-const STROKE_EXTRAS = [{ value: 'none', label: '无描边' }, { value: 'auto', label: '跟随主题' }]
-const INK_EXTRAS = [{ value: 'auto', label: '自动' }]
+const radii = (t: T) => [
+  { value: '0', label: t('aiworkspace.blocks.shape.radius.square') }, { value: '4', label: t('aiworkspace.blocks.shape.radius.s') }, { value: '8', label: t('aiworkspace.blocks.shape.radius.m') },
+  { value: '16', label: t('aiworkspace.blocks.shape.radius.l') }, { value: '32', label: t('aiworkspace.blocks.shape.radius.xl') },
+]
+const directions = (t: T) => [
+  { value: 'e', label: t('aiworkspace.blocks.shape.dir.e') }, { value: 's', label: t('aiworkspace.blocks.shape.dir.s') },
+  { value: 'w', label: t('aiworkspace.blocks.shape.dir.w') }, { value: 'n', label: t('aiworkspace.blocks.shape.dir.n') },
+]
+const aligns = (t: T) => [
+  { value: 'left', label: t('aiworkspace.blocks.shape.align.left'), icon: AlignLeft }, { value: 'center', label: t('aiworkspace.blocks.shape.align.center'), icon: AlignCenter },
+  { value: 'right', label: t('aiworkspace.blocks.shape.align.right'), icon: AlignRight },
+]
+const valigns = (t: T) => [
+  { value: 'top', label: t('aiworkspace.blocks.shape.valign.top'), icon: AlignVerticalJustifyStart }, { value: 'middle', label: t('aiworkspace.blocks.shape.valign.middle'), icon: AlignVerticalJustifyCenter },
+  { value: 'bottom', label: t('aiworkspace.blocks.shape.valign.bottom'), icon: AlignVerticalJustifyEnd },
+]
+const labelPositions = (t: T) => [
+  { value: 'inside', label: t('aiworkspace.blocks.shape.labelPos.inside') }, { value: 'top', label: t('aiworkspace.blocks.shape.labelPos.top') }, { value: 'bottom', label: t('aiworkspace.blocks.shape.labelPos.bottom') },
+  { value: 'left', label: t('aiworkspace.blocks.shape.labelPos.left') }, { value: 'right', label: t('aiworkspace.blocks.shape.labelPos.right') },
+]
+const fillExtras = (t: T) => [{ value: 'none', label: t('aiworkspace.blocks.shape.noFill') }, { value: 'auto', label: t('aiworkspace.blocks.followTheme') }]
+const strokeExtras = (t: T) => [{ value: 'none', label: t('aiworkspace.blocks.shape.noStroke') }, { value: 'auto', label: t('aiworkspace.blocks.followTheme') }]
+const inkExtras = (t: T) => [{ value: 'auto', label: t('aiworkspace.blocks.shape.auto') }]
+/** "<what> → <value>": the label of a look change in the edit history. */
+const changed = (t: T, label: string, value: string) => t('aiworkspace.blocks.edit.change', { label, value })
 
-const canChange = (context: RenderContext): string | false => (context.capabilities.includes('update') && context.mode === 'edit' && context.readOnlyReason === null ? false : '没有修改此 Block 的权限')
+const canChange = (context: RenderContext): string | false => (context.capabilities.includes('update') && context.mode === 'edit' && context.readOnlyReason === null ? false : aiwsT('aiworkspace.blocks.noPermission'))
 const roundCorners = (kind: ShapeKind) => !['ellipse', 'cloud', 'cylinder', 'line', 'svg', 'document'].includes(kind)
 const turnable = (kind: ShapeKind) => !['rect', 'ellipse', 'cloud', 'cross', 'text', 'svg'].includes(kind)
 
 function LinePanel({ context, store, look, close }: { context: RenderContext; store: WorkspaceStore; look: ShapeLook; close: () => void }) {
+  const { t } = useAiwsText()
   const set = (patch: Record<string, Json | null>, label: string) => setCellConfig(context, store, patch, label)
+  const dashList = dashes(t)
+  const directionList = directions(t)
   const row = (label: string, options: { value: string; label: string }[], value: string, pick: (v: string) => void, id: string) => (
     <div className="aiws-shape-panel-row">
       <span>{label}</span>
@@ -208,19 +252,19 @@ function LinePanel({ context, store, look, close }: { context: RenderContext; st
   )
   return (
     <div className="aiws-shape-panel" data-testid="aiws-shape-line-panel">
-      {row('线宽', WIDTHS, String(look.stroke === 'none' ? 0 : look.strokeWidth), (v) => set(v === '0' ? { stroke: 'none' } : { stroke_width: Number(v), ...(look.stroke === 'none' ? { stroke: null } : {}) }, `线宽 → ${v}`), 'width')}
-      {row('线型', DASHES, look.dash, (v) => set({ dash: v === 'solid' ? null : v }, `线型 → ${DASHES.find((d) => d.value === v)?.label}`), 'dash')}
-      {row('透明度', OPACITIES, String(look.opacity), (v) => set({ opacity: v === '1' ? null : Number(v) }, `透明度 → ${Math.round(Number(v) * 100)}%`), 'opacity')}
-      {roundCorners(look.kind) && row('圆角', RADII, String(look.radius), (v) => set({ radius: v === '0' ? null : Number(v) }, `圆角 → ${v}`), 'radius')}
-      {turnable(look.kind) && row('方向', DIRECTIONS, look.direction, (v) => set({ direction: v === 'e' ? null : v }, `方向 → ${DIRECTIONS.find((d) => d.value === v)?.label}`), 'direction')}
+      {row(t('aiworkspace.blocks.shape.lineWidth'), widths(t), String(look.stroke === 'none' ? 0 : look.strokeWidth), (v) => set(v === '0' ? { stroke: 'none' } : { stroke_width: Number(v), ...(look.stroke === 'none' ? { stroke: null } : {}) }, changed(t, t('aiworkspace.blocks.shape.lineWidth'), v)), 'width')}
+      {row(t('aiworkspace.blocks.lineStyle'), dashList, look.dash, (v) => set({ dash: v === 'solid' ? null : v }, changed(t, t('aiworkspace.blocks.lineStyle'), dashList.find((d) => d.value === v)?.label ?? v)), 'dash')}
+      {row(t('aiworkspace.blocks.shape.opacity'), OPACITIES, String(look.opacity), (v) => set({ opacity: v === '1' ? null : Number(v) }, changed(t, t('aiworkspace.blocks.shape.opacity'), `${Math.round(Number(v) * 100)}%`)), 'opacity')}
+      {roundCorners(look.kind) && row(t('aiworkspace.blocks.shape.cornerRadius'), radii(t), String(look.radius), (v) => set({ radius: v === '0' ? null : Number(v) }, changed(t, t('aiworkspace.blocks.shape.cornerRadius'), v)), 'radius')}
+      {turnable(look.kind) && row(t('aiworkspace.blocks.direction'), directionList, look.direction, (v) => set({ direction: v === 'e' ? null : v }, changed(t, t('aiworkspace.blocks.direction'), directionList.find((d) => d.value === v)?.label ?? v)), 'direction')}
       <div className="aiws-shape-panel-row">
-        <span>翻转</span>
-        <div className="aiws-segmented" role="group" aria-label="翻转">
-          <button type="button" aria-pressed={look.flipH} data-testid="aiws-shape-flip-h" onMouseDown={(e) => e.preventDefault()} onClick={() => set({ flip_h: look.flipH ? null : true }, '水平翻转')}>水平</button>
-          <button type="button" aria-pressed={look.flipV} data-testid="aiws-shape-flip-v" onMouseDown={(e) => e.preventDefault()} onClick={() => set({ flip_v: look.flipV ? null : true }, '垂直翻转')}>垂直</button>
+        <span>{t('aiworkspace.blocks.shape.flip')}</span>
+        <div className="aiws-segmented" role="group" aria-label={t('aiworkspace.blocks.shape.flip')}>
+          <button type="button" aria-pressed={look.flipH} data-testid="aiws-shape-flip-h" onMouseDown={(e) => e.preventDefault()} onClick={() => set({ flip_h: look.flipH ? null : true }, t('aiworkspace.blocks.shape.flipH'))}>{t('aiworkspace.blocks.shape.horizontal')}</button>
+          <button type="button" aria-pressed={look.flipV} data-testid="aiws-shape-flip-v" onMouseDown={(e) => e.preventDefault()} onClick={() => set({ flip_v: look.flipV ? null : true }, t('aiworkspace.blocks.shape.flipV'))}>{t('aiworkspace.blocks.shape.vertical')}</button>
         </div>
       </div>
-      <div className="aiws-dialog-actions"><button type="button" onClick={close}>完成</button></div>
+      <div className="aiws-dialog-actions"><button type="button" onClick={close}>{t('aiworkspace.blocks.shape.done')}</button></div>
     </div>
   )
 }
@@ -229,28 +273,33 @@ function shapeToolbar(context: RenderContext, store: WorkspaceStore): ToolbarIte
   const look = readLook(context.payload.config, context.payload.title)
   const reason = canChange(context)
   const set = (patch: Record<string, Json | null>, label: string) => setCellConfig(context, store, patch, label)
-  const kindLabel = SHAPE_KINDS.find((k) => k.kind === look.kind)?.label ?? 'SVG 形状'
+  const t = aiwsT
+  const alignItems = aligns(t)
+  const valignItems = valigns(t)
   return [
-    { kind: 'panel', id: 'shape-kind', icon: Shapes, label: `形状：${kindLabel}`, disabled: reason,
-      render: (close) => <ShapePicker value={look.kind} onPick={(kind) => { close(); if (kind !== look.kind) set({ shape: kind, ...(kind === 'svg' ? {} : { svg: null }) }, `形状 → ${SHAPE_KINDS.find((k) => k.kind === kind)?.label ?? kind}`) }} /> },
-    ...(look.kind === 'line' ? [] : [{ kind: 'color' as const, id: 'shape-fill', label: '填充', palette: 'fill' as const, extras: FILL_EXTRAS, value: look.fill, disabled: reason, onPick: (value: string) => set({ fill: value || null }, '形状填充') }]),
-    { kind: 'color', id: 'shape-stroke', label: look.kind === 'line' ? '线条颜色' : '描边', palette: 'ink', extras: STROKE_EXTRAS, value: look.stroke, disabled: reason, onPick: (value) => set({ stroke: value || null }, '形状描边') },
-    { kind: 'panel', id: 'shape-line', icon: PenLine, label: '线宽、线型、透明度、圆角、方向', disabled: reason, render: (close) => <LinePanel context={context} store={store} look={look} close={close} /> },
+    { kind: 'panel', id: 'shape-kind', icon: Shapes, label: t('aiworkspace.blocks.shape.kindLabel', { kind: t(KIND_LABEL[look.kind]) }), disabled: reason,
+      render: (close) => <ShapePicker value={look.kind} onPick={(kind) => { close(); if (kind !== look.kind) set({ shape: kind, ...(kind === 'svg' ? {} : { svg: null }) }, changed(t, t('aiworkspace.blocks.shape.shape'), SHAPE_KINDS.some((k) => k.kind === kind) ? t(KIND_LABEL[kind]) : kind)) }} /> },
+    ...(look.kind === 'line' ? [] : [{ kind: 'color' as const, id: 'shape-fill', label: t('aiworkspace.blocks.shape.fill'), palette: 'fill' as const, extras: fillExtras(t), value: look.fill, disabled: reason, onPick: (value: string) => set({ fill: value || null }, t('aiworkspace.blocks.shape.fillEdit')) }]),
+    { kind: 'color', id: 'shape-stroke', label: t(look.kind === 'line' ? 'aiworkspace.blocks.shape.lineColor' : 'aiworkspace.blocks.shape.stroke'), palette: 'ink', extras: strokeExtras(t), value: look.stroke, disabled: reason, onPick: (value) => set({ stroke: value || null }, t('aiworkspace.blocks.shape.strokeEdit')) },
+    { kind: 'panel', id: 'shape-line', icon: PenLine, label: t('aiworkspace.blocks.shape.lineTools'), disabled: reason, render: (close) => <LinePanel context={context} store={store} look={look} close={close} /> },
     { kind: 'separator', id: 'shape-sep-text' },
-    { kind: 'menu', id: 'shape-font-size', icon: ALargeSmall, label: '字号', value: String(look.fontSize), disabled: reason, items: FONT_SIZES.map((s) => ({ value: String(s), label: `${s}` })), onPick: (value) => set({ font_size: Number(value) }, `字号 → ${value}`) },
-    { kind: 'color', id: 'shape-font-color', label: '文字颜色', palette: 'ink', extras: INK_EXTRAS, value: look.fontColor || 'auto', disabled: reason, onPick: (value) => set({ font_color: value && value !== 'auto' ? value : null }, '文字颜色') },
-    { kind: 'button', id: 'shape-bold', icon: Bold, label: '粗体', active: look.bold, disabled: reason, run: () => set({ bold: look.bold ? null : true }, look.bold ? '取消粗体' : '粗体') },
-    { kind: 'button', id: 'shape-italic', icon: Italic, label: '斜体', active: look.italic, disabled: reason, run: () => set({ italic: look.italic ? null : true }, look.italic ? '取消斜体' : '斜体') },
-    { kind: 'button', id: 'shape-underline', icon: Underline, label: '下划线', active: look.underline, disabled: reason, run: () => set({ underline: look.underline ? null : true }, look.underline ? '取消下划线' : '下划线') },
-    { kind: 'menu', id: 'shape-align', icon: ALIGNS.find((a) => a.value === look.align)?.icon ?? AlignCenter, label: '水平对齐', value: look.align, disabled: reason, items: ALIGNS, onPick: (value) => set({ align: value }, `对齐 → ${ALIGNS.find((a) => a.value === value)?.label}`) },
-    { kind: 'menu', id: 'shape-valign', icon: VALIGNS.find((a) => a.value === look.valign)?.icon ?? AlignVerticalJustifyCenter, label: '垂直对齐', value: look.valign, disabled: reason, items: VALIGNS, onPick: (value) => set({ valign: value === 'middle' ? null : value }, `垂直对齐 → ${VALIGNS.find((a) => a.value === value)?.label}`) },
-    ...(context.editorActive ? [] : [{ kind: 'button' as const, id: 'shape-text', icon: Baseline, label: '编辑文字', key: 'Enter', disabled: reason, run: () => context.activateEditor() }]),
+    { kind: 'menu', id: 'shape-font-size', icon: ALargeSmall, label: t('aiworkspace.blocks.fontSize'), value: String(look.fontSize), disabled: reason, items: FONT_SIZES.map((s) => ({ value: String(s), label: `${s}` })), onPick: (value) => set({ font_size: Number(value) }, changed(t, t('aiworkspace.blocks.fontSize'), value)) },
+    { kind: 'color', id: 'shape-font-color', label: t('aiworkspace.blocks.textColor'), palette: 'ink', extras: inkExtras(t), value: look.fontColor || 'auto', disabled: reason, onPick: (value) => set({ font_color: value && value !== 'auto' ? value : null }, t('aiworkspace.blocks.textColor')) },
+    { kind: 'button', id: 'shape-bold', icon: Bold, label: t('aiworkspace.blocks.shape.bold'), active: look.bold, disabled: reason, run: () => set({ bold: look.bold ? null : true }, t(look.bold ? 'aiworkspace.blocks.shape.unbold' : 'aiworkspace.blocks.shape.bold')) },
+    { kind: 'button', id: 'shape-italic', icon: Italic, label: t('aiworkspace.blocks.shape.italic'), active: look.italic, disabled: reason, run: () => set({ italic: look.italic ? null : true }, t(look.italic ? 'aiworkspace.blocks.shape.unitalic' : 'aiworkspace.blocks.shape.italic')) },
+    { kind: 'button', id: 'shape-underline', icon: Underline, label: t('aiworkspace.blocks.shape.underline'), active: look.underline, disabled: reason, run: () => set({ underline: look.underline ? null : true }, t(look.underline ? 'aiworkspace.blocks.shape.ununderline' : 'aiworkspace.blocks.shape.underline')) },
+    { kind: 'menu', id: 'shape-align', icon: alignItems.find((a) => a.value === look.align)?.icon ?? AlignCenter, label: t('aiworkspace.blocks.shape.hAlign'), value: look.align, disabled: reason, items: alignItems,
+      onPick: (value) => set({ align: value }, changed(t, t('aiworkspace.blocks.shape.alignEdit'), alignItems.find((a) => a.value === value)?.label ?? value)) },
+    { kind: 'menu', id: 'shape-valign', icon: valignItems.find((a) => a.value === look.valign)?.icon ?? AlignVerticalJustifyCenter, label: t('aiworkspace.blocks.shape.vAlign'), value: look.valign, disabled: reason, items: valignItems,
+      onPick: (value) => set({ valign: value === 'middle' ? null : value }, changed(t, t('aiworkspace.blocks.shape.vAlign'), valignItems.find((a) => a.value === value)?.label ?? value)) },
+    ...(context.editorActive ? [] : [{ kind: 'button' as const, id: 'shape-text', icon: Baseline, label: t('aiworkspace.blocks.shape.editText'), key: 'Enter', disabled: reason, run: () => context.activateEditor() }]),
   ]
 }
 
 // ---- inspector (属性面板): every key
 
 function ShapeInspector(context: RenderContext) {
+  const { t } = useAiwsText()
   const store = useStore()
   const look = readLook(context.payload.config, context.payload.title)
   const config = context.payload.config ?? {}
@@ -258,7 +307,7 @@ function ShapeInspector(context: RenderContext) {
   const set = (patch: Record<string, Json | null>, label: string) => { if (!readOnly) setCellConfig(context, store, patch, label) }
   const select = (key: string, label: string, options: { value: string; label: string }[], value: string, fallback: string) => (
     <label className="aiws-inline-form">{label}
-      <select value={value} disabled={readOnly} data-testid={`aiws-shape-field-${key}`} onChange={(e) => set({ [key]: e.target.value === fallback ? null : e.target.value }, `${label} → ${e.target.value}`)}>
+      <select value={value} disabled={readOnly} data-testid={`aiws-shape-field-${key}`} onChange={(e) => set({ [key]: e.target.value === fallback ? null : e.target.value }, changed(t, label, e.target.value))}>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </label>
@@ -266,14 +315,18 @@ function ShapeInspector(context: RenderContext) {
   const number = (key: string, label: string, value: number | null, fallback?: number) => (
     <label className="aiws-inline-form">{label}
       <input type="number" step="any" defaultValue={value ?? ''} key={`${key}:${value}`} disabled={readOnly} data-testid={`aiws-shape-field-${key}`}
-        onBlur={(e) => { const v = e.target.value.trim(); const n = Number(v); if (v === '' || n === fallback) set({ [key]: null }, `${label}（默认）`); else if (Number.isFinite(n) && n !== value) set({ [key]: n }, `${label} → ${n}`) }} />
+        onBlur={(e) => { const v = e.target.value.trim(); const n = Number(v); if (v === '' || n === fallback) set({ [key]: null }, t('aiworkspace.blocks.edit.default', { label })); else if (Number.isFinite(n) && n !== value) set({ [key]: n }, changed(t, label, String(n))) }} />
     </label>
   )
   const color = (key: string, label: string, value: string, extras: string[]) => (
     <label className="aiws-inline-form">{label}
       <span className="aiws-color-field">
         <input type="color" value={value.startsWith('#') ? value : '#ffffff'} disabled={readOnly} data-testid={`aiws-shape-field-${key}`} onChange={(e) => set({ [key]: e.target.value }, label)} />
-        {extras.map((x) => <button key={x} type="button" aria-pressed={value === x} disabled={readOnly} onClick={() => set({ [key]: x }, `${label} → ${x === 'none' ? '无' : '跟随主题'}`)}>{x === 'none' ? '无' : '主题'}</button>)}
+        {extras.map((x) => (
+          <button key={x} type="button" aria-pressed={value === x} disabled={readOnly} onClick={() => set({ [key]: x }, changed(t, label, t(x === 'none' ? 'aiworkspace.common.none' : 'aiworkspace.blocks.followTheme')))}>
+            {t(x === 'none' ? 'aiworkspace.common.none' : 'aiworkspace.blocks.shape.theme')}
+          </button>
+        ))}
       </span>
     </label>
   )
@@ -284,37 +337,38 @@ function ShapeInspector(context: RenderContext) {
   const anchors = cleanAnchors(config.anchors) ?? []
   return (
     <div className="aiws-shape-inspector" data-testid="aiws-shape-inspector">
-      {select('shape', '形状', [...SHAPE_KINDS.map((k) => ({ value: k.kind, label: k.label })), ...(look.kind === 'svg' ? [{ value: 'svg', label: 'SVG 形状' }] : [])], look.kind, '')}
-      {color('fill', '填充', look.fill, ['none', 'auto'])}
-      {color('stroke', '描边', look.stroke, ['none', 'auto'])}
-      {number('stroke_width', '线宽', look.strokeWidth, 2)}
-      {select('dash', '线型', DASHES, look.dash, 'solid')}
-      {number('opacity', '透明度（0–1）', look.opacity, 1)}
-      {roundCorners(look.kind) && number('radius', '圆角', look.radius, 0)}
-      {turnable(look.kind) && select('direction', '方向', DIRECTIONS, look.direction, 'e')}
-      {flag('flip_h', '水平翻转', look.flipH)}
-      {flag('flip_v', '垂直翻转', look.flipV)}
-      {number('shape_size', '形状参数（draw.io size）', look.size)}
-      <label className="aiws-field">文字
+      {select('shape', t('aiworkspace.blocks.shape.shape'), [...SHAPE_KINDS.map((k) => ({ value: k.kind, label: t(KIND_LABEL[k.kind]) })), ...(look.kind === 'svg' ? [{ value: 'svg', label: t(KIND_LABEL.svg) }] : [])], look.kind, '')}
+      {color('fill', t('aiworkspace.blocks.shape.fill'), look.fill, ['none', 'auto'])}
+      {color('stroke', t('aiworkspace.blocks.shape.stroke'), look.stroke, ['none', 'auto'])}
+      {number('stroke_width', t('aiworkspace.blocks.shape.lineWidth'), look.strokeWidth, 2)}
+      {select('dash', t('aiworkspace.blocks.lineStyle'), dashes(t), look.dash, 'solid')}
+      {number('opacity', t('aiworkspace.blocks.shape.opacityField'), look.opacity, 1)}
+      {roundCorners(look.kind) && number('radius', t('aiworkspace.blocks.shape.cornerRadius'), look.radius, 0)}
+      {turnable(look.kind) && select('direction', t('aiworkspace.blocks.direction'), directions(t), look.direction, 'e')}
+      {flag('flip_h', t('aiworkspace.blocks.shape.flipH'), look.flipH)}
+      {flag('flip_v', t('aiworkspace.blocks.shape.flipV'), look.flipV)}
+      {number('shape_size', t('aiworkspace.blocks.shape.sizeParam'), look.size)}
+      <label className="aiws-field">{t('aiworkspace.blocks.shape.text')}
         <textarea rows={3} defaultValue={look.text} key={`text:${look.text}`} disabled={readOnly} data-testid="aiws-shape-field-text" onBlur={(e) => { if (!readOnly) saveText(context, store, e.target.value) }} />
       </label>
-      {number('font_size', '字号', look.fontSize, 14)}
-      {color('font_color', '文字颜色', look.fontColor || 'auto', ['auto'])}
-      {flag('bold', '粗体', look.bold)}
-      {flag('italic', '斜体', look.italic)}
-      {flag('underline', '下划线', look.underline)}
-      {select('align', '水平对齐', ALIGNS, look.align, '')}
-      {select('valign', '垂直对齐', VALIGNS, look.valign, 'middle')}
-      {select('label_position', '文字位置', LABEL_POSITIONS, look.labelPosition, 'inside')}
-      {flag('wrap', '自动换行', look.wrap, true)}
-      {color('label_fill', '文字底色', look.labelFill ?? 'none', ['none', 'auto'])}
-      <AnchorsForm anchors={anchors} readOnly={readOnly} onChange={(next) => set({ anchors: next.length ? (next as unknown as Json) : null }, '连接点')} />
+      {number('font_size', t('aiworkspace.blocks.fontSize'), look.fontSize, 14)}
+      {color('font_color', t('aiworkspace.blocks.textColor'), look.fontColor || 'auto', ['auto'])}
+      {flag('bold', t('aiworkspace.blocks.shape.bold'), look.bold)}
+      {flag('italic', t('aiworkspace.blocks.shape.italic'), look.italic)}
+      {flag('underline', t('aiworkspace.blocks.shape.underline'), look.underline)}
+      {select('align', t('aiworkspace.blocks.shape.hAlign'), aligns(t), look.align, '')}
+      {select('valign', t('aiworkspace.blocks.shape.vAlign'), valigns(t), look.valign, 'middle')}
+      {select('label_position', t('aiworkspace.blocks.shape.labelPosition'), labelPositions(t), look.labelPosition, 'inside')}
+      {flag('wrap', t('aiworkspace.blocks.shape.wrap'), look.wrap, true)}
+      {color('label_fill', t('aiworkspace.blocks.shape.labelFill'), look.labelFill ?? 'none', ['none', 'auto'])}
+      <AnchorsForm anchors={anchors} readOnly={readOnly} onChange={(next) => set({ anchors: next.length ? (next as unknown as Json) : null }, t('aiworkspace.blocks.shape.anchors'))} />
     </div>
   )
 }
 
 /** The Block's own connection points (`config.anchors`): id and position in the box (0–1). */
 function AnchorsForm({ anchors, readOnly, onChange }: { anchors: AnchorDef[]; readOnly: boolean; onChange: (next: AnchorDef[]) => void }) {
+  const { t } = useAiwsText()
   const [draft, setDraft] = useState({ id: '', x: '0.5', y: '0' })
   const add = () => {
     const x = Number(draft.x), y = Number(draft.y)
@@ -325,19 +379,19 @@ function AnchorsForm({ anchors, readOnly, onChange }: { anchors: AnchorDef[]; re
   }
   return (
     <details className="aiws-details" data-testid="aiws-shape-anchors">
-      <summary>连接点（{anchors.length}）</summary>
-      <div className="aiws-muted">形状自带 16 个方位锚点；这里加的连接点以 0–1 表示在形状框内的位置，连接线可以连到它们上。</div>
+      <summary>{t('aiworkspace.blocks.shape.anchorsCount', { count: anchors.length })}</summary>
+      <div className="aiws-muted">{t('aiworkspace.blocks.shape.anchorsHelp')}</div>
       {anchors.map((a) => (
         <div key={a.id} className="aiws-inline-form"><code>{a.id}</code> ({a.x}, {a.y}){a.dx || a.dy ? ` + (${a.dx ?? 0}, ${a.dy ?? 0})` : ''}
-          <button type="button" className="aiws-link" disabled={readOnly} onClick={() => onChange(anchors.filter((b) => b.id !== a.id))}>删除</button>
+          <button type="button" className="aiws-link" disabled={readOnly} onClick={() => onChange(anchors.filter((b) => b.id !== a.id))}>{t('aiworkspace.common.delete')}</button>
         </div>
       ))}
       {!readOnly && (
         <div className="aiws-inline-form">
-          <input aria-label="连接点 id" placeholder="id" value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.target.value })} data-testid="aiws-anchor-id" />
+          <input aria-label={t('aiworkspace.blocks.shape.anchorId')} placeholder="id" value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.target.value })} data-testid="aiws-anchor-id" />
           <input aria-label="x" type="number" step="0.05" value={draft.x} onChange={(e) => setDraft({ ...draft, x: e.target.value })} />
           <input aria-label="y" type="number" step="0.05" value={draft.y} onChange={(e) => setDraft({ ...draft, y: e.target.value })} />
-          <button type="button" onClick={add} data-testid="aiws-anchor-add">添加</button>
+          <button type="button" onClick={add} data-testid="aiws-anchor-add">{t('aiworkspace.blocks.shape.add')}</button>
         </div>
       )}
     </details>
@@ -349,19 +403,20 @@ function AnchorsForm({ anchors, readOnly, onChange }: { anchors: AnchorDef[]; re
 const outlineOf = (payload: CellPayload) => shapeOutline(readLook(payload.config))
 
 export const shapeDefinition: BlockDefinition = {
-  type: 'shape', version: 1, title: '形状', accepts: [], allowNoSource: true, pureUi: true,
+  type: 'shape', version: 1, get title() { return aiwsT('aiworkspace.blocks.shape.shape') }, accepts: [], allowNoSource: true, pureUi: true,
   defaultSize: { w: 160, h: 120 }, cost: { editor: false, html: false },
   Static: ShapeStatic, Editor: ShapeEditor, Inspector: ShapeInspector, chrome: 'none',
   shape: outlineOf,
   anchors: (payload) => shapeAnchors(payload.config, outlineOf(payload)),
   catalog: {
-    group: 'layout', description: '矩形、椭圆、菱形、流程图符号、箭头等基本图形，可改填充、描边、线型和文字；也可以是导入或粘贴的 SVG 形状。', needs: 'none', standard: true,
+    group: 'layout', get description() { return aiwsT('aiworkspace.blocks.shape.description') }, needs: 'none', standard: true,
     variants: [
-      { id: 'text', title: '文字', group: 'text', description: '画布上的一段文字（无边框的形状），插入后直接输入。', config: { shape: 'text', text: '', font_size: 16 }, size: { w: 240, h: 48 }, editAfterInsert: true, standard: true },
-      { id: 'svg', title: 'SVG 形状', group: 'layout', description: '粘贴 SVG 代码或选择 .svg 文件，变成可缩放、可改填充和描边颜色、可连线的形状。也可以直接把 SVG 粘贴或拖到画布上。', config: { shape: 'svg' } },
+      { id: 'text', get title() { return aiwsT('aiworkspace.blocks.shape.kind.text') }, group: 'text', get description() { return aiwsT('aiworkspace.blocks.shape.textDescription') },
+        config: { shape: 'text', text: '', font_size: 16 }, size: { w: 240, h: 48 }, editAfterInsert: true, standard: true },
+      { id: 'svg', get title() { return aiwsT('aiworkspace.blocks.shape.kind.svg') }, group: 'layout', get description() { return aiwsT('aiworkspace.blocks.shape.svgDescription') }, config: { shape: 'svg' } },
     ],
   },
-  actions: [{ id: 'label', label: '编辑文字', modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
+  actions: [{ id: 'label', get label() { return aiwsT('aiworkspace.blocks.shape.editText') }, modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
   toolbar: shapeToolbar,
   create: (args) => {
     const preset = args.config ?? {}

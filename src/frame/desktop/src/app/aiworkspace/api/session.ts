@@ -8,6 +8,7 @@
 import { AiwsClient, ServiceFailure, unwrap } from './client'
 import { randomId } from './ids'
 import { TransportError } from './transport'
+import { aiwsT, localizedLabels } from '../i18n'
 import type { LocalExport, PendingMeta, PendingRow, PendingState, RichTextDraftRow } from '../offline/protocol'
 import {
   PROTOCOL_VERSION,
@@ -161,13 +162,13 @@ export interface WorkspaceSession {
 }
 
 const STOP_CODES = new Set(['EPOCH_MISMATCH', 'BASE_TOO_OLD', 'VERSION_MISMATCH'])
-const STOP_TEXT: Record<string, string> = {
-  VERSION_MISMATCH: '后台已升级到新版本的 AI Workspace，本页面是旧版本：已停止同步，未提交的修改仍保留在本窗口。请刷新页面。',
-  EPOCH_MISMATCH: '此工作区的历史已被恢复操作替换。本窗口基于旧历史的版本号与未提交修改不再适用，已停止同步；请重新打开工作区。',
-  BASE_TOO_OLD: '变化流已不覆盖本窗口的基准，已停止同步；请重新打开工作区。',
-  PERMISSION_DENIED: '你对此工作区的访问权限已被撤回，已停止同步。',
-  NOT_FOUND: '此工作区已不存在或你已无权访问，已停止同步。',
-}
+const STOP_TEXT: Readonly<Record<string, string>> = localizedLabels({
+  VERSION_MISMATCH: 'aiworkspace.core.session.stop.versionMismatch',
+  EPOCH_MISMATCH: 'aiworkspace.core.session.stop.epochMismatch',
+  BASE_TOO_OLD: 'aiworkspace.core.session.stop.baseTooOld',
+  PERMISSION_DENIED: 'aiworkspace.core.session.stop.permissionDenied',
+  NOT_FOUND: 'aiworkspace.core.session.stop.notFound',
+})
 
 export const SESSION_STOP_CODES: ReadonlySet<string> = STOP_CODES
 export const SESSION_STOP_TEXT: Readonly<Record<string, string>> = STOP_TEXT
@@ -227,7 +228,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     this.lock = info.show_lock ?? null
   }
 
-  static async open(client: AiwsClient, workspaceId: string, mode: SessionMode = { kind: 'direct', reason: 'not_prepared', detail: '尚未为此工作区准备离线' }): Promise<OnlineWorkspaceSession> {
+  static async open(client: AiwsClient, workspaceId: string, mode: SessionMode = { kind: 'direct', reason: 'not_prepared', detail: aiwsT('aiworkspace.core.session.notPrepared') }): Promise<OnlineWorkspaceSession> {
     const info = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }))
     if (info.principal) client.transport.learnPrincipal(info.principal)
     const session = new OnlineWorkspaceSession(client, info, mode, null)
@@ -483,7 +484,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     if (refused) return Promise.resolve(refused)
     if (this.readOnlyNow()) {
       // design §6.1: a window without the replica does not edit while the backend is unreachable
-      const detail = '后台不可达，且此窗口未启用离线：当前只读，这次修改没有保存到任何地方'
+      const detail = aiwsT('aiworkspace.core.session.readOnlyUnsaved')
       return Promise.resolve({ status: 'rejected', code: 'BACKEND_UNREACHABLE', retryable: true, detail, errors: [{ code: 'BACKEND_UNREACHABLE', detail }], idempotency_key: key })
     }
     const request = this.request(operations, key, options)
@@ -503,7 +504,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
   retryUnknown(idempotencyKey: string): Promise<CommitOutcome> {
     const pending = this.unknown.get(idempotencyKey)
-    if (!pending) return Promise.resolve({ status: 'unknown', idempotency_key: idempotencyKey, detail: '没有可重发的请求' })
+    if (!pending) return Promise.resolve({ status: 'unknown', idempotency_key: idempotencyKey, detail: aiwsT('aiworkspace.core.session.nothingToResend') })
     const refused = this.refused(idempotencyKey)
     if (refused) return Promise.resolve(refused)
     return this.deliver(idempotencyKey, () => (pending.kind === 'commit' ? this.client.commit(pending.request) : this.client.undo(this.ws, pending.params)), pending)
@@ -548,7 +549,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       }
     }
     this.unknown.set(key, keep)
-    return { status: 'unknown', idempotency_key: key, detail: lastError || '后台不可达' }
+    return { status: 'unknown', idempotency_key: key, detail: lastError || aiwsT('aiworkspace.core.session.unreachable') }
   }
 
   async prepare(operations: Operation[]) {
@@ -619,6 +620,6 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
 export function describeError(error: unknown): string {
   if (error instanceof ServiceFailure) return error.message
-  if (error instanceof TransportError) return `无法连接后台${browserOffline() ? '（浏览器处于离线状态）' : ''}：${error.message}`
+  if (error instanceof TransportError) return aiwsT(browserOffline() ? 'aiworkspace.core.session.cannotConnectOffline' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
   return error instanceof Error ? error.message : String(error)
 }

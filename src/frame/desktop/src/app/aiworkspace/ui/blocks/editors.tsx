@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Lock, LockKeyhole, LockOpen } from 'lucide-react'
 import { ServiceFailure } from '../../api/client'
 import { describeError, type ReadOk } from '../../api/session'
+import { useAiwsText } from '../../useAiwsText'
 import type { AnnotationContent, AssetContent, EntityEnvelope, Json, RecordContent, RecordPropDef, Reference } from '../../api/types'
 import type { RichTextCollab } from '../../richtext/collab'
 import { RichTextEditor } from '../../richtext/RichTextEditor'
@@ -26,6 +27,7 @@ import type { ToolbarItem } from './registry'
 
 /** Lock bar + focus scope: the lock is released a moment after focus leaves the cell, and on close. */
 export function LockScope({ entity, onAcquired, children }: { entity: EntityEnvelope | undefined; onAcquired?: () => void; children: ReactNode }) {
+  const { t, time } = useAiwsText()
   const store = useStore()
   useLocksVersion()
   const releaseTimer = useRef<number | null>(null)
@@ -48,33 +50,36 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
     } catch (error) {
       if (error instanceof ServiceFailure && error.code === 'LOCK_HELD') {
         const lock = ((error.data?.locks ?? []) as { holder?: string; expires_at?: string }[])[0]
-        store.notify('info', `写锁由 ${lock?.holder ?? '他人'} 持有${lock?.expires_at ? `（租约至 ${new Date(lock.expires_at).toLocaleTimeString()}）` : ''}，当前只读。`)
+        const by = lock?.holder ?? t('aiworkspace.common.others')
+        store.notify('info', lock?.expires_at ? t('aiworkspace.blocks.lock.heldByUntil', { holder: by, time: time(lock.expires_at) }) : t('aiworkspace.blocks.lock.heldBy', { holder: by }))
         store.versions.bump(['outline'])
       } else {
-        store.notify('error', `无法取得写锁：${describeError(error)}`)
+        store.notify('error', t('aiworkspace.blocks.lock.acquireFailed', { error: describeError(error) }))
       }
     }
   }
   const release = () => { if (entityId) void store.locks.release(entityId).then(() => store.versions.bump(['outline'])) }
   // on a canvas the lock is one control of the near toolbar: take it, or see who has it and give it back
   const lockItems: ToolbarItem[] | null = !entity || !required ? null : held
-    ? [{ kind: 'panel', id: 'lock-state', icon: LockKeyhole, label: '你持有写锁', active: true, render: (close) => (
+    ? [{ kind: 'panel', id: 'lock-state', icon: LockKeyhole, label: t('aiworkspace.blocks.lock.youHold'), active: true, render: (close) => (
         <div className="aiws-near-panel" data-testid={`aiws-lock-${entity.entity_id}`} data-held="true">
-          <span>你持有写锁，正在编辑（每 20 秒续约）。</span>
-          <button type="button" data-testid="aiws-lock-release" onClick={() => { close(); release() }}>结束编辑</button>
+          <span>{t('aiworkspace.blocks.lock.youHoldDetail')}</span>
+          <button type="button" data-testid="aiws-lock-release" onClick={() => { close(); release() }}>{t('aiworkspace.blocks.lock.finish')}</button>
         </div>
       ) }]
     : holder
-      ? [{ kind: 'panel', id: 'lock-state', icon: Lock, label: `由 ${holder.principal} 编辑中`, render: (close) => (
+      ? [{ kind: 'panel', id: 'lock-state', icon: Lock, label: t('aiworkspace.blocks.lock.editingBy', { principal: holder.principal }), render: (close) => (
           <div className="aiws-near-panel" data-testid={`aiws-lock-${entity.entity_id}`} data-held="false">
-            <span data-testid="aiws-lock-holder">由 {holder.principal} 编辑中{holder.expires_at ? `（租约至 ${new Date(holder.expires_at).toLocaleTimeString()}）` : ''}，当前只读。</span>
-            {canWrite && <button type="button" onClick={() => { close(); void acquire() }}>再试一次</button>}
+            <span data-testid="aiws-lock-holder">{holder.expires_at
+              ? t('aiworkspace.blocks.lock.editingByUntilDetail', { principal: holder.principal, time: time(holder.expires_at) })
+              : t('aiworkspace.blocks.lock.editingByDetail', { principal: holder.principal })}</span>
+            {canWrite && <button type="button" onClick={() => { close(); void acquire() }}>{t('aiworkspace.blocks.lock.tryAgain')}</button>}
           </div>
         ) }]
-      : canWrite ? [{ kind: 'button', id: 'lock-acquire', icon: LockOpen, label: '此对象启用了写锁：开始编辑（同一时间只有一人可以修改）', run: () => { void acquire() } }] : null
+      : canWrite ? [{ kind: 'button', id: 'lock-acquire', icon: LockOpen, label: t('aiworkspace.blocks.lock.acquire'), run: () => { void acquire() } }] : null
   const inNearToolbar = useEditorToolbar('lock', lockItems)
   if (!entity || !required) return <>{children}</>
-  const lostAlert = lost && !held ? <span className="aiws-error" role="alert" data-testid="aiws-lock-lost">{lost}。未被接受的修改保留在“需要处理”中。</span> : null
+  const lostAlert = lost && !held ? <span className="aiws-error" role="alert" data-testid="aiws-lock-lost">{t('aiworkspace.blocks.lock.lost', { reason: lost })}</span> : null
   return (
     <div
       className="aiws-lock-scope"
@@ -88,13 +93,15 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
       {inNearToolbar ? (lostAlert && <div className="aiws-lock-lost-row">{lostAlert}</div>) : (
         <div className="aiws-lock-bar" data-testid={`aiws-lock-${entity.entity_id}`} data-held={held ? 'true' : 'false'}>
           {held ? (
-            <><span>🔒 你持有写锁，正在编辑（每 20 秒续约）</span><button type="button" data-testid="aiws-lock-release" onClick={release}>结束编辑</button></>
+            <><span>{t('aiworkspace.blocks.lock.barHeld')}</span><button type="button" data-testid="aiws-lock-release" onClick={release}>{t('aiworkspace.blocks.lock.finish')}</button></>
           ) : holder ? (
-            <><span data-testid="aiws-lock-holder">🔒 由 {holder.principal} 编辑中{holder.expires_at ? `（租约至 ${new Date(holder.expires_at).toLocaleTimeString()}）` : ''}，当前只读</span>
-              {canWrite && <button type="button" onClick={() => { void acquire() }}>再试一次</button>}</>
+            <><span data-testid="aiws-lock-holder">{holder.expires_at
+              ? t('aiworkspace.blocks.lock.barEditingByUntil', { principal: holder.principal, time: time(holder.expires_at) })
+              : t('aiworkspace.blocks.lock.barEditingBy', { principal: holder.principal })}</span>
+              {canWrite && <button type="button" onClick={() => { void acquire() }}>{t('aiworkspace.blocks.lock.tryAgain')}</button>}</>
           ) : (
-            <><span>🔒 此对象启用了写锁：同一时间只有一人可以修改</span>
-              {canWrite && <button type="button" data-testid="aiws-lock-acquire" onClick={() => { void acquire() }}>开始编辑</button>}</>
+            <><span>{t('aiworkspace.blocks.lock.barRequired')}</span>
+              {canWrite && <button type="button" data-testid="aiws-lock-acquire" onClick={() => { void acquire() }}>{t('aiworkspace.blocks.lock.start')}</button>}</>
           )}
           {lostAlert}
         </div>
@@ -150,13 +157,14 @@ export function RichTextCell({ entity, entityId, renderEmbed, intentKey }: { ent
 // ---- record (design §3.2)
 
 export function RecordCell({ entityId, entity, readOnly }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const access = useWriteAccess(entity)
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<RecordContent>(entityId), [store, entityId])
   const record = useLoad<ReadOk<RecordContent>>(load, version)
-  if (record.error && !record.data) return <div className="aiws-error" role="alert">无法读取记录：{record.error}</div>
-  if (!record.data) return <div className="aiws-muted">载入中…</div>
+  if (record.error && !record.data) return <div className="aiws-error" role="alert">{t('aiworkspace.blocks.record.readFailed', { error: record.error })}</div>
+  if (!record.data) return <div className="aiws-muted">{t('aiworkspace.blocks.loading')}</div>
   const content = record.data.content
   return (
     <table className="aiws-record" data-testid={`aiws-record-${entityId}`}>
@@ -170,6 +178,7 @@ export function RecordCell({ entityId, entity, readOnly }: { entityId: string; e
 }
 
 function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string; prop: RecordPropDef; value: Json | undefined; rev: number; editable: boolean }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const editId = `key:${entityId}:p:${prop.key}`
   const entry = useEdit(editId)
@@ -190,15 +199,15 @@ function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string
           <ValueEditor def={prop} value={value} initialText={editing.text} ariaLabel={prop.name} onCancel={() => setEditing(null)}
             onCommit={(input) => { setEditing(null); void write(input, editing.baseRev) }} />
         ) : (
-          <button type="button" className="aiws-cell-value" disabled={!editable} onClick={() => setEditing({ baseRev: rev })}>{shown || <span className="aiws-muted">（未设置）</span>}</button>
+          <button type="button" className="aiws-cell-value" disabled={!editable} onClick={() => setEditing({ baseRev: rev })}>{shown || <span className="aiws-muted">{t('aiworkspace.blocks.value.unset')}</span>}</button>
         )}
         {entry && !editing && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state" title={entry.detail}>{EDIT_STATE_LABEL[entry.state]}</span>}
         {entry && entry.state === 'needs_attention' && !editing && (
           <ConflictBox
             store={store}
             editId={editId}
-            theirs={entry.hasTheirs ? formatValue(prop, entry.theirs) || '（未设置）' : null}
-            mine={entry.hasMine ? (entry.mine === null ? '（清空）' : formatValue(prop, entry.mine ?? undefined)) : null}
+            theirs={entry.hasTheirs ? formatValue(prop, entry.theirs) || t('aiworkspace.blocks.value.unset') : null}
+            mine={entry.hasMine ? (entry.mine === null ? t('aiworkspace.blocks.value.cleared') : formatValue(prop, entry.mine ?? undefined)) : null}
             detail={entry.detail ?? ''}
             onKeepMine={entry.hasMine && entry.currentRev !== undefined ? () => { void write(entry.mine === null ? UNSET : (entry.mine as Json), entry.currentRev ?? 0) } : undefined}
             onEditAgain={entry.hasMine ? () => setEditing({ baseRev: entry.currentRev ?? rev, text: entry.mine === null || typeof entry.mine === 'object' ? '' : String(entry.mine) }) : undefined}
@@ -211,10 +220,11 @@ function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string
 
 // ---- asset (design §3.6)
 
-const AVAILABILITY_TEXT: Record<string, string> = { available: '可用', missing: '内容缺失（对象存储中取不到）', corrupt: '内容损坏（校验失败）' }
+const AVAILABILITY_TEXT: Record<string, string> = { available: 'aiworkspace.blocks.asset.available', missing: 'aiworkspace.blocks.asset.missing', corrupt: 'aiworkspace.blocks.asset.corrupt' }
 
 /** `bare`: the picture only (a canvas Block, §4.1); the file facts and "replace" stay in the data-source view. */
 export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId: string; fit: 'contain' | 'cover'; readOnly: boolean; bare?: boolean }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AssetContent>(entityId), [store, entityId])
@@ -241,34 +251,35 @@ export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId:
     )
     return () => { live = false; if (url) URL.revokeObjectURL(url) }
   }, [store, objectId, availability, asset.data?.content.payload.media_type])
-  if (asset.error && !asset.data) return <div className="aiws-error" role="alert">无法读取资产：{asset.error}</div>
-  if (!asset.data) return <div className="aiws-muted">载入中…</div>
+  if (asset.error && !asset.data) return <div className="aiws-error" role="alert">{t('aiworkspace.blocks.asset.readFailed', { error: asset.error })}</div>
+  if (!asset.data) return <div className="aiws-muted">{t('aiworkspace.blocks.loading')}</div>
   const payload = asset.data.content.payload
   const isImage = (payload.media_type ?? '').startsWith('image/')
   const current = image && image.objectId === objectId ? image : null
   const canReplace = !readOnly && asset.data.capabilities.includes('update')
   const replace = async (file: File) => {
-    setUploading('上传中…')
+    setUploading(t('aiworkspace.blocks.asset.uploading'))
     setUploading(await replaceAsset(store, entityId, file))
   }
+  const availabilityText = availability && AVAILABILITY_TEXT[availability] ? t(AVAILABILITY_TEXT[availability]) : availability
   return (
     <div className="aiws-asset" data-testid={`aiws-asset-${entityId}`} data-availability={availability}>
       {availability !== 'available' ? (
-        <div className="aiws-asset-placeholder">资产不可用：{AVAILABILITY_TEXT[availability ?? ''] ?? availability}</div>
+        <div className="aiws-asset-placeholder">{t('aiworkspace.blocks.asset.unavailable', { reason: availabilityText ?? '' })}</div>
       ) : !isImage ? (
-        <div className="aiws-asset-placeholder">附件 {payload.file_name ?? ''}（{payload.media_type ?? '未知类型'}）</div>
+        <div className="aiws-asset-placeholder">{t('aiworkspace.blocks.asset.attachment', { name: payload.file_name ?? '', type: payload.media_type ?? t('aiworkspace.blocks.asset.unknownType') })}</div>
       ) : current?.url ? (
         <img src={current.url} alt={payload.file_name ?? entityId} style={{ objectFit: fit }} data-testid="aiws-asset-image" />
       ) : current?.error ? (
-        <div className="aiws-error" role="alert">图片读取失败：{current.error}</div>
-      ) : <div className="aiws-muted">读取图片…</div>}
+        <div className="aiws-error" role="alert">{t('aiworkspace.blocks.asset.imageFailed', { error: current.error })}</div>
+      ) : <div className="aiws-muted">{t('aiworkspace.blocks.asset.readingImage')}</div>}
       {!bare && <div className="aiws-asset-meta">
         <span>{payload.file_name ?? entityId}</span>
         <span>{payload.media_type}</span>
-        {typeof payload.size === 'number' && <span>{payload.size} 字节</span>}
-        <span className={`aiws-chip ${availability === 'available' ? '' : 'aiws-chip-warn'}`} data-testid="aiws-asset-availability">{AVAILABILITY_TEXT[availability ?? ''] ?? availability}</span>
+        {typeof payload.size === 'number' && <span>{t('aiworkspace.blocks.asset.bytes', { count: payload.size })}</span>}
+        <span className={`aiws-chip ${availability === 'available' ? '' : 'aiws-chip-warn'}`} data-testid="aiws-asset-availability">{availabilityText}</span>
         {canReplace && (
-          <label className="aiws-link">替换…
+          <label className="aiws-link">{t('aiworkspace.blocks.asset.replaceEllipsis')}
             <input type="file" hidden accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void replace(file) }} />
           </label>
         )}
@@ -283,16 +294,18 @@ export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId:
 
 /** The replies of a note: annotations targeting it (标准对象的交互改进 §7.3). */
 export function NoteReplies({ noteId }: { noteId: string }) {
+  const { t } = useAiwsText()
   const ui = useWorkspaceUi()
   const count = ui.annotations.filter((mark) => mark.payload.target?.entity_id === noteId).length
   if (count === 0) return null
-  return <button type="button" className="aiws-note-replies" data-testid={`aiws-note-replies-${noteId}`} onClick={() => ui.showAnnotations(noteId)}>{count} 条回复</button>
+  return <button type="button" className="aiws-note-replies" data-testid={`aiws-note-replies-${noteId}`} onClick={() => ui.showAnnotations(noteId)}>{t('aiworkspace.blocks.note.replies', { count })}</button>
 }
 
 /** `startEditing`: opened by an explicit activation on the canvas (a new note included), so the text box opens at once.
  * `intentKey`: the canvas Block, whose "type this" arrives as the first characters. On a canvas the note stays the same
  * sheet while editing: no frame, no status row; the save state is a dot in the corner (§4.1, §4.4). */
 export function NoteEditor({ entityId, entity, readOnly, startEditing = false, intentKey }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean; startEditing?: boolean; intentKey?: string }) {
+  const { t } = useAiwsText()
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AnnotationContent>(entityId), [store, entityId])
@@ -305,8 +318,8 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
   const intent = useIntent(intentKey ?? '')
   const [intentSeen, setIntentSeen] = useState(0)
   useEffect(() => { if (intent && intentKey && intent.seq === intentSeen) consumeIntent(intentKey, intent) }, [intent, intentKey, intentSeen])
-  if (note.error && !note.data) return <div className="aiws-error" role="alert">无法读取便签：{note.error}</div>
-  if (!note.data) return <div className="aiws-muted">载入中…</div>
+  if (note.error && !note.data) return <div className="aiws-error" role="alert">{t('aiworkspace.blocks.note.readFailed', { error: note.error })}</div>
+  if (!note.data) return <div className="aiws-muted">{t('aiworkspace.blocks.loading')}</div>
   const payload = note.data.content.payload
   const mine = store.session.principal !== null && payload.author === store.session.principal
   const editable = !readOnly && Boolean(entity) && (mine ? (entity?.capabilities.includes('comment') ?? false) : (entity?.capabilities.includes('manage') ?? false))
@@ -319,7 +332,7 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
   const save = () => {
     if (text === null || text === payload.body) { setText(null); return }
     void store.submit({
-      editId, label: '便签内容', mine: text, hasMine: true,
+      editId, label: t('aiworkspace.blocks.note.text'), mine: text, hasMine: true,
       operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: [{ key: 'body', value: text, expect: { rev: note.data?.content.key_revs.body ?? 0 } }] }],
     })
     setText(null)
@@ -329,11 +342,11 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
   return (
     <div className="aiws-note" data-testid={`aiws-note-${entityId}`} data-size={size} style={{ background: typeof payload.style?.color === 'string' ? payload.style.color : undefined }}>
       {text !== null ? (
-        <textarea aria-label="便签内容" autoFocus value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} onBlur={save}
+        <textarea aria-label={t('aiworkspace.blocks.note.text')} autoFocus value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} onBlur={save}
           onFocus={(event) => { const end = event.target.value.length; event.target.setSelectionRange(end, end) }}
           onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); save() } }} />
       ) : (
-        <div className="aiws-note-body" onDoubleClick={() => { if (editable) setText(payload.body) }}>{payload.body || <span className="aiws-muted">（空便签）</span>}</div>
+        <div className="aiws-note-body" onDoubleClick={() => { if (editable) setText(payload.body) }}>{payload.body || <span className="aiws-muted">{t('aiworkspace.blocks.note.empty')}</span>}</div>
       )}
       {onCanvas ? (
         <>
@@ -343,10 +356,10 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
         </>
       ) : (
         <div className="aiws-note-meta">
-          {payload.target && <span title="贴在数据上的便签">📎 {payload.target.entity_id}</span>}
+          {payload.target && <span title={t('aiworkspace.blocks.note.attached')}>📎 {payload.target.entity_id}</span>}
           {authorLabel(payload) && <span>{authorLabel(payload)}</span>}
           {entry && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state">{EDIT_STATE_LABEL[entry.state]}</span>}
-          {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>编辑</button>}
+          {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>{t('aiworkspace.common.edit')}</button>}
         </div>
       )}
     </div>

@@ -5,6 +5,7 @@
 import { AiwsClient, ServiceFailure, unwrap } from '../api/client'
 import type { ShowCommand, ShowStart, ShowState } from '../api/types'
 import { TransportError } from '../api/transport'
+import { aiwsT } from '../i18n'
 
 /** The stage renews well within the lease (§8.1: every 20 s, lease 60 s). */
 const HEARTBEAT_SHARE = 3
@@ -52,7 +53,7 @@ export class ShowRelay {
       unwrap(await this.client.showHeartbeat(this.ws, this.showId))
       this.onTrouble?.(null)
     } catch (error) {
-      if (ended(error)) this.end('放映已在别处结束（被所有者强制结束，或舞台超过租期没有续期）')
+      if (ended(error)) this.end(aiwsT('aiworkspace.presentation.show.endedElsewhereDetail'))
       else this.onTrouble?.(error instanceof Error ? error.message : String(error))
     }
   }
@@ -74,7 +75,7 @@ export class ShowRelay {
         try {
           unwrap(await this.client.showPublish(this.ws, this.showId, this.seq, state))
         } catch (error) {
-          if (ended(error)) { this.end('放映已在别处结束'); return }
+          if (ended(error)) { this.end(aiwsT('aiworkspace.presentation.show.endedElsewhere')); return }
           // the next state goes out with a newer seq; prompters keep the last one they saw
         }
       }
@@ -97,7 +98,7 @@ export class ShowRelay {
         }
       } catch (error) {
         if (this.closed) return
-        if (ended(error)) { this.end('放映已在别处结束（被所有者强制结束，或舞台超过租期没有续期）'); return }
+        if (ended(error)) { this.end(aiwsT('aiworkspace.presentation.show.endedElsewhereDetail')); return }
         if (!(error instanceof TransportError) && !(error instanceof ServiceFailure)) throw error
         await new Promise((resolve) => window.setTimeout(resolve, backoff))
         backoff = Math.min(backoff * 2, 8000)

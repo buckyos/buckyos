@@ -4,6 +4,7 @@
 
 import type { AnnotationPayload } from '../api/types'
 import { GUEST_PREFIX, isGuestPrincipal } from '../api/transport'
+import { aiwsT } from '../i18n'
 
 export const GUEST_NAME_KEY = 'aiworkspace.guest-name'
 
@@ -21,7 +22,7 @@ export function writeGuestName(name: string) {
 
 /** "访客 abc123" for a guest principal. */
 export function guestLabel(principal: string): string {
-  return `访客 ${principal.slice(GUEST_PREFIX.length, GUEST_PREFIX.length + 6)}`
+  return aiwsT('aiworkspace.core.guest.label', { id: principal.slice(GUEST_PREFIX.length, GUEST_PREFIX.length + 6) })
 }
 
 /** The author line of an annotation: the chosen name of a guest, else its short label, else the principal. */

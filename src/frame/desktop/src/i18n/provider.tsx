@@ -52,7 +52,12 @@ export function I18nProvider({ children }: PropsWithChildren) {
   const value = useMemo<I18nContextValue>(() => {
     return {
       locale,
-      setLocale,
+      // Stored before the re-render, not only in the effect: text produced outside React during that render
+      // (app translators that read the stored language) is already in the new language.
+      setLocale: (next) => {
+        try { window.localStorage.setItem(storageKey, next) } catch { /* no storage */ }
+        setLocale(next)
+      },
       t: (key, fallback = key, variables) => {
         const table = dictionaries[locale] ?? dictionaries.en
         const current = table[key] ?? dictionaries.en[key] ?? fallback

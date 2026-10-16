@@ -4,6 +4,7 @@
  * sizes change S only, never R, so every window shows the same content with more or less letterboxing. */
 
 import type { EntityEnvelope, ShowPathPayload, ShowStep, StageSize, StepTransition } from '../api/types'
+import { aiwsT, localizedLabels } from '../i18n'
 import type { OutlineModel } from '../state/outline'
 
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -11,8 +12,8 @@ export interface View { x: number; y: number; zoom: number }
 
 export const DEFAULT_STAGE: StageSize = { w: 1920, h: 1080 }
 export const STAGE_PRESETS: { id: string; label: string; stage: StageSize }[] = [
-  { id: '16:9', label: '16:9（1920 × 1080）', stage: { w: 1920, h: 1080 } },
-  { id: '4:3', label: '4:3（1440 × 1080）', stage: { w: 1440, h: 1080 } },
+  { id: '16:9', get label() { return aiwsT('aiworkspace.presentation.stage.preset', { ratio: '16:9', w: 1920, h: 1080 }) }, stage: { w: 1920, h: 1080 } },
+  { id: '4:3', get label() { return aiwsT('aiworkspace.presentation.stage.preset', { ratio: '4:3', w: 1440, h: 1080 }) }, stage: { w: 1440, h: 1080 } },
 ]
 export const DEFAULT_BACKGROUND = '#ffffff'
 
@@ -78,12 +79,12 @@ export function frameAtRatio(rect: Rect, stage: StageSize): Rect {
 }
 
 export type StepProblem = 'missing' | 'surface' | 'flow' | 'rotated'
-export const STEP_PROBLEM_TEXT: Record<StepProblem, string> = {
-  missing: '目标已删除或无权查看',
-  surface: '目标所在的画布已不存在',
-  flow: '目标不在自由画布上',
-  rotated: 'Frame 已旋转：放映时按未旋转显示',
-}
+export const STEP_PROBLEM_TEXT: Readonly<Record<StepProblem, string>> = localizedLabels({
+  missing: 'aiworkspace.presentation.problem.missing',
+  surface: 'aiworkspace.presentation.problem.surface',
+  flow: 'aiworkspace.presentation.problem.flow',
+  rotated: 'aiworkspace.presentation.problem.rotated',
+})
 
 /** One step as a show needs it: where it is, what it is called, and whether it can be shown. */
 export interface ResolvedStep {
@@ -102,7 +103,7 @@ export interface ResolvedStep {
 }
 
 export function stepTitle(step: ShowStep, target: EntityEnvelope | undefined, n: number): string {
-  return step.title || target?.title || target?.name || `第 ${n} 步`
+  return step.title || target?.title || target?.name || aiwsT('aiworkspace.presentation.step.defaultTitle', { n })
 }
 
 export function resolveStep(outline: OutlineModel, path: ShowPathPayload, step: ShowStep, index: number): ResolvedStep {
@@ -253,18 +254,18 @@ export function applyStepCommands(steps: ShowStep[], commands: StepCommand[]): S
     switch (command.kind) {
       case 'insert': {
         const at = place(command.after)
-        if (at === null) return { unreplayable: '插入位置所在的步骤已被删除' }
+        if (at === null) return { unreplayable: aiwsT('aiworkspace.presentation.replay.insertAnchorGone') }
         const fresh = command.steps.filter((s) => indexOf(s.id) < 0)
         out = [...out.slice(0, at), ...fresh, ...out.slice(at)]
         break
       }
       case 'move': {
         const i = indexOf(command.id)
-        if (i < 0) return { unreplayable: '要移动的步骤已被删除' }
+        if (i < 0) return { unreplayable: aiwsT('aiworkspace.presentation.replay.moveStepGone') }
         const [moved] = out.splice(i, 1)
-        if (command.after === command.id) return { unreplayable: '无效的移动' }
+        if (command.after === command.id) return { unreplayable: aiwsT('aiworkspace.presentation.replay.invalidMove') }
         const at = place(command.after)
-        if (at === null) { out.splice(i, 0, moved); return { unreplayable: '移动的目标位置已被删除' } }
+        if (at === null) { out.splice(i, 0, moved); return { unreplayable: aiwsT('aiworkspace.presentation.replay.moveAnchorGone') } }
         out.splice(at, 0, moved)
         break
       }
@@ -275,7 +276,7 @@ export function applyStepCommands(steps: ShowStep[], commands: StepCommand[]): S
       }
       case 'update': {
         const i = indexOf(command.id)
-        if (i < 0) return { unreplayable: '要修改的步骤已被删除' }
+        if (i < 0) return { unreplayable: aiwsT('aiworkspace.presentation.replay.updateStepGone') }
         const next: Record<string, unknown> = { ...out[i] }
         for (const [key, value] of Object.entries(command.patch)) {
           if (value === undefined) delete next[key]

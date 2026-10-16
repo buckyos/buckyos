@@ -40,9 +40,10 @@ export const SIDE_VEC: Record<Side, Point> = { n: { x: 0, y: -1 }, e: { x: 1, y:
 /** The 16 compass ids, clockwise from the top. Even positions are major. */
 export const COMPASS = ['n', 'nne', 'ne', 'ene', 'e', 'ese', 'se', 'sse', 's', 'ssw', 'sw', 'wsw', 'w', 'wnw', 'nw', 'nnw'] as const
 
+/** English names of the compass anchors, for developers: a host shows its own name for each id. */
 const COMPASS_LABELS: Record<string, string> = {
-  n: '上', nne: '上偏右', ne: '右上', ene: '右偏上', e: '右', ese: '右偏下', se: '右下', sse: '下偏右',
-  s: '下', ssw: '下偏左', sw: '左下', wsw: '左偏下', w: '左', wnw: '左偏上', nw: '左上', nnw: '上偏左',
+  n: 'top', nne: 'top, right of center', ne: 'top right', ene: 'right, above center', e: 'right', ese: 'right, below center', se: 'bottom right', sse: 'bottom, right of center',
+  s: 'bottom', ssw: 'bottom, left of center', sw: 'bottom left', wsw: 'left, below center', w: 'left', wnw: 'left, above center', nw: 'top left', nnw: 'top, left of center',
 }
 
 /** Rectangle: corners, side midpoints and quarter points, walking the outline clockwise from the top midpoint. */

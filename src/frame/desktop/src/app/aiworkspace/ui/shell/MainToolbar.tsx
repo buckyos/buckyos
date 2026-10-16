@@ -9,6 +9,7 @@ import { ArrowLeftRight, ChevronDown, Database, Ellipsis, LayoutDashboard, Searc
 import type { EntityEnvelope } from '../../api/types'
 import { describeError } from '../../api/session'
 import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
+import { useAiwsText } from '../../useAiwsText'
 import { CANVAS_MODE_LABEL } from '../blocks/registry'
 import { SURFACE_ICONS, SurfaceIcon } from '../canvas/icons'
 import { accepted, renameBase, renameSurface, setSurfaceBackground, setSurfaceIcon, SurfaceDeleteDialog, surfaceWriteReason, useSurfaceConfig, type RenameBase } from '../canvas/surfaceManage'
@@ -26,6 +27,7 @@ function readBase(store: ReturnType<typeof useStore>, surface: EntityEnvelope): 
 export function MainToolbar({ canvas }: { canvas: CanvasCommands | null }) {
   const store = useStore()
   const shell = useShell()
+  const { t } = useAiwsText()
   useOutlineVersion()
   const mode = useCanvasMode()
   const readOnlyNow = useReadOnlyReason()
@@ -34,7 +36,7 @@ export function MainToolbar({ canvas }: { canvas: CanvasCommands | null }) {
   const inSources = shell.topMode === 'sources'
   return (
     <div className="aiws-main-area">
-      <div className="aiws-panel aiws-main-toolbar" role="toolbar" aria-label="主工具栏" data-testid="aiws-main-toolbar">
+      <div className="aiws-panel aiws-main-toolbar" role="toolbar" aria-label={t('aiworkspace.shell.toolbar.main')} data-testid="aiws-main-toolbar">
         {surface ? (
           <>
             <SurfaceIconButton surface={surface} reason={writeReason} />
@@ -44,23 +46,23 @@ export function MainToolbar({ canvas }: { canvas: CanvasCommands | null }) {
           <span className="aiws-main-title" data-testid="aiws-surface-name"><LayoutDashboard size={18} aria-hidden="true" /> <b>{store.session.info().title}</b></span>
         )}
         <SurfaceSwitcher />
-        {mode !== 'edit' && !inSources && <span className="aiws-chip aiws-mode-chip" data-testid="aiws-mode-note" title={mode === 'view' ? '查看模式：除批注外不修改文档' : '播放编辑：尚未实现，只读占位'}>{CANVAS_MODE_LABEL[mode]}</span>}
+        {mode !== 'edit' && !inSources && <span className="aiws-chip aiws-mode-chip" data-testid="aiws-mode-note" title={mode === 'view' ? t('aiworkspace.shell.toolbar.viewModeHint') : t('aiworkspace.shell.toolbar.otherModeHint')}>{CANVAS_MODE_LABEL[mode]}</span>}
         <span className="aiws-toolbar-sep" aria-hidden="true" />
         {inSources ? (
-          <button type="button" className="aiws-tool aiws-tool-text" aria-pressed="true" data-testid="aiws-top-canvas" title="返回之前的画布和视口" onClick={() => shell.setTopMode('canvas')}>
-            <Database size={18} /><span>返回画布</span>
+          <button type="button" className="aiws-tool aiws-tool-text" aria-pressed="true" data-testid="aiws-top-canvas" title={t('aiworkspace.shell.toolbar.backToCanvasHint')} onClick={() => shell.setTopMode('canvas')}>
+            <Database size={18} /><span>{t('aiworkspace.shell.toolbar.backToCanvas')}</span>
           </button>
         ) : (
-          <button type="button" className="aiws-tool" aria-label="数据源" title="数据源：数据树、详情、属性与关系" data-testid="aiws-top-sources" onClick={() => shell.setTopMode('sources')}>
+          <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.sources')} title={t('aiworkspace.shell.toolbar.sourcesHint')} data-testid="aiws-top-sources" onClick={() => shell.setTopMode('sources')}>
             <Database size={18} />
           </button>
         )}
-        <MenuButton label="主菜单" title="主菜单" testId="aiws-main-menu" menuTestId="aiws-main-menu-list" items={() => buildMainMenu({ store, shell, canvas, mode })}>
+        <MenuButton label={t('aiworkspace.shell.toolbar.mainMenu')} title={t('aiworkspace.shell.toolbar.mainMenu')} testId="aiws-main-menu" menuTestId="aiws-main-menu-list" items={() => buildMainMenu({ store, shell, canvas, mode })}>
           <Ellipsis size={18} />
         </MenuButton>
-        <button type="button" className={`aiws-tool${shell.size === 'wide' ? ' aiws-tool-text' : ''}`} aria-pressed={shell.side === 'collab'} aria-label="协作" title="协作：访问权限与授权" data-testid="aiws-collab"
+        <button type="button" className={`aiws-tool${shell.size === 'wide' ? ' aiws-tool-text' : ''}`} aria-pressed={shell.side === 'collab'} aria-label={t('aiworkspace.shell.side.collab')} title={t('aiworkspace.shell.toolbar.collabHint')} data-testid="aiws-collab"
           onClick={() => shell.setSide(shell.side === 'collab' ? null : 'collab')}>
-          <Users size={18} />{shell.size === 'wide' && <span>协作</span>}
+          <Users size={18} />{shell.size === 'wide' && <span>{t('aiworkspace.shell.side.collab')}</span>}
         </button>
       </div>
     </div>
@@ -69,26 +71,27 @@ export function MainToolbar({ canvas }: { canvas: CanvasCommands | null }) {
 
 function SurfaceIconButton({ surface, reason }: { surface: EntityEnvelope; reason: string | null }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const choose = (icon: string | null) => {
     close()
     if ((surface.icon ?? null) === icon) return
-    setSurfaceIcon(store, surface, icon).catch((error: unknown) => store.notify('error', `更换图标失败：${describeError(error)}`))
+    setSurfaceIcon(store, surface, icon).catch((error: unknown) => store.notify('error', t('aiworkspace.shell.toolbar.iconFailed', { error: describeError(error) })))
   }
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-tool" aria-label="画布图标" title={reason ?? '更换画布图标'} aria-haspopup="dialog" aria-expanded={open}
+      <button ref={bindTrigger} type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.icon')} title={reason ?? t('aiworkspace.shell.toolbar.changeIcon')} aria-haspopup="dialog" aria-expanded={open}
         data-testid="aiws-surface-icon" data-icon={surface.icon ?? ''} disabled={reason !== null && !open} onClick={toggle}>
         <SurfaceIcon surface={surface} size={20} />
       </button>
       {open && (
-        <PopoverPanel label="选择画布图标" testId="aiws-icon-picker" className="aiws-icon-picker">
-          <div className="aiws-icon-grid" role="listbox" aria-label="预设图标">
+        <PopoverPanel label={t('aiworkspace.shell.toolbar.chooseIcon')} testId="aiws-icon-picker" className="aiws-icon-picker">
+          <div className="aiws-icon-grid" role="listbox" aria-label={t('aiworkspace.shell.presetIcons')}>
             {SURFACE_ICONS.map(({ id, label, Icon }) => (
               <button key={id} type="button" role="option" aria-selected={surface.icon === id} aria-label={label} title={label} data-testid={`aiws-icon-${id}`} onClick={() => choose(id)}><Icon size={20} /></button>
             ))}
           </div>
-          <button type="button" className="aiws-popover-item" data-testid="aiws-icon-default" onClick={() => choose(null)}>使用默认图标</button>
+          <button type="button" className="aiws-popover-item" data-testid="aiws-icon-default" onClick={() => choose(null)}>{t('aiworkspace.shell.toolbar.defaultIcon')}</button>
           {surface.layout?.mode === 'free' && <SurfaceBackground surface={surface} />}
         </PopoverPanel>
       )}
@@ -97,23 +100,28 @@ function SurfaceIconButton({ surface, reason }: { surface: EntityEnvelope; reaso
 }
 
 /** The page background of a free canvas (draw.io 导入 TODO §2.5): none (the theme's), a preset or any colour. */
-const BACKGROUNDS = [{ value: '#ffffff', label: '白' }, { value: '#fffbe6', label: '米黄' }, { value: '#f5f5f5', label: '浅灰' }, { value: '#eef5ff', label: '浅蓝' }, { value: '#f1f8ee', label: '浅绿' }, { value: '#1e1e1e', label: '深色' }]
+const BACKGROUNDS = [
+  { value: '#ffffff', label: 'aiworkspace.shell.background.white' }, { value: '#fffbe6', label: 'aiworkspace.shell.background.cream' },
+  { value: '#f5f5f5', label: 'aiworkspace.shell.background.lightGray' }, { value: '#eef5ff', label: 'aiworkspace.shell.background.lightBlue' },
+  { value: '#f1f8ee', label: 'aiworkspace.shell.background.lightGreen' }, { value: '#1e1e1e', label: 'aiworkspace.shell.background.dark' },
+]
 
 function SurfaceBackground({ surface }: { surface: EntityEnvelope }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const { background } = useSurfaceConfig(surface.entity_id)
   const pick = (value: string | null) => {
     if (value === background) return
-    setSurfaceBackground(store, surface, value).catch((error: unknown) => store.notify('error', `更换背景失败：${describeError(error)}`))
+    setSurfaceBackground(store, surface, value).catch((error: unknown) => store.notify('error', t('aiworkspace.shell.background.failed', { error: describeError(error) })))
   }
   return (
     <div className="aiws-surface-background" data-testid="aiws-surface-background">
-      <div className="aiws-muted">画布背景</div>
+      <div className="aiws-muted">{t('aiworkspace.shell.background.title')}</div>
       <div className="aiws-palette-grid">
-        <button type="button" className="aiws-palette-swatch is-auto" aria-label="跟随主题" title="跟随主题" aria-pressed={background === null} data-testid="aiws-background-default" onClick={() => pick(null)} />
-        {BACKGROUNDS.map((b) => <button key={b.value} type="button" className="aiws-palette-swatch" aria-label={b.label} title={b.label} aria-pressed={background === b.value} style={{ background: b.value }} data-testid={`aiws-background-${b.value.slice(1)}`} onClick={() => pick(b.value)} />)}
+        <button type="button" className="aiws-palette-swatch is-auto" aria-label={t('aiworkspace.shell.background.theme')} title={t('aiworkspace.shell.background.theme')} aria-pressed={background === null} data-testid="aiws-background-default" onClick={() => pick(null)} />
+        {BACKGROUNDS.map((b) => <button key={b.value} type="button" className="aiws-palette-swatch" aria-label={t(b.label)} title={t(b.label)} aria-pressed={background === b.value} style={{ background: b.value }} data-testid={`aiws-background-${b.value.slice(1)}`} onClick={() => pick(b.value)} />)}
       </div>
-      <label className="aiws-palette-custom">自定义 <input type="color" aria-label="自定义背景色" defaultValue={background ?? '#ffffff'} onChange={(event) => pick(event.target.value)} /></label>
+      <label className="aiws-palette-custom">{t('aiworkspace.shell.background.custom')} <input type="color" aria-label={t('aiworkspace.shell.background.customColor')} defaultValue={background ?? '#ffffff'} onChange={(event) => pick(event.target.value)} /></label>
     </div>
   )
 }
@@ -122,6 +130,7 @@ function SurfaceBackground({ surface }: { surface: EntityEnvelope }) {
  * non-empty change; an empty name restores the old one. A refused rename keeps the input and says why. */
 function SurfaceName({ surface, reason }: { surface: EntityEnvelope; reason: string | null }) {
   const store = useStore()
+  const { t } = useAiwsText()
   const [draft, setDraft] = useState<string | null>(null)
   const [base, setBase] = useState<Promise<RenameBase> | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -137,34 +146,34 @@ function SurfaceName({ surface, reason }: { surface: EntityEnvelope; reason: str
   const commit = async () => {
     if (draft === null || cancelled) return
     const title = draft.trim()
-    if (title === '') { setDraft(null); store.notify('info', '画布名称不能为空，已恢复原名称。'); return }
+    if (title === '') { setDraft(null); store.notify('info', t('aiworkspace.shell.name.emptyRestored')); return }
     if (title === current) { setDraft(null); return }
     let versions: RenameBase
     try {
-      if (!base) throw new Error('没有开始编辑')
+      if (!base) throw new Error(t('aiworkspace.shell.name.notEditing'))
       versions = await base
     } catch (failure) {
-      setError(`无法读取画布版本：${describeError(failure)}`)
+      setError(t('aiworkspace.shell.cannotReadVersions', { error: describeError(failure) }))
       return
     }
     const outcome = await renameSurface(store, surface, title, versions)
     if (accepted(outcome)) { setDraft(null); setError(null); return }
     setError(outcome.status === 'conflict' || ('code' in outcome && outcome.code === 'REVISION_CONFLICT')
-      ? '其他人刚改过这张画布的名称，你的输入保留在此：确认后再按 Enter 覆盖，或按 Esc 放弃。'
-      : `改名未被接受：${'code' in outcome ? outcome.code : outcome.status}`)
+      ? t('aiworkspace.shell.name.conflict')
+      : t('aiworkspace.shell.renameRefused', { code: 'code' in outcome ? outcome.code : outcome.status }))
     // a later Enter overwrites knowingly: the next attempt expects the versions as they are now
     setBase(readBase(store, surface))
   }
   if (draft === null) {
     return (
-      <button type="button" className="aiws-surface-name" data-testid="aiws-surface-name" title={reason ? `${current}（${reason}）` : `${current}（点击改名）`} onClick={start}>
+      <button type="button" className="aiws-surface-name" data-testid="aiws-surface-name" title={reason ? t('aiworkspace.shell.name.titleReason', { name: current, reason }) : t('aiworkspace.shell.name.titleRename', { name: current })} onClick={start}>
         <span>{current}</span>
       </button>
     )
   }
   return (
     <span className="aiws-anchor aiws-surface-name-edit">
-      <input autoFocus aria-label="画布名称" data-testid="aiws-surface-name-input" value={draft} maxLength={256} aria-invalid={error !== null}
+      <input autoFocus aria-label={t('aiworkspace.shell.name.input')} data-testid="aiws-surface-name-input" value={draft} maxLength={256} aria-invalid={error !== null}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Enter') { event.preventDefault(); void commit() }
@@ -181,6 +190,7 @@ function SurfaceName({ surface, reason }: { surface: EntityEnvelope; reason: str
 export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
   const store = useStore()
   const shell = useShell()
+  const { t } = useAiwsText()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<{ id: string; base: Promise<RenameBase>; value: string } | null>(null)
@@ -197,69 +207,69 @@ export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
     setRenaming(null)
     if (!surface || !title || title === (surface.title ?? surface.name)) return
     let versions: RenameBase
-    try { versions = await renaming.base } catch (failure) { store.notify('error', `无法读取画布版本：${describeError(failure)}`); return }
+    try { versions = await renaming.base } catch (failure) { store.notify('error', t('aiworkspace.shell.cannotReadVersions', { error: describeError(failure) })); return }
     const outcome = await renameSurface(store, surface, title, versions)
-    if (!accepted(outcome)) store.notify('error', `改名未被接受：${'code' in outcome ? outcome.code : outcome.status}`)
+    if (!accepted(outcome)) store.notify('error', t('aiworkspace.shell.renameRefused', { code: 'code' in outcome ? outcome.code : outcome.status }))
   }
   return (
     <span ref={bindAnchor} className={`aiws-anchor${phone ? ' aiws-surface-anchor' : ''}`}>
       {phone ? (
-        <button ref={bindTrigger} type="button" className="aiws-surface-trigger" aria-label={`切换画布：${active ? active.title ?? active.name ?? '' : workspaceTitle}`} title="切换画布" aria-haspopup="dialog" aria-expanded={open}
+        <button ref={bindTrigger} type="button" className="aiws-surface-trigger" aria-label={t('aiworkspace.shell.switcher.label', { name: active ? active.title ?? active.name ?? '' : workspaceTitle })} title={t('aiworkspace.shell.switchCanvas')} aria-haspopup="dialog" aria-expanded={open}
           data-testid="aiws-surface-switch" data-icon={active?.icon ?? ''} onClick={toggle}>
           {active ? <SurfaceIcon surface={active} size={20} /> : <LayoutDashboard size={20} aria-hidden="true" />}
           <span className="aiws-surface-trigger-name" data-testid="aiws-surface-name">{active ? active.title ?? active.name ?? active.entity_id : workspaceTitle}</span>
           <ChevronDown size={16} aria-hidden="true" />
         </button>
       ) : (
-        <button ref={bindTrigger} type="button" className="aiws-tool aiws-tool-narrow" aria-label="切换画布" title="切换画布" aria-haspopup="dialog" aria-expanded={open} data-testid="aiws-surface-switch" onClick={toggle}>
+        <button ref={bindTrigger} type="button" className="aiws-tool aiws-tool-narrow" aria-label={t('aiworkspace.shell.switchCanvas')} title={t('aiworkspace.shell.switchCanvas')} aria-haspopup="dialog" aria-expanded={open} data-testid="aiws-surface-switch" onClick={toggle}>
           <ChevronDown size={16} />
         </button>
       )}
       {open && (
-        <PopoverPanel label="画布" testId="aiws-surface-list" className="aiws-surface-list">
+        <PopoverPanel label={t('aiworkspace.shell.new.tab.canvas')} testId="aiws-surface-list" className="aiws-surface-list">
           <div className="aiws-surface-list-head">
-            <span className="aiws-muted">工作区</span>
+            <span className="aiws-muted">{t('aiworkspace.shell.new.tab.workspace')}</span>
             <b data-testid="aiws-workspace-title">{workspaceTitle}</b>
             {phone && (
               <>
                 <button type="button" className="aiws-popover-item" data-testid="aiws-switch-workspace" onClick={() => { close(); shell.close() }}>
-                  <ArrowLeftRight size={16} aria-hidden="true" /> 切换工作区
+                  <ArrowLeftRight size={16} aria-hidden="true" /> {t('aiworkspace.shell.switcher.switchWorkspace')}
                 </button>
-                <span className="aiws-muted" data-testid="aiws-phone-note">手机上只能查看；编辑请在电脑上打开。</span>
+                <span className="aiws-muted" data-testid="aiws-phone-note">{t('aiworkspace.shell.switcher.phoneNote')}</span>
               </>
             )}
           </div>
           {shell.surfaces.length > 6 && (
-            <label className="aiws-search"><Search size={14} aria-hidden="true" /><input type="search" aria-label="搜索画布" placeholder="搜索画布…" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+            <label className="aiws-search"><Search size={14} aria-hidden="true" /><input type="search" aria-label={t('aiworkspace.shell.switcher.search')} placeholder={t('aiworkspace.shell.switcher.searchPlaceholder')} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
           )}
-          <div className="aiws-surface-items" role="menu" aria-label="画布列表">
+          <div className="aiws-surface-items" role="menu" aria-label={t('aiworkspace.shell.switcher.list')}>
             {surfaces.map((surface) => (
               <div key={surface.entity_id} className={`aiws-surface-item${surface.entity_id === shell.activeSurface?.entity_id ? ' is-active' : ''}`} data-testid={`aiws-surface-item-${surface.entity_id}`}>
                 {renaming?.id === surface.entity_id ? (
-                  <input autoFocus aria-label="画布标题" value={renaming.value} onChange={(event) => setRenaming({ ...renaming, value: event.target.value })}
+                  <input autoFocus aria-label={t('aiworkspace.shell.switcher.titleInput')} value={renaming.value} onChange={(event) => setRenaming({ ...renaming, value: event.target.value })}
                     onBlur={() => { void rename() }} onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); if (event.key === 'Escape') { event.stopPropagation(); setRenaming(null) } }} />
                 ) : (
                   <button type="button" role="menuitem" className="aiws-surface-pick" aria-current={surface.entity_id === shell.activeSurface?.entity_id} onClick={() => { shell.selectSurface(surface.entity_id); shell.setTopMode('canvas'); close() }}>
                     <SurfaceIcon surface={surface} size={16} />
                     <span className="aiws-surface-item-name">{surface.title ?? surface.name ?? surface.entity_id}</span>
-                    <span className="aiws-chip">{surface.layout?.mode === 'free' ? '自由画布' : '流式页'}</span>
+                    <span className="aiws-chip">{surface.layout?.mode === 'free' ? t('aiworkspace.shell.freeCanvas') : t('aiworkspace.shell.flowPage')}</span>
                   </button>
                 )}
                 {!phone && (surface.capabilities.includes('structure') || surface.capabilities.includes('delete')) && (
-                  <MenuButton label={`「${surface.title ?? surface.name ?? ''}」的更多操作`} className="aiws-tool aiws-tool-small" testId={`aiws-surface-more-${surface.entity_id}`} align="end"
+                  <MenuButton label={t('aiworkspace.shell.switcher.more', { name: surface.title ?? surface.name ?? '' })} className="aiws-tool aiws-tool-small" testId={`aiws-surface-more-${surface.entity_id}`} align="end"
                     items={[
-                      { id: `rename-${surface.entity_id}`, label: '重命名', disabled: !surface.capabilities.includes('structure'), reason: '没有修改这张画布的权限',
+                      { id: `rename-${surface.entity_id}`, label: t('aiworkspace.common.rename'), disabled: !surface.capabilities.includes('structure'), reason: t('aiworkspace.shell.switcher.noRenamePermission'),
                         run: () => setRenaming({ id: surface.entity_id, base: readBase(store, surface), value: surface.title ?? surface.name ?? '' }) },
-                      { id: `surface-delete-${surface.entity_id}`, testId: `aiws-surface-delete-${surface.entity_id}`, label: '删除画布…', danger: true, disabled: !surface.capabilities.includes('delete'), reason: '没有删除这张画布的权限', run: () => setDeleting(surface) },
+                      { id: `surface-delete-${surface.entity_id}`, testId: `aiws-surface-delete-${surface.entity_id}`, label: t('aiworkspace.shell.switcher.delete'), danger: true, disabled: !surface.capabilities.includes('delete'), reason: t('aiworkspace.shell.switcher.noDeletePermission'), run: () => setDeleting(surface) },
                     ]}>
                     <Ellipsis size={14} />
                   </MenuButton>
                 )}
               </div>
             ))}
-            {surfaces.length === 0 && <div className="aiws-muted">{q ? '没有匹配的画布' : '还没有画布'}</div>}
+            {surfaces.length === 0 && <div className="aiws-muted">{q ? t('aiworkspace.shell.switcher.noMatch') : t('aiworkspace.shell.switcher.empty')}</div>}
           </div>
-          {canStructure && <button type="button" className="aiws-popover-item" data-testid="aiws-surface-new" onClick={() => { close(); shell.openDialog({ kind: 'new', tab: 'canvas' }) }}>＋ 新建画布</button>}
+          {canStructure && <button type="button" className="aiws-popover-item" data-testid="aiws-surface-new" onClick={() => { close(); shell.openDialog({ kind: 'new', tab: 'canvas' }) }}>{t('aiworkspace.shell.switcher.new')}</button>}
         </PopoverPanel>
       )}
       {deleting && <SurfaceDeleteDialog surface={deleting} onClose={() => setDeleting(null)} onDeleted={(next) => { if (next) shell.selectSurface(next) }} />}

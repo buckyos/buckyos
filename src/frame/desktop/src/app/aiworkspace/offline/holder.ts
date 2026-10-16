@@ -11,6 +11,7 @@
 import { unwrap, type AiwsClient } from '../api/client'
 import type { WorkspaceInfo } from '../api/types'
 import { DEV_OVERRIDE_KEY } from '../api/transport'
+import { aiwsT } from '../i18n'
 import { ReplicaClient } from './client'
 import { ASSET_SIZE_CAP, REPLICA_LOCK_PREFIX, type AssetRow, type PendingRow, type ReplicaMeta } from './protocol'
 
@@ -40,10 +41,10 @@ function testHooksEnabled(): boolean {
 
 /** Why this browser context cannot hold an offline replica at all, or null. */
 export function offlineUnavailableReason(): string | null {
-  if (!window.isSecureContext) return '当前页面不是安全上下文（需要 HTTPS 或 localhost），浏览器不提供 OPFS 与 Service Worker'
-  if (typeof Worker === 'undefined') return '此浏览器不支持 Web Worker'
-  if (typeof navigator.storage?.getDirectory !== 'function') return '此浏览器没有 OPFS（Origin Private File System）'
-  if (typeof navigator.locks?.request !== 'function') return '此浏览器没有 Web Locks，无法保证只有一个窗口写入离线副本'
+  if (!window.isSecureContext) return aiwsT('aiworkspace.core.offline.insecureContext')
+  if (typeof Worker === 'undefined') return aiwsT('aiworkspace.core.worker.unsupported')
+  if (typeof navigator.storage?.getDirectory !== 'function') return aiwsT('aiworkspace.core.offline.noOpfs')
+  if (typeof navigator.locks?.request !== 'function') return aiwsT('aiworkspace.core.offline.noWebLocks')
   return null
 }
 
@@ -79,11 +80,11 @@ export type ReplicaOpenResult = { kind: 'replica'; opened: OpenedReplica } | { k
 
 /** Become the holder of an already prepared replica. Never touches the network. */
 export async function openPreparedReplica(workspaceId: string, principal: string | null): Promise<ReplicaOpenResult> {
-  if (!preparedIndex()[workspaceId]) return { kind: 'direct', reason: 'not_prepared', detail: '尚未为此工作区准备离线' }
+  if (!preparedIndex()[workspaceId]) return { kind: 'direct', reason: 'not_prepared', detail: aiwsT('aiworkspace.core.session.notPrepared') }
   const unavailable = offlineUnavailableReason()
   if (unavailable) return { kind: 'direct', reason: 'unavailable', detail: unavailable }
   const lock = await acquireReplicaLock(workspaceId)
-  if (!lock) return { kind: 'direct', reason: 'not_holder', detail: '另一个窗口正持有此工作区的离线副本' }
+  if (!lock) return { kind: 'direct', reason: 'not_holder', detail: aiwsT('aiworkspace.core.offline.otherHolder') }
   let replica: ReplicaClient | null = null
   try {
     const started = await ReplicaClient.start(workspaceId, testHooksEnabled())
@@ -98,12 +99,12 @@ export async function openPreparedReplica(workspaceId: string, principal: string
       forgetPrepared(workspaceId)
       await replica.close()
       lock.release()
-      return { kind: 'direct', reason: 'not_prepared', detail: '本机没有此工作区的离线副本（浏览器存储可能已被清理）' }
+      return { kind: 'direct', reason: 'not_prepared', detail: aiwsT('aiworkspace.core.offline.missing') }
     }
     if (principal && prepared.principal !== principal) {
       await replica.close()
       lock.release()
-      return { kind: 'direct', reason: 'not_prepared', detail: `本机的离线副本属于另一个身份（${prepared.principal}）` }
+      return { kind: 'direct', reason: 'not_prepared', detail: aiwsT('aiworkspace.core.offline.otherIdentity', { principal: prepared.principal }) }
     }
     const opened = await replica.call('open')
     let persisted = false
@@ -112,7 +113,7 @@ export async function openPreparedReplica(workspaceId: string, principal: string
   } catch (error) {
     replica?.terminate()
     lock.release()
-    return { kind: 'direct', reason: 'unavailable', detail: `本机的离线副本无法打开：${error instanceof Error ? error.message : String(error)}` }
+    return { kind: 'direct', reason: 'unavailable', detail: aiwsT('aiworkspace.core.offline.cannotOpen', { error: error instanceof Error ? error.message : String(error) }) }
   }
 }
 
@@ -136,31 +137,31 @@ export async function prepareOffline(client: AiwsClient, workspaceId: string, op
   if (unavailable) throw new OfflineUnavailable(unavailable)
   let persisted = false
   try { persisted = await navigator.storage.persist() } catch { /* treated as refused */ }
-  if (!persisted) throw new OfflineUnavailable('浏览器拒绝了持久化存储申请：本地数据可能在空间紧张时被浏览器清理，因此不启用离线')
+  if (!persisted) throw new OfflineUnavailable(aiwsT('aiworkspace.core.offline.persistRefused'))
   const lock = await acquireReplicaLock(workspaceId)
-  if (!lock) throw new OfflineUnavailable('另一个窗口正持有此工作区的离线副本')
+  if (!lock) throw new OfflineUnavailable(aiwsT('aiworkspace.core.offline.otherHolder'))
   let replica: ReplicaClient | null = null
   try {
     const started = await ReplicaClient.start(workspaceId, testHooksEnabled())
     replica = started.client
     if (!started.init.ok) throw new OfflineUnavailable(started.init.reason)
     if (started.init.prepared && started.init.pendingCount > 0 && !options.discardLocal) {
-      throw new OfflineUnavailable(`本机副本里还有 ${started.init.pendingCount} 条未提交的修改；请先打开工作区导出或处理它们`)
+      throw new OfflineUnavailable(aiwsT('aiworkspace.core.offline.pendingLeft', { count: started.init.pendingCount }))
     }
-    progress('向后台申请副本…')
+    progress(aiwsT('aiworkspace.core.offline.progress.bootstrap'))
     const info: WorkspaceInfo = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }))
     const boot = unwrap(await client.replicaBootstrap({ workspace_id: workspaceId }))
-    progress('下载副本库…')
+    progress(aiwsT('aiworkspace.core.offline.progress.download'))
     const file = await client.transport.download(`replica/${workspaceId}/${boot.replica_id}`)
-    progress('写入本机存储…')
+    progress(aiwsT('aiworkspace.core.offline.progress.store'))
     const meta = await replica.call('importReplica', {
       bytes: await file.arrayBuffer(), principal: boot.principal, info: { ...info, epoch: boot.epoch }, epoch: boot.epoch,
       headSeq: boot.head_seq, preparedAt: boot.prepared_at, discardLocal: options.discardLocal === true,
     })
     const report: PrepareReport = { meta, assets: { stored: [], skipped: [] } }
     for (const asset of await replica.call('listAssets')) {
-      if (asset.size > ASSET_SIZE_CAP) { report.assets.skipped.push({ ...asset, reason: `超过 ${ASSET_SIZE_CAP / 1024 / 1024} MiB 的上限` }); continue }
-      progress(`下载资产 ${report.assets.stored.length + report.assets.skipped.length + 1}…`)
+      if (asset.size > ASSET_SIZE_CAP) { report.assets.skipped.push({ ...asset, reason: aiwsT('aiworkspace.core.offline.assetTooLarge', { size: ASSET_SIZE_CAP / 1024 / 1024 }) }); continue }
+      progress(aiwsT('aiworkspace.core.offline.progress.asset', { index: report.assets.stored.length + report.assets.skipped.length + 1 }))
       try {
         const bytes = await (await client.transport.download(`asset/${workspaceId}/${asset.object_id}`)).arrayBuffer()
         await replica.call('putAsset', asset.object_id, bytes)
