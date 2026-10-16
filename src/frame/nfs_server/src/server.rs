@@ -199,6 +199,9 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
             Actor::Anonymous => "anonymous",
         },
     });
+    if let Err(e) = state.ensure_home(&actor) {
+        log::warn!("create home for {:?} failed: {}", actor.user_id(), e.message);
+    }
     let session = state.sessions.create(actor);
     Ok(json!({
         "version": PROTOCOL_VERSION,

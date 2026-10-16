@@ -165,7 +165,8 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 ## 鉴权与权限
 
 - `auth.rs`:token 来源 Bearer > `buckyos_session_token` cookie > `<app_id>_token` cookie;无凭证为匿名。
-  User 主体按 `system/zone_owner_user_id` 区分 owner;System/Device 主体视同 owner。hello 会话绑定身份。
+  User 主体按 `system/zone_owner_user_id` 区分 owner;System/Device 主体视同 owner。hello 会话绑定身份,
+  并按需创建该用户的 `home/<user_id>`(建账号时没有服务创建它)。
 - `acl.rs`:纯路径判定(不访问文件系统,无权与不存在不可区分)。级别 `traverse < read < write < manage`;
   owner 与 `home/<user>` 主人为内置 `manage`;记录 `{inherit, entries[{principal, level}]}` 向下继承,
   principal 为 `user:<id>` / `zone_users` / `public`(只读)。记录随 move 迁移、随 delete 删除。

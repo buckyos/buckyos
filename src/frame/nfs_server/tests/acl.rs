@@ -169,9 +169,15 @@ async fn users_see_only_their_home_and_grants() {
     let bob = s.client(Some("bob")).await;
 
     assert_eq!(owner.names("/").await, vec!["home", "srv"]);
-    assert_eq!(owner.names("/home").await, vec!["alice", "bob"]);
+    assert_eq!(owner.names("/home").await, vec!["alice", "bob", "owner"]);
     assert_eq!(alice.names("/").await, vec!["home"]);
     assert_eq!(alice.names("/home").await, vec!["alice"]);
+    // A new account has no home directory yet; signing in creates it.
+    let dave = s.client(Some("dave")).await;
+    assert!(s.data.join("home/dave").is_dir());
+    assert_eq!(dave.names("/home").await, vec!["dave"]);
+    let listing = dave.ok("list", json!({"at": {"path": "/home/dave"}})).await;
+    assert_eq!(listing["container"]["access_level"], "manage");
     assert_eq!(alice.names("/home/alice/docs").await, vec!["a.txt"]);
     // Forbidden and missing look the same.
     assert_eq!(alice.code("resolve", json!({"at": {"path": "/home/bob/secret.txt"}})).await, "PERMISSION_DENIED");

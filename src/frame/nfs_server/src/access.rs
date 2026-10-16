@@ -207,6 +207,28 @@ impl AppState {
         Ok(child)
     }
 
+    /// Accounts get no home directory when they are created; a signed-in user's
+    /// `home/<user_id>` is created on first use (as smb_service does), so
+    /// the home they fully control is always there to see.
+    pub fn ensure_home(&self, actor: &Actor) -> NfsResult<()> {
+        let (Some(user), Some(home)) = (actor.user_id(), self.config.root(HOME_ROOT)) else {
+            return Ok(());
+        };
+        if user.starts_with('.') || crate::fsutil::validate_name(user).is_err() {
+            return Ok(());
+        }
+        let dir = home.path.join(user);
+        if std::fs::symlink_metadata(&dir).is_ok() {
+            return Ok(());
+        }
+        std::fs::create_dir(&dir)?;
+        self.acls.delete_subtree(&self.db, HOME_ROOT, user)?;
+        if let Ok(node) = self.resolve_dfs_path(HOME_ROOT) {
+            self.bump_dir(&node, "entries_changed", Some(json!({"added": [user]})));
+        }
+        Ok(())
+    }
+
     /// Recursive operation guard: `min` on the target and on every protected
     /// (non-inheriting) record below it.
     pub fn require_subtree(&self, actor: &Actor, root: &str, rel: &str, min: Level, op: &str) -> NfsResult<()> {

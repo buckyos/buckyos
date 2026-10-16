@@ -510,6 +510,8 @@ UTF-8 边界截断到 255 字节。目标目录是自身或源的后代时拒绝
 | `manage` | write + 查看与修改 ACL、grant/revoke |
 
 - 内置规则（不可被记录覆盖）：Zone owner 对一切 `manage`；用户对 `home/<user_id>/**` `manage`。
+  建账号时没有任何服务创建个人目录，nfs-server 在该用户 hello 时按需创建 `home/<user_id>`
+  （与 smb_service 一致；以 `.` 开头或含非法字符的 id 不创建）。
 - ACL 记录挂在路径上：`{inherit, entries[{principal, level}]}`，principal 为 `user:<id>`、
   `zone_users`（任何已登录用户）或 `public`（任何人，只能 `read`）。授权沿目录向下继承，
   多条取最高；`inherit=false` 的记录不再收集上级授权（内置规则仍生效），用于在共享目录中
