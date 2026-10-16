@@ -42,8 +42,8 @@ pub async fn drive(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: 
     let (rid, final_state) = (run_id.clone(), if cancelled { "cancelled" } else { "failed" });
     let outcome = match res {
         Ok(()) if !cancelled => None,
-        Ok(()) => Some(json!({ "code": "RUN_CANCELLED", "detail": "已取消" })),
-        Err(e) => Some(if cancelled { json!({ "code": "RUN_CANCELLED", "detail": "已取消" }) } else { e.to_json() }),
+        Ok(()) => Some(json!({ "code": "RUN_CANCELLED", "detail": "Cancelled" })),
+        Err(e) => Some(if cancelled { json!({ "code": "RUN_CANCELLED", "detail": "Cancelled" }) } else { e.to_json() }),
     };
     let _ = with_ws(&state, &ws_id, move |ws| {
         let run = ws.wish_run(&caller, &rid)?;
@@ -246,19 +246,19 @@ async fn run_xllm(st: &Arc<StageState>, run_dir: &Path, system: String, user: St
     let overrides = TaskOverrides { system: Some(system), tools: Some(true), ..Default::default() };
     let prepared = XllmTask::prepare(&st.workdir, TaskInput::question(user), overrides, &deps)
         .await
-        .map_err(|e| WsError::new(Code::DependencyUnavailable, format!("准备模型运行失败：{e}")))?;
+        .map_err(|e| WsError::new(Code::DependencyUnavailable, format!("Preparing the model run failed: {e}")))?;
     // nothing but this stage's configuration may shape the run (§13.3)
     let own = ctx_file.canonicalize().map(|p| p.display().to_string()).unwrap_or_default();
     if prepared.merged.files.iter().any(|f| *f != own && std::path::Path::new(f).canonicalize().map(|p| p.display().to_string()).unwrap_or_default() != own) {
         return Err(WsError::invalid_op(format!("unexpected .llm_context files above the run directory: {:?}", prepared.merged.files)));
     }
-    let mut run = XllmRun::start(prepared, deps).await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("启动模型运行失败：{e}")))?;
+    let mut run = XllmRun::start(prepared, deps).await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("Starting the model run failed: {e}")))?;
     *st.active.interrupter.lock().unwrap() = Some(run.interrupter());
     if st.cancelled() {
         run.interrupter().interrupt("cancelled by the user");
     }
     set_progress(&st.active, "running");
-    let outcome = run.execute().await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("模型运行失败：{e}")))?;
+    let outcome = run.execute().await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("The model run failed: {e}")))?;
     *st.active.interrupter.lock().unwrap() = None;
     let rec = outcome.record();
     let usage = json!({ "main": rec.usage.main, "llm_requests": rec.usage.llm_requests });
@@ -271,7 +271,7 @@ async fn run_xllm(st: &Arc<StageState>, run_dir: &Path, system: String, user: St
 }
 
 fn section(title: &str, body: &str) -> String {
-    format!("## {title}\n\n{}\n\n", if body.trim().is_empty() { "（无）" } else { body.trim() })
+    format!("## {title}\n\n{}\n\n", if body.trim().is_empty() { "(none)" } else { body.trim() })
 }
 
 fn refinement_lines(payload: &Value) -> String {
@@ -308,20 +308,20 @@ async fn analyze(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<S
         let stage = st.stage.lock().unwrap();
         let p = wish_payload(&stage);
         let map = std::fs::read_to_string(stage.workdir.join("WORKSPACE.md")).unwrap_or_default();
-        let mut u = String::from("# 许愿格（分析阶段）\n\n");
-        u.push_str(&section("原始需求", p["prompt"].as_str().unwrap_or("")));
-        u.push_str(&section("许愿格知识（口径、背景、偏好）", p["knowledge"].as_str().unwrap_or("")));
-        u.push_str(&section("修改意见（以后每次都要遵守）", &refinement_lines(&p)));
-        u.push_str(&section("固定参数（request）", &serde_json::to_string(&stage.request).unwrap_or_default()));
+        let mut u = String::from("# Wish (analysis stage)\n\n");
+        u.push_str(&section("Original request", p["prompt"].as_str().unwrap_or("")));
+        u.push_str(&section("Wish knowledge (definitions, background, preferences)", p["knowledge"].as_str().unwrap_or("")));
+        u.push_str(&section("Refinements (to be followed every time from now on)", &refinement_lines(&p)));
+        u.push_str(&section("Fixed parameters (request)", &serde_json::to_string(&stage.request).unwrap_or_default()));
         if let Some(a) = p.get("analysis") {
             u.push_str(&section(
-                "上一次分析（重新分析时默认沿用其结果名、类型、键和视图）",
-                &format!("context_prompt：{}\n\noutput_contract：{}\n\nchecks：{}", a["context_prompt"].as_str().unwrap_or(""), a["output_contract"], a["checks"]),
+                "Previous analysis (a new analysis keeps its result names, types, keys and views by default)",
+                &format!("context_prompt: {}\n\noutput_contract: {}\n\nchecks: {}", a["context_prompt"].as_str().unwrap_or(""), a["output_contract"], a["checks"]),
             ));
         }
         u.push_str("---\n\n");
         u.push_str(&map);
-        u.push_str("\n\n读完地图后：需要时用 ws_* 工具核实，然后调用 submit_analysis 提交。");
+        u.push_str("\n\nAfter reading the map: verify with the ws_* tools where needed, then submit with submit_analysis.");
         (u, stage.evidence()?)
     };
     let x = run_xllm(st, run_dir, ANALYZE_SYSTEM.to_string(), user, &st.runtime.config.analyze_model, st.runtime.config.analyze_tool_iterations, &[Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query, Kind::SubmitAnalysis], false).await?;
@@ -330,8 +330,8 @@ async fn analyze(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<S
     }
     let accepted = st.analysis.lock().unwrap().take();
     let Some(v) = accepted else {
-        return Err(WsError::new(Code::DependencyUnavailable, format!("模型没有提交被接受的分析（运行状态 {}）{}", x["status"].as_str().unwrap_or("?"),
-            x["error"]["message"].as_str().map(|m| format!("：{m}")).or_else(|| x["limit_reason"].as_str().map(|m| format!("：{m}"))).unwrap_or_default()))
+        return Err(WsError::new(Code::DependencyUnavailable, format!("The model did not submit an accepted analysis (run status {}){}", x["status"].as_str().unwrap_or("?"),
+            x["error"]["message"].as_str().map(|m| format!(": {m}")).or_else(|| x["limit_reason"].as_str().map(|m| format!(": {m}"))).unwrap_or_default()))
             .with_data(json!({ "xllm": x })));
     };
     let candidate = json!({ "wish_id": evidence["wish_id"], "analysis": v.analysis, "inputs": v.inputs, "basis": evidence["basis"], "executed_at": now() });
@@ -344,23 +344,23 @@ fn input_lines(stage: &Stage) -> String {
     let mut out = Vec::new();
     for i in &stage.inputs {
         let meta: Value = std::fs::read_to_string(stage.workdir.join("context/entities").join(&i.entity_id).join("meta.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
-        let mut l = format!("- `{}`：{}「{}」（{}）", i.name, aiworkspace_store::wish::context::type_label(&i.type_id), i.label, meta["handle"].as_str().unwrap_or(""));
+        let mut l = format!("- `{}`: {} \"{}\" ({})", i.name, aiworkspace_store::wish::context::type_label(&i.type_id), i.label, meta["handle"].as_str().unwrap_or(""));
         if let Some(r) = meta["rows"].as_u64() {
-            l.push_str(&format!("，{r} 行"));
+            l.push_str(&format!(", {}", aiworkspace_store::wish::profile::count(r, "row", "rows")));
         }
         if let Some(v) = meta.get("view").filter(|v| v.is_object()) {
-            l.push_str(&format!("，按视图 {} 读取（{}）", v["handle"].as_str().unwrap_or(""), v["summary"].as_str().unwrap_or("")));
+            l.push_str(&format!(", read through view {} ({})", v["handle"].as_str().unwrap_or(""), v["summary"].as_str().unwrap_or("")));
         } else if let Some(s) = &i.selector {
-            l.push_str(&format!("，范围 {s}"));
+            l.push_str(&format!(", range {s}"));
         }
         if i.appended {
-            l.push_str("（上次执行时追加的输入）");
+            l.push_str(" (input appended during the last execution)");
         }
-        l.push_str(&format!("；文件 context/entities/{}/", i.entity_id));
+        l.push_str(&format!("; files in context/entities/{}/", i.entity_id));
         out.push(l);
     }
     if out.is_empty() {
-        "没有数据输入（纯创作任务）".into()
+        "No data inputs (a purely creative task)".into()
     } else {
         out.join("\n")
     }
@@ -393,16 +393,16 @@ fn collector_for(stage: &Stage, program_only: bool) -> WsResult<Collector> {
 /// The analysis must be current and ready before anything executes (§7.3).
 fn ready_to_execute(stage: &Stage) -> WsResult<()> {
     let p = &stage.wish.payload;
-    let Some(a) = p.get("analysis") else { return Err(WsError::invalid_op("这个许愿格还没有分析：先点“分析”")) };
+    let Some(a) = p.get("analysis") else { return Err(WsError::invalid_op("This wish has not been analyzed yet: click \"Analyze\" first")) };
     if aiworkspace_core::wish::needs_analysis(p) {
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "需求、知识、修改意见、输入或执行配置在分析之后改变了：先重新分析"));
+        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "The request, knowledge, refinements, inputs or execution configuration changed after the analysis: analyze again first"));
     }
     if !aiworkspace_core::freshness::analysis_sources_changed(&stage.ctx(), p)?.is_empty() {
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "任务说明引用的文档（口径、规则）在分析之后改变了：先重新分析"));
+        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "Documents the task description relies on (definitions, rules) changed after the analysis: analyze again first"));
     }
     if a["status"] != json!("ready") {
         let blockers: Vec<String> = a["blockers"].as_array().into_iter().flatten().filter_map(|b| b["message"].as_str().map(str::to_string)).collect();
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("分析结论是缺少输入：{}", blockers.join("；"))));
+        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("The analysis concluded that inputs are missing: {}", blockers.join("; "))));
     }
     Ok(())
 }
@@ -431,32 +431,32 @@ async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<S
             write(&stage.workdir.join("program/main.js"), src)?;
         }
         let map = std::fs::read_to_string(stage.workdir.join("WORKSPACE.md")).unwrap_or_default();
-        let mut u = String::from(if repair { "# 许愿格（执行阶段：修复程序）\n\n" } else { "# 许愿格（执行阶段）\n\n" });
-        u.push_str(&section("原始需求", p["prompt"].as_str().unwrap_or("")));
-        u.push_str(&section("许愿格知识（口径、背景、偏好）", p["knowledge"].as_str().unwrap_or("")));
-        u.push_str(&section("修改意见（必须遵守）", &refinement_lines(&p)));
-        u.push_str(&section("任务说明（context 提示词）", a["context_prompt"].as_str().unwrap_or("")));
-        u.push_str(&section("输入（程序中用 aiws.input(输入名) 读取）", &input_lines(&stage)));
-        u.push_str(&section("输出约定", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["output_contract"]).unwrap_or_default())));
-        u.push_str(&section("验收检查（program 型由程序 aiws.check 报告；review 型在 finish 中自评）", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["checks"]).unwrap_or_default())));
-        u.push_str(&section("固定参数（aiws.request）", &serde_json::to_string(&stage.request).unwrap_or_default()));
+        let mut u = String::from(if repair { "# Wish (execution stage: repairing the program)\n\n" } else { "# Wish (execution stage)\n\n" });
+        u.push_str(&section("Original request", p["prompt"].as_str().unwrap_or("")));
+        u.push_str(&section("Wish knowledge (definitions, background, preferences)", p["knowledge"].as_str().unwrap_or("")));
+        u.push_str(&section("Refinements (must be followed)", &refinement_lines(&p)));
+        u.push_str(&section("Task description (context prompt)", a["context_prompt"].as_str().unwrap_or("")));
+        u.push_str(&section("Inputs (read them in the program with aiws.input(input name))", &input_lines(&stage)));
+        u.push_str(&section("Output contract", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["output_contract"]).unwrap_or_default())));
+        u.push_str(&section("Acceptance checks (the program reports program checks with aiws.check; review checks are self-assessed in finish)", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["checks"]).unwrap_or_default())));
+        u.push_str(&section("Fixed parameters (aiws.request)", &serde_json::to_string(&stage.request).unwrap_or_default()));
         u.push_str(&section(
-            "程序",
-            if existing.is_some() { "program/main.js 已有程序（上次应用的或上一轮的）：在它上面做最小修改，保持结果名、字段和键稳定。" } else { "还没有程序：在 program/main.js 中编写。" },
+            "Program",
+            if existing.is_some() { "program/main.js already has a program (the last applied one or the previous round's): make the smallest change to it, keeping result names, fields and keys stable." } else { "No program yet: write it in program/main.js." },
         ));
         if let Some((prun, _)) = &parent {
             let prev = &prun["candidate"];
             if repair {
                 let err = prun["detail"]["error"].clone();
-                u.push_str(&section("程序运行失败（只重跑程序时）", &format!("{}\n\n{}", err["detail"].as_str().unwrap_or(""), prun["detail"]["program_log"].as_str().unwrap_or(""))));
-                u.push_str("请读取输入的最新 schema 与画像，做让程序在新数据上正确运行的最小修改，然后 run_program、finish。direct 结果（文字）保持原样，不需要重新提交。\n\n");
+                u.push_str(&section("Program run failed (when re-running only the program)", &format!("{}\n\n{}", err["detail"].as_str().unwrap_or(""), prun["detail"]["program_log"].as_str().unwrap_or(""))));
+                u.push_str("Read the inputs' latest schema and profile, make the smallest change that makes the program run correctly on the new data, then run_program and finish. Direct results (text) stay as they are and need not be submitted again.\n\n");
             } else {
                 let results: Vec<Value> = prev["results"].as_array().into_iter().flatten().map(|r| json!({ "name": r["name"], "type": r["type"], "approach": r["approach"],
                     "rows": r["table"]["rows"].as_array().map(Vec::len), "fields": r["table"]["fields"], "excerpt": r["markdown"].as_str().map(|m| m.chars().take(300).collect::<String>()) })).collect();
-                u.push_str(&section("上一轮候选", &format!("结果：{}\n检查：{}\nfacts：{}\n摘要：{}", json!(results), prev["checks"], prev["facts"], prev["summary"].as_str().unwrap_or(""))));
+                u.push_str(&section("Previous round's candidate", &format!("Results: {}\nChecks: {}\nfacts: {}\nSummary: {}", json!(results), prev["checks"], prev["facts"], prev["summary"].as_str().unwrap_or(""))));
                 // direct results of the previous round are carried over unless the model resubmits them
-                u.push_str(&section("用户反馈（本轮要满足）", st.feedback.as_deref().unwrap_or("")));
-                u.push_str("在已有程序上修改以满足反馈；不受反馈影响的结果保持不变（direct 结果需要时重新 put_result）。finish 时在 refinements 中写出整理后的要求。\n\n");
+                u.push_str(&section("User feedback (to be satisfied in this round)", st.feedback.as_deref().unwrap_or("")));
+                u.push_str("Change the existing program to satisfy the feedback; results the feedback does not affect stay unchanged (put_result direct results again when needed). In finish, write the distilled requirements in refinements.\n\n");
             }
         }
         u.push_str("---\n\n");
@@ -485,8 +485,8 @@ async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<S
     }
     if st.collector.lock().unwrap().finished.is_none() {
         let tail = st.collector.lock().unwrap().program.as_ref().map(|p| p.logs.clone()).unwrap_or_default();
-        return Err(WsError::new(Code::DependencyUnavailable, format!("执行没有以 finish 结束（运行状态 {}）{}", x["status"].as_str().unwrap_or("?"),
-            x["error"]["message"].as_str().map(|m| format!("：{m}")).or_else(|| x["limit_reason"].as_str().map(|m| format!("：{m}"))).unwrap_or_default()))
+        return Err(WsError::new(Code::DependencyUnavailable, format!("The execution did not end with finish (run status {}){}", x["status"].as_str().unwrap_or("?"),
+            x["error"]["message"].as_str().map(|m| format!(": {m}")).or_else(|| x["limit_reason"].as_str().map(|m| format!(": {m}"))).unwrap_or_default()))
             .with_data(json!({ "xllm": x, "program_log": tail })));
     }
     let (mut candidate, evidence) = {
@@ -564,9 +564,9 @@ async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Sta
         let stage = st.stage.lock().unwrap();
         let p = &stage.wish.payload;
         if p.get("analysis").is_none() {
-            return Err(WsError::invalid_op("这个许愿格还没有分析"));
+            return Err(WsError::invalid_op("This wish has not been analyzed yet"));
         }
-        let src = program_source(&stage).ok_or_else(|| WsError::invalid_op("这个许愿格还没有本服务能运行的程序：先执行一次（生成）"))?;
+        let src = program_source(&stage).ok_or_else(|| WsError::invalid_op("This wish has no program this service can run yet: execute it once first (generate)"))?;
         write(&stage.workdir.join("program/main.js"), &src)?;
         *st.collector.lock().unwrap() = collector_for(&stage, true)?;
     }
@@ -576,23 +576,23 @@ async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Sta
     let log = out.tail();
     let fail = |msg: String| WsError::sub(Code::InvalidOperation, "PROGRAM_FAILED", msg).with_data(json!({ "program_log": log }));
     if out.timed_out {
-        return Err(fail(format!("程序运行超时（{} 秒）", st.runtime.config.program_timeout_secs)));
+        return Err(fail(format!("The program timed out ({} s)", st.runtime.config.program_timeout_secs)));
     }
-    let raw = out.results.clone().ok_or_else(|| fail(format!("程序没有写出结果（退出码 {:?}）", out.code)))?;
+    let raw = out.results.clone().ok_or_else(|| fail(format!("The program wrote no results (exit code {:?})", out.code)))?;
     if let Some(e) = raw.get("error").and_then(Value::as_str) {
-        return Err(fail(format!("程序抛出错误：{}", e.lines().next().unwrap_or(""))));
+        return Err(fail(format!("The program threw an error: {}", e.lines().next().unwrap_or(""))));
     }
     let source = std::fs::read_to_string(st.workdir.join("program/main.js")).unwrap_or_default();
     let (mut candidate, evidence) = {
         let stage = st.stage.lock().unwrap();
         let mut c = st.collector.lock().unwrap();
-        let run = program_output(&c, &raw, &source, &log).map_err(|errs| fail(format!("程序结果没有通过校验：{}", errs.join("；"))))?;
+        let run = program_output(&c, &raw, &source, &log).map_err(|errs| fail(format!("The program's results failed validation: {}", errs.join("; "))))?;
         c.program = Some(run);
         let blocking = c.blocking();
         if !blocking.is_empty() {
-            return Err(fail(format!("程序结果不完整：{}", blocking.join("；"))));
+            return Err(fail(format!("The program's results are incomplete: {}", blocking.join("; "))));
         }
-        c.finished = Some(json!({ "summary": "只重跑程序（没有调用模型）" }));
+        c.finished = Some(json!({ "summary": "Re-ran only the program (no model call)" }));
         (c.candidate(), stage.evidence()?)
     };
     st.note_program_run();
@@ -709,21 +709,21 @@ fn check_mock(results: &[Value]) -> WsResult<()> {
             let (n, t) = (p["name"].as_str().unwrap_or(""), p["type"].as_str().unwrap_or("text"));
             if let Some(v) = r["record"]["props"].get(n) {
                 if !check_value(t, v) {
-                    bad.push(format!("「{name}」的「{n}」声明为 {t}，值是 {v}"));
+                    bad.push(format!("\"{name}\": \"{n}\" is declared {t}, but its value is {v}"));
                 }
             }
         }
         for f in r["table"]["fields"].as_array().into_iter().flatten() {
             let (n, t) = (f["name"].as_str().unwrap_or(""), f["type"].as_str().unwrap_or("text"));
             if let Some(v) = r["table"]["rows"].as_array().into_iter().flatten().filter_map(|row| row.get(n)).find(|v| !check_value(t, v)) {
-                bad.push(format!("「{name}」的字段「{n}」声明为 {t}，有值是 {v}"));
+                bad.push(format!("\"{name}\": field \"{n}\" is declared {t}, but has the value {v}"));
             }
         }
     }
     if bad.is_empty() {
         Ok(())
     } else {
-        Err(WsError::invalid_schema(format!("模拟结果不合法：{}", bad.join("；"))))
+        Err(WsError::invalid_schema(format!("The simulated results are invalid: {}", bad.join("; "))))
     }
 }
 
@@ -757,9 +757,9 @@ async fn mock(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Stag
                 .map(|f| json!({ "object_id": f["object_id"], "media_type": f["media_type"], "duration_ms": f["duration_ms"], "caption": f["caption"] })).collect();
             let duration: u64 = frames.iter().filter_map(|f| f["duration_ms"].as_u64()).sum();
             r["record"] = json!({
-                "properties": [{ "name": "帧", "type": "text", "key": "frames" }, { "name": "时长(毫秒)", "type": "number", "key": "duration" }, { "name": "说明", "type": "text", "key": "caption" },
-                               { "name": "宽", "type": "number", "key": "width" }, { "name": "高", "type": "number", "key": "height" }],
-                "props": { "帧": serde_json::to_string(&frames).unwrap_or_default(), "时长(毫秒)": duration, "说明": r["video"]["caption"], "宽": r["video"]["width"], "高": r["video"]["height"] },
+                "properties": [{ "name": "Frames", "type": "text", "key": "frames" }, { "name": "Duration (ms)", "type": "number", "key": "duration" }, { "name": "Caption", "type": "text", "key": "caption" },
+                               { "name": "Width", "type": "number", "key": "width" }, { "name": "Height", "type": "number", "key": "height" }],
+                "props": { "Frames": serde_json::to_string(&frames).unwrap_or_default(), "Duration (ms)": duration, "Caption": r["video"]["caption"], "Width": r["video"]["width"], "Height": r["video"]["height"] },
             });
             r.as_object_mut().unwrap().remove("frames");
             r.as_object_mut().unwrap().remove("video");

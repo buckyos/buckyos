@@ -109,24 +109,24 @@ fn map_tools_analysis_and_writeback() {
     let b_orders = handle_of(&st, "blk-orders");
     let t_orders = handle_of(&st, "orders");
     // task location, direction, view conditions by name, the frame, the note and knowledge
-    assert!(map.contains("画布「Q3 经营」") && map.contains("框「华东复盘」"), "{map}");
-    assert!(map.contains(&format!("触发时选中：{b_orders}")), "{map}");
-    let line = map.lines().find(|l| l.contains(&b_orders) && l.contains("表格视图")).unwrap();
-    assert!(line.contains("左侧相邻") && line.contains("同框") && line.contains("地区=华东") && line.contains("月份 降序"), "{line}");
+    assert!(map.contains("canvas \"Q3 经营\"") && map.contains("frame \"华东复盘\""), "{map}");
+    assert!(map.contains(&format!("Selected when triggered: {b_orders}")), "{map}");
+    let line = map.lines().find(|l| l.contains(&b_orders) && l.contains("table view")).unwrap();
+    assert!(line.contains("to the left, adjacent") && line.contains("same frame") && line.contains("地区=华东") && line.contains("月份 descending"), "{line}");
     assert!(map.contains("value=销售额(@T1.f4)") && map.contains("by=月份(@T1.f1)"), "{map}");
-    assert!(map.contains("框「华东复盘」（纯 UI 框，@W 位于其中）") && map.contains("便签「9 月数据含未结算订单"), "{map}");
+    assert!(map.contains("frame \"华东复盘\" (a pure UI frame; @W is inside it)") && map.contains("sticky note \"9 月数据含未结算订单"), "{map}");
     assert!(map.contains("9 月数据含未结算订单") && map.contains("季度按自然季度"), "{map}");
-    assert!(map.contains(&format!("{t_orders} 表「订单」 /data/销售/订单 · 30 行 · 5 列")), "{map}");
-    assert!(map.contains("地区 select（华东 73%"), "{map}");
+    assert!(map.contains(&format!("{t_orders} table \"订单\" /data/销售/订单 · 30 rows · 5 columns")), "{map}");
+    assert!(map.contains("地区 select (华东 73%"), "{map}");
     // the snapshot holds while the Workspace moves on
     let rev = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o1", "field_id": "amount" }))).unwrap()["content"]["rev"].as_u64().unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "table.set_values", "source_id": "orders", "values": [{ "record_id": "o1", "field_id": "amount", "value": "999.00", "expect": { "rev": rev } }] }]));
     let q = st.ws_query(&json!({ "table_or_view": b_orders, "limit": 50 })).unwrap();
-    assert!(q.contains("按视图") && q.contains("共 22 行") && !q.contains("999") && q.contains("110.5"), "{q}");
+    assert!(q.contains("read through view") && q.contains("22 rows in total") && !q.contains("999") && q.contains("110.5"), "{q}");
     let q2 = st.ws_query(&json!({ "table_or_view": t_orders, "filter": { "状态": "未结算" } })).unwrap();
-    assert!(q2.contains("共 1 行") && q2.contains("客户1"), "{q2}");
+    assert!(q2.contains("1 row in total") && q2.contains("客户1"), "{q2}");
     assert!(st.ws_find(&json!({ "text": "含税" })).unwrap().contains("口径说明"));
-    assert!(st.ws_neighbors(&json!({ "cell": handle_of(&st, "blk-wish") })).unwrap().contains("上方相邻"));
+    assert!(st.ws_neighbors(&json!({ "cell": handle_of(&st, "blk-wish") })).unwrap().contains("above, adjacent"));
     assert!(st.ws_profile(&json!({ "target": b_orders })).unwrap().contains("\"rows\": 30"));
     assert!(st.ws_read(&json!({ "target": "@T99" })).unwrap_err().detail.contains("unknown handle"));
 
@@ -143,7 +143,7 @@ fn map_tools_analysis_and_writeback() {
         "blockers": [], "warnings": []
     });
     let bad = st.validate_analysis(&analysis).unwrap().unwrap_err();
-    assert!(bad.iter().any(|p| p.contains(&handle_of(&st, "blk-chart")) && p.contains("没有绑定")), "an unbound handle in the prompt: {bad:?}");
+    assert!(bad.iter().any(|p| p.contains(&handle_of(&st, "blk-chart")) && p.contains("not bound as inputs")), "an unbound handle in the prompt: {bad:?}");
     let mut fixed = analysis.clone();
     fixed["context_prompt"] = json!(format!("读取 {b_orders} 的全部记录，排除状态=未结算，按月汇总 {t_orders}.f4；口径见 {}", handle_of(&st, "rules")));
     let mut wrong = fixed.clone();
@@ -158,7 +158,7 @@ fn map_tools_analysis_and_writeback() {
     assert_eq!(v.inputs[0]["selector"], json!({ "kind": "table_view", "cell_id": "blk-orders" }));
     assert_eq!(v.inputs[1]["entity_id"], "rules");
     let cp = v.analysis["context_prompt"].as_str().unwrap();
-    assert!(!cp.contains('@') && cp.contains("输入 `sales`") && cp.contains("输入 `rules`") && cp.contains("`sales` 的字段「销售额」"), "{cp}");
+    assert!(!cp.contains('@') && cp.contains("input `sales`") && cp.contains("input `rules`") && cp.contains("field \"销售额\" of `sales`"), "{cp}");
     // write-back: one commit; then a prompt change makes it need analysis again
     let mut cand = json!({ "wish_id": "wish-q3", "analysis": v.analysis, "inputs": v.inputs });
     cand["basis"] = st.evidence().unwrap()["basis"].clone();
@@ -211,7 +211,7 @@ fn execute_collect_plan_apply_and_refresh() {
     assert_eq!(inputs["sales"]["selector"]["kind"], "table_view");
     // reading undeclared data during execution appends it, recorded and materialized
     let note = st.ws_read(&json!({ "target": handle_of(&st, "rules") })).unwrap();
-    assert!(note.contains("执行时追加的输入 `input1`") || note.contains("追加的输入"), "{note}");
+    assert!(note.contains("input `input1` appended during execution") || note.contains("appended during execution"), "{note}");
     assert!(work.path().join(&e1).join("context/entities/rules/content.md").exists());
     let ev = st.evidence().unwrap();
     let rs = ev["read_set"].as_array().unwrap();
@@ -223,13 +223,13 @@ fn execute_collect_plan_apply_and_refresh() {
     // collection: contract rules and the on-the-spot errors
     let mut c = Collector { contract: analysis_contract(&ws), checks_def: analysis_checks(&ws), workdir: work.path().join(&e1), inputs: st.input_infos().unwrap(), ..Default::default() };
     let direct_table = json!({ "name": "commentary", "type": "table", "rows": [] });
-    assert!(c.normalize(&direct_table, "direct").unwrap_err()[0].contains("程序"));
+    assert!(c.normalize(&direct_table, "direct").unwrap_err()[0].contains("program"));
     let program_text = json!({ "name": "monthly", "type": "text", "markdown": "x" });
-    assert!(c.normalize(&program_text, "direct").unwrap_err()[0].contains("程序"));
+    assert!(c.normalize(&program_text, "direct").unwrap_err()[0].contains("program"));
     let extra = json!({ "name": "bonus", "type": "text", "markdown": "x" });
-    assert!(c.normalize(&extra, "direct").unwrap_err()[0].contains("不在输出约定中"));
+    assert!(c.normalize(&extra, "direct").unwrap_err()[0].contains("not in the output contract"));
     let dup = monthly_output(&[("2026-07-01", 1.0, 1), ("2026-07-01", 2.0, 1)], 3.0);
-    assert!(program_output(&c, &dup, "src", "").unwrap_err().iter().any(|e| e.contains("重复")));
+    assert!(program_output(&c, &dup, "src", "").unwrap_err().iter().any(|e| e.contains("duplicate")));
     let out = monthly_output(&[("2026-07-01", 1000.5, 8), ("2026-08-01", 1100.5, 7), ("2026-09-01", 1200.5, 7)], 3301.5);
     c.program = Some(program_output(&c, &out, "export default async function main(aiws) {}", "").unwrap());
     assert!(c.blocking().iter().any(|b| b.contains("commentary")));
@@ -339,7 +339,7 @@ fn execute_collect_plan_apply_and_refresh() {
     assert_eq!(ids(&ws, &monthly).len(), 3);
     // the stale preview of an older run cannot be applied: the wish's last run moved on
     let again = ws.wish_plan(&alice(), &PlanRequest { run_id: &p2, candidate: &cand2, choices: &json!({}), location: &json!({}) }).unwrap();
-    assert!(!again.ready && again.summary["problems"].to_string().contains("另一组结果"));
+    assert!(!again.ready && again.summary["problems"].to_string().contains("another set of results"));
 }
 
 #[test]
@@ -486,7 +486,7 @@ fn generation_cycles_are_refused_through_other_wishes_and_folders() {
     for target in ["r-own", "r-other", "f-mid"] {
         let h = st.handles.get(target).unwrap().to_string();
         let problems = st.validate_analysis(&a(&h)).unwrap().unwrap_err();
-        assert!(problems.iter().any(|p| p.contains("生成环")), "{target}: {problems:?}");
+        assert!(problems.iter().any(|p| p.contains("generation cycle")), "{target}: {problems:?}");
     }
     let h = st.handles.get("orders").unwrap().to_string();
     assert!(st.validate_analysis(&a(&h)).unwrap().is_ok());

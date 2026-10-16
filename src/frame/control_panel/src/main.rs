@@ -266,15 +266,26 @@ impl ControlPanelServer {
         }
     }
 
+    /// The storage behind the mounted disks, each counted once: container layers and repeated
+    /// mounts of one file system would otherwise multiply the capacity (name-lib `disk_space`).
+    pub(crate) fn distinct_disks(disks: &Disks) -> Vec<name_lib::DiskSpaceSample> {
+        name_lib::distinct_disk_samples(disks.list().iter().map(|disk| name_lib::DiskSpaceSample {
+            device: disk.name().to_string_lossy().into_owned(),
+            file_system: disk.file_system().to_string_lossy().into_owned(),
+            mount_point: disk.mount_point().to_string_lossy().into_owned(),
+            total: disk.total_space(),
+            available: disk.available_space(),
+        }))
+    }
+
     fn sum_disks(disks: &Disks) -> (u64, u64, Vec<Value>) {
         let mut total_bytes: u64 = 0;
         let mut used_bytes: u64 = 0;
         let mut details: Vec<Value> = Vec::new();
 
-        for disk in disks.list().iter() {
-            let total = disk.total_space();
-            let available = disk.available_space();
-            let used = total.saturating_sub(available);
+        for disk in Self::distinct_disks(disks) {
+            let total = disk.total;
+            let used = disk.used();
             total_bytes = total_bytes.saturating_add(total);
             used_bytes = used_bytes.saturating_add(used);
             let usage_percent = if total > 0 {
@@ -284,12 +295,12 @@ impl ControlPanelServer {
             };
 
             details.push(json!({
-                "label": disk.name().to_string_lossy(),
+                "label": disk.device,
                 "totalGb": bytes_to_gb(total),
                 "usedGb": bytes_to_gb(used),
                 "usagePercent": usage_percent,
-                "fs": disk.file_system().to_string_lossy(),
-                "mount": disk.mount_point().to_string_lossy(),
+                "fs": disk.file_system,
+                "mount": disk.mount_point,
             }));
         }
 

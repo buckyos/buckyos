@@ -27,7 +27,7 @@ pub fn plain_value(def: &FieldDef, v: &Value) -> Value {
 
 /// Text that parses as a number once separators and currency/percent signs are removed.
 pub fn numeric_text(s: &str) -> Option<f64> {
-    let t: String = s.chars().filter(|c| !matches!(c, ',' | '¥' | '$' | '%' | '￥' | ' ' | '\u{a0}')).collect();
+    let t: String = s.chars().filter(|c| !matches!(c, ',' | '¥' | '$' | '%' | '￥' | ' ' | '\u{a0}')).collect(); // i18n-exempt: input: the full-width yuan sign in user data
     if t.is_empty() {
         return None;
     }
@@ -47,6 +47,11 @@ fn short(v: &Value, max: usize) -> Value {
         Value::String(s) if s.chars().count() > max => json!(format!("{}…", s.chars().take(max).collect::<String>())),
         _ => v.clone(),
     }
+}
+
+/// A count with its English noun: `1 row`, `30 rows`.
+pub fn count(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 fn fmt_num(n: f64) -> String {
@@ -183,16 +188,16 @@ pub fn table_profile(ctx: &dyn ReadCtx, table: &EntityRow, field_handles: &[Stri
                 );
             }
             if f.def.ty == FieldType::Text && distinct as u64 != non_null && (f.field_id == table.payload.get("title_field_id").and_then(Value::as_str).unwrap_or("") || i == 0) {
-                issues.push(format!("字段「{}」有重复值（{} 行只有 {} 个不同值）", f.def.name, non_null, distinct));
+                issues.push(format!("Field \"{}\" has duplicate values ({} have only {})", f.def.name, count(non_null, "row", "rows"), count(distinct as u64, "distinct value", "distinct values")));
             }
         }
         if non_null == 0 && rows > 0 {
-            issues.push(format!("字段「{}」全部为空", f.def.name));
+            issues.push(format!("Field \"{}\" is entirely empty", f.def.name));
         } else if a.nulls > 0 && matches!(f.def.ty, FieldType::Number | FieldType::Decimal) {
-            issues.push(format!("数值字段「{}」有 {} 个空值", f.def.name, a.nulls));
+            issues.push(format!("Numeric field \"{}\" has {}", f.def.name, count(a.nulls, "empty value", "empty values")));
         }
         if a.texts >= 3 && a.numeric_text * 10 >= a.texts * 8 {
-            issues.push(format!("字段「{}」是文本类型，但 {}/{} 个值是数字（计算前需要转换）", f.def.name, a.numeric_text, a.texts));
+            issues.push(format!("Field \"{}\" is a text field, but {}/{} values are numbers (convert them before calculating)", f.def.name, a.numeric_text, a.texts));
         }
         if a.nums.len() >= 8 {
             let mut v = a.nums.clone();
@@ -203,7 +208,7 @@ pub fn table_profile(ctx: &dyn ReadCtx, table: &EntityRow, field_handles: &[Stri
             if iqr > 0.0 {
                 let n = v.iter().filter(|x| **x < q1 - 3.0 * iqr || **x > q3 + 3.0 * iqr).count();
                 if n > 0 {
-                    issues.push(format!("字段「{}」有 {} 个异常值（超出四分位距 3 倍；范围 {}…{}）", f.def.name, n, fmt_num(v[0]), fmt_num(v[v.len() - 1])));
+                    issues.push(format!("Field \"{}\" has {} (beyond 3 times the interquartile range; range {}…{})", f.def.name, count(n as u64, "outlier", "outliers"), fmt_num(v[0]), fmt_num(v[v.len() - 1])));
                 }
             }
         }
@@ -264,26 +269,26 @@ pub fn entity_profile(ctx: &dyn ReadCtx, e: &EntityRow, field_handles: &[String]
     })
 }
 
-/// One line describing a profile for the map (`· 12,480 行 · 11 列`).
+/// One line describing a profile for the map (`12480 rows · 11 columns`).
 pub fn profile_line(p: &Value) -> String {
     match p["kind"].as_str().unwrap_or("") {
-        "table" => format!("{} 行 · {} 列", p["rows"], p["fields"].as_array().map_or(0, Vec::len)),
-        "record" => format!("{} 个属性", p["properties"].as_array().map_or(0, Vec::len)),
+        "table" => format!("{} · {}", count(p["rows"].as_u64().unwrap_or(0), "row", "rows"), count(p["fields"].as_array().map_or(0, Vec::len) as u64, "column", "columns")),
+        "record" => count(p["properties"].as_array().map_or(0, Vec::len) as u64, "property", "properties"),
         "richtext" => {
             let h: Vec<&str> = p["headings"].as_array().into_iter().flatten().filter_map(Value::as_str).take(6).collect();
             if h.is_empty() {
-                format!("{} 字", p["chars"])
+                count(p["chars"].as_u64().unwrap_or(0), "character", "characters")
             } else {
-                format!("{} 字 · 标题：{}", p["chars"], h.join(" / "))
+                format!("{} · headings: {}", count(p["chars"].as_u64().unwrap_or(0), "character", "characters"), h.join(" / "))
             }
         }
         "asset" => format!("{} {}", p["media_type"].as_str().unwrap_or(""), p["file_name"].as_str().unwrap_or("")),
-        "folder" => format!("{} 项", p["members"]),
+        "folder" => count(p["members"].as_u64().unwrap_or(0), "item", "items"),
         _ => String::new(),
     }
 }
 
-/// Field lines for the map: `f2 月份 date（2026-01-01…2026-09-30）· f4 地区 select（华东 52%、华南 31%）`.
+/// Field lines for the map: `f2 月份 date (2026-01-01…2026-09-30)`, `f4 地区 select (华东 52%, 华南 31%; 3 empty)`.
 pub fn field_lines(p: &Value, max_fields: usize) -> Vec<String> {
     let mut out = Vec::new();
     for f in p["fields"].as_array().into_iter().flatten().take(max_fields) {
@@ -295,13 +300,13 @@ pub fn field_lines(p: &Value, max_fields: usize) -> Vec<String> {
             extra.push(format!("{}…{}", show(&f["min"]), show(&f["max"])));
         }
         if let Some(top) = f["top"].as_array().filter(|t| !t.is_empty()) {
-            extra.push(top.iter().take(4).map(|t| format!("{} {}", t[0].as_str().unwrap_or(""), t[1].as_str().unwrap_or(""))).collect::<Vec<_>>().join("、"));
+            extra.push(top.iter().take(4).map(|t| format!("{} {}", t[0].as_str().unwrap_or(""), t[1].as_str().unwrap_or(""))).collect::<Vec<_>>().join(", "));
         }
         if f["nulls"].as_u64().unwrap_or(0) > 0 {
-            extra.push(format!("{} 个空值", f["nulls"]));
+            extra.push(format!("{} empty", f["nulls"]));
         }
         if !extra.is_empty() {
-            s.push_str(&format!("（{}）", extra.join("，")));
+            s.push_str(&format!(" ({})", extra.join("; ")));
         }
         out.push(s);
     }

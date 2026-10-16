@@ -227,19 +227,19 @@ impl Workspace {
                              "values": values, "derived": { "program": MOCK_PROGRAM, "inputs": inputs } }));
         }
         let blocks = [
-            json!({ "type": "heading", "attrs": { "block_id": "sum-title", "level": 2 }, "content": [{ "type": "text", "text": "任务摘要（模拟生成）" }] }),
-            para("sum-stats", &format!("共 {total} 项任务，未完成 {open} 项，逾期 {overdue} 项。")),
-            para("sum-risk", &if high_titles.is_empty() { "没有逾期任务。".to_string() } else { format!("逾期：{}", high_titles.join("、")) }),
+            json!({ "type": "heading", "attrs": { "block_id": "sum-title", "level": 2 }, "content": [{ "type": "text", "text": "Task summary (simulated)" }] }),
+            para("sum-stats", &format!("Tasks: {total} in total, {open} open, {overdue} overdue.")),
+            para("sum-risk", &if high_titles.is_empty() { "No overdue tasks.".to_string() } else { format!("Overdue: {}", high_titles.join(", ")) }),
         ];
         match ctx.entity(&summary_id)?.filter(|e| e.alive()) {
             None => {
                 ops.push(json!({ "op": "entity.create", "entity_id": summary_id, "type_id": TYPE_RICHTEXT, "parent_id": parent_id,
-                                 "order_key": p("summary_order_key", "y"), "name": "任务摘要",
+                                 "order_key": p("summary_order_key", "y"), "name": "Task summary",
                                  "payload": { "content": { "type": "doc", "content": blocks } } }));
                 if ctx.entity(&cell_id)?.is_none() {
                     ops.push(json!({ "op": "entity.create", "entity_id": cell_id, "type_id": TYPE_CELL, "parent_id": surface_id,
                                      "order_key": p("cell_order_key", "z"),
-                                     "payload": { "source_ref": { "entity_id": summary_id }, "view": { "type": "richtext" }, "title": "任务摘要" } }));
+                                     "payload": { "source_ref": { "entity_id": summary_id }, "view": { "type": "richtext" }, "title": "Task summary" } }));
                 }
             }
             Some(_) => {
@@ -295,7 +295,7 @@ impl Workspace {
         }
         let candidate = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
                                 "idempotency_key": format!("run/{run_id}"), "origin": "program", "run_id": run_id,
-                                "message": format!("{MOCK_PROGRAM}（模拟结果）"), "preconditions": pre, "operations": ops });
+                                "message": format!("{MOCK_PROGRAM} (simulated result)"), "preconditions": pre, "operations": ops });
         Ok((candidate, inputs, json!(warnings)))
     }
 }

@@ -88,6 +88,7 @@ pub fn store_value(ty: FieldType, scale: Option<u8>, options: &BTreeMap<String, 
         },
         FieldType::Boolean => match v {
             Value::Bool(b) => json!(b),
+            // i18n-exempt: "是" (Chinese "yes") in a result value is input
             Value::String(s) => json!(matches!(s.as_str(), "true" | "是" | "yes" | "1")),
             Value::Number(n) => json!(n.as_f64().unwrap_or(0.0) != 0.0),
             _ => return None,
@@ -111,6 +112,7 @@ pub fn store_value(ty: FieldType, scale: Option<u8>, options: &BTreeMap<String, 
         FieldType::MultiSelect => {
             let list: Vec<Value> = match v {
                 Value::Array(a) => a.iter().filter_map(|x| x.as_str().and_then(|s| options.get(s)).map(|o| json!(o))).collect(),
+                // i18n-exempt: Chinese list separators in a result value are input
                 Value::String(s) => s.split([',', '，', '、']).map(str::trim).filter(|s| !s.is_empty()).filter_map(|s| options.get(s)).map(|o| json!(o)).collect(),
                 _ => return None,
             };
@@ -246,8 +248,8 @@ impl Workspace {
             preconditions.push(json!({ "target": { "entity_id": wish_id, "selector": { "kind": "doc_key", "key": k } }, "expect": { "rev": at_start } }));
             if wish.key_rev(k) != at_start {
                 p.problems.push(match *k {
-                    "last_run" => "这个许愿格在本次运行开始后已经应用过另一组结果：请重新执行（或重新预览后选择新建）".to_string(),
-                    _ => format!("运行开始后许愿格的 {k} 已被修改：这个候选对应旧的配置，不能应用"),
+                    "last_run" => "This wish block has applied another set of results since this run started: run it again (or preview again and choose to create a new set)".to_string(),
+                    _ => format!("The wish block's {k} was modified after the run started: this candidate was made for the old configuration and cannot be applied"),
                 });
             }
         }
@@ -263,9 +265,9 @@ impl Workspace {
         let wish_parent = p.ctx.edge(&wish_id)?.map(|e| e.parent_id).unwrap_or_else(|| DATA_ID.to_string());
         let container = output.get("container_id").and_then(Value::as_str).unwrap_or(&wish_parent).to_string();
         if p.alive(&container)?.is_none() {
-            p.problems.push(format!("输出位置 {container} 不存在：请修改许愿格的输出设置"));
+            p.problems.push(format!("Output location {container} does not exist: change the wish block's output settings"));
         }
-        let out_name = output.get("name").and_then(Value::as_str).unwrap_or("结果").to_string();
+        let out_name = output.get("name").and_then(Value::as_str).unwrap_or("Results").to_string();
         let last_run = payload.get("last_run").cloned().unwrap_or(json!({}));
         let prev_bindings: BTreeMap<String, Value> = current_results(payload).into_iter().collect();
         let seq = last_run.get("seq").and_then(Value::as_u64).unwrap_or(0) + 1;
@@ -286,7 +288,7 @@ impl Workspace {
         };
         if let Some(s) = &surface {
             if !p.alive(s)?.is_some_and(|e| e.payload.get("kind").and_then(Value::as_str) == Some("surface")) {
-                p.problems.push(format!("输出画布 {s} 不存在：请修改许愿格的输出画布，结果不会落到别的画布上"));
+                p.problems.push(format!("Output canvas {s} does not exist: change the wish block's output canvas; results are never placed on another canvas"));
             }
         }
         let anchor = match &origin_cell {
@@ -339,10 +341,10 @@ impl Workspace {
             if let (Some(b), Some(e)) = (&binding, &existing) {
                 let was = b["type"].as_str().unwrap_or("");
                 if was != ty && ty != "table_columns" {
-                    p.problems.push(format!("结果「{name}」的类型从 {was} 变为 {ty}：不能原地转换，请换一个结果名，或改为“每次新建一组”"));
+                    p.problems.push(format!("The type of result \"{name}\" changed from {was} to {ty}: it cannot be converted in place; use a different result name, or switch to \"Create a new set each time\""));
                 }
                 if e.derived.as_ref().and_then(|d| d.get("wish_id")).and_then(Value::as_str) != Some(wish_id.as_str()) {
-                    p.problems.push(format!("结果「{name}」的目标 {} 不属于这个许愿格：不会接管", e.entity_id));
+                    p.problems.push(format!("The target {} of result \"{name}\" does not belong to this wish block: it will not be taken over", e.entity_id));
                 }
             }
             if existing.is_none() && ty != "table_columns" {
@@ -480,7 +482,7 @@ impl Workspace {
                 "image" | "asset" => plan_asset(&mut p, it, &parent)?,
                 "html" => plan_html(&mut p, it, &parent, &wish_id, &mut binding)?,
                 t => {
-                    p.problems.push(format!("结果「{}」的类型 {t} 不支持", it.name));
+                    p.problems.push(format!("Result \"{}\" has unsupported type {t}", it.name));
                     false
                 }
             };
@@ -648,14 +650,14 @@ impl Workspace {
                     p.ops.insert(
                         if folder_exists { 0 } else { 1 },
                         json!({ "op": "entity.create", "entity_id": group_id, "type_id": TYPE_CONTAINER, "parent_id": s, "order_key": key, "placement": rect,
-                                "payload": { "kind": "group", "layout": { "mode": "free" }, "title": format!("{title}{}", if simulated { "（模拟）" } else { "" }) } }),
+                                "payload": { "kind": "group", "layout": { "mode": "free" }, "title": format!("{title}{}", if simulated { " (simulated)" } else { "" }) } }),
                     );
                     group_rect = rect;
                 }
             }
         }
         if !group_exists && cells_to_place.is_empty() && surface.is_some() && p.ops.iter().any(|o| o["parent_id"] == json!(group_id)) {
-            p.problems.push("内部错误：结果组缺失".into());
+            p.problems.push("Internal error: the result group is missing".into());
         }
         // ---- the wish: last run, program, refinements, appended inputs — the same commit (§11.4)
         let checks = cand.get("checks").cloned().unwrap_or(json!([]));
@@ -670,15 +672,15 @@ impl Workspace {
         wish_keys.push(json!({ "key": "last_run", "value": last, "expect": { "rev": wish.key_rev("last_run") } }));
         p.ops.push(json!({ "op": "entity.set_keys", "entity_id": wish_id, "keys": wish_keys }));
         if p.destructive && !p.confirm_structure {
-            p.problems.push("结构变化会删除行或字段：请在预览中确认结构差异后再应用".into());
+            p.problems.push("Structure changes will delete rows or fields: confirm the structure differences in the preview before applying".into());
         }
         let mut plan = Plan { operations: std::mem::take(&mut p.ops), preconditions, assets: std::mem::take(&mut p.assets), ..Default::default() };
         let size = canonical_json(&json!({ "o": plan.operations })).map(|s| s.len()).unwrap_or(0);
         if size > MAX_PLAN_BYTES {
-            p.problems.push(format!("应用内容约 {} MiB，超过单次提交上限：请缩小结果规模", size / (1024 * 1024)));
+            p.problems.push(format!("The application is about {} MiB, over the limit for a single commit: reduce the size of the results", size / (1024 * 1024)));
         }
         if plan.operations.len() > 9000 {
-            p.problems.push("应用包含的操作过多：请缩小结果规模".into());
+            p.problems.push("The application contains too many operations: reduce the size of the results".into());
         }
         let blocking_checks = false; // failed checks need confirmation, not a block (§8.7)
         let failed_checks: Vec<Value> = checks.as_array().into_iter().flatten().filter(|c| c["status"] == json!("failed")).cloned().collect();
@@ -1062,7 +1064,7 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row
             record_id_for_key(&key.iter().map(|k| r.get(k).cloned().unwrap_or(Value::Null)).collect::<Vec<_>>())
         };
         if !seen.insert(id.clone()) {
-            p.problems.push(format!("结果「{}」的键 {} 有重复值", it.name(), key.join("+")));
+            p.problems.push(format!("Result \"{}\" has duplicate values for key {}", it.name(), key.join("+")));
             break;
         }
         let mut vals = Map::new();
@@ -1119,7 +1121,7 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row
                             ops.push(json!({ "op": "table.delete_field", "source_id": sid, "field_id": old.field_id, "expect": { "rev": old.def_rev } }));
                             p.destructive = true;
                         } else {
-                            p.problems.push(format!("结果「{}」的字段「{}」与人工添加的同名字段冲突", it.name(), f.name));
+                            p.problems.push(format!("Field \"{1}\" of result \"{0}\" conflicts with a manually added field of the same name", it.name(), f.name));
                             continue;
                         }
                     } else {
@@ -1220,7 +1222,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
     let c = &it.r()["columns"];
     let tid = c["target_id"].as_str().unwrap_or("").to_string();
     let Some(table) = p.alive(&tid)?.filter(|t| t.type_id == TYPE_TABLE) else {
-        p.problems.push(format!("派生列「{}」的目标表不存在", it.name()));
+        p.problems.push(format!("The target table of derived-column result \"{}\" does not exist", it.name()));
         return Ok(false);
     };
     let fields = live_fields(&p.ctx, &tid)?;
@@ -1250,7 +1252,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
         }
         if !f.exists {
             if fields.iter().any(|x| x.def.name == f.name) {
-                p.problems.push(format!("派生列「{}」与表中已有字段同名：请换一个列名", f.name));
+                p.problems.push(format!("Derived column \"{}\" has the same name as an existing field of the table: use a different column name", f.name));
                 continue;
             }
             f.def["maintained_by"] = json!("program");
@@ -1364,7 +1366,7 @@ fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &
             Some(id) => {
                 bindings.insert(name.clone(), json!({ "entity_id": id }));
             }
-            None => p.problems.push(format!("HTML 结果「{}」的绑定 {name} → {t} 无法解析", it.name())),
+            None => p.problems.push(format!("Binding {name} → {t} of HTML result \"{}\" cannot be resolved", it.name())),
         }
     }
     binding["def_id"] = json!(def_id);
@@ -1385,7 +1387,7 @@ fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &
             let key = p.next_key(parent)?;
             p.ops.push(json!({ "op": "entity.create", "entity_id": it.entity_id(), "type_id": TYPE_BLOCK_DEF, "parent_id": parent, "order_key": key, "name": it.name(),
                                "payload": { "def_id": def_id, "version": 1, "kind": "html", "title": it.r().get("title").cloned().unwrap_or(json!(it.name())),
-                                            "allow_no_source": true, "html": body, "description": h.get("description").cloned().unwrap_or(json!("由许愿格生成的 HTML Block")) } }));
+                                            "allow_no_source": true, "html": body, "description": h.get("description").cloned().unwrap_or(json!("HTML block generated by a wish block")) } }));
             Ok(true)
         }
     }
@@ -1414,7 +1416,7 @@ impl Workspace {
             let at_start = basis.get(*k).and_then(Value::as_u64).unwrap_or(0);
             preconditions.push(json!({ "target": { "entity_id": wish_id, "selector": { "kind": "doc_key", "key": k } }, "expect": { "rev": at_start } }));
             if wish.key_rev(k) != at_start {
-                problems.push(format!("分析期间许愿格的 {k} 已被修改：这份分析只保留在运行记录中，请重新分析"));
+                problems.push(format!("The wish block's {k} was modified during the analysis: this analysis is kept only in the run record; analyze again"));
             }
         }
         let mut analysis = candidate["analysis"].clone();

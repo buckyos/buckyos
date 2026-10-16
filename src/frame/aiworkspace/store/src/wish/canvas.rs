@@ -170,20 +170,20 @@ pub fn relation(origin: &Rect, b: &Rect) -> (&'static str, &'static str, f64) {
     let overlap_y = b.y < origin.y + origin.h && b.y + b.h > origin.y;
     let (dx, dy) = (b.cx() - origin.cx(), b.cy() - origin.cy());
     let dir = if overlap_x && overlap_y {
-        "重叠"
+        "overlapping"
     } else if overlap_y || (!overlap_x && dx.abs() >= dy.abs()) {
-        if dx < 0.0 { "左侧" } else { "右侧" }
+        if dx < 0.0 { "to the left" } else { "to the right" }
     } else if dy < 0.0 {
-        "上方"
+        "above"
     } else {
-        "下方"
+        "below"
     };
     let band = if gap <= 80.0 {
-        "相邻"
+        "adjacent"
     } else if gap <= 600.0 {
-        "较近"
+        "near"
     } else {
-        "较远"
+        "far"
     };
     (dir, band, gap)
 }

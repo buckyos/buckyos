@@ -70,8 +70,8 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
   const manual = summary?.manual ?? []
   const needsChoice = manual.some((m) => !choices.results?.[m.name])
   const destructive = Boolean(summary?.destructive)
-  // i18n-exempt: matches the service's problem text (the server reports structure changes in Chinese)
-  const blocking = (summary?.problems ?? []).filter((p) => !(destructive && p.includes('结构变化')))
+  // matches the service's problem text for structure changes (store/src/wish/plan.rs)
+  const blocking = (summary?.problems ?? []).filter((p) => !(destructive && p.includes('Structure changes will delete')))
   const title = t(run.stage === 'analyze' ? 'aiworkspace.wish.candidate.analysis' : run.stage === 'rerun_program' ? 'aiworkspace.wish.candidate.rerun' : run.stage === 'repair_program' ? 'aiworkspace.wish.candidate.repair' : 'aiworkspace.wish.candidate.results')
   return (
     <div className="aiws-wish-candidate" data-testid="aiws-wish-candidate" data-run-id={run.run_id} data-state={run.state} data-ready={preview?.ready ? 'true' : 'false'}>

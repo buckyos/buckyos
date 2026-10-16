@@ -151,8 +151,10 @@ Desktop languages read English, like the rest of the Desktop.
   it in both languages, the browser's first.
 - **Text that becomes document data** — demo content, default names of new objects and canvases, edit and commit
   labels, Mock wish results — is written in the language of the moment, like anything a user types.
-- **Not translated:** `fixtures/project-workspace.commits.json` (byte-identical with the backend's fixture), and
-  text the backend produces (wish context maps and problem texts, the Mock processing's output) — Chinese.
+- **The backend speaks English** — its problem texts, the documents it writes (result group titles, the Mock
+  processing's output, commit messages), the data profile and the prompts it sends to models; it does not follow the
+  Desktop's language. `fixtures/project-workspace.commits.json` (byte-identical with the backend's fixture) is
+  sample content and stays Chinese.
 - **Checks.** `deno test --allow-read --allow-env tests/datamodel/aiworkspace-i18n.test.ts [-- <path prefix>…]`
   (from `src/frame/desktop`): the two tables have the same keys and placeholders, no Chinese is left in string
   literals or JSX text of this app or the draw.io module (a literal that must stay — Chinese words the Mock looks

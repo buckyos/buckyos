@@ -13,8 +13,8 @@ use wishkit::*;
 
 fn facts(t: &Turn) -> Value {
     for r in t.results.iter().rev() {
-        if let Some(i) = r.find("facts：") {
-            let rest = &r[i + "facts：".len()..];
+        if let Some(i) = r.find("\nfacts: ") {
+            let rest = &r[i + "\nfacts: ".len()..];
             if let Ok(v) = serde_json::from_str::<Value>(&rest[..rest.find('\n').unwrap_or(rest.len())]) {
                 return v;
             }
@@ -75,12 +75,12 @@ fn submit(analysis: Value) -> Script {
             let mut text_a = a.to_string();
             while let Some(i) = text_a.find("<<") {
                 let j = text_a[i..].find(">>").unwrap() + i;
-                let needle = text_a[i + 2..j].to_string();
+                let needle = text_a[i + 2..j].replace("\\\"", "\"");
                 text_a.replace_range(i..j + 2, &handle(&t.user, &needle));
             }
             return call("submit_analysis", json!({ "analysis": serde_json::from_str::<Value>(&text_a).unwrap() }));
         }
-        if t.results.last().is_some_and(|r| r.contains("未被接受")) {
+        if t.results.last().is_some_and(|r| r.contains("not accepted")) {
             return text("放弃。");
         }
         text("完成。")
@@ -143,8 +143,8 @@ async fn analyzed(srv: &Srv, analysis: Value) -> Value {
 }
 
 fn monthly_analysis() -> Value {
-    json!({ "status": "ready", "context_prompt": "读取 <<表格视图「华东订单」>> 全部记录，排除 状态=未结算，按月汇总销售额；写解读，数字取自 facts",
-        "inputs": [{ "name": "sales", "ref": "<<表格视图「华东订单」>>" }],
+    json!({ "status": "ready", "context_prompt": "读取 <<table view \"华东订单\">> 全部记录，排除 状态=未结算，按月汇总销售额；写解读，数字取自 facts",
+        "inputs": [{ "name": "sales", "ref": "<<table view \"华东订单\">>" }],
         "output_contract": { "results": [
             { "name": "monthly", "type": "table", "title": "月度汇总", "approach": "program", "key": ["月份"],
               "views": [{ "renderer": "table" }, { "renderer": "sample.line-chart", "config": { "x": "月份", "y": "销售额" } }] },
@@ -177,9 +177,9 @@ fn q01_q04_q06_q07_reference_rules_numbers_views() {
         base(&mut srv).await;
         // the map tells the model where things are and what the note says
         *srv.model.analyze.lock().unwrap() = Box::new(|t: &Turn| {
-            let line = t.user.lines().find(|l| l.contains("表格视图「华东订单」")).unwrap_or("");
-            assert!(line.contains("左侧相邻") && line.contains("地区=华东"), "{line}");
-            assert!(t.user.contains("触发时选中：") && t.user.contains("统计时排除 状态=未结算"), "{}", t.user);
+            let line = t.user.lines().find(|l| l.contains("table view \"华东订单\"")).unwrap_or("");
+            assert!(line.contains("to the left, adjacent") && line.contains("地区=华东"), "{line}");
+            assert!(t.user.contains("Selected when triggered: ") && t.user.contains("统计时排除 状态=未结算"), "{}", t.user);
             text("看过了。")
         });
         let probe = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "analyze", "location": loc() })).await;
@@ -232,7 +232,7 @@ fn q02_ambiguity_is_a_blocker() {
             0 => call("ws_find", json!({ "text": "订单" })),
             1 => {
                 // two tables are called 订单: ask, do not pick
-                let hits: Vec<String> = t.results[0].lines().filter(|l| l.contains("表「订单」")).map(|l| l.split_whitespace().nth(1).unwrap().to_string()).collect();
+                let hits: Vec<String> = t.results[0].lines().filter(|l| l.contains("table \"订单\"")).map(|l| l.split_whitespace().nth(1).unwrap().to_string()).collect();
                 assert_eq!(hits.len(), 2, "{}", t.results[0]);
                 call("submit_analysis", json!({ "analysis": { "status": "needs_input", "context_prompt": "待确认", "inputs": [],
                     "output_contract": { "results": [] }, "checks": [], "warnings": [],
@@ -249,7 +249,7 @@ fn q02_ambiguity_is_a_blocker() {
         assert_eq!(e["state"], "failed");
         assert_eq!(e["error"]["sub_code"], "NEEDS_INPUT", "{e}");
         // a handle that does not exist, or a pure UI Block, is never bound
-        *srv.model.analyze.lock().unwrap() = submit(json!({ "status": "ready", "context_prompt": "x", "inputs": [{ "name": "a", "ref": "@T99" }, { "name": "b", "ref": "<<框「华东复盘」>>" }],
+        *srv.model.analyze.lock().unwrap() = submit(json!({ "status": "ready", "context_prompt": "x", "inputs": [{ "name": "a", "ref": "@T99" }, { "name": "b", "ref": "<<frame \"华东复盘\" (a pure UI frame>>" }],
             "output_contract": { "results": [] }, "checks": [], "blockers": [], "warnings": [] }));
         let r = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "analyze", "location": loc() })).await;
         assert_eq!(r["state"], "failed", "{r}");
@@ -273,7 +273,7 @@ fn q03_large_table_through_the_program() {
             }).collect();
             srv.commit(json!([{ "op": "table.insert_records", "source_id": "big", "records": rows }])).await;
         }
-        analyzed(&srv, json!({ "status": "ready", "context_prompt": "按分组汇总 <<表「流水」>> 的金额", "inputs": [{ "name": "flow", "ref": "<<表「流水」>>" }],
+        analyzed(&srv, json!({ "status": "ready", "context_prompt": "按分组汇总 <<table \"流水\">> 的金额", "inputs": [{ "name": "flow", "ref": "<<table \"流水\">>" }],
             "output_contract": { "results": [{ "name": "groups", "type": "table", "title": "分组合计", "approach": "program", "key": ["分组"] }] },
             "checks": [{ "id": "rows", "kind": "program", "text": "读到全部 12000 行" }], "blockers": [], "warnings": [] })).await;
         *srv.model.execute.lock().unwrap() = exec(Flow { program: Some(r#"
@@ -303,8 +303,8 @@ fn q05_derived_column_and_rerun() {
     run_test(|| async move {
         let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
         base(&mut srv).await;
-        analyzed(&srv, json!({ "status": "ready", "context_prompt": "计算 <<表「工资」>> 每人工资与平均工资的差值",
-            "inputs": [{ "name": "salary", "ref": "<<表「工资」>>" }],
+        analyzed(&srv, json!({ "status": "ready", "context_prompt": "计算 <<table \"工资\">> 每人工资与平均工资的差值",
+            "inputs": [{ "name": "salary", "ref": "<<table \"工资\">>" }],
             "output_contract": { "results": [{ "name": "差值", "type": "table_columns", "approach": "program", "target": "salary" }] },
             "checks": [{ "id": "zero", "kind": "program", "text": "差值之和约等于 0" }], "blockers": [], "warnings": [] })).await;
         *srv.model.execute.lock().unwrap() = exec(Flow { program: Some(r#"
@@ -360,7 +360,7 @@ fn q09_repair_after_rename() {
         // the analysis basis did not change (a field name is data): the repair runs on the same analysis
         let fixed: &'static str = Box::leak(MONTHLY.replace("fields: ['月份', '销售额', '状态']", "fields: ['月份', '金额', '状态']").replace("xs.map((r) => r['销售额'])", "xs.map((r) => r['金额'])").replace("settled.map((r) => r['销售额'])", "settled.map((r) => r['金额'])").into_boxed_str());
         *srv.model.execute.lock().unwrap() = Box::new(move |t: &Turn| {
-            assert!(t.user.contains("程序运行失败") && t.user.contains("修复程序"), "{}", &t.user[..400.min(t.user.len())]);
+            assert!(t.user.contains("Program run failed") && t.user.contains("repairing the program"), "{}", &t.user[..400.min(t.user.len())]);
             match t.results.len() {
                 0 => call("write_file", json!({ "path": "program/main.js", "content": fixed })),
                 1 => call("run_program", json!({})),
@@ -431,21 +431,21 @@ fn w05_w08_w12_guards() {
         *srv.model.execute.lock().unwrap() = Box::new(|t: &Turn| match t.results.len() {
             0 => call("put_result", json!({ "name": "monthly", "type": "text", "markdown": "| a |\n|---|\n" })),
             1 => {
-                assert!(t.results[0].contains("由程序产生"), "{}", t.results[0]);
+                assert!(t.results[0].contains("produced by the program"), "{}", t.results[0]);
                 call("put_result", json!({ "name": "commentary", "type": "file", "path": "../../../etc/passwd" }))
             }
             2 => {
-                assert!(t.results[1].contains("不在 output/") || t.results[1].contains("不存在"), "{}", t.results[1]);
+                assert!(t.results[1].contains("not under output/") || t.results[1].contains("does not exist"), "{}", t.results[1]);
                 call("finish", json!({ "summary": "x" }))
             }
             3 => {
-                assert!(t.results[2].contains("还不能结束"), "{}", t.results[2]);
+                assert!(t.results[2].contains("Cannot finish yet"), "{}", t.results[2]);
                 call("write_file", json!({ "path": "program/main.js", "content": MONTHLY }))
             }
             4 => call("run_program", json!({})),
             5 => call("put_result", json!({ "name": "monthly", "type": "text", "markdown": "x" })),
             6 => {
-                assert!(t.results[5].contains("名称冲突") || t.results[5].contains("由程序产生"), "{}", t.results[5]);
+                assert!(t.results[5].contains("name conflict") || t.results[5].contains("produced by the program"), "{}", t.results[5]);
                 call("put_result", json!({ "name": "commentary", "type": "text", "markdown": "合计见表。" }))
             }
             7 => call("finish", json!({ "summary": "完成" })),
@@ -460,7 +460,7 @@ fn w05_w08_w12_guards() {
         srv.apply(&e1, json!({})).await;
         let p2 = srv.rpc("proc.get", json!({ "run_id": e2["run_id"], "choices": {} })).await;
         assert_eq!(p2["preview"]["ready"], false, "{}", p2["preview"]);
-        assert!(p2["preview"]["summary"]["problems"].to_string().contains("另一组结果"));
+        assert!(p2["preview"]["summary"]["problems"].to_string().contains("another set of results"));
         // applying the stale preview it had before is a conflict, and the document keeps the first
         let r = srv.rpc("proc.apply", json!({ "run_id": e2["run_id"], "plan_digest": e2["preview"]["plan_digest"], "session_id": "s1" })).await;
         assert_eq!(r["applied"]["status"], "conflict", "{r}");

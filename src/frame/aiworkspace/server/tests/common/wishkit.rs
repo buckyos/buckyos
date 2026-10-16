@@ -65,15 +65,15 @@ impl LlmClient for ScriptedModel {
                 }
             }
         }
-        if turn.system.contains("逐项判断器") {
+        if turn.system.contains("item-by-item judge") {
             self.map_calls.fetch_add(1, Ordering::SeqCst);
             // per-item judgement: 正面 when the text says 好
-            let items: Vec<Value> = turn.user.split("输入项（JSON 数组，共").nth(1).and_then(|t| t.split_once('\n')).and_then(|(_, rest)| rest.split("\n\n").next()).and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default();
+            let items: Vec<Value> = turn.user.split("Input items (a JSON array of").nth(1).and_then(|t| t.split_once('\n')).and_then(|(_, rest)| rest.split("\n\n").next()).and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default();
             let out: Vec<Value> = items.iter().map(|i| json!(if i.as_str().unwrap_or("").contains('好') { "正面" } else { "负面" })).collect();
             return Ok(text(&serde_json::to_string(&out).unwrap()));
         }
         *self.max_tokens.lock().unwrap() = req.max_completion_tokens;
-        let script = if turn.system.contains("的**分析阶段**") { self.analyze.lock().unwrap() } else { self.execute.lock().unwrap() };
+        let script = if turn.system.contains("the **analysis stage**") { self.analyze.lock().unwrap() } else { self.execute.lock().unwrap() };
         Ok(script(&turn))
     }
 }

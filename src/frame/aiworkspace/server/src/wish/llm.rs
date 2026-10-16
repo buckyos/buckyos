@@ -166,7 +166,7 @@ async fn ask(llm: &Arc<dyn LlmClient>, model: &str, system: &str, user: String) 
     Ok(r.message.text_content())
 }
 
-const MAP_SYSTEM: &str = "你是一个逐项判断器。按指令对每个输入项独立作出判断，只输出 JSON，不要解释。";
+const MAP_SYSTEM: &str = "You are an item-by-item judge. Judge each input item independently according to the instruction. Output only JSON, with no explanation.";
 
 /// `POST …/wish-host/<token>/llm_map` `{ items, instruction, schema, batch? }` →
 /// `{ results: [{ value } | { error }], calls, cached }`.
@@ -208,7 +208,7 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
     for chunk in todo.chunks(batch) {
         let list: Vec<&Value> = chunk.iter().map(|i| &items[*i]).collect();
         let user = format!(
-            "指令：{instruction}\n每一项的输出必须符合 JSON schema：{schema_text}\n输入项（JSON 数组，共 {} 项）：\n{}\n\n只输出一个 JSON 数组，第 i 个元素是第 i 项的结果，长度必须是 {}。",
+            "Instruction: {instruction}\nThe output for each item must conform to the JSON schema: {schema_text}\nInput items (a JSON array of {} items):\n{}\n\nOutput only one JSON array whose i-th element is the result for the i-th item; its length must be {}.",
             list.len(),
             serde_json::to_string(&list).unwrap_or_default(),
             list.len()
@@ -230,7 +230,7 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
             continue;
         }
         calls += 1;
-        let user = format!("指令：{instruction}\n输出必须符合 JSON schema：{schema_text}\n输入项：{}\n\n只输出这一项的 JSON 结果。", items[i]);
+        let user = format!("Instruction: {instruction}\nThe output must conform to the JSON schema: {schema_text}\nInput item: {}\n\nOutput only the JSON result for this item.", items[i]);
         let answer = ask(&llm, &model, MAP_SYSTEM, user).await;
         results[i] = Some(match answer.as_ref().ok().and_then(|t| extract_json(t).or_else(|| (schema["type"] == json!("string")).then(|| json!(t.trim())))) {
             Some(v) => match validate(&schema, &v) {
@@ -253,11 +253,11 @@ mod tests {
 
     #[test]
     fn schema_subset_and_json_extraction() {
-        let s = json!({ "type": "object", "properties": { "tag": { "enum": ["正面", "负面"] }, "n": { "type": ["number", "null"] } }, "required": ["tag"] });
-        assert!(validate(&s, &json!({ "tag": "正面", "n": null })).is_ok());
-        assert!(validate(&s, &json!({ "tag": "中性" })).is_err());
+        let s = json!({ "type": "object", "properties": { "tag": { "enum": ["正面", "负面"] }, "n": { "type": ["number", "null"] } }, "required": ["tag"] }); // i18n-exempt: test data: a model reply in Chinese
+        assert!(validate(&s, &json!({ "tag": "正面", "n": null })).is_ok()); // i18n-exempt: test data: a model reply in Chinese
+        assert!(validate(&s, &json!({ "tag": "中性" })).is_err()); // i18n-exempt: test data: a model reply in Chinese
         assert!(validate(&s, &json!({ "n": 1 })).is_err());
         assert_eq!(extract_json("```json\n[1, 2]\n```"), Some(json!([1, 2])));
-        assert_eq!(extract_json("结果如下：[\"a\"] 完"), Some(json!(["a"])));
+        assert_eq!(extract_json("结果如下：[\"a\"] 完"), Some(json!(["a"]))); // i18n-exempt: test data: a model reply in Chinese
     }
 }

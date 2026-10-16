@@ -9,7 +9,7 @@
 
 use super::canvas::{reading_order, relation, Block, Canvas, Rect};
 use super::handles::{Handles, Target};
-use super::profile::{entity_profile, field_lines, plain_value, profile_line};
+use super::profile::{count, entity_profile, field_lines, plain_value, profile_line};
 use super::readset::ReadSet;
 use super::snapshot::WishSnapshot;
 use aiworkspace_core::filter::{live_fields, run_query, QuerySpec};
@@ -126,7 +126,7 @@ fn clip(s: String, max: usize) -> String {
         return s;
     }
     let mut out: String = s.chars().take(max).collect();
-    out.push_str("\n…（结果过长已截断：请缩小范围，或用程序处理全部数据）");
+    out.push_str("\n… (result too long, truncated: narrow the range, or process all the data with a program)");
     out
 }
 
@@ -785,31 +785,31 @@ impl Stage {
         let mut out = String::new();
         let wish_title = title_of(&self.wish);
         let origin = self.origin.clone().and_then(|o| self.canvas.block(&o).cloned());
-        out.push_str("# 工作区地图\n\n");
-        out.push_str("句柄（@T1、@B2、@T1.f3…）只在本次运行中有效；工具参数与输出约定中使用句柄，程序中使用输入名。\n\n");
+        out.push_str("# Workspace map\n\n");
+        out.push_str("Handles (@T1, @B2, @T1.f3…) are valid only in this run; use handles in tool arguments and the output contract, and input names in the program.\n\n");
         // 1. task location
-        out.push_str("## 任务位置\n");
+        out.push_str("## Task location\n");
         match &origin {
             Some(b) => {
                 let surface = self.canvas.surface(&b.surface_id).map(|s| s.title.clone()).unwrap_or_default();
                 let frame = b.frame_id.as_ref().and_then(|f| self.canvas.block(f)).and_then(|f| f.title.clone());
                 let group = b.group_id.as_ref().and_then(|g| self.canvas.group(g)).and_then(|g| g.title.clone());
                 out.push_str(&format!(
-                    "许愿格 @W「{wish_title}」的 Block {} 位于画布「{surface}」({}){}{}。\n",
+                    "The Block {} of wish @W \"{wish_title}\" is on canvas \"{surface}\" ({}){}{}.\n",
                     self.handle_of(&b.entity_id),
                     self.handle_of(&b.surface_id),
-                    frame.map(|f| format!("的框「{f}」内")).unwrap_or_default(),
-                    group.map(|g| format!("，组「{g}」中")).unwrap_or_default()
+                    frame.map(|f| format!(" in frame \"{f}\"")).unwrap_or_default(),
+                    group.map(|g| format!(", in group \"{g}\"")).unwrap_or_default()
                 ));
             }
-            None => out.push_str(&format!("许愿格 @W「{wish_title}」位于数据树 {}（没有画布上的 Block）。\n", self.path_of(&self.wish.entity_id)?)),
+            None => out.push_str(&format!("Wish @W \"{wish_title}\" is at {} in the data tree (it has no Block on a canvas).\n", self.path_of(&self.wish.entity_id)?)),
         }
         let selection: Vec<String> = self.location.get("selection").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
         if !selection.is_empty() {
             let on_canvas: Vec<String> = selection.iter().filter(|s| self.canvas.block(s).is_some()).cloned().collect();
             let hs: Vec<String> = on_canvas.iter().map(|s| self.handle_of(s)).collect();
             if !hs.is_empty() {
-                out.push_str(&format!("触发时选中：{}。\n", hs.join("、")));
+                out.push_str(&format!("Selected when triggered: {}.\n", hs.join(", ")));
             }
         }
         if let Some(vp) = self.location.get("viewport") {
@@ -825,14 +825,14 @@ impl Stage {
                     .map(|x| self.handle_of(&x.entity_id))
                     .collect();
                 if !visible.is_empty() {
-                    out.push_str(&format!("视口中可见：{}。\n", visible.join("、")));
+                    out.push_str(&format!("Visible in the viewport: {}.\n", visible.join(", ")));
                 }
             }
         }
         out.push('\n');
         // 2. nearby Blocks
         if let Some(b) = &origin {
-            out.push_str("## 附近的 Block（以 @W 的 Block 为原点，由近及远）\n");
+            out.push_str("## Nearby Blocks (from @W's Block as the origin, nearest first)\n");
             let mut same: Vec<&Block> = self.canvas.blocks.iter().filter(|x| x.surface_id == b.surface_id && x.entity_id != b.entity_id).collect();
             let order = reading_order(&same);
             same.sort_by(|x, y| b.rect.gap(&x.rect).partial_cmp(&b.rect.gap(&y.rect)).unwrap_or(std::cmp::Ordering::Equal));
@@ -845,39 +845,39 @@ impl Stage {
                     (_, "note", Some(src)) => self.snap.entity(src)?.and_then(|a| a.payload.get("body").and_then(Value::as_str).map(|s| s.chars().take(30).collect::<String>())).unwrap_or_default(),
                     _ => String::new(),
                 };
-                let mut l = format!("- {} {}「{}」", self.handle_of(&x.entity_id), renderer_label(&x.renderer), title);
+                let mut l = format!("- {} {} \"{}\"", self.handle_of(&x.entity_id), renderer_label(&x.renderer), title);
                 if x.renderer == "frame" && x.rect.contains_point(b.rect.cx(), b.rect.cy()) {
-                    l.push_str("（纯 UI 框，@W 位于其中）");
+                    l.push_str(" (a pure UI frame; @W is inside it)");
                     lines.push(l);
                     continue;
                 }
                 if let Some(s) = &x.source_id {
-                    l.push_str(&format!(" → 数据 {}", self.handle_of(s)));
+                    l.push_str(&format!(" → data {}", self.handle_of(s)));
                 } else if x.pure_ui {
-                    l.push_str("（纯 UI，没有可读取的正文）");
+                    l.push_str(" (pure UI, no readable content)");
                 }
-                l.push_str(&format!("；{dir}{band}"));
+                l.push_str(&format!("; {dir}, {band}"));
                 if x.group_id.is_some() && x.group_id == b.group_id {
-                    l.push_str("，同组");
+                    l.push_str(", same group");
                 }
                 if x.frame_id.is_some() && x.frame_id == b.frame_id {
-                    l.push_str("，同框");
+                    l.push_str(", same frame");
                 } else if let Some(f) = x.frame_id.as_ref().and_then(|f| self.canvas.block(f)).and_then(|f| f.title.clone()) {
-                    l.push_str(&format!("，在框「{f}」内"));
+                    l.push_str(&format!(", in frame \"{f}\""));
                 }
                 if let Some(n) = order.iter().position(|i| *i == x.entity_id) {
-                    l.push_str(&format!("，阅读顺序 {}", n + 1));
+                    l.push_str(&format!(", reading order {}", n + 1));
                 }
                 if let Some(v) = self.block_detail(x)? {
-                    l.push_str(&format!("。{v}"));
+                    l.push_str(&format!(". {v}"));
                 }
                 lines.push(l);
             }
             if same.len() > 30 {
-                lines.push(format!("- …画布上另有 {} 个 Block（用 ws_neighbors / ws_outline 展开）", same.len() - 30));
+                lines.push(format!("- …{} more on the canvas (expand with ws_neighbors / ws_outline)", count((same.len() - 30) as u64, "Block", "Blocks")));
             }
             if lines.is_empty() {
-                lines.push("- （同一画布上没有其他 Block）".into());
+                lines.push("- (no other Blocks on the same canvas)".into());
             }
             out.push_str(&lines.join("\n"));
             out.push_str("\n\n");
@@ -889,28 +889,28 @@ impl Stage {
                 continue;
             }
             let blocks: Vec<Block> = self.canvas.blocks.iter().filter(|b| b.surface_id == s.entity_id).cloned().collect();
-            canvas_lines.push(format!("- 画布 {}「{}」：{} 个 Block", self.handle_of(&s.entity_id), s.title, blocks.len()));
+            canvas_lines.push(format!("- Canvas {} \"{}\": {}", self.handle_of(&s.entity_id), s.title, count(blocks.len() as u64, "Block", "Blocks")));
             for b in blocks.iter().take(12) {
-                let mut l = format!("  - {} {}「{}」", self.handle_of(&b.entity_id), renderer_label(&b.renderer), b.title.clone().unwrap_or_default());
+                let mut l = format!("  - {} {} \"{}\"", self.handle_of(&b.entity_id), renderer_label(&b.renderer), b.title.clone().unwrap_or_default());
                 if let Some(src) = &b.source_id {
                     l.push_str(&format!(" → {}", self.handle_of(src)));
                 }
                 if let Some(v) = self.block_detail(b)? {
-                    l.push_str(&format!("。{v}"));
+                    l.push_str(&format!(". {v}"));
                 }
                 canvas_lines.push(l);
             }
             if blocks.len() > 12 {
-                canvas_lines.push(format!("  - …另有 {} 个（ws_outline {}）", blocks.len() - 12, self.handle_of(&s.entity_id)));
+                canvas_lines.push(format!("  - …{} more (ws_outline {})", blocks.len() - 12, self.handle_of(&s.entity_id)));
             }
         }
         if !canvas_lines.is_empty() {
-            out.push_str("## 其他画布\n");
+            out.push_str("## Other canvases\n");
             out.push_str(&canvas_lines.join("\n"));
             out.push_str("\n\n");
         }
         // 4. data
-        out.push_str("## 数据\n");
+        out.push_str("## Data\n");
         let prompt = self.wish.payload.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
         let declared: BTreeSet<String> = self.inputs.iter().map(|i| i.entity_id.clone()).collect();
         let near: BTreeSet<String> = origin
@@ -968,18 +968,18 @@ impl Stage {
             }
             for (p, n) in folded {
                 let ph = self.handle_of(&p);
-                out.push_str(&format!("- …{} {} 下另有 {n} 项未列出（ws_outline {ph} 展开）\n", ph, self.path_of(&p)?));
+                out.push_str(&format!("- …{} more under {} {}, not listed (expand with ws_outline {ph})\n", count(n as u64, "item", "items"), ph, self.path_of(&p)?));
             }
         }
         out.push('\n');
         // 5. knowledge and annotations
         let mut kn = Vec::new();
         if let Some(k) = self.wish.payload.get("knowledge").and_then(Value::as_str).filter(|k| !k.trim().is_empty()) {
-            kn.push(format!("- 许愿格知识：{}", k.trim()));
+            kn.push(format!("- Wish knowledge: {}", k.trim()));
         }
         for r in self.wish.payload.get("refinements").and_then(Value::as_array).into_iter().flatten() {
             if let Some(t) = r["text"].as_str() {
-                kn.push(format!("- 修改意见：{t}"));
+                kn.push(format!("- Refinement: {t}"));
             }
         }
         let targets: Vec<String> = declared.iter().cloned().chain(near.iter().cloned()).collect();
@@ -993,8 +993,8 @@ impl Stage {
                     continue;
                 }
                 let target = a["content"]["payload"]["target"]["entity_id"].as_str().unwrap_or("").to_string();
-                let quote = a["content"]["payload"]["context"]["quote"].as_str().map(|q| format!("（针对“{}”）", q.chars().take(40).collect::<String>())).unwrap_or_default();
-                kn.push(format!("- 批注（在 {} 上{quote}）：{body}", self.handle_of(&target)));
+                let quote = a["content"]["payload"]["context"]["quote"].as_str().map(|q| format!(", about \"{}\"", q.chars().take(40).collect::<String>())).unwrap_or_default();
+                kn.push(format!("- Comment (on {}{quote}): {body}", self.handle_of(&target)));
             }
         }
         if let Some(b) = &origin {
@@ -1008,51 +1008,51 @@ impl Stage {
             for n in notes {
                 if let Some(a) = n.source_id.as_ref().and_then(|s| self.snap.entity(s).ok().flatten()) {
                     if let Some(body) = a.payload.get("body").and_then(Value::as_str).filter(|b| !b.is_empty()) {
-                        kn.push(format!("- 附近的便签 {}：{body}", self.handle_of(&n.entity_id)));
+                        kn.push(format!("- Nearby sticky note {}: {body}", self.handle_of(&n.entity_id)));
                     }
                 }
             }
         }
         if !kn.is_empty() {
-            out.push_str("## 知识与批注（作者写给这个任务的说明）\n");
+            out.push_str("## Knowledge and comments (what the authors wrote for this task)\n");
             out.push_str(&kn.join("\n"));
             out.push_str("\n\n");
         }
         // 6. last result
         let results = aiworkspace_core::wish::current_results(&self.wish.payload);
         if !results.is_empty() || self.wish.payload.get("program").is_some() {
-            out.push_str("## 上次结果\n");
+            out.push_str("## Last result\n");
             let fresh = aiworkspace_core::freshness::entity_freshness(&self.ctx(), &self.snap.access, &self.wish.entity_id).unwrap_or(Value::Null);
-            out.push_str(&format!("新鲜度：{}。重跑时沿用相同的结果名、字段和键，保持结果身份稳定。\n", fresh["status"].as_str().unwrap_or("unknown")));
+            out.push_str(&format!("Freshness: {}. Re-runs keep the same result names, fields and keys, so the results keep their identity.\n", fresh["status"].as_str().unwrap_or("unknown")));
             for (name, b) in &results {
                 let id = b["entity_id"].as_str().unwrap_or("");
-                let mut l = format!("- `{name}`（{}，{}）→ {}", b["type"].as_str().unwrap_or(""), b["approach"].as_str().unwrap_or(""), self.handle_of(id));
+                let mut l = format!("- `{name}` ({}, {}) → {}", b["type"].as_str().unwrap_or(""), b["approach"].as_str().unwrap_or(""), self.handle_of(id));
                 if let Some(k) = b.get("key").and_then(Value::as_array) {
-                    l.push_str(&format!("，键 {}", k.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("+")));
+                    l.push_str(&format!(", key {}", k.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("+")));
                 }
                 if let Some(f) = b.get("fields").and_then(Value::as_object) {
-                    l.push_str(&format!("，字段 {}", f.keys().cloned().collect::<Vec<_>>().join("、")));
+                    l.push_str(&format!(", fields {}", f.keys().cloned().collect::<Vec<_>>().join(", ")));
                 }
                 out.push_str(&l);
                 out.push('\n');
             }
             if let Some(p) = self.wish.payload.get("program") {
                 out.push_str(&format!(
-                    "- 已有程序 program/main.js（产出 {}），在它上面修改，不要从头重写。\n",
-                    p["produces"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("、")).unwrap_or_default()
+                    "- A program exists: program/main.js (produces {}); modify it, do not rewrite it from scratch.\n",
+                    p["produces"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default()
                 ));
             }
             out.push('\n');
         }
         // 7. renderer catalog
-        out.push_str("## Renderer 目录（完整说明见 catalog/renderers.json）\n");
+        out.push_str("## Renderer catalog (full descriptions in catalog/renderers.json)\n");
         for r in self.catalog_json()?.as_array().into_iter().flatten() {
             out.push_str(&format!(
-                "- `{}` {} — 数据：{}{}\n",
+                "- `{}` {} — data: {}{}\n",
                 r["renderer"].as_str().unwrap_or(""),
                 r["title"].as_str().unwrap_or(""),
-                r["accepts"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(|t| t.trim_start_matches("buckyos.")).collect::<Vec<_>>().join("/")).filter(|s| !s.is_empty()).unwrap_or_else(|| "无".into()),
-                r["config_summary"].as_str().map(|s| format!("；配置 {s}")).unwrap_or_default()
+                r["accepts"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(|t| t.trim_start_matches("buckyos.")).collect::<Vec<_>>().join("/")).filter(|s| !s.is_empty()).unwrap_or_else(|| "none".into()),
+                r["config_summary"].as_str().map(|s| format!("; config {s}")).unwrap_or_default()
             ));
         }
         Ok(out)
@@ -1061,15 +1061,15 @@ impl Stage {
     fn data_line(&mut self, e: &EntityRow) -> WsResult<String> {
         let h = self.handle_of(&e.entity_id);
         let p = self.profile(e)?;
-        let mut l = format!("- {h} {}「{}」 {} · {}", type_label(&e.type_id), title_of(e), self.path_of(&e.entity_id)?, profile_line(&p));
+        let mut l = format!("- {h} {} \"{}\" {} · {}", type_label(&e.type_id), title_of(e), self.path_of(&e.entity_id)?, profile_line(&p));
         let showing: Vec<String> = self.canvas.showing(&e.entity_id).iter().map(|b| b.entity_id.clone()).collect::<Vec<_>>();
         if !showing.is_empty() {
             let hs: Vec<String> = showing.iter().take(6).map(|b| self.handle_of(b)).collect();
-            l.push_str(&format!("（显示于 {}）", hs.join("、")));
+            l.push_str(&format!(" (shown in {})", hs.join(", ")));
         }
         if let Some(g) = p.get("generated").filter(|g| !g.is_null()) {
             let w = g["wish_id"].as_str().map(|w| self.handle_of(w)).unwrap_or_default();
-            l.push_str(&format!(" · 许愿格 {w} 的结果（{}）", g["status"].as_str().unwrap_or("")));
+            l.push_str(&format!(" · result of wish {w} ({})", g["status"].as_str().unwrap_or("")));
         }
         l.push('\n');
         if e.type_id == TYPE_TABLE {
@@ -1078,7 +1078,7 @@ impl Stage {
                 l.push_str(&format!("  - {}\n", chunk.join(" · ")));
             }
             if p["fields"].as_array().map_or(0, Vec::len) > 16 {
-                l.push_str("  - …更多字段见 ws_profile\n");
+                l.push_str("  - …more fields: see ws_profile\n");
             }
             for i in p["issues"].as_array().into_iter().flatten().take(3) {
                 l.push_str(&format!("  - ⚠ {}\n", i.as_str().unwrap_or("")));
@@ -1102,7 +1102,7 @@ impl Stage {
         if b.renderer == "table" {
             let cell = self.snap.entity(&b.entity_id)?.ok_or_else(|| WsError::not_found("cell"))?;
             let s = view_summary(&cell, &fields);
-            return Ok(if s.is_empty() { None } else { Some(format!("视图：{s}")) });
+            return Ok(if s.is_empty() { None } else { Some(format!("View: {s}")) });
         }
         if let Some(cfg) = b.payload.get("config").and_then(Value::as_object) {
             let parts: Vec<String> = cfg
@@ -1114,7 +1114,7 @@ impl Stage {
                 })
                 .collect();
             if !parts.is_empty() {
-                return Ok(Some(format!("配置：{}", parts.join("，"))));
+                return Ok(Some(format!("Config: {}", parts.join(", "))));
             }
         }
         Ok(None)
@@ -1159,7 +1159,7 @@ impl Stage {
                     continue;
                 }
                 let h = st.handle_of(&e.entity_id);
-                let mut l = format!("{}- {h} {}「{}」", "  ".repeat(level), type_label(&e.type_id), title_of(&e));
+                let mut l = format!("{}- {h} {} \"{}\"", "  ".repeat(level), type_label(&e.type_id), title_of(&e));
                 if e.type_id == TYPE_CELL {
                     let r = e.payload.get("view").and_then(|v| v["type"].as_str()).unwrap_or("");
                     l.push_str(&format!(" renderer={r}"));
@@ -1176,7 +1176,7 @@ impl Stage {
                 } else if e.type_id == TYPE_CONTAINER {
                     let n = st.ctx().children(&e.entity_id)?.len();
                     if n > 0 {
-                        lines.push(format!("{}  - …{n} 项（ws_outline {h}）", "  ".repeat(level)));
+                        lines.push(format!("{}  - …{} (ws_outline {h})", "  ".repeat(level), count(n as u64, "item", "items")));
                     }
                 }
             }
@@ -1208,7 +1208,7 @@ impl Stage {
             }
             let mut where_ = Vec::new();
             if title_of(&e).to_lowercase().contains(&text) {
-                where_.push(format!("名称：{}", title_of(&e)));
+                where_.push(format!("name: {}", title_of(&e)));
             }
             match e.type_id.as_str() {
                 TYPE_TABLE => {
@@ -1216,7 +1216,7 @@ impl Stage {
                     let fh = self.handles.fields(&e, &fields);
                     for (i, f) in fields.iter().enumerate() {
                         if f.def.name.to_lowercase().contains(&text) {
-                            where_.push(format!("字段 {} {}", fh[i], f.def.name));
+                            where_.push(format!("field {} {}", fh[i], f.def.name));
                         }
                     }
                     let mut n = 0;
@@ -1231,7 +1231,7 @@ impl Stage {
                         Ok(n < 1000)
                     })?;
                     if n > 0 {
-                        where_.push(format!("{n} 行的值包含该文本"));
+                        where_.push(format!("{} with values containing the text", count(n as u64, "row", "rows")));
                     }
                 }
                 TYPE_RICHTEXT => {
@@ -1240,31 +1240,31 @@ impl Stage {
                     if let Some(pos) = md.to_lowercase().find(&text) {
                         let start = md[..pos.min(md.len())].char_indices().rev().nth(30).map(|(i, _)| i).unwrap_or(0);
                         let snippet: String = md[start..].chars().take(100).collect::<String>().replace('\n', " ");
-                        where_.push(format!("正文：…{snippet}…"));
+                        where_.push(format!("body: …{snippet}…"));
                     }
                 }
                 TYPE_RECORD | TYPE_ANNOTATION => {
                     let s = serde_json::to_string(&e.payload).unwrap_or_default().to_lowercase();
                     if s.contains(&text) {
-                        where_.push("内容包含该文本".into());
+                        where_.push("the content contains the text".into());
                     }
                 }
                 _ => {}
             }
             if !where_.is_empty() {
-                hits.push(format!("- {} {}「{}」 {}：{}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e), self.path_of(&e.entity_id)?, where_.join("；")));
+                hits.push(format!("- {} {} \"{}\" {}: {}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e), self.path_of(&e.entity_id)?, where_.join("; ")));
             }
             if hits.len() >= 30 {
-                hits.push("- …匹配过多，请缩小查找词".into());
+                hits.push("- …too many matches: narrow the search text".into());
                 break;
             }
         }
         for b in self.canvas.blocks.clone() {
             if b.title.as_deref().is_some_and(|t| t.to_lowercase().contains(&text)) && kinds.as_ref().map_or(true, |k| k.iter().any(|x| x == "cell" || x == "block")) {
-                hits.push(format!("- {} Block「{}」 renderer={}{}", self.handle_of(&b.entity_id), b.title.clone().unwrap_or_default(), b.renderer, b.source_id.as_ref().map(|s| format!(" → {}", self.handle_of(s))).unwrap_or_default()));
+                hits.push(format!("- {} Block \"{}\" renderer={}{}", self.handle_of(&b.entity_id), b.title.clone().unwrap_or_default(), b.renderer, b.source_id.as_ref().map(|s| format!(" → {}", self.handle_of(s))).unwrap_or_default()));
             }
         }
-        Ok(if hits.is_empty() { format!("没有找到包含“{text}”的数据或 Block。") } else { clip(hits.join("\n"), MAX_TOOL_CHARS) })
+        Ok(if hits.is_empty() { format!("No data or Block contains \"{text}\".") } else { clip(hits.join("\n"), MAX_TOOL_CHARS) })
     }
 
     /// `ws_profile(target)`
@@ -1274,7 +1274,7 @@ impl Stage {
         if e.type_id == TYPE_CELL {
             match e.payload.get("source_ref").and_then(reference_entity_id) {
                 Some(s) => e = self.snap.readable(s)?,
-                None => return Ok(format!("{t} 是纯 UI Block，没有数据。")),
+                None => return Ok(format!("{t} is a pure UI Block with no data.")),
             }
         }
         let mut p = self.profile(&e)?;
@@ -1292,15 +1292,15 @@ impl Stage {
         let radius = args.get("radius").and_then(Value::as_f64).unwrap_or(800.0);
         let mut near: Vec<Block> = self.canvas.blocks.iter().filter(|x| x.surface_id == b.surface_id && x.entity_id != id && b.rect.gap(&x.rect) <= radius).cloned().collect();
         near.sort_by(|x, y| b.rect.gap(&x.rect).partial_cmp(&b.rect.gap(&y.rect)).unwrap_or(std::cmp::Ordering::Equal));
-        let mut lines = vec![format!("以 {c} 为原点（半径 {radius}px）：")];
+        let mut lines = vec![format!("From {c} as the origin (radius {radius}px):")];
         for x in near.iter().take(40) {
             let (dir, band, gap) = relation(&b.rect, &x.rect);
-            let mut l = format!("- {} {}「{}」 {dir}{band}（间距 {:.0}px）", self.handle_of(&x.entity_id), renderer_label(&x.renderer), x.title.clone().unwrap_or_default(), gap);
+            let mut l = format!("- {} {} \"{}\" {dir}, {band} (gap {:.0}px)", self.handle_of(&x.entity_id), renderer_label(&x.renderer), x.title.clone().unwrap_or_default(), gap);
             if let Some(s) = &x.source_id {
                 l.push_str(&format!(" → {}", self.handle_of(s)));
             }
             if let Some(d) = self.block_detail(x)? {
-                l.push_str(&format!("。{d}"));
+                l.push_str(&format!(". {d}"));
             }
             lines.push(l);
         }
@@ -1316,7 +1316,7 @@ impl Stage {
             return Ok(None);
         }
         let name = self.append_input(&e.entity_id, None)?;
-        Ok(Some(format!("（{} 不在已声明的输入中：已作为执行时追加的输入 `{name}` 记入读集，程序中可用 aiws.input('{name}')）\n", self.handle_of(&e.entity_id))))
+        Ok(Some(format!("({} is not among the declared inputs: it was recorded in the read set as the input `{name}` appended during execution; use aiws.input('{name}') in the program)\n", self.handle_of(&e.entity_id))))
     }
 
     /// `ws_read(target, selector?, limit?)`
@@ -1336,13 +1336,13 @@ impl Stage {
             match cell.payload.get("source_ref").and_then(reference_entity_id) {
                 Some(s) => {
                     e = self.snap.readable(s)?;
-                    prefix = format!("Block {}：{}\n数据 {}：\n", t, info, self.handle_of(s));
+                    prefix = format!("Block {}: {}\nData {}:\n", t, info, self.handle_of(s));
                     if e.type_id == TYPE_TABLE && cell.payload.get("view").and_then(|v| v["type"].as_str()) == Some("table") {
                         let q = json!({ "table_or_view": t, "limit": args.get("limit").cloned().unwrap_or(json!(20)) });
                         return Ok(format!("{prefix}{}", self.ws_query(&q)?));
                     }
                 }
-                None => return Ok(format!("Block {t} 是纯 UI（{}），没有可读取的正文。", info)),
+                None => return Ok(format!("Block {t} is pure UI ({}) with no readable content.", info)),
             }
         }
         let note = self.note_read(&e)?.unwrap_or_default();
@@ -1374,7 +1374,7 @@ impl Stage {
                 serde_json::to_string_pretty(&props).unwrap_or_default()
             }
             TYPE_ASSET => serde_json::to_string_pretty(&json!({ "media_type": e.payload.get("media_type"), "size": e.payload.get("size"), "file_name": e.payload.get("file_name"),
-                "image": e.payload.get("image"), "note": "资产内容已放在 context/assets/ 下（执行阶段），可用 read_file 或程序读取" })).unwrap_or_default(),
+                "image": e.payload.get("image"), "note": "the asset's content is under context/assets/ (execution stage); read it with read_file or a program" })).unwrap_or_default(),
             TYPE_CONTAINER => {
                 drop(ctx);
                 return Ok(format!("{note}{}", self.ws_outline(&json!({ "target": t, "depth": 2 }))?));
@@ -1384,7 +1384,7 @@ impl Stage {
                 "context_prompt": e.payload.get("analysis").and_then(|a| a.get("context_prompt")) })).unwrap_or_default(),
             _ => serde_json::to_string_pretty(&e.payload).unwrap_or_default(),
         };
-        Ok(clip(format!("{note}{prefix}{} {}「{}」\n{body}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e)), MAX_TOOL_CHARS))
+        Ok(clip(format!("{note}{prefix}{} {} \"{}\"\n{body}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e)), MAX_TOOL_CHARS))
     }
 
     /// `ws_query(table_or_view, filter?, sorts?, fields?, limit?, cursor?)`
@@ -1444,17 +1444,17 @@ impl Stage {
             })
             .collect();
         let mut out = format!(
-            "{note}{} 表「{}」{}：共 {} 行，本页 {} 行\n字段：{}\n",
+            "{note}{} table \"{}\"{}: {} in total, {} on this page\nFields: {}\n",
             self.handle_of(&e.entity_id),
             title_of(&e),
-            view.as_ref().map(|c| format!("（按视图 {} 读取：{}）", self.handle_of(&c.entity_id), view_summary(c, &fields))).unwrap_or_default(),
-            page["total"],
+            view.as_ref().map(|c| format!(" (read through view {}: {})", self.handle_of(&c.entity_id), view_summary(c, &fields))).unwrap_or_default(),
+            count(page["total"].as_u64().unwrap_or(0), "row", "rows"),
             rows.len(),
             cols.join(" · ")
         );
         out.push_str(&serde_json::to_string(&rows).unwrap_or_default().replace("},{", "},\n{"));
         if let Some(c) = page.get("next_cursor") {
-            out.push_str(&format!("\n下一页 cursor: {c}（大量行请改用程序处理）"));
+            out.push_str(&format!("\nNext page cursor: {c} (process many rows with a program instead)"));
         }
         Ok(clip(out, MAX_TOOL_CHARS))
     }
@@ -1502,36 +1502,36 @@ impl Stage {
     }
 }
 
-/// `筛选：地区=华东；按 销售额 降序；显示 6/11 列`
+/// `filter: 地区=华东; sort by 销售额 descending; 6/11 columns shown`
 pub fn view_summary(cell: &EntityRow, fields: &[FieldRow]) -> String {
     let name = |fid: &str| fields.iter().find(|f| f.field_id == fid).map(|f| f.def.name.clone()).unwrap_or_else(|| fid.to_string());
     let mut parts = Vec::new();
     if let Some(f) = cell.payload.get("filter").filter(|f| !f.is_null()) {
-        parts.push(format!("筛选：{}", filter_text(f, &name, fields)));
+        parts.push(format!("filter: {}", filter_text(f, &name, fields)));
     }
     if let Some(s) = cell.payload.get("sorts").and_then(Value::as_array).filter(|s| !s.is_empty()) {
-        let t: Vec<String> = s.iter().map(|x| format!("{} {}", name(x["field_id"].as_str().unwrap_or("")), if x["direction"] == json!("desc") { "降序" } else { "升序" })).collect();
-        parts.push(format!("按 {}", t.join("、")));
+        let t: Vec<String> = s.iter().map(|x| format!("{} {}", name(x["field_id"].as_str().unwrap_or("")), if x["direction"] == json!("desc") { "descending" } else { "ascending" })).collect();
+        parts.push(format!("sort by {}", t.join(", ")));
     }
     if let Some(g) = cell.payload.get("group").and_then(|g| g["field_id"].as_str()) {
-        parts.push(format!("按 {} 分组", name(g)));
+        parts.push(format!("group by {}", name(g)));
     }
     if let Some(fl) = cell.payload.get("fields").and_then(Value::as_array) {
         let shown = fl.iter().filter(|f| f["hidden"] != json!(true)).count();
         if shown < fields.len() {
-            parts.push(format!("显示 {shown}/{} 列", fields.len()));
+            parts.push(format!("{shown}/{} columns shown", fields.len()));
         }
     }
-    parts.join("；")
+    parts.join("; ")
 }
 
 fn filter_text(f: &Value, name: &dyn Fn(&str) -> String, fields: &[FieldRow]) -> String {
     match f["op"].as_str().unwrap_or("") {
         "and" | "or" => {
-            let sep = if f["op"] == json!("and") { " 且 " } else { " 或 " };
+            let sep = if f["op"] == json!("and") { " and " } else { " or " };
             f["args"].as_array().into_iter().flatten().map(|a| filter_text(a, name, fields)).collect::<Vec<_>>().join(sep)
         }
-        "not" => format!("非（{}）", filter_text(&f["arg"], name, fields)),
+        "not" => format!("not ({})", filter_text(&f["arg"], name, fields)),
         "cmp" => {
             let fid = f["field_id"].as_str().unwrap_or("");
             let label = |v: &Value| -> String {
@@ -1549,11 +1549,11 @@ fn filter_text(f: &Value, name: &dyn Fn(&str) -> String, fields: &[FieldRow]) ->
                 "lte" => "≤",
                 "gt" => ">",
                 "gte" => "≥",
-                "contains" => " 包含 ",
-                "starts_with" => " 开头为 ",
-                "in" => " 属于 ",
-                "is_empty" => " 为空",
-                "is_not_empty" => " 不为空",
+                "contains" => " contains ",
+                "starts_with" => " starts with ",
+                "in" => " in ",
+                "is_empty" => " is empty",
+                "is_not_empty" => " is not empty",
                 o => o,
             };
             let v = match &f["value"] {
@@ -1569,29 +1569,29 @@ fn filter_text(f: &Value, name: &dyn Fn(&str) -> String, fields: &[FieldRow]) ->
 
 pub fn type_label(t: &str) -> &'static str {
     match t {
-        TYPE_TABLE => "表",
-        TYPE_RICHTEXT => "富文本",
-        TYPE_RECORD => "记录",
-        TYPE_ASSET => "资产",
-        TYPE_ANNOTATION => "批注",
-        TYPE_WISH => "许愿格",
-        TYPE_BLOCK_DEF => "Block 定义",
-        TYPE_CONTAINER => "文件夹",
+        TYPE_TABLE => "table",
+        TYPE_RICHTEXT => "rich text",
+        TYPE_RECORD => "record",
+        TYPE_ASSET => "asset",
+        TYPE_ANNOTATION => "comment",
+        TYPE_WISH => "wish",
+        TYPE_BLOCK_DEF => "Block definition",
+        TYPE_CONTAINER => "folder",
         TYPE_CELL => "Block",
-        _ => "对象",
+        _ => "object",
     }
 }
 
 pub fn renderer_label(r: &str) -> String {
     match r {
-        "table" => "表格视图".into(),
-        "richtext" => "富文本".into(),
-        "record" => "记录".into(),
-        "asset" => "图片/附件".into(),
-        "note" => "便签".into(),
-        "frame" => "框".into(),
-        "shape" => "形状".into(),
-        "wish" => "许愿格".into(),
+        "table" => "table view".into(),
+        "richtext" => "rich text".into(),
+        "record" => "record".into(),
+        "asset" => "image/attachment".into(),
+        "note" => "sticky note".into(),
+        "frame" => "frame".into(),
+        "shape" => "shape".into(),
+        "wish" => "wish".into(),
         other => format!("Block[{other}]"),
     }
 }

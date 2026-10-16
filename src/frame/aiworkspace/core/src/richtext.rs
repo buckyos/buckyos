@@ -1043,6 +1043,7 @@ mod tests {
 
     fn sample() -> Value {
         json!({ "type": "doc", "content": [
+            // i18n-exempt (this sample): CJK and emoji text exercise multi-byte offsets in the CRDT text
             { "type": "heading", "attrs": { "block_id": "h1", "level": 2 }, "content": [{ "type": "text", "text": "本周项目进展 😀" }] },
             { "type": "paragraph", "attrs": { "block_id": "p1" }, "content": [
                 { "type": "text", "text": "plain " },
@@ -1050,10 +1051,12 @@ mod tests {
                 { "type": "text", "text": "both", "marks": [{ "type": "strong" }, { "type": "em" }] },
                 { "type": "hard_break" },
                 { "type": "text", "text": "site", "marks": [{ "type": "link", "attrs": { "href": "https://example.com" } }] },
+                // i18n-exempt: multi-byte test text
                 { "type": "object_link", "attrs": { "ref": { "entity_id": "task-42-details" }, "label": "详情" } }
             ] },
             { "type": "bullet_list", "attrs": { "block_id": "l1" }, "content": [
                 { "type": "list_item", "attrs": { "block_id": "li1" }, "content": [
+                    // i18n-exempt: multi-byte test text
                     { "type": "paragraph", "attrs": { "block_id": "li1p" }, "content": [{ "type": "text", "text": "一" }] },
                     { "type": "ordered_list", "attrs": { "block_id": "l2", "start": 3 }, "content": [
                         { "type": "list_item", "attrs": { "block_id": "li2" }, "content": [
@@ -1090,13 +1093,14 @@ mod tests {
     fn build_keeps_mark_boundaries() {
         let ast = canonicalize(&json!({ "type": "doc", "content": [
             { "type": "paragraph", "attrs": { "block_id": "p" }, "content": [
-                { "type": "text", "text": "第一期围绕" },
-                { "type": "text", "text": "文档格式", "marks": [{ "type": "strong" }] },
-                { "type": "text", "text": "、" },
+                // i18n-exempt (these runs): multi-byte text around mark boundaries
+                { "type": "text", "text": "第一期围绕" }, // i18n-exempt
+                { "type": "text", "text": "文档格式", "marks": [{ "type": "strong" }] }, // i18n-exempt
+                { "type": "text", "text": "、" }, // i18n-exempt
                 { "type": "text", "text": "Command Engine", "marks": [{ "type": "em" }, { "type": "strong" }] },
-                { "type": "text", "text": " 与内置对象" },
+                { "type": "text", "text": " 与内置对象" }, // i18n-exempt
                 { "type": "text", "text": "code", "marks": [{ "type": "code" }] },
-                { "type": "text", "text": "。" }
+                { "type": "text", "text": "。" } // i18n-exempt
             ] }] })).unwrap();
         assert_eq!(ast["content"][0]["content"].as_array().unwrap().len(), 7);
         assert_eq!(decode_ast(&build_doc(&ast, 7).unwrap()).unwrap(), ast);
@@ -1204,6 +1208,7 @@ mod tests {
             json!({ "type": "doc", "content": [
                 p("new1", "inserted first"),
                 base["content"][4].clone(),
+                // i18n-exempt: multi-byte test text
                 { "type": "heading", "attrs": { "block_id": "h1", "level": 3 }, "content": [{ "type": "text", "text": "改过的标题" }] },
                 base["content"][2].clone(),
                 p("new2", "tail") ] }),
@@ -1213,7 +1218,7 @@ mod tests {
                 { "type": "bullet_list", "attrs": { "block_id": "l1" }, "content": [
                     { "type": "list_item", "attrs": { "block_id": "li9" }, "content": [p("li9p", "new item")] },
                     { "type": "list_item", "attrs": { "block_id": "li1" }, "content": [
-                        p("li1p", "一改"),
+                        p("li1p", "一改"), // i18n-exempt: multi-byte test text
                         { "type": "bullet_list", "attrs": { "block_id": "l2" }, "content": [
                             { "type": "list_item", "attrs": { "block_id": "li2" }, "content": [p("li2p", "x")] }] }] }] },
                 base["content"][1].clone() ] }),

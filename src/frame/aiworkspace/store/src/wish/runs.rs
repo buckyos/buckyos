@@ -185,7 +185,7 @@ impl Workspace {
             "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
             "idempotency_key": format!("run/{run_id}/{}", &plan_digest[..plan_digest.len().min(32)]),
             "origin": "program", "run_id": run_id,
-            "message": if stage == "analyze" { "许愿格分析写回".to_string() } else { format!("应用许愿格结果{}", if run["program"] == json!(PROGRAM_MOCK) { "（模拟）" } else { "" }) },
+            "message": if stage == "analyze" { "Write back wish block analysis".to_string() } else { format!("Apply wish block results{}", if run["program"] == json!(PROGRAM_MOCK) { " (simulated)" } else { "" }) },
             "preconditions": plan["preconditions"], "operations": plan["operations"],
         });
         let mut request = request;

@@ -323,7 +323,7 @@ fn v18_controlled_processing() {
     assert_eq!(risk(&ws, "task-41")["meta"]["derived"]["program"], "mock.task-summary@1");
     assert_eq!(risk(&ws, "task-41")["meta"]["derived"]["run_id"], run["run_id"]);
     let summary = ws.read(&alice(), "summary", None).unwrap();
-    assert_eq!(summary["content"]["content"]["content"][1]["content"][0]["text"], "共 5 项任务，未完成 4 项，逾期 1 项。");
+    assert_eq!(summary["content"]["content"]["content"][1]["content"][0]["text"], "Tasks: 5 in total, 4 open, 1 overdue.");
     assert!(ws.read(&alice(), "cell-summary", None).is_ok());
     // 3. the whole application is one undo unit
     let commit_id = applied["result"]["commit_id"].clone();

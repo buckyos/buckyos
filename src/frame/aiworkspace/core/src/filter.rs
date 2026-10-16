@@ -547,6 +547,7 @@ mod tests {
         // decimals compare numerically, operands are normalized like writes
         assert!(check(json!({"op":"cmp","field_id":"budget","operator":"gt","value":"9.5"}), json!({"budget":"10.00"})));
         assert!(check(json!({"op":"cmp","field_id":"budget","operator":"eq","value":"10"}), json!({"budget":"10.00"})));
+        // i18n-exempt: Chinese cell text is input
         assert!(check(json!({"op":"cmp","field_id":"title","operator":"contains","value":"验收"}), json!({"title":"写验收用例"})));
         assert!(!check(json!({"op":"cmp","field_id":"title","operator":"starts_with","value":"A"}), json!({"title":"abc"})));
         assert!(check(json!({"op":"cmp","field_id":"tags","operator":"has_all","value":["a","b"]}), json!({"tags":["a","b"]})));

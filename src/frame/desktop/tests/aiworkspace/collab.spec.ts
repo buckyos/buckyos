@@ -273,8 +273,8 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
   await expect(all.getByTestId('aiws-cell-task-41-risk').getByTestId('aiws-derived')).toHaveText('模拟')
   // the summary rich text and its cell appear, labelled as simulated
   const summary = page.getByTestId('aiws-cell-frame-cell-summary')
-  await expect(summary).toContainText('任务摘要（模拟生成）')
-  await expect(summary).toContainText('共 5 项任务，未完成 4 项，逾期 1 项。')
+  await expect(summary).toContainText('Task summary (simulated)')
+  await expect(summary).toContainText('Tasks: 5 in total, 4 open, 1 overdue.')
   expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(20)
   expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'risk')).value).toBe('option-high')
 
@@ -287,7 +287,7 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
   expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'risk')).is_set).toBe(false)
   // redo = undo of the compensating commit: everything is back
   await page.getByTestId('aiws-redo').click()
-  await expect(page.getByTestId('aiws-cell-frame-cell-summary')).toContainText('任务摘要（模拟生成）')
+  await expect(page.getByTestId('aiws-cell-frame-cell-summary')).toContainText('Task summary (simulated)')
   await expect(all.getByTestId('aiws-cell-task-41-risk')).toContainText('高')
 
   // a human edit on a derived cell is marked as a manual override

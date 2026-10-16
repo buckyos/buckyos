@@ -8,7 +8,10 @@
  *   text — comments are fine; a literal that must stay (data, a CJK regex) carries `i18n-exempt: <reason>` on
  *   its line or the line above;
  * - every `aiworkspace.<area>.…` literal in the source is a key, and every key is written out as a literal
- *   somewhere (keys are never assembled from pieces, so this check can see them).
+ *   somewhere (keys are never assembled from pieces, so this check can see them);
+ * - the backend speaks English: no Chinese in the string literals of src/frame/aiworkspace/{core,store,server}/src
+ *   (comments are fine; a literal that recognises Chinese input carries `i18n-exempt: <reason>`), nor in the
+ *   program-host assets the server compiles in (aiws/prompts, aiws/README.md, renderers.json, aiws.js, run.js).
  *
  * Path prefixes (relative to src/frame/desktop) limit the source checks to those files and skip the unused-key
  * check, for working on one part of the app. */
@@ -155,4 +158,80 @@ Deno.test({
     const problems = Object.keys(en).filter((key) => !key.endsWith('_one') && !used.has(key))
     fail(problems, 'keys no source names as a literal (unused, or assembled from pieces)')
   },
+})
+
+/** String and char literals of a Rust file (comments skipped), with their line numbers. */
+function rustLiterals(file: string): Literal[] {
+  const text = Deno.readTextFileSync(ROOT + file)
+  const lines = text.split('\n')
+  const out: Literal[] = []
+  const lineAt = (i: number) => text.slice(0, i).split('\n').length
+  const push = (start: number, end: number, value: string) => {
+    const a = lineAt(start), b = lineAt(end)
+    out.push({ file, line: a, text: value, exempt: lines.slice(Math.max(0, a - 2), b).some((l) => l.includes(EXEMPT)) })
+  }
+  let i = 0
+  while (i < text.length) {
+    const c = text[i], next = text[i + 1]
+    if (c === '/' && next === '/') { i = text.indexOf('\n', i); if (i < 0) break; continue }
+    if (c === '/' && next === '*') {
+      let depth = 1; i += 2
+      while (i < text.length && depth > 0) {
+        if (text[i] === '/' && text[i + 1] === '*') { depth += 1; i += 2 } else if (text[i] === '*' && text[i + 1] === '/') { depth -= 1; i += 2 } else i += 1
+      }
+      continue
+    }
+    const raw = /^b?r(#*)"/.exec(text.slice(i, i + 40))
+    if (raw && !/[\w]/.test(text[i - 1] ?? '')) {
+      const close = '"' + raw[1]
+      const start = i + raw[0].length
+      const end = text.indexOf(close, start)
+      push(i, end, text.slice(start, end))
+      i = end + close.length
+      continue
+    }
+    if (c === '"') {
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1
+      push(i, j, text.slice(i + 1, j))
+      i = j + 1
+      continue
+    }
+    if (c === "'") {
+      // a char literal ('x', '\n', '\u{..}'), else a lifetime or label
+      const m = /^'(\\(u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'/.exec(text.slice(i, i + 16))
+      if (m) { push(i, i, m[0].slice(1, -1)); i += m[0].length; continue }
+    }
+    i += 1
+  }
+  return out
+}
+
+const BACKEND = '../aiworkspace'
+function backendFiles(): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of Deno.readDirSync(ROOT + dir)) {
+      const path = `${dir}/${entry.name}`
+      if (entry.isDirectory) walk(path)
+      else if (entry.name.endsWith('.rs')) out.push(path)
+    }
+  }
+  for (const crate of ['core', 'store', 'server']) walk(`${BACKEND}/${crate}/src`)
+  return out.sort()
+}
+
+Deno.test('aiworkspace i18n: the backend speaks English', () => {
+  const problems: string[] = []
+  for (const file of backendFiles()) {
+    for (const l of rustLiterals(file)) if (!l.exempt && CJK.test(l.text)) problems.push(`${file}:${l.line}: ${l.text.trim().slice(0, 70)}`)
+  }
+  // the program host's assets the server compiles in: prompts and API text are read whole, scripts by literal
+  for (const file of ['aiws/prompts/analyze.md', 'aiws/prompts/execute.md', 'aiws/README.md', 'aiws/renderers.json']) {
+    Deno.readTextFileSync(`${ROOT}${BACKEND}/${file}`).split('\n').forEach((line, i) => { if (CJK.test(line)) problems.push(`${BACKEND}/${file}:${i + 1}: ${line.trim().slice(0, 70)}`) })
+  }
+  for (const file of ['aiws/aiws.js', 'aiws/run.js']) {
+    for (const l of literals(`${BACKEND}/${file}`)) if (!l.exempt && CJK.test(l.text)) problems.push(`${l.file}:${l.line}: ${l.text.trim().slice(0, 70)}`)
+  }
+  fail(problems, 'Chinese texts in the backend (it speaks English; mark input matching i18n-exempt with a reason)')
 })

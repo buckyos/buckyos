@@ -541,10 +541,10 @@ pub fn system_entities(title: Option<&str>) -> Vec<(EntityRow, Option<TreeEdge>)
     }
     vec![
         (root, None),
-        (system_container(DATA_ID, "data", Some("data"), Some("数据")), Some(edge(DATA_ID, ROOT_ID, "a"))),
-        (system_container(SURFACES_ID, "surfaces", Some("surfaces"), Some("画布")), Some(edge(SURFACES_ID, ROOT_ID, "b"))),
-        (system_container(SHOWS_ID, "folder", Some("shows"), Some("演讲路径")), Some(edge(SHOWS_ID, DATA_ID, "zy"))),
-        (system_container(CANVAS_CONTENT_ID, "folder", Some("canvas-content"), Some("画布内容")), Some(edge(CANVAS_CONTENT_ID, DATA_ID, "zz"))),
+        (system_container(DATA_ID, "data", Some("data"), Some("Data")), Some(edge(DATA_ID, ROOT_ID, "a"))),
+        (system_container(SURFACES_ID, "surfaces", Some("surfaces"), Some("Canvases")), Some(edge(SURFACES_ID, ROOT_ID, "b"))),
+        (system_container(SHOWS_ID, "folder", Some("shows"), Some("Presentation paths")), Some(edge(SHOWS_ID, DATA_ID, "zy"))),
+        (system_container(CANVAS_CONTENT_ID, "folder", Some("canvas-content"), Some("Canvas content")), Some(edge(CANVAS_CONTENT_ID, DATA_ID, "zz"))),
     ]
 }
 

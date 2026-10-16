@@ -245,10 +245,12 @@ impl ControlPanelServer {
         let mut disks = Disks::new_with_refreshed_list();
         disks.refresh();
 
-        for (idx, disk) in disks.list().iter().enumerate() {
-            let total = disk.total_space();
-            let available = disk.available_space();
-            let used = total.saturating_sub(available);
+        for (idx, disk) in ControlPanelServer::distinct_disks(&disks)
+            .into_iter()
+            .enumerate()
+        {
+            let total = disk.total;
+            let used = disk.used();
             storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
             storage_used_bytes = storage_used_bytes.saturating_add(used);
 
@@ -259,18 +261,18 @@ impl ControlPanelServer {
             };
 
             storage_slices.push(json!({
-                "label": disk.name().to_string_lossy(),
+                "label": disk.device,
                 "value": used_percent,
                 "color": palette[idx % palette.len()],
             }));
 
             disks_detail.push(json!({
-                "label": disk.name().to_string_lossy(),
+                "label": disk.device,
                 "totalGb": bytes_to_gb(total),
                 "usedGb": bytes_to_gb(used),
                 "usagePercent": used_percent,
-                "fs": disk.file_system().to_string_lossy(),
-                "mount": disk.mount_point().to_string_lossy(),
+                "fs": disk.file_system,
+                "mount": disk.mount_point,
             }));
         }
 
@@ -502,15 +504,16 @@ impl ControlPanelServer {
 
         let mut disks = Disks::new_with_refreshed_list();
         disks.refresh();
-        let mut storage_capacity_bytes: u64 = 0;
-        let mut storage_used_bytes: u64 = 0;
-        for disk in disks.list().iter() {
-            let total = disk.total_space();
-            let available = disk.available_space();
-            let used = total.saturating_sub(available);
-            storage_capacity_bytes = storage_capacity_bytes.saturating_add(total);
-            storage_used_bytes = storage_used_bytes.saturating_add(used);
-        }
+        let (storage_capacity_bytes, storage_used_bytes) = ControlPanelServer::distinct_disks(
+            &disks,
+        )
+        .iter()
+        .fold((0u64, 0u64), |(total, used), disk| {
+            (
+                total.saturating_add(disk.total),
+                used.saturating_add(disk.used()),
+            )
+        });
         let disk_usage_percent = if storage_capacity_bytes > 0 {
             ((storage_used_bytes as f64 / storage_capacity_bytes as f64) * 100.0).round()
         } else {

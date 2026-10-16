@@ -383,10 +383,10 @@ mod tests {
     fn payload() -> JsonMap {
         json!({
             "prompt": "p", "executor": "xllm", "knowledge": "k",
-            "inputs": [{ "entity_id": "sales", "name": "sales", "label": "订单", "version": { "mode": "follow", "rev": 3 } }],
+            "inputs": [{ "entity_id": "sales", "name": "sales", "label": "Orders", "version": { "mode": "follow", "rev": 3 } }],
             "analysis": { "schema_version": ANALYSIS_SCHEMA, "status": "ready", "prompt": "p", "context_prompt": "c",
-                          "output_contract": { "results": [{ "name": "monthly", "type": "table", "approach": "program", "key": ["月份"] }], "placement": "right_of_wish" },
-                          "checks": [{ "id": "total", "kind": "program", "text": "合计一致" }], "blockers": [], "warnings": [] },
+                          "output_contract": { "results": [{ "name": "monthly", "type": "table", "approach": "program", "key": ["month"] }], "placement": "right_of_wish" },
+                          "checks": [{ "id": "total", "kind": "program", "text": "totals match" }], "blockers": [], "warnings": [] },
             "output_mode": "overwrite",
         })
         .as_object()
@@ -402,7 +402,7 @@ mod tests {
         assert!(!needs_analysis(&p));
         let before = config_digest(&p);
         // label, recorded versions, placement, output mode and last run are bookkeeping
-        p["inputs"][0]["label"] = json!("新名字");
+        p["inputs"][0]["label"] = json!("new name");
         p["inputs"][0]["version"]["rev"] = json!(9);
         p["analysis"]["output_contract"]["placement"] = json!("below_wish");
         p.insert("output_mode".into(), json!("new"));
@@ -410,7 +410,7 @@ mod tests {
         assert!(!needs_analysis(&p));
         assert_eq!(config_digest(&p), before);
         // meaning: knowledge, refinements, inputs, executor configuration
-        for (k, v) in [("knowledge", json!("k2")), ("refinements", json!([{ "text": "拆分华东" }])), ("executor_config", json!({ "model": "x" }))] {
+        for (k, v) in [("knowledge", json!("k2")), ("refinements", json!([{ "text": "split out East China" }])), ("executor_config", json!({ "model": "x" }))] {
             let mut q = p.clone();
             q.insert(k.into(), v);
             assert!(needs_analysis(&q), "{k}");
@@ -432,14 +432,16 @@ mod tests {
         a["output_contract"]["results"][0]["approach"] = json!("direct");
         assert!(check_analysis(&a).is_err(), "tables come from programs");
         let mut a = p["analysis"].clone();
-        a["blockers"] = json!([{ "code": "MISSING_INPUT", "message": "找不到销售表" }]);
+        a["blockers"] = json!([{ "code": "MISSING_INPUT", "message": "no sales table found" }]);
         assert!(check_analysis(&a).is_err(), "ready with blockers");
         a["status"] = json!("needs_input");
         check_analysis(&a).unwrap();
         let mut a = p["analysis"].clone();
         a["output_contract"]["results"][0]["name"] = json!("../x");
         assert!(check_analysis(&a).is_err());
+        // i18n-exempt: result names may be Chinese (user input)
         assert!(is_result_name("月度汇总") && !is_result_name("a/b") && !is_result_name(" a"));
+        // i18n-exempt: input names must be ASCII identifiers, a Chinese one is refused
         assert!(is_input_name("sales_2") && !is_input_name("2sales") && !is_input_name("销售"));
     }
 

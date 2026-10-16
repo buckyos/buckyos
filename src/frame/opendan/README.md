@@ -240,6 +240,16 @@ zone 内启动时，进程把 `AGENT_TOOL_HOST_ID` 设为 `<device did>/<app ins
 
 ## 测试
 
+提示词人工 review（在 `src/` 下运行）：
+
+```bash
+cargo test -p opendan --test loader jarvis_prompt_review -- --ignored --exact --nocapture --test-threads=1
+```
+
+每次运行覆盖 `src/target/prompt-review/jarvis-chat-route.txt`（相对仓库根目录，独立于 `CARGO_TARGET_DIR`）。测试加载当前源码中的 `apps/jarvis_agent/agent`，通过真实 Loader、Session 和提示词组装链路处理私聊“你好 Jarvis”，在 `LlmClient::infer` 入口捕获请求，写出按原顺序排列的完整 messages、工具描述与参数 schema、模型设置。文本保留换行，非文本内容块保留 JSON。LLM 回复与消息服务使用本地模拟，无需在线 Zone 或模型密钥。
+
+这是手动运行的 review 测试，不对提示词内容做断言或快照比较；只有装配、运行或文件写入失败才报错。输出覆盖 `chat_route` 首轮请求，不包含 `plan` / `do` / `goal` 的推理场景。每次创建全新的临时 AgentRoot 和 Session，因此会读取最新模板；输出中的 Session ID、时间和临时路径可能变化。
+
 ```bash
 cargo test -p opendan -- --test-threads=1
 

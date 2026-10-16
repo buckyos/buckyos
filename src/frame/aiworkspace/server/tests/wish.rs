@@ -30,8 +30,8 @@ export default async function main(aiws) {
 
 fn facts_of(results: &[String]) -> Value {
     for r in results.iter().rev() {
-        if let Some(i) = r.find("facts：") {
-            let rest = &r[i + "facts：".len()..];
+        if let Some(i) = r.find("\nfacts: ") {
+            let rest = &r[i + "\nfacts: ".len()..];
             let end = rest.find('\n').unwrap_or(rest.len());
             if let Ok(v) = serde_json::from_str::<Value>(&rest[..end]) {
                 return v;
@@ -43,9 +43,9 @@ fn facts_of(results: &[String]) -> Value {
 
 fn analysis_script() -> Script {
     Box::new(|t: &Turn| match t.results.len() {
-        0 => call("ws_profile", json!({ "target": handle(&t.user, "表格视图「华东订单」") })),
+        0 => call("ws_profile", json!({ "target": handle(&t.user, "table view \"华东订单\"") })),
         1 => {
-            let b = handle(&t.user, "表格视图「华东订单」");
+            let b = handle(&t.user, "table view \"华东订单\"");
             call("submit_analysis", json!({ "analysis": {
                 "schema_version": "wish.analysis.v2", "status": "ready",
                 "context_prompt": format!("读取 {b} 的全部记录，排除 状态=未结算，按月汇总销售额与订单数；写一段解读，数字取自 facts。"),
@@ -63,7 +63,7 @@ fn analysis_script() -> Script {
 
 fn execute_script(feedback: bool) -> Script {
     Box::new(move |t: &Turn| {
-        let has_program = t.user.contains("program/main.js 已有程序");
+        let has_program = t.user.contains("program/main.js already has a program");
         let mut steps: Vec<&str> = Vec::new();
         if !has_program {
             steps.push("write");
@@ -143,7 +143,7 @@ fn analyze_execute_apply_rerun_feedback() {
     // execution before analysis is refused with a reason
     let r = srv.run("wish.xllm@1", json!({ "wish_id": "wish-q3", "stage": "execute", "location": loc() })).await;
     assert_eq!(r["state"], "failed");
-    assert!(r["error"]["detail"].as_str().unwrap().contains("还没有分析"), "{r}");
+    assert!(r["error"]["detail"].as_str().unwrap().contains("has not been analyzed yet"), "{r}");
 
     // ---- analysis: bound to the view, written back by the UI's apply
     let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "request": { "today": "2026-10-06", "timezone": "Asia/Shanghai" } })).await;
@@ -214,7 +214,7 @@ fn llm_map_cache_mock_and_cancel() {
     // an analysis with a per-item judgement result
     *m.analyze.lock().unwrap() = Box::new(|t: &Turn| match t.results.len() {
         0 => call("submit_analysis", json!({ "analysis": { "status": "ready", "context_prompt": "给 sales 的反馈打情感标签",
-            "inputs": [{ "name": "sales", "ref": handle(&t.user, "表格视图「华东订单」") }],
+            "inputs": [{ "name": "sales", "ref": handle(&t.user, "table view \"华东订单\"") }],
             "output_contract": { "results": [{ "name": "情感", "type": "table_columns", "approach": "program", "target": "sales" }] },
             "checks": [], "blockers": [], "warnings": [] } })),
         _ => text("好"),

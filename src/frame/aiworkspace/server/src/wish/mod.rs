@@ -335,7 +335,7 @@ pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, ch
         let st = run["state"].as_str().unwrap_or("").to_string();
         if ACTIVE_STATES.contains(&st.as_str()) && rt.active(run_id).is_none() {
             // nobody owns it any more (service restart): interrupted, never silently re-run (§13.1)
-            ws.wish_run_set(run_id, Some("interrupted"), None, None, None, Some(&json!({ "error": { "code": "INTERRUPTED", "detail": "服务在运行期间重启或中断；运行不会自动重新开始" } })))?;
+            ws.wish_run_set(run_id, Some("interrupted"), None, None, None, Some(&json!({ "error": { "code": "INTERRUPTED", "detail": "The service restarted or was interrupted during the run; the run does not restart automatically" } })))?;
             run = ws.wish_run(caller, run_id)?;
         }
         if st == "applying" && rt.active(run_id).is_none() {
@@ -367,7 +367,7 @@ pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Calle
         if pre["status"] != json!("ok") {
             plan.ready = false;
             let detail = pre["errors"][0]["detail"].as_str().or(pre["code"].as_str()).unwrap_or("").to_string();
-            plan.summary["problems"].as_array_mut().map(|a| a.push(json!(format!("预检未通过（{}）：{detail}", pre["code"].as_str().unwrap_or("")))));
+            plan.summary["problems"].as_array_mut().map(|a| a.push(json!(format!("Pre-check failed ({}): {detail}", pre["code"].as_str().unwrap_or("")))));
             plan.summary["precheck"] = pre;
         }
     }

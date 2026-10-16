@@ -112,11 +112,11 @@ fn declared_fields(v: Option<&Value>) -> Result<Vec<Value>, String> {
                     f["name"] = json!(k);
                     Ok(f)
                 }
-                _ => Err(format!("字段 {k} 的类型声明无效")),
+                _ => Err(format!("Field {k} has an invalid type declaration")),
             })
             .collect(),
         Some(Value::Array(a)) => Ok(a.clone()),
-        Some(_) => Err("fields 必须是 { 字段名: 类型 } 或 [{ name, type }]".into()),
+        Some(_) => Err("fields must be { field name: type } or [{ name, type }]".into()),
     }
 }
 
@@ -224,17 +224,17 @@ impl Collector {
     pub fn output_path(&self, p: &str) -> Result<PathBuf, String> {
         let rel = Path::new(p);
         let joined = if rel.is_absolute() { rel.to_path_buf() } else { self.workdir.join(rel) };
-        let real = joined.canonicalize().map_err(|_| format!("文件 {p} 不存在"))?;
+        let real = joined.canonicalize().map_err(|_| format!("File {p} does not exist"))?;
         let out = self.workdir.join("output").canonicalize().map_err(|e| e.to_string())?;
         if !real.starts_with(&out) {
-            return Err(format!("文件 {p} 不在 output/ 下：只有 output/ 中的文件可以成为结果"));
+            return Err(format!("File {p} is not under output/: only files in output/ can become results"));
         }
         let meta = std::fs::metadata(&real).map_err(|e| e.to_string())?;
         if !meta.is_file() {
-            return Err(format!("{p} 不是文件"));
+            return Err(format!("{p} is not a file"));
         }
         if meta.len() > MAX_FILE_BYTES {
-            return Err(format!("文件 {p} 超过 {} MiB", MAX_FILE_BYTES / 1024 / 1024));
+            return Err(format!("File {p} exceeds {} MiB", MAX_FILE_BYTES / 1024 / 1024));
         }
         Ok(real)
     }
@@ -244,12 +244,12 @@ impl Collector {
         let mut errs = Vec::new();
         let name = raw["name"].as_str().unwrap_or("").to_string();
         if !is_result_name(&name) {
-            return Err(vec![format!("结果名「{name}」无效：1–64 个字符，不能含路径分隔符、冒号或 ..")]);
+            return Err(vec![format!("Result name \"{name}\" is invalid: 1–64 characters, without path separators, colons or ..")]);
         }
         let contract = self.contract_for(&name);
         if contract.is_none() && !self.dynamic() {
             let names: Vec<String> = contract_results(&self.contract).iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect();
-            return Err(vec![format!("结果「{name}」不在输出约定中（约定的结果：{}）：不要扩展任务；需要新结果时请先修改分析", names.join("、"))]);
+            return Err(vec![format!("Result \"{name}\" is not in the output contract (contracted results: {}): do not extend the task; to get a new result, revise the analysis first", names.join(", "))]);
         }
         let kind = raw["type"].as_str().unwrap_or("");
         let ty = match kind {
@@ -260,16 +260,16 @@ impl Collector {
             "file" | "image" | "asset" => "file",
             "html" => "html",
             "video" => "video",
-            other => return Err(vec![format!("结果「{name}」的类型 {other} 不支持")]),
+            other => return Err(vec![format!("Result \"{name}\" has unsupported type {other}")]),
         };
         let contract_ty = contract.as_ref().and_then(|c| c["type"].as_str()).unwrap_or("").to_string();
         let contract_approach = contract.as_ref().and_then(|c| c["approach"].as_str()).unwrap_or("").to_string();
         if approach == "direct" {
             if PROGRAM_ONLY_TYPES.contains(&ty) {
-                return Err(vec![format!("结果「{name}」是 {ty}：表格与派生列只能由程序产生（在 program/main.js 中用 aiws.result.table / aiws.result.columns 输出，再调用 run_program）")]);
+                return Err(vec![format!("Result \"{name}\" is of type {ty}: tables and derived columns can only be produced by a program (output them in program/main.js with aiws.result.table / aiws.result.columns, then call run_program)")]);
             }
             if contract_approach == "program" {
-                return Err(vec![format!("结果「{name}」约定由程序产生：请在程序中输出它并调用 run_program，而不是用 put_result 直接书写")]);
+                return Err(vec![format!("Result \"{name}\" is contracted to be produced by the program: output it in the program and call run_program instead of writing it directly with put_result")]);
             }
         }
         let mut out = json!({ "name": name, "approach": approach });
@@ -289,13 +289,13 @@ impl Collector {
             "table" => {
                 let rows = raw["rows"].as_array().cloned().unwrap_or_default();
                 if rows.len() > MAX_TABLE_ROWS {
-                    errs.push(format!("结果「{name}」有 {} 行，超过 {MAX_TABLE_ROWS} 行上限：请缩小范围或汇总", rows.len()));
+                    errs.push(format!("Result \"{name}\" has {} rows, over the limit of {MAX_TABLE_ROWS} rows: narrow the range or aggregate", rows.len()));
                 }
                 let mut declared = declared_fields(raw.get("fields")).map_err(|e| vec![e])?;
                 let mut order: Vec<String> = declared.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect();
                 for r in &rows {
                     let Some(o) = r.as_object() else {
-                        errs.push(format!("结果「{name}」的每一行必须是 {{ 字段名: 值 }} 对象"));
+                        errs.push(format!("Each row of result \"{name}\" must be a {{ field name: value }} object"));
                         break;
                     };
                     for k in o.keys() {
@@ -305,26 +305,26 @@ impl Collector {
                     }
                 }
                 if order.len() > MAX_TABLE_FIELDS {
-                    errs.push(format!("结果「{name}」有 {} 个字段，超过 {MAX_TABLE_FIELDS} 个", order.len()));
+                    errs.push(format!("Result \"{name}\" has {} fields, over the limit of {MAX_TABLE_FIELDS}", order.len()));
                 }
                 let mut fields = Vec::new();
                 for fname in &order {
                     if fname.is_empty() || fname.chars().count() > 128 {
-                        errs.push(format!("结果「{name}」的字段名「{fname}」无效"));
+                        errs.push(format!("Result \"{name}\" has an invalid field name \"{fname}\""));
                         continue;
                     }
                     let mut f = declared.iter().find(|f| f["name"] == json!(fname)).cloned().unwrap_or_else(|| json!({ "name": fname }));
                     let t = match f["type"].as_str() {
                         Some(t) if FIELD_TYPES.contains(&t) => t.to_string(),
                         Some(t) => {
-                            errs.push(format!("结果「{name}」字段「{fname}」的类型 {t} 不支持（{}）", FIELD_TYPES.join("/")));
+                            errs.push(format!("Field \"{fname}\" of result \"{name}\" has unsupported type {t} ({})", FIELD_TYPES.join("/")));
                             continue;
                         }
                         None => infer_type(rows.iter().filter_map(|r| r.get(fname))).to_string(),
                     };
                     let bad: Vec<String> = rows.iter().filter_map(|r| r.get(fname)).filter(|v| !check_value(&t, v)).take(3).map(|v| v.to_string()).collect();
                     if !bad.is_empty() {
-                        errs.push(format!("结果「{name}」字段「{fname}」声明为 {t}，但有值不符合：{}", bad.join("、")));
+                        errs.push(format!("Field \"{fname}\" of result \"{name}\" is declared as {t}, but some values do not match: {}", bad.join(", ")));
                     }
                     f["type"] = json!(t);
                     fields.push(f);
@@ -336,11 +336,11 @@ impl Collector {
                     _ => Vec::new(),
                 };
                 if key.is_empty() && approach == "program" {
-                    errs.push(format!("结果「{name}」需要 key（一列或多列逻辑键），例如 aiws.result.table('{name}', rows, {{ key: ['月份'] }})"));
+                    errs.push(format!("Result \"{name}\" needs a key (one or more logical key columns), e.g. aiws.result.table('{name}', rows, {{ key: ['month'] }})"));
                 }
                 for k in &key {
                     if !order.contains(k) {
-                        errs.push(format!("结果「{name}」的键字段「{k}」不在行中"));
+                        errs.push(format!("Key field \"{k}\" of result \"{name}\" is not in the rows"));
                     }
                 }
                 if !key.is_empty() && errs.is_empty() {
@@ -348,11 +348,11 @@ impl Collector {
                     for r in &rows {
                         let kv: Vec<Value> = key.iter().map(|k| r.get(k).cloned().unwrap_or(Value::Null)).collect();
                         if kv.iter().any(Value::is_null) {
-                            errs.push(format!("结果「{name}」有行的键字段为空：{}", r));
+                            errs.push(format!("Result \"{name}\" has a row with an empty key field: {}", r));
                             break;
                         }
                         if !seen.insert(serde_json::to_string(&kv).unwrap_or_default()) {
-                            errs.push(format!("结果「{name}」的键 {} 有重复值：{}", key.join("+"), serde_json::to_string(&kv).unwrap_or_default()));
+                            errs.push(format!("Result \"{name}\" has duplicate values for key {}: {}", key.join("+"), serde_json::to_string(&kv).unwrap_or_default()));
                             break;
                         }
                     }
@@ -368,10 +368,10 @@ impl Collector {
             "table_columns" => {
                 let input = raw["input"].as_str().or_else(|| contract.as_ref().and_then(|c| c["target"].as_str())).unwrap_or("").to_string();
                 let Some(info) = self.inputs.get(&input).filter(|i| i.type_id == aiworkspace_core::model::TYPE_TABLE) else {
-                    return Err(vec![format!("派生列「{name}」的目标 {input} 不是一个表格输入")]);
+                    return Err(vec![format!("The target {input} of derived-column result \"{name}\" is not a table input")]);
                 };
                 if contract.as_ref().and_then(|c| c["target"].as_str()).is_some_and(|t| t != input) {
-                    errs.push(format!("派生列「{name}」约定写到 {}，不是 {input}", contract.as_ref().unwrap()["target"]));
+                    errs.push(format!("Derived-column result \"{name}\" is contracted to write to {}, not {input}", contract.as_ref().unwrap()["target"]));
                 }
                 let values = raw["values"].as_object().cloned().unwrap_or_default();
                 let declared = declared_fields(raw.get("fields")).map_err(|e| vec![e])?;
@@ -390,13 +390,13 @@ impl Collector {
                             }
                         }
                         _ => {
-                            errs.push(format!("派生列「{name}」的值必须是 {{ record_id: {{ 列名: 值 }} }}"));
+                            errs.push(format!("The values of derived-column result \"{name}\" must be {{ record_id: {{ column name: value }} }}"));
                             break;
                         }
                     }
                 }
                 if unknown > 0 {
-                    errs.push(format!("派生列「{name}」有 {unknown} 个 record id 不在输入 {input} 中（行的 _id 来自 aiws.input('{input}').rows()）"));
+                    errs.push(format!("Derived-column result \"{name}\" has {unknown} record ids that are not in input {input} (a row's _id comes from aiws.input('{input}').rows())"));
                 }
                 let mut fields = Vec::new();
                 for fname in &order {
@@ -412,7 +412,7 @@ impl Collector {
             "record" => {
                 let props = raw["props"].as_object().cloned().unwrap_or_default();
                 if props.len() > 64 {
-                    errs.push(format!("记录「{name}」的属性超过 64 个"));
+                    errs.push(format!("Record \"{name}\" has more than 64 properties"));
                 }
                 let declared = declared_fields(raw.get("schema").or_else(|| raw.get("fields"))).map_err(|e| vec![e])?;
                 let properties: Vec<Value> = props
@@ -435,16 +435,16 @@ impl Collector {
             "richtext" => {
                 let md = raw["markdown"].as_str().or_else(|| raw["text"].as_str()).unwrap_or("");
                 if md.trim().is_empty() {
-                    errs.push(format!("文本结果「{name}」为空"));
+                    errs.push(format!("Text result \"{name}\" is empty"));
                 }
                 if approach == "direct" && md.chars().count() > MAX_DIRECT_CHARS {
-                    errs.push(format!("文本结果「{name}」超过 {MAX_DIRECT_CHARS} 字：长内容请由程序生成"));
+                    errs.push(format!("Text result \"{name}\" exceeds {MAX_DIRECT_CHARS} characters: generate long content with a program"));
                 }
                 if approach == "direct" {
                     // a written table of many rows is data, not text
                     let table_lines = md.lines().filter(|l| l.trim_start().starts_with('|')).count();
                     if table_lines > DIRECT_ROWS_LIMIT + 2 {
-                        errs.push(format!("文本结果「{name}」包含 {table_lines} 行表格：超过 {DIRECT_ROWS_LIMIT} 行的结构化结果必须由程序产生（aiws.result.table）"));
+                        errs.push(format!("Text result \"{name}\" contains {table_lines} table lines: structured results of more than {DIRECT_ROWS_LIMIT} rows must be produced by a program (aiws.result.table)"));
                     }
                 }
                 out["markdown"] = json!(md);
@@ -463,7 +463,7 @@ impl Collector {
                         }
                         if let Some(d) = raw.get("media_type").and_then(Value::as_str) {
                             if !media.starts_with("image/") && d.starts_with("image/") {
-                                errs.push(format!("文件 {p} 声明为 {d}，但内容是 {media}"));
+                                errs.push(format!("File {p} is declared as {d}, but its content is {media}"));
                             }
                         }
                         out["file"] = f;
@@ -479,11 +479,11 @@ impl Collector {
             "html" => {
                 let html = raw["html"].as_str().unwrap_or("");
                 if html.is_empty() {
-                    errs.push(format!("HTML 结果「{name}」需要 html"));
+                    errs.push(format!("HTML result \"{name}\" needs html"));
                 }
                 let size = html.len() + raw["css"].as_str().map_or(0, str::len) + raw["js"].as_str().map_or(0, str::len);
                 if size > MAX_HTML_BYTES {
-                    errs.push(format!("HTML 结果「{name}」超过 {} KiB", MAX_HTML_BYTES / 1024));
+                    errs.push(format!("HTML result \"{name}\" exceeds {} KiB", MAX_HTML_BYTES / 1024));
                 }
                 let mut bindings = Map::new();
                 for (k, v) in raw["bindings"].as_object().into_iter().flatten() {
@@ -494,9 +494,9 @@ impl Collector {
                         _ => false,
                     };
                     if !is_input_name(k) || k == "source" {
-                        errs.push(format!("HTML 结果「{name}」的绑定名 {k} 必须是标识符"));
+                        errs.push(format!("Binding name {k} of HTML result \"{name}\" must be an identifier"));
                     } else if !ok {
-                        errs.push(format!("HTML 结果「{name}」的绑定 {k} → {t} 无效（用 input:<输入名> 或 result:<结果名>）"));
+                        errs.push(format!("Binding {k} → {t} of HTML result \"{name}\" is invalid (use input:<input name> or result:<result name>)"));
                     } else {
                         bindings.insert(k.clone(), json!(t));
                     }
@@ -505,12 +505,12 @@ impl Collector {
                 "html"
             }
             _ => {
-                errs.push("video 结果需要真实媒体工具，首版不支持".into());
+                errs.push("video results need a real media tool and are not supported in the first version".into());
                 "video"
             }
         };
         if !contract_ty.is_empty() && contract_ty != final_ty && !(contract_ty == "asset" && final_ty == "image" || contract_ty == "image" && final_ty == "asset") {
-            errs.push(format!("结果「{name}」约定为 {contract_ty}，实际是 {final_ty}"));
+            errs.push(format!("Result \"{name}\" is contracted as {contract_ty}, but it is {final_ty}"));
         }
         out["type"] = json!(final_ty);
         if errs.is_empty() {
@@ -678,18 +678,18 @@ impl Collector {
                 continue;
             }
             if !have.contains(n) {
-                out.push(format!("约定的结果「{n}」还没有产生（{}）", if c["approach"] == json!("program") { "由程序输出后调用 run_program" } else { "用 put_result 提交" }));
+                out.push(format!("Contracted result \"{n}\" has not been produced yet ({})", if c["approach"] == json!("program") { "output it from the program, then call run_program" } else { "submit it with put_result" }));
             }
         }
         if !self.program_only {
             for c in self.checks() {
                 if c["kind"] == json!("program") && c["status"] == json!("not_run") && c.get("extra").is_none() {
-                    out.push(format!("程序型检查「{}」没有执行：在程序中调用 aiws.check('{}', 通过与否, 说明)", c["id"].as_str().unwrap_or(""), c["id"].as_str().unwrap_or("")));
+                    out.push(format!("Program check \"{}\" was not run: call aiws.check('{}', passed, detail) in the program", c["id"].as_str().unwrap_or(""), c["id"].as_str().unwrap_or("")));
                 }
             }
             let needs_program = contract_results(&self.contract).iter().any(|c| c["approach"] == json!("program")) || self.checks_def.iter().any(|c| c["kind"] == json!("program"));
             if needs_program && self.program.is_none() {
-                out.push("还没有成功运行过程序：先调用 run_program".into());
+                out.push("The program has not run successfully yet: call run_program first".into());
             }
         }
         out
@@ -728,11 +728,11 @@ pub fn program_output(c: &Collector, raw: &Value, source: &str, logs: &str) -> R
     for r in raw["results"].as_array().into_iter().flatten() {
         let n = r["name"].as_str().unwrap_or("").to_string();
         if !names.insert(n.clone()) {
-            errs.push(format!("程序两次输出了结果「{n}」"));
+            errs.push(format!("The program output result \"{n}\" twice"));
             continue;
         }
         if c.direct.contains_key(&n) {
-            errs.push(format!("结果「{n}」已经用 put_result 提交过：名称冲突"));
+            errs.push(format!("Result \"{n}\" was already submitted with put_result: name conflict"));
             continue;
         }
         match c.normalize(r, "program") {
@@ -744,7 +744,7 @@ pub fn program_output(c: &Collector, raw: &Value, source: &str, logs: &str) -> R
     for ch in raw["checks"].as_array().into_iter().flatten() {
         let id = ch["id"].as_str().unwrap_or("");
         if !is_check_id(id) {
-            errs.push(format!("检查 id「{id}」无效"));
+            errs.push(format!("Check id \"{id}\" is invalid"));
             continue;
         }
         checks.push(json!({ "id": id, "passed": ch["passed"] == json!(true), "detail": ch.get("detail").cloned().unwrap_or(Value::Null) }));
@@ -770,12 +770,13 @@ mod tests {
 
     #[test]
     fn numbers_and_citations() {
+        // i18n-exempt: numbers in Chinese prose (the model's written results) are input
         let n: Vec<String> = numbers_in("本季度销售额 1,234.5 元，环比 12.3%，2026-09-30 截止，v2 版本，第3季度").into_iter().map(|(r, _)| r).collect();
         assert_eq!(n, ["1,234.5", "12.3", "3"]);
         assert!(cited("12.3", 12.3, &[0.1234]));
         assert!(cited("1,234.5", 1234.5, &[1234.49]));
         assert!(!cited("1,300", 1300.0, &[1234.5]));
-        assert!(cited("12.3", 12.3, &[123_000.0]), "12.3 万");
+        assert!(cited("12.3", 12.3, &[123_000.0]), "12.3 × 10,000");
         assert!(!cited("12.4", 12.4, &[123_000.0, 0.5]));
     }
 

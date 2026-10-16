@@ -85,19 +85,19 @@ impl Stage {
     /// Validate the model's analysis. `Err(problems)` lists everything to fix.
     pub fn validate_analysis(&mut self, submitted: &Value) -> WsResult<Result<Validated, Vec<String>>> {
         let mut problems: Vec<String> = Vec::new();
-        let Some(o) = submitted.as_object() else { return Ok(Err(vec!["analysis 必须是一个 JSON 对象".into()])) };
+        let Some(o) = submitted.as_object() else { return Ok(Err(vec!["analysis must be a JSON object".into()])) };
         let known = ["schema_version", "status", "context_prompt", "inputs", "output_contract", "checks", "blockers", "warnings", "context_sources", "summary"];
         for k in o.keys() {
             if !known.contains(&k.as_str()) {
-                problems.push(format!("未知字段 {k}（允许：{}）", known.join(", ")));
+                problems.push(format!("Unknown field {k} (allowed: {})", known.join(", ")));
             }
         }
         if o.get("schema_version").and_then(Value::as_str).is_some_and(|v| v != ANALYSIS_SCHEMA) {
-            problems.push(format!("schema_version 必须是 {ANALYSIS_SCHEMA}"));
+            problems.push(format!("schema_version must be {ANALYSIS_SCHEMA}"));
         }
         let mut status = o.get("status").and_then(Value::as_str).unwrap_or("ready").to_string();
         if !matches!(status.as_str(), "ready" | "needs_input") {
-            problems.push("status 必须是 ready 或 needs_input".into());
+            problems.push("status must be ready or needs_input".into());
         }
         let wish_id = self.wish.entity_id.clone();
         // ---- inputs
@@ -109,11 +109,11 @@ impl Stage {
             let at = format!("inputs[{i}]");
             let name = input["name"].as_str().unwrap_or("").to_string();
             if !is_input_name(&name) {
-                problems.push(format!("{at}.name「{name}」必须是标识符（字母、数字、下划线，不以数字开头），程序用它读取输入"));
+                problems.push(format!("{at}.name \"{name}\" must be an identifier (letters, digits and underscores, not starting with a digit): the program reads the input by this name"));
                 continue;
             }
             if names.contains_key(&name) {
-                problems.push(format!("{at}.name「{name}」重复"));
+                problems.push(format!("{at}.name \"{name}\" is a duplicate"));
                 continue;
             }
             let r = input["ref"].as_str().or_else(|| input["entity_id"].as_str()).unwrap_or("");
@@ -132,7 +132,7 @@ impl Stage {
             let e = match self.snap.readable(&entity_id) {
                 Ok(e) => e,
                 Err(err) => {
-                    problems.push(format!("{at}.ref {r} 不可读或不存在（{}）", err.detail));
+                    problems.push(format!("{at}.ref {r} is not readable or does not exist ({})", err.detail));
                     continue;
                 }
             };
@@ -141,14 +141,14 @@ impl Stage {
             if e.type_id == TYPE_CELL {
                 match e.payload.get("source_ref").and_then(reference_entity_id) {
                     None => {
-                        problems.push(format!("{at}.ref {r} 是纯 UI Block（框/形状），没有数据可绑定"));
+                        problems.push(format!("{at}.ref {r} is a pure UI block (frame/shape) with no data to bind"));
                         continue;
                     }
                     Some(src) => {
                         data = match self.snap.readable(src) {
                             Ok(d) => d,
                             Err(_) => {
-                                problems.push(format!("{at}.ref {r} 显示的数据不可读"));
+                                problems.push(format!("The data shown by {at}.ref {r} is not readable"));
                                 continue;
                             }
                         };
@@ -158,7 +158,7 @@ impl Stage {
                             // the table the user sees is the view: its filter and order are the range (§5.2)
                             selector = Some(json!({ "kind": "table_view", "cell_id": e.entity_id }));
                         } else if explicit.as_deref() == Some("table_view") {
-                            problems.push(format!("{at}: {r} 不是表格视图，不能用 table_view"));
+                            problems.push(format!("{at}: {r} is not a table view, so table_view cannot be used"));
                             continue;
                         }
                     }
@@ -166,32 +166,32 @@ impl Stage {
             }
             match data.type_id.as_str() {
                 TYPE_WISH => {
-                    problems.push(format!("{at}.ref {r} 是许愿格本身：请绑定它产生的结果"));
+                    problems.push(format!("{at}.ref {r} is a wish block itself: bind the results it produces"));
                     continue;
                 }
                 TYPE_BLOCK_DEF | TYPE_CELL => {
-                    problems.push(format!("{at}.ref {r} 不是数据"));
+                    problems.push(format!("{at}.ref {r} is not data"));
                     continue;
                 }
                 _ => {}
             }
             if data.entity_id == wish_id {
-                problems.push(format!("{at}: 许愿格不能以自己为输入"));
+                problems.push(format!("{at}: a wish block cannot take itself as input"));
                 continue;
             }
             match generation_cycle(&self.ctx(), &wish_id, &data.entity_id)? {
                 Ok(true) => {
-                    problems.push(format!("{at}.ref {r}（{}）直接或间接来自本许愿格的结果：会形成生成环", data.payload.get("title").and_then(Value::as_str).or(data.name.as_deref()).unwrap_or(&data.entity_id)));
+                    problems.push(format!("{at}.ref {r} ({}) comes directly or indirectly from this wish block's results: it would form a generation cycle", data.payload.get("title").and_then(Value::as_str).or(data.name.as_deref()).unwrap_or(&data.entity_id)));
                     continue;
                 }
                 Err(()) => {
-                    problems.push(format!("{at}.ref {r} 的生成依赖链过长，无法确认是否成环：请改绑更直接的数据"));
+                    problems.push(format!("The generation dependency chain of {at}.ref {r} is too long to confirm that it has no cycle: bind more direct data instead"));
                     continue;
                 }
                 Ok(false) => {}
             }
             if input.get("version").and_then(|v| v["mode"].as_str()) == Some("fixed") {
-                problems.push(format!("{at}: 首版不支持固定历史版本（version.mode = fixed），请使用 follow"));
+                problems.push(format!("{at}: fixed historical versions (version.mode = fixed) are not supported in the first version; use follow"));
                 continue;
             }
             // selector: by names → by field ids
@@ -231,18 +231,18 @@ impl Stage {
                         selector = Some(out);
                     }
                     Some(k) => {
-                        problems.push(format!("{at}.selector.kind {k} 不支持（entity / table_view / table_query）"));
+                        problems.push(format!("{at}.selector.kind {k} is not supported (entity / table_view / table_query)"));
                         continue;
                     }
                 }
             } else if selector.as_ref().and_then(|s| s["kind"].as_str()).is_some_and(|k| k != "entity") {
-                problems.push(format!("{at}: {} 只能整体绑定（selector.kind = entity）", super::context::type_label(&data.type_id)));
+                problems.push(format!("{at}: an input of type {} can only be bound as a whole (selector.kind = entity)", super::context::type_label(&data.type_id)));
                 continue;
             } else {
                 selector = None;
             }
             if data.type_id == TYPE_TABLE && aiworkspace_core::types::is_url_table(&data) {
-                problems.push(format!("{at}: URL 查询表没有可验证的版本，首版不能作为许愿格输入"));
+                problems.push(format!("{at}: a URL query table has no verifiable version and cannot be a wish block input in the first version"));
                 continue;
             }
             let label = input["label"].as_str().map(str::to_string).unwrap_or_else(|| data.payload.get("title").and_then(Value::as_str).or(data.name.as_deref()).unwrap_or(&data.entity_id).to_string());
@@ -260,7 +260,7 @@ impl Stage {
         // ---- context prompt: persisted without run-local handles
         let raw_prompt = o.get("context_prompt").and_then(Value::as_str).unwrap_or("").trim().to_string();
         if raw_prompt.is_empty() {
-            problems.push("context_prompt 不能为空：写出可以独立执行的任务说明".into());
+            problems.push("context_prompt must not be empty: write a task description that can be carried out on its own".into());
         }
         let field_names: BTreeMap<(String, String), String> = {
             let mut m = BTreeMap::new();
@@ -276,11 +276,11 @@ impl Stage {
         let unbound_cell = std::cell::RefCell::new(Vec::<String>::new());
         let (context_prompt, unknown) = self.handles.rewrite(&raw_prompt, &|h, t| {
             let out = match t {
-                Target::Entity(_) => handle_names.get(h).map(|n| format!("输入 `{n}`")),
+                Target::Entity(_) => handle_names.get(h).map(|n| format!("input `{n}`")),
                 Target::Field(e, f) => {
                     let owner = names.iter().find(|(_, id)| *id == e).map(|(n, _)| n.clone());
                     match (owner, field_names.get(&(e.clone(), f.clone()))) {
-                        (Some(n), Some(fname)) => Some(format!("`{n}` 的字段「{fname}」")),
+                        (Some(n), Some(fname)) => Some(format!("field \"{fname}\" of `{n}`")),
                         _ => None,
                     }
                 }
@@ -293,10 +293,10 @@ impl Stage {
         });
         let unbound = unbound_cell.into_inner();
         if !unknown.is_empty() {
-            problems.push(format!("context_prompt 中的句柄 {} 不存在", unknown.join("、")));
+            problems.push(format!("context_prompt refers to handles that do not exist: {}", unknown.join(", ")));
         }
         if !unbound.is_empty() {
-            problems.push(format!("context_prompt 提到了 {}，但它们没有绑定为输入：句柄只在本次运行有效，请绑定为输入并用输入名指代", unbound.join("、")));
+            problems.push(format!("context_prompt mentions {}, but they are not bound as inputs: handles are only valid in this run; bind them as inputs and refer to them by input name", unbound.join(", ")));
         }
         // ---- output contract
         let contract_in = o.get("output_contract").cloned().unwrap_or(json!({ "results": [] }));
@@ -313,13 +313,13 @@ impl Stage {
             }
             let ty = r["type"].as_str().unwrap_or("");
             if ty == "table" && !r.get("key").and_then(Value::as_array).is_some_and(|k| !k.is_empty()) {
-                problems.push(format!("{at}: 表格结果需要 key（一列或多列的逻辑键），重跑时据此保持记录身份"));
+                problems.push(format!("{at}: a table result needs a key (one or more logical key columns), which keeps record identity across reruns"));
             }
             if ty == "table_columns" && !table_inputs.contains(r["target"].as_str().unwrap_or("")) {
-                problems.push(format!("{at}: table_columns 的 target 必须是一个表格输入的输入名"));
+                problems.push(format!("{at}: the target of table_columns must be the input name of a table input"));
             }
             if ty == "video" {
-                problems.push(format!("{at}: 当前没有真实的视频生成工具，不能约定 video 结果"));
+                problems.push(format!("{at}: there is no real video generation tool yet, so a video result cannot be contracted"));
             }
             for (vi, v) in r.get("views").and_then(Value::as_array).into_iter().flatten().enumerate() {
                 let renderer = v["renderer"].as_str().unwrap_or("");
@@ -327,8 +327,8 @@ impl Stage {
                     continue;
                 }
                 match renderer_accepts(&self.catalog_json()?, renderer, ty) {
-                    None => problems.push(format!("{at}.views[{vi}]: Renderer `{renderer}` 不在目录中（见 catalog/renderers.json）")),
-                    Some(false) => problems.push(format!("{at}.views[{vi}]: Renderer `{renderer}` 不能显示 {ty} 结果")),
+                    None => problems.push(format!("{at}.views[{vi}]: renderer `{renderer}` is not in the catalog (see catalog/renderers.json)")),
+                    Some(false) => problems.push(format!("{at}.views[{vi}]: renderer `{renderer}` cannot display {ty} results")),
                     Some(true) => {}
                 }
             }
@@ -342,7 +342,7 @@ impl Stage {
                 Some(h) => match self.handles.resolve_entity(h) {
                     Ok(id) => format!("frame:{id}"),
                     Err(_) => {
-                        problems.push(format!("output_contract.placement 的框 {h} 不存在"));
+                        problems.push(format!("The frame {h} in output_contract.placement does not exist"));
                         pl.to_string()
                     }
                 },
@@ -360,7 +360,7 @@ impl Stage {
             for h in b["candidates"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                 match self.handles.resolve_entity(h).and_then(|id| self.snap.readable(&id)) {
                     Ok(e) => c.push(json!(e.entity_id)),
-                    Err(_) => problems.push(format!("blocker 候选 {h} 不存在或不可读")),
+                    Err(_) => problems.push(format!("Blocker candidate {h} does not exist or is not readable")),
                 }
             }
             let mut x = json!({ "code": b["code"].as_str().unwrap_or("NEEDS_INPUT"), "message": b["message"].as_str().unwrap_or("") });
@@ -376,14 +376,14 @@ impl Stage {
             status = "needs_input".into();
         }
         if status == "ready" && inputs.is_empty() && raw_prompt.contains('@') {
-            problems.push("context_prompt 提到了数据，但 inputs 为空".into());
+            problems.push("context_prompt mentions data, but inputs is empty".into());
         }
         // ---- semantic basis: the text whose rules or values went into the prompt (§8.1)
         let mut reads = super::readset::ReadSet::default();
         for h in o.get("context_sources").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
             match self.handles.resolve_entity(h).and_then(|id| self.snap.readable(&id)) {
                 Ok(e) => reads.entity(&self.ctx(), &e)?,
-                Err(_) => problems.push(format!("context_sources 中的 {h} 不存在")),
+                Err(_) => problems.push(format!("{h} in context_sources does not exist")),
             }
         }
         let analysis = json!({

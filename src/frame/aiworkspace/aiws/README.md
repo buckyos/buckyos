@@ -1,70 +1,70 @@
-# aiws v2 — 程序宿主接口
+# aiws v2 — the program host API
 
-许愿格程序是一个 ES module：`program/main.js`，默认导出 `async function main(aiws)`。它读取本次运行的快照，写出**候选结果**；它不直接修改工作区。只使用 Deno 内置 API 与 `aiws`，不引入第三方依赖。
+A wish program is an ES module, `program/main.js`, whose default export is `async function main(aiws)`. It reads this run's snapshot and writes **candidate results**; it does not modify the workspace directly. Use only Deno's built-in APIs and `aiws`; do not bring in third-party dependencies.
 
-调试：`deno run -A lib/run.js`（打印结果摘要；完整输出在 `output/.aiws/results.json`）。宿主的 `run_program` 和以后的“只重跑程序”用同一个 `lib/run.js` 运行同一份程序（权限更严：只能读运行目录、只能写 `output/`）。
+Debugging: `deno run -A lib/run.js` (prints a summary of the results; the full output is in `output/.aiws/results.json`). The host's `run_program` and a later "re-run only the program" run the same program with the same `lib/run.js` (with stricter permissions: it can only read the run directory and only write `output/`).
 
-## 读取
+## Reading
 
 ```js
-const sales = aiws.input('sales')        // 按输入名取得输入（输入名见 context/inputs.json 与输出约定）
+const sales = aiws.input('sales')        // get an input by input name (input names: see context/inputs.json and the output contract)
 sales.kind                               // 'table' | 'richtext' | 'record' | 'asset' | 'folder' | 'annotation'
-sales.fields()                           // [{ name, type, options?, id, visible }]，按表格字段顺序
-sales.rows()                             // [{ 字段名: 值, _id }]；视图输入按视图的筛选与排序
-sales.rows({ fields: ['月份', '销售额'], filter: { 状态: '已结算' }, sort: '-销售额', limit: 10 })
-sales.rows({ filter: (r) => r['销售额'] > 0 })
-aiws.input('rules').markdown()           // 富文本 → Markdown
-aiws.input('profile').props()            // 记录 → { 属性名: 值 }
-aiws.input('logo').bytes()               // 资产 → Uint8Array（.text() 取文本）
-aiws.input('folder').members()           // 文件夹成员（每个成员同样有 rows/markdown/…）
-aiws.inputs()                            // 全部输入名
-aiws.request                             // 固定参数：{ today, timezone, currency, … }；日期口径以它为准
-aiws.resolve('订单') / aiws.find('销售') / aiws.outline()   // 只返回元数据；要读内容必须是输入
+sales.fields()                           // [{ name, type, options?, id, visible }], in the table's field order
+sales.rows()                             // [{ field name: value, _id }]; a view input follows the view's filter and sort
+sales.rows({ fields: ['Month', 'Sales'], filter: { Status: 'Settled' }, sort: '-Sales', limit: 10 })
+sales.rows({ filter: (r) => r['Sales'] > 0 })
+aiws.input('rules').markdown()           // rich text → Markdown
+aiws.input('profile').props()            // record → { property name: value }
+aiws.input('logo').bytes()               // asset → Uint8Array (.text() for the text)
+aiws.input('folder').members()           // folder members (each member also has rows/markdown/…)
+aiws.inputs()                            // all input names
+aiws.request                             // fixed parameters: { today, timezone, currency, … }; dates follow it
+aiws.resolve('Orders') / aiws.find('Sales') / aiws.outline()   // return metadata only; to read content it must be an input
 ```
 
-值的形式：数值是 number，单选是选项名称（字符串），多选是名称数组，日期是 `YYYY-MM-DD` 字符串，空值不出现在行对象里（`r['x'] === undefined`）。
+Value forms: a number is a number, a single select is the option name (a string), a multi-select is an array of names, a date is a `YYYY-MM-DD` string, and empty values do not appear in the row object (`r['x'] === undefined`).
 
-## 写结果（只写候选）
+## Writing results (candidates only)
 
 ```js
-// 表格：key 是逻辑键（一列或多列），重跑时据此保持记录身份；fields 可声明类型与列顺序
-aiws.result.table('monthly', rows, { key: ['月份'], fields: { 月份: 'date', 销售额: 'decimal', 订单数: 'number' } })
-// 派生列：写到一个表格输入上，按该输入行的 _id 给值；只会写本许愿格拥有的列
-aiws.result.columns('差值', 'salary', Object.fromEntries(rows.map((r) => [r._id, { 差值: r['工资'] - avg }])), { fields: { 差值: 'decimal' } })
-aiws.result.record('kpi', { 销售额合计: 123.4, 订单数: 12 })
-aiws.result.text('commentary', markdown)            // 由程序按模板生成的文字（只重跑程序时也会更新）
+// table: key is the logical key (one or more columns) that keeps record identity across re-runs; fields can declare types and column order
+aiws.result.table('monthly', rows, { key: ['Month'], fields: { Month: 'date', Sales: 'decimal', Orders: 'number' } })
+// derived columns: written onto a table input, values by the _id of that input's rows; only columns this wish owns are written
+aiws.result.columns('Diff', 'salary', Object.fromEntries(rows.map((r) => [r._id, { Diff: r['Salary'] - avg }])), { fields: { Diff: 'decimal' } })
+aiws.result.record('kpi', { 'Total sales': 123.4, Orders: 12 })
+aiws.result.text('commentary', markdown)            // text the program generates from a template (also updated when only the program is re-run)
 aiws.result.file('chart', 'output/chart.svg', 'image/svg+xml')
 aiws.result.html('dashboard', { html, css, js, bindings: { orders: 'input:sales', summary: 'result:monthly' } })
 ```
 
-字段类型：`text | number | decimal | boolean | date | datetime | select | multi_select`；不声明时按值推断。`decimal` 按值所需的小数位保存（最多 6 位，不会四舍五入到更少）；要固定小数位时写成数组形式 `fields: [{ name: '毛利率', type: 'decimal', scale: 4 }]`，此时程序自己负责舍入。表格按 `rows` 的顺序显示（不超过 1000 行时；用户在 Block 上自己排序后以用户为准），需要排序就在程序里排好。一个结果名只能写一次；结果名必须是输出约定中的名称。
+Field types: `text | number | decimal | boolean | date | datetime | select | multi_select`; inferred from the values when not declared. `decimal` keeps as many decimal places as the values need (at most 6; it never rounds to fewer); to fix the number of decimal places, use the array form `fields: [{ name: 'Gross margin', type: 'decimal', scale: 4 }]`, and the program then does its own rounding. A table is shown in the order of `rows` (up to 1000 rows; once the user sorts it on the Block, the user's order wins), so sort in the program when needed. A result name can be written only once; result names must be names in the output contract.
 
-## 数字、检查与逐项判断
+## Numbers, checks and per-item judgments
 
 ```js
-aiws.facts({ total: 3301.5, growth: 0.091 })        // 文字中引用的数字必须来自 facts 或结果表
-aiws.check('total', Math.abs(a - b) < 0.01, { a, b }) // 报告分析约定的程序型检查：id、是否通过、说明
-const tags = await aiws.llm.map(texts, '判断这条客户反馈的情感', { type: 'string', enum: ['正面', '中性', '负面'] })
-const amounts = await aiws.llm.map(notes, '从备注中抽取金额（元），没有则为 null', { type: ['number', 'null'] })
+aiws.facts({ total: 3301.5, growth: 0.091 })        // numbers cited in text must come from facts or result tables
+aiws.check('total', Math.abs(a - b) < 0.01, { a, b }) // report a program check agreed in the analysis: id, passed or not, detail
+const tags = await aiws.llm.map(texts, 'Judge the sentiment of this customer feedback', { type: 'string', enum: ['positive', 'neutral', 'negative'] })
+const amounts = await aiws.llm.map(notes, 'Extract the amount (in yuan) from the note; null if there is none', { type: ['number', 'null'] })
 ```
 
-`llm.map` 逐项调用模型并按 schema 校验，结果按（模型、指令、输入项）缓存，只重跑程序时只对新增或变化的项调用模型；失败项会让调用抛错（`{ allowErrors: true }` 时以 `{ error }` 返回）。用它做逐项语义判断，不要让模型通读全表。
+`llm.map` calls the model item by item and validates each answer against the schema; results are cached by (model, instruction, input item), so re-running only the program calls the model only for new or changed items; failed items make the call throw (with `{ allowErrors: true }` they come back as `{ error }`). Use it for per-item semantic judgments; do not let the model read through the whole table.
 
-## 例子
+## Example
 
 ```js
 export default async function main(aiws) {
-  const rows = aiws.input('sales').rows({ fields: ['月份', '客户', '销售额', '状态'] })
-  const settled = rows.filter((r) => r['状态'] !== '未结算')
+  const rows = aiws.input('sales').rows({ fields: ['Month', 'Customer', 'Sales', 'Status'] })
+  const settled = rows.filter((r) => r['Status'] !== 'Unsettled')
   const sum = (xs) => Math.round(xs.reduce((s, x) => s + (x ?? 0), 0) * 100) / 100
   const byMonth = new Map()
-  for (const r of settled) byMonth.set(r['月份'], [...(byMonth.get(r['月份']) ?? []), r])
+  for (const r of settled) byMonth.set(r['Month'], [...(byMonth.get(r['Month']) ?? []), r])
   const monthly = [...byMonth].sort(([a], [b]) => a.localeCompare(b))
-    .map(([月份, items]) => ({ 月份, 销售额: sum(items.map((r) => r['销售额'])), 订单数: items.length }))
-  aiws.result.table('monthly', monthly, { key: ['月份'], fields: { 月份: 'date', 销售额: 'decimal', 订单数: 'number' } })
-  const total = sum(settled.map((r) => r['销售额']))
+    .map(([Month, items]) => ({ Month, Sales: sum(items.map((r) => r['Sales'])), Orders: items.length }))
+  aiws.result.table('monthly', monthly, { key: ['Month'], fields: { Month: 'date', Sales: 'decimal', Orders: 'number' } })
+  const total = sum(settled.map((r) => r['Sales']))
   aiws.facts({ total, months: monthly.length })
-  aiws.check('total', Math.abs(sum(monthly.map((m) => m['销售额'])) - total) < 0.01)
-  aiws.check('months', ['2026-07', '2026-08', '2026-09'].every((m) => monthly.some((r) => r['月份'].startsWith(m))))
+  aiws.check('total', Math.abs(sum(monthly.map((m) => m['Sales'])) - total) < 0.01)
+  aiws.check('months', ['2026-07', '2026-08', '2026-09'].every((m) => monthly.some((r) => r['Month'].startsWith(m))))
 }
 ```

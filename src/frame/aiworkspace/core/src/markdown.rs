@@ -476,18 +476,21 @@ mod tests {
 
     #[test]
     fn commonmark_and_gfm() {
+        // i18n-exempt (this test): Chinese Markdown from the model is input (CJK punctuation next to emphasis)
         let md = "# 季度解读\n\n本季度销售额 **1,234.5**，环比 *+12%*，见 [月度汇总](result:monthly)。\n\n- 华东 `52%`\n- 华南\n  1. 深圳\n  2. 广州\n\n> 注意：已排除未结算订单\n\n```js\nconst a = 1\nconst b = 2\n```\n\n| 月份 | 销售额 |\n| --- | ---: |\n| 7 | 100 |\n\n---\n\n- [x] 已核对\n\n~~旧口径~~ [官网](https://example.com) [坏链接](javascript:alert(1))\n";
         let resolve = |s: &str| (s == "result:monthly").then(|| json!({ "entity_id": "res-monthly" }));
         let ast = to_richtext(md, "c1", &resolve).unwrap();
         let types: Vec<&str> = ast["content"].as_array().unwrap().iter().map(|n| n["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["heading", "paragraph", "bullet_list", "blockquote", "code_block", "table", "horizontal_rule", "bullet_list", "paragraph"]);
         let p = &ast["content"][1];
+        // i18n-exempt: see above
         assert!(p["content"].as_array().unwrap().iter().any(|n| n["type"] == json!("object_link") && n["attrs"]["ref"]["entity_id"] == json!("res-monthly") && n["attrs"]["label"] == json!("月度汇总")));
         assert!(p["content"].as_array().unwrap().iter().any(|n| n["marks"] == json!([{ "type": "strong" }]) && n["text"] == json!("1,234.5")));
         assert_eq!(ast["content"][4]["attrs"]["language"], json!("js"));
         assert_eq!(ast["content"][4]["content"][0]["text"], json!("const a = 1\nconst b = 2"));
         assert_eq!(ast["content"][5]["content"][0]["content"][0]["attrs"]["header"], json!(1));
         let last = serde_json::to_string(&ast["content"][8]).unwrap();
+        // i18n-exempt: see above
         assert!(last.contains("https://example.com") && !last.contains("javascript:") && last.contains("坏链接"));
         // the nested ordered list lives inside the second item, after its paragraph
         let item = &ast["content"][2]["content"][1];
@@ -495,6 +498,7 @@ mod tests {
         assert_eq!(item["content"][1]["type"], json!("ordered_list"));
         // back to Markdown keeps the structure
         let back = from_richtext(&ast);
+        // i18n-exempt: see above
         assert!(back.contains("# 季度解读") && back.contains("| 月份 | 销售额 |") && back.contains("> 注意") && back.contains("```js"));
     }
 

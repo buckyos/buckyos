@@ -9,9 +9,8 @@ import { backToList, expect, LOCALE_STORAGE_KEY, openApp, openSide, openStatus, 
 const ALICE = 'tok-alice'
 const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]/
 
-/** Content shown as is: workspace titles on the list (other specs name theirs in Chinese) and group titles — a
- * wish's result group is named by the backend, whose text is not localised yet (README "Language"). */
-const USER_CONTENT = 'script, style, .aiws-card-title, .aiws-group-title'
+/** Content shown as is: workspace titles on the list (other specs name theirs in Chinese). */
+const USER_CONTENT = 'script, style, .aiws-card-title'
 
 /** Chinese text anywhere on the page: text nodes, accessible names, titles, placeholders, same-origin frames. */
 async function chineseOnPage(page: Page): Promise<string[]> {

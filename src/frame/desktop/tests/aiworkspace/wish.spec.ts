@@ -112,7 +112,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
   await page.getByTestId('aiws-wish-execute').click()
-  await expect(page.getByTestId('aiws-wish-message')).toContainText('不合法')
+  await expect(page.getByTestId('aiws-wish-message')).toContainText('The simulated results are invalid')
   await expect(page.getByTestId('aiws-wish-candidate')).toHaveCount(0)
   expect((await api.read(ALICE, ws.workspace_id, summary.entity_id)).content_rev).toBe(v1)
   // a manual edit of the summary: detected, and the next application asks

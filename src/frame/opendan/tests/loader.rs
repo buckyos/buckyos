@@ -1259,6 +1259,77 @@ async fn the_jarvis_package_loads_and_answers() {
     loader.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes the rendered Jarvis request for manual prompt review"]
+async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let w = World::new();
+    std::fs::remove_file(w.root.join("agent.toml"))?;
+    std::fs::remove_dir_all(w.root.join("i18n"))?;
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_agent/agent");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    let llm = Llm::new(move |req, _| {
+        captured.lock().unwrap().push(req.clone());
+        "你好".to_string()
+    });
+    let mut env = w.env(llm, free_port()).await;
+    env.package_root = Some(package);
+    env.options.load_hints = true;
+    let loader = Loader::start(env).await?;
+    w.mail.deliver(&format!("dm:{BOB}"), chat(BOB, "你好 Jarvis"));
+    until("prompt review turn completes", || !w.mail.sent().is_empty()).await;
+    loader.shutdown().await;
+    let requests = requests.lock().unwrap();
+    if requests.is_empty() {
+        return Err("the review turn ended before reaching LlmClient::infer".into());
+    }
+
+    let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/prompt-review");
+    std::fs::create_dir_all(&output_dir)?;
+    let output = output_dir.canonicalize()?.join("jarvis-chat-route.txt");
+    let mut file = std::fs::File::create(&output)?;
+    writeln!(file, "OpenDAN prompt review")?;
+    writeln!(file, "Package: src/apps/jarvis_agent/agent")?;
+    writeln!(file, "Scenario: private chat / chat_route / 你好 Jarvis")?;
+    writeln!(file, "Boundary: LlmClient::infer (scripted response, no model call)")?;
+    for (round, req) in requests.iter().enumerate() {
+        writeln!(file, "\n===== Request {}: settings =====", round + 1)?;
+        let settings = json!({
+            "trace_id": req.trace_id,
+            "model_alias": req.model_alias,
+            "fallbacks": req.fallbacks,
+            "temperature": req.temperature,
+            "max_completion_tokens": req.max_completion_tokens,
+            "force_json": req.force_json,
+            "json_schema": req.json_schema,
+            "provider_options": req.provider_options,
+            "disable_capabilities": req.disable_capabilities,
+            "allow_tool_calls": req.allow_tool_calls,
+        });
+        writeln!(file, "{}", serde_json::to_string_pretty(&settings)?)?;
+        for (index, message) in req.messages.iter().enumerate() {
+            writeln!(file, "\n===== Message {}: {:?} =====", index + 1, message.role)?;
+            for (index, block) in message.content.iter().enumerate() {
+                writeln!(file, "\n--- Content block {} ---", index + 1)?;
+                match block {
+                    buckyos_api::AiContent::Text { text } => writeln!(file, "{text}")?,
+                    other => writeln!(file, "{}", serde_json::to_string_pretty(other)?)?,
+                }
+            }
+        }
+        writeln!(file, "\n===== Tools ({}) =====", req.tool_specs.len())?;
+        for tool in &req.tool_specs {
+            writeln!(file, "\n--- {} ---\n{}", tool.name, tool.description)?;
+            writeln!(file, "args_schema:\n{}", serde_json::to_string_pretty(&tool.args_schema)?)?;
+        }
+    }
+    file.flush()?;
+    println!("Prompt review written to {}", output.display());
+    Ok(())
+}
+
 fn system_text(req: &LlmInferenceRequest) -> String {
     req.messages
         .iter()

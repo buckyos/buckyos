@@ -22,10 +22,10 @@ function handleOf(line) {
 
 /** The table the need talks about: named in the need, else the first table of the map's data list. */
 function tableLine(user) {
-  const need = (/## 原始需求\n\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? ''
-  const data = user.split('## 数据')[1] ?? ''
-  const lines = data.split('\n').filter((l) => /表「/.test(l))
-  return lines.find((l) => { const name = /表「(.+?)」/.exec(l)?.[1]; return name && need.includes(name) }) ?? lines[0]
+  const need = (/## Original request\n\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? ''
+  const data = user.split('## Data\n')[1] ?? ''
+  const lines = data.split('\n').filter((l) => / table "/.test(l))
+  return lines.find((l) => { const name = / table "(.+?)"/.exec(l)?.[1]; return name && need.includes(name) }) ?? lines[0]
 }
 
 function analysis(msgs, user, tools) {
@@ -67,12 +67,12 @@ function program(cat, num, desc) {
 }
 
 function execution(msgs, user, tools) {
-  const contract = JSON.parse((/## 输出约定\n\n```json\n([\s\S]*?)\n```/.exec(user) ?? [])[1] ?? '{}')
+  const contract = JSON.parse((/## Output contract\n\n```json\n([\s\S]*?)\n```/.exec(user) ?? [])[1] ?? '{}')
   const key = contract.results?.[0]?.key?.[0] ?? '分组'
-  const task = (/## 任务说明（context 提示词）\n\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? ''
+  const task = (/## Task description \(context prompt\)\n\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? ''
   const num = (/按「.+?」汇总「(.+?)」/.exec(task) ?? [])[1] ?? '销售额'
-  const feedback = user.includes('## 用户反馈')
-  const hasProgram = user.includes('program/main.js 已有程序')
+  const feedback = user.includes('## User feedback')
+  const hasProgram = user.includes('program/main.js already has a program')
   const steps = []
   if (!hasProgram || feedback) steps.push('write')
   steps.push('run', 'put', 'check', 'finish', 'done')
@@ -80,8 +80,8 @@ function execution(msgs, user, tools) {
   if (step === 'write') return toolCall('write_file', { path: 'program/main.js', content: program(key, num, feedback) })
   if (step === 'run') return toolCall('run_program', {})
   if (step === 'put') {
-    const runOut = tools.find((t) => t.includes('facts：')) ?? ''
-    const facts = JSON.parse((/facts：(\{.*\})/.exec(runOut) ?? [])[1] ?? '{}')
+    const runOut = tools.find((t) => t.includes('\nfacts: ')) ?? ''
+    const facts = JSON.parse((/\nfacts: (\{.*\})/.exec(runOut) ?? [])[1] ?? '{}')
     return toolCall('put_result', { name: 'commentary', type: 'text', markdown: `## 解读\n\n合计 ${facts.total}，共 ${facts.groups} 组。` })
   }
   if (step === 'check') return toolCall('check_results', {})
@@ -94,7 +94,7 @@ function execution(msgs, user, tools) {
 }
 
 function mapJudge(user) {
-  const items = JSON.parse((/输入项（JSON 数组，共 \d+ 项）：\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? '[]')
+  const items = JSON.parse((/Input items \(a JSON array of \d+ items\):\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? '[]')
   return say(JSON.stringify(items.map((i) => (String(i).includes('好') ? '正面' : '负面'))))
 }
 
@@ -110,7 +110,7 @@ export function startMockLlm(port) {
         const system = msgs.filter((m) => m.role === 'system').map(text).join('\n')
         const user = msgs.filter((m) => m.role === 'user').map(text).join('\n')
         const tools = msgs.filter((m) => m.role === 'tool').map(text)
-        const message = system.includes('逐项判断器') ? mapJudge(user) : system.includes('的**分析阶段**') ? analysis(msgs, user, tools) : execution(msgs, user, tools)
+        const message = system.includes('item-by-item judge') ? mapJudge(user) : system.includes('the **analysis stage**') ? analysis(msgs, user, tools) : execution(msgs, user, tools)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ id: `cmpl_${Date.now()}`, object: 'chat.completion', model: r.model, choices: [{ index: 0, message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }))
       } catch (error) {
