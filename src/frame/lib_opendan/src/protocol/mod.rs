@@ -60,6 +60,7 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("behavior_entry", s::<config::BehaviorEntry>()),
         ("behavior_config", s::<behavior::BehaviorConfig>()),
         ("session_state", s::<state::SessionState>()),
+        ("todo_list", s::<agent_tool::todo_tools::TodoList>()),
         ("report_submission", s::<report::ReportSubmission>()),
         ("session_summary", s::<summary::SessionSummary>()),
         ("worklog_entry", s::<worklog::WorklogEntry>()),

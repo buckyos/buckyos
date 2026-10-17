@@ -1,0 +1,436 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "CallRef": {
+      "description": "The run and call a serial attempt was admitted for (the hand-over step of the caller): its idempotency key.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "DispatchRefusal": {
+      "description": "A dispatch the concurrency limits refused (observable; the Todo stays pending and can be dispatched again).",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "DispatchState": {
+      "description": "Dispatch of an exploration attempt (crash recovery: a `dispatching` attempt is reconciled against the registry by its sub session id).",
+      "enum": [
+        "dispatching",
+        "dispatched"
+      ],
+      "type": "string"
+    },
+    "ReportRef": {
+      "description": "Where the report of an attempt is: an exploration's final report in its sub session, a serial attempt's report in the session's report store.",
+      "properties": {
+        "report_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The run that submitted it (serial attempts).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "The session holding the report (the sub session of an exploration, the session itself for a serial attempt).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "report_id",
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "ReviewVerdict": {
+      "enum": [
+        "accept",
+        "reject",
+        "need_evidence"
+      ],
+      "type": "string"
+    },
+    "TodoAttempt": {
+      "properties": {
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "caller": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CallRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Serial: the caller's hand-over the attempt was admitted for."
+        },
+        "child_sid": {
+          "description": "Explore: the sub session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dispatch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DispatchState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ended_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/definitions/TodoMode"
+        },
+        "reason": {
+          "description": "Why this attempt was made (a retry's reason).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "report": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReportRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "description": "Serial: the sub context's run (known once it returned).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "status": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TodoStatus"
+            }
+          ],
+          "description": "`running | blocked | completed | failed | timeout | stopped`."
+        },
+        "summary": {
+          "description": "One line about the result.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "attempt",
+        "mode",
+        "started_at_ms",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TodoMode": {
+      "description": "How an attempt runs.",
+      "oneOf": [
+        {
+          "description": "A sub context of the session (`next_behavior = do`): the caller's run is suspended until it returns.",
+          "enum": [
+            "serial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An independent sub session; several run in parallel.",
+          "enum": [
+            "explore"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "TodoRecord": {
+      "properties": {
+        "accept": {
+          "description": "Acceptance criteria.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "after": {
+          "description": "Todos whose result must be accepted before this one may run.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attempts": {
+          "items": {
+            "$ref": "#/definitions/TodoAttempt"
+          },
+          "type": "array"
+        },
+        "batch": {
+          "description": "Dispatch batch (explorations sent out together).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cancel_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "evidence": {
+          "description": "Evidence already known.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/definitions/TodoMode"
+        },
+        "refusals": {
+          "items": {
+            "$ref": "#/definitions/DispatchRefusal"
+          },
+          "type": "array"
+        },
+        "retry": {
+          "description": "Pending retry: the reason for the next attempt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rev": {
+          "description": "Revision of this record (+1 on every change).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "reviews": {
+          "items": {
+            "$ref": "#/definitions/TodoReview"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "Creation order.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "skills": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/definitions/TodoStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "todo_id": {
+          "description": "Stable, never reused (`T01`, `T02`, … from the list's counter).",
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content",
+        "created_at_ms",
+        "mode",
+        "rev",
+        "seq",
+        "status",
+        "title",
+        "todo_id",
+        "updated_at_ms"
+      ],
+      "type": "object"
+    },
+    "TodoReview": {
+      "description": "The PLAN's judgement of one attempt's result. Execution success and acceptance are recorded apart.",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "followups": {
+          "description": "Todos created because of this review.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "report_id": {
+          "description": "The report version that was read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verdict": {
+          "$ref": "#/definitions/ReviewVerdict"
+        }
+      },
+      "required": [
+        "at_ms",
+        "attempt",
+        "reason",
+        "verdict"
+      ],
+      "type": "object"
+    },
+    "TodoStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "timeout",
+            "stopped",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Not terminal, but never picked as the serial current Todo: the PLAN handles it explicitly (an exploration that waits for an answer).",
+          "enum": [
+            "blocked"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "next_seq": {
+      "description": "Counter of todo ids: never reused, also after cancellations.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "rev": {
+      "description": "Revision of the list (+1 on every change).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "todos": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/TodoRecord"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "next_seq",
+    "rev",
+    "schema"
+  ],
+  "title": "TodoList",
+  "type": "object"
+}

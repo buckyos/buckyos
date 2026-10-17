@@ -182,6 +182,30 @@ impl CheckpointHook for SessionCheckpointHook {
         self.boundary(snapshot).await.map_err(|e| e.to_string())?;
         Ok(None)
     }
+
+    /// Hand-overs to a Todo executor and yields are the session's to judge
+    /// (TodoList §2.2): refused, they are corrected in the same run.
+    async fn review_decision(
+        &self,
+        snapshot: &LLMContextSnapshot,
+        result: &llm_context::LLMBehaviorResult,
+        _step_index: u32,
+        decision: llm_context::StepDecision,
+    ) -> Option<llm_context::DecisionVerdict> {
+        let run_id = self.run.run_id();
+        match decision {
+            llm_context::StepDecision::Handover => {
+                let target = result.next_behavior.as_deref()?.trim();
+                if !agent_tool::xllm::is_handover_target(target) {
+                    return None;
+                }
+                super::todos::review_handover(&self.shared, run_id, target).await
+            }
+            llm_context::StepDecision::Yield => {
+                super::todos::review_yield(&self.shared, run_id, snapshot).await
+            }
+        }
+    }
 }
 
 /// Refs a session declared at creation (for activity initialization).

@@ -195,9 +195,21 @@ pub struct ChildCall {
     pub mode: ContextMode,
     pub behavior: String,
     pub trigger: CallTrigger,
-    /// Task given to the child (tool trigger: the call's `task` argument).
+    /// Task given to the child (tool trigger: the call's `task` argument;
+    /// a Todo executor: the admitted Todo's body).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// The serial Todo attempt this call executes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo: Option<TodoBinding>,
+}
+
+/// A sub context call bound to a serial Todo attempt (TodoList §2.1):
+/// its result is written back to that attempt when the call returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TodoBinding {
+    pub todo_id: String,
+    pub attempt: u32,
 }
 
 /// Suspended behavior process (its run is kept, §4.4).
@@ -741,6 +753,11 @@ pub struct SessionState {
     /// call's tool result when the caller's run is opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_result: Option<Value>,
+    /// Revision of the TodoList (`todos.json`) last shown to the session's
+    /// top-level context in an input batch: the compact view is rendered
+    /// again only when the list changed since (0: never shown).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub todo_view_rev: u64,
     /// Goal Sessions: the Goal State it owns and the Activation in
     /// progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -791,6 +808,7 @@ impl SessionState {
             turn_stop_requested: false,
             internal_continuation: None,
             process_result: None,
+            todo_view_rev: 0,
             goal: None,
             updated_at_ms: now_ms,
         }

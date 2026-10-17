@@ -35,6 +35,7 @@ pub mod runtime;
 pub mod session;
 pub mod state;
 pub mod template;
+pub mod todos;
 
 pub use api::{
     create_self_improve_session, create_session, post_input, read_session, InputChannel,

@@ -252,6 +252,13 @@ impl Loader {
         // Commands run by a session's shell reach the Agent State as the
         // same identity.
         std::env::set_var("LIBOPENDAN_WHO", &env.who);
+        // ... and know how many sub sessions this host drives at once (a
+        // Todo dispatch beyond it is refused, not queued).
+        let max_child_concurrency = 4;
+        std::env::set_var(
+            libopendan::todos::ENV_MAX_CHILDREN,
+            max_child_concurrency.to_string(),
+        );
         let host = HostDeps {
             who: env.who.clone(),
             agent: agent.clone(),
@@ -262,7 +269,7 @@ impl Loader {
             session_cli: env.session_cli.clone(),
             app_tools: Vec::new(),
             options,
-            max_child_concurrency: 4,
+            max_child_concurrency,
             bridges,
             outbound,
             objects: env.objects.clone(),

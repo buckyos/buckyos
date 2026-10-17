@@ -29,8 +29,9 @@ pub mod xml_behavior;
 mod xml_util;
 
 pub use behavior_loop::{
-    HistorySummaryRecord, LLMBehaviorResult, LLMResultParser, StepCompressionLevel, StepMeta,
-    StepRecord, StepRenderer, StepResultHook, StepResultHookOutput,
+    DecisionVerdict, HistorySummaryRecord, LLMBehaviorResult, LLMResultParser,
+    StepCompressionLevel, StepDecision, StepMeta, StepRecord, StepRenderer, StepResultHook,
+    StepResultHookOutput,
 };
 pub use context_derive::{
     derive_child, fork_snapshot, DeriveError, DerivedContext, ForkOptions, ForkPoint,

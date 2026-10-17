@@ -777,3 +777,181 @@ async fn final_report_recovery_rechecks_host_acceptance_and_allows_correction() 
         Some("corrected")
     );
 }
+
+/// A host that reviews hand-overs and yields (llm_context L2): records
+/// every decision it was asked about and answers from a fixed table.
+struct DecisionHook {
+    asked: std::sync::Mutex<Vec<(crate::StepDecision, Option<String>)>>,
+    handover: Option<crate::DecisionVerdict>,
+    yield_: Option<crate::DecisionVerdict>,
+}
+
+impl DecisionHook {
+    fn new(
+        handover: Option<crate::DecisionVerdict>,
+        yield_: Option<crate::DecisionVerdict>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            asked: std::sync::Mutex::new(Vec::new()),
+            handover,
+            yield_,
+        })
+    }
+
+    fn asked(&self) -> Vec<(crate::StepDecision, Option<String>)> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::deps::CheckpointHook for DecisionHook {
+    async fn before_inference(
+        &self,
+        _: &LLMContextSnapshot,
+    ) -> Result<Option<crate::deps::Injection>, String> {
+        Ok(None)
+    }
+
+    async fn review_decision(
+        &self,
+        _: &LLMContextSnapshot,
+        result: &crate::LLMBehaviorResult,
+        _: u32,
+        decision: crate::StepDecision,
+    ) -> Option<crate::DecisionVerdict> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((decision, result.self_report.clone()));
+        match decision {
+            crate::StepDecision::Handover => self.handover.clone(),
+            crate::StepDecision::Yield => self.yield_.clone(),
+        }
+    }
+}
+
+fn behavior_ctx(
+    responses: Vec<buckyos_api::AiResponse>,
+    hook: Option<Arc<DecisionHook>>,
+) -> (LLMContext, Arc<ScriptedRecordingLlm>) {
+    let llm = Arc::new(ScriptedRecordingLlm::new(responses));
+    let mut deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    if let Some(h) = hook {
+        deps = deps.with_checkpoint_hook(h);
+    }
+    let mut req = base_request();
+    req.behavior_name = "plan".into();
+    (LLMContext::new(req, deps), llm)
+}
+
+/// Without a verdict a progress report alone keeps the loop going, as it
+/// always did; a hand-over ends it.
+#[tokio::test]
+async fn without_a_verdict_a_progress_report_continues() {
+    for hook in [None, Some(DecisionHook::new(None, None))] {
+        let (mut ctx, llm) = behavior_ctx(
+            vec![
+                text_response("<response><report>still thinking</report></response>"),
+                text_response(r#"<response><report end="true">finished</report></response>"#),
+            ],
+            hook.clone(),
+        );
+        let LLMContextOutcome::Done { behavior_result, .. } = ctx.run().await else {
+            panic!("expected Done");
+        };
+        assert!(behavior_result.unwrap().report_end);
+        assert_eq!(llm.seen().len(), 2);
+        if let Some(h) = hook {
+            assert_eq!(h.asked(), vec![(crate::StepDecision::Yield, Some("still thinking".into()))]);
+        }
+    }
+}
+
+/// An accepted yield ends the loop at once with the progress report: no
+/// further inference, the host decides what follows.
+#[tokio::test]
+async fn an_accepted_yield_ends_the_loop() {
+    let hook = DecisionHook::new(None, Some(crate::DecisionVerdict::Accept));
+    let (mut ctx, llm) = behavior_ctx(
+        vec![text_response(
+            "<response><intent>wait</intent><report>waiting for T01 and T02</report></response>",
+        )],
+        Some(hook.clone()),
+    );
+    let LLMContextOutcome::Done { behavior_result, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    let r = behavior_result.unwrap();
+    assert_eq!(r.self_report.as_deref(), Some("waiting for T01 and T02"));
+    assert!(!r.report_end);
+    assert!(r.next_behavior.is_none());
+    assert_eq!(llm.seen().len(), 1);
+    let snap = ctx.snapshot();
+    assert_eq!(snap.state.last_report.as_deref(), Some("waiting for T01 and T02"));
+    assert!(!snap.state.report_end);
+    assert_eq!(snap.state.steps.len(), 1);
+    assert!(!snap.state.steps[0].is_correction());
+}
+
+/// A refused yield or hand-over becomes a correction step carrying the
+/// host's text, and the same run infers again.
+#[tokio::test]
+async fn refused_decisions_are_corrected_in_the_same_run() {
+    let cases = [
+        (
+            "<response><report>waiting</report></response>",
+            DecisionHook::new(None, Some(crate::DecisionVerdict::Refuse("nothing runs: nothing to wait for".into()))),
+            "nothing runs: nothing to wait for",
+        ),
+        (
+            "<response><report>T03 next</report><next_behavior>do</next_behavior></response>",
+            DecisionHook::new(Some(crate::DecisionVerdict::Refuse("no serial todo is ready".into())), None),
+            "no serial todo is ready",
+        ),
+    ];
+    for (first, hook, message) in cases {
+        let (mut ctx, llm) = behavior_ctx(
+            vec![
+                text_response(first),
+                text_response(r#"<response><report end="true">finished</report></response>"#),
+            ],
+            Some(hook.clone()),
+        );
+        let LLMContextOutcome::Done { behavior_result, .. } = ctx.run().await else {
+            panic!("expected Done");
+        };
+        assert!(behavior_result.unwrap().report_end);
+        assert_eq!(llm.seen().len(), 2);
+        let snap = ctx.snapshot();
+        assert!(snap.state.steps[0].is_correction(), "{:?}", snap.state.steps[0]);
+        let second = llm.seen()[1]
+            .iter()
+            .map(|m| m.text_content())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(second.contains(message), "{second}");
+        assert_eq!(snap.state.last_report.as_deref(), Some("finished"));
+    }
+}
+
+/// An accepted hand-over ends the loop as before; a step with actions is
+/// not a decision and is never offered for review.
+#[tokio::test]
+async fn hand_overs_and_steps_with_actions() {
+    let hook = DecisionHook::new(Some(crate::DecisionVerdict::Accept), Some(crate::DecisionVerdict::Accept));
+    let (mut ctx, llm) = behavior_ctx(
+        vec![
+            text_response("<response><actions><shell>ls</shell></actions><report>looking</report></response>"),
+            text_response("<response><report>T01 next</report><next_behavior>do</next_behavior></response>"),
+        ],
+        Some(hook.clone()),
+    );
+    let LLMContextOutcome::Done { behavior_result, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    assert_eq!(behavior_result.unwrap().next_behavior.as_deref(), Some("do"));
+    assert_eq!(llm.seen().len(), 2);
+    assert_eq!(hook.asked(), vec![(crate::StepDecision::Handover, Some("T01 next".into()))]);
+}

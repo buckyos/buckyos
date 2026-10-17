@@ -18,7 +18,7 @@
     "start_on_create": false
   },
   "status": "active",
-  "status_changed_at_ms": 1791796112880,
+  "status_changed_at_ms": 1792219154690,
   "status_by": "app:app2@alice",
   "session": {
     "epoch": 1,
@@ -28,12 +28,12 @@
     {
       "epoch": 1,
       "sid": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
-      "started_at_ms": 1791796112880,
+      "started_at_ms": 1792219154690,
       "start": "created",
       "keep": "all"
     }
   ],
   "idempotency_key": "fixture",
-  "created_at_ms": 1791796112880,
-  "updated_at_ms": 1791796112880
+  "created_at_ms": 1792219154690,
+  "updated_at_ms": 1792219154690
 }

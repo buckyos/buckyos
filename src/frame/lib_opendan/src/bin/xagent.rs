@@ -78,6 +78,12 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         [--class <c>] [--behavior <b>] [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive] [--wait [--wait-ms <ms>]]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
+  todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <s>]...
+           [--after <todo_id>]... [--batch <b>]                                  (a serial Todo: next_behavior = do runs it)
+  todo explore <title> --content <t> [same options] [--behavior <b>] [--class <c>]  (add + dispatch as a sub session)
+  todo dispatch <todo_id> [--behavior <b>] [--class <c>] | todo list [--json] | todo show <todo_id> [--report]
+  todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
+  todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
   ask-user <question> [--option <id>=<label>]... [--allow-text]   (ui sessions: the result is the user's next message)
   runtime list [--available] | get <id> | check <id> | workspace ...
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
@@ -88,6 +94,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
          (answer / ack: on the user's behalf, for a notification the user answered in this conversation;
           never one this session sent; exit 5 when it is closed already, 6 when it is not yours to answer)
 
+  xagent todo   list <sid> [--json] | show <todo_id> --session <sid> [--report]   (a session's TodoList, read only)
   xagent notify list [--open] [--session <sid>] [--goal <id>] | show <id> | answer <id> (--option <v> | --text <t> | --dismiss)
               | ack <id> | dismiss <id> | cancel <id> [--reason <r>]     (the owner's side; --dev and tests)
 
@@ -526,6 +533,9 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         std::env::set_var("LIBOPENDAN_QUEUE_DIR", dir);
     }
     std::env::set_var("LIBOPENDAN_WHO", &c.who);
+    let max_children = a.num::<usize>("max-children")?.unwrap_or(4);
+    // A dispatch beyond what this host drives at once is refused, not queued.
+    std::env::set_var(libopendan::todos::ENV_MAX_CHILDREN, max_children.to_string());
     Ok(HostDeps {
         who: c.who.clone(),
         agent: c.agent.clone(),
@@ -536,7 +546,7 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         session_cli: std::env::current_exe().ok(),
         app_tools: Vec::new(),
         options,
-        max_child_concurrency: a.num::<usize>("max-children")?.unwrap_or(4),
+        max_child_concurrency: max_children,
         bridges,
         outbound: None,
         objects: None,
@@ -781,7 +791,18 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
                 .await?
                 .ok_or_else(|| bad(format!("session {sid} is not registered")))?;
             if entry.input_queue.is_none() {
-                return decide_without_queue(&c, &entry, &decision).await;
+                // No queue, no drive that would apply it: decided directly,
+                // under the session's lock, by its driver.
+                let acceptance = libopendan::api::decide_unqueued(
+                    c.agent.as_ref(),
+                    &c.who,
+                    &sid,
+                    &decision,
+                    a.get("note").as_deref(),
+                )
+                .await?;
+                print(&json!({ "session_id": sid, "acceptance": acceptance }));
+                return Ok(0);
             }
             (
                 key("decide"),
@@ -841,39 +862,6 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
         e => e.into(),
     })?;
     print(&json!({ "posted": idx, "key": input.key }));
-    Ok(0)
-}
-
-/// A session without a queue has no driver to apply a `decide`: the
-/// decision goes to the artifact directly, under its lock.
-async fn decide_without_queue(c: &Ctx, entry: &RegistryEntry, decision: &str) -> R<i32> {
-    let aid = entry.artifact_id.clone().ok_or_else(|| {
-        bad(format!(
-            "session {} has no input queue and no artifact: there is nothing a decision could change",
-            entry.session_id
-        ))
-    })?;
-    let holder = HolderInfo {
-        runner_id: libopendan::ids::new_runner_id(),
-        principal: c.who.clone(),
-        host: Some(libopendan::runtime::native_host_id()),
-        pid: std::process::id(),
-        runtime_id: None,
-    };
-    let lease = match c.agent.locks().acquire(&format!("artifact:{aid}"), holder)? {
-        libopendan::lock::Acquire::Acquired(l) => l,
-        libopendan::lock::Acquire::Busy(_) => {
-            return Err(Fail {
-                code: 5,
-                msg: format!("artifact {aid} is being decided by someone else"),
-            })
-        }
-    };
-    let ver = format!("v-{}", entry.session_id);
-    let r = c.agent.artifacts().decide(&lease, &aid, &ver, decision).await;
-    lease.release();
-    let r = r?;
-    print(&json!({ "artifact": aid, "version": r.version, "head": r.head_after }));
     Ok(0)
 }
 
@@ -1212,6 +1200,225 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         print(&json!({ "session_id": sd.sid(), "status": "created", "path": sd.path() }));
     }
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// todo — the session's TodoList (doc/opendan/Agent TodoList.md)
+// ---------------------------------------------------------------------------
+
+fn todo_fail(e: agent_tool::AgentToolError) -> Fail {
+    libopendan::todos::todo_error(e).into()
+}
+
+/// The Todo body: `--content <text>`, `--content -` (stdin: a quoted
+/// heredoc keeps backticks and `$` as they are) or `--content-file <path>`.
+fn todo_content(a: &Args) -> R<String> {
+    match (a.get("content"), a.get("content-file")) {
+        (Some(c), None) if c == "-" => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            Ok(text)
+        }
+        (Some(c), None) => Ok(c),
+        (None, Some(path)) => Ok(std::fs::read_to_string(&path)
+            .map_err(|e| bad(format!("--content-file {path}: {e}")))?),
+        (Some(_), Some(_)) => Err(bad("use one of --content and --content-file")),
+        (None, None) => Err(bad(
+            "missing --content <what to do, in which scope, with what evidence> (or --content - with the body on stdin)",
+        )),
+    }
+}
+
+fn new_todo(a: &mut Args, mode: libopendan::todos::TodoMode) -> R<libopendan::todos::NewTodo> {
+    Ok(libopendan::todos::NewTodo {
+        title: a.next("<title>")?,
+        content: todo_content(a)?,
+        mode,
+        accept: a.all("accept"),
+        scope: a.get("scope"),
+        evidence: a.all("evidence"),
+        skills: a.all("skill"),
+        after: a
+            .all("after")
+            .iter()
+            .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
+            .filter(|x| !x.is_empty())
+            .collect(),
+        batch: a.get("batch"),
+    })
+}
+
+fn explore_options(a: &Args) -> libopendan::todos::ExploreOptions {
+    let mut o = libopendan::todos::ExploreOptions::from_env();
+    o.behavior = a.get("behavior");
+    o.class = a.get("class");
+    o
+}
+
+/// Dispatch with an observable result: a refusal leaves the Todo pending
+/// and says why (exit 3, the caller may wait and dispatch again).
+async fn todo_dispatch(c: &Ctx, sd: &SessionDir, todo_id: &str, a: &Args) -> R<i32> {
+    match libopendan::todos::dispatch(
+        c.agent.as_ref(),
+        &c.who,
+        c.channels.as_ref(),
+        sd,
+        todo_id,
+        &explore_options(a),
+    )
+    .await
+    {
+        Ok(d) => {
+            print(&json!({
+                "todo_id": d.todo_id, "attempt": d.attempt, "child_sid": d.child_sid,
+                "status": "running", "dispatched": true,
+                "note": "the sub session reports back when it finishes; end your step with a progress report to wait for it",
+            }));
+            Ok(0)
+        }
+        Err(OpenDanError::InvalidArgument(reason)) => {
+            print(&json!({ "todo_id": todo_id, "status": "pending", "dispatched": false, "reason": reason }));
+            Ok(3)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+const TODO_COMMANDS: &str = "add | explore | dispatch | list | show | review | cancel | clean | retry";
+
+/// `todo …`. Inside a session (`agent-session todo …`, $OPENDAN_SESSION_ID)
+/// every command works on that session's list — the session's tool layer is
+/// the list's writer. From outside only `list` and `show` read a list.
+async fn cmd_todo(mut a: Args) -> R<i32> {
+    use libopendan::todos::{store_of, ReviewVerdict, TodoMode};
+    let sub = a.next(TODO_COMMANDS)?;
+    let inside = env_sid();
+    let target = match (sub.as_str(), a.get("session")) {
+        (_, Some(sid)) => sid,
+        ("list", None) if inside.is_none() => a.next("<sid>")?,
+        (_, None) => inside
+            .clone()
+            .ok_or_else(|| bad("todo runs inside a session ($OPENDAN_SESSION_ID), or reads one with --session <sid>"))?,
+    };
+    let writes = !matches!(sub.as_str(), "list" | "show");
+    if writes && inside.as_deref() != Some(target.as_str()) {
+        return Err(bad(format!(
+            "todo {sub} changes a session's list: only its own runs can (inside session {target})"
+        )));
+    }
+    let (c, sd) = locate(&a, &target, sub == "explore" || sub == "dispatch" || sub == "retry").await?;
+    let store = store_of(&sd);
+    let now = libopendan::now_ms();
+    match sub.as_str() {
+        "add" => {
+            let new = new_todo(&mut a, TodoMode::Serial)?;
+            let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
+            let list = store.load().map_err(todo_fail)?;
+            print(&json!({ "todo_id": id, "status": "pending", "mode": "serial", "rev": list.rev,
+                "note": "next_behavior = do executes the next ready serial todo" }));
+            Ok(0)
+        }
+        "explore" => {
+            let new = new_todo(&mut a, TodoMode::Explore)?;
+            let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
+            todo_dispatch(&c, &sd, &id, &a).await
+        }
+        "dispatch" => {
+            let id = a.next("<todo_id>")?;
+            todo_dispatch(&c, &sd, &id, &a).await
+        }
+        "list" => {
+            let list = store.load().map_err(todo_fail)?;
+            if a.has("json") {
+                print(&list);
+            } else {
+                println!("{}", list.render_view());
+            }
+            Ok(0)
+        }
+        "show" => {
+            let id = a.next("<todo_id>")?;
+            let list = store.load().map_err(todo_fail)?;
+            let t = list.get(&id).ok_or_else(|| bad(format!("todo {id}: no such todo")))?;
+            let mut v = json!({ "todo": t, "review": t.review_state() });
+            if a.has("report") {
+                v["report"] = match t.latest() {
+                    Some(attempt) => serde_json::to_value(
+                        libopendan::todos::read_report(c.agent.as_ref(), &sd, attempt).await?,
+                    )?,
+                    None => Value::Null,
+                };
+            }
+            print(&v);
+            Ok(0)
+        }
+        "review" => {
+            let id = a.next("<todo_id>")?;
+            let verdict = match (a.has("accept"), a.has("reject"), a.has("need-evidence")) {
+                (true, false, false) => ReviewVerdict::Accept,
+                (false, true, false) => ReviewVerdict::Reject,
+                (false, false, true) => ReviewVerdict::NeedEvidence,
+                _ => return Err(bad("todo review takes exactly one of --accept | --reject | --need-evidence")),
+            };
+            let reason = a.get("reason").ok_or_else(|| bad("missing --reason <what the report shows and why>"))?;
+            let (attempt, recorded) = store
+                .update(|l| l.review(&id, verdict, &reason, a.all("followup"), Some(c.who.clone()), now))
+                .map_err(todo_fail)?;
+            let list = store.load().map_err(todo_fail)?;
+            let child = list
+                .get(&id)
+                .and_then(|t| t.attempt(attempt))
+                .and_then(|x| x.child_sid.clone());
+            // An exploration's acceptance is its sub session's too.
+            let mut out = json!({ "todo_id": id, "attempt": attempt, "verdict": verdict, "recorded": recorded });
+            if let Some(child) = child {
+                let decision = match verdict {
+                    ReviewVerdict::Accept => Some("accept"),
+                    ReviewVerdict::Reject => Some("discard"),
+                    ReviewVerdict::NeedEvidence => None,
+                };
+                if let Some(decision) = decision {
+                    match libopendan::api::decide_unqueued(c.agent.as_ref(), &c.who, &child, decision, Some(&reason)).await {
+                        Ok(acc) => out["acceptance"] = json!({ "session_id": child, "acceptance": acc }),
+                        Err(e) => {
+                            out["acceptance_error"] = json!(format!(
+                                "the review is recorded; the acceptance of {child} was not written ({e}): run the same review again"
+                            ));
+                            print(&out);
+                            return Ok(5);
+                        }
+                    }
+                }
+            }
+            print(&out);
+            Ok(0)
+        }
+        "cancel" => {
+            let id = a.next("<todo_id>")?;
+            let reason = a.get("reason").ok_or_else(|| bad("missing --reason"))?;
+            store.update(|l| l.cancel(&id, &reason, now)).map_err(todo_fail)?;
+            print(&json!({ "todo_id": id, "status": "cancelled" }));
+            Ok(0)
+        }
+        "clean" => {
+            let reason = a.get("reason").ok_or_else(|| bad("missing --reason"))?;
+            let ids = store.update(|l| l.clean(&reason, now)).map_err(todo_fail)?;
+            print(&json!({ "cancelled": ids }));
+            Ok(0)
+        }
+        "retry" => {
+            let id = a.next("<todo_id>")?;
+            let reason = a.get("reason").ok_or_else(|| bad("missing --reason <what the new attempt must do differently>"))?;
+            store.update(|l| l.retry(&id, &reason, now)).map_err(todo_fail)?;
+            let mode = store.load().map_err(todo_fail)?.get(&id).map(|t| t.mode);
+            if mode == Some(TodoMode::Explore) {
+                return todo_dispatch(&c, &sd, &id, &a).await;
+            }
+            print(&json!({ "todo_id": id, "status": "pending", "note": "next_behavior = do runs it again as a new attempt" }));
+            Ok(0)
+        }
+        other => Err(bad(format!("unknown todo command `{other}` ({TODO_COMMANDS})"))),
+    }
 }
 
 async fn cmd_wait(mut a: Args) -> R<i32> {
@@ -2027,8 +2234,14 @@ async fn real_main() -> R<i32> {
         return Ok(if argv.is_empty() { 2 } else { 0 });
     }
     let cmd = argv.remove(0);
-    // `--run` is a flag of `status` and takes a run id for `xllm`.
-    let extra: &[&str] = if cmd == "status" { &["run"] } else { &[] };
+    // `--run` is a flag of `status` and takes a run id for `xllm`;
+    // `--accept` is a verdict of `todo review` and a criterion elsewhere.
+    let extra: &[&str] = match (cmd.as_str(), argv.first().map(String::as_str)) {
+        ("status", _) => &["run"],
+        ("todo", Some("review")) => &["accept", "reject", "need-evidence", "json"],
+        ("todo", _) => &["json"],
+        _ => &[],
+    };
     let a = Args::parse(argv, extra);
     if a.has("help") {
         println!("{USAGE}");
@@ -2057,6 +2270,7 @@ async fn real_main() -> R<i32> {
         "wait" => cmd_wait(a).await,
         "goal" => cmd_goal(a).await,
         "notify" => cmd_notify(a).await,
+        "todo" => cmd_todo(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");
             Ok(2)

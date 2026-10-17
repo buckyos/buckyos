@@ -834,6 +834,21 @@ fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or("");
     let actions = render_history_actions_compact(step, 512);
+    // The step's report is part of what the inheriting context needs (a
+    // caller's report is often the hand-over itself); it is not an action.
+    let report = step
+        .self_report
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| {
+            format!(
+                "<report end=\"{}\">{}</report>\n",
+                step.report_end,
+                crate::escape_xml_text(r)
+            )
+        })
+        .unwrap_or_default();
     let times = if timestamps {
         format!(
             " started_at_ms=\"{}\" ended_at_ms=\"{}\"",
@@ -847,7 +862,7 @@ fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
         String::new()
     };
     format!(
-        "<step_record behavior=\"{}\" index=\"{}\"{} compression=\"{}\">\n<observation>{}</observation>\n<intent>{}</intent>\n<actions>\n{}\n</actions>\n</step_record>",
+        "<step_record behavior=\"{}\" index=\"{}\"{} compression=\"{}\">\n<observation>{}</observation>\n<intent>{}</intent>\n{}<actions>\n{}\n</actions>\n</step_record>",
         step.meta.behavior_name,
         step.meta.step_index,
         times,
@@ -858,6 +873,7 @@ fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
         },
         observation,
         thought,
+        report,
         actions
     )
 }
@@ -1132,19 +1148,31 @@ mod tests {
         assert!(!text.contains("```output"));
     }
 
+    /// An inherited step carries its report (a caller's hand-over is often
+    /// in it), but the report is still not an action result.
     #[test]
-    fn inherited_self_report_does_not_render_as_action() {
+    fn inherited_self_report_renders_as_report_not_action() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
         step.meta.behavior_name = "plan".into();
-        step.self_report = Some("checkpoint".into());
+        step.self_report = Some("checkpoint <T01>".into());
 
         let msgs = renderer.render_history(vec![step], "do", Vec::new(), Vec::new());
         assert_eq!(msgs.len(), 1);
         let inherited = plain_text(&msgs[0]);
+        assert!(
+            inherited.contains("<report end=\"false\">checkpoint &lt;T01&gt;</report>\n<actions>"),
+            "{inherited}"
+        );
         assert!(inherited.contains("<actions>\nNo action.\n</actions>"));
         assert!(!inherited.contains("Report acknowledged"));
         assert!(!inherited.contains("- Report"));
+
+        let mut plain = StepRecord::default();
+        plain.meta.behavior_name = "plan".into();
+        plain.thought = Some("no report here".into());
+        let msgs = renderer.render_history(vec![plain], "do", Vec::new(), Vec::new());
+        assert!(!plain_text(&msgs[0]).contains("<report"));
     }
 
     #[test]

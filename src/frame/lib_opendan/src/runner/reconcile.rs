@@ -162,6 +162,7 @@ async fn redo_transfer(
             false,
         );
         next.usage = record.usage.main.clone();
+        super::todos::settle(sh, &mut next, &site, false, &record.run_id, snapshot).await?;
         hold_for_children(sh, &mut next).await?;
         if next.kind == FinishKind::Switch {
             hand_over(sh, run, behavior, snapshot, &mut next).await?;

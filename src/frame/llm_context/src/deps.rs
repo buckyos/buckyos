@@ -422,6 +422,20 @@ pub trait CheckpointHook: Send + Sync {
         Ok(())
     }
 
+    /// Review a behavior step that hands over or yields, after it parsed
+    /// and its report (if any) was validated, before it takes effect.
+    /// `None`: no verdict — a hand-over ends the loop as usual, a yield
+    /// continues it (the behavior of a host without this method).
+    async fn review_decision(
+        &self,
+        _snapshot: &LLMContextSnapshot,
+        _result: &crate::behavior_loop::LLMBehaviorResult,
+        _step_index: u32,
+        _decision: crate::behavior_loop::StepDecision,
+    ) -> Option<crate::behavior_loop::DecisionVerdict> {
+        None
+    }
+
     async fn before_inference(
         &self,
         snapshot: &LLMContextSnapshot,

@@ -641,7 +641,7 @@ pub(super) async fn apply_decide(
 }
 
 /// Side-effect actions of this session, read backwards from the worklog.
-pub(super) fn side_effects_from_worklog(s: &Session) -> Result<Vec<SideEffectRef>> {
+pub(crate) fn side_effects_from_worklog(s: &Session) -> Result<Vec<SideEffectRef>> {
     let mut out = Vec::new();
     let mut r = s
         .dir

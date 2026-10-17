@@ -460,5 +460,6 @@ pub(super) fn pending_sub_call(
             task_id: p.task_id.clone(),
         },
         task,
+        todo: None,
     }))
 }

@@ -2664,6 +2664,7 @@ pub fn build_runtime_protocol_for(
             s.push_str("- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n");
             if matches!(flavor, HostProtocolFlavor::Session { .. }) {
                 s.push_str("- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n");
+                s.push_str("- A reply whose only content is a progress report (no actions, no sendmsg, no next_behavior) is how you wait while work this session started (sub sessions) is still running: the step ends and the session wakes you when that work reports. When nothing it started is running, the report is only a progress report and you continue.\n");
             }
             if has_actions {
                 s.push_str("- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n");
@@ -9093,6 +9094,22 @@ mod behavior_protocol_tests {
         let p = protocol(&[], &[]);
         assert!(p.contains("No actions or tools are available"), "{p}");
         assert!(!p.contains("native function-call tools"), "{p}");
+    }
+
+    /// Only a session explains that a progress report alone hands control
+    /// back (and when it is accepted); a one-shot run keeps its rules.
+    #[test]
+    fn a_progress_report_alone_yields_only_in_a_session() {
+        let p = protocol(&[], &["shell"]);
+        assert!(p.contains("only content is a progress report"), "{p}");
+        let tools = EffectiveTools {
+            enabled: true,
+            actions: vec![tool("shell")],
+            ..Default::default()
+        };
+        let one_shot =
+            build_runtime_protocol_for(&HostProtocolFlavor::OneShot, LoopModel::Behavior, &tools, false);
+        assert!(!one_shot.contains("only content is a progress report"), "{one_shot}");
     }
 }
 

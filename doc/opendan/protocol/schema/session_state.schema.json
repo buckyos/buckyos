@@ -246,11 +246,22 @@
           "description": "`create_sub_context | fork` (how the child was constructed)."
         },
         "task": {
-          "description": "Task given to the child (tool trigger: the call's `task` argument).",
+          "description": "Task given to the child (tool trigger: the call's `task` argument; a Todo executor: the admitted Todo's body).",
           "type": [
             "string",
             "null"
           ]
+        },
+        "todo": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The serial Todo attempt this call executes."
         },
         "trigger": {
           "$ref": "#/definitions/CallTrigger"
@@ -1654,6 +1665,24 @@
       },
       "type": "object"
     },
+    "TodoBinding": {
+      "description": "A sub context call bound to a serial Todo attempt (TodoList §2.1): its result is written back to that attempt when the call returns.",
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt",
+        "todo_id"
+      ],
+      "type": "object"
+    },
     "Topic": {
       "properties": {
         "tags": {
@@ -2132,6 +2161,12 @@
       "additionalProperties": true,
       "description": "Pull-mode cursors only (registry rev of session subscriptions).",
       "type": "object"
+    },
+    "todo_view_rev": {
+      "description": "Revision of the TodoList (`todos.json`) last shown to the session's top-level context in an input batch: the compact view is rendered again only when the list changed since (0: never shown).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "topic": {
       "allOf": [

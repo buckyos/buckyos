@@ -68,8 +68,7 @@ beta2.2 是 breaking-change 版本，下列旧上下文变量**已整体移除**
 | [`read_file`](#5-read_file-legacy) | bash / llm_tool_call | legacy 文本读取，支持纯文本 stdout | `src/file_tools.rs` |
 | [`Glob`](#6-glob) | bash / llm_tool_call | 文件名 glob 匹配 | `src/glob_tool.rs` |
 | [`Grep`](#7-grep) | bash / llm_tool_call | ripgrep 内容搜索 | `src/grep_tool.rs` |
-| [`todo`](#8-todo) | bash / action / llm_tool_call | session 级 PDCA todo 管理 | `src/todo_tools.rs` |
-| [`delegateTask`](#9-delegatetask) | bash / action / llm_tool_call | 委托系统级 Task | `src/todo_tools.rs` |
+| [`agent-session todo`](#8-agent-session-todo) | bash | Work Session 的 TodoList：串行 / 探索 Todo、Review | `lib_opendan/src/bin/xagent.rs`（数据模型 `agent_tool/src/todo_tools.rs`） |
 | [`get_session`](#10-get_session) | bash | 读 session 快照 | `src/lib.rs` |
 | `agent-session workspace` | bash | 登记、查询和维护长期 Workspace | `lib_opendan/src/bin/xagent.rs` |
 | `agent-session create-worksession --workspace <id>` | bash | 创建时固定 Workspace 绑定 | `lib_opendan/src/bin/xagent.rs` |
@@ -612,158 +611,32 @@ Grep 'panic!' output_mode=content head_limit=50 offset=50
 
 ---
 
-## 8. `todo`
+## 8. `agent-session todo`
 
-Session 级 PDCA 工具：plan 阶段加 todo，do 阶段消费 current，完成时回写 summary / report。
+Work Session 的 TodoList（[Agent TodoList](<Agent TodoList.md>)）。不是 prompt-visible 工具：PLAN 在 shell 里调用 Session Bin 的 `agent-session`（= `xagent`），Session 由 `$OPENDAN_SESSION_ID` 给出。执行者（DO、探索子 Session）不调用它写父列表；结果由宿主依据已提交状态回写。
 
-### Prompt
-
-`description`:
 ```text
-Session 级 Todo 工具：plan 写入下一步执行分支、DO 拉取 current todo、
-分支结束写 summary/report 回流到主干。
+todo add <title> --content <t> [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <s>]... [--after <todo_id>]...
+todo explore <title> --content <t> [同上] [--behavior <b>] [--class <c>]   # 建 Todo 并派发为探索子 Session
+todo dispatch <todo_id>                                                  # 派发已有的 pending Todo
+todo list [--json] | todo show <todo_id> [--report]
+todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
+todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
 ```
 
-`usage`:
-```text
-todo add "<title>" --content <text> [--skill <name>]... [--context <text>]
-todo current
-todo list
-todo done "<summary>" [--report <text> | --report-file <path>]
-todo failed "<summary>" [--report <text> | --report-file <path>]
-todo finish --status <completed|failed|timeout|blocked> "<summary>"
-   [--report <text> | --report-file <path>] [--id <todoID>]
-todo show [<todoID>]
-todo clean
-```
-
-`args_schema` 是一个 `TodoArgs` tagged enum（每个 subcommand 一个 variant），LLM tool_call 路径直接发对应的 JSON 即可。
-
-数据落地：
-
-- session 级 `todos.json` ← `<agent_rootfs>/sessions/<session_id>/todos.json`
-- workspace 级 `tasks.json` ← `<workspace>/.agent/tasks.json`
-
-### Bash 支持
-
-`CallingConventions::ALL`。Session Exec Bin 通过软链暴露 `todo` 命令。
-
-### CLI 命令解释 + 常用例子
-
-```bash
-todo add "实现 read_tool 的 unchanged 短路" \
-  --content '复用 hash 检查' --skill read --skill cache
-
-todo current                  # 当前 running / 第一个 pending
-todo list                     # 全部 todo + delegate task
-todo show                     # 当前 todo 详情
-todo show T001                # 指定 id
-
-# 完成（report 可走文件以便长内容）
-todo done "短路实现完成" --report-file ./reports/read_unchanged.md
-todo failed "命中边界条件" --report '...'
-
-# 通用 finish
-todo finish --status timeout "等待超时" --id T002
-
-# 清理 pending（已 terminal 的 todo 不动）
-todo clean
-```
-
-### 输出示例
-
-`todo add` 结果：
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "todo",
-  "cmd_args": "todo add",
-  "title": "todo add => ok",
-  "summary": "added T003 (current)",
-  "detail": {
-    "Add": {
-      "todo_id": "T003",
-      "is_current": true,
-      "order_index": 3,
-      "title": "实现 read_tool 的 unchanged 短路"
-    }
-  }
-}
-```
-
-`todo current` 无 current：
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "todo",
-  "cmd_args": "todo current",
-  "title": "todo current => ok",
-  "summary": "no current todo",
-  "detail": { "Current": { "todo": null } }
-}
-```
-
-`todo done`：
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "todo",
-  "summary": "T003 -> Completed",
-  "detail": { "Done": { "todo_id": "T003", "status": "completed" } }
-}
-```
+- 串行 Todo 由 `next_behavior = do`（Todo 执行器）执行：宿主选第一个就绪的串行 Todo，把正文作为 `<sub_task>` 交给 DO。
+- `explore` / `dispatch` 的结果：`{todo_id, attempt, child_sid, dispatched: true}`；被并发上限拒绝时 `{dispatched: false, reason}`、退出码 3，Todo 保持 pending。
+- `list` 默认输出 PLAN 视图 `<todo_list rev>`；`show --report` 输出最新 attempt 的完整报告。
+- `review` 对探索 attempt 同时写子 Session 的 acceptance（accept → accepted，reject → discarded）；退出码 5 = Review 已记录、acceptance 未写入，重跑同一 Review。
+- owner 侧只读：`xagent todo list <sid> [--json]`、`xagent todo show <todo_id> --session <sid> [--report]`。
+- 环境：`OPENDAN_SESSION_ID`、`OPENDAN_AGENT_DID`、`OPENDAN_AGENT_ROOT`、`LIBOPENDAN_WHO`、`LIBOPENDAN_MAX_CHILDREN`（宿主的并发上限）。
+- 列表在 `<SessionDir>/.opendan_agent_session/todos.json`（`opendan.todo_list/1`）。旧的 `todo current / done / finish` 与 `delegateTask` 已删除。
 
 ---
 
-## 9. `delegateTask`
+## 9. （已删除）
 
-把一段自然语言任务委托给 task_management，登记到当前 workspace 的 `.agent/tasks.json`。
-
-### Prompt
-
-`description`:
-```text
-委托一个系统级 Task（task_management 创建 / 路由），并把 taskID 登记到
-当前 workspace 的 .agent/tasks.json。
-```
-
-`usage`: `delegateTask "<task>" [--to <target>] [--context <text>]`
-
-### Bash 支持
-
-`CallingConventions::ALL`。
-
-### CLI 命令解释 + 常用例子
-
-```bash
-delegateTask "替我把 build 产物上传到 OSS" --to deploy-agent --context "release v1.2"
-```
-
-### 输出示例
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "delegateTask",
-  "cmd_args": "delegateTask",
-  "title": "delegateTask => success",
-  "summary": "delegated tsk_ab12cd34ef56 (pending)",
-  "detail": {
-    "task_id": "tsk_ab12cd34ef56",
-    "status": "pending",
-    "purpose": "替我把 build 产物上传到 OSS"
-  }
-}
-```
-
-后续通过 `check_task <task_id>` 拉最终结果。
+`delegateTask` 的占位后端已删除；把工作交给另一个 Session 用 `agent-session todo explore` 或 `agent-session create-worksession`。
 
 ---
 

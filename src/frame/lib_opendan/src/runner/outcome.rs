@@ -182,7 +182,7 @@ fn returns(next: &mut Next, status: &str, result: Option<String>) {
 /// A hand-over that cannot be carried out (target without an entry mode,
 /// nesting limit). There is no fallback: a sub context reports it to its
 /// caller, any other run ends the Turn as failed.
-fn refuse_handover(next: &mut Next, site: &CallSite, message: String) {
+pub(super) fn refuse_handover(next: &mut Next, site: &CallSite, message: String) {
     if site.child {
         returns(next, "failed", Some(message));
         return;
@@ -318,6 +318,7 @@ pub(super) fn classify_done(
                         behavior: b.to_string(),
                         trigger: CallTrigger::Behavior,
                         task: None,
+                        todo: None,
                     });
                 }
             }
@@ -375,6 +376,7 @@ pub(super) async fn hand_over(
     next: &mut Next,
 ) -> Result<()> {
     let target = next.next_behavior.clone().unwrap_or_default();
+    super::todos::bind_serial(sh, next, run.run_id(), snapshot).await?;
     suspend_run(sh, run, behavior, snapshot, &target, next.call.clone()).await?;
     next.suspended = true;
     Ok(())
@@ -498,6 +500,9 @@ pub(super) async fn handle_context_outcome(
             );
             next.report = final_report;
             next.usage = Some(usage);
+            let yielded = behavior_result.as_ref().and_then(|b| b.decision())
+                == Some(llm_context::StepDecision::Yield);
+            super::todos::settle(sh, &mut next, &site, yielded, lc.run.run_id(), &snapshot).await?;
             hold_for_children(sh, &mut next).await?;
             status = match next.kind {
                 // Suspended into process_stack: never terminal.
@@ -515,7 +520,7 @@ pub(super) async fn handle_context_outcome(
                 returns(
                     &mut next,
                     "failed",
-                    Some(format!("the sub context ran out of budget ({which:?})")),
+                    Some(format!("{} ({which:?})", super::todos::SUB_CONTEXT_BUDGET)),
                 );
             } else {
                 next.kind = FinishKind::Budget;
@@ -855,6 +860,28 @@ async fn commit_run_end(
             &render_report(s, next.answer.as_deref().unwrap_or_default(), next),
         )?;
     }
+    // A returning sub context that executed a serial Todo: the attempt's
+    // result is written back before this commit (idempotent); its caller
+    // and the history get a brief, the report is read on demand.
+    let todo_brief = match s
+        .state
+        .process_stack
+        .last()
+        .filter(|f| next.kind == FinishKind::ProcessDone && f.role == FrameRole::Caller)
+        .and_then(|f| f.call.as_ref())
+        .and_then(|c| c.todo.clone())
+    {
+        Some(b) => Some(super::todos::serial_returned(
+            sh,
+            s,
+            &b,
+            &run_id,
+            next.child_status.as_deref(),
+            next.report.as_ref(),
+            next.answer.as_deref(),
+        )?),
+        None => None,
+    };
     // Flush the run's unwritten history into the worklog.
     bodies.push(WorklogBody::Outcome {
         run_id: run_id.clone(),
@@ -864,7 +891,10 @@ async fn commit_run_end(
         report: if next.report.is_some() && next.kind != FinishKind::ProcessDone {
             None
         } else {
-            next.answer.clone().map(|a| a.chars().take(2000).collect())
+            todo_brief
+                .clone()
+                .or_else(|| next.answer.clone())
+                .map(|a| a.chars().take(2000).collect())
         },
     });
     if let Some(status) = turn_closed {
@@ -951,19 +981,22 @@ async fn commit_run_end(
         {
             let entry = f.entry.clone();
             let trigger = f.call.as_ref().map(|c| c.trigger.clone());
+            let bound = f.call.as_ref().and_then(|c| c.todo.clone());
             s.state.live_run = Some(live_from_frame(f));
             let named = Some(entry.clone()).filter(|e| !e.is_empty());
             s.state.process_entry = named.clone();
             s.state.current_behavior = named;
             let mut result = json!({
                 "behavior": child_behavior.unwrap_or_default(),
-                "result": next.answer.clone().unwrap_or_default(),
+                "result": todo_brief.clone().or_else(|| next.answer.clone()).unwrap_or_default(),
                 "status": next.child_status.clone().unwrap_or_else(|| "ok".into()),
                 // Keep action / step ids unique after the return.
                 "next_action_id": snapshot.state.next_action_id,
                 "next_step_index": snapshot.state.next_step_index,
             });
-            if let Some(report) = &next.report {
+            if let Some(todo) = &bound {
+                result["todo"] = json!({ "todo_id": todo.todo_id, "attempt": todo.attempt });
+            } else if let Some(report) = &next.report {
                 result["submission"] = serde_json::to_value(report).unwrap_or(Value::Null);
             }
             match trigger {
@@ -1156,6 +1189,10 @@ fn one_line(next: &Next) -> String {
     let base = match (next.finished, next.kind) {
         (true, FinishKind::Stopped) => "stopped".to_string(),
         (true, _) => "finished".to_string(),
+        (false, FinishKind::Wait) if !next.wait_children.is_empty() => format!(
+            "waiting for {} sub session(s)",
+            next.wait_children.len()
+        ),
         (false, FinishKind::Wait) => "waiting for input".to_string(),
         (false, FinishKind::Switch) => format!(
             "switching to {}",

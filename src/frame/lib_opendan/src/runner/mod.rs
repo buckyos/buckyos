@@ -22,6 +22,7 @@ mod reconcile;
 mod rounds;
 mod shared;
 mod tools;
+mod todos;
 mod turn_task;
 
 use std::path::PathBuf;
@@ -53,6 +54,7 @@ pub use turn_task::{
 };
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::classify_effect;
+pub(crate) use inputs::side_effects_from_worklog as side_effects_of;
 
 /// When `drive` returns (a property of this call, not a session end
 /// condition).

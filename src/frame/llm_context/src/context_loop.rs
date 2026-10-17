@@ -55,7 +55,9 @@ use buckyos_api::{
 };
 use serde_json::Value;
 
-use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser, StepMeta, StepRecord};
+use crate::behavior_loop::{
+    DecisionVerdict, LLMBehaviorResult, LLMResultParser, StepDecision, StepMeta, StepRecord,
+};
 use crate::context_window::{estimate_request, ContextLimits};
 use crate::deps::{
     resolve_tool_specs, CancelCause, Injection, InjectionPosition, LLMContextDeps,
@@ -1603,6 +1605,31 @@ impl LLMContext {
                 },
                 other => other,
             };
+            // A hand-over or a yield is reviewed by the host before it takes
+            // effect: refused, it is corrected in this same run.
+            let mut yielded = false;
+            let parsed = match (parsed, &self.deps.checkpoint_hook) {
+                (Ok(result), Some(hook)) => match result.decision() {
+                    Some(decision) => match hook
+                        .review_decision(
+                            &self.snapshot(),
+                            &result,
+                            self.state.next_step_index,
+                            decision,
+                        )
+                        .await
+                    {
+                        None => Ok(result),
+                        Some(DecisionVerdict::Accept) => {
+                            yielded = decision == StepDecision::Yield;
+                            Ok(result)
+                        }
+                        Some(DecisionVerdict::Refuse(message)) => Err(message),
+                    },
+                    None => Ok(result),
+                },
+                (other, _) => other,
+            };
             let result = match parsed {
                 Ok(r) => r,
                 Err(err_msg) => {
@@ -1690,6 +1717,11 @@ impl LLMContext {
                         chars: msg.body.chars().count(),
                     })
                     .await;
+            }
+            // 4a. An accepted yield (a progress report and nothing else) ends
+            //     the loop: the host decides what follows.
+            if yielded {
+                return self.finish_done_behavior(new_step, response).await;
             }
 
             // 5. Gate parsed XML actions through the action policy. Mirrors

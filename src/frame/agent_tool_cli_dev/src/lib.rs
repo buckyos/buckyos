@@ -58,7 +58,7 @@ use agent_tool::{
     DcrontabTool, DiscoverEventTool, DiscoverObjectObservationTool,
     DiscoverRelationshipTool, DiscoverSkillCoverageGapTool, EditFileTool, FileToolConfig,
     GetSessionTool, GlobTool, GrepTool, NoopFileWriteAudit, ReadFileTool, RuntimeContext,
-    SessionRuntimeContext, SessionViewBackend, TodoTool, TodoToolConfig, ToolCtx, TypedTool,
+    SessionRuntimeContext, SessionViewBackend, ToolCtx, TypedTool,
     WriteFileTool, DEFAULT_READ_TOKEN_LIMIT,
 };
 use agent_tool::{llm_explore, llm_understand_media, run_local_llm};
@@ -80,7 +80,7 @@ const TOOL_BEGIN_ATTENTION_SIGNAL_EXTRACTION: &str = "BeginAttentionSignalExtrac
 const TOOL_COMPLETE_ATTENTION_SIGNAL_EXTRACTION: &str = "CompleteAttentionSignalExtraction";
 const TOOL_LIST_PENDING_ATTENTION_SIGNALS: &str = "ListPendingAttentionSignals";
 const TOOL_MARK_ATTENTION_SIGNAL_CONSUMED: &str = "MarkAttentionSignalConsumed";
-const TOOL_NAMES: [&str; 27] = [
+const TOOL_NAMES: [&str; 26] = [
     "Glob",
     "Grep",
     "dcrontab",
@@ -89,7 +89,6 @@ const TOOL_NAMES: [&str; 27] = [
     "read_file",
     "write_file",
     "edit_file",
-    "todo",
     "get_session",
     TOOL_AGENT_MEMORY,
     TOOL_AGENT_MEMORY_SNAKE,
@@ -5754,7 +5753,6 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
     mgr.register_typed_tool(ReadFileTool::new(file_cfg.clone()))?;
     mgr.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()))?;
     mgr.register_typed_tool(EditFileTool::new(file_cfg, audit))?;
-    mgr.register_typed_tool(TodoTool::new(TodoToolConfig::new(state_root)))?;
     mgr.register_typed_tool(CliBeginAttentionSignalExtractionTool {
         agent_root: env.agent_env_root.clone(),
         current_session_id: env.call_ctx.session_id.clone(),
@@ -7009,60 +7007,6 @@ methods = ["x_call"]
             payload["detail"]["tools"].as_array().map(|v| v.len()),
             Some(TOOL_NAMES.len())
         );
-    }
-
-    #[tokio::test]
-    async fn todo_cli_writes_session_todos_under_agent_env() {
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-        let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd)
-            .await
-            .expect("create workspace dir");
-
-        let add_output = execute(
-            vec![
-                OsString::from("/tmp/todo"),
-                OsString::from("add"),
-                OsString::from("first task"),
-                OsString::from("--content"),
-                OsString::from("task body"),
-            ],
-            test_env(root.clone(), cwd.clone()),
-            None,
-        )
-        .await
-        .expect("run todo add");
-        assert_eq!(add_output.exit_code, EXIT_SUCCESS);
-
-        let todos_path = root
-            .join("sessions")
-            .join("session-test")
-            .join("todos.json");
-        let todos: Json = serde_json::from_str(
-            &fs::read_to_string(&todos_path)
-                .await
-                .expect("read todos.json"),
-        )
-        .expect("parse todos");
-        assert_eq!(todos[0]["todo_id"], "T01");
-        assert_eq!(todos[0]["session_id"], "session-test");
-        assert_eq!(todos[0]["title"], "first task");
-
-        let current_output = execute(
-            vec![
-                OsString::from(MAIN_BINARY_NAME),
-                OsString::from("todo"),
-                OsString::from("current"),
-            ],
-            test_env(root, cwd),
-            None,
-        )
-        .await
-        .expect("run todo current");
-        assert_eq!(current_output.exit_code, EXIT_SUCCESS);
-        let payload: Json = serde_json::from_str(&current_output.stdout).expect("parse json");
-        assert_eq!(payload["detail"]["todo"]["todo_id"], "T01");
     }
 
     #[tokio::test]

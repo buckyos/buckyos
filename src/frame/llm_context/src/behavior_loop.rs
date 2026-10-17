@@ -315,6 +315,33 @@ impl LLMBehaviorResult {
         Ok(())
     }
 
+    /// What this result decides about the control of its context, when it
+    /// decides something the host may want to review: a hand-over
+    /// (`next_behavior` without actions or sendmsg — with them the
+    /// hand-over is ignored anyway) or a yield (a progress report and
+    /// nothing else). Pure shape check; the meaning is the host's.
+    pub fn decision(&self) -> Option<StepDecision> {
+        if !self.do_actions.is_empty() || !self.messages_to_send.is_empty() {
+            return None;
+        }
+        if self
+            .next_behavior
+            .as_deref()
+            .is_some_and(|next| !next.trim().is_empty())
+        {
+            return Some(StepDecision::Handover);
+        }
+        if !self.report_end
+            && self
+                .self_report
+                .as_deref()
+                .is_some_and(|report| !report.trim().is_empty())
+        {
+            return Some(StepDecision::Yield);
+        }
+        None
+    }
+
     /// Reconstruct a behavior result from a finished step. Used at terminal
     /// time so `Done.behavior_result` carries the same payload that the
     /// parser produced.
@@ -408,6 +435,30 @@ pub trait StepRenderer: Send + Sync {
         }
         out
     }
+}
+
+/// A behavior step that changes who acts next, offered to the host for
+/// review ([`crate::deps::CheckpointHook::review_decision`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepDecision {
+    /// `next_behavior` names another behavior (or WAIT_USER_MSG).
+    Handover,
+    /// Only a progress report: no actions, no sendmsg, no next_behavior.
+    /// Accepted, it ends the loop with `Done` and the host decides what
+    /// follows; without a verdict the loop continues as before.
+    Yield,
+}
+
+/// The host's verdict on a [`StepDecision`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecisionVerdict {
+    /// The decision stands: a hand-over ends the loop with `Done` as usual,
+    /// a yield ends it with `Done` carrying the progress report.
+    Accept,
+    /// The decision is refused: the step becomes a correction step whose
+    /// text is this message, and the same run infers again (counts as a
+    /// consecutive error, like a refused report).
+    Refuse(String),
 }
 
 #[derive(Debug, Clone, Default)]

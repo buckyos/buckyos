@@ -106,6 +106,10 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         ));
     }
     live.applied_input_seq = r.input_seq;
+    // The TodoList view this batch showed (also when recovery applies it).
+    if let Some(rev) = r.extra.get("todo_rev").and_then(serde_json::Value::as_u64) {
+        state.todo_view_rev = state.todo_view_rev.max(rev);
+    }
     let input_ids: Vec<String> = r.inputs.iter().map(|i| i.id()).collect();
     let event_keys: Vec<String> = r.events.iter().map(|e| e.key.clone()).collect();
     match live.turns.last_mut() {

@@ -614,13 +614,28 @@ impl ChildDriver {
 
 **父结束规则（汇总）**：父的 `decide_end` 发现还有未结束、且 `report != none` 的子 session 时，不结束 session：run 结束，Turn 保持打开，`waiting_for = Children{sids}`；子的结束事件作为受控输入并入同一个 Turn，父 LLM 汇总后再提交结束报告。这样 work 父也能“先并行派出几个子 session，再汇总”。不想等的子，要么创建时选 `--report none`，要么先 `ctl <child> stop`。
 
+**无决策即等待**（2026-10-16）：behavior loop 里只有阶段 `<report>`、没有 actions / next_behavior 的回复交给宿主判断（llm_context 的 `CheckpointHook::review_decision`，见 [llm_context 决策钩子 TODO](../../notepads/llm-context-plan-do-yield-todo.md)）：顶层 context 还有未收齐的子 Session 时，宿主接受它为等待——run 结束，Turn 以同样的 `waiting_for = Children{sids}` 保持打开，子的结束事件唤醒同一个 Turn；没有可等的就不表态，阶段报告照旧、context 继续（连续第三次被拒绝，防空转）。异步派出、无决策等待、逐个 Review，是 TodoList 并行探索的执行方式（§4.17）。
+
 ### 4.16 生命周期与限制
 
 - **stop 级联**：父 stop → 对未结束的子投 `stop`（子有队列时），或由 ChildDriver 直接中断（子无队列；驱动者是同一个 principal）。子被 stop 只在父那里产生 `finished{stopped}` 事件，不影响父。
-- **验收**：work 子 session 结束后 `acceptance = pending`，默认由父（创建者）决定：父 LLM 读报告后 `ctl decide <child> accept|discard`。
+- **验收**：work 子 session 结束后 `acceptance = pending`，默认由父（创建者）决定：父 LLM 读报告后 `ctl decide <child> accept|discard`。子没有输入队列时（默认），不经队列：父的工具进程以驱动者身份持子 Session 的锁直接写 acceptance（`api::decide_unqueued`；有 artifact 时先决定 artifact 版本）。探索 Todo 的 `todo review` 同时写它（§4.17）。
 - **数量与深度**：`session.policy.max_sub_sessions`（同时未结束的子，默认 4）与 `max_session_depth`（默认 2）。
 - **Turn 与预算不合并**：子有自己的 Turn（计划 §8.3），父的 Turn、Round、预算都不含子；子按自己的 budget。
 - **归档与清理**：子目录的归档与清理沿用顶层 session 的规则（后移）；登记表条目保留，供审计与 `sessions` 查询。
+
+### 4.17 TodoList：PLAN 的计划与两种执行形态
+
+Work Session 的 TodoList（`.opendan_agent_session/todos.json`，[Agent TodoList](<./Agent TodoList.md>)）把 §4.10 的两种交出方式组合成 PLAN 的决策循环。它不是新的调度器：
+
+| | 串行 Todo | 探索 Todo |
+|---|---|---|
+| 执行 | `next_behavior = <Todo 执行器>`（behavior 声明 `[entry] todo = true`，`create_sub_context`；Jarvis `do`）：T2 子 context，父 run 挂起 | `agent-session todo explore` / `todo dispatch`：Sub Session（`--workspace none`、`--report final`、入口 behavior `explore`），可并行 |
+| 准入 / 派发 | 宿主在交接时选第一个就绪的串行 Todo（`after` 中的结果已被接受），正文写入 `ChildCall.task`（`<sub_task>`），绑定 `ChildCall.todo = {todo_id, attempt}` 与 `(run_id, step:<n>)`；没有就绪 Todo 时可修正地拒绝，或在有探索时按等待处理 | 工具进程加锁：记 `dispatching` → `create_sub_session`（key `todo:<id>:<attempt>`）→ 记 `dispatched`；`max_sub_sessions` 与宿主 `--max-children`（`LIBOPENDAN_MAX_CHILDREN`）超限可观察地拒绝 |
+| 结果回流 | 子 context 返回的同一次提交前写回 attempt；`process_result` 只给一句话与 `todo show` 指引；报告副本存 `reports/<id>/` | 父宿主在批次边界按登记表状态回写；结束事件说 Todo、attempt、一句话与 `todo show` 指引 |
+| Review | `todo review` 写 Todo | `todo review` 写 Todo，同时写子 Session acceptance |
+
+PLAN 在每个顶层输入批次（列表修订变化时）得到紧凑视图 `<todo_list rev>`；报告全文只在 `todo show <id> --report` 时进入上下文。顶层结束报告在列表未收敛（有 Todo 在执行 / pending / 未 Review）时被拒绝。恢复：派发按登记表对账（有 sid 就绑定、没有就撤回），串行绑定按调用方 Step 幂等，回写幂等且只写自己的 attempt。
 
 ---
 

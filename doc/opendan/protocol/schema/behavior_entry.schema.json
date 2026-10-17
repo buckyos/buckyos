@@ -223,6 +223,10 @@
       ],
       "description": "`prompt.system` and the input templates of the context. A system prompt is not allowed for `fork`."
     },
+    "todo": {
+      "description": "The behavior executes the session's serial Todos: a `next_behavior` hand-over to it admits the next one (TodoList, `[entry] todo`).",
+      "type": "boolean"
+    },
     "tool": {
       "anyOf": [
         {

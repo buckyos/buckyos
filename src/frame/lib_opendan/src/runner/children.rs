@@ -102,8 +102,30 @@ fn cut(mut text: String) -> String {
     text
 }
 
-fn summary_of(e: &RegistryEntry, attention: Option<&str>) -> String {
+/// The Todo attempt a sub session executes, as the parent's list binds it.
+struct TodoOf {
+    todo_id: String,
+    attempt: u32,
+    summary: Option<String>,
+}
+
+fn summary_of(e: &RegistryEntry, attention: Option<&str>, todo: Option<&TodoOf>) -> String {
     let st = &e.status;
+    // An exploration's end is told through its Todo: a line, and where the
+    // report is; the report itself is read on demand.
+    if let (Some(t), Some(ATTENTION_FINISHED)) = (todo, attention) {
+        return cut(format!(
+            "sub session {} of todo {} (attempt {}) finished ({}): {}\nRead the report with `agent-session todo show {} --report`, then review it.",
+            e.session_id,
+            t.todo_id,
+            t.attempt,
+            st.outcome
+                .map(|o| format!("{o:?}").to_lowercase())
+                .unwrap_or_else(|| "no outcome".into()),
+            t.summary.clone().unwrap_or_else(|| st.one_line_status.clone()),
+            t.todo_id
+        ));
+    }
     let mut text = match attention {
         Some(ATTENTION_FINISHED) => format!(
             "sub session {} finished ({})",
@@ -195,6 +217,10 @@ pub(super) async fn poll_children(
         return Ok(Vec::new());
     }
     let mut inputs = Vec::new();
+    let todos: Vec<(String, TodoOf)> = super::todos::bound_children(sh)
+        .into_iter()
+        .map(|(sid, todo_id, attempt, summary)| (sid, TodoOf { todo_id, attempt, summary }))
+        .collect();
     let mut s = sh.session.lock().await;
     if s.state.is_finished() {
         return Ok(inputs);
@@ -217,7 +243,11 @@ pub(super) async fn poll_children(
                     source: EventSource::new("session", sid),
                     event: a.to_string(),
                     seq: Some(e.status.rev),
-                    summary: summary_of(e, Some(a)),
+                    summary: summary_of(
+                        e,
+                        Some(a),
+                        todos.iter().find(|(c, _)| c == sid).map(|(_, t)| t),
+                    ),
                     data_ref: None,
                     terminal: a == ATTENTION_FINISHED,
                 };
@@ -258,7 +288,7 @@ pub(super) async fn poll_children(
                     source: EventSource::new("session", sid),
                     event: "progress".to_string(),
                     seq: Some(e.status.rev),
-                    summary: summary_of(e, None),
+                    summary: summary_of(e, None, None),
                     data_ref: None,
                     terminal: false,
                 };

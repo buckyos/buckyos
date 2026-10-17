@@ -549,6 +549,164 @@ async fn session_depth(agent: &dyn AgentStateClient, entry: &RegistryEntry) -> R
     Ok(depth)
 }
 
+/// Idempotency key of a sub session: its creating call, or the explicit
+/// key (`None`: neither, every creation is a new session).
+fn sub_session_key(parent_sid: &str, sub: &SubSessionSpec) -> Option<String> {
+    match (&sub.call, &sub.key) {
+        (Some((run, call)), _) => Some(format!("sub:{}", ids::h(&[parent_sid, run, call]))),
+        (None, Some(k)) => Some(format!("sub:{}", ids::h(&[parent_sid, k]))),
+        (None, None) => None,
+    }
+}
+
+/// The id [`create_sub_session`] gives the sub session `sub` of
+/// `parent_sid` created by `who` — known before it exists, so a creator can
+/// record it first and find it again after a crash. Needs an idempotency
+/// identity (`sub.call` or `sub.key`).
+pub fn sub_session_id(
+    agent: &dyn AgentStateClient,
+    who: &str,
+    parent_sid: &str,
+    sub: &SubSessionSpec,
+) -> Result<String> {
+    let key = sub_session_key(parent_sid, sub).ok_or_else(|| {
+        OpenDanError::InvalidArgument("a sub session id is only known for a creating call or a key".into())
+    })?;
+    let class = sub.class.clone().unwrap_or_else(|| "work".to_string());
+    let template = crate::template::SessionTemplate::load(&class, agent.agent_root())?;
+    ids::derive_session_id(template.kind, agent.agent_did(), who, Some(&key), None)
+}
+
+/// Apply `accept | discard` to a finished Work that has no input queue,
+/// where no drive would ever apply a posted decision: under the session's
+/// own lock, by its driver (`who`). The artifact version, when there is
+/// one, is decided first. Returns the new acceptance.
+pub async fn decide_unqueued(
+    agent: &dyn AgentStateClient,
+    who: &str,
+    sid: &str,
+    decision: &str,
+    note: Option<&str>,
+) -> Result<Acceptance> {
+    let entry = agent
+        .sessions()
+        .lookup(sid)
+        .await?
+        .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+    let sd = SessionDir::open(&entry.location)?;
+    let holder = HolderInfo {
+        runner_id: ids::new_runner_id(),
+        principal: who.to_string(),
+        host: Some(crate::runtime::native_host_id()),
+        pid: std::process::id(),
+        runtime_id: None,
+    };
+    let lease = match sd.acquire(holder)? {
+        crate::lock::Acquire::Acquired(l) => l,
+        crate::lock::Acquire::Busy(info) => {
+            return Err(OpenDanError::Busy {
+                resource: format!("session:{sid}"),
+                holder: info.and_then(|i| serde_json::to_value(i).ok()),
+            })
+        }
+    };
+    let result = decide_locked(agent, &sd, &lease, who, decision, note).await;
+    lease.release();
+    result
+}
+
+async fn decide_locked(
+    agent: &dyn AgentStateClient,
+    sd: &SessionDir,
+    lease: &crate::lock::Lease,
+    who: &str,
+    decision: &str,
+    note: Option<&str>,
+) -> Result<Acceptance> {
+    let mut s = sd.load(lease)?;
+    if s.config.session.kind != SessionKind::Work || !s.state.is_finished() {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "session {} is not a finished work session: a decision applies to a result",
+            sd.sid()
+        )));
+    }
+    let target = match decision {
+        "accept" => Acceptance::Accepted,
+        "discard" => Acceptance::Discarded,
+        other => {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "decide takes accept | discard, not `{other}`"
+            )))
+        }
+    };
+    if s.state.acceptance == target {
+        return Ok(target);
+    }
+    let valid = match target {
+        Acceptance::Accepted => s.state.acceptance == Acceptance::Pending,
+        _ => matches!(s.state.acceptance, Acceptance::Pending | Acceptance::Accepted),
+    };
+    if !valid {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "decide `{decision}` is not valid while acceptance is {:?}",
+            s.state.acceptance
+        )));
+    }
+    let mut head_after = None;
+    if let Some(aid) = s.config.artifact_id.clone() {
+        let holder = HolderInfo {
+            runner_id: ids::new_runner_id(),
+            principal: who.to_string(),
+            host: Some(crate::runtime::native_host_id()),
+            pid: std::process::id(),
+            runtime_id: None,
+        };
+        let alease = match agent.locks().acquire(&format!("artifact:{aid}"), holder)? {
+            crate::lock::Acquire::Acquired(l) => l,
+            crate::lock::Acquire::Busy(info) => {
+                return Err(OpenDanError::Busy {
+                    resource: format!("artifact:{aid}"),
+                    holder: info.and_then(|i| serde_json::to_value(i).ok()),
+                })
+            }
+        };
+        let ver = format!("v-{}", sd.sid());
+        let r = agent.artifacts().decide(&alease, &aid, &ver, decision).await;
+        alease.release();
+        head_after = Some(r?.head_after);
+    }
+    let mut report = Value::Null;
+    if target == Acceptance::Discarded {
+        let r = DiscardReport {
+            reverted: Vec::new(),
+            workspace: if s.config.workspace.is_some() { "unsupported" } else { "none" }.into(),
+            unsupported: crate::runner::side_effects_of(&s)?,
+            head_moved_to: head_after,
+            note: note.map(str::to_string),
+        };
+        report = serde_json::to_value(&r).unwrap_or(Value::Null);
+        let mut result = s.state.result.clone().unwrap_or_else(|| serde_json::json!({}));
+        result["discard_report"] = report.clone();
+        s.state.result = Some(result);
+    }
+    s.state.acceptance = target;
+    s.state.pending_decision = None;
+    s.append_worklog(
+        lease,
+        vec![WorklogBody::Decide {
+            decision: decision.to_string(),
+            by: who.to_string(),
+            report,
+        }],
+    )?;
+    s.commit_state(lease)?;
+    let status = s.status(lease.epoch());
+    if let Err(e) = agent.sessions().report_state(lease, sd.sid(), status).await {
+        log::warn!("report state of {}: {e}", sd.sid());
+    }
+    Ok(target)
+}
+
 /// Create a sub session of `parent_sid`: registered with
 /// `origin = {parent_session, report, created_by_call}`, driven by the
 /// parent's driver, not advanced here. Idempotent for the same creating
@@ -568,11 +726,8 @@ pub async fn create_sub_session(
         .ok_or_else(|| OpenDanError::NotFound(format!("parent session {parent_sid}")))?;
     let parent_dir = SessionDir::open(&parent.location)?;
     let pcfg = parent_dir.config()?;
-    let key = match (&sub.call, &sub.key) {
-        (Some((run, call)), _) => format!("sub:{}", ids::h(&[parent_sid, run, call])),
-        (None, Some(k)) => format!("sub:{}", ids::h(&[parent_sid, k])),
-        (None, None) => format!("sub:{}", uuid::Uuid::new_v4().simple()),
-    };
+    let key = sub_session_key(parent_sid, &sub)
+        .unwrap_or_else(|| format!("sub:{}", uuid::Uuid::new_v4().simple()));
     let class = sub.class.clone().unwrap_or_else(|| "work".to_string());
     let template = crate::template::SessionTemplate::load(&class, agent.agent_root())?;
     if template.kind == SessionKind::Goal {

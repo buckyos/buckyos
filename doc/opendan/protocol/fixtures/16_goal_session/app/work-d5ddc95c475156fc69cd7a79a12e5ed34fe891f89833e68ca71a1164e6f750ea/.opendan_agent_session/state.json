@@ -10,17 +10,17 @@
       "acked_index": 1
     }
   },
-  "last_run": "20261012-020832-14fbd6",
+  "last_run": "20261016-233914-3feaf4",
   "live_run": null,
   "one_line_status": "finished: answer",
   "outcome": "succeeded",
   "perception_seq": 2,
   "recent_keys": [
-    "cymsg:ce2dda16f352d987e71636e7244fbf5372ff1b66a2eba6db1a2560ad1a66b022"
+    "cymsg:24712e5c1421c2ebf806dfa3b78747590de522aefdafd59b9151a5d91154c0cd"
   ],
   "reply": {
     "kind": "chat",
-    "reply_to": "cymsg:ce2dda16f352d987e71636e7244fbf5372ff1b66a2eba6db1a2560ad1a66b022",
+    "reply_to": "cymsg:24712e5c1421c2ebf806dfa3b78747590de522aefdafd59b9151a5d91154c0cd",
     "route": "message",
     "to": "did:bns:jarvis.alice",
     "to_session": null,
@@ -32,7 +32,7 @@
     "answer_ref": "report.md",
     "goal": {
       "activation_seq": 0,
-      "at_ms": 1791796112902,
+      "at_ms": 1792219154711,
       "epoch": 1,
       "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
       "revision": 1
@@ -47,7 +47,7 @@
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1791796113005,
+  "updated_at_ms": 1792219154812,
   "worklog": {
     "committed_bytes": 1659,
     "committed_seq": 6
@@ -55,8 +55,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 4186287,
+    "pid": 1654165,
     "principal": "app:app2@alice",
-    "runner_id": "rn-d99358a17cb04510"
+    "runner_id": "rn-7666418078764ae6"
   }
 }

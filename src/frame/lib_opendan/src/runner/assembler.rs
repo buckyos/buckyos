@@ -43,6 +43,11 @@ pub struct InputMaterial {
     pub now_ms: u64,
     /// Self-improve sessions: the perception window to consolidate.
     pub perceptions: Vec<PerceptionRecord>,
+    /// The session's TodoList in its compact view, when it changed since
+    /// the top-level context last saw it.
+    pub todos: Option<String>,
+    /// The serial Todo a hand-over to the Todo executor would run now.
+    pub current_todo: Value,
 }
 
 #[async_trait]
@@ -337,9 +342,9 @@ impl SessionAssembler for DefaultAssembler {
                 "objective": cfg.session.objective,
                 "timezone": cfg.session.timezone,
                 "is_bootstrap": first,
-                // Assembled by hosts that keep todos / background hints;
-                // none here.
-                "current_todo": Value::Null,
+                // The serial Todo the Todo executor would run now.
+                "current_todo": m.current_todo,
+                "todos": m.todos,
                 "background_hint_changed": false,
                 "default_changed_background_hint_text": "",
             },
@@ -352,6 +357,7 @@ impl SessionAssembler for DefaultAssembler {
             "task_text": blocks.task,
             "handover_text": blocks.handover,
             "perceptions_text": blocks.perceptions,
+            "todos_text": blocks.todos,
             "hints_text": blocks.hints,
             "active_sessions_text": blocks.active,
             "runtime_text": blocks.runtime,
@@ -371,6 +377,7 @@ fn esc(s: &str) -> String {
 struct Blocks {
     handover: String,
     task: String,
+    todos: String,
     perceptions: String,
     hints: String,
     active: String,
@@ -457,6 +464,11 @@ impl Blocks {
             }
             hints.push_str("</hints>\n");
         }
+        let todos = m
+            .todos
+            .as_ref()
+            .map(|v| format!("{v}\n"))
+            .unwrap_or_default();
         let active = render_active_sessions(&m.active)
             .map(|a| format!("{a}\n"))
             .unwrap_or_default();
@@ -468,6 +480,7 @@ impl Blocks {
         Self {
             handover,
             task,
+            todos,
             perceptions,
             hints,
             active,
@@ -490,6 +503,7 @@ impl Blocks {
             s.push_str(&m.input.text);
             s.push('\n');
         }
+        s.push_str(&self.todos);
         s.push_str(&self.perceptions);
         s.push_str(&self.hints);
         s.push_str(&self.active);

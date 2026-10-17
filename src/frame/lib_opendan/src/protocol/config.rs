@@ -622,6 +622,10 @@ pub struct BehaviorEntry {
     /// `behavior:<name>` as a named function running this sub context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<super::behavior::BehaviorToolConfig>,
+    /// The behavior executes the session's serial Todos: a `next_behavior`
+    /// hand-over to it admits the next one (TodoList, `[entry] todo`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub todo: bool,
 }
 
 impl BehaviorEntry {
@@ -640,6 +644,11 @@ impl BehaviorEntry {
     }
 
     pub fn validate(&self, name: &str) -> std::result::Result<(), String> {
+        if self.todo && self.mode != ContextMode::CreateSubContext {
+            return Err(format!(
+                "behavior `{name}`: a Todo executor (`[entry] todo = true`) is entered as create_sub_context"
+            ));
+        }
         if let Some(t) = &self.tool {
             if !self.mode.is_sub_context() {
                 return Err(format!(
@@ -1020,6 +1029,7 @@ impl SessionConfig {
                 llm_context: Value::Null,
                 inherit: InheritMode::RecentDialogue,
                 tool: None,
+                todo: false,
             });
         }
         Err(format!(

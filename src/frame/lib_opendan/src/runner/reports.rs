@@ -155,6 +155,17 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
     if !child && !goal && !super::children::unsettled_children(sh).await?.is_empty() {
         return Err(invalid("cannot finish while child sessions are unsettled"));
     }
+    // The session's result rests on its TodoList: every Todo converged
+    // (executed and reviewed, or cancelled with a reason).
+    if !child && !goal {
+        let open = super::todos::unconverged(sh);
+        if !open.is_empty() {
+            return Err(invalid(format!(
+                "cannot finish while the todo list has not converged: {}. Review results with `agent-session todo review`, cancel what will not be done with `agent-session todo cancel <id> --reason <why>`.",
+                open.join("; ")
+            )));
+        }
+    }
     Ok(())
 }
 

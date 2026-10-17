@@ -1542,6 +1542,8 @@ pub(super) struct InputBatch<'a> {
     /// Goal Sessions: the Activation this batch opens and its header
     /// (placed first; the receipt carries the Activation).
     pub goal: Option<super::goal::Opening>,
+    /// Revision of the TodoList whose view the input message shows.
+    pub todo_rev: Option<u64>,
 }
 
 /// Commit one input batch (§8.3): its 1–2 messages + receipt in one
@@ -1603,6 +1605,9 @@ pub(super) async fn commit_input_batch(
     let mut extra = std::collections::BTreeMap::new();
     if s.state.internal_continuation.is_some() {
         extra.insert("continuation".to_string(), Value::Bool(true));
+    }
+    if let Some(rev) = batch.todo_rev {
+        extra.insert("todo_rev".to_string(), Value::from(rev));
     }
     if let Some(g) = &goal {
         extra.insert(

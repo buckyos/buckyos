@@ -1427,6 +1427,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     if let Err(e) = catch_up(sh).await {
         log::warn!("catch-up of {}: {e}", sh.dir.sid());
     }
+    // The TodoList follows what recovery left: explorations' committed
+    // state, interrupted dispatches, serial calls that are gone.
+    if let Err(e) = super::todos::sync(sh).await {
+        log::warn!("todo sync of {}: {e}", sh.dir.sid());
+    }
     // A Goal Session holds its Goal State; what it committed and did not
     // publish yet is published first.
     Box::pin(super::goal::load(sh)).await?;
@@ -1630,10 +1635,23 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // completions of watched background tasks.
         let mut picked: Vec<FetchedInput> = Vec::new();
         if !hold_inputs {
+            // Batch boundary: the explorations' committed state is written
+            // back to the TodoList before their ends are delivered.
+            if let Err(e) = super::todos::sync(sh).await {
+                log::warn!("todo sync of {}: {e}", sh.dir.sid());
+            }
             let mut candidates = std::mem::take(&mut routed.candidates);
             candidates.extend(poll_watched_tasks(sh).await?);
             // What the session's sub sessions need from it (xAgent §4.14).
-            candidates.extend(poll_children(sh, &[]).await?);
+            let children = poll_children(sh, &[]).await?;
+            // An end delivered in this batch is in the TodoList of this
+            // batch too (it may have finished after the sync above).
+            if !children.is_empty() {
+                if let Err(e) = super::todos::sync(sh).await {
+                    log::warn!("todo sync of {}: {e}", sh.dir.sid());
+                }
+            }
+            candidates.extend(children);
             let take = match input_cfg.mode {
                 InputMode::Single => 1,
                 InputMode::Batch => sh.deps.options.input_batch_max.max(1),
@@ -1660,6 +1678,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             || state.internal_continuation.is_some();
         let mut msg = None;
         let mut media = Vec::new();
+        let mut todo_rev = None;
         if triggered {
             let me = sh.agent().sessions().lookup(sh.dir.sid()).await?;
             let policy = &cfg.session.policy;
@@ -1717,7 +1736,14 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 } else {
                     Vec::new()
                 },
+                todos: None,
+                current_todo: super::todos::current(sh),
             };
+            let mut material = material;
+            if let Some((view, rev)) = super::todos::view_for_batch(sh, &state) {
+                material.todos = Some(view);
+                todo_rev = Some(rev);
+            }
             msg = sh
                 .deps
                 .assembler
@@ -1922,6 +1948,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     text,
                     media,
                     goal: goal_opening,
+                    todo_rev,
                 },
             ))
             .await?;

@@ -97,6 +97,10 @@
               "type": "null"
             }
           ]
+        },
+        "todo": {
+          "description": "A hand-over to this behavior (`next_behavior`) executes the session's next serial Todo: the host admits it and hands its body over as the sub task (`create_sub_context` only).",
+          "type": "boolean"
         }
       },
       "type": "object"
