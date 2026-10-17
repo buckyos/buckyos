@@ -360,15 +360,42 @@ function discoveryFixture(
           ...(openrouterDecisionCatalog.data.find(model => model.id === id) ?? {canonical_slug: id}),
           supported_parameters: id.startsWith("cohere/rerank-") ? ["top_n"] : [],
           architecture: {
-            input_modalities: ["text"],
+            input_modalities: id === "typesafe/jev-1.13"
+              ? ["text", "image"]
+              : provider.official_first_party_model_ids?.["audio.music"]?.includes(id)
+              ? ["text", "image"]
+              : provider.official_first_party_model_ids?.["audio.asr"]?.includes(id)
+              ? ["audio"]
+              : provider.official_first_party_model_ids?.["image.img2img"]?.includes(id) ||
+                  provider.official_first_party_model_ids?.["video.img2video"]?.includes(id) ||
+                  provider.official_first_party_model_ids?.["vision.ocr"]?.includes(id) ||
+                  provider.official_first_party_model_ids?.["vision.caption"]?.includes(id)
+              ? ["text", "image"]
+              : ["text"],
             output_modalities: id === "typesafe/jev-1.13" ? ["decisions"] : id.startsWith("cohere/rerank-")
               ? ["rerank"]
-              : id.includes("embedding")
+              : provider.official_first_party_model_ids?.["embedding.text"]?.includes(id)
               ? ["embeddings"]
+              : provider.official_first_party_model_ids?.["audio.tts"]?.includes(id)
+              ? ["speech"]
+              : provider.official_first_party_model_ids?.["audio.asr"]?.includes(id)
+              ? ["transcription"]
+              : provider.official_first_party_model_ids?.["audio.music"]?.includes(id)
+              ? ["text", "audio"]
+              : provider.official_first_party_model_ids?.["video.txt2video"]?.includes(id) ||
+                  provider.official_first_party_model_ids?.["video.img2video"]?.includes(id)
+              ? ["video"]
+              : provider.official_first_party_model_ids?.["image.txt2img"]?.includes(id) ||
+                  provider.official_first_party_model_ids?.["image.img2img"]?.includes(id)
+              ? ["image"]
               : ["text"],
           },
-          pricing: id === "typesafe/jev-1.13" ? {prompt:"0.000000042",completion:"0"} : null,
-          expiration_date: null,
+          pricing: id === "typesafe/jev-1.13"
+            ? { prompt: "0.000000042", completion: "0" }
+            : id === "z-ai/glm-5.2"
+            ? { prompt: "0.000000037", completion: "0.000007" }
+            : null,
+          expiration_date: id === "z-ai/glm-4.7" ? "2026-12-31" : null,
         }
         : {}),
     })),
@@ -677,6 +704,86 @@ export function createT15MockHandler(
         });
         return validation.errors;
       };
+
+      if (contract.async_protocol === "gemini_interactions") {
+        const interactionPath =
+          "/v1beta/interactions/interaction_background_mock_1";
+        if (url.pathname === interactionPath && request.method === "GET") {
+          const prior = requests.filter((captured) =>
+            captured.selection.contract_id === selection!.contract_id &&
+            captured.pathname === url.pathname && captured.method === "GET"
+          );
+          const step = prior.length === 0 ? "poll" : "result";
+          const errors = captureAuxiliary(step);
+          if (errors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors,
+            });
+          }
+          if (selection.scenario === "async_failed") {
+            return json(response, 200, {
+              id: "interaction_background_mock_1",
+              status: "failed",
+              error: { code: "provider_error", message: "mock decode failed" },
+            });
+          }
+          if (
+            selection.scenario === "async_poll_timeout" ||
+            selection.scenario === "async_cancel"
+          ) {
+            return json(response, 200, {
+              id: "interaction_background_mock_1",
+              status: "in_progress",
+            });
+          }
+          const result = structuredClone(
+            contract.async_result_fixture ?? {},
+          ) as Record<string, unknown>;
+          const structuredText: Record<string, string> = {
+            "vision.ocr": JSON.stringify({
+              text: "BUCKYOS-AICC-4827",
+              pages: [{ page_index: 0, width: 1, height: 1, blocks: [] }],
+            }),
+            "vision.detect": JSON.stringify({
+              boxes: [{ box_2d: [100, 200, 800, 900], label: "marker" }],
+            }),
+            "vision.segment": JSON.stringify({
+              boxes: [{
+                box_2d: [100, 200, 800, 900],
+                mask: [[200, 100], [900, 100], [900, 800]],
+                label: "marker",
+              }],
+            }),
+          };
+          const text = selection.api_type
+            ? structuredText[selection.api_type]
+            : undefined;
+          if (text) {
+            result.steps = [{
+              type: "model_output",
+              content: [{ type: "text", text }],
+            }];
+          }
+          return json(response, 200, result);
+        }
+        if (
+          url.pathname === `${interactionPath}/cancel` &&
+          request.method === "POST"
+        ) {
+          const errors = captureAuxiliary("cancel");
+          if (errors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors,
+            });
+          }
+          return json(response, 200, {
+            id: "interaction_background_mock_1",
+            status: "cancelled",
+          });
+        }
+      }
 
       if (contract.async_protocol === "fal_queue") {
         if (
@@ -1091,6 +1198,43 @@ export function createT15MockHandler(
         response.end(Buffer.from("mock-video"));
         return;
       }
+      if (
+        contract.async_protocol === "openrouter_video" &&
+        url.pathname === "/api/v1/videos/gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt" &&
+        request.method === "GET"
+      ) {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) {
+          return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        }
+        return json(response, 200, {
+          id: "gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt",
+          generation_id: "gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt",
+          polling_url: "/api/v1/videos/gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt",
+          status: selection.scenario === "async_failed"
+            ? "failed"
+            : selection.scenario === "async_poll_timeout"
+            ? "in_progress"
+            : "completed",
+          ...(selection.scenario === "async_failed" ? { error: "mock failure" } : {}),
+        });
+      }
+      if (
+        contract.async_protocol === "openrouter_video" &&
+        url.pathname === "/api/v1/videos/gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt/content" &&
+        request.method === "GET"
+      ) {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) {
+          return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        }
+        if (selection.scenario === "async_artifact_unavailable") {
+          return json(response, 404, { error: { code: 404, message: "Video content unavailable" } });
+        }
+        response.writeHead(200, { "content-type": "video/mp4" });
+        response.end(Buffer.from("mock-video"));
+        return;
+      }
       if (url.pathname === "/v1/files/retrieve" && request.method === "GET") {
         if (contract.async_protocol === "minimax_video") {
           const errors = captureAuxiliary();
@@ -1294,6 +1438,76 @@ export function createT15MockHandler(
         validationErrors.push(...qwenResponsesVideoErrors(parsedBody));
       }
       if (
+        selection.provider_driver === "google-gemini" &&
+        ["vision.detect", "vision.segment"].includes(selection.api_type ?? "") &&
+        typeof parsedBody === "object" && parsedBody !== null
+      ) {
+        const body = parsedBody as Record<string, unknown>;
+        const format = body.response_format as Record<string, unknown> | undefined;
+        const schema = format?.schema as Record<string, unknown> | undefined;
+        const properties = schema?.properties as Record<string, unknown> | undefined;
+        const boxes = properties?.boxes as Record<string, unknown> | undefined;
+        const item = boxes?.items as Record<string, unknown> | undefined;
+        const itemProperties = item?.properties as Record<string, unknown> | undefined;
+        const required = Array.isArray(item?.required) ? item.required : [];
+        const expectedFields = selection.api_type === "vision.detect"
+          ? ["box_2d", "label"]
+          : ["box_2d", "mask", "label"];
+        if (
+          format?.type !== "text" || format?.mime_type !== "application/json" ||
+          schema?.type !== "object" || boxes?.type !== "array" ||
+          !expectedFields.every((field) =>
+            field in (itemProperties ?? {}) && required.includes(field)
+          ) ||
+          (selection.api_type === "vision.detect" &&
+            ("mask" in (itemProperties ?? {}) || required.includes("mask")))
+        ) {
+          validationErrors.push(
+            selection.api_type === "vision.detect"
+              ? "Gemini detection requests require boxes with box_2d and label only"
+              : "Gemini segmentation requests require boxes with box_2d, mask, and label",
+          );
+        }
+      }
+      if (
+        selection.provider_driver === "google-gemini" &&
+        selection.contract_id === "gemini.batch-embed-contents.v1beta" &&
+        typeof parsedBody === "object" && parsedBody !== null
+      ) {
+        const requests = (parsedBody as Record<string, unknown>).requests;
+        if (
+          !Array.isArray(requests) || requests.length === 0 ||
+          requests.some((entry) => {
+            if (typeof entry !== "object" || entry === null) return true;
+            const request = entry as Record<string, unknown>;
+            const content = request.content as Record<string, unknown> | undefined;
+            return typeof request.model !== "string" ||
+              !request.model.startsWith("models/") ||
+              !Array.isArray(content?.parts);
+          })
+        ) {
+          validationErrors.push(
+            "Gemini batch embeddings require model-qualified EmbedContentRequest entries",
+          );
+        }
+      }
+      if (
+        selection.provider_driver === "google-gemini" &&
+        (selection.api_type ?? "").startsWith("video.") &&
+        typeof parsedBody === "object" && parsedBody !== null
+      ) {
+        const body = parsedBody as Record<string, unknown>;
+        const format = body.response_format as Record<string, unknown> | undefined;
+        if (
+          format?.duration !== undefined &&
+          (typeof format.duration !== "string" || !/^\d+(?:\.\d+)?s$/.test(format.duration))
+        ) {
+          validationErrors.push(
+            "Gemini video response_format.duration must use the official seconds string",
+          );
+        }
+      }
+      if (
         ["doubao", "doubao-agent-plan"].includes(selection.provider_driver) &&
         ["vision.ocr", "vision.caption"].includes(selection.api_type ?? "") &&
         typeof parsedBody === "object" && parsedBody !== null &&
@@ -1385,14 +1599,26 @@ export function createT15MockHandler(
         return;
       }
       if (contract.success_chunk_fixtures?.length) {
+        const contentType = contract.success_content_type ?? "text/plain";
         response.writeHead(200, {
-          "content-type": contract.success_content_type ?? "text/plain",
+          "content-type": contentType,
         });
-        response.end(
-          contract.success_chunk_fixtures.map((fixture) =>
-            JSON.stringify(fixture)
-          ).join("\n") + "\n",
-        );
+        const fixtures = structuredClone(contract.success_chunk_fixtures);
+        for (const expansion of contract.success_chunk_string_expansions ?? []) {
+          let target: unknown = fixtures[expansion.chunk_index];
+          for (const segment of expansion.path.slice(0, -1)) {
+            target = (target as Record<string | number, unknown>)[segment];
+          }
+          const leaf = expansion.path.at(-1);
+          if (leaf !== undefined) {
+            (target as Record<string | number, unknown>)[leaf] =
+              expansion.value.repeat(expansion.repeat);
+          }
+        }
+        const chunks = fixtures.map((fixture) => JSON.stringify(fixture));
+        response.end(contentType === "text/event-stream"
+          ? chunks.map((chunk) => `data: ${chunk}\n\n`).join("") + "data: [DONE]\n\n"
+          : chunks.join("\n") + "\n");
         return;
       }
       const rawFixture = structuredClone(
@@ -1401,8 +1627,10 @@ export function createT15MockHandler(
           : contract.success_fixture ?? {},
       ) as Record<string, unknown>;
       if (
-        selection.provider_driver === "openai" &&
-        contract.id === "openai.responses.v1" &&
+        ((selection.provider_driver === "openai" &&
+          contract.id === "openai.responses.v1") ||
+          (selection.provider_driver === "openrouter" &&
+            contract.id === "openrouter.responses.v1")) &&
         ["image.txt2img", "image.img2img"].includes(selection.api_type ?? "")
       ) {
         rawFixture.output = [{
@@ -1424,24 +1652,16 @@ export function createT15MockHandler(
             pages: [{ page_index: 0, width: 1, height: 1, blocks: [] }],
           }),
           "vision.detect": JSON.stringify({
-            detections: [{
+            boxes: [{
+              box_2d: [100, 200, 800, 900],
               label: "marker",
-              score: 1,
-              bbox: {
-                format: "xywh",
-                unit: "relative",
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-              },
             }],
           }),
           "vision.segment": JSON.stringify({
-            masks: [{
-              id: "mask-1",
-              score: 1,
-              mask: { format: "polygon", points: [[0, 0], [1, 0], [1, 1]] },
+            boxes: [{
+              box_2d: [100, 200, 800, 900],
+              mask: [[200, 100], [900, 100], [900, 800]],
+              label: "marker",
             }],
           }),
         };

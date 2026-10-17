@@ -824,8 +824,11 @@ mod tests {
     #[test]
     fn lifecycle_url_and_path_validation_are_strict() {
         let input = input(
-            AiccCall::ImagesGenerate(TextToImageInvokeRequest::new("fal-ai/flux@fal-main", "cat")),
-            "fal-ai/flux",
+            AiccCall::ImagesGenerate(TextToImageInvokeRequest::new(
+                "fal-ai/imageutils/rembg@fal-main",
+                "cat",
+            )),
+            "fal-ai/imageutils/rembg",
         );
         let context = context();
         let codec = codec(ApiType::ImageTextToImage);
@@ -839,7 +842,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             request.url,
-            "https://queue.fal.run/fal-ai/flux/requests/request-1/status"
+            "https://queue.fal.run/fal-ai/imageutils/rembg/requests/request-1/status"
         );
         let error = codec
             .encode_native(&native_input(

@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "claude",
-  "revision_seq": 4,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
@@ -119,6 +119,29 @@
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
         "stability": "stable",
         "weight": 50
+      }
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "parameter_scale": "sonnet",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 128000,
+        "streaming": true,
+        "tool_call": true,
+        "web_search": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-sonnet",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable",
+        "weight": 55
       }
     },
     {
@@ -257,6 +280,29 @@
         "supported_efforts": ["none", "thinking"],
         "stability": "stable",
         "weight": 45
+      }
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "parameter_scale": "haiku",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 128000,
+        "streaming": true,
+        "tool_call": true,
+        "web_search": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-haiku",
+        "effort": "medium",
+        "default_effort": "medium",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable",
+        "weight": 55
       }
     },
     {

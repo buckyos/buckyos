@@ -208,6 +208,7 @@ export type OfficialCatalogConfig = {
   page_size?: number;
   anthropic_version_header?: boolean;
   endpoint_ids?: string[];
+  include_model_ids?: string[];
   model_ids?: string[];
   supplemental_model_ids?: string[];
   task_type_api_types?: Record<string, string[]>;

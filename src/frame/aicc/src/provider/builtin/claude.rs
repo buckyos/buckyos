@@ -89,6 +89,14 @@ mod tests {
             .models
             .iter()
             .any(|model| model.id == "claude-sonnet-5"));
+        assert!(models
+            .models
+            .iter()
+            .any(|model| model.id == "claude-sonnet-5-5"));
+        assert!(models
+            .models
+            .iter()
+            .any(|model| model.id == "claude-haiku-5-5"));
         let sonnet = models
             .models
             .iter()

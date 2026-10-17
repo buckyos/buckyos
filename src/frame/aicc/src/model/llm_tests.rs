@@ -110,6 +110,10 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
 fn reviewed_vendor_token_limits_match_official_hard_limits() {
     let catalog = builtin_catalog();
     let expected = [
+        ("gemini", "gemma-4-26b-a4b-it", 262_144, 32_768),
+        ("gemini", "gemma-4-31b-it", 262_144, 32_768),
+        ("qwen", "qwen3.8-27b", 1_000_000, 131_072),
+        ("qwen", "qwen3.6-35b-a3b", 262_144, 65_536),
         ("kimi", "kimi-k3", 1_048_576, 1_048_576),
         ("minimax", "MiniMax-M3", 1_000_000, 524_288),
         ("doubao", "doubao-seed-2.1-lite", 1_048_576, 262_144),

@@ -216,13 +216,43 @@ mod wp08d_tests {
     use std::collections::BTreeSet;
 
     fn driver(id: &str, model: &str) -> ModelDriverCatalog {
+        let mut models = vec![model.to_owned()];
+        models.extend(
+            match id {
+                "claude" => vec![
+                    "claude-fable-5-1",
+                    "claude-opus-5-5",
+                    "claude-sonnet-5-5",
+                    "claude-opus-4-8",
+                    "claude-opus-4-7",
+                    "claude-opus-4-6",
+                    "claude-opus-4-5-20251101",
+                    "claude-sonnet-4-6",
+                    "claude-sonnet-4-5-20250929",
+                    "claude-haiku-5-5",
+                    "claude-haiku-4-5-20251001",
+                ],
+                "minimax" => vec!["MiniMax-Hailuo-2.3"],
+                "qwen" => vec!["qwen3.8-max"],
+                _ => Vec::new(),
+            }
+            .into_iter()
+            .map(str::to_owned),
+        );
+        models.sort();
+        models.dedup();
+        let models = models.into_iter().map(|model| json!({
+            "id": model,
+            "api_types": ["llm"],
+            "llm": {"spec":format!("{id}-spec"),"family_id":format!("{id}-{}",crate::catalog::family_segment(&model)),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}
+        })).collect::<Vec<_>>();
         serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
             "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": id,
             "revision_seq": 1,
-            "models": [{"id": model, "api_types": ["llm"], "llm":{"spec":format!("{id}-spec"),"family_id":format!("{id}-{}",crate::catalog::family_segment(model)),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}}],
+            "models": models,
             "patterns": [],
             "defaults": {},
             "specs": [{"id":format!("{id}-spec"),"direct_only":true}]
@@ -283,6 +313,9 @@ mod wp08d_tests {
                 model_drivers: vec![
                     driver("openai", "router-model"),
                     driver("claude", "router-model"),
+                    driver("deepseek", "deepseek-fixture"),
+                    driver("minimax", "minimax-fixture"),
+                    driver("qwen", "qwen-fixture"),
                     driver("gemini", "gemini-fixture"),
                     kimi_model_driver(),
                     glm_model_driver(),
@@ -385,7 +418,10 @@ mod wp08d_tests {
         for model_driver in [
             driver("openai", "gpt-5.6"),
             driver("claude", "claude-fixture"),
+            driver("deepseek", "deepseek-fixture"),
             driver("gemini", "gemini-fixture"),
+            driver("minimax", "minimax-fixture"),
+            driver("qwen", "qwen-fixture"),
         ] {
             builtin.push(
                 MetadataFile::parse(

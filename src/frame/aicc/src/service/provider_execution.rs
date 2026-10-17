@@ -1058,6 +1058,14 @@ impl RuntimeProviderExecutionPort {
                         &request,
                     )
                     .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let max_poll_duration = self
+                    .codecs
+                    .native_task_max_poll_duration(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
                 let response = Self::send_cancelable(cancellation, transport.send(request))
                     .await
                     .map_err(ProviderStartFailure::after_accept)?;
@@ -1106,6 +1114,8 @@ impl RuntimeProviderExecutionPort {
                         resolved_parameters: call.input.resolved_parameters.clone(),
                         output_video_seconds,
                         request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
+                        max_poll_duration_ms: max_poll_duration.as_millis() as u64,
+                        active_poll_elapsed_ms: 0,
                         max_request_bytes: call.context.limits.max_request_bytes as u64,
                         max_response_bytes: call.context.limits.max_response_bytes as u64,
                     },

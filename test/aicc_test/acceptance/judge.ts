@@ -176,7 +176,8 @@ export function outputResources(value: unknown, depth = 0): Array<Record<string,
 async function terminal(taskManager: RpcClient, initial: AiMethodResponse, timeoutMs: number): Promise<unknown> {
   if (!initial.task_id) throw new JudgeError("Judge response omitted task_id");
   if (initial.status === "failed") {
-    throw new JudgeError(`Judge request failed immediately: ${JSON.stringify(initial.result ?? {})}`);
+    const response = initial as AiMethodResponse & { error?: unknown };
+    throw new JudgeError(`Judge request failed immediately: ${JSON.stringify(response.error ?? response.result ?? {})}`);
   }
   if (initial.status === "succeeded") return initial;
   const deadline = Date.now() + timeoutMs;
@@ -253,8 +254,8 @@ export async function runJudge(input: {
               type: "object",
               properties: {
                 pass: { type: "boolean" },
-                score: { type: "number", minimum: 0, maximum: 1 },
-                reason: { type: "string", maxLength: 240 },
+                score: { type: "number", description: "Must be between 0 and 1." },
+                reason: { type: "string", pattern: ".+", description: "Must be 240 characters or fewer." },
               },
               required: ["pass", "score", "reason"],
               additionalProperties: false,

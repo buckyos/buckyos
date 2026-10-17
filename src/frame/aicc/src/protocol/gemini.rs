@@ -30,6 +30,7 @@ use std::time::Duration;
 
 pub(crate) const GEMINI_ADAPTER_ID: &str = "gemini-interactions";
 pub(crate) const GEMINI_INTERACTIONS_OPERATION_ID: &str = "interactions.create";
+pub(crate) const GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID: &str = "interactions.background";
 pub(crate) const GEMINI_EMBED_CONTENT_OPERATION_ID: &str = "models.embedContent";
 pub(crate) const GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID: &str = "models.predictLongRunning";
 
@@ -70,12 +71,20 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             binding(
                 ApiType::ImageTextToImage,
                 [ExecutionMode::Immediate],
-                [features::IMAGE_GENERATION],
+                [
+                    features::IMAGE_GENERATION,
+                    features::WEB_SEARCH,
+                    "reasoning",
+                ],
             ),
             binding(
                 ApiType::ImageImageToImage,
                 [ExecutionMode::Immediate],
-                [features::IMAGE_GENERATION],
+                [
+                    features::IMAGE_GENERATION,
+                    features::WEB_SEARCH,
+                    "reasoning",
+                ],
             ),
             binding(
                 ApiType::AudioTextToSpeech,
@@ -97,6 +106,31 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             binding(ApiType::EmbeddingMultimodal, [ExecutionMode::Immediate], []),
         ],
         false,
+    );
+    let background_interactions = operation(
+        GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID,
+        vec![
+            binding(
+                ApiType::Llm,
+                [ExecutionMode::NativeTask],
+                [
+                    features::TOOL_CALL,
+                    features::JSON_SCHEMA,
+                    features::VISION,
+                    features::WEB_SEARCH,
+                ],
+            ),
+            binding(ApiType::VisionOcr, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionCaption, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionDetect, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionSegment, [ExecutionMode::NativeTask], []),
+            binding(
+                ApiType::AudioSpeechRecognition,
+                [ExecutionMode::NativeTask],
+                [],
+            ),
+        ],
+        true,
     );
     let video = operation(
         GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
@@ -120,6 +154,10 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         credential: super::AdapterCredentialContract::named_header("x-goog-api-key"),
         operations: BTreeMap::from([
             (interactions.operation_id.clone(), interactions.clone()),
+            (
+                background_interactions.operation_id.clone(),
+                background_interactions.clone(),
+            ),
             (embeddings.operation_id.clone(), embeddings.clone()),
             (video.operation_id.clone(), video.clone()),
         ]),
@@ -157,7 +195,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             ApiType::EmbeddingMultimodal,
         )) as Arc<dyn OperationCodec>,
     ]);
-    let native_task_codecs = [
+    let mut native_task_codecs: Vec<Arc<dyn NativeTaskCodec>> = [
         ApiType::VideoTextToVideo,
         ApiType::VideoImageToVideo,
         ApiType::VideoToVideo,
@@ -168,6 +206,23 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         Arc::new(GeminiVideoCodec::new(video.clone(), api_type)) as Arc<dyn NativeTaskCodec>
     })
     .collect();
+    native_task_codecs.extend(
+        [
+            ApiType::Llm,
+            ApiType::VisionOcr,
+            ApiType::VisionCaption,
+            ApiType::VisionDetect,
+            ApiType::VisionSegment,
+            ApiType::AudioSpeechRecognition,
+        ]
+        .into_iter()
+        .map(|api_type| {
+            Arc::new(GeminiBackgroundInteractionCodec::new(
+                background_interactions.clone(),
+                api_type,
+            )) as Arc<dyn NativeTaskCodec>
+        }),
+    );
     (
         descriptor,
         CodecRegistration {
@@ -285,6 +340,170 @@ impl OperationCodec for GeminiInteractionCodec {
             .with_request_id(Some(response.request_id)));
         }
         interaction_protocol_stream(response, self.api_type).await
+    }
+}
+
+#[derive(Clone)]
+struct GeminiBackgroundInteractionCodec {
+    descriptor: OperationDescriptor,
+    api_type: ApiType,
+}
+
+impl GeminiBackgroundInteractionCodec {
+    fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
+        Self {
+            descriptor,
+            api_type,
+        }
+    }
+}
+
+#[async_trait]
+impl NativeTaskCodec for GeminiBackgroundInteractionCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        self.api_type
+    }
+
+    fn operations(&self) -> BTreeSet<NativeTaskOperation> {
+        BTreeSet::from([
+            NativeTaskOperation::Submit,
+            NativeTaskOperation::Status,
+            NativeTaskOperation::Result,
+            NativeTaskOperation::Cancel,
+        ])
+    }
+
+    fn max_poll_duration(&self) -> Duration {
+        Duration::from_secs(24 * 60 * 60)
+    }
+
+    fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
+        match input.operation {
+            NativeTaskOperation::Submit => {
+                let codec_input = input.codec_input.ok_or_else(|| {
+                    ProtocolError::invalid_request(
+                        "Gemini background interaction submit requires canonical input",
+                    )
+                })?;
+                let mut body = encode_interaction(
+                    &CodecCall {
+                        api_type: self.api_type,
+                        input: codec_input,
+                        context: input.context,
+                    },
+                    self.api_type,
+                )?;
+                let body = body.as_object_mut().ok_or_else(|| {
+                    ProtocolError::invalid_request("Gemini interaction body must be an object")
+                })?;
+                body.insert("background".to_string(), Value::Bool(true));
+                body.insert("store".to_string(), Value::Bool(true));
+                body.remove("stream");
+                json_request(
+                    input.context,
+                    Method::POST,
+                    "interactions",
+                    Value::Object(body.clone()),
+                )
+            }
+            NativeTaskOperation::Status | NativeTaskOperation::Result => {
+                let id = interaction_task_id(input)?;
+                json_request(
+                    input.context,
+                    Method::GET,
+                    &format!("interactions/{id}"),
+                    Value::Null,
+                )
+            }
+            NativeTaskOperation::Cancel => {
+                let id = interaction_task_id(input)?;
+                json_request(
+                    input.context,
+                    Method::POST,
+                    &format!("interactions/{id}/cancel"),
+                    json!({}),
+                )
+            }
+        }
+    }
+
+    async fn decode_native(
+        &self,
+        operation: NativeTaskOperation,
+        response: HttpResponse,
+    ) -> ProtocolResultValue<NativeTaskOutput> {
+        ensure_success(&response)?;
+        if operation == NativeTaskOperation::Cancel {
+            return Ok(NativeTaskOutput::Cancelled { accepted: true });
+        }
+        let retry_after = response.retry_after;
+        let value: Value = response.json(self.descriptor.max_response_bytes)?;
+        match operation {
+            NativeTaskOperation::Submit => {
+                let id = required_output_string(&value, "id")?;
+                let mut handle = NativeTaskHandle::new(id)?;
+                handle.state = interaction_task_state(&value)?;
+                handle.poll_after = retry_after.or(Some(Duration::from_secs(2)));
+                handle.cancel_supported = true;
+                Ok(NativeTaskOutput::Submitted(handle))
+            }
+            NativeTaskOperation::Status => {
+                let state = interaction_task_state(&value)?;
+                if state == NativeTaskState::Failed {
+                    return Err(interaction_failure(&value));
+                }
+                Ok(NativeTaskOutput::Status {
+                    state,
+                    retry_after: retry_after.or(Some(Duration::from_secs(2))),
+                    result_ref: None,
+                    result_usage: decode_usage(value.get("usage"))?,
+                    result_artifacts: BTreeMap::new(),
+                })
+            }
+            NativeTaskOperation::Result => Ok(NativeTaskOutput::Result(normalize_interaction(
+                &value,
+                self.api_type,
+            )?)),
+            NativeTaskOperation::Cancel => unreachable!(),
+        }
+    }
+}
+
+fn interaction_task_id(input: &NativeTaskInput<'_>) -> ProtocolResultValue<String> {
+    let id = input.remote_task_id.ok_or_else(|| {
+        ProtocolError::invalid_request("Gemini interaction lifecycle requires an interaction ID")
+    })?;
+    if id.is_empty()
+        || id.len() > 512
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(ProtocolError::invalid_request(
+            "Gemini interaction ID contains invalid path characters",
+        ));
+    }
+    Ok(id.to_string())
+}
+
+fn interaction_task_state(value: &Value) -> ProtocolResultValue<NativeTaskState> {
+    match value.get("status").and_then(Value::as_str) {
+        Some("queued") => Ok(NativeTaskState::Queued),
+        Some("in_progress") => Ok(NativeTaskState::Running),
+        Some("completed" | "requires_action") => Ok(NativeTaskState::Succeeded),
+        Some("failed" | "incomplete") => Ok(NativeTaskState::Failed),
+        Some("cancelled" | "canceled") => Ok(NativeTaskState::Cancelled),
+        _ => Err(ProtocolError::invalid_response(
+            "Gemini background interaction contains an unknown status",
+        )),
     }
 }
 
@@ -759,12 +978,12 @@ fn encode_vision_detect(
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::Array(vec![
-        json!({"type":"text", "text":format!("Detect objects and return JSON. Classes: {:?}", request.classes)}),
+        json!({"type":"text", "text":format!("Detect all prominent items in the image{}. Return only raw JSON matching the response schema; do not use markdown code fences. The top-level object must contain a boxes array, and every item must contain box_2d and label. The box_2d must be [ymin, xmin, ymax, xmax] normalized to 0-1000.", request.classes.as_ref().filter(|classes| !classes.is_empty()).map(|classes| format!(" matching these classes: {}", classes.join(", "))).unwrap_or_default())}),
         encode_resource(&request.image, "image", call.context)?,
     ]));
     body.insert(
         "response_format".to_string(),
-        json!({"type":"text", "mime_type":"application/json"}),
+        gemini_detection_response_format(),
     );
     Ok(())
 }
@@ -775,14 +994,66 @@ fn encode_vision_segment(
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::Array(vec![
-        json!({"type":"text", "text":format!("Segment the requested subject and return mask JSON. Prompt: {:?}", request.prompt)}),
+        json!({"type":"text", "text":format!("Give segmentation masks for the requested subjects. Return only raw JSON matching the response schema; do not use markdown code fences. The top-level object must contain a boxes array, and every item must contain box_2d, mask, and label. Each box_2d must be [ymin, xmin, ymax, xmax]. Each mask must be an array of separate two-number [x, y] arrays, never a flattened coordinate list. Normalize every coordinate to 0-1000. Prompt: {:?}", request.prompt)}),
         encode_resource(&request.image, "image", call.context)?,
     ]));
     body.insert(
         "response_format".to_string(),
-        json!({"type":"text", "mime_type":"application/json"}),
+        gemini_segmentation_response_format(),
     );
     Ok(())
+}
+
+fn gemini_detection_response_format() -> Value {
+    json!({
+        "type": "text",
+        "mime_type": "application/json",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "boxes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "box_2d": {"type": "array", "items": {"type": "integer"}},
+                            "label": {"type": "string"}
+                        },
+                        "required": ["box_2d", "label"]
+                    }
+                }
+            },
+            "required": ["boxes"]
+        }
+    })
+}
+
+fn gemini_segmentation_response_format() -> Value {
+    json!({
+        "type": "text",
+        "mime_type": "application/json",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "boxes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "box_2d": {"type": "array", "items": {"type": "integer"}},
+                            "mask": {
+                                "type": "array",
+                                "items": {"type": "array", "items": {"type": "integer"}}
+                            },
+                            "label": {"type": "string"}
+                        },
+                        "required": ["box_2d", "mask", "label"]
+                    }
+                }
+            },
+            "required": ["boxes"]
+        }
+    })
 }
 
 fn encode_asr(
@@ -1112,10 +1383,13 @@ fn video_response_format(
 ) -> ProtocolResultValue<Map<String, Value>> {
     let mut format = Map::from_iter([("type".to_string(), json!("video"))]);
     if let Some(duration) = duration_seconds {
-        format.insert(
-            "duration".to_string(),
-            finite_number("duration_seconds", duration)?,
-        );
+        finite_number("duration_seconds", duration)?;
+        let duration = if duration.fract() == 0.0 {
+            format!("{duration:.0}s")
+        } else {
+            format!("{duration}s")
+        };
+        format.insert("duration".to_string(), json!(duration));
     }
     if let Some(value) = aspect_ratio {
         format.insert("aspect_ratio".to_string(), json!(value));
@@ -1366,6 +1640,34 @@ impl OperationCodec for GeminiEmbeddingCodec {
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
         let model = provider_model_id(&call.input.resolved_parameters)?;
+        if let AiccCall::EmbeddingText(request) = &call.input.canonical_request {
+            if !request.items.is_empty() {
+                let mut request_template = Map::new();
+                if let Some(dimensions) = request.dimensions {
+                    request_template.insert("outputDimensionality".to_string(), dimensions.into());
+                }
+                apply_embedding_parameters(&mut request_template, &call.input.resolved_parameters)?;
+                let requests = request
+                    .items
+                    .iter()
+                    .map(|item| {
+                        let mut entry = request_template.clone();
+                        entry.insert("model".to_string(), json!(format!("models/{model}")));
+                        entry.insert(
+                            "content".to_string(),
+                            json!({"parts":[encode_text_embedding_item(item, call.context)?]}),
+                        );
+                        Ok(Value::Object(entry))
+                    })
+                    .collect::<ProtocolResultValue<Vec<_>>>()?;
+                return json_request(
+                    call.context,
+                    Method::POST,
+                    &format!("models/{model}:batchEmbedContents"),
+                    json!({"requests":requests}),
+                );
+            }
+        }
         let content = match (&call.input.canonical_request, self.api_type) {
             (AiccCall::EmbeddingText(request), ApiType::EmbeddingText) => {
                 encode_text_embedding(request, call.context)?
@@ -1400,25 +1702,42 @@ impl OperationCodec for GeminiEmbeddingCodec {
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
         ensure_success(&response)?;
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
-        let embedding = value
-            .pointer("/embedding/values")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                ProtocolError::invalid_response(
-                    "Gemini embedding response is missing embedding.values",
-                )
-            })?;
-        let values = embedding
-            .iter()
-            .map(|value| {
-                value.as_f64().map(|number| number as f32).ok_or_else(|| {
-                    ProtocolError::invalid_response("Gemini embedding value must be numeric")
-                })
+        let embeddings = if let Some(items) = value.get("embeddings").and_then(Value::as_array) {
+            items.iter().collect::<Vec<_>>()
+        } else if let Some(item) = value.get("embedding") {
+            vec![item]
+        } else {
+            return Err(ProtocolError::invalid_response(
+                "Gemini embedding response is missing embedding or embeddings",
+            ));
+        };
+        let data = embeddings
+            .into_iter()
+            .enumerate()
+            .map(|(index, embedding)| {
+                let values = embedding
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        ProtocolError::invalid_response(
+                            "Gemini embedding response is missing values",
+                        )
+                    })?
+                    .iter()
+                    .map(|value| {
+                        value.as_f64().map(|number| number as f32).ok_or_else(|| {
+                            ProtocolError::invalid_response(
+                                "Gemini embedding value must be numeric",
+                            )
+                        })
+                    })
+                    .collect::<ProtocolResultValue<Vec<_>>>()?;
+                Ok(json!({"index":index,"id":null,"embedding":values,"embedding_space_id":"gemini"}))
             })
             .collect::<ProtocolResultValue<Vec<_>>>()?;
         let usage = decode_embedding_usage(&value)?.or_else(|| Some(AiUsage::request_units(1)));
         Ok(ProtocolExecution::Immediate(ProtocolOutput {
-            value: json!({"data":[{"index":0,"id":null,"embedding":values,"embedding_space_id":"gemini"}],"data_resource":null}),
+            value: json!({"data":data,"data_resource":null}),
             usage,
             artifacts: Vec::new(),
         }))
@@ -1435,11 +1754,18 @@ fn encode_text_embedding(
             "Gemini models.embedContent requires exactly one canonical embedding item",
         ));
     }
-    let part = match &request.items[0] {
-        EmbeddingTextItem::Text { text, .. } => json!({"text":text}),
-        EmbeddingTextItem::Resource { resource, .. } => embedding_resource_part(resource, context)?,
-    };
+    let part = encode_text_embedding_item(&request.items[0], context)?;
     Ok(json!({"parts":[part]}))
+}
+
+fn encode_text_embedding_item(
+    item: &EmbeddingTextItem,
+    context: &CodecContext,
+) -> ProtocolResultValue<Value> {
+    match item {
+        EmbeddingTextItem::Text { text, .. } => Ok(json!({"text":text})),
+        EmbeddingTextItem::Resource { resource, .. } => embedding_resource_part(resource, context),
+    }
 }
 
 fn encode_multimodal_embedding(
@@ -1606,12 +1932,8 @@ fn normalize_interaction(value: &Value, api_type: ApiType) -> ProtocolResultValu
             "text",
             json!({"text":output_text(&outputs),"pages":[],"artifacts":{}}),
         ),
-        ApiType::VisionDetect => {
-            normalize_structured(&outputs, usage, "detections", json!({"detections":[]}))
-        }
-        ApiType::VisionSegment => {
-            normalize_structured(&outputs, usage, "masks", json!({"masks":[]}))
-        }
+        ApiType::VisionDetect => normalize_vision_detect(&outputs, usage),
+        ApiType::VisionSegment => normalize_vision_segment(&outputs, usage),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
             "Gemini interaction response API type is unsupported",
@@ -1892,6 +2214,150 @@ fn normalize_structured(
     })
 }
 
+fn normalize_vision_detect(
+    outputs: &[Value],
+    usage: Option<AiUsage>,
+) -> ProtocolResultValue<ProtocolOutput> {
+    let boxes = gemini_vision_boxes(outputs)?;
+    let detections = boxes
+        .iter()
+        .map(|item| {
+            Ok(json!({
+                "label": gemini_vision_label(item)?,
+                "score": 1.0,
+                "bbox": gemini_vision_bbox(item)?
+            }))
+        })
+        .collect::<ProtocolResultValue<Vec<_>>>()?;
+    Ok(ProtocolOutput {
+        value: json!({"detections": detections}),
+        usage,
+        artifacts: Vec::new(),
+    })
+}
+
+fn normalize_vision_segment(
+    outputs: &[Value],
+    usage: Option<AiUsage>,
+) -> ProtocolResultValue<ProtocolOutput> {
+    let boxes = gemini_vision_boxes(outputs)?;
+    let masks = boxes
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let mask = item.get("mask").and_then(Value::as_array).ok_or_else(|| {
+                ProtocolError::invalid_response("Gemini segmentation item is missing mask")
+            })?;
+            let point_values = if mask.len() == 1 {
+                let flattened = mask[0].as_array().filter(|values| {
+                    values.len() >= 6
+                        && values.len() % 2 == 0
+                        && values.iter().all(Value::is_number)
+                });
+                flattened
+                    .map(|values| values.chunks(2).map(|pair| json!(pair)).collect())
+                    .unwrap_or_else(|| mask.clone())
+            } else {
+                mask.clone()
+            };
+            let points = point_values
+                .iter()
+                .map(|point| {
+                    let point = point
+                        .as_array()
+                        .filter(|point| point.len() == 2)
+                        .ok_or_else(|| {
+                            ProtocolError::invalid_response(
+                                "Gemini segmentation mask point must contain [x, y]",
+                            )
+                        })?;
+                    Ok([
+                        normalized_coordinate(&point[0])?,
+                        normalized_coordinate(&point[1])?,
+                    ])
+                })
+                .collect::<ProtocolResultValue<Vec<_>>>()?;
+            if points.len() < 3 {
+                return Err(ProtocolError::invalid_response(
+                    "Gemini segmentation mask must contain at least three points",
+                ));
+            }
+            Ok(json!({
+                "id": format!("gemini-mask-{}", index + 1),
+                "score": 1.0,
+                "bbox": gemini_vision_bbox(item)?,
+                "mask": {"format": "polygon", "points": points}
+            }))
+        })
+        .collect::<ProtocolResultValue<Vec<_>>>()?;
+    Ok(ProtocolOutput {
+        value: json!({"masks": masks}),
+        usage,
+        artifacts: Vec::new(),
+    })
+}
+
+fn gemini_vision_boxes(outputs: &[Value]) -> ProtocolResultValue<Vec<Value>> {
+    let parsed = parse_json_text(&output_text(outputs));
+    if let Some(boxes) = parsed.get("boxes").and_then(Value::as_array) {
+        return Ok(boxes.clone());
+    }
+    if parsed.get("box_2d").is_some() {
+        return Ok(vec![parsed]);
+    }
+    Err(ProtocolError::invalid_response(
+        "Gemini vision response is missing boxes",
+    ))
+}
+
+fn gemini_vision_label(item: &Value) -> ProtocolResultValue<&str> {
+    item.get("label")
+        .and_then(Value::as_str)
+        .filter(|label| !label.is_empty())
+        .ok_or_else(|| ProtocolError::invalid_response("Gemini vision item is missing label"))
+}
+
+fn gemini_vision_bbox(item: &Value) -> ProtocolResultValue<Value> {
+    let coordinates = item
+        .get("box_2d")
+        .and_then(Value::as_array)
+        .filter(|coordinates| coordinates.len() == 4)
+        .ok_or_else(|| {
+            ProtocolError::invalid_response(
+                "Gemini vision box_2d must contain [ymin, xmin, ymax, xmax]",
+            )
+        })?;
+    let ymin = normalized_coordinate(&coordinates[0])?;
+    let xmin = normalized_coordinate(&coordinates[1])?;
+    let ymax = normalized_coordinate(&coordinates[2])?;
+    let xmax = normalized_coordinate(&coordinates[3])?;
+    if xmax < xmin || ymax < ymin {
+        return Err(ProtocolError::invalid_response(
+            "Gemini vision box_2d bounds are reversed",
+        ));
+    }
+    Ok(json!({
+        "format": "xywh",
+        "unit": "relative",
+        "x": xmin,
+        "y": ymin,
+        "width": xmax - xmin,
+        "height": ymax - ymin
+    }))
+}
+
+fn normalized_coordinate(value: &Value) -> ProtocolResultValue<f64> {
+    let coordinate = value.as_f64().ok_or_else(|| {
+        ProtocolError::invalid_response("Gemini vision coordinate must be numeric")
+    })?;
+    if !(0.0..=1000.0).contains(&coordinate) {
+        return Err(ProtocolError::invalid_response(
+            "Gemini vision coordinate must be between 0 and 1000",
+        ));
+    }
+    Ok(coordinate / 1000.0)
+}
+
 fn output_text(outputs: &[Value]) -> String {
     outputs
         .iter()
@@ -1902,7 +2368,19 @@ fn output_text(outputs: &[Value]) -> String {
 }
 
 fn parse_json_text(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or(Value::Null)
+    if let Ok(value) = serde_json::from_str(text) {
+        return value;
+    }
+    let trimmed = text.trim();
+    if let Some(fenced) = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```JSON"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return serde_json::from_str(fenced.trim()).unwrap_or(Value::Null);
+    }
+    Value::Null
 }
 
 fn decode_resource(value: &Value) -> ProtocolResultValue<ResourceRef> {
@@ -2960,10 +3438,13 @@ mod tests {
     fn descriptor_registers_frozen_operations_without_generate_content() {
         let (descriptor, registration) = gemini_interactions_adapter();
         assert_eq!(descriptor.protocol_adapter_id, GEMINI_ADAPTER_ID);
-        assert_eq!(descriptor.operations.len(), 3);
+        assert_eq!(descriptor.operations.len(), 4);
         assert!(descriptor
             .operations
             .contains_key(GEMINI_INTERACTIONS_OPERATION_ID));
+        assert!(descriptor
+            .operations
+            .contains_key(GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID));
         assert!(descriptor
             .operations
             .contains_key(GEMINI_EMBED_CONTENT_OPERATION_ID));
@@ -2994,6 +3475,109 @@ mod tests {
                 ApiType::VideoToVideo,
             )
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn background_interaction_maps_submit_status_result_and_cancel() {
+        let descriptor = gemini_interactions_adapter().0.operations
+            [GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID]
+            .clone();
+        let codec = GeminiBackgroundInteractionCodec::new(descriptor, ApiType::Llm);
+        let request = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                "gemini-test@google",
+                vec![AiMessage::text(AiRole::User, "hello")],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-4-argon"),
+            )]),
+        };
+        let empty = BTreeMap::new();
+        let ctx = context();
+        let submit = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&request),
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        let wire = codec.encode_native(&submit).unwrap();
+        assert!(wire.url.ends_with("/v1beta/interactions"));
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["background"], true);
+        assert_eq!(body["store"], true);
+        assert!(body.get("stream").is_none());
+        assert_eq!(codec.max_poll_duration(), Duration::from_secs(24 * 60 * 60));
+
+        let NativeTaskOutput::Submitted(handle) = codec
+            .decode_native(
+                NativeTaskOperation::Submit,
+                response(
+                    StatusCode::OK,
+                    "application/json",
+                    json!({"id":"interaction-1","status":"queued"}),
+                ),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected handle")
+        };
+        assert_eq!(handle.remote_task_id, "interaction-1");
+        assert!(handle.cancel_supported);
+
+        let lifecycle = NativeTaskInput {
+            operation: NativeTaskOperation::Status,
+            remote_task_id: Some("interaction-1"),
+            codec_input: None,
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        assert!(codec
+            .encode_native(&lifecycle)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/interactions/interaction-1"));
+        let NativeTaskOutput::Status { state, .. } = codec
+            .decode_native(
+                NativeTaskOperation::Status,
+                response(
+                    StatusCode::OK,
+                    "application/json",
+                    json!({"id":"interaction-1","status":"completed","usage":{"total_tokens":7}}),
+                ),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected status")
+        };
+        assert_eq!(state, NativeTaskState::Succeeded);
+
+        let NativeTaskOutput::Result(output) = codec
+            .decode_native(
+                NativeTaskOperation::Result,
+                response(StatusCode::OK, "application/json", completed_text()),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected result")
+        };
+        assert_eq!(output.value["message"]["content"][0]["text"], "hello");
+
+        let cancel = NativeTaskInput {
+            operation: NativeTaskOperation::Cancel,
+            ..lifecycle
+        };
+        assert!(codec
+            .encode_native(&cancel)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/interactions/interaction-1/cancel"));
     }
 
     #[test]
@@ -3111,10 +3695,17 @@ mod tests {
         image.seed = Some(7);
         let input = CodecInput {
             canonical_request: AiccCall::ImagesGenerate(image),
-            resolved_parameters: BTreeMap::from([(
-                "provider_model_id".to_string(),
-                json!("gemini-image"),
-            )]),
+            resolved_parameters: BTreeMap::from([
+                (
+                    "provider_model_id".to_string(),
+                    json!("gemini-3.1-flash-image"),
+                ),
+                ("web_search".to_string(), json!(true)),
+                (
+                    "generation_config".to_string(),
+                    json!({"seed": 7, "thinking_level": "high"}),
+                ),
+            ]),
         };
         let value = encode_interaction(
             &CodecCall {
@@ -3127,7 +3718,136 @@ mod tests {
         .unwrap();
         assert_eq!(value["response_format"]["aspect_ratio"], "1:1");
         assert_eq!(value["generation_config"]["seed"], 7);
+        assert_eq!(value["generation_config"]["thinking_level"], "high");
+        assert_eq!(value["tools"][0]["type"], "google_search");
         assert!(value["generation_config"].get("aspect_ratio").is_none());
+    }
+
+    #[test]
+    fn vision_detection_uses_official_schema_and_normalizes_boxes() {
+        let request = VisionDetectRequest::new(
+            "gemini-test@google",
+            ResourceRef::base64("image/png".to_string(), STANDARD.encode(b"image")),
+        );
+        let input = CodecInput {
+            canonical_request: AiccCall::VisionDetect(request),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-test"),
+            )]),
+        };
+        let body = encode_interaction(
+            &CodecCall {
+                api_type: ApiType::VisionDetect,
+                input: &input,
+                context: &context(),
+            },
+            ApiType::VisionDetect,
+        )
+        .unwrap();
+        assert_eq!(body["response_format"]["schema"]["required"][0], "boxes");
+        assert_eq!(
+            body["response_format"]["schema"]["properties"]["boxes"]["items"]["properties"]
+                ["box_2d"]["items"]["type"],
+            "integer"
+        );
+        let item = &body["response_format"]["schema"]["properties"]["boxes"]["items"];
+        assert!(item["properties"].get("mask").is_none());
+        assert_eq!(item["required"], json!(["box_2d", "label"]));
+
+        let interaction = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{"type": "text", "text": r#"{"boxes":[{"box_2d":[100,200,800,900],"mask":[[200,100],[900,100],[900,800]],"label":"marker"}]}"#}]
+            }]
+        });
+        let output = normalize_interaction(&interaction, ApiType::VisionDetect).unwrap();
+        assert_eq!(output.value["detections"][0]["label"], "marker");
+        assert_eq!(output.value["detections"][0]["bbox"]["x"], 0.2);
+        assert_eq!(output.value["detections"][0]["bbox"]["y"], 0.1);
+        assert!(
+            (output.value["detections"][0]["bbox"]["width"]
+                .as_f64()
+                .unwrap()
+                - 0.7)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (output.value["detections"][0]["bbox"]["height"]
+                .as_f64()
+                .unwrap()
+                - 0.7)
+                .abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn vision_segmentation_normalizes_official_polygon() {
+        let request = VisionSegmentRequest::new(
+            "gemini-test@google",
+            ResourceRef::base64("image/png".to_string(), STANDARD.encode(b"image")),
+            buckyos_api::SegmentationPrompt::Text {
+                text: "marker".to_string(),
+            },
+        );
+        let input = CodecInput {
+            canonical_request: AiccCall::VisionSegment(request),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-test"),
+            )]),
+        };
+        let body = encode_interaction(
+            &CodecCall {
+                api_type: ApiType::VisionSegment,
+                input: &input,
+                context: &context(),
+            },
+            ApiType::VisionSegment,
+        )
+        .unwrap();
+        let item = &body["response_format"]["schema"]["properties"]["boxes"]["items"];
+        assert!(item["properties"].get("mask").is_some());
+        assert_eq!(item["required"], json!(["box_2d", "mask", "label"]));
+
+        let interaction = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{"type": "text", "text": r#"{"boxes":[{"box_2d":[100,200,800,900],"mask":[[200,100],[900,100],[900,800]],"label":"marker"}]}"#}]
+            }]
+        });
+        let output = normalize_interaction(&interaction, ApiType::VisionSegment).unwrap();
+        assert_eq!(output.value["masks"][0]["id"], "gemini-mask-1");
+        assert_eq!(output.value["masks"][0]["mask"]["format"], "polygon");
+        assert_eq!(output.value["masks"][0]["mask"]["points"][0][0], 0.2);
+        assert_eq!(output.value["masks"][0]["mask"]["points"][0][1], 0.1);
+    }
+
+    #[test]
+    fn vision_normalization_accepts_legacy_fenced_and_unwrapped_json() {
+        let detection = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{"type": "text", "text": "```json\n{\"boxes\":[{\"box_2d\":[100,200,800,900],\"mask\":[],\"label\":\"marker\"}]}\n```"}]
+            }]
+        });
+        let output = normalize_interaction(&detection, ApiType::VisionDetect).unwrap();
+        assert_eq!(output.value["detections"][0]["label"], "marker");
+
+        let segmentation = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{"type": "text", "text": r#"{"box_2d":[100,200,800,900],"mask":[[200,100,900,100,900,800]]}"#}]
+            }]
+        });
+        let output = normalize_interaction(&segmentation, ApiType::VisionSegment).unwrap();
+        assert_eq!(output.value["masks"][0]["mask"]["points"][2][1], 0.8);
     }
 
     #[test]
@@ -3446,11 +4166,49 @@ mod tests {
             .unwrap();
         assert!(wire
             .url
-            .ends_with("/v1beta/models/gemini-embedding-001:embedContent"));
+            .ends_with("/v1beta/models/gemini-embedding-001:batchEmbedContents"));
         let HttpBody::Json(body) = wire.body else {
             panic!("expected JSON")
         };
-        assert_eq!(body["content"]["parts"][0]["text"], "hello");
+        assert_eq!(body["requests"][0]["content"]["parts"][0]["text"], "hello");
+
+        let batch = CodecInput {
+            canonical_request: AiccCall::EmbeddingText(EmbeddingTextRequest::new(
+                "embedding@google",
+                vec![
+                    EmbeddingTextItem::Text {
+                        text: "first".to_string(),
+                        id: Some("a".to_string()),
+                    },
+                    EmbeddingTextItem::Text {
+                        text: "second".to_string(),
+                        id: Some("b".to_string()),
+                    },
+                ],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-embedding-001"),
+            )]),
+        };
+        let batch_wire = text_codec
+            .encode(&CodecCall {
+                api_type: ApiType::EmbeddingText,
+                input: &batch,
+                context: &context(),
+            })
+            .unwrap();
+        assert!(batch_wire
+            .url
+            .ends_with("/v1beta/models/gemini-embedding-001:batchEmbedContents"));
+        let HttpBody::Json(batch_body) = batch_wire.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(batch_body["requests"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            batch_body["requests"][0]["model"],
+            "models/gemini-embedding-001"
+        );
 
         let multimodal_codec = GeminiEmbeddingCodec::new(descriptor, ApiType::EmbeddingMultimodal);
         let multimodal = CodecInput {
@@ -3496,6 +4254,18 @@ mod tests {
                 .len(),
             2
         );
+        let ProtocolExecution::Immediate(batch_output) = codec
+            .decode(response(
+                StatusCode::OK,
+                "application/json",
+                json!({"embeddings":[{"values":[0.1,0.2]},{"values":[0.3,0.4]}]}),
+            ))
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate")
+        };
+        assert_eq!(batch_output.value["data"].as_array().unwrap().len(), 2);
         let error = codec
             .decode(response(
                 StatusCode::UNAUTHORIZED,
@@ -3574,6 +4344,12 @@ mod tests {
                 .and_then(Value::as_i64),
             Some(1_712_697_600_000)
         );
+    }
+
+    #[test]
+    fn interaction_video_duration_uses_official_string_format() {
+        let format = video_response_format(Some(7.0), None, None, None).unwrap();
+        assert_eq!(format["duration"], "7s");
     }
 
     #[test]

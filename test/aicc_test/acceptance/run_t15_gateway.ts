@@ -911,10 +911,9 @@ export function buildT15TypedParams(
                 type: "document",
                 source: {
                   kind: "url",
-                  url: "https://example.test/video.mp4",
+                  url: "https://example.test/media?id=4827",
                   mime_hint: "video/mp4",
                 },
-                title: "video.mp4",
               },
             ],
           }]
@@ -2119,14 +2118,20 @@ export function variantCells(
       );
     }
   }
-  return runtimeVariants.flatMap((model) =>
-    model.api_types.map((apiType) => {
+  return runtimeVariants.flatMap((model) => {
+    const baseModelId = model.provider_actual_model_id ??
+      model.provider_model_id.slice(0, model.provider_model_id.lastIndexOf(":"));
+    return model.api_types.filter((apiType) => {
+      const officialModels = new Set([
+        ...(provider.official_aggregated_model_ids?.[apiType] ?? []),
+        ...(provider.official_first_party_model_ids?.[apiType] ?? []),
+      ]);
+      return officialModels.size === 0 || officialModels.has(baseModelId);
+    }).map((apiType) => {
       const candidates = provider.contracts.filter((candidate) =>
           candidate.api_types.includes(apiType) ||
           candidate.variant_api_types?.includes(apiType)
         );
-      const baseModelId = model.provider_actual_model_id ??
-        model.provider_model_id.slice(0, model.provider_model_id.lastIndexOf(":"));
       const aggregated = new Set(
         provider.official_aggregated_model_ids?.[apiType] ?? [],
       );
@@ -2158,7 +2163,7 @@ export function variantCells(
         expected_provider_options: expected.get(model.provider_model_id),
       };
     })
-  );
+  });
 }
 
 async function main(): Promise<void> {

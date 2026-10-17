@@ -266,10 +266,11 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         (
             "qwen",
             "kimi/kimi-k2.8-preview",
-            "low",
+            "max",
             "/reasoning_effort",
-            json!("low"),
+            json!("max"),
         ),
+        ("qwen", "kimi-k3", "low", "/reasoning_effort", json!("low")),
         (
             "qwen",
             "MiniMax/MiniMax-M3",
@@ -531,6 +532,80 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 assert_eq!(lowered_request.max_output_tokens, None, "{provider}/{id}");
             }
         }
+    }
+}
+
+#[test]
+fn qwen_kimi_k3_variants_follow_each_serving_channel() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "qwen")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "qwen"),
+        discovery(&[
+            "kimi-k2.8-preview",
+            "kimi-k3",
+            "kimi/kimi-k2.8-preview",
+            "kimi/kimi-k3",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    let variants = |model_id: &str| {
+        inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == model_id)
+            .unwrap()
+            .variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        variants("kimi-k3"),
+        ["reasoning-high", "reasoning-low", "reasoning-max"]
+    );
+    assert_eq!(
+        variants("kimi-k2.8-preview"),
+        ["reasoning-high", "reasoning-low", "reasoning-max"]
+    );
+    assert_eq!(variants("kimi/kimi-k2.8-preview"), ["reasoning-max"]);
+    assert_eq!(variants("kimi/kimi-k3"), ["reasoning-max"]);
+}
+
+#[test]
+fn gemma_4_variants_match_hosted_thinking_levels() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "gemini")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "gemini"),
+        discovery(&["gemma-4-26b-a4b-it", "gemma-4-31b-it"]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    for model in inventory.models {
+        assert_eq!(
+            model
+                .variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>(),
+            ["reasoning-high", "reasoning-minimal"],
+            "{}",
+            model.provider_model_id
+        );
     }
 }
 
@@ -1066,12 +1141,12 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
-        ("claude", 12),
+        ("claude", 14),
         ("deepseek", 3),
         ("doubao", 12),
         ("doubao-agent-plan", 0),
         ("fal", 4),
-        ("gemini", 29),
+        ("gemini", 35),
         ("glm", 101),
         ("kimi", 4),
         ("minimax", 23),
@@ -1142,12 +1217,57 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 321);
+    assert_eq!(pricing_count, 329);
 }
 
 #[test]
 fn corrected_provider_prices_match_official_billing_dimensions() {
     let catalog = catalog();
+
+    let claude = catalog.provider_rules("claude").unwrap();
+    let haiku = claude
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("claude-haiku-5-5"))
+        .unwrap();
+    let tiers = haiku.pricing.tiers.as_ref().unwrap();
+    assert_eq!(tiers.dimension, crate::catalog::TierDimension::InputTokens);
+    assert_eq!(tiers.mode, crate::catalog::TierMode::Volume);
+    assert_eq!(tiers.steps[0].up_to, Some(100_001));
+    assert_eq!(tiers.steps[0].input_token, Some(1e-7));
+    assert_eq!(tiers.steps[0].output_token, Some(5e-7));
+    assert_eq!(tiers.steps[0].cache_input_token, Some(1e-8));
+    assert_eq!(tiers.steps[0].cache_write_input_token, Some(1.25e-7));
+    assert_eq!(tiers.steps[0].cache_write_1h_input_token, Some(2e-7));
+    assert_eq!(tiers.steps[1].up_to, None);
+    assert_eq!(tiers.steps[1].input_token, Some(5e-7));
+    assert_eq!(tiers.steps[1].output_token, Some(2.5e-6));
+    assert_eq!(tiers.steps[1].cache_input_token, Some(5e-8));
+    assert_eq!(tiers.steps[1].cache_write_input_token, Some(6.25e-7));
+    assert_eq!(tiers.steps[1].cache_write_1h_input_token, Some(1e-6));
+    let pricing = crate::execution::PinnedPricingSnapshot::from_pricing(
+        &haiku.pricing,
+        None,
+        std::time::SystemTime::now(),
+    )
+    .unwrap()
+    .unwrap();
+    let low = pricing
+        .completion_cost(&buckyos_api::AiUsage {
+            input_tokens: Some(100_000),
+            output_tokens: Some(1_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!((low.amount - 0.0105).abs() < 1e-12);
+    let high = pricing
+        .completion_cost(&buckyos_api::AiUsage {
+            input_tokens: Some(200_000),
+            output_tokens: Some(1_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!((high.amount - 0.1025).abs() < 1e-12);
 
     let agent_plan = catalog.provider_rules("doubao-agent-plan").unwrap();
     assert!(agent_plan.model_pricing.is_empty());

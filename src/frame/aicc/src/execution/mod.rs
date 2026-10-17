@@ -722,6 +722,8 @@ pub(crate) struct NativeTaskResumeDescriptor {
     pub resolved_parameters: BTreeMap<String, Value>,
     pub output_video_seconds: Option<u64>,
     pub request_timeout_ms: u64,
+    pub max_poll_duration_ms: u64,
+    pub active_poll_elapsed_ms: u64,
     pub max_request_bytes: u64,
     pub max_response_bytes: u64,
 }
@@ -743,6 +745,8 @@ impl NativeTaskResumeDescriptor {
             || self.resource_access_context.caller_id.trim().is_empty()
             || self.resource_access_context.request_id.trim().is_empty()
             || self.request_timeout_ms == 0
+            || self.max_poll_duration_ms == 0
+            || self.active_poll_elapsed_ms > self.max_poll_duration_ms
             || self.max_request_bytes == 0
             || self.max_response_bytes == 0
         {
@@ -773,6 +777,20 @@ impl NativeTaskResumeDescriptor {
             }
         }
         Ok(())
+    }
+
+    fn remaining_active_poll_duration(&self) -> Duration {
+        Duration::from_millis(
+            self.max_poll_duration_ms
+                .saturating_sub(self.active_poll_elapsed_ms),
+        )
+    }
+
+    fn record_active_poll_session(&mut self, elapsed_before_session_ms: u64, elapsed: Duration) {
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        self.active_poll_elapsed_ms = elapsed_before_session_ms
+            .saturating_add(elapsed_ms)
+            .min(self.max_poll_duration_ms);
     }
 }
 
@@ -1368,7 +1386,7 @@ impl ExecutionEngine {
         if record.state.is_terminal() {
             return Ok(record.into());
         }
-        let Some(binding) = record.binding.clone() else {
+        let Some(mut binding) = record.binding.clone() else {
             return self
                 .finish_failure(
                     task_id,
@@ -1421,7 +1439,15 @@ impl ExecutionEngine {
             return self.current_receipt(task_id).await;
         }
         let mut next_poll_after = initial_poll_after;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+        let mut current_state = record.state;
+        let active_poll_started = tokio::time::Instant::now();
+        let resume = binding
+            .resume
+            .as_ref()
+            .expect("validated native task resume descriptor");
+        let active_poll_elapsed_at_start_ms = resume.active_poll_elapsed_ms;
+        let remaining_poll_duration = resume.remaining_active_poll_duration();
+        let deadline = active_poll_started + remaining_poll_duration;
         loop {
             if tokio::time::Instant::now() >= deadline {
                 return self
@@ -1429,7 +1455,7 @@ impl ExecutionEngine {
                         task_id,
                         aicc_error(
                             AiccErrorCode::Timeout,
-                            "native Provider task exceeded the 30 minute polling deadline",
+                            "native Provider task exceeded its polling deadline",
                             false,
                         ),
                     )
@@ -1438,6 +1464,13 @@ impl ExecutionEngine {
             if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
                 tokio::select! {
                     _ = cancellation.cancelled() => {
+                        let elapsed = active_poll_started.elapsed();
+                        binding
+                            .resume
+                            .as_mut()
+                            .expect("validated native task resume descriptor")
+                            .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
+                        let _ = self.store.set_running(task_id, current_state, binding.clone()).await?;
                         self.remove_active(task_id);
                         return self.current_receipt(task_id).await;
                     }
@@ -1445,6 +1478,16 @@ impl ExecutionEngine {
                 }
             }
             if cancellation.is_cancelled() {
+                let elapsed = active_poll_started.elapsed();
+                binding
+                    .resume
+                    .as_mut()
+                    .expect("validated native task resume descriptor")
+                    .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
+                let _ = self
+                    .store
+                    .set_running(task_id, current_state, binding.clone())
+                    .await?;
                 self.remove_active(task_id);
                 return self.current_receipt(task_id).await;
             }
@@ -1459,7 +1502,7 @@ impl ExecutionEngine {
                         task_id,
                         aicc_error(
                             AiccErrorCode::Timeout,
-                            "native Provider task exceeded the 30 minute polling deadline",
+                            "native Provider task exceeded its polling deadline",
                             false,
                         ),
                     )
@@ -1475,9 +1518,18 @@ impl ExecutionEngine {
                         );
                         return self.finish_failure(task_id, error).await;
                     }
+                    current_state = ExecutionState::from(state);
+                    let resume = binding
+                        .resume
+                        .as_mut()
+                        .expect("validated native task resume descriptor");
+                    resume.record_active_poll_session(
+                        active_poll_elapsed_at_start_ms,
+                        active_poll_started.elapsed(),
+                    );
                     if !self
                         .store
-                        .set_running(task_id, ExecutionState::from(state), binding.clone())
+                        .set_running(task_id, current_state, binding.clone())
                         .await?
                     {
                         self.remove_active(task_id);
@@ -2360,9 +2412,32 @@ mod tests {
                 .unwrap(),
             output_video_seconds: None,
             request_timeout_ms: 10_000,
+            max_poll_duration_ms: 30 * 60 * 1_000,
+            active_poll_elapsed_ms: 0,
             max_request_bytes: 1_024,
             max_response_bytes: 2_048,
         }
+    }
+
+    #[test]
+    fn native_task_poll_budget_survives_restart_without_counting_downtime() {
+        let mut resume = resume_descriptor();
+        resume.max_poll_duration_ms = 24 * 60 * 60 * 1_000;
+        resume.active_poll_elapsed_ms = 60 * 60 * 1_000;
+
+        let encoded = serde_json::to_value(&resume).unwrap();
+        resume = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            resume.remaining_active_poll_duration(),
+            Duration::from_secs(23 * 60 * 60)
+        );
+
+        resume.record_active_poll_session(60 * 60 * 1_000, Duration::from_secs(2 * 60 * 60));
+        assert_eq!(resume.active_poll_elapsed_ms, 3 * 60 * 60 * 1_000);
+        assert_eq!(
+            resume.remaining_active_poll_duration(),
+            Duration::from_secs(21 * 60 * 60)
+        );
     }
 
     fn call(instance: &str) -> ResolvedProviderCall {

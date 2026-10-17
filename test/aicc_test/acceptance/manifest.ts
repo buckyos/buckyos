@@ -175,6 +175,18 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         throw new Error(`${driver}.official_catalog.endpoint_ids must contain 1-50 unique ids`);
       }
     }
+    if (rawProvider.official_catalog.include_model_ids !== undefined) {
+      const ids = requireStringArray(
+        rawProvider.official_catalog.include_model_ids,
+        `${driver}.official_catalog.include_model_ids`,
+      );
+      if (ids.length === 0 || new Set(ids.map((id) => id.toLowerCase())).size !== ids.length) {
+        throw new Error(`${driver}.official_catalog.include_model_ids must be non-empty and unique`);
+      }
+      if (rawProvider.official_catalog.format === "frozen") {
+        throw new Error(`${driver}.official_catalog.include_model_ids is invalid for frozen catalogs`);
+      }
+    }
     if (rawProvider.official_catalog.supplemental_model_ids !== undefined) {
       const supplementalModelIds = requireStringArray(
         rawProvider.official_catalog.supplemental_model_ids,

@@ -583,7 +583,9 @@ export function assertResponseShape(
   if (cell.api_type === "vision.detect" || cell.api_type === "vision.segment") {
     if (!text.trim() && Object.keys(extra).length === 0 &&
       !Array.isArray(response.detections) && !Array.isArray(response.masks)) {
-      throw new Error("expected structured vision output");
+      throw new Error(
+        `expected structured vision output: ${JSON.stringify(response).slice(0, 1000)}`,
+      );
     }
     return;
   }

@@ -19,15 +19,17 @@ const SUPPORTED_TOKEN_DRIVERS = [
 
 export type ProviderTokenDriver = (typeof SUPPORTED_TOKEN_DRIVERS)[number];
 export type ProviderTokens = Partial<Record<ProviderTokenDriver, string>>;
-export type ProviderInstanceOverrides = Partial<Record<
-  ProviderTokenDriver,
-  {
-    enabled_inventory_models?: string[];
-    base_url?: string;
-    operation_base_urls?: Record<string, string>;
-    workspace?: string;
-  }
->>;
+export type ProviderInstanceOverrides = Partial<
+  Record<
+    ProviderTokenDriver,
+    {
+      enabled_inventory_models?: string[];
+      base_url?: string;
+      operation_base_urls?: Record<string, string>;
+      workspace?: string;
+    }
+  >
+>;
 
 type JsonObject = Record<string, unknown>;
 
@@ -41,7 +43,11 @@ function profileId(driver: ProviderTokenDriver): string {
   return driver === "google-gemini" ? "gemini" : driver;
 }
 
-function defaultInstance(driver: ProviderTokenDriver, name: string, token: string): JsonObject {
+function defaultInstance(
+  driver: ProviderTokenDriver,
+  name: string,
+  token: string,
+): JsonObject {
   const endpoints: Record<ProviderTokenDriver, string> = {
     openai: "https://api.openai.com/v1",
     claude: "https://api.anthropic.com/v1",
@@ -83,6 +89,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     provider_rules_id: profile,
     enabled: true,
     timeout_ms: 300_000,
+    ...(driver === "openrouter" ? { auto_sync_models: true } : {}),
   };
 }
 
@@ -99,8 +106,11 @@ export function configuredProviderTokens(
   const result: ProviderTokens = {};
   for (const driver of SUPPORTED_TOKEN_DRIVERS) {
     const tomlValue = values[`provider_credentials.${driver}.api_token`];
-    const envName = `AICC_${driver.replaceAll("-", "_").toUpperCase()}_API_TOKEN`;
-    const token = (typeof tomlValue === "string" ? tomlValue.trim() : "") || environment(envName)?.trim();
+    const envName = `AICC_${
+      driver.replaceAll("-", "_").toUpperCase()
+    }_API_TOKEN`;
+    const token = (typeof tomlValue === "string" ? tomlValue.trim() : "") ||
+      environment(envName)?.trim();
     if (token) result[driver] = token;
   }
   return result;
@@ -122,17 +132,28 @@ export function configuredProviderInstanceOverrides(
     if (
       enabledModels !== undefined &&
       (!Array.isArray(enabledModels) ||
-        enabledModels.some((modelId) => typeof modelId !== "string" || !modelId.trim()))
+        enabledModels.some((modelId) =>
+          typeof modelId !== "string" || !modelId.trim()
+        ))
     ) {
       throw new Error(
         `provider_credentials.${driver}.enabled_inventory_models must be a string array`,
       );
     }
-    if (baseUrl !== undefined && (typeof baseUrl !== "string" || !baseUrl.trim())) {
-      throw new Error(`provider_credentials.${driver}.base_url must be a non-empty string`);
+    if (
+      baseUrl !== undefined && (typeof baseUrl !== "string" || !baseUrl.trim())
+    ) {
+      throw new Error(
+        `provider_credentials.${driver}.base_url must be a non-empty string`,
+      );
     }
-    if (workspace !== undefined && (typeof workspace !== "string" || !workspace.trim())) {
-      throw new Error(`provider_credentials.${driver}.workspace must be a non-empty string`);
+    if (
+      workspace !== undefined &&
+      (typeof workspace !== "string" || !workspace.trim())
+    ) {
+      throw new Error(
+        `provider_credentials.${driver}.workspace must be a non-empty string`,
+      );
     }
     if (
       operationBaseUrls !== undefined &&
@@ -152,19 +173,23 @@ export function configuredProviderInstanceOverrides(
       operationBaseUrls === undefined && workspace === undefined
     ) continue;
     result[driver] = {
-      ...(enabledModels === undefined
-        ? {}
-        : { enabled_inventory_models: enabledModels.map((modelId) => modelId.trim()).sort() }),
+      ...(enabledModels === undefined ? {} : {
+        enabled_inventory_models: enabledModels.map((modelId) => modelId.trim())
+          .sort(),
+      }),
       ...(baseUrl === undefined ? {} : { base_url: baseUrl.trim() }),
       ...(workspace === undefined ? {} : { workspace: workspace.trim() }),
-      ...(operationBaseUrls === undefined
-        ? {}
-        : {
-          operation_base_urls: Object.fromEntries(operationBaseUrls.map((entry) => {
+      ...(operationBaseUrls === undefined ? {} : {
+        operation_base_urls: Object.fromEntries(
+          operationBaseUrls.map((entry) => {
             const separator = entry.indexOf("=");
-            return [entry.slice(0, separator).trim(), entry.slice(separator + 1).trim()];
-          })),
-        }),
+            return [
+              entry.slice(0, separator).trim(),
+              entry.slice(separator + 1).trim(),
+            ];
+          }),
+        ),
+      }),
     };
   }
   return result;
@@ -175,13 +200,16 @@ export function scopeOfficialInventoriesToInstanceRules(
   overrides: ProviderInstanceOverrides,
 ): ProviderInventory[] {
   return inventories.map((inventory) => {
-    const enabledModels = overrides[inventory.provider_driver as ProviderTokenDriver]
-      ?.enabled_inventory_models;
+    const enabledModels =
+      overrides[inventory.provider_driver as ProviderTokenDriver]
+        ?.enabled_inventory_models;
     if (!enabledModels) return inventory;
     const enabled = new Set(enabledModels);
     return {
       ...inventory,
-      models: inventory.models.filter((model) => enabled.has(model.provider_model_id)),
+      models: inventory.models.filter((model) =>
+        enabled.has(model.provider_model_id)
+      ),
     };
   });
 }
@@ -207,6 +235,13 @@ function applyInstanceOverrides(
   }
 }
 
+function applyDriverDefaults(
+  instance: JsonObject,
+  driver: ProviderTokenDriver,
+): void {
+  if (driver === "openrouter") instance.auto_sync_models = true;
+}
+
 export function applyProviderTokens(
   original: Record<string, unknown>,
   tokens: ProviderTokens,
@@ -215,7 +250,9 @@ export function applyProviderTokens(
 ): Record<string, unknown> {
   const settings = structuredClone(original);
   const providers = Array.isArray(settings.providers)
-    ? settings.providers.flatMap((value) => object(value) ? [value as JsonObject] : [])
+    ? settings.providers.flatMap((value) =>
+      object(value) ? [value as JsonObject] : []
+    )
     : [];
   settings.providers = providers;
   for (const [rawDriver, rawToken] of Object.entries(tokens)) {
@@ -225,7 +262,9 @@ export function applyProviderTokens(
     if (!SUPPORTED_TOKEN_DRIVERS.includes(driver)) {
       throw new Error(`provider credential driver ${driver} is not supported`);
     }
-    const candidates = providers.filter((instance) => instanceDriver(instance) === driver);
+    const candidates = providers.filter((instance) =>
+      instanceDriver(instance) === driver
+    );
     const selectedName = selectedInstances[driver]?.trim();
     if (selectedName) {
       const selected = candidates.find((instance) =>
@@ -233,6 +272,7 @@ export function applyProviderTokens(
       );
       if (selected) {
         selected.credentials = { api_token: { inline_secret: token } };
+        applyDriverDefaults(selected, driver);
         applyInstanceOverrides(selected, instanceOverrides[driver]);
         continue;
       }
@@ -243,6 +283,7 @@ export function applyProviderTokens(
     }
     if (candidates.length === 1) {
       candidates[0].credentials = { api_token: { inline_secret: token } };
+      applyDriverDefaults(candidates[0], driver);
       applyInstanceOverrides(candidates[0], instanceOverrides[driver]);
       continue;
     }
@@ -276,13 +317,16 @@ export function applyProviderTokens(
         `provider ${driver} has multiple configured instances; provider_credentials.${driver}.instance_name is required`,
       );
     }
-    throw new Error(`AICC settings has no unambiguous credential target for provider ${driver}`);
+    throw new Error(
+      `AICC settings has no unambiguous credential target for provider ${driver}`,
+    );
   }
   return settings;
 }
 
 export function providerTokenDrivers(tokens: ProviderTokens): string[] {
-  return Object.entries(tokens).filter(([, token]) => Boolean(token?.trim())).map(([driver]) => driver).sort();
+  return Object.entries(tokens).filter(([, token]) => Boolean(token?.trim()))
+    .map(([driver]) => driver).sort();
 }
 
 export function selectProviderTokens(
@@ -292,6 +336,8 @@ export function selectProviderTokens(
   if (selectedDrivers.length === 0) return { ...tokens };
   const selected = new Set(selectedDrivers);
   return Object.fromEntries(
-    Object.entries(tokens).filter(([driver, token]) => selected.has(driver) && Boolean(token?.trim())),
+    Object.entries(tokens).filter(([driver, token]) =>
+      selected.has(driver) && Boolean(token?.trim())
+    ),
   ) as ProviderTokens;
 }

@@ -12,9 +12,9 @@ import {
 import {
   callChatCompletions,
   callInference,
+  type GatewaySession,
   loginGateway,
   openAiccArtifact,
-  type GatewaySession,
   type RpcClient,
 } from "./gateway.ts";
 import { analyzeProviderMatrix, validateProviderBaseline } from "./manifest.ts";
@@ -26,21 +26,25 @@ import {
   type ResourceRef,
 } from "./payloads.ts";
 import { runPreflight } from "./preflight.ts";
-import { defectFromFailure, isProviderRestricted, writeReport } from "./report.ts";
+import {
+  defectFromFailure,
+  isProviderRestricted,
+  writeReport,
+} from "./report.ts";
 import type {
   AcceptanceReport,
   CaseReport,
   FailureClass,
-  ProviderInventory,
   ProviderBaseline,
+  ProviderInventory,
 } from "./types.ts";
-import { ProviderScheduler, type ProviderLimits } from "./scheduler.ts";
+import { type ProviderLimits, ProviderScheduler } from "./scheduler.ts";
 import {
   buildFinancialReport,
   CostBudget,
+  type CostReservation,
   exceedsUsdBudget,
   extractFinance,
-  type CostReservation,
 } from "./finance.ts";
 import type { FinancialEntry } from "./types.ts";
 import {
@@ -54,21 +58,30 @@ import {
   applyProviderTokens,
   configuredProviderInstanceOverrides,
   configuredProviderTokens,
+  type ProviderInstanceOverrides,
   providerTokenDrivers,
+  type ProviderTokens,
   scopeOfficialInventoriesToInstanceRules,
   selectProviderTokens,
-  type ProviderTokens,
-  type ProviderInstanceOverrides,
 } from "./provider_credentials.ts";
-import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
 import {
+  SettingsCleanupError,
+  withAiccSettingsOverride,
+} from "./settings_transaction.ts";
+import {
+  type ArtifactAudit,
   assertBackgroundRemovalTransparency,
+  type ReadableNamedData,
   validateArtifactBytes,
   validateNamedArtifact,
-  type ArtifactAudit,
-  type ReadableNamedData,
 } from "./artifact_validation.ts";
-import { assertJudgeModelAvailable, JudgeError, judgeProviderDriver, runJudge, selectJudgeModel } from "./judge.ts";
+import {
+  assertJudgeModelAvailable,
+  JudgeError,
+  judgeProviderDriver,
+  runJudge,
+  selectJudgeModel,
+} from "./judge.ts";
 import {
   bindOfficialCatalogInstances,
   fetchOfficialCatalogs,
@@ -78,8 +91,8 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
 import { methodsForApiType } from "./canonical.ts";
 import {
-  startNdnFixtureService,
   type NdnFixtureService,
+  startNdnFixtureService,
 } from "./ndn_fixture_service.ts";
 
 type Options = {
@@ -134,13 +147,20 @@ type AiMethodResponse = {
 };
 
 class TaskFailureError extends Error {
-  constructor(message: string, readonly errorCode?: string, readonly retriable = false) {
+  constructor(
+    message: string,
+    readonly errorCode?: string,
+    readonly retriable = false,
+  ) {
     super(message);
     this.name = "TaskFailureError";
   }
 }
 
-function compactFailure(value: unknown, depth = 0): Record<string, unknown> | undefined {
+function compactFailure(
+  value: unknown,
+  depth = 0,
+): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || depth > 4) return undefined;
   const object = value as Record<string, unknown>;
   const summary: Record<string, unknown> = {};
@@ -167,7 +187,9 @@ function failedResponseDiagnostic(response: AiMethodResponse): string {
 }
 
 function providerErrorCode(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
   const object = value as Record<string, unknown>;
   if (typeof object.provider_code === "string" && object.provider_code.trim()) {
     return object.provider_code.trim();
@@ -188,10 +210,15 @@ function providerRetriable(value: unknown): boolean {
   );
 }
 
-function taskFailure(taskId: string, task: Record<string, unknown>): TaskFailureError {
+function taskFailure(
+  taskId: string,
+  task: Record<string, unknown>,
+): TaskFailureError {
   const error = task.error;
   return new TaskFailureError(
-    `provider task ${taskId} ended ${String(task.outcome ?? "Failed")}: ${JSON.stringify(compactFailure(error) ?? {})}`,
+    `provider task ${taskId} ended ${String(task.outcome ?? "Failed")}: ${
+      JSON.stringify(compactFailure(error) ?? {})
+    }`,
     providerErrorCode(error),
     providerRetriable(error),
   );
@@ -214,13 +241,21 @@ function boolEnv(name: string): boolean | undefined {
 
 function requiredArg(args: string[], index: number, name: string): string {
   const value = args[index + 1]?.trim();
-  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${name} requires a value`);
+  }
   return value;
 }
 
-function resource(kind: string, value?: string, mime?: string): ResourceRef | undefined {
+function resource(
+  kind: string,
+  value?: string,
+  mime?: string,
+): ResourceRef | undefined {
   if (!value) return undefined;
-  if (/^(chunk|cyfile|obj):/i.test(value)) return { kind: "named_object", obj_id: value };
+  if (/^(chunk|cyfile|obj):/i.test(value)) {
+    return { kind: "named_object", obj_id: value };
+  }
   return { kind: "url", url: value, ...(mime ? { mime_hint: mime } : {}) };
 }
 
@@ -235,7 +270,11 @@ function base64(bytes: Uint8Array): string {
 const TRANSPARENT_OCR_MASK_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAABFAAAACECAYAAAC3Z98WAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAJMSURBVHhe7cEBDQAAAMKg909tDwcEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHKsB5fwAAcDqUMkAAAAASUVORK5CYII=";
 
-function uniqueNamedFixture(bytes: Uint8Array, mime: string, nonce: string): Uint8Array {
+function uniqueNamedFixture(
+  bytes: Uint8Array,
+  mime: string,
+  nonce: string,
+): Uint8Array {
   if (mime !== "video/mp4") return bytes;
   const suffix = new Uint8Array(24);
   new DataView(suffix.buffer).setUint32(0, suffix.length);
@@ -259,7 +298,10 @@ async function loadDefaultFixtures(
   const fixtureRevision = "d3aef519a1ab24fcdd5e1e54c6270465d0b28b48";
   const rawFixtureUrl = (path: string) =>
     `https://raw.githubusercontent.com/streetycat/buckyos/${fixtureRevision}/${path}`;
-  const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string; url?: string }> = {
+  const defaults: Record<
+    Exclude<keyof FixtureRefs, "documents">,
+    { path: string; mime: string; url?: string }
+  > = {
     image: {
       path: join(here, "../../jarvis_media_dv/assets/image_primary.png"),
       mime: "image/png",
@@ -275,7 +317,11 @@ async function loadDefaultFixtures(
       mime: "image/png",
       url: rawFixtureUrl("test/jarvis_media_dv/assets/image_ocr.png"),
     },
-    mask: { path: join(here, "../fixtures/mask.png"), mime: "image/png", url: rawFixtureUrl("test/aicc_test/fixtures/mask.png") },
+    mask: {
+      path: join(here, "../fixtures/mask.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/aicc_test/fixtures/mask.png"),
+    },
     audio: {
       path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"),
       mime: "audio/wav",
@@ -312,7 +358,9 @@ async function loadDefaultFixtures(
         const target = typeof request === "string"
           ? request.replaceAll("%3A", ":").replaceAll("%3a", ":")
           : request instanceof URL
-          ? new URL(request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"))
+          ? new URL(
+            request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"),
+          )
           : request;
         return fetch(target, init);
       },
@@ -364,38 +412,79 @@ async function loadDefaultFixtures(
     }
     return result;
   };
-  for (const [kind, fixture] of Object.entries(defaults) as Array<[
-    Exclude<keyof FixtureRefs, "documents">,
-    { path: string; mime: string; url?: string },
-  ]>) {
+  for (
+    const [kind, fixture] of Object.entries(defaults) as Array<[
+      Exclude<keyof FixtureRefs, "documents">,
+      { path: string; mime: string; url?: string },
+    ]>
+  ) {
     const configured = loaded[kind];
-    const configuredPath = configured && "kind" in configured && configured.kind === "url" &&
-        typeof configured.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
-      ? configured.url
-      : undefined;
+    const configuredPath =
+      configured && "kind" in configured && configured.kind === "url" &&
+        typeof configured.url === "string" &&
+        !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
+        ? configured.url
+        : undefined;
     const bytes = kind === "mask"
       ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
       : await Deno.readFile(configuredPath ?? fixture.path);
-    loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured, fixture.url);
+    loaded[kind] = await variants(
+      bytes,
+      fixture.mime,
+      configuredPath ? undefined : configured,
+      fixture.url,
+    );
   }
   const documentFixtures: Record<string, { path: string; mime: string }> = {
     txt: { path: join(here, "../fixtures/facts.txt"), mime: "text/plain" },
     md: { path: join(here, "../fixtures/facts.md"), mime: "text/markdown" },
     pdf: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
-    doc: { path: join(here, "../fixtures/facts.doc"), mime: "application/msword" },
-    docx: { path: join(here, "../fixtures/facts.docx"), mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
-    xls: { path: join(here, "../fixtures/facts.xls"), mime: "application/vnd.ms-excel" },
-    xlsx: { path: join(here, "../fixtures/facts.xlsx"), mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    doc: {
+      path: join(here, "../fixtures/facts.doc"),
+      mime: "application/msword",
+    },
+    docx: {
+      path: join(here, "../fixtures/facts.docx"),
+      mime:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
+    xls: {
+      path: join(here, "../fixtures/facts.xls"),
+      mime: "application/vnd.ms-excel",
+    },
+    xlsx: {
+      path: join(here, "../fixtures/facts.xlsx"),
+      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
     csv: { path: join(here, "../fixtures/facts.csv"), mime: "text/csv" },
-    tsv: { path: join(here, "../fixtures/facts.tsv"), mime: "text/tab-separated-values" },
-    ppt: { path: join(here, "../fixtures/facts.ppt"), mime: "application/vnd.ms-powerpoint" },
-    pptx: { path: join(here, "../fixtures/facts.pptx"), mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+    tsv: {
+      path: join(here, "../fixtures/facts.tsv"),
+      mime: "text/tab-separated-values",
+    },
+    ppt: {
+      path: join(here, "../fixtures/facts.ppt"),
+      mime: "application/vnd.ms-powerpoint",
+    },
+    pptx: {
+      path: join(here, "../fixtures/facts.pptx"),
+      mime:
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    },
     html: { path: join(here, "../fixtures/facts.html"), mime: "text/html" },
     xml: { path: join(here, "../fixtures/facts.xml"), mime: "text/xml" },
-    json: { path: join(here, "../fixtures/facts.json"), mime: "application/json" },
-    yaml: { path: join(here, "../fixtures/facts.yaml"), mime: "application/yaml" },
+    json: {
+      path: join(here, "../fixtures/facts.json"),
+      mime: "application/json",
+    },
+    yaml: {
+      path: join(here, "../fixtures/facts.yaml"),
+      mime: "application/yaml",
+    },
     rtf: { path: join(here, "../fixtures/facts.rtf"), mime: "application/rtf" },
-    epub: { path: join(here, "../fixtures/facts.epub"), mime: "application/epub+zip" },
+    epub: {
+      path: join(here, "../fixtures/facts.epub"),
+      mime: "application/epub+zip",
+    },
     source: { path: join(here, "../fixtures/facts.py"), mime: "text/x-python" },
   };
   loaded.documents = { ...loaded.documents };
@@ -404,7 +493,9 @@ async function loadDefaultFixtures(
       await Deno.readFile(fixture.path),
       fixture.mime,
       loaded.documents[format],
-      rawFixtureUrl(`test/aicc_test/fixtures/${fixture.path.split(/[\\/]/).at(-1)}`),
+      rawFixtureUrl(
+        `test/aicc_test/fixtures/${fixture.path.split(/[\\/]/).at(-1)}`,
+      ),
     );
   }
   return loaded;
@@ -414,7 +505,9 @@ async function parseOptions(args: string[]): Promise<Options> {
   let configPath = "aicc_acceptance.local.toml";
   let commandLineProviders = false;
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === "--config") configPath = requiredArg(args, index, "--config");
+    if (args[index] === "--config") {
+      configPath = requiredArg(args, index, "--config");
+    }
   }
   let config: ReturnType<typeof parseToml> = {};
   try {
@@ -425,21 +518,32 @@ async function parseOptions(args: string[]): Promise<Options> {
   const providerLimitOverrides: Record<string, Partial<ProviderLimits>> = {};
   const providerInstances: Record<string, string> = {};
   const providerTokens = configuredProviderTokens(config, env);
-  const officialCatalogTokens: Record<string, string | undefined> = { ...providerTokens };
+  const officialCatalogTokens: Record<string, string | undefined> = {
+    ...providerTokens,
+  };
   const officialCatalogEndpoints: Record<string, string> = {};
-  for (const driver of [
-    "openai",
-    "claude",
-    "google-gemini",
-    "fal",
-    "minimax",
-    "openrouter",
-    "glm",
-    "sn-ai-provider",
-  ]) {
-    const configured = tomlString(config, `official_catalog_credentials.${driver}.api_token`);
-    const environment = env(`AICC_${driver.replaceAll("-", "_").toUpperCase()}_CATALOG_TOKEN`);
-    if (configured || environment) officialCatalogTokens[driver] = configured ?? environment;
+  for (
+    const driver of [
+      "openai",
+      "claude",
+      "google-gemini",
+      "fal",
+      "minimax",
+      "openrouter",
+      "glm",
+      "sn-ai-provider",
+    ]
+  ) {
+    const configured = tomlString(
+      config,
+      `official_catalog_credentials.${driver}.api_token`,
+    );
+    const environment = env(
+      `AICC_${driver.replaceAll("-", "_").toUpperCase()}_CATALOG_TOKEN`,
+    );
+    if (configured || environment) {
+      officialCatalogTokens[driver] = configured ?? environment;
+    }
   }
   for (const [key, value] of Object.entries(config)) {
     const match = /^official_catalog_credentials\.([^.]+)\.endpoint$/.exec(key);
@@ -451,7 +555,9 @@ async function parseOptions(args: string[]): Promise<Options> {
     officialCatalogEndpoints[match[1]] = endpoint.toString();
   }
   for (const [key, value] of Object.entries(config)) {
-    const match = /^limits\.([^.]+)\.(max_concurrency|min_interval_ms)$/.exec(key);
+    const match = /^limits\.([^.]+)\.(max_concurrency|min_interval_ms)$/.exec(
+      key,
+    );
     if (!match || typeof value !== "number") continue;
     const limits = providerLimitOverrides[match[1]] ?? {};
     if (match[2] === "max_concurrency") limits.maxConcurrency = value;
@@ -466,13 +572,20 @@ async function parseOptions(args: string[]): Promise<Options> {
   }
   const options: Options = {
     configPath,
-    gatewayUrl: tomlString(config, "gateway.url") ?? env("BUCKYOS_TEST_GATEWAY_URL") ?? "",
-    sessionToken: tomlString(config, "auth.session_token") ?? env("BUCKYOS_APPCLIENT_SESSION_TOKEN"),
-    username: tomlString(config, "auth.username") ?? env("BUCKYOS_TEST_USERNAME"),
-    password: tomlString(config, "auth.password") ?? env("BUCKYOS_TEST_PASSWORD"),
-    appId: tomlString(config, "auth.app_id") ?? env("BUCKYOS_TEST_APP_ID") ?? "aicc-tests",
+    gatewayUrl: tomlString(config, "gateway.url") ??
+      env("BUCKYOS_TEST_GATEWAY_URL") ?? "",
+    sessionToken: tomlString(config, "auth.session_token") ??
+      env("BUCKYOS_APPCLIENT_SESSION_TOKEN"),
+    username: tomlString(config, "auth.username") ??
+      env("BUCKYOS_TEST_USERNAME"),
+    password: tomlString(config, "auth.password") ??
+      env("BUCKYOS_TEST_PASSWORD"),
+    appId: tomlString(config, "auth.app_id") ?? env("BUCKYOS_TEST_APP_ID") ??
+      "aicc-tests",
     providers: tomlStrings(config, "runner.providers") ??
-      env("AICC_ACCEPTANCE_PROVIDERS")?.split(",").map((item) => item.trim()).filter(Boolean) ?? [],
+      env("AICC_ACCEPTANCE_PROVIDERS")?.split(",").map((item) => item.trim())
+        .filter(Boolean) ??
+      [],
     providerInstances,
     allowRealModelCalls: tomlBoolean(config, "runner.allow_real_model_calls") ??
       boolEnv("AICC_ALLOW_REAL_MODEL_CALLS") ?? false,
@@ -484,46 +597,101 @@ async function parseOptions(args: string[]): Promise<Options> {
     globalConcurrency: tomlNumber(config, "runner.global_concurrency") ?? 8,
     providerLimits: {
       maxConcurrency: tomlNumber(config, "runner.provider_concurrency") ?? 2,
-      minIntervalMs: tomlNumber(config, "runner.provider_min_interval_ms") ?? 250,
+      minIntervalMs: tomlNumber(config, "runner.provider_min_interval_ms") ??
+        250,
     },
     providerLimitOverrides,
     maxAttempts: tomlNumber(config, "runner.max_attempts") ?? 2,
     retryDelayMs: tomlNumber(config, "runner.retry_delay_ms") ?? 1_000,
-    inventoryRefreshMaxAttempts: tomlNumber(config, "runner.inventory_refresh_max_attempts") ?? 3,
-    inventoryRefreshRetryDelayMs: tomlNumber(config, "runner.inventory_refresh_retry_delay_ms") ?? 2_000,
-    estimatedCostPerCallUsd: tomlNumber(config, "runner.estimated_cost_per_call_usd") ?? 0.01,
+    inventoryRefreshMaxAttempts:
+      tomlNumber(config, "runner.inventory_refresh_max_attempts") ?? 3,
+    inventoryRefreshRetryDelayMs:
+      tomlNumber(config, "runner.inventory_refresh_retry_delay_ms") ?? 2_000,
+    estimatedCostPerCallUsd:
+      tomlNumber(config, "runner.estimated_cost_per_call_usd") ?? 0.01,
     judgeEnabled: tomlBoolean(config, "judge.enabled") ?? true,
     judgeModel: tomlString(config, "judge.model") ?? "llm.plan.default",
-    judgeRubricVersion: tomlString(config, "judge.rubric_version") ?? "2026-08-27.1",
+    judgeRubricVersion: tomlString(config, "judge.rubric_version") ??
+      "2026-08-27.1",
     judgeMinScore: tomlNumber(config, "judge.min_score") ?? 0.7,
     providerTokens,
     providerInstanceOverrides: configuredProviderInstanceOverrides(config),
     officialCatalogTokens,
     officialCatalogEndpoints,
-    applyProviderCredentials: tomlBoolean(config, "provider_credentials.apply_to_aicc_settings") ?? false,
+    applyProviderCredentials:
+      tomlBoolean(config, "provider_credentials.apply_to_aicc_settings") ??
+        false,
     allowCredentialMutationCli: false,
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
     shardCount: tomlNumber(config, "runner.shard_count") ?? 1,
     caseIds: [],
     ndnGatewayBinary: tomlString(config, "fixtures.ndn_gateway_binary") ??
-      env("AICC_NDN_GATEWAY_BINARY") ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
-    ndnNamedStoreConfigPath: tomlString(config, "fixtures.ndn_named_store_config") ??
-      env("AICC_NDN_NAMED_STORE_CONFIG") ?? "/opt/buckyos/storage/named_store.json",
-    ndnGatewayControlUrl: tomlString(config, "fixtures.ndn_gateway_control_url") ??
-      env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
+      env("AICC_NDN_GATEWAY_BINARY") ??
+      "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
+    ndnNamedStoreConfigPath:
+      tomlString(config, "fixtures.ndn_named_store_config") ??
+        env("AICC_NDN_NAMED_STORE_CONFIG") ??
+        "/opt/buckyos/storage/named_store.json",
+    ndnGatewayControlUrl:
+      tomlString(config, "fixtures.ndn_gateway_control_url") ??
+        env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
     ndnSystemRoot: tomlString(config, "fixtures.ndn_system_root") ??
       env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
-    ndnPublicGatewayUrl: tomlString(config, "fixtures.ndn_public_gateway_url") ??
-      env("AICC_NDN_PUBLIC_GATEWAY_URL"),
+    ndnPublicGatewayUrl:
+      tomlString(config, "fixtures.ndn_public_gateway_url") ??
+        env("AICC_NDN_PUBLIC_GATEWAY_URL"),
     fixtures: {
-      image: resource("image", tomlString(config, "fixtures.image"), "image/png"),
+      image: resource(
+        "image",
+        tomlString(config, "fixtures.image"),
+        "image/png",
+      ),
       mask: resource("mask", tomlString(config, "fixtures.mask"), "image/png"),
-      audio: resource("audio", tomlString(config, "fixtures.audio"), "audio/wav"),
-      video: resource("video", tomlString(config, "fixtures.video"), "video/mp4"),
-      document: resource("document", tomlString(config, "fixtures.document"), "application/pdf"),
+      audio: resource(
+        "audio",
+        tomlString(config, "fixtures.audio"),
+        "audio/wav",
+      ),
+      video: resource(
+        "video",
+        tomlString(config, "fixtures.video"),
+        "video/mp4",
+      ),
+      document: resource(
+        "document",
+        tomlString(config, "fixtures.document"),
+        "application/pdf",
+      ),
       documents: Object.fromEntries(
-        ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "epub", "source"]
-          .map((format) => [format, resource("document", tomlString(config, `fixtures.document_${format}`))])
+        [
+          "txt",
+          "md",
+          "pdf",
+          "doc",
+          "docx",
+          "xls",
+          "xlsx",
+          "csv",
+          "tsv",
+          "ppt",
+          "pptx",
+          "html",
+          "xml",
+          "json",
+          "yaml",
+          "rtf",
+          "epub",
+          "source",
+        ]
+          .map((
+            format,
+          ) => [
+            format,
+            resource(
+              "document",
+              tomlString(config, `fixtures.document_${format}`),
+            ),
+          ])
           .filter((entry): entry is [string, ResourceRef] => Boolean(entry[1])),
       ),
     },
@@ -532,55 +700,83 @@ async function parseOptions(args: string[]): Promise<Options> {
     const arg = args[index];
     if (arg === "--") continue;
     else if (arg === "--config") index += 1;
-    else if (arg === "--gateway-url") options.gatewayUrl = requiredArg(args, index++, arg);
-    else if (arg === "--session-token") options.sessionToken = requiredArg(args, index++, arg);
-    else if (arg === "--username") options.username = requiredArg(args, index++, arg);
-    else if (arg === "--password") options.password = requiredArg(args, index++, arg);
-    else if (arg === "--provider") {
+    else if (arg === "--gateway-url") {
+      options.gatewayUrl = requiredArg(args, index++, arg);
+    } else if (arg === "--session-token") {
+      options.sessionToken = requiredArg(args, index++, arg);
+    } else if (arg === "--username") {
+      options.username = requiredArg(args, index++, arg);
+    } else if (arg === "--password") {
+      options.password = requiredArg(args, index++, arg);
+    } else if (arg === "--provider") {
       if (!commandLineProviders) {
         options.providers = [];
         commandLineProviders = true;
       }
       options.providers.push(requiredArg(args, index++, arg));
-    }
-    else if (arg === "--provider-instance") {
+    } else if (arg === "--provider-instance") {
       const value = requiredArg(args, index++, arg);
       const separator = value.indexOf(":");
       if (separator <= 0 || separator === value.length - 1) {
-        throw new Error("--provider-instance must be provider_driver:instance_name");
+        throw new Error(
+          "--provider-instance must be provider_driver:instance_name",
+        );
       }
-      options.providerInstances[value.slice(0, separator)] = value.slice(separator + 1);
-    }
-    else if (arg === "--allow-real-model-calls") options.allowRealModelCalls = true;
-    else if (arg === "--no-real-model-calls") options.allowRealModelCalls = false;
-    else if (arg === "--yes") options.assumeYes = true;
-    else if (arg === "--allow-credential-mutation") options.allowCredentialMutationCli = true;
-    else if (arg === "--max-real-calls") options.maxRealCalls = Number(requiredArg(args, index++, arg));
-    else if (arg === "--max-cost-usd") options.maxCostUsd = Number(requiredArg(args, index++, arg));
-    else if (arg === "--timeout-ms") options.timeoutMs = Number(requiredArg(args, index++, arg));
-    else if (arg === "--global-concurrency") options.globalConcurrency = Number(requiredArg(args, index++, arg));
-    else if (arg === "--provider-concurrency") options.providerLimits.maxConcurrency = Number(requiredArg(args, index++, arg));
-    else if (arg === "--provider-min-interval-ms") options.providerLimits.minIntervalMs = Number(requiredArg(args, index++, arg));
-    else if (arg === "--max-attempts") options.maxAttempts = Number(requiredArg(args, index++, arg));
-    else if (arg === "--retry-delay-ms") options.retryDelayMs = Number(requiredArg(args, index++, arg));
-    else if (arg === "--judge") options.judgeEnabled = true;
+      options.providerInstances[value.slice(0, separator)] = value.slice(
+        separator + 1,
+      );
+    } else if (arg === "--allow-real-model-calls") {
+      options.allowRealModelCalls = true;
+    } else if (arg === "--no-real-model-calls") {
+      options.allowRealModelCalls = false;
+    } else if (arg === "--yes") options.assumeYes = true;
+    else if (arg === "--allow-credential-mutation") {
+      options.allowCredentialMutationCli = true;
+    } else if (arg === "--max-real-calls") {
+      options.maxRealCalls = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--max-cost-usd") {
+      options.maxCostUsd = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--timeout-ms") {
+      options.timeoutMs = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--global-concurrency") {
+      options.globalConcurrency = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--provider-concurrency") {
+      options.providerLimits.maxConcurrency = Number(
+        requiredArg(args, index++, arg),
+      );
+    } else if (arg === "--provider-min-interval-ms") {
+      options.providerLimits.minIntervalMs = Number(
+        requiredArg(args, index++, arg),
+      );
+    } else if (arg === "--max-attempts") {
+      options.maxAttempts = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--retry-delay-ms") {
+      options.retryDelayMs = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--judge") options.judgeEnabled = true;
     else if (arg === "--no-judge") options.judgeEnabled = false;
-    else if (arg === "--judge-model") options.judgeModel = requiredArg(args, index++, arg);
-    else if (arg === "--shard-index") options.shardIndex = Number(requiredArg(args, index++, arg));
-    else if (arg === "--shard-count") options.shardCount = Number(requiredArg(args, index++, arg));
-    else if (arg === "--case") options.caseIds.push(requiredArg(args, index++, arg));
-    else if (arg === "--provider-limit") {
-      const [provider, concurrency, interval] = requiredArg(args, index++, arg).split(":");
+    else if (arg === "--judge-model") {
+      options.judgeModel = requiredArg(args, index++, arg);
+    } else if (arg === "--shard-index") {
+      options.shardIndex = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--shard-count") {
+      options.shardCount = Number(requiredArg(args, index++, arg));
+    } else if (arg === "--case") {
+      options.caseIds.push(requiredArg(args, index++, arg));
+    } else if (arg === "--provider-limit") {
+      const [provider, concurrency, interval] = requiredArg(args, index++, arg)
+        .split(":");
       if (!provider || concurrency === undefined || interval === undefined) {
-        throw new Error("--provider-limit must be provider:max_concurrency:min_interval_ms");
+        throw new Error(
+          "--provider-limit must be provider:max_concurrency:min_interval_ms",
+        );
       }
       options.providerLimitOverrides[provider] = {
         maxConcurrency: Number(concurrency),
         minIntervalMs: Number(interval),
       };
-    }
-    else if (arg === "--report-dir") options.reportDir = requiredArg(args, index++, arg);
-    else throw new Error(`unknown argument ${arg}`);
+    } else if (arg === "--report-dir") {
+      options.reportDir = requiredArg(args, index++, arg);
+    } else throw new Error(`unknown argument ${arg}`);
   }
   options.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
   if (!options.gatewayUrl) throw new Error("gateway URL is required");
@@ -593,7 +789,10 @@ async function parseOptions(args: string[]): Promise<Options> {
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
     throw new Error("timeout_ms must be positive");
   }
-  if (!Number.isInteger(options.globalConcurrency) || options.globalConcurrency < 1) {
+  if (
+    !Number.isInteger(options.globalConcurrency) ||
+    options.globalConcurrency < 1
+  ) {
     throw new Error("global_concurrency must be a positive integer");
   }
   if (!Number.isInteger(options.maxAttempts) || options.maxAttempts < 1) {
@@ -602,64 +801,68 @@ async function parseOptions(args: string[]): Promise<Options> {
   if (!Number.isFinite(options.retryDelayMs) || options.retryDelayMs < 0) {
     throw new Error("retry_delay_ms must be non-negative");
   }
-  if (!Number.isInteger(options.inventoryRefreshMaxAttempts) || options.inventoryRefreshMaxAttempts < 1) {
-    throw new Error("inventory_refresh_max_attempts must be a positive integer");
+  if (
+    !Number.isInteger(options.inventoryRefreshMaxAttempts) ||
+    options.inventoryRefreshMaxAttempts < 1
+  ) {
+    throw new Error(
+      "inventory_refresh_max_attempts must be a positive integer",
+    );
   }
-  if (!Number.isFinite(options.inventoryRefreshRetryDelayMs) || options.inventoryRefreshRetryDelayMs < 0) {
+  if (
+    !Number.isFinite(options.inventoryRefreshRetryDelayMs) ||
+    options.inventoryRefreshRetryDelayMs < 0
+  ) {
     throw new Error("inventory_refresh_retry_delay_ms must be non-negative");
   }
-  if (!Number.isFinite(options.estimatedCostPerCallUsd) || options.estimatedCostPerCallUsd < 0) {
+  if (
+    !Number.isFinite(options.estimatedCostPerCallUsd) ||
+    options.estimatedCostPerCallUsd < 0
+  ) {
     throw new Error("estimated_cost_per_call_usd must be non-negative");
   }
-  if (!Number.isFinite(options.judgeMinScore) || options.judgeMinScore < 0 || options.judgeMinScore > 1) {
+  if (
+    !Number.isFinite(options.judgeMinScore) || options.judgeMinScore < 0 ||
+    options.judgeMinScore > 1
+  ) {
     throw new Error("judge.min_score must be between 0 and 1");
   }
-  if (!Number.isInteger(options.shardCount) || options.shardCount < 1 ||
+  if (
+    !Number.isInteger(options.shardCount) || options.shardCount < 1 ||
     !Number.isInteger(options.shardIndex) || options.shardIndex < 0 ||
-    options.shardIndex >= options.shardCount) {
+    options.shardIndex >= options.shardCount
+  ) {
     throw new Error("shard_index must satisfy 0 <= shard_index < shard_count");
   }
   options.providers = [...new Set(options.providers)];
   const tokenDrivers = providerTokenDrivers(options.providerTokens);
-  if (options.applyProviderCredentials && tokenDrivers.length > 0 && !options.allowCredentialMutationCli) {
-    throw new Error("applying Provider credentials requires --allow-credential-mutation");
+  if (
+    options.applyProviderCredentials && tokenDrivers.length > 0 &&
+    !options.allowCredentialMutationCli
+  ) {
+    throw new Error(
+      "applying Provider credentials requires --allow-credential-mutation",
+    );
   }
   return options;
 }
 
 function normalizeInventories(raw: unknown): ProviderInventory[] {
-  if (!raw || typeof raw !== "object") throw new Error("models.list returned non-object");
+  if (!raw || typeof raw !== "object") {
+    throw new Error("models.list returned non-object");
+  }
   const providers = (raw as { providers?: unknown }).providers;
   if (!Array.isArray(providers)) return inventoriesFromModelsList(raw);
   return providers.map((value) => {
     const provider = value as ProviderInventory;
-    if (!provider.provider_driver || !provider.provider_instance_name || !Array.isArray(provider.models)) {
+    if (
+      !provider.provider_driver || !provider.provider_instance_name ||
+      !Array.isArray(provider.models)
+    ) {
       throw new Error("models.list contains invalid provider inventory");
     }
     return provider;
   });
-}
-
-async function waitForProviderInventories(input: {
-  aicc: RpcClient;
-  expectedDrivers: string[];
-  expectedInstances: Record<string, string>;
-  timeoutMs: number;
-}): Promise<ProviderInventory[]> {
-  const deadline = Date.now() + Math.min(input.timeoutMs, 60_000);
-  let latest: ProviderInventory[] = [];
-  do {
-    latest = normalizeInventories(await input.aicc.call("models.list", {}));
-    const ready = input.expectedDrivers.every((driver) => latest.some((inventory) =>
-      inventory.provider_driver === driver &&
-      (!input.expectedInstances[driver] || inventory.provider_instance_name === input.expectedInstances[driver])
-    ));
-    if (ready) return latest;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-  } while (Date.now() < deadline);
-  throw new Error(
-    `Provider inventories did not converge: expected=${input.expectedDrivers.map((driver) => `${driver}:${input.expectedInstances[driver] ?? "*"}`).join(",")} found=${latest.map((inventory) => `${inventory.provider_driver}:${inventory.provider_instance_name}`).join(",")}`,
-  );
 }
 
 async function confirmRealModelCalls(assumeYes: boolean): Promise<boolean> {
@@ -667,7 +870,9 @@ async function confirmRealModelCalls(assumeYes: boolean): Promise<boolean> {
     console.log("[start] --yes skipped the 10 second confirmation wait");
     return true;
   }
-  console.log("[start] real Provider calls start in 10 seconds; enter c then Enter to cancel, or press Enter to start now");
+  console.log(
+    "[start] real Provider calls start in 10 seconds; enter c then Enter to cancel, or press Enter to start now",
+  );
   let finish!: (start: boolean) => void;
   let settled = false;
   const decision = new Promise<boolean>((resolvePromise) => {
@@ -698,7 +903,9 @@ async function confirmRealModelCalls(assumeYes: boolean): Promise<boolean> {
       }),
       { signal: controller.signal, preventCancel: true, preventClose: true },
     ).catch((error) => {
-      if (!(error instanceof DOMException && error.name === "AbortError")) throw error;
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        throw error;
+      }
     });
   }
   const start = await decision;
@@ -720,11 +927,18 @@ function taskValue(raw: unknown): Record<string, unknown> {
 
 function auditTaskId(task: Record<string, unknown>, fallback: string): string {
   for (const snapshot of [task.result, task.progress, task.input]) {
-    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) continue;
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+      continue;
+    }
     const request = (snapshot as Record<string, unknown>).request;
-    if (!request || typeof request !== "object" || Array.isArray(request)) continue;
-    const externalTaskId = (request as Record<string, unknown>).external_task_id;
-    if (typeof externalTaskId === "string" && externalTaskId.trim()) return externalTaskId;
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      continue;
+    }
+    const externalTaskId =
+      (request as Record<string, unknown>).external_task_id;
+    if (typeof externalTaskId === "string" && externalTaskId.trim()) {
+      return externalTaskId;
+    }
   }
   return fallback;
 }
@@ -745,12 +959,16 @@ async function waitForTask(
     } catch (error) {
       if (error instanceof TaskFailureError) throw error;
     }
-    throw new Error(`AICC returned failed: ${failedResponseDiagnostic(response)}`);
+    throw new Error(
+      `AICC returned failed: ${failedResponseDiagnostic(response)}`,
+    );
   }
   if (response.status !== "running") return response;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const raw = await taskManager.call("get_task", { task_id: response.task_id });
+    const raw = await taskManager.call("get_task", {
+      task_id: response.task_id,
+    });
     const task = taskValue(raw) as {
       phase?: string;
       outcome?: string;
@@ -763,12 +981,16 @@ async function waitForTask(
       }
       const output = task.result?.result?.output;
       if (!output || typeof output !== "object" || Array.isArray(output)) {
-        throw new Error(`task ${response.task_id} completed without an AICC result output`);
+        throw new Error(
+          `task ${response.task_id} completed without an AICC result output`,
+        );
       }
       const execution = output as Record<string, unknown>;
       const value = execution.value;
       return {
-        ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
+        ...(value && typeof value === "object" && !Array.isArray(value)
+          ? value
+          : {}),
         task_id: auditTaskId(task, response.task_id),
         task_manager_id: response.task_id,
         status: "succeeded",
@@ -785,11 +1007,20 @@ async function waitForTask(
 
 function failureClass(error: unknown): FailureClass {
   const message = String(error).toLowerCase();
-  if (error instanceof JudgeError || message.includes("judge")) return "judge_failed";
+  if (error instanceof JudgeError || message.includes("judge")) {
+    return "judge_failed";
+  }
   if (message.includes("baseline")) return "baseline_mismatch";
-  if (message.includes("artifact") || message.includes("mime")) return "resource_failed";
-  if (error instanceof TaskFailureError || message.includes("provider")) return "provider_protocol_failed";
-  if (message.includes("task") || message.includes("timeout") || message.includes("aicc returned failed")) {
+  if (message.includes("artifact") || message.includes("mime")) {
+    return "resource_failed";
+  }
+  if (error instanceof TaskFailureError || message.includes("provider")) {
+    return "provider_protocol_failed";
+  }
+  if (
+    message.includes("task") || message.includes("timeout") ||
+    message.includes("aicc returned failed")
+  ) {
     return "task_lifecycle_failed";
   }
   return "assertion_failed";
@@ -816,7 +1047,10 @@ function retryable(error: unknown): boolean {
   ].some((marker) => message.includes(marker)) || /\b5\d\d\b/.test(message);
 }
 
-function estimatedCellCost(cell: { estimated_cost_usd?: number }, fallback: number): number {
+function estimatedCellCost(
+  cell: { estimated_cost_usd?: number },
+  fallback: number,
+): number {
   return typeof cell.estimated_cost_usd === "number" &&
       Number.isFinite(cell.estimated_cost_usd) && cell.estimated_cost_usd >= 0
     ? cell.estimated_cost_usd
@@ -825,44 +1059,126 @@ function estimatedCellCost(cell: { estimated_cost_usd?: number }, fallback: numb
 
 function semanticRubric(cell: { api_type: string; method: string }): string[] {
   const apiType = cell.api_type;
-  if (apiType === "image.txt2img") return ["The image visibly contains a blue square and the number 4827."];
-  if (apiType === "image.img2img") return ["The output preserves the source composition and applies warm evening light."];
-  if (apiType === "image.inpaint") return ["The edited image contains plausible green leaves in the intended central masked region and remains a simple square-canvas composition rather than an unrelated scene. The mask is model guidance, so surrounding colors need not match pixel-for-pixel."];
-  if (apiType === "image.upscale") return ["The output preserves the source content and has visibly improved or increased resolution."];
-  if (apiType === "image.bg_remove") return ["The red apple with its brown stem and green leaf remains the foreground subject, while the uniform white surrounding background is removed or transparent."];
-  if (apiType === "vision.ocr") return ["The recognized text contains the visible acceptance marker 4827."];
-  if (apiType === "vision.caption") return ["The caption accurately describes the supplied marker image."];
-  if (apiType === "vision.detect") return ["The structured detection result identifies visible objects in the supplied image."];
-  if (apiType === "vision.segment") return ["The segmentation result corresponds to visible regions in the supplied image."];
-  if (apiType === "audio.tts") return ["The speech clearly says BuckyOS four eight two seven."];
-  if (apiType === "audio.asr") return ["The transcript faithfully represents the supplied speech audio."];
-  if (apiType === "audio.music") return ["The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat."];
-  if (apiType === "audio.enhance") return ["The output preserves the source audio while reducing noise or improving clarity."];
-  if (apiType === "video.txt2video") return ["The video shows a paper plane moving across a desk."];
-  if (apiType === "video.img2video") return ["The video preserves the supplied image content and adds subtle motion with a slow camera push."];
-  if (apiType === "video.video2video") return ["The output is a coherent transformation of the supplied video."];
-  if (apiType === "video.extend") return ["The output coherently extends the supplied video rather than replacing it with unrelated content."];
-  if (apiType === "video.upscale") return ["The output preserves the supplied video content at improved resolution or visual quality."];
-  if (apiType === "agent.computer_use") return ["The result reports the title visible in the supplied test environment and does not invent an action result."];
+  if (apiType === "llm") {
+    return [
+      "The response follows the instruction and contains the exact marker BUCKYOS-AICC-4827 without changing its characters.",
+    ];
+  }
+  if (apiType === "image.txt2img") {
+    return ["The image visibly contains a blue square and the number 4827."];
+  }
+  if (apiType === "image.img2img") {
+    return [
+      "The output preserves the source composition and applies warm evening light.",
+    ];
+  }
+  if (apiType === "image.inpaint") {
+    return [
+      "The edited image contains plausible green leaves in the intended central masked region and remains a simple square-canvas composition rather than an unrelated scene. The mask is model guidance, so surrounding colors need not match pixel-for-pixel.",
+    ];
+  }
+  if (apiType === "image.upscale") {
+    return [
+      "The output preserves the source content and has visibly improved or increased resolution.",
+    ];
+  }
+  if (apiType === "image.bg_remove") {
+    return [
+      "The red apple with its brown stem and green leaf remains the foreground subject, while the uniform white surrounding background is removed or transparent.",
+    ];
+  }
+  if (apiType === "vision.ocr") {
+    return ["The recognized text contains the visible acceptance marker 4827."];
+  }
+  if (apiType === "vision.caption") {
+    return ["The caption accurately describes the supplied marker image."];
+  }
+  if (apiType === "vision.detect") {
+    return [
+      "The structured detection result identifies visible objects in the supplied image.",
+    ];
+  }
+  if (apiType === "vision.segment") {
+    return [
+      "The segmentation result corresponds to visible regions in the supplied image.",
+    ];
+  }
+  if (apiType === "audio.tts") {
+    return ["The speech clearly says BuckyOS four eight two seven."];
+  }
+  if (apiType === "audio.asr") {
+    return ["The transcript faithfully represents the supplied speech audio."];
+  }
+  if (apiType === "audio.music") {
+    return [
+      "The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat.",
+    ];
+  }
+  if (apiType === "audio.enhance") {
+    return [
+      "The output preserves the source audio while reducing noise or improving clarity.",
+    ];
+  }
+  if (apiType === "video.txt2video") {
+    return ["The video shows a paper plane moving across a desk."];
+  }
+  if (apiType === "video.img2video") {
+    return [
+      "The video preserves the supplied image content and adds subtle motion with a slow camera push.",
+    ];
+  }
+  if (apiType === "video.video2video") {
+    return ["The output is a coherent transformation of the supplied video."];
+  }
+  if (apiType === "video.extend") {
+    return [
+      "The output coherently extends the supplied video rather than replacing it with unrelated content.",
+    ];
+  }
+  if (apiType === "video.upscale") {
+    return [
+      "The output preserves the supplied video content at improved resolution or visual quality.",
+    ];
+  }
+  if (apiType === "agent.computer_use") {
+    return [
+      "The result reports the title visible in the supplied test environment and does not invent an action result.",
+    ];
+  }
   return [];
 }
 
-function artifactSources(value: unknown, depth = 0): Array<Record<string, unknown>> {
+function artifactSources(
+  value: unknown,
+  depth = 0,
+): Array<Record<string, unknown>> {
   if (depth > 8 || value === null || value === undefined) return [];
-  if (Array.isArray(value)) return value.flatMap((item) => artifactSources(item, depth + 1));
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => artifactSources(item, depth + 1));
+  }
   if (typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
-  const direct = typeof record.obj_id === "string" || typeof record.url === "string" ||
+  const direct =
+    typeof record.obj_id === "string" || typeof record.url === "string" ||
       typeof record.data_base64 === "string"
-    ? [record]
-    : [];
-  const source = record.source && typeof record.source === "object" && !Array.isArray(record.source)
+      ? [record]
+      : [];
+  const source = record.source && typeof record.source === "object" &&
+      !Array.isArray(record.source)
     ? record.source as Record<string, unknown>
     : undefined;
-  const found = source && (typeof source.obj_id === "string" || typeof source.url === "string" || typeof source.data_base64 === "string")
+  const found = source &&
+      (typeof source.obj_id === "string" || typeof source.url === "string" ||
+        typeof source.data_base64 === "string")
     ? [{ ...source, _content_type: record.type }]
     : [];
-  return [...direct, ...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
+  return [
+    ...direct,
+    ...found,
+    ...Object.values(record).flatMap((child) =>
+      artifactSources(child, depth + 1)
+    ),
+  ];
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -881,19 +1197,36 @@ async function validateTerminalArtifacts(input: {
   const audits: ArtifactAudit[] = [];
   const ids: string[] = [];
   for (const source of sources) {
-    const mime = typeof source.mime_hint === "string" ? source.mime_hint
-      : typeof source.mime === "string" ? source.mime : undefined;
-    const label = [source.filename, mime].filter((value): value is string => typeof value === "string").join(" ");
+    const mime = typeof source.mime_hint === "string"
+      ? source.mime_hint
+      : typeof source.mime === "string"
+      ? source.mime
+      : undefined;
+    const label = [source.filename, mime].filter((value): value is string =>
+      typeof value === "string"
+    ).join(" ");
     if (typeof source.obj_id === "string") {
       if (seen.has(`obj:${source.obj_id}`)) continue;
       seen.add(`obj:${source.obj_id}`);
-      audits.push(await validateNamedArtifact(input.ndm, { obj_id: source.obj_id, label }));
+      audits.push(
+        await validateNamedArtifact(input.ndm, {
+          obj_id: source.obj_id,
+          label,
+        }),
+      );
       ids.push(source.obj_id);
     } else if (typeof source.data_base64 === "string") {
-      const key = `base64:${source.data_base64.length}:${source.data_base64.slice(0, 32)}`;
+      const key = `base64:${source.data_base64.length}:${
+        source.data_base64.slice(0, 32)
+      }`;
       if (seen.has(key)) continue;
       seen.add(key);
-      audits.push(await validateArtifactBytes(decodeBase64(source.data_base64), { id: "[inline-base64]", label }));
+      audits.push(
+        await validateArtifactBytes(decodeBase64(source.data_base64), {
+          id: "[inline-base64]",
+          label,
+        }),
+      );
     } else if (typeof source.url === "string") {
       if (seen.has(`url:${source.url}`)) continue;
       seen.add(`url:${source.url}`);
@@ -901,20 +1234,32 @@ async function validateTerminalArtifacts(input: {
         gatewayUrl: input.gatewayUrl,
         sessionToken: input.sessionToken,
         url: source.url,
-        artifactId: typeof source.artifact_id === "string" ? source.artifact_id : undefined,
+        artifactId: typeof source.artifact_id === "string"
+          ? source.artifact_id
+          : undefined,
       });
       const declared = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declared) && declared > 256 * 1024 * 1024) throw new Error("artifact URL exceeds 256 MiB safety limit");
+      if (Number.isFinite(declared) && declared > 256 * 1024 * 1024) {
+        throw new Error("artifact URL exceeds 256 MiB safety limit");
+      }
       const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.length > 256 * 1024 * 1024) throw new Error("artifact URL exceeds 256 MiB safety limit");
-      audits.push(await validateArtifactBytes(bytes, { id: "[downloaded-url]", label: label || response.headers.get("content-type") || undefined }));
+      if (bytes.length > 256 * 1024 * 1024) {
+        throw new Error("artifact URL exceeds 256 MiB safety limit");
+      }
+      audits.push(
+        await validateArtifactBytes(bytes, {
+          id: "[downloaded-url]",
+          label: label || response.headers.get("content-type") || undefined,
+        }),
+      );
     }
   }
   return { audits, ids };
 }
 
 function modelFamily(exactModel: string): string {
-  return exactModel.split("@")[0].split(":")[0].replace(/[-_]20\d{2}.*$/, "").replace(/[-_]v?\d+(?:\.\d+)*$/, "");
+  return exactModel.split("@")[0].split(":")[0].replace(/[-_]20\d{2}.*$/, "")
+    .replace(/[-_]v?\d+(?:\.\d+)*$/, "");
 }
 
 async function commitId(): Promise<string> {
@@ -925,7 +1270,9 @@ async function commitId(): Promise<string> {
       stdout: "piped",
       stderr: "null",
     }).output();
-    return output.success ? new TextDecoder().decode(output.stdout).trim() : "unknown";
+    return output.success
+      ? new TextDecoder().decode(output.stdout).trim()
+      : "unknown";
   } catch {
     return "unknown";
   }
@@ -935,7 +1282,9 @@ async function main(): Promise<void> {
   const runStartedAt = new Date().toISOString();
   await runPreflight();
   const options = await parseOptions(Deno.args);
-  const runId = `aicc-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = `aicc-${new Date().toISOString().replace(/[:.]/g, "-")}-${
+    crypto.randomUUID().slice(0, 8)
+  }`;
   const outputDir = join(options.reportDir, runId);
   const baseline = validateProviderBaseline(JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
@@ -976,20 +1325,27 @@ async function main(): Promise<void> {
     normalizeInventories(await session.aicc.call("models.list", {}))
       .map((inventory) => inventory.provider_instance_name),
   );
-  const execute = () => executeAcceptance({
-    options,
-    session,
-    runStartedAt,
-    runId,
-    outputDir,
-    baseline,
-    officialCatalogs,
-    uploadedFixtureIds,
-    configuredFixtures,
-  });
-  options.providerTokens = selectProviderTokens(options.providerTokens, options.providers);
+  const execute = () =>
+    executeAcceptance({
+      options,
+      session,
+      runStartedAt,
+      runId,
+      outputDir,
+      baseline,
+      officialCatalogs,
+      uploadedFixtureIds,
+      configuredFixtures,
+    });
+  options.providerTokens = selectProviderTokens(
+    options.providerTokens,
+    options.providers,
+  );
   const tokenDrivers = providerTokenDrivers(options.providerTokens);
-  let outcome: { report: AcceptanceReport; effectiveBaseline: Record<string, unknown> };
+  let outcome: {
+    report: AcceptanceReport;
+    effectiveBaseline: Record<string, unknown>;
+  };
   let cleanupFailure: SettingsCleanupError<typeof outcome> | undefined;
   if (!options.applyProviderCredentials || tokenDrivers.length === 0) {
     outcome = await execute();
@@ -1019,15 +1375,21 @@ async function main(): Promise<void> {
       })).result;
       outcome.report.cleanup.details = [
         ...outcome.report.cleanup.details,
-        `temporary Provider credentials restored after testing (${tokenDrivers.join(", ")})`,
+        `temporary Provider credentials restored after testing (${
+          tokenDrivers.join(", ")
+        })`,
       ];
     } catch (error) {
-      if (!(error instanceof SettingsCleanupError) || !error.executionResult) throw error;
+      if (!(error instanceof SettingsCleanupError) || !error.executionResult) {
+        throw error;
+      }
       outcome = error.executionResult;
       cleanupFailure = error as SettingsCleanupError<typeof outcome>;
       outcome.report.cleanup = {
         status: "failed",
-        details: ["automatic Provider credential restoration failed; manual restoration is required"],
+        details: [
+          "automatic Provider credential restoration failed; manual restoration is required",
+        ],
       };
       outcome.report.cases.push({
         run_id: outcome.report.run_id,
@@ -1051,7 +1413,17 @@ async function main(): Promise<void> {
     }
   }
   if (options.applyProviderCredentials && tokenDrivers.length > 0) {
-    const extraRuntimeInstances = normalizeInventories(await session.aicc.call("models.list", {}))
+    const postExecutionSession = options.username && options.password
+      ? await loginGateway({
+        gatewayUrl: options.gatewayUrl,
+        username: options.username,
+        password: options.password,
+        appId: options.appId,
+      })
+      : session;
+    const extraRuntimeInstances = normalizeInventories(
+      await postExecutionSession.aicc.call("models.list", {}),
+    )
       .map((inventory) => inventory.provider_instance_name)
       .filter((name) => !initialRuntimeInstances.has(name));
     if (extraRuntimeInstances.length > 0) {
@@ -1059,7 +1431,9 @@ async function main(): Promise<void> {
         status: "failed",
         details: [
           ...outcome.report.cleanup.details,
-          `AICC runtime inventory retained temporary Provider instance(s): ${extraRuntimeInstances.join(", ")}`,
+          `AICC runtime inventory retained temporary Provider instance(s): ${
+            extraRuntimeInstances.join(", ")
+          }`,
         ],
       };
       outcome.report.cases.push({
@@ -1076,7 +1450,9 @@ async function main(): Promise<void> {
           elapsed_ms: 0,
           status: "failed",
           failure_class: "cleanup_failed",
-          diagnostic: `runtime inventory retained: ${extraRuntimeInstances.join(", ")}`,
+          diagnostic: `runtime inventory retained: ${
+            extraRuntimeInstances.join(", ")
+          }`,
           estimated_cost_usd: 0,
           cost_status: "not_called",
         }],
@@ -1090,10 +1466,14 @@ async function main(): Promise<void> {
     "utf8",
   );
   if (cleanupFailure) Deno.exitCode = 1;
-  if (outcome.report.cases.some((item) => item.status === "failed")) Deno.exitCode = 1;
-  else if (outcome.report.cases.some((item) =>
-    item.status === "provider_restricted" || item.status === "skipped" || item.status === "review"
-  )) Deno.exitCode = 2;
+  if (outcome.report.cases.some((item) => item.status === "failed")) {
+    Deno.exitCode = 1;
+  } else if (
+    outcome.report.cases.some((item) =>
+      item.status === "provider_restricted" || item.status === "skipped" ||
+      item.status === "review"
+    )
+  ) Deno.exitCode = 2;
 }
 
 async function executeAcceptance(input: {
@@ -1106,7 +1486,9 @@ async function executeAcceptance(input: {
   officialCatalogs: ProviderInventory[];
   uploadedFixtureIds: string[];
   configuredFixtures: FixtureRefs;
-}): Promise<{ report: AcceptanceReport; effectiveBaseline: Record<string, unknown> }> {
+}): Promise<
+  { report: AcceptanceReport; effectiveBaseline: Record<string, unknown> }
+> {
   const {
     options,
     session,
@@ -1126,7 +1508,9 @@ async function executeAcceptance(input: {
       const target = typeof request === "string"
         ? request.replaceAll("%3A", ":").replaceAll("%3a", ":")
         : request instanceof URL
-        ? new URL(request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"))
+        ? new URL(
+          request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"),
+        )
         : request;
       return fetch(target, init);
     },
@@ -1138,31 +1522,43 @@ async function executeAcceptance(input: {
     ? options.providers
     : baseline.providers.map((provider) => provider.provider_driver);
   const credentialDrivers = providerTokenDrivers(options.providerTokens);
-  const discoveryInventories = options.applyProviderCredentials && credentialDrivers.length > 0
-    ? await waitForProviderInventories({
-      aicc: session.aicc,
-      expectedDrivers: credentialDrivers,
-      expectedInstances: options.providerInstances,
-      timeoutMs: options.timeoutMs,
-    })
-    : normalizeInventories(await session.aicc.call("models.list", {}));
-  const selectedBeforeRefresh = selectSingleProviderInstances({
-    inventories: discoveryInventories,
-    drivers: selectedDrivers,
-    configured: options.providerInstances,
-  });
+  const selectedBeforeRefresh =
+    options.applyProviderCredentials && credentialDrivers.length > 0
+      ? credentialDrivers.map((driver) => {
+        const instance = options.providerInstances[driver];
+        if (!instance) {
+          throw new Error(`missing configured Provider instance for ${driver}`);
+        }
+        return {
+          provider_driver: driver,
+          provider_instance_name: instance,
+          models: [],
+        };
+      })
+      : selectSingleProviderInstances({
+        inventories: normalizeInventories(
+          await session.aicc.call("models.list", {}),
+        ),
+        drivers: selectedDrivers,
+        configured: options.providerInstances,
+      });
   const refreshed = await refreshProviderInventoriesUntilSuccess({
     aicc: session.aicc,
     selectedInventories: selectedBeforeRefresh,
-    readInventories: async () => normalizeInventories(await session.aicc.call("models.list", {})),
+    readInventories: async () =>
+      normalizeInventories(await session.aicc.call("models.list", {})),
     maxAttempts: options.inventoryRefreshMaxAttempts,
     retryDelayMs: options.inventoryRefreshRetryDelayMs,
     providerRetryDelayMs: Object.fromEntries(selectedDrivers.map((driver) => [
       driver,
-      options.providerLimitOverrides[driver]?.minIntervalMs ?? options.providerLimits.minIntervalMs,
+      options.providerLimitOverrides[driver]?.minIntervalMs ??
+        options.providerLimits.minIntervalMs,
     ])),
   });
-  const providerRuntimeAfterRefresh = await session.aicc.call("provider.list", {});
+  const providerRuntimeAfterRefresh = await session.aicc.call(
+    "provider.list",
+    {},
+  );
   const selectedInventories = selectSingleProviderInstances({
     inventories: refreshed.inventories,
     drivers: selectedDrivers,
@@ -1172,7 +1568,10 @@ async function executeAcceptance(input: {
     ])),
   });
   const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
-  const judgeSchedulerProvider = judgeProviderDriver(judgeModel, selectedInventories);
+  const judgeSchedulerProvider = judgeProviderDriver(
+    judgeModel,
+    selectedInventories,
+  );
   const officialInventories = scopeOfficialInventoriesToInstanceRules(
     bindOfficialCatalogInstances(officialCatalogs, selectedInventories),
     options.providerInstanceOverrides,
@@ -1197,13 +1596,19 @@ async function executeAcceptance(input: {
   const requestedCases = new Set(options.caseIds);
   const selectedCells = requestedCases.size > 0
     ? sortedCells.filter((cell) => requestedCases.has(cell.case_id))
-    : sortedCells.filter((_, index) => index % options.shardCount === options.shardIndex);
+    : sortedCells.filter((_, index) =>
+      index % options.shardCount === options.shardIndex
+    );
   const filteredRequestedCases = new Map<string, typeof matrix.coverage>();
   for (const caseId of requestedCases) {
     if (sortedCells.some((cell) => cell.case_id === caseId)) continue;
     const matches = matrix.coverage.filter((record) => {
-      const segment = record.provider_model_id.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-      return record.status === "filtered" && caseId.toLowerCase().includes(`.${segment}.`);
+      const segment = record.provider_model_id.toLowerCase().replace(
+        /[^a-z0-9._-]+/g,
+        "-",
+      );
+      return record.status === "filtered" &&
+        caseId.toLowerCase().includes(`.${segment}.`);
     });
     if (matches.length > 0) filteredRequestedCases.set(caseId, matches);
   }
@@ -1214,23 +1619,33 @@ async function executeAcceptance(input: {
     apiType: string;
   }>();
   for (const caseId of requestedCases) {
-    if (sortedCells.some((cell) => cell.case_id === caseId) || filteredRequestedCases.has(caseId)) {
+    if (
+      sortedCells.some((cell) => cell.case_id === caseId) ||
+      filteredRequestedCases.has(caseId)
+    ) {
       continue;
     }
     for (const inventory of selectedInventories) {
-      const prefix = `t2.${inventory.provider_driver}.${inventory.provider_instance_name}.`
-        .toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+      const prefix =
+        `t2.${inventory.provider_driver}.${inventory.provider_instance_name}.`
+          .toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
       if (!caseId.startsWith(prefix)) continue;
       const profile = baseline.providers.find((candidate) =>
         candidate.provider_driver === inventory.provider_driver
       );
       if (!profile) continue;
       for (const rule of profile.rules) {
-        if (!rule.model_pattern.endsWith("*") || !["active", "preview"].includes(rule.status)) {
+        if (
+          !rule.model_pattern.endsWith("*") ||
+          !["active", "preview"].includes(rule.status)
+        ) {
           continue;
         }
         const providerModelId = rule.model_pattern.slice(0, -1);
-        const modelSegment = providerModelId.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+        const modelSegment = providerModelId.toLowerCase().replace(
+          /[^a-z0-9._-]+/g,
+          "-",
+        );
         for (const apiType of rule.api_types) {
           const expected = `${prefix}${modelSegment}.${apiType}`;
           if (caseId !== expected) continue;
@@ -1250,7 +1665,11 @@ async function executeAcceptance(input: {
     !restrictedRequestedCases.has(caseId)
   );
   if (missingCases.length > 0) {
-    throw new Error(`requested cases are not in the selected Provider matrix: ${missingCases.join(", ")}`);
+    throw new Error(
+      `requested cases are not in the selected Provider matrix: ${
+        missingCases.join(", ")
+      }`,
+    );
   }
   const cases: CaseReport[] = matrix.mismatches.map((mismatch, index) => ({
     run_id: runId,
@@ -1303,7 +1722,8 @@ async function executeAcceptance(input: {
       status: "provider_restricted",
       provider_driver: restricted.providerDriver,
       provider_instance: restricted.providerInstance,
-      exact_model: `${restricted.providerModelId}@${restricted.providerInstance}`,
+      exact_model:
+        `${restricted.providerModelId}@${restricted.providerInstance}`,
       api_type: restricted.apiType,
       method: "models.list",
       outbound_message_ids: [],
@@ -1314,14 +1734,19 @@ async function executeAcceptance(input: {
         elapsed_ms: 0,
         status: "provider_restricted",
         failure_class: "platform_limitation",
-        diagnostic: `Provider restriction: ${restricted.providerModelId} is documented but absent from the official catalog for the selected credentials`,
+        diagnostic:
+          `Provider restriction: ${restricted.providerModelId} is documented but absent from the official catalog for the selected credentials`,
         estimated_cost_usd: 0,
         cost_status: "not_called",
       }],
     });
   }
   for (const driver of selectedDrivers) {
-    if (!selectedInventories.some((inventory) => inventory.provider_driver === driver)) {
+    if (
+      !selectedInventories.some((inventory) =>
+        inventory.provider_driver === driver
+      )
+    ) {
       cases.push({
         run_id: runId,
         case_id: `t2.preflight.provider_missing.${driver}`,
@@ -1339,11 +1764,13 @@ async function executeAcceptance(input: {
           diagnostic: "selected provider has no runtime inventory",
         }],
       });
-    } else if (!matrix.coverage.some((record) =>
-      record.provider_driver === driver &&
-      record.status === "included" &&
-      record.source === "aicc_inventory"
-    )) {
+    } else if (
+      !matrix.coverage.some((record) =>
+        record.provider_driver === driver &&
+        record.status === "included" &&
+        record.source === "aicc_inventory"
+      )
+    ) {
       cases.push({
         run_id: runId,
         case_id: `t2.preflight.provider_no_eligible_models.${driver}`,
@@ -1358,7 +1785,8 @@ async function executeAcceptance(input: {
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
-          diagnostic: "runtime inventory contains no active physical model after lifecycle, alias, and duplicate filtering",
+          diagnostic:
+            "runtime inventory contains no active physical model after lifecycle, alias, and duplicate filtering",
           estimated_cost_usd: 0,
           cost_status: "not_called",
         }],
@@ -1368,7 +1796,10 @@ async function executeAcceptance(input: {
   const preparedRequests = new Map<string, Record<string, unknown>>();
   for (const cell of selectedCells) {
     try {
-      preparedRequests.set(cell.case_id, buildExactRequest({ cell, runId, fixtures: options.fixtures }));
+      preparedRequests.set(
+        cell.case_id,
+        buildExactRequest({ cell, runId, fixtures: options.fixtures }),
+      );
     } catch (error) {
       cases.push({
         run_id: runId,
@@ -1394,41 +1825,86 @@ async function executeAcceptance(input: {
       });
     }
   }
-  const executableCells = selectedCells.filter((cell) => preparedRequests.has(cell.case_id));
+  const executableCells = selectedCells.filter((cell) =>
+    preparedRequests.has(cell.case_id)
+  );
   const plannedCases = executableCells.length;
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
     : [];
-  if (judgedCells.length > 0) assertJudgeModelAvailable(judgeModel, selectedInventories);
+  if (judgedCells.length > 0) {
+    assertJudgeModelAvailable(judgeModel, selectedInventories);
+  }
   const continuationPrerequisiteCells = [...new Map(
     executableCells
       .filter((cell) => cell.api_type === "video.extend")
       .map((cell) => [cell.exact_model, cell]),
   ).values()];
-  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length + continuationPrerequisiteCells.length;
+  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length +
+    continuationPrerequisiteCells.length;
   const estimatedCost = executableCells.reduce(
-    (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd) * options.maxAttempts,
+    (sum, cell) =>
+      sum +
+      estimatedCellCost(cell, options.estimatedCostPerCallUsd) *
+        options.maxAttempts,
     continuationPrerequisiteCells.reduce(
-      (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd),
+      (sum, cell) =>
+        sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd),
       0,
     ),
   ) + judgedCells.length * options.estimatedCostPerCallUsd;
   console.log(`[plan] run_id=${runId}`);
   console.log(`[plan] providers=${selectedDrivers.join(",")}`);
-  console.log(`[plan] shard=${options.shardIndex + 1}/${options.shardCount} full_matrix_cases=${matrix.cells.length}`);
-  if (requestedCases.size > 0) console.log(`[plan] targeted_cases=${selectedCells.length}`);
-  console.log(`[plan] cases=${plannedCases} max_attempts=${options.maxAttempts} max_possible_calls=${plannedCalls} max_calls=${options.maxRealCalls}`);
-  console.log(`[plan] concurrency global=${options.globalConcurrency} provider_default=${options.providerLimits.maxConcurrency} interval_default_ms=${options.providerLimits.minIntervalMs}`);
-  for (const [provider, limits] of Object.entries(options.providerLimitOverrides)) {
-    console.log(`[plan] provider_limit ${provider}: concurrency=${limits.maxConcurrency ?? options.providerLimits.maxConcurrency} interval_ms=${limits.minIntervalMs ?? options.providerLimits.minIntervalMs}`);
+  console.log(
+    `[plan] shard=${
+      options.shardIndex + 1
+    }/${options.shardCount} full_matrix_cases=${matrix.cells.length}`,
+  );
+  if (requestedCases.size > 0) {
+    console.log(`[plan] targeted_cases=${selectedCells.length}`);
   }
-  console.log(`[plan] estimated_cost_usd=${estimatedCost.toFixed(4)} max_cost_usd=${options.maxCostUsd.toFixed(4)}`);
-  console.log(`[plan] judge enabled=${options.judgeEnabled} model=${judgeModel} semantic_cases=${options.judgeEnabled ? judgedCells.length : executableCells.filter((cell) => semanticRubric(cell).length > 0).length}`);
+  console.log(
+    `[plan] cases=${plannedCases} max_attempts=${options.maxAttempts} max_possible_calls=${plannedCalls} max_calls=${options.maxRealCalls}`,
+  );
+  console.log(
+    `[plan] concurrency global=${options.globalConcurrency} provider_default=${options.providerLimits.maxConcurrency} interval_default_ms=${options.providerLimits.minIntervalMs}`,
+  );
+  for (
+    const [provider, limits] of Object.entries(options.providerLimitOverrides)
+  ) {
+    console.log(
+      `[plan] provider_limit ${provider}: concurrency=${
+        limits.maxConcurrency ?? options.providerLimits.maxConcurrency
+      } interval_ms=${
+        limits.minIntervalMs ?? options.providerLimits.minIntervalMs
+      }`,
+    );
+  }
+  console.log(
+    `[plan] estimated_cost_usd=${estimatedCost.toFixed(4)} max_cost_usd=${
+      options.maxCostUsd.toFixed(4)
+    }`,
+  );
+  console.log(
+    `[plan] judge enabled=${options.judgeEnabled} model=${judgeModel} semantic_cases=${
+      options.judgeEnabled
+        ? judgedCells.length
+        : executableCells.filter((cell) => semanticRubric(cell).length > 0)
+          .length
+    }`,
+  );
   if (options.allowRealModelCalls && plannedCalls > options.maxRealCalls) {
-    throw new Error(`planned calls ${plannedCalls} exceed max_real_calls ${options.maxRealCalls}`);
+    throw new Error(
+      `planned calls ${plannedCalls} exceed max_real_calls ${options.maxRealCalls}`,
+    );
   }
-  if (options.allowRealModelCalls && exceedsUsdBudget(estimatedCost, options.maxCostUsd)) {
-    throw new Error(`estimated cost ${estimatedCost} exceeds max_cost_usd ${options.maxCostUsd}`);
+  if (
+    options.allowRealModelCalls &&
+    exceedsUsdBudget(estimatedCost, options.maxCostUsd)
+  ) {
+    throw new Error(
+      `estimated cost ${estimatedCost} exceeds max_cost_usd ${options.maxCostUsd}`,
+    );
   }
 
   let ndnFixtureService: NdnFixtureService | undefined;
@@ -1439,7 +1915,8 @@ async function executeAcceptance(input: {
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     const uploadFixtures = selectedCells.some((cell) =>
-      cell.resource_representation === "named_object" || cell.resource_representation === "url"
+      cell.resource_representation === "named_object" ||
+      cell.resource_representation === "url"
     );
     if (executeRealModelCalls && uploadFixtures) {
       ndnFixtureService = await startNdnFixtureService({
@@ -1476,35 +1953,54 @@ async function executeAcceptance(input: {
       options.providerLimitOverrides,
     );
     const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
-    const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
+    const continuationResource = (
+      cell: typeof executableCells[number],
+    ): Promise<ResourceRef> => {
       const sourceApiType = cell.generated_artifact_source_api_type ??
         (cell.api_type === "video.extend" ? "video.txt2video" : undefined);
-      if (!sourceApiType) throw new Error(`${cell.case_id} has no generated artifact source api_type`);
+      if (!sourceApiType) {
+        throw new Error(
+          `${cell.case_id} has no generated artifact source api_type`,
+        );
+      }
       const key = `${cell.exact_model}:${sourceApiType}`;
       const existing = continuationPrerequisites.get(key);
       if (existing) return existing;
       const pending = scheduler.execute(cell.provider_driver, async () => {
         if (actualCalls >= options.maxRealCalls) {
-          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before generated artifact prerequisite`);
+          throw new Error(
+            `max_real_calls ${options.maxRealCalls} exhausted before generated artifact prerequisite`,
+          );
         }
-        const sourceMethod = methodsForApiType(sourceApiType)[0] ?? sourceApiType;
-        const estimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
+        const sourceMethod = methodsForApiType(sourceApiType)[0] ??
+          sourceApiType;
+        const estimate = estimatedCellCost(
+          cell,
+          options.estimatedCostPerCallUsd,
+        );
         const reservation = costBudget.reserve(estimate);
         const started = Date.now();
         actualCalls += 1;
         try {
           const prerequisiteCell = {
             ...cell,
-            case_id: `${cell.case_id}.generated-artifact-source.${sourceApiType}`,
+            case_id:
+              `${cell.case_id}.generated-artifact-source.${sourceApiType}`,
             api_type: sourceApiType,
             method: sourceMethod,
-            input_kinds: sourceApiType.startsWith("image.") ? ["text"]
-              : sourceApiType.startsWith("audio.") ? ["text"]
-              : sourceApiType.startsWith("video.") ? ["text"]
+            input_kinds: sourceApiType.startsWith("image.")
+              ? ["text"]
+              : sourceApiType.startsWith("audio.")
+              ? ["text"]
+              : sourceApiType.startsWith("video.")
+              ? ["text"]
               : cell.input_kinds,
-            output_kinds: sourceApiType.startsWith("image.") ? ["image"]
-              : sourceApiType.startsWith("audio.") ? ["audio"]
-              : sourceApiType.startsWith("video.") ? ["video"]
+            output_kinds: sourceApiType.startsWith("image.")
+              ? ["image"]
+              : sourceApiType.startsWith("audio.")
+              ? ["audio"]
+              : sourceApiType.startsWith("video.")
+              ? ["video"]
               : cell.output_kinds,
             generated_artifact_source_api_type: undefined,
           };
@@ -1513,22 +2009,31 @@ async function executeAcceptance(input: {
             runId,
             fixtures: options.fixtures,
           });
-          const payload = prerequisiteRequest.payload as Record<string, unknown>;
+          const payload = prerequisiteRequest.payload as Record<
+            string,
+            unknown
+          >;
           if (sourceApiType === "video.txt2video") {
             payload.input_json = {
               ...(payload.input_json as Record<string, unknown>),
-              prompt: "A paper plane moving across a desk, continuous steady motion",
+              prompt:
+                "A paper plane moving across a desk, continuous steady motion",
             };
             payload.resources = [];
           }
-          prerequisiteRequest.idempotency_key = `${runId}:continuation:${sourceApiType}:${cell.exact_model}`;
+          prerequisiteRequest.idempotency_key =
+            `${runId}:continuation:${sourceApiType}:${cell.exact_model}`;
           const initial = await callInference(
             session.aicc,
             sourceMethod,
             prerequisiteRequest,
           ) as AiMethodResponse;
           taskManagerTaskIds.add(initial.task_id);
-          const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
+          const terminal = await waitForTask(
+            session.taskManager,
+            initial,
+            options.timeoutMs,
+          );
           const artifacts = await validateTerminalArtifacts({
             terminal,
             ndm,
@@ -1537,14 +2042,20 @@ async function executeAcceptance(input: {
           });
           prerequisiteArtifactIds.push(...artifacts.ids);
           const source = artifactSources(terminal).find((candidate) =>
-            typeof candidate.obj_id === "string" || typeof candidate.url === "string" ||
+            typeof candidate.obj_id === "string" ||
+            typeof candidate.url === "string" ||
             typeof candidate.data_base64 === "string"
           );
-          if (!source) throw new Error(`${sourceApiType} prerequisite produced no reusable artifact`);
+          if (!source) {
+            throw new Error(
+              `${sourceApiType} prerequisite produced no reusable artifact`,
+            );
+          }
           const finance = extractFinance(terminal);
           costBudget.settle(reservation, finance.actualCostUsd);
           financialEntries.push({
-            case_id: `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
+            case_id:
+              `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
             attempt: 1,
             provider_driver: cell.provider_driver,
             provider_instance: cell.provider_instance,
@@ -1558,14 +2069,17 @@ async function executeAcceptance(input: {
             actual_cost_usd: finance.actualCostUsd,
             raw_cost_usd: finance.rawCostUsd,
             credit_applied_usd: finance.creditAppliedUsd,
-            cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
+            cost_status: finance.actualCostUsd === undefined
+              ? "unknown"
+              : "actual",
           });
           const { _content_type: _, ...resource } = source;
           return resource as ResourceRef;
         } catch (error) {
           costBudget.settle(reservation);
           financialEntries.push({
-            case_id: `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
+            case_id:
+              `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
             attempt: 1,
             provider_driver: cell.provider_driver,
             provider_instance: cell.provider_instance,
@@ -1601,32 +2115,61 @@ async function executeAcceptance(input: {
       let request = preparedRequests.get(cell.case_id)!;
       for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
         const started = Date.now();
-        const attemptEstimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
+        const attemptEstimate = estimatedCellCost(
+          cell,
+          options.estimatedCostPerCallUsd,
+        );
         let reservation: CostReservation | undefined;
         let reservationSettled = false;
         try {
-          if (cell.generated_artifact_source_api_type || cell.api_type === "video.extend") {
+          if (
+            cell.generated_artifact_source_api_type ||
+            cell.api_type === "video.extend"
+          ) {
             const generatedVideo = await continuationResource(cell);
             request = structuredClone(request);
-            (request.payload as Record<string, unknown>).resources = [generatedVideo];
+            (request.payload as Record<string, unknown>).resources = [
+              generatedVideo,
+            ];
           }
-          const initial = await scheduler.execute(cell.provider_driver, async () => {
-            if (actualCalls >= options.maxRealCalls) {
-              throw new Error(`max_real_calls ${options.maxRealCalls} exhausted`);
-            }
-            reservation = costBudget.reserve(attemptEstimate);
-            actualCalls += 1;
-            if (cell.api_type === "decision") {
-              const resolved = await session.aicc.call("route.resolve", {
-                api_type: "decision", logical_model: "decision", requirements: decisionRouteRequirements(),
-                policy: { allowed_provider_instances: [cell.provider_instance] },
-              }) as { selected_exact_model: string };
-              if (resolved.selected_exact_model !== cell.exact_model) throw new Error("decision route selected a different physical model than its T2 cell");
-            }
-            return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
-          });
+          const initial = await scheduler.execute(
+            cell.provider_driver,
+            async () => {
+              if (actualCalls >= options.maxRealCalls) {
+                throw new Error(
+                  `max_real_calls ${options.maxRealCalls} exhausted`,
+                );
+              }
+              reservation = costBudget.reserve(attemptEstimate);
+              actualCalls += 1;
+              if (cell.api_type === "decision") {
+                const resolved = await session.aicc.call("route.resolve", {
+                  api_type: "decision",
+                  logical_model: "decision",
+                  requirements: decisionRouteRequirements(),
+                  policy: {
+                    allowed_provider_instances: [cell.provider_instance],
+                  },
+                }) as { selected_exact_model: string };
+                if (resolved.selected_exact_model !== cell.exact_model) {
+                  throw new Error(
+                    "decision route selected a different physical model than its T2 cell",
+                  );
+                }
+              }
+              return await callInference(
+                session.aicc,
+                cell.method,
+                request,
+              ) as AiMethodResponse;
+            },
+          );
           taskManagerTaskIds.add(initial.task_id);
-          const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
+          const terminal = await waitForTask(
+            session.taskManager,
+            initial,
+            options.timeoutMs,
+          );
           assertResponseShape(cell, terminal);
           const artifacts = await validateTerminalArtifacts({
             terminal,
@@ -1657,7 +2200,9 @@ async function executeAcceptance(input: {
             actual_cost_usd: finance.actualCostUsd,
             raw_cost_usd: finance.rawCostUsd,
             credit_applied_usd: finance.creditAppliedUsd,
-            cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
+            cost_status: finance.actualCostUsd === undefined
+              ? "unknown"
+              : "actual",
           });
           caseReport.status = "passed";
           caseReport.task_id = (terminal as AiMethodResponse).task_id;
@@ -1677,7 +2222,8 @@ async function executeAcceptance(input: {
               ? judgeModel.slice(judgeModel.lastIndexOf("@") + 1)
               : undefined;
             try {
-              const preferDifferentProvider = judgeProviderInstance !== cell.provider_instance;
+              const preferDifferentProvider =
+                judgeProviderInstance !== cell.provider_instance;
               const verdict = await runJudge({
                 aicc: session.aicc,
                 taskManager: session.taskManager,
@@ -1697,12 +2243,20 @@ async function executeAcceptance(input: {
                   metadata: audit.metadata,
                 })),
                 timeoutMs: Math.min(options.timeoutMs, 180_000),
-                invoke: async (request) => await scheduler.execute(judgeSchedulerProvider, async () => {
-                  if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);
-                  judgeReservation = costBudget.reserve(judgeEstimate);
-                  actualCalls += 1;
-                  return await callChatCompletions(session.aicc, request) as AiMethodResponse;
-                }),
+                invoke: async (request) =>
+                  await scheduler.execute(judgeSchedulerProvider, async () => {
+                    if (actualCalls >= options.maxRealCalls) {
+                      throw new Error(
+                        `max_real_calls ${options.maxRealCalls} exhausted before Judge`,
+                      );
+                    }
+                    judgeReservation = costBudget.reserve(judgeEstimate);
+                    actualCalls += 1;
+                    return await callChatCompletions(
+                      session.aicc,
+                      request,
+                    ) as AiMethodResponse;
+                  }),
               });
               const judgeFinance = extractFinance(verdict.terminalResponse);
               costBudget.settle(judgeReservation!, judgeFinance.actualCostUsd);
@@ -1722,7 +2276,9 @@ async function executeAcceptance(input: {
                 actual_cost_usd: judgeFinance.actualCostUsd,
                 raw_cost_usd: judgeFinance.rawCostUsd,
                 credit_applied_usd: judgeFinance.creditAppliedUsd,
-                cost_status: judgeFinance.actualCostUsd === undefined ? "unknown" : "actual",
+                cost_status: judgeFinance.actualCostUsd === undefined
+                  ? "unknown"
+                  : "actual",
               });
               caseReport.judge = {
                 rubric_version: options.judgeRubricVersion,
@@ -1734,7 +2290,10 @@ async function executeAcceptance(input: {
                 reason: verdict.reason,
               };
               if (!verdict.passed) finalStatus = "review";
-              diagnostic = [diagnostic, `Judge score ${verdict.score}: ${verdict.reason}`].filter(Boolean).join("; ");
+              diagnostic = [
+                diagnostic,
+                `Judge score ${verdict.score}: ${verdict.reason}`,
+              ].filter(Boolean).join("; ");
             } catch (error) {
               if (judgeReservation && !judgeSettled) {
                 costBudget.settle(judgeReservation);
@@ -1756,7 +2315,10 @@ async function executeAcceptance(input: {
             }
           } else if (rubric.length > 0) {
             finalStatus = "review";
-            diagnostic = [diagnostic, "semantic rubric requires Judge or manual review"].filter(Boolean).join("; ");
+            diagnostic = [
+              diagnostic,
+              "semantic rubric requires Judge or manual review",
+            ].filter(Boolean).join("; ");
           }
           caseReport.status = finalStatus;
           caseReport.attempts.push({
@@ -1770,12 +2332,16 @@ async function executeAcceptance(input: {
             actual_cost_usd: finance.actualCostUsd,
             raw_cost_usd: finance.rawCostUsd,
             credit_applied_usd: finance.creditAppliedUsd,
-            cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
+            cost_status: finance.actualCostUsd === undefined
+              ? "unknown"
+              : "actual",
           });
           break;
         } catch (error) {
           const providerRestricted = isProviderRestricted(error);
-          const errorStatus = providerRestricted ? "provider_restricted" : "failed";
+          const errorStatus = providerRestricted
+            ? "provider_restricted"
+            : "failed";
           caseReport.status = errorStatus;
           if (reservation && !reservationSettled) {
             costBudget.settle(reservation);
@@ -1798,17 +2364,26 @@ async function executeAcceptance(input: {
             started_at: new Date(started).toISOString(),
             elapsed_ms: Date.now() - started,
             status: errorStatus,
-            failure_class: providerRestricted ? "platform_limitation" : failureClass(error),
-            error_code: error instanceof TaskFailureError ? error.errorCode : undefined,
+            failure_class: providerRestricted
+              ? "platform_limitation"
+              : failureClass(error),
+            error_code: error instanceof TaskFailureError
+              ? error.errorCode
+              : undefined,
             diagnostic: providerRestricted
               ? `Provider restriction: ${String(error)}`
               : String(error),
             estimated_cost_usd: reservation ? attemptEstimate : 0,
             cost_status: reservation ? "unknown" : "not_called",
           });
-          if (providerRestricted || attempt >= options.maxAttempts || !retryable(error)) break;
+          if (
+            providerRestricted || attempt >= options.maxAttempts ||
+            !retryable(error)
+          ) break;
           if (options.retryDelayMs > 0) {
-            await new Promise((resolvePromise) => setTimeout(resolvePromise, options.retryDelayMs));
+            await new Promise((resolvePromise) =>
+              setTimeout(resolvePromise, options.retryDelayMs)
+            );
           }
         }
       }
@@ -1842,9 +2417,12 @@ async function executeAcceptance(input: {
     }
   }
   if (executeRealModelCalls) {
-    const successful = cases.filter((item) => item.task_id && financialEntries.some((entry) =>
-      entry.case_id === item.case_id && entry.status === "passed"
-    ));
+    const successful = cases.filter((item) =>
+      item.task_id &&
+      financialEntries.some((entry) =>
+        entry.case_id === item.case_id && entry.status === "passed"
+      )
+    );
     if (successful.length > 0) {
       try {
         let usageEvents = await queryUsageEvents({
@@ -1854,8 +2432,12 @@ async function executeAcceptance(input: {
           taskIds: successful.map((item) => item.task_id!),
         });
         const deadline = Date.now() + 10_000;
-        while (usageEvents.length < successful.length && Date.now() < deadline) {
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+        while (
+          usageEvents.length < successful.length && Date.now() < deadline
+        ) {
+          await new Promise((resolvePromise) =>
+            setTimeout(resolvePromise, 500)
+          );
           usageEvents = await queryUsageEvents({
             aicc: session.aicc,
             startTimeMs: new Date(runStartedAt).getTime() - 1_000,
@@ -1891,7 +2473,16 @@ async function executeAcceptance(input: {
               elapsed_ms: 0,
               status: "failed",
               failure_class: "usage_failed",
-              diagnostic: `durable attribution failed for task ${item.task_id}: usage_events=${durable.length}, matching_route_trace=${Boolean(trace)}, observed_routes=${routeTraces.map((candidate) => `${candidate.selected_exact_model ?? "[missing]"}/${candidate.provider_instance_name ?? "[missing]"}`).join("|") || "[none]"}`,
+              diagnostic:
+                `durable attribution failed for task ${item.task_id}: usage_events=${durable.length}, matching_route_trace=${
+                  Boolean(trace)
+                }, observed_routes=${
+                  routeTraces.map((candidate) =>
+                    `${candidate.selected_exact_model ?? "[missing]"}/${
+                      candidate.provider_instance_name ?? "[missing]"
+                    }`
+                  ).join("|") || "[none]"
+                }`,
               estimated_cost_usd: 0,
               cost_status: "not_called",
             });
@@ -1909,15 +2500,21 @@ async function executeAcceptance(input: {
             entry.actual_cost_usd = audited.actualCostUsd;
             entry.raw_cost_usd = audited.rawCostUsd;
             entry.credit_applied_usd = audited.creditAppliedUsd;
-            entry.cost_status = audited.actualCostUsd === undefined ? "unknown" : "actual";
+            entry.cost_status = audited.actualCostUsd === undefined
+              ? "unknown"
+              : "actual";
           }
-          const attempt = [...item.attempts].reverse().find((candidate) => candidate.status === "passed");
+          const attempt = [...item.attempts].reverse().find((candidate) =>
+            candidate.status === "passed"
+          );
           if (attempt) {
             attempt.usage = audited.usage;
             attempt.actual_cost_usd = audited.actualCostUsd;
             attempt.raw_cost_usd = audited.rawCostUsd;
             attempt.credit_applied_usd = audited.creditAppliedUsd;
-            attempt.cost_status = audited.actualCostUsd === undefined ? "unknown" : "actual";
+            attempt.cost_status = audited.actualCostUsd === undefined
+              ? "unknown"
+              : "actual";
           }
         }
       } catch (error) {
@@ -1956,7 +2553,9 @@ async function executeAcceptance(input: {
         });
         const deadline = Date.now() + 10_000;
         while (events.length < judged.length && Date.now() < deadline) {
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+          await new Promise((resolvePromise) =>
+            setTimeout(resolvePromise, 500)
+          );
           events = await queryUsageEvents({
             aicc: session.aicc,
             startTimeMs: new Date(runStartedAt).getTime() - 1_000,
@@ -1971,16 +2570,23 @@ async function executeAcceptance(input: {
           endTimeMs: Date.now() + 1_000,
           taskIds,
         });
-        const traceByTask = new Map(traces.map((trace) => [trace.task_id, trace]));
-        const driverByInstance = new Map(selectedInventories.map((inventory) => [
-          inventory.provider_instance_name,
-          inventory.provider_driver,
-        ]));
+        const traceByTask = new Map(
+          traces.map((trace) => [trace.task_id, trace]),
+        );
+        const driverByInstance = new Map(
+          selectedInventories.map((inventory) => [
+            inventory.provider_instance_name,
+            inventory.provider_driver,
+          ]),
+        );
         for (const item of judged) {
           const judge = item.judge!;
           const event = byTask.get(judge.task_id) ?? [];
           const trace = traceByTask.get(judge.task_id);
-          if (event.length !== 1 || !trace?.selected_exact_model || !trace.provider_instance_name) {
+          if (
+            event.length !== 1 || !trace?.selected_exact_model ||
+            !trace.provider_instance_name
+          ) {
             item.status = "failed";
             item.attempts.push({
               attempt: item.attempts.length + 1,
@@ -1988,7 +2594,10 @@ async function executeAcceptance(input: {
               elapsed_ms: 0,
               status: "failed",
               failure_class: "usage_failed",
-              diagnostic: `Judge attribution failed for task ${judge.task_id}: usage_events=${event.length}, route_trace=${Boolean(trace)}`,
+              diagnostic:
+                `Judge attribution failed for task ${judge.task_id}: usage_events=${event.length}, route_trace=${
+                  Boolean(trace)
+                }`,
               estimated_cost_usd: 0,
               cost_status: "not_called",
             });
@@ -1996,11 +2605,17 @@ async function executeAcceptance(input: {
           }
           judge.exact_model = trace.selected_exact_model;
           judge.provider_instance = trace.provider_instance_name;
-          judge.provider_driver = driverByInstance.get(trace.provider_instance_name);
-          judge.distinct_provider_or_family = trace.provider_instance_name !== item.provider_instance ||
-            modelFamily(trace.selected_exact_model) !== modelFamily(item.exact_model ?? "");
+          judge.provider_driver = driverByInstance.get(
+            trace.provider_instance_name,
+          );
+          judge.distinct_provider_or_family =
+            trace.provider_instance_name !== item.provider_instance ||
+            modelFamily(trace.selected_exact_model) !==
+              modelFamily(item.exact_model ?? "");
           const audited = usageEventFinance(event[0]);
-          const entry = financialEntries.find((candidate) => candidate.case_id === `${item.case_id}.judge`);
+          const entry = financialEntries.find((candidate) =>
+            candidate.case_id === `${item.case_id}.judge`
+          );
           if (entry) {
             entry.provider_driver = judge.provider_driver ?? "unknown";
             entry.provider_instance = trace.provider_instance_name;
@@ -2009,7 +2624,9 @@ async function executeAcceptance(input: {
             entry.actual_cost_usd = audited.actualCostUsd;
             entry.raw_cost_usd = audited.rawCostUsd;
             entry.credit_applied_usd = audited.creditAppliedUsd;
-            entry.cost_status = audited.actualCostUsd === undefined ? "unknown" : "actual";
+            entry.cost_status = audited.actualCostUsd === undefined
+              ? "unknown"
+              : "actual";
           }
         }
       } catch (error) {
@@ -2041,32 +2658,43 @@ async function executeAcceptance(input: {
   const artifactDiscoveryFailures: string[] = [];
   for (const taskId of taskManagerTaskIds) {
     try {
-      const task = taskValue(await session.taskManager.call("get_task", { task_id: taskId }));
-      const taskResult = task.result && typeof task.result === "object" && !Array.isArray(task.result)
+      const task = taskValue(
+        await session.taskManager.call("get_task", { task_id: taskId }),
+      );
+      const taskResult = task.result && typeof task.result === "object" &&
+          !Array.isArray(task.result)
         ? task.result as Record<string, unknown>
         : undefined;
-      const result = taskResult?.result && typeof taskResult.result === "object" && !Array.isArray(taskResult.result)
-        ? taskResult.result as Record<string, unknown>
-        : undefined;
-      const output = result?.output && typeof result.output === "object" && !Array.isArray(result.output)
+      const result =
+        taskResult?.result && typeof taskResult.result === "object" &&
+          !Array.isArray(taskResult.result)
+          ? taskResult.result as Record<string, unknown>
+          : undefined;
+      const output = result?.output && typeof result.output === "object" &&
+          !Array.isArray(result.output)
         ? result.output as Record<string, unknown>
         : undefined;
       for (const source of artifactSources(output?.artifacts)) {
-        if (typeof source.obj_id === "string") terminalArtifactIds.push(source.obj_id);
+        if (typeof source.obj_id === "string") {
+          terminalArtifactIds.push(source.obj_id);
+        }
       }
     } catch (error) {
       artifactDiscoveryFailures.push(`${taskId}: ${String(error)}`);
     }
   }
-  const generatedArtifactIds = [...new Set([
-    ...prerequisiteArtifactIds,
-    ...cases.flatMap((item) => item.artifact_ids),
-    ...terminalArtifactIds,
-  ])]
+  const generatedArtifactIds = [
+    ...new Set([
+      ...prerequisiteArtifactIds,
+      ...cases.flatMap((item) => item.artifact_ids),
+      ...terminalArtifactIds,
+    ]),
+  ]
     .filter((objId) => !uploadedFixtureIds.includes(objId));
   const removeNamed = async (objId: string): Promise<void> => {
-    if (/^(?:mix256|chunk):/i.test(objId)) await ndm.removeChunk({ chunk_id: objId });
-    else await ndm.removeObject({ obj_id: objId });
+    if (/^(?:mix256|chunk):/i.test(objId)) {
+      await ndm.removeChunk({ chunk_id: objId });
+    } else await ndm.removeObject({ obj_id: objId });
   };
   for (const objId of [...new Set(uploadedFixtureIds)]) {
     try {
@@ -2082,8 +2710,18 @@ async function executeAcceptance(input: {
       cleanupResidual.push(objId);
     }
   }
-  cleanupDetails.push(`removed ${new Set(uploadedFixtureIds).size - cleanupResidual.filter((id) => uploadedFixtureIds.includes(id)).length} uploaded fixture object(s)`);
-  cleanupDetails.push(`removed ${generatedArtifactIds.length - cleanupResidual.filter((id) => generatedArtifactIds.includes(id)).length} generated output object(s)`);
+  cleanupDetails.push(
+    `removed ${
+      new Set(uploadedFixtureIds).size -
+      cleanupResidual.filter((id) => uploadedFixtureIds.includes(id)).length
+    } uploaded fixture object(s)`,
+  );
+  cleanupDetails.push(
+    `removed ${
+      generatedArtifactIds.length -
+      cleanupResidual.filter((id) => generatedArtifactIds.includes(id)).length
+    } generated output object(s)`,
+  );
   if (artifactDiscoveryFailures.length > 0) {
     cases.push({
       run_id: runId,
@@ -2099,7 +2737,10 @@ async function executeAcceptance(input: {
         elapsed_ms: 0,
         status: "failed",
         failure_class: "cleanup_failed",
-        diagnostic: `could not inspect ${artifactDiscoveryFailures.length} task result(s) before cleanup: ${artifactDiscoveryFailures.join("; ")}`,
+        diagnostic:
+          `could not inspect ${artifactDiscoveryFailures.length} task result(s) before cleanup: ${
+            artifactDiscoveryFailures.join("; ")
+          }`,
         estimated_cost_usd: 0,
         cost_status: "not_called",
       }],
@@ -2120,7 +2761,8 @@ async function executeAcceptance(input: {
         elapsed_ms: 0,
         status: "failed",
         failure_class: "cleanup_failed",
-        diagnostic: `failed to remove ${cleanupResidual.length} test-scoped Named Data object(s)`,
+        diagnostic:
+          `failed to remove ${cleanupResidual.length} test-scoped Named Data object(s)`,
         estimated_cost_usd: 0,
         cost_status: "not_called",
       }],
@@ -2153,40 +2795,68 @@ async function executeAcceptance(input: {
     model_coverage: matrix.coverage,
     product_defects: [
       ...cases.filter((item) =>
-        item.status === "failed" && item.case_id.startsWith("t2.preflight.baseline_mismatch.")
-      ).map((item) => defectFromFailure({
-        component: "AICC",
-        caseReport: item,
-        expected: "official Provider capability, AICC inventory declaration, and adapter support are bidirectionally consistent",
-        observed: item.attempts.at(-1)?.diagnostic ?? "capability baseline mismatch",
-        evidencePaths: [`cases/${item.case_id}.json`, "effective_baseline.json"],
-      })),
+        item.status === "failed" &&
+        item.case_id.startsWith("t2.preflight.baseline_mismatch.")
+      ).map((item) =>
+        defectFromFailure({
+          component: "AICC",
+          caseReport: item,
+          expected:
+            "official Provider capability, AICC inventory declaration, and adapter support are bidirectionally consistent",
+          observed: item.attempts.at(-1)?.diagnostic ??
+            "capability baseline mismatch",
+          evidencePaths: [
+            `cases/${item.case_id}.json`,
+            "effective_baseline.json",
+          ],
+        })
+      ),
       ...cases.filter((item) =>
         item.status === "failed" &&
         item.attempts.some((attempt) => attempt.status === "passed") &&
         item.attempts.at(-1)?.failure_class === "usage_failed"
-      ).map((item) => defectFromFailure({
-        component: "AICC",
-        caseReport: item,
-        expected: "a successful Provider call has one durable usage event and a matching exact-model/provider route trace",
-        observed: item.attempts.at(-1)?.diagnostic ?? "durable usage/route attribution mismatch",
-        evidencePaths: [`cases/${item.case_id}.json`, "finance.json"],
-      })),
+      ).map((item) =>
+        defectFromFailure({
+          component: "AICC",
+          caseReport: item,
+          expected:
+            "a successful Provider call has one durable usage event and a matching exact-model/provider route trace",
+          observed: item.attempts.at(-1)?.diagnostic ??
+            "durable usage/route attribution mismatch",
+          evidencePaths: [`cases/${item.case_id}.json`, "finance.json"],
+        })
+      ),
       ...cases.filter((item) =>
         item.status === "failed" &&
-        ["routing_failed", "resource_failed", "security_failed", "assertion_failed"]
+        [
+          "routing_failed",
+          "resource_failed",
+          "security_failed",
+          "assertion_failed",
+        ]
           .includes(item.attempts.at(-1)?.failure_class ?? "")
-      ).map((item) => defectFromFailure({
-        component: "AICC",
-        caseReport: item,
-        expected: "the selected exact model satisfies the case routing, capability, resource, and security assertions",
-        observed: item.attempts.at(-1)?.diagnostic ?? "acceptance assertion failed",
-        evidencePaths: [`cases/${item.case_id}.json`],
-      })),
+      ).map((item) =>
+        defectFromFailure({
+          component: "AICC",
+          caseReport: item,
+          expected:
+            "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+          observed: item.attempts.at(-1)?.diagnostic ??
+            "acceptance assertion failed",
+          evidencePaths: [`cases/${item.case_id}.json`],
+        })
+      ),
     ],
-    targeted_retest_command: targetedRetestCommand(cases, options.configPath, options.timeoutMs),
+    targeted_retest_command: targetedRetestCommand(
+      cases,
+      options.configPath,
+      options.timeoutMs,
+    ),
     cleanup: {
-      status: cleanupResidual.length === 0 && artifactDiscoveryFailures.length === 0 ? "passed" : "failed",
+      status:
+        cleanupResidual.length === 0 && artifactDiscoveryFailures.length === 0
+          ? "passed"
+          : "failed",
       details: cleanupDetails,
     },
   };
@@ -2194,7 +2864,11 @@ async function executeAcceptance(input: {
     schema_version: 1,
     generated_at: now,
     source_baseline_revision: baseline.baseline_revision,
-    official_catalog_fetched_at: officialInventories[0]?.inventory_revision?.replace("official-snapshot-", "") ?? null,
+    official_catalog_fetched_at:
+      officialInventories[0]?.inventory_revision?.replace(
+        "official-snapshot-",
+        "",
+      ) ?? null,
     provider_inventory_refresh_policy: {
       max_attempts: options.inventoryRefreshMaxAttempts,
       retry_delay_ms: options.inventoryRefreshRetryDelayMs,
@@ -2207,7 +2881,9 @@ async function executeAcceptance(input: {
       provider_driver: inventory.provider_driver,
       provider_instance_name: inventory.provider_instance_name,
       inventory_revision: inventory.inventory_revision ?? null,
-      models: inventory.models.map((model) => ({ provider_model_id: model.provider_model_id })),
+      models: inventory.models.map((model) => ({
+        provider_model_id: model.provider_model_id,
+      })),
     })),
     selected_provider_instances: selectedInventories.map((inventory) => ({
       provider_driver: inventory.provider_driver,
@@ -2239,7 +2915,11 @@ async function executeAcceptance(input: {
   return { report, effectiveBaseline };
 }
 
-function targetedRetestCommand(cases: CaseReport[], configPath: string, timeoutMs: number): string {
+function targetedRetestCommand(
+  cases: CaseReport[],
+  configPath: string,
+  timeoutMs: number,
+): string {
   const selected = cases.filter((item) =>
     item.layer === "T2" && item.status === "failed" &&
     !item.case_id.startsWith("t2.preflight.") && item.provider_driver
@@ -2247,9 +2927,13 @@ function targetedRetestCommand(cases: CaseReport[], configPath: string, timeoutM
   if (selected.length === 0) {
     return `pnpm run acceptance:gateway -- --config ${configPath} --allow-credential-mutation --timeout-ms ${timeoutMs} --no-real-model-calls`;
   }
-  const providers = [...new Set(selected.flatMap((item) =>
-    item.provider_driver ? [item.provider_driver] : []
-  ))];
+  const providers = [
+    ...new Set(
+      selected.flatMap((item) =>
+        item.provider_driver ? [item.provider_driver] : []
+      ),
+    ),
+  ];
   return [
     "pnpm run acceptance:gateway --",
     `--config ${configPath}`,
