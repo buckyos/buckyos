@@ -70,6 +70,7 @@ export type ProviderProtocolContract = {
     string,
     Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
+  body_field_formats?: Record<string, "http_url" | "http_url_or_data_uri">;
   required_body_values?: Record<string, unknown>;
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
@@ -172,7 +173,6 @@ function object(value: unknown, field: string): Record<string, unknown> {
   }
   return value as Record<string, unknown>;
 }
-
 function nonEmptyString(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${field} must be a non-empty string`);
@@ -522,6 +522,23 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id}.body_field_types.${field} contains invalid type`,
           );
+        }
+      }
+      if (contract.body_field_formats !== undefined) {
+        const formats = object(
+          contract.body_field_formats,
+          `${id}.body_field_formats`,
+        );
+        for (const [field, format] of Object.entries(formats)) {
+          if (!allowed.has(field)) {
+            throw new Error(`${id} format field ${field} is not allowed`);
+          }
+          if (!(bodyFieldTypes[field] as unknown[] | undefined)?.includes("string")) {
+            throw new Error(`${id} format field ${field} must accept strings`);
+          }
+          if (format !== "http_url" && format !== "http_url_or_data_uri") {
+            throw new Error(`${id}.body_field_formats.${field} is invalid`);
+          }
         }
       }
       if (contract.generation_config !== undefined) {
@@ -1026,6 +1043,36 @@ export function validateProviderRequest(
         Number.isInteger(body[field])
     )) {
       errors.push(`body field ${field} has invalid type`);
+    }
+  }
+  for (const [field, format] of Object.entries(contract.body_field_formats ?? {})) {
+    const value = body[field];
+    if (value === undefined || value === null) continue;
+    if (format === "http_url" || format === "http_url_or_data_uri") {
+      const dataUri = typeof value === "string" &&
+        /^data:[^;,\s]+;base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
+      try {
+        const url = new URL(String(value));
+        if (
+          typeof value !== "string" ||
+          (!["http:", "https:"].includes(url.protocol) &&
+            !(format === "http_url_or_data_uri" && dataUri))
+        ) {
+          errors.push(
+            format === "http_url"
+              ? `body field ${field} must be an HTTP(S) URL`
+              : `body field ${field} must be an HTTP(S) URL or Base64 data URI`,
+          );
+        }
+      } catch {
+        if (!(format === "http_url_or_data_uri" && dataUri)) {
+          errors.push(
+            format === "http_url"
+              ? `body field ${field} must be an HTTP(S) URL`
+              : `body field ${field} must be an HTTP(S) URL or Base64 data URI`,
+          );
+        }
+      }
     }
   }
   if (contract.id === "doubao.translation.responses.v3") {

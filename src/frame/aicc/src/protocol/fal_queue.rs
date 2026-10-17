@@ -90,9 +90,6 @@ struct FalQueueCodec {
 #[async_trait]
 impl NativeTaskCodec for FalQueueCodec {
     fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
-        // fal's queue API takes every media slot as a URL. `fal_resource`
-        // writes that URL verbatim and only converts to an inline `data:` URL
-        // when the caller actually supplied bytes.
         crate::resource::ResourceInputForm::UrlOrBytes
     }
 
@@ -322,23 +319,11 @@ fn replace_resource(
 }
 
 fn fal_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<Value> {
-    // Materialization may have handed this resource over as a URL because the
-    // protocol takes one (`ResourceInputForm`), in which case there are no
-    // bytes to inline and the URL is the only usable form.
     if let Some(url) = context.materialized_url(resource) {
-        return Ok(Value::String(url.to_string()));
+        return fal_http_url(url);
     }
-    let url = match resource {
-        ResourceRef::Url { url, .. } => {
-            let parsed = Url::parse(url)
-                .map_err(|_| ProtocolError::invalid_request("fal resource URL is invalid"))?;
-            if !matches!(parsed.scheme(), "http" | "https") {
-                return Err(ProtocolError::invalid_request(
-                    "fal resource URL must use HTTP or HTTPS",
-                ));
-            }
-            url.clone()
-        }
+    let value = match resource {
+        ResourceRef::Url { url, .. } => return fal_http_url(url),
         ResourceRef::Base64 { mime, data_base64 } => {
             STANDARD.decode(data_base64).map_err(|_| {
                 ProtocolError::invalid_request("fal resource contains invalid base64")
@@ -354,7 +339,18 @@ fn fal_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResul
             )
         }
     };
-    Ok(Value::String(url))
+    Ok(Value::String(value))
+}
+
+fn fal_http_url(url: &str) -> ProtocolResultValue<Value> {
+    let parsed = Url::parse(url)
+        .map_err(|_| ProtocolError::invalid_request("fal resource URL is invalid"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ProtocolError::invalid_request(
+            "fal resource URL must use HTTP or HTTPS",
+        ));
+    }
+    Ok(Value::String(url.to_string()))
 }
 
 fn decode_submit(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput> {
@@ -580,8 +576,16 @@ fn provider_model_id(parameters: &BTreeMap<String, Value>) -> ProtocolResultValu
 
 fn validate_model_id(model_id: &str) -> ProtocolResultValue<()> {
     let segments = model_id.split('/').collect::<Vec<_>>();
+    let minimum_segments = if segments
+        .first()
+        .is_some_and(|segment| matches!(*segment, "workflows" | "comfy"))
+    {
+        3
+    } else {
+        2
+    };
     if model_id.len() > 512
-        || segments.len() < 2
+        || segments.len() < minimum_segments
         || segments.iter().any(|segment| {
             segment.is_empty()
                 || *segment == "."
@@ -621,7 +625,22 @@ fn endpoint(
     let mut url = Url::parse(base_url)
         .map_err(|_| ProtocolError::invalid_configuration("fal base URL is invalid"))?;
     let base_path = url.path().trim_end_matches('/');
-    let mut path = format!("{base_path}/{model_id}");
+    let lifecycle_model_id = if request_id.is_some() {
+        let segment_count = if model_id.starts_with("workflows/") || model_id.starts_with("comfy/")
+        {
+            3
+        } else {
+            2
+        };
+        model_id
+            .split('/')
+            .take(segment_count)
+            .collect::<Vec<_>>()
+            .join("/")
+    } else {
+        model_id.to_string()
+    };
+    let mut path = format!("{base_path}/{lifecycle_model_id}");
     if let Some(request_id) = request_id {
         path.push_str("/requests/");
         path.push_str(request_id);
@@ -823,7 +842,7 @@ mod tests {
 
     #[test]
     fn lifecycle_url_and_path_validation_are_strict() {
-        let input = input(
+        let lifecycle_input = input(
             AiccCall::ImagesGenerate(TextToImageInvokeRequest::new("fal-ai/flux@fal-main", "cat")),
             "fal-ai/flux",
         );
@@ -833,7 +852,7 @@ mod tests {
             .encode_native(&native_input(
                 NativeTaskOperation::Status,
                 Some("request-1"),
-                &input,
+                &lifecycle_input,
                 &context,
             ))
             .unwrap();
@@ -845,7 +864,86 @@ mod tests {
             .encode_native(&native_input(
                 NativeTaskOperation::Cancel,
                 Some("../request-1"),
-                &input,
+                &lifecycle_input,
+                &context,
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+
+        let nested = input(
+            AiccCall::ImagesGenerate(TextToImageInvokeRequest::new(
+                "fal-ai/imageutils/rembg@fal-main",
+                "cat",
+            )),
+            "fal-ai/imageutils/rembg",
+        );
+        let request = codec
+            .encode_native(&native_input(
+                NativeTaskOperation::Result,
+                Some("request-2"),
+                &nested,
+                &context,
+            ))
+            .unwrap();
+        assert_eq!(
+            request.url,
+            "https://queue.fal.run/fal-ai/imageutils/requests/request-2"
+        );
+
+        for model_id in ["workflows/acme/upscale", "comfy/acme/upscale"] {
+            let namespaced = input(
+                AiccCall::ImagesGenerate(TextToImageInvokeRequest::new(
+                    format!("{model_id}@fal-main"),
+                    "cat",
+                )),
+                model_id,
+            );
+            let request = codec
+                .encode_native(&native_input(
+                    NativeTaskOperation::Status,
+                    Some("request-3"),
+                    &namespaced,
+                    &context,
+                ))
+                .unwrap();
+            assert_eq!(
+                request.url,
+                format!("https://queue.fal.run/{model_id}/requests/request-3/status")
+            );
+        }
+
+        let namespaced_subpath = input(
+            AiccCall::ImagesGenerate(TextToImageInvokeRequest::new(
+                "workflows/acme/upscale/custom@fal-main",
+                "cat",
+            )),
+            "workflows/acme/upscale/custom",
+        );
+        let request = codec
+            .encode_native(&native_input(
+                NativeTaskOperation::Result,
+                Some("request-4"),
+                &namespaced_subpath,
+                &context,
+            ))
+            .unwrap();
+        assert_eq!(
+            request.url,
+            "https://queue.fal.run/workflows/acme/upscale/requests/request-4"
+        );
+
+        let invalid_namespace = input(
+            AiccCall::ImagesGenerate(TextToImageInvokeRequest::new(
+                "workflows/acme@fal-main",
+                "cat",
+            )),
+            "workflows/acme",
+        );
+        let error = codec
+            .encode_native(&native_input(
+                NativeTaskOperation::Submit,
+                None,
+                &invalid_namespace,
                 &context,
             ))
             .unwrap_err();
@@ -853,20 +951,25 @@ mod tests {
     }
 
     #[test]
-    fn materialized_resource_is_encoded_as_data_url_without_debug_leak() {
-        let mut context = context();
+    fn resource_prefers_http_url_and_falls_back_to_data_uri_without_debug_leak() {
+        let mut url_context = context();
         let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
-        let missing = fal_resource(&source, &context).unwrap_err();
+        let missing = fal_resource(&source, &url_context).unwrap_err();
         assert_eq!(missing.kind, ProtocolErrorKind::InvalidRequest);
         assert!(!format!("{missing:?}").contains("chunk:123456"));
-        context.resources.insert(
+        url_context.resources.insert(
             crate::resource::ResourceKey::from_ref(&source).into_string(),
-            MaterializedResource::new(Bytes::from_static(b"image"), "image/png", None).unwrap(),
+            MaterializedResource::from_url(
+                "https://fixtures.example/ndn/chunk:123456",
+                "image/png",
+                None,
+            )
+            .unwrap(),
         );
         let input = input(
             AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
                 "fal-ai/video@fal-main",
-                source,
+                source.clone(),
                 "animate".to_string(),
             )),
             "fal-ai/video",
@@ -876,7 +979,7 @@ mod tests {
                 NativeTaskOperation::Submit,
                 None,
                 &input,
-                &context,
+                &url_context,
             ))
             .unwrap();
         let GoldenBody::Json(body) = ProtocolContractHarness::default()
@@ -886,8 +989,46 @@ mod tests {
         else {
             panic!("expected JSON")
         };
-        assert_eq!(body["image_url"], "data:image/png;base64,aW1hZ2U=");
-        assert!(!format!("{request:?}").contains("aW1hZ2U="));
+        assert_eq!(
+            body["image_url"],
+            "https://fixtures.example/ndn/chunk:123456"
+        );
+        assert!(!format!("{request:?}").contains("chunk:123456"));
+
+        let inline = ResourceRef::Base64 {
+            mime: "image/png".to_string(),
+            data_base64: STANDARD.encode(b"image"),
+        };
+        assert_eq!(
+            fal_resource(
+                &inline,
+                &CodecContext {
+                    resources: BTreeMap::new(),
+                    ..context()
+                }
+            )
+            .unwrap(),
+            json!("data:image/png;base64,aW1hZ2U=")
+        );
+
+        let invalid = ResourceRef::Base64 {
+            mime: "image/png".to_string(),
+            data_base64: "not-base64".to_string(),
+        };
+        assert_eq!(
+            fal_resource(&invalid, &context()).unwrap_err().kind,
+            ProtocolErrorKind::InvalidRequest
+        );
+
+        let mut inline_context = context();
+        inline_context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&source).into_string(),
+            MaterializedResource::new(Bytes::from_static(b"image"), "image/png", None).unwrap(),
+        );
+        assert_eq!(
+            fal_resource(&source, &inline_context).unwrap(),
+            json!("data:image/png;base64,aW1hZ2U=")
+        );
     }
 
     #[tokio::test]
