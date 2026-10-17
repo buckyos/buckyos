@@ -751,6 +751,7 @@ mod tests {
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, AUTHORIZATION};
     use reqwest::StatusCode;
+    use serde_json::json;
     use std::sync::Mutex;
 
     struct FakeTransport {
@@ -824,6 +825,20 @@ mod tests {
             &Default::default(),
         )
         .unwrap();
+        let argon = catalog
+            .resolve_provider_rule(
+                OPENROUTER_PROVIDER_PROFILE_ID,
+                "google/gemini-4-argon",
+                &Default::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(argon.action.provider_options["background"], true);
+        assert_eq!(argon.action.provider_options["modalities"], json!(["text"]));
+        assert_eq!(
+            argon.action.operations["llm"],
+            OPENAI_RESPONSES_OPERATION_ID
+        );
         let vendor = catalog
             .resolve_model("gemini", "gemini-2.5-flash-image")
             .unwrap()

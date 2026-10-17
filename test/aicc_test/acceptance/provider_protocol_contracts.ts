@@ -101,6 +101,7 @@ export type ProviderProtocolContract = {
     | "gemini_interactions";
   async_protocol?:
     | "fal_queue"
+    | "gemini_interactions"
     | "minimax_video"
     | "minimax_video_v2"
     | "google_lro"
@@ -1344,7 +1345,9 @@ function validateNestedProviderBody(
     errors.push(...videoScenarioErrors(contract, body, videoScenario));
   }
   if (
-    contract.operation === "interactions.create" && Array.isArray(body.input) &&
+    ["interactions.create", "interactions.background"].includes(
+      contract.operation,
+    ) && Array.isArray(body.input) &&
     (body.input.length === 0 ||
       body.input.some((item) => typeof item !== "string" && !recordValue(item)))
   ) {
@@ -1390,7 +1393,11 @@ function validateNestedProviderBody(
   ) {
     validateClaudeMessages(contract, body, errors);
   }
-  if (contract.operation === "interactions.create") {
+  if (
+    ["interactions.create", "interactions.background"].includes(
+      contract.operation,
+    )
+  ) {
     if (Array.isArray(body.input)) {
       validateGeminiInteractionInput(body.input, errors);
     }
@@ -2006,6 +2013,14 @@ export function validateProviderSuccessFixture(
       });
       break;
     }
+    case "interactions.background":
+      if (typeof fixture.id !== "string" || !fixture.id) {
+        errors.push("id is required");
+      }
+      if (!["queued", "in_progress"].includes(String(fixture.status))) {
+        errors.push("status must be queued or in_progress");
+      }
+      break;
     case "queue.submit":
       if (typeof fixture.request_id !== "string" || !fixture.request_id) {
         errors.push("request_id is required");
@@ -2424,6 +2439,7 @@ export function buildT15Manifest(
           } as AcceptanceCase);
           const terminalFailureScenarios =
               contract.async_protocol === "google_lro" ||
+              contract.async_protocol === "gemini_interactions" ||
               contract.async_protocol === "minimax_video" ||
               contract.async_protocol === "minimax_video_v2" ||
               contract.async_protocol === "glm_video" ||

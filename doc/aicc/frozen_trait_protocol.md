@@ -143,6 +143,7 @@ Adapter 默认复用该实现。只有认证 header、URL 变换、请求 method
 
 - `Immediate`、`Stream` 是用户可请求的执行模式；所选 binding 不支持时返回 `unsupported_execution_mode`。
 - Provider 原生异步协议是内部 `NativeTask` 模式。AICC 负责将它桥接为统一 task 状态，用户不能通过公共 DTO 直接选择 `NativeTask`。
+- `NativeTaskCodec` 声明累计在线轮询期限，默认 30 分钟；每次运行只累计进程实际驱动该任务的时间，并将已用额度随恢复描述持久化，AICC 退出或系统停机期间不计时。Gemini background Interaction 的声明期限为 24 小时。
 - 幂等 key 的作用域为租户、method 与 key；同 key 不同请求体返回 `idempotency_conflict`。
 - 长任务必须固定 Provider Instance、adapter、operation、模型身份和恢复描述，不能在恢复时按当前 catalog 重新路由。
 - 只有 Provider 确认取消才返回 `accepted=true`；终态不可被迟到结果覆盖。

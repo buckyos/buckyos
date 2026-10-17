@@ -733,6 +733,86 @@ export function createT15MockHandler(
         return validation.errors;
       };
 
+      if (contract.async_protocol === "gemini_interactions") {
+        const interactionPath =
+          "/v1beta/interactions/interaction_background_mock_1";
+        if (url.pathname === interactionPath && request.method === "GET") {
+          const prior = requests.filter((captured) =>
+            captured.selection.contract_id === selection!.contract_id &&
+            captured.pathname === url.pathname && captured.method === "GET"
+          );
+          const step = prior.length === 0 ? "poll" : "result";
+          const errors = captureAuxiliary(step);
+          if (errors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors,
+            });
+          }
+          if (selection.scenario === "async_failed") {
+            return json(response, 200, {
+              id: "interaction_background_mock_1",
+              status: "failed",
+              error: { code: "provider_error", message: "mock decode failed" },
+            });
+          }
+          if (
+            selection.scenario === "async_poll_timeout" ||
+            selection.scenario === "async_cancel"
+          ) {
+            return json(response, 200, {
+              id: "interaction_background_mock_1",
+              status: "in_progress",
+            });
+          }
+          const result = structuredClone(
+            contract.async_result_fixture ?? {},
+          ) as Record<string, unknown>;
+          const structuredText: Record<string, string> = {
+            "vision.ocr": JSON.stringify({
+              text: "BUCKYOS-AICC-4827",
+              pages: [{ page_index: 0, width: 1, height: 1, blocks: [] }],
+            }),
+            "vision.detect": JSON.stringify({
+              boxes: [{ box_2d: [100, 200, 800, 900], label: "marker" }],
+            }),
+            "vision.segment": JSON.stringify({
+              boxes: [{
+                box_2d: [100, 200, 800, 900],
+                mask: [[200, 100], [900, 100], [900, 800]],
+                label: "marker",
+              }],
+            }),
+          };
+          const text = selection.api_type
+            ? structuredText[selection.api_type]
+            : undefined;
+          if (text) {
+            result.steps = [{
+              type: "model_output",
+              content: [{ type: "text", text }],
+            }];
+          }
+          return json(response, 200, result);
+        }
+        if (
+          url.pathname === `${interactionPath}/cancel` &&
+          request.method === "POST"
+        ) {
+          const errors = captureAuxiliary("cancel");
+          if (errors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors,
+            });
+          }
+          return json(response, 200, {
+            id: "interaction_background_mock_1",
+            status: "cancelled",
+          });
+        }
+      }
+
       if (contract.async_protocol === "fal_queue") {
         if (
           /\/requests\/fal_mock_1\/status$/.test(url.pathname) &&

@@ -818,6 +818,10 @@ pub(crate) trait NativeTaskCodec: Send + Sync {
         None
     }
 
+    fn max_poll_duration(&self) -> Duration {
+        Duration::from_secs(30 * 60)
+    }
+
     /// What this codec accepts as the *form* of a resource input.
     ///
     /// Mirrors [`OperationCodec::resource_input_form`]: materialization runs
@@ -1552,6 +1556,17 @@ impl CodecRegistry {
             .native_task_codec
             .as_ref()
             .and_then(|codec| codec.output_video_seconds(request)))
+    }
+
+    pub(crate) fn native_task_max_poll_duration(
+        &self,
+        adapter_id: &str,
+        operation_id: &str,
+        api_type: ApiType,
+    ) -> ProtocolResultValue<Duration> {
+        Ok(self
+            .native_task_codec(adapter_id, operation_id, api_type)?
+            .max_poll_duration())
     }
 
     pub(crate) async fn decode_native(

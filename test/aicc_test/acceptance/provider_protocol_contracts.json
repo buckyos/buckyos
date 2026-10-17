@@ -1492,8 +1492,17 @@
             "vision.ocr",
             "vision.caption",
             "vision.detect",
-            "vision.segment"
+            "vision.segment",
+            "audio.asr"
           ],
+          "conformance_test_model_ids": {
+            "llm": ["gemini-4-argon"],
+            "vision.ocr": ["gemini-4-argon"],
+            "vision.caption": ["gemini-4-argon"],
+            "vision.detect": ["gemini-4-argon"],
+            "vision.segment": ["gemini-4-argon"],
+            "audio.asr": ["gemini-4-argon"]
+          },
           "operation": "interactions.create",
           "http_method": "POST",
           "path": "/v1beta/interactions",
@@ -1617,6 +1626,9 @@
           "api_types": [
             "audio.asr"
           ],
+          "test_model_ids": {
+            "audio.asr": "gemini-3.5-transcribe"
+          },
           "operation": "interactions.create",
           "http_method": "POST",
           "path": "/v1beta/interactions",
@@ -3412,6 +3424,11 @@
           "api_types": [
             "llm"
           ],
+          "conformance_test_model_ids": {
+            "llm": ["google/gemini-4-argon"],
+            "vision.ocr": ["google/gemini-4-argon"],
+            "vision.caption": ["google/gemini-4-argon"]
+          },
           "operation": "responses.create",
           "http_method": "POST",
           "path": "/api/v1/responses",
@@ -3425,6 +3442,12 @@
             "model",
             "input"
           ],
+          "required_body_values": {
+            "/modalities": ["text"]
+          },
+          "required_body_values_by_model": {
+            "google/gemini-4-argon": {"/background": true}
+          },
           "allowed_body_fields": [
             "model",
             "input",
@@ -3700,6 +3723,72 @@
             "https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"
           ],
           "evidence_summary": "OpenRouter rerank uses POST /api/v1/rerank and returns ordered index/relevance_score results."
+        },
+        {
+          "id": "openrouter.audio.speech.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["audio.tts"],
+          "conformance_test_model_ids": {"audio.tts": ["minimax/speech-2.8-hd", "minimax/speech-2.8-turbo", "google/gemini-3.1-flash-tts-preview", "google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"]},
+          "operation": "audio.speech",
+          "http_method": "POST",
+          "path": "/api/v1/audio/speech",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "voice"],
+          "allowed_body_fields": ["model", "input", "input_references", "instructions", "provider", "response_format", "session_id", "speed", "trace", "user", "voice"],
+          "body_field_types": {"model": ["string"], "input": ["string"], "voice": ["string"]},
+          "required_body_values_by_model": {
+            "minimax/speech-2.8-hd": {"/response_format": "mp3"},
+            "minimax/speech-2.8-turbo": {"/response_format": "mp3"}
+          },
+          "success_content_type": "audio/mpeg",
+          "success_fixture_base64": "SUQzAwAAAAA=",
+          "official_sources": ["https://openrouter.ai/openapi.json", "https://ai.google.dev/gemini-api/docs/speech-generation", "https://platform.minimax.io/docs/api-reference/speech-t2a-http.md"],
+          "evidence_summary": "OpenRouter speech uses JSON POST /api/v1/audio/speech; aggregated TTS providers require a provider-supported voice string, and the response is raw audio bytes."
+        },
+        {
+          "id": "openrouter.audio.transcriptions.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["audio.asr"],
+          "conformance_test_model_ids": {"audio.asr": ["google/gemini-3.5-transcribe"]},
+          "operation": "audio.transcriptions",
+          "http_method": "POST",
+          "path": "/api/v1/audio/transcriptions",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["file", "model"],
+          "allowed_body_fields": ["file", "model", "chunking_strategy", "language", "prompt", "response_format", "temperature", "timestamp_granularities"],
+          "body_field_types": {"file": ["object"], "model": ["string"]},
+          "success_fixture": {"text": "BUCKYOS-AICC-4827", "usage": {"type": "tokens", "input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
+          "official_sources": ["https://openrouter.ai/openapi.json"],
+          "evidence_summary": "OpenRouter transcription accepts OpenAI-compatible multipart file/model input and returns transcript text with optional usage."
+        },
+        {
+          "id": "openrouter.chat.audio.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": ["audio.music"],
+          "operation": "chat.completions.create",
+          "http_method": "POST",
+          "path": "/api/v1/chat/completions",
+          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "content_type": "application/json",
+          "required_body_fields": ["model", "messages", "modalities", "stream"],
+          "allowed_body_fields": ["model", "messages", "modalities", "seed", "stream"],
+          "body_field_types": {"model": ["string"], "messages": ["array"], "modalities": ["array"], "seed": ["number"], "stream": ["boolean"]},
+          "required_body_values": {"/stream": true},
+          "success_content_type": "text/event-stream",
+          "success_chunk_fixtures": [
+            {"id": "chatcmpl-openrouter-music-mock", "choices": [{"index": 0, "delta": {"audio": {"data": "UklG", "transcript": "BUCKYOS-"}}, "finish_reason": null}]},
+            {"id": "chatcmpl-openrouter-music-mock", "choices": [{"index": 0, "delta": {"audio": {"data": "RgAAAAA=", "transcript": "AICC-4827"}}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cost": 0}}
+          ],
+          "success_chunk_string_expansions": [
+            {"chunk_index": 0, "path": ["choices", 0, "delta", "audio", "data"], "value": "UklG", "repeat": 70000}
+          ],
+          "official_sources": ["https://openrouter.ai/docs/guides/overview/multimodal/audio", "https://openrouter.ai/openapi.json"],
+          "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE]."
         },
         {
           "id": "openrouter.decisions.alpha",
