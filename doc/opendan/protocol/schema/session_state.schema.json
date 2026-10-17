@@ -1977,6 +1977,13 @@
         "summary": ""
       }
     },
+    "background_shown": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Chat input format (UI sessions): the background context lines last shown, `key → digest` (`time` → the epoch ms it was shown at). A line is shown again only when its digest changes; the time line at most every [`BACKGROUND_TIME_STEP_MS`].",
+      "type": "object"
+    },
     "bootstrap_done": {
       "default": false,
       "type": "boolean"

@@ -42,6 +42,11 @@ pub struct LLMContextState {
     /// successful inference.
     pub consecutive_errors: u32,
 
+    /// Correction rounds spent on a reply that broke the reply contract
+    /// (`OutputSpec::Json { max_repairs }`), this run.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub output_repairs: u32,
+
     /// Set while the context is suspended by a cooperative yield. `resume`
     /// only accepts the matching fill, `run` refuses to advance until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +184,7 @@ impl LLMContextState {
             started_at_ms,
             cost_units: 0,
             consecutive_errors: 0,
+            output_repairs: 0,
             suspended: None,
             tool_batch: None,
             action_step: None,
@@ -217,4 +223,8 @@ impl LLMContextState {
 pub struct LLMContextSnapshot {
     pub request: LLMContextRequest,
     pub state: LLMContextState,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }

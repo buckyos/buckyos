@@ -122,8 +122,11 @@ impl EditFileTool {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct EditFileArgs {
+    /// File to edit, relative to the working directory.
     pub path: String,
+    /// The exact text to replace; it must occur exactly once.
     pub old_string: String,
+    /// The replacement text.
     pub new_string: String,
 }
 
@@ -150,7 +153,7 @@ impl TypedTool for EditFileTool {
         TOOL_EDIT_FILE
     }
     fn description(&self) -> &str {
-        "Edit file."
+        "Replace the one exact occurrence of old_string with new_string in a text file. Fails when old_string is absent or occurs more than once: include enough surrounding text to make it unique. Paths are relative to the working directory; paths outside it only where the run's filesystem policy allows."
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::ACTION
@@ -352,8 +355,12 @@ impl WriteFileTool {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct WriteFileArgs {
+    /// File to write, relative to the working directory.
     pub path: String,
+    /// The text to write.
     pub content: String,
+    /// `write` (default): create or overwrite; `append`: add to the end;
+    /// `new`: create, fail if the file exists.
     #[serde(default)]
     pub mode: Option<String>,
 }
@@ -385,7 +392,7 @@ impl TypedTool for WriteFileTool {
         TOOL_WRITE_FILE
     }
     fn description(&self) -> &str {
-        "Write file."
+        "Write a text file: mode \"write\" (default) creates or overwrites it, \"append\" adds to its end, \"new\" creates it and fails if it exists. Parent directories are created. Paths are relative to the working directory; paths outside it only where the run's filesystem policy allows."
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::ACTION
@@ -572,9 +579,14 @@ details:
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ReadFileArgs {
+    /// File to read, relative to the working directory.
     pub path: String,
+    /// 1-based line range: "120-200", "120:$" (to the end), "120:+20"
+    /// (20 lines from 120); negative numbers count from the end ("-50:$").
     #[serde(default)]
     pub range: Option<Json>,
+    /// Start the read at the first occurrence of this text (range then
+    /// counts from there).
     #[serde(default)]
     pub first_chunk: Option<String>,
 }
@@ -606,7 +618,7 @@ impl TypedTool for ReadFileTool {
         TOOL_READ_FILE
     }
     fn description(&self) -> &str {
-        "Read file."
+        "Read a text file. range selects 1-based lines (\"120-200\", \"120:$\", \"120:+20\", \"-50:$\" for the last 50); first_chunk starts the read at the first occurrence of that text. Paths are relative to the working directory; paths outside it only where the run's filesystem policy allows."
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::from_legacy(true, false, true)

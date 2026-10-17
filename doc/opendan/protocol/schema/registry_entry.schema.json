@@ -343,6 +343,17 @@
         "run_state": {
           "$ref": "#/definitions/RunState"
         },
+        "topic": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Topic"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the conversation is about (UI sessions: from their structured reply); other sessions see it in their background context."
+        },
         "turn_open": {
           "description": "A Turn is open (work in progress, or waiting inside it).",
           "type": "boolean"
@@ -369,6 +380,21 @@
         "rev",
         "run_state"
       ],
+      "type": "object"
+    },
+    "Topic": {
+      "properties": {
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": "",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "Touching": {

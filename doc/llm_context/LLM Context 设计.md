@@ -316,21 +316,25 @@ pub struct PendingToolCall {
 
 `allow_deferred=false` 时 `Observation::Pending` 是契约违规（该调用记为结果未知、其余未执行，`Error{Internal}`）；为 true 时产生 `PendingTool`（§9.5）。`allow_deferred` 同时经 `ToolCallCtx` 传给工具：宿主不能挂起时，只拿到 task_id 的工具在调用内等待 task（最长 `MAX_IN_TOOL_WAIT_MS` = 30 分钟），到时带 task 当时的状态返回。
 
-**运行中的 task**（`tasks.rs`，长命令 TODO §4）：waist 对工具结果只做两种机械判断——返回给 LLM，或 `Pending{task_id}` 挂起由宿主在进程外等待。task 由宿主装配的 `RunningTaskResolver`（`state` / `wait` / `cancel` / `can_resolve` / `watch` / `active`）解析，task_id 对 waist 不透明。`task_state_observation` 是 `TaskState` 到 observation 的唯一渲染，内联的 `wait_task` / `get_task_state` 与挂起后的回填读起来一致。`LLMContextDeps.tasks` 存在时，每次推理前 waist 用 `active()` 渲染一段 `<background_tasks>` 简介追加在请求末尾（不进历史，不破坏前缀缓存）；结果里带 `task_id` 的调用自动 `watch`。
+**运行中的 task**（`tasks.rs`，长命令 TODO §4）：waist 对工具结果只做两种机械判断——返回给 LLM，或 `Pending{task_id}` 挂起由宿主在进程外等待。task 由宿主装配的 `RunningTaskResolver`（`state` / `wait` / `cancel` / `can_resolve` / `watch` / `active`）解析，task_id 对 waist 不透明。`task_state_observation` 是 `TaskState` 到 observation 的唯一渲染，内联的 `wait_task` / `get_task_state` 与挂起后的回填读起来一致。`LLMContextDeps.tasks` 存在时，每次推理前 waist 用 `active()` 渲染一段 `<background_tasks>` 简介追加在请求末尾（不进历史，不破坏前缀缓存）；结果里带 `task_id` 的调用自动 `watch`。提示与简介的措辞由 resolver 的 `followup()` 决定（`TaskFollowup::Tools`：task 工具；`TaskFollowup::Command(cli)`：经 `shell` 运行的 task CLI 桥，见 xllm SDK 的 `bash_core`）。
 
 ### 3.4 OutputSpec / ContextOutput
 
 ```rust
 pub enum OutputSpec {
     Text,
-    Json { schema: Option<Value>, strict: bool },
+    Json { schema: Option<Value>, strict: bool, max_repairs: Option<u32> },
 }
 
 pub enum ContextOutput {
     Text { content: String },
     Json { content: Value },
+    /// 回复契约（`max_repairs: Some(_)`）在允许的纠正后仍未满足：原文与原因。
+    Invalid { content: String, error: String },
 }
 ```
+
+**回复契约**（`OutputSpec::Json { max_repairs: Some(n) }`）：最终回复（无工具调用的 assistant 文本）必须是一个 JSON 值（容忍一层 Markdown 代码围栏）、符合 `schema`（`json_check`：JSON Schema 子集——`type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`min/maxItems`、`min/maxLength`、`minimum/maximum`、`anyOf/oneOf/allOf`，其余关键字忽略），并通过宿主的 `LLMContextDeps.output_validator`（schema 说不了的检查，如文件存在、计数一致）。不满足时把失败的回复留在历史里，追加一条 user 纠正消息（原因 + schema），再推理一次；每个 run 至多 `n` 次（`LLMContextState.output_repairs`，不计入连续错误）。用完仍不满足返回 `ContextOutput::Invalid`，由宿主决定如何出站。schema 同时作为 provider 原生结构化输出交给 adapter（AICC 映射 Claude `output_config.format` 与 OpenAI `response_format.json_schema`），waist 的校验只是兜底。没有 `max_repairs` 时保持原语义（只解析：`strict` 决定解析失败走 ErrorPolicy 还是原文返回 `Text`）。fork 可以用 `ForkOptions.output` 换掉分支的回复约束（只换约束，不换 system / tools / model，前缀缓存不变）。
 
 waist **不内置任何 scheduler-specific 复合输出类型**（见 §A.1）。Agent 的 `actions / next_behavior / set_memory` 等字段由 `LLMAgentContext` 在 lowering 时声明为 `Json { schema = BehaviorSchema }`，并在收到 `ContextOutput::Json` 后自己 deserialize（Behavior Loop 模式下这一步已经被 §6 的 `LLMResultParser` 内化）。
 
@@ -409,7 +413,7 @@ pub enum LLMComputeError {
 - run 中被 `InferenceAbortToken` 触发的 cancelled 不走 ErrorPolicy，收敛到 `Outcome::Interrupted`；没有 interrupt 信号的 Provider `Cancelled` 是 Provider 故障。
 - 可纠正错误的反馈只用 role ∈ {tool, user}：工具 / Policy 错误以 tool_result 配对到 call_id，输出协议错误以 user 消息追加；静态 system 前缀之外不再出现 system 消息。
 - `Outcome::Error` 携带 `trace`，其中 `tool_trace[].status ∈ {succeeded, failed, unknown, not_executed}` 记录批次中每个调用的最终状态。
-- `OutputSpec::Json.schema` 只透传给 provider；waist 只做 JSON 解析，不做 schema 校验，JSON 解析成功不等于 schema 校验成功。
+- 没有 `max_repairs` 时 `OutputSpec::Json.schema` 只透传给 provider，waist 只做 JSON 解析；回复契约（`max_repairs: Some(n)`）下 waist 另做 schema 子集校验与宿主校验，纠正有次数上限，用完返回 `Invalid`（§3.4）。
 - Provider retry / 退避 / fallback chain 都在 adapter 内部，**waist 自己绝不在外面再做一层 retry**；上层若要重跑，是显式决策，不通过伪造 observation 触发。
 
 ---

@@ -137,16 +137,28 @@ impl Default for ToolPolicy {
 pub enum OutputSpec {
     /// Free-form text, caller parses it themselves.
     Text,
-    /// Force JSON. `schema` is forwarded to the provider adapter only — the
-    /// waist does not validate the parsed value against it. `strict = true`
-    /// makes a JSON parse failure an LLM-correctable `OutputParse` error
-    /// (bounded by `ErrorPolicy`); `strict = false` returns the raw text as
+    /// Force JSON. `schema` is forwarded to the provider adapter, which
+    /// enforces it natively where the provider supports structured output.
+    ///
+    /// Without `max_repairs` the waist only parses: `strict = true` makes a
+    /// parse failure an LLM-correctable `OutputParse` error (bounded by
+    /// `ErrorPolicy`); `strict = false` returns the raw text as
     /// `ContextOutput::Text` instead.
+    ///
+    /// With `max_repairs = Some(n)` the output is a reply contract: the final
+    /// reply must parse, match `schema` (`json_check`, a subset of JSON
+    /// Schema) and pass the host's `OutputValidator`. A reply that fails gets
+    /// a correction message and another inference, at most `n` times per
+    /// run (`LLMContextState.output_repairs`); after that the raw text is
+    /// returned as `ContextOutput::Invalid` and the host decides. Repairs do
+    /// not count as consecutive errors.
     Json {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schema: Option<Value>,
         #[serde(default)]
         strict: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_repairs: Option<u32>,
     },
 }
 

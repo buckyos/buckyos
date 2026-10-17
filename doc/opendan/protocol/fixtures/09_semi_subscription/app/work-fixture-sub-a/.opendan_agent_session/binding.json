@@ -7,6 +7,6 @@
   "runtime_id": "rt-fixture-native",
   "kind": "native",
   "workdir": "${FIXTURE_ROOT}/app/work-fixture-sub-a",
-  "bound_at_ms": 1792219153875,
-  "bound_by": "rn-baa31f73861e4dd4"
+  "bound_at_ms": 1792232848552,
+  "bound_by": "rn-7d704c9450de4690"
 }

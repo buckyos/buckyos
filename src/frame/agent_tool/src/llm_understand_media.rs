@@ -1656,7 +1656,9 @@ fn scrub_value(value: &Value) -> Value {
 fn parse_report_output(output: &ContextOutput) -> Result<UnderstandingReport, String> {
     let value = match output {
         ContextOutput::Json { content } => content.clone(),
-        ContextOutput::Text { content } => parse_jsonish(content)?,
+        ContextOutput::Text { content } | ContextOutput::Invalid { content, .. } => {
+            parse_jsonish(content)?
+        }
     };
     let mut report: UnderstandingReport =
         serde_json::from_value(value).map_err(|err| err.to_string())?;
@@ -1722,7 +1724,9 @@ fn render_report(report: &UnderstandingReport) -> String {
 
 fn output_to_text(output: &ContextOutput) -> String {
     match output {
-        ContextOutput::Text { content } => content.clone(),
+        ContextOutput::Text { content } | ContextOutput::Invalid { content, .. } => {
+            content.clone()
+        }
         ContextOutput::Json { content } => {
             serde_json::to_string_pretty(content).unwrap_or_else(|_| content.to_string())
         }
@@ -1733,6 +1737,7 @@ fn context_output_kind(output: &ContextOutput) -> &'static str {
     match output {
         ContextOutput::Text { .. } => "text",
         ContextOutput::Json { .. } => "json",
+        ContextOutput::Invalid { .. } => "invalid",
     }
 }
 

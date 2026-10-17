@@ -1679,6 +1679,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let mut msg = None;
         let mut media = Vec::new();
         let mut todo_rev = None;
+        // UI sessions: the background map after this batch and the
+        // semi-subscription versions its background lines show.
+        let mut chat_background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)> =
+            None;
         if triggered {
             let me = sh.agent().sessions().lookup(sh.dir.sid()).await?;
             let policy = &cfg.session.policy;
@@ -1738,11 +1742,48 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 },
                 todos: None,
                 current_todo: super::todos::current(sh),
+                background: Vec::new(),
             };
             let mut material = material;
             if let Some((view, rev)) = super::todos::view_for_batch(sh, &state) {
                 material.todos = Some(view);
                 todo_rev = Some(rev);
+            }
+            if cfg.session.kind == SessionKind::Ui {
+                let budget = match cfg.session.policy.observe {
+                    ObserveScope::Off => 0,
+                    _ => sh.deps.options.change_budget,
+                };
+                let (views, shown) = select_snapshot(&state, budget);
+                let mut children = Vec::new();
+                for m in &picked {
+                    if let Ok(SessionInput::Event(ev)) = &m.input {
+                        if ev.source.kind == "session" {
+                            if let Ok(Some(e)) = sh.agent().sessions().lookup(&ev.source.id).await {
+                                children.push(e);
+                            }
+                        }
+                    }
+                }
+                let tunnel = picked.iter().rev().find_map(|m| match &m.input {
+                    Ok(SessionInput::Msg(sm)) => sm.delivery.tunnel.clone(),
+                    _ => None,
+                });
+                let candidates = super::background::lines(&super::background::BackgroundInput {
+                    sid: sh.dir.sid(),
+                    now_ms,
+                    timezone: cfg.session.timezone.as_deref(),
+                    runtime_status: &material.runtime_status,
+                    active: &material.active,
+                    children: &children,
+                    events: &views,
+                    hints: &material.hints,
+                    tunnel: tunnel.as_deref(),
+                });
+                let (lines, map) =
+                    super::background::select(candidates, &state.background_shown, now_ms);
+                material.background = lines;
+                chat_background = Some((map, shown));
             }
             msg = sh
                 .deps
@@ -1926,18 +1967,25 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         };
         if let Some(text) = msg {
             // The semi-subscription snapshot is assembled right before the
-            // controlled input and committed with it as one batch.
-            let budget = match cfg.session.policy.observe {
-                ObserveScope::Off => 0,
-                _ => sh.deps.options.change_budget,
+            // controlled input and committed with it as one batch (a UI
+            // session shows it as background lines of the input itself).
+            let (snapshot, background) = match chat_background.take() {
+                Some((map, shown)) => (None, Some((map, shown))),
+                None => {
+                    let budget = match cfg.session.policy.observe {
+                        ObserveScope::Off => 0,
+                        _ => sh.deps.options.change_budget,
+                    };
+                    let (views, shown) = select_snapshot(&state, budget);
+                    let snapshot = sh
+                        .deps
+                        .assembler
+                        .render_semi_subscription_snapshot(&templates, &views)
+                        .await?
+                        .map(|t| (t, shown));
+                    (snapshot, None)
+                }
             };
-            let (views, shown) = select_snapshot(&state, budget);
-            let snapshot = sh
-                .deps
-                .assembler
-                .render_semi_subscription_snapshot(&templates, &views)
-                .await?
-                .map(|t| (t, shown));
             Box::pin(commit_input_batch(
                 sh,
                 &mut lc,
@@ -1945,6 +1993,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     hook,
                     picked: &picked,
                     snapshot,
+                    background,
                     text,
                     media,
                     goal: goal_opening,

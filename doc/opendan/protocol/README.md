@@ -55,7 +55,7 @@ Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；�
 | 13_unsupported_snapshot_version | 快照版本不支持：RecoveryBlocked，保留现场 |
 | 15_report_pending_commit | 最终报告与配对快照已持久但 Session 尚未关闭；恢复不推理，稳定产物与最终消息只交付一次 |
 | 16_goal_session | Goal 与它 epoch 1 的 Goal Session（两次 Activation 之间：`waiting_for = event`）、一个已结束的 Goal 派生 Work；Activation 1 吸收了定时运行机会与 Work 的结束，关闭 Turn 的提交已落盘但 Goal State 与 Activation 记录尚未写回：下一次推进只写回一次，不推理 |
-| 14_input_bus | 没有 session 状态：手工投递的总线记录（`records/`）及各自的处理、每种拒绝原因的记录（`rejected/`）、同一批输入的逐字节渲染（`rendering/`：`input_text.xml`、内建模板、半订阅快照、六个示例模板的 `.tpl` / `.out`、模板变量 `vars.json`、`input.media = reference / inline` 的 user 消息） |
+| 14_input_bus | 没有 session 状态：手工投递的总线记录（`records/`）及各自的处理、每种拒绝原因的记录（`rejected/`）、同一批输入的逐字节渲染（`rendering/`：`input_text.xml`、内建模板、半订阅快照、六个示例模板的 `.tpl` / `.out`、模板变量 `vars.json`、`input.media = reference / inline` 的 user 消息，以及 UI Session 的 chat 格式：一对一、事件批次、群聊三份 `chat_*.txt`） |
 
 其余 §11 场景（选择性消费、订阅丢失重建、ack 不回退、持有者退出后接管、非驱动者被拒、binding 准备中断后修复、discard 与 accept 并发、历史段确定性、跨 Agent/App/owner 的 sid）由 `src/frame/lib_opendan/tests/` 的用例覆盖。
 

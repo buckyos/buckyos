@@ -23,16 +23,16 @@
     "turn_open": true,
     "activity": {
       "summary": "Pick the database of the notes app",
-      "heartbeat_ms": 1792219155030
+      "heartbeat_ms": 1792232849792
     },
     "last_runner": {
-      "runner_id": "rn-975bd5cd977443c1",
+      "runner_id": "rn-3c89b886b7bd4290",
       "host": "${FIXTURE_HOST}",
-      "pid": 1654165,
+      "pid": 2426942,
       "lock_epoch": 1,
-      "at_ms": 1792219155071
+      "at_ms": 1792232849837
     },
-    "updated_at_ms": 1792219155069
+    "updated_at_ms": 1792232849835
   },
   "location_rev": 0
 }

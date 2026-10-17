@@ -24,7 +24,7 @@ use buckyos_api::{AiMessage, AiRole};
 use serde::{Deserialize, Serialize};
 
 use crate::behavior_loop::StepRecord;
-use crate::request::{BudgetSpec, ContextOwnerRef, LLMContextRequest, ToolPolicy};
+use crate::request::{BudgetSpec, ContextOwnerRef, LLMContextRequest, OutputSpec, ToolPolicy};
 use crate::state::{LLMContextSnapshot, LLMContextState};
 use crate::suspension::{check_paired, strip_step_thinking, strip_thinking, unanswered_tool_calls};
 
@@ -183,6 +183,10 @@ pub struct ForkOptions {
     /// System block the target declares, if any. A fork never replaces the
     /// system: a declaration that differs from the parent's is refused.
     pub expect_system: Option<Vec<AiMessage>>,
+    /// Reply constraint of the branch (e.g. its own reply contract). Only
+    /// what the reply must look like changes: system, tools and model stay
+    /// the parent's, so the provider's prefix cache holds.
+    pub output: Option<OutputSpec>,
 }
 
 /// fork: the parent's system and its complete effective history up to the
@@ -269,6 +273,9 @@ pub fn fork_snapshot(
     if let Some(b) = options.budget {
         request.budget = b;
     }
+    if let Some(o) = options.output {
+        request.output = o;
+    }
     if !behavior {
         // Function call mode: the inherited history is the branch's stable
         // input; what the branch appends follows it.
@@ -305,7 +312,7 @@ pub fn fork_snapshot(
 mod tests {
     use super::*;
     use crate::observation::PendingToolCall;
-    use crate::request::{ErrorPolicy, HumanPolicy, ModelPolicy, OutputSpec};
+    use crate::request::{ErrorPolicy, HumanPolicy, ModelPolicy};
     use crate::state::{ActionStep, Suspension, ToolBatch};
     use buckyos_api::{AiContent, AiResponse, AiToolCall};
     use serde_json::json;

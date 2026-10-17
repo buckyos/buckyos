@@ -110,6 +110,14 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
     if let Some(rev) = r.extra.get("todo_rev").and_then(serde_json::Value::as_u64) {
         state.todo_view_rev = state.todo_view_rev.max(rev);
     }
+    // The background lines this batch showed (chat format).
+    if let Some(map) = r
+        .extra
+        .get(RECEIPT_BACKGROUND)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+    {
+        state.background_shown = map;
+    }
     let input_ids: Vec<String> = r.inputs.iter().map(|i| i.id()).collect();
     let event_keys: Vec<String> = r.events.iter().map(|e| e.key.clone()).collect();
     match live.turns.last_mut() {

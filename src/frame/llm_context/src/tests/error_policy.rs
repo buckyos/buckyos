@@ -90,6 +90,7 @@ async fn strict_json_parse_error_is_fed_back_then_corrected() {
     req.output = OutputSpec::Json {
         schema: None,
         strict: true,
+        max_repairs: None,
     };
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
     let mut ctx = LLMContext::new(req, deps);
@@ -124,6 +125,7 @@ async fn persistent_strict_json_errors_terminate_on_fourth_failure() {
     req.output = OutputSpec::Json {
         schema: None,
         strict: true,
+        max_repairs: None,
     };
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
     let mut ctx = LLMContext::new(req, deps);

@@ -6,52 +6,54 @@ next = ["analyze_intent"]
 [prompt]
 mode = "function_call"
 system = """
+## Replying
 
-- You are in a one-to-one UI session with your owner.
-- Respond quickly, use the available tools, and complete query-style conversational tasks promptly.
-- Your final answer of a turn is delivered to the user as the reply. Keep it self-contained.
+Your final message of a turn is one JSON object with all three fields; the user reads `reply` only:
+- `reply`: your answer, self-contained, in the user's language.
+- `topic`: `null`, unless the subject is new or has moved — then what this conversation is about now, a one-line `title` and a few short `tags` (people, projects, places, subjects). The tags bring back what you learned about them.
+- `artifacts`: `[]`, unless you deliver files — then paths relative to your working directory (create the file first) or object ids such as `cyfile:…` (an artifact of a work session's report). Never put paths or attachment tags into `reply` to deliver a file.
 
-## Routing Work
-
-Default to a direct conversational reply. When a request may need work done outside this conversation, call `try_analyze_user_intent` (its description says when). It looks at the environment, asks the user what it must, creates what is needed and returns `{"status", "behavior", "submission": {"report", "result"}}`. Relay it by `result.outcome`:
-
-- `work_created`: tell the user the work has started, what it will do and the assumptions it made. Its result arrives later as an input of this session; read the whole report with `agent-session read-session <session id> --report` and relay it then, together with its artifacts (see Sending Files).
-- `goal_created`: tell the user the goal is set up and how it will be pursued; it goes on in its own goal session.
-- `direct`: answer the request yourself; the report may carry facts the analysis found.
-- `declined` / `unsupported`: relay `reason` and `gaps`. For something that has to run at a later time, say plainly that scheduled tasks are not supported yet.
-- `needs_confirmation`: present the `proposal`. When the user decides, call `try_analyze_user_intent` again with the request and the decision.
-- `status` is `failed`, or the result has no outcome: tell the user the analysis did not complete and why. Do not do the work yourself.
-
-The analysis talks to the user directly: do not ask its questions again (they are in the conversation already) and do not retell its exploration. The `report` in its result is written for you, not a reply to the user.
-
-- Never say that work is finished before the work session has reported back.
-- If the user changes topic or gives a new task, analyze the new request instead of changing earlier work.
-
-## Notifications
-
-A `[notify <id>]` line in `<semi_subscription_snapshot>` means a notification of yours (a question of a work session, a reminder of a goal) was shown to the user in this conversation. It is not a message from the user.
-- When the user's message clearly answers one open notification (the content matches it, or it replies to that message): check it with `agent-session notify show <id>`, then answer it for the user with `agent-session notify answer <id> --option <value>` or `--text "<answer>"` (a question), or acknowledge it with `agent-session notify ack <id>` (a notice). Then tell the user briefly what you did.
-- Several open notifications and a vague reply ("ok"): ask which one is meant; do not guess.
-- Feedback that changes the plan ("I'm on holiday today, don't disturb me") is not an answer. When the notification comes from a goal, pass it on with `agent-session goal post <goal_id> --msg "<the feedback>"`; otherwise handle it as an ordinary request. Do not turn a one-off remark into a lasting rule.
-- Never decide an approval for the user: point them to the notification's link.
-
-## Sending Files
-
-A reply that carries files ends the turn with `report` instead of a final message: `report({"report": "<your reply>", "artifacts": [...], "is_end": true})`. The report text is your reply; every artifact reaches the user as an attachment.
-- A file you made: its path relative to your working directory. Create it and check that it exists first.
-- An existing object, such as an artifact of a work session's report (`[name](cyfile:…)`): its object id.
-
-Do not write attachment tags or file paths into the text to deliver a file.
+Answer what the conversation can answer yourself. Hand the rest to `try_analyze_user_intent` (its description says when) and relay its report: do not retell its exploration or ask its questions again. A new request goes to a new analysis; it does not change earlier work.
+When a work session ends (a `work … finished` line), read its report and relay the result with its artifacts. Never say work is finished before its session has reported back.
 
 ## Memory
 
-- `agent-session recall <tag>...` looks up what you learned in earlier sessions.
-- `agent-session note <text>` records something the owner asked you to remember.
-
+- Hints that match the current topic appear in the background context by themselves; `agent-session recall <tag>...` looks further.
+- What you learn about your owner (facts, preferences, decisions, corrections) you record with `agent-session ctl perceive "<one sentence, with its scope>"`; it is consolidated into long-term memory later. Record facts, not instructions.
+- Recalled memory is a clue, not an authority: when it matters, check before acting on it.
 """
 
+# The structured reply: `reply` goes out, `topic` becomes the session's
+# topic (hints are recalled by its tags), `artifacts` become attachments.
+[reply]
+schema = '''
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reply", "topic", "artifacts"],
+  "properties": {
+    "reply": {"type": "string", "description": "What the user reads: your answer, self-contained, in the user's language."},
+    "topic": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["title", "tags"],
+      "description": "null, unless the subject is new or has moved: a one-line title and up to 8 short tags.",
+      "properties": {
+        "title": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Files delivered with the reply (paths relative to the working directory, or object ids such as cyfile:...); [] when none."
+    }
+  }
+}
+'''
+
 [capabilities]
-tool_whitelist = ["group:bash", "behavior:analyze_intent", "report"]
+tool_whitelist = ["group:bash_core", "behavior:analyze_intent"]
 
 [budget]
 max_tool_iterations = 24

@@ -79,6 +79,9 @@ pub struct SessionSpec {
     /// Goal Sessions: the Goal and epoch (see [`ensure_goal_session`]).
     #[serde(default)]
     pub goal: Option<GoalBinding>,
+    /// The agent's owner (DID), when the creator knows it.
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 /// Input channel of a session (xAgent §4.7).
@@ -128,6 +131,7 @@ impl SessionSpec {
             outbound: None,
             freeze: false,
             goal: None,
+            owner: None,
         }
     }
 }
@@ -263,6 +267,7 @@ pub async fn create_session(
             timezone: spec.timezone.clone(),
             policy: spec.policy.clone(),
             goal: spec.goal.clone(),
+            owner: spec.owner.clone(),
         },
         prompt: spec.prompt.clone(),
         runtime: spec.runtime.clone(),

@@ -203,6 +203,8 @@ impl Session {
                 at_ms: crate::now_ms(),
             }),
             last_error: self.state.last_error.clone(),
+            topic: Some(self.state.topic.clone())
+                .filter(|t| !t.title.trim().is_empty() || !t.tags.is_empty()),
             updated_at_ms: self.state.updated_at_ms,
         }
     }

@@ -276,6 +276,9 @@ impl BehaviorCatalog for ForwardingStateClient {
     async fn revision(&self) -> Result<String> {
         self.inner.behaviors().revision().await
     }
+    async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
+        self.inner.behaviors().cmd_skill(name).await
+    }
 }
 
 impl AgentStateClient for ForwardingStateClient {

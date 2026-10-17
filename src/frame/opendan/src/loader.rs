@@ -165,8 +165,27 @@ impl Loader {
                 None
             }
         };
+        // Who the agent is and whose: its name, account and DID, and its
+        // owner's account and DID (the review of the UI prompt).
+        let owner_line = env.owner_did.as_ref().map(|owner| {
+            let owner = owner.to_string();
+            format!(
+                "Your owner is `{}` (DID `{owner}`).",
+                libopendan::runner::assembler::did_account(&owner)
+            )
+        });
         let instance_role = display_name
-            .map(|(name, account)| format!("Your name is {name} (account `{account}`)."))
+            .map(|(name, account)| {
+                let mut line = format!(
+                    "Your name is {name} (account `{account}`, DID `{}`).",
+                    env.agent_did
+                );
+                if let Some(o) = &owner_line {
+                    line.push(' ');
+                    line.push_str(o);
+                }
+                line
+            })
             .into_iter()
             .chain(Some(env.settings.role_supplement.trim().to_string()))
             .filter(|t| !t.is_empty())

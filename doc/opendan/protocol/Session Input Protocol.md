@@ -219,7 +219,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 属性值转义 `& < > "`。只有一条纯文本消息时也使用 `<msg>`。`machine` 与 `ServiceDid` 引用不在内建渲染中出现。
 
-内建模板：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`、活动 session 列表、`<runtime>`。半订阅快照的内建形式：`<semi_subscription_snapshot>` 内每个状态版本一个 `<event>` 元素（终结版本在前）。
+内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`、活动 session 列表、`<runtime>`。半订阅快照的内建形式：`<semi_subscription_snapshot>` 内每个状态版本一个 `<event>` 元素（终结版本在前）。
 
 协议时间与内建渲染一律 UTC。用户时区与 Session 绑定（`session.timezone`，IANA 名），其初始值与后续变化经隐式 semi 订阅进入半订阅快照，不取 Runner 所在机器的时区，变化本身不唤醒推理。
 
@@ -246,6 +246,51 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 `inline` 的请求被 provider 拒绝（永久或未知的 provider 错误：模型不接受图片 / 文档，或对象不可读）时，Session 机械降级一次：去掉该 run 中 user 消息的媒体块，在其文本末尾追加一行说明，发布改写后的快照并重试；快照的 `host.libopendan.media_degraded = true` 记录它已发生，同一个 run 不再降级。文本自足保证附件仍可按 ObjId / 路径读取。
 
+### 6.5 UI Session 的 chat 格式
+
+`session.kind = ui`（一对一与群聊的会话 Session）的内建模板是 chat 格式：只有变化了的背景行，然后是输入本身。没有 `<session_input>` 包装、`<task>`、`<runtime>` JSON、`<active_sessions>`，半订阅状态也不单独成一条快照消息（并入背景行）。
+
+```text
+<<background_context>>
+- current_time 2026-10-16T10:45:45-07:00 (America/Los_Angeles)
+- runtime native on lzc-pve, cwd …/sessions/<sid>
+- work work-12481d…: running — reviewing PR #667 diff
+- [notify n_01] input/timely from session work-… : Which branch? … — check the current state with `agent-session notify show n_01`
+- hint: owner prefers replies in Chinese (noticed 2026-10-02)
+<</background_context>>
+你好 Jarvis
+```
+
+事件批次（没有消息）：
+
+```text
+<<background_context>>
+- work work-12481d…: finished (succeeded) — 1 P2 issue found. Read: agent-session read-session work-12481d… --report
+<</background_context>>
+<<inputs>>
+<event key="child:work-12481d…:finished@26" source="session:work-12481d…" event="finished" seq="26" terminal="true">sub session work-12481d… finished (succeeded): 1 P2 issue found</event>
+<</inputs>>
+```
+
+背景行（每行一个稳定 key；文本为一行）：
+
+| key | 内容 | 来源 |
+|---|---|---|
+| `time` | `current_time <用户时区的本地时间> (<IANA 名>)`；没有 `session.timezone` 时 UTC | 批次时间 + `session.timezone` |
+| `runtime` | `runtime <kind> on <hostname>, cwd <cwd>` | 运行时状态 |
+| `channel` | 本批最后一条消息经过的隧道 DID | `delivery.tunnel` |
+| `work:<sid>` | 本 Session 创建的子 Session：运行中 → 状态与活动摘要；本批送达其结束 → `finished (<outcome>) — <一行状态>. Read: agent-session read-session <sid> --report`；等输入 / 等决定 | 活动视图（`parent = 本 sid`）、本批的子 Session 事件 |
+| `ui:<sid>` | 其它 UI Session 的 topic 标题 | 活动视图（登记表 `status.topic`） |
+| `session:<sid>` | 与本 Session 目标相同或范围重叠的其它活动 Session（避让规则） | 活动视图 |
+| `event:<key>` | 半订阅状态版本：`_notify` 的通知行原样（`[notify <id>] …`）；其它为 `<source> <event>: <summary>`。用户时区事件不单列（由 `time` 行承载） | `pending_events`（同 §5 的选择与预算） |
+| `hint:<id>` | `hint: <sentence> (noticed <time>)` | 按 `state.topic.tags` 召回的 hints |
+
+- **只显示变化的行**：`state.background_shown` 记录每个 key 上次显示时的内容摘要；摘要变了才显示。`time` 行另按 5 秒粒度：距上次显示不足 `BACKGROUND_TIME_STEP_MS = 5000` 且时区未变时不显示。本批候选里没有的 key 从记录中删除（再出现时重新显示）。所有行都没有变化时整个 `<<background_context>>` 块省略。
+- 新记录随批次 receipt 提交（`extra.background`，见 §7），恢复时与 receipt 一起应用；显示了哪些半订阅版本仍记在 receipt 的 `events` 里。
+- **消息**：一对一时只写原文，不写 key / from / time；附件每个一行 `[attachment <media> "<name>" -> <path 或 ObjId>]`；回复 / 编辑等关系有才写一行（`(replying to <ObjId>)`）。一个批次有多条消息时每条前加一行 `[<发言人> <本地时间 HH:MM:SS>]`。**群聊**保留 §6.2 的 `<msg>` 元素（发言人与 `context="true"` 是群聊语义的根本），与事件一起放在 `<<inputs>>` 里。
+- **事件**：保留 `<event>` 元素（属性是用 CLI 回查的依据），放在 `<<inputs>> … <</inputs>>` 中、消息原文之前；子 Session 事件的摘要对 UI 父 Session 只有一行，不附 `report:`。
+- 交接块（`<context_switch>` 等）与 TodoList 视图有时照旧放在最前。自定义模板可用 `background`（行数组）与 `background_text`（整块文本）。
+
 ## 7. 输入 receipt 与提交
 
 每个批次由有序的 1–2 条 user 消息组成：有待注入的半订阅状态时先是快照消息，再是受控输入消息，一次注入，中间不推理、不发布快照。receipt 与消息写在**同一份**快照的 `state.host.libopendan.input_receipts[]`：
@@ -261,6 +306,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
   "bootstrap": false, "after_step": 7, "extra": { "continuation": true }, "at_ms": 0 }
 ```
 
+- `extra.background`（chat 格式）：本批之后的 `state.background_shown`，应用 receipt 时整体替换。
 - 批次 ID = `(run_id, input_seq)`，每个 run 从 1 开始连续。`opens_turn` 只看提交时有没有打开的 Turn；半订阅快照不独立计 Turn。
 - `inputs`：本批消费的 msg 与 Input event。Runner 自己合成的输入（被跟踪的后台 task 完成）用 `src = "_task"`、`key = task:<task_id>:terminal`，没有消费位置。
 - `events`：快照消息实际注入的状态版本；应用时按 `(subscription_id, source, key)`（有 `seq` 时一并核对）从 `pending_events` 精确清除。处理 v7 期间收到 v8，提交 v7 不删除 v8。

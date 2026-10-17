@@ -4,6 +4,7 @@
 //! protocol piece used here is xllm's run directory (§8.7).
 
 pub mod assembler;
+pub mod background;
 mod ask;
 mod children;
 mod drive;

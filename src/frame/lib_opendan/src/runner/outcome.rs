@@ -108,6 +108,62 @@ pub(super) struct Next {
     /// Goal Sessions: why the Activation ended badly. The session itself
     /// carries no error: it goes on waiting for its next Activation.
     pub(super) goal_error: Option<Value>,
+    /// Structured reply (UI sessions): the artifacts delivered with the
+    /// reply text (`answer`).
+    pub(super) reply_artifacts: Vec<ReportArtifact>,
+    /// Structured reply: what the conversation is about now.
+    pub(super) topic: Option<Topic>,
+    /// The reply broke its contract after the allowed repair: the raw text
+    /// went out as it was, and this is why (recorded in the worklog).
+    pub(super) reply_error: Option<String>,
+}
+
+/// A UI session's structured reply `{reply, topic, artifacts}` (`topic` may be
+/// null, `artifacts` empty).
+struct StructuredReply {
+    reply: String,
+    topic: Option<Topic>,
+    artifacts: Vec<String>,
+}
+
+/// Most tags a topic keeps (MEM §1120: a title and a few tags).
+const MAX_TOPIC_TAGS: usize = 8;
+
+impl StructuredReply {
+    fn parse(v: &Value) -> Self {
+        let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().trim().to_string();
+        let topic = v.get("topic").filter(|t| t.is_object()).map(|t| Topic {
+            title: t
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            tags: t
+                .get("tags")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .take(MAX_TOPIC_TAGS)
+                .collect(),
+        });
+        Self {
+            reply: text("reply"),
+            topic: topic.filter(|t| !t.title.is_empty() || !t.tags.is_empty()),
+            artifacts: v
+                .get("artifacts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+        }
+    }
 }
 
 fn is_retryable_error(e: &LLMComputeError) -> bool {
@@ -462,9 +518,41 @@ pub(super) async fn handle_context_outcome(
             response,
             ..
         } => {
-            let text = match output {
-                ContextOutput::Text { content } => content,
-                ContextOutput::Json { content } => content.to_string(),
+            // A reply contract: a UI conversation's reply is structured
+            // (`{reply, topic, artifacts}`); a reply that broke the
+            // contract twice goes out as it is.
+            let contract = matches!(
+                snapshot.request.output,
+                llm_context::OutputSpec::Json {
+                    max_repairs: Some(_),
+                    ..
+                }
+            );
+            let mut structured = None;
+            let mut reply_error = None;
+            let text = match &output {
+                ContextOutput::Json { content }
+                    if contract && !site.child && cfg.session.kind == SessionKind::Ui =>
+                {
+                    let r = StructuredReply::parse(content);
+                    let reply = r.reply.clone();
+                    structured = Some(r);
+                    reply
+                }
+                ContextOutput::Invalid { content, error } if contract => {
+                    log::warn!(
+                        "session {}: the reply of run {} does not meet its contract: {error}",
+                        sh.dir.sid(),
+                        lc.run.run_id()
+                    );
+                    reply_error = Some(error.clone());
+                    if site.child {
+                        format!("The result is not in the required format ({error}); its text as given:\n{content}")
+                    } else {
+                        content.clone()
+                    }
+                }
+                other => other.text(),
             };
             let nb = behavior_result.as_ref().and_then(|b| b.next_behavior.clone());
             let report = behavior_result.as_ref().and_then(|b| b.self_report.clone());
@@ -500,6 +588,21 @@ pub(super) async fn handle_context_outcome(
             );
             next.report = final_report;
             next.usage = Some(usage);
+            next.reply_error = reply_error;
+            if let Some(r) = structured {
+                next.topic = r.topic;
+                if !r.artifacts.is_empty() {
+                    let id = crate::ids::h(&[lc.run.run_id(), "structured_reply"]);
+                    match super::reports::store_artifacts(sh, &id, &r.artifacts).await {
+                        Ok(a) => next.reply_artifacts = a,
+                        // Checked before the reply was accepted; gone since.
+                        Err(e) => {
+                            log::warn!("session {}: reply artifacts not delivered: {e}", sh.dir.sid());
+                            next.reply_error = Some(format!("artifacts not delivered: {e}"));
+                        }
+                    }
+                }
+            }
             let yielded = behavior_result.as_ref().and_then(|b| b.decision())
                 == Some(llm_context::StepDecision::Yield);
             super::todos::settle(sh, &mut next, &site, yielded, lc.run.run_id(), &snapshot).await?;
@@ -773,6 +876,12 @@ async fn commit_run_end(
             });
         }
     }
+    // The conversation's topic, from its structured reply (MEM §1120):
+    // hints are recalled by its tags from the next batch on, and other
+    // sessions see it through the registry. A reply without one keeps it.
+    if let Some(topic) = &next.topic {
+        s.state.topic = topic.clone();
+    }
     // Close the Turn before the report renders the counters.
     let turn_closed = match (next.turn_end, s.state.open_turn.take()) {
         (Some(status), Some(open)) => {
@@ -787,7 +896,9 @@ async fn commit_run_end(
                     turn,
                     status,
                     answer: delivered.map(|r| r.report.clone()).or_else(|| next.answer.clone()),
-                    artifacts: delivered.map(|r| r.artifacts.clone()).unwrap_or_default(),
+                    artifacts: delivered
+                        .map(|r| r.artifacts.clone())
+                        .unwrap_or_else(|| next.reply_artifacts.clone()),
                     workdir: None,
                     inputs: open.inputs,
                     has_msg: open.has_msg,
@@ -894,6 +1005,10 @@ async fn commit_run_end(
             todo_brief
                 .clone()
                 .or_else(|| next.answer.clone())
+                .map(|a| match &next.reply_error {
+                    Some(e) => format!("[reply not in the required format: {e}] {a}"),
+                    None => a,
+                })
                 .map(|a| a.chars().take(2000).collect())
         },
     });

@@ -2,12 +2,12 @@
   "resource": "session:work-notify",
   "epoch": 1,
   "holder": {
-    "runner_id": "rn-975bd5cd977443c1",
+    "runner_id": "rn-3c89b886b7bd4290",
     "principal": "app:app2@alice",
     "host": "${FIXTURE_HOST}",
-    "pid": 1654165,
+    "pid": 2426942,
     "runtime_id": "rt-fixture-native"
   },
-  "acquired_at_ms": 1792219154965,
-  "released_at_ms": 1792219155074
+  "acquired_at_ms": 1792232849728,
+  "released_at_ms": 1792232849840
 }

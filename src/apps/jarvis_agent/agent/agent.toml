@@ -46,13 +46,17 @@ enabled = false
 [loader.goals]
 enabled = true
 
+# A UI session's objective is the built-in design intent of a conversation
+# (`objective = "..."` replaces it); its command manual is frozen with it.
 [session.ui]
 default_behavior = "chat_route"
+default_cmd_skill = "ui_core"
 max_process_depth = 4
 
 [session.group]
 base = "ui"
 default_behavior = "groupchat_route"
+default_cmd_skill = "ui_core"
 max_process_depth = 4
 
 [session.work]

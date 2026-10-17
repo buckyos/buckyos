@@ -335,6 +335,10 @@ pub async fn serve_call(
         },
         "behaviors.list" => agent.behaviors().list().await.and_then(out),
         "behaviors.revision" => agent.behaviors().revision().await.and_then(out),
+        "behaviors.cmd_skill" => match arg::<String>(params, "name") {
+            Ok(n) => agent.behaviors().cmd_skill(&n).await.and_then(out),
+            Err(e) => Err(e),
+        },
         "goals.list" => agent.goals().list().await.and_then(out),
         "goals.get" => match arg::<String>(params, "goal_id") {
             Ok(id) => agent.goals().get(&id).await.and_then(out),
@@ -697,6 +701,9 @@ impl BehaviorCatalog for KrpcAgentStateClient {
     }
     async fn revision(&self) -> Result<String> {
         self.call("behaviors.revision", json!({})).await
+    }
+    async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
+        self.call("behaviors.cmd_skill", json!({ "name": name })).await
     }
 }
 

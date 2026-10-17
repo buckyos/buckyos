@@ -36,6 +36,10 @@ pub struct ActiveSession {
     pub overlap: Vec<String>,
     pub possibly_interrupted: bool,
     pub driver: String,
+    /// The session that created it (a sub session's parent).
+    pub parent: Option<String>,
+    /// What it is about (UI sessions), as last reported.
+    pub topic: Option<Topic>,
 }
 
 pub(super) struct FsActivity {
@@ -140,6 +144,8 @@ impl ActivityView for FsActivity {
                 overlap,
                 possibly_interrupted,
                 driver: e.driver.principal.clone(),
+                parent: e.origin.as_ref().and_then(|o| o.parent_session.clone()),
+                topic: e.status.topic.clone(),
             });
         }
         out.sort_by(|a, b| {

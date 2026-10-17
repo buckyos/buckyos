@@ -757,6 +757,11 @@ async fn gen(out: &Path) -> R<()> {
                 &pretty(&serde_json::to_value(&m)?),
             );
         }
+        // The chat format of UI sessions (Session Input Protocol §6.5).
+        for (file, batch, group) in input_fixture::CHAT_BATCHES {
+            let text = input_fixture::chat_text(&records, batch, *group);
+            write(&format!("rendering/{file}"), text.as_bytes());
+        }
         // The semi event as the snapshot message of the next controlled input.
         let semi = &records[3].1;
         let SessionInput::Event(ev) = parse_logical_record(semi).map_err(|e| e.to_string())? else {
@@ -796,6 +801,13 @@ async fn gen(out: &Path) -> R<()> {
                     "output": format!("rendering/templates/{n}.out"),
                 })).collect::<Vec<_>>(),
                 "ai_message": { "reference": "rendering/ai_message_reference.json", "inline": "rendering/ai_message_inline.json" },
+                "chat": {
+                    "timezone": input_fixture::CHAT_TIMEZONE,
+                    "background": "every line new; the semi event of 04_event_semi_object.json as a background line",
+                    "batches": input_fixture::CHAT_BATCHES.iter().map(|(f, b, g)| json!({
+                        "output": format!("rendering/{f}"), "batch": b, "group": g,
+                    })).collect::<Vec<_>>(),
+                },
                 "rules": [
                     "`{{ input | render_format: \"input.xml\" }}` equals input.text byte for byte",
                     "message.xml / event.xml equal the corresponding element inside input.text",

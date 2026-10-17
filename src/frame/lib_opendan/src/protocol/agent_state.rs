@@ -49,6 +49,10 @@ pub struct SessionStatus {
     pub last_runner: Option<LastRunner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<Value>,
+    /// What the conversation is about (UI sessions: from their structured
+    /// reply); other sessions see it in their background context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<super::state::Topic>,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -75,6 +79,7 @@ impl SessionStatus {
             activity: Activity::default(),
             last_runner: None,
             last_error: None,
+            topic: None,
             updated_at_ms: now_ms,
         }
     }

@@ -126,6 +126,10 @@ pub const DEFAULT_LOCK_DIR: &str = "~/.xllm/locks";
 /// 内置工具组 `bash` 提供的命令执行工具名（`shell`）。
 pub const TOOL_EXEC: &str = TOOL_SHELL;
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
+/// 内置工具组 `bash_core`：`read`（`read_file` 的超集）/ `write_file` /
+/// `edit_file` / `shell`，不含 task 工具——长命令由 `XllmDeps.task_cli`
+/// 经 task CLI 桥跟进；宿主没有 task 命令时仍带上三个 task 工具。
+pub const BUILTIN_TOOL_GROUP_BASH_CORE: &str = "bash_core";
 /// 运行时协议版本；resume 时校验当前执行器是否能处理保存的协议。
 pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/2";
 pub const RUN_RECORD_VERSION: u32 = 6;
@@ -773,6 +777,14 @@ pub struct LlmContextFile {
     pub run_logs: Option<RunLogLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_format: Option<ResultFormat>,
+    /// The final reply is one JSON value (implied by `json_schema`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<bool>,
+    /// JSON Schema of the final reply: handed to the provider as structured
+    /// output and checked on the reply (hosted runs: a reply contract with
+    /// one repair).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1427,6 +1439,8 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
             "loop_model",
             "run_logs",
             "result_format",
+            "json",
+            "json_schema",
             "tools",
             "prompt",
         ],
@@ -1514,6 +1528,19 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         None => None,
         Some(s) => {
             Some(ResultFormat::parse(&s).map_err(|e| ctx.err("result_format", e.to_string()))?)
+        }
+    };
+    let json = ctx.get_bool("", m, "json")?;
+    let json_schema = match m.get("json_schema") {
+        None | Some(Yaml::Null) => None,
+        Some(v @ Yaml::Mapping(_)) => Some(
+            serde_json::to_value(v).map_err(|e| ctx.err("json_schema", e.to_string()))?,
+        ),
+        Some(other) => {
+            return Err(ctx.err(
+                "json_schema",
+                format!("expected a JSON Schema object, got {}", yaml_kind(other)),
+            ))
         }
     };
     let tools = match m.get("tools") {
@@ -1609,6 +1636,8 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         loop_model,
         run_logs,
         result_format,
+        json,
+        json_schema,
         tools,
         prompt,
     })
@@ -1674,6 +1703,10 @@ pub struct MergedConfig {
     pub run_logs: Option<RunLogLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_format: Option<ResultFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<Value>,
     #[serde(default)]
     pub tools: ToolsConfig,
     #[serde(default)]
@@ -1756,6 +1789,8 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         scalar!(loop_model, "loop_model");
         scalar!(run_logs, "run_logs");
         scalar!(result_format, "result_format");
+        scalar!(json, "json");
+        scalar!(json_schema, "json_schema");
         if let Some(t) = &f.tools {
             merged.tools.merge_over(t);
             merged.sources.insert("tools".into(), src.clone());
@@ -2731,7 +2766,7 @@ fn build_rules_system_text(loop_model: LoopModel, tools: &EffectiveTools) -> Str
         .native
         .iter()
         .chain(&tools.actions)
-        .any(|tool| tool.source == "groupname:bash")
+        .any(|tool| tool.source == "groupname:bash" || tool.source == "groupname:bash_core")
     {
         lines.push(match tools.filesystem_policy {
             FilesystemPolicy::Workspace => "Builtin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.",
@@ -3740,6 +3775,50 @@ pub struct XllmDeps {
     pub skip_workdir_lock: bool,
     /// Opening of the runtime protocol of hosted runs (`prepare_hosted`).
     pub host_protocol: HostProtocolFlavor,
+    /// Which of xllm's own sections a hosted run appends after the host's
+    /// system text (`prepare_hosted`). Default: all of them.
+    pub host_prompt_sections: HostPromptSections,
+    /// Host facts appended to the `shell` tool's description (e.g. the
+    /// commands its PATH provides). Part of the tool schema: keep it stable.
+    pub shell_note: Option<String>,
+    /// The command that follows a `shell` task when the task tools are not
+    /// offered (`group:bash_core`), e.g. `agent-session task`: it must reach
+    /// this run's task resolver through `XLLM_TASK_ENDPOINT`. `None`:
+    /// `bash_core` keeps the task tools.
+    pub task_cli: Option<String>,
+}
+
+/// The sections xllm appends to a hosted run's system text. A host that
+/// states the capabilities, commands and loop rules itself (an Agent
+/// Session's UI conversation) turns them off; xllm still computes the
+/// runtime protocol and records it in run.json (`prompt.runtime_protocol`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostPromptSections {
+    /// `## capabilities`: the tools of the run and the filesystem policy.
+    pub capabilities: bool,
+    /// `## cmd_manual`: the documented commands (`bash_tools`).
+    pub cmd_manual: bool,
+    /// `## runtime_protocol`: the loop rules. Only a function call loop can
+    /// run without it (the behavior loop's reply shape is defined there).
+    pub runtime_protocol: bool,
+}
+
+impl Default for HostPromptSections {
+    fn default() -> Self {
+        Self {
+            capabilities: true,
+            cmd_manual: true,
+            runtime_protocol: true,
+        }
+    }
+}
+
+impl HostPromptSections {
+    pub const NONE: Self = Self {
+        capabilities: false,
+        cmd_manual: false,
+        runtime_protocol: false,
+    };
 }
 
 impl Default for XllmDeps {
@@ -3755,6 +3834,9 @@ impl Default for XllmDeps {
             runtime_path_prefix: Vec::new(),
             skip_workdir_lock: false,
             host_protocol: HostProtocolFlavor::OneShot,
+            host_prompt_sections: HostPromptSections::default(),
+            shell_note: None,
+            task_cli: None,
         }
     }
 }
@@ -3811,6 +3893,9 @@ pub struct XllmToolManager {
     /// The run the tools belong to (execution directories).
     run: RunBindingSlot,
     resolver: Arc<CompositeTaskResolver>,
+    /// The task CLI bridge over `resolver` (`bash_core` with a task
+    /// command); served as long as this manager lives.
+    task_bridge: Option<crate::task_bridge::TaskBridge>,
 }
 
 impl XllmToolManager {
@@ -3851,7 +3936,26 @@ impl XllmToolManager {
             tasks,
             run,
             resolver: Arc::new(resolver),
+            task_bridge: None,
         }
+    }
+
+    /// Serve this run's task resolver to commands (`XLLM_TASK_ENDPOINT`)
+    /// and word task hints for `cli`. `None` when no bridge can be served
+    /// here (the caller keeps the task tools then).
+    pub fn serve_task_bridge(&mut self, cli: &str) -> Option<String> {
+        if self.task_bridge.is_none() {
+            match crate::task_bridge::serve(self.resolver.clone()) {
+                Ok(bridge) => self.task_bridge = Some(bridge),
+                Err(e) => {
+                    log::warn!("task bridge not served: {e}");
+                    return None;
+                }
+            }
+        }
+        self.resolver
+            .set_followup(llm_context::tasks::TaskFollowup::Command(cli.to_string()));
+        self.task_bridge.as_ref().map(|b| b.endpoint().to_string())
     }
 
     /// The task manager `shell` hands long commands to.
@@ -4348,7 +4452,18 @@ fn shell_runtime_note(descriptor: &RuntimeDescriptor) -> ShellRuntimeNote {
     }
 }
 
-/// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `shell`。
+/// How `shell` commands of a builtin group follow tasks and what the host
+/// adds to its description.
+#[derive(Clone, Default)]
+struct ShellExtras {
+    followup: llm_context::tasks::TaskFollowup,
+    endpoint: Option<String>,
+    note: Option<String>,
+}
+
+/// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `shell`；
+/// `core`（`bash_core`）以 `read` 取代 `read_file`。
+#[allow(clippy::too_many_arguments)]
 fn builtin_bash_group(
     workdir: &Path,
     filesystem_policy: FilesystemPolicy,
@@ -4357,6 +4472,8 @@ fn builtin_bash_group(
     shell: &ShellSettings,
     runtime: ShellRuntimeNote,
     tasks: Arc<InProcessTaskManager>,
+    core: bool,
+    extras: ShellExtras,
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut cfg = FileToolConfig::new(workdir.to_path_buf());
     cfg.backend = files;
@@ -4377,11 +4494,19 @@ fn builtin_bash_group(
         .with_mode(shell.mode)
         .with_default_wait_ms(shell.wait_ms)
         .with_runtime_note(runtime)
-        .with_tasks(tasks);
-    vec![
+        .with_tasks(tasks)
+        .with_task_followup(extras.followup)
+        .with_task_endpoint(extras.endpoint)
+        .with_note(extras.note);
+    let reader: Arc<dyn AgentTool> = if core {
+        Arc::new(crate::read_tool::ReadTool::new(cfg.clone()))
+    } else {
         Arc::new(TypedToolHandle::with_null_host(ReadFileTool::new(
             cfg.clone(),
-        ))),
+        )))
+    };
+    vec![
+        reader,
         Arc::new(TypedToolHandle::with_null_host(WriteFileTool::new(
             cfg.clone(),
             audit.clone(),
@@ -4412,10 +4537,28 @@ async fn expand_tool_sources(
         let desc = src.describe();
         match src {
             ToolSource::Group { groupname } => {
-                if groupname != BUILTIN_TOOL_GROUP_BASH {
+                let core = groupname == BUILTIN_TOOL_GROUP_BASH_CORE;
+                if groupname != BUILTIN_TOOL_GROUP_BASH && !core {
                     return Err(XllmError::Tools(format!(
-                        "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH})"
+                        "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH}, {BUILTIN_TOOL_GROUP_BASH_CORE})"
                     )));
+                }
+                let mut extras = ShellExtras {
+                    note: deps.shell_note.clone(),
+                    ..Default::default()
+                };
+                // `bash_core` follows tasks with the host's command when a
+                // bridge can be served; otherwise with the task tools.
+                let mut task_tools_needed = shell.mode == ShellMode::Auto;
+                if core && task_tools_needed {
+                    if let Some(cli) = deps.task_cli.as_deref() {
+                        if let Some(endpoint) = manager.serve_task_bridge(cli) {
+                            extras.followup =
+                                llm_context::tasks::TaskFollowup::Command(cli.to_string());
+                            extras.endpoint = Some(endpoint);
+                            task_tools_needed = false;
+                        }
+                    }
                 }
                 let tasks = manager.tasks();
                 for t in builtin_bash_group(
@@ -4426,10 +4569,12 @@ async fn expand_tool_sources(
                     shell,
                     runtime.clone(),
                     tasks,
+                    core,
+                    extras,
                 ) {
                     out.push(manager.register(t, &desc)?);
                 }
-                if shell.mode == ShellMode::Auto {
+                if task_tools_needed {
                     // The model follows a command that became a task with
                     // these (§4); registered with the group that can create
                     // tasks.
@@ -6566,6 +6711,15 @@ impl XllmTask {
                 ResultFormat::Raw
             }
         };
+        // `--json` / an SDK schema, or the `.llm_context` keys.
+        let json_out = overrides.json
+            || merged.json == Some(true)
+            || overrides.json_schema.is_some()
+            || merged.json_schema.is_some();
+        let json_schema = overrides
+            .json_schema
+            .clone()
+            .or_else(|| merged.json_schema.clone());
         let run_logs = match (overrides.run_logs, merged.run_logs) {
             (Some(l), _) => {
                 sources.insert("run_logs".into(), "cli".into());
@@ -6629,7 +6783,7 @@ impl XllmTask {
                 RunStore::disk(resolve_config_path(DEFAULT_RUNS_DIR, &base_dir))
             }
         };
-        if overrides.json && loop_model == LoopModel::Behavior && result_format == ResultFormat::Raw
+        if json_out && loop_model == LoopModel::Behavior && result_format == ResultFormat::Raw
         {
             return Err(XllmError::Capability(
                 "--json cannot be satisfied with `loop_model: behavior` and `result_format: raw` (the raw behavior response is XML); use e.g. `result_format: result.report`".into(),
@@ -6705,7 +6859,7 @@ impl XllmTask {
                 .ok_or_else(|| XllmError::Capability("runtime info unavailable".into()))?,
         );
         let prompt = if structured {
-            let runtime_protocol = build_runtime_protocol(loop_model, &tools, overrides.json);
+            let runtime_protocol = build_runtime_protocol(loop_model, &tools, json_out);
             PromptPlan {
                 mode: PromptMode::Custom,
                 group: None,
@@ -6734,7 +6888,7 @@ impl XllmTask {
                 loop_model,
                 tools: &tools,
                 env: &env,
-                json: overrides.json,
+                json: json_out,
             })?
         };
 
@@ -6891,8 +7045,8 @@ impl XllmTask {
             limits,
             run_logs,
             result_format,
-            json: overrides.json,
-            json_schema: overrides.json_schema.clone(),
+            json: json_out,
+            json_schema,
             disable_capabilities: overrides.disable_capabilities.clone(),
             tools,
             config_files: merged.files.clone(),
@@ -6997,6 +7151,18 @@ impl XllmTask {
             },
         };
         let loop_model = merged.loop_model.unwrap_or(LoopModel::FunctionCall);
+        let sections = deps.host_prompt_sections;
+        if !sections.runtime_protocol && loop_model != LoopModel::FunctionCall {
+            return Err(XllmError::Capability(format!(
+                "{origin}: the runtime protocol defines the reply shape of the behavior loop; only a function call loop can run without it"
+            )));
+        }
+        let json = merged.json == Some(true) || merged.json_schema.is_some();
+        if json && loop_model != LoopModel::FunctionCall {
+            return Err(XllmError::Capability(format!(
+                "{origin}: a JSON reply (json / json_schema) needs loop_model function_call; a behavior loop reply is its XML step"
+            )));
+        }
         let limits = RunLimits {
             max_tokens: merged.max_tokens,
             max_tool_iterations: merged
@@ -7024,7 +7190,7 @@ impl XllmTask {
         let runtime_config = runtime.config();
         let runtime_descriptor = runtime.descriptor().clone();
         let runtime_protocol =
-            build_runtime_protocol_for(&deps.host_protocol, loop_model, &tools, false);
+            build_runtime_protocol_for(&deps.host_protocol, loop_model, &tools, json);
         let mut template_env = TemplateEnv::for_new_run(
             manager
                 .runtime_info()
@@ -7033,21 +7199,31 @@ impl XllmTask {
         template_env.runtime.remove("current_time");
         template_env.runtime.remove("timezone");
         let rendered_host_system = template_env.render(host_system, &format!("host:{origin}"))?;
+        let mut appended = Vec::new();
+        if sections.capabilities {
+            appended.push(format!(
+                "## capabilities\n{}",
+                build_rules_system_text(loop_model, &tools).trim_end()
+            ));
+        }
+        if sections.cmd_manual {
+            if let Some(manual) = build_cmd_manual_system_text(&tools) {
+                appended.push(format!("## cmd_manual\n{}", manual.trim_end()));
+            }
+        }
+        if sections.runtime_protocol {
+            appended.push(format!("## runtime_protocol\n{}", runtime_protocol.trim_end()));
+        }
         let mut system = rendered_host_system.trim_end().to_string();
+        for section in appended {
+            if !system.is_empty() {
+                system.push_str("\n\n");
+            }
+            system.push_str(&section);
+        }
         if !system.is_empty() {
-            system.push_str("\n\n");
+            system.push('\n');
         }
-        system.push_str(&format!(
-            "## capabilities\n{}\n",
-            build_rules_system_text(loop_model, &tools).trim_end()
-        ));
-        if let Some(manual) = build_cmd_manual_system_text(&tools) {
-            system.push_str(&format!("\n## cmd_manual\n{}\n", manual.trim_end()));
-        }
-        system.push_str(&format!(
-            "\n## runtime_protocol\n{}\n",
-            runtime_protocol.trim_end()
-        ));
         let prompt = PromptPlan {
             mode: PromptMode::Custom,
             group: None,
@@ -7076,8 +7252,8 @@ impl XllmTask {
             limits,
             run_logs: merged.run_logs.unwrap_or(RunLogLevel::Warn),
             result_format: merged.result_format.clone().unwrap_or(ResultFormat::Raw),
-            json: false,
-            json_schema: None,
+            json,
+            json_schema: merged.json_schema.clone(),
             disable_capabilities: Vec::new(),
             tools,
             config_files: vec![origin.to_string()],
@@ -7430,7 +7606,17 @@ pub fn hosted_request(
             provider_options: None,
         },
         tool_policy,
-        output: OutputSpec::Text,
+        // A JSON reply of a hosted run is a contract: one repair, then the
+        // host gets the raw reply (`ContextOutput::Invalid`).
+        output: if cfg.json {
+            OutputSpec::Json {
+                schema: cfg.json_schema.clone(),
+                strict: true,
+                max_repairs: Some(1),
+            }
+        } else {
+            OutputSpec::Text
+        },
         budget: BudgetSpec {
             max_total_tokens: None,
             max_completion_tokens: cfg.limits.max_tokens,
@@ -8438,6 +8624,7 @@ impl XllmRun {
             OutputSpec::Json {
                 schema: cfg.json_schema.clone(),
                 strict: false,
+                max_repairs: None,
             }
         } else {
             OutputSpec::Text
@@ -8658,7 +8845,9 @@ impl XllmRun {
                                 text
                             }
                         }
-                        ContextOutput::Text { .. } => response.message.text_content(),
+                        ContextOutput::Text { .. } | ContextOutput::Invalid { .. } => {
+                            response.message.text_content()
+                        }
                     };
                     return self.finish_with_response(raw, usage);
                 }
@@ -10060,6 +10249,110 @@ there]]></write_file>
             ensure_host_report_not_pending(&record),
             Err(XllmError::NotResumable { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn hosted_sections_can_be_disabled() {
+        let env = Env::new();
+        let cfg = json!({"tools": {"enabled": true}});
+        for bits in 0..8u8 {
+            let sections = HostPromptSections {
+                capabilities: bits & 1 != 0,
+                cmd_manual: bits & 2 != 0,
+                runtime_protocol: bits & 4 != 0,
+            };
+            let mut deps = env.deps(ScriptedLlm::new(vec![]));
+            deps.host_prompt_sections = sections;
+            let hosted =
+                XllmTask::prepare_hosted(&env.workdir, &cfg, "session.json", "HOST TEXT", &deps)
+                    .await
+                    .unwrap();
+            let system = &hosted.prompt.system_prompt;
+            assert!(system.starts_with("HOST TEXT"), "{system}");
+            assert_eq!(system.contains("## capabilities"), sections.capabilities, "{system}");
+            assert_eq!(system.contains("## cmd_manual"), sections.cmd_manual, "{system}");
+            assert_eq!(
+                system.contains("## runtime_protocol"),
+                sections.runtime_protocol,
+                "{system}"
+            );
+            // Recorded for diagnosis either way.
+            assert!(!hosted.prompt.runtime_protocol.is_empty());
+            if bits == 0 {
+                assert_eq!(system, "HOST TEXT\n");
+            }
+        }
+        // The behavior loop's reply shape lives in the runtime protocol.
+        let mut deps = env.deps(ScriptedLlm::new(vec![]));
+        deps.host_prompt_sections = HostPromptSections::NONE;
+        let err = XllmTask::prepare_hosted(
+            &env.workdir,
+            &json!({"loop_model": "behavior"}),
+            "session.json",
+            "",
+            &deps,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, XllmError::Capability(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_hosted_json_schema_is_a_reply_contract() {
+        let env = Env::new();
+        let deps = env.deps(ScriptedLlm::new(vec![]));
+        let schema = json!({"type": "object", "required": ["reply"], "properties": {"reply": {"type": "string"}}});
+        let hosted = XllmTask::prepare_hosted(
+            &env.workdir,
+            &json!({"tools": {"enabled": true}, "json_schema": schema}),
+            "session.json",
+            "",
+            &deps,
+        )
+        .await
+        .unwrap();
+        assert!(hosted.config.json);
+        assert_eq!(hosted.config.json_schema.as_ref(), Some(&schema));
+        assert!(hosted.prompt.runtime_protocol.contains("exactly one valid JSON value"));
+        let req = hosted.build_request(
+            ContextOwnerRef::OneShot { id: "t".into() },
+            "trace",
+            "objective",
+            "",
+            Vec::new(),
+        );
+        assert_eq!(
+            req.output,
+            OutputSpec::Json {
+                schema: Some(schema),
+                strict: true,
+                max_repairs: Some(1)
+            }
+        );
+        // A plain hosted run stays text; a behavior loop cannot take JSON.
+        let plain = XllmTask::prepare_hosted(&env.workdir, &json!({}), "s.json", "", &deps)
+            .await
+            .unwrap();
+        assert!(!plain.config.json);
+        assert!(XllmTask::prepare_hosted(
+            &env.workdir,
+            &json!({"loop_model": "behavior", "json": true}),
+            "s.json",
+            "",
+            &deps
+        )
+        .await
+        .is_err());
+        // The `.llm_context` file keys are validated.
+        assert!(XllmTask::prepare_hosted(
+            &env.workdir,
+            &json!({"json_schema": "not a schema"}),
+            "s.json",
+            "",
+            &deps
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -11756,6 +12049,8 @@ there]]></write_file>
             &shell,
             ShellRuntimeNote::native(),
             manager.tasks(),
+            false,
+            ShellExtras::default(),
         ) {
             manager.register(t, "groupname:bash").expect("register");
         }
@@ -11863,6 +12158,8 @@ there]]></write_file>
             &shell,
             ShellRuntimeNote::native(),
             manager.tasks(),
+            false,
+            ShellExtras::default(),
         ) {
             manager.register(t, "groupname:bash").expect("register");
         }
@@ -11923,6 +12220,113 @@ there]]></write_file>
             .await
             .unwrap();
         assert!(matches!(dir_obs, Observation::Success { .. }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_core_follows_tasks_through_the_cli_bridge() {
+        let env = Env::new();
+        let cfg = json!({
+            "tools": {
+                "enabled": true,
+                "tools": [{"groupname": "bash_core"}],
+                "shell": {"mode": "auto", "wait_ms": 200}
+            }
+        });
+        // Without a task command the group keeps the task tools.
+        let deps = env.deps(ScriptedLlm::new(vec![]));
+        let hosted = XllmTask::prepare_hosted(&env.workdir, &cfg, "s.json", "", &deps)
+            .await
+            .unwrap();
+        let names: Vec<String> = hosted.config.tools.native.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["read", "write_file", "edit_file", "shell", "wait_task", "get_task_state", "cancel_task"]
+        );
+        // With one: four tools, and commands reach the run's tasks.
+        let mut deps = env.deps(ScriptedLlm::new(vec![]));
+        deps.task_cli = Some("agent-session task".into());
+        deps.shell_note = Some("PATH provides `agent-session`.".into());
+        let hosted = XllmTask::prepare_hosted(&env.workdir, &cfg, "s.json", "", &deps)
+            .await
+            .unwrap();
+        let names: Vec<String> = hosted.config.tools.native.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(names, ["read", "write_file", "edit_file", "shell"]);
+        let shell = hosted
+            .config
+            .tools
+            .native
+            .iter()
+            .find(|t| t.name == "shell")
+            .unwrap();
+        assert!(shell.description.contains("`agent-session task wait <task_id>`"), "{}", shell.description);
+        assert!(shell.description.ends_with("PATH provides `agent-session`."), "{}", shell.description);
+        assert!(!shell.description.contains("wait_task"), "{}", shell.description);
+
+        let manager = hosted.manager;
+        let call = |command: &str, id: &str| AiToolCall {
+            name: TOOL_SHELL.into(),
+            args: HashMap::from([("command".to_string(), Value::String(command.into()))]),
+            call_id: id.into(),
+        };
+        let obs = manager
+            .call_tool(call(&format!("printf %s \"${}\"", crate::task_bridge::ENV_TASK_ENDPOINT), "c0"), ToolCallCtx::noop())
+            .await
+            .unwrap();
+        let Observation::Success { content, .. } = obs else { panic!("{obs:?}") };
+        let endpoint = content.as_str().unwrap().lines().last().unwrap_or_default().trim().to_string();
+        assert!(endpoint.starts_with('@') || endpoint.starts_with('/'), "{content}");
+
+        let obs = manager
+            .call_tool(call("echo early; sleep 1; echo late", "c1"), ToolCallCtx::noop())
+            .await
+            .unwrap();
+        let Observation::Success { content, tool_result, .. } = obs else { panic!("{obs:?}") };
+        let text = content.as_str().unwrap();
+        assert!(text.contains("agent-session task wait local:shell:c1"), "{text}");
+        let task_id = tool_result.unwrap().task_id.unwrap();
+        let req = |op, wait_ms| crate::task_bridge::TaskBridgeRequest {
+            op,
+            task_id: task_id.clone(),
+            wait_ms,
+        };
+        let running = crate::task_bridge::call(&endpoint, &req(crate::task_bridge::TaskOp::State, None))
+            .await
+            .unwrap();
+        assert_eq!(running.state, "running", "{running:?}");
+        assert!(running.text.contains("agent-session task state"), "{}", running.text);
+        let done = crate::task_bridge::call(&endpoint, &req(crate::task_bridge::TaskOp::Wait, Some(5000)))
+            .await
+            .unwrap();
+        assert_eq!(done.state, "finished", "{done:?}");
+        assert_eq!(done.exit_code(), 0);
+        // The very text the task tools return for the same state.
+        let state = manager.resolver().state(&task_id).await;
+        let Observation::Success { content, .. } =
+            llm_context::tasks::task_state_observation("", &task_id, &state)
+        else {
+            panic!()
+        };
+        assert_eq!(done.text, content.as_str().unwrap());
+        assert!(done.text.contains("late") && done.text.contains("exited with code 0"));
+        let unknown = crate::task_bridge::call(
+            &endpoint,
+            &crate::task_bridge::TaskBridgeRequest {
+                op: crate::task_bridge::TaskOp::Cancel,
+                task_id: "local:shell:nope".into(),
+                wait_ms: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_ne!(unknown.exit_code(), 0, "{unknown:?}");
+        // The bridge ends with the run's tools.
+        drop(manager);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(crate::task_bridge::call(&endpoint, &req(crate::task_bridge::TaskOp::State, None))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

@@ -303,8 +303,11 @@ async fn ui_sessions_observe_notifications_of_their_conversation() {
     let llm = ScriptedLlm::new(move |req, n| match n {
         0 => {
             let all = render(&req.messages);
-            assert!(all.contains("<semi_subscription_snapshot>"), "{all}");
-            assert!(all.contains("[notify nt-1] input/timely from session work-7"), "{all}");
+            // A UI session shows it as a line of the background context of
+            // the message's own batch (chat format), no snapshot message.
+            assert!(!all.contains("<semi_subscription_snapshot>"), "{all}");
+            assert!(all.contains("<<background_context>>"), "{all}");
+            assert!(all.contains("- [notify nt-1] input/timely from session work-7"), "{all}");
             assert!(all.contains("(options: pg=Postgres)"), "{all}");
             assert!(all.contains("agent-session notify show nt-1"), "{all}");
             assert_eq!(all.matches("[notify nt-1]").count(), 1, "{all}");

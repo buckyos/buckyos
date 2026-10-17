@@ -76,7 +76,7 @@ use crate::state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
 use crate::suspension::{apply_fill, inner_transcript_of};
-use crate::tasks::render_background_env;
+use crate::tasks::render_background_env_via;
 
 pub struct LLMContext {
     request: LLMContextRequest,
@@ -1295,7 +1295,7 @@ impl LLMContext {
     /// request only — never to the history, so the prefix stays cacheable.
     async fn render_background_env(&mut self) {
         self.background_env = match &self.deps.tasks {
-            Some(tasks) => render_background_env(&tasks.active().await),
+            Some(tasks) => render_background_env_via(&tasks.active().await, &tasks.followup()),
             None => None,
         };
     }
@@ -1391,6 +1391,40 @@ impl LLMContext {
             OutputSpec::Text => ContextOutput::Text {
                 content: text.clone(),
             },
+            OutputSpec::Json {
+                schema,
+                max_repairs: Some(max),
+                ..
+            } => {
+                let (schema, max) = (schema.clone(), *max);
+                match self.check_reply(&text, schema.as_ref()).await {
+                    Ok(value) => ContextOutput::Json { content: value },
+                    Err(error) => {
+                        self.deps
+                            .worklog
+                            .emit(WorkEvent::OutputParseFailed {
+                                trace_id: self.request.trace.clone(),
+                                error: error.clone(),
+                            })
+                            .await;
+                        if self.state.output_repairs < max {
+                            // One more inference with the reason fed back;
+                            // the failed reply stays in the transcript.
+                            self.state.output_repairs += 1;
+                            self.state.accumulated.push(response.message.clone());
+                            self.state.accumulated.push(AiMessage::text(
+                                AiRole::User,
+                                repair_message(&error, schema.as_ref()),
+                            ));
+                            return None;
+                        }
+                        ContextOutput::Invalid {
+                            content: text.clone(),
+                            error,
+                        }
+                    }
+                }
+            }
             OutputSpec::Json { strict, .. } => match serde_json::from_str::<Value>(&text) {
                 Ok(value) => ContextOutput::Json { content: value },
                 Err(err) => {
@@ -1435,6 +1469,20 @@ impl LLMContext {
             trace,
             behavior_result: None,
         })
+    }
+
+    /// A reply under a reply contract: parsed (one code fence tolerated),
+    /// matching the schema, accepted by the host's validator.
+    async fn check_reply(&self, text: &str, schema: Option<&Value>) -> Result<Value, String> {
+        let value = crate::json_check::parse_reply(text)
+            .map_err(|e| format!("the reply is not one JSON value ({e})"))?;
+        if let Some(schema) = schema {
+            crate::json_check::validate(schema, &value)?;
+        }
+        if let Some(v) = &self.deps.output_validator {
+            v.validate(&value).await?;
+        }
+        Ok(value)
     }
 
     /// Decide what to do with a (already-emitted, already-logged) error whose
@@ -2554,4 +2602,14 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// The correction message after a reply that broke the reply contract.
+fn repair_message(error: &str, schema: Option<&Value>) -> String {
+    let mut m = format!("Your reply does not meet the required format: {error}.\n");
+    if let Some(schema) = schema {
+        m.push_str(&format!("The reply must be exactly one JSON value matching this JSON Schema: {schema}\n"));
+    }
+    m.push_str("Reply again with only that JSON value: no prose, no code fence.");
+    m
 }

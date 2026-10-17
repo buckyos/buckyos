@@ -923,6 +923,10 @@ pub struct InputReceipt {
     pub at_ms: u64,
 }
 
+/// `InputReceipt.extra` key: the `background_shown` map after a chat
+/// format batch (UI sessions), applied to the state with the receipt.
+pub const RECEIPT_BACKGROUND: &str = "background";
+
 /// libopendan host metadata stored in `LLMContextState.host["libopendan"]`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HostMeta {

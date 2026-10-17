@@ -2,9 +2,9 @@
 
 日期：2026-10-17
 
-状态：v0.2，待实施。这是 [jarvis-chat-prompt-todo.md](jarvis-chat-prompt-todo.md)（下称“主 TODO”）§9 列出的 llm_context / agent_tool 层改动，按约定单列并**先于** libopendan / xagent 侧实施（[feedback-llm-context-first]）。五项彼此独立，可并行；每项自带单测与 fixtures 更新。
+状态：v0.3，**P1–P5 已实施（2026-10-17）**，实施记录见 §实施记录。这是 [jarvis-chat-prompt-todo.md](jarvis-chat-prompt-todo.md)（下称“主 TODO”）§9 列出的 llm_context / agent_tool 层改动，按约定单列并**先于** libopendan / xagent 侧实施（[feedback-llm-context-first]）。五项彼此独立，可并行；每项自带单测与 fixtures 更新。
 
-修订记录：2026-10-17 v0.2 按用户答复（主 TODO §10）：P2 以 provider 原生 JSON Schema 为主路径、校验纠正只兜底；P3 的 `bash_core` 用 `read` 取代 `read_file`；新增 P5。
+修订记录：2026-10-17 v0.2 按用户答复（主 TODO §10）：P2 以 provider 原生 JSON Schema 为主路径、校验纠正只兜底；P3 的 `bash_core` 用 `read` 取代 `read_file`；新增 P5。2026-10-17 v0.3 实施完成。
 
 依据：主 TODO §3.3、§5、§6；[OpenDAN Agent Dev Guide](../doc/sdk/OpenDAN_Agent_Dev_Guide.md) §3.3（task CLI 化目标、“不能先移除 task 工具”）、§6.2–6.3；[xllm_rust_sdk](../doc/llm_context/xllm_rust_sdk.md) §36、§112（`prepare_hosted` 追加 `capabilities / cmd_manual / runtime_protocol`）；[LLM Context 设计](<../doc/llm_context/LLM Context 设计.md>) §324、§412（`OutputSpec::Json` 的 schema 只透传不校验）；[local_llm_context_protocol](../doc/llm_context/local_llm_context_protocol.md) §151–155、§411、§451。
 
@@ -93,3 +93,40 @@ cargo run -p libopendan --example fixtures -- doc/opendan/protocol/fixtures   # 
 ```
 
 完成后在主 TODO §9 表格标注状态，再开始主 TODO §3.3 / §5 / §6。P5 完成前主 TODO §6 的 `bash_core` 临时用 `read_file`。
+
+---
+
+## 实施记录（2026-10-17）
+
+### 落点
+
+| 项 | 代码 | 测试 |
+|---|---|---|
+| P1 | `agent_tool/src/xllm.rs`：`HostPromptSections { capabilities, cmd_manual, runtime_protocol }`（`Default` 全开，`NONE`）、`XllmDeps.host_prompt_sections`；`prepare_hosted` 按它追加各段，`prompt.runtime_protocol` 照算照记；`runtime_protocol = false` + behavior 循环 → `XllmError::Capability` | `xllm::tests::hosted_sections_can_be_disabled`（8 种组合 + behavior 拒绝） |
+| P2 | llm_context：`OutputSpec::Json` 加 `max_repairs: Option<u32>`；`ContextOutput::Invalid { content, error }` + `ContextOutput::text()`；`json_check.rs`（JSON Schema 子集校验 + 容忍一层代码围栏的 `parse_reply`）；`LLMContextDeps.output_validator: Option<Arc<dyn OutputValidator>>`；`LLMContextState.output_repairs`；`finish_done` 的回复契约分支（失败回复留在历史 + user 纠正消息，不计连续错误）；`ForkOptions.output`。xllm：`.llm_context` 新键 `json` / `json_schema`（文件、合并、CLI run 也认）；`prepare_hosted` 设 `config.json/json_schema`，JSON + behavior 循环报错；`hosted_request` 生成 `Json { schema, strict: true, max_repairs: Some(1) }` | `llm_context/src/tests/reply_contract.rs`（直接通过 / 一次纠正 / 两次失败返回 Invalid / 宿主校验参与 / fork 换契约且父不变）；`json_check` 单测；`xllm::tests::a_hosted_json_schema_is_a_reply_contract` |
+| P3 | `agent_tool/src/task_bridge.rs`（Linux 抽象 Unix socket，其它平台 temp 目录 socket 文件；一行 JSON 请求 / 应答；`answer()` 用 `task_state_observation_via`）；`ENV_TASK_ENDPOINT = "XLLM_TASK_ENDPOINT"`；llm_context `TaskFollowup { Tools, Command(cli) }` + `RunningTaskResolver::followup()`、`render_background_env_via` / `task_state_observation_via`；`CompositeTaskResolver::set_followup`；`XllmToolManager::serve_task_bridge`（桥随 manager 生命周期）；`BUILTIN_TOOL_GROUP_BASH_CORE = "bash_core"`；`XllmDeps.task_cli`；shell 的说明 / 转 task 提示 / 环境变量按 followup；CLI `agent-session task state|wait|cancel <id> [--wait-ms]`（`lib_opendan/src/bin/xagent.rs`） | `xllm::tests::bash_core_follows_tasks_through_the_cli_bridge`（两种组展开、shell 说明、环境变量、`state` / `wait` / 未知 task、与工具文本逐字一致、manager 释放后桥关闭） |
+| P4 | `file_tools.rs` 三个 description 与参数文档（schemars 由字段注释生成 description）；shell 说明加“从工作目录开始、不沙箱、当前用户权限” + `XllmDeps.shell_note` | 由 prompt review 基线覆盖 |
+| P5 | `agent_tool/src/read_tool.rs` 重写并**注册为模块**（原文件是孤儿文件，从未编译）：文件目标直接交给 `ReadFileTool`（同实现、同策略、同结果）；`cyfile:` 等对象 id 经 `ObjectReader`（缺省 `NamedStoreObjectReader`，NamedStore）+ 内存 `FileBackend` 复用同一窗口逻辑，非文本对象拒绝并指向 `llm_understand_media`；`offset/limit` 是 `range` 的另一种写法；`path` 是 `uri` 的别名 | `read_tool::tests`（与 `read_file` 序列化结果逐字节一致、offset/limit 等价、越界拒绝、对象读取与二进制拒绝、目标解析） |
+
+### 与本文不同的决定
+
+1. **`first_chunk` 的含义**：本文 P4/P5 草案说“first_chunk returns only the beginning of a large file”，源码里它是**锚点文本**（从第一次出现处开始读）。description 按源码写。`range` 的真实语法是 `120-200` / `120:$` / `120:+20` / `-50:$`，description 也按源码写。
+2. **`.llm_context` 键名**：主 TODO 写的 `result_format = "json"` 与 xllm 已有的 `result_format`（`raw` / `result.<path>`，提取路径）冲突，改为新键 `json` / `json_schema`；在 behavior 包里由 `[reply] schema` 表达（主 TODO 实施记录）。
+3. **校验器**：没有现成的 `jsonschema` crate 可离线使用，写了 JSON Schema 子集（`json_check.rs`）；provider 原生结构化输出是主路径，子集校验只兜底，不比 schema 更严。另加了宿主语义校验钩子 `OutputValidator`（文件存在、`clarifications` 计数），与 schema 失败走同一次纠正。
+4. **兜底提示**：无法得知 AICC 对某 provider 是否真的应用了结构化输出（MiniMax 适配器忽略），所以不在 xllm 里追加“必须输出 JSON”的提示；关掉 runtime_protocol 的宿主自己在提示词里说明回复格式（Jarvis 的 `## Replying`），纠正消息里带完整 schema。
+5. **task 命令名**：用 `agent-session task …`（Session 的 PATH 上本来就有），没有新造 `xllm-task` 二进制；独立 xllm 没有这个命令，`bash_core` 在没有 `task_cli` 或桥起不来时仍带三个 task 工具（DEVG §3.3：不能先删 task 工具）。CLI 的 `wait` 缺省 25s（低于 shell 缺省 30s，避免命令自己转成 task）。
+6. **桥的可达性**：抽象 socket 只在执行器所在主机 / 网络命名空间可达；remote_ssh runtime 的命令到不了，返回“endpoint not reachable”。
+7. `cmd_manual` 在 `bash_core` 下列出 task 命令一行：未做（UI 关掉了 cmd_manual，命令由 cmd_skill 列出）。
+
+### 验证
+
+```
+cargo test -p llm_context            # 234 passed
+cargo test -p agent_tool --lib       # 247 passed, 5 ignored
+```
+
+### 遗留
+
+- 宿主提供的 background 行随 tool result 附加（本文“以后”）。
+- remote_ssh runtime 的 task CLI 桥（需要随 SSH 通道转发或文件协议）。
+

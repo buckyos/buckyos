@@ -114,20 +114,64 @@ pub trait RunningTaskResolver: Send + Sync {
     /// Tasks this context follows, for the background env. A finished task
     /// stays listed until the LLM read its result once.
     async fn active(&self) -> Vec<TaskBrief>;
+
+    /// How the model follows these tasks (the wording of hints and of the
+    /// background env).
+    fn followup(&self) -> TaskFollowup {
+        TaskFollowup::Tools
+    }
 }
 
-/// Hint appended to a still-running task's result.
-pub fn next_step_hint(task_id: &str, cancellable: bool) -> String {
-    let mut s = format!(
-        "Call `wait_task` with task_id=\"{task_id}\" to keep waiting (wait_ms up to {} min), or `get_task_state` to check later.",
-        MAX_IN_TOOL_WAIT_MS / 60_000
-    );
-    if cancellable {
-        s.push_str(&format!(
-            " `cancel_task` with task_id=\"{task_id}\" stops it."
-        ));
+/// How the model follows a task: with the task tools (`wait_task` /
+/// `get_task_state` / `cancel_task`), or with a command run through
+/// `shell` that reaches the same resolver (`<cli> wait|state|cancel <id>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum TaskFollowup {
+    #[default]
+    Tools,
+    Command(String),
+}
+
+impl TaskFollowup {
+    /// Hint appended to a still-running task's result.
+    pub fn hint(&self, task_id: &str, cancellable: bool) -> String {
+        match self {
+            TaskFollowup::Tools => {
+                let mut s = format!(
+                    "Call `wait_task` with task_id=\"{task_id}\" to keep waiting (wait_ms up to {} min), or `get_task_state` to check later.",
+                    MAX_IN_TOOL_WAIT_MS / 60_000
+                );
+                if cancellable {
+                    s.push_str(&format!(
+                        " `cancel_task` with task_id=\"{task_id}\" stops it."
+                    ));
+                }
+                s
+            }
+            TaskFollowup::Command(cli) => {
+                let mut s = format!(
+                    "Run `{cli} wait {task_id} --wait-ms <ms>` to keep waiting (give the shell call a larger wait_ms than that), or `{cli} state {task_id}` to check later."
+                );
+                if cancellable {
+                    s.push_str(&format!(" `{cli} cancel {task_id}` stops it."));
+                }
+                s
+            }
+        }
     }
-    s
+
+    /// How to get a task's full output, in a few words.
+    pub fn short(&self) -> String {
+        match self {
+            TaskFollowup::Tools => "use get_task_state / wait_task".to_string(),
+            TaskFollowup::Command(cli) => format!("use `{cli} state <id>` / `{cli} wait <id>`"),
+        }
+    }
+}
+
+/// Hint appended to a still-running task's result (task tools).
+pub fn next_step_hint(task_id: &str, cancellable: bool) -> String {
+    TaskFollowup::Tools.hint(task_id, cancellable)
 }
 
 fn fmt_elapsed(ms: u64) -> String {
@@ -145,6 +189,16 @@ fn fmt_elapsed(ms: u64) -> String {
 /// `call_id`. Used for the inline task tools and for the fill of a
 /// suspended call alike.
 pub fn task_state_observation(call_id: &str, task_id: &str, state: &TaskState) -> Observation {
+    task_state_observation_via(call_id, task_id, state, &TaskFollowup::Tools)
+}
+
+/// [`task_state_observation`] with the hints worded for `followup`.
+pub fn task_state_observation_via(
+    call_id: &str,
+    task_id: &str,
+    state: &TaskState,
+    followup: &TaskFollowup,
+) -> Observation {
     match state {
         TaskState::Running {
             brief,
@@ -161,7 +215,7 @@ pub fn task_state_observation(call_id: &str, task_id: &str, state: &TaskState) -
                 text.push_str(output_tail.trim_end());
             }
             text.push('\n');
-            text.push_str(&next_step_hint(task_id, *cancellable));
+            text.push_str(&followup.hint(task_id, *cancellable));
             let bytes = text.len();
             Observation::Success {
                 call_id: call_id.to_string(),
@@ -222,11 +276,17 @@ pub fn task_state_observation(call_id: &str, task_id: &str, state: &TaskState) -
 /// there is nothing to show. Appended to the request only; never part of
 /// the history.
 pub fn render_background_env(tasks: &[TaskBrief]) -> Option<String> {
+    render_background_env_via(tasks, &TaskFollowup::Tools)
+}
+
+/// [`render_background_env`] worded for `followup`.
+pub fn render_background_env_via(tasks: &[TaskBrief], followup: &TaskFollowup) -> Option<String> {
     if tasks.is_empty() {
         return None;
     }
-    let mut s = String::from(
-        "<background_tasks>\nTasks started earlier in this context (status at this moment; use get_task_state / wait_task for full output):\n",
+    let mut s = format!(
+        "<background_tasks>\nTasks started earlier in this context (status at this moment; {} for full output):\n",
+        followup.short()
     );
     for t in tasks {
         s.push_str(&format!(

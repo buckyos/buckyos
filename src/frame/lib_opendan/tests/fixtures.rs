@@ -650,4 +650,14 @@ async fn f14_input_bus() {
         .collect();
     assert_eq!(kinds, vec!["text", "image", "document"]);
     assert_eq!(json_of("rendering/ai_message_reference.json")["content"].as_array().unwrap().len(), 1);
+    // The chat format of UI sessions, byte for byte.
+    for c in expected["rendering"]["chat"]["batches"].as_array().unwrap() {
+        let files: Vec<&str> = c["batch"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+        let text = input_fixture::chat_text(&records, &files, c["group"].as_bool().unwrap());
+        assert_eq!(text, read(c["output"].as_str().unwrap()), "{}", c["output"]);
+    }
+    let one = read("rendering/chat_one_to_one.txt");
+    assert!(one.starts_with("<<background_context>>\n- current_time 2026-10-02T08:00:01+08:00 (Asia/Shanghai)\n"), "{one}");
+    assert!(one.ends_with("<</background_context>>\n查询构建进度"), "{one}");
+    assert!(read("rendering/chat_group.txt").contains("<<inputs>>\n<msg "));
 }

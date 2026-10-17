@@ -13,6 +13,7 @@ pub mod context_window;
 pub mod deps;
 pub mod error;
 pub mod interrupt;
+pub mod json_check;
 pub mod msg_parser;
 pub mod observation;
 pub mod outcome;
@@ -42,7 +43,7 @@ pub use context_window::ContextLimits;
 pub use deps::{
     AllowAllPolicy, ByteHeuristicTokenizer, CancelCause, CheckpointHook, InferenceHook, Injection,
     InjectionPosition, LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink,
-    PolicyEngine, Tokenizer, ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent,
+    OutputValidator, PolicyEngine, Tokenizer, ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent,
     WorklogSink, MAX_INJECTIONS_PER_BOUNDARY,
 };
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
@@ -82,7 +83,8 @@ pub use state::{
 pub use step_record::XmlStepRenderer;
 pub use suspension::{is_thinking, strip_snapshot_thinking, strip_thinking};
 pub use tasks::{
-    next_step_hint, render_background_env, task_state_observation, CancelUnsupported,
+    next_step_hint, render_background_env, render_background_env_via, task_state_observation,
+    task_state_observation_via, CancelUnsupported, TaskFollowup,
     RunningTaskResolver, TaskBrief, TaskResult, TaskState, DEFAULT_TASK_WAIT_MS,
     MAX_IN_TOOL_WAIT_MS,
 };

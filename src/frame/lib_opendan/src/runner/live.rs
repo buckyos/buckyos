@@ -57,6 +57,12 @@ pub(super) async fn remove_if_safe(sh: &Shared, run_id: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// What a UI session's `shell` description adds: the session's PATH.
+pub const UI_SHELL_NOTE: &str = "Its PATH provides `agent-session` (this session's commands) and the agent's tools.";
+
+/// The command a UI session follows `shell` tasks with (`group:bash_core`).
+pub const UI_TASK_CLI: &str = "agent-session task";
+
 /// Opening of the runtime protocol of a session's runs.
 pub const SESSION_PROTOCOL_INTRO: &str = "You are running inside an Agent Session. Work on the session's objective with the inputs you are given; the session delivers your result and decides what follows it. Use only the material provided and the results you obtain in this session; distinguish verified facts from assumptions.";
 
@@ -73,6 +79,7 @@ async fn xllm_deps_for(
     sh: &Arc<Shared>,
     env: &SessionEnv,
     depth: usize,
+    function_call: bool,
 ) -> Result<agent_tool::xllm::XllmDeps> {
     let mut x = sh.deps.xllm.clone();
     x.runtime = Some(sh.deps.runtime.clone());
@@ -86,15 +93,26 @@ async fn xllm_deps_for(
             intro: SESSION_PROTOCOL_INTRO.to_string(),
         };
     }
-    let (behaviors, max_depth) = {
+    let (behaviors, max_depth, ui) = {
         let s = sh.session.lock().await;
         (
             s.config
                 .behaviors()
                 .map_err(OpenDanError::InvalidArgument)?,
             s.config.session.policy.max_process_depth as usize,
+            s.config.session.kind == SessionKind::Ui,
         )
     };
+    if ui && function_call {
+        // A conversation states its constraints, commands and reply
+        // contract itself: xllm's capability list, command manual and loop
+        // rules stay out of its system text (they are still recorded in
+        // run.json; a behavior loop keeps them: its reply shape is defined
+        // there). Tasks are followed through `agent-session task`.
+        x.host_prompt_sections = agent_tool::xllm::HostPromptSections::NONE;
+        x.task_cli = Some(UI_TASK_CLI.to_string());
+        x.shell_note = Some(UI_SHELL_NOTE.to_string());
+    }
     // Suspended calls waiting for a sub session (`session:<sid>`) are
     // answered from the registry; other task ids go to the host's resolver.
     x.buckyos_tasks = Some(Arc::new(super::children::SessionTaskResolver::new(
@@ -155,6 +173,11 @@ fn checkpoint_deps(
     hosted_waist_deps(cfg, llm, Arc::new(tools))
         .with_checkpoint_hook(hook)
         .with_tasks(resolver.clone())
+        // Only consulted for a run with a reply contract (`[reply]`).
+        .with_output_validator(Arc::new(super::reports::ReplyValidator {
+            sh: sh.clone(),
+            run: run.clone(),
+        }))
 }
 
 /// What a new run is created for.
@@ -225,7 +248,8 @@ pub(super) async fn new_run_context(
                 .as_ref()
                 .and_then(|f| f.behaviors.get(&new.behavior))
                 .map(|b| b.budget.clone());
-            fork_run_context(sh, env, parent, new.depth, budget).await
+            let reply = new.entry.as_ref().and_then(|e| e.reply.clone());
+            fork_run_context(sh, env, parent, new.depth, budget, reply).await
         }
         _ => own_run_context(sh, binding, env, &cfg, &new).await,
     }
@@ -248,6 +272,7 @@ async fn fork_run_context(
     parent: &str,
     depth: usize,
     budget: Option<BehaviorBudget>,
+    reply: Option<BehaviorReply>,
 ) -> Result<LiveCtx> {
     let (parent_record, parent_snap) = parent_snapshot(sh, parent)?;
     let sid = sh.dir.sid().to_string();
@@ -271,6 +296,20 @@ async fn fork_run_context(
         }
         options.tool_policy = Some(tools);
         options.budget = Some(limits);
+    }
+    // The branch's own reply contract (e.g. the analysis result): only what
+    // the reply must look like changes, the prefix stays the caller's.
+    if let Some(r) = &reply {
+        if !parent_snap.request.behavior_name.is_empty() {
+            return Err(OpenDanError::InvalidArgument(
+                "[reply] needs the function call loop; the caller runs the behavior loop".into(),
+            ));
+        }
+        options.output = Some(llm_context::OutputSpec::Json {
+            schema: Some(r.schema.clone()),
+            strict: true,
+            max_repairs: Some(1),
+        });
     }
     let mut derived = llm_context::fork_snapshot(&parent_snap, options)
         .map_err(|e| OpenDanError::InvalidArgument(e.to_string()))?;
@@ -304,9 +343,17 @@ async fn fork_run_context(
             extra.remove("finish");
             extra.remove("tasks");
             extra.remove("asks");
+            extra.remove(super::reports::EXTRA_REPLY);
+        }
+        if let Some(v) = reply.as_ref().and_then(reply_extra) {
+            if !host.extra.is_object() {
+                host.extra = json!({});
+            }
+            host.extra[super::reports::EXTRA_REPLY] = v;
         }
     }
-    let xdeps = xllm_deps_for(sh, env, depth).await?;
+    let function_call = record.config.loop_model == LoopModel::FunctionCall;
+    let xdeps = xllm_deps_for(sh, env, depth, function_call).await?;
     let manager = rebuild_toolset(&record, &xdeps).await?;
     let resolver = manager.resolver();
     let llm = create_run_llm(&record, &xdeps).await?;
@@ -352,6 +399,12 @@ async fn fork_run_context(
         summary_llm: llm,
         resolver,
     })
+}
+
+/// What a resumed run needs to know of its reply contract (run.json
+/// `host.extra.reply`).
+fn reply_extra(r: &BehaviorReply) -> Option<Value> {
+    r.asks_field.as_ref().map(|f| json!({ "asks_field": f }))
 }
 
 fn session_env_check(sh: &Shared, env: &SessionEnv) -> Result<Value> {
@@ -414,7 +467,6 @@ async fn own_run_context(
         .assembler
         .system_text(&cfg, sh.agent_root.as_deref())
         .await?;
-    let xdeps = xllm_deps_for(sh, env, new.depth).await?;
     let mut llm_ctx = if cfg.prompt.llm_context.is_null() {
         default_llm_context()
     } else {
@@ -425,6 +477,7 @@ async fn own_run_context(
         .and_then(Value::as_str)
         .unwrap_or("function_call")
         == "function_call";
+    let xdeps = xllm_deps_for(sh, env, new.depth, function_call).await?;
     let explicit_report = cfg.session.policy.completion == CompletionPolicy::ExplicitReport;
     let enabled = llm_ctx.pointer("/tools/enabled").and_then(Value::as_bool);
     if function_call && explicit_report && enabled == Some(false) {
@@ -455,6 +508,11 @@ async fn own_run_context(
         {
             sources.push(json!({"name":TOOL_REPORT}));
         }
+    }
+    // `[reply]`: the context's final reply is JSON of this contract.
+    let reply = new.entry.as_ref().and_then(|e| e.reply.clone());
+    if let Some(r) = &reply {
+        llm_ctx["json_schema"] = r.schema.clone();
     }
     llm_ctx["runtime"] = serde_json::to_value(sh.deps.runtime.config()).unwrap();
     let hosted = XllmTask::prepare_hosted(
@@ -504,10 +562,20 @@ async fn own_run_context(
             runtime_kind: Some(binding.kind.clone()),
             runtime_id: Some(binding.runtime_id.clone()),
             env_check: session_env_check(sh, env)?,
-            extra: cfg.workspace_binding.as_ref().map_or(
-                Value::Null,
-                |workspace| json!({"workspace_binding": workspace}),
-            ),
+            extra: {
+                let mut extra = serde_json::Map::new();
+                if let Some(workspace) = &cfg.workspace_binding {
+                    extra.insert("workspace_binding".into(), json!(workspace));
+                }
+                if let Some(v) = reply.as_ref().and_then(reply_extra) {
+                    extra.insert(super::reports::EXTRA_REPLY.into(), v);
+                }
+                if extra.is_empty() {
+                    Value::Null
+                } else {
+                    Value::Object(extra)
+                }
+            },
         },
     );
     let system_prompt = hosted.prompt.system_prompt.clone();
@@ -866,7 +934,13 @@ pub(super) async fn resume_live_run(
     let record = run.record();
     let run_id = record.run_id.clone();
     let depth = sh.session.lock().await.state.call_depth();
-    let xdeps = xllm_deps_for(sh, env, depth).await?;
+    let xdeps = xllm_deps_for(
+        sh,
+        env,
+        depth,
+        record.config.loop_model == LoopModel::FunctionCall,
+    )
+    .await?;
     let blocked = |e: String| OpenDanError::blocked(e, Some(&run_id));
     let manager = rebuild_toolset(&record, &xdeps)
         .await
@@ -1536,6 +1610,9 @@ pub(super) struct InputBatch<'a> {
     /// The semi-subscription snapshot message and the state versions it
     /// shows (injected before the controlled input).
     pub snapshot: Option<(String, Vec<EventReceipt>)>,
+    /// Chat format (UI sessions): `background_shown` after this batch and
+    /// the state versions its background lines show (no snapshot message).
+    pub background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)>,
     /// The controlled input message: template output and media blocks.
     pub text: String,
     pub media: Vec<AiContent>,
@@ -1609,6 +1686,14 @@ pub(super) async fn commit_input_batch(
     if let Some(rev) = batch.todo_rev {
         extra.insert("todo_rev".to_string(), Value::from(rev));
     }
+    let mut events = Vec::new();
+    if let Some((map, shown)) = batch.background {
+        extra.insert(
+            RECEIPT_BACKGROUND.to_string(),
+            serde_json::to_value(map).unwrap_or(Value::Null),
+        );
+        events = shown;
+    }
     if let Some(g) = &goal {
         extra.insert(
             RECEIPT_GOAL_ACTIVATION.to_string(),
@@ -1638,7 +1723,6 @@ pub(super) async fn commit_input_batch(
     let after_step = lc.ctx.snapshot().state.next_step_index;
     let mut messages = Vec::new();
     let mut part_texts: Vec<(&str, String)> = Vec::new();
-    let mut events = Vec::new();
     let goal_brief = goal.as_ref().map(|g| g.brief.clone());
     if let Some(g) = &goal {
         messages.push(AiMessage::text(AiRole::User, g.text.clone()));

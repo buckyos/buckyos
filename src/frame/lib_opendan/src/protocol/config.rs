@@ -330,6 +330,10 @@ pub struct SessionSection {
     /// Goal Sessions: the Goal and epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<GoalBinding>,
+    /// The agent's owner (DID), when the host knows it: a UI session tells
+    /// its peer apart from the owner by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 fn default_class() -> String {
@@ -398,6 +402,11 @@ pub struct PromptSection {
     /// Behaviors and identity frozen from the agent's catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<super::behavior::FrozenPrompt>,
+    /// The cmd_skill of the session (`<agent_root>/cmd_skills/<name>.md`,
+    /// `agent.toml [session.<class>] default_cmd_skill`): frozen with the
+    /// behaviors (`frozen.cmd_skill`) and rendered as `## Commands`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_skill: Option<String>,
     /// Bootstrap inputs of a session created without an input queue: `msg`
     /// records only, at most [`super::input::MAX_PENDING_INPUTS`], never
     /// changed after creation. The runner reads them as the read-only source
@@ -626,6 +635,10 @@ pub struct BehaviorEntry {
     /// hand-over to it admits the next one (TodoList, `[entry] todo`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub todo: bool,
+    /// `[reply]`: the context's final reply is a JSON value of this
+    /// contract (function call loop only). A fork may declare its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<super::behavior::BehaviorReply>,
 }
 
 impl BehaviorEntry {
@@ -659,6 +672,9 @@ impl BehaviorEntry {
         }
         if !self.llm_context.is_null() && !self.llm_context.is_object() {
             return Err(format!("behavior `{name}`: llm_context must be an object"));
+        }
+        if let Some(r) = &self.reply {
+            r.validate(name)?;
         }
         match self.mode {
             ContextMode::Fork => {
@@ -1030,6 +1046,7 @@ impl SessionConfig {
                 inherit: InheritMode::RecentDialogue,
                 tool: None,
                 todo: false,
+                reply: None,
             });
         }
         Err(format!(

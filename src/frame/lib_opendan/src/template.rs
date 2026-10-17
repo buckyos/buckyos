@@ -45,7 +45,21 @@ pub struct SessionTemplate {
     pub implicit_subscriptions: Vec<Subscription>,
     /// Goal Sessions: what a Goal leaves out of its budget and schedule.
     pub goal: Option<GoalDefaults>,
+    /// `agent.toml [session.<class>] objective`: the session's objective
+    /// for hosts that create it without one of their own (a UI session's
+    /// design intent; built-in: [`UI_OBJECTIVE`] / [`GROUP_OBJECTIVE`]).
+    pub objective: Option<String>,
+    /// `agent.toml [session.<class>] default_cmd_skill`: the command manual
+    /// the session freezes (`cmd_skills/<name>.md`).
+    pub default_cmd_skill: Option<String>,
 }
+
+/// Objective of a one-to-one UI session: what the conversation is for,
+/// not what one request asks (ARCH §194: a UI session has no fixed purpose).
+pub const UI_OBJECTIVE: &str = "The long-lived conversation of this agent with one user. Answer what a conversation can answer; hand work that must happen outside the conversation to intent analysis and relay what it created; when a work session or goal reports back, relay the result; notice and keep what you learn about the user. The conversation never ends by itself.";
+
+/// Objective of a group UI session.
+pub const GROUP_OBJECTIVE: &str = "The long-lived presence of this agent in one group, serving its owner only. Answer what a conversation can answer; hand work that must happen outside the conversation to intent analysis and relay what it created; when a work session or goal reports back, relay the result. The conversation never ends by itself.";
 
 /// `agent.toml [session.goal]` defaults of every Goal (`budget`,
 /// `min_interval_secs`), over the built-in ones.
@@ -96,6 +110,8 @@ impl SessionTemplate {
             ask_user_timeout_secs: policy.ask_user_timeout_secs,
             implicit_subscriptions: Vec::new(),
             goal: None,
+            objective: None,
+            default_cmd_skill: None,
         };
         Some(match class {
             "work" => base(
@@ -264,6 +280,15 @@ impl SessionTemplate {
                     .to_string(),
             );
         }
+        for (key, slot) in [
+            ("objective", &mut t.objective),
+            ("default_cmd_skill", &mut t.default_cmd_skill),
+        ] {
+            if let Some(v) = over.get(key) {
+                *slot = Some(v.as_str().ok_or_else(|| bad(key))?.to_string())
+                    .filter(|s| !s.trim().is_empty());
+            }
+        }
         if let Some(v) = over.get("ask_user_timeout_secs") {
             t.ask_user_timeout_secs = v
                 .as_integer()
@@ -296,6 +321,18 @@ impl SessionTemplate {
             }
         }
         Ok(t)
+    }
+
+    /// The objective of a session of this template created without one:
+    /// `agent.toml`'s, else the built-in design intent of a UI session
+    /// (`group`: one bound to a group conversation).
+    pub fn objective_or_default(&self, group: bool) -> String {
+        match &self.objective {
+            Some(o) => o.clone(),
+            None if self.kind == SessionKind::Ui && group => GROUP_OBJECTIVE.to_string(),
+            None if self.kind == SessionKind::Ui => UI_OBJECTIVE.to_string(),
+            None => String::new(),
+        }
     }
 
     pub fn policy(&self) -> SessionPolicy {
@@ -331,6 +368,7 @@ impl SessionTemplate {
         };
         spec.policy = self.policy();
         spec.prompt.behavior = self.default_behavior.clone();
+        spec.prompt.cmd_skill = self.default_cmd_skill.clone();
         spec.subscriptions = self.implicit_subscriptions.clone();
         spec.input_channel = Some(self.input);
         self.settle_input(&mut spec);

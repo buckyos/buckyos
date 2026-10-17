@@ -10,7 +10,7 @@ mode = "fork"
 
 [tool]
 name = "try_analyze_user_intent"
-description = "Hand a request to intent analysis. Use it instead of answering when the request likely takes multiple steps, needs durable workspace state, should continue on its own, asks for something to be achieved or watched over time, or the user asks for a work session. The analysis looks at the environment, asks the user what only the user can answer, creates the work session or goal the request needs and returns a report."
+description = "Hand a request to intent analysis. Answer directly when the conversation itself can answer (questions, short lookups you can do in a few tool calls, chit-chat). Call this when the request needs work outside the conversation: several steps, durable workspace state, something to achieve or watch over time, or when the user asks for a work session or a goal. It explores the environment, asks the user what only the user can answer, creates the work session or goal and returns its result with a report written for the user."
 task = "{{args.request}}"
 
 [tool.parameters]
@@ -25,7 +25,7 @@ description = "The user's request, restated completely with every constraint the
 [prompt]
 on_context_switch = """
 <intent_analysis>
-You are now in a branch of this conversation: the analysis behind `try_analyze_user_intent`. The conversation above is context only. Nothing you write here reaches the user except the questions you ask with `ask-user`; your final report returns to the conversation as the result of the call. Do not call `try_analyze_user_intent` from here.
+You are now in a branch of this conversation: the analysis behind `try_analyze_user_intent`. The conversation above is context only. Nothing you write here reaches the user except the questions you ask with `ask-user`; your final reply — the result below, not the conversation's reply format — returns to the conversation as the result of the call. Do not call `try_analyze_user_intent` from here.
 
 ## What to decide
 
@@ -49,7 +49,7 @@ For the request below, decide what it needs:
    - plain shell commands to look at directories, files and git status
 3. Ask the user what only the user can answer (below), then look again with the answer.
 4. Create what the request needs once it is ready.
-5. Finish with `report`.
+5. Finish with your result (below).
 
 ## Asking the user
 
@@ -94,14 +94,85 @@ For the request below, decide what it needs:
 
 ## Finishing
 
-Call `report` once with `is_end: true`:
-- `report`: written for the user — what was created and what it will do, the assumptions you made, what the user answered. Not your exploration.
-- `result`: `{"outcome": "work_created | goal_created | direct | declined | needs_confirmation | unsupported", "request": "<the request restated completely>", "clarifications": [{"question": "...", "answer": "..."}], "assumptions": ["..."], "evidence": ["<fact and where it came from>"], "work": {"session_id": "...", "shape": "plan_do | simple", "objective": "...", "workspace_id": "... | null", "runtime_id": "...", "report": "final"}, "goal": {"goal_id": "...", "objective": "...", "lifecycle": "achieve | maintain"}, "proposal": {"summary": "...", "options": ["..."], "why_confirm": "..."}, "gaps": ["<what is missing and why>"], "reason": "<why declined / unsupported>"}`
-  Include `work` only for `work_created`, `goal` only for `goal_created`, `proposal` only for `needs_confirmation`. `clarifications` lists every question you asked with its answer: the conversation does not see them otherwise.
+Your final reply is one JSON object, the result, with every field below (no tool call):
+- `outcome`: `work_created | goal_created | direct | declined | needs_confirmation | unsupported`.
+- `request`: the request restated completely.
+- `report`: the text the conversation relays to the user, complete in itself, in the user's language, in three parts:
+  1. what you did and what you created — the work's objective and assumptions, or the goal and how it is pursued; for `direct` the answer's facts; for `declined` / `unsupported` why, and what is missing (scheduled tasks are not supported yet); for `needs_confirmation` the proposal to decide on;
+  2. what you asked the user and what they answered, word for word, every question (or that you asked nothing);
+  3. what the user will see next (the work's report when it ends, the goal's notifications, nothing).
+  Not your exploration.
+- `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask-user` and its answer, exactly as in the report — the conversation does not see them otherwise.
+- `assumptions`, `evidence` (`<fact and where it came from>`), `gaps` (`<what is missing and why>`): lists, `[]` when empty. `reason`: why declined / unsupported, otherwise `null`.
+- `work`: for `work_created` `{"session_id", "shape": "plan_do | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
 
 Request: {{handover.sub_task.task}}
 </intent_analysis>
 """
+
+# The branch's own reply contract: its final reply is this result, checked
+# by the host (the schema, and `clarifications` against the questions it
+# asked) before it returns as the result of the call.
+[reply]
+asks_field = "clarifications"
+schema = '''
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "request", "report", "clarifications", "assumptions", "evidence", "gaps", "reason", "work", "goal", "proposal"],
+  "properties": {
+    "outcome": {"type": "string", "enum": ["work_created", "goal_created", "direct", "declined", "needs_confirmation", "unsupported"]},
+    "request": {"type": "string"},
+    "report": {"type": "string", "description": "For the user: what was done and created; every question asked and its answer; what comes next."},
+    "clarifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "answer"],
+        "properties": {"question": {"type": "string"}, "answer": {"type": "string"}}
+      }
+    },
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "gaps": {"type": "array", "items": {"type": "string"}},
+    "reason": {"type": ["string", "null"]},
+    "work": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["session_id", "shape", "objective", "workspace_id", "runtime_id", "report"],
+      "properties": {
+        "session_id": {"type": "string"},
+        "shape": {"type": "string", "enum": ["plan_do", "simple"]},
+        "objective": {"type": "string"},
+        "workspace_id": {"type": "string"},
+        "runtime_id": {"type": "string"},
+        "report": {"type": "string"}
+      }
+    },
+    "goal": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["goal_id", "objective", "lifecycle"],
+      "properties": {
+        "goal_id": {"type": "string"},
+        "objective": {"type": "string"},
+        "lifecycle": {"type": "string", "enum": ["achieve", "maintain"]}
+      }
+    },
+    "proposal": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["summary", "options", "why_confirm"],
+      "properties": {
+        "summary": {"type": "string"},
+        "options": {"type": "array", "items": {"type": "string"}},
+        "why_confirm": {"type": "string"}
+      }
+    }
+  }
+}
+'''
 
 [budget]
 max_tool_iterations = 40

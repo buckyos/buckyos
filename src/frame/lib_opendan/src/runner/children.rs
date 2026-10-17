@@ -109,7 +109,14 @@ struct TodoOf {
     summary: Option<String>,
 }
 
-fn summary_of(e: &RegistryEntry, attention: Option<&str>, todo: Option<&TodoOf>) -> String {
+/// `brief`: one line only — a UI parent shows the end in its background
+/// context and reads the report on demand (`agent-session read-session`).
+fn summary_of(
+    e: &RegistryEntry,
+    attention: Option<&str>,
+    todo: Option<&TodoOf>,
+    brief: bool,
+) -> String {
     let st = &e.status;
     // An exploration's end is told through its Todo: a line, and where the
     // report is; the report itself is read on demand.
@@ -145,6 +152,13 @@ fn summary_of(e: &RegistryEntry, attention: Option<&str>, todo: Option<&TodoOf>)
     };
     if !st.one_line_status.is_empty() {
         text.push_str(&format!(": {}", st.one_line_status));
+    }
+    if brief {
+        let mut line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.chars().count() > 300 {
+            line = format!("{}…", line.chars().take(299).collect::<String>());
+        }
+        return line;
     }
     if attention == Some(ATTENTION_FINISHED) && !st.report_brief.is_empty() {
         text.push_str(&format!("\nreport: {}", st.report_brief));
@@ -225,6 +239,7 @@ pub(super) async fn poll_children(
     if s.state.is_finished() {
         return Ok(inputs);
     }
+    let brief = s.config.session.kind == SessionKind::Ui;
     let mut changed = false;
     for e in &children {
         let Some(report) = reports(e) else {
@@ -247,6 +262,7 @@ pub(super) async fn poll_children(
                         e,
                         Some(a),
                         todos.iter().find(|(c, _)| c == sid).map(|(_, t)| t),
+                        brief,
                     ),
                     data_ref: None,
                     terminal: a == ATTENTION_FINISHED,
@@ -288,7 +304,7 @@ pub(super) async fn poll_children(
                     source: EventSource::new("session", sid),
                     event: "progress".to_string(),
                     seq: Some(e.status.rev),
-                    summary: summary_of(e, None, None),
+                    summary: summary_of(e, None, None, false),
                     data_ref: None,
                     terminal: false,
                 };

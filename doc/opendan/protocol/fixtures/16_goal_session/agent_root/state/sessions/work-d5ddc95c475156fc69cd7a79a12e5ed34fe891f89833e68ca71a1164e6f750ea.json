@@ -21,7 +21,7 @@
       "revision": 1,
       "epoch": 1,
       "activation_seq": 0,
-      "at_ms": 1792219154711
+      "at_ms": 1792232849451
     }
   },
   "objective": "Tick item 1 of TODO.md",
@@ -38,13 +38,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-7666418078764ae6",
+      "runner_id": "rn-0f98e978330d403f",
       "host": "${FIXTURE_HOST}",
-      "pid": 1654165,
+      "pid": 2426942,
       "lock_epoch": 1,
-      "at_ms": 1792219154816
+      "at_ms": 1792232849564
     },
-    "updated_at_ms": 1792219154812
+    "updated_at_ms": 1792232849559
   },
   "location_rev": 0
 }

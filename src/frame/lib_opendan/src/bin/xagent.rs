@@ -85,6 +85,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   todo review <todo_id> (--accept | --reject | --need-evidence) --reason <t> [--followup <todo_id>]...
   todo cancel <todo_id> --reason <t> | todo clean --reason <t> | todo retry <todo_id> --reason <t>
   ask-user <question> [--option <id>=<label>]... [--allow-text]   (ui sessions: the result is the user's next message)
+  task state|wait|cancel <task_id> [--wait-ms <ms>]   (a shell command that continued as a task, in the run that started it;
+        wait: default 25s, max 30 min — give the shell call a larger wait_ms; exit 0 running/finished, 1 failed, 2 unknown)
   runtime list [--available] | get <id> | check <id> | workspace ...
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
@@ -740,6 +742,36 @@ async fn cmd_serve(mut a: Args) -> R<i32> {
     Ok(code)
 }
 
+/// `agent-session task state|wait|cancel <task_id>`: the task tools of the
+/// run this shell command belongs to, through its task bridge.
+async fn cmd_task(mut a: Args) -> R<i32> {
+    use agent_tool::task_bridge::{call, TaskBridgeRequest, TaskOp, ENV_TASK_ENDPOINT};
+    let op = match a.next("state | wait | cancel")?.as_str() {
+        "state" => TaskOp::State,
+        "wait" => TaskOp::Wait,
+        "cancel" => TaskOp::Cancel,
+        other => return Err(bad(format!("task takes state | wait | cancel, not `{other}`"))),
+    };
+    let task_id = a.next("<task_id>")?;
+    let wait_ms = a
+        .get("wait-ms")
+        .map(|v| v.parse::<u64>().map_err(|_| bad("--wait-ms takes milliseconds")))
+        .transpose()?;
+    let endpoint = std::env::var(ENV_TASK_ENDPOINT)
+        .ok()
+        .filter(|e| !e.is_empty())
+        .ok_or_else(|| {
+            bad(format!(
+                "no task bridge here (${ENV_TASK_ENDPOINT}): run it through the shell tool of the run whose task it is"
+            ))
+        })?;
+    let resp = call(&endpoint, &TaskBridgeRequest { op, task_id, wait_ms })
+        .await
+        .map_err(|msg| Fail { code: 1, msg })?;
+    println!("{}", resp.text);
+    Ok(resp.exit_code())
+}
+
 fn env_sid() -> Option<String> {
     std::env::var("OPENDAN_SESSION_ID").ok().filter(|s| !s.is_empty())
 }
@@ -1022,13 +1054,22 @@ async fn cmd_note(mut a: Args) -> R<i32> {
 }
 
 fn brief(e: &RegistryEntry) -> Value {
-    json!({
+    let mut v = json!({
         "session_id": e.session_id, "class": e.class, "objective": e.objective,
         "run_state": e.status.run_state, "outcome": e.status.outcome,
         "acceptance": e.status.acceptance, "one_line_status": e.status.one_line_status,
         "waiting_for": e.status.waiting_for, "pending_decision": e.status.pending_decision,
         "parent": e.origin.as_ref().and_then(|o| o.parent_session.clone()),
-    })
+    });
+    // A UI session's objective is its design intent: whose conversation it
+    // is shows in its route key, what it is about in its topic.
+    if let Some(route) = &e.route_key {
+        v["route_key"] = json!(route);
+    }
+    if let Some(topic) = &e.status.topic {
+        v["topic"] = json!(topic);
+    }
+    v
 }
 
 async fn cmd_sessions(a: Args) -> R<i32> {
@@ -2271,6 +2312,7 @@ async fn real_main() -> R<i32> {
         "goal" => cmd_goal(a).await,
         "notify" => cmd_notify(a).await,
         "todo" => cmd_todo(a).await,
+        "task" => cmd_task(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");
             Ok(2)

@@ -26,7 +26,8 @@ use async_trait::async_trait;
 use llm_context::deps::ToolCallCtx;
 use llm_context::observation::Observation;
 use llm_context::tasks::{
-    task_state_observation, CancelUnsupported, RunningTaskResolver, TaskBrief, TaskResult,
+    task_state_observation, CancelUnsupported, RunningTaskResolver, TaskBrief, TaskFollowup,
+    TaskResult,
     TaskState, DEFAULT_TASK_WAIT_MS, MAX_IN_TOOL_WAIT_MS,
 };
 use serde_json::{json, Value as Json};
@@ -336,6 +337,9 @@ pub struct CompositeTaskResolver {
     buckyos: Option<Arc<dyn RunningTaskResolver>>,
     /// Non-local tasks this context follows (ids seen in results).
     watched: Mutex<BTreeSet<String>>,
+    /// How the model follows tasks in this run (set when the tools are
+    /// assembled: `bash_core` with a task command).
+    followup: Mutex<TaskFollowup>,
 }
 
 impl CompositeTaskResolver {
@@ -345,7 +349,12 @@ impl CompositeTaskResolver {
             run,
             buckyos: None,
             watched: Mutex::new(BTreeSet::new()),
+            followup: Mutex::new(TaskFollowup::Tools),
         }
+    }
+
+    pub fn set_followup(&self, followup: TaskFollowup) {
+        *self.followup.lock().expect("followup") = followup;
     }
 
     pub fn with_buckyos(mut self, resolver: Arc<dyn RunningTaskResolver>) -> Self {
@@ -506,6 +515,10 @@ impl RunningTaskResolver for CompositeTaskResolver {
             });
         }
         out
+    }
+
+    fn followup(&self) -> TaskFollowup {
+        self.followup.lock().expect("followup").clone()
     }
 }
 

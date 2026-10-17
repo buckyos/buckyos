@@ -221,6 +221,59 @@ fn item(rec: &Value) -> InputItem {
     }
 }
 
+/// The view of any batch of the records (`files` in consumption order).
+pub fn view_of(records: &[(String, Value)], files: &[&str], hook: &str) -> InputView {
+    let items = files
+        .iter()
+        .map(|f| item(&records.iter().find(|(n, _)| n == f).unwrap().1))
+        .collect();
+    InputView::new(hook, BATCH_MS, items)
+}
+
+/// Chat format (UI sessions): the batches rendered, `(output file, batch
+/// files, group conversation)`.
+pub const CHAT_BATCHES: &[(&str, &[&str], bool)] = &[
+    ("chat_one_to_one.txt", &["01_msg_text.json"], false),
+    ("chat_event_batch.txt", &["03_event_active_task.json"], false),
+    ("chat_group.txt", BATCH, true),
+];
+
+/// The user's time zone of the chat renderings.
+pub const CHAT_TIMEZONE: &str = "Asia/Shanghai";
+
+/// The background lines shown with the chat renderings: everything is new
+/// (nothing shown before), the semi event of record 04 included.
+pub fn chat_background(records: &[(String, Value)]) -> Vec<libopendan::runner::background::BackgroundLine> {
+    use libopendan::runner::background::{lines, select, BackgroundInput};
+    use libopendan::runner::input_view::event_view;
+    let semi = &records.iter().find(|(n, _)| n == "04_event_semi_object.json").unwrap().1;
+    let SessionInput::Event(ev) = parse_logical_record(semi).unwrap() else {
+        panic!("record 04 is an event")
+    };
+    let events = vec![event_view(semi["key"].as_str().unwrap(), &ev)];
+    let runtime = json!({ "kind": "native", "hostname": "pve", "cwd": "/agents/jarvis/sessions/ui-1" });
+    let candidates = lines(&BackgroundInput {
+        sid: "ui-1",
+        now_ms: BATCH_MS,
+        timezone: Some(CHAT_TIMEZONE),
+        runtime_status: &runtime,
+        active: &[],
+        children: &[],
+        events: &events,
+        hints: &[],
+        tunnel: None,
+    });
+    select(candidates, &Default::default(), BATCH_MS).0
+}
+
+/// The chat format text of one batch.
+pub fn chat_text(records: &[(String, Value)], files: &[&str], group: bool) -> String {
+    let view = view_of(records, files, HOOK_ON_INPUT);
+    let mut s = libopendan::runner::background::render(&chat_background(records));
+    s.push_str(&libopendan::runner::assembler::chat_inputs(&view, group, Some(CHAT_TIMEZONE)));
+    s.trim_end().to_string()
+}
+
 /// The view of the batch (`input.*`).
 pub fn batch_view(records: &[(String, Value)], hook: &str) -> InputView {
     let items = BATCH

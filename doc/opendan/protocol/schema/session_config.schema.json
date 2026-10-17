@@ -223,6 +223,16 @@
           ],
           "default": {}
         },
+        "reply": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BehaviorReply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tool": {
           "anyOf": [
             {
@@ -375,6 +385,26 @@
       },
       "type": "object"
     },
+    "BehaviorReply": {
+      "additionalProperties": false,
+      "description": "`[reply]`: the reply contract of a behavior's context. The final reply (an assistant text without tool calls) is one JSON value matching `schema`: the provider enforces it natively where it can, the host checks it and asks for one correction (`OutputSpec::Json { max_repairs: Some(1) }`). Function call loop only.",
+      "properties": {
+        "asks_field": {
+          "description": "An array field of the reply that must list every question the context asked the user (`agent-session ask-user`), one entry each.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "description": "JSON Schema of the reply (an object schema)."
+        }
+      },
+      "required": [
+        "schema"
+      ],
+      "type": "object"
+    },
     "BehaviorToolConfig": {
       "additionalProperties": false,
       "description": "`[tool]`: a sub context behavior offered to its callers as a named function. Calling it runs the behavior exactly like `call_behavior` does; the declaration only decides what the caller's model sees.",
@@ -432,6 +462,22 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "CmdSkill": {
+      "description": "`prompt.frozen.cmd_skill`: the command manual of the session, frozen with its behaviors (`cmd_skills/<name>.md`).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "text"
+      ],
       "type": "object"
     },
     "CompletionPolicy": {
@@ -749,6 +795,17 @@
           "default": "",
           "description": "Catalog revision at the first freeze (audit).",
           "type": "string"
+        },
+        "cmd_skill": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CmdSkill"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session's cmd_skill (`prompt.cmd_skill`), frozen once."
         },
         "frozen_at_ms": {
           "default": 0,
@@ -1263,6 +1320,13 @@
             "null"
           ]
         },
+        "cmd_skill": {
+          "description": "The cmd_skill of the session (`<agent_root>/cmd_skills/<name>.md`, `agent.toml [session.<class>] default_cmd_skill`): frozen with the behaviors (`frozen.cmd_skill`) and rendered as `## Commands`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "compact_ratio": {
           "description": "Compact after a run once the history uses more than this ratio of the budget (`maybe_compact`).",
           "format": "float",
@@ -1653,6 +1717,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "owner": {
+          "description": "The agent's owner (DID), when the host knows it: a UI session tells its peer apart from the owner by it.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "policy": {

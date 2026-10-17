@@ -762,9 +762,19 @@ pub struct SessionState {
     /// progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<super::goal::GoalSessionState>,
+    /// Chat input format (UI sessions): the background context lines last
+    /// shown, `key → digest` (`time` → the epoch ms it was shown at). A
+    /// line is shown again only when its digest changes; the time line at
+    /// most every [`BACKGROUND_TIME_STEP_MS`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub background_shown: BTreeMap<String, String>,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
+
+/// The time line of the background context changes at most this often
+/// (an LLM is a high-latency system: the design assumes 5 s).
+pub const BACKGROUND_TIME_STEP_MS: u64 = 5_000;
 
 impl SessionState {
     pub fn initial(worklog: WorklogBoundary, now_ms: u64) -> Self {
@@ -810,6 +820,7 @@ impl SessionState {
             process_result: None,
             todo_view_rev: 0,
             goal: None,
+            background_shown: BTreeMap::new(),
             updated_at_ms: now_ms,
         }
     }

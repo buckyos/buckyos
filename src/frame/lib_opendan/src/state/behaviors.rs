@@ -25,12 +25,22 @@ pub trait BehaviorCatalog: Send + Sync {
     async fn list(&self) -> Result<Vec<BehaviorMeta>>;
     /// Version of the catalog as a whole (audit of a freeze).
     async fn revision(&self) -> Result<String>;
+    /// The manual of a cmd_skill (`cmd_skills/<name>.md`). `None`: the
+    /// agent has no such cmd_skill.
+    async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
+        let _ = name;
+        Ok(None)
+    }
 }
 
 const MAX_INCLUDE_DEPTH: usize = 8;
 
 /// What the owner adds to the package's role, appended to it.
 pub const ROLE_SUPPLEMENT_FILE: &str = ".meta/role_supplement.md";
+
+/// `<agent_root>/cmd_skills/<name>.md`: command manuals a session class
+/// names as its `default_cmd_skill`.
+pub const CMD_SKILLS_DIR: &str = "cmd_skills";
 
 fn expand_includes(text: &str, base: &Path, depth: usize) -> Result<String> {
     const OPEN: &str = "__INCLUDE(";
@@ -78,6 +88,17 @@ pub fn parse_behavior(name: &str, path: &Path) -> Result<BehaviorConfig> {
         if let Some(text) = t {
             *text = expand_includes(text, base, 0)?;
         }
+    }
+    // `[reply] schema` may be written as JSON text (`schema = '''{…}'''`).
+    if let Some(reply) = cfg.reply.as_mut() {
+        if let serde_json::Value::String(text) = &reply.schema {
+            reply.schema = serde_json::from_str(text).map_err(|e| {
+                OpenDanError::InvalidArgument(format!("{}: [reply] schema: {e}", path.display()))
+            })?;
+        }
+        reply
+            .validate(name)
+            .map_err(|e| OpenDanError::InvalidArgument(format!("{}: {e}", path.display())))?;
     }
     if cfg.meta.name.is_empty() {
         cfg.meta.name = name.to_string();
@@ -181,6 +202,16 @@ impl BehaviorCatalog for FsBehaviorCatalog {
         Ok(out)
     }
 
+    async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
+        crate::ids::validate_session_id(name)
+            .map_err(|_| OpenDanError::InvalidArgument(format!("bad cmd_skill name `{name}`")))?;
+        let path = self.root.join(CMD_SKILLS_DIR).join(format!("{name}.md"));
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(read_trimmed(&path)))
+    }
+
     async fn revision(&self) -> Result<String> {
         let mut h = Sha256::new();
         let mut files: Vec<PathBuf> = vec![
@@ -188,7 +219,7 @@ impl BehaviorCatalog for FsBehaviorCatalog {
             self.root.join(ROLE_SUPPLEMENT_FILE),
             self.root.join("self.md"),
         ];
-        for d in [self.dir(), self.root.join("i18n")] {
+        for d in [self.dir(), self.root.join("i18n"), self.root.join(CMD_SKILLS_DIR)] {
             if let Ok(rd) = std::fs::read_dir(d) {
                 files.extend(rd.flatten().map(|e| e.path()));
             }
@@ -214,6 +245,7 @@ impl BehaviorCatalog for FsBehaviorCatalog {
 pub struct MemBehaviorCatalog {
     identity: Mutex<IdentityText>,
     behaviors: Mutex<BTreeMap<String, BehaviorConfig>>,
+    cmd_skills: Mutex<BTreeMap<String, String>>,
     rev: Mutex<u64>,
 }
 
@@ -231,6 +263,14 @@ impl MemBehaviorCatalog {
             .lock()
             .expect("behaviors")
             .insert(name.to_string(), cfg);
+        *self.rev.lock().expect("rev") += 1;
+    }
+
+    pub fn put_cmd_skill(&self, name: &str, text: &str) {
+        self.cmd_skills
+            .lock()
+            .expect("cmd skills")
+            .insert(name.to_string(), text.to_string());
         *self.rev.lock().expect("rev") += 1;
     }
 }
@@ -257,6 +297,10 @@ impl BehaviorCatalog for MemBehaviorCatalog {
 
     async fn revision(&self) -> Result<String> {
         Ok(format!("mem:{}", self.rev.lock().expect("rev")))
+    }
+
+    async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
+        Ok(self.cmd_skills.lock().expect("cmd skills").get(name).cloned())
     }
 }
 
@@ -288,7 +332,19 @@ pub async fn freeze_config(
         frozen_by: who.to_string(),
         identity: catalog.identity().await?,
         behaviors: BTreeMap::new(),
+        cmd_skill: None,
     };
+    // The session's command manual is frozen with its behaviors: a
+    // cmd_skill the agent does not have is a configuration error.
+    if let Some(name) = cfg.prompt.cmd_skill.as_deref().filter(|n| !n.is_empty()) {
+        let text = catalog.cmd_skill(name).await?.ok_or_else(|| {
+            OpenDanError::InvalidArgument(format!("the agent has no cmd_skill `{name}`"))
+        })?;
+        frozen.cmd_skill = Some(CmdSkill {
+            name: name.to_string(),
+            text,
+        });
+    }
     let mut next = cfg.clone();
     let mut queue: Vec<String> = cfg.prompt.behavior.iter().cloned().collect();
     while let Some(name) = queue.pop() {

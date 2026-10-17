@@ -223,10 +223,35 @@ pub(super) async fn submit(
             }
         }
     }
+    let artifacts = store_artifacts(sh, &id, &args.artifacts).await?;
+    let submission = ReportSubmission {
+        id,
+        run_id: run.run_id().to_string(),
+        source,
+        report: args.report,
+        artifacts,
+        result: args.result,
+        is_end: args.is_end,
+        accepted_at_ms: crate::now_ms(),
+    };
+    run.save_report(&submission)?;
+    crate::fault::point("report:after_persist");
+    sync_latest(sh, run).await?;
+    Ok(submission)
+}
+
+/// Artifacts leaving the session under `id` (a report, a structured reply):
+/// an object id as it is; a file of the work directory copied to a stable
+/// place (`state/reports/<id>/…`) and put into the host's object store.
+pub(super) async fn store_artifacts(
+    sh: &Shared,
+    id: &str,
+    paths: &[String],
+) -> Result<Vec<ReportArtifact>> {
     let cfg = sh.session.lock().await.config.clone();
     let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
     let mut artifacts = Vec::new();
-    for (index, path) in args.artifacts.iter().enumerate() {
+    for (index, path) in paths.iter().enumerate() {
         if let Some(obj_id) = artifact_obj_id(path) {
             artifacts.push(ReportArtifact {
                 path: path.clone(),
@@ -257,20 +282,66 @@ pub(super) async fn submit(
         }
         artifacts.push(artifact);
     }
-    let submission = ReportSubmission {
-        id,
-        run_id: run.run_id().to_string(),
-        source,
-        report: args.report,
-        artifacts,
-        result: args.result,
-        is_end: args.is_end,
-        accepted_at_ms: crate::now_ms(),
-    };
-    run.save_report(&submission)?;
-    crate::fault::point("report:after_persist");
-    sync_latest(sh, run).await?;
-    Ok(submission)
+    Ok(artifacts)
+}
+
+/// The host check of a reply under a reply contract (`[reply]`): what the
+/// schema cannot say. `artifacts` (when the reply has them) must be object
+/// ids or files of the work directory, each once; the reply contract's
+/// `asks_field` must list every question this context asked the user.
+pub(super) struct ReplyValidator {
+    pub sh: Arc<Shared>,
+    pub run: RunHandle,
+}
+
+/// run.json `host.extra` key: the reply contract of the run's context
+/// (`{asks_field}`), kept for a resumed run.
+pub(super) const EXTRA_REPLY: &str = "reply";
+
+#[async_trait]
+impl llm_context::OutputValidator for ReplyValidator {
+    async fn validate(&self, reply: &Value) -> std::result::Result<(), String> {
+        if let Some(list) = reply.get("artifacts").and_then(Value::as_array) {
+            let cfg = self.sh.session.lock().await.config.clone();
+            let workdir =
+                crate::runtime::resolve_workdir(&self.sh.dir, &cfg, self.sh.agent_root.as_deref())
+                    .map_err(|e| e.to_string())?;
+            let mut seen = std::collections::HashSet::new();
+            for a in list {
+                let Some(path) = a.as_str() else {
+                    return Err("artifacts must be strings".into());
+                };
+                if !seen.insert(path) {
+                    return Err(format!("artifact `{path}` is listed twice"));
+                }
+                if artifact_obj_id(path).is_none() {
+                    artifact_bytes(Path::new(&workdir), path).map_err(|e| {
+                        format!("{e}; an artifact is a file you made (path relative to your working directory, created first) or an object id")
+                    })?;
+                }
+            }
+        }
+        let record = self.run.record();
+        let extra = record.host.as_ref().map(|h| &h.extra);
+        if let Some(field) = extra
+            .and_then(|x| x.get(EXTRA_REPLY))
+            .and_then(|r| r.get("asks_field"))
+            .and_then(Value::as_str)
+        {
+            let asked = extra
+                .and_then(|x| x.get("asks"))
+                .and_then(Value::as_object)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let listed = reply.get(field).and_then(Value::as_array).map_or(0, Vec::len);
+            if listed != asked {
+                return Err(format!(
+                    "`{field}` must list every question you asked the user with ask-user in this context, one entry each with the user's answer: you asked {asked}, it lists {listed}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) async fn sync_latest(sh: &Shared, run: &RunHandle) -> Result<()> {

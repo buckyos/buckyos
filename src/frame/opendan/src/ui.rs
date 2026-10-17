@@ -471,9 +471,12 @@ impl UiModule {
             return Ok(None);
         };
         let template = SessionTemplate::load(&rule.session_class, self.agent.agent_root())?;
-        let mut spec = template.spec(format!("{on} {route_key}"));
+        // The objective is the conversation's design intent; whose
+        // conversation it is stays in the route key.
+        let mut spec = template.spec(template.objective_or_default(on == ON_MSG_GROUP));
         spec.session_id = Some(ui_session_id(self.agent.agent_did(), route_key, bound.len()));
         spec.route_key = Some(route_key.to_string());
+        spec.owner = Some(self.owner.to_string());
         spec.driver = Some(self.who.clone());
         spec.via = "opendan".to_string();
         spec.prompt.llm_context = self.config.llm_context.clone();

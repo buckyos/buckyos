@@ -146,6 +146,52 @@ pub struct BehaviorToolConfig {
 /// Prefix of a `tool_whitelist` entry naming a behavior's `[tool]`.
 pub const BEHAVIOR_TOOL_PREFIX: &str = "behavior:";
 
+/// `[reply]`: the reply contract of a behavior's context. The final reply
+/// (an assistant text without tool calls) is one JSON value matching
+/// `schema`: the provider enforces it natively where it can, the host
+/// checks it and asks for one correction (`OutputSpec::Json { max_repairs:
+/// Some(1) }`). Function call loop only.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorReply {
+    /// JSON Schema of the reply (an object schema).
+    pub schema: Value,
+    /// An array field of the reply that must list every question the
+    /// context asked the user (`agent-session ask-user`), one entry each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asks_field: Option<String>,
+}
+
+impl BehaviorReply {
+    pub fn validate(&self, behavior: &str) -> std::result::Result<(), String> {
+        if self.schema.get("type").and_then(Value::as_str) != Some("object") {
+            return Err(format!(
+                "behavior `{behavior}`: [reply] schema must be a JSON Schema of type object"
+            ));
+        }
+        if let Some(f) = &self.asks_field {
+            let declared = self
+                .schema
+                .pointer(&format!("/properties/{f}/type"))
+                .and_then(Value::as_str);
+            if declared != Some("array") {
+                return Err(format!(
+                    "behavior `{behavior}`: [reply] asks_field `{f}` must be an array property of the schema"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `prompt.frozen.cmd_skill`: the command manual of the session, frozen
+/// with its behaviors (`cmd_skills/<name>.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CmdSkill {
+    pub name: String,
+    pub text: String,
+}
+
 fn valid_function_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
@@ -262,6 +308,8 @@ pub struct BehaviorConfig {
     pub entry: BehaviorEntryConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<BehaviorToolConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<BehaviorReply>,
     /// Host hooks (`on_context_limit_reached` …): carried, not interpreted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hooks: BTreeMap<String, Value>,
@@ -364,6 +412,7 @@ impl BehaviorConfig {
             }),
             tool: self.tool.clone(),
             todo: self.entry.todo,
+            reply: self.reply.clone(),
         };
         entry.validate(name)?;
         Ok(entry)
@@ -398,6 +447,9 @@ pub struct FrozenPrompt {
     pub identity: IdentityText,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub behaviors: BTreeMap<String, BehaviorConfig>,
+    /// The session's cmd_skill (`prompt.cmd_skill`), frozen once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_skill: Option<CmdSkill>,
 }
 
 impl SessionConfig {

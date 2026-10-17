@@ -764,7 +764,7 @@ pub struct RuntimeGrant {
 
 1. behavior 是 **Agent 的**配置（`<agent_root>/behaviors/<name>.toml` + `*.inc`、`role.md`、`self.md`、`i18n/`），因此由 Agent State 提供，不由应用随手写进 session。
 2. llm_context 构造时要初始化 system 段，此刻需要 behavior；**Session 一旦构造，用的 behavior 就固定**：Agent 后来改了 behavior 文件，旧 session 不受影响，新 session 才看到。
-3. 冻结的是“文本与策略”，不是渲染结果：时间、活动 session、hints 等新鲜量仍然每个输入批次现算，放在 `<session_input>`（S-20）。
+3. 冻结的是“文本与策略”，不是渲染结果：时间、活动 session、hints 等新鲜量仍然每个输入批次现算，放在 `<session_input>`（S-20）；UI Session 放在 chat 格式的 `<<background_context>>` 里，只出现变化了的行（§11.6）。冻结材料还包括 Session 的 cmd_skill（`prompt.frozen.cmd_skill`）。
 4. 冻结后 system 段只依赖冻结材料 + session_config，所以同一 behavior 的新 run 保持相同 system 前缀；不同 behavior 可以有各自的 system / 配置，fork 沿用父的前缀。
 
 ### 6.2 BehaviorCatalog：Agent State 的新门面
@@ -909,7 +909,7 @@ impl BehaviorConfig {
 |---|---|
 | `identity.*`、`behavior.{name,objective,mode}`、`session.{id,kind,objective,driver,scope,parent}`、`paths.{session_root,workspace_root}`（相对或 binding 提供）、`workspace.id`、`xml_behavior_result_protocol`（由 xllm `runtime_protocol` 段提供） | `runtime.{clock_text,status}`、`<active_sessions>`、`<hints>`、`semi_subscription_snapshot`（pending_events 的选定版本）、`<perceptions>`、`<inputs>`、`context_switch / process_result`、`session.current_todo*`（读 `todos.json`）、`notebook.last_items`、`workspace_list` |
 
-上表包含后续宿主变量。当前 libopendan 已提供 `input.*`、`session.{id,kind,objective,timezone,is_bootstrap,current_todo,background_hint_changed,default_changed_background_hint_text}`、`runtime.{status,clock_text}`、`handover` 与内建块文本；todo / 背景提示没有数据源，分别为 null / false，不能据此声称 xagent 已读取 todos.json。额外变量由对应宿主明确装配，不在 CLI 中猜测 OpenDAN 的状态路径。
+上表包含后续宿主变量。当前 libopendan 已提供 `input.*`、`session.{id,kind,objective,timezone,is_bootstrap,current_todo,background_hint_changed,default_changed_background_hint_text}`、`runtime.{status,clock_text}`、`handover` 与内建块文本；todo / 背景提示没有数据源，分别为 null / false，不能据此声称 xagent 已读取 todos.json（UI Session 的背景提示已由 chat 格式的背景行承担，模板变量为 `background` / `background_text`，§11.6）。额外变量由对应宿主明确装配，不在 CLI 中猜测 OpenDAN 的状态路径。
 
 渲染复用八个命名格式：`input.xml`、`message.xml`、`message.markdown`、`event.xml`、`event.summary_text`、`attachments.xml`、`attachments.list`、`todo.summary_xml`。`input.text` 与 `input.xml` 使用同一渲染器；XML 正文 / 属性分别转义，块标签独占行不输出空行，整体 trim，未知格式 / 错误形状报模板错误。内建时间为 UTC；用户时区来自绑定的 `session.timezone` 与默认 semi 订阅，不取执行机时区。逐字节结果以 `14_input_bus` fixtures 为准。
 
@@ -1363,6 +1363,16 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 5. **`serve` 的 SIGINT**。文档把 SIGINT 归为“stop”，但常驻宿主被 Ctrl-C 时把所服务的 Session 全部 stop（finished）不合理。实现为：`new` / `run` 的 SIGINT 是对该 Session 的 stop（退出码 4）；`serve` 的 SIGINT 只结束托管，Session 保留已提交状态。
 6. **timer / kevent 桥缺少配置约定**。`timer:<name>` 订阅没有间隔字段，`object_event` 没有到 kevent id 的映射规则；本轮分别取 `extensions.opendan.timers.<name>.every_secs` 与“object 即 kevent id”。这两处应由协议定下来。
 7. **ChildDriver 的轮询成本**。空闲但未结束的子（如等输入的交互式子）每个 tick 都被 `drive(Idle)` 一次（取 lease、核验绑定、重写 bin）。正确但偏重；需要一个“只在登记表 rev 或队列变化时再驱动”的条件。
+
+### 11.6 UI Session 提示词改造（2026-10-17）
+
+按 [Jarvis UI Session 提示词改造 TODO](../../notepads/jarvis-chat-prompt-todo.md)（先行项见 [llm_context 先行 TODO](../../notepads/llm-context-chat-prompt-prereq-todo.md)）实施，只改 `kind = ui` 的 Session（一对一与群聊）；Work / Goal 不变：
+
+- **system 段**：`## Identity`（role + 实例补充：名字、account、Agent DID 与 owner 的 account / DID）→ `## Current Session Constraints`（对端或群、身份来源、避让、session 目录、通知处理，按群聊 / 一对一分支）→ `## Objective`（UI Session 的设计意图，模板 `objective` / 内建 `UI_OBJECTIVE`，不再是 `msg.chat <route_key>`）→ 应用提示词原样（自带 `## Replying` / `## Memory`）→ `## Commands`（随 Session 冻结的 cmd_skill，`<agent_root>/cmd_skills/<name>.md`，`agent.toml [session.<class>] default_cmd_skill`）。function call 循环的 UI run 关掉 xllm 追加的 `capabilities` / `cmd_manual` / `runtime_protocol` 三段（behavior 循环保留）。不写 session id。`SessionSection.owner` 记 owner DID。
+- **输入**：chat 格式（Session Input Protocol §6.5），背景行的显示记录 `state.background_shown` 随 receipt（`extra.background`）提交；半订阅版本作为背景行显示，不再单独成快照消息。子 Session 事件对 UI 父只有一行摘要。
+- **回复**：`[reply]` 回复契约（`BehaviorReply { schema, asks_field }` → `.llm_context` `json_schema` → `OutputSpec::Json { max_repairs: Some(1) }`）。UI 的最终回复 `{reply, topic, artifacts}`（schema 按 OpenAI strict 规则写：字段都必填，`topic` 可为 `null`，`artifacts` 可为 `[]`）由宿主解析：`reply` 出站，`artifacts` 经 `store_artifacts` 成附件，`topic` 写入 `state.topic`（与 Turn 关闭同一次提交）并经登记表 `status.topic` 给其它 Session 看；hints 由此开始按 topic 召回。两次不满足契约时原文出站，worklog 的 `outcome.report` 记原因。fork 子 context 可声明自己的 `[reply]`（`ForkOptions.output`），`asks_field` 要求列出本 context 里 `ask-user` 问过的每个问题（宿主 `ReplyValidator` 校验，一次纠正）。UI 不再有 `report` 工具。
+- **工具**：`group:bash_core`（`read` / `write_file` / `edit_file` / `shell`），长命令由 `agent-session task state|wait|cancel` 经 task CLI 桥跟进。
+- 待做：cmd_skill 的运行时调整与延迟暴露（`notepads/opendan-cmd-skill-todo.md`）、function result 里的背景行（先行 TODO“以后”）。
 
 ---
 

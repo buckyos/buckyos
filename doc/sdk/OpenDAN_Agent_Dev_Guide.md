@@ -81,14 +81,16 @@ MCP 和进程内 host tool 也遵循同一方向：优先由 CLI 客户端或宿
 
 ### 3.3 task 能力 CLI 化的目标
 
-目标是让模型通过稳定的 shell 入口调用任务命令。例如，下列为**目标用法，当前尚未提供等价的 runtime task CLI**：
+目标是让模型通过稳定的 shell 入口调用任务命令。**已实现**（2026-10-17，[先行 TODO](../../notepads/llm-context-chat-prompt-prereq-todo.md) P3）：在 Agent Session 中是
 
 ```xml
 <actions>
-  <shell>get_task_state local:shell:example</shell>
-  <shell>wait_task local:shell:example --wait-ms 30000</shell>
+  <shell>agent-session task state local:shell:example</shell>
+  <shell>agent-session task wait local:shell:example --wait-ms 25000</shell>
 </actions>
 ```
+
+（还有 `agent-session task cancel <id>`）。run 的 task CLI 桥（`agent_tool::task_bridge`）在 Unix socket 上服务本 run 的 task resolver，端点经 `XLLM_TASK_ENDPOINT` 传给命令，结果文本与 task 工具逐字一致；内置组 `bash_core` 在宿主给出 `XllmDeps.task_cli` 时不再带三个 task 工具。独立 xllm 没有这个命令，仍用 `bash` 组的 task 工具。
 
 命令必须连接当前 xllm/runtime 的同一个 task resolver，复用状态、输出、等待和取消语义。不能简单把 `get_task_state` 别名到现有 `check_task`：后者查询 BuckyOS task-mgr，不覆盖当前 runtime 的 `local:` task；现有同名 CLI `cancel_task` 也有这一差别。
 
@@ -158,9 +160,9 @@ action_whitelist = ["group:bash"]
 
 ### 6.2 尚需收敛的地方
 
-1. 在 xllm/runtime 层补齐 runtime task CLI 桥，复用现有 resolver；上层再提供 Session 控制桥。
+1. ~~在 xllm/runtime 层补齐 runtime task CLI 桥，复用现有 resolver~~（已完成：`agent_tool::task_bridge` + `agent-session task`）；上层再提供 Session 控制桥。
 2. 为动态能力提供 CLI 接入和发现路径。当前 `agent_tool` CLI 仍有静态命令表；独立可执行命令可通过执行环境提供，不能把新增能力仅注册到模型 tool 列表。
-3. 将动态目录移出公共模型接口：当前 `call_behavior` 的 description 会拼入可调用 behavior 列表；`bash_tools` 手册会写入 system prompt。这两处即使不增加 tool 名，也会改变模型输入前缀。
+3. 将动态目录移出公共模型接口：当前 `call_behavior` 的 description 会拼入可调用 behavior 列表；`bash_tools` 手册会写入 system prompt。这两处即使不增加 tool 名，也会改变模型输入前缀。UI Session 已改为宿主关掉 xllm 的 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`XllmDeps.host_prompt_sections`），命令手册改由随 Session 冻结的 cmd_skill（`## Commands`）承担：冻结后同一 Session 内前缀不变，换 Session 才变（cmd_skill 的运行时调整见 `notepads/opendan-cmd-skill-todo.md`）。
 4. CLI 功能与控制语义等价后，再统一调整固定 tool/action 集合、提示词和恢复协议；不在每次能力扩展时改变它们。
 
 媒体分析目前已有 CLI，结果是侧模型生成的文本。若将来要求当前主模型直接接收图片等原生媒体，应扩展稳定的结果协议和宿主处理；当前标准 tool 与 shell 的模型结果通道都是文本，不能把此缺口当作必须新增业务 tool 的理由。

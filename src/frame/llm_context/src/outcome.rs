@@ -79,6 +79,21 @@ pub enum ResumeFill {
 pub enum ContextOutput {
     Text { content: String },
     Json { content: Value },
+    /// A reply contract (`OutputSpec::Json { max_repairs: Some(_) }`) was
+    /// not met after the allowed repairs: the raw reply and why it failed.
+    Invalid { content: String, error: String },
+}
+
+impl ContextOutput {
+    /// The output as text (a JSON value serialized).
+    pub fn text(&self) -> String {
+        match self {
+            ContextOutput::Text { content } | ContextOutput::Invalid { content, .. } => {
+                content.clone()
+            }
+            ContextOutput::Json { content } => content.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

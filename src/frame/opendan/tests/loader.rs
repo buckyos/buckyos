@@ -1181,7 +1181,8 @@ async fn the_jarvis_package_loads_and_answers() {
             .map(|m| m.text_content())
             .collect::<Vec<_>>()
             .join("\n");
-        "你好".to_string()
+        // The UI reply is structured (`[reply]` of chat_route).
+        serde_json::json!({ "reply": "你好", "topic": null, "artifacts": [] }).to_string()
     });
     let mut env = w.env(llm, free_port()).await;
     env.package_root = Some(package);
@@ -1216,17 +1217,26 @@ async fn the_jarvis_package_loads_and_answers() {
             ("host", libopendan::protocol::RuntimeAvailability::RuntimeUnavailable)
         ]
     );
-    for name in ["groupchat_route"] {
+    // Both conversations reply under a contract; the analysis returns its
+    // result under its own, listing the questions it asked.
+    for name in ["chat_route", "groupchat_route"] {
         let b = loader.agent.behaviors().get(name).await.unwrap().unwrap();
-        assert!(b.prompt.system.as_deref().is_some_and(|t| t.contains("context=\"true\"")), "{name}");
+        let reply = b.reply.as_ref().unwrap_or_else(|| panic!("{name} has no [reply]"));
+        assert_eq!(reply.schema["required"], serde_json::json!(["reply", "topic", "artifacts"]), "{name}");
+        assert_eq!(
+            b.capabilities.tool_whitelist.as_deref(),
+            Some(&["group:bash_core".to_string(), "behavior:analyze_intent".to_string()][..]),
+            "{name}"
+        );
     }
+    assert_eq!(analyze.reply.as_ref().unwrap().asks_field.as_deref(), Some("clarifications"));
     assert_eq!(loader.config.ui_rule("msg.group").unwrap().session_class, "group");
     let group = SessionTemplate::load("group", loader.agent.agent_root()).unwrap();
     assert_eq!(group.default_behavior.as_deref(), Some("groupchat_route"));
     assert_eq!(
         std::fs::read_to_string(w.root.join(".meta/role_supplement.md")).unwrap(),
-        "Your name is jarvis (account `jarvis`).\n",
-        "without a profile name or a supplement only the account name is added"
+        "Your name is jarvis (account `jarvis`, DID `did:bns:jarvis.alice`). Your owner is `bob` (DID `did:bns:bob`).\n",
+        "without a profile name or a supplement only the account name, DIDs and owner are added"
     );
     let session = format!("dm:{BOB}");
     w.mail.deliver(&session, chat(BOB, "你好 Jarvis"));
@@ -1238,11 +1248,12 @@ async fn the_jarvis_package_loads_and_answers() {
     assert!(system.contains("primary personal Agent"), "identity is part of the system text");
     assert!(system.contains("Your name is jarvis"), "{system}");
     assert!(!system.contains("You are Jarvis"), "the template does not name the instance: {system}");
-    assert!(system.contains("one-to-one UI session"), "{system}");
+    assert!(system.contains("This is a one-to-one chat with your owner (bob, DID did:bns:bob)"), "{system}");
+    assert!(system.contains("## Commands\nRun these through `shell`"), "the cmd_skill is frozen: {system}");
     assert!(!system.contains("<<"), "{system}");
-    let tools = tools.lock().unwrap().clone();
-    assert!(tools.iter().any(|t| t == "shell") && tools.iter().any(|t| t == "try_analyze_user_intent"), "{tools:?}");
-    assert!(!tools.iter().any(|t| t == "call_behavior"), "{tools:?}");
+    let mut tools = tools.lock().unwrap().clone();
+    tools.sort();
+    assert_eq!(tools, ["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]);
     assert_eq!(cfg_max_tokens(&loader.config.llm_context), Some(8192));
     let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
         .unwrap()
@@ -1253,12 +1264,20 @@ async fn the_jarvis_package_loads_and_answers() {
     cfg.behaviors().unwrap();
     let frozen = cfg.prompt.frozen.unwrap();
     assert!(frozen.behaviors.contains_key("chat_route") && frozen.behaviors.contains_key("analyze_intent"));
+    assert_eq!(frozen.cmd_skill.as_ref().map(|c| c.name.as_str()), Some("ui_core"));
+    assert_eq!(cfg.session.owner.as_deref(), Some(BOB));
+    assert!(cfg.session.objective.starts_with("The long-lived conversation of this agent"), "{}", cfg.session.objective);
     // A work session of the package starts in plan and can hand over to do.
     let template = SessionTemplate::load("work", loader.agent.agent_root()).unwrap();
     assert_eq!(template.default_behavior.as_deref(), Some("plan"));
     loader.shutdown().await;
 }
 
+/// The rendered requests of a Jarvis UI session, written for prompt review
+/// (`target/prompt-review/jarvis-chat-route.txt`) and checked against the
+/// structure the review asked for: a greeting (structured reply with a
+/// topic), a follow-up where nothing in the background changed, and the end
+/// of a work session the conversation started (2.B: an event batch).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "writes the rendered Jarvis request for manual prompt review"]
 async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
@@ -1271,20 +1290,81 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured = requests.clone();
     let llm = Llm::new(move |req, _| {
-        captured.lock().unwrap().push(req.clone());
-        "你好".to_string()
+        if system_text(req).contains("You are a work session for one bounded task") {
+            return r#"REPORT:{"report":"已完成 PR #667 的审查，发现 1 项 P2（中等）问题：创建响应丢失时清理逻辑会遗留临时账户。","is_end":true}"#
+                .to_string();
+        }
+        let mut all = captured.lock().unwrap();
+        all.push(req.clone());
+        match all.len() {
+            1 => json!({"reply": "你好！我是 Jarvis，有什么可以帮你？", "topic": {"title": "问候", "tags": ["greeting"]}, "artifacts": []}),
+            2 => json!({"reply": "好的，以后我会尽量简短。", "topic": null, "artifacts": []}),
+            _ => json!({"reply": "PR #667 审查完成：发现 1 项 P2 问题，详见报告。", "topic": null, "artifacts": []}),
+        }
+        .to_string()
     });
     let mut env = w.env(llm, free_port()).await;
     env.package_root = Some(package);
     env.options.load_hints = true;
     let loader = Loader::start(env).await?;
     w.mail.deliver(&format!("dm:{BOB}"), chat(BOB, "你好 Jarvis"));
-    until("prompt review turn completes", || !w.mail.sent().is_empty()).await;
+    until("greeting answered", || w.mail.sent().len() == 1).await;
+    w.mail.deliver(&format!("dm:{BOB}"), chat(BOB, "谢谢，回答简短一点就好"));
+    until("follow-up answered", || w.mail.sent().len() == 2).await;
+    // A work session this conversation started ends.
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(format!("dm:{BOB}")))
+        .unwrap()
+        .to_string();
+    let ui = ui_entry(loader.agent.as_ref(), &route).ok_or("no ui session")?;
+    libopendan::api::create_sub_session(
+        loader.agent.as_ref(),
+        WHO,
+        &ui.session_id,
+        libopendan::api::SubSessionSpec {
+            objective: "审查 BuckyOS PR #667 的 diff，报告有证据的缺陷".into(),
+            msgs: vec!["go".into()],
+            behavior: Some("work_simple".into()),
+            report: ReportMode::Final,
+            key: Some("review-667".into()),
+            ..Default::default()
+        },
+        w.channels().as_ref(),
+    )
+    .await?;
+    until("work end relayed", || w.mail.sent().len() == 3).await;
+    let ui_state = SessionDir::open(w.root.join("sessions").join(&ui.session_id))?.state()?;
     loader.shutdown().await;
     let requests = requests.lock().unwrap();
-    if requests.is_empty() {
-        return Err("the review turn ended before reaching LlmClient::infer".into());
+    if requests.len() < 3 {
+        return Err(format!("expected three UI requests, got {}", requests.len()).into());
     }
+
+    // The structure the review asked for.
+    let first = &requests[0];
+    let system = system_text(first);
+    for heading in ["## Identity", "## Current Session Constraints", "## Objective", "## Replying", "## Memory", "## Commands"] {
+        assert!(system.contains(heading), "{heading} missing:\n{system}");
+    }
+    for gone in ["## capabilities", "## cmd_manual", "## runtime_protocol", "## Routing Work", "## Notifications", "session `ui-", "agent-session note"] {
+        assert!(!system.contains(gone), "{gone} still there:\n{system}");
+    }
+    assert!(system.contains("DID `did:bns:jarvis.alice`") && system.contains("DID `did:bns:bob`"), "{system}");
+    assert!(first.force_json && first.json_schema.is_some());
+    let mut tools: Vec<&str> = first.tool_specs.iter().map(|t| t.name.as_str()).collect();
+    tools.sort();
+    assert_eq!(tools, ["edit_file", "read", "shell", "try_analyze_user_intent", "write_file"]);
+    let input = last_user(first);
+    assert!(input.starts_with("<<background_context>>\n- current_time "), "{input}");
+    assert!(input.ends_with("<</background_context>>\n你好 Jarvis"), "{input}");
+    assert!(!input.contains("<session_input") && !input.contains("<msg"), "{input}");
+    // Nothing in the background changed: the message alone.
+    assert_eq!(last_user(&requests[1]), "谢谢，回答简短一点就好");
+    // The work's end: one background line and the event, one line.
+    let event = last_user(&requests[2]);
+    assert!(event.contains("finished (succeeded)") && event.contains("Read: agent-session read-session work-"), "{event}");
+    assert!(event.contains("<<inputs>>\n<event ") && !event.contains("report:"), "{event}");
+    // The topic came from the structured reply.
+    assert_eq!(ui_state.topic.title, "问候");
 
     let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/prompt-review");
     std::fs::create_dir_all(&output_dir)?;
@@ -1292,7 +1372,7 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = std::fs::File::create(&output)?;
     writeln!(file, "OpenDAN prompt review")?;
     writeln!(file, "Package: src/apps/jarvis_agent/agent")?;
-    writeln!(file, "Scenario: private chat / chat_route / 你好 Jarvis")?;
+    writeln!(file, "Scenario: private chat / chat_route / 你好 Jarvis → follow-up → a work session ends")?;
     writeln!(file, "Boundary: LlmClient::infer (scripted response, no model call)")?;
     for (round, req) in requests.iter().enumerate() {
         writeln!(file, "\n===== Request {}: settings =====", round + 1)?;
@@ -1303,13 +1383,18 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
             "temperature": req.temperature,
             "max_completion_tokens": req.max_completion_tokens,
             "force_json": req.force_json,
-            "json_schema": req.json_schema,
+            "json_schema": if round == 0 { req.json_schema.clone() } else { req.json_schema.as_ref().map(|_| json!("(as in request 1)")) },
             "provider_options": req.provider_options,
             "disable_capabilities": req.disable_capabilities,
             "allow_tool_calls": req.allow_tool_calls,
         });
         writeln!(file, "{}", serde_json::to_string_pretty(&settings)?)?;
         for (index, message) in req.messages.iter().enumerate() {
+            // Later requests repeat the system message of the first.
+            if round > 0 && message.role == AiRole::System {
+                writeln!(file, "\n===== Message {}: System (as in request 1) =====", index + 1)?;
+                continue;
+            }
             writeln!(file, "\n===== Message {}: {:?} =====", index + 1, message.role)?;
             for (index, block) in message.content.iter().enumerate() {
                 writeln!(file, "\n--- Content block {} ---", index + 1)?;
@@ -1318,6 +1403,10 @@ async fn jarvis_prompt_review() -> Result<(), Box<dyn std::error::Error>> {
                     other => writeln!(file, "{}", serde_json::to_string_pretty(other)?)?,
                 }
             }
+        }
+        if round > 0 {
+            writeln!(file, "\n===== Tools ({}): as in request 1 =====", req.tool_specs.len())?;
+            continue;
         }
         writeln!(file, "\n===== Tools ({}) =====", req.tool_specs.len())?;
         for tool in &req.tool_specs {
@@ -1454,12 +1543,12 @@ async fn the_role_supplement_reaches_the_identity() {
     let loader = w.start(llm.clone()).await;
     assert_eq!(
         std::fs::read_to_string(w.root.join(".meta/role_supplement.md")).unwrap(),
-        "Your name is 小白 (account `jarvis`).\n\nAlways answer in Japanese.\n"
+        "Your name is 小白 (account `jarvis`, DID `did:bns:jarvis.alice`). Your owner is `bob` (DID `did:bns:bob`).\n\nAlways answer in Japanese.\n"
     );
     let identity = loader.agent.behaviors().identity().await.unwrap();
     assert_eq!(
         identity.role,
-        "You are Jarvis.\n\nYour name is 小白 (account `jarvis`).\n\nAlways answer in Japanese."
+        "You are Jarvis.\n\nYour name is 小白 (account `jarvis`, DID `did:bns:jarvis.alice`). Your owner is `bob` (DID `did:bns:bob`).\n\nAlways answer in Japanese."
     );
     let with = loader.agent.behaviors().revision().await.unwrap();
     w.mail.deliver(&format!("dm:{BOB}"), chat(BOB, "hello"));
@@ -1473,7 +1562,7 @@ async fn the_role_supplement_reaches_the_identity() {
     let loader = w.start(llm).await;
     assert_eq!(
         loader.agent.behaviors().identity().await.unwrap().role,
-        "You are Jarvis.\n\nYour name is 小白 (account `jarvis`)."
+        "You are Jarvis.\n\nYour name is 小白 (account `jarvis`, DID `did:bns:jarvis.alice`). Your owner is `bob` (DID `did:bns:bob`)."
     );
     assert_ne!(loader.agent.behaviors().revision().await.unwrap(), with);
     loader.shutdown().await;

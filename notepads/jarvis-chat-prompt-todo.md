@@ -2,12 +2,13 @@
 
 日期：2026-10-17
 
-状态：v0.2，待实施。用户已答复 §10 的 D1–D8（2026-10-17，决定已回写到各节；D9 未答复，按推荐执行）。本文把 [jarvis-chat-prompt-review.txt](jarvis-chat-prompt-review.txt)（用户观察 Jarvis 真实运行日志后写下的批注）整理成可实施的改造清单：System 段瘦身与重排、用户输入改成 `background_context + 原文`、用结构化回复取代 `report` / `set_topic`、工具集收敛、`try_analyze_user_intent` 调优，以及一个新机制 cmd_skill 的占位。涉及 llm_context / agent_tool 层的改动按约定**单列先行**：[llm-context-chat-prompt-prereq-todo.md](llm-context-chat-prompt-prereq-todo.md)（下称“先行 TODO”）。
+状态：v0.3，**已实施（2026-10-17）**，实施记录见 §13；真实 Zone 验收（§11 第 4 步）未做。用户已答复 §10 的 D1–D8（2026-10-17，决定已回写到各节；D9 未答复，按推荐执行）。本文把 [jarvis-chat-prompt-review.txt](jarvis-chat-prompt-review.txt)（用户观察 Jarvis 真实运行日志后写下的批注）整理成可实施的改造清单：System 段瘦身与重排、用户输入改成 `background_context + 原文`、用结构化回复取代 `report` / `set_topic`、工具集收敛、`try_analyze_user_intent` 调优，以及一个新机制 cmd_skill 的占位。涉及 llm_context / agent_tool 层的改动按约定**单列先行**：[llm-context-chat-prompt-prereq-todo.md](llm-context-chat-prompt-prereq-todo.md)（下称“先行 TODO”）。
 
 修订记录：
 
 - 2026-10-17 v0.1 初稿：按 review 批注逐条对照源码与设计文档写成；待用户决定项见 §10。
 - 2026-10-17 v0.2：按用户答复回写 D1–D8：`read` 取代 `read_file`（先行 P5）；结构化回复走 provider 原生 JSON Schema（AICC 已映射 Claude / OpenAI），校验 + 纠正只是兜底；`current_time` 行按 5 秒粒度去重；buckyos sdk 工具只给 work。
+- 2026-10-17 v0.3：先行 TODO P1–P5 与本文 §3–§8 实施完成（§13）。
 
 依据：
 
@@ -295,6 +296,8 @@ function result 里也带 background 行（REQ S-16；ARCH §371）：llm_contex
 
 ## 9. 先行项（llm_context / agent_tool 层，见先行 TODO）
 
+状态：P1–P5 均已实施（2026-10-17，见先行 TODO 的实施记录）。
+
 | 编号 | 内容 | 本文依赖它的部分 |
 |---|---|---|
 | P1 | `prepare_hosted` 可按宿主要求关掉 `capabilities` / `cmd_manual` / `runtime_protocol` 三段（`XllmDeps.host_prompt_sections`），默认全开 | §3.3 |
@@ -350,3 +353,63 @@ function result 里也带 background 行（REQ S-16；ARCH §371）：llm_contex
 | Tools | task 工具删、走 hint + CLI；set_topic 与 report 合并到 json_schema + force_json | §6、P3、§5 |
 | read_file | “应该用 read?” | D3：保留 `read`，补成 `read_file` 超集后取代之（先行 P5） |
 | try_analyze_user_intent | 触发时机；报告要详细含沟通记录 | §7 |
+
+---
+
+## 13. 实施记录（2026-10-17）
+
+### 13.1 落点
+
+| 本文 | 代码 / 文件 |
+|---|---|
+| §3.1 Identity | `opendan/src/loader.rs`：实例补充第一行 ``Your name is {name} (account `{account}`, DID `{agent_did}`). Your owner is `{owner_account}` (DID `{owner_did}`).``；`assembler.rs` 标题 `## Identity`（所有 Session） |
+| §3.2 Constraints | `runner/assembler.rs`：`ui_constraints`（一对一 / 群聊分支）、`UI_AVOIDANCE_RULE`、`UI_NOTIFY_RULE`、`did_account`、`is_group_session`（`channels.outbound.kind == "group_msg"`）；`SessionSection.owner`（Loader 写 `spec.owner`） |
+| §3.3 删段 | Jarvis `chat_route.toml` / `groupchat_route.toml` 重写；`runner/live.rs::xllm_deps_for`：UI + function call 循环 → `HostPromptSections::NONE`、`task_cli = "agent-session task"`、`shell_note` |
+| §3.4 Objective | `template.rs`：`objective` / `default_cmd_skill` 两个模板键、`UI_OBJECTIVE` / `GROUP_OBJECTIVE`、`objective_or_default(group)`；`opendan/src/ui.rs` 用它建 Session；`xagent sessions` 的 brief 加 `route_key` / `topic` |
+| §3.5 Memory | 包内 `## Memory`（`chat_route` / `groupchat_route` 的 `[prompt] system`） |
+| §3.6 cmd_skill v0 | `BehaviorCatalog::cmd_skill`（fs / mem / forwarding / kRPC `behaviors.cmd_skill`）、`CMD_SKILLS_DIR`、`PromptSection.cmd_skill`、`FrozenPrompt.cmd_skill: CmdSkill {name, text}`（`freeze_config` 冻结，缺失即配置错误）、assembler 渲染 `## Commands`；Jarvis `cmd_skills/ui_core.md`、`agent.toml [session.ui|group] default_cmd_skill` |
+| §4 输入 | `runner/background.rs`（`lines` / `select` / `render` / `local_time`）、`assembler.rs::chat_inputs` + `Blocks::chat`、`InputMaterial.background`、模板变量 `background` / `background_text`；`drive.rs` 为 UI 组装背景（活动视图、本批子 Session 事件的登记表条目、半订阅版本、hints、隧道），`InputBatch.background` → receipt `extra.background`（`RECEIPT_BACKGROUND`）→ `apply_receipt` 写 `state.background_shown`；`children.rs` 对 UI 父只给一行摘要；新依赖 `chrono-tz` |
+| §5 结构化回复 | `BehaviorReply { schema, asks_field }`（`[reply]`，schema 可写 TOML 表或 JSON 文本）→ `BehaviorEntry.reply` → `own_run_context` 写 `.llm_context.json_schema` / `fork_run_context` 用 `ForkOptions.output`；`reports.rs::store_artifacts`（从 `submit` 抽出）与 `ReplyValidator`（artifacts 存在、`asks_field` 计数；契约记在 run.json `host.extra.reply`，恢复时仍可用）；`outcome.rs`：`StructuredReply` 解析、`Next.{reply_artifacts, topic, reply_error}`、`commit_run_end` 写 `state.topic`、`TurnReply.artifacts`、worklog `outcome.report` 前缀；`SessionStatus.topic` / `ActiveSession.{topic, parent}` |
+| §6 工具 | 先行 P3 / P4 / P5；`tool_whitelist = ["group:bash_core", "behavior:analyze_intent"]` |
+| §7 意图分析 | `analyze_intent.toml`：`[tool] description` 二分、`on_context_switch` 的 Finishing 改成 JSON 结果（报告三块）、`[reply] asks_field = "clarifications"` + 结果 schema |
+| §8 | `notepads/opendan-cmd-skill-todo.md`（占位） |
+| 文档 | Session Input Protocol §6.5（chat 格式）、§7（`extra.background`）；xAgent §6.1 / §6.5 / §11.6；Dev Guide §3.3 / §6.2；LLM Context 设计 §3.3 / §3.4 / 错误纪律；xllm SDK §10；protocol schema 与 fixtures 重生成，`14_input_bus` 新增 chat 格式三份逐字节样例 |
+| 基线 | `opendan/tests/loader.rs::jarvis_prompt_review`（ignored）：问候 → 无变化的追问（只有原文）→ 子 work 结束（2.B），并断言结构；输出 `target/prompt-review/jarvis-chat-route.txt` |
+
+### 13.2 与本文不同的决定
+
+1. **背景行的过滤放在 drive，不在 assembler**：assembler 是纯函数、不提交状态；drive 用同一个纯函数 `background::select` 过滤并把结果放进 receipt，assembler 只渲染给它的行。自定义模板拿到的也是过滤后的行。
+2. **`background_shown` 随输入批次的 receipt 提交**（不是“Turn 提交时”）：显示发生在批次注入时，崩溃恢复按 receipt 补齐，与 `todo_view_rev` 同法。整张表随 receipt 替换；本批候选里没有的 key 删除（hint 换了、子 Session 结束后不再出现时自动清理，再出现会重新显示）。
+3. **时间行**：用 `chrono-tz` 换算到 `session.timezone`（缺省 UTC），显示 `current_time <本地时间> (<IANA 名>)`；用户时区事件不再单列。群聊 `<msg time>` 仍是 UTC（§6.2 规则不变）。
+4. **渠道**：OutboundBinding 没有渠道信息，Constraints 不写 `through {channel}`；改为本批最后一条消息带 `delivery.tunnel` 时出一行 `channel` 背景行（变化才出现）。
+5. **Identity 的 owner 句**写成“Your owner is …”，不写“primary personal Agent of …”：实例补充对所有 Agent 生效，不是每个 Agent 都是主 Agent；没有 owner 显示名来源，只写 account 与 DID。
+6. **Memory 段放在包里**（`chat_route` 的 `[prompt] system`），不放 assembler：命令与措辞属于 Agent 包；assembler 对 UI 只是不加 `## application` 标题，原样插入。UI system 段的实际顺序是 Identity → Constraints → Objective → 包文本（`## Replying`、`## Memory`）→ Commands。
+7. **xllm 三段只对 function call 循环的 UI run 关闭**：behavior 循环的 UI Session（测试与其它包里有）回复形状由 runtime_protocol 定义，保留。
+8. **结构化回复不经 `report` 提交**：`report(is_end)` 的校验（子 Session 未结束不得 final）不适合会话；回复的附件走同一套 `store_artifacts`（id = `h(run_id, "structured_reply")`），校验在回复被接受之前由 `ReplyValidator` 完成，失败进同一次纠正。两次不满足契约：原文出站，worklog 的 `outcome.report` 记 `[reply not in the required format: …]`；fork 子 context 两次失败则把原因 + 原文作为调用结果返回。
+9. **topic 按“有就覆盖”**（标题一行，tags 最多 8 个、去空），与 Turn 关闭同一次提交，并经登记表 `status.topic` 给其它 Session（`ui:<sid>` 背景行）。schema 里不写 `maxItems`（Claude 原生结构化输出不支持数组上限约束），由宿主截断。
+10. **`[reply] schema` 允许 JSON 文本**（TOML 多行字面量 `schema = '''{…}'''`，加载 behavior 时解析并校验），TOML 表写法也可以。
+11. **`llm_understand_media` 不进 cmd_skill**：它是 `agent_tool` 二进制的子命令，`agent_tool` 在 opendan 旁边，不在 Session 的 PATH 上（cmd_skill TODO 记录）。
+12. **`ctl subscribe|unsubscribe` 的会话内形式早已存在**（`CTL_COMMANDS` + `$OPENDAN_SESSION_ID`），不用补。
+13. **schema 按 OpenAI strict 规则写**：DV 上 `llm.chat` 路由到 `gpt-6-sol@codex-proxy`，即使不设 strict 也按 strict 校验 schema（每个对象的 `required` 必须列出全部属性）。所以 §5.2 的 schema 改为全部字段必填：UI 回复 `{reply, topic: object|null, artifacts: [...]}`（不换话题时 `topic: null`，不交文件时 `artifacts: []`），分析结果所有字段必填（列表可空，`reason` / `work` / `goal` / `proposal` 用 `null`）。提示词同步写明“三个字段都给”。宿主对 `null` / 空列表按“没有”处理。
+
+### 13.3 验证
+
+```
+cargo test -p llm_context                                   # 234 passed
+cargo test -p agent_tool --lib                              # 247 passed, 5 ignored
+cargo test -p libopendan --no-fail-fast -- --test-threads=1 # 30 个测试二进制全过（338 passed）
+cargo test -p opendan -- --test-threads=1                   # loader 21 passed（另 1 ignored）
+cargo test -p opendan --test loader jarvis_prompt_review -- --ignored
+cargo run -p libopendan --example fixtures -- <绝对路径>/doc/opendan/protocol/fixtures && cargo test -p libopendan --test fixtures
+```
+
+真实 provider 校验（DV OOD 上 `agent_tool xllm` + `.llm_context` 的 `json_schema` + 工具，走 AICC → `gpt-6-sol@codex-proxy`）：最初的 schema 被拒（`invalid_json_schema: 'required' … Missing 'tags'`）；改成 strict 兼容后，“先调 `read_file` 再按 schema 回复”成功，Jarvis 的 `chat_route` 与 `analyze_intent` schema 原样通过并产出合规 JSON。Claude 路由在 DV 上没有可用候选，未验证（类型数组 `["object","null"]` 在 Claude 原生结构化输出下的表现待真实验收）。
+
+改动的既有测试：`notify.rs`（UI 的通知改为背景行）、`loader.rs` 的 Jarvis 包与实例补充两例（新身份行、`[reply]`、5 个工具、冻结的 cmd_skill）。
+
+### 13.4 未做 / 待验证
+
+- **真实 Zone 验收（§11 第 4 步）未做**：问候（topic 写入 → 下一条消息的 hint 行）、带附件回复、触发 work 并等其 finished 事件、`usage.jsonl` 前缀字节不变。需要用本地镜像覆盖 + `devenv.json` 的流程（opendan-agent-loader-refactor TODO）。
+- 真实 provider 下的结构化输出 + 工具调用并存（Claude `output_config.format`、OpenAI `response_format`），以及 MiniMax 等无映射 provider 走纠正兜底的效果。
+- 已存在的 UI Session 用冻结的旧 behavior（无 `[reply]`、仍有 `report`、无 cmd_skill），新 run 会拿到新的 Constraints / chat 格式 / 关掉的 xllm 三段；它们照常以纯文本回复。新 Session 才有完整新结构。
+- §4.3、cmd_skill 的运行时调整（各自 TODO）。

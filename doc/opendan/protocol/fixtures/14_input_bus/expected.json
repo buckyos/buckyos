@@ -95,6 +95,34 @@
       "03_event_active_task.json"
     ],
     "batch_time_ms": 1790899201000,
+    "chat": {
+      "background": "every line new; the semi event of 04_event_semi_object.json as a background line",
+      "batches": [
+        {
+          "batch": [
+            "01_msg_text.json"
+          ],
+          "group": false,
+          "output": "rendering/chat_one_to_one.txt"
+        },
+        {
+          "batch": [
+            "03_event_active_task.json"
+          ],
+          "group": false,
+          "output": "rendering/chat_event_batch.txt"
+        },
+        {
+          "batch": [
+            "02_msg_group_attachments.json",
+            "03_event_active_task.json"
+          ],
+          "group": true,
+          "output": "rendering/chat_group.txt"
+        }
+      ],
+      "timezone": "Asia/Shanghai"
+    },
     "hook": "on_input",
     "input_text": "rendering/input_text.xml",
     "on_input_builtin": "rendering/on_input_builtin.txt",

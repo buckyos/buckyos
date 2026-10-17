@@ -213,6 +213,26 @@
       },
       "type": "object"
     },
+    "BehaviorReply": {
+      "additionalProperties": false,
+      "description": "`[reply]`: the reply contract of a behavior's context. The final reply (an assistant text without tool calls) is one JSON value matching `schema`: the provider enforces it natively where it can, the host checks it and asks for one correction (`OutputSpec::Json { max_repairs: Some(1) }`). Function call loop only.",
+      "properties": {
+        "asks_field": {
+          "description": "An array field of the reply that must list every question the context asked the user (`agent-session ask-user`), one entry each.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "description": "JSON Schema of the reply (an object schema)."
+        }
+      },
+      "required": [
+        "schema"
+      ],
+      "type": "object"
+    },
     "BehaviorToolConfig": {
       "additionalProperties": false,
       "description": "`[tool]`: a sub context behavior offered to its callers as a named function. Calling it runs the behavior exactly like `call_behavior` does; the declaration only decides what the caller's model sees.",
@@ -421,6 +441,16 @@
         }
       ],
       "default": {}
+    },
+    "reply": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/BehaviorReply"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "tool": {
       "anyOf": [

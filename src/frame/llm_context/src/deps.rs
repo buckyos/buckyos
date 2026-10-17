@@ -503,6 +503,19 @@ pub struct LLMContextDeps {
     /// Running tasks this context may follow (background env before every
     /// inference) — host assembled; `None` when the host has no tasks.
     pub tasks: Option<Arc<dyn RunningTaskResolver>>,
+    /// Host check of a reply that met the reply contract's schema
+    /// (`OutputSpec::Json { max_repairs: Some(_) }`): what the schema cannot
+    /// say (a file that must exist, a count that must match). A rejection
+    /// is fed back to the model like a schema mismatch.
+    pub output_validator: Option<Arc<dyn OutputValidator>>,
+}
+
+/// See [`LLMContextDeps::output_validator`].
+#[async_trait]
+pub trait OutputValidator: Send + Sync {
+    /// `Err(message)`: the reply is rejected; `message` tells the model
+    /// what to fix.
+    async fn validate(&self, reply: &Value) -> Result<(), String>;
 }
 
 impl LLMContextDeps {
@@ -519,6 +532,7 @@ impl LLMContextDeps {
             step_result_hook: None,
             checkpoint_hook: None,
             tasks: None,
+            output_validator: None,
         }
     }
 
@@ -564,6 +578,11 @@ impl LLMContextDeps {
 
     pub fn with_tasks(mut self, tasks: Arc<dyn RunningTaskResolver>) -> Self {
         self.tasks = Some(tasks);
+        self
+    }
+
+    pub fn with_output_validator(mut self, validator: Arc<dyn OutputValidator>) -> Self {
+        self.output_validator = Some(validator);
         self
     }
 
