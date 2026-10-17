@@ -124,7 +124,7 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 
 - `BUCKYOS_APP_ID`（默认 `buckyos-agent`，兼容 `BUCKYOS_TEST_APP_ID`）
 - `BUCKYOS_APPCLIENT_SESSION_TOKEN`：OpenDAN 注入的 AppClient session token；设置后启用容器内访问方式
-- `BUCKYOS_HOST_GATEWAY`：容器访问宿主机的地址（默认 `host.docker.internal`）
+- `BUCKYOS_HOST_GATEWAY`：容器访问宿主机的地址（Docker 默认 `host.docker.internal`，Windows WSLC 由 node-daemon 注入 `host.wslc.internal`）
 - `BUCKYOS_NODE_GATEWAY_PORT`：NodeGateway 端口（默认 `3180`）
 - `BUCKYOS_AICC_TOOL_ROOT`：仅供 AIOS launcher 调试覆盖安装目录（默认 `/opt/buckyos/bin/opendan/buckyos-agent`）
 - `BUCKYOS_OWNER_USER_ID`：当前 Zone owner 用户 ID（默认 `devtest`）

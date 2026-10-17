@@ -1,7 +1,10 @@
 #!/usr/bin/env -S uv run
 
+import json
 import os
+from pathlib import Path
 import platform
+import shutil
 import subprocess
 
 system = platform.system()
@@ -57,44 +60,71 @@ def kill_devtest_containers():
         else:
             print(f"{container_name} container killed")
 
+def _container_program():
+    runtime = os.environ.get("BUCKYOS_CONTAINER_RUNTIME")
+    if runtime not in (None, "docker", "wslc"):
+        raise ValueError(f"unknown BUCKYOS_CONTAINER_RUNTIME: {runtime}")
+    if runtime == "docker" or (system != "Windows" and runtime is None):
+        return "docker", False
+    wslc = shutil.which("wslc.exe")
+    if not wslc:
+        candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WSL" / "wslc.exe"
+        if candidate.is_file():
+            wslc = str(candidate)
+    if wslc or runtime == "wslc":
+        return wslc or "wslc.exe", True
+    return "docker", False
+
+
 def kill_buckyos_containers():
-    result_list = subprocess.run(
-        ["docker", "ps", "-a", "--format", "{{.Names}}"],
-        capture_output=True,
-        text=True,
-        **_windows_subprocess_kwargs(),
-    )
+    program, is_wslc = _container_program()
+    try:
+        result_list = subprocess.run(
+            [program, "container", "ls", "-a", "--format", "json" if is_wslc else "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **_windows_subprocess_kwargs(),
+        )
+    except FileNotFoundError:
+        print(f"Container runtime {program} is not installed")
+        return
     if result_list.returncode != 0:
         stderr = result_list.stderr.strip()
-        print(f"Failed to list buckyos docker containers: {stderr or 'unknown error'}")
+        print(f"Failed to list buckyos containers: {stderr or 'unknown error'}")
         return
 
-    container_names = [
-        name.strip()
-        for name in result_list.stdout.splitlines()
-        if name.strip().startswith("buckyos-app-")
-    ]
+    if is_wslc:
+        names = []
+        decoder = json.JSONDecoder()
+        remaining = result_list.stdout.strip()
+        while remaining:
+            value, offset = decoder.raw_decode(remaining)
+            rows = value if isinstance(value, list) else [value]
+            names.extend(row["Names"] for row in rows)
+            remaining = remaining[offset:].lstrip()
+    else:
+        names = result_list.stdout.splitlines()
+    container_names = [name.strip() for name in names if name.strip().startswith("buckyos-app-")]
     if not container_names:
-        print("No buckyos docker containers found")
+        print("No buckyos containers found")
         return
 
     result_rm = subprocess.run(
-        ["docker", "rm", "-f", *container_names],
+        [program, "rm", "-f", *container_names],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         **_windows_subprocess_kwargs(),
     )
     if result_rm.returncode != 0:
         stderr = result_rm.stderr.strip()
-        print(f"Failed to remove buckyos docker containers: {stderr or 'unknown error'}")
+        print(f"Failed to remove buckyos containers: {stderr or 'unknown error'}")
         return
-
-    removed = result_rm.stdout.strip()
-    if removed:
-        for container_name in removed.splitlines():
-            print(f"{container_name} container removed")
-    else:
-        print("BuckyOS docker containers removed")
+    for name in container_names:
+        print(f"{name} container removed")
 
 def kill_process(name):
     if system == "Windows":
