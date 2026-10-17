@@ -2,7 +2,7 @@
 """
 Parse LLM log files and display formatted prompts/responses.
 
-Extracts llm.input and llm.output lines, strips OpenAI protocol noise,
+Extracts aicc.llm.input and aicc.llm.output JSON events,
 and presents the content in readable HTML by default.
 
 Usage:
@@ -16,7 +16,7 @@ Options:
     --print     Print to terminal instead of generating HTML
     --raw       Show full JSON instead of cleaned-up view
     --no-color  Disable ANSI color codes in --print mode
-    --errors    Also show provider errors (start_failed lines)
+    --errors    Also show aicc.llm.error events
 """
 
 import sys
@@ -48,6 +48,7 @@ ROLE_COLORS = {
     "tool": C_YELLOW,
     "tool_call": C_YELLOW,
     "tool_result": C_YELLOW,
+    "error": C_RED,
 }
 
 DEFAULT_BUCKYOS_ROOT = "/opt/buckyos"
@@ -70,103 +71,38 @@ def find_latest_aicc_log() -> Optional[str]:
 
 
 def parse_log_line(line: str):
-    """Parse a single log line, return (timestamp, direction, metadata, json_payload) or None."""
-    # Format: 04-07 10:27:30.198 INFO  [openai.rs:926] aicc.openai.llm.input ... request={...}
-    #     or: 04-07 10:27:33.474 INFO  [openai.rs:978] aicc.openai.llm.output ... response={...}
-    m = re.match(
-        LOG_PREFIX_RE +
-        r"aicc\.(\w+)\.llm\.(input|output)\s+"           # provider + direction
-        r"(.+?)(?:request|response)=(.+)$",              # metadata + json payload
-        line.strip(),
-    )
-    if not m:
+    parsed = parse_event_line(line)
+    if not parsed:
         return None
-
-    timestamp = m.group(1)
-    provider = m.group(3)
-    direction = m.group(4)  # "input" or "output"
-    meta_str = m.group(5)
-    payload_raw = m.group(6)
-
-    meta = parse_kv_pairs(meta_str)
-    meta["provider"] = provider
-
-    try:
-        payload = json.loads(payload_raw)
-    except json.JSONDecodeError:
-        payload = _try_repair_json(payload_raw)
-
+    timestamp, direction, event = parsed
+    if direction not in ("input", "output"):
+        return None
+    key = "request" if direction == "input" else "response"
+    payload = event.get(key, {"_raw": event})
+    if not isinstance(payload, dict):
+        payload = {"_raw": payload}
+    meta = {key_: value for key_, value in event.items() if key_ != key}
     return timestamp, direction, meta, payload
 
 
-def parse_kv_pairs(text: str) -> dict:
-    """Parse log-style key=value pairs, preserving values like Some("jarvis")."""
-    meta = {}
-    for kv in re.finditer(r"(\w+)=((?:[^\s\"']+|\"[^\"]*\"|'[^']*')+)", text):
-        meta[kv.group(1)] = kv.group(2)
-    return meta
-
-
-def parse_context_line(line: str):
-    """Parse AICC routing/provider context lines that surround provider LLM logs."""
-    stripped = line.strip()
-
-    m = re.match(LOG_PREFIX_RE + r"aicc\.routing output:\s+(.+)$", stripped)
-    if m:
-        return "routing", parse_kv_pairs(m.group(3))
-
-    m = re.match(LOG_PREFIX_RE + r"aicc\.llm\.input\s+(.+)$", stripped)
-    if m:
-        return "llm_input", parse_kv_pairs(m.group(3))
-
-    m = re.match(LOG_PREFIX_RE + r"aicc\.provider\.start\s+(.+)$", stripped)
-    if m:
-        return "provider_start", parse_kv_pairs(m.group(3))
-
+def parse_error_line(line: str):
+    parsed = parse_event_line(line)
+    if parsed and parsed[1] == "error":
+        return parsed[0], parsed[2]
     return None
 
 
-def provider_key(meta: dict):
-    """Build the best available FIFO correlation key for provider request/response logs."""
-    return (
-        meta.get("instance_id") or meta.get("primary_instance") or "",
-        meta.get("model") or meta.get("provider_model") or "",
-        meta.get("trace_id") or "",
-    )
-
-
-def merge_meta(base: dict, overlay: dict) -> dict:
-    merged = dict(base)
-    merged.update(overlay)
-    if "model" not in merged and "provider_model" in merged:
-        merged["model"] = merged["provider_model"]
-    if "instance_id" not in merged and "primary_instance" in merged:
-        merged["instance_id"] = merged["primary_instance"]
-    return merged
-
-
-def pop_first(queue_map: dict, key):
-    queue = queue_map.get(key)
-    if not queue:
-        return {}
-    item = queue.pop(0)
-    if not queue:
-        queue_map.pop(key, None)
-    return item
-
-
-def parse_error_line(line: str):
-    """Parse a provider error line, return (timestamp, metadata_str) or None."""
-    # Format: 04-07 10:13:43.364 WARN  [aicc.rs:1561] aicc.provider.start_failed task_id=... err=...
+def parse_event_line(line: str):
     m = re.match(
-        LOG_PREFIX_RE +
-        r"aicc\.provider\.start_failed(?:\.final)?\s+"
-        r"(.+)$",
+        LOG_PREFIX_RE + r"aicc\.llm\.(input|output|error)\s+(.+)$",
         line.strip(),
     )
     if not m:
         return None
-    return m.group(1), m.group(3)
+    event = _try_repair_json(m.group(4))
+    if not isinstance(event, dict):
+        event = {"_raw": event}
+    return m.group(1), m.group(3), event
 
 
 def _try_repair_json(raw: str) -> dict:
@@ -183,28 +119,57 @@ def _try_repair_json(raw: str) -> dict:
 def _extract_message_content(msg: dict) -> str:
     """Extract text content from a message in either API format."""
     content = msg.get("content", "")
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        content = [content]
     if isinstance(content, list):
         parts = []
         for block in content:
             if isinstance(block, dict):
-                text = block.get("text", "")
-                if text:
-                    parts.append(text)
-                elif block.get("output"):
-                    parts.append(str(block["output"]))
-                elif block.get("type"):
-                    parts.append(f"[{block['type']}]")
+                block_type = block.get("type")
+                if block_type in ("tool_use", "function_call"):
+                    call_id = block.get("call_id") or block.get("id")
+                    label = "TOOL_CALL" + (f" call_id={call_id}" if call_id else "")
+                    parts.append(f"[{label}]\n{_format_function_call_content(block)}")
+                elif block_type in ("tool_result", "function_call_output"):
+                    call_id = block.get("call_id") or block.get("tool_use_id")
+                    label = "TOOL_RESULT" + (f" call_id={call_id}" if call_id else "")
+                    if block.get("is_error"):
+                        label += " is_error=true"
+                    result = block.get("content", block.get("output"))
+                    parts.append(f"[{label}]\n{_extract_message_content({'content': result})}")
+                elif block_type in ("thinking", "reasoning"):
+                    texts = []
+                    for key in ("summary", "text", "thinking"):
+                        value = _extract_message_content({"content": block.get(key)})
+                        if value and value not in texts:
+                            texts.append(value)
+                    parts.append("[THINKING]" + ("\n" + "\n".join(texts) if texts else ""))
+                elif block_type == "provider_state":
+                    provider = block.get("provider", "")
+                    parts.append(f"[provider_state {provider}]\n{format_message_content(block.get('value'))}")
+                elif block.get("text") is not None:
+                    parts.append(format_message_content(block["text"]))
+                elif block.get("output") is not None:
+                    parts.append(format_message_content(block["output"]))
+                elif block_type:
+                    title = block.get("title")
+                    parts.append(f"[{block_type}" + (f": {title}" if title else "") + "]")
+                else:
+                    parts.append(format_message_content(block))
             elif isinstance(block, str):
                 parts.append(block)
         return "\n".join(parts)
-    return str(content)
+    return format_message_content(content)
 
 
 def _format_function_call_content(item: dict) -> str:
+    item = item.get("function") or item
     name = item.get("name", "?")
-    arguments = item.get("arguments", "")
+    arguments = item.get("args", item.get("arguments", ""))
     try:
         parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
         if name == "shell" and isinstance(parsed, dict):
@@ -233,14 +198,21 @@ def extract_clean_input(payload: dict) -> dict:
     """Extract readable content from an llm.input request payload."""
     result = {}
 
-    model = payload.get("model")
+    model = payload.get("exact_model") or payload.get("logical_model") or payload.get("model")
     if model:
         result["model"] = model
 
     raw_messages = payload.get("messages") or payload.get("input") or []
+    if isinstance(raw_messages, str):
+        raw_messages = [{"role": "user", "content": raw_messages}]
+    elif isinstance(raw_messages, dict):
+        raw_messages = [raw_messages]
 
     clean_messages = []
     for msg in raw_messages:
+        if not isinstance(msg, dict):
+            clean_messages.append({"role": "user", "content": format_message_content(msg)})
+            continue
         item_type = msg.get("type")
         if item_type == "function_call":
             call_id = msg.get("call_id", "")
@@ -261,11 +233,19 @@ def extract_clean_input(payload: dict) -> dict:
             clean_messages.append({
                 "role": "tool_result",
                 "title": title,
-                "content": msg.get("output", ""),
+                "content": _extract_message_content({"content": msg.get("output")}),
             })
+            continue
+        if item_type == "reasoning":
+            clean_messages.append({"role": "assistant", "content": _extract_message_content({"content": [msg]})})
             continue
         role = msg.get("role", "unknown")
         content = _extract_message_content(msg)
+        for call in msg.get("tool_calls") or []:
+            block = dict(call, type="function_call")
+            content += ("\n" if content else "") + _extract_message_content({"content": [block]})
+        if msg.get("tool_call_id"):
+            content = f"[TOOL_RESULT call_id={msg['tool_call_id']}]\n{content}"
         clean_messages.append({"role": role, "content": content})
 
     if clean_messages:
@@ -278,28 +258,66 @@ def extract_clean_input(payload: dict) -> dict:
     return result
 
 
+def _extract_usage(usage: dict) -> dict:
+    result = dict(usage)
+    input_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+    output_details = usage.get("output_tokens_details") or usage.get("completion_tokens_details") or {}
+    for key, values in {
+        "prompt_tokens": (usage.get("input_tokens"), usage.get("prompt_tokens")),
+        "completion_tokens": (usage.get("output_tokens"), usage.get("completion_tokens")),
+        "cached_tokens": (usage.get("cache_read_input_tokens"), input_details.get("cached_tokens")),
+        "reasoning_tokens": (usage.get("reasoning_tokens"), output_details.get("reasoning_tokens")),
+    }.items():
+        result[key] = next((value for value in values if value is not None), None)
+    if result.get("total_tokens") is None:
+        counts = (result["prompt_tokens"], result["completion_tokens"])
+        result["total_tokens"] = sum(_int_value(value) for value in counts) if any(value is not None for value in counts) else None
+    return result
+
+
 def extract_clean_output(payload: dict) -> dict:
     """Extract readable content from an llm.output response payload."""
     result = {}
 
-    model = payload.get("model")
+    model = payload.get("exact_model") or payload.get("model")
     if model:
         result["model"] = model
 
     usage = payload.get("usage")
     if usage:
-        result["usage"] = {
-            "prompt_tokens": usage.get("prompt_tokens") or usage.get("input_tokens"),
-            "completion_tokens": usage.get("completion_tokens") or usage.get("output_tokens"),
-            "total_tokens": usage.get("total_tokens"),
-        }
+        result["usage"] = _extract_usage(usage)
 
     replies = []
+    message = payload.get("message")
+    if isinstance(message, dict):
+        replies.append({
+            "role": message.get("role", "assistant"),
+            "content": _extract_message_content(message),
+            "finish_reason": payload.get("finish_reason") or payload.get("status", ""),
+        })
+    content = message.get("content") if isinstance(message, dict) else []
+    embedded_calls = {
+        block.get("call_id")
+        for block in content or []
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    }
+    for call in payload.get("tool_calls") or []:
+        if call.get("call_id") and call["call_id"] in embedded_calls:
+            continue
+        replies.append({
+            "role": "tool_call",
+            "content": _extract_message_content({"content": [dict(call, type="tool_use")]}),
+            "finish_reason": payload.get("finish_reason") or payload.get("status", ""),
+        })
+    if payload.get("error"):
+        replies.append({"role": "error", "content": format_message_content(payload["error"])})
 
     # Chat Completions API format
-    for choice in payload.get("choices", []):
-        msg = choice.get("message", {})
-        content = msg.get("content", "")
+    for choice in payload.get("choices") or []:
+        msg = choice.get("message") or {}
+        content = _extract_message_content(msg)
+        if msg.get("reasoning_content"):
+            content = f"[THINKING]\n{msg['reasoning_content']}\n{content}"
         role = msg.get("role", "assistant")
         entry = {"role": role, "content": content}
         if msg.get("tool_calls"):
@@ -309,18 +327,11 @@ def extract_clean_output(payload: dict) -> dict:
         replies.append(entry)
 
     # Responses API format
-    for item in payload.get("output", []):
+    for item in payload.get("output") or []:
         if item.get("type") == "message":
             role = item.get("role", "assistant")
             status = item.get("status", "")
-            content_parts = []
-            for block in item.get("content", []):
-                text = block.get("text", "")
-                if text:
-                    content_parts.append(text)
-                elif block.get("type"):
-                    content_parts.append(f"[{block['type']}]")
-            content = "\n".join(content_parts)
+            content = _extract_message_content(item)
             entry = {"role": role, "content": content}
             if status:
                 entry["finish_reason"] = status
@@ -333,6 +344,8 @@ def extract_clean_output(payload: dict) -> dict:
                 "finish_reason": item.get("status", ""),
             }
             replies.append(entry)
+        elif item.get("type") == "reasoning":
+            replies.append({"role": "assistant", "content": _extract_message_content({"content": [item]})})
 
     if replies:
         result["replies"] = replies
@@ -373,6 +386,10 @@ def print_message_content(content: str, role: str, indent: int = 4):
 
 def format_message_content(content: str) -> str:
     """Format message content for terminal or HTML display."""
+    if content is None:
+        return ""
+    if not isinstance(content, str):
+        return json.dumps(content, indent=2, ensure_ascii=False)
     try:
         inner = json.loads(content)
         return json.dumps(inner, indent=2, ensure_ascii=False)
@@ -392,17 +409,17 @@ def display_entry(timestamp, direction, meta, payload, raw=False):
     print_separator("=")
 
     icon = ">> INPUT" if direction == "input" else "<< OUTPUT"
-    model = meta.get("model", payload.get("model", "?"))
-    instance = meta.get("instance_id", "")
+    model = meta.get("exact_model") or payload.get("exact_model") or payload.get("model", "?")
+    instance = meta.get("provider_instance_name") or ""
     trace = meta.get("trace_id", "")
 
     print(f"{C_BOLD}{icon}{C_RESET}  {C_DIM}{timestamp}{C_RESET}  "
           f"{C_YELLOW}{model}{C_RESET}  {C_DIM}{instance}{C_RESET}")
 
     details = []
-    for key in ("task_id", "tenant", "caller_app", "provider", "status"):
-        value = meta.get(key)
-        if value and value != "None":
+    for key in ("task_id", "tenant_id", "caller_app_id", "provider", "method", "request_model", "status"):
+        value = meta.get(key) or payload.get(key)
+        if value:
             details.append(f"{key}: {value}")
     if details:
         print(f"  {C_DIM}{'  '.join(details)}{C_RESET}")
@@ -412,7 +429,7 @@ def display_entry(timestamp, direction, meta, payload, raw=False):
 
     print_separator()
 
-    if raw:
+    if raw or "_raw" in payload:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
@@ -457,76 +474,48 @@ def display_entry(timestamp, direction, meta, payload, raw=False):
     print_separator("=")
 
 
-def display_error(timestamp, meta_str):
+def display_error(timestamp, event):
     """Display a provider error entry."""
     print()
     print_separator("=")
     print(f"{C_BOLD}{C_RED}!! ERROR{C_RESET}  {C_DIM}{timestamp}{C_RESET}")
     print_separator()
 
-    meta, tail_key, tail_value = split_error_meta(meta_str)
-    for key, val in meta.items():
-        print(f"  {C_DIM}{key}: {val}{C_RESET}")
-
-    if tail_key:
-        print(f"  {C_RED}{tail_key}: {tail_value}{C_RESET}")
+    for key, value in event.items():
+        if key != "error" and value is not None:
+            print(f"  {C_DIM}{key}: {value}{C_RESET}")
+    print_message_content(event.get("error", event), "error")
 
     print_separator("=")
-
-
-def split_error_meta(meta_str: str):
-    tail_key = None
-    tail_value = None
-    prefix = meta_str
-    for key in ("err", "reason"):
-        marker = f"{key}="
-        pos = meta_str.find(marker)
-        if pos >= 0:
-            tail_key = key
-            tail_value = meta_str[pos + len(marker):]
-            prefix = meta_str[:pos].strip()
-            break
-    return parse_kv_pairs(prefix), tail_key, tail_value
 
 
 def parse_entries(logfile: str, show_errors: bool):
     entries = []
     task_contexts = {}
-    pending_provider = {}
-    active_provider = {}
 
     with open(logfile, "r", encoding="utf-8") as f:
         for line in f:
-            context = parse_context_line(line)
-            if context:
-                kind, meta = context
-                task_id = meta.get("task_id")
-                if task_id:
-                    task_contexts[task_id] = merge_meta(task_contexts.get(task_id, {}), meta)
-
-                if kind == "provider_start":
-                    base = task_contexts.get(task_id, {}) if task_id else {}
-                    provider_meta = merge_meta(base, meta)
-                    pending_provider.setdefault(provider_key(provider_meta), []).append(provider_meta)
+            parsed = parse_event_line(line)
+            if not parsed:
                 continue
-
-            parsed = parse_log_line(line)
-            if parsed:
-                timestamp, direction, meta, payload = parsed
-                key = provider_key(meta)
+            timestamp, direction, event = parsed
+            key = {"input": "request", "output": "response", "error": "error"}[direction]
+            task_id = event.get("task_id")
+            meta = dict(task_contexts.get(task_id, {})) if task_id else {}
+            meta.update({k: v for k, v in event.items() if k != key})
+            if task_id:
                 if direction == "input":
-                    provider_meta = pop_first(pending_provider, key)
-                    meta = merge_meta(provider_meta, meta)
-                    active_provider.setdefault(provider_key(meta), []).append(meta)
+                    task_contexts[task_id] = meta
                 else:
-                    provider_meta = pop_first(active_provider, key)
-                    meta = merge_meta(provider_meta, meta)
+                    task_contexts.pop(task_id, None)
+            payload = event.get(key, {"_raw": event})
+            if direction == "error":
+                if show_errors:
+                    entries.append(("error", (timestamp, {**meta, "error": payload})))
+            else:
+                if not isinstance(payload, dict):
+                    payload = {"_raw": payload}
                 entries.append(("llm", (timestamp, direction, meta, payload)))
-                continue
-            if show_errors:
-                err = parse_error_line(line)
-                if err:
-                    entries.append(("error", err))
 
     return entries
 
@@ -555,6 +544,8 @@ def collect_html_stats(entries: list) -> dict:
         "completion_tokens": 0,
         "total_tokens": 0,
         "cached_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
         "reasoning_tokens": 0,
         "models": {},
     }
@@ -573,7 +564,7 @@ def collect_html_stats(entries: list) -> dict:
             continue
 
         stats["output_entries"] += 1
-        model = meta.get("model") or payload.get("model")
+        model = meta.get("exact_model") or meta.get("model") or payload.get("exact_model") or payload.get("model")
         if model:
             stats["models"][model] = stats["models"].get(model, 0) + 1
 
@@ -581,18 +572,11 @@ def collect_html_stats(entries: list) -> dict:
         if not usage:
             continue
 
+        usage = _extract_usage(usage)
         stats["usage_entries"] += 1
-        prompt_tokens = _int_value(usage.get("prompt_tokens")) or _int_value(usage.get("input_tokens"))
-        completion_tokens = _int_value(usage.get("completion_tokens")) or _int_value(usage.get("output_tokens"))
-        total_tokens = _int_value(usage.get("total_tokens")) or prompt_tokens + completion_tokens
-        input_details = usage.get("input_tokens_details") or {}
-        output_details = usage.get("output_tokens_details") or {}
-
-        stats["prompt_tokens"] += prompt_tokens
-        stats["completion_tokens"] += completion_tokens
-        stats["total_tokens"] += total_tokens
-        stats["cached_tokens"] += _int_value(input_details.get("cached_tokens"))
-        stats["reasoning_tokens"] += _int_value(output_details.get("reasoning_tokens"))
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens",
+                    "cache_write_input_tokens", "cache_write_1h_input_tokens", "reasoning_tokens"):
+            stats[key] += _int_value(usage.get(key))
 
     return stats
 
@@ -607,6 +591,8 @@ def render_stats_text(stats: dict) -> str:
         f"input={format_count(stats['prompt_tokens'])}",
         f"output={format_count(stats['completion_tokens'])}",
         f"cached={format_count(stats['cached_tokens'])}",
+        f"cache_write={format_count(stats['cache_write_input_tokens'])}",
+        f"cache_write_1h={format_count(stats['cache_write_1h_input_tokens'])}",
         f"reasoning={format_count(stats['reasoning_tokens'])}",
         f"entries input={format_count(stats['input_entries'])}",
         f"output={format_count(stats['output_entries'])}",
@@ -628,16 +614,18 @@ def html_pre(text: str) -> str:
 
 def render_meta_html(meta: dict, payload: dict) -> str:
     details = []
-    model = meta.get("model", payload.get("model", "?"))
-    instance = meta.get("instance_id", "")
+    model = meta.get("exact_model") or payload.get("exact_model") or payload.get("model", "?")
+    instance = meta.get("provider_instance_name")
     for key, value in (
         ("model", model),
         ("instance", instance),
         ("task_id", meta.get("task_id")),
-        ("tenant", meta.get("tenant")),
-        ("caller_app", meta.get("caller_app")),
+        ("tenant", meta.get("tenant_id")),
+        ("caller_app", meta.get("caller_app_id")),
         ("provider", meta.get("provider")),
-        ("status", meta.get("status")),
+        ("method", meta.get("method")),
+        ("request_model", meta.get("request_model")),
+        ("status", meta.get("status") or payload.get("status")),
         ("trace", meta.get("trace_id")),
     ):
         if value and value != "None":
@@ -652,7 +640,7 @@ def render_llm_entry_html(index: int, timestamp: str, direction: str, meta: dict
     css_class = "input" if direction == "input" else "output"
     body = []
 
-    if raw:
+    if raw or "_raw" in payload:
         body.append(f"<pre>{html_pre(json.dumps(payload, indent=2, ensure_ascii=False))}</pre>")
     elif direction == "input":
         clean = extract_clean_input(payload)
@@ -711,18 +699,14 @@ def render_llm_entry_html(index: int, timestamp: str, direction: str, meta: dict
     )
 
 
-def render_error_html(index: int, timestamp: str, meta_str: str) -> str:
-    meta, tail_key, tail_value = split_error_meta(meta_str)
-    rows = []
-    for key, value in meta.items():
-        rows.append(f"<span><b>{html.escape(key)}</b>: {html.escape(str(value))}</span>")
-    if tail_key:
-        rows.append(f"<span class=\"error-text\"><b>{html.escape(tail_key)}</b>: {html.escape(str(tail_value))}</span>")
+def render_error_html(index: int, timestamp: str, event: dict) -> str:
+    error = format_message_content(event.get("error", event))
     return (
         f"<article class=\"entry error\" id=\"entry-{index}\">"
         f"<details>"
         f"<summary><span class=\"badge\">ERROR</span> <span class=\"time\">{html.escape(timestamp)}</span></summary>"
-        f"<div class=\"meta\">{''.join(rows)}</div>"
+        f"<div class=\"meta\">{render_meta_html(event, {})}</div>"
+        f"<section class=\"message\"><pre class=\"error-text\">{html_pre(error)}</pre></section>"
         f"</details>"
         f"</article>"
     )
@@ -915,7 +899,8 @@ def main():
     entries = parse_entries(logfile, show_errors)
 
     if not entries:
-        print("No llm.input/llm.output entries found.")
+        print("No aicc.llm.input/output events found" + (" (including errors)." if show_errors else "."))
+        print("Request/response logs require an AICC build with structured LLM logging.")
         sys.exit(0)
 
     summary, _, _ = summarize_entries(entries)

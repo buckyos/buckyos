@@ -406,6 +406,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
 
   return {
     source: 'mock',
+    login: { lost: () => false, subscribe: () => () => {} },
 
     loaderStatus: async () => {
       await delay()

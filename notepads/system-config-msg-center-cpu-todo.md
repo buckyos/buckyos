@@ -111,7 +111,7 @@ GET 来源由日志中的 appid 统计。后台同步也会产生 GET，因此�
 | --- | --- | --- |
 | buckyos-base | `src/rbac/src/matcher.rs`（新） | `keyMatch3`/`keyGet3`/`regexMatch` 的缓存版：沿用 Casbin 2.20 的模式改写与捕获编号，只复用每个策略模式的编译结果；同线程复用上一次 `keyGet3` 结果；`build_enforcer` 中覆盖内置函数。 |
 | buckyos-base | `src/rbac/src/lib.rs` | 记录已安装 Enforcer 的 model/policy 全文；新增 `apply_enforcer_policy`（文本相同不重建，返回是否重建；构建串行，并发同内容只构建一次）、`enforcer_build_count`、`matcher_regex_compile_count`、`matcher_cached_pattern_count`；删除已无调用方的 `update_enforcer`；`create_enforcer` 仍无条件重建。重建时打 info 日志 `rbac enforcer rebuilt for changed policy`。 |
-| buckyos-base | `src/Cargo.toml`、`src/rbac/Cargo.toml` | rbac 直接依赖 `regex = "1"`：它本来就是 casbin 的传递依赖（锁定 1.13.1），锁文件不新增 crate。 |
+| buckyos-base | `src/Cargo.toml`、`src/rbac/Cargo.toml` | rbac 直接依赖 `regex = "1"`：它本来就是 casbin 的传递依赖（锁定 1.13.1），锁文件不新增 crate。casbin 版本要求由 `2.9` 收紧为 `2.20`（`matcher.rs` 需要 2.15 起才有的 `Dynamic` 参数 `OperatorFunction` 和 `dynamic_to_str`；2.20.0 是当前最新版，锁定版本不变）。 |
 | buckyos-base | `src/rbac/tests/policy_cache.rs`、`tests/fixtures/` | 集成测试与微基准；fixtures 是 buckyos 当前 `DEFAULT_RBAC_MODEL`/`DEFAULT_RBAC_POLICY` 的快照。 |
 | buckyos | `kernel/buckyos-api/src/rbac_config.rs` | `sync_rbac_enforcer`：“读策略 + apply”按轮次串行；等待中的调用方直接采用刚结束那一轮的结果（成功或错误），system_config 变慢时不会逐个叠加超时。 |
 | buckyos | `kernel/buckyos-api/src/runtime.rs` | `enforce` 不再依赖 `is_changed`，改走 `sync_rbac_enforcer`；拒绝后的强制刷新（每秒至多一次）在轮次内 invalidate 后重读，仅在策略文本变化时重新判权。 |

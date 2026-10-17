@@ -1,8 +1,42 @@
 import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
-import { OpenDanError, type OpenDanDataModel } from './datamodel'
+import { OpenDanError, type LoginState, type OpenDanDataModel } from './datamodel'
 import type { AgentProfile, LoaderStatus, PerceptionCursor } from './types'
 
 const SERVICE_URL = '/kapi/opendan'
+
+// In a zone the gateway admits this page's requests only with the zone login
+// (the SSO cookies of this host) and answers the others with a redirect to the
+// zone's login page, which a call cannot follow (another origin): it fails as
+// "Failed to fetch". The login is gone for good once renewing it fails, e.g.
+// after verify-hub restarted and forgot the refresh token: the zone then
+// clears the cookies. The page says so instead of showing failed calls.
+let loginLost = false
+const loginListeners = new Set<() => void>()
+
+const login: LoginState = {
+  lost: () => loginLost,
+  subscribe: (notify) => {
+    loginListeners.add(notify)
+    return () => loginListeners.delete(notify)
+  },
+}
+
+const markLoginLost = () => {
+  if (loginLost) return
+  loginLost = true
+  loginListeners.forEach((notify) => notify())
+}
+
+const gatewayWantsLogin = async (): Promise<boolean> => {
+  try {
+    const response = await fetch(SERVICE_URL, { headers: { accept: 'application/json' }, redirect: 'manual', cache: 'no-store' })
+    return response.type === 'opaqueredirect'
+  } catch {
+    return false
+  }
+}
+
+const LOGIN_LOST = 'the zone login has expired; sign in again'
 
 // The session token of the zone login (SSO cookie -> /sso_refresh). The token
 // is issued to the app that serves this page; the service names it on GET.
@@ -53,10 +87,13 @@ const toError = (error: unknown): OpenDanError => {
 export const createKrpcDataModel = (): OpenDanDataModel => {
   const client = new buckyos.kRPCClient(SERVICE_URL, null, null, { sessionTokenProvider: sessionToken })
   const call = async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+    if (loginLost) throw new OpenDanError('login_lost', LOGIN_LOST)
     try {
       return await client.call<T, Record<string, unknown>>(method, params)
     } catch (error) {
-      throw toError(error)
+      const failure = toError(error)
+      if (failure.kind === 'transport' && !loginLost && (await gatewayWantsLogin())) markLoginLost()
+      throw loginLost ? new OpenDanError('login_lost', LOGIN_LOST) : failure
     }
   }
 
@@ -72,6 +109,7 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
 
   return {
     source: 'krpc',
+    login,
     loaderStatus: () => call('loader.status'),
     profile: () =>
       optional<AgentProfile>('agent.profile', async () => {

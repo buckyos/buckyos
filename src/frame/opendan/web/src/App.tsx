@@ -24,13 +24,29 @@ const TABS = [
   { id: 'loader', label: 'Loader' },
 ]
 
+// Reloading is a navigation: the zone gateway sends it to the zone's login
+// page, which comes back here once signed in.
+function LoginLost() {
+  return (
+    <div className="mx-auto max-w-md px-4 py-16 text-center" data-testid="login-lost" role="alert">
+      <h1 className="mb-2 text-base font-semibold">{t('loginLost')}</h1>
+      <p className="mb-4 text-sm text-mute">{t('loginLostHint')}</p>
+      <button className="btn mx-auto" onClick={() => window.location.reload()}>
+        {t('signInAgain')}
+      </button>
+    </div>
+  )
+}
+
 export default function App() {
   const hash = useSyncExternalStore(subscribeHash, readHash)
+  const loginLost = useSyncExternalStore(dataModel.login.subscribe, dataModel.login.lost)
   const [page = '', arg] = hash.replace(/^#\/?/, '').split('/')
   const tab = page === 'session' ? 'sessions' : page
   const home = !TABS.some((x) => x.id === tab)
   const { mutate } = useSWRConfig()
-  const status = useQuery(home ? null : ['loader.status'], () => dataModel.loaderStatus())
+  const status = useQuery(home || loginLost ? null : ['loader.status'], () => dataModel.loaderStatus())
+  if (loginLost) return <LoginLost />
   const meta = (
     <>
       <span data-testid="data-source">data: {dataModel.source}</span>

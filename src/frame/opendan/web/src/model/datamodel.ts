@@ -31,8 +31,16 @@ export interface BehaviorCatalog {
   behaviors: BehaviorMeta[]
 }
 
+/** Whether the page still has the zone login its calls need. */
+export interface LoginState {
+  /** `true` once the zone turns this page away: only a new sign-in helps. */
+  lost(): boolean
+  subscribe(notify: () => void): () => void
+}
+
 export interface OpenDanDataModel {
   readonly source: 'mock' | 'krpc'
+  readonly login: LoginState
 
   loaderStatus(): Promise<LoaderStatus>
 
