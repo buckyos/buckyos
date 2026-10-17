@@ -1586,9 +1586,9 @@ async fn loaded_info(w: &World) -> buckyos_api::AgentRuntimeInfo {
 async fn a_pinned_template_keeps_the_agentroot() {
     let mut w = World::new();
     let package = w._tmp.path().join("package");
-    std::fs::create_dir_all(package.join("skills")).unwrap();
+    std::fs::create_dir_all(package.join("cmd_skills")).unwrap();
     std::fs::write(package.join("role.md"), "role v1").unwrap();
-    std::fs::write(package.join("skills/tip.md"), "tip v1").unwrap();
+    std::fs::write(package.join("cmd_skills/tip.md"), "tip v1").unwrap();
     // Pinned from the start: the first load still installs the template.
     w.settings.template_auto_update = false;
     async fn start(w: &World, package: &std::path::Path, version: &str) -> Loader {
@@ -1607,7 +1607,7 @@ async fn a_pinned_template_keeps_the_agentroot() {
 
     // A new package version does not reach a pinned agent.
     std::fs::write(package.join("role.md"), "role v2").unwrap();
-    std::fs::write(package.join("skills/tip.md"), "tip v2").unwrap();
+    std::fs::write(package.join("cmd_skills/tip.md"), "tip v2").unwrap();
     let mut stale = info.clone();
     stale.loaded_at = 0;
     w.records
@@ -1616,7 +1616,7 @@ async fn a_pinned_template_keeps_the_agentroot() {
         .unwrap();
     let loader = start(&w, &package, "2.0.0").await;
     assert_eq!(std::fs::read_to_string(w.root.join("role.md")).unwrap(), "role v1");
-    assert_eq!(std::fs::read_to_string(w.root.join("skills/tip.md")).unwrap(), "tip v1");
+    assert_eq!(std::fs::read_to_string(w.root.join("cmd_skills/tip.md")).unwrap(), "tip v1");
     let started = Instant::now();
     let reloaded = loop {
         let now = records::info(w.records.as_ref()).await.unwrap().unwrap();

@@ -2,7 +2,7 @@
 
 日期：2026-10-17
 
-状态：v0.1 占位，未设计。来源：[Jarvis UI Session 提示词改造 TODO](jarvis-chat-prompt-todo.md) §8；review 原话“目前机制上还没有 cmd_skill，要先写个 todo”。
+状态：v0.2，部分已定（见“已定”），其余待设计。来源：[Jarvis UI Session 提示词改造 TODO](jarvis-chat-prompt-todo.md) §8；review 原话“目前机制上还没有 cmd_skill，要先写个 todo”。实施任务在 [内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md) §3（I01–I04、I08）。
 
 ## 已有（v0，2026-10-17 实施）
 
@@ -12,12 +12,19 @@
 - Jarvis 的 `ui_core` 只列今天存在、且在 Session PATH 上的命令（`llm_understand_media`、`agent-session read-session / sessions / recall / ctl perceive / notify / goal / ctl subscribe|unsubscribe / task`）。
 - 冻结时找不到手册是配置错误（Session 不推进），不会静默降级。
 
+## 已定（2026-10-17 用户裁决）
+
+- **skill 的分类**：传统 agent-skills（`agent_tool` 的 `skills_mgr`，`skills/ + skill.yaml + SKILL.md`）已废弃，代码已删除（2026-10-17）。skill 安装时分为两类：cmd_skills（命令手册，可带 PATH 层工具）和 goal_skills（Goal 使用）。
+- **安装**：cmd_skills 与 goal_skills 都可经 PIKG 安装；opendan runtime 为 Agent 提供明确的 kRPC 安装接口（`skills.list/install/remove`）。
+- **Work 的 cmd_skills**：在 `create-worksession` 时选好（`--cmd-skill`，可重复），上限 8 个；选中的手册全部装进 Work 的系统提示词。Work 运行中不花注意力调整手册，没有切换机制。选择由 `try_analyze_user_intent`、Goal、PLAN/DO 在创建时完成。
+- **手册的口吻**：cmd_skill 是捷径，提示词写成可用的做法，不写成“必须这么做”。
+
 ## 待设计
 
-1. **定义**：cmd_skill = 一组 CLI 的使用手册 + 可选的 PATH 层（`<agent_root>/tools/<skill>/bin`），作为 Agent 能力扩展的唯一形态（Dev Guide §5 原则）。v0 只有手册。
-2. **运行时调整**：UI Session 有默认 cmd_skill，运行中可通过通用机制调整（例如 `agent-session skill use <name>`）：重新冻结 → 新 run 的前缀变化一次。要定：调整是否需要用户确认、是否跨 Session 记忆、与 `prompt.frozen` 的修订记录（`config_rev`）如何对应。
+1. **定义**：cmd_skill = 一组 CLI 的使用手册 + 可选的 PATH 层（`<agent_root>/tools/<skill>/bin`），作为 Agent 能力扩展的唯一形态（Dev Guide §5 原则）。v0 只有手册。待定：front-matter 字段、skill PIKG 的包内结构（倾向复用 AppDoc `pkg_list.agent_skills` 子包）、goal_skills 文件格式及 `GoalSkill.ref` 如何指向它。
+2. **运行时调整（只对 UI）**：UI Session 有默认 cmd_skill，运行中可通过通用机制调整（例如 `agent-session skill use <name>`）：重新冻结 → 新 run 的前缀变化一次。要定：调整是否需要用户确认、是否跨 Session 记忆、与 `prompt.frozen` 的修订记录（`config_rev`）如何对应。Work 不做（见“已定”）。
 3. **延迟暴露**：手册只列核心命令；其余命令由背景行 / 事件行 / 工具结果里的一句 hint 带出（例如事件行后附 `manage with agent-session ctl subscribe …`），配合先行 TODO“以后”项“function result 里的背景行”。
-4. **work session 的 cmd_skill**：用户可扩展的 cmd_skill 在 `try_analyze_user_intent` 里探索，在 `create-worksession` 时选定（`--skill`），work session 的默认 cmd_skill 由分析决定。
+4. ~~**work session 的 cmd_skill**~~：已定，见上。
 5. **待纳入的命令与现状**（实施时逐条核对）：
    - 计划任务：dcrontab，未实现（[Agent 计划任务 CLI 需求](<../doc/llm_context/agent_tool/Agent 计划任务cli工具需求.md>)）。
    - task：已实现 `agent-session task state|wait|cancel`（先行 P3）。

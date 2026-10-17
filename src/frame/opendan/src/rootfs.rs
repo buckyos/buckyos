@@ -147,7 +147,7 @@ pub struct SyncReport {
 }
 
 pub fn ensure_layout(agent_root: &Path) -> Result<()> {
-    for rel in ["", ".meta", "behaviors", "skills", "tools", "memory", "notebook", "workspace", "sessions"] {
+    for rel in ["", ".meta", "behaviors", "cmd_skills", "tools", "memory", "notebook", "workspace", "sessions"] {
         let dir = agent_root.join(rel);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     }
@@ -299,10 +299,10 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("behaviors/do.toml")).unwrap(), "v2");
         // Still preserved on the next start, and files the agent created
         // itself are never touched.
-        fs::write(root.join("skills/mine.md"), "x").unwrap();
+        fs::write(root.join("cmd_skills/mine.md"), "x").unwrap();
         let r = sync_from_package(&pkg, &root).unwrap();
         assert_eq!((r.unchanged, r.preserved), (1, 1));
-        assert!(root.join("skills/mine.md").is_file());
+        assert!(root.join("cmd_skills/mine.md").is_file());
     }
 
     fn identity(did: &str, doc: Option<&str>) -> RootIdentity {

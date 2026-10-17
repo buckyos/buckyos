@@ -154,7 +154,7 @@ action_whitelist = ["group:bash"]
 
 ### 6.1 已具备的基础
 
-- `agent_tool` CLI 已覆盖文件读写、搜索、对象访问、todo、memory、notebook、skills、attention 相关能力；另有模型调用和媒体分析子命令。
+- `agent_tool` CLI 已覆盖文件读写、搜索、对象访问、todo、memory、notebook、attention 相关能力；另有模型调用和媒体分析子命令。
 - `agent-session` 已提供子 Session 创建、等待、输入投递，以及 `ctl subscribe/unsubscribe` 等控制命令。事件订阅不能再仅因涉及 Session 状态就被视为必须保留独立 action。
 - shell 已有结构化结果转发；CLI 发起子 Session 等待已有实际路径。
 

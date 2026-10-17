@@ -1,5 +1,7 @@
 # Agent Skill / Skills Mgr 设计
 
+> **已废弃（2026-10-17）**：本文的 Skills Mgr（`skills/` + `skill.yaml` + `SKILL.md`、`agent-skills` CLI）已删除。skill 改为安装时分成 cmd_skills 与 goal_skills，经 PIKG 与 opendan kRPC 安装，见 [cmd_skill 机制 TODO](../../../notepads/opendan-cmd-skill-todo.md)。下文仅作设计参考，不代表当前实现。
+
 > 本文定义 OpenDAN / BuckyOS Agent Runtime 中新的 `Skills Mgr`。
 >
 > 直接输入：

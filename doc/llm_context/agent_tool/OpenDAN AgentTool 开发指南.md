@@ -286,7 +286,7 @@ CLI 前端在 `src/frame/agent_tool_cli_dev/src/lib.rs`：
 Glob  Grep  dcrontab  read  xcall
 read_file  write_file  edit_file
 todo  get_session  create_workspace  bind_workspace
-agent-memory / agent_memory  agent-notebook / agent_notebook  agent-skills / agent_skills
+agent-memory / agent_memory  agent-notebook / agent_notebook
 check_task  cancel_task  finish_task
 read_session_history  commit_session_history_improved
 BeginAttentionSignalExtraction  CompleteAttentionSignalExtraction
