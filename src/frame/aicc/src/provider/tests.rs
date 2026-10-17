@@ -725,6 +725,9 @@ fn web_search_inventory_requires_model_adapter_and_discovery_support() {
             if provider == "openrouter" {
                 discovered.models[0].remote_methods =
                     Some(BTreeSet::from(["responses.create".to_owned()]));
+            } else if provider == "gemini" {
+                discovered.models[0].remote_methods =
+                    Some(BTreeSet::from(["interactions.create".to_owned()]));
             }
             if discovery_disables {
                 discovered.models[0]
