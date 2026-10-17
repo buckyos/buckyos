@@ -340,6 +340,16 @@ model = "llm.video"
 | 模型分析 | `operator::media.model_analyze` | `model_media` + metadata + traditional findings + goal + purified history | `UnderstandingReport` | 内部仍用 `OneShotRequest` / `LocalLLMContext` 调 AICC |
 | 汇总渲染 | `operator::media.render_report` | report + pipeline trace | `AgentToolResult.output` 文本 | 控制写回主干的体积 |
 
+> 当前实现：图片的 probe + preprocess 以 Rust 代码内置（[image_fit.rs](src/frame/agent_tool/src/llm_understand_media/image_fit.rs)），尚未走 DSL / stage cache。
+>
+> - **判断**：只读文件头。长边 ≤ 2048、像素 ≤ 2048²、字节 ≤ 3.5 MiB、格式为 png/jpeg/webp/gif、且无 EXIF 旋转时，原样透传，不重新编码（声明的 MIME 与实际字节不符时只纠正 MIME）。
+> - **处理**：固化 EXIF 方向，按长边与像素数中更紧的一个等比缩小，然后编码：有透明或源图无损时优先 PNG，否则 JPEG（质量依次 85/75/60）；仍超字节上限时，每轮把长边乘 0.75 再试，最多 3 轮。解码缓冲超过 512 MiB 直接报错。
+> - **格式**：`image` crate 解不了的格式（超限 GIF、TIFF、AVIF…）先用 ffmpeg 转成 PNG（动图取首帧）。aios 镜像的 ffmpeg 6.1 读不了 HEIC，ImageMagick 也缺 HEVC 插件，HEIC 目前会明确报错。
+> - **URL 图片**：先下载到工具内再判断。
+> - **视频帧**：抽帧时缩到长边 ≤ 1280。
+> - **配置**：上述限制可用环境变量 `LLM_UNDERSTAND_MEDIA_IMAGE_MAX_EDGE` / `_IMAGE_MAX_PIXELS` / `_IMAGE_MAX_BYTES` / `_VIDEO_FRAME_MAX_EDGE` 覆盖。
+> - **结果**：原图与实际送出图的 mime / 宽高 / 字节数，以及所做的处理（`actions`），写入 `details.media_preprocess`。缩过图时，旁路模型在图片前收到一条说明，主干 `output` 末尾也追加一行提示。
+
 #### 4.5.4 本地管线上下文
 
 本地 runner 在各 stage 之间传递一个结构化上下文，stage 输出只追加确定字段：

@@ -48,7 +48,7 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/agents/<agent_id>/info` | Agent app 自有 info 路径，RBAC 中允许 Agent 写。当前未发现系统组件固定 schema。 | Agent app 自己 | Agent 自有运行信息。 |
 | `users/<user_id>/samba/settings` | `UserSambaInfo`，包含 `is_enable` 和 SMB 密码。 | SMB/用户设置流程 | smb-service 读取后生成本机 SMB 用户配置。 |
 | `users/<user_id>/desktop/<session_id>/_meta` | 桌面 UI session 元数据，包含名称和创建/更新时间。 | control-panel UI session manager | 桌面状态同步与管理。 |
-| `users/<user_id>/desktop/<session_id>/<state_key>` | 桌面 UI session 的单项状态 JSON。已知 state key 包括 `appearance`、`window_layout`、`app_items_layout`、`widgets_layout`。 | control-panel UI session manager | 桌面状态恢复。 |
+| `users/<user_id>/desktop/<session_id>/<state_key>` | 桌面 UI session 的单项状态 JSON。已知 state key 包括 `appearance`、`window_layout`、`app_items_layout`、`widgets_layout`（桌面上有哪些项目不在这里，而是用户 home 下的 `Desktop` 文件夹）。 | control-panel UI session manager | 桌面状态恢复。 |
 
 `users/<user_id>/apps/<app_id>/spec` 与 `users/<user_id>/agents/<agent_id>/spec` 分别保存普通 App desired state 和 Agent identity/binding。beta 2.2 不读取旧 `config` 或旧 Agent AppServiceSpec。
 

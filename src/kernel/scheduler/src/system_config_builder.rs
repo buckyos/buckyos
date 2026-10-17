@@ -1145,6 +1145,7 @@ mod beta22_tests {
             schema_version: buckyos_api::PRE_INSTALL_APP_SCHEMA_VERSION,
             pikg_path: "data/cache/app.buckyos.bns.did-1.0.0.pikg".to_string(),
             install_plan: buckyos_api::PreInstallPlanSeed::default(),
+            desktop_shortcut: None,
         };
         let mut builder = SystemConfigBuilder::new(HashMap::from([(
             "system/install_settings".to_string(),

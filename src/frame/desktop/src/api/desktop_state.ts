@@ -9,7 +9,7 @@ import { buckyos, getActiveSessionToken } from 'buckyos'
 import { isMockRuntime } from '../runtime'
 
 export const DESKTOP_SESSION_ID = 'default'
-const DESKTOP_API = '/api/desktop'
+export const DESKTOP_API = '/api/desktop'
 export const WALLPAPER_API = `${DESKTOP_API}/wallpaper`
 
 export interface DesktopStateRead<T> {
@@ -35,7 +35,7 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { 'X-Auth': token } : {}
 }
 
-async function send<T>(url: string, init: RequestInit): Promise<T> {
+export async function sendDesktopApi<T>(url: string, init: RequestInit): Promise<T> {
   let response: Response
   try {
     response = await fetch(url, { credentials: 'same-origin', ...init, headers: { ...(await authHeaders()), ...init.headers } })
@@ -54,7 +54,7 @@ export async function readDesktopState<T>(stateKey: string): Promise<DesktopStat
     const { readMockDesktopState } = await import('./desktop_state_mock')
     return readMockDesktopState<T>(stateKey)
   }
-  const data = await send<{ value: T | null; exists?: boolean }>(DESKTOP_API, {
+  const data = await sendDesktopApi<{ value: T | null; exists?: boolean }>(DESKTOP_API, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'state.get', session_id: DESKTOP_SESSION_ID, state_key: stateKey }),
@@ -69,7 +69,7 @@ export async function writeDesktopState(stateKey: string, value: unknown, jsonPa
     writeMockDesktopState(stateKey, value, jsonPath)
     return
   }
-  await send(DESKTOP_API, {
+  await sendDesktopApi(DESKTOP_API, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'state.set', session_id: DESKTOP_SESSION_ID, state_key: stateKey, json_path: jsonPath, value }),
@@ -84,7 +84,7 @@ export async function uploadWallpaper(blob: Blob): Promise<string> {
     const { uploadMockWallpaper } = await import('./desktop_state_mock')
     return uploadMockWallpaper(blob)
   }
-  const data = await send<{ asset: string }>(WALLPAPER_API, {
+  const data = await sendDesktopApi<{ asset: string }>(WALLPAPER_API, {
     method: 'POST',
     headers: { 'Content-Type': blob.type || 'application/octet-stream' },
     body: blob,

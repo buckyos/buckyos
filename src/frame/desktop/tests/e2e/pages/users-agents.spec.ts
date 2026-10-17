@@ -1,59 +1,5 @@
 import { expect, test } from '@playwright/test'
 
-function placeUsersAgentsOnFirstPage() {
-  window.localStorage.setItem(
-    'buckyos.layout.desktop.v2',
-    JSON.stringify({
-      version: 1,
-      formFactor: 'desktop',
-      deadZone: { top: 0, bottom: 8, left: 5, right: 5 },
-      pages: [
-        {
-          id: 'desktop-page-1',
-          items: [
-            {
-              id: 'app-users-agents',
-              type: 'app',
-              appId: 'users-agents',
-              x: 0,
-              y: 0,
-              w: 1,
-              h: 1,
-            },
-          ],
-        },
-      ],
-    }),
-  )
-}
-
-function placeMyNetworkOnFirstPage() {
-  window.localStorage.setItem(
-    'buckyos.layout.desktop.v2',
-    JSON.stringify({
-      version: 1,
-      formFactor: 'desktop',
-      deadZone: { top: 0, bottom: 8, left: 5, right: 5 },
-      pages: [
-        {
-          id: 'desktop-page-1',
-          items: [
-            {
-              id: 'app-my-network',
-              type: 'app',
-              appId: 'my-network',
-              x: 0,
-              y: 0,
-              w: 1,
-              h: 1,
-            },
-          ],
-        },
-      ],
-    }),
-  )
-}
-
 test.describe('Users & Agents app panel', () => {
   test('desktop: internal entity manager renders and validates local-user form', async ({ page }) => {
     const consoleErrors: string[] = []
@@ -63,7 +9,6 @@ test.describe('Users & Agents app panel', () => {
     })
 
     await page.setViewportSize({ width: 1440, height: 900 })
-    await page.addInitScript(placeUsersAgentsOnFirstPage)
     await page.goto('/?scenario=normal')
 
     await page.getByTestId('desktop-app-users-agents').click()
@@ -138,7 +83,6 @@ test.describe('My Network app panel', () => {
     })
 
     await page.setViewportSize({ width: 1440, height: 900 })
-    await page.addInitScript(placeMyNetworkOnFirstPage)
     await page.goto('/?scenario=normal')
 
     await page.getByTestId('desktop-app-my-network').click()
@@ -277,7 +221,6 @@ test.describe('Users & Agents mobile panel', () => {
 
 test('Agent detail opens an explicit read-only owner view in a desktop window', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.addInitScript(placeUsersAgentsOnFirstPage)
   await page.goto('/?scenario=normal')
   await page.getByTestId('desktop-app-users-agents').click()
   const users = page.getByTestId('window-users-agents')

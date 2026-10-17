@@ -143,11 +143,10 @@ async function refreshBrowserSso(page: Page, expectedUserId: string): Promise<vo
 }
 
 async function openUsersAgents(page: Page) {
+  // From All apps: the desktop only has the shortcuts the user's Desktop folder holds.
   await page.getByRole('button', { name: 'BuckyOS' }).click()
-  await page.getByRole('complementary').getByRole('button', {
-    name: 'Users & Agents',
-    exact: true,
-  }).click()
+  await page.getByTestId('taskbar-all-apps').click()
+  await page.getByTestId('all-apps-item-users-agents').click()
   const appWindow = page.getByTestId('window-users-agents')
   await expect(appWindow).toBeVisible()
   await expect(appWindow.getByText('Internal Entities')).toBeVisible()

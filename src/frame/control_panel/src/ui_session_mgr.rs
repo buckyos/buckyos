@@ -13,6 +13,9 @@ username + ui_session_id + state_key => ui_state_value (可以读写)
 - app_items_layout
 - widgets_layout
 
+桌面上有哪些项目不在这里：它们是用户 home 下 Desktop 文件夹里的文件（见 desktop_folder.rs，
+items.* 动作），各 session 只记录项目的位置。
+
 核心接口
 1） uisession的管理，包括创建uisession, 删除uisession, 获取uisession列表，重命名uisession
 2）针对state_key的读写操作,通过json_path来支持部分写
@@ -25,6 +28,7 @@ username + ui_session_id + state_key => ui_state_value (可以读写)
 
 */
 
+use super::desktop_folder;
 use super::desktop_wallpaper::WALLPAPER_ROUTE;
 use super::ControlPanelServer;
 use buckyos_api::{get_buckyos_api_runtime, SystemConfigError};
@@ -342,6 +346,9 @@ impl ControlPanelServer {
                 self.desktop_state_delete(userid, session_id, state_key, json_path)
                     .await
             }
+            "items.list" | "items.write" | "items.delete" => {
+                return self.desktop_items_action(userid, action, &body).await;
+            }
             _ => {
                 return self.desktop_json_response(
                     StatusCode::BAD_REQUEST,
@@ -358,6 +365,98 @@ impl ControlPanelServer {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({"ok": false, "error": e}),
             ),
+        }
+    }
+
+    // ── Desktop folder (desktop_folder.rs) ──────────────────────────────
+
+    /// The items of the user's Desktop folder; a refused request answers 400, a failed one 500.
+    async fn desktop_items_action(
+        &self,
+        userid: &str,
+        action: &str,
+        body: &Value,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let bad_request = |error: String| {
+            self.desktop_json_response(StatusCode::BAD_REQUEST, json!({"ok": false, "error": error}))
+        };
+        let Some(dir) = desktop_folder::desktop_dir(userid) else {
+            return bad_request("this account has no home folder".to_string());
+        };
+        let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let result = match action {
+            "items.list" => {
+                let mut seed = match desktop_folder::parse_seed(body.get("seed")) {
+                    Ok(seed) => seed,
+                    Err(error) => return bad_request(error),
+                };
+                if !desktop_folder::folder_exists(&dir).await {
+                    let declared = self.declared_desktop_shortcuts(&seed).await;
+                    seed.extend(declared);
+                }
+                desktop_folder::list_items(&dir, &seed).await.map(|(created, items)| {
+                    json!({
+                        "path": desktop_folder::desktop_dfs_path(userid),
+                        "created": created,
+                        "items": items,
+                    })
+                })
+            }
+            "items.write" => {
+                let Some(text) = body.get("text").and_then(|v| v.as_str()) else {
+                    return bad_request("missing text".to_string());
+                };
+                if !desktop_folder::is_desktop_object_name(name) {
+                    return bad_request(format!("not a .lnk or .widget name: {}", name));
+                }
+                let create = body.get("create").and_then(|v| v.as_bool()).unwrap_or(false);
+                match desktop_folder::write_item(&dir, name, text, create).await {
+                    Err(error) if error.starts_with("exists:") => return bad_request(error),
+                    other => other.map(|()| json!({"name": name})),
+                }
+            }
+            _ => {
+                if !desktop_folder::is_desktop_object_name(name) {
+                    return bad_request(format!("not a .lnk or .widget name: {}", name));
+                }
+                desktop_folder::delete_item(&dir, name)
+                    .await
+                    .map(|()| json!({"name": name}))
+            }
+        };
+        match result {
+            Ok(data) => self.desktop_json_response(StatusCode::OK, json!({"ok": true, "data": data})),
+            Err(error) => {
+                log::error!("desktop: {} for {}: {}", action, userid, error);
+                self.desktop_json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"ok": false, "error": error}),
+                )
+            }
+        }
+    }
+
+    /// Shortcuts `system/install_settings` declares for pre-installed Apps; none when it cannot be read.
+    async fn declared_desktop_shortcuts(
+        &self,
+        seed: &[desktop_folder::DesktopSeedItem],
+    ) -> Vec<desktop_folder::DesktopSeedItem> {
+        let settings = async {
+            let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+            let client = runtime.get_system_config_client().await.map_err(|e| e.to_string())?;
+            let value = client
+                .get(super::pre_install_reconciler::INSTALL_SETTINGS_KEY)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::from_str::<buckyos_api::SystemInstallSettings>(&value.value).map_err(|e| e.to_string())
+        }
+        .await;
+        match settings {
+            Ok(settings) => desktop_folder::declared_shortcuts(&settings, seed),
+            Err(error) => {
+                log::warn!("desktop: install_settings unavailable for desktop shortcuts: {}", error);
+                Vec::new()
+            }
         }
     }
 

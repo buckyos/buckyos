@@ -1,4 +1,8 @@
 import { expect, test, type Locator } from '@playwright/test'
+import { openFromAllApps, pinTaskbarApps } from '../fixtures/desktop'
+
+// The taskbar tests below exercise its mechanics with these pins rather than the defaults.
+const systemPins = ['settings', 'diagnostics', 'users-agents', 'my-network']
 
 function boxesOverlap(
   left: { x: number; y: number; width: number; height: number } | null,
@@ -40,7 +44,7 @@ test('narrow desktop keeps widgets and launcher items fully visible', async ({
   await page.goto('/?scenario=normal')
 
   const clockTime = page
-    .getByTestId('desktop-item-widget-clock')
+    .getByTestId('desktop-item-Clock.widget')
     .locator('p')
     .first()
   await expect(clockTime).toBeVisible()
@@ -99,10 +103,10 @@ test('desktop flow opens settings window and supports locale switch', async ({
   await page.goto('/?scenario=normal')
 
   await expect(page.getByRole('button', { name: 'BuckyOS' })).toBeVisible()
-  await expect(page.getByTestId('desktop-item-widget-clock')).toBeVisible()
-  await expect(page.getByTestId('notepad-preview-widget-notepad')).toBeVisible()
-  await expect(page.getByTestId('notepad-editor-widget-notepad')).toHaveCount(0)
-  await expect(page.getByTestId('notepad-save-widget-notepad')).toHaveCount(0)
+  await expect(page.getByTestId('desktop-item-Clock.widget')).toBeVisible()
+  await expect(page.getByTestId('notepad-preview-Getting Started.widget')).toBeVisible()
+  await expect(page.getByTestId('notepad-editor-Getting Started.widget')).toHaveCount(0)
+  await expect(page.getByTestId('notepad-save-Getting Started.widget')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Prototype Lab' })).toHaveCount(0)
   await expect(page.getByTestId('drag-settings')).toHaveCount(0)
 
@@ -117,17 +121,17 @@ test('desktop flow opens settings window and supports locale switch', async ({
   const afterDrag = await settingsIcon.boundingBox()
   expect(afterDrag?.x).not.toBe(beforeDrag?.x)
 
-  await page.getByTestId('notepad-preview-widget-notepad').click()
-  await expect(page.getByTestId('notepad-editor-widget-notepad')).toBeVisible()
-  await expect(page.getByTestId('notepad-save-widget-notepad')).toBeVisible()
-  await page.getByTestId('notepad-editor-widget-notepad').fill('Updated desktop note.')
-  await page.getByTestId('notepad-save-widget-notepad').click()
-  await expect(page.getByTestId('notepad-editor-widget-notepad')).toHaveCount(0)
-  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(
+  await page.getByTestId('notepad-preview-Getting Started.widget').click()
+  await expect(page.getByTestId('notepad-editor-Getting Started.widget')).toBeVisible()
+  await expect(page.getByTestId('notepad-save-Getting Started.widget')).toBeVisible()
+  await page.getByTestId('notepad-editor-Getting Started.widget').fill('Updated desktop note.')
+  await page.getByTestId('notepad-save-Getting Started.widget').click()
+  await expect(page.getByTestId('notepad-editor-Getting Started.widget')).toHaveCount(0)
+  await expect(page.getByTestId('notepad-preview-Getting Started.widget')).toContainText(
     'Updated desktop note.',
   )
 
-  const notepadWidget = page.getByTestId('desktop-item-widget-notepad')
+  const notepadWidget = page.getByTestId('desktop-item-Getting Started.widget')
   const widgetBeforeDrag = await notepadWidget.boundingBox()
   await notepadWidget.hover()
   await page.mouse.down()
@@ -138,8 +142,8 @@ test('desktop flow opens settings window and supports locale switch', async ({
   // Compare the grid tiles (exact cell boxes), not the inner buttons: a
   // two-line label makes the button taller than the cell, so two icons that
   // legitimately sit in vertically adjacent cells would otherwise "overlap".
-  const settingsAfterWidgetDrag = await page.getByTestId('desktop-item-app-settings').boundingBox()
-  const filesAfterWidgetDrag = await page.getByTestId('desktop-item-app-files').boundingBox()
+  const settingsAfterWidgetDrag = await page.getByTestId('desktop-item-Settings.lnk').boundingBox()
+  const filesAfterWidgetDrag = await page.getByTestId('desktop-item-Files.lnk').boundingBox()
   expect(boxesOverlap(settingsAfterWidgetDrag, filesAfterWidgetDrag)).toBeFalsy()
 
   await page.getByTestId('desktop-app-settings').click()
@@ -269,7 +273,7 @@ test('double-clicking a window title bar toggles maximize and restore', async ({
   expect(restoredBounds?.height).toBeCloseTo(windowedBounds?.height ?? 0, 0)
 })
 
-test('desktop layout restores AI Center launcher entry and opens panel content', async ({
+test('the AI Center desktop shortcut opens its panel content', async ({
   page,
 }) => {
   const consoleErrors: string[] = []
@@ -277,51 +281,6 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
     if (message.type() === 'error') {
       consoleErrors.push(message.text())
     }
-  })
-
-  await page.addInitScript(() => {
-    window.localStorage.setItem(
-      'buckyos.layout.desktop.v2',
-      JSON.stringify({
-        version: 1,
-        formFactor: 'desktop',
-        deadZone: { top: 0, bottom: 8, left: 5, right: 5 },
-        pages: [
-          {
-            id: 'desktop-page-1',
-            items: [
-              { id: 'widget-clock', type: 'widget', widgetType: 'clock', x: 0, y: 0, w: 2, h: 1, config: {} },
-              { id: 'app-settings', type: 'app', appId: 'settings', x: 2, y: 0, w: 1, h: 1 },
-              { id: 'app-files', type: 'app', appId: 'files', x: 3, y: 0, w: 1, h: 1 },
-              { id: 'app-studio', type: 'app', appId: 'studio', x: 4, y: 0, w: 1, h: 1 },
-              { id: 'app-market', type: 'app', appId: 'market', x: 5, y: 0, w: 1, h: 1 },
-              { id: 'app-docs', type: 'app', appId: 'docs', x: 6, y: 0, w: 1, h: 1 },
-              { id: 'app-demos', type: 'app', appId: 'demos', x: 7, y: 0, w: 1, h: 1 },
-              { id: 'app-codeassistant', type: 'app', appId: 'codeassistant', x: 2, y: 1, w: 1, h: 1 },
-              { id: 'app-messagehub', type: 'app', appId: 'messagehub', x: 3, y: 1, w: 1, h: 1 },
-              {
-                id: 'widget-notepad',
-                type: 'widget',
-                widgetType: 'notepad',
-                x: 0,
-                y: 1,
-                w: 2,
-                h: 2,
-                config: {
-                  content: 'Review drag semantics, dead zone behavior, and window polish.',
-                },
-              },
-            ],
-          },
-          {
-            id: 'desktop-page-2',
-            items: [
-              { id: 'app-diagnostics', type: 'app', appId: 'diagnostics', x: 0, y: 0, w: 1, h: 1 },
-            ],
-          },
-        ],
-      }),
-    )
   })
 
   await page.goto('/?scenario=normal')
@@ -408,7 +367,7 @@ test('systest opens its zone subdomain inside a desktop window', async ({ page }
 
   await page.goto('/?scenario=normal')
 
-  await page.getByTestId('desktop-app-systest').click()
+  await openFromAllApps(page, 'systest')
   await expect(page.getByTestId('window-systest')).toBeVisible()
   await expect(page.getByTestId('systest-frame')).toHaveAttribute(
     'src',
@@ -559,7 +518,7 @@ test('logout clears persisted desktop auth state before returning to login', asy
 test('demos app renders common controls', async ({ page }) => {
   await page.goto('/?scenario=normal')
 
-  await page.getByTestId('desktop-app-demos').click()
+  await openFromAllApps(page, 'demos')
   await expect(page.getByTestId('window-demos')).toBeVisible()
   await expect(page.getByText('Control gallery', { exact: true })).toBeVisible()
 
@@ -579,6 +538,7 @@ test('desktop taskbar slides out from the avatar, pins, and leaves windows the f
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
+  await pinTaskbarApps(page, systemPins)
   await page.goto('/?scenario=normal')
 
   const avatar = page.getByRole('button', { name: 'BuckyOS' })
@@ -719,6 +679,7 @@ test('taskbar apps launch from All apps, toggle like Windows 7, and pin from the
 
 test('taskbar app buttons reorder by dragging', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
+  await pinTaskbarApps(page, systemPins)
   await page.addInitScript(() => {
     window.localStorage.setItem('buckyos.desktop.taskbar-pinned.v1', 'true')
   })
@@ -762,6 +723,7 @@ test('taskbar app buttons reorder by dragging', async ({ page }) => {
 
 test('taskbar show desktop hides every window and brings them back', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
+  await pinTaskbarApps(page, systemPins)
   await page.addInitScript(() => {
     window.localStorage.setItem('buckyos.desktop.taskbar-pinned.v1', 'true')
   })
@@ -850,6 +812,7 @@ test('mobile taskbar mirrors the desktop one: profile card, pinning, status and 
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 })
+  await pinTaskbarApps(page, systemPins)
   await page.goto('/?scenario=normal')
 
   await page.getByRole('button', { name: 'BuckyOS' }).first().click()
@@ -920,7 +883,7 @@ test('window modal only blocks its owner window', async ({ page }) => {
   )
   await page.mouse.up()
 
-  await page.getByTestId('desktop-app-demos').click()
+  await openFromAllApps(page, 'demos')
   await expect(page.getByTestId('window-demos')).toBeVisible()
   await page.getByRole('button', { name: 'Window modal' }).first().click()
   await expect(page.getByRole('dialog', { name: 'Scoped window modal' })).toBeVisible()
@@ -959,7 +922,7 @@ test('codeassistant history does not jump back to bottom while scrolling older m
 }) => {
   await page.goto('/?scenario=normal')
 
-  await page.getByTestId('desktop-app-codeassistant').click()
+  await openFromAllApps(page, 'codeassistant')
   const historyPane = page.locator('[data-testid="window-codeassistant"] .shell-scrollbar').first()
   await expect(historyPane).toBeVisible()
 
@@ -990,13 +953,13 @@ test('codeassistant history does not jump back to bottom while scrolling older m
 test('dragging a launcher icon keeps items that overflowed to another page', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/?scenario=normal')
-  await expect(page.getByTestId('desktop-item-app-settings')).toBeVisible()
+  await expect(page.getByTestId('desktop-item-MessageHub.lnk')).toBeVisible()
 
   const noteText = 'Overflow note keeps its content.'
-  await page.getByTestId('notepad-preview-widget-notepad').click()
-  await page.getByTestId('notepad-editor-widget-notepad').fill(noteText)
-  await page.getByTestId('notepad-save-widget-notepad').click()
-  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(noteText)
+  await page.getByTestId('notepad-preview-Getting Started.widget').click()
+  await page.getByTestId('notepad-editor-Getting Started.widget').fill(noteText)
+  await page.getByTestId('notepad-save-Getting Started.widget').click()
+  await expect(page.getByTestId('notepad-preview-Getting Started.widget')).toContainText(noteText)
 
   const tileIds = () =>
     page
@@ -1005,23 +968,24 @@ test('dragging a launcher icon keeps items that overflowed to another page', asy
   const allIds = await tileIds()
   expect(allIds.length).toBeGreaterThan(0)
 
-  // Move the notepad four rows down so a short viewport can no longer fit it.
-  const settingsBox = (await page.getByTestId('desktop-item-app-settings').boundingBox())!
-  const aiCenterBox = (await page.getByTestId('desktop-item-app-ai-center').boundingBox())!
-  const cellHeight = aiCenterBox.y - settingsBox.y
-  const notepad = page.getByTestId('desktop-item-widget-notepad')
+  // Move the (three rows tall) notepad three rows down so a short viewport can no longer fit it.
+  // MessageHub and AI Center sit in one column, a row apart.
+  const messageHubBox = (await page.getByTestId('desktop-item-MessageHub.lnk').boundingBox())!
+  const aiCenterBox = (await page.getByTestId('desktop-item-AI Center.lnk').boundingBox())!
+  const cellHeight = aiCenterBox.y - messageHubBox.y
+  const notepad = page.getByTestId('desktop-item-Getting Started.widget')
   const notepadBox = (await notepad.boundingBox())!
   await notepad.hover()
   await page.mouse.down()
   await page.mouse.move(
     notepadBox.x + notepadBox.width / 2,
-    notepadBox.y + notepadBox.height / 2 + cellHeight * 4,
+    notepadBox.y + notepadBox.height / 2 + cellHeight * 3,
     { steps: 14 },
   )
   await page.mouse.up()
   await expect
     .poll(async () => (await notepad.boundingBox())?.y ?? 0)
-    .toBeGreaterThan(notepadBox.y + cellHeight * 3)
+    .toBeGreaterThan(notepadBox.y + cellHeight * 2)
 
   // A 7×3 grid: the notepad (and the rightmost icons) overflow onto page 2.
   await page.setViewportSize({ width: 780, height: 400 })
@@ -1029,11 +993,11 @@ test('dragging a launcher icon keeps items that overflowed to another page', asy
   expect(await tileIds()).toEqual(allIds)
 
   // Drag a page-1 icon one cell down.
-  const settings = page.getByTestId('desktop-item-app-settings')
-  const before = (await settings.boundingBox())!
+  const messageHub = page.getByTestId('desktop-item-MessageHub.lnk')
+  const before = (await messageHub.boundingBox())!
   const cellHeightSmall =
-    (await page.getByTestId('desktop-item-app-ai-center').boundingBox())!.y - before.y
-  await settings.hover()
+    (await page.getByTestId('desktop-item-AI Center.lnk').boundingBox())!.y - before.y
+  await messageHub.hover()
   await page.mouse.down()
   await page.mouse.move(
     before.x + before.width / 2,
@@ -1042,15 +1006,15 @@ test('dragging a launcher icon keeps items that overflowed to another page', asy
   )
   await page.mouse.up()
   await expect
-    .poll(async () => (await settings.boundingBox())?.y ?? 0)
+    .poll(async () => (await messageHub.boundingBox())?.y ?? 0)
     .toBeGreaterThan(before.y + cellHeightSmall / 2)
 
   // Nothing that lived on page 2 may disappear, before or after a reload.
   expect(await tileIds()).toEqual(allIds)
-  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(noteText)
+  await expect(page.getByTestId('notepad-preview-Getting Started.widget')).toContainText(noteText)
 
   await page.reload()
-  await expect(page.getByTestId('desktop-item-app-settings')).toBeVisible()
+  await expect(page.getByTestId('desktop-item-MessageHub.lnk')).toBeVisible()
   expect(await tileIds()).toEqual(allIds)
-  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(noteText)
+  await expect(page.getByTestId('notepad-preview-Getting Started.widget')).toContainText(noteText)
 })

@@ -2,6 +2,7 @@ import { Divider, ListItemIcon, Menu, MenuItem } from '@mui/material'
 import clsx from 'clsx'
 import {
   CircleCheck,
+  LayoutGrid,
   LogOut,
   OctagonAlert,
   Pin,
@@ -13,7 +14,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import type { CSSProperties, ReactNode, Ref } from 'react'
+import { useSyncExternalStore, type CSSProperties, type ReactNode, type Ref } from 'react'
 import type { SystemMetrics } from '../api/system_metrics'
 import type { DesktopAppItem } from '../app/types'
 import { AppIcon } from '../components/DesktopVisuals'
@@ -21,6 +22,7 @@ import { appIconSurfaceStyle } from '../components/DesktopVisualTokens'
 import { useI18n } from '../i18n/provider'
 import { useAppText } from '../presentation/appText'
 import { initialOf } from '../presentation/model'
+import { useDesktopUIStore } from '../models/DesktopUIDataModel'
 import { ObjectImage } from '../presentation/ObjectIcon'
 import type { TaskbarAppItem } from '../models/ui'
 import { connectionLabel, type ConnectionState } from './shell'
@@ -101,6 +103,10 @@ export function TaskbarMenu({
 }) {
   const { t } = useI18n()
   const appText = useAppText()
+  const store = useDesktopUIStore()
+  // Re-read on every store change: whether a shortcut to the app is on the desktop.
+  const onDesktop = useSyncExternalStore(store.subscribe, () => Boolean(app && store.isAppOnDesktop(app.id)))
+  const canEditDesktop = useSyncExternalStore(store.subscribe, () => store.canEditDesktop())
   return (
     <Menu
       ref={menuRef}
@@ -136,6 +142,24 @@ export function TaskbarMenu({
               <ListItemIcon>{pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}</ListItemIcon>
               {pinned ? t('shell.unpinFromTaskbar', 'Unpin from taskbar') : t('shell.pinToTaskbar', 'Pin to taskbar')}
             </MenuItem>,
+            canEditDesktop ? <MenuItem
+              key="desktop"
+              data-testid="taskbar-menu-desktop"
+              onClick={() => {
+                onClose()
+                if (onDesktop) {
+                  const shortcut = store.getSnapshot().layoutState?.pages
+                    .flatMap((page) => page.items)
+                    .find((item) => item.type === 'app' && item.appId === app.id)
+                  if (shortcut) void store.removeDesktopItem(shortcut.id)
+                } else {
+                  void store.addAppToDesktop(app.id, appText(app).title)
+                }
+              }}
+            >
+              <ListItemIcon><LayoutGrid className="size-4" /></ListItemIcon>
+              {onDesktop ? t('shell.removeFromDesktop', 'Remove from desktop') : t('shell.addToDesktop', 'Add to desktop')}
+            </MenuItem> : null,
             windowCount > 0 ? (
               <MenuItem
                 key="close"

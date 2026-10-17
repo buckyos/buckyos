@@ -1,7 +1,8 @@
 # beta 2.2 bootstrap input. Control Panel turns each pre_install_apps PIKG seed
 # into a standard, immutable install/update task after system services are
 # available. agent_templates are bundled Agent templates; they are never
-# installed as runtime instances.
+# installed as runtime instances. `desktop_shortcut` puts a shortcut to the App
+# in every new account's Desktop folder; other Apps are only under All apps.
 
 "system/install_settings" = """
 {
@@ -9,7 +10,8 @@
     "text-editor.buckyos.bns.did": {
       "schema_version": 1,
       "pikg_path": "data/cache/text-editor.buckyos.bns.did-0.1.0.pikg",
-      "install_plan": {}
+      "install_plan": {},
+      "desktop_shortcut": {"name": "Text Editor"}
     },
     "buckyos-systest.buckyos.bns.did": {
       "schema_version": 1,

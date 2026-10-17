@@ -16,7 +16,7 @@ export type ThemeMode = 'light' | 'dark'
 export type RuntimeContainer = 'browser' | 'desktop-app' | 'mobile-app'
 export type FormFactor = 'desktop' | 'mobile'
 export type MockScenario = 'normal' | 'empty' | 'error'
-export type DesktopItemType = 'app' | 'widget'
+export type DesktopItemType = 'app' | 'widget' | 'file'
 
 /**
  * Placement provenance — tracks how an item ended up at its current slot.
@@ -79,7 +79,16 @@ export interface WidgetItem extends LayoutItemBase {
   config: Record<string, unknown>
 }
 
-export type LayoutItem = AppIconItem | WidgetItem
+/** A document or folder in the Desktop folder (see models/desktopFolder.ts). */
+export interface FileIconItem extends LayoutItemBase {
+  type: 'file'
+  fileKind: 'file' | 'folder'
+  /** As Files shows it, e.g. `/home/alice/Desktop/photo.jpg`. */
+  path: string
+  size?: number
+}
+
+export type LayoutItem = AppIconItem | WidgetItem | FileIconItem
 
 export interface DesktopPageState {
   id: string
@@ -233,12 +242,15 @@ export const systemPreferencesInputSchema = z.object({
 
 export type SystemPreferencesInput = z.infer<typeof systemPreferencesInputSchema>
 
+/** A note widget's text is a small file in the Desktop folder; this keeps it a note. */
+export const NOTE_MAX_LENGTH = 2000
+
 export const noteInputSchema = z.object({
   content: z
     .string()
     .trim()
     .min(1)
-    .max(180),
+    .max(NOTE_MAX_LENGTH),
 })
 
 export type NoteInput = z.infer<typeof noteInputSchema>

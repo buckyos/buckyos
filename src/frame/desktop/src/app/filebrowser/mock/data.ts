@@ -1,3 +1,5 @@
+import { MOCK_DESKTOP_PATH, mockDesktopFolderEntries } from '../../../api/desktop_items_mock'
+import { classifyFileKind } from '../data/fileKinds'
 import type {
   BrowserTab,
   DeviceNode,
@@ -622,17 +624,40 @@ export const fileBrowserSnapshot: FileBrowserSnapshot = {
 // UI code must not touch entriesByPath/entriesById directly anymore; readers
 // are the only consumers of these.
 
+// The desktop's mock Desktop folder (api/desktop_items_mock.ts) shows under Home, read-only: it lives in
+// localStorage, not in this index.
+const DESKTOP_FOLDER_ID = 'home-desktop'
+
+function desktopFolderEntry(): FileEntry {
+  return { id: DESKTOP_FOLDER_ID, name: 'Desktop', kind: 'folder', path: MOCK_DESKTOP_PATH, modifiedAt: new Date(0).toISOString() }
+}
+
+function desktopEntries(): FileEntry[] | undefined {
+  return mockDesktopFolderEntries()?.map((entry) => ({
+    id: `desktop:${entry.name}`,
+    name: entry.name,
+    kind: entry.kind === 'dir' ? 'folder' : classifyFileKind(entry.name),
+    path: `${MOCK_DESKTOP_PATH}/${entry.name}`,
+    ...(entry.kind === 'dir' ? {} : { sizeBytes: entry.size }),
+    modifiedAt: new Date(entry.mtime * 1000).toISOString(),
+  }))
+}
+
 export function mockEntriesAtPath(path: string): FileEntry[] | undefined {
+  if (path === MOCK_DESKTOP_PATH) return desktopEntries()
+  if (path === '/home' && byPath[path] && mockDesktopFolderEntries()) return [...byPath[path], desktopFolderEntry()]
   return byPath[path]
 }
 
 export function mockEntryById(id: string): FileEntry | undefined {
+  if (id === DESKTOP_FOLDER_ID) return mockDesktopFolderEntries() ? desktopFolderEntry() : undefined
+  if (id.startsWith('desktop:')) return desktopEntries()?.find((entry) => entry.id === id)
   return byId[id]
 }
 
 export function mockEntryByPath(path: string): FileEntry | undefined {
   const parent = path.split('/').slice(0, -1).join('/') || '/'
-  return byPath[parent]?.find((entry) => entry.path === path)
+  return mockEntriesAtPath(parent)?.find((entry) => entry.path === path)
 }
 
 /** Curated (non-stress) file entries — the "library" recent/search run over. */

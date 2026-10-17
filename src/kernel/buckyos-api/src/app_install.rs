@@ -65,6 +65,18 @@ pub struct PreInstallAppConfig {
     pub schema_version: u32,
     pub pikg_path: String,
     pub install_plan: PreInstallPlanSeed,
+    /// Present when a new account's Desktop folder starts with a shortcut to this App (Control Panel
+    /// writes `{name}.lnk`). Apps are otherwise only listed under All apps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_shortcut: Option<PreInstallDesktopShortcut>,
+}
+
+/// The default desktop shortcut of a pre-installed App.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreInstallDesktopShortcut {
+    /// The shortcut's file name without `.lnk`.
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1964,6 +1976,23 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
+        assert_eq!(settings.pre_install_apps["demo.example.web.did"].desktop_shortcut, None);
+
+        let with_shortcut: SystemInstallSettings = serde_json::from_value(json!({
+            "pre_install_apps": {
+                "demo.example.web.did": {
+                    "schema_version": 1,
+                    "pikg_path": "data/cache/demo.example.web.did-1.0.0.pikg",
+                    "install_plan": {},
+                    "desktop_shortcut": {"name": "Demo"}
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            with_shortcut.pre_install_apps["demo.example.web.did"].desktop_shortcut,
+            Some(PreInstallDesktopShortcut { name: "Demo".to_string() })
+        );
 
         for invalid in [
             json!({

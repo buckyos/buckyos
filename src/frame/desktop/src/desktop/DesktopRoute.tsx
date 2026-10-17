@@ -1,6 +1,7 @@
 import {
   Alert,
   Button,
+  Divider,
   Menu,
   MenuItem,
   useMediaQuery,
@@ -50,6 +51,10 @@ import { MobileTaskbar } from './MobileTaskbar'
 import { StatusBar } from './StatusBar'
 import { useCurrentUser } from './taskbarHooks'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
+import { openDesktopFile, showFolderInFiles } from './desktopFolderActions'
+import { watchDfsPath } from '../app/filebrowser/data/nfsp/invalidation'
+import { classifyFileKind } from '../app/filebrowser/data/fileKinds'
+import { kindIcon } from '../app/filebrowser/fileDisplay'
 import { DesktopWindowLayer } from './windows/DesktopWindowLayer'
 import {
   getDesktopWindowWorkspaceBounds,
@@ -71,6 +76,7 @@ import { useAppText } from '../presentation/appText'
 import type {
   AppDefinition,
   DesktopWallpaper,
+  FileIconItem,
   FormFactor,
   LayoutItem,
   LayoutState,
@@ -307,6 +313,29 @@ export function DesktopRoute() {
   useEffect(() => {
     void store.init(formFactor, scenario)
   }, [store, formFactor, scenario])
+
+  // The Desktop folder can change elsewhere (Files, another device): look again when the page comes back
+  // into view, now and then while it is shown, and right after Files changes it in this page.
+  const storeStatus = snap.status
+  useEffect(() => {
+    if (storeStatus !== 'success') return
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void store.refreshDesktopFolder()
+    }
+    const folderPath = store.getDesktopFolderPath()
+    const stopWatching = folderPath
+      ? watchDfsPath(folderPath, () => void store.refreshDesktopFolder({ force: true }))
+      : undefined
+    const timer = window.setInterval(refresh, 30_000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      stopWatching?.()
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [store, storeStatus])
 
   // Sync scenario to URL
   useEffect(() => {
@@ -679,6 +708,10 @@ export function DesktopRoute() {
         if (!consumeOpenBlock(item.id)) handleOpenApp(item.appId)
         return
       }
+      if (item.type === 'file') {
+        if (!consumeOpenBlock(item.id)) openDesktopFile(item)
+        return
+      }
       store.setSelectedItemId(item.id)
     },
     // consumeOpenBlock only touches refs.
@@ -745,6 +778,10 @@ export function DesktopRoute() {
     [isMobile, topMobileWindowId, minimizeWindow],
   )
   const taskbarApps = store.getTaskbarApps()
+  const contextMenuItem = contextMenu
+    ? resolvedLayout?.pages.flatMap((page) => page.items).find((entry) => entry.id === contextMenu.itemId)
+    : undefined
+  const desktopFolderPath = status === 'success' ? store.getDesktopFolderPath() : ''
 
   // The status bar's message and notification trays read MessageHub,
   // msg-center and TaskMgr only while the mobile shell is up.
@@ -936,25 +973,35 @@ export function DesktopRoute() {
         }
       >
         <MenuItem
+          disabled={contextMenuItem?.type === 'widget'}
           onClick={() => {
-            const pageIndex =
-              contextMenu && resolvedLayout
-                ? getPageIndex(resolvedLayout, contextMenu.itemId)
-                : -1
-            const item =
-              pageIndex >= 0
-                ? resolvedLayout?.pages[pageIndex].items.find(
-                    (entry) => entry.id === contextMenu?.itemId,
-                  )
-                : null
-            if (item?.type === 'app') {
-              handleOpenApp(item.appId)
-            }
+            if (contextMenuItem?.type === 'app') handleOpenApp(contextMenuItem.appId)
+            if (contextMenuItem?.type === 'file') openDesktopFile(contextMenuItem)
             store.setContextMenu(null)
           }}
         >
           {t('common.open')}
         </MenuItem>
+        <MenuItem
+          disabled={!desktopFolderPath}
+          data-testid="desktop-menu-show-in-files"
+          onClick={() => {
+            store.setContextMenu(null)
+            showFolderInFiles(desktopFolderPath)
+          }}
+        >
+          {t('desktop.menu.showInFiles', 'Show in Files')}
+        </MenuItem>
+        <MenuItem
+          disabled={!contextMenuItem || contextMenuItem.type === 'file' || !desktopFolderPath}
+          data-testid="desktop-menu-remove"
+          onClick={() => {
+            if (contextMenuItem) void store.removeDesktopItem(contextMenuItem.id)
+          }}
+        >
+          {t('shell.removeFromDesktop', 'Remove from desktop')}
+        </MenuItem>
+        <Divider />
         <MenuItem
           disabled={
             !contextMenu ||
@@ -1095,7 +1142,8 @@ const DesktopPages = memo(function DesktopPages({
   useEffect(() => resetDesktopViewportProgress, [])
 
   if (pageCount === 0 || layout.pages.every((page) => page.items.length === 0)) {
-    return <EmptyState onRestore={onRestore} />
+    // As tall as the pages: the grid's row count is measured from this container.
+    return <EmptyState height={height} onRestore={onRestore} />
   }
 
   return (
@@ -1215,10 +1263,10 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
   )
 }
 
-function EmptyState({ onRestore }: { onRestore: () => void }) {
+function EmptyState({ height, onRestore }: { height: number; onRestore: () => void }) {
   const { t } = useI18n()
   return (
-    <div className="flex h-full items-center justify-center px-4">
+    <div className="flex items-center justify-center px-4" style={{ height }}>
       <div className="shell-panel max-w-lg border-dashed px-7 py-8 text-center">
         <p className="shell-kicker">Layout</p>
         <p className="mt-2 font-display text-2xl font-semibold">
@@ -1332,9 +1380,32 @@ function DesktopTile({
     )
   }
 
+  const tile = item.type === 'app' && app
+    ? {
+      title: appText(app).title,
+      testId: `desktop-app-${app.id}`,
+      icon: (
+        <span
+          className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
+          style={{
+            width: 'var(--icon-size)',
+            height: 'var(--icon-size)',
+            ...appIconSurfaceStyle(app.accent),
+          }}
+        >
+          <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
+        </span>
+      ),
+    }
+    : item.type === 'file'
+      ? { title: item.id, testId: `desktop-file-${item.id}`, icon: <DesktopFileIcon item={item} /> }
+      : null
+
   return (
     <div
       data-testid={`desktop-item-${item.id}`}
+      data-item-type={item.type}
+      data-widget-type={item.type === 'widget' ? item.widgetType : undefined}
       className={clsx(
         'desktop-tile-shell group relative h-full border border-transparent transition-[transform,border-color,box-shadow,background-color] duration-200 ease-[var(--cp-ease-emphasis)]',
         item.type === 'widget' ? 'rounded-[22px]' : 'rounded-[28px]',
@@ -1348,15 +1419,15 @@ function DesktopTile({
       )}
       onContextMenu={(event) => onOpenContextMenu(item, event)}
     >
-      {item.type === 'app' && app ? (
+      {tile ? (
         <button
           type="button"
           onClick={isDesktop ? () => onOpen(item) : undefined}
           onPointerDown={handleAppPointerDown}
           onPointerUp={handleAppPointerUp}
           onPointerCancel={clearAppPointer}
-          data-testid={`desktop-app-${app.id}`}
-          title={appText(app).title}
+          data-testid={tile.testId}
+          title={tile.title}
           className={clsx(
             'flex h-full w-full flex-col items-center rounded-[28px] bg-transparent text-center transition-[background-color,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,var(--cp-surface))]',
             isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
@@ -1367,17 +1438,8 @@ function DesktopTile({
           // viewport (see the label's fontSize below).
           style={{ paddingTop: 'var(--icon-padding-top)', containerType: 'inline-size' }}
         >
-          <span
-            className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
-            style={{
-              width: 'var(--icon-size)',
-              height: 'var(--icon-size)',
-              ...appIconSurfaceStyle(app.accent),
-            }}
-          >
-            <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
-          </span>
-          {app.iconBadge ? (
+          {tile.icon}
+          {item.type === 'app' && app?.iconBadge ? (
             <span
               aria-hidden="true"
               data-testid={`desktop-app-badge-${app.id}`}
@@ -1404,7 +1466,7 @@ function DesktopTile({
               WebkitBoxOrient: 'vertical',
             }}
           >
-            {appText(app).title}
+            {tile.title}
           </span>
         </button>
       ) : null}
@@ -1413,5 +1475,18 @@ function DesktopTile({
         <DesktopWidgetRenderer item={item} onSaveNote={onSaveNote} />
       ) : null}
     </div>
+  )
+}
+
+/** A document or folder on the desktop: its kind's icon on a plain tile. */
+function DesktopFileIcon({ item }: { item: FileIconItem }) {
+  const kind = item.fileKind === 'folder' ? 'folder' : classifyFileKind(item.id)
+  return (
+    <span
+      className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] border border-[color:color-mix(in_srgb,var(--cp-border)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
+      style={{ width: 'var(--icon-size)', height: 'var(--icon-size)' }}
+    >
+      {kindIcon(kind, 26)}
+    </span>
   )
 }

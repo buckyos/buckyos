@@ -205,8 +205,14 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 * 存储路径：`users/{user_id}/desktop/{session_id}/{state_key}`，会话元数据存 `.../_meta`。
 * HTTP 入口：`POST /api/desktop`，需 session token（401 if 失败），按 `action` 分发。
 * 方法：`session.list` / `session.create`（生成 UUID v4）/ `session.delete` / `session.rename`；`state.get` / `state.set` / `state.delete`，后三者支持 `json_path`（点分路径）做部分读写删。任何 state 写都会刷新会话 `updated_at`；写入一个还没有 `_meta` 的会话时补建 `_meta`（`name` = session_id）。`session_id`、`state_key` 只接受 `[A-Za-z0-9_-]{1,64}`，`state_key` 不能以 `_` 开头，否则 400。`state.get` 读从未写过的 state 返回 `{value: null, version: null, exists: false}`（不是错误），存在时 `exists: true`。
-* **账号级外观**：Desktop 所有设备共用约定的会话 `default`，外观设置存在 `state_key = appearance`，每项设置单独按 `json_path` 写，不同设备改不同设置不会互相覆盖：`{theme: "light"|"dark", locale, iconSize: "small"|"medium"|"large", window: {titleBarOpacity, backgroundOpacity}, wallpaper: {image: {asset, width, height, name} | null, fit: "fill"|"fit"|"stretch"|"tile"|"center"|"panorama", tileScale, focusX, focusY}}`。前端先用本机缓存立即绘制，启动和回到前台时读账号值（账号优先；本机改了但账号还没确认的设置以本机为准，跨刷新保留）；账号缺的设置用本机值补写，但不会把浏览器里另一个账号的壁纸带给新账号。状态栏消息预览、安全区、任务栏和图标布局仍是设备级设置。
+* **账号级外观**：Desktop 所有设备共用约定的会话 `default`，外观设置存在 `state_key = appearance`，每项设置单独按 `json_path` 写，不同设备改不同设置不会互相覆盖：`{theme: "light"|"dark", locale, iconSize: "small"|"medium"|"large", window: {titleBarOpacity, backgroundOpacity}, wallpaper: {image: {asset, width, height, name} | null, fit: "fill"|"fit"|"stretch"|"tile"|"center"|"panorama", tileScale, focusX, focusY}}`。前端先用本机缓存立即绘制，启动和回到前台时读账号值（账号优先；本机改了但账号还没确认的设置以本机为准，跨刷新保留）；账号缺的设置用本机值补写，但不会把浏览器里另一个账号的壁纸带给新账号。状态栏消息预览、安全区、任务栏和图标位置仍是设备级设置（桌面上有哪些项目跟着账号走，见下方“桌面文件夹”）。
 * **壁纸图片**：图片字节不进 SystemConfig（单值上限），存在用户 home：`data/home/{user}/.local/share/control-panel/wallpapers/{sha256 前 32 位}.{jpg|png|gif|webp|avif}`。`POST /api/desktop/wallpaper`（body 为图片原始字节，≤16 MiB，按文件头识别类型，其它类型 415、超限 413）返回 `{ok, data: {asset, bytes}}`，同时只保留最新 3 张、删除更早的；`GET /api/desktop/wallpaper/{asset}` 返回图片，名字即内容哈希，响应 `Cache-Control: private, max-age=31536000, immutable`。两者都需登录。CSS/`<img>` 加载带不了请求头，所以读图（`GET`）在没有 `X-Auth`/`Authorization`/查询参数 token 时优先认 Gateway SSO 会话 cookie `buckyos_session_token`（根域 SSO 登录后由 `/sso_refresh` 持续续期），其次才是旧的 `control-panel_token` 等 cookie；Desktop 因此直接把这个 URL 用作 CSS 背景，加载失败时再用带 `X-Auth` 的 fetch 取回。上传（`POST`）不认 SSO cookie，必须带请求头：同站其它子域应用发出的请求也会捎带这个 cookie。
+* **桌面文件夹**（`desktop_folder.rs`）：像 Windows 一样，桌面显示的是用户 home 下的一个文件夹 `data/home/{user}/Desktop`（Files 里是 `/home/{user}/Desktop`），所以所有设备、所有会话看到的是同一批项目，会话（设备 × 形态）只保存项目的位置。以 `.` 开头的名字隐藏。两类小 JSON 文件是桌面对象：`*.lnk` 快捷方式 `{"app": "<内置 id | AppId | 实例 id>"}`，`*.widget` 小组件 `{"widget": "clock"}` / `{"widget": "notepad", "text": "..."}`；其它文件和文件夹按文档/文件夹显示（文档用内容处理器打开，文件夹在 Files 中打开）。动作：
+  * `items.list {seed?: [{name, text}]}` → `{path, created, items: [{name, kind: "file"|"dir", size, mtime, text?}]}`。文件夹不存在时创建并写入 `seed`（`created: true`，seed 只接受 `.lnk`/`.widget`，每个 ≤64 KiB、最多 64 个）；用户自己清空的文件夹保持为空，删掉整个文件夹则下次按 seed 重建。`.lnk`/`.widget` 文件（≤64 KiB）随列表返回内容 `text`；符号链接不跟随、不读内容。
+  * `items.write {name, text, create?}` 写一个 `.lnk`/`.widget` 文件（临时文件 + rename）；`create: true` 时已存在则 400 `exists: {name}`。
+  * `items.delete {name}` 删除一个 `.lnk`/`.widget` 文件（不存在视为成功）。文档和文件夹只在 Files 里改。
+  * 名字必须是单个可见路径段（≤255 字节，无 `/` `\` 控制字符，不以 `.` 开头），否则 400。
+  * 新账号的默认内容 = Desktop 前端提供的 `seed`（内置应用快捷方式、时钟和上手说明便笺，按当前语言命名）+ `system/install_settings.pre_install_apps.{app_id}.desktop_shortcut: {name}` 声明的预装应用快捷方式（如 Text Editor，写成 `{name}.lnk`，与 seed 重名时编号）。Desktop 源码不出现任何第三方 App 的身份。安装应用不会自动在桌面放快捷方式，应用在“全部应用”里，用户可从那里“添加到桌面”。
 
 ### 4.6 只读诊断模块 (Read-only Diagnostics)
 
@@ -351,6 +357,7 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 | Zone 展示设置 | `system/zone_presentation` | 调用者 sudo token + revision CAS（不存在时 create） |
 | UI Session | `users/{uid}/desktop/{session_id}/{state_key}` · `.../_meta` | 单次 `set`，写后刷新（或补建）`_meta.updated_at` |
 | 桌面壁纸图片 | 文件 `data/home/{uid}/.local/share/control-panel/wallpapers/{hash}.{ext}` | 临时文件 + rename，保留最新 3 张 |
+| 桌面文件夹 | 目录 `data/home/{uid}/Desktop`（`*.lnk` / `*.widget` 由本服务写） | 首次列出时建目录并写 seed；单文件临时文件 + rename |
 
 ---
 

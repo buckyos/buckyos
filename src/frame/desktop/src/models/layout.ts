@@ -29,10 +29,8 @@ import type {
 } from './ui'
 import {
   defaultWindowAppearancePreferences,
-  isLauncherApp,
   windowAppearancePreferencesSchema,
 } from './ui'
-import type { DesktopAppItem } from '../app/types'
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -42,10 +40,15 @@ export const runtimeStorageKey = 'buckyos.prototype.runtime.v1'
 export const windowGeometryStorageKey = 'buckyos.window-geometry.desktop.v1'
 export const windowAppearanceStorageKey = 'buckyos.window-appearance.v1'
 export const desktopTaskbarPinnedStorageKey = 'buckyos.desktop.taskbar-pinned.v1'
-export const desktopTaskbarAppsStorageKey = 'buckyos.desktop.taskbar-apps.v1'
+/** v2: the default pins became MessageHub, AI Workspace, HomeStation and AI Center. */
+export const desktopTaskbarAppsStorageKey = 'buckyos.desktop.taskbar-apps.v2'
 
+/**
+ * Where this device keeps its desktop item positions (and the dead zone). v3: items are the Desktop folder's
+ * entries, keyed by file name (models/desktopFolder.ts).
+ */
 export function layoutStorageKey(formFactor: FormFactor) {
-  return `buckyos.layout.${formFactor}.v2`
+  return `buckyos.layout.${formFactor}.v3`
 }
 
 // ---------------------------------------------------------------------------
@@ -805,82 +808,8 @@ export function applyDragCollision(
 }
 
 // ---------------------------------------------------------------------------
-// Layout sanitisation & reconciliation
+// Lookup
 // ---------------------------------------------------------------------------
-
-export function sanitizeLayoutForApps(
-  layout: LayoutState,
-  apps: DesktopAppItem[],
-): LayoutState {
-  const launcherAppIds = new Set(
-    apps.filter((app) => isLauncherApp(app)).map((app) => app.id),
-  )
-  return {
-    ...layout,
-    pages: layout.pages.map((page) => ({
-      ...page,
-      items: page.items.filter(
-        (item) => item.type === 'widget' || launcherAppIds.has(item.appId),
-      ),
-    })),
-  }
-}
-
-export function reconcileLayoutWithDefaultApps(
-  layout: LayoutState,
-  defaultLayout: LayoutState,
-  apps: DesktopAppItem[],
-  formFactor: FormFactor,
-): LayoutState {
-  const sanitizedLayout = sanitizeLayoutForApps(layout, apps)
-  const launcherAppIds = new Set(
-    apps.filter((app) => isLauncherApp(app)).map((app) => app.id),
-  )
-  const existingAppIds = new Set(
-    sanitizedLayout.pages.flatMap((page) =>
-      page.items.flatMap((item) => (item.type === 'app' ? [item.appId] : [])),
-    ),
-  )
-
-  const newItems: LayoutItem[] = []
-  let nextSeq = sanitizedLayout.pages.reduce(
-    (max, page) => Math.max(max, ...page.items.map((i) => i.seq ?? 0)),
-    0,
-  ) + 1
-
-  defaultLayout.pages.forEach((defaultPage) => {
-    defaultPage.items.forEach((item) => {
-      if (
-        item.type !== 'app' ||
-        !launcherAppIds.has(item.appId) ||
-        existingAppIds.has(item.appId)
-      ) {
-        return
-      }
-      newItems.push({
-        ...item,
-        x: undefined,
-        y: undefined,
-        slotIndex: undefined,
-        placementType: 'auto',
-        seq: nextSeq++,
-      })
-      existingAppIds.add(item.appId)
-    })
-  })
-
-  if (newItems.length === 0) return sanitizedLayout
-
-  const pages = sanitizedLayout.pages.map((page) => ({
-    ...page,
-    items: [...page.items],
-  }))
-  if (pages.length === 0) {
-    pages.push({ id: `${formFactor}-page-1`, items: [] })
-  }
-  pages[pages.length - 1].items.push(...newItems)
-  return { ...sanitizedLayout, pages }
-}
 
 export function getPageIndex(layoutState: LayoutState, itemId: string) {
   return layoutState.pages.findIndex((page) =>

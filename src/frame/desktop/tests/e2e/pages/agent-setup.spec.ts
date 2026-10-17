@@ -14,18 +14,6 @@ async function seedMock(page: Page, state: Record<string, unknown>) {
   }, [MOCK_KEY, JSON.stringify(state)] as const)
 }
 
-/** Puts these apps on the first desktop page (the Jarvis guide is appended by the default layout). */
-async function placeApps(page: Page, appIds: string[]) {
-  await page.addInitScript((ids) => {
-    window.localStorage.setItem('buckyos.layout.desktop.v2', JSON.stringify({
-      version: 1,
-      formFactor: 'desktop',
-      deadZone: { top: 0, bottom: 8, left: 5, right: 5 },
-      pages: [{ id: 'desktop-page-1', items: ids.map((appId, index) => ({ id: `app-${appId}`, type: 'app', appId, x: index, y: 0, w: 1, h: 1 })) }],
-    }))
-  }, appIds)
-}
-
 async function openGuideWizard(page: Page) {
   await page.getByTestId('desktop-app-agent-guide').click()
   const wizard = page.getByTestId('window-agent-setup')
@@ -125,7 +113,6 @@ test.describe('Agent setup wizard', () => {
 
   test('limited users get no guide and a disabled Add Agent', async ({ page }) => {
     await seedMock(page, { account: { user_id: 'lim', user_name: 'Lim', user_type: 'limited', did: 'did:bns:lim' } })
-    await placeApps(page, ['settings', 'users-agents'])
     await page.goto('/?scenario=normal')
     await expect(page.getByTestId('desktop-app-settings')).toBeVisible()
     await expect(page.getByTestId('desktop-app-agent-guide')).toHaveCount(0)
@@ -292,7 +279,6 @@ test.describe('Agent setup wizard', () => {
   })
 
   test('Add Agent uses the same wizard; a taken name offers the Owner-prefixed suggestion', async ({ page }) => {
-    await placeApps(page, ['users-agents'])
     await page.goto('/?scenario=normal')
     await page.getByTestId('desktop-app-users-agents').click()
     await page.getByTestId('window-users-agents').getByTestId('users-agents-add-agent').click()
@@ -314,7 +300,6 @@ test.describe('Agent details and group chats', () => {
   test.use({ viewport: { width: 1440, height: 900 } })
 
   test('details toggle group chats, MessageHub explains a disabled Agent, and delete asks in the page', async ({ page }) => {
-    await placeApps(page, ['messagehub', 'users-agents'])
     await page.goto('/?scenario=normal')
     await page.getByTestId('desktop-app-messagehub').click()
     const hub = page.getByTestId('window-messagehub')

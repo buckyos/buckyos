@@ -107,7 +107,7 @@ type BrowserPane = ReturnType<typeof useBrowserPane>
 const FILE_DRAG_TYPE = 'application/x-buckyos-file-items'
 let draggedFiles: { token: string; pane: BrowserPane; items: FileItem[] } | null = null
 
-export function FileBrowserView({ windowId }: { windowId?: string }) {
+export function FileBrowserView({ windowId, openRequest }: { windowId?: string; openRequest?: { requestId: string; path: string } }) {
   const { t } = useI18n()
   const isMobile = useMediaQuery('(max-width: 900px)')
   // Tailwind xl — the preview sidebar only exists at this width, so the
@@ -133,6 +133,14 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   useEffect(() => { const refresh = () => refreshCopyCapability((n) => n + 1); window.addEventListener('files-copy-capability', refresh); return () => window.removeEventListener('files-copy-capability', refresh) }, [])
   const [closedTabs, setClosedTabs] = useState<BrowserTab[]>([])
   const [focusedSide, setFocusedSide] = useState<'left' | 'right'>('left')
+  // A launch that names a folder (the Desktop folder, a folder on the desktop) shows it in the left pane.
+  const handledOpenRequest = useRef<string | null>(null)
+  useEffect(() => {
+    if (!openRequest || handledOpenRequest.current === openRequest.requestId) return
+    handledOpenRequest.current = openRequest.requestId
+    left.navigate(openRequest.path)
+    setFocusedSide('left')
+  }, [openRequest, left])
 
   const [advancedMode, setAdvancedMode] = useState(false)
   const [listPreferences, setListPreferences] = useState<{ fullColumns: boolean; density: 'compact' | 'comfortable'; nameWidth: number }>(() => {

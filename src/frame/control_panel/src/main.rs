@@ -12,6 +12,7 @@ mod app_servcie_mgr;
 mod app_staging;
 mod cluster_mgr;
 mod dashboard;
+mod desktop_folder;
 mod desktop_wallpaper;
 mod diagnostic_mgr;
 mod download_mgr;

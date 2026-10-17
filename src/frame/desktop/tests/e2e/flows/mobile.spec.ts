@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openFromAllApps } from '../fixtures/desktop'
 
 test.use({
   viewport: { width: 375, height: 812 },
@@ -23,7 +24,7 @@ test('mobile viewport opens in-place app with system title bar', async ({
   await expect(page.getByLabel('Status bar').locator('.shell-pill:visible')).toHaveCount(1)
   await expect(page.getByText('Secure session')).toHaveCount(0)
 
-  const filesTile = page.getByTestId('desktop-item-app-files-mobile')
+  const filesTile = page.getByTestId('desktop-item-Files.lnk')
   const beforeDrag = await filesTile.boundingBox()
   await filesTile.hover()
   await page.mouse.down()
@@ -117,28 +118,9 @@ test('mobile demos exposes dialog trigger and opens centered dialog', async ({
   page,
 }) => {
   await page.goto('/?scenario=normal')
-
-  const demosButton = page.getByRole('button', { name: 'Demos' })
-  const demosBox = await demosButton.boundingBox()
-  expect(demosBox).not.toBeNull()
-
-  const startX = (demosBox?.x ?? 0) + (demosBox?.width ?? 0) / 2
-  const startY = (demosBox?.y ?? 0) + (demosBox?.height ?? 0) / 2
-
-  await demosButton.dispatchEvent('pointerdown', {
-    bubbles: true,
-    clientX: startX,
-    clientY: startY,
-    pointerId: 2,
-    pointerType: 'touch',
-  })
-  await page.locator('body').dispatchEvent('pointerup', {
-    bubbles: true,
-    clientX: startX + 6,
-    clientY: startY + 5,
-    pointerId: 2,
-    pointerType: 'touch',
-  })
+  await expect(page.getByTestId('mobile-taskbar')).toBeAttached()
+  // Demos has no desktop shortcut; it is under All apps.
+  await openFromAllApps(page, 'demos')
 
   await expect(page.getByText('Control gallery', { exact: true })).toBeVisible()
   const trigger = page.getByRole('button', { name: 'Window modal' }).last()

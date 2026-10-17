@@ -23,7 +23,7 @@ export async function fetchDesktopPayload({
     throw new Error('mock.provider.desktop_unavailable')
   }
 
-  const payload = structuredClone(buildDesktopPayload(formFactor, scenario))
+  const payload = structuredClone(buildDesktopPayload(formFactor))
   if (contentFixtureEnabled()) payload.apps.push(...contentFixtureApps(payload.apps.find(app => app.id === 'files')!))
   return payload
 }

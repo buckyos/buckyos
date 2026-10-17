@@ -61,8 +61,7 @@ test('the message preview setting lives in Settings > Appearance', async ({ page
   await expect(alice.getByTestId('tray-row-text')).toHaveText('1 new message')
   await page.keyboard.press('Escape')
 
-  await page.getByRole('button', { name: 'BuckyOS' }).first().click()
-  await page.getByTestId('mobile-taskbar').getByTestId('taskbar-app-settings').click()
+  await page.getByTestId('desktop-app-settings').tap()
   await page.getByText('Appearance', { exact: true }).first().click()
   const toggle = page.getByRole('switch', { name: 'Show message content in the status bar' })
   await expect(toggle).not.toBeChecked()
