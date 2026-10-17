@@ -266,10 +266,11 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         (
             "qwen",
             "kimi/kimi-k2.8-preview",
-            "low",
+            "max",
             "/reasoning_effort",
-            json!("low"),
+            json!("max"),
         ),
+        ("qwen", "kimi-k3", "low", "/reasoning_effort", json!("low")),
         (
             "qwen",
             "MiniMax/MiniMax-M3",
@@ -531,6 +532,80 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 assert_eq!(lowered_request.max_output_tokens, None, "{provider}/{id}");
             }
         }
+    }
+}
+
+#[test]
+fn qwen_kimi_k3_variants_follow_each_serving_channel() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "qwen")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "qwen"),
+        discovery(&[
+            "kimi-k2.8-preview",
+            "kimi-k3",
+            "kimi/kimi-k2.8-preview",
+            "kimi/kimi-k3",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    let variants = |model_id: &str| {
+        inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == model_id)
+            .unwrap()
+            .variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        variants("kimi-k3"),
+        ["reasoning-high", "reasoning-low", "reasoning-max"]
+    );
+    assert_eq!(
+        variants("kimi-k2.8-preview"),
+        ["reasoning-high", "reasoning-low", "reasoning-max"]
+    );
+    assert_eq!(variants("kimi/kimi-k2.8-preview"), ["reasoning-max"]);
+    assert_eq!(variants("kimi/kimi-k3"), ["reasoning-max"]);
+}
+
+#[test]
+fn gemma_4_variants_match_hosted_thinking_levels() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "gemini")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "gemini"),
+        discovery(&["gemma-4-26b-a4b-it", "gemma-4-31b-it"]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    for model in inventory.models {
+        assert_eq!(
+            model
+                .variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>(),
+            ["reasoning-high", "reasoning-minimal"],
+            "{}",
+            model.provider_model_id
+        );
     }
 }
 
@@ -1071,7 +1146,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("doubao", 12),
         ("doubao-agent-plan", 0),
         ("fal", 4),
-        ("gemini", 29),
+        ("gemini", 35),
         ("glm", 101),
         ("kimi", 4),
         ("minimax", 23),
@@ -1142,7 +1217,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 321);
+    assert_eq!(pricing_count, 327);
 }
 
 #[test]

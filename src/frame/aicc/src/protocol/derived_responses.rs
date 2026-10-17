@@ -5,7 +5,7 @@ use super::{
     OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
-use buckyos_api::ApiType;
+use buckyos_api::{AiContent, AiccCall, ApiType};
 use futures_util::StreamExt;
 use reqwest::{
     header::{HeaderName, HeaderValue},
@@ -356,7 +356,7 @@ impl ResponsesDialectStrategy for QwenDialect {
 
     fn transform_request(
         &self,
-        _call: &CodecCall<'_>,
+        call: &CodecCall<'_>,
         mut request: HttpRequest,
         prepared: PreparedDialectRequest,
     ) -> ProtocolResultValue<HttpRequest> {
@@ -365,7 +365,7 @@ impl ResponsesDialectStrategy for QwenDialect {
                 "Qwen request body must be JSON",
             ));
         };
-        rewrite_qwen_video_inputs(body);
+        rewrite_qwen_video_inputs(body, call)?;
         if let Some(value) = prepared.enable_thinking {
             if !value.is_boolean() {
                 return Err(ProtocolError::invalid_request(
@@ -387,15 +387,76 @@ impl ResponsesDialectStrategy for QwenDialect {
     }
 }
 
-fn rewrite_qwen_video_inputs(value: &mut Value) {
+fn qwen_document_is_video(
+    source: &buckyos_api::ResourceRef,
+    context: &super::CodecContext,
+) -> ProtocolResultValue<bool> {
+    let mime = match source {
+        buckyos_api::ResourceRef::Url { url, mime_hint } => {
+            if let Some(mime) = mime_hint.as_deref() {
+                return Ok(mime.to_ascii_lowercase().starts_with("video/"));
+            }
+            return Ok(reqwest::Url::parse(url)
+                .ok()
+                .is_some_and(|url| url.path().to_ascii_lowercase().ends_with(".mp4")));
+        }
+        buckyos_api::ResourceRef::Base64 { mime, .. } => Some(mime.as_str()),
+        buckyos_api::ResourceRef::NamedObject { .. } => {
+            Some(context.materialized_resource(source)?.mime.as_str())
+        }
+    };
+    Ok(mime.is_some_and(|mime| mime.to_ascii_lowercase().starts_with("video/")))
+}
+
+fn rewrite_qwen_video_inputs(value: &mut Value, call: &CodecCall<'_>) -> ProtocolResultValue<()> {
+    let mut video_documents = Vec::new();
+    if let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request {
+        for message in &request.messages {
+            for content in &message.content {
+                match content {
+                    AiContent::Document { source, .. } => {
+                        video_documents.push(qwen_document_is_video(source, call.context)?);
+                    }
+                    AiContent::ToolResult { content, .. } => {
+                        for result in content {
+                            if let buckyos_api::AiToolResultContent::Document { source, .. } =
+                                result
+                            {
+                                video_documents.push(qwen_document_is_video(source, call.context)?);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut document_index = 0;
+    rewrite_qwen_video_values(value, &video_documents, &mut document_index);
+    Ok(())
+}
+
+fn rewrite_qwen_video_values(value: &mut Value, video_documents: &[bool], index: &mut usize) {
     match value {
-        Value::Array(values) => values.iter_mut().for_each(rewrite_qwen_video_inputs),
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| rewrite_qwen_video_values(value, video_documents, index)),
         Value::Object(object) => {
-            let is_video = object.get("type").and_then(Value::as_str) == Some("input_file")
-                && object
-                    .get("filename")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name.eq_ignore_ascii_case("video.mp4"));
+            let is_input_file = object.get("type").and_then(Value::as_str) == Some("input_file");
+            let is_video = is_input_file
+                && video_documents.get(*index).copied().unwrap_or_else(|| {
+                    object
+                        .get("file_url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|url| {
+                            reqwest::Url::parse(url).ok().is_some_and(|url| {
+                                url.path().to_ascii_lowercase().ends_with(".mp4")
+                            })
+                        })
+                });
+            if is_input_file {
+                *index += 1;
+            }
             if is_video {
                 object.insert("type".to_owned(), Value::String("input_video".to_owned()));
                 if let Some(url) = object.remove("file_url") {
@@ -406,7 +467,9 @@ fn rewrite_qwen_video_inputs(value: &mut Value) {
                 }
                 object.remove("filename");
             }
-            object.values_mut().for_each(rewrite_qwen_video_inputs);
+            object
+                .values_mut()
+                .for_each(|value| rewrite_qwen_video_values(value, video_documents, index));
         }
         _ => {}
     }
@@ -943,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_maps_mp4_documents_to_responses_video_input() {
+    fn qwen_maps_video_mime_to_responses_video_input_without_filename_conventions() {
         let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Qwen).unwrap();
         let input = CodecInput {
             canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
@@ -956,8 +1019,15 @@ mod tests {
                         },
                         AiContent::Document {
                             source: ResourceRef::url(
-                                "https://example.test/result.mp4".into(),
+                                "https://example.test/media?id=4827".into(),
                                 Some("video/mp4".into()),
+                            ),
+                            title: None,
+                        },
+                        AiContent::Document {
+                            source: ResourceRef::url(
+                                "https://example.test/document?id=4827".into(),
+                                Some("application/pdf".into()),
                             ),
                             title: Some("video.mp4".into()),
                         },
@@ -985,8 +1055,13 @@ mod tests {
             body["input"][0]["content"][1],
             json!({
                 "type": "input_video",
-                "video_url": "https://example.test/result.mp4"
+                "video_url": "https://example.test/media?id=4827"
             })
+        );
+        assert_eq!(body["input"][0]["content"][2]["type"], "input_file");
+        assert_eq!(
+            body["input"][0]["content"][2]["file_url"],
+            "https://example.test/document?id=4827"
         );
     }
 
