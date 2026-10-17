@@ -1124,6 +1124,22 @@ impl LLMContext {
         estimated_tokens: Option<u64>,
         history: Vec<AiMessage>,
     ) -> LLMContextOutcome {
+        if log::log_enabled!(log::Level::Info) {
+            let limits = ContextLimits::of(&self.request).ok();
+            log::info!(
+                "llm_context.context_limit {}",
+                serde_json::json!({
+                    "owner": self.request.owner,
+                    "trace_id": self.request.trace,
+                    "model": self.request.model_policy.preferred,
+                    "reason": which,
+                    "estimated_input_tokens": estimated_tokens,
+                    "yield_threshold_tokens": limits.and_then(|limits| limits.threshold),
+                    "context_window_tokens": limits.and_then(|limits| limits.window),
+                    "completion_reserve_tokens": limits.map(|limits| limits.reserve),
+                })
+            );
+        }
         self.state.suspended = Some(Suspension::ContextLimit {
             which,
             estimated_tokens,

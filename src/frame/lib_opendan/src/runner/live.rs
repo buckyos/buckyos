@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_tool::exec_tracking::{materialize_unresolved, HostRunInfo};
 use agent_tool::llm_bash::RunBinding;
@@ -1075,10 +1076,24 @@ pub(super) async fn run_compacting(
                 continue;
             }
         }
-        let LLMContextOutcome::ContextLimitReached { snapshot, .. } = &outcome else {
+        let LLMContextOutcome::ContextLimitReached {
+            snapshot, which, ..
+        } = &outcome
+        else {
             return Ok(outcome);
         };
         if attempt >= MAX_LIMIT_COMPACTIONS {
+            log::warn!(
+                "opendan.context.rewrite.paused {}",
+                json!({
+                    "session_id": sh.dir.sid(),
+                    "run_id": lc.run.run_id(),
+                    "reason": which,
+                    "attempt": attempt,
+                    "max_attempts": MAX_LIMIT_COMPACTIONS,
+                    "pause_reason": "compaction_attempts_exhausted",
+                })
+            );
             return Ok(outcome);
         }
         attempt += 1;
@@ -1186,6 +1201,65 @@ fn degrade_inline_media(sh: &Arc<Shared>, lc: &LiveCtx) -> Result<Option<LLMCont
 /// their positions are left behind in the old epoch. The open Turn is not
 /// affected: the rewrite only changes how its history is carried.
 async fn rewrite_for_limit(
+    sh: &Arc<Shared>,
+    run: &RunHandle,
+    snapshot: LLMContextSnapshot,
+    behavior: bool,
+    deps: &LLMContextDeps,
+    summary_llm: &Arc<dyn LlmClient>,
+    attempt: u32,
+) -> Result<LLMContext> {
+    let started = Instant::now();
+    let (reason, estimated_tokens) = match snapshot.state.suspended.as_ref() {
+        Some(Suspension::ContextLimit {
+            which,
+            estimated_tokens,
+            ..
+        }) => (Some(*which), *estimated_tokens),
+        _ => (None, None),
+    };
+    let epoch_before = snapshot_host_meta(&snapshot).history_epoch;
+    log::info!(
+        "opendan.context.rewrite.started {}",
+        json!({
+            "session_id": sh.dir.sid(),
+            "run_id": run.run_id(),
+            "reason": reason,
+            "estimated_input_tokens": estimated_tokens,
+            "attempt": attempt,
+            "max_attempts": MAX_LIMIT_COMPACTIONS,
+            "history_epoch_before": epoch_before,
+        })
+    );
+    let result =
+        rewrite_for_limit_inner(sh, run, snapshot, behavior, deps, summary_llm, attempt).await;
+    match &result {
+        Ok(ctx) => log::info!(
+            "opendan.context.rewrite.completed {}",
+            json!({
+                "session_id": sh.dir.sid(),
+                "run_id": run.run_id(),
+                "attempt": attempt,
+                "history_epoch_before": epoch_before,
+                "history_epoch_after": host_meta_of(ctx.host_meta()).history_epoch,
+                "elapsed_ms": started.elapsed().as_millis(),
+            })
+        ),
+        Err(error) => log::warn!(
+            "opendan.context.rewrite.failed {}",
+            json!({
+                "session_id": sh.dir.sid(),
+                "run_id": run.run_id(),
+                "attempt": attempt,
+                "elapsed_ms": started.elapsed().as_millis(),
+                "error": error.to_string(),
+            })
+        ),
+    }
+    result
+}
+
+async fn rewrite_for_limit_inner(
     sh: &Arc<Shared>,
     run: &RunHandle,
     snapshot: LLMContextSnapshot,

@@ -1048,12 +1048,27 @@ async fn after_run_end(
         .prompt
         .history_budget_tokens
         .unwrap_or(sh.deps.options.history_budget_tokens);
-    let ratio = cfg.prompt.compact_ratio.unwrap_or(sh.deps.options.compact_ratio);
+    let ratio = cfg
+        .prompt
+        .compact_ratio
+        .unwrap_or(sh.deps.options.compact_ratio);
     let summarizer = sh.deps.summarizer.clone();
     if let Some(sm) = summarizer {
         if let Err(e) = maybe_compact(&mut s, &sh.lease, Some(sm.as_ref()), budget, ratio).await {
             log::warn!("compaction of {sid}: {e}");
         }
+    } else {
+        log::debug!(
+            "opendan.context.compaction.skipped {}",
+            json!({
+                "session_id": sid,
+                "run_id": run_id,
+                "phase": "after_run",
+                "reason": "no_summarizer",
+                "budget_tokens": budget,
+                "ratio": ratio,
+            })
+        );
     }
     let usage = next.usage.clone();
     let turns = s.state.turns_completed;

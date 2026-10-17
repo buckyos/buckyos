@@ -6,7 +6,7 @@
 mod common;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Once};
 
 use async_trait::async_trait;
 use buckyos_api::AiRole;
@@ -15,7 +15,70 @@ use libopendan::protocol::*;
 use libopendan::runner::Summarizer;
 use libopendan::runner::{drive, StopWhen};
 use llm_context::error::{LLMComputeError, ProviderFailure};
-use serde_json::json;
+use serde_json::{json, Value};
+
+#[derive(Clone, Debug)]
+struct ContextLogEvent {
+    name: String,
+    level: log::Level,
+    body: Value,
+}
+
+struct ContextTestLogger(Mutex<Vec<ContextLogEvent>>);
+
+static CONTEXT_TEST_LOGGER: ContextTestLogger = ContextTestLogger(Mutex::new(Vec::new()));
+static INIT_CONTEXT_TEST_LOGGER: Once = Once::new();
+
+impl log::Log for ContextTestLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let message = record.args().to_string();
+        let Some((name, body)) = message.split_once(' ') else {
+            return;
+        };
+        if name != "llm_context.context_limit" && !name.starts_with("opendan.context.") {
+            return;
+        }
+        let Ok(body) = serde_json::from_str(body) else {
+            return;
+        };
+        self.0.lock().unwrap().push(ContextLogEvent {
+            name: name.to_string(),
+            level: record.level(),
+            body,
+        });
+    }
+
+    fn flush(&self) {}
+}
+
+fn init_context_logger() {
+    INIT_CONTEXT_TEST_LOGGER.call_once(|| {
+        log::set_logger(&CONTEXT_TEST_LOGGER).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
+    });
+}
+
+fn context_log_events(session_id: &str) -> Vec<ContextLogEvent> {
+    CONTEXT_TEST_LOGGER
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            event.body["session_id"] == session_id
+                || event.body["owner"]["session_id"] == session_id
+        })
+        .cloned()
+        .collect()
+}
+
+fn events_named<'a>(events: &'a [ContextLogEvent], name: &str) -> Vec<&'a ContextLogEvent> {
+    events.iter().filter(|event| event.name == name).collect()
+}
 
 struct StaticSummarizer;
 
@@ -55,6 +118,7 @@ fn rewrites(sd: &libopendan::SessionDir) -> usize {
 
 #[tokio::test]
 async fn function_call_run_continues_after_a_mid_run_rewrite() {
+    init_context_logger();
     let env = Env::new();
     let sd = env.create_work(work_spec("two tool steps")).await;
     let llm = ScriptedLlm::fallible(|req, _| {
@@ -128,10 +192,29 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
     assert_eq!(meta.epoch_input_seq, 1);
     assert_eq!(snap.request.input.len(), 2);
     assert!(snap.state.suspended.is_none());
+
+    let events = context_log_events(sd.sid());
+    let limits = events_named(&events, "llm_context.context_limit");
+    assert_eq!(limits.len(), 1, "{events:?}");
+    assert_eq!(limits[0].level, log::Level::Info);
+    assert_eq!(limits[0].body["reason"], "provider_refused");
+    assert_eq!(limits[0].body["trace_id"], run_id);
+    let started = events_named(&events, "opendan.context.rewrite.started");
+    let completed = events_named(&events, "opendan.context.rewrite.completed");
+    assert_eq!((started.len(), completed.len()), (1, 1), "{events:?}");
+    assert_eq!(started[0].body["reason"], "provider_refused");
+    assert_eq!(started[0].body["attempt"], 1);
+    for event in [started[0], completed[0]] {
+        assert_eq!(event.body["run_id"], run_id);
+        assert_eq!(event.level, log::Level::Info);
+    }
+    assert!(events_named(&events, "opendan.context.rewrite.failed").is_empty());
+    assert!(events_named(&events, "opendan.context.rewrite.paused").is_empty());
 }
 
 #[tokio::test]
 async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
+    init_context_logger();
     let env = Env::new();
     let mut spec = work_spec("behavior with a tight history budget");
     spec.prompt.llm_context = json!({
@@ -191,10 +274,29 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
     let indices: Vec<u32> = snap.state.steps.iter().map(|s| s.meta.step_index).collect();
     assert_eq!(indices, vec![1]);
     assert!(sd.report().unwrap().contains("finished after compaction"));
+
+    let events = context_log_events(sd.sid());
+    let triggered = events_named(&events, "opendan.context.compaction.triggered");
+    assert!(
+        triggered
+            .iter()
+            .any(|event| event.body["reason"] == "context_limit"),
+        "{events:?}"
+    );
+    let completed = events_named(&events, "opendan.context.compaction.completed");
+    assert!(!completed.is_empty(), "{events:?}");
+    assert!(completed
+        .iter()
+        .any(|event| event.body["reason"] == "context_limit"));
+    assert!(events_named(&events, "opendan.context.compaction.failed").is_empty());
+    let rewritten = events_named(&events, "opendan.context.rewrite.completed");
+    assert_eq!(rewritten.len(), 1, "{events:?}");
+    assert_eq!(rewritten[0].body["run_id"], st.last_run.as_deref().unwrap());
 }
 
 #[tokio::test]
 async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
+    init_context_logger();
     let env = Env::new();
     let sd = env.create_work(work_spec("never fits")).await;
     let fits = Arc::new(AtomicBool::new(false));
@@ -232,6 +334,26 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
         Some(llm_context::Suspension::ContextLimit { .. })
     ));
 
+    let events = context_log_events(sd.sid());
+    assert_eq!(events_named(&events, "llm_context.context_limit").len(), 4);
+    let started = events_named(&events, "opendan.context.rewrite.started");
+    assert_eq!(started.len(), 3, "{events:?}");
+    for (index, event) in started.iter().enumerate() {
+        assert_eq!(event.body["attempt"], index + 1);
+        assert_eq!(event.body["run_id"], live.run_id);
+        assert_eq!(event.body["reason"], "provider_refused");
+    }
+    assert_eq!(
+        events_named(&events, "opendan.context.rewrite.completed").len(),
+        3
+    );
+    let paused = events_named(&events, "opendan.context.rewrite.paused");
+    assert_eq!(paused.len(), 1, "{events:?}");
+    assert_eq!(paused[0].level, log::Level::Warn);
+    assert_eq!(paused[0].body["run_id"], live.run_id);
+    assert_eq!(paused[0].body["attempt"], 3);
+    assert_eq!(paused[0].body["max_attempts"], 3);
+
     // A later drive compacts the suspended run and continues it.
     fits.store(true, Ordering::SeqCst);
     let r = drive(&sd, &deps, StopWhen::Finished).await;
@@ -255,4 +377,59 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
     let stats = sd.statistics().unwrap();
     assert_eq!((stats.rounds, stats.rounds_failed, stats.turns), (5, 4, 1));
+}
+
+struct FailingSummarizer;
+
+#[async_trait]
+impl Summarizer for FailingSummarizer {
+    async fn summarize(&self, _previous: &str, _segment: &str) -> libopendan::Result<String> {
+        Err(libopendan::error::OpenDanError::Llm(
+            "summary backend unavailable".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn failed_compaction_logs_the_failure_and_preserves_the_error() {
+    init_context_logger();
+    let env = Env::new();
+    let mut spec = work_spec("summary failure");
+    spec.prompt.history_budget_tokens = Some(80);
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::fallible(|req, _| {
+        if has_tool_result(req, "large-result").is_some() {
+            return Err(refusal());
+        }
+        Ok(tool_call(
+            "large-result",
+            "shell",
+            json!({"command": format!("echo {}", "x".repeat(1024))}),
+        ))
+    });
+    let deps = env.deps(llm).with_summarizer(Arc::new(FailingSummarizer));
+    let result = drive(&sd, &deps, StopWhen::Finished).await;
+    let libopendan::runner::DriveResult::Error { error, .. } = result else {
+        panic!("expected summarizer failure, got {result:?}");
+    };
+    assert_eq!(error["kind"], "llm");
+    assert_eq!(
+        error["message"],
+        "llm context error: summary backend unavailable"
+    );
+    let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+    let events = context_log_events(sd.sid());
+    for phase in ["compaction", "rewrite"] {
+        let started = events_named(&events, &format!("opendan.context.{phase}.started"));
+        let failed = events_named(&events, &format!("opendan.context.{phase}.failed"));
+        assert_eq!((started.len(), failed.len()), (1, 1), "{events:?}");
+        assert_eq!(failed[0].level, log::Level::Warn);
+        assert!(failed[0]
+            .body
+            .to_string()
+            .contains("summary backend unavailable"));
+        assert!(events_named(&events, &format!("opendan.context.{phase}.completed")).is_empty());
+    }
+    let failed = events_named(&events, "opendan.context.rewrite.failed");
+    assert_eq!(failed[0].body["run_id"], run_id);
 }
