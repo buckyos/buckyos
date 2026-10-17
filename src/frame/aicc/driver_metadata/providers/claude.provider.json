@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "provider_profile_id": "claude",
   "custom_provider_adapters": ["claude-messages"],
   "patterns": [
@@ -208,13 +208,29 @@
       "id": "claude-haiku-5-5",
       "pricing": {
         "currency": "USD",
-        "input_token": 1e-07,
-        "output_token": 5e-07,
-        "cache_write_1h_input_token": 2e-07,
-        "cache_input_token": 1e-08,
-        "cache_write_input_token": 1.25e-07,
-        "source_url": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
-        "verified_at": "2026-10-14"
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 100001,
+              "input_token": 1e-07,
+              "output_token": 5e-07,
+              "cache_write_1h_input_token": 2e-07,
+              "cache_input_token": 1e-08,
+              "cache_write_input_token": 1.25e-07
+            },
+            {
+              "input_token": 5e-07,
+              "output_token": 2.5e-06,
+              "cache_write_1h_input_token": 1e-06,
+              "cache_input_token": 5e-08,
+              "cache_write_input_token": 6.25e-07
+            }
+          ]
+        },
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "verified_at": "2026-10-17"
       }
     },
     {
