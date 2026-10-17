@@ -348,13 +348,14 @@
         "video.video2video": ["gemini-omni-1.1-flash"],
         "video.extend": ["gemini-omni-1.1-flash", "veo-3.1-fast-generate-preview"]
       },
-      "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
+      "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking", "https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"],
       "official_variant_rules": [
         { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-4-argon", "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-robotics-er-2-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+        ,{ "model_ids": ["gemma-4-26b-a4b-it", "gemma-4-31b-it"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
       "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
@@ -2341,7 +2342,7 @@
         "vision.ocr": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"],
         "vision.caption": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"]
       },
-      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin", "https://help.aliyun.com/zh/model-studio/glm-zhipu", "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai", "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"],
+      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin", "https://help.aliyun.com/zh/model-studio/glm-zhipu", "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai", "https://help.aliyun.com/zh/model-studio/kimi-kimi-k3", "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"],
       "official_variant_rules": [{
         "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"],
         "variants": {
@@ -2397,10 +2398,15 @@
           "reasoning-medium": { "enable_thinking": true, "preserve_thinking": true }
         }
       }, {
-        "model_ids": ["kimi-k3", "kimi/kimi-k2.8-preview", "kimi/kimi-k3"],
+        "model_ids": ["kimi-k3"],
         "variants": {
           "reasoning-low": { "reasoning_effort": "low" },
           "reasoning-high": { "reasoning_effort": "high" },
+          "reasoning-max": { "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["kimi/kimi-k2.8-preview", "kimi/kimi-k3"],
+        "variants": {
           "reasoning-max": { "reasoning_effort": "max" }
         }
       }, {
@@ -2454,8 +2460,8 @@
           "body_field_types": {"model": ["string"], "messages": ["array"], "max_completion_tokens": ["integer"], "max_tokens": ["integer"], "stream": ["boolean"], "enable_thinking": ["boolean"], "preserve_thinking": ["boolean"], "thinking": ["object"], "tool_stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "seed": ["integer"]},
           "stream_protocol": "openai_chat",
           "success_fixture": {"id": "chatcmpl_qwen_aggregated_mock_1", "object": "chat.completion", "created": 1770000000, "model": "deepseek-v4-flash", "choices": [{"index": 0, "message": {"role": "assistant", "content": "BUCKYOS-AICC-4827"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}},
-          "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions", "https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
-          "evidence_summary": "Alibaba Cloud Model Studio exposes DeepSeek, Kimi, GLM, and MiniMax through POST /compatible-mode/v1/chat/completions with Bearer authentication and OpenAI-compatible chat responses."
+          "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions", "https://help.aliyun.com/zh/model-studio/qwen-function-calling", "https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
+          "evidence_summary": "Alibaba Cloud Model Studio exposes DeepSeek, Kimi, GLM, and MiniMax through POST /compatible-mode/v1/chat/completions with Bearer authentication and OpenAI-compatible chat responses; thinking Kimi tool-call continuation retains reasoning_content in every assistant message."
         },
         {
           "id": "qwen.dashscope.image_synthesis.v1",

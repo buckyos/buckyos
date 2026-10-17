@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "gemini",
-  "revision_seq": 4,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
@@ -321,13 +321,16 @@
       "capabilities": {
         "streaming": true,
         "tool_call": true,
-        "vision": true
+        "vision": true,
+        "reasoning": true,
+        "max_context_tokens": 262144,
+        "max_output_tokens": 32768
       },
       "llm": {
         "spec": "gemini-flash",
-        "effort": "medium",
-        "default_effort": "medium",
-        "supported_efforts": ["medium"],
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["minimal", "high"],
         "stability": "stable",
         "weight": 18
       }
@@ -338,13 +341,16 @@
       "capabilities": {
         "streaming": true,
         "tool_call": true,
-        "vision": true
+        "vision": true,
+        "reasoning": true,
+        "max_context_tokens": 262144,
+        "max_output_tokens": 32768
       },
       "llm": {
         "spec": "gemini-flash",
-        "effort": "medium",
-        "default_effort": "medium",
-        "supported_efforts": ["medium"],
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["minimal", "high"],
         "stability": "stable",
         "weight": 18
       }

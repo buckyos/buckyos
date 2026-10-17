@@ -573,6 +573,21 @@ async function providerResponse(
     json(response, 200, {
       models: [
         {
+          name: "models/gemini-4-argon",
+          displayName: "Gemini 4 Argon Mock",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
+          name: "models/gemma-4-26b-a4b-it",
+          displayName: "Gemma 4 26B A4B Mock",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
+          name: "models/gemma-4-31b-it",
+          displayName: "Gemma 4 31B Mock",
+          supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
+        },
+        {
           name: "models/gemini-2.5-flash",
           displayName: "Gemini 2.5 Flash Mock",
           supportedGenerationMethods: ["generateContent", "streamGenerateContent"],

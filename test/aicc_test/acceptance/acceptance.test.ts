@@ -4961,7 +4961,7 @@ test("T1.5 Qwen Responses mock enforces the official video input shape", () => {
       role: "user",
       content: [{
         type: "input_video",
-        video_url: "https://example.test/video.mp4",
+        video_url: "https://example.test/media?id=4827",
       }],
     }],
   }), []);
