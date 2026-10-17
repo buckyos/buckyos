@@ -204,7 +204,9 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 * 存储路径：`users/{user_id}/desktop/{session_id}/{state_key}`，会话元数据存 `.../_meta`。
 * HTTP 入口：`POST /api/desktop`，需 session token（401 if 失败），按 `action` 分发。
-* 方法：`session.list` / `session.create`（生成 UUID v4）/ `session.delete` / `session.rename`；`state.get` / `state.set` / `state.delete`，后三者支持 `json_path`（点分路径）做部分读写删。任何 state 写都会刷新会话 `updated_at`。
+* 方法：`session.list` / `session.create`（生成 UUID v4）/ `session.delete` / `session.rename`；`state.get` / `state.set` / `state.delete`，后三者支持 `json_path`（点分路径）做部分读写删。任何 state 写都会刷新会话 `updated_at`；写入一个还没有 `_meta` 的会话时补建 `_meta`（`name` = session_id）。`session_id`、`state_key` 只接受 `[A-Za-z0-9_-]{1,64}`，`state_key` 不能以 `_` 开头，否则 400。`state.get` 读从未写过的 state 返回 `{value: null, version: null, exists: false}`（不是错误），存在时 `exists: true`。
+* **账号级外观**：Desktop 所有设备共用约定的会话 `default`，外观设置存在 `state_key = appearance`，每项设置单独按 `json_path` 写，不同设备改不同设置不会互相覆盖：`{theme: "light"|"dark", locale, iconSize: "small"|"medium"|"large", window: {titleBarOpacity, backgroundOpacity}, wallpaper: {image: {asset, width, height, name} | null, fit: "fill"|"fit"|"stretch"|"tile"|"center"|"panorama", tileScale, focusX, focusY}}`。前端先用本机缓存立即绘制，启动和回到前台时读账号值（账号优先；本机改了但账号还没确认的设置以本机为准，跨刷新保留）；账号缺的设置用本机值补写，但不会把浏览器里另一个账号的壁纸带给新账号。状态栏消息预览、安全区、任务栏和图标布局仍是设备级设置。
+* **壁纸图片**：图片字节不进 SystemConfig（单值上限），存在用户 home：`data/home/{user}/.local/share/control-panel/wallpapers/{sha256 前 32 位}.{jpg|png|gif|webp|avif}`。`POST /api/desktop/wallpaper`（body 为图片原始字节，≤16 MiB，按文件头识别类型，其它类型 415、超限 413）返回 `{ok, data: {asset, bytes}}`，同时只保留最新 3 张、删除更早的；`GET /api/desktop/wallpaper/{asset}` 返回图片，名字即内容哈希，响应 `Cache-Control: private, max-age=31536000, immutable`。两者都需登录，`control-panel_token` cookie 即可鉴权，所以 Desktop 直接把这个 URL 用作 CSS 背景。
 
 ### 4.6 只读诊断模块 (Read-only Diagnostics)
 
@@ -347,7 +349,8 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 | App 实例状态 | `services/{app_id}@{uid}/instances/{node_id}` | Node Daemon 上报 |
 | RBAC 策略 | `system/rbac/policy` | `append`（事务后追加，注意非原子） |
 | Zone 展示设置 | `system/zone_presentation` | 调用者 sudo token + revision CAS（不存在时 create） |
-| UI Session | `users/{uid}/desktop/{session_id}/{state_key}` · `.../_meta` | 单次 `set`，写后刷新 `_meta.updated_at` |
+| UI Session | `users/{uid}/desktop/{session_id}/{state_key}` · `.../_meta` | 单次 `set`，写后刷新（或补建）`_meta.updated_at` |
+| 桌面壁纸图片 | 文件 `data/home/{uid}/.local/share/control-panel/wallpapers/{hash}.{ext}` | 临时文件 + rename，保留最新 3 张 |
 
 ---
 

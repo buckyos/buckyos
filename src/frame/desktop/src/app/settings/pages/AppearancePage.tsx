@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
 import { Section } from '../components/shared/Section'
+import { WallpaperSection } from '../components/WallpaperSection'
 import { localeLabels } from '../../../mock/data'
 import type { AppContentLoaderProps } from '../../types'
 import type { GridDensity } from '../../../models/layout'
@@ -108,6 +109,8 @@ export function AppearancePage({ appProps }: AppearancePageProps) {
           </TextField>
         </div>
       </Section>
+
+      <WallpaperSection pageCount={appProps.layoutState.pages.length} />
 
       <Section title={t('settings.appearance.desktop', 'Desktop')}>
         <TextField

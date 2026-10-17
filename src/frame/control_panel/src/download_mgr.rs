@@ -549,7 +549,7 @@ fn split_extension(filename: &str) -> (&str, &str) {
 }
 
 /// The user's directory name under `data/home`, when the name is safe as one.
-fn home_segment(username: &str) -> Option<&str> {
+pub(crate) fn home_segment(username: &str) -> Option<&str> {
     let name = username.trim();
     let safe = !name.is_empty()
         && name != "."

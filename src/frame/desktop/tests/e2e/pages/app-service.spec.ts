@@ -451,11 +451,12 @@ test('loading, empty and recoverable list errors remain explicit', async ({
 test('Chinese source, verification, plan and authorization are translated', async ({
   page,
 }) => {
-  await page.goto('/')
-  await page.evaluate(() =>
+  // Set before the first load: appearance follows the account, so a language
+  // changed behind the page's back after it synced is taken back on reload.
+  await page.addInitScript(() =>
     localStorage.setItem('buckyos.prototype.locale.v1', 'zh-CN'),
   )
-  await page.reload()
+  await page.goto('/')
   await page.getByRole('button', { name: '应用服务', exact: true }).click()
   await page.getByRole('button', { name: '添加应用' }).click()
   await expect(page.getByRole('heading', { name: '选择应用包' })).toBeVisible()

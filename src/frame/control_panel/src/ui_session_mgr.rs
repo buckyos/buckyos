@@ -25,8 +25,9 @@ username + ui_session_id + state_key => ui_state_value (可以读写)
 
 */
 
+use super::desktop_wallpaper::WALLPAPER_ROUTE;
 use super::ControlPanelServer;
-use buckyos_api::get_buckyos_api_runtime;
+use buckyos_api::{get_buckyos_api_runtime, SystemConfigError};
 use buckyos_http_server::*;
 use bytes::Bytes;
 use http::{Method, StatusCode};
@@ -52,6 +53,20 @@ fn desktop_state_key(userid: &str, session_id: &str, state_key: &str) -> String 
 /// Session metadata is stored under: users/{userid}/desktop/{session_id}/_meta
 fn desktop_session_meta_key(userid: &str, session_id: &str) -> String {
     format!("users/{}/desktop/{}/_meta", userid, session_id)
+}
+
+/// Session ids and state keys are single config path segments: `[A-Za-z0-9_-]`, at most 64, and a state key
+/// never starts with `_` (that is where `_meta` lives).
+fn is_path_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn is_state_key(value: &str) -> bool {
+    is_path_segment(value) && !value.starts_with('_')
 }
 
 /// Read a value at a json_path from a JSON value.
@@ -190,6 +205,10 @@ impl ControlPanelServer {
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let path = req.uri().path();
+        if path == WALLPAPER_ROUTE || path.starts_with(&format!("{}/", WALLPAPER_ROUTE)) {
+            return self.handle_desktop_wallpaper(req).await;
+        }
         if req.method() != Method::POST {
             return self.desktop_json_response(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -232,6 +251,17 @@ impl ControlPanelServer {
         let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
         let userid = &principal.username;
+
+        let session_id = body.get("session_id").and_then(|v| v.as_str());
+        let state_key = body.get("state_key").and_then(|v| v.as_str());
+        if session_id.is_some_and(|id| !is_path_segment(id))
+            || state_key.is_some_and(|key| !is_state_key(key))
+        {
+            return self.desktop_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"ok": false, "error": "session_id and state_key must be [A-Za-z0-9_-]{1,64}; a state_key cannot start with _"}),
+            );
+        }
 
         let result = match action {
             "session.list" => self.desktop_session_list(userid).await,
@@ -513,10 +543,20 @@ impl ControlPanelServer {
             .map_err(|e| format!("get config client: {}", e))?;
 
         let key = desktop_state_key(userid, session_id, state_key);
-        let config_value = client
-            .get(&key)
-            .await
-            .map_err(|e| format!("get state: {}", e))?;
+        let config_value = match client.get(&key).await {
+            Ok(value) => value,
+            // Never written is an answer, not a failure: the desktop then seeds the state from what it has.
+            Err(SystemConfigError::KeyNotFound(_)) => {
+                return Ok(json!({
+                    "session_id": session_id,
+                    "state_key": state_key,
+                    "value": Value::Null,
+                    "version": Value::Null,
+                    "exists": false,
+                }))
+            }
+            Err(e) => return Err(format!("get state: {}", e)),
+        };
 
         let parsed: Value = serde_json::from_str(&config_value.value)
             .unwrap_or(Value::String(config_value.value.clone()));
@@ -532,6 +572,7 @@ impl ControlPanelServer {
             "state_key": state_key,
             "value": result,
             "version": config_value.version,
+            "exists": true,
         }))
     }
 
@@ -572,20 +613,26 @@ impl ControlPanelServer {
             .await
             .map_err(|e| format!("set state: {}", e))?;
 
-        // Update session's updated_at timestamp
+        // Update session's updated_at timestamp. A session first written without `session.create` (the
+        // desktop's well-known `default` one, shared by all of the user's devices) gets its metadata here.
         let meta_key = desktop_session_meta_key(userid, session_id);
-        if let Ok(meta_val) = client.get(&meta_key).await {
-            if let Ok(mut meta) = serde_json::from_str::<Value>(&meta_val.value) {
-                if let Some(obj) = meta.as_object_mut() {
-                    obj.insert(
-                        "updated_at".to_string(),
-                        json!(chrono::Utc::now().to_rfc3339()),
-                    );
-                    if let Ok(s) = serde_json::to_string(&meta) {
-                        let _ = client.set(&meta_key, &s).await;
+        let now = chrono::Utc::now().to_rfc3339();
+        match client.get(&meta_key).await {
+            Ok(meta_val) => {
+                if let Ok(mut meta) = serde_json::from_str::<Value>(&meta_val.value) {
+                    if let Some(obj) = meta.as_object_mut() {
+                        obj.insert("updated_at".to_string(), json!(now));
+                        if let Ok(s) = serde_json::to_string(&meta) {
+                            let _ = client.set(&meta_key, &s).await;
+                        }
                     }
                 }
             }
+            Err(SystemConfigError::KeyNotFound(_)) => {
+                let meta = json!({"name": session_id, "created_at": now, "updated_at": now});
+                let _ = client.set(&meta_key, &meta.to_string()).await;
+            }
+            Err(_) => {}
         }
 
         Ok(json!({
@@ -652,5 +699,31 @@ impl ControlPanelServer {
             .header("Content-Type", "application/json")
             .body(Self::boxed_http_body(json_bytes))
             .map_err(|e| server_err!(ServerErrorCode::BadRequest, "build response: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_ids_and_state_keys_are_single_segments() {
+        assert!(is_path_segment("default"));
+        assert!(is_path_segment("3f2b9c1e-7d1a-4c55-9a0e-1b2c3d4e5f60"));
+        assert!(is_state_key("appearance"));
+        assert!(is_state_key("window_layout"));
+        assert!(!is_path_segment(""));
+        assert!(!is_path_segment("a/b"));
+        assert!(!is_path_segment(".."));
+        assert!(!is_path_segment(&"a".repeat(65)));
+        assert!(!is_state_key("_meta"));
+    }
+
+    #[test]
+    fn json_path_set_merges_one_field() {
+        let mut root = json!({"theme": "light", "wallpaper": {"fit": "fill"}});
+        json_path_set(&mut root, "wallpaper.fit", json!("tile")).unwrap();
+        json_path_set(&mut root, "locale", json!("zh-CN")).unwrap();
+        assert_eq!(root, json!({"theme": "light", "locale": "zh-CN", "wallpaper": {"fit": "tile"}}));
     }
 }

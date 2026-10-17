@@ -1,5 +1,5 @@
 const resetSearchParam = 'resetSiteData'
-const indexedDbFallbackNames = ['buckyos-mock-message-history']
+const indexedDbFallbackNames = ['buckyos-mock-message-history', 'buckyos-desktop-wallpaper']
 
 export function beginSiteDataReset() {
   const url = new URL(window.location.href)

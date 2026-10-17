@@ -25,7 +25,12 @@ export type DesktopItemType = 'app' | 'widget'
  * - `reflow`: system re-placed due to resize / init recovery
  */
 export type PlacementType = 'manual' | 'auto' | 'reflow'
-export type DesktopWallpaperMode = 'panorama' | 'tile' | 'infinite'
+/**
+ * `infinite` is the built-in theme background. With an image: `fill` covers the screen (cropping), `fit` shows
+ * the whole image, `stretch` distorts it to the screen, `tile` repeats it, `center` shows it at its own pixel
+ * size, and `panorama` spans it across the desktop pages and pans with them.
+ */
+export type DesktopWallpaperMode = 'panorama' | 'tile' | 'infinite' | 'fill' | 'fit' | 'stretch' | 'center'
 export type WidgetType = string
 export type DisplayMode = 'windowed' | 'maximized' | 'fullscreen'
 export type WindowState = 'windowed' | 'maximized' | 'minimized'
@@ -91,7 +96,16 @@ export interface LayoutState {
 export interface DesktopWallpaper {
   mode: DesktopWallpaperMode
   imageUrl?: string
+  /** Square tile of the built-in pattern, in CSS px. */
   tileSize?: number
+  /** Pixel size of `imageUrl`; `center` and `tile` show the image at it (device pixels). */
+  imageWidth?: number
+  imageHeight?: number
+  /** `tile` with an image: percent of the image's own size. */
+  tileScale?: number
+  /** `fill` / `panorama`: the point of the image kept in view when it is cropped, 0–100 on each axis. */
+  focusX?: number
+  focusY?: number
 }
 
 export interface WindowAppearancePreferences {

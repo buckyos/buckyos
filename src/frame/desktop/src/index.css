@@ -275,6 +275,42 @@ a {
   transform: scale(1.1);
 }
 
+/* A picture wallpaper can be light or dark anywhere, so the desktop's own text goes light with a shadow, as on
+   phone home screens; the theme colours above only suit the built-in background. */
+main[data-wallpaper='image'] .desktop-icon-label {
+  color: #fff;
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 0.6),
+    0 0 8px rgb(0 0 0 / 0.35);
+}
+
+main[data-wallpaper='image'] .swiper-pagination-bullet {
+  background: rgb(255 255 255 / 0.55);
+  border-color: rgb(0 0 0 / 0.18);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+main[data-wallpaper='image'] .swiper-pagination-bullet-active {
+  background: #fff;
+}
+
+/* A new picture fades in over the theme background instead of popping in. */
+.desktop-wallpaper-image {
+  animation: desktop-wallpaper-in 240ms var(--cp-ease-smooth);
+}
+
+@keyframes desktop-wallpaper-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-wallpaper-image {
+    animation: none;
+  }
+}
+
 .swiper {
   overflow: visible;
 }

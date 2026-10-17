@@ -64,10 +64,13 @@ import {
   type ConnectionState,
 } from './shell'
 import { useTray } from './tray/trayModel'
+import { useHasWallpaperPicture, useWallpaperSnapshot } from './wallpaper/store'
+import { AccountAppearanceSync } from './appearance/AccountAppearanceSync'
 import { useI18n } from '../i18n/provider'
 import { useAppText } from '../presentation/appText'
 import type {
   AppDefinition,
+  DesktopWallpaper,
   FormFactor,
   LayoutItem,
   LayoutState,
@@ -230,7 +233,6 @@ type WindowGeometryPatch = Partial<Pick<WindowRecord, 'x' | 'y' | 'width' | 'hei
 export function DesktopRoute() {
   const store = useDesktopUIStore()
   const snap = useDesktopUISnapshot()
-  const { resetBackground, setBackground } = useDesktopBackground()
   const { locale, setLocale, t } = useI18n()
   const appText = useAppText()
   const { themeMode, setThemeMode } = useThemeMode()
@@ -748,21 +750,9 @@ export function DesktopRoute() {
   // msg-center and TaskMgr only while the mobile shell is up.
   const tray = useTray(isMobile && !isLoading && !hasError)
 
-  // Background
-  const backgroundWallpaper = useMemo(
-    () => appearance.wallpaper ?? { mode: 'infinite' as const },
-    [appearance.wallpaper],
-  )
+  // Background (drawn by DesktopBackgroundSync below)
+  const hasWallpaperPicture = useHasWallpaperPicture()
   const backgroundPageCount = resolvedLayout?.pages.length ?? 1
-
-  useEffect(() => {
-    setBackground({
-      wallpaper: backgroundWallpaper,
-      pageCount: backgroundPageCount,
-    })
-  }, [backgroundPageCount, backgroundWallpaper, setBackground])
-
-  useEffect(() => resetBackground, [resetBackground])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -770,13 +760,18 @@ export function DesktopRoute() {
 
   return (
     <main
-      className="relative isolate bg-[color:var(--cp-bg)]"
+      // With a picture the desktop is see-through down to DesktopBackground; labels and page dots
+      // switch to light-on-dark (index.css) so they read on any image.
+      className={clsx('relative isolate', hasWallpaperPicture ? null : 'bg-[color:var(--cp-bg)]')}
+      data-wallpaper={hasWallpaperPicture ? 'image' : undefined}
       style={
         shouldLockDesktopViewport
           ? { height: '100dvh', overflow: 'hidden' }
           : { minHeight: '100dvh' }
       }
     >
+      <DesktopBackgroundSync fallback={appearance.wallpaper} pageCount={backgroundPageCount} />
+      {currentUser ? <AccountAppearanceSync key={currentUser.userId} userId={currentUser.userId} /> : null}
       <section
         className="relative z-10"
         style={
@@ -1162,6 +1157,24 @@ const DesktopPages = memo(function DesktopPages({
 // Sub-components (unchanged)
 // ---------------------------------------------------------------------------
 
+/**
+ * Hands the wallpaper to the app-wide DesktopBackground: the picture chosen in Settings, else the payload's
+ * built-in one. Kept apart so a preview drag in Settings re-renders this, not the whole desktop.
+ */
+function DesktopBackgroundSync({ fallback, pageCount }: { fallback: DesktopWallpaper | undefined; pageCount: number }) {
+  const { resetBackground, setBackground } = useDesktopBackground()
+  const picture = useWallpaperSnapshot().wallpaper
+  const wallpaper = useMemo(() => picture ?? fallback ?? { mode: 'infinite' as const }, [picture, fallback])
+
+  useEffect(() => {
+    setBackground({ wallpaper, pageCount })
+  }, [pageCount, wallpaper, setBackground])
+
+  useEffect(() => resetBackground, [resetBackground])
+
+  return null
+}
+
 function LoadingState() {
   const { t } = useI18n()
   return (
@@ -1377,7 +1390,7 @@ function DesktopTile({
             />
           ) : null}
           <span
-            className="max-w-full break-words overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
+            className="desktop-icon-label max-w-full break-words overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
             style={{
               paddingTop: 'var(--label-padding-top)',
               fontSize: isDesktop

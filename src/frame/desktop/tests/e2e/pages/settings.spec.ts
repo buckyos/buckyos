@@ -1,5 +1,28 @@
 import { expect, test, type Page } from '@playwright/test'
 
+/** A landscape picture drawn in the page, as a file the picker can take. */
+async function landscapePicture(page: Page, name = 'sunset.jpg') {
+  const base64 = await page.evaluate(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1200
+    canvas.height = 800
+    const context = canvas.getContext('2d')!
+    context.fillStyle = '#1d3b6e'
+    context.fillRect(0, 0, 1200, 400)
+    context.fillStyle = '#e8875a'
+    context.fillRect(0, 400, 1200, 400)
+    return canvas.toDataURL('image/jpeg', 0.9).split(',')[1]
+  })
+  return { name, mimeType: 'image/jpeg', buffer: Buffer.from(base64, 'base64') }
+}
+
+const wallpaperLayer = (page: Page) => page.getByTestId('desktop-background').locator('.desktop-wallpaper-image')
+
+/** The account's appearance state as the mock control panel holds it. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const accountAppearance = (page: Page): Promise<any> =>
+  page.evaluate(() => JSON.parse(localStorage.getItem('buckyos.mock.desktop-state.appearance') ?? '{}'))
+
 async function openSettings(page: Page, item?: string) {
   await page.goto('/?scenario=normal')
   await page.getByTestId('desktop-app-settings').click()
@@ -34,18 +57,106 @@ test.describe('settings', () => {
     await expect(win.getByTestId('settings-zone-page')).toBeVisible()
   })
 
-  test('appearance: no session management or wallpaper; the icon size persists', async ({ page }) => {
+  test('appearance: no session management; the icon size persists', async ({ page }) => {
     const win = await openSettings(page, 'Appearance')
     await expect(win.getByTestId('settings-appearance-page')).toBeVisible()
     await expect(win.getByText('Session Management')).toHaveCount(0)
     await expect(win.getByText('Current Session')).toHaveCount(0)
-    await expect(win.getByText('Wallpaper')).toHaveCount(0)
 
     await win.getByTestId('settings-icon-size').selectOption('large')
     await page.reload()
     await page.getByTestId('desktop-app-settings').click()
     await page.getByTestId('window-settings').getByRole('button', { name: 'Appearance', exact: true }).click()
     await expect(page.getByTestId('settings-icon-size')).toHaveValue('large')
+  })
+
+  test('appearance: a desktop picture with its fit and position is saved to the account', async ({ page }) => {
+    const win = await openSettings(page, 'Appearance')
+    const section = win.getByTestId('settings-wallpaper')
+    await expect(section).toContainText('saved to your account')
+    await expect(section).toContainText('Using the default background')
+    await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
+    await expect(page.locator('main[data-wallpaper]')).toHaveCount(0)
+
+    await win.getByTestId('settings-wallpaper-file').setInputFiles(await landscapePicture(page))
+    await expect(section.getByTestId('settings-wallpaper-status')).toContainText('sunset.jpg · 1200 × 800')
+    await expect(page.getByTestId('desktop-background')).toHaveAttribute('data-wallpaper-mode', 'fill')
+    await expect(wallpaperLayer(page)).toHaveCSS('background-image', /^url\("blob:/)
+    await expect(page.locator('main[data-wallpaper="image"]')).toHaveCount(1)
+    await expect(section.getByTestId('settings-wallpaper-preview-phone').locator('.desktop-wallpaper-image')).toHaveCount(1)
+
+    // Dragging the phone preview to the right brings the left of the picture into view.
+    const phone = section.getByTestId('settings-wallpaper-preview-phone')
+    const box = (await phone.boundingBox())!
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(async () => Number((await wallpaperLayer(page).evaluate((el) => getComputedStyle(el).backgroundPositionX)).replace('%', ''))).toBeLessThan(50)
+    await expect(section.getByTestId('settings-wallpaper-recenter')).toBeVisible()
+
+    await section.getByTestId('settings-wallpaper-fit-tile').click()
+    await expect(section.getByTestId('settings-wallpaper-fit-tile')).toHaveAttribute('aria-checked', 'true')
+    await expect(page.getByTestId('desktop-background')).toHaveAttribute('data-wallpaper-mode', 'tile')
+    await expect(wallpaperLayer(page)).toHaveCSS('background-repeat', 'repeat')
+    await expect(section.getByTestId('settings-wallpaper-tile-scale')).toBeAttached()
+
+    // The account (the mock control-panel state) now holds the picture and its fit.
+    await expect.poll(() => accountAppearance(page)).toMatchObject({ wallpaper: { fit: 'tile', image: { width: 1200, height: 800, name: 'sunset.jpg' } } })
+    expect((await accountAppearance(page)).wallpaper.focusX).toBeLessThan(50)
+
+    await page.reload()
+    await expect(page.getByTestId('desktop-background')).toHaveAttribute('data-wallpaper-mode', 'tile')
+    await expect(wallpaperLayer(page)).toHaveCSS('background-image', /^url\("blob:/)
+
+    await page.getByTestId('desktop-app-settings').click()
+    await page.getByTestId('window-settings').getByRole('button', { name: 'Appearance', exact: true }).click()
+    await expect(page.getByTestId('settings-wallpaper-fit-tile')).toHaveAttribute('aria-checked', 'true')
+    await page.getByTestId('settings-wallpaper-reset').click()
+    await expect(page.getByTestId('settings-wallpaper')).toContainText('Using the default background')
+    await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
+    await expect(page.locator('main[data-wallpaper]')).toHaveCount(0)
+    await expect.poll(async () => (await accountAppearance(page)).wallpaper.image).toBeNull()
+  })
+
+  test('appearance follows the account: another device gets the theme, icon size and picture back', async ({ page }) => {
+    const win = await openSettings(page, 'Appearance')
+    await win.getByTestId('settings-theme').selectOption('dark')
+    await win.getByTestId('settings-icon-size').selectOption('large')
+    await win.getByTestId('settings-wallpaper-file').setInputFiles(await landscapePicture(page))
+    await win.getByTestId('settings-wallpaper-fit-fit').click()
+    await expect.poll(() => accountAppearance(page)).toMatchObject({ theme: 'dark', iconSize: 'large', wallpaper: { fit: 'fit', image: { name: 'sunset.jpg' } } })
+
+    // A new device: nothing of this page's own is left, only the account (which the mock keeps in the browser).
+    await page.evaluate(() => {
+      for (const key of Object.keys(localStorage)) {
+        if (!key.startsWith('buckyos.mock.')) localStorage.removeItem(key)
+      }
+    })
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(page.getByTestId('desktop-background')).toHaveAttribute('data-wallpaper-mode', 'fit')
+    await expect(wallpaperLayer(page)).toHaveCSS('background-image', /^url\("blob:/)
+    await page.getByTestId('desktop-app-settings').click()
+    await page.getByTestId('window-settings').getByRole('button', { name: 'Appearance', exact: true }).click()
+    await expect(page.getByTestId('settings-icon-size')).toHaveValue('large')
+    await expect(page.getByTestId('settings-wallpaper-status')).toContainText('sunset.jpg')
+
+    // A change on one device reaches the account; the message preview stays a choice of this device.
+    await page.getByTestId('settings-theme').selectOption('light')
+    await expect.poll(async () => (await accountAppearance(page)).theme).toBe('light')
+    expect(Object.keys(await accountAppearance(page))).not.toContain('messagePreview')
+  })
+
+  test('appearance: a file that is not a picture is refused and the background is kept', async ({ page }) => {
+    const win = await openSettings(page, 'Appearance')
+    await win.getByTestId('settings-wallpaper-file').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') })
+    await expect(win.getByTestId('settings-wallpaper').getByRole('alert')).toContainText('Choose a picture file')
+    await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
+
+    await win.getByTestId('settings-wallpaper-file').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not a png') })
+    await expect(win.getByTestId('settings-wallpaper').getByRole('alert')).toContainText('could not be read')
+    await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
   })
 
   test('cluster: devices with their hardware, add-device notice, certificates', async ({ page }) => {
@@ -93,5 +204,30 @@ test.describe('settings', () => {
     await win.getByTestId('settings-download-logs').click()
     expect((await download).suggestedFilename()).toBe('buckyos-logs-mock.txt')
     await expect(win.getByText('Coming soon')).toHaveCount(0)
+  })
+})
+
+test.describe('settings on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+  test('appearance: the picture covers the home screen and its labels turn light', async ({ page }) => {
+    await page.goto('/?scenario=normal')
+    // Launcher tiles open on a touch pointer release (see mobile.spec.ts).
+    const settings = page.getByRole('button', { name: 'Settings' })
+    const box = (await settings.boundingBox())!
+    const at = { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2, pointerId: 1, pointerType: 'touch', bubbles: true }
+    await settings.dispatchEvent('pointerdown', at)
+    await page.locator('body').dispatchEvent('pointerup', at)
+    await page.getByRole('button', { name: 'Appearance' }).first().click()
+
+    await expect(page.getByTestId('settings-wallpaper-preview-phone').locator('xpath=..')).toContainText('Phone · this screen')
+    await page.getByTestId('settings-wallpaper-file').setInputFiles(await landscapePicture(page))
+    await expect(page.getByTestId('settings-wallpaper-status')).toContainText('1200 × 800')
+    await page.getByTestId('settings-wallpaper-fit-panorama').click()
+    await page.getByRole('button', { name: 'Minimize' }).tap()
+
+    await expect(page.getByTestId('desktop-background')).toHaveAttribute('data-wallpaper-mode', 'panorama')
+    await expect(wallpaperLayer(page)).toHaveCSS('background-image', /^url\("blob:/)
+    await expect(page.locator('.desktop-icon-label').first()).toHaveCSS('color', 'rgb(255, 255, 255)')
   })
 })

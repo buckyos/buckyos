@@ -1475,6 +1475,19 @@ export class DesktopUIStore {
     this.persistLayout()
   }
 
+  /** Window opacity from the account (AccountAppearanceSync); the Settings app saves it through applySettings. */
+  setWindowAppearance(next: WindowAppearancePreferences) {
+    const current = this.snapshot.syncData.appearance.windowAppearance
+    if (
+      current.titleBarOpacity === next.titleBarOpacity &&
+      current.backgroundOpacity === next.backgroundOpacity
+    ) {
+      return
+    }
+    writeJson(windowAppearanceStorageKey, next)
+    this.update({ appearance: { windowAppearance: { ...next } } })
+  }
+
   // ========================================================================
   // Simple setters for transient UI state (runtime)
   // ========================================================================
