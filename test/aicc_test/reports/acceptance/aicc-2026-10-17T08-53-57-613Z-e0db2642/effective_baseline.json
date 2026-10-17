@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-17T08:55:16.826Z",
+  "source_baseline_revision": "2026-10-10.2",
+  "official_catalog_fetched_at": "2026-10-17T08:53:57.869Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "fal",
+      "provider_instance_name": "fal-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "catalog-fal-3",
+      "refresh_inventory_revision": "23:1792226967255",
+      "unmatched_count": 0,
+      "after_inventory_revision": "catalog-fal-3"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "24:1792226967255",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "fal_key",
+          "mode": "api_key"
+        },
+        "base_url": "https://queue.fal.run",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792227241296,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 4,
+          "revision": "catalog-fal-3",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 1792227241296
+        },
+        "protocol_adapter_id": "fal-queue",
+        "provider_instance_name": "fal-t2",
+        "provider_profile_id": "fal",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 5113
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "fal",
+      "provider_instance_name": "fal-t2",
+      "inventory_revision": "official-snapshot-2026-10-17T08:53:57.869Z",
+      "models": [
+        {
+          "provider_model_id": "fal-ai/deepfilternet3"
+        },
+        {
+          "provider_model_id": "fal-ai/esrgan"
+        },
+        {
+          "provider_model_id": "fal-ai/imageutils/rembg"
+        },
+        {
+          "provider_model_id": "fal-ai/video-upscaler"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "fal",
+      "provider_instance_name": "fal-t2",
+      "inventory_revision": "catalog-fal-3",
+      "models": [
+        {
+          "exact_model": "fal-ai/deepfilternet3@fal-t2",
+          "provider_model_id": "fal-ai/deepfilternet3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.enhance"
+          ],
+          "logical_mounts": [
+            "audio.enhance",
+            "audio.enhance.fal",
+            "audio.enhance.fal-ai.deepfilternet3"
+          ]
+        },
+        {
+          "exact_model": "fal-ai/esrgan@fal-t2",
+          "provider_model_id": "fal-ai/esrgan",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.upscale"
+          ],
+          "logical_mounts": [
+            "image.upscale",
+            "image.upscale.fal",
+            "image.upscale.fal-ai.esrgan"
+          ]
+        },
+        {
+          "exact_model": "fal-ai/imageutils/rembg@fal-t2",
+          "provider_model_id": "fal-ai/imageutils/rembg",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.bg_remove"
+          ],
+          "logical_mounts": [
+            "image.bg_remove",
+            "image.bg_remove.fal",
+            "image.bg_remove.fal-ai.imageutils.rembg"
+          ]
+        },
+        {
+          "exact_model": "fal-ai/video-upscaler@fal-t2",
+          "provider_model_id": "fal-ai/video-upscaler",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.upscale"
+          ],
+          "logical_mounts": [
+            "video.upscale",
+            "video.upscale.fal",
+            "video.upscale.fal-ai.video-upscaler"
+          ]
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "fal",
+      "provider_instance": "fal-t2",
+      "exact_model": "fal-ai/imageutils/rembg@fal-t2",
+      "provider_model_id": "fal-ai/imageutils/rembg",
+      "physical_model_id": "fal-ai/imageutils/rembg",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/imageutils/rembg/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "fal",
+      "provider_instance": "fal-t2",
+      "exact_model": "fal-ai/imageutils/rembg@fal-t2",
+      "provider_model_id": "fal-ai/imageutils/rembg",
+      "physical_model_id": "fal-ai/imageutils/rembg",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/imageutils/rembg/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.fal.fal-t2.fal-ai-imageutils-rembg.image.bg_remove",
+      "provider_driver": "fal",
+      "provider_instance": "fal-t2",
+      "exact_model": "fal-ai/imageutils/rembg@fal-t2",
+      "api_type": "image.bg_remove",
+      "method": "image.bg_remove",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "image"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/imageutils/rembg/api"
+      ]
+    }
+  ]
+}

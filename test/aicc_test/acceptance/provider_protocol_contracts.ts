@@ -70,7 +70,7 @@ export type ProviderProtocolContract = {
     string,
     Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
-  body_field_formats?: Record<string, "http_url">;
+  body_field_formats?: Record<string, "http_url" | "http_url_or_data_uri">;
   required_body_values?: Record<string, unknown>;
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
@@ -172,7 +172,6 @@ function object(value: unknown, field: string): Record<string, unknown> {
   }
   return value as Record<string, unknown>;
 }
-
 function nonEmptyString(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${field} must be a non-empty string`);
@@ -520,7 +519,7 @@ export function validateProviderProtocolCatalog(
           if (!(bodyFieldTypes[field] as unknown[] | undefined)?.includes("string")) {
             throw new Error(`${id} format field ${field} must accept strings`);
           }
-          if (format !== "http_url") {
+          if (format !== "http_url" && format !== "http_url_or_data_uri") {
             throw new Error(`${id}.body_field_formats.${field} is invalid`);
           }
         }
@@ -1032,14 +1031,30 @@ export function validateProviderRequest(
   for (const [field, format] of Object.entries(contract.body_field_formats ?? {})) {
     const value = body[field];
     if (value === undefined || value === null) continue;
-    if (format === "http_url") {
+    if (format === "http_url" || format === "http_url_or_data_uri") {
+      const dataUri = typeof value === "string" &&
+        /^data:[^;,\s]+;base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
       try {
         const url = new URL(String(value));
-        if (typeof value !== "string" || !["http:", "https:"].includes(url.protocol)) {
-          errors.push(`body field ${field} must be an HTTP(S) URL`);
+        if (
+          typeof value !== "string" ||
+          (!["http:", "https:"].includes(url.protocol) &&
+            !(format === "http_url_or_data_uri" && dataUri))
+        ) {
+          errors.push(
+            format === "http_url"
+              ? `body field ${field} must be an HTTP(S) URL`
+              : `body field ${field} must be an HTTP(S) URL or Base64 data URI`,
+          );
         }
       } catch {
-        errors.push(`body field ${field} must be an HTTP(S) URL`);
+        if (!(format === "http_url_or_data_uri" && dataUri)) {
+          errors.push(
+            format === "http_url"
+              ? `body field ${field} must be an HTTP(S) URL`
+              : `body field ${field} must be an HTTP(S) URL or Base64 data URI`,
+          );
+        }
       }
     }
   }
