@@ -449,8 +449,8 @@ impl MessageCenter {
     /// Agent of `owner` (AppId = AgentId).
     async fn agent_of_app(&self, app_id: &str, owner: Option<&DID>) -> Option<DID> {
         let did = AgentId::parse(app_id).ok()?.agent_did();
-        let info = self.token_verifier.get().zone_agent(&did).await.ok()??;
-        (owner.is_none() || owner == Some(&info.owner)).then_some(did)
+        let agent_owner = self.token_verifier.get().agent_owner(&did).await.ok()??;
+        (owner.is_none() || owner == Some(&agent_owner)).then_some(did)
     }
 
     pub(crate) async fn notify_caller(&self, ctx: &RPCContext) -> Result<NotifyCaller> {

@@ -9,11 +9,11 @@
 
 use crate::msg_center::MessageCenter;
 use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry};
-use crate::zone_agent::find_zone_agent;
+use crate::zone_agent::{find_zone_agent_spec, load_agent_settings, AgentLocationHints};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, validate_verify_hub_token_claims, MailboxAddress, MailboxKind,
-    MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState, SessionLifecycle,
+    get_buckyos_api_runtime, validate_verify_hub_token_claims, AgentSpec, MailboxAddress,
+    MailboxKind, MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState, SessionLifecycle,
     SessionListLifecycleFilter, SessionListOrder, SessionMessagePage, SessionSummary,
     SessionSummaryPage, TokenPrincipalKind, TokenUse, UiSessionStateEntry, UserPrivateProfile,
 };
@@ -71,7 +71,24 @@ pub struct ZoneAgentInfo {
     pub allow_group: bool,
 }
 
-pub struct RuntimeSessionTokenVerifier;
+#[derive(Default)]
+pub struct RuntimeSessionTokenVerifier {
+    agent_locations: AgentLocationHints,
+}
+
+impl RuntimeSessionTokenVerifier {
+    async fn zone_agent_spec(
+        &self,
+        did: &DID,
+    ) -> std::result::Result<Option<(String, AgentSpec)>, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        find_zone_agent_spec(client.as_ref(), did, Some(&self.agent_locations))
+            .await
+            .map_err(|error| permission_denied(error.to_string()))
+    }
+}
 
 #[async_trait]
 impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
@@ -95,16 +112,159 @@ impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
     }
 
     async fn zone_agent(&self, did: &DID) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors> {
+        let Some((owner_user_id, spec)) = self.zone_agent_spec(did).await? else {
+            return Ok(None);
+        };
         let client = get_buckyos_api_runtime()?
             .get_system_config_client()
             .await?;
-        let agent = find_zone_agent(client.as_ref(), did)
+        let settings = load_agent_settings(client.as_ref(), &owner_user_id, &spec.agent_id)
             .await
             .map_err(|error| permission_denied(error.to_string()))?;
-        Ok(agent.map(|agent| ZoneAgentInfo {
-            owner: agent.owner().clone(),
-            allow_group: agent.settings.allow_group,
+        Ok(Some(ZoneAgentInfo {
+            owner: spec.agent_doc.owner,
+            allow_group: settings.allow_group,
         }))
+    }
+
+    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+        Ok(self.zone_agent_spec(did).await?.is_some())
+    }
+
+    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
+        Ok(self
+            .zone_agent_spec(did)
+            .await?
+            .map(|(_, spec)| spec.agent_doc.owner))
+    }
+}
+
+tokio::task_local! {
+    static REQUEST_IDENTITY: RequestIdentityMemo;
+}
+
+#[derive(Default)]
+struct RequestIdentityMemo(std::sync::Mutex<RequestIdentityFacts>);
+
+#[derive(Default)]
+struct RequestIdentityFacts {
+    verified_tokens: HashMap<String, RPCSessionToken>,
+    user_dids: HashMap<String, DID>,
+    zone_agents: HashMap<DID, Option<ZoneAgentInfo>>,
+    agent_owners: HashMap<DID, Option<DID>>,
+}
+
+/// Only successful answers are kept, and only for this request.
+pub(crate) async fn serve_with_request_identity<F: std::future::Future>(request: F) -> F::Output {
+    REQUEST_IDENTITY
+        .scope(RequestIdentityMemo::default(), request)
+        .await
+}
+
+fn recall<T>(read: impl FnOnce(&RequestIdentityFacts) -> Option<T>) -> Option<T> {
+    REQUEST_IDENTITY
+        .try_with(|memo| {
+            read(
+                &memo
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        })
+        .ok()
+        .flatten()
+}
+
+fn remember(write: impl FnOnce(&mut RequestIdentityFacts)) {
+    let _ = REQUEST_IDENTITY.try_with(|memo| {
+        write(
+            &mut memo
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    });
+}
+
+struct RequestScopedVerifier(Arc<dyn SessionTokenVerifier>);
+
+#[async_trait]
+impl SessionTokenVerifier for RequestScopedVerifier {
+    async fn authorize(
+        &self,
+        token: &str,
+        resource: &str,
+        action: &str,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.0.authorize(token, resource, action).await
+    }
+
+    async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors> {
+        if let Some(verified) = recall(|facts| facts.verified_tokens.get(token).cloned()) {
+            return Ok(verified);
+        }
+        let verified = self.0.verify(token).await?;
+        remember(|facts| {
+            facts
+                .verified_tokens
+                .insert(token.to_string(), verified.clone());
+        });
+        Ok(verified)
+    }
+
+    async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors> {
+        if let Some(did) = recall(|facts| facts.user_dids.get(user_id).cloned()) {
+            return Ok(did);
+        }
+        let did = self.0.resolve_user_did(user_id).await?;
+        remember(|facts| {
+            facts.user_dids.insert(user_id.to_string(), did.clone());
+        });
+        Ok(did)
+    }
+
+    async fn zone_agent(&self, did: &DID) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors> {
+        if let Some(agent) = recall(|facts| facts.zone_agents.get(did).cloned()) {
+            return Ok(agent);
+        }
+        let agent = self.0.zone_agent(did).await?;
+        remember(|facts| {
+            facts.zone_agents.insert(did.clone(), agent.clone());
+        });
+        Ok(agent)
+    }
+
+    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+        let known = recall(|facts| {
+            facts
+                .agent_owners
+                .get(did)
+                .map(Option::is_some)
+                .or_else(|| facts.zone_agents.get(did).map(Option::is_some))
+        });
+        match known {
+            Some(known) => Ok(known),
+            None => self.0.is_zone_agent(did).await,
+        }
+    }
+
+    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
+        let known = recall(|facts| {
+            facts.agent_owners.get(did).cloned().or_else(|| {
+                facts
+                    .zone_agents
+                    .get(did)
+                    .map(|agent| agent.as_ref().map(|agent| agent.owner.clone()))
+            })
+        });
+        if let Some(owner) = known {
+            return Ok(owner);
+        }
+        let owner = self.0.agent_owner(did).await?;
+        remember(|facts| {
+            facts.agent_owners.insert(did.clone(), owner.clone());
+        });
+        Ok(owner)
     }
 }
 
@@ -114,7 +274,7 @@ pub struct TokenVerifierSlot(RwLock<Arc<dyn SessionTokenVerifier>>);
 
 impl TokenVerifierSlot {
     pub fn new(verifier: Arc<dyn SessionTokenVerifier>) -> Self {
-        Self(RwLock::new(verifier))
+        Self(RwLock::new(Arc::new(RequestScopedVerifier(verifier))))
     }
 
     pub(crate) fn get(&self) -> Arc<dyn SessionTokenVerifier> {
@@ -123,7 +283,7 @@ impl TokenVerifierSlot {
 
     #[allow(dead_code)]
     fn set(&self, verifier: Arc<dyn SessionTokenVerifier>) {
-        *self.0.write().unwrap() = verifier;
+        *self.0.write().unwrap() = Arc::new(RequestScopedVerifier(verifier));
     }
 }
 
@@ -135,7 +295,7 @@ impl std::fmt::Debug for TokenVerifierSlot {
 
 impl Default for TokenVerifierSlot {
     fn default() -> Self {
-        Self::new(Arc::new(RuntimeSessionTokenVerifier))
+        Self::new(Arc::new(RuntimeSessionTokenVerifier::default()))
     }
 }
 

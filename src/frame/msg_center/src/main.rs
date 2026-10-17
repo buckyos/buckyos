@@ -54,6 +54,7 @@ use crate::contact_mgr::ZoneUserContactSeed;
 use crate::message_hub::MessageHubExecutor;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::{DeliveryExecutor, DeliveryExecutorMgr, ExecutorInstanceState};
+use crate::owner_session::serve_with_request_identity;
 use crate::tg_tunnel::{GrammersTgGatewayConfig, TgBotBinding, TgTunnel, TgTunnelConfig};
 use crate::zone_agent::{load_zone_agents, ZoneAgent, TELEGRAM_PLATFORM};
 
@@ -224,22 +225,25 @@ impl HttpServer for MsgCenterHttpServer {
         mut req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        if let Some(response) = group_http::serve(&self.rpc_handler.0, &mut req).await {
-            return Ok(response);
-        }
-        if let Some(response) = object_access::serve(&self.rpc_handler.0, &req).await {
-            return Ok(response);
-        }
-        if *req.method() == Method::POST
-            && (req.uri().path() == MSG_CENTER_HTTP_PATH
-                || req
-                    .uri()
-                    .path()
-                    .starts_with(&format!("{MSG_CENTER_HTTP_PATH}/")))
-        {
-            return serve_http_by_rpc_handler(req, info, self).await;
-        }
-        Ok(cyfs_dispatch::serve(&self.rpc_handler.0, req).await)
+        serve_with_request_identity(async move {
+            if let Some(response) = group_http::serve(&self.rpc_handler.0, &mut req).await {
+                return Ok(response);
+            }
+            if let Some(response) = object_access::serve(&self.rpc_handler.0, &req).await {
+                return Ok(response);
+            }
+            if *req.method() == Method::POST
+                && (req.uri().path() == MSG_CENTER_HTTP_PATH
+                    || req
+                        .uri()
+                        .path()
+                        .starts_with(&format!("{MSG_CENTER_HTTP_PATH}/")))
+            {
+                return serve_http_by_rpc_handler(req, info, self).await;
+            }
+            Ok(cyfs_dispatch::serve(&self.rpc_handler.0, req).await)
+        })
+        .await
     }
 
     fn id(&self) -> String {

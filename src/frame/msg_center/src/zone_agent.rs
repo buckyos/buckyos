@@ -12,6 +12,7 @@ use buckyos_api::{
 use log::warn;
 use name_lib::{AgentDocument, DID};
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 
 pub const TELEGRAM_PLATFORM: &str = "telegram";
 
@@ -100,6 +101,32 @@ async fn get_or_default<T: DeserializeOwned + Default>(
     }))
 }
 
+async fn load_agent_spec(
+    source: &dyn ConfigSource,
+    owner_user_id: &str,
+    agent_id: &AgentId,
+) -> Result<Option<AgentSpec>> {
+    let spec_key = agent_spec_key(owner_user_id, agent_id);
+    let Some(spec) = source.get(&spec_key).await? else {
+        return Ok(None);
+    };
+    match parse_agent_spec(&spec, agent_id) {
+        Ok(spec) => Ok(Some(spec)),
+        Err(error) => {
+            warn!("skip agent with invalid {}: {}", spec_key, error);
+            Ok(None)
+        }
+    }
+}
+
+pub async fn load_agent_settings(
+    source: &dyn ConfigSource,
+    owner_user_id: &str,
+    agent_id: &AgentId,
+) -> Result<AgentSettings> {
+    get_or_default(source, &agent_settings_key(owner_user_id, agent_id)).await
+}
+
 /// `Ok(None)` while the Agent has no (valid) spec. Storage errors are
 /// returned so a failed read never looks like a removed Agent.
 pub async fn load_zone_agent(
@@ -107,21 +134,13 @@ pub async fn load_zone_agent(
     owner_user_id: &str,
     agent_id: &AgentId,
 ) -> Result<Option<ZoneAgent>> {
-    let spec_key = agent_spec_key(owner_user_id, agent_id);
-    let Some(spec) = source.get(&spec_key).await? else {
+    let Some(spec) = load_agent_spec(source, owner_user_id, agent_id).await? else {
         return Ok(None);
-    };
-    let spec = match parse_agent_spec(&spec, agent_id) {
-        Ok(spec) => spec,
-        Err(error) => {
-            warn!("skip agent with invalid {}: {}", spec_key, error);
-            return Ok(None);
-        }
     };
     Ok(Some(ZoneAgent {
         agent_id: agent_id.clone(),
         doc: spec.agent_doc,
-        settings: get_or_default(source, &agent_settings_key(owner_user_id, agent_id)).await?,
+        settings: load_agent_settings(source, owner_user_id, agent_id).await?,
         profile: get_or_default(source, &agent_profile_key(owner_user_id, agent_id)).await?,
     }))
 }
@@ -145,16 +164,67 @@ pub async fn load_zone_agents(source: &dyn ConfigSource) -> Result<Vec<ZoneAgent
     Ok(agents)
 }
 
-pub async fn find_zone_agent(source: &dyn ConfigSource, did: &DID) -> Result<Option<ZoneAgent>> {
+const MAX_AGENT_LOCATION_HINTS: usize = 4096;
+
+/// Search-order hint only: the hinted spec is re-read and checked on every lookup.
+#[derive(Default)]
+pub struct AgentLocationHints(std::sync::Mutex<HashMap<DID, String>>);
+
+impl AgentLocationHints {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DID, String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn get(&self, did: &DID) -> Option<String> {
+        self.lock().get(did).cloned()
+    }
+
+    fn remember(&self, did: &DID, owner_user_id: &str) {
+        let mut hints = self.lock();
+        if hints.len() >= MAX_AGENT_LOCATION_HINTS && !hints.contains_key(did) {
+            hints.clear();
+        }
+        hints.insert(did.clone(), owner_user_id.to_string());
+    }
+
+    fn forget(&self, did: &DID) {
+        self.lock().remove(did);
+    }
+}
+
+pub async fn find_zone_agent_spec(
+    source: &dyn ConfigSource,
+    did: &DID,
+    hints: Option<&AgentLocationHints>,
+) -> Result<Option<(String, AgentSpec)>> {
     let Ok(agent_id) = AgentId::from_agent_did(did) else {
         return Ok(None);
     };
-    for user_id in source.list("users").await? {
-        if let Some(agent) = load_zone_agent(source, &user_id, &agent_id).await? {
-            if agent.did() == did {
-                return Ok(Some(agent));
+    let hinted = hints.and_then(|hints| hints.get(did));
+    if let Some(user_id) = hinted.as_deref() {
+        if let Some(spec) = load_agent_spec(source, user_id, &agent_id).await? {
+            if &spec.agent_doc.id == did {
+                return Ok(Some((user_id.to_string(), spec)));
             }
         }
+    }
+    for user_id in source.list("users").await? {
+        if hinted.as_deref() == Some(user_id.as_str()) {
+            continue;
+        }
+        if let Some(spec) = load_agent_spec(source, &user_id, &agent_id).await? {
+            if &spec.agent_doc.id == did {
+                if let Some(hints) = hints {
+                    hints.remember(did, &user_id);
+                }
+                return Ok(Some((user_id, spec)));
+            }
+        }
+    }
+    if let Some(hints) = hints {
+        hints.forget(did);
     }
     Ok(None)
 }
@@ -273,13 +343,125 @@ mod tests {
         assert!(agents[0].settings.allow_group);
         assert_eq!(agents[0].display_name(), "小白");
 
-        let found = find_zone_agent(&config, &ready.id).await.unwrap().unwrap();
-        assert_eq!(found, agents[0]);
-        assert!(find_zone_agent(&config, &creating.id)
+        let (owner_user_id, spec) = find_zone_agent_spec(&config, &ready.id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner_user_id, "alice");
+        assert_eq!(&spec.agent_doc, &agents[0].doc);
+        assert!(find_zone_agent_spec(&config, &creating.id, None)
             .await
             .unwrap()
             .is_none());
-        assert!(find_zone_agent(&config, &alice).await.unwrap().is_none());
+        assert!(find_zone_agent_spec(&config, &alice, None)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[derive(Default)]
+    struct CountingSource {
+        config: std::sync::Mutex<BTreeMap<String, String>>,
+        reads: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl CountingSource {
+        fn take_reads(&self) -> Vec<String> {
+            std::mem::take(&mut *self.reads.lock().unwrap())
+        }
+    }
+
+    #[async_trait]
+    impl ConfigSource for CountingSource {
+        async fn list(&self, key: &str) -> Result<Vec<String>> {
+            self.reads.lock().unwrap().push(format!("list {key}"));
+            let config = self.config.lock().unwrap().clone();
+            ConfigSource::list(&config, key).await
+        }
+
+        async fn get(&self, key: &str) -> Result<Option<String>> {
+            self.reads.lock().unwrap().push(format!("get {key}"));
+            Ok(self.config.lock().unwrap().get(key).cloned())
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_lookup_reads_specs_only_and_follows_hints() {
+        let carol = DID::new("web", "carol.test.buckyos.io");
+        let agent = agent_document(&DID::new("web", "xiaobai.test.buckyos.io"), &carol);
+        let agent_id = AgentId::from_agent_did(&agent.id).unwrap();
+        let source = CountingSource::default();
+        {
+            let mut config = source.config.lock().unwrap();
+            for user in ["alice", "bob", "carol"] {
+                config.insert(format!("users/{user}/settings"), "{}".into());
+            }
+            put_agent(&mut config, "carol", &agent, true, json!({}), json!({}));
+        }
+        let hints = AgentLocationHints::default();
+
+        let (owner, _) = find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner, "carol");
+        assert_eq!(
+            source.take_reads(),
+            vec![
+                "list users".to_string(),
+                agent_spec_key("alice", &agent_id).replace("users/", "get users/"),
+                agent_spec_key("bob", &agent_id).replace("users/", "get users/"),
+                agent_spec_key("carol", &agent_id).replace("users/", "get users/"),
+            ]
+        );
+
+        assert!(find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            source.take_reads(),
+            vec![agent_spec_key("carol", &agent_id).replace("users/", "get users/")]
+        );
+
+        {
+            let mut config = source.config.lock().unwrap();
+            config.retain(|key, _| !key.starts_with("users/carol/agents/"));
+            put_agent(&mut config, "alice", &agent, true, json!({}), json!({}));
+        }
+        let (owner, _) = find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner, "alice");
+        source.take_reads();
+        find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.take_reads().len(), 1);
+
+        source
+            .config
+            .lock()
+            .unwrap()
+            .insert(agent_spec_key("alice", &agent_id), "{}".into());
+        assert!(find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .is_none());
+
+        source.config.lock().unwrap().clear();
+        assert!(find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .is_none());
+        source.take_reads();
+        assert!(find_zone_agent_spec(&source, &agent.id, Some(&hints))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(source.take_reads(), vec!["list users".to_string()]);
     }
 
     #[tokio::test]

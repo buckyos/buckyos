@@ -268,6 +268,53 @@ pub async fn load_current_rbac_config(
     Ok(config)
 }
 
+struct RbacSyncState {
+    rounds: u64,
+    last_error: Option<String>,
+}
+
+static RBAC_SYNC: tokio::sync::Mutex<RbacSyncState> =
+    tokio::sync::Mutex::const_new(RbacSyncState {
+        rounds: 0,
+        last_error: None,
+    });
+static RBAC_SYNC_ROUNDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Rounds run one at a time; with `join_finished_round` a caller that waited
+/// takes the finished round's outcome.
+pub(crate) async fn sync_rbac_enforcer<F, Fut>(load: F, join_finished_round: bool) -> Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<RbacConfig>>,
+{
+    use std::sync::atomic::Ordering;
+
+    let seen_rounds = RBAC_SYNC_ROUNDS.load(Ordering::Acquire);
+    let mut state = RBAC_SYNC.lock().await;
+    if join_finished_round && state.rounds != seen_rounds {
+        return match &state.last_error {
+            None => Ok(false),
+            Some(error) => Err(RPCErrors::ReasonError(error.clone())),
+        };
+    }
+
+    let outcome = match load().await {
+        Ok(config) => rbac::apply_enforcer_policy(&config.model, &config.policy)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("update rbac enforcer failed: {}", error))
+            }),
+        Err(error) => Err(error),
+    };
+    state.rounds += 1;
+    state.last_error = outcome.as_ref().err().map(|error| match error {
+        RPCErrors::ReasonError(reason) => reason.clone(),
+        other => other.to_string(),
+    });
+    RBAC_SYNC_ROUNDS.store(state.rounds, Ordering::Release);
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,4 +1276,126 @@ g, app:gallery, app
         assert!(!rbac::enforce("ood1", "system:control-panel", registry, "write", None).await);
     }
 
+    #[tokio::test]
+    async fn rbac_sync_rebuilds_only_for_changed_policy() {
+        let _guard = TEST_LOCK.lock().await;
+        let base = build_current_rbac_config(Some("g, alice, users\ng, bob, users"));
+        rbac::create_enforcer(&base.model, &base.policy)
+            .await
+            .unwrap();
+        let builds = rbac::enforcer_build_count();
+        let bob_profile = "obj://config/users/bob/profile";
+
+        for _ in 0..20 {
+            let mut reread = base.clone();
+            reread.is_changed = true;
+            assert!(!sync_rbac_enforcer(|| async { Ok(reread) }, true)
+                .await
+                .unwrap());
+        }
+        assert_eq!(rbac::enforcer_build_count(), builds);
+        assert!(!rbac::enforce("alice", "system:control-panel", bob_profile, "read", None).await);
+
+        let granted = build_current_rbac_config(Some(&format!(
+            "{}\np, alice, {bob_profile}, read, allow",
+            base.policy_tail
+        )));
+        assert!(sync_rbac_enforcer(|| async { Ok(granted.clone()) }, true)
+            .await
+            .unwrap());
+        assert!(rbac::enforce("alice", "system:control-panel", bob_profile, "read", None).await);
+
+        assert!(sync_rbac_enforcer(|| async { Ok(base.clone()) }, true)
+            .await
+            .unwrap());
+        assert!(!rbac::enforce("alice", "system:control-panel", bob_profile, "read", None).await);
+
+        let deleted = build_current_rbac_config(None);
+        let alice_profile = "obj://config/users/alice/profile";
+        assert!(rbac::enforce("alice", "system:control-panel", alice_profile, "read", None).await);
+        assert!(sync_rbac_enforcer(|| async { Ok(deleted) }, true)
+            .await
+            .unwrap());
+        assert!(!rbac::enforce("alice", "system:control-panel", alice_profile, "read", None).await);
+        assert_eq!(rbac::enforcer_build_count(), builds + 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rbac_sync_never_installs_an_older_read_last() {
+        let _guard = TEST_LOCK.lock().await;
+        let old = build_current_rbac_config(Some("g, alice, users"));
+        let new = build_current_rbac_config(Some("g, alice, admin"));
+        rbac::create_enforcer(&old.model, &old.policy)
+            .await
+            .unwrap();
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let slow_policy = old.clone();
+        let slow = tokio::spawn(sync_rbac_enforcer(
+            move || async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(slow_policy)
+            },
+            false,
+        ));
+        started_rx.await.unwrap();
+
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let forced_reads = reads.clone();
+        let forced = tokio::spawn(sync_rbac_enforcer(
+            move || async move {
+                forced_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(new)
+            },
+            false,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        release_tx.send(()).unwrap();
+        assert!(!slow.await.unwrap().unwrap());
+        assert!(forced.await.unwrap().unwrap());
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            rbac::enforce("alice", "system:control-panel", "obj://config/system/x", "read", None)
+                .await
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rbac_sync_callers_that_waited_share_the_finished_round() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, users"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let failing = tokio::spawn(sync_rbac_enforcer(
+            move || async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Err::<RbacConfig, _>(RPCErrors::ReasonError("system-config timeout".into()))
+            },
+            true,
+        ));
+        started_rx.await.unwrap();
+        let waiter = tokio::spawn(sync_rbac_enforcer(
+            || async { panic!("a waiting caller reuses the finished round") },
+            true,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        release_tx.send(()).unwrap();
+
+        let failed = failing.await.unwrap().unwrap_err().to_string();
+        assert!(failed.contains("system-config timeout"));
+        assert_eq!(waiter.await.unwrap().unwrap_err().to_string(), failed);
+
+        assert!(!sync_rbac_enforcer(|| async { Ok(config) }, true)
+            .await
+            .unwrap());
+    }
 }

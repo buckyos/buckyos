@@ -1613,14 +1613,11 @@ impl BuckyOSRuntime {
         let canonical_target = claims.target.canonical_key();
 
         let system_config_client = self.get_system_config_client().await?;
-        let rbac_config = crate::load_current_rbac_config(system_config_client.as_ref()).await?;
-        if rbac_config.is_changed {
-            rbac::update_enforcer(rbac_config.model.as_str(), rbac_config.policy.as_str())
-                .await
-                .map_err(|error| {
-                    RPCErrors::ReasonError(format!("update rbac enforcer failed: {}", error))
-                })?;
-        }
+        crate::rbac_config::sync_rbac_enforcer(
+            || crate::load_current_rbac_config(system_config_client.as_ref()),
+            true,
+        )
+        .await?;
 
         let sudo = || {
             token
@@ -1634,16 +1631,17 @@ impl BuckyOSRuntime {
             // The policy is cached for a few seconds; a grant written just
             // before this call (a new user, a changed role) is re-read once
             // before the request is denied.
-            system_config_client
-                .invalidate_cache(crate::RBAC_POLICY_KEY)
-                .await;
-            let fresh = crate::load_current_rbac_config(system_config_client.as_ref()).await?;
-            if fresh.is_changed {
-                rbac::update_enforcer(fresh.model.as_str(), fresh.policy.as_str())
-                    .await
-                    .map_err(|error| {
-                        RPCErrors::ReasonError(format!("update rbac enforcer failed: {}", error))
-                    })?;
+            let rebuilt = crate::rbac_config::sync_rbac_enforcer(
+                || async {
+                    system_config_client
+                        .invalidate_cache(crate::RBAC_POLICY_KEY)
+                        .await;
+                    crate::load_current_rbac_config(system_config_client.as_ref()).await
+                },
+                false,
+            )
+            .await?;
+            if rebuilt {
                 result =
                     rbac::enforce(userid, &authorization_key, resource_path, action, sudo()).await;
             }

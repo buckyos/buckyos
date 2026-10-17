@@ -1,7 +1,7 @@
 use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::notify::NotifyTasks;
-use crate::owner_session::{SessionTokenVerifier, ZoneAgentInfo};
+use crate::owner_session::{serve_with_request_identity, SessionTokenVerifier, ZoneAgentInfo};
 use async_trait::async_trait;
 use buckyos_api::*;
 use jsonwebtoken::{DecodingKey, EncodingKey};
@@ -75,11 +75,20 @@ impl SessionTokenVerifier for Verifier {
 
 fn token(sub: &str, kind: TokenPrincipalKind, target: AuthTarget) -> RPCContext {
     let now = buckyos_kit::buckyos_get_unix_timestamp();
+    token_expiring_at(sub, kind, target, now + 3600)
+}
+
+fn token_expiring_at(
+    sub: &str,
+    kind: TokenPrincipalKind,
+    target: AuthTarget,
+    exp: u64,
+) -> RPCContext {
     let mut token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
         token: None,
         aud: None,
-        exp: Some(now + 3600),
+        exp: Some(exp),
         iss: Some(VERIFY_HUB_UNIQUE_ID.to_string()),
         jti: None,
         sub: Some(sub.to_string()),
@@ -737,4 +746,108 @@ async fn an_interrupted_send_resumes_with_the_same_key() {
     assert_eq!(session_records(c, &alice(), "sysnotify:agent").await.len(), 1);
     let obs = session_records(c, &jarvis(), "chat-a").await;
     assert_eq!(obs.iter().filter(|r| r.msg_kind == MsgObjKind::Event).count(), 1);
+}
+
+#[derive(Default)]
+struct IdentityCalls {
+    verify: std::sync::atomic::AtomicUsize,
+    resolve_user_did: std::sync::atomic::AtomicUsize,
+    zone_agent: std::sync::atomic::AtomicUsize,
+}
+
+impl IdentityCalls {
+    fn take(&self) -> (usize, usize, usize) {
+        (
+            self.verify.swap(0, Ordering::SeqCst),
+            self.resolve_user_did.swap(0, Ordering::SeqCst),
+            self.zone_agent.swap(0, Ordering::SeqCst),
+        )
+    }
+}
+
+struct CountingVerifier {
+    inner: Verifier,
+    calls: Arc<IdentityCalls>,
+}
+
+#[async_trait]
+impl SessionTokenVerifier for CountingVerifier {
+    async fn authorize(
+        &self,
+        _token: &str,
+        _resource: &str,
+        _action: &str,
+    ) -> Result<(), RPCErrors> {
+        Ok(())
+    }
+
+    async fn verify(&self, token: &str) -> Result<RPCSessionToken, RPCErrors> {
+        self.calls.verify.fetch_add(1, Ordering::SeqCst);
+        self.inner.verify(token).await
+    }
+
+    async fn resolve_user_did(&self, user_id: &str) -> Result<DID, RPCErrors> {
+        self.calls.resolve_user_did.fetch_add(1, Ordering::SeqCst);
+        self.inner.resolve_user_did(user_id).await
+    }
+
+    async fn zone_agent(&self, did: &DID) -> Result<Option<ZoneAgentInfo>, RPCErrors> {
+        self.calls.zone_agent.fetch_add(1, Ordering::SeqCst);
+        self.inner.zone_agent(did).await
+    }
+}
+
+#[tokio::test]
+async fn one_request_establishes_its_caller_once() {
+    let e = env().await;
+    let c = &e.center;
+    let calls = Arc::new(IdentityCalls::default());
+    c.set_token_verifier(Arc::new(CountingVerifier {
+        inner: Verifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+        },
+        calls: calls.clone(),
+    }));
+    let agent_app = || app_ctx("jarvis.test.buckyos.io", "alice");
+    let send_req = || NotifySendReq::notice("alice", "Hi", "", "memo-1");
+
+    let unscoped = send(c, send_req(), agent_app()).await.unwrap();
+    let (verify, resolve, zone_agent) = calls.take();
+    assert!(
+        verify >= 2 && resolve >= 2 && zone_agent >= 1,
+        "{verify} {resolve} {zone_agent}"
+    );
+
+    let scoped = serve_with_request_identity(send(c, send_req(), agent_app()))
+        .await
+        .unwrap();
+    assert_eq!(scoped.notify_id, unscoped.notify_id);
+    assert_eq!(calls.take(), (1, 1, 1));
+
+    serve_with_request_identity(send(c, send_req(), agent_app()))
+        .await
+        .unwrap();
+    assert_eq!(calls.take(), (1, 1, 1));
+
+    let expired = token_expiring_at(
+        "alice",
+        TokenPrincipalKind::App,
+        AuthTarget::app("jarvis.test.buckyos.io@alice".parse().unwrap()),
+        buckyos_kit::buckyos_get_unix_timestamp() - 3600,
+    );
+    serve_with_request_identity(async {
+        send(c, send_req(), agent_app()).await.unwrap();
+        assert!(send(c, send_req(), expired).await.is_err());
+    })
+    .await;
+    assert_eq!(calls.take().0, 2);
+
+    let mut forged = agent_app();
+    forged.token = Some(format!("{}x", forged.token.unwrap()));
+    serve_with_request_identity(async {
+        assert!(send(c, send_req(), forged.clone()).await.is_err());
+        assert!(send(c, send_req(), forged.clone()).await.is_err());
+    })
+    .await;
+    assert_eq!(calls.take().0, 2);
 }
