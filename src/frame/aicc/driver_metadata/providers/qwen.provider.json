@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 9,
+  "revision_seq": 10,
   "provider_profile_id": "qwen",
   "model_driver_overrides": {
     "deepseek-v4-flash-0731": "deepseek/deepseek-v4-flash",
@@ -355,19 +355,19 @@
     {
       "model_driver": "kimi",
       "variant": "reasoning-low",
-      "match": { "origin_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-low" },
+      "match": { "provider_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-low" },
       "provider_options": { "reasoning_effort": "low" }
     },
     {
       "model_driver": "kimi",
       "variant": "reasoning-high",
-      "match": { "origin_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-high" },
+      "match": { "provider_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-high" },
       "provider_options": { "reasoning_effort": "high" }
     },
     {
       "model_driver": "kimi",
       "variant": "reasoning-max",
-      "match": { "origin_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-max" },
+      "match": { "provider_model_id": ["kimi-k2.8-preview", "kimi-k3", "kimi/kimi-k2.8-preview", "kimi/kimi-k3"], "variant": "reasoning-max" },
       "provider_options": { "reasoning_effort": "max" }
     },
     {
