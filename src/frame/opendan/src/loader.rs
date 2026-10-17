@@ -59,6 +59,9 @@ pub struct LoaderEnv {
     pub records: Arc<dyn AgentRecords>,
     pub agent_root: PathBuf,
     pub package_root: Option<PathBuf>,
+    /// The template's `agent_skills` sub package (`cmd_skills/`,
+    /// `goal_skills/`, `tools/`), synced like the package itself.
+    pub skills_package_root: Option<PathBuf>,
     /// Version of the package at `package_root` (the agent's template).
     pub package_version: Option<String>,
     pub channels: Arc<KmsgChannels>,
@@ -158,6 +161,18 @@ impl Loader {
                 false
             }
         };
+        if let Some(skills) = env.skills_package_root.as_ref().filter(|_| !pinned) {
+            let r = rootfs::sync_from_package(skills, &env.agent_root)
+                .with_context(|| format!("sync AgentRoot from the skills package {}", skills.display()))?;
+            log::info!(
+                "loader: skills of the template synced from {}: copied={} updated={} unchanged={} kept={}",
+                skills.display(),
+                r.copied,
+                r.updated,
+                r.unchanged,
+                r.preserved
+            );
+        }
         let display_name = match records::profile(env.records.as_ref()).await {
             Ok(profile) => DID::from_str(&env.agent_did)
                 .ok()

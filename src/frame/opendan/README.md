@@ -198,6 +198,18 @@ Agent State 门面的 `goals.*`（读：`goals.list / get / revision / changes /
 
 Goal 不存在 → `not_found`；Goal 已结束（achieved / archived）→ `goal_conflict`。
 
+### Skills
+
+Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md` + `tools/<name>/bin`）与 goal_skills（`goal_skills/<name>.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）；用户侧 CLI 是 `buckyos skill list|install|remove --agent <agent_id>`，Agent 在 Session 里用 `agent-session skill …`（直接读写 AgentRoot）。
+
+| method | params | 说明 |
+|---|---|---|
+| `skills.list` | `{kind?: cmd \| goal}` | `SkillMeta[]`：`kind`、`name`、front matter 的 `description` / `requires`、`origin`（`package` / `installed` / `local`）、`install`（来源包、版本、内容 digest、`pikg_digest`、时间与安装者）、`tools` |
+| `skills.install` | `{package: {package, version, pikg_digest?, files: {<rel>: {content: base64, executable}}}, replace?}` | 文件只能是 `cmd_skills/<n>.md`、`goal_skills/<n>.md`、`tools/<cmd_skill>/…`；同名的模板 skill、本地 skill 或其他包的 skill 拒绝，`replace` 才替换；同一包再装即更新。记录写 `.meta/skills.json`，模板同步不覆盖也不删除已安装的 skill |
+| `skills.remove` | `{kind, name}` | 只删已安装的 skill（模板自带的会在下次同步回来） |
+
+新建 Session 读取当时已安装的手册，运行中的 Session 保持冻结正文。模板 PIKG 若带 `agent_skills` 子包，node-daemon 以 `BUCKYOS_AGENT_SKILLS_PKG_DIR` 只读挂入，Loader 启动时与 `agent` 子包一样同步进 AgentRoot（模板 pinned 时不同步）。
+
 ### 首页
 
 | method | params | result |

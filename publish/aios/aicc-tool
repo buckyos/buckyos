@@ -3,6 +3,12 @@ set -eu
 
 tool_root="${BUCKYOS_AICC_TOOL_ROOT:-/opt/buckyos/bin/opendan/buckyos-agent}"
 launcher="$(basename "$0")"
+sdk=/opt/buckyos/libexec/buckyos-tool/dist/node.mjs
+
+if [ ! -f "$sdk" ]; then
+  echo "$launcher: $sdk not found. node_daemon mounts the buckyos SDK read-only from the host's \$BUCKYOS_ROOT/libexec/buckyos-tool/dist into agent containers; this container has no such mount." >&2
+  exit 1
+fi
 
 if [ "$launcher" = "aicc-tool" ]; then
   exec deno run \

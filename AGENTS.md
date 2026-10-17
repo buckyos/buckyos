@@ -163,6 +163,28 @@ WebUI 在各自目录运行 `pnpm install`、`pnpm build`。Desktop 和 OpenDAN 
 - 主要改动入口文件
 - 是否影响文档、协议、共享类型、数据结构、第三方依赖
 
+## cmd_skills 联动维护
+
+cmd_skills 是 Agent 完成一类事的命令手册（加可选命令），是对应功能的交付物，不是一次性文档。机制与写法见 [OpenDAN Agent 开发指南](doc/sdk/OpenDAN_Agent_Dev_Guide.md) §2.3–2.4。
+
+- **位置**：内置手册源码在 `src/apps/jarvis_agent/agent/cmd_skills/<name>.md`（随 Jarvis 的 `agent` 子包分发）；front matter 的 `name` / `description` / `requires` 是发现索引，由 `agent-session skill list`（`src/frame/lib_opendan/src/skills.rs`）输出。选择说明在 Jarvis 的 `behaviors/{analyze_intent,goal,plan}.toml`，UI 默认手册在 `agent.toml` 的 `default_cmd_skills`；冻结在 `src/frame/lib_opendan/src/state/behaviors.rs`，装配在 `runner/assembler.rs`（`## Commands`），命令 PATH 在 `runtime/mod.rs`（`tools/<skill>/bin`）。skill 包样例在 `test/skills_pikg_sample/`。
+- **工具实现原则**：访问 BuckyOS 的 Agent 工具优先用 TypeScript 基于 buckyos-websdk 编写，源码随 runtime 可读、Agent 可据此派生。人也会用的系统、App、发布命令放 websdk `cli/modules`（`buckyos` 命令唯一源码）；Agent 专用的配方类工具（AIGC、媒体合成）放 `src/tools/buckyos-agent`；某个 skill 自带的命令放 skill 包的 `tools/<skill>/bin`。xllm 等 runtime 层保留 Rust。
+- **同一变更内检查手册**：修改用户可见的 CLI、API、配置、运行路径或发布流程时，按下表找出受影响的手册，在同一变更中更新手册与示例；判断不受影响时写明依据，不能只因代码编译通过就跳过。跨仓库（websdk、devkit、cyfs-gateway）的实现变化也要检查 BuckyOS 分发的手册。手册指向当前源码或命令 schema（`--help`、`buckyos command describe`），不复制会过期的接口说明。
+
+| 实现变更 | 检查的手册与验证 |
+| --- | --- |
+| system-config、Control Panel、身份/RBAC、scheduler/node-daemon、日志诊断、路径及版本信息、容器内 Tool 挂载与 launcher | `buckyos_admin`：设置生效、权限失败、诊断与源码版本核验、容器内 `buckyos` 可用 |
+| websdk SDK API、`buckyos-agent` 的 `commands/` 范本与 `lib/` | 引用这些源码的手册（`aigc_*`、`buckyos_admin`、`opendan_agent_dev`）：范本仍可照抄运行，派生工具示例可执行 |
+| AICC 协议、provider 能力、媒体 CLI、Task/结果/下载和消息附件 | `aigc_image`、`aigc_audio`、`aigc_video`：真实生成、长任务恢复、交付可访问 |
+| xllm 参数、模型路由、工具开关、上下文/behavior 协议 | `xllm`：示例调用、结构化结果、上下文与执行边界 |
+| SDK/Tool、PIKG/AppDoc、devkit、Installer/Repo/BNS、系统/镜像发布 | `buckyos_dev_release`、`buckyos_app_dev` 及相关场景：构建、包验证、测试安装、发布回读 |
+| AIWorkspace schema/RPC、对象/资源、renderer、Wish/Block 执行器、模板格式 | `aiworkspace_template_dev`（暂缓，恢复后生效）：新建、导出导入、引用和运行 |
+| skill 安装 kRPC、PIKG 的 `agent_skills` 子包、AgentRoot 的 `cmd_skills/` / `goal_skills/` / `tools/` 布局 | `opendan_agent_dev` 及所有内置手册的打包位置：安装、列表、选择、删除 |
+| AgentRootFS、Loader、Session/Behavior、cmd_skill 冻结/装配、PATH/helper、模板和扩展分发 | `opendan_agent_dev`、`ui_core` 及受影响的专项手册：发现/选择/执行、冻结与升级 |
+
+- **完成条件**：提交说明列出受影响的 skills、修改或无需修改的依据、验证命令与结果、尚未实测的 provider / 平台。删除失效命令，不用兼容说明掩盖当前版本不可用；同步生成来源与分发产物，不能只改打包副本。
+- **回归**：手册纯文字改动核对路径、命令和链接；CLI、协议、runtime 或打包变更运行相关用例（`cargo test -p libopendan --test xagent_lib work_sessions_take`、`--test xagent_cli skills_are`、`cargo test -p opendan`）和最小场景。真实生成、发布等需要环境的测试如实标为未验证，不能用 mock 通过替代。
+
 ## 常用术语与领域知识
 
 - **Zone**：BuckyOS 为了区别于传统“集群/云”而使用的术语，指用户拥有的逻辑云/集群，是系统管理和调度的基本范围。

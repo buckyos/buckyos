@@ -465,7 +465,7 @@
       "type": "object"
     },
     "CmdSkill": {
-      "description": "`prompt.frozen.cmd_skill`: the command manual of the session, frozen with its behaviors (`cmd_skills/<name>.md`).",
+      "description": "`prompt.frozen.cmd_skills[]`: a command manual of the session, frozen with its behaviors (`cmd_skills/<name>.md` without its front matter).",
       "properties": {
         "name": {
           "type": "string"
@@ -796,16 +796,12 @@
           "description": "Catalog revision at the first freeze (audit).",
           "type": "string"
         },
-        "cmd_skill": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/CmdSkill"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The session's cmd_skill (`prompt.cmd_skill`), frozen once."
+        "cmd_skills": {
+          "description": "The session's cmd_skills (`prompt.cmd_skills`, in that order), frozen once.",
+          "items": {
+            "$ref": "#/definitions/CmdSkill"
+          },
+          "type": "array"
         },
         "frozen_at_ms": {
           "default": 0,
@@ -1320,12 +1316,12 @@
             "null"
           ]
         },
-        "cmd_skill": {
-          "description": "The cmd_skill of the session (`<agent_root>/cmd_skills/<name>.md`, `agent.toml [session.<class>] default_cmd_skill`): frozen with the behaviors (`frozen.cmd_skill`) and rendered as `## Commands`.",
-          "type": [
-            "string",
-            "null"
-          ]
+        "cmd_skills": {
+          "description": "The cmd_skills of the session (`<agent_root>/cmd_skills/<name>.md`, at most [`super::behavior::MAX_CMD_SKILLS`]): chosen when the session is created (`agent.toml [session.<class>] default_cmd_skills`, `create-worksession --cmd-skill`), frozen with the behaviors (`frozen.cmd_skills`) and rendered as `## Commands`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "compact_ratio": {
           "description": "Compact after a run once the history uses more than this ratio of the budget (`maybe_compact`).",

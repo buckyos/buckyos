@@ -69,17 +69,21 @@ ln -s aicc-tool gen_image
 gen_image "prompt" out.png
 ```
 
-AIOS 镜像中的只读安装目录是 `/opt/buckyos/bin/opendan/buckyos-agent/`。安装态
-`deno.json` 已指向镜像内 vendored SDK，因此可以直接运行 task：
+AIOS 镜像中的只读安装目录是 `/opt/buckyos/bin/opendan/buckyos-agent/`。镜像不带 SDK：
+安装态 `deno.json` 的 `buckyos` 指向 `/opt/buckyos/libexec/buckyos-tool/dist/node.mjs`，即
+node-daemon 从宿主 `$BUCKYOS_ROOT/libexec/buckyos-tool/` 只读挂入 Agent 容器的 SDK，
+与容器内 `buckyos` 命令用的是同一版（随宿主系统升级）。该挂载缺失时 `aicc-tool` 及各命令直接报错退出。
+仓库内开发态 `deno.json` 指向构建产物 `src/rootfs/libexec/buckyos-tool/dist/node.mjs`。
+在 Agent 容器内可以直接运行 task：
 
 ```bash
 cd /opt/buckyos/bin/opendan/buckyos-agent
 deno task gen_image --help
 ```
 
-Agent 组合新工具时，可以读取该目录下的 `commands/*.ts` 和 `lib/*.ts`，但应把派生
-脚本写入 Agent 或当前 Session 自己的 `tools/` 目录，不要修改只读安装副本。运行派生
-脚本时显式复用安装态配置：
+Agent 组合新工具时，可以读取该目录下的 `commands/*.ts` 和 `lib/*.ts`，SDK 类型见
+`/opt/buckyos/libexec/buckyos-tool/dist/*.d.ts`，但应把派生脚本写入 Agent 或当前 Session
+自己的 `tools/` 目录，不要修改只读安装副本。运行派生脚本时显式复用安装态配置：
 
 ```bash
 deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
@@ -120,7 +124,7 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 
 ### 环境变量
 
-在 OpenDAN 中，工具使用运行时注入的受限 AppClient session token，并通过宿主机 NodeGateway 访问系统服务。本地独立运行时仍需私钥（默认搜索路径 `~/.buckyos`、`/opt/buckyos/etc` 等）。
+在 OpenDAN 中，工具使用运行时注入的受限 AppClient session token，并通过宿主机 NodeGateway 访问系统服务。本地独立运行时仍需私钥（默认搜索路径 `~/.buckyos`、`/opt/buckyos/etc` 等）。容器内 `buckyos` 命令另读 node-daemon 注入的 `BUCKYOS_TOOL_ENDPOINT`（见 `doc/arch/11_env_contract.md`），本工具不读该变量。
 
 - `BUCKYOS_APP_ID`（默认 `buckyos-agent`，兼容 `BUCKYOS_TEST_APP_ID`）
 - `BUCKYOS_APPCLIENT_SESSION_TOKEN`：OpenDAN 注入的 AppClient session token；设置后启用容器内访问方式

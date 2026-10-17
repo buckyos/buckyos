@@ -99,6 +99,8 @@ Finish with a final report (is_end) that the parent's PLAN can review.\n",
         msgs: vec![task],
         class: opts.class.clone(),
         behavior: Some(opts.behavior.clone().unwrap_or_else(|| EXPLORE_BEHAVIOR.to_string())),
+        // The Todo's cmd_skills; without any the parent Work's are inherited.
+        cmd_skills: (!t.skills.is_empty()).then(|| t.skills.clone()),
         workspace: SubWorkspace::None,
         report: ReportMode::Final,
         key: Some(explore_key(&t.todo_id, attempt)),

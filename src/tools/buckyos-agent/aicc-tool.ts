@@ -31,6 +31,7 @@ import * as upscale_video from "./commands/upscale_video.ts";
 import * as ai_provider from "./commands/ai_provider.ts";
 import * as ai_quota from "./commands/ai_quota.ts";
 import * as materialize_resource from "./commands/materialize_resource.ts";
+import * as resume_aicc_task from "./commands/resume_aicc_task.ts";
 
 interface Command {
   run: (argv: string[]) => Promise<never>;
@@ -59,6 +60,7 @@ const COMMANDS: Record<string, Command> = {
   ai_provider,
   ai_quota,
   materialize_resource,
+  resume_aicc_task,
 };
 
 function topLevelHelp(): string {

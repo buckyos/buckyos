@@ -49,9 +49,10 @@ pub struct SessionTemplate {
     /// for hosts that create it without one of their own (a UI session's
     /// design intent; built-in: [`UI_OBJECTIVE`] / [`GROUP_OBJECTIVE`]).
     pub objective: Option<String>,
-    /// `agent.toml [session.<class>] default_cmd_skill`: the command manual
-    /// the session freezes (`cmd_skills/<name>.md`).
-    pub default_cmd_skill: Option<String>,
+    /// `agent.toml [session.<class>] default_cmd_skills`: the command
+    /// manuals a session of this class takes when its creator chooses none
+    /// (`cmd_skills/<name>.md`).
+    pub default_cmd_skills: Vec<String>,
 }
 
 /// Objective of a one-to-one UI session: what the conversation is for,
@@ -111,7 +112,7 @@ impl SessionTemplate {
             implicit_subscriptions: Vec::new(),
             goal: None,
             objective: None,
-            default_cmd_skill: None,
+            default_cmd_skills: Vec::new(),
         };
         Some(match class {
             "work" => base(
@@ -280,14 +281,20 @@ impl SessionTemplate {
                     .to_string(),
             );
         }
-        for (key, slot) in [
-            ("objective", &mut t.objective),
-            ("default_cmd_skill", &mut t.default_cmd_skill),
-        ] {
-            if let Some(v) = over.get(key) {
-                *slot = Some(v.as_str().ok_or_else(|| bad(key))?.to_string())
-                    .filter(|s| !s.trim().is_empty());
-            }
+        if let Some(v) = over.get("objective") {
+            t.objective = Some(v.as_str().ok_or_else(|| bad("objective"))?.to_string())
+                .filter(|s| !s.trim().is_empty());
+        }
+        if let Some(v) = over.get("default_cmd_skills") {
+            t.default_cmd_skills = v
+                .as_array()
+                .ok_or_else(|| bad("default_cmd_skills"))?
+                .iter()
+                .map(|n| n.as_str().map(str::to_string).ok_or_else(|| bad("default_cmd_skills")))
+                .collect::<Result<_>>()?;
+            crate::state::check_cmd_skill_names(&t.default_cmd_skills).map_err(|e| {
+                OpenDanError::InvalidArgument(format!("agent.toml [session.{class}] default_cmd_skills: {e}"))
+            })?;
         }
         if let Some(v) = over.get("ask_user_timeout_secs") {
             t.ask_user_timeout_secs = v
@@ -368,7 +375,7 @@ impl SessionTemplate {
         };
         spec.policy = self.policy();
         spec.prompt.behavior = self.default_behavior.clone();
-        spec.prompt.cmd_skill = self.default_cmd_skill.clone();
+        spec.prompt.cmd_skills = self.default_cmd_skills.clone();
         spec.subscriptions = self.implicit_subscriptions.clone();
         spec.input_channel = Some(self.input);
         self.settle_input(&mut spec);

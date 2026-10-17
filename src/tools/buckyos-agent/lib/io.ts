@@ -72,6 +72,41 @@ export function extFromMime(mime: string | undefined | null): string | null {
   return EXT_BY_MIME[k] ?? k.split("/").at(-1) ?? null;
 }
 
+// Raw 16-bit PCM (`audio/l16`, `audio/pcm`; Gemini TTS sends little-endian
+// samples, 24 kHz mono) plays nowhere: wrap it in a WAV header. Rate and
+// channels come from the mime parameters when present.
+export function wrapRawPcm(
+  bytes: Uint8Array,
+  mime: string | undefined,
+): Uint8Array | null {
+  const [type, ...params] = (mime ?? "").split(";").map((p) => p.trim().toLowerCase());
+  if (type !== "audio/l16" && type !== "audio/pcm") return null;
+  const param = (name: string) =>
+    Number(params.find((p) => p.startsWith(`${name}=`))?.split("=")[1]);
+  const rate = param("rate") || 24000;
+  const channels = param("channels") || 1;
+  const out = new Uint8Array(44 + bytes.byteLength);
+  const v = new DataView(out.buffer);
+  const ascii = (at: number, s: string) => {
+    for (let i = 0; i < s.length; i += 1) out[at + i] = s.charCodeAt(i);
+  };
+  ascii(0, "RIFF");
+  v.setUint32(4, 36 + bytes.byteLength, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, channels, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * channels * 2, true);
+  v.setUint16(32, channels * 2, true);
+  v.setUint16(34, 16, true);
+  ascii(36, "data");
+  v.setUint32(40, bytes.byteLength, true);
+  out.set(bytes, 44);
+  return out;
+}
+
 export function isUrl(value: string): boolean {
   return /^(https?|data):/i.test(value);
 }
@@ -124,6 +159,9 @@ export interface SavedOutput {
   bytes: number;
   mime?: string;
   source_kind: string;
+  // The typed object id (e.g. `cyfile:…`) when the resource is a named object:
+  // pass it on as `named_object:<id>` or list it as a report artifact.
+  obj_id?: string;
 }
 
 export interface SaveResourceOptions {
@@ -218,7 +256,7 @@ export async function saveResourceToPath(
   if (resource.kind === "named_object") {
     const r = await readNamedObject(ndmProxy, resource.obj_id);
     bytes = r.bytes;
-    mime = r.mime ?? mime;
+    mime = mime ?? r.mime;
   } else if (resource.kind === "url") {
     const result = await readUrlArtifact(resource.url);
     mime = result.mime ?? mime;
@@ -229,6 +267,12 @@ export async function saveResourceToPath(
     throw new Error(`unsupported artifact resource kind: ${sourceKind}`);
   }
 
+  const wav = wrapRawPcm(bytes, mime);
+  if (wav) {
+    bytes = wav;
+    mime = "audio/wav";
+    destPath = `${destPath.replace(/\.[a-z0-9]{1,8}$/i, "")}.wav`;
+  }
   await ensureParentDir(destPath);
   const exclusive = options.overwrite === false;
   let file: Deno.FsFile | undefined;
@@ -261,6 +305,7 @@ export async function saveResourceToPath(
     bytes: bytes.byteLength,
     mime,
     source_kind: sourceKind,
+    ...(resource.kind === "named_object" ? { obj_id: resource.obj_id } : {}),
   };
 }
 

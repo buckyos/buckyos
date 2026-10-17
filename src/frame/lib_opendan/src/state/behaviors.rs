@@ -25,11 +25,35 @@ pub trait BehaviorCatalog: Send + Sync {
     async fn list(&self) -> Result<Vec<BehaviorMeta>>;
     /// Version of the catalog as a whole (audit of a freeze).
     async fn revision(&self) -> Result<String>;
-    /// The manual of a cmd_skill (`cmd_skills/<name>.md`). `None`: the
-    /// agent has no such cmd_skill.
+    /// The manual of a cmd_skill (`cmd_skills/<name>.md`, front matter
+    /// included). `None`: the agent has no such cmd_skill.
     async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
         let _ = name;
         Ok(None)
+    }
+    /// The agent's skills of `kind` (`None`: both), by name.
+    async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
+        let _ = kind;
+        Ok(Vec::new())
+    }
+    /// Install the skills of a skill package (`skills.install`).
+    async fn install_skills(
+        &self,
+        pkg: &crate::skills::SkillPackage,
+        replace: bool,
+        who: &str,
+    ) -> Result<crate::skills::InstallReport> {
+        let _ = (pkg, replace, who);
+        Err(OpenDanError::InvalidArgument(
+            "this agent state does not install skills".into(),
+        ))
+    }
+    /// Remove an installed skill (`skills.remove`).
+    async fn remove_skill(&self, kind: SkillKind, name: &str, who: &str) -> Result<SkillMeta> {
+        let _ = (kind, name, who);
+        Err(OpenDanError::InvalidArgument(
+            "this agent state does not remove skills".into(),
+        ))
     }
 }
 
@@ -38,8 +62,8 @@ const MAX_INCLUDE_DEPTH: usize = 8;
 /// What the owner adds to the package's role, appended to it.
 pub const ROLE_SUPPLEMENT_FILE: &str = ".meta/role_supplement.md";
 
-/// `<agent_root>/cmd_skills/<name>.md`: command manuals a session class
-/// names as its `default_cmd_skill`.
+/// `<agent_root>/cmd_skills/<name>.md`: command manuals a session takes
+/// when it is created (`prompt.cmd_skills`).
 pub const CMD_SKILLS_DIR: &str = "cmd_skills";
 
 fn expand_includes(text: &str, base: &Path, depth: usize) -> Result<String> {
@@ -212,6 +236,33 @@ impl BehaviorCatalog for FsBehaviorCatalog {
         Ok(Some(read_trimmed(&path)))
     }
 
+    async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
+        crate::skills::list(&self.root, kind)
+    }
+
+    async fn install_skills(
+        &self,
+        pkg: &crate::skills::SkillPackage,
+        replace: bool,
+        who: &str,
+    ) -> Result<crate::skills::InstallReport> {
+        let r = crate::skills::install(&self.root, pkg, replace, who)?;
+        log::info!(
+            "skills: {} {} ({}) installed by {who}: {}",
+            r.package,
+            r.version,
+            r.digest,
+            r.skills.iter().map(|s| format!("{}:{}", s.kind.as_str(), s.name)).collect::<Vec<_>>().join(", ")
+        );
+        Ok(r)
+    }
+
+    async fn remove_skill(&self, kind: SkillKind, name: &str, who: &str) -> Result<SkillMeta> {
+        let m = crate::skills::remove(&self.root, kind, name)?;
+        log::info!("skills: {}:{name} removed by {who}", kind.as_str());
+        Ok(m)
+    }
+
     async fn revision(&self) -> Result<String> {
         let mut h = Sha256::new();
         let mut files: Vec<PathBuf> = vec![
@@ -302,6 +353,22 @@ impl BehaviorCatalog for MemBehaviorCatalog {
     async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
         Ok(self.cmd_skills.lock().expect("cmd skills").get(name).cloned())
     }
+
+    async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
+        if kind == Some(SkillKind::Goal) {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .cmd_skills
+            .lock()
+            .expect("cmd skills")
+            .iter()
+            .map(|(n, t)| SkillMeta {
+                origin: "package".into(),
+                ..skill_meta(SkillKind::Cmd, n, t)
+            })
+            .collect())
+    }
 }
 
 fn check_llm_context(cfg: &SessionConfig) -> Result<()> {
@@ -332,17 +399,28 @@ pub async fn freeze_config(
         frozen_by: who.to_string(),
         identity: catalog.identity().await?,
         behaviors: BTreeMap::new(),
-        cmd_skill: None,
+        cmd_skills: Vec::new(),
     };
-    // The session's command manual is frozen with its behaviors: a
+    // The session's command manuals are frozen with its behaviors: a
     // cmd_skill the agent does not have is a configuration error.
-    if let Some(name) = cfg.prompt.cmd_skill.as_deref().filter(|n| !n.is_empty()) {
-        let text = catalog.cmd_skill(name).await?.ok_or_else(|| {
-            OpenDanError::InvalidArgument(format!("the agent has no cmd_skill `{name}`"))
-        })?;
-        frozen.cmd_skill = Some(CmdSkill {
-            name: name.to_string(),
-            text,
+    check_cmd_skill_names(&cfg.prompt.cmd_skills)?;
+    for name in &cfg.prompt.cmd_skills {
+        let Some(text) = catalog.cmd_skill(name).await? else {
+            let known: Vec<String> = catalog
+                .skills(Some(SkillKind::Cmd))
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            return Err(OpenDanError::InvalidArgument(format!(
+                "the agent has no cmd_skill `{name}` (installed: {}; see `agent-session skill list`)",
+                if known.is_empty() { "none".to_string() } else { known.join(", ") }
+            )));
+        };
+        frozen.cmd_skills.push(CmdSkill {
+            name: name.clone(),
+            text: split_front_matter(&text).1.to_string(),
         });
     }
     let mut next = cfg.clone();
@@ -362,6 +440,28 @@ pub async fn freeze_config(
     next.prompt.frozen = Some(frozen);
     next.behaviors().map_err(OpenDanError::InvalidArgument)?;
     *cfg = next;
+    Ok(())
+}
+
+/// The cmd_skill names a session may take: at most [`MAX_CMD_SKILLS`], each
+/// once, each a valid name.
+pub fn check_cmd_skill_names(names: &[String]) -> Result<()> {
+    if names.len() > MAX_CMD_SKILLS {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "a session takes at most {MAX_CMD_SKILLS} cmd_skills (got {}): choose the ones the task needs",
+            names.len()
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for n in names {
+        crate::ids::validate_session_id(n)
+            .map_err(|_| OpenDanError::InvalidArgument(format!("bad cmd_skill name `{n}`")))?;
+        if !seen.insert(n.as_str()) {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "cmd_skill `{n}` is named twice"
+            )));
+        }
+    }
     Ok(())
 }
 

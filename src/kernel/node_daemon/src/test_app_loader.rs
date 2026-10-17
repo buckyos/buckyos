@@ -1,5 +1,5 @@
 use crate::app_loader::{
-    command_matches_agent_process, command_matches_exact_agent_process,
+    buckyos_tool_mounts, command_matches_agent_process, command_matches_exact_agent_process,
     container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
     docker_runtime_matches_target, exttool_prepare_lock, inspect_docker_image_layout,
@@ -908,6 +908,25 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(!start.commands[1]
         .args
         .contains(&"<agent-bootstrap-script>".to_string()));
+    // Host Tool scripts are mounted read-only for the image's `buckyos`
+    // launcher; the host Deno runtime is not.
+    for entry in ["cli", "dist", "package.json", "distribution.json"] {
+        let mount = format!("<buckyos_tool>/{entry}:/opt/buckyos/libexec/buckyos-tool/{entry}:ro");
+        assert!(start.commands[1].args.contains(&mount), "missing {mount}");
+    }
+    assert!(!start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg.contains("buckyos-tool/runtime")));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_TOOL_ENDPOINT=http://host.docker.internal:3180".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"<agent_skills_pkg>:/mnt/buckyos/agent_skills:ro".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_AGENT_SKILLS_PKG_DIR=/mnt/buckyos/agent_skills".to_string()));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Agent);
@@ -1038,6 +1057,38 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .contains(&"BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg".to_string()));
+    assert!(!preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a.contains("buckyos-tool") || a.contains("agent_skills")));
+    assert!(!preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a.starts_with("BUCKYOS_TOOL_ENDPOINT=")));
+}
+
+#[test]
+fn buckyos_tool_mounts_skip_missing_entries_and_runtime() {
+    let root = tempdir().unwrap();
+    let tool_root = root.path().join("buckyos-tool");
+    fs::create_dir_all(tool_root.join("cli")).unwrap();
+    fs::create_dir_all(tool_root.join("dist")).unwrap();
+    fs::create_dir_all(tool_root.join("runtime")).unwrap();
+    fs::write(tool_root.join("package.json"), "{}").unwrap();
+
+    let mounts = buckyos_tool_mounts(&tool_root);
+    assert_eq!(
+        mounts,
+        ["cli", "dist", "package.json"]
+            .iter()
+            .map(|entry| (
+                format!("/opt/buckyos/libexec/buckyos-tool/{entry}"),
+                tool_root.join(entry)
+            ))
+            .collect::<Vec<_>>()
+    );
+    // The missing manifest is skipped, not created.
+    assert!(!tool_root.join("distribution.json").exists());
 }
 
 #[test]

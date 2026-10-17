@@ -47,18 +47,20 @@ enabled = false
 enabled = true
 
 # A UI session's objective is the built-in design intent of a conversation
-# (`objective = "..."` replaces it); its command manual is frozen with it.
+# (`objective = "..."` replaces it); its command manuals are frozen with it.
 [session.ui]
 default_behavior = "chat_route"
-default_cmd_skill = "ui_core"
+default_cmd_skills = ["ui_core"]
 max_process_depth = 4
 
 [session.group]
 base = "ui"
 default_behavior = "groupchat_route"
-default_cmd_skill = "ui_core"
+default_cmd_skills = ["ui_core"]
 max_process_depth = 4
 
+# A work session's command manuals are chosen when it is created
+# (`create-worksession --cmd-skill`); there is no default.
 [session.work]
 default_behavior = "plan"
 max_process_depth = 8

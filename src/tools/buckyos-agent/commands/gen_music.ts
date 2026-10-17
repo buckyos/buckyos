@@ -140,6 +140,7 @@ export async function run(argv: string[]): Promise<never> {
         mime: saved.mime ?? null,
         bytes: saved.bytes,
         source_kind: saved.source_kind,
+        obj_id: saved.obj_id ?? null,
       }],
     }),
     EXIT_SUCCESS,

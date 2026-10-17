@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:hello-skills.devtest",
+  "name": "hello-skills",
+  "version": "0.1.0",
+  "owner": "did:bns:devtest",
+  "author": "did:bns:devtest",
+  "show_name": "hello-skills",
+  "categories": [
+    "agent_skills"
+  ],
+  "permissions": [],
+  "selector_type": "single",
+  "service_config_tips": {}
+}

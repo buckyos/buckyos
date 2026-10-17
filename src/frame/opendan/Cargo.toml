@@ -31,3 +31,4 @@ libopendan = { path = "../lib_opendan" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+base64 = { workspace = true }

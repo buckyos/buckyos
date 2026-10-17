@@ -2,13 +2,13 @@
 
 日期：2026-10-17
 
-状态：v0.2，部分已定（见“已定”），其余待设计。来源：[Jarvis UI Session 提示词改造 TODO](jarvis-chat-prompt-todo.md) §8；review 原话“目前机制上还没有 cmd_skill，要先写个 todo”。实施任务在 [内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md) §3（I01–I04、I08）。
+状态：v0.3，“已定”各项与待设计项 1 已实施（2026-10-17，见内置 cmd_skills TODO §10），其余待设计。来源：[Jarvis UI Session 提示词改造 TODO](jarvis-chat-prompt-todo.md) §8；review 原话“目前机制上还没有 cmd_skill，要先写个 todo”。实施任务在 [内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md) §3（I01–I04、I08）。
 
-## 已有（v0，2026-10-17 实施）
+## 已有（v0，2026-10-17 实施；同日 v1 已改为列表，见下）
 
 - 一个 cmd_skill = Agent 包里的一份静态手册 `cmd_skills/<name>.md`。
-- `agent.toml [session.<class>] default_cmd_skill = "<name>"` → `SessionTemplate.default_cmd_skill` → `SessionConfig.prompt.cmd_skill`（名字）→ 冻结时由 `BehaviorCatalog::cmd_skill(name)` 读出 → `prompt.frozen.cmd_skill = {name, text}`（随 Session 冻结，同一 Session 内前缀不变）。
-- assembler 只对 UI Session 把它渲染成 system 段的 `## Commands`；Work / Goal 尚未使用。
+- v1：`agent.toml [session.<class>] default_cmd_skills = ["<name>"]` 或 `create-worksession --cmd-skill` → `prompt.cmd_skills` → 冻结为 `prompt.frozen.cmd_skills = [{name, text}]`（随 Session 冻结，同一 Session 内前缀不变）。
+- assembler 对 UI 与 Work 都渲染 `## Commands`（Work 段首说明是可选捷径，每份一个 `### <name>`）。
 - Jarvis 的 `ui_core` 只列今天存在、且在 Session PATH 上的命令（`llm_understand_media`、`agent-session read-session / sessions / recall / ctl perceive / notify / goal / ctl subscribe|unsubscribe / task`）。
 - 冻结时找不到手册是配置错误（Session 不推进），不会静默降级。
 
@@ -21,7 +21,7 @@
 
 ## 待设计
 
-1. **定义**：cmd_skill = 一组 CLI 的使用手册 + 可选的 PATH 层（`<agent_root>/tools/<skill>/bin`），作为 Agent 能力扩展的唯一形态（Dev Guide §5 原则）。v0 只有手册。待定：front-matter 字段、skill PIKG 的包内结构（倾向复用 AppDoc `pkg_list.agent_skills` 子包）、goal_skills 文件格式及 `GoalSkill.ref` 如何指向它。
+1. **定义**（已实施，2026-10-17）：cmd_skill = 一组 CLI 的使用手册 + 可选的 PATH 层（`<agent_root>/tools/<skill>/bin`，只在选了它的 Session PATH 上）。front matter 为 `name` / `description` / `requires`（冻结时剥掉）；skill 包是 `app_type = agent_skills` 的 PIKG，唯一子包 `agent_skills` 内分 `cmd_skills/`、`goal_skills/`、`tools/`；安装记录 `.meta/skills.json`。仍待定：goal_skills 在 Goal 里如何引用（`GoalSkill.ref` 指向 `goal_skills/<name>.md`），属于 Goal 的 TODO。
 2. **运行时调整（只对 UI）**：UI Session 有默认 cmd_skill，运行中可通过通用机制调整（例如 `agent-session skill use <name>`）：重新冻结 → 新 run 的前缀变化一次。要定：调整是否需要用户确认、是否跨 Session 记忆、与 `prompt.frozen` 的修订记录（`config_rev`）如何对应。Work 不做（见“已定”）。
 3. **延迟暴露**：手册只列核心命令；其余命令由背景行 / 事件行 / 工具结果里的一句 hint 带出（例如事件行后附 `manage with agent-session ctl subscribe …`），配合先行 TODO“以后”项“function result 里的背景行”。
 4. ~~**work session 的 cmd_skill**~~：已定，见上。

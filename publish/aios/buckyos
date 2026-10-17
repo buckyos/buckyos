@@ -1,0 +1,47 @@
+#!/usr/bin/env sh
+# BuckyOS system CLI inside the aios worker image.
+#
+# node_daemon mounts the host's Tool distribution ($BUCKYOS_ROOT/libexec/
+# buckyos-tool: cli/, dist/, package.json, distribution.json) read-only at
+# /opt/buckyos/libexec/buckyos-tool. The scripts follow the host system; the
+# Deno runtime is this image's, because the host runtime may not be a Linux
+# binary. system_bootstrap.ts derives the second stage from Deno.execPath(),
+# so both stages use the image Deno.
+#
+# The CLI only reads BUCKYOS_TOOL_ENDPOINT, which node_daemon injects. When it
+# is unset and BUCKYOS_HOST_GATEWAY is set, the host NodeGateway
+# http://$BUCKYOS_HOST_GATEWAY:3180 is used.
+set -eu
+
+TOOL=/opt/buckyos/libexec/buckyos-tool
+SUPPORTED_PROTOCOL=1
+
+fail() {
+  printf 'buckyos: %s\n' "$*" >&2
+  exit 1
+}
+
+for entry in cli/system_bootstrap.ts distribution.json; do
+  [ -f "$TOOL/$entry" ] || fail "$TOOL/$entry not found. The BuckyOS Tool scripts are mounted read-only from the host's \$BUCKYOS_ROOT/libexec/buckyos-tool by node_daemon for agent containers; this container has no such mount, or the host distribution is incomplete."
+done
+
+DENO=$(command -v deno) || fail "deno not found in PATH"
+
+protocol=$(jq -r '.protocol_version // empty' "$TOOL/distribution.json") ||
+  fail "cannot read $TOOL/distribution.json"
+[ "$protocol" = "$SUPPORTED_PROTOCOL" ] ||
+  fail "host Tool protocol_version '${protocol}' is not supported by this image (supports ${SUPPORTED_PROTOCOL}); update the aios image or the BuckyOS host so they match"
+
+wanted_deno=$(jq -r '.deno_version // empty' "$TOOL/distribution.json")
+wanted_deno=${wanted_deno#v}
+[ -n "$wanted_deno" ] || fail "$TOOL/distribution.json has no deno_version"
+image_deno=$("$DENO" --version | awk 'NR == 1 { print $2 }')
+[ "${wanted_deno%%.*}" = "${image_deno%%.*}" ] ||
+  fail "host Tool is built for Deno ${wanted_deno} but this image has Deno ${image_deno}; the major versions must match"
+
+if [ -z "${BUCKYOS_TOOL_ENDPOINT:-}" ] && [ -n "${BUCKYOS_HOST_GATEWAY:-}" ]; then
+  export BUCKYOS_TOOL_ENDPOINT="http://${BUCKYOS_HOST_GATEWAY}:3180"
+fi
+export BUCKYOS_ROOT=${BUCKYOS_ROOT:-/opt/buckyos}
+
+exec "$DENO" run --no-prompt --allow-read="$TOOL" --allow-env="HOME,USERPROFILE,APPDATA,BUCKYOS_TOOL_CONFIG_DIR,BUCKYOS_TOOL_PROFILE,BUCKYOS_TOOL_ZONE,BUCKYOS_TOOL_ENDPOINT,BUCKYOS_TOOL_IDENTITY,BUCKYOS_TOOL_OUTPUT,BUCKYOS_IDENTITY_ROOT,BUCKYOS_SECURITY_ROOT,BUCKYOS_APPCLIENT_SESSION_TOKEN,BUCKYOS_ROOT,SOURCE_DATE_EPOCH" --allow-run="$DENO" "$TOOL/cli/system_bootstrap.ts" "$@"

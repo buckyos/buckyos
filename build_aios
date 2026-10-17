@@ -30,6 +30,7 @@ INSTALL_WORKSPACE_TOOLS=1
 ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
 BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
 AICC_TOOL_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/aicc-tool"
+BUCKYOS_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/buckyos"
 OPENDAN_WEB_SOURCE="$SRC_DIR/frame/opendan/web"
 LOCAL_TEST=0
 LOCAL_TEST_IMAGE_NAME="local/aios-test"
@@ -78,7 +79,10 @@ Options:
 
 Env overrides:
   BUCKYOS_WEBSDK_REF
-                  buckyos-websdk Git ref packaged with buckyos-agent tools (default: main)
+                  buckyos-websdk Git ref whose dist/ backs the build-time checks of the
+                  buckyos-agent tools (default: main). It is not shipped in the image: at
+                  run time the tools use the host SDK that node_daemon mounts read-only at
+                  /opt/buckyos/libexec/buckyos-tool/dist.
 EOF
 }
 
@@ -461,8 +465,9 @@ prepare_opendan_web() {
 
 prepare_buckyos_agent_package() {
   local output_dir="$1"
-  local tmp_root="$2"
-  local python_bin="$3"
+  local check_sdk_dir="$2"
+  local tmp_root="$3"
+  local python_bin="$4"
   local sdk_dist=""
   local sdk_checkout="$tmp_root/buckyos-websdk"
   local fetched_commit
@@ -475,10 +480,14 @@ prepare_buckyos_agent_package() {
     echo "Missing AICC tool launcher: $AICC_TOOL_LAUNCHER_SOURCE" >&2
     exit 1
   fi
+  if [[ ! -f "$BUCKYOS_LAUNCHER_SOURCE" ]]; then
+    echo "Missing buckyos launcher: $BUCKYOS_LAUNCHER_SOURCE" >&2
+    exit 1
+  fi
   mkdir -p "$output_dir"
   cp -R "$BUCKYOS_AGENT_TOOLS_SOURCE/." "$output_dir/"
 
-  log "Fetching buckyos-websdk ref $BUCKYOS_WEBSDK_REF for AICC tools"
+  log "Fetching buckyos-websdk ref $BUCKYOS_WEBSDK_REF for the AICC tool build checks"
   git init -q "$sdk_checkout"
   git -C "$sdk_checkout" remote add origin "$BUCKYOS_WEBSDK_REPO"
   git -C "$sdk_checkout" fetch -q --depth 1 origin "$BUCKYOS_WEBSDK_REF"
@@ -492,8 +501,8 @@ prepare_buckyos_agent_package() {
     exit 1
   fi
 
-  mkdir -p "$output_dir/vendor/buckyos-websdk"
-  cp -R "$sdk_dist/." "$output_dir/vendor/buckyos-websdk/"
+  mkdir -p "$check_sdk_dir"
+  cp -R "$sdk_dist/." "$check_sdk_dir/"
 
   "$python_bin" - "$output_dir/deno.json" <<'PY'
 import json
@@ -502,7 +511,7 @@ from pathlib import Path
 
 config_path = Path(sys.argv[1])
 config = json.loads(config_path.read_text(encoding="utf-8"))
-config.setdefault("imports", {})["buckyos"] = "./vendor/buckyos-websdk/node.mjs"
+config.setdefault("imports", {})["buckyos"] = "/opt/buckyos/libexec/buckyos-tool/dist/node.mjs"
 config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 }
@@ -553,9 +562,15 @@ WORKDIR /opt/buckyos
 
 # BuckyOS Agent AICC CLI tools. Keep these outside /opt/buckyos/tools because
 # that path is shadowed by the shared ExtTool volume at runtime.
+# They and the `buckyos` launcher run on the host's Tool scripts and SDK,
+# which node_daemon mounts read-only at /opt/buckyos/libexec/buckyos-tool.
+# The checks below borrow a build-time SDK through a bind mount, so no SDK
+# lands in the image.
 COPY buckyos-agent /opt/buckyos/bin/opendan/buckyos-agent
 COPY aicc-tool-launcher /usr/local/bin/aicc-tool
-RUN chmod 755 /usr/local/bin/aicc-tool && \
+COPY buckyos-launcher /usr/local/bin/buckyos
+RUN --mount=type=bind,source=buckyos-tool-check-dist,target=/opt/buckyos/libexec/buckyos-tool/dist \
+    chmod 755 /usr/local/bin/aicc-tool /usr/local/bin/buckyos && \
     for command_path in /opt/buckyos/bin/opendan/buckyos-agent/commands/*.ts; do \
       command_name="$(basename "$command_path" .ts)"; \
       ln -sf aicc-tool "/usr/local/bin/$command_name"; \
@@ -1325,6 +1340,7 @@ main() {
   local cargo_target_dir
   local cargo_target_mode
   local buckyos_agent_package_dir
+  local buckyos_tool_check_dist_dir
   local opendan_web_dir
   local -a target_arches=()
 
@@ -1360,7 +1376,8 @@ main() {
   trap "rm -rf '$tmp_root'" EXIT
 
   buckyos_agent_package_dir="$tmp_root/buckyos-agent-package"
-  prepare_buckyos_agent_package "$buckyos_agent_package_dir" "$tmp_root" "$python_bin"
+  buckyos_tool_check_dist_dir="$tmp_root/buckyos-tool-check-dist"
+  prepare_buckyos_agent_package "$buckyos_agent_package_dir" "$buckyos_tool_check_dist_dir" "$tmp_root" "$python_bin"
 
   opendan_web_dir="$tmp_root/opendan-web"
   prepare_opendan_web "$opendan_web_dir"
@@ -1411,7 +1428,9 @@ main() {
 
     build_runtime_binaries "$arch" "$context_dir" "$cargo_target_dir" "$python_bin"
     cp -R "$buckyos_agent_package_dir" "$context_dir/buckyos-agent"
+    cp -R "$buckyos_tool_check_dist_dir" "$context_dir/buckyos-tool-check-dist"
     cp "$AICC_TOOL_LAUNCHER_SOURCE" "$context_dir/aicc-tool-launcher"
+    cp "$BUCKYOS_LAUNCHER_SOURCE" "$context_dir/buckyos-launcher"
     cp -R "$opendan_web_dir" "$context_dir/web"
     render_dockerfile "$dockerfile_path"
     if [[ -z "$PREPARE_CONTEXT_DIR" ]]; then

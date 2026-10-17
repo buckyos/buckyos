@@ -45,6 +45,7 @@ For the request below, decide what it needs:
    - `agent-session runtime list`: runtimes, whether they are available, suggested roots
    - `agent-session sessions --children --active`, `agent-session read-session <sid> --report`: work running or just finished (a failed work's report is input for a new one)
    - `agent-session goal list` / `goal show <id>`: existing goals
+   - `agent-session skill list --kind cmd`: command manuals (cmd_skills) a work session can be given, with what each is for and needs
    - `agent-session recall <tag>...`: what you learned earlier
    - plain shell commands to look at directories, files and git status
 3. Ask the user what only the user can answer (below), then look again with the answer.
@@ -64,7 +65,7 @@ For the request below, decide what it needs:
 
 ## Ready
 
-- A task is ready when you know: its objective; scope and what is not included; how to check that it is done; the inputs it needs; key dependencies; runtime; workspace; what it may change.
+- A task is ready when you know: its objective; scope and what is not included; how to check that it is done; the inputs it needs; key dependencies; runtime; workspace; what it may change; the cmd_skills that fit it.
 - A goal is ready when you know: the state to reach or keep, what it acts on, whom it serves, how progress is judged, its limits.
 
 ## Shape of a work session
@@ -81,8 +82,9 @@ For the request below, decide what it needs:
 
 ## Creating
 
-- Work: `agent-session create-worksession --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" [--behavior work_simple] --workspace <workspace_id>|none --context recent:6 --report final`
+- Work: `agent-session create-worksession --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" [--behavior work_simple] [--cmd-skill <name>]... --workspace <workspace_id>|none --context recent:6 --report final`
   The work session does not see this conversation: its objective and message are all it has. Never add `--wait`.
+  `--cmd-skill`: the manuals from `skill list` that fit the task (at most 8). Each one goes into the work session's prompt for its whole life, so give the ones it will use and none when none fits; they are shortcuts, not rules it must follow.
 - Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs>] --start --key <unique operation id>`
   A request that belongs to an existing goal goes to it: `agent-session goal post <goal_id> --msg "<text>"`.
 
@@ -104,7 +106,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
   Not your exploration.
 - `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask-user` and its answer, exactly as in the report — the conversation does not see them otherwise.
 - `assumptions`, `evidence` (`<fact and where it came from>`), `gaps` (`<what is missing and why>`): lists, `[]` when empty. `reason`: why declined / unsupported, otherwise `null`.
-- `work`: for `work_created` `{"session_id", "shape": "plan_do | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
+- `work`: for `work_created` `{"session_id", "shape": "plan_do | simple", "objective", "workspace_id" ("none" without one), "runtime_id", "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
 
 Request: {{handover.sub_task.task}}
 </intent_analysis>
@@ -140,13 +142,14 @@ schema = '''
     "work": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["session_id", "shape", "objective", "workspace_id", "runtime_id", "report"],
+      "required": ["session_id", "shape", "objective", "workspace_id", "runtime_id", "cmd_skills", "report"],
       "properties": {
         "session_id": {"type": "string"},
         "shape": {"type": "string", "enum": ["plan_do", "simple"]},
         "objective": {"type": "string"},
         "workspace_id": {"type": "string"},
         "runtime_id": {"type": "string"},
+        "cmd_skills": {"type": "array", "items": {"type": "string"}},
         "report": {"type": "string"}
       }
     },

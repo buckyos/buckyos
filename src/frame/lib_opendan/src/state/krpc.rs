@@ -135,6 +135,8 @@ pub fn is_write(method: &str) -> bool {
             | "notify.send"
             | "notify.cancel"
             | "notify.answer"
+            | "skills.install"
+            | "skills.remove"
     )
 }
 
@@ -338,6 +340,25 @@ pub async fn serve_call(
         "behaviors.cmd_skill" => match arg::<String>(params, "name") {
             Ok(n) => agent.behaviors().cmd_skill(&n).await.and_then(out),
             Err(e) => Err(e),
+        },
+        "skills.list" => match arg::<Option<SkillKind>>(params, "kind") {
+            Ok(kind) => agent.behaviors().skills(kind).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "skills.install" => match (
+            arg::<crate::skills::SkillPackage>(params, "package"),
+            arg::<Option<bool>>(params, "replace"),
+        ) {
+            (Ok(pkg), Ok(replace)) => agent
+                .behaviors()
+                .install_skills(&pkg, replace.unwrap_or(false), who)
+                .await
+                .and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "skills.remove" => match (arg::<SkillKind>(params, "kind"), arg::<String>(params, "name")) {
+            (Ok(kind), Ok(name)) => agent.behaviors().remove_skill(kind, &name, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "goals.list" => agent.goals().list().await.and_then(out),
         "goals.get" => match arg::<String>(params, "goal_id") {
@@ -704,6 +725,20 @@ impl BehaviorCatalog for KrpcAgentStateClient {
     }
     async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
         self.call("behaviors.cmd_skill", json!({ "name": name })).await
+    }
+    async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
+        self.call("skills.list", json!({ "kind": kind })).await
+    }
+    async fn install_skills(
+        &self,
+        pkg: &crate::skills::SkillPackage,
+        replace: bool,
+        _who: &str,
+    ) -> Result<crate::skills::InstallReport> {
+        self.call("skills.install", json!({ "package": pkg, "replace": replace })).await
+    }
+    async fn remove_skill(&self, kind: SkillKind, name: &str, _who: &str) -> Result<SkillMeta> {
+        self.call("skills.remove", json!({ "kind": kind, "name": name })).await
     }
 }
 

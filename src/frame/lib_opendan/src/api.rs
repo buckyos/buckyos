@@ -488,6 +488,11 @@ pub struct SubSessionSpec {
     pub class: Option<String>,
     #[serde(default)]
     pub behavior: Option<String>,
+    /// The sub session's cmd_skills, chosen now (at most
+    /// [`MAX_CMD_SKILLS`]). `None`: a Work parent's frozen choice (the
+    /// manuals still installed), else the template's default.
+    #[serde(default)]
+    pub cmd_skills: Option<Vec<String>>,
     #[serde(default)]
     pub workspace: SubWorkspace,
     /// Explicit runtime id requirement (`None`: inherit the parent's
@@ -836,7 +841,32 @@ pub async fn create_sub_session(
     if let Some(b) = sub.behavior.clone() {
         spec.prompt.behavior = Some(b);
     }
-    spec.freeze = spec.prompt.behavior.is_some() || pcfg.prompt.frozen.is_some();
+    spec.prompt.cmd_skills = match &sub.cmd_skills {
+        Some(names) => {
+            crate::state::check_cmd_skill_names(names)?;
+            names.clone()
+        }
+        // A Work hands its manuals on to the work it splits off; a UI's or
+        // a Goal's own manuals are never a Work's.
+        None if pcfg.session.kind == SessionKind::Work => {
+            let chosen: Vec<String> = match &pcfg.prompt.frozen {
+                Some(f) => f.cmd_skills.iter().map(|c| c.name.clone()).collect(),
+                None => pcfg.prompt.cmd_skills.clone(),
+            };
+            let installed: Vec<String> = agent
+                .behaviors()
+                .skills(Some(SkillKind::Cmd))
+                .await?
+                .into_iter()
+                .map(|m| m.name)
+                .collect();
+            chosen.into_iter().filter(|n| installed.contains(n)).collect()
+        }
+        None => spec.prompt.cmd_skills.clone(),
+    };
+    spec.freeze = spec.prompt.behavior.is_some()
+        || pcfg.prompt.frozen.is_some()
+        || !spec.prompt.cmd_skills.is_empty();
     spec.workspace = match &sub.workspace {
         SubWorkspace::Inherit => pcfg.workspace.clone(),
         SubWorkspace::None => None,

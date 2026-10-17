@@ -223,9 +223,10 @@ export function parseArgvOrExit(
   tool: string,
   help: string,
   argv: string[],
+  extraBooleanFlags: string[] = [],
 ): ParsedArgs {
   try {
-    return parseArgs(argv);
+    return parseArgs(argv, new Set([...BOOLEAN_FLAGS, ...extraBooleanFlags]));
   } catch (err) {
     if (err instanceof HelpRequested) {
       console.error(help);

@@ -54,19 +54,18 @@ npx buckyos pikg info ./dapp_dist/app1-0.1.0.pikg
 以下为 macOS/Linux shell 示例；使用专门的开发机或 VM，不与正式运行的 BuckyOS 共用运行目录。先按仓库 [README](../../README.md#getting-started) 和 [devenv.py](../../devenv.py) 准备 Rust、Python 3.12、uv、Node/pnpm、Deno ≥ 2.2、tmux、Docker 等构建依赖。两个仓库放在同一父目录：
 
 ```bash
-git clone https://github.com/buckyos/cyfs-gateway.git
-git clone https://github.com/buckyos/buckyos.git
+git clone --branch main https://github.com/buckyos/cyfs-gateway.git
+git clone --branch main https://github.com/buckyos/buckyos.git
 cd cyfs-gateway/src
-uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-build
-uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install --all
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-build
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-install --all
 cd ../../buckyos/src
-uv run tools/prepare_sdk_tool_distribution.py --work-dir ../.cache/sdk-tool
-uv run buckyos-build --app=buckyos
+uv run buckyos-build.py
 uv run start.py --all
 uv run check.py
 ```
 
-这里复用 CI 的“准备 SDK/Tool 发行物 → devkit 构建”路径。直接运行 `buckyos-build.py` 则必须先提供它要求的四个 `BUCKYOS_SDK_TOOL_*` 输入，不能省略。
+`buckyos-build.py` 先准备 SDK/Tool 分发包，再调用 devkit 的 `buckyos-build`：同级目录有 `buckyos-websdk` 时从源码构建（构建失败即中止），没有时使用 npm 发布的 `buckyos@latest`；只有使用预构建分发包时才需要同时提供四个 `BUCKYOS_SDK_TOOL_*`。直接运行 devkit 的 `buckyos-build` 会跳过 SDK/Tool 准备，而 `start.py` 要求 `rootfs/libexec/buckyos-tool/` 中已有分发包。
 
 `--all` 使用 `dev` 配置：Zone 为 `test.buckyos.io`，Owner 为 `devtest`，无需手工激活。检查须显示已激活且核心服务可用。该域名及通配子域名用于回环测试，预期解析到 `127.0.0.1`；在开发机浏览器访问 `http://test.buckyos.io`。若在 VM 中运行，应在 VM 内访问，或另行配置宿主机解析和转发。
 
@@ -84,43 +83,45 @@ uv run check.py
 
 ## 4. 把 PIKG 安装到 DV
 
-回到应用项目，配置一个显式指向 DV 的 CLI profile：
+回到应用项目，配置一个显式指向 DV 的 CLI profile。当前 CLI 的 `config set --profile-name` 不会新建 profile 文件（不存在时报 `readfile '…/profiles/dv.json'`），先建一个空 profile；Tool 配置目录默认是 `~/.buckyos_tool`（`BUCKYOS_TOOL_CONFIG_DIR` 可改）：
 
 ```bash
+mkdir -p ~/.buckyos_tool/profiles
+[ -f ~/.buckyos_tool/profiles/dv.json ] || echo '{"schema_version":1}' > ~/.buckyos_tool/profiles/dv.json
 npx buckyos config set zone --value test.buckyos.io --profile-name dv
 npx buckyos config set default_protocol --value http:// --profile-name dv
 ```
 
-Coding Agent 使用下面的 Node 片段获取 DV 会话，保存到本机文件；将 `.dv-session-token` 加入 `.gitignore`。这是源码 `dev` 配置的预设账号 `devtest` / `bucky2025`，只用于本地 DV；会话过期或环境重建后重新执行。
+Coding Agent 使用下面的 Node 片段获取 DV 会话，保存到本机文件；将 `.dv-session-token` 加入 `.gitignore`。这是源码 `dev` 配置的预设账号 `devtest` / `bucky2025`，只用于本地 DV；会话约 15 分钟过期，过期或环境重建后重新执行。片段经 control-panel 登录：CLI 自带的交互式密码登录和 verify-hub 的 `buckycli` 应用目标在 DV 上会被拒绝（`AppAccessDenied`）。
 
 ```bash
 node --input-type=module <<'JS'
 import { writeFileSync } from 'node:fs';
-import { buckyos, VerifyHubClient, createAppInstanceId } from 'buckyos/node';
-const client = new VerifyHubClient(new buckyos.kRPCClient('http://test.buckyos.io/kapi/verify-hub'));
+import { buckyos } from 'buckyos/node';
 const nonce = Date.now();
-client.setSeq(nonce);
-const response = await client.loginByPassword({
+const rpc = new buckyos.kRPCClient('http://test.buckyos.io/kapi/control-panel', null, nonce);
+const { session_token } = await rpc.call('auth.login', {
   username: 'devtest', password: buckyos.hashPassword('devtest', 'bucky2025', nonce),
-  login_nonce: nonce, target: { kind: 'app', app_instance_id: createAppInstanceId('buckycli', 'devtest') }
+  appid: 'control-panel', target: { kind: 'system', service_id: 'control-panel' }, login_nonce: nonce,
 });
-const { session_token } = VerifyHubClient.normalizeLoginResponse(response);
 if (!session_token) throw new Error('DV login failed');
 writeFileSync('.dv-session-token', session_token, { mode: 0o600 });
 JS
 npx buckyos --profile dv --session-token-file ./.dv-session-token auth whoami
 npx buckyos --profile dv --session-token-file ./.dv-session-token --non-interactive app fetch ./dapp_dist/app1-0.1.0.pikg --plan ./app1.install-plan.json --policy local-developer
-npx buckyos --profile dv --session-token-file ./.dv-session-token --non-interactive --yes app install ./dapp_dist/app1-0.1.0.pikg --plan ./app1.install-plan.json --policy local-developer
-npx buckyos --profile dv --session-token-file ./.dv-session-token app status app1
+npx buckyos --profile dv --session-token-file ./.dv-session-token --non-interactive --yes --timeout 10m app install ./dapp_dist/app1-0.1.0.pikg --plan ./app1.install-plan.json --policy local-developer
+npx buckyos --profile dv --session-token-file ./.dv-session-token app status did:bns:app1.devtest
 ```
 
 首次安装需要 `fetch` 生成的计划；若返回 `PLAN_INPUT_REQUIRED`，按命令 schema 用 `--input` 补齐目标和配置后重新生成。未签名开发包必须显式使用 `local-developer`，且目标 Installer 允许此权限；它不代表正式发布。
 
-安装命令默认等待任务完成。正常情况下，Zone Owner 安装的 `app1` 可通过 **`http://app1.test.buckyos.io`** 访问；先在浏览器登录 DV。实际域名以安装结果的分配为准：命名冲突或其他用户安装可能带后缀，同一应用实例升级时保留分配。验证页面/API 确实来自当前版本。
+安装命令默认等待任务完成，但 CLI 默认超时只有 30 秒：Docker 应用安装通常更久，超时会以退出码 8 `TIMEOUT` 返回而任务继续执行，所以上面加了 `--timeout 10m`。`app status` 等命令按 App DID（`did:bns:<name>.<owner>`）或实例 ID（`app1.devtest.bns.did@devtest`）选择应用；只写 `app1` 会被解释成 `did:bns:app1` 而找不到。
+
+正常情况下，Zone Owner 安装的 `app1` 可通过 **`http://app1.test.buckyos.io`** 访问；端点声明了 `allow_guest: false`，未登录会被重定向到登录页，先在浏览器登录 DV。实际域名以 `app status` 的 `web_hosts` 为准：命名冲突或其他用户安装可能带后缀，同一应用实例升级时保留分配。验证页面/API 确实来自当前版本。
 
 ## 5. 日常循环：改代码 → 打包新版本 → 升级
 
-将 `dapp_meta/app.json.version` 改为 `0.1.1`；将 `pikg.json` 中镜像 source 改为 `local/app1:0.1.1`，若有显式 `pikg_file` 也同步修改。保持 App DID 不变。
+将 `dapp_meta/app.json.version` 改为 `0.1.1`；将 `pikg.json` 中镜像 source 改为 `local/app1:0.1.1`，`pikg_file` 同步改为 `app1-0.1.1.pikg`（`pikg init` 总会写入该字段）。保持 App DID 不变。重新 `pikg build` 会删除 `dapp_dist` 中上一版 PIKG，需要保留旧包时先复制出去。
 
 ```bash
 npm run build
@@ -128,13 +129,13 @@ docker build -t local/app1:0.1.1 .
 npx buckyos pikg build ./dapp_meta
 npx buckyos pikg pack ./dapp_dist
 npx buckyos pikg info ./dapp_dist/app1-0.1.1.pikg
-npx buckyos --profile dv --session-token-file ./.dv-session-token --non-interactive --yes app install ./dapp_dist/app1-0.1.1.pikg --policy local-developer
-npx buckyos --profile dv --session-token-file ./.dv-session-token app status app1
+npx buckyos --profile dv --session-token-file ./.dv-session-token --non-interactive --yes --timeout 10m app install ./dapp_dist/app1-0.1.1.pikg --policy local-developer
+npx buckyos --profile dv --session-token-file ./.dv-session-token app status did:bns:app1.devtest
 ```
 
-**本地新包升级使用 `app install <新 PIKG>`，不带首次安装的 `--plan`。** `app upgrade` 检查 Catalog 中的已发布版本，不接收本地 PIKG。相同版本不会重装，每次测试新包都要递增版本号。升级保留当前安装设置，可能短暂停机；完成后仍在同一子域名测试新版本和数据保留情况。
+**本地新包升级使用 `app install <新 PIKG>`，不带首次安装的 `--plan`。** 可先加 `--dry-run` 确认 `plan_use` 为 `UPGRADE`。`app upgrade` 经 BNS 解析 App DID 检查已发布版本，不接收本地 PIKG；本地开发包没有 BNS 记录，会返回 `TRUST_RESOLUTION_REQUIRED`。相同版本不会重装，每次测试新包都要递增版本号。升级保留当前安装设置和 `$BUCKYOS_DATA_DIR`（宿主机 `$BUCKYOS_ROOT/data/home/<owner>/.local/share/<app_id>/`）中的数据，可能短暂停机；完成后仍在同一子域名测试新版本和数据保留情况。
 
-只改应用无需重新构建或重置 BuckyOS。任务等待超时可用 `npx buckyos --profile dv --session-token-file ./.dv-session-token task wait <task-id>` 续等；系统异常先跑 `uv run check.py`，日志在 `$BUCKYOS_ROOT/logs`。
+只改应用无需重新构建或重置 BuckyOS。任务等待超时可用 `npx buckyos --profile dv --session-token-file ./.dv-session-token --timeout 10m task wait <task-id>` 续等；系统异常先跑 `uv run check.py`，日志在 `$BUCKYOS_ROOT/logs`。
 
 ## 给 Coding Agent 的参考入口
 

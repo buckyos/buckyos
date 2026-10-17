@@ -27,7 +27,9 @@ pub const TODO_LIST_SCHEMA: &str = "opendan.todo_list/1";
 /// File name of a session's list (in its state directory).
 pub const TODO_LIST_FILE: &str = "todos.json";
 const TODO_LOCK_FILE: &str = "todos.lock";
-pub const MAX_SKILLS_PER_TODO: usize = 3;
+/// cmd_skills a Todo names for the sub session that executes it (the
+/// session limit of OpenDAN).
+pub const MAX_SKILLS_PER_TODO: usize = 8;
 /// Characters of the one-line summary of an attempt.
 pub const SUMMARY_CHARS: usize = 160;
 
@@ -410,7 +412,7 @@ impl TodoRecord {
             }
         }
         if !self.skills.is_empty() {
-            s.push_str(&format!("\nSkills: {}\n", self.skills.join(", ")));
+            s.push_str(&format!("\ncmd_skills: {}\n", self.skills.join(", ")));
         }
         let deps: Vec<&TodoRecord> = self.after.iter().filter_map(|id| list.get(id)).collect();
         if !deps.is_empty() {
@@ -542,7 +544,7 @@ impl TodoList {
         }
         if new.skills.len() > MAX_SKILLS_PER_TODO {
             return Err(invalid(format!(
-                "at most {MAX_SKILLS_PER_TODO} skills per todo (got {})",
+                "at most {MAX_SKILLS_PER_TODO} cmd_skills per todo (got {})",
                 new.skills.len()
             )));
         }

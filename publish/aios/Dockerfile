@@ -51,9 +51,15 @@ WORKDIR /opt/buckyos
 
 # BuckyOS Agent AICC CLI tools. Keep these outside /opt/buckyos/tools because
 # that path is shadowed by the shared ExtTool volume at runtime.
+# They and the `buckyos` launcher run on the host's Tool scripts and SDK,
+# which node_daemon mounts read-only at /opt/buckyos/libexec/buckyos-tool.
+# The checks below borrow a build-time SDK through a bind mount, so no SDK
+# lands in the image.
 COPY buckyos-agent /opt/buckyos/bin/opendan/buckyos-agent
 COPY aicc-tool-launcher /usr/local/bin/aicc-tool
-RUN chmod 755 /usr/local/bin/aicc-tool && \
+COPY buckyos-launcher /usr/local/bin/buckyos
+RUN --mount=type=bind,source=buckyos-tool-check-dist,target=/opt/buckyos/libexec/buckyos-tool/dist \
+    chmod 755 /usr/local/bin/aicc-tool /usr/local/bin/buckyos && \
     for command_path in /opt/buckyos/bin/opendan/buckyos-agent/commands/*.ts; do \
       command_name="$(basename "$command_path" .ts)"; \
       ln -sf aicc-tool "/usr/local/bin/$command_name"; \

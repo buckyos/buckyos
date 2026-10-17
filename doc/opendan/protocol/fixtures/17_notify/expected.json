@@ -4,7 +4,7 @@
   "next": {
     "ui": {
       "action": "show_the_observation_with_the_next_message",
-      "snapshot_line_starts_with": "[notify nt-f4acf43da57b44e9ac7b7997d613f68a] input/timely",
+      "snapshot_line_starts_with": "[notify nt-f798f23e219b4249bc6d7cb597d71f65] input/timely",
       "turns_opened_by_the_observation": 0
     },
     "work": {
@@ -15,7 +15,7 @@
       "llm_calls": 1,
       "report": "migrated to Postgres",
       "tool_result_q1": {
-        "notify_id": "nt-f4acf43da57b44e9ac7b7997d613f68a",
+        "notify_id": "nt-f798f23e219b4249bc6d7cb597d71f65",
         "option": "pg",
         "text": "Postgres",
         "via": "notification"
@@ -31,11 +31,11 @@
         "inflight": [
           "q1"
         ],
-        "run_id": "20261017-032729-9bdb8d",
+        "run_id": "20261017-092836-cf967a",
         "run_status": "paused"
       },
       "runs_on_disk": [
-        "20261017-032729-9bdb8d"
+        "20261017-092836-cf967a"
       ],
       "session_id": "work-notify",
       "state": {
@@ -51,9 +51,9 @@
         "turns_completed": 0
       },
       "waiting_for": {
-        "deadline_ms": 1792243649823,
+        "deadline_ms": 1792265316463,
         "human_tasks": [
-          "local-task-nt-f4acf43da57b44e9ac7b7997d613f68a"
+          "local-task-nt-f798f23e219b4249bc6d7cb597d71f65"
         ],
         "kind": "input",
         "refs": [
@@ -78,13 +78,13 @@
               "index": 1,
               "src": "q"
             },
-            "key": "notify:nt-f4acf43da57b44e9ac7b7997d613f68a:dm:did:bns:alice",
-            "received_at_ms": 1792232849895,
+            "key": "notify:nt-f798f23e219b4249bc6d7cb597d71f65:dm:did:bns:alice",
+            "received_at_ms": 1792254516551,
             "seq": null,
-            "summary": "[notify nt-f4acf43da57b44e9ac7b7997d613f68a] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-f4acf43da57b44e9ac7b7997d613f68a`"
+            "summary": "[notify nt-f798f23e219b4249bc6d7cb597d71f65] input/timely from session work-notify at 2026-10-02T00:00:00Z: Postgres or SQLite? (options: pg=Postgres, lite=SQLite) — check the current state with `agent-session notify show nt-f798f23e219b4249bc6d7cb597d71f65`"
           },
           "source": {
-            "id": "notify:nt-f4acf43da57b44e9ac7b7997d613f68a",
+            "id": "notify:nt-f798f23e219b4249bc6d7cb597d71f65",
             "kind": "system"
           },
           "subscription_id": "_notify",

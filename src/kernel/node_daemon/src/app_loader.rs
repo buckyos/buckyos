@@ -49,6 +49,15 @@ const WORKER_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
 /// paios容器需求.md). The Worker image bakes a default layout here; a shared
 /// named volume overlays it so multiple containers see the same tool set.
 const WORKER_CONTAINER_EXTTOOL_ROOT: &str = "/opt/buckyos/tools";
+/// Host BuckyOS Tool distribution (`$BUCKYOS_ROOT/libexec/buckyos-tool`).
+/// Agent containers get its scripts and manifests read-only and run them with
+/// the image's own Deno, so `runtime/` (a host binary) is never mounted.
+const BUCKYOS_TOOL_RELATIVE_DIR: &str = "libexec/buckyos-tool";
+const WORKER_CONTAINER_BUCKYOS_TOOL_ROOT: &str = "/opt/buckyos/libexec/buckyos-tool";
+const BUCKYOS_TOOL_MOUNT_ENTRIES: [&str; 4] = ["cli", "dist", "package.json", "distribution.json"];
+/// Read-only view of the agent's installed `pkg_list.agent_skills` sub package.
+const WORKER_CONTAINER_AGENT_SKILLS_ROOT: &str = "/mnt/buckyos/agent_skills";
+const NODE_GATEWAY_PORT: u16 = 3180;
 /// Shared named volume that serves as the default ExtTool Volume. All
 /// containers on the same node mount this volume read-only at
 /// WORKER_CONTAINER_EXTTOOL_ROOT; if empty (first start), the image's baked
@@ -1144,6 +1153,7 @@ impl AppLoader {
             "script",
             package_root.as_path(),
             None,
+            None,
             self.host_script_desc(),
         )
         .await
@@ -1170,6 +1180,25 @@ impl AppLoader {
                 format!("agent package root {} not found", agent_root.display()),
             ));
         }
+        let agent_skills_root = match self.agent_skills_pkg_id() {
+            Some(pkg_id) => {
+                let media_info = self
+                    .try_load_pkg(pkg_id.as_str())
+                    .await
+                    .ok_or_else(|| self.pkg_not_found("agent skills package"))?;
+                if !media_info.full_path.exists() {
+                    return Err(ControlRuntItemErrors::ExecuteError(
+                        "start".to_string(),
+                        format!(
+                            "agent skills package root {} not found",
+                            media_info.full_path.display()
+                        ),
+                    ));
+                }
+                Some(media_info.full_path)
+            }
+            None => None,
+        };
 
         self.stop_agent().await?;
 
@@ -1178,6 +1207,7 @@ impl AppLoader {
             PackageRole::AgentPkg,
             "agent",
             agent_root.as_path(),
+            agent_skills_root.as_deref(),
             Some(service_port),
             Some(desc),
         )
@@ -1195,6 +1225,7 @@ impl AppLoader {
         role: PackageRole,
         app_type_label: &str,
         pkg_source_root: &Path,
+        agent_skills_root: Option<&Path>,
         service_port: Option<u16>,
         desc: Option<&SubPkgDesc>,
     ) -> Result<()> {
@@ -1202,9 +1233,14 @@ impl AppLoader {
         let container_name = self.container_name();
         let instance_volume = self.instance_volume_name();
         let env_vars = self
-            .build_worker_runtime_env(role, app_type_label, service_port)
+            .build_worker_runtime_env(
+                role,
+                app_type_label,
+                service_port,
+                agent_skills_root.is_some(),
+            )
             .await?;
-        let mounts = self.build_worker_volume_mounts(pkg_source_root, role)?;
+        let mounts = self.build_worker_volume_mounts(pkg_source_root, role, agent_skills_root)?;
 
         info!(
             "starting worker app_type={} id={} image={} pkg_source={} instance_volume={} safe_mode={}",
@@ -1903,6 +1939,7 @@ impl AppLoader {
         &self,
         pkg_source_root: &Path,
         role: PackageRole,
+        agent_skills_root: Option<&Path>,
     ) -> Result<Vec<(String, PathBuf, &'static str)>> {
         // §6.1/§7.1: the worker container always has three volume groups —
         // (1) a read-only view of the upstream package at /mnt/buckyos/pkg,
@@ -1987,7 +2024,18 @@ impl AppLoader {
             mounts.insert(container_path, (host_path, permission));
         }
 
-        let _ = role; // reserved for future per-role external mounts
+        if role == PackageRole::AgentPkg {
+            let tool_root = get_buckyos_root_dir().join(BUCKYOS_TOOL_RELATIVE_DIR);
+            for (container_path, host_path) in buckyos_tool_mounts(&tool_root) {
+                mounts.insert(container_path, (host_path, "ro"));
+            }
+            if let Some(skills_root) = agent_skills_root {
+                mounts.insert(
+                    WORKER_CONTAINER_AGENT_SKILLS_ROOT.to_string(),
+                    (skills_root.to_path_buf(), "ro"),
+                );
+            }
+        }
 
         let mut result: Vec<(String, PathBuf, &'static str)> = mounts
             .into_iter()
@@ -2209,8 +2257,12 @@ impl AppLoader {
         role: PackageRole,
         app_type_label: &str,
         service_port: Option<u16>,
+        with_agent_skills: bool,
     ) -> Result<HashMap<String, String>> {
         let mut env_vars = self.build_runtime_env(role).await?;
+        if role == PackageRole::AgentPkg {
+            env_vars.extend(agent_worker_env(with_agent_skills)?);
+        }
         let worker_pkg_dir = self.worker_pkg_dir();
 
         // §9 env contract.
@@ -2684,8 +2736,20 @@ impl AppLoader {
             "<app_data>:{}:rw",
             container_app_data_dir(&self.owner_user_id, &self.app_id)
         ));
-
+        let with_agent_skills = app_type_label == "agent" && self.agent_skills_pkg_id().is_some();
         if app_type_label == "agent" {
+            for entry in BUCKYOS_TOOL_MOUNT_ENTRIES {
+                docker_run_args.push("-v".to_string());
+                docker_run_args.push(format!(
+                    "<buckyos_tool>/{entry}:{WORKER_CONTAINER_BUCKYOS_TOOL_ROOT}/{entry}:ro"
+                ));
+            }
+            if with_agent_skills {
+                docker_run_args.push("-v".to_string());
+                docker_run_args.push(format!(
+                    "<agent_skills_pkg>:{WORKER_CONTAINER_AGENT_SKILLS_ROOT}:ro"
+                ));
+            }
             if let Some(port) = service_port {
                 docker_run_args.push("-p".to_string());
                 docker_run_args.push(format!("{port}:{port}"));
@@ -2751,6 +2815,12 @@ impl AppLoader {
         if let Some(port) = service_port {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("BUCKYOS_SERVICE_PORT={port}"));
+        }
+        if package_role == PackageRole::AgentPkg {
+            for (key, value) in agent_worker_env(with_agent_skills)? {
+                docker_run_args.push("-e".to_string());
+                docker_run_args.push(format!("{key}={value}"));
+            }
         }
         if let Some(desc) = desc {
             for (key, value) in self.docker_runtime_labels(desc) {
@@ -3321,6 +3391,43 @@ fn runtime_host_gateway() -> Result<&'static str> {
     } else {
         AGENT_RUNTIME_HOST_GATEWAY
     })
+}
+
+/// Host paths are only probed, never created: Docker would otherwise put an
+/// empty directory in place of a missing file.
+pub(crate) fn buckyos_tool_mounts(tool_root: &Path) -> Vec<(String, PathBuf)> {
+    BUCKYOS_TOOL_MOUNT_ENTRIES
+        .iter()
+        .filter_map(|entry| {
+            let host_path = tool_root.join(entry);
+            if host_path.exists() {
+                Some((
+                    format!("{WORKER_CONTAINER_BUCKYOS_TOOL_ROOT}/{entry}"),
+                    host_path,
+                ))
+            } else {
+                warn!(
+                    "{} is missing; agent containers start without it and `buckyos` will not run inside",
+                    host_path.display()
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+fn agent_worker_env(with_agent_skills: bool) -> Result<Vec<(String, String)>> {
+    let mut env = vec![(
+        "BUCKYOS_TOOL_ENDPOINT".to_string(),
+        format!("http://{}:{}", runtime_host_gateway()?, NODE_GATEWAY_PORT),
+    )];
+    if with_agent_skills {
+        env.push((
+            "BUCKYOS_AGENT_SKILLS_PKG_DIR".to_string(),
+            WORKER_CONTAINER_AGENT_SKILLS_ROOT.to_string(),
+        ));
+    }
+    Ok(env)
 }
 
 fn append_host_gateway_run_args(args: &mut Vec<String>) {

@@ -51,10 +51,15 @@ const UNINSTALL_TASK_TYPE: &str = "app.uninstall";
 const START_TASK_TYPE: &str = "app.start";
 const WAIT_INTERVAL_MS: u64 = 1_000;
 const WAIT_TIMEOUT_SECS: u64 = 45;
+const AGENT_SKILLS_PUBLISH_DIR: &str = "agent_skills";
 
 #[derive(Clone)]
 enum PackageSource {
     Directory(PathBuf),
+    DirectoryExcept {
+        path: PathBuf,
+        exclude: PathBuf,
+    },
     File {
         path: PathBuf,
         packaged_name: Option<String>,
@@ -1267,21 +1272,42 @@ impl AppInstaller {
                         "Agent app template missing `pkg_list.agent`".to_string(),
                     )
                 })?;
-                if app_doc_template.pkg_list.agent_skills.is_some() {
-                    return Err(RPCErrors::ReasonError(
-                        "Agent publish does not support `pkg_list.agent_skills` yet".to_string(),
-                    ));
-                }
                 if app_doc_template.pkg_list.agent_tools.is_some() {
                     return Err(RPCErrors::ReasonError(
                         "Agent publish does not support `pkg_list.agent_tools` yet".to_string(),
                     ));
                 }
-                let sub_pkgs = vec![ScannedSubPkg {
-                    key: "agent".to_string(),
-                    desc: agent_desc,
-                    source: PackageSource::Directory(local_dir.to_path_buf()),
-                }];
+                let sub_pkgs = match app_doc_template.pkg_list.agent_skills.clone() {
+                    Some(skills_desc) => {
+                        let skills_dir = local_dir.join(AGENT_SKILLS_PUBLISH_DIR);
+                        if !skills_dir.is_dir() {
+                            return Err(RPCErrors::ReasonError(format!(
+                                "Agent template declares `pkg_list.agent_skills` but `{}` is not a directory",
+                                skills_dir.display()
+                            )));
+                        }
+                        vec![
+                            ScannedSubPkg {
+                                key: "agent".to_string(),
+                                desc: agent_desc,
+                                source: PackageSource::DirectoryExcept {
+                                    path: local_dir.to_path_buf(),
+                                    exclude: skills_dir.clone(),
+                                },
+                            },
+                            ScannedSubPkg {
+                                key: "agent_skills".to_string(),
+                                desc: skills_desc,
+                                source: PackageSource::Directory(skills_dir),
+                            },
+                        ]
+                    }
+                    None => vec![ScannedSubPkg {
+                        key: "agent".to_string(),
+                        desc: agent_desc,
+                        source: PackageSource::Directory(local_dir.to_path_buf()),
+                    }],
+                };
 
                 Ok(PublishScanPlan {
                     app_bundle: None,
@@ -1644,8 +1670,14 @@ impl AppInstaller {
         }
     }
 
-    async fn create_tar_gz(&self, src_dir: &Path, tarball_path: &Path) -> Result<(), RPCErrors> {
+    async fn create_tar_gz(
+        &self,
+        src_dir: &Path,
+        exclude: Option<&Path>,
+        tarball_path: &Path,
+    ) -> Result<(), RPCErrors> {
         let src_dir = src_dir.to_path_buf();
+        let exclude = exclude.map(Path::to_path_buf);
         let tarball_path = tarball_path.to_path_buf();
 
         tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1662,6 +1694,7 @@ impl AppInstaller {
                 tar: &mut Builder<GzEncoder<StdFile>>,
                 path: &Path,
                 base: &Path,
+                exclude: Option<&Path>,
             ) -> io::Result<()> {
                 for entry in std::fs::read_dir(path)? {
                     let entry = entry?;
@@ -1671,14 +1704,14 @@ impl AppInstaller {
                         .and_then(|name| name.to_str())
                         .map(|name| name.starts_with('.'))
                         .unwrap_or(false);
-                    if skip {
+                    if skip || exclude == Some(path.as_path()) {
                         continue;
                     }
 
                     let relative = path.strip_prefix(base).unwrap();
                     if path.is_dir() {
                         tar.append_dir(relative, &path)?;
-                        append_dir_all(tar, &path, base)?;
+                        append_dir_all(tar, &path, base, exclude)?;
                     } else {
                         tar.append_file(relative, &mut StdFile::open(&path)?)?;
                     }
@@ -1686,7 +1719,7 @@ impl AppInstaller {
                 Ok(())
             }
 
-            append_dir_all(&mut tar, &src_dir, &src_dir).map_err(|error| {
+            append_dir_all(&mut tar, &src_dir, &src_dir, exclude.as_deref()).map_err(|error| {
                 format!(
                     "Append files from `{}` into archive failed: {error}",
                     src_dir.display()
@@ -1711,7 +1744,9 @@ impl AppInstaller {
         source: &PackageSource,
     ) -> Result<PathBuf, RPCErrors> {
         match source {
-            PackageSource::Directory(path) => Ok(path.clone()),
+            PackageSource::Directory(path) | PackageSource::DirectoryExcept { path, .. } => {
+                Ok(path.clone())
+            }
             PackageSource::File {
                 path,
                 packaged_name,
@@ -1754,7 +1789,12 @@ impl AppInstaller {
             "{}.tar.gz",
             Self::sanitize_publish_name(archive_base_name)
         ));
-        self.create_tar_gz(&staged_dir, &tarball_path).await?;
+        let exclude = match source {
+            PackageSource::DirectoryExcept { exclude, .. } => Some(exclude.as_path()),
+            _ => None,
+        };
+        self.create_tar_gz(&staged_dir, exclude, &tarball_path)
+            .await?;
 
         let file_template = FileObject::default();
         let (file_object, _file_obj_id, _file_obj_str) = cacl_file_object(
@@ -1774,11 +1814,8 @@ impl AppInstaller {
             ))
         })?;
 
-        match source {
-            PackageSource::Directory(_) => {}
-            PackageSource::File { .. } => {
-                let _ = fs::remove_dir_all(&staged_dir).await;
-            }
+        if let PackageSource::File { .. } = source {
+            let _ = fs::remove_dir_all(&staged_dir).await;
         }
 
         Ok(PreparedPayload {
@@ -4891,32 +4928,6 @@ mod tests {
     }
 
     #[test]
-    fn publish_example_agent_skills_is_rejected() {
-        let installer = test_installer();
-        let template = AppDoc::builder(
-            AppType::Agent,
-            "demo-agent-skills",
-            "0.1.0",
-            "tester",
-            &test_owner(),
-        )
-        .agent_pkg(SubPkgDesc::new("tester_demo-agent-skills-agent#0.1.0"))
-        .agent_skills_pkg(SubPkgDesc::new("tester_demo-agent-skills-skills#0.1.0"))
-        .build()
-        .expect("build agent template with skills");
-        let dir = temp_test_dir("agent-skills-rejected");
-        std::fs::write(dir.join("prompt.md"), "hello").expect("write prompt");
-
-        let error = match installer.scan_publish_sources(AppType::Agent, &dir, &template) {
-            Ok(_) => panic!("agent skills should be rejected"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("agent_skills"));
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn publish_example_agent_sub_pkg_meta_can_be_viewed_locally() {
         let installer = test_installer();
         let template = build_agent_template();
@@ -4949,5 +4960,138 @@ mod tests {
         assert_eq!(sub_pkg_meta.name, "tester_demo-agent-agent");
         assert!(final_doc._base.content.is_empty());
         assert_eq!(final_doc._base.size, 0);
+    }
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+    use name_lib::DID;
+
+    fn test_installer() -> AppInstaller {
+        AppInstaller::new()
+    }
+
+    fn temp_test_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("{}-{}", prefix, Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn pinned(pkg_id: &str) -> SubPkgDesc {
+        SubPkgDesc::new(pkg_id)
+            .package_meta_object_id(ObjId::new_by_raw("pkg".to_string(), vec![1; 32]))
+    }
+
+    fn build_agent_skills_template() -> AppDoc {
+        AppDoc::builder(
+            AppType::Agent,
+            "demo-agent-skills",
+            "0.1.0",
+            "tester",
+            &DID::from_str("did:bns:tester").expect("parse test did"),
+        )
+        .agent_pkg(pinned("all.agent.demo-agent-skills.tester.bns.did#0.1.0"))
+        .agent_skills_pkg(pinned(
+            "all.agent_skills.demo-agent-skills.tester.bns.did#0.1.0",
+        ))
+        .build()
+        .expect("build agent template with skills")
+    }
+
+    #[test]
+    fn publish_example_agent_skills_come_from_their_sub_dir() {
+        let installer = test_installer();
+        let template = build_agent_skills_template();
+        let dir = temp_test_dir("agent-skills-publish");
+        std::fs::write(dir.join("prompt.md"), "hello").expect("write prompt");
+
+        let error = match installer.scan_publish_sources(AppType::Agent, &dir, &template) {
+            Ok(_) => panic!("agent skills without their directory should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("agent_skills"));
+
+        let skills_dir = dir.join(AGENT_SKILLS_PUBLISH_DIR);
+        std::fs::create_dir_all(skills_dir.join("cmd_skills")).expect("create skills dir");
+        let scan_plan = installer
+            .scan_publish_sources(AppType::Agent, &dir, &template)
+            .expect("scan agent with skills");
+        assert_eq!(scan_plan.sub_pkgs.len(), 2);
+        assert_eq!(scan_plan.sub_pkgs[0].key, "agent");
+        match &scan_plan.sub_pkgs[0].source {
+            PackageSource::DirectoryExcept { path, exclude } => {
+                assert_eq!(path, &dir);
+                assert_eq!(exclude, &skills_dir);
+            }
+            other => panic!("unexpected source: {:?}", std::mem::discriminant(other)),
+        }
+        assert_eq!(scan_plan.sub_pkgs[1].key, "agent_skills");
+        match &scan_plan.sub_pkgs[1].source {
+            PackageSource::Directory(path) => assert_eq!(path, &skills_dir),
+            other => panic!("unexpected source: {:?}", std::mem::discriminant(other)),
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn publish_agent_payload_leaves_out_the_skills_dir() {
+        let installer = test_installer();
+        let dir = temp_test_dir("agent-skills-tar");
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join(AGENT_SKILLS_PUBLISH_DIR).join("cmd_skills"))
+            .expect("create skills dir");
+        std::fs::write(src.join("prompt.md"), "hello").expect("write prompt");
+        std::fs::write(
+            src.join(AGENT_SKILLS_PUBLISH_DIR)
+                .join("cmd_skills")
+                .join("hello.md"),
+            "hello",
+        )
+        .expect("write skill");
+        let tarball = dir.join("agent.tar.gz");
+        installer
+            .create_tar_gz(&src, Some(&src.join(AGENT_SKILLS_PUBLISH_DIR)), &tarball)
+            .await
+            .expect("create agent tar");
+
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+            StdFile::open(&tarball).expect("open tar"),
+        ));
+        let paths: Vec<String> = archive
+            .entries()
+            .expect("tar entries")
+            .map(|entry| {
+                entry
+                    .expect("tar entry")
+                    .path()
+                    .expect("entry path")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(paths, vec!["prompt.md".to_string()]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn publish_example_agent_tools_is_rejected() {
+        let installer = test_installer();
+        let mut template = build_agent_skills_template();
+        template.pkg_list.agent_tools = Some(pinned(
+            "all.agent_tools.demo-agent-skills.tester.bns.did#0.1.0",
+        ));
+        let dir = temp_test_dir("agent-tools-rejected");
+        std::fs::create_dir_all(dir.join(AGENT_SKILLS_PUBLISH_DIR)).expect("create skills dir");
+
+        let error = match installer.scan_publish_sources(AppType::Agent, &dir, &template) {
+            Ok(_) => panic!("agent tools should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("agent_tools"));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

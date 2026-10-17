@@ -20,6 +20,27 @@ pub struct SessionEnvCtx {
     pub input_queue: Option<String>,
     pub trace_id: String,
     pub extra_env: Vec<(String, String)>,
+    /// The session's frozen cmd_skills: their commands
+    /// (`<agent_root>/tools/<name>/bin`) come first on PATH.
+    pub cmd_skills: Vec<String>,
+}
+
+/// `<agent_root>/tools/<name>/bin` of each cmd_skill that brings commands.
+pub fn skill_tool_dirs(agent_root: &Path, cmd_skills: &[String]) -> Vec<PathBuf> {
+    cmd_skills
+        .iter()
+        .map(|n| agent_root.join(crate::skills::TOOLS_DIR).join(n).join("bin"))
+        .filter(|d| d.is_dir())
+        .collect()
+}
+
+/// The names of the session's frozen cmd_skills.
+pub fn frozen_cmd_skills(cfg: &SessionConfig) -> Vec<String> {
+    cfg.prompt
+        .frozen
+        .as_ref()
+        .map(|f| f.cmd_skills.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default()
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEnv {
@@ -491,6 +512,7 @@ pub async fn bind_or_verify(
     bin_overlay::verify(&sd.runtime_bin_dir(), plan)?;
     open.path_prefix.push(sd.runtime_bin_dir());
     if let Some(root) = agent_root {
+        open.path_prefix.extend(skill_tool_dirs(root, &frozen_cmd_skills(cfg)));
         if root.join("tools").is_dir() {
             open.path_prefix.push(root.join("tools"));
         }
@@ -557,6 +579,7 @@ pub async fn bind_or_verify(
 pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv> {
     let mut layers = vec![ctx.session_dir.join(RUNTIME_DIR).join("bin")];
     if let Some(root) = &ctx.agent_root {
+        layers.extend(skill_tool_dirs(root, &ctx.cmd_skills));
         if root.join("tools").is_dir() {
             layers.push(root.join("tools"));
         }

@@ -52,6 +52,27 @@ MCP 和进程内 host tool 也遵循同一方向：优先由 CLI 客户端或宿
 
 当前 `shell` 已支持识别简单命令 stdout 中的 `AgentToolResult` 并转发；含管道等 shell 运算符的复合命令不走同一结构化直传路径。依赖 `Pending` 等控制语义时，应使用直接的 CLI 调用，见 [ShellTool 实现](../../src/frame/agent_tool/src/llm_bash.rs)。
 
+### 2.3 访问 BuckyOS 的工具：TypeScript + buckyos-websdk
+
+访问 BuckyOS 的新工具优先用 TypeScript 基于 buckyos-websdk 编写（Deno 运行），源码随 runtime 交给 Agent：Agent 读工具源码就学会了怎么调 BuckyOS，可以在此基础上写派生脚本组合能力，比只读手册或用管道串 CLI 更可控。不优先新增 Rust `agent_tool` 子命令或 shell 薄包装。落点分工：
+
+| 工具类型 | 落点 | 运行时可读位置（aios 容器） |
+|---|---|---|
+| 人也会用的系统、App、发布、Agent 管理命令 | websdk `cli/modules/*.ts`（`buckyos` 命令，唯一源码真相源） | `/opt/buckyos/libexec/buckyos-tool/cli/`（宿主同版本只读挂载），SDK 类型 `dist/node.d.ts` |
+| Agent 专用的配方类工具（AIGC、媒体合成等） | `src/tools/buckyos-agent`（每个命令是 6 步配方，`commands/gen_image.ts` 是范本） | `/opt/buckyos/bin/opendan/buckyos-agent/`，`deno.json` 的 `buckyos` 指向挂载的 SDK |
+| 某个 cmd_skill 自带的命令 | skill 包的 `tools/<skill>/bin` | `$OPENDAN_AGENT_ROOT/tools/<skill>/bin`，只在选了该 cmd_skill 的 Session PATH 上 |
+
+xllm 等 runtime 层能力保留 Rust 实现。Agent 派生的脚本写到 `$OPENDAN_AGENT_ROOT/tools/`（在 PATH 上、长期保留）或当前 Session 目录（一次性），TS 脚本用 `deno run --config <安装态 deno.json>` 复用 SDK 映射，不改只读安装副本。命令能被发现不代表当前身份有权限或 provider 支持；手册要说明真实的拒绝 / 不支持结果。
+
+### 2.4 cmd_skills：随 Session 冻结的命令手册
+
+cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter 写 `name` / `description` / `requires`）加可选的命令（`tools/<name>/bin`）。它是捷径不是规定：手册写“可以这样做、这样做更快更稳”，Agent 有更合适的做法时可以不用。
+
+- 选择：Work 在创建时选定，最多 8 个（`agent-session create-worksession --cmd-skill <name>`，可重复），由意图分析、Goal、PLAN/DO 从 `agent-session skill list` 中挑选；未指定时子 Work 继承父 Work 的选择，UI 的 `ui_core` 与 Goal 的 goal_skills 不会自动注入 Work。UI Session 用 `agent.toml [session.<class>] default_cmd_skills`。
+- 装配：选中的手册按顺序整篇进入系统段末尾的 `## Commands`，随 Session 冻结；运行中不切换、不追加，安装 / 更新 / 删除只影响之后创建的 Session。
+- 安装：skill 包是 `app_type = agent_skills` 的 PIKG（`buckyos pikg init --kind agent-skills`），`agent_skills` 子包内分 `cmd_skills/`、`goal_skills/`、`tools/`。用户用 `buckyos skill install <x.pikg> --agent <agent_id>`（opendan kRPC `skills.install`），Agent 用 `agent-session skill install <x.pikg | dir>`；安装记录在 `.meta/skills.json`，Agent 模板升级不覆盖、不删除已安装的 skill。Agent 模板也可以在自己的 PIKG 里带 `agent_skills` 子包，随模板同步。
+- 维护：手册是对应功能的交付物，改 CLI / 协议 / 运行路径时同步更新，见仓库根 `AGENTS.md` 的“cmd_skills 联动维护”。
+
 ## 3. xllm 是最小可用层
 
 ### 3.1 独立 xllm 应具备的能力
@@ -162,7 +183,7 @@ action_whitelist = ["group:bash"]
 
 1. ~~在 xllm/runtime 层补齐 runtime task CLI 桥，复用现有 resolver~~（已完成：`agent_tool::task_bridge` + `agent-session task`）；上层再提供 Session 控制桥。
 2. 为动态能力提供 CLI 接入和发现路径。当前 `agent_tool` CLI 仍有静态命令表；独立可执行命令可通过执行环境提供，不能把新增能力仅注册到模型 tool 列表。
-3. 将动态目录移出公共模型接口：当前 `call_behavior` 的 description 会拼入可调用 behavior 列表；`bash_tools` 手册会写入 system prompt。这两处即使不增加 tool 名，也会改变模型输入前缀。UI Session 已改为宿主关掉 xllm 的 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`XllmDeps.host_prompt_sections`），命令手册改由随 Session 冻结的 cmd_skill（`## Commands`）承担：冻结后同一 Session 内前缀不变，换 Session 才变（cmd_skill 的运行时调整见 `notepads/opendan-cmd-skill-todo.md`）。
+3. 将动态目录移出公共模型接口：当前 `call_behavior` 的 description 会拼入可调用 behavior 列表；`bash_tools` 手册会写入 system prompt。这两处即使不增加 tool 名，也会改变模型输入前缀。UI Session 已改为宿主关掉 xllm 的 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`XllmDeps.host_prompt_sections`），命令手册改由随 Session 冻结的 cmd_skills（`## Commands`，见 §2.4）承担：冻结后同一 Session 内前缀不变，换 Session 才变；Work 也按创建时选定的 cmd_skills 装配（UI 的运行时调整见 `notepads/opendan-cmd-skill-todo.md`）。
 4. CLI 功能与控制语义等价后，再统一调整固定 tool/action 集合、提示词和恢复协议；不在每次能力扩展时改变它们。
 
 媒体分析目前已有 CLI，结果是侧模型生成的文本。若将来要求当前主模型直接接收图片等原生媒体，应扩展稳定的结果协议和宿主处理；当前标准 tool 与 shell 的模型结果通道都是文本，不能把此缺口当作必须新增业务 tool 的理由。
@@ -183,6 +204,9 @@ action_whitelist = ["group:bash"]
 | shell 执行与 CLI 结果转发 | [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs) |
 | Agent CLI 命令与分发 | [agent_tool_cli_dev](../../src/frame/agent_tool_cli_dev/src/lib.rs) |
 | Session CLI | [xagent.rs](../../src/frame/lib_opendan/src/bin/xagent.rs) |
+| cmd_skills / goal_skills 的列表、安装、删除 | [skills.rs](../../src/frame/lib_opendan/src/skills.rs)、[behaviors.rs](../../src/frame/lib_opendan/src/state/behaviors.rs)（冻结） |
+| Jarvis 内置 cmd_skills | [cmd_skills/](../../src/apps/jarvis_agent/agent/cmd_skills/) |
+| 访问 BuckyOS 的 Agent 工具（TS + websdk） | [buckyos-agent](../../src/tools/buckyos-agent/readme.md)、websdk `cli/modules/` |
 | 当前报告与子 context 控制 | [reports.rs](../../src/frame/lib_opendan/src/runner/reports.rs)、[tools.rs](../../src/frame/lib_opendan/src/runner/tools.rs) |
 
 - [OpenDAN AgentTool 开发指南](<../llm_context/agent_tool/OpenDAN AgentTool 开发指南.md>)：接口、CLI、执行环境和结果契约。

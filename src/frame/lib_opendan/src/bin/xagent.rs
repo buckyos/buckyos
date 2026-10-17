@@ -36,7 +36,7 @@ const USAGE: &str = "\
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
   xagent new    --agent <did> --objective <text> [--class work|ui|self_improve|self_check] [--parent <dir>]
-                [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <id>]
+                [--behavior <name>] [--cmd-skill <name>]... [--llm-context <json|@file>] [--runtime <id>] [--workspace <id>]
                 [--subscribe <spec>]... [--msg <text>] [--key <idem>]
                 [--until turn|finished|idle|outcomes:<n>] [--no-run]
   xagent run    <session_dir|sid> [--msg <text> | --msg-file <path> | --event <json|@file>]
@@ -75,10 +75,13 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   ctl activity ... | ctl perceive <text> | recall <tag>... | note <text> | sessions [--active] [--children]
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
-        [--class <c>] [--behavior <b>] [--workspace inherit|none|<id>] [--runtime inherit|<id>]
+        [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive] [--wait [--wait-ms <ms>]]
+        (--cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
+         session inherits its parent work's, a conversation's or a goal's are not inherited)
+  skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
-  todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <s>]...
+  todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
            [--after <todo_id>]... [--batch <b>]                                  (a serial Todo: next_behavior = do runs it)
   todo explore <title> --content <t> [same options] [--behavior <b>] [--class <c>]  (add + dispatch as a sub session)
   todo dispatch <todo_id> [--behavior <b>] [--class <c>] | todo list [--json] | todo show <todo_id> [--report]
@@ -648,6 +651,9 @@ async fn cmd_new(mut a: Args) -> R<i32> {
     };
     if let Some(b) = a.get("behavior") {
         spec.prompt.behavior = Some(b);
+    }
+    if let Some(names) = cmd_skills_arg(&a, "cmd-skill") {
+        spec.prompt.cmd_skills = names;
     }
     spec.runtime.requirement.runtime_id = a.get("runtime");
     if let Some(ws) = a.get("workspace") {
@@ -1226,6 +1232,7 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         context_recent,
         class: a.get("class"),
         behavior: a.get("behavior"),
+        cmd_skills: cmd_skills_arg(&a, "cmd-skill"),
         workspace: match a.get("workspace").as_deref() {
             None | Some("inherit") => SubWorkspace::Inherit,
             Some("none") => SubWorkspace::None,
@@ -1244,6 +1251,80 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         print(&json!({ "session_id": sd.sid(), "status": "created", "path": sd.path() }));
     }
     Ok(0)
+}
+
+/// `--cmd-skill <name>` (repeatable, or `a,b`). `None`: not given.
+fn cmd_skills_arg(a: &Args, flag: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = a
+        .all(flag)
+        .iter()
+        .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
+        .filter(|x| !x.is_empty())
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+// ---------------------------------------------------------------------------
+// skill — the agent's skills (cmd_skills / goal_skills)
+// ---------------------------------------------------------------------------
+
+fn skill_kind(a: &Args) -> R<Option<SkillKind>> {
+    match a.get("kind").as_deref() {
+        None => Ok(None),
+        Some("cmd") => Ok(Some(SkillKind::Cmd)),
+        Some("goal") => Ok(Some(SkillKind::Goal)),
+        Some(k) => Err(bad(format!("bad --kind {k} (cmd | goal)"))),
+    }
+}
+
+/// `skill list [--kind cmd|goal] [--json]` / `skill install <x.pikg | dir> [--replace]`
+/// / `skill remove <name> [--kind cmd|goal]`: the agent's skills. A new
+/// session takes the manuals installed when it is created; running sessions
+/// keep theirs.
+async fn cmd_skill(mut a: Args) -> R<i32> {
+    let sub = a.next("list | install | remove")?;
+    let c = ctx(&a, None, false).await?;
+    match sub.as_str() {
+        "list" => {
+            let skills = c.agent.behaviors().skills(skill_kind(&a)?).await?;
+            if a.has("json") {
+                print(&skills);
+                return Ok(0);
+            }
+            if skills.is_empty() {
+                println!("no skills installed");
+            }
+            for s in &skills {
+                let mut line = format!("{}  [{}] {}", s.name, s.kind.as_str(), s.description);
+                if !s.requires.is_empty() {
+                    line.push_str(&format!(" — requires: {}", s.requires));
+                }
+                if !s.tools.is_empty() {
+                    line.push_str(&format!(" — commands: {}", s.tools.join(", ")));
+                }
+                if let Some(i) = &s.install {
+                    line.push_str(&format!(" — from {} {}", i.package, i.version));
+                }
+                println!("{line}");
+            }
+            Ok(0)
+        }
+        "install" => {
+            let path = PathBuf::from(a.next("<skill package: .pikg file or directory>")?);
+            let pkg = libopendan::skills::read_source(&path)?;
+            let r = c.agent.behaviors().install_skills(&pkg, a.has("replace"), &c.who).await?;
+            print(&r);
+            Ok(0)
+        }
+        "remove" => {
+            let name = a.next("<name>")?;
+            let kind = skill_kind(&a)?.unwrap_or(SkillKind::Cmd);
+            let m = c.agent.behaviors().remove_skill(kind, &name, &c.who).await?;
+            print(&json!({ "removed": m }));
+            Ok(0)
+        }
+        other => Err(bad(format!("unknown skill command `{other}` (list | install | remove)"))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,7 +1362,12 @@ fn new_todo(a: &mut Args, mode: libopendan::todos::TodoMode) -> R<libopendan::to
         accept: a.all("accept"),
         scope: a.get("scope"),
         evidence: a.all("evidence"),
-        skills: a.all("skill"),
+        skills: a
+            .all("skill")
+            .iter()
+            .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
+            .filter(|x| !x.is_empty())
+            .collect(),
         after: a
             .all("after")
             .iter()
@@ -1290,6 +1376,32 @@ fn new_todo(a: &mut Args, mode: libopendan::todos::TodoMode) -> R<libopendan::to
             .collect(),
         batch: a.get("batch"),
     })
+}
+
+/// A Todo's `--skill` names are cmd_skills the agent has: the sub session
+/// that executes it takes them.
+async fn check_todo_skills(c: &Ctx, names: &[String]) -> R<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    libopendan::state::check_cmd_skill_names(names)?;
+    let installed: Vec<String> = c
+        .agent
+        .behaviors()
+        .skills(Some(SkillKind::Cmd))
+        .await?
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+    for n in names {
+        if !installed.contains(n) {
+            return Err(bad(format!(
+                "--skill {n}: the agent has no such cmd_skill (installed: {}; see `agent-session skill list`)",
+                installed.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn explore_options(a: &Args) -> libopendan::todos::ExploreOptions {
@@ -1356,6 +1468,7 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
     match sub.as_str() {
         "add" => {
             let new = new_todo(&mut a, TodoMode::Serial)?;
+            check_todo_skills(&c, &new.skills).await?;
             let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
             let list = store.load().map_err(todo_fail)?;
             print(&json!({ "todo_id": id, "status": "pending", "mode": "serial", "rev": list.rev,
@@ -1364,6 +1477,7 @@ async fn cmd_todo(mut a: Args) -> R<i32> {
         }
         "explore" => {
             let new = new_todo(&mut a, TodoMode::Explore)?;
+            check_todo_skills(&c, &new.skills).await?;
             let id = store.update(|l| l.add(new, now)).map_err(todo_fail)?;
             todo_dispatch(&c, &sd, &id, &a).await
         }
@@ -2284,6 +2398,7 @@ async fn real_main() -> R<i32> {
         ("status", _) => &["run"],
         ("todo", Some("review")) => &["accept", "reject", "need-evidence", "json"],
         ("todo", _) => &["json"],
+        ("skill", _) => &["json", "replace"],
         _ => &[],
     };
     let a = Args::parse(argv, extra);
@@ -2316,6 +2431,7 @@ async fn real_main() -> R<i32> {
         "notify" => cmd_notify(a).await,
         "todo" => cmd_todo(a).await,
         "task" => cmd_task(a).await,
+        "skill" => cmd_skill(a).await,
         other => {
             eprintln!("xagent: unknown command `{other}`\n\n{USAGE}");
             Ok(2)

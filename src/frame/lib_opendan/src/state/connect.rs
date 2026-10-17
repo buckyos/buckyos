@@ -279,6 +279,20 @@ impl BehaviorCatalog for ForwardingStateClient {
     async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
         self.inner.behaviors().cmd_skill(name).await
     }
+    async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
+        self.inner.behaviors().skills(kind).await
+    }
+    async fn install_skills(
+        &self,
+        pkg: &crate::skills::SkillPackage,
+        replace: bool,
+        who: &str,
+    ) -> Result<crate::skills::InstallReport> {
+        self.inner.behaviors().install_skills(pkg, replace, who).await
+    }
+    async fn remove_skill(&self, kind: SkillKind, name: &str, who: &str) -> Result<SkillMeta> {
+        self.inner.behaviors().remove_skill(kind, name, who).await
+    }
 }
 
 impl AgentStateClient for ForwardingStateClient {

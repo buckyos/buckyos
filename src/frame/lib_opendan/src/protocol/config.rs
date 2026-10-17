@@ -402,11 +402,13 @@ pub struct PromptSection {
     /// Behaviors and identity frozen from the agent's catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<super::behavior::FrozenPrompt>,
-    /// The cmd_skill of the session (`<agent_root>/cmd_skills/<name>.md`,
-    /// `agent.toml [session.<class>] default_cmd_skill`): frozen with the
-    /// behaviors (`frozen.cmd_skill`) and rendered as `## Commands`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cmd_skill: Option<String>,
+    /// The cmd_skills of the session (`<agent_root>/cmd_skills/<name>.md`,
+    /// at most [`super::behavior::MAX_CMD_SKILLS`]): chosen when the session
+    /// is created (`agent.toml [session.<class>] default_cmd_skills`,
+    /// `create-worksession --cmd-skill`), frozen with the behaviors
+    /// (`frozen.cmd_skills`) and rendered as `## Commands`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cmd_skills: Vec<String>,
     /// Bootstrap inputs of a session created without an input queue: `msg`
     /// records only, at most [`super::input::MAX_PENDING_INPUTS`], never
     /// changed after creation. The runner reads them as the read-only source

@@ -44,6 +44,8 @@ environment: BUCKYOS_APP_ID, BUCKYOS_SERVICE_PORT | OPENDAN_SERVICE_PORT, BUCKYO
 /// Port assigned by the scheduler, as node-daemon and `service_debug` pass it.
 const SERVICE_PORT_ENVS: [&str; 2] = ["BUCKYOS_SERVICE_PORT", "OPENDAN_SERVICE_PORT"];
 const PACKAGE_ROOT_ENVS: [&str; 2] = ["BUCKYOS_PKG_DIR", "BUCKYOS_PKG_SOURCE_DIR"];
+/// The template's `agent_skills` sub package, mounted by node-daemon.
+const SKILLS_PACKAGE_ENV: &str = "BUCKYOS_AGENT_SKILLS_PKG_DIR";
 const AGENT_BINDING_POLL: Duration = Duration::from_secs(5);
 const AGENT_BINDING_LOG_EVERY: u32 = 12;
 
@@ -304,6 +306,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         records,
         agent_root,
         package_root,
+        skills_package_root: first_env(&[SKILLS_PACKAGE_ENV])
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir()),
         package_version: match package_version() {
             Some(version) => Some(version),
             None => installed_app_version(&instance).await,
@@ -377,6 +382,7 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         records,
         agent_root,
         package_root: args.agent_bin.clone(),
+        skills_package_root: None,
         package_version: None,
         channels: Arc::new(
             KmsgChannels::dir(&queue_dir).map_err(|e| anyhow!("queue dir: {e}"))?,

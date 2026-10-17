@@ -1,4 +1,8 @@
-import { formatProviderListSummary } from "./ai_provider.ts";
+import {
+  filterModels,
+  formatModelsSummary,
+  formatProviderListSummary,
+} from "./ai_provider.ts";
 
 function assertIncludes(actual: string, expected: string): void {
   if (!actual.includes(expected)) {
@@ -48,4 +52,27 @@ Deno.test("formatProviderListSummary includes actionable provider state", () => 
   assertIncludes(summary, "profile=glm");
   assertIncludes(summary, "inventory=loaded/10 models");
   assertIncludes(summary, "health=healthy");
+});
+
+Deno.test("filterModels keeps the models and names of one api_type", () => {
+  const models = filterModels({
+    models: [
+      {
+        exact_model: "veo-lite@gemini-default",
+        api_types: ["video.txt2video", "video.img2video"],
+        logical_mounts: ["video.txt2video.veo", "video.img2video.veo"],
+        attributes: {
+          pricing: {
+            value: { amount: 0.05, currency: "USD", unit: "video_second" },
+          },
+        },
+      },
+      { exact_model: "tts@gemini-default", api_types: ["audio.tts"] },
+    ],
+  }, "video.txt2video");
+  assertIncludes(JSON.stringify(models), "video.txt2video.veo");
+  const summary = formatModelsSummary(models);
+  assertIncludes(summary, "1 model(s)");
+  assertIncludes(summary, "veo-lite@gemini-default: video.txt2video");
+  assertIncludes(summary, "price=0.05 USD/video_second");
 });

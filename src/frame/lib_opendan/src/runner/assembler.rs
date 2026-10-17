@@ -10,10 +10,12 @@
 //! 4. initial context material (`prompt.context`)
 //! 5. objective / end condition
 //!
+//! 6. the frozen cmd_skills (`## Commands`), offered as shortcuts
+//!
 //! UI sessions (one conversation with a user or a group) put the objective
 //! — the design intent of the conversation — right after the constraints,
 //! carry the application prompt without a heading of its own (it brings its
-//! own sections) and end with the frozen cmd_skill (`## Commands`).
+//! own sections) and end with the frozen cmd_skills (`## Commands`).
 //!
 //! Fresh values (time, active sessions, hints) live in the input batch
 //! message only, so the system section plus the history summary form
@@ -360,7 +362,10 @@ impl SessionAssembler for DefaultAssembler {
                     cfg.session.end_condition.detail
                 ));
             }
+            s.push('\n');
         }
+        // 6. cmd_skills
+        s.push_str(&commands_section(cfg, false));
         Ok(s.trim_end().to_string())
     }
 
@@ -636,19 +641,38 @@ impl DefaultAssembler {
                 s.push_str("\n\n");
             }
         }
-        if let Some(skill) = cfg
-            .prompt
-            .frozen
-            .as_ref()
-            .and_then(|f| f.cmd_skill.as_ref())
-            .filter(|k| !k.text.trim().is_empty())
-        {
-            s.push_str("## Commands\n");
-            s.push_str(skill.text.trim());
-            s.push('\n');
-        }
+        s.push_str(&commands_section(cfg, true));
         s.trim_end().to_string()
     }
+}
+
+/// `## Commands`: the frozen cmd_skills in the order they were chosen. A UI
+/// session's manual lists the commands of the conversation; elsewhere they
+/// are shortcuts the session may take. One manual is its text, several
+/// each under its name.
+fn commands_section(cfg: &SessionConfig, ui: bool) -> String {
+    let skills: Vec<&CmdSkill> = cfg
+        .prompt
+        .frozen
+        .as_ref()
+        .map(|f| f.cmd_skills.iter().filter(|k| !k.text.trim().is_empty()).collect())
+        .unwrap_or_default();
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("## Commands\n");
+    if !ui {
+        s.push_str("The manuals below were chosen for this session: shortcuts that tend to get this kind of work done faster and more reliably. Use what fits; a better way for the task at hand is fine.\n\n");
+    }
+    let several = skills.len() > 1 || !ui;
+    for k in skills {
+        if several {
+            s.push_str(&format!("### {}\n", k.name));
+        }
+        s.push_str(k.text.trim());
+        s.push_str("\n\n");
+    }
+    s
 }
 
 /// The inputs of a chat format batch (Session Input Protocol §6.5): in a

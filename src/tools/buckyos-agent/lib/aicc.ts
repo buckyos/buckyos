@@ -303,7 +303,17 @@ async function waitForFinalTask(
     }
     await sleep(1_000);
   }
-  throw new Error(`timed out while waiting for AICC task ${taskId} to finish`);
+  throw new AiccWaitTimeout(taskId);
+}
+
+// The wait ended, the AICC task did not: it keeps running on the server.
+export class AiccWaitTimeout extends Error {
+  constructor(readonly taskId: string) {
+    super(
+      `timed out while waiting for AICC task ${taskId} to finish; it keeps running, \`resume_aicc_task ${taskId} <output>\` picks it up without submitting again`,
+    );
+    this.name = "AiccWaitTimeout";
+  }
 }
 
 function taskOutput(task: TaskRecord): AiccInferenceResponse | null {
@@ -411,7 +421,59 @@ export async function textToImage(
   );
 }
 
-export function describeFailure(result: CallResult): string {
+export interface ResumeResult extends Omit<CallResult, "status"> {
+  status: "succeeded" | "failed" | "running";
+  method: string | null;
+  phase: string;
+}
+
+// Pick up an AICC task by id without submitting it again: read it from the
+// task manager, wait while it runs (waitTimeoutMs 0 = do not wait), and
+// return its output once it is terminal.
+export async function resumeAiccTask(
+  runtime: AiccRuntime,
+  taskId: string,
+  waitTimeoutMs: number,
+): Promise<ResumeResult> {
+  const taskMgr = runtime.buckyos.getTaskManagerClient();
+  let task = normalizeTask(await taskMgr.getTask(taskId));
+  const schema = (task as { schema_id?: string }).schema_id;
+  if (schema && !schema.startsWith("aicc.")) {
+    throw new Error(
+      `task ${taskId} is not an AICC task (schema ${schema}); a shell task id is followed with \`agent-session task wait\``,
+    );
+  }
+  const name = (task as { name?: string }).name ?? "";
+  const method = name.startsWith("AICC ") ? name.slice(5) : null;
+  if (task.phase !== "Terminal" && waitTimeoutMs > 0) {
+    try {
+      task = await waitForFinalTask(
+        taskMgr,
+        taskId,
+        method ?? "aicc",
+        Date.now() + waitTimeoutMs,
+      );
+    } catch (err) {
+      if (!(err instanceof AiccWaitTimeout)) throw err;
+      task = normalizeTask(await taskMgr.getTask(taskId));
+    }
+  }
+  const base = {
+    taskId,
+    method,
+    phase: task.phase,
+    rawResponse: {} as AiccInferenceResponse,
+    finalTask: task,
+  };
+  if (task.phase !== "Terminal") {
+    return { ...base, status: "running", summary: null };
+  }
+  return task.outcome === "Succeeded"
+    ? { ...base, status: "succeeded", summary: taskOutput(task) }
+    : { ...base, status: "failed", summary: null };
+}
+
+export function describeFailure(result: CallResult | ResumeResult): string {
   if (result.finalTask) {
     const taskResult = result.finalTask.result;
     const nestedError =

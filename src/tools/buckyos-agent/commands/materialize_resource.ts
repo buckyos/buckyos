@@ -86,6 +86,7 @@ export async function run(argv: string[]): Promise<never> {
           bytes: saved.bytes,
           mime: saved.mime ?? null,
           source_kind: saved.source_kind,
+          obj_id: saved.obj_id ?? null,
         },
         absolutePath,
       ),

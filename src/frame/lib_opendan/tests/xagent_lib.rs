@@ -1360,3 +1360,144 @@ async fn stopping_a_workspace_handoff_interrupts_the_child_and_parent() {
     assert_eq!(parent.state().unwrap().outcome, Some(Outcome::Stopped));
     assert!(result.children.is_empty(), "{result:?}");
 }
+
+fn skill_names(sd: &SessionDir) -> Vec<String> {
+    sd.config()
+        .unwrap()
+        .prompt
+        .frozen
+        .map(|f| f.cmd_skills.into_iter().map(|c| c.name).collect())
+        .unwrap_or_default()
+}
+
+async fn system_text_of(sd: &SessionDir) -> String {
+    use libopendan::runner::SessionAssembler;
+    BehaviorAssembler::default()
+        .system_text(&sd.config().unwrap(), None)
+        .await
+        .unwrap()
+}
+
+/// cmd_skills (opendan-builtin-cmd-skills-todo I01–I04): a work session
+/// takes the manuals chosen when it is created — known names, each once, at
+/// most 8 — frozen in that order and rendered as `## Commands` without
+/// their front matter. A Work's sub session inherits its choice, a
+/// conversation's manual is never inherited, a Todo's `--skill` replaces
+/// it. Installing, changing or removing a manual reaches new sessions only.
+#[tokio::test]
+async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
+    let env = Env::new();
+    write_catalog(&env);
+    write(&env.agent_root.join("behaviors/explore.toml"), "[prompt]\nmode = \"behavior\"\nsystem = \"EXPLORE\"\n");
+    write(
+        &env.agent_root.join("cmd_skills/admin.md"),
+        "---\nname: admin\ndescription: settings and diagnosis\nrequires: the buckyos command\n---\nADMIN-V1 manual\n",
+    );
+    write(&env.agent_root.join("cmd_skills/image.md"), "---\ndescription: images\n---\nIMAGE-V1 manual");
+    write(&env.agent_root.join("cmd_skills/ui_core.md"), "UI manual");
+    let agent = env.agent();
+    let ch = env.channels();
+    let listed = agent.behaviors().skills(Some(SkillKind::Cmd)).await.unwrap();
+    assert_eq!(listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["admin", "image", "ui_core"]);
+    assert_eq!(listed[0].description, "settings and diagnosis");
+    assert_eq!(listed[0].requires, "the buckyos command");
+
+    let mut ui = frozen_spec("conversation");
+    ui.prompt.cmd_skills = vec!["ui_core".into()];
+    ui.policy.max_sub_sessions = 32;
+    ui.policy.max_session_depth = 4;
+    let ui = env.create_work(ui).await;
+    assert!(system_text_of(&ui).await.contains("## Commands\nUI manual"), "a UI's one manual is its text");
+    let sub = |key: &str, names: Option<&[&str]>| SubSessionSpec {
+        objective: "child work".into(),
+        key: Some(key.into()),
+        cmd_skills: names.map(|n| n.iter().map(|s| s.to_string()).collect()),
+        report: ReportMode::None,
+        ..Default::default()
+    };
+    let create = |key: &'static str, parent: String, names: Option<&'static [&'static str]>| {
+        let agent = agent.clone();
+        let ch = ch.clone();
+        async move { create_sub_session(agent.as_ref(), APP, &parent, sub(key, names), ch.as_ref()).await }
+    };
+
+    let w1 = create("w1", ui.sid().into(), Some(&["admin", "image"])).await.unwrap();
+    assert_eq!(skill_names(&w1), ["admin", "image"]);
+    let system = system_text_of(&w1).await;
+    let (admin, image) = (system.find("### admin\nADMIN-V1 manual").unwrap(), system.find("### image\nIMAGE-V1 manual").unwrap());
+    assert!(admin < image, "in the order chosen: {system}");
+    assert!(system.contains("## Commands\nThe manuals below were chosen for this session"), "{system}");
+    assert!(!system.contains("settings and diagnosis") && !system.contains("UI manual"), "{system}");
+
+    let plain = create("w0", ui.sid().into(), None).await.unwrap();
+    assert!(skill_names(&plain).is_empty(), "a conversation's manual is not a Work's");
+    assert!(!system_text_of(&plain).await.contains("## Commands"));
+
+    let err = create("bad1", ui.sid().into(), Some(&["nope"])).await.unwrap_err();
+    assert!(err.to_string().contains("no cmd_skill `nope`") && err.to_string().contains("admin, image, ui_core"), "{err}");
+    let err = create("bad2", ui.sid().into(), Some(&["a", "b", "c", "d", "e", "f", "g", "h", "i"])).await.unwrap_err();
+    assert!(err.to_string().contains("at most 8"), "{err}");
+    let err = create("bad3", ui.sid().into(), Some(&["admin", "admin"])).await.unwrap_err();
+    assert!(err.to_string().contains("named twice"), "{err}");
+
+    // A Work hands its choice on; an explicit choice replaces it.
+    let w2 = create("w2", w1.sid().into(), None).await.unwrap();
+    assert_eq!(skill_names(&w2), ["admin", "image"]);
+    let w3 = create("w3", w1.sid().into(), Some(&["image"])).await.unwrap();
+    assert_eq!(skill_names(&w3), ["image"]);
+
+    // A Todo's skills go to its exploration; without any it inherits.
+    let store = libopendan::todos::store_of(&w1);
+    let todo = |title: &str, skills: Vec<String>| libopendan::todos::NewTodo {
+        title: title.into(),
+        content: "look".into(),
+        mode: libopendan::todos::TodoMode::Explore,
+        accept: Vec::new(),
+        scope: None,
+        evidence: Vec::new(),
+        skills,
+        after: Vec::new(),
+        batch: None,
+    };
+    let t1 = store.update(|l| l.add(todo("with", vec!["image".into()]), 1)).unwrap();
+    let t2 = store.update(|l| l.add(todo("without", Vec::new()), 1)).unwrap();
+    let opts = libopendan::todos::ExploreOptions::default();
+    let d1 = libopendan::todos::dispatch(agent.as_ref(), APP, ch.as_ref(), &w1, &t1, &opts).await.unwrap();
+    let d2 = libopendan::todos::dispatch(agent.as_ref(), APP, ch.as_ref(), &w1, &t2, &opts).await.unwrap();
+    assert_eq!(skill_names(&SessionDir::open(&d1.path).unwrap()), ["image"]);
+    assert_eq!(skill_names(&SessionDir::open(&d2.path).unwrap()), ["admin", "image"]);
+
+    // Changing a manual: the running Work keeps its frozen text.
+    write(&env.agent_root.join("cmd_skills/admin.md"), "ADMIN-V2 manual");
+    assert!(system_text_of(&w1).await.contains("ADMIN-V1 manual"));
+    let w4 = create("w4", ui.sid().into(), Some(&["admin"])).await.unwrap();
+    assert!(system_text_of(&w4).await.contains("ADMIN-V2 manual"));
+
+    // Install / remove: new sessions see the change, earlier ones keep theirs.
+    use base64::Engine;
+    let pkg = libopendan::skills::SkillPackage {
+        package: "extra-skills".into(),
+        version: "1.0.0".into(),
+        pikg_digest: None,
+        files: [(
+            "cmd_skills/extra.md".to_string(),
+            libopendan::skills::SkillFile {
+                content: base64::engine::general_purpose::STANDARD.encode("---\ndescription: extra\n---\nEXTRA manual"),
+                executable: false,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let r = agent.behaviors().install_skills(&pkg, false, APP).await.unwrap();
+    assert_eq!(r.skills[0].origin, "installed");
+    let w5 = create("w5", ui.sid().into(), Some(&["admin", "extra"])).await.unwrap();
+    assert!(system_text_of(&w5).await.contains("### extra\nEXTRA manual"));
+    agent.behaviors().remove_skill(SkillKind::Cmd, "extra", APP).await.unwrap();
+    let err = create("w6", ui.sid().into(), Some(&["extra"])).await.unwrap_err();
+    assert!(err.to_string().contains("no cmd_skill `extra`"), "{err}");
+    assert!(system_text_of(&w5).await.contains("EXTRA manual"), "frozen before the removal");
+    // An inherited manual removed since is left out, not an error.
+    let w7 = create("w7", w5.sid().into(), None).await.unwrap();
+    assert_eq!(skill_names(&w7), ["admin"]);
+}

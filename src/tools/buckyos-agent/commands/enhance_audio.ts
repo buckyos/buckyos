@@ -118,7 +118,13 @@ export async function run(argv: string[]): Promise<never> {
 
   const dest = suffixPathByMime(outputPath, "audio/wav");
   const files: Array<
-    { path: string; bytes: number; mime: string | null; source_kind: string }
+    {
+      path: string;
+      bytes: number;
+      mime: string | null;
+      source_kind: string;
+      obj_id: string | null;
+    }
   > = [];
   try {
     const savedPrimary = await saveArtifactToPath(primary, dest, ndmProxy);
@@ -127,6 +133,7 @@ export async function run(argv: string[]): Promise<never> {
       bytes: savedPrimary.bytes,
       mime: savedPrimary.mime ?? null,
       source_kind: savedPrimary.source_kind,
+      obj_id: savedPrimary.obj_id ?? null,
     });
     if (arts.length > 1) {
       const dir = stemsDir ??
@@ -149,6 +156,7 @@ export async function run(argv: string[]): Promise<never> {
           bytes: stemSaved.bytes,
           mime: stemSaved.mime ?? null,
           source_kind: stemSaved.source_kind,
+          obj_id: stemSaved.obj_id ?? null,
         });
       }
     }

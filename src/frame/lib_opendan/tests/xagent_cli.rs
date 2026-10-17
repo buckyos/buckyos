@@ -860,3 +860,125 @@ fn ask_user_prints_a_pending_question() {
         assert_eq!(code, 2, "{bad:?}: {err}");
     }
 }
+
+/// A skill PIKG as `buckyos pikg pack` writes it: APPDOC.json (app_type
+/// `agent_skills`), PACKAGE_META.json and the `agent_skills.tar.gz` payload.
+fn skill_pikg(path: &Path, files: &[(&str, &str, u32)]) {
+    use sha2::{Digest, Sha256};
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+    for (name, text, mode) in files {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(text.len() as u64);
+        h.set_mode(*mode);
+        h.set_cksum();
+        tar.append_data(&mut h, name, text.as_bytes()).unwrap();
+    }
+    let payload = tar.into_inner().unwrap().finish().unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&payload)));
+    let objid = "pkg:00";
+    let app = json!({
+        "doc_type": "app", "name": "hello-skills", "version": "0.1.0", "app_type": "agent_skills",
+        "pkg_list": { "agent_skills": { "pkg_id": "all.agent_skills.hello#0.1.0", "pkg_objid": objid } }
+    });
+    let meta = json!({
+        "@schema": "buckyos.pikg.package-meta.v1",
+        "package_objects": { objid: { "name": "all.agent_skills.hello", "size": payload.len(), "version": "0.1.0" } },
+        "content_index": { digest.clone(): {
+            "sub_pkg_name": "agent_skills", "path": "agent_skills.tar.gz", "format": "tar.gz",
+            "size": payload.len(), "digest": digest
+        }}
+    });
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, bytes) in [
+        ("APPDOC.json", app.to_string().into_bytes()),
+        ("PACKAGE_META.json", meta.to_string().into_bytes()),
+        ("agent_skills.tar.gz", payload),
+    ] {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(&bytes).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+/// `skill list | install | remove` and `create-worksession --cmd-skill`
+/// (opendan-builtin-cmd-skills-todo I01, I08): a skill PIKG installs its
+/// manuals and commands, a Work created afterwards takes the ones chosen,
+/// an unknown name is refused, and a removed skill cannot be chosen again.
+#[test]
+fn skills_are_installed_listed_chosen_and_removed() {
+    let cli = Cli::new();
+    let root = cli.root.join("agent_root");
+    std::fs::create_dir_all(root.join("cmd_skills")).unwrap();
+    std::fs::write(root.join("cmd_skills/admin.md"), "---\ndescription: settings\n---\nADMIN manual").unwrap();
+    let pikg = cli.root.join("hello-skills-0.1.0.pikg");
+    skill_pikg(
+        &pikg,
+        &[
+            ("cmd_skills/hello.md", "---\nname: hello\ndescription: say hello\nrequires: nothing\n---\nRun `hello`.", 0o644),
+            ("tools/hello/bin/hello", "#!/bin/sh\necho hello\n", 0o755),
+            ("goal_skills/greet.md", "---\ndescription: greet daily\n---\nGreet.", 0o644),
+        ],
+    );
+    let (code, v, err) = cli.run(&["skill", "install", pikg.to_str().unwrap()]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["package"], "hello-skills");
+    assert!(v["skills"].as_array().unwrap().iter().all(|s| s["install"]["pikg_digest"].as_str().unwrap().starts_with("sha256:")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(root.join("tools/hello/bin/hello")).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "commands stay executable");
+    }
+    let (code, v, _) = cli.run(&["skill", "list", "--json"]);
+    assert_eq!(code, 0);
+    let names: Vec<(String, String, String)> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["kind"].as_str().unwrap().into(), s["name"].as_str().unwrap().into(), s["origin"].as_str().unwrap().into()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("cmd".to_string(), "admin".to_string(), "local".to_string()),
+            ("cmd".into(), "hello".into(), "installed".into()),
+            ("goal".into(), "greet".into(), "installed".into()),
+        ]
+    );
+    // Installed again: the same package updates its own skills.
+    let (code, _, err) = cli.run(&["skill", "install", pikg.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+
+    let parent = cli.create(&["--objective", "parent work"]);
+    let create = |extra: &[&str]| {
+        let mut args = vec!["create-worksession", "--objective", "child", "--report", "none"];
+        args.extend_from_slice(extra);
+        let out = cli.command(&args).env("OPENDAN_SESSION_ID", parent.sid()).output().unwrap();
+        parse(out)
+    };
+    let (code, v, err) = create(&["--cmd-skill", "hello", "--cmd-skill", "admin", "--key", "c1"]);
+    assert_eq!(code, 0, "{v} {err}");
+    let child = SessionDir::open(v["path"].as_str().unwrap()).unwrap();
+    let frozen = child.config().unwrap().prompt.frozen.unwrap();
+    assert_eq!(frozen.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["hello", "admin"]);
+    assert_eq!(frozen.cmd_skills[0].text, "Run `hello`.");
+    let (code, _, err) = create(&["--cmd-skill", "nope", "--key", "c2"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("no cmd_skill `nope`"), "{err}");
+
+    let (code, v, err) = cli.run(&["skill", "remove", "hello"]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert!(!root.join("tools/hello").exists() && !root.join("cmd_skills/hello.md").exists());
+    let (code, _, err) = cli.run(&["skill", "remove", "admin"]);
+    assert_eq!(code, 2, "a skill that was not installed is not removed here: {err}");
+    let (code, _, err) = create(&["--cmd-skill", "hello", "--key", "c3"]);
+    assert_eq!(code, 2, "{err}");
+    let frozen = child.config().unwrap().prompt.frozen.unwrap();
+    assert_eq!(frozen.cmd_skills[0].text, "Run `hello`.", "the earlier Work keeps its manual");
+
+    // Not a skill package.
+    std::fs::write(cli.root.join("bad.pikg"), "not a zip").unwrap();
+    let (code, _, err) = cli.run(&["skill", "install", cli.root.join("bad.pikg").to_str().unwrap()]);
+    assert_eq!(code, 2, "{err}");
+}

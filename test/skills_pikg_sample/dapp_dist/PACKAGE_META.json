@@ -1,0 +1,25 @@
+{
+  "@schema": "buckyos.pikg.package-meta.v1",
+  "app_doc_id": "appdoc:3e50b0b3c54000334aac68eeecb6ab7556f8f815d2c5384fa86c20208f81861b",
+  "package_objects": {
+    "pkg:09aa22b7e786ae9619cafbf114695ae549cb612a40a3bd4688eea22d5b1b696a": {
+      "name": "all.agent_skills.hello-skills.devtest.bns.did",
+      "author": "did:bns:devtest",
+      "owner": "did:bns:devtest",
+      "create_time": 1792195200,
+      "last_update_time": 1792195200,
+      "size": 531,
+      "content": "mix256:9304f7a61e22c9a84b54bb18ff2abe2c38737070923ce2beaebecb10d82e420df2d3",
+      "version": "0.1.0"
+    }
+  },
+  "content_index": {
+    "sha256:f7a61e22c9a84b54bb18ff2abe2c38737070923ce2beaebecb10d82e420df2d3": {
+      "sub_pkg_name": "agent_skills",
+      "path": "agent_skills.tar.gz",
+      "format": "tar.gz",
+      "size": 531,
+      "digest": "sha256:f7a61e22c9a84b54bb18ff2abe2c38737070923ce2beaebecb10d82e420df2d3"
+    }
+  }
+}

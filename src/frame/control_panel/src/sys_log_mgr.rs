@@ -608,7 +608,7 @@ impl ControlPanelServer {
         } else {
             "forward".to_string()
         };
-        let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
+        let level_filter = Self::param_str(&req, "level").map(|value| Self::normalize_log_level(&value));
         let keyword_raw = Self::param_str(&req, "keyword");
         let keyword_filter = keyword_raw.as_ref().map(|value| value.to_lowercase());
         let since_filter = Self::parse_request_filter_time(&req, "since")?;
@@ -1030,7 +1030,7 @@ impl ControlPanelServer {
 
         let file_param = Self::param_str(&req, "file");
         Self::validate_log_file_name(file_param.as_deref())?;
-        let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
+        let level_filter = Self::param_str(&req, "level").map(|value| Self::normalize_log_level(&value));
         let keyword_filter = Self::param_str(&req, "keyword").map(|value| value.to_lowercase());
         let since_filter = Self::parse_request_filter_time(&req, "since")?;
         let until_filter = Self::parse_request_filter_time(&req, "until")?;
@@ -1196,7 +1196,7 @@ impl ControlPanelServer {
                 "only filtered log downloads are supported".to_string(),
             ));
         }
-        let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
+        let level_filter = Self::param_str(&req, "level").map(|value| Self::normalize_log_level(&value));
         let keyword_filter = Self::param_str(&req, "keyword").map(|value| value.to_lowercase());
         let since_filter = Self::parse_request_filter_time(&req, "since")?;
         let until_filter = Self::parse_request_filter_time(&req, "until")?;

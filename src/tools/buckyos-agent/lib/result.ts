@@ -82,6 +82,7 @@ export function emitAndExit(result: AgentToolResult, exitCode: number): never {
 export function classifyAiccError(message: string): number {
   const lowered = message.toLowerCase();
   if (
+    lowered.includes("no_candidate_model") ||
     lowered.includes("no_provider_available") ||
     lowered.includes("no route candidate generated") ||
     lowered.includes("provider_unavailable") ||
@@ -112,6 +113,19 @@ export function bailRuntimeError(tool: string, err: unknown): never {
 
 export function bailAiccError(tool: string, method: string, err: unknown): never {
   const msg = err instanceof Error ? err.message : String(err);
+  // A wait timeout (AiccWaitTimeout) names the task that keeps running.
+  const taskId = (err as { taskId?: unknown } | null)?.taskId;
+  if (typeof taskId === "string") {
+    emitAndExit(
+      errorResult(tool, `${tool} => wait_timeout`, msg, {
+        method,
+        task_id: taskId,
+        still_running: true,
+        error: msg,
+      }),
+      EXIT_TIMEOUT,
+    );
+  }
   emitAndExit(
     errorResult(tool, `${tool} => aicc_call_failed`, msg, { method, error: msg }),
     classifyAiccError(msg),

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "doc_type": "app",
+  "did": "did:bns:hello-skills.devtest",
+  "name": "hello-skills",
+  "version": "0.1.0",
+  "app_type": "agent_skills",
+  "author": "did:bns:devtest",
+  "owner": "did:bns:devtest",
+  "controller": "did:bns:devtest",
+  "create_time": 1792195200,
+  "last_update_time": 1792195200,
+  "exp": 1949875200,
+  "categories": [
+    "agent_skills"
+  ],
+  "pkg_list": {
+    "agent_skills": {
+      "pkg_id": "all.agent_skills.hello-skills.devtest.bns.did#0.1.0",
+      "pkg_objid": "pkg:09aa22b7e786ae9619cafbf114695ae549cb612a40a3bd4688eea22d5b1b696a",
+      "required": true
+    }
+  },
+  "show_name": "hello-skills",
+  "selector_type": "single",
+  "service_config_tips": {}
+}

@@ -184,12 +184,126 @@ impl BehaviorReply {
     }
 }
 
-/// `prompt.frozen.cmd_skill`: the command manual of the session, frozen
-/// with its behaviors (`cmd_skills/<name>.md`).
+/// A session takes at most this many cmd_skills (`prompt.cmd_skills`).
+pub const MAX_CMD_SKILLS: usize = 8;
+
+/// `prompt.frozen.cmd_skills[]`: a command manual of the session, frozen
+/// with its behaviors (`cmd_skills/<name>.md` without its front matter).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CmdSkill {
     pub name: String,
     pub text: String,
+}
+
+/// Kind of an installed skill: a command manual (`cmd_skills/`) or a
+/// method a Goal uses (`goal_skills/`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillKind {
+    #[default]
+    Cmd,
+    Goal,
+}
+
+impl SkillKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillKind::Cmd => "cmd",
+            SkillKind::Goal => "goal",
+        }
+    }
+
+    /// Directory of the AgentRoot holding skills of this kind.
+    pub fn dir(self) -> &'static str {
+        match self {
+            SkillKind::Cmd => "cmd_skills",
+            SkillKind::Goal => "goal_skills",
+        }
+    }
+}
+
+/// A skill as `skill list` shows it: the front matter of its manual and
+/// where it came from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillMeta {
+    pub kind: SkillKind,
+    pub name: String,
+    /// What the skill is for (front matter `description`).
+    #[serde(default)]
+    pub description: String,
+    /// What it needs before it works (front matter `requires`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requires: String,
+    /// `package` (the agent package) | `installed` (`skills.install`).
+    #[serde(default)]
+    pub origin: String,
+    /// An installed skill: the package it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<SkillInstallRecord>,
+    /// Commands it brings (`tools/<name>/bin`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+}
+
+/// Where an installed skill came from (`.meta/skills.json`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillInstallRecord {
+    /// The PIKG package (`pkg_name`).
+    pub package: String,
+    #[serde(default)]
+    pub version: String,
+    /// Digest of the installed content (`sha256:` over its files).
+    #[serde(default)]
+    pub digest: String,
+    /// Digest of the `.pikg` file it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pikg_digest: Option<String>,
+    #[serde(default)]
+    pub installed_at_ms: u64,
+    #[serde(default)]
+    pub installed_by: String,
+}
+
+/// Split a skill manual into its front matter (`---` lines around
+/// `key: value` lines) and its body. A manual without front matter is all
+/// body.
+pub fn split_front_matter(text: &str) -> (BTreeMap<String, String>, &str) {
+    let mut fields = BTreeMap::new();
+    let trimmed = text.trim_start_matches('\u{feff}');
+    let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
+        return (fields, text.trim());
+    };
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        let l = line.trim();
+        if l == "---" {
+            return (fields, rest[offset..].trim());
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            let v = v.trim();
+            let v = v
+                .strip_prefix('"')
+                .and_then(|x| x.strip_suffix('"'))
+                .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+                .unwrap_or(v);
+            fields.insert(k.trim().to_string(), v.to_string());
+        }
+    }
+    // No closing line: not front matter.
+    (BTreeMap::new(), text.trim())
+}
+
+/// The metadata of the manual `text` of skill `name`.
+pub fn skill_meta(kind: SkillKind, name: &str, text: &str) -> SkillMeta {
+    let (fields, _) = split_front_matter(text);
+    SkillMeta {
+        kind,
+        name: name.to_string(),
+        description: fields.get("description").cloned().unwrap_or_default(),
+        requires: fields.get("requires").cloned().unwrap_or_default(),
+        ..Default::default()
+    }
 }
 
 fn valid_function_name(name: &str) -> bool {
@@ -447,9 +561,10 @@ pub struct FrozenPrompt {
     pub identity: IdentityText,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub behaviors: BTreeMap<String, BehaviorConfig>,
-    /// The session's cmd_skill (`prompt.cmd_skill`), frozen once.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cmd_skill: Option<CmdSkill>,
+    /// The session's cmd_skills (`prompt.cmd_skills`, in that order),
+    /// frozen once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cmd_skills: Vec<CmdSkill>,
 }
 
 impl SessionConfig {

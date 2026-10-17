@@ -67,6 +67,8 @@ node-daemon 的 `AppLoader` 是 app/agent worker 环境变量的权威注入者�
 | `BUCKYOS_SERVICE_PORT` | node-daemon | agent/service | app/agent 暴露服务端口。agent 未注入时 aios 入口默认 `4060`。 |
 | `BUCKYOS_HOST_GATEWAY` | node-daemon、AppClient 调用方 | `buckyos-api` runtime | 容器访问 host 本地服务的 host 名。runtime 会把 app/frame service 的本地 system service URL 解析到该 host；Rust AppClient 在该变量非空时也通过该 host 的 NodeGateway 访问 system-config 和其它 kRPC 服务，默认端口 `3180`。 |
 | `BUCKYOS_KEVENT_DAEMON_ADDR` | node-daemon | `buckyos-api` runtime（App/Agent Worker，包括 OpenDAN） | KEvent daemon bridge endpoint，格式为 `host:port`。node-daemon 默认注入 `host.docker.internal:3183`；未设置时 runtime 回退到 `BUCKYOS_HOST_GATEWAY` 指定的 host 和端口 `3183`。 |
+| `BUCKYOS_TOOL_ENDPOINT` | node-daemon（仅 Agent 容器） | 容器内 `buckyos` CLI | 宿主 NodeGateway 地址 `http://<BUCKYOS_HOST_GATEWAY 同值>:3180`。CLI 只认该变量，不读 `BUCKYOS_HOST_GATEWAY`；镜像 launcher 仅在该变量缺失且 `BUCKYOS_HOST_GATEWAY` 非空时自行按此规则补出。身份用 Session 注入的 `BUCKYOS_APPCLIENT_SESSION_TOKEN`。 |
+| `BUCKYOS_AGENT_SKILLS_PKG_DIR` | node-daemon（仅声明了 `pkg_list.agent_skills` 的 Agent） | OpenDAN | 已安装 `agent_skills` 子包的只读挂载点，固定 `/mnt/buckyos/agent_skills`；未声明该子包时不注入也不挂载。 |
 
 同时注入的内部变量：
 
@@ -76,6 +78,8 @@ node-daemon 的 `AppLoader` 是 app/agent worker 环境变量的权威注入者�
 | `app_media_info` | node-daemon | package media 信息 JSON；worker 内会把 `full_path` 改写为 `BUCKYOS_PKG_DIR`。 |
 | `local_app_instance_config` | node-daemon | local app config JSON。 |
 | `loca_app_instance_config` | node-daemon | `local_app_instance_config` 的拼写兼容变量。不要新增依赖。 |
+
+Agent 容器还会得到宿主 BuckyOS Tool 分发的只读挂载：`$BUCKYOS_ROOT/libexec/buckyos-tool/` 下的 `cli/`、`dist/`、`package.json`、`distribution.json` 分别挂到容器 `/opt/buckyos/libexec/buckyos-tool/` 同名路径；`runtime/`（宿主 Deno，可能不是 Linux 二进制）不挂载，宿主缺某项时跳过并记 warning。镜像的 `/usr/local/bin/buckyos` 用镜像自带 Deno 运行挂载的 `cli/system_bootstrap.ts`，挂载缺失或 `distribution.json` 的 `protocol_version` 不是 `1`、`deno_version` 主版本与镜像 Deno 不同时直接报错；`buckyos-agent` 工具也从挂载的 `dist/node.mjs` 加载 SDK。
 
 App 数据目录固定为 `$BUCKYOS_ROOT/data/home/{owner_user_id}/.local/share/{app_id}`，cache 固定为 `$BUCKYOS_ROOT/data/cache/{owner_user_id}/{app_id}`。Docker 容器名为 `buckyos-app-{app_host_name}`，其中 `app_host_name` 直接取自 NodeExecutionSpec 的 Registry 投影；实例卷仍为 `buckyos-instance-{sha256(app_instance_id)}`，使用完整 64 位 lowercase hex。容器通过 `buckyos.app_instance_id` label 保存可诊断的语义身份。
 

@@ -1,4 +1,10 @@
-import { callAicc, describeFailure, textToImage } from "./aicc.ts";
+import {
+  AiccWaitTimeout,
+  callAicc,
+  describeFailure,
+  resumeAiccTask,
+  textToImage,
+} from "./aicc.ts";
 import { aiResponseArtifacts } from "./types.ts";
 import type { AiccRuntime } from "./runtime.ts";
 
@@ -212,4 +218,104 @@ Deno.test("decision calls route with actual mixed question requirements and pres
   assertEquals(calls[0][1].requirements.decision.structured_state,true);
   assertEquals(calls[0][1].requirements.decision.max_options,20);
   assertEquals(calls[1][1].exact_model,"jev-1.13.0@typesafe-main");
+});
+
+
+function taskSequence(records: Array<Record<string, unknown>>) {
+  let index = 0;
+  return {
+    getTask: (taskId: string) => {
+      const record = records[Math.min(index, records.length - 1)];
+      index += 1;
+      return Promise.resolve({
+        task_id: taskId,
+        name: "AICC video.txt2video",
+        schema_id: "aicc.compute/v1",
+        ...record,
+      });
+    },
+  };
+}
+
+Deno.test("resumeAiccTask waits for a running AICC task and returns its output", async () => {
+  const runtime = runtimeWithClients({}, taskSequence([
+    { phase: "Running" },
+    {
+      phase: "Terminal",
+      outcome: "Succeeded",
+      result: {
+        result: {
+          output: {
+            artifacts: [{
+              name: "video",
+              resource: { kind: "named_object", obj_id: "chunk:video" },
+              mime: "video/mp4",
+            }],
+          },
+        },
+      },
+    },
+  ]));
+  const result = await resumeAiccTask(runtime, "t-1", 10_000);
+  assertEquals(result.status, "succeeded");
+  assertEquals(result.method, "video.txt2video");
+  assertEquals(aiResponseArtifacts(result.summary!).length, 1);
+});
+
+Deno.test("resumeAiccTask without wait reports a running task", async () => {
+  const runtime = runtimeWithClients({}, taskSequence([{ phase: "Running" }]));
+  const result = await resumeAiccTask(runtime, "t-2", 0);
+  assertEquals([result.status, result.phase, result.summary], [
+    "running",
+    "Running",
+    null,
+  ]);
+});
+
+Deno.test("resumeAiccTask reports a failed task with its error", async () => {
+  const runtime = runtimeWithClients({}, taskSequence([{
+    phase: "Terminal",
+    outcome: "Failed",
+    error: { code: "provider_error", message: "quota exhausted" },
+  }]));
+  const result = await resumeAiccTask(runtime, "t-3", 0);
+  assertEquals(result.status, "failed");
+  assertEquals(
+    describeFailure(result),
+    JSON.stringify({ code: "provider_error", message: "quota exhausted" }),
+  );
+});
+
+Deno.test("resumeAiccTask refuses a task that is not an AICC task", async () => {
+  const runtime = runtimeWithClients({}, taskSequence([{
+    phase: "Running",
+    schema_id: "tool.shell/v1",
+  }]));
+  let message = "";
+  try {
+    await resumeAiccTask(runtime, "t-4", 0);
+  } catch (err) {
+    message = (err as Error).message;
+  }
+  assertEquals(message.includes("not an AICC task"), true);
+});
+
+Deno.test("callAicc wait timeout names the task that keeps running", async () => {
+  const runtime = runtimeWithClients({
+    videoTextToVideo: () =>
+      Promise.resolve({ task_id: "t-5", status: "running" }),
+  }, taskSequence([{ phase: "Running" }]));
+  let error: unknown;
+  try {
+    await callAicc(runtime, {
+      method: "video.txt2video",
+      model: "veo@provider-main",
+      request: { prompt: "a wave" },
+      waitTimeoutMs: 1,
+    });
+  } catch (err) {
+    error = err;
+  }
+  assertEquals(error instanceof AiccWaitTimeout, true);
+  assertEquals((error as AiccWaitTimeout).taskId, "t-5");
 });

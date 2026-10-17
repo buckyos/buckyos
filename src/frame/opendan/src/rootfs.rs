@@ -147,7 +147,7 @@ pub struct SyncReport {
 }
 
 pub fn ensure_layout(agent_root: &Path) -> Result<()> {
-    for rel in ["", ".meta", "behaviors", "cmd_skills", "tools", "memory", "notebook", "workspace", "sessions"] {
+    for rel in ["", ".meta", "behaviors", "cmd_skills", "goal_skills", "tools", "memory", "notebook", "workspace", "sessions"] {
         let dir = agent_root.join(rel);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     }
@@ -220,6 +220,9 @@ pub fn sync_from_package(package_root: &Path, agent_root: &Path) -> Result<SyncR
     let mut manifest = load_manifest(&manifest_path)?;
     manifest.version = SYNC_VERSION;
     let mut report = SyncReport::default();
+    // Installed skills belong to their skill package: a newer agent package
+    // neither replaces nor removes them.
+    let installed = libopendan::skills::installed_paths(agent_root)?;
     let mut files = Vec::new();
     collect(package_root, &mut files)?;
     files.sort();
@@ -231,6 +234,11 @@ pub fn sync_from_package(package_root: &Path, agent_root: &Path) -> Result<SyncR
             .collect::<Vec<_>>()
             .join("/");
         if key == SYNC_MANIFEST {
+            continue;
+        }
+        if installed.iter().any(|p| key == *p || (p.ends_with('/') && key.starts_with(p.as_str()))) {
+            report.preserved += 1;
+            log::warn!("rootfs: keep installed skill file {key}");
             continue;
         }
         let target = agent_root.join(rel);
@@ -310,6 +318,39 @@ mod tests {
             agent_did: did.to_string(),
             agent_doc_object_id: doc.map(|d| ObjId::new(&format!("agentdoc:{}", d.repeat(32))).unwrap()),
         }
+    }
+
+    #[test]
+    fn package_sync_leaves_installed_skills_alone() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let (pkg, root) = (dir.path().join("pkg"), dir.path().join("root"));
+        fs::create_dir_all(pkg.join("cmd_skills")).unwrap();
+        fs::create_dir_all(pkg.join("tools/demo/bin")).unwrap();
+        fs::write(pkg.join("cmd_skills/demo.md"), "package demo").unwrap();
+        fs::write(pkg.join("tools/demo/bin/demo"), "package tool").unwrap();
+        ensure_layout(&root).unwrap();
+        let file = |t: &str| libopendan::skills::SkillFile {
+            content: base64::engine::general_purpose::STANDARD.encode(t),
+            executable: false,
+        };
+        let skill = libopendan::skills::SkillPackage {
+            package: "demo-skills".into(),
+            version: "1.0.0".into(),
+            pikg_digest: None,
+            files: [
+                ("cmd_skills/demo.md".to_string(), file("installed demo")),
+                ("tools/demo/bin/demo".to_string(), file("installed tool")),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        libopendan::skills::install(&root, &skill, false, "owner").unwrap();
+        let r = sync_from_package(&pkg, &root).unwrap();
+        assert_eq!(r.preserved, 2);
+        assert_eq!(fs::read_to_string(root.join("cmd_skills/demo.md")).unwrap(), "installed demo");
+        assert_eq!(fs::read_to_string(root.join("tools/demo/bin/demo")).unwrap(), "installed tool");
+        assert!(root.join("goal_skills").is_dir());
     }
 
     #[test]

@@ -31,6 +31,16 @@
 /opt/buckyos/tools    => 节点共享 ExtTool volume,只读+可执行
 ```
 
+Agent 容器另有两组只读 bind mount(普通 script 容器没有):
+
+```
+/opt/buckyos/libexec/buckyos-tool/{cli,dist,package.json,distribution.json}
+                          => $buckyos_root/libexec/buckyos-tool/ 同名项,宿主 BuckyOS Tool 脚本与 SDK
+/mnt/buckyos/agent_skills => 已安装的 pkg_list.agent_skills 子包(仅声明了该子包时)
+```
+
+宿主 Tool 的 `runtime/`(宿主 Deno)不挂入;容器内 `buckyos` 命令和 `buckyos-agent` 工具用镜像自带的 Deno 运行这些挂载的脚本,源码与宿主系统同版本。
+
 /opt/buckyos/instance 用来保存容器运行期需要写入、但不应进入用户数据目录的内容,例如:
 
 - `/opt/buckyos/instance/pkg/`: package 工作副本

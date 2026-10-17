@@ -5845,8 +5845,17 @@ impl RunRecord {
         !self.status.is_terminal()
     }
 
+    /// The command that continues this run (`agent_tool xllm`; the runs
+    /// directory is named so it is found from any working directory).
     pub fn resume_command(&self) -> String {
-        format!("xllm --resume --run {}", self.run_id)
+        match &self.runs_dir {
+            Some(dir) => format!(
+                "agent_tool xllm --resume --run {} --runs-dir {}",
+                self.run_id,
+                crate::runtime::shell_quote(dir)
+            ),
+            None => format!("agent_tool xllm --resume --run {}", self.run_id),
+        }
     }
 }
 

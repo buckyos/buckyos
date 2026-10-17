@@ -483,6 +483,7 @@ impl World {
             records: self.records.clone(),
             agent_root: self.root.clone(),
             package_root: None,
+            skills_package_root: None,
             package_version: None,
             channels: self.channels(),
             waker: Arc::new(PollWaker),
@@ -1251,6 +1252,7 @@ async fn the_jarvis_package_loads_and_answers() {
     assert!(!system.contains("You are Jarvis"), "the template does not name the instance: {system}");
     assert!(system.contains("This is a one-to-one chat with your owner (bob, DID did:bns:bob)"), "{system}");
     assert!(system.contains("## Commands\nRun these through `shell`"), "the cmd_skill is frozen: {system}");
+    assert!(!system.contains("requires: an OpenDAN UI session"), "front matter is not part of the manual: {system}");
     assert!(!system.contains("<<"), "{system}");
     let mut tools = tools.lock().unwrap().clone();
     tools.sort();
@@ -1265,7 +1267,7 @@ async fn the_jarvis_package_loads_and_answers() {
     cfg.behaviors().unwrap();
     let frozen = cfg.prompt.frozen.unwrap();
     assert!(frozen.behaviors.contains_key("chat_route") && frozen.behaviors.contains_key("analyze_intent"));
-    assert_eq!(frozen.cmd_skill.as_ref().map(|c| c.name.as_str()), Some("ui_core"));
+    assert_eq!(frozen.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["ui_core"]);
     assert_eq!(cfg.session.owner.as_deref(), Some(BOB));
     assert!(cfg.session.objective.starts_with("The long-lived conversation of this agent"), "{}", cfg.session.objective);
     // A work session of the package starts in plan and can hand over to do.
