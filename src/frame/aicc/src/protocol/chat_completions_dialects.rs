@@ -482,6 +482,16 @@ impl OpenAiChatCompletionsDialect for QwenAggregatedDialect {
         role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
     }
 
+    fn transform_request(
+        &self,
+        request: &LlmChatInvokeRequest,
+        body: &mut Map<String, Value>,
+        _headers: &mut HeaderMap,
+        context: &super::CodecContext,
+    ) -> ProtocolResultValue<()> {
+        restore_assistant_state(request, body, false, &context.state_coordinate)
+    }
+
     fn transform_resolved_parameter(
         &self,
         name: &str,
@@ -1096,6 +1106,69 @@ mod tests {
             response.pointer("/usage/prompt_tokens_details/cached_tokens"),
             Some(&json!(2))
         );
+    }
+
+    #[tokio::test]
+    async fn qwen_aggregated_replays_decoded_reasoning_for_tool_continuation() {
+        let registry = registry_with(qwen_aggregated_chat_adapter());
+        let ProtocolExecution::Immediate(output) = registry
+            .decode(
+                "qwen-aggregated-chat",
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                HttpResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::new(),
+                    body: Bytes::from_static(
+                        br#"{"id":"chatcmpl-qwen","object":"chat.completion","created":1770000000,"model":"kimi/kimi-k3","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"inspect the weather","tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":8,"total_tokens":12}}"#,
+                    ),
+                    request_id: "qwen-tool-1".to_owned(),
+                    retry_after: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate output")
+        };
+        let mut assistant: AiMessage =
+            serde_json::from_value(output.value["message"].clone()).unwrap();
+        assert!(assistant.content.iter().any(|content| matches!(
+            content,
+            AiContent::Thinking { text: Some(text), .. } if text == "inspect the weather"
+        )));
+        let call_context = context();
+        for content in &mut assistant.content {
+            if let AiContent::Thinking { source, .. } = content {
+                *source = call_context.state_coordinate.clone();
+            }
+        }
+        let mut codec_input = input(BTreeMap::new());
+        if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
+            request.messages.push(assistant);
+            request.messages.push(AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::tool_result_text("call-1", "sunny", false)],
+            ));
+        }
+        let request = registry
+            .encode(
+                "qwen-aggregated-chat",
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                &codec_input,
+                &call_context,
+            )
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON request")
+        };
+        assert_eq!(
+            body["messages"][1]["reasoning_content"], "inspect the weather",
+            "{body}"
+        );
+        assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call-1");
+        assert_eq!(body["messages"][2]["tool_call_id"], "call-1");
     }
 
     #[test]

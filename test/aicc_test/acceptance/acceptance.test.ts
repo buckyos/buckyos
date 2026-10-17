@@ -196,6 +196,15 @@ function t15FieldValue(
     return { type: "video", resolution: "720p" };
   }
   if (
+    field === "requests" &&
+    contract.id === "gemini.batch-embed-contents.v1beta"
+  ) {
+    return ["first", "second"].map((text) => ({
+      model: "models/gemini-embedding-001",
+      content: { parts: [{ text }] },
+    }));
+  }
+  if (
     field === "generation_config" &&
     contract.id === "gemini.interactions.tts.v1beta"
   ) {
@@ -577,8 +586,8 @@ test("Judge request uses the canonical nested JSON schema response format", asyn
         type: "object",
         properties: {
           pass: { type: "boolean" },
-          score: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string", maxLength: 240 },
+          score: { type: "number", description: "Must be between 0 and 1." },
+          reason: { type: "string", pattern: ".+", description: "Must be 240 characters or fewer." },
         },
         required: ["pass", "score", "reason"],
         additionalProperties: false,
@@ -3984,6 +3993,61 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.equal(audit.requests[0].headers["x-api-key"], "[REDACTED]");
   assert.deepEqual(audit.requests[0].validation_errors, []);
   await select();
+  const validNamedSchema = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 16,
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: {
+              minimum: { $ref: "#/$defs/maximum" },
+            },
+            required: ["minimum"],
+            additionalProperties: false,
+            $defs: {
+              maximum: { type: "number" },
+            },
+          },
+        },
+      },
+    }),
+  });
+  assert.equal(validNamedSchema.status, 200);
+  await select();
+  const invalidSchema = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 16,
+      output_config: { format: { type: "json_schema", schema: { type: "number", minimum: 0 } } },
+    }),
+  });
+  assert.equal(invalidSchema.status, 400);
+  assert.match(await invalidSchema.text(), /minimum is not supported/);
+  await select();
+  const invalidDocument = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: [{
+        type: "document",
+        source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" },
+      }] }],
+      max_tokens: 16,
+    }),
+  });
+  assert.equal(invalidDocument.status, 400);
+  assert.match(await invalidDocument.text(), /document media_type is invalid/);
+  await select();
   const invalid = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     headers,
@@ -4130,8 +4194,45 @@ test("T1.5 Provider mock serves every contract for all Provider profiles", async
           `${provider.provider_driver}/${contract.id} selection`,
         );
         const model = contractTestModelId(provider, contract, apiType);
-        const extraBody =
-          ["doubao", "doubao-agent-plan"].includes(provider.provider_driver) &&
+        const extraBody = provider.provider_driver === "google-gemini" &&
+            ["vision.detect", "vision.segment"].includes(apiType)
+          ? {
+            response_format: {
+              type: "text",
+              mime_type: "application/json",
+              schema: {
+                type: "object",
+                properties: {
+                  boxes: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        box_2d: { type: "array", items: { type: "integer" } },
+                        ...(apiType === "vision.segment"
+                          ? {
+                            mask: {
+                              type: "array",
+                              items: {
+                                type: "array",
+                                items: { type: "integer" },
+                              },
+                            },
+                          }
+                          : {}),
+                        label: { type: "string" },
+                      },
+                      required: apiType === "vision.segment"
+                        ? ["box_2d", "mask", "label"]
+                        : ["box_2d", "label"],
+                    },
+                  },
+                },
+                required: ["boxes"],
+              },
+            },
+          }
+          : ["doubao", "doubao-agent-plan"].includes(provider.provider_driver) &&
             ["vision.ocr", "vision.caption"].includes(apiType) &&
             model.startsWith("doubao-seed-")
             ? { max_output_tokens: 2048, reasoning: { effort: "minimal" } }
@@ -4846,7 +4947,7 @@ test("T1.5 Qwen Responses mock enforces the official video input shape", () => {
       role: "user",
       content: [{
         type: "input_video",
-        video_url: "https://example.test/video.mp4",
+        video_url: "https://example.test/media?id=4827",
       }],
     }],
   }), []);
@@ -5124,6 +5225,18 @@ test("report redaction removes secrets and totals statuses", () => {
   assert.equal(totals.skipped, 0);
   assert.equal(
     isProviderRestricted(new Error("request not allowed for this model")),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("This model models/gemini-2.5-flash-lite is no longer available to new users."),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("Request blocked for an unspecified policy reason. Please modify your input and retry."),
+    ),
     true,
   );
   assert.equal(

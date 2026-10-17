@@ -647,11 +647,22 @@ mod tests {
         registry.register_codecs(adapter, codecs).unwrap();
 
         for model_id in [
+            "gemini-4-argon",
             "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-3.1-pro-preview-customtools",
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts",
+            "gemini-nano-banana-2.1",
+            "gemini-robotics-er-2-preview",
+            "gemma-4-26b-a4b-it",
+            "gemma-4-31b-it",
             "gemini-embedding-2-preview",
             "gemini-2.5-flash-preview-tts",
             "lyria-3-clip-preview",
             "veo-3.1-generate-preview",
+            "veo-3.1-fast-generate-preview",
             "gemini-omni-1.1-flash",
             "gemini-2.5-computer-use-preview-10-2025",
         ] {

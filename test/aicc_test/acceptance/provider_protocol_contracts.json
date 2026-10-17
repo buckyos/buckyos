@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-13.1",
-  "checked_at": "2026-10-13",
+  "revision": "official-provider-protocols-2026-10-14.1",
+  "checked_at": "2026-10-14",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -294,13 +294,13 @@
       "endpoint_path": "/v1",
       "credential_type": "api_key",
       "official_first_party_model_ids": {
-        "llm": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
-        "vision.ocr": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
-        "vision.caption": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+        "llm": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5-20251001"],
+        "vision.ocr": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5-20251001"],
+        "vision.caption": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-haiku-4-5-20251001"]
       },
       "official_variant_sources": ["https://platform.claude.com/docs/en/build-with-claude/effort", "https://platform.claude.com/docs/en/build-with-claude/extended-thinking", "https://platform.claude.com/docs/en/models/haiku-4-5/migration-guide"],
       "official_variant_rules": [
-        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } },
+        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-5-5"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } },
         { "model_ids": ["claude-haiku-4-5-20251001"], "variants": { "reasoning-none": { "thinking": { "type": "disabled" } }, "reasoning-thinking": { "thinking": { "type": "enabled", "budget_tokens": 1024 } } } }
       ],
       "test_model_ids": { "llm": "claude-sonnet-5", "vision.ocr": "claude-sonnet-5", "vision.caption": "claude-sonnet-5" },
@@ -331,29 +331,31 @@
       "endpoint_path": "/v1beta",
       "credential_type": "api_key",
       "official_first_party_model_ids": {
-        "llm": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
-        "vision.ocr": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "vision.caption": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "vision.detect": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "vision.segment": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-        "audio.asr": ["gemini-3.5-transcribe"],
+        "llm": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-robotics-er-2-preview", "gemma-4-26b-a4b-it", "gemma-4-31b-it"],
+        "vision.ocr": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview-customtools", "gemini-robotics-er-2-preview", "gemma-4-26b-a4b-it", "gemma-4-31b-it"],
+        "vision.caption": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview-customtools", "gemini-robotics-er-2-preview", "gemma-4-26b-a4b-it", "gemma-4-31b-it"],
+        "vision.detect": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview-customtools", "gemini-robotics-er-2-preview"],
+        "vision.segment": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview-customtools", "gemini-robotics-er-2-preview"],
+        "audio.asr": ["gemini-4-argon", "gemini-3.1-pro-preview-customtools", "gemini-3.5-transcribe"],
         "embedding.text": ["gemini-embedding-2", "gemini-embedding-2-preview", "gemini-embedding-001"],
         "embedding.multimodal": ["gemini-embedding-2", "gemini-embedding-2-preview"],
-        "image.txt2img": ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
-        "image.img2img": ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
-        "audio.tts": ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"],
+        "image.txt2img": ["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
+        "image.img2img": ["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
+        "audio.tts": ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"],
         "audio.music": ["lyria-3-pro-preview", "lyria-3-clip-preview"],
-        "video.txt2video": ["veo-3.1-generate-preview", "veo-3.1-lite-generate-preview"],
-        "video.img2video": ["veo-3.1-generate-preview", "veo-3.1-lite-generate-preview"],
+        "video.txt2video": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
+        "video.img2video": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
         "video.video2video": ["gemini-omni-1.1-flash"],
-        "video.extend": ["gemini-omni-1.1-flash"]
+        "video.extend": ["gemini-omni-1.1-flash", "veo-3.1-fast-generate-preview"]
       },
-      "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
+      "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking", "https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"],
       "official_variant_rules": [
-        { "model_ids": ["gemini-2.5-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+        { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-4-argon", "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-robotics-er-2-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+        ,{ "model_ids": ["gemma-4-26b-a4b-it", "gemma-4-31b-it"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
       "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
@@ -378,8 +380,8 @@
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "inline_artifact_success_fixture": { "id": "interaction_inline_artifact_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }, { "type": "image", "id": "gemini_inline_artifact_mock_1", "mime_type": "image/png", "data": "aW1hZ2U=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "inline_artifact_payload_paths": ["/steps/0/content/1/data"],
-          "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/api-errors"],
-          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call."
+          "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/image-understanding", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call; detection uses a structured boxes schema with normalized box_2d and label, while segmentation additionally requires polygon mask coordinates."
         },
         {
           "id": "gemini.interactions.transcription.v1beta",
@@ -466,7 +468,7 @@
           "id": "gemini.embed-content.v1beta",
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
-          "api_types": ["embedding.text", "embedding.multimodal"],
+          "api_types": ["embedding.multimodal"],
           "operation": "models.embedContent",
           "http_method": "POST",
           "path": "/v1beta/models/{model}:embedContent",
@@ -478,6 +480,23 @@
           "success_fixture": { "embedding": { "values": [0.1, 0.2, 0.3] } },
           "official_sources": ["https://ai.google.dev/api/embeddings", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "EmbedContent puts the model in the v1beta path, accepts Content, and returns an embedding values array."
+        },
+        {
+          "id": "gemini.batch-embed-contents.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["embedding.text"],
+          "operation": "models.batchEmbedContents",
+          "http_method": "POST",
+          "path": "/v1beta/models/{model}:batchEmbedContents",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["requests"],
+          "allowed_body_fields": ["requests"],
+          "body_field_types": { "requests": ["array"] },
+          "success_fixture": { "embeddings": [{ "values": [0.1, 0.2, 0.3] }, { "values": [0.4, 0.5, 0.6] }] },
+          "official_sources": ["https://ai.google.dev/api/embeddings", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "BatchEmbedContents accepts multiple EmbedContentRequest objects and returns embeddings in request order."
         },
         {
           "id": "gemini.interactions.video.v1beta",
@@ -2319,7 +2338,7 @@
         "vision.ocr": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"],
         "vision.caption": ["deepseek-v4.1-flash", "vanchin/deepseek-v4.1-flash", "ZHIPU/GLM-5.3-Flash", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi/kimi-k2.6", "kimi/kimi-k2.7-code", "kimi/kimi-k2.7-code-highspeed", "kimi/kimi-k2.8-preview", "kimi/kimi-k3", "MiniMax/MiniMax-M3"]
       },
-      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin", "https://help.aliyun.com/zh/model-studio/glm-zhipu", "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai", "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"],
+      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://help.aliyun.com/zh/model-studio/deepseek-api-by-vanchin", "https://help.aliyun.com/zh/model-studio/glm-zhipu", "https://help.aliyun.com/zh/model-studio/kimi-api-by-moonshot-ai", "https://help.aliyun.com/zh/model-studio/kimi-kimi-k3", "https://help.aliyun.com/zh/model-studio/minimax-api-by-minimax"],
       "official_variant_rules": [{
         "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"],
         "variants": {
@@ -2375,10 +2394,15 @@
           "reasoning-medium": { "enable_thinking": true, "preserve_thinking": true }
         }
       }, {
-        "model_ids": ["kimi-k3", "kimi/kimi-k2.8-preview", "kimi/kimi-k3"],
+        "model_ids": ["kimi-k3"],
         "variants": {
           "reasoning-low": { "reasoning_effort": "low" },
           "reasoning-high": { "reasoning_effort": "high" },
+          "reasoning-max": { "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["kimi/kimi-k2.8-preview", "kimi/kimi-k3"],
+        "variants": {
           "reasoning-max": { "reasoning_effort": "max" }
         }
       }, {
@@ -2432,8 +2456,8 @@
           "body_field_types": {"model": ["string"], "messages": ["array"], "max_completion_tokens": ["integer"], "max_tokens": ["integer"], "stream": ["boolean"], "enable_thinking": ["boolean"], "preserve_thinking": ["boolean"], "thinking": ["object"], "tool_stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "seed": ["integer"]},
           "stream_protocol": "openai_chat",
           "success_fixture": {"id": "chatcmpl_qwen_aggregated_mock_1", "object": "chat.completion", "created": 1770000000, "model": "deepseek-v4-flash", "choices": [{"index": 0, "message": {"role": "assistant", "content": "BUCKYOS-AICC-4827"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}},
-          "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions", "https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
-          "evidence_summary": "Alibaba Cloud Model Studio exposes DeepSeek, Kimi, GLM, and MiniMax through POST /compatible-mode/v1/chat/completions with Bearer authentication and OpenAI-compatible chat responses."
+          "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions", "https://help.aliyun.com/zh/model-studio/qwen-function-calling", "https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
+          "evidence_summary": "Alibaba Cloud Model Studio exposes DeepSeek, Kimi, GLM, and MiniMax through POST /compatible-mode/v1/chat/completions with Bearer authentication and OpenAI-compatible chat responses; thinking Kimi tool-call continuation retains reasoning_content in every assistant message."
         },
         {
           "id": "qwen.dashscope.image_synthesis.v1",
