@@ -648,7 +648,10 @@ mod tests {
             .find(|model| model.provider_model_id == "gemini-4-argon")
             .unwrap();
         assert_eq!(argon.operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
-        assert_eq!(argon.operations["audio.asr"], GEMINI_INTERACTIONS_OPERATION_ID);
+        assert_eq!(
+            argon.operations["audio.asr"],
+            GEMINI_INTERACTIONS_OPERATION_ID
+        );
         assert_eq!(argon.capabilities["max_output_tokens"], 65_536);
     }
 
