@@ -1141,7 +1141,7 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
-        ("claude", 12),
+        ("claude", 14),
         ("deepseek", 3),
         ("doubao", 12),
         ("doubao-agent-plan", 0),
@@ -1217,7 +1217,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 327);
+    assert_eq!(pricing_count, 329);
 }
 
 #[test]
