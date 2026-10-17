@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 5,
+  "revision_seq": 6,
   "provider_profile_id": "gemini",
   "custom_provider_adapters": ["gemini-interactions"],
   "models": [
@@ -13,7 +13,8 @@
         "vision.ocr": "interactions.create",
         "vision.caption": "interactions.create",
         "vision.detect": "interactions.create",
-        "vision.segment": "interactions.create"
+        "vision.segment": "interactions.create",
+        "audio.asr": "interactions.create"
       },
       "capability_limits": { "max_output_tokens": 65536 },
       "request_rules": [

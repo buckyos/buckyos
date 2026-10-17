@@ -612,26 +612,42 @@ mod tests {
                 revision: Some("models-v1".to_owned()),
                 discovered_at_ms: 1,
                 health: ProviderHealthState::Healthy,
-                models: vec![DiscoveredModel {
-                    provider_model_id: "gemini-3.8-flash".to_owned(),
-                    api_types: None,
-                    supported_features: None,
-                    unsupported_features: BTreeSet::new(),
-                    remote_methods: None,
-                    availability: ModelAvailability::Available,
-                    deprecated: false,
-                    pricing: None,
-                }],
+                models: ["gemini-3.8-flash", "gemini-4-argon"]
+                    .into_iter()
+                    .map(|model_id| DiscoveredModel {
+                        provider_model_id: model_id.to_owned(),
+                        api_types: None,
+                        supported_features: None,
+                        unsupported_features: BTreeSet::new(),
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    })
+                    .collect(),
             },
             &catalog,
             &registry,
         )
         .unwrap();
 
-        let operations = &inventory.models[0].operations;
+        let operations = &inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-3.8-flash")
+            .unwrap()
+            .operations;
         assert_eq!(operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
         assert!(!operations.contains_key("embedding.text"));
         assert!(!operations.contains_key("video.txt2video"));
+        let argon = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-4-argon")
+            .unwrap();
+        assert_eq!(argon.operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
+        assert_eq!(argon.operations["audio.asr"], GEMINI_INTERACTIONS_OPERATION_ID);
+        assert_eq!(argon.capabilities["max_output_tokens"], 65_536);
     }
 
     #[test]
@@ -834,7 +850,6 @@ mod tests {
             ("gemini-3.8-flash-lite-tts", 8_192, Some(16_384)),
             ("gemini-2.5-flash-preview-tts", 8_192, Some(16_384)),
             ("gemini-2.5-pro-preview-tts", 8_192, Some(16_384)),
-            ("gemini-3.5-transcribe", 98_304, Some(32_768)),
             ("veo-3.1-generate-preview", 1_024, None),
             ("veo-3.1-fast-generate-preview", 1_024, None),
             ("veo-3.1-lite-generate-preview", 1_024, None),
@@ -857,6 +872,19 @@ mod tests {
                 "{model_id}"
             );
         }
+        let transcribe = catalog
+            .resolve_model("gemini", "gemini-3.5-transcribe")
+            .unwrap()
+            .semantics
+            .capabilities
+            .unwrap_or_default();
+        assert!(!transcribe.contains_key("max_context_tokens"));
+        assert!(!transcribe.contains_key("max_output_tokens"));
+        assert_eq!(transcribe["audio.max_input_duration_seconds"], 3_600);
+        assert_eq!(
+            transcribe["audio.max_input_duration_with_diarization_or_timestamps_seconds"],
+            1_800
+        );
     }
 
     #[test]

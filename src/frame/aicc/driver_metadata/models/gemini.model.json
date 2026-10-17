@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "gemini",
-  "revision_seq": 5,
+  "revision_seq": 6,
   "required_features": [],
   "models": [
     {
@@ -515,8 +515,8 @@
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": {
-        "max_context_tokens": 98304,
-        "max_output_tokens": 32768
+        "audio.max_input_duration_seconds": 3600,
+        "audio.max_input_duration_with_diarization_or_timestamps_seconds": 1800
       }
     },
     {

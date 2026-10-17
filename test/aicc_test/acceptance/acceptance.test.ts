@@ -5130,6 +5130,8 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
           "{operation_id}",
           contract.async_protocol === "google_lro"
             ? "gemini_mock_1"
+            : contract.async_protocol === "gemini_interactions"
+            ? "interaction_background_mock_1"
             : contract.async_protocol === "openrouter_video"
             ? "gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt"
             : contract.async_protocol === "glm_video" ||

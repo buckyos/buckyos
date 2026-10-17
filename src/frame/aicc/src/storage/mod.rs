@@ -2976,6 +2976,8 @@ mod tests {
                 .unwrap(),
                 output_video_seconds: None,
                 request_timeout_ms: 30_000,
+                max_poll_duration_ms: 30 * 60 * 1_000,
+                active_poll_elapsed_ms: 0,
                 max_request_bytes: 1_048_576,
                 max_response_bytes: 8_388_608,
             }),

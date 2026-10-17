@@ -30,6 +30,7 @@ use std::time::Duration;
 
 pub(crate) const GEMINI_ADAPTER_ID: &str = "gemini-interactions";
 pub(crate) const GEMINI_INTERACTIONS_OPERATION_ID: &str = "interactions.create";
+pub(crate) const GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID: &str = "interactions.background";
 pub(crate) const GEMINI_EMBED_CONTENT_OPERATION_ID: &str = "models.embedContent";
 pub(crate) const GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID: &str = "models.predictLongRunning";
 
@@ -106,6 +107,31 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         false,
     );
+    let background_interactions = operation(
+        GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID,
+        vec![
+            binding(
+                ApiType::Llm,
+                [ExecutionMode::NativeTask],
+                [
+                    features::TOOL_CALL,
+                    features::JSON_SCHEMA,
+                    features::VISION,
+                    features::WEB_SEARCH,
+                ],
+            ),
+            binding(ApiType::VisionOcr, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionCaption, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionDetect, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionSegment, [ExecutionMode::NativeTask], []),
+            binding(
+                ApiType::AudioSpeechRecognition,
+                [ExecutionMode::NativeTask],
+                [],
+            ),
+        ],
+        true,
+    );
     let video = operation(
         GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
         vec![
@@ -128,6 +154,10 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         credential: super::AdapterCredentialContract::named_header("x-goog-api-key"),
         operations: BTreeMap::from([
             (interactions.operation_id.clone(), interactions.clone()),
+            (
+                background_interactions.operation_id.clone(),
+                background_interactions.clone(),
+            ),
             (embeddings.operation_id.clone(), embeddings.clone()),
             (video.operation_id.clone(), video.clone()),
         ]),
@@ -165,7 +195,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             ApiType::EmbeddingMultimodal,
         )) as Arc<dyn OperationCodec>,
     ]);
-    let native_task_codecs = [
+    let mut native_task_codecs: Vec<Arc<dyn NativeTaskCodec>> = [
         ApiType::VideoTextToVideo,
         ApiType::VideoImageToVideo,
         ApiType::VideoToVideo,
@@ -176,6 +206,23 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         Arc::new(GeminiVideoCodec::new(video.clone(), api_type)) as Arc<dyn NativeTaskCodec>
     })
     .collect();
+    native_task_codecs.extend(
+        [
+            ApiType::Llm,
+            ApiType::VisionOcr,
+            ApiType::VisionCaption,
+            ApiType::VisionDetect,
+            ApiType::VisionSegment,
+            ApiType::AudioSpeechRecognition,
+        ]
+        .into_iter()
+        .map(|api_type| {
+            Arc::new(GeminiBackgroundInteractionCodec::new(
+                background_interactions.clone(),
+                api_type,
+            )) as Arc<dyn NativeTaskCodec>
+        }),
+    );
     (
         descriptor,
         CodecRegistration {
@@ -293,6 +340,170 @@ impl OperationCodec for GeminiInteractionCodec {
             .with_request_id(Some(response.request_id)));
         }
         interaction_protocol_stream(response, self.api_type).await
+    }
+}
+
+#[derive(Clone)]
+struct GeminiBackgroundInteractionCodec {
+    descriptor: OperationDescriptor,
+    api_type: ApiType,
+}
+
+impl GeminiBackgroundInteractionCodec {
+    fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
+        Self {
+            descriptor,
+            api_type,
+        }
+    }
+}
+
+#[async_trait]
+impl NativeTaskCodec for GeminiBackgroundInteractionCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        self.api_type
+    }
+
+    fn operations(&self) -> BTreeSet<NativeTaskOperation> {
+        BTreeSet::from([
+            NativeTaskOperation::Submit,
+            NativeTaskOperation::Status,
+            NativeTaskOperation::Result,
+            NativeTaskOperation::Cancel,
+        ])
+    }
+
+    fn max_poll_duration(&self) -> Duration {
+        Duration::from_secs(24 * 60 * 60)
+    }
+
+    fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
+        match input.operation {
+            NativeTaskOperation::Submit => {
+                let codec_input = input.codec_input.ok_or_else(|| {
+                    ProtocolError::invalid_request(
+                        "Gemini background interaction submit requires canonical input",
+                    )
+                })?;
+                let mut body = encode_interaction(
+                    &CodecCall {
+                        api_type: self.api_type,
+                        input: codec_input,
+                        context: input.context,
+                    },
+                    self.api_type,
+                )?;
+                let body = body.as_object_mut().ok_or_else(|| {
+                    ProtocolError::invalid_request("Gemini interaction body must be an object")
+                })?;
+                body.insert("background".to_string(), Value::Bool(true));
+                body.insert("store".to_string(), Value::Bool(true));
+                body.remove("stream");
+                json_request(
+                    input.context,
+                    Method::POST,
+                    "interactions",
+                    Value::Object(body.clone()),
+                )
+            }
+            NativeTaskOperation::Status | NativeTaskOperation::Result => {
+                let id = interaction_task_id(input)?;
+                json_request(
+                    input.context,
+                    Method::GET,
+                    &format!("interactions/{id}"),
+                    Value::Null,
+                )
+            }
+            NativeTaskOperation::Cancel => {
+                let id = interaction_task_id(input)?;
+                json_request(
+                    input.context,
+                    Method::POST,
+                    &format!("interactions/{id}/cancel"),
+                    json!({}),
+                )
+            }
+        }
+    }
+
+    async fn decode_native(
+        &self,
+        operation: NativeTaskOperation,
+        response: HttpResponse,
+    ) -> ProtocolResultValue<NativeTaskOutput> {
+        ensure_success(&response)?;
+        if operation == NativeTaskOperation::Cancel {
+            return Ok(NativeTaskOutput::Cancelled { accepted: true });
+        }
+        let retry_after = response.retry_after;
+        let value: Value = response.json(self.descriptor.max_response_bytes)?;
+        match operation {
+            NativeTaskOperation::Submit => {
+                let id = required_output_string(&value, "id")?;
+                let mut handle = NativeTaskHandle::new(id)?;
+                handle.state = interaction_task_state(&value)?;
+                handle.poll_after = retry_after.or(Some(Duration::from_secs(2)));
+                handle.cancel_supported = true;
+                Ok(NativeTaskOutput::Submitted(handle))
+            }
+            NativeTaskOperation::Status => {
+                let state = interaction_task_state(&value)?;
+                if state == NativeTaskState::Failed {
+                    return Err(interaction_failure(&value));
+                }
+                Ok(NativeTaskOutput::Status {
+                    state,
+                    retry_after: retry_after.or(Some(Duration::from_secs(2))),
+                    result_ref: None,
+                    result_usage: decode_usage(value.get("usage"))?,
+                    result_artifacts: BTreeMap::new(),
+                })
+            }
+            NativeTaskOperation::Result => Ok(NativeTaskOutput::Result(normalize_interaction(
+                &value,
+                self.api_type,
+            )?)),
+            NativeTaskOperation::Cancel => unreachable!(),
+        }
+    }
+}
+
+fn interaction_task_id(input: &NativeTaskInput<'_>) -> ProtocolResultValue<String> {
+    let id = input.remote_task_id.ok_or_else(|| {
+        ProtocolError::invalid_request("Gemini interaction lifecycle requires an interaction ID")
+    })?;
+    if id.is_empty()
+        || id.len() > 512
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(ProtocolError::invalid_request(
+            "Gemini interaction ID contains invalid path characters",
+        ));
+    }
+    Ok(id.to_string())
+}
+
+fn interaction_task_state(value: &Value) -> ProtocolResultValue<NativeTaskState> {
+    match value.get("status").and_then(Value::as_str) {
+        Some("queued") => Ok(NativeTaskState::Queued),
+        Some("in_progress") => Ok(NativeTaskState::Running),
+        Some("completed" | "requires_action") => Ok(NativeTaskState::Succeeded),
+        Some("failed" | "incomplete") => Ok(NativeTaskState::Failed),
+        Some("cancelled" | "canceled") => Ok(NativeTaskState::Cancelled),
+        _ => Err(ProtocolError::invalid_response(
+            "Gemini background interaction contains an unknown status",
+        )),
     }
 }
 
@@ -3227,10 +3438,13 @@ mod tests {
     fn descriptor_registers_frozen_operations_without_generate_content() {
         let (descriptor, registration) = gemini_interactions_adapter();
         assert_eq!(descriptor.protocol_adapter_id, GEMINI_ADAPTER_ID);
-        assert_eq!(descriptor.operations.len(), 3);
+        assert_eq!(descriptor.operations.len(), 4);
         assert!(descriptor
             .operations
             .contains_key(GEMINI_INTERACTIONS_OPERATION_ID));
+        assert!(descriptor
+            .operations
+            .contains_key(GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID));
         assert!(descriptor
             .operations
             .contains_key(GEMINI_EMBED_CONTENT_OPERATION_ID));
@@ -3261,6 +3475,109 @@ mod tests {
                 ApiType::VideoToVideo,
             )
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn background_interaction_maps_submit_status_result_and_cancel() {
+        let descriptor = gemini_interactions_adapter().0.operations
+            [GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID]
+            .clone();
+        let codec = GeminiBackgroundInteractionCodec::new(descriptor, ApiType::Llm);
+        let request = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                "gemini-test@google",
+                vec![AiMessage::text(AiRole::User, "hello")],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-4-argon"),
+            )]),
+        };
+        let empty = BTreeMap::new();
+        let ctx = context();
+        let submit = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&request),
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        let wire = codec.encode_native(&submit).unwrap();
+        assert!(wire.url.ends_with("/v1beta/interactions"));
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["background"], true);
+        assert_eq!(body["store"], true);
+        assert!(body.get("stream").is_none());
+        assert_eq!(codec.max_poll_duration(), Duration::from_secs(24 * 60 * 60));
+
+        let NativeTaskOutput::Submitted(handle) = codec
+            .decode_native(
+                NativeTaskOperation::Submit,
+                response(
+                    StatusCode::OK,
+                    "application/json",
+                    json!({"id":"interaction-1","status":"queued"}),
+                ),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected handle")
+        };
+        assert_eq!(handle.remote_task_id, "interaction-1");
+        assert!(handle.cancel_supported);
+
+        let lifecycle = NativeTaskInput {
+            operation: NativeTaskOperation::Status,
+            remote_task_id: Some("interaction-1"),
+            codec_input: None,
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        assert!(codec
+            .encode_native(&lifecycle)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/interactions/interaction-1"));
+        let NativeTaskOutput::Status { state, .. } = codec
+            .decode_native(
+                NativeTaskOperation::Status,
+                response(
+                    StatusCode::OK,
+                    "application/json",
+                    json!({"id":"interaction-1","status":"completed","usage":{"total_tokens":7}}),
+                ),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected status")
+        };
+        assert_eq!(state, NativeTaskState::Succeeded);
+
+        let NativeTaskOutput::Result(output) = codec
+            .decode_native(
+                NativeTaskOperation::Result,
+                response(StatusCode::OK, "application/json", completed_text()),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected result")
+        };
+        assert_eq!(output.value["message"]["content"][0]["text"], "hello");
+
+        let cancel = NativeTaskInput {
+            operation: NativeTaskOperation::Cancel,
+            ..lifecycle
+        };
+        assert!(codec
+            .encode_native(&cancel)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/interactions/interaction-1/cancel"));
     }
 
     #[test]

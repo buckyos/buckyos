@@ -38,7 +38,7 @@ Rust 构建仍有 dead-code 等警告，不影响上述测试通过。
   媒体 fixture 检查成功图片张数、视频秒数、Seedance completion tokens、TTS 字符数实际进入费用计算。
   Gemini 时长在最终编码请求中读取并随 task 保存；Sora 从状态响应读取，其他视频从结果响应读取。缺失必要用量时仍保持 unknown。
 - **协议**：`protocol/review_tests.rs` 覆盖原生任务业务错误详情、默认/显式 Retry-After、MiniMax cancelled、GLM 缺失 id、TTS 四种格式/完成帧用量/HTTP 错误、整数时长、Seedream/Wan 尺寸与 Qwen 图片部分成功。
-  原生轮询默认回退 3 秒，并限制每次驱动最多 30 分钟（包括等待中的单次请求）。进程恢复后重新计时，尚未改成跨重启累计截止。
+  原生轮询默认回退 3 秒。轮询期限由 `NativeTaskCodec` 声明，默认累计在线轮询 30 分钟，Gemini background 为 24 小时；已用额度随恢复描述持久化，AICC 退出或系统停机期间不计时。
 - **元数据与连接**：国内 CNY 不匹配 global；MiniMax M2 文本/M3 vision；Qwen flash 精确项恢复阶梯价；Doubao 按量默认 URL、自定义代理和显式 operation 覆盖、plan 价格 unknown、policy_region 默认和 allowed_values 均有校验。
   无法复核的 `glm-4-32b-0414-128k` USD 价格已移除，不猜测币种或金额。
 - **测试防漏**：恢复 MiniMax 音乐契约；加入 Qwen 图片生成、编辑和视频 Mock，并补齐三个对应官方模型的 Model Driver 身份；`qwen_media_protocol_fixtures_resolve_to_routable_inventory` 确认不会在路由前因 NoMatch 被丢弃；拒绝错误尺寸、浮点 duration、缺失输入和已移除字段；variant 基础模型缺失恢复失败；能力矩阵加入真实 vision 样本。

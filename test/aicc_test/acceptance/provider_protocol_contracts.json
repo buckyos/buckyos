@@ -365,7 +365,8 @@
           "id": "gemini.interactions.v1beta",
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
-          "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+          "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
+          "conformance_test_model_ids": {"llm": ["gemini-4-argon"], "vision.ocr": ["gemini-4-argon"], "vision.caption": ["gemini-4-argon"], "vision.detect": ["gemini-4-argon"], "vision.segment": ["gemini-4-argon"], "audio.asr": ["gemini-4-argon"]},
           "operation": "interactions.create",
           "http_method": "POST",
           "path": "/v1beta/interactions",
@@ -390,6 +391,7 @@
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
           "api_types": ["audio.asr"],
+          "test_model_ids": {"audio.asr": "gemini-3.5-transcribe"},
           "operation": "interactions.create",
           "http_method": "POST",
           "path": "/v1beta/interactions",
@@ -1080,7 +1082,7 @@
           "openai/text-embedding-3-small"
         ],
         "audio.tts": ["minimax/speech-2.8-hd", "minimax/speech-2.8-turbo", "google/gemini-3.1-flash-tts-preview", "google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"],
-        "audio.asr": ["openai/whisper-1"],
+        "audio.asr": ["openai/whisper-1", "google/gemini-3.5-transcribe"],
         "audio.music": ["google/lyria-3-pro-preview", "google/lyria-3-clip-preview"],
         "video.txt2video": ["minimax/hailuo-2.3"],
         "video.img2video": ["minimax/hailuo-2.3"],
@@ -1427,6 +1429,11 @@
             "vision.ocr",
             "vision.caption"
           ],
+          "conformance_test_model_ids": {
+            "llm": ["google/gemini-4-argon"],
+            "vision.ocr": ["google/gemini-4-argon"],
+            "vision.caption": ["google/gemini-4-argon"]
+          },
           "operation": "responses.create",
           "http_method": "POST",
           "path": "/api/v1/responses",
@@ -1443,6 +1450,9 @@
           ],
           "required_body_values": {
             "/modalities": ["text"]
+          },
+          "required_body_values_by_model": {
+            "google/gemini-4-argon": {"/background": true}
           },
           "allowed_body_fields": [
             "model",
@@ -1766,6 +1776,7 @@
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
           "api_types": ["audio.asr"],
+          "conformance_test_model_ids": {"audio.asr": ["google/gemini-3.5-transcribe"]},
           "operation": "audio.transcriptions",
           "http_method": "POST",
           "path": "/api/v1/audio/transcriptions",

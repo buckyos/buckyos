@@ -53,10 +53,10 @@ Opus 5.5 的默认 effort 按模型表改为 `medium`。Batch API 专用的 300K
 
 - 通用 Gemini LLM 均显式声明 Google Search grounding。按[思考文档](https://ai.google.dev/gemini-api/docs/thinking/)修正默认档位：3.8/3.7/3.6/3.5 Flash 为 `medium`，3.5/3.1 Flash-Lite 为 `minimal`，3.1 Pro、3 Flash Preview、2.5 Flash/Pro 与 Robotics ER 为 `high`；2.5 Flash-Lite 默认关闭，表示为 `none`，同时保留 low/medium/high。
 - 2026-10-16 线上回归确认官方文档仍声明 `gemini-3.8-flash` 与 `gemini-2.5-flash` 支持 medium。Interactions API 已接受 3.8 的 `thinking_level=medium`，但 2.5 仍以 400 明确只接受 low/high；因此基础模型继续声明 medium，仅 Google Gemini Provider 将 2.5 的 `reasoning-medium` 底层参数兼容映射为 high。OpenRouter 对两个型号的 `reasoning.effort=medium` 均返回 200，不做降级。
-- [Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)保留 1,048,576 输入与 1,048,576 最大输出；后者是 [Long Decode](https://ai.google.dev/gemini-api/docs/long-decode) 经后台 Interactions API 提供的原厂硬上限，不用同步请求的 65,536 默认上限覆盖基础模型能力。
+- [Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)保留 1,048,576 统一上下文与 1,048,576 原厂最大输出；后者由 [Long Decode](https://ai.google.dev/gemini-api/docs/long-decode) 提供。Google Gemini 通道使用同步 `interactions.create`，并在 `gemini.provider.json` 将 `max_output_tokens` 收窄为非长解码上限 65,536；OpenRouter 通道继续提交 `background=true`，保留 Long Decode 能力。
 - [Gemma 4 on Gemini API](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api) 两个型号均为 262,144 / 32,768，支持图片理解、函数调用、Google Search 和 minimal/high 两档 reasoning，默认 high。
 - 图像模型按各自模型卡分别配置，不能从 Nano Banana 2.1 外推：3.1 Flash Image 与 Nano Banana 2.1 为 131,072 / 32,768，支持 reasoning/search；3 Pro Image 为 65,536 / 32,768，支持 reasoning/search；3.1 Flash-Lite Image 为 65,536 / 4,096，仅支持 reasoning；2.5 Flash Image 为 65,536 / 32,768，不声明 reasoning/search。
-- TTS 五个型号统一为 8,192 / 16,384；3.5 Transcribe 为 98,304 / 32,768。来源：[TTS 模型卡](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts)、[Transcribe 模型卡](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-transcribe)。
+- TTS 五个型号统一为 8,192 / 16,384。当前 [Transcribe 模型卡](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-transcribe)只公布最长 1 小时音频（启用说话人区分或词级时间戳时最长 30 分钟），因此 3.5 Transcribe 用 `audio.max_input_duration_seconds=3600` 和 `audio.max_input_duration_with_diarization_or_timestamps_seconds=1800` 明确表达时长，同时不声明没有官网依据的 context/output token 上限。
 - Veo 3.1 三个型号的文本输入上限为 1,024；Gemini Omni 1.1 Flash 上下文为 1,048,576；Lyria 3.5、3 Pro Preview、3 Clip Preview 的输入上限均为 131,072。Lyria 的高保真 Provider 基线同时修正为 text/image 输入与 audio/text 输出，稳定版 3.5 不再继承 preview 状态。
 - Gemini Embedding 2/Preview 保持 8,192，Embedding 001 保持 2,048；它们没有可确认的生成 token 上限，不添加 LLM 输出字段。
 
