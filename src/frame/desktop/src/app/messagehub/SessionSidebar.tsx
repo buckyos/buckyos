@@ -14,6 +14,8 @@ interface SessionSidebarProps {
   onToggleArchived?: () => void
   archived?: boolean
   archivedCount?: number
+  /** Unread messages of the archived sessions, shown on the toggle while the active list is open. */
+  archivedUnread?: number
   canManage?: boolean
   creationReason?: string
   titleFor?: (session: Session) => string
@@ -23,7 +25,7 @@ interface SessionSidebarProps {
   showHeader?: boolean
 }
 
-export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onClose, onCreate, onManage, onToggleArchived, archived = false, archivedCount = 0, canManage = false, creationReason, titleFor = session => session.title, statusFor, badgeFor, showHeader = true }: SessionSidebarProps) {
+export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onClose, onCreate, onManage, onToggleArchived, archived = false, archivedCount = 0, archivedUnread = 0, canManage = false, creationReason, titleFor = session => session.title, statusFor, badgeFor, showHeader = true }: SessionSidebarProps) {
   const { t } = useI18n()
   const now = useMessageHubClock()
   return <div className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="session-sidebar">
@@ -32,7 +34,7 @@ export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onC
       <button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button>
     </div>}
     {onCreate && <div className="flex items-center gap-1 px-2 py-2 border-b border-[color:var(--cp-border)]">
-      <button type="button" onClick={onToggleArchived} aria-pressed={archived} className="flex min-h-11 flex-1 items-center gap-1.5 px-1 text-[13px] text-[color:var(--cp-muted)]"><Archive size={15} />{archived ? t('messagehub.activeSessions') : `${t('messagehub.archived')} (${archivedCount})`}</button>
+      <button type="button" onClick={onToggleArchived} aria-pressed={archived} className="flex min-h-11 flex-1 items-center gap-1.5 px-1 text-[13px] text-[color:var(--cp-muted)]"><Archive size={15} />{archived ? t('messagehub.activeSessions') : `${t('messagehub.archived')} (${archivedCount})`}{!archived && archivedUnread > 0 && <span data-testid="archived-unread" className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[color:var(--cp-accent)] px-1.5 text-[11px] font-semibold text-white">{archivedUnread}</span>}</button>
       <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="flex min-h-11 min-w-11 items-center justify-center text-[color:var(--cp-muted)] disabled:opacity-40"><SquarePen size={18} /></button>
     </div>}
     <div className="flex-1 overflow-y-auto px-2 py-2 shell-scrollbar">

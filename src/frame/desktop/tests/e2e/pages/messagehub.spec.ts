@@ -213,6 +213,22 @@ test('agent entity entry creates a missing default and skips pinned or tunnel se
   expect(await page.evaluate(({ context, agent }) => window.__messageHubMock.sessions(context, agent, 'active').filter(session => session.binding.kind === 'native').length, { context: OWN, agent: CODER })).toBe(1)
 })
 
+test('unread of other sessions shows on the session list button and archived toggle', async ({ page }) => {
+  await openHub(page)
+  const unreadOf = (exclude: string) => page.evaluate(({ context, agent, exclude }) => window.__messageHubMock.sessions(context, agent).reduce((sum, session) => session.id === exclude ? sum : sum + session.unreadCount, 0), { context: OWN, agent: CODER, exclude })
+  const sessionsButton = page.getByRole('button', { name: 'Sessions', exact: true })
+  const expected = await unreadOf('session-coder-1')
+  expect(expected).toBeGreaterThan(0)
+  await expect(sessionsButton.getByTestId('other-sessions-unread')).toHaveText(`${expected}`)
+  await expect(sessionsButton).toHaveAttribute('title', `${expected} unread in other sessions`)
+  await sessionsButton.click()
+  await page.locator('[data-session-id="session-coder-ask"] button').first().click()
+  await expect(sessionsButton.getByTestId('other-sessions-unread')).toHaveText(`${await unreadOf('session-coder-ask')}`)
+  await page.evaluate(({ context }) => window.__messageHubMock.manage(context, 'session-coder-ask', 'archive'), { context: OWN })
+  if (!await page.getByTestId('session-sidebar').isVisible()) await sessionsButton.click()
+  await expect(page.getByTestId('session-sidebar').getByTestId('archived-unread')).toHaveText('1')
+})
+
 test('default creation can retry and a delayed completion cannot replace a newer entity selection', async ({ page }) => {
   await openHub(page)
   await page.evaluate(() => window.__messageHubMock.configure({ failNext: 'mock_failure' }))

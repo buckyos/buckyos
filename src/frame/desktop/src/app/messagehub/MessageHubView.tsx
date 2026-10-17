@@ -251,6 +251,8 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const access = activeSession ? store.access(context, activeSession, confirmed) : null
   const canManage = context.mode === 'self' && context.viewerDid === context.ownerDid
   const activeSessionId = activeSession?.id ?? null
+  const archivedSessions = selectedEntityId ? store.sessions(context, selectedEntityId, 'archived') : EMPTY_SESSIONS
+  const otherSessionsUnread = selectedEntityId ? store.sessions(context, selectedEntityId).reduce((sum, session) => session.id === activeSessionId ? sum : sum + session.unreadCount, 0) : 0
   useEffect(() => store.startSync(context, activeSessionId), [store, context.ownerDid, context.mode, context.viewerDid, activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   const selectedGroupId = selectedEntity?.type === 'group' ? selectedEntity.id : null
   useEffect(() => { if (selectedGroupId) void store.ensureGroup(context, selectedGroupId) }, [store, context.ownerDid, context.mode, context.viewerDid, selectedGroupId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -277,7 +279,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   }
   const sidebarProps = {
     onCreate: () => openCreate(), onManage: openManage, onToggleArchived: () => { contextEpoch.current++; setArchived(value => !value); setSelectedSessionId(null); setDetailsTarget(null); setDefaultSessionError(false) }, archived,
-    archivedCount: selectedEntityId ? store.sessions(context, selectedEntityId, 'archived').length : 0, canManage, creationReason: createReason, titleFor: (session: Session) => store.title(context, session),
+    archivedCount: archivedSessions.length, archivedUnread: archivedSessions.reduce((sum, session) => sum + session.unreadCount, 0), canManage, creationReason: createReason, titleFor: (session: Session) => store.title(context, session),
     statusFor: (session: Session) => store.runtimeFor(context, session.id).map(state => t(`messagehub.runtime.${state.status}`)).join(' · '),
     badgeFor: (session: Session) => selectedEntity?.type === 'group' && store.groupSession(context, selectedEntity.id, session.id)?.hasGuests ? t('messagehub.group.hasGuests') : undefined,
   }
@@ -539,6 +541,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
               onSendMessage={handleSendMessage}
               onQueueChange={handleQueueChange}
               sessionCount={sessions.length}
+              otherSessionsUnread={otherSessionsUnread}
             />
 
             {showSessionSidebar ? (
@@ -673,6 +676,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
             onSendMessage={handleSendMessage}
             onQueueChange={handleQueueChange}
             sessionCount={sessions.length}
+            otherSessionsUnread={otherSessionsUnread}
             leadingPane={desktopSessionSidebarPane}
             isSessionSidebarOpen={showSessionSidebar}
           />

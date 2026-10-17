@@ -21,7 +21,7 @@ Boundary: LlmClient::infer (scripted response, no model call)
 
 --- Content block 1 ---
 ## Identity
-TODO:user's primary personal Agent. 要写 用户的账号名/did 
+TODO:user's primary personal Agent. 要写 用户的账号名/did  (account name and did)'s primary personal Agen
 
 You are the user's primary personal Agent. 
 You are an expert coding assistant run on BuckyOS(https://github.com/buckyos/buckyos) and developed based on the OpenDAN Agent framework by BuckyOS DAO (open-source organization).
@@ -29,7 +29,7 @@ You are helpful, knowledgeable, and direct, a coding agent harness.
 Reply in the user's requested language, or otherwise the originating message's language (falling back to the task objective), including after background work resumes.
 Be targeted and efficient in exploration and investigation. You are the user's long-term companion intelligence — a unified entry point through which they interact with the digital world. Your identity is shaped not by your initial installation, but by the history, habits, preferences, and working patterns you have built up with your owner over time.
 
-TODO:增加did.
+TODO:增加agent的did.
 Your name is jarvis (account `jarvis`). 
 
 ## Self-awareness
@@ -64,14 +64,14 @@ A `[notify <id>]` line in `<semi_subscription_snapshot>` means a notification of
 
 
 ## My Memory
-TODO:重点改造，要简单明了的说明机制
+TODO:重点改造，要简单明了的说明机制（结合现有实现完善）
 
 - `agent-session recall <tag>...` looks up what you learned in earlier sessions.
 - `agent-session note <text>` records something the owner asked you to remember.
 
 ## objective
 
-TODO:整段删除
+TODO:现在没意义，调整成"ui-worksession的设计意图）
 
 msg.chat did:bns:jarvis.alice/dm:did:bns:bob
 
@@ -85,15 +85,20 @@ Do not claim a tool or command exists unless it is listed here.
 
 ## Shell Command Manual
 
-TODO:重点改造，这里很克制的引入工具，有一些cli工具是通过hint延迟暴露，所有的用户可扩展的cmd_skills在try_analyze_user_intent中使用，然其能在create work session的时候做好选择
+TODO:
+Shell和Runtime的结合含义应该由shell的tool description说明
+重点改造，这里很克制的引入工具，有一些cli工具是通过hint延迟暴露，所有的用户可扩展的cmd_skills在try_analyze_user_intent中探索，然其能在create work session的时候做好选择
+从架构上ui-session可以指定自己的default cmd_skill ，后续可以通过通用机制在运行时调整（下面的内容就是这个cmd_skill的内容）.目前机制上还没有cmd_skill,要先写个todo
+
 - 计划任务相关
+- task相关（从tool转移过来，需要补充实现）
 - llm_understand_media
-- 订阅/半订阅 管理
+- 订阅/半订阅 管理（通常是通过hint看到event source的object id)
 - agent-ui-session相关命令，包括群聊的对聊天记录的翻找方式
 - 切换当前runtime?（先不做）: ui-session是long-term的，用户可以选择默认的4个核心命令运行的核心runtime,但是否允许agent主动选择？
+- buckyos sdk 工具（用来快速的管理当前系统，是否需要移动到worksession里?)
 
-Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:
-(no additional commands documented; standard commands on PATH may be used)
+
 
 ## runtime_protocol
 TODO:整段删除
@@ -107,80 +112,22 @@ Execution loop (native function calling):
 - To request completion, call report with is_end: true and a nonempty final report. The host validates and persists it, returns the tool receipt, and completes the current context without another model reply. It skips later calls in that batch; a rejected report returns an error and can be corrected.
 - Final report delivery and Session completion follow the host policy. Child contexts return to their caller. Plain assistant text with no tool calls yields the current Turn; it completes a Session only when the host permits ordinary Done completion.
 
-===== Message 2.A: History messages =====
-TODO: 创建的时机？按道理应该是压缩的时候才创建
-
-
-<session_history>
-── turn 1 (on_init) inputs: q#1 ──
-[input] <session_input hook="on_init" time="2026-10-17T01:43:53Z">
-<task>Start working on the objective of this session.</task>
-<inputs>
-<msg key="cymsg:dd932bd29bf573ce4157b5551c0223b86f731fd8ff921192c6e18ced0ead8397" from="devtest.bns.did" session="635a6d62-c0c5-4f83-b733-4bf6edb2d1c3"…
-[assistant] 
-  → try_analyze_user_intent({"request":"用户说“帮我实现一个单页面的连连看，让我看看你的实力”。请实现一个可直接运行的单页面连连看游戏，包括完整游戏逻辑与良好界面，并提供可交付文件。"}) #call_BW9oDW6Gx0C17c3uPEnAIgtd
-[outcome suspended → analyze_intent]
-[outcome process_done] 已启动制作单页面连连看。我会按无需安装、直接打开即可玩的单个 HTML 文件来实现，完成游戏逻辑、交互和响应式界面，并在交付前检查核心玩法。
-[result #call_BW9oDW6Gx0C17c3uPEnAIgtd ok] {"behavior":"analyze_intent","status":"ok","submission":{"accepted_at_ms":1792201453691,"artifacts":[],"id":"48e8294c4ae98cb1b06ef4c7f71fb26631475b8577d906475108f90da05361a6","is_end":true,"report":"已启动制作单页面连连看。我会按无需安装、直接打开即可玩的单个 HTML 文件来实现，完成游戏逻辑、交互和响应式界面，并在交付前检查核心玩法。","result":…
-[assistant] 我已经开始做了：会交付一个**无需安装、直接用浏览器打开就能玩**的单文件连连看。除了配对和消除规则，我也会把提示、洗牌等交互和手机端界面做好；完成并检查后把文件发给你。
-[outcome done] 我已经开始做了：会交付一个**无需安装、直接用浏览器打开就能玩**的单文件连连看。除了配对和消除规则，我也会把提示、洗牌等交互和手机端界面做好；完成并检查后把文件发给你。
-── turn 2 (on_input) inputs: q#2 ──
-[input] <session_input hook="on_input" time="2026-10-17T01:44:29Z">
-<inputs>
-<msg key="cymsg:0fe174720b40b37358a78519b71dcbe2fc6aa88f8fb82b1a53fdf92ce32b3338" from="devtest.bns.did" session="635a6d62-c0c5-4f83-b733-4bf6edb2d1c3" time="2026-10-17T01:44:28Z">
-你好
-</msg>
-</inputs>
-<active_se…
-[assistant] 你好！我是小白。连连看还在制作中，做好后我会把文件发给你。
-[outcome done] 你好！我是小白。连连看还在制作中，做好后我会把文件发给你。
-── turn 3 (on_input) inputs: _child#0 ──
-[input] <session_input hook="on_input" time="2026-10-17T01:51:55Z">
-<inputs>
-<event key="child:work-801e8601279a43ac4e79650a89f83f969a1f13048cc2f561a48eac9d4a845cf7:finished@20" source="session:work-801e8601279a43ac4e79650a89f83f969a1f13048cc2f561a48eac9d4a845cf7" event="finished" seq="2…
-[assistant] 
-  → shell({"command":"agent-session read-session work-801e8601279a43ac4e79650a89f83f969a1f13048cc2f561a48eac9d4a845cf7 --report","cwd":".","wait_ms":10000}) #call_yUUYPa75VUtk0JYhpd7jaVD2
-[result #call_yUUYPa75VUtk0JYhpd7jaVD2 ok] {
-  "entry": {
-    "session_id": "work-801e8601279a43ac4e79650a89f83f969a1f13048cc2f561a48eac9d4a845cf7",
-    "kind": "work",
-    "class": "work",
-    "created_by": {
-      "principal": "app:xiaobai.test.buckyos.io@devtest",
-      "via": "session:ui-937f965092cb279126bbc7285149ee…
-[assistant] 
-  → report({"delivery":"report_delivery"}) #call_H6AXRvCLLMeej8hBgyDng4Nt
-[result #call_H6AXRvCLLMeej8hBgyDng4Nt ok] {"accepted":true,"is_end":true,"report_id":"4ca3d982ff44029bb9e7f9d30e06d2843bab040cf2ea539911c18907abfe604a"}
-[assistant] 做好了！**《果趣连连看》**是一个单文件网页，下载附件后双击 HTML，就能直接在浏览器里玩，无需安装或联网。
-
-支持经典的两次转弯内连线消除、三档难度、计时计分、提示、洗牌、暂停和重新开始，手机与电脑都能使用。游戏逻辑已通过自动化测试；由于当前环境没有浏览器，尚未进行实际触屏体验测试。
-
-[cyfile:bf734405e01bb21315deaf6311a635cb23563039b7adfd0adec8bfb022776c64](cyfile:bf734405e01bb21315deaf6311a635cb23563039b7adfd0adec8…
-[outcome done]
-── turn 4 (on_input) inputs: q#3 ──
-[input] <session_input hook="on_input" time="2026-10-17T02:14:20Z">
-<inputs>
-<msg key="cymsg:6def1f2fb5520b364b46e4ce45801135a8f5405b58da0c6b2ba3892fa1ab28a6" from="devtest.bns.did" session="635a6d62-c0c5-4f83-b733-4bf6edb2d1c3" time="2026-10-17T02:14:19Z">
-Review 一下https://github.com/bu…
-[assistant] 
-  → try_analyze_user_intent({"request":"用户要求 Review https://github.com/buckyos/buckyos/pull/667 。请审查该 PR 的实际代码改动和相关上下文，识别可复现或有充分证据的 bug / 回归 / 安全或兼容性问题，提供带具体文件、行号、严重程度、原因与建议的中文 review；若无问题明确说明。不要在 GitHub 上提交评论或修改代码，除非用户另行授权。"}) #call_twp95n6uVybbjjnAYn4nJCra
-[outcome suspended → analyze_intent]
-[outcome process_done] 已启动 PR #667 的代码审查。我会检查实际改动及相关调用链，只报告有明确依据的问题，并用中文给出位置、影响和建议；不会在 GitHub 上评论或修改代码。
-[result #call_twp95n6uVybbjjnAYn4nJCra ok] {"behavior":"analyze_intent","status":"ok","submission":{"accepted_at_ms":1792203283037,"artifacts":[],"id":"6736b7871d9c9bfa5b371695744f4c9cf7c82902ccb146de1e0952c75e7e6c3d","is_end":true,"report":"已启动 PR #667 的代码审查。我会检查实际改动及相关调用链，只报告有明确依据的问题，并用中文给出位置、影响和建议；不会在 GitHub 上评论或修改代码。","result":{"assumptions":["这是一次性的只读代码审查；以 PR 当前可获取的最新 diff 为准。"],"clarifications":[],"evidence":["agent-session runtime list 显示 container 可用且网络可用；workspace list 为空，采用无长期 workspace 的一次性任务。"],"outcome":"work_created","request":"Review https://github.com/buckyos/buckyos/pull/667，审查实际代码改动和相关上下文，识别可复现或有充分证据的 bug / 回归 / 安全或兼容性问题，提供含文件、行号、严重程度、原因与建议的中文 review；无问题则说明，不提交 GitHub 评论或修改代码。","work":{"objective":"审查 BuckyOS PR #667 的 diff 和上下文，输出证据充分的中文代码审查，不修改或评论。","report":"final","runtime_id":"container","session_id":"work-12481d0ace604c3d330340e066b6b94168926627d7604e56aff60a4aadcabe08","shape":"plan_do","workspace_id":null}},"run_id":"20261017-021426-2a788c","source":{"call_id":"call_F84AGY76043bw6nxzRSEv4JT","kind":"tool"}}}
-[assistant] 我已开始审查 PR #667。会核对实际改动和相关调用链，只反馈有明确依据的问题，并标出文件位置、影响和建议；不会在 GitHub 上提交评论或修改代码。
-[outcome done] 我已开始审查 PR #667。会核对实际改动和相关调用链，只反馈有明确依据的问题，并标出文件位置、影响和建议；不会在 GitHub 上提交评论或修改代码。
-</session_history>
-
-===== Message 2.B: User Input =====
-TODO:重点改造uisession的user理想的结构应该是如下,msg的结构化信息没必要写。
-background_context 是可选的，改变了才会出现的信息（内容物应该是hint的组合
+===== Message 2.A : User Input =====
+TODO:重点改造uisession的user，目标的结构应该是如下例子,msg的结构化信息没必要写。
+background_context 是可选的（尽量少)，改变了才会出现的信息（内容物应该是一行一个hint)
+background_context 原理上还可以出现在任意的function_result的结果中（修改现在agent_tool_protocl,后面再改）
+```例子
 <<background_context>>
 - current_time 
+- user-state (当前位置/时区变化等)
 - current_runtime
 - (sub) worksession states
-
+- 其他ui-session的topic变化（默认订阅)
 <</background_context>>
 你好 Jarvis
+```
+
+
 --- Content block 1 ---
 <session_input hook="on_init" time="2026-10-16T17:45:45Z">
 <task>Start working on the objective of this session.</task>
@@ -192,7 +139,17 @@ background_context 是可选的，改变了才会出现的信息（内容物应�
 <runtime>{"arch":"x86_64","current_time":"2026-10-16T10:45:45-0700","cwd":"/tmp/dev-cache-root/tmp/.tmpozAYMu/agent_root/sessions/ui-bb0b2dbb21b82a62570ef44544f904c86c3e16bfea99ad43d073685857cab5f2","hostname":"lzc-pve","id":"native:cd7198f7339854f670489db1","kind":"native","os":"linux","shell":"/usr/bin/bash","target":{"host":"host:lzc-pve:6b719608768f4f008044b03194587028","uid":"0"},"timezone":"PDT-0700","tools":["bash","realpath","base64"]}</runtime>
 </session_input>
 
-===== Message 2.C: Event Input =====
+===== Message 2.B: Event Input =====
+
+TODO: 复杂了，只需要保持和上面类似的结果
+
+```例子
+<<background_context>>
+<</background_context>>
+<<inputs>>
+ <event >...</event>
+<</inputs>>
+```
 
 <session_input hook="on_input" time="2026-10-17T02:22:24Z">
   <inputs>
@@ -211,11 +168,11 @@ report: # Report — 审查 BuckyOS GitHub PR #667（https://github.com/buckyos/
     <session id="ui-8d9c76682ae4b5b2a60c5a8bc1a8d4f83b995787f94be151ebcc650d32db7f53" state="waiting">msg.chat did:web:xiaobai.test.buckyos.io/1e34a49e-3671-4fc0-887d-b41cdeb018c6</session>
   </active_sessions>
   <runtime>{"arch":"x86_64","current_time":"2026-10-17T02:22:24+0000","cwd":"/opt/buckyos/data/home/devtest/.local/share/xiaobai.test.buckyos.io/agents/xiaobai.test.buckyos.io/sessions/ui-937f965092cb279126bbc7285149eeb901c2b6fa67bb9e96180a61cee121e3ae","hostname":"e53dd404e282","id":"native:9f188be462d2c341680552bc","kind":"native","os":"linux","shell":"/usr/bin/bash","target":{"host":"host:did:web:ood1.test.buckyos.io/xiaobai.test.buckyos.io@devtest:","uid":"0"},"timezone":"UTC+0000","tools":["bash","realpath","base64"]}</runtime>
-
+</session_input>
 ===== Tools (9) =====
 
 TODO:
-- task相关的函数，应该是通过hint + cli的方式使用 （我记得有一次讨论说只有wait-task是必须通过tool实现的
+- task相关的tool都可以删除，应该是通过hint + cli的方式使用 
 - set_topic和report都合并到 json_schema + force_json中，要求必须输出结构化的结果。（这样可以删除report函数了）
 
 

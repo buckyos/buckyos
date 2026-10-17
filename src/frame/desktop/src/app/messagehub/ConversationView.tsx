@@ -64,6 +64,8 @@ interface ConversationViewProps {
   sessionCount: number
   leadingPane?: ReactNode
   isSessionSidebarOpen?: boolean
+  /** Unread messages of the entity's other sessions, shown on the session list button. */
+  otherSessionsUnread?: number
   historyStatus?: 'idle' | 'loading' | 'ready' | 'error'
   hasOlder?: boolean
   onLoadOlder?: () => Promise<boolean>
@@ -97,6 +99,7 @@ export function ConversationView({
   context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true,
   leadingPane = null,
   isSessionSidebarOpen = false,
+  otherSessionsUnread = 0,
   historyStatus = 'ready',
   hasOlder = false,
   onLoadOlder,
@@ -329,7 +332,7 @@ export function ConversationView({
           <ArrowLeft size={20} />
         </button>
 
-        <button onClick={onOpenSessionSidebar} aria-label={t('messagehub.sessions')} title={t('messagehub.sessions')} className="flex min-h-11 min-w-11 items-center justify-center" style={{ color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }} type="button"><Menu size={18} /></button>
+        <button onClick={onOpenSessionSidebar} aria-label={t('messagehub.sessions')} title={otherSessionsUnread > 0 ? t('messagehub.otherSessionsUnread', '{{count}} unread in other sessions', { count: otherSessionsUnread }) : t('messagehub.sessions')} className="relative flex min-h-11 min-w-11 items-center justify-center" style={{ color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }} type="button"><Menu size={18} />{otherSessionsUnread > 0 && <span data-testid="other-sessions-unread" className="absolute right-0.5 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[color:var(--cp-accent)] px-1 text-[10px] font-semibold leading-none text-white">{otherSessionsUnread}</span>}</button>
         <div className="min-w-0 flex-1">
           {/* On touch layouts the whole title block is one entity target; session
               details stay on the ⋮ button. */}
