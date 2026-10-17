@@ -3998,6 +3998,33 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.equal(audit.requests[0].headers["x-api-key"], "[REDACTED]");
   assert.deepEqual(audit.requests[0].validation_errors, []);
   await select();
+  const validNamedSchema = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 16,
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: {
+              minimum: { $ref: "#/$defs/maximum" },
+            },
+            required: ["minimum"],
+            additionalProperties: false,
+            $defs: {
+              maximum: { type: "number" },
+            },
+          },
+        },
+      },
+    }),
+  });
+  assert.equal(validNamedSchema.status, 200);
+  await select();
   const invalidSchema = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     headers,

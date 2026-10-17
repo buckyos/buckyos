@@ -1623,18 +1623,33 @@ function validateClaudeMessages(
       "minimum", "maximum", "multipleOf", "minLength", "maxLength",
       "maxItems", "uniqueItems", "contains", "minContains", "maxContains",
     ]);
+    const schemaMaps = new Set([
+      "properties", "patternProperties", "$defs", "definitions", "dependentSchemas",
+    ]);
+    const schemaValues = new Set([
+      "items", "additionalProperties", "propertyNames", "not", "if", "then", "else",
+      "unevaluatedProperties", "unevaluatedItems",
+    ]);
+    const schemaArrays = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
     const visit = (value: unknown, path: string): void => {
-      if (Array.isArray(value)) {
-        value.forEach((item, index) => visit(item, `${path}[${index}]`));
-        return;
-      }
       const record = recordValue(value);
       if (!record) return;
       for (const [key, child] of Object.entries(record)) {
         if (unsupported.has(key) || key === "minItems" && child !== 0 && child !== 1) {
           errors.push(`${path}.${key} is not supported by Claude structured outputs`);
         }
-        visit(child, `${path}.${key}`);
+        if (schemaMaps.has(key)) {
+          const children = recordValue(child);
+          if (children) {
+            for (const [name, schema] of Object.entries(children)) {
+              visit(schema, `${path}.${key}.${name}`);
+            }
+          }
+        } else if (schemaValues.has(key)) {
+          visit(child, `${path}.${key}`);
+        } else if (schemaArrays.has(key) && Array.isArray(child)) {
+          child.forEach((schema, index) => visit(schema, `${path}.${key}[${index}]`));
+        }
       }
     };
     visit(format.schema, "body field output_config.format.schema");
