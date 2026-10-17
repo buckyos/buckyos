@@ -26,7 +26,7 @@ use serde_json::Value;
 use crate::error::{OpenDanError, Result};
 use crate::lock::{Acquire, Lease};
 use crate::protocol::*;
-use crate::runtime::{bin_plan_for, bind_or_verify, SessionEnv, SessionEnvCtx};
+use crate::runtime::{bind_or_verify, SessionEnv, SessionEnvCtx};
 use crate::session::{Session, SessionDir};
 use crate::state::run_digest;
 
@@ -1351,10 +1351,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     // Runtime binding happens before any inference (Q3).
     let (binding, env) = {
         let cfg = sh.session.lock().await.config.clone();
-        let plan = bin_plan_for(
+        let plan = crate::runtime::bin_plan_with(
             &cfg,
             sh.agent_root.as_deref(),
             sh.deps.session_cli.clone(),
+            &sh.deps.session_helpers,
             &[],
         )?;
         let bound = bind_or_verify(

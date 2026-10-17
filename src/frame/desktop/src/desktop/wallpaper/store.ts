@@ -7,7 +7,7 @@
  */
 
 import { useSyncExternalStore } from 'react'
-import { uploadWallpaper, wallpaperAssetUrl, wallpaperAssetUrlNow } from '../../api/desktop_state'
+import { fetchWallpaperWithToken, uploadWallpaper, wallpaperAssetUrl, wallpaperAssetUrlNow } from '../../api/desktop_state'
 import type { DesktopWallpaper } from '../../models/ui'
 import { prepareWallpaperImage } from './image'
 import {
@@ -19,7 +19,7 @@ import {
 } from './model'
 
 const CACHE_KEY = 'buckyos.desktop.wallpaper.v2'
-/** A server picture that fails to load (say, before an expired session cookie is renewed) is tried again. */
+/** A server picture that fails to load, even with the token in a header, is tried again (say, offline). */
 const RETRY_DELAYS_MS = [2_000, 8_000, 30_000]
 
 export interface WallpaperSnapshot {
@@ -58,6 +58,8 @@ export class WallpaperStore {
   private started = false
   /** Bumped by every picture change, so a slower earlier lookup or upload never lands after it. */
   private imageSeq = 0
+  /** `blob:` URLs this store made from a token fetch; revoked once the picture moves on. */
+  private readonly ownBlobUrls = new Set<string>()
 
   constructor() {
     const account = readCache()
@@ -88,25 +90,45 @@ export class WallpaperStore {
     const wallpaperChanged =
       url !== previousUrl || JSON.stringify(account) !== JSON.stringify(this.snapshot.account)
     if (!wallpaperChanged) return
-    this.snapshot = { account, url, wallpaper: derive(account, url) }
-    this.listeners.forEach((listener) => listener())
+    this.setUrl(account, url)
     if (url && url !== previousUrl && this.started) this.watchLoad(url)
   }
 
-  /** CSS gives no load error, so a probe watches a server picture and retries it under a fresh URL. */
+  private setUrl(account: AccountWallpaper, url: string | null) {
+    const previousUrl = this.snapshot.url
+    this.snapshot = { account, url, wallpaper: derive(account, url) }
+    this.listeners.forEach((listener) => listener())
+    if (previousUrl && previousUrl !== url && this.ownBlobUrls.delete(previousUrl)) URL.revokeObjectURL(previousUrl)
+  }
+
+  /**
+   * CSS gives no load error, so a probe watches a server picture. A refused plain load (no usable session
+   * cookie) is fetched again with the token in a header; if that fails too it is retried later.
+   */
   private watchLoad(url: string, attempt = 0) {
     if (url.startsWith('blob:') || typeof Image === 'undefined') return
     const asset = this.snapshot.account.image?.asset
+    const current = () => this.snapshot.url === url && this.snapshot.account.image?.asset === asset
     const probe = new Image()
     probe.onerror = () => {
-      if (attempt >= RETRY_DELAYS_MS.length) return
-      setTimeout(() => {
-        if (this.snapshot.url !== url || this.snapshot.account.image?.asset !== asset) return
-        const retry = `${url.split('?')[0]}?attempt=${attempt + 1}`
-        this.snapshot = { ...this.snapshot, url: retry, wallpaper: derive(this.snapshot.account, retry) }
-        this.listeners.forEach((listener) => listener())
-        this.watchLoad(retry, attempt + 1)
-      }, RETRY_DELAYS_MS[attempt])
+      void fetchWallpaperWithToken(url).then((blobUrl) => {
+        if (!current()) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl)
+          return
+        }
+        if (blobUrl) {
+          this.ownBlobUrls.add(blobUrl)
+          this.setUrl(this.snapshot.account, blobUrl)
+          return
+        }
+        if (attempt >= RETRY_DELAYS_MS.length) return
+        setTimeout(() => {
+          if (!current()) return
+          const retry = `${url.split('?')[0]}?attempt=${attempt + 1}`
+          this.setUrl(this.snapshot.account, retry)
+          this.watchLoad(retry, attempt + 1)
+        }, RETRY_DELAYS_MS[attempt])
+      })
     }
     probe.src = url
   }

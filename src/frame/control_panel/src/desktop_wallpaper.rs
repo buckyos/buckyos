@@ -9,7 +9,10 @@ the bytes are a file in the user's home, so the picture follows the account to e
 - `POST /api/desktop/wallpaper`  body = the image bytes (JPEG/PNG/WebP/GIF/AVIF, ≤ 16 MiB)
   → `{ok, data: {asset, bytes}}`. The newest few pictures are kept, older ones deleted.
 - `GET /api/desktop/wallpaper/{asset}` → the bytes. Names are content hashes, so the answer is
-  cached as immutable; the session cookie authenticates a plain `<img>`/CSS load.
+  cached as immutable. A CSS/`<img>` load sends no headers, so a read also takes the Gateway SSO
+  session cookie (`buckyos_session_token`, the one `/sso_refresh` keeps fresh at the Zone root).
+  An upload does not: it changes the account, and the cookie also rides along on requests other
+  apps of the same site make.
 */
 
 use super::download_mgr::home_segment;
@@ -123,11 +126,31 @@ async fn prune_wallpapers(dir: &Path, current: &str) {
 }
 
 impl ControlPanelServer {
+    /// An explicit token (header, query) first; a read then prefers the SSO session cookie, which stays
+    /// fresh, over an older `control-panel_token` cookie a password sign-in may have left behind.
+    pub(super) fn wallpaper_request_token(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> Option<String> {
+        let headers = req.headers();
+        let explicit = headers.contains_key("X-Auth")
+            || headers.contains_key(http::header::AUTHORIZATION)
+            || req.uri().query().is_some_and(|query| {
+                url::form_urlencoded::parse(query.as_bytes())
+                    .any(|(key, _)| key == "auth" || key == "session_token")
+            });
+        if !explicit && req.method() == Method::GET {
+            if let Some(token) = Self::extract_http_sso_session_cookie(req) {
+                return Some(token);
+            }
+        }
+        Self::extract_http_session_token(req)
+    }
+
     pub(super) async fn handle_desktop_wallpaper(
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let token = Self::extract_http_session_token(&req);
+        let token = Self::wallpaper_request_token(&req);
         let principal = match self
             .authenticate_session_token_for_method("desktop.api", token)
             .await
@@ -258,6 +281,32 @@ mod tests {
         assert!(!is_wallpaper_asset_name(&format!("{}.png", "A".repeat(32))));
         assert!(!is_wallpaper_asset_name(&format!("{}.png", "a".repeat(31))));
         assert!(!is_wallpaper_asset_name(&format!("{}.png.part", "a".repeat(32))));
+    }
+
+    fn wallpaper_request(method: Method, uri: &str, headers: &[(&str, &str)]) -> http::Request<BoxBody<Bytes, ServerError>> {
+        let mut builder = http::Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder
+            .body(ControlPanelServer::boxed_http_body(Vec::new()))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_picture_read_takes_the_sso_session_cookie_an_upload_does_not() {
+        let cookies = "control-panel_token=stale-password-login; buckyos_session_token=fresh-sso-session";
+        let read = wallpaper_request(Method::GET, "/api/desktop/wallpaper/x.jpg", &[("Cookie", cookies)]);
+        assert_eq!(ControlPanelServer::wallpaper_request_token(&read).as_deref(), Some("fresh-sso-session"));
+
+        let only_sso = wallpaper_request(Method::GET, "/api/desktop/wallpaper/x.jpg", &[("Cookie", "buckyos_session_token=sso")]);
+        assert_eq!(ControlPanelServer::wallpaper_request_token(&only_sso).as_deref(), Some("sso"));
+
+        let with_header = wallpaper_request(Method::GET, "/api/desktop/wallpaper/x.jpg", &[("Cookie", cookies), ("X-Auth", "header-token")]);
+        assert_eq!(ControlPanelServer::wallpaper_request_token(&with_header).as_deref(), Some("header-token"));
+
+        let upload = wallpaper_request(Method::POST, "/api/desktop/wallpaper", &[("Cookie", "buckyos_session_token=sso")]);
+        assert_eq!(ControlPanelServer::wallpaper_request_token(&upload), None);
     }
 
     #[test]

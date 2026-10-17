@@ -1142,8 +1142,14 @@ async fn commit_run_end(
         // The same tasks read from the run itself: a finish redone after a
         // crash has no resolver that saw the run, but every task a call
         // returned is in its results. A task that already ended is found
-        // (and reported once) by the query that follows.
+        // (and reported once) by the query that follows — unless the model
+        // already got its end (e.g. through `agent-session task wait`,
+        // which no tool result records).
+        let seen = sh.tasks.lock().expect("tasks").clone();
         for task_id in run.noted_tasks() {
+            if seen.as_ref().is_some_and(|r| r.result_seen(&task_id)) {
+                continue;
+            }
             if !s.state.watched_tasks.contains(&task_id) {
                 s.state.watched_tasks.push(task_id);
             }

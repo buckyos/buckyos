@@ -95,7 +95,11 @@ fn child_line(e: &RegistryEntry) -> BackgroundLine {
     let status = one_line(&st.one_line_status, 200);
     let text = if st.run_state == RunState::Finished {
         let mut t = format!("work {sid}: finished ({})", outcome_name(st.outcome));
-        let status = status.trim_end_matches(['.', '。', '!', '！', ';', '；']);
+        let status = status
+            .strip_prefix("finished:")
+            .unwrap_or(&status)
+            .trim()
+            .trim_end_matches(['.', '。', '!', '！', ';', '；']);
         if !status.is_empty() {
             t.push_str(&format!(" — {status}"));
         }

@@ -872,11 +872,16 @@ fn local_path_from_object(
 }
 
 fn looks_like_object_id(value: &str) -> bool {
-    // Object ids in this system are typed (`cyfile:<base32>`, `chunk:<…>`).
+    // Object ids in this system are typed (`cyfile:<…>`, a chunk id such as
+    // `mix256:<…>` / `sha256:<…>`): whatever ndn-lib parses as an `ObjId`,
+    // with no path separator or whitespace.
+    if value.contains(['/', '\\']) || value.chars().any(char::is_whitespace) {
+        return false;
+    }
     matches!(
         value.split_once(':').map(|(kind, _)| kind),
         Some("cyfile") | Some("chunk") | Some("objid") | Some("obj")
-    )
+    ) || ndn_lib::ObjId::new(value).is_ok()
 }
 
 fn looks_like_path(value: &str) -> bool {
@@ -1870,20 +1875,26 @@ impl ToolManager for NoopToolManager {
     }
 }
 
-const USAGE: &str = r#"Usage: agent_tool llm_understand_media --media <json> --goal <text> [options]
+const USAGE: &str = r#"Usage: llm_understand_media <file | object id | url> [--goal <text>] [options]
+       agent_tool llm_understand_media --media <json | locator> [--goal <text>] [options]
 
-Required:
-  --media <json>          Media locator, e.g. {"kind":"named_object","obj_id":"cyfile:…","mime_hint":"image/png"},
+Media (one of):
+  <locator>               A local file (relative to the current directory or absolute), an object id
+                          (cyfile:…, a chunk id such as mix256:…; e.g. an attachment of a message) or an http(s) URL.
+  --media <json>          The same as a JSON ResourceRef, e.g. {"kind":"named_object","obj_id":"cyfile:…","mime_hint":"image/png"},
                           {"kind":"local_file","path":"/abs/frame.png"}, or {"url":"https://…"}.
-  --goal <text>           Understanding goal.
 
 Options:
+  --goal <text>           What to find out (default: describe the content in detail).
   --history-file <path>   JSON Vec<AiMessage> parent history snapshot.
   --work-dir <path>       LocalLLMContext working directory.
   --model <alias>         AICC logical model alias; default image route is llm.vision.
   --max-completion-tokens <n>  Positive output budget; default 2048, rounded up to 2048/4096/8192 tiers.
   -h, --help              Show this help.
 "#;
+
+/// The goal of a CLI call without `--goal`.
+const DEFAULT_CLI_GOAL: &str = "Describe this content in detail: what it shows or says, any text in it (verbatim), its structure, and anything notable, so that someone who cannot see it can work with it.";
 
 #[derive(Debug)]
 struct CliOpts {
@@ -1933,14 +1944,23 @@ impl CliOpts {
         let mut max_completion_tokens = None;
 
         let mut idx = 0;
+        fn set_media(value: Value, media: &mut Option<Value>) -> Result<(), ParseError> {
+            if media.replace(value).is_some() {
+                return Err(ParseError::Bad("give one media only".to_string()));
+            }
+            Ok(())
+        }
         while idx < args.len() {
             match args[idx].as_str() {
                 "-h" | "--help" => return Err(ParseError::Help),
                 "--media" => {
                     let raw = next_value(args, &mut idx, "--media")?;
-                    media = Some(serde_json::from_str(&raw).map_err(|err| {
-                        ParseError::Bad(format!("--media must be JSON ResourceRef: {err}"))
-                    })?);
+                    // A JSON ResourceRef, or a bare locator.
+                    let value = match serde_json::from_str::<Value>(&raw) {
+                        Ok(v @ Value::Object(_)) => v,
+                        _ => Value::String(raw),
+                    };
+                    set_media(value, &mut media)?;
                 }
                 "--goal" => goal = Some(next_value(args, &mut idx, "--goal")?),
                 "--history-file" => {
@@ -1957,17 +1977,23 @@ impl CliOpts {
                         "--max-completion-tokens",
                     )?);
                 }
-                other => return Err(ParseError::Bad(format!("unknown flag `{other}`"))),
+                other if other.starts_with("--") => {
+                    return Err(ParseError::Bad(format!("unknown flag `{other}`")))
+                }
+                // The locator itself (`llm_understand_media photo.png`).
+                locator => set_media(Value::String(locator.to_string()), &mut media)?,
             }
             idx += 1;
         }
 
         Ok(Self {
-            media: media.ok_or_else(|| ParseError::Bad("missing --media".to_string()))?,
+            media: media.ok_or_else(|| {
+                ParseError::Bad("missing media: a file, an object id (cyfile:…) or a url".to_string())
+            })?,
             goal: goal
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| ParseError::Bad("missing non-empty --goal".to_string()))?,
+                .unwrap_or_else(|| DEFAULT_CLI_GOAL.to_string()),
             history_file,
             work_dir,
             model,
@@ -2011,6 +2037,41 @@ fn normalize_completion_tokens(value: u32) -> u32 {
 mod tests {
     use super::*;
     use buckyos_api::{AiToolResultContent, AiUsage};
+
+    fn cli(args: &[&str]) -> Result<CliOpts, ParseError> {
+        CliOpts::parse(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn chunk_ids_are_object_ids() {
+        let chunk = "mix256:8d11eaa912debbdd30ccbbebbdae7ac4950b321afaaf740dd98ad76af3d7cfdc19c9";
+        assert!(looks_like_object_id(chunk));
+        assert!(matches!(
+            parse_media_locator(chunk),
+            Ok(MediaSource::Resource(ResourceRef::NamedObject { .. }))
+        ));
+        assert!(!looks_like_object_id("notes/a.png"));
+        assert!(!looks_like_object_id("a.png"));
+    }
+
+    #[test]
+    fn the_cli_takes_a_bare_locator_and_a_default_goal() {
+        let o = cli(&["photo.png"]).ok().unwrap();
+        assert_eq!(o.media, Value::String("photo.png".into()));
+        assert_eq!(o.goal, DEFAULT_CLI_GOAL);
+        let o = cli(&["cyfile:abc", "--goal", "what error is shown?"]).ok().unwrap();
+        assert_eq!(o.media, Value::String("cyfile:abc".into()));
+        assert_eq!(o.goal, "what error is shown?");
+        // `--media` takes JSON or a locator.
+        let o = cli(&["--media", r#"{"kind":"local_file","path":"/a.png"}"#]).ok().unwrap();
+        assert_eq!(o.media["path"], "/a.png");
+        let o = cli(&["--media", "https://example.com/a.png"]).ok().unwrap();
+        assert_eq!(o.media, Value::String("https://example.com/a.png".into()));
+        assert!(matches!(cli(&[]), Err(ParseError::Bad(_))));
+        assert!(matches!(cli(&["a.png", "b.png"]), Err(ParseError::Bad(_))));
+        assert!(matches!(cli(&["a.png", "--nope"]), Err(ParseError::Bad(_))));
+        assert!(matches!(cli(&["--help"]), Err(ParseError::Help)));
+    }
 
     #[test]
     fn purify_history_omits_media_payloads() {

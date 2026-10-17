@@ -42,6 +42,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
         xllm: deps.xllm.clone(),
         assembler: Arc::new(DefaultAssembler::default()),
         session_cli: None,
+        session_helpers: Vec::new(),
         app_tools: Vec::new(),
         options: deps.options.clone(),
         max_child_concurrency: 4,

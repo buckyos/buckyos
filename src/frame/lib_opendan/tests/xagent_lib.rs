@@ -574,6 +574,7 @@ fn spawn_host(env: &Env, llm: Arc<dyn LlmClient>, parent: &SessionDir) -> HostDe
         xllm,
         assembler: Arc::new(libopendan::runner::DefaultAssembler::default()),
         session_cli: None,
+        session_helpers: Vec::new(),
         app_tools: Vec::new(),
         options: RunnerOptions {
             poll_interval: Duration::from_millis(50),

@@ -105,6 +105,7 @@ fn host(env: &Env, llm: Arc<dyn llm_context::deps::LlmClient>) -> HostDeps {
         xllm: agent_tool::xllm::XllmDeps::default().with_llm(llm),
         assembler: Arc::new(BehaviorAssembler::default()),
         session_cli: Some(PathBuf::from(env!("CARGO_BIN_EXE_xagent"))),
+        session_helpers: Vec::new(),
         app_tools: Vec::new(),
         options: RunnerOptions {
             poll_interval: Duration::from_millis(50),

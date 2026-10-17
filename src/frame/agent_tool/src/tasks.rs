@@ -270,6 +270,11 @@ impl InProcessTaskManager {
         self.inner.lock().expect("tasks").tasks.is_empty()
     }
 
+    /// Whether a finished task's result was read once.
+    pub fn was_read(&self, id: &str) -> bool {
+        self.inner.lock().expect("tasks").read.contains(id)
+    }
+
     fn mark_read(&self, id: &str) {
         self.inner
             .lock()
@@ -519,6 +524,10 @@ impl RunningTaskResolver for CompositeTaskResolver {
 
     fn followup(&self) -> TaskFollowup {
         self.followup.lock().expect("followup").clone()
+    }
+
+    fn result_seen(&self, task_id: &str) -> bool {
+        task_id.starts_with(LOCAL_TASK_PREFIX) && self.local.was_read(task_id)
     }
 }
 

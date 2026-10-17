@@ -120,6 +120,14 @@ pub trait RunningTaskResolver: Send + Sync {
     fn followup(&self) -> TaskFollowup {
         TaskFollowup::Tools
     }
+
+    /// Whether the model was already given this task's end through this
+    /// resolver (a task tool, a fill, or the task CLI bridge). A host that
+    /// keeps following tasks after a run skips those.
+    fn result_seen(&self, task_id: &str) -> bool {
+        let _ = task_id;
+        false
+    }
 }
 
 /// How the model follows a task: with the task tools (`wait_task` /

@@ -1,4 +1,5 @@
 Run these through `shell`; the session they act for comes from the environment.
+- `llm_understand_media <file | object id | url> [--goal "<what to find out>"]`: understand an image, a document (PDF …), audio or video — an attachment of a message (its id exactly as the attachment line gives it), a file, a link — through a model that can perceive it; the result is text. Use it before you answer about media; plain text files and text objects you read with `read`.
 - `agent-session read-session <sid> --report`: the full report of a work session (the background context shows one line of it).
 - `agent-session sessions --children --active`: the work sessions this conversation started and their state.
 - `agent-session recall <tag>...` / `agent-session ctl perceive "<sentence>"`: memory (see Memory).

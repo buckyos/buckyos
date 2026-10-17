@@ -35,6 +35,8 @@ pub struct HostDeps {
     pub assembler: Arc<dyn SessionAssembler>,
     /// Executable wrapped as `agent-session` in each session's bin.
     pub session_cli: Option<PathBuf>,
+    /// Further commands of the host in each session's bin.
+    pub session_helpers: Vec<crate::runtime::bin_overlay::SessionHelper>,
     pub app_tools: Vec<String>,
     pub options: RunnerOptions,
     /// Sub sessions driven at the same time.
@@ -76,6 +78,7 @@ impl HostDeps {
         .with_assembler(self.assembler.clone())
         .with_options(self.options.clone());
         deps.session_cli = self.session_cli.clone();
+        deps.session_helpers = self.session_helpers.clone();
         deps.app_tools = self.app_tools.clone();
         deps.outbound = self.outbound.clone();
         deps.objects = self.objects.clone();

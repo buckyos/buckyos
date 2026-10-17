@@ -576,8 +576,20 @@ pub fn bin_plan_for(
     session_cli: Option<PathBuf>,
     runtime_layers: &[PathBuf],
 ) -> Result<BinPlan> {
+    bin_plan_with(cfg, agent_root, session_cli, &[], runtime_layers)
+}
+
+/// [`bin_plan_for`] with the host's helper commands.
+pub fn bin_plan_with(
+    cfg: &SessionConfig,
+    agent_root: Option<&Path>,
+    session_cli: Option<PathBuf>,
+    helpers: &[bin_overlay::SessionHelper],
+    runtime_layers: &[PathBuf],
+) -> Result<BinPlan> {
     let mut plan = BinPlan {
         session_cli,
+        helpers: helpers.to_vec(),
         ..Default::default()
     };
     if let Some(root) = agent_root {

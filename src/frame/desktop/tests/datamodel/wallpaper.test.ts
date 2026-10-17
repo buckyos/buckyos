@@ -9,6 +9,7 @@ import {
 } from '../../src/desktop/wallpaper/model.ts'
 import { planSync, readAppearance, type AccountAppearance } from '../../src/desktop/appearance/model.ts'
 import { AppearanceSync, type AppearanceSyncIo } from '../../src/desktop/appearance/sync.ts'
+import { WallpaperStore } from '../../src/desktop/wallpaper/store.ts'
 import {
   MAX_WALLPAPER_EDGE,
   WallpaperImageError,
@@ -202,4 +203,35 @@ Deno.test('sync engine: a change the account has not confirmed survives a reload
   assertEquals(page.iconSize, 'large', 'the account did not take it back')
   assertEquals(account.writes, [['iconSize', 'large']], 'saved now')
   second.stop()
+})
+
+Deno.test('a server picture refused as a plain load (no usable cookie) is fetched with the token instead', async () => {
+  const requests: string[] = []
+  const globals = globalThis as Record<string, unknown>
+  const saved = { window: globals.window, Image: globals.Image, fetch: globals.fetch }
+  globals.window = { localStorage: new MemoryStorage(), addEventListener: () => {} }
+  // A CSS/<img> load that the server refuses.
+  globals.Image = class {
+    onerror: (() => void) | null = null
+    set src(_url: string) {
+      setTimeout(() => this.onerror?.(), 0)
+    }
+  }
+  globals.fetch = (url: string) => {
+    requests.push(url)
+    return Promise.resolve(new Response(new Blob(['picture'], { type: 'image/jpeg' }), { status: 200 }))
+  }
+  try {
+    const store = new WallpaperStore()
+    const stop = store.subscribe(() => {})
+    store.applyAccount({ ...defaultAccountWallpaper, image: { asset: ASSET, width: 1200, height: 800, name: 'a.jpg' } })
+    assertEquals(store.getSnapshot().url, `/api/desktop/wallpaper/${ASSET}`, 'drawn from the server URL first')
+    for (let i = 0; i < 20 && !store.getSnapshot().url?.startsWith('blob:'); i++) await new Promise((done) => setTimeout(done, 5))
+    assertEquals(store.getSnapshot().url?.startsWith('blob:'), true, 'then from the fetched copy')
+    assertEquals(requests, [`/api/desktop/wallpaper/${ASSET}`], 'one fetch')
+    assertEquals(store.getSnapshot().wallpaper?.imageUrl, store.getSnapshot().url, 'the desktop draws it')
+    stop()
+  } finally {
+    Object.assign(globals, saved)
+  }
 })

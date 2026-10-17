@@ -499,6 +499,7 @@ impl World {
             web_dir: None,
             xllm: XllmDeps::default().with_llm(llm),
             session_cli: None,
+            session_helpers: Vec::new(),
             options: RunnerOptions {
                 poll_interval: Duration::from_millis(50),
                 max_wait: Duration::from_millis(300),

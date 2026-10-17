@@ -250,6 +250,9 @@ pub struct RunnerDeps {
     pub notify: Option<Arc<dyn crate::notify::NotifyHost>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
     pub session_cli: Option<PathBuf>,
+    /// Further commands of the host in `.runtime/bin`
+    /// (`llm_understand_media` …).
+    pub session_helpers: Vec<crate::runtime::bin_overlay::SessionHelper>,
     /// Tools that only exist in this runner process (`requirement.app_tools`).
     pub app_tools: Vec<String>,
     pub options: RunnerOptions,
@@ -280,6 +283,7 @@ impl RunnerDeps {
             turn_tasks: None,
             notify: None,
             session_cli: None,
+            session_helpers: Vec::new(),
             app_tools: Vec::new(),
             options: RunnerOptions::default(),
             stop: StopSignal::default(),

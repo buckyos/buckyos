@@ -97,6 +97,20 @@ export function wallpaperAssetUrlNow(asset: string): string | null {
   return isMockRuntime() ? null : `${WALLPAPER_API}/${encodeURIComponent(asset)}`
 }
 
+/**
+ * The picture fetched with the session token in a header, as a `blob:` URL: for when a plain load is refused
+ * because the page has no usable session cookie. Null when that fails too.
+ */
+export async function fetchWallpaperWithToken(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, { credentials: 'same-origin', headers: await authHeaders() })
+    if (!response.ok) return null
+    return URL.createObjectURL(await response.blob())
+  } catch {
+    return null
+  }
+}
+
 /** A URL the page can draw the picture from; the server's is cached for good (the name is its hash). */
 export async function wallpaperAssetUrl(asset: string): Promise<string | null> {
   if (isMockRuntime()) {

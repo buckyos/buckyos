@@ -2,7 +2,7 @@
 
 日期：2026-10-17
 
-状态：v0.3，**已实施（2026-10-17）**，实施记录见 §13；真实 Zone 验收（§11 第 4 步）未做。用户已答复 §10 的 D1–D8（2026-10-17，决定已回写到各节；D9 未答复，按推荐执行）。本文把 [jarvis-chat-prompt-review.txt](jarvis-chat-prompt-review.txt)（用户观察 Jarvis 真实运行日志后写下的批注）整理成可实施的改造清单：System 段瘦身与重排、用户输入改成 `background_context + 原文`、用结构化回复取代 `report` / `set_topic`、工具集收敛、`try_analyze_user_intent` 调优，以及一个新机制 cmd_skill 的占位。涉及 llm_context / agent_tool 层的改动按约定**单列先行**：[llm-context-chat-prompt-prereq-todo.md](llm-context-chat-prompt-prereq-todo.md)（下称“先行 TODO”）。
+状态：v0.3，**已实施（2026-10-17）**，实施记录见 §13；真实 Zone 验收见 §13.6（debug_jarvis 形态通过，修掉 2 个缺陷）。用户已答复 §10 的 D1–D8（2026-10-17，决定已回写到各节；D9 未答复，按推荐执行）。本文把 [jarvis-chat-prompt-review.txt](jarvis-chat-prompt-review.txt)（用户观察 Jarvis 真实运行日志后写下的批注）整理成可实施的改造清单：System 段瘦身与重排、用户输入改成 `background_context + 原文`、用结构化回复取代 `report` / `set_topic`、工具集收敛、`try_analyze_user_intent` 调优，以及一个新机制 cmd_skill 的占位。涉及 llm_context / agent_tool 层的改动按约定**单列先行**：[llm-context-chat-prompt-prereq-todo.md](llm-context-chat-prompt-prereq-todo.md)（下称“先行 TODO”）。
 
 修订记录：
 
@@ -388,7 +388,7 @@ function result 里也带 background 行（REQ S-16；ARCH §371）：llm_contex
 8. **结构化回复不经 `report` 提交**：`report(is_end)` 的校验（子 Session 未结束不得 final）不适合会话；回复的附件走同一套 `store_artifacts`（id = `h(run_id, "structured_reply")`），校验在回复被接受之前由 `ReplyValidator` 完成，失败进同一次纠正。两次不满足契约：原文出站，worklog 的 `outcome.report` 记 `[reply not in the required format: …]`；fork 子 context 两次失败则把原因 + 原文作为调用结果返回。
 9. **topic 按“有就覆盖”**（标题一行，tags 最多 8 个、去空），与 Turn 关闭同一次提交，并经登记表 `status.topic` 给其它 Session（`ui:<sid>` 背景行）。schema 里不写 `maxItems`（Claude 原生结构化输出不支持数组上限约束），由宿主截断。
 10. **`[reply] schema` 允许 JSON 文本**（TOML 多行字面量 `schema = '''{…}'''`，加载 behavior 时解析并校验），TOML 表写法也可以。
-11. **`llm_understand_media` 不进 cmd_skill**：它是 `agent_tool` 二进制的子命令，`agent_tool` 在 opendan 旁边，不在 Session 的 PATH 上（cmd_skill TODO 记录）。
+11. ~~`llm_understand_media` 不进 cmd_skill~~：后来补做，见 §13.5（会话辅助命令 + 位置参数 CLI + `ui_core` 第一条）。
 12. **`ctl subscribe|unsubscribe` 的会话内形式早已存在**（`CTL_COMMANDS` + `$OPENDAN_SESSION_ID`），不用补。
 13. **schema 按 OpenAI strict 规则写**：DV 上 `llm.chat` 路由到 `gpt-6-sol@codex-proxy`，即使不设 strict 也按 strict 校验 schema（每个对象的 `required` 必须列出全部属性）。所以 §5.2 的 schema 改为全部字段必填：UI 回复 `{reply, topic: object|null, artifacts: [...]}`（不换话题时 `topic: null`，不交文件时 `artifacts: []`），分析结果所有字段必填（列表可空，`reason` / `work` / `goal` / `proposal` 用 `null`）。提示词同步写明“三个字段都给”。宿主对 `null` / 空列表按“没有”处理。
 
@@ -409,7 +409,38 @@ cargo run -p libopendan --example fixtures -- <绝对路径>/doc/opendan/protoco
 
 ### 13.4 未做 / 待验证
 
-- **真实 Zone 验收（§11 第 4 步）未做**：问候（topic 写入 → 下一条消息的 hint 行）、带附件回复、触发 work 并等其 finished 事件、`usage.jsonl` 前缀字节不变。需要用本地镜像覆盖 + `devenv.json` 的流程（opendan-agent-loader-refactor TODO）。
+- 真实 Zone 验收已做（§13.6，debug_jarvis 形态）；本地镜像（`build_aios --local-test`）形态未做。hint 行未验证。
 - 真实 provider 下的结构化输出 + 工具调用并存（Claude `output_config.format`、OpenAI `response_format`），以及 MiniMax 等无映射 provider 走纠正兜底的效果。
 - 已存在的 UI Session 用冻结的旧 behavior（无 `[reply]`、仍有 `report`、无 cmd_skill），新 run 会拿到新的 Constraints / chat 格式 / 关掉的 xllm 三段；它们照常以纯文本回复。新 Session 才有完整新结构。
 - §4.3、cmd_skill 的运行时调整（各自 TODO）。
+
+### 13.5 `llm_understand_media` 接入 UI（2026-10-17，用户追问后补做）
+
+原状：只有 `agent_tool llm_understand_media --media '<json>' --goal "<text>"` 一种调用（`agent_tool` 在 opendan 旁边，容器与 debug_jarvis 下都在 PATH 上；会话环境带刷新过的 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，能登录 AICC），没有 `llm_understand_media <path>`，UI 提示词里也没有它。改动：
+
+- **CLI**：`llm_understand_media <file | object id | url> [--goal <text>]`——位置参数即 locator（相对路径按当前目录），`--media` 也接受裸 locator，`--goal` 缺省为“详细描述内容（含原文文字）”（`agent_tool/src/llm_understand_media.rs`）。
+- **对象 id**：原来只认 `cyfile|chunk|objid|obj` 前缀，MessageHub / DV 上传的附件是 chunk id `mix256:…`，被当成“不是对象”拒绝；改为凡 `ndn_lib::ObjId` 能解析的都算（DV 上抓到的真实缺陷）。
+- **Session PATH**：宿主新增“会话辅助命令”`SessionHelper { name, exe, args }`（`HostDeps` / `RunnerDeps.session_helpers` → `bin_plan_with` → `.runtime/bin/<name>` 包装脚本，与 `agent-session` 同机制）；`standard_helpers(dir)` 在 `agent_tool` 与宿主二进制同目录时提供 `llm_understand_media` → `agent_tool llm_understand_media "$@"`。Loader（`opendan/src/main.rs`）与 xagent 都装配它。
+- **提示词**：`cmd_skills/ui_core.md` 第一条即 `llm_understand_media`；`chat_route` / `groupchat_route` 的 `## Replying` 加一句：附件行 `[attachment <media> "<name>" -> <location>]`，媒体先 `llm_understand_media <location>`，文本用 `read <location>`。
+- 测试：`llm_understand_media::tests::{the_cli_takes_a_bare_locator_and_a_default_goal, chunk_ids_are_object_ids}`、`bin_overlay::tests::helpers_are_wrapped_next_to_agent_session`。
+
+### 13.6 真实 Zone 验收（2026-10-17，DV Test，用户清空数据后）
+
+做法：`agent_target.ts --create xiaobai`（默认模板）→ `./debug_jarvis.sh devtest --agent xiaobai.test.buckyos.io`（源码构建、包读源码目录、kRPC `http://127.0.0.1:10048/kapi/opendan`）→ `test_agent_loader.ts` 以 devtest 经 msg-center 发消息（新增 `OPENDAN_ATTACH=<file>`：经 NDM proxy 上传为 chunk 并作为 `data_obj` 附件），读 Session 目录核对。模型路由 `gpt-6-sol:reasoning-medium@codex-proxy`。
+
+| 场景 | 结果 |
+|---|---|
+| 问候（“我在研究 tokio”） | chat 格式输入（时间 + runtime 两行背景）；模型按 Memory 段 `agent-session ctl perceive "…"`；结构化回复 → `state.topic = {研究 Rust 异步运行时与 Tokio, [Rust, Tokio, …]}`；占位消息被最终回复（只含 reply 文本）编辑替换 |
+| 带文件回复（写 echo.rs 发给我） | UI 调 `try_analyze_user_intent` → fork 分析看 runtime / workspace、建 `work_simple`、返回分析 JSON（`clarifications: []`、`work: {…}`）→ UI 转述；work 结束：背景一行 + 一行 `<event>` → UI `agent-session read-session … --report` → 回复 `artifacts: ["cyfile:…"]`，出站消息带 `echo.rs` 附件 |
+| 图片附件（OCR） | UI 直接 `llm_understand_media <附件 id>`；第一次因 `mix256:` 不被认作对象而失败（已修）。修后旧 Session 改用 chunk 文件路径成功；命令超过 shell 30s 转成 task，模型用 `agent-session task wait local:shell:… --wait-ms 120000`（shell `wait_ms` 130000）拿到结果——**task CLI 桥在生产形态可用** |
+| 新 Session + 图片 | 冻结了新 cmd_skill；第一次调用 `llm_understand_media 'mix256:…' --goal …` 即成功（13s 回复） |
+| system 前缀 | 同一 Session 两个 run 的 system 文本 sha256 相同；后一 run `cache_read_input_tokens = 3968`（system + tools 前缀命中 provider 缓存） |
+
+DV 中修掉的问题：
+1. `llm_understand_media` 不认 chunk id（见 13.5）。
+2. **经 CLI 跟进的 task 在 Turn 结束后仍被跟踪**：run 结束时 `run.noted_tasks()`（只由 task 工具的结果清除）里的 task 进了 `watched_tasks`，进程内 task-mgr 随 run 释放，随后以 “state unknown” 事件又开了一个空 Turn。修法：`RunningTaskResolver::result_seen(task_id)`（`CompositeTaskResolver` 用进程内 task-mgr 的已读集合；task 工具、回填、CLI 桥都经 resolver，结束态返回时记为已读），run 结束时跳过已读的。回归测试 `tests/ui_chat.rs::a_task_followed_through_the_cli_is_not_watched_after_the_turn`（去掉修复即失败）。
+3. 背景行 `finished (succeeded) — finished: …` 去掉重复前缀。
+
+仍未验证：hint 行（新 Zone 没有固化的 memory；`ctl perceive` 进了感知队列，self_improve 关着）、群聊、UI 收到通知行、Claude 路由（类型数组）。`session.timezone` 没人设置，时间行显示 UTC。
+
+运维提示：DV 期间磁盘满（共享 cargo target 210G），删了 `/tmp/dev-cache-root/cargo-target/debug/incremental`（59G，仅增量编译缓存）。

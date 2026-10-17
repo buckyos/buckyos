@@ -546,6 +546,9 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         xllm: XllmDeps::default(),
         assembler: Arc::new(BehaviorAssembler::default()),
         session_cli: std::env::current_exe().ok(),
+        session_helpers: libopendan::runtime::bin_overlay::standard_helpers(
+            std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),
+        ),
         app_tools: Vec::new(),
         options,
         max_child_concurrency: max_children,

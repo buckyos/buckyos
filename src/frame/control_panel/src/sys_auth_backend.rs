@@ -592,6 +592,14 @@ impl ControlPanelServer {
             .and_then(|value| Self::normalize_session_token(Some(value)))
     }
 
+    /// The Gateway SSO session cookie (host-only, renewed by `/sso_refresh`): what a browser page signed in
+    /// at the Zone root carries on plain loads it cannot add headers to, such as an image.
+    pub(super) fn extract_http_sso_session_cookie(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> Option<String> {
+        Self::extract_http_cookie(req, GATEWAY_SSO_SESSION_COOKIE)
+    }
+
     fn extract_http_cookie(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         cookie_name: &str,

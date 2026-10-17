@@ -330,6 +330,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         web_dir: args.web.clone().or_else(|| beside_exe("web")),
         xllm: XllmDeps::default(),
         session_cli: beside_exe("xagent"),
+        session_helpers: libopendan::runtime::bin_overlay::standard_helpers(
+            std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),
+        ),
         options: options_of(args),
     })
 }
@@ -389,6 +392,9 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         web_dir: args.web.clone().or_else(|| beside_exe("web")),
         xllm: XllmDeps::default(),
         session_cli: beside_exe("xagent"),
+        session_helpers: libopendan::runtime::bin_overlay::standard_helpers(
+            std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),
+        ),
         options: options_of(args),
     })
 }

@@ -80,6 +80,9 @@ pub struct LoaderEnv {
     pub xllm: XllmDeps,
     /// The `xagent` executable, wrapped as `agent-session` in every session.
     pub session_cli: Option<PathBuf>,
+    /// Further commands every session gets (`llm_understand_media` →
+    /// `agent_tool llm_understand_media`).
+    pub session_helpers: Vec<libopendan::runtime::bin_overlay::SessionHelper>,
     pub options: RunnerOptions,
 }
 
@@ -286,6 +289,7 @@ impl Loader {
             xllm: env.xllm.clone(),
             assembler: Arc::new(BehaviorAssembler::default()),
             session_cli: env.session_cli.clone(),
+            session_helpers: env.session_helpers.clone(),
             app_tools: Vec::new(),
             options,
             max_child_concurrency,

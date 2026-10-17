@@ -471,6 +471,7 @@ async fn an_unloaded_waiting_work_is_rechecked() {
         xllm: deps.xllm.clone(),
         assembler: Arc::new(libopendan::runner::DefaultAssembler::default()),
         session_cli: deps.session_cli.clone(),
+        session_helpers: Vec::new(),
         app_tools: Vec::new(),
         options: deps.options.clone(),
         max_child_concurrency: 4,

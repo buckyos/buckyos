@@ -11,7 +11,9 @@
  * agent_target.ts selects it (BUCKYOS_TEST_AGENT_CREATE=<name> |
  * BUCKYOS_TEST_AGENT_ID=<agent_id> | the user's first ready agent; OPENDAN_URL),
  * OPENDAN_REPLY_TIMEOUT_S (180), OPENDAN_FOLLOW_S (0: after the reply, keep
- * printing further messages of the agent until its sessions are idle).
+ * printing further messages of the agent until its sessions are idle),
+ * OPENDAN_ATTACH (a local file: uploaded as a chunk through the zone's NDM
+ * proxy and attached to the message as a data object).
  * The message is sent as the agent's owner: anyone else is not answered.
  */
 import { buckyos } from "buckyos";
@@ -117,6 +119,27 @@ const before = (await dan("sessions.query", {})) as JsonRecord[];
 console.log(`  ✓ ${status.who} hosts ${agentDid}; ${before.length} session(s) registered`);
 
 console.log(`2. send: ${text}`);
+let refs: JsonRecord[] | undefined;
+const attach = Deno.env.get("OPENDAN_ATTACH")?.trim();
+if (attach) {
+  const { ndm_proxy, ndn } = await import("buckyos") as unknown as {
+    ndm_proxy: { createNdmProxyClient(o: JsonRecord): { putChunk(id: string, bytes: Uint8Array): Promise<unknown> } };
+    ndn: { ChunkId: { fromMix256Result(len: number, hash: Uint8Array): { toString(): string } }; sha256Bytes(b: Uint8Array): Uint8Array };
+  };
+  const bytes = await Deno.readFile(attach);
+  const objId = ndn.ChunkId.fromMix256Result(bytes.byteLength, ndn.sha256Bytes(bytes)).toString();
+  const proxy = ndm_proxy.createNdmProxyClient({
+    endpoint: `https://${zoneHost}`,
+    sessionToken: token,
+    // The proxy path keeps the object id's `:` unescaped.
+    fetcher: (request: RequestInfo | URL, init?: RequestInit) =>
+      fetch(typeof request === "string" ? request.replaceAll("%3A", ":").replaceAll("%3a", ":") : request, init),
+  });
+  await proxy.putChunk(objId, bytes);
+  const label = attach.split("/").pop() ?? attach;
+  refs = [{ role: "input", target: { type: "data_obj", obj_id: objId }, label }];
+  console.log(`  ✓ uploaded ${label} as ${objId}`);
+}
 const sentAt = Date.now();
 const sent = asRecord(await msg("msg.post_send", {
   msg: {
@@ -125,7 +148,7 @@ const sent = asRecord(await msg("msg.post_send", {
     kind: "chat",
     created_at_ms: sentAt,
     nonce: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-    content: { format: "text/plain", content: text },
+    content: { format: "text/plain", content: text, ...(refs ? { refs } : {}) },
   },
   idempotency_key: `opendan-accept-${sentAt}`,
 }), "post_send");
