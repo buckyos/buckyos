@@ -1072,20 +1072,27 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
     if watched.is_empty() {
         return Ok(Vec::new());
     }
-    let resolver: Option<Arc<dyn RunningTaskResolver>> = sh
-        .tasks
-        .lock()
-        .expect("tasks")
-        .clone()
-        .or_else(|| sh.deps.xllm.buckyos_tasks.clone());
+    // Between runs (a new drive) no run holds a resolver: the tasks of this
+    // process (`local:`) and of the host are still answered for.
+    let resolver: Arc<dyn RunningTaskResolver> = match sh.tasks.lock().expect("tasks").clone() {
+        Some(r) => r,
+        None => Arc::new(
+            agent_tool::CompositeTaskResolver::new(
+                sh.deps.xllm.local_tasks.clone(),
+                agent_tool::llm_bash::new_run_binding_slot(),
+            )
+            .with_buckyos(super::live::host_task_resolver(sh)),
+        ),
+    };
     let mut inputs = Vec::new();
     let mut observed = Vec::new();
     for task_id in watched {
-        let state = match &resolver {
-            Some(r) if r.can_resolve(&task_id) => r.state(&task_id).await,
-            _ => TaskState::Unknown {
+        let state = if resolver.can_resolve(&task_id) {
+            resolver.state(&task_id).await
+        } else {
+            TaskState::Unknown {
                 reason: "no task manager of this runner knows the task".into(),
-            },
+            }
         };
         if matches!(state, TaskState::Running { .. }) {
             continue;

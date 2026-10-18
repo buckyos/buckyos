@@ -41,6 +41,7 @@ pub mod runtime;
 pub mod runtime_context;
 pub mod task_bridge;
 pub mod tasks;
+pub mod tasks_zone;
 pub mod todo_tools;
 pub mod tool;
 pub mod xllm;
@@ -89,8 +90,13 @@ pub use llm_bash::{
     TOOL_SHELL,
 };
 pub use tasks::{
-    task_tools, CancelTaskTool, CompositeTaskResolver, GetTaskStateTool, InProcessTaskManager,
-    LocalTask, ShellTask, WaitTaskTool, TOOL_CANCEL_TASK, TOOL_GET_TASK_STATE, TOOL_WAIT_TASK,
+    exec_dir_state, task_tools, CancelTaskTool, CompositeTaskResolver, GetTaskStateTool,
+    InProcessTaskManager, LocalTask, ShellTask, ShellTaskContext, ShellTaskManager, WaitTaskTool,
+    TOOL_CANCEL_TASK, TOOL_GET_TASK_STATE, TOOL_WAIT_TASK,
+};
+pub use tasks_zone::{
+    MemoryShellTaskBackend, ShellTaskBackend, ShellTaskCreate, ShellTaskRecord,
+    ZoneShellTaskBackend, ZoneShellTasks, ZONE_TASK_PREFIX,
 };
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,

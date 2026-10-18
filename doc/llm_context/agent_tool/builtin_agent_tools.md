@@ -667,9 +667,16 @@ detail 常见字段：
 
 调用返回后仍在运行的工作称为 task，id 前缀表示归属：`local:<kind>:<n>` 属于执行器进程内的 `InProcessTaskManager`（`shell` 为 `local:shell:<call_id>`）；其它 id 属于 buckyos task-mgr。
 
+`shell` 到期转 task 时把命令交给谁由宿主决定（`tasks::ShellTaskManager`，`XllmDeps.shell_tasks`）：
+
+- 没有注入（xllm CLI、xagent 单跑）：进程内 task-mgr（`XllmDeps.local_tasks`，每进程一份，task 可跨 run 查询）。
+- 宿主注入 `tasks_zone::ZoneShellTasks`（OpenDAN Loader 的 zone 环境默认）：命令仍在本进程跑，但 task 建在 zone 的 buckyos task-mgr 里（schema `tool.shell/v1`，id `t-<hex>`，挂在所属 Session 当前 Turn 的 task 下，`input` 记录 command / session_id / run_id / call_id / exec_dir / agent）。每个 task 一个 watcher：每 5s 写进度（`message` 为最后一行输出，`progress.output_tail`）并读 `pending_control`，TaskMgr 里的 cancel 由它结束命令并 ack；命令结束时 `runner_complete`（exit 0）或 `runner_fail`（`exit_<n>`），`result` / `error.detail` 带 `exit_code`、`duration_ms`、`output`（尾部 8KB）。task-mgr 不可达时退回进程内 task-mgr（返回 `local:` id），命令不丢。
+- `ShellTaskContext`（`XllmDeps.shell_task_context`）由宿主按 run 填：`session_id`、`parent_task`（Turn task）、`run`（run 目录，算执行目录用）。
+- 进程重启：Loader 启动时 `recover()` 列出 zone 里未结束的 `tool.shell/v1` task（按 `input.agent` 过滤），执行目录还在的轮询其 `exit` 文件回填结果，不在的以 `executor_restarted` 失败。
+
 ### 6.1 LLM 工具：`wait_task` / `get_task_state` / `cancel_task`
 
-三个工具共用宿主的 `RunningTaskResolver`（`tasks::CompositeTaskResolver`）：`local:` id 由进程内 task 管理器回答，进程已不在时 `shell` task 从执行目录读回结果；其它 id 交给宿主注入的 buckyos task-mgr resolver（`XllmDeps.buckyos_tasks`），没有注入时状态为 unknown。
+三个工具共用宿主的 `RunningTaskResolver`（`tasks::CompositeTaskResolver`）：`local:` id 由进程内 task 管理器回答，进程已不在时 `shell` task 从执行目录读回结果；其它 id 交给宿主注入的 buckyos task-mgr resolver（`XllmDeps.buckyos_tasks`；`ZoneShellTasks` 本身就是 `t-` id 的 resolver，本进程在跑的 task 直接读句柄，其它进程的从 task-mgr 读），没有注入时状态为 unknown。`result_seen` 标记模型已读过的结果，run 结束后不再作为事件重复投递；`active()`（background env）列本 Session 的 task，`ShellTaskManager::resolver(session_id)` 给出按 Session 过滤的 resolver。
 
 | Tool | 输入 | 行为 |
 |---|---|---|

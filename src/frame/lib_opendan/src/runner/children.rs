@@ -452,6 +452,10 @@ impl RunningTaskResolver for SessionTaskResolver {
             || self.inner.as_ref().is_some_and(|i| i.can_resolve(task_id))
     }
 
+    fn result_seen(&self, task_id: &str) -> bool {
+        self.inner.as_ref().is_some_and(|i| i.result_seen(task_id))
+    }
+
     fn watch(&self, task_id: &str) {
         if let Some(inner) = &self.inner {
             inner.watch(task_id);

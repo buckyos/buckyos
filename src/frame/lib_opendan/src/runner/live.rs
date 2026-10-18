@@ -49,9 +49,25 @@ pub(super) async fn remove_if_safe(sh: &Shared, run_id: &str) -> Result<bool> {
     let Some(lock) = runs.try_lock(run_id)? else {
         return Ok(false); // someone executes it (xllm?)
     };
-    if runs.record(run_id).is_err() && runs.dir().join(run_id).join("run.json").exists() {
-        log::warn!("keeping unreferenced run {run_id}: its record is unreadable");
-        return Ok(false);
+    match runs.record(run_id) {
+        Err(_) if runs.dir().join(run_id).join("run.json").exists() => {
+            log::warn!("keeping unreferenced run {run_id}: its record is unreadable");
+            return Ok(false);
+        }
+        // A background task of the run may still run: its execution
+        // directory (`exec/<call_id>`) is where its output and exit go.
+        Ok(record)
+            if record
+                .host
+                .as_ref()
+                .and_then(|h| h.extra.get("tasks"))
+                .and_then(Value::as_array)
+                .is_some_and(|t| !t.is_empty()) =>
+        {
+            log::debug!("keeping run {run_id}: its background tasks are not settled");
+            return Ok(false);
+        }
+        _ => {}
     }
     runs.remove_locked(run_id, &lock)?;
     Ok(true)
@@ -115,10 +131,21 @@ async fn xllm_deps_for(
     }
     // Suspended calls waiting for a sub session (`session:<sid>`) are
     // answered from the registry; other task ids go to the host's resolver.
-    x.buckyos_tasks = Some(Arc::new(super::children::SessionTaskResolver::new(
-        sh.deps.agent.clone(),
-        sh.deps.xllm.buckyos_tasks.clone(),
-    )));
+    // A `shell` command handed over as a task belongs to this session and
+    // hangs under the task of its Turn.
+    // The Turn opens inside the run, after this: its task is looked up
+    // from the committed state when a command is handed over.
+    let dir = sh.dir.clone();
+    x.shell_task_context = agent_tool::ShellTaskContext {
+        session_id: Some(sh.dir.sid().to_string()),
+        parent_task: Some(Arc::new(move || {
+            dir.state()
+                .ok()
+                .and_then(|s| s.open_turn_task().map(|t| t.task_id.clone()))
+        })),
+        run: None,
+    };
+    x.buckyos_tasks = Some(host_task_resolver(sh));
     let mut functions = std::collections::BTreeSet::new();
     if let Some(tool) = BehaviorTool::any(&behaviors, depth, max_depth) {
         functions.insert(TOOL_CALL_BEHAVIOR.to_string());
@@ -139,6 +166,24 @@ async fn xllm_deps_for(
         }
     }
     Ok(x)
+}
+
+/// The resolver of the tasks a host answers for: sub sessions
+/// (`session:<sid>`), then the host's `shell` task manager scoped to this
+/// session (its `active()` lists this session's tasks), else whatever
+/// resolver the host injected.
+pub(super) fn host_task_resolver(sh: &Arc<Shared>) -> Arc<dyn RunningTaskResolver> {
+    let inner = sh
+        .deps
+        .xllm
+        .shell_tasks
+        .as_ref()
+        .and_then(|m| m.resolver(Some(sh.dir.sid())))
+        .or_else(|| sh.deps.xllm.buckyos_tasks.clone());
+    Arc::new(super::children::SessionTaskResolver::new(
+        sh.deps.agent.clone(),
+        inner,
+    ))
 }
 
 /// The configuration a behavior's own context runs with: the session's,

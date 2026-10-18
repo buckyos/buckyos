@@ -293,6 +293,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
             None
         }
     };
+    // Long `shell` commands become tasks of the zone's TaskMgr (under the
+    // Turn they belong to), not of this process.
+    let xllm = opendan::tasks::zone_xllm_deps(&spec.agent_did.to_string(), Some(owner.clone()));
     Ok(LoaderEnv {
         who: format!("app:{}@{owner}", runtime.get_app_id()),
         agent_did: spec.agent_did.to_string(),
@@ -333,7 +336,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),
-        xllm: XllmDeps::default(),
+        // Long `shell` commands become tasks of the zone's TaskMgr (under
+        // the Turn they belong to), not of this process.
+        xllm,
         session_cli: beside_exe("xagent"),
         session_helpers: libopendan::runtime::bin_overlay::standard_helpers(
             std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent),

@@ -447,3 +447,19 @@ cargo check -p llm_context -p agent_tool -p libopendan --tests
 **全仓 / 构建限制**：实际执行 `cargo check --workspace --tests` 失败，现有 msg_center 测试仍引用已删除的 `MsgRelType` / `MsgRelation` / `CyfsNamedObjectEncoding` 等 API（146 个错误），opendan 的 `agent_session.rs:7356,7405` 仍写已删除的 `MsgObject.to_session`。实际执行 `uv run buckyos-build.py --skip-web` 的 Windows 原生 release 构建也因同一 opendan 字段错误失败。因此不能声明全仓测试或 buckyos-build 通过；未运行 Web 构建、安装启动、DV / SSH 真机或 Windows tmux 验证。Windows 文件锁验证在本机 NTFS / ReFS 上完成，其它文件系统未验证。上述范围外的消息协议问题未改动。
 
 证据目录：`C:/Users/water/AppData/Local/Temp/buckyos-windows-long-tool-20261003/`。最终端到端结果为 `cli-report.json`，详细请求、stdout / stderr、run / 快照保留在 `cli-20261003-013606/`；脚本 `verify_cli.py`、启动器 `windows_long_tool_driver.rs`，最终 CLI 构建 / 运行日志 `cli-driver-final-source-build.log` / `cli-e2e-final-source.log`。自动化最终日志 `windows-regression-final.log`、`libopendan-final-source.log`、`affected-check-final.log`，两种文件系统的 l1 日志为 `windows-file-id-ntfs.log` / `windows-file-id-refs.log`；全仓检查 / release 构建失败日志 `workspace-check.log` / `buckyos-build.log`。
+
+### 11.6 宿主接 zone task-mgr（2026-10-18）
+
+起因：DV 上 Jarvis 的长命令转 `local:shell:<call_id>` 后，模型经 `agent-session task wait` 读完结果，接着 `try_analyze_user_intent` fork 返回时 `resume_live_run` 重建了工具集（新的 `InProcessTaskManager`），`result_seen` 为 false，task 又进 `watched_tasks`；下一次 `drive()` 的 `Shared.tasks` 为 None，只剩不认 `local:` 的宿主 resolver，于是投递了 `state unknown (no task manager of this runner knows the task)`。用户决定：Jarvis 相关 Session 默认用 buckyos task-mgr，不用进程内的。
+
+改了什么：
+
+- `agent_tool/tasks.rs`：`ShellTaskManager` trait（`take_over` / `resolver(session_id)` / `recover`）+ `ShellTaskContext`；`InProcessTaskManager` 实现它；`CompositeTaskResolver::active` 并入 buckyos resolver 的 `active()`、`result_seen` 透传 buckyos；`exec_dir_state` 抽成公开函数；`ShellTask::poll` 拿到句柄锁后重查 `finished`（修 cancel 与 watcher 竞争时结果被 `exit 124` 覆盖）。
+- `agent_tool/tasks_zone.rs`（新）：`ZoneShellTasks`（见 builtin_agent_tools.md §6）、`ShellTaskBackend` trait、`ZoneShellTaskBackend`（`TaskManagerClient`，schema `tool.shell/v1`）、`MemoryShellTaskBackend`（测试）。
+- `agent_tool/xllm.rs`：`XllmDeps.local_tasks`（进程级，取代每个 `XllmToolManager` 新建）、`shell_tasks`、`shell_task_context`；`XllmToolManager::with_run_binding` 多一个 `tasks` 参数；`ShellExtras.context`。`llm_bash.rs`：`LlmBashConfig.tasks: Option<Arc<dyn ShellTaskManager>>` + `task_context`。
+- `libopendan`：`runner/live.rs` `host_task_resolver`（session:→宿主 shell task-mgr 按 Session 过滤→`buckyos_tasks`），`xllm_deps_for` 填 `shell_task_context`（parent 为当前 Turn task）；`remove_if_safe` 不删还记着后台 task 的 run（执行目录是回读依据）；`runner/drive.rs::poll_watched_tasks` 在没有 run 持有 resolver 时用 `local_tasks` + `host_task_resolver` 组 resolver；`children.rs` `SessionTaskResolver::result_seen` 透传。
+- `opendan`：`tasks::zone_xllm_deps`（zone 环境默认注入 `ZoneShellTasks`，`--dev` 环境仍是进程内）；`loader.rs` 启动时 spawn `recover()`。
+
+验证：`cargo test -p agent_tool --lib -- tasks_zone tasks:: task_bridge llm_bash`（33 通过，新增 5 个 tasks_zone 测试：交接/失败/取消/不可达回退/重启恢复）；`cargo test -p libopendan --test ui_chat --test input_tasks`（新增 `a_zone_host_hands_long_commands_to_the_task_service`、`a_task_still_running_after_the_turn_is_followed_by_the_next_drive`）。
+
+未做：Session 自身 `stop` 关 Turn task 时 `recursive: false`，不会取消其下的 shell task（TaskMgr 里取消 Turn task 则按 `follow_cancel` 传到子 task）；`XLLM_TASK_ENDPOINT` 的 CLI 对 `t-` id 走的是本 run 的 resolver，跨进程时等待靠 1s 轮询 task-mgr；`list_open` 按 schema 全列再按 agent 过滤，zone 里 shell task 多时启动恢复慢。

@@ -476,6 +476,11 @@ impl Loader {
                 ),
             ));
         }
+        if let Some(shell_tasks) = env.xllm.shell_tasks.clone() {
+            // The `shell` tasks a previous process left open are taken
+            // back (or failed) before anything asks for them.
+            tasks.push(tokio::spawn(async move { shell_tasks.recover().await }));
+        }
         match &env.tasks {
             Some(service) => {
                 module("task_mgr", true, true, None);

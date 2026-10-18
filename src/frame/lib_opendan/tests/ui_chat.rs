@@ -107,3 +107,135 @@ async fn a_task_followed_through_the_cli_is_not_watched_after_the_turn() {
     // The background line of the runtime is not shown again.
     assert!(st.background_shown.contains_key("runtime"));
 }
+
+/// The id of the first TaskMgr task (`t-<32 hex>`) named in `text`.
+fn zone_task_id(text: &str) -> Option<String> {
+    let i = text.find("t-")?;
+    let id: String = text[i..].chars().take(34).collect();
+    (id.len() == 34 && id[2..].chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
+}
+
+/// A zone host: `shell` commands that outlive their wait are tasks of the
+/// task service (`tool.shell/v1`), not of the runner process.
+fn zone_host_deps(
+    env: &Env,
+    llm: std::sync::Arc<ScriptedLlm>,
+) -> (
+    libopendan::runner::RunnerDeps,
+    std::sync::Arc<agent_tool::MemoryShellTaskBackend>,
+) {
+    use agent_tool::ShellTaskManager;
+    let backend = agent_tool::MemoryShellTaskBackend::new();
+    let mut deps = env
+        .deps(llm)
+        .with_session_cli(PathBuf::from(env!("CARGO_BIN_EXE_xagent")));
+    let shell_tasks = agent_tool::ZoneShellTasks::new(
+        backend.clone(),
+        AGENT,
+        Some("bob".into()),
+        deps.xllm.local_tasks.clone(),
+    );
+    deps.xllm.buckyos_tasks = shell_tasks.resolver(None);
+    deps.xllm.shell_tasks = Some(shell_tasks);
+    (deps, backend)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zone_host_hands_long_commands_to_the_task_service() {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec()).await;
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("run the slow job"));
+    let seen: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let seen_in_llm = seen.clone();
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => shell("c1", "sleep 1; echo slow-done"),
+        1 => {
+            let r = has_tool_result(req, "c1").expect("c1 result");
+            let id = zone_task_id(&r).unwrap_or_else(|| panic!("no task id in {r}"));
+            assert!(r.contains(&format!("agent-session task wait {id}")), "{r}");
+            *seen_in_llm.lock().unwrap() = Some(id.clone());
+            tool_call(
+                "c2",
+                "shell",
+                json!({ "command": format!("agent-session task wait {id} --wait-ms 10000"), "wait_ms": 20000 }),
+            )
+        }
+        2 => {
+            let r = has_tool_result(req, "c2").expect("c2 result");
+            assert!(r.contains("slow-done") && r.contains("exited with code 0"), "{r}");
+            text(r#"{"reply": "the job printed slow-done", "topic": null, "artifacts": []}"#)
+        }
+        _ => panic!("unexpected call {n}: {}", last_user_text(req)),
+    });
+    let (deps, backend) = zone_host_deps(&env, llm.clone());
+    drive(&sd, &deps, StopWhen::Idle).await;
+    let id = seen.lock().unwrap().clone().expect("task id");
+    let st = sd.state().unwrap();
+    assert_eq!(st.turns_completed, 1);
+    assert!(st.watched_tasks.is_empty(), "{:?}", st.watched_tasks);
+    // The task belongs to this session, under the task of its Turn.
+    let rec = backend.record(&id).expect("task in the task service");
+    assert_eq!(rec.input["session_id"], sd.sid());
+    assert_eq!(rec.input["call_id"], "c1");
+    assert_eq!(rec.input["agent"], AGENT);
+    for _ in 0..50 {
+        if backend.record(&id).unwrap().terminal {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let rec = backend.record(&id).unwrap();
+    assert_eq!(rec.outcome.as_deref(), Some("succeeded"), "{rec:?}");
+    assert!(rec.result.unwrap()["output"].as_str().unwrap().contains("slow-done"));
+    // Read already: nothing comes back for it.
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(llm.count(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_still_running_after_the_turn_is_followed_by_the_next_drive() {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec()).await;
+    post_blocking(&env.queue_dir, &queue_of(&sd), msg("start the slow job"));
+    let seen: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let seen_in_llm = seen.clone();
+    let llm = ScriptedLlm::new(move |req, n| match n {
+        0 => shell("c1", "sleep 3; echo later-done"),
+        1 => {
+            let r = has_tool_result(req, "c1").expect("c1 result");
+            *seen_in_llm.lock().unwrap() = Some(zone_task_id(&r).expect("task id"));
+            text(r#"{"reply": "started; I will report when it ends", "topic": null, "artifacts": []}"#)
+        }
+        2 => {
+            let input = last_user_text(req);
+            let id = seen_in_llm.lock().unwrap().clone().unwrap();
+            assert!(input.contains(&format!("task:{id}:terminal")), "{input}");
+            assert!(input.contains("later-done") && input.contains("exited with code 0"), "{input}");
+            assert!(!input.contains("state unknown"), "{input}");
+            text(r#"{"reply": "the job printed later-done", "topic": null, "artifacts": []}"#)
+        }
+        _ => panic!("unexpected call {n}: {}", last_user_text(req)),
+    });
+    let (deps, backend) = zone_host_deps(&env, llm.clone());
+    // The Turn ends while the command runs: the session keeps following it.
+    drive(&sd, &deps, StopWhen::Idle).await;
+    let id = seen.lock().unwrap().clone().expect("task id");
+    let st = sd.state().unwrap();
+    assert_eq!(st.turns_completed, 1);
+    assert_eq!(st.watched_tasks, [id.clone()]);
+    assert_eq!(llm.count(), 2, "its end is not delivered by the Turn's drive");
+    // Later drives (new runner state each) answer for the task through the
+    // task service and deliver its end once.
+    let started = std::time::Instant::now();
+    while llm.count() < 3 && started.elapsed() < std::time::Duration::from_secs(15) {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        drive(&sd, &deps, StopWhen::Idle).await;
+    }
+    assert_eq!(llm.count(), 3);
+    let st = sd.state().unwrap();
+    assert_eq!(st.turns_completed, 2);
+    assert!(st.watched_tasks.is_empty(), "{:?}", st.watched_tasks);
+    assert_eq!(backend.record(&id).unwrap().outcome.as_deref(), Some("succeeded"));
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(llm.count(), 3, "delivered once");
+}

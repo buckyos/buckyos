@@ -139,7 +139,7 @@ Bash 环境下只能依赖 stdout / stderr 获取结果，格式不统一。自�
 ```
 LLM 调用 shell（cargo test）
     ↓ 30s 后仍在运行
-返回 { status: "success", task_id: "local:shell:<call_id>", output: "still running ... Call wait_task ..." }
+返回 { status: "success", task_id: "local:shell:<call_id>"（宿主接了 zone task-mgr 时为 "t-<hex>"）, output: "still running ... Call wait_task ..." }
     ↓
 LLM 继续做别的；每次推理前看到 <background_tasks>
     ↓

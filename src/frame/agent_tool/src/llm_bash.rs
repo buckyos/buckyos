@@ -32,7 +32,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::{timeout as tokio_timeout, Duration};
 
 use crate::path_utils::to_abs_path;
-use crate::tasks::{InProcessTaskManager, ShellTask};
+use crate::tasks::{ShellTaskContext, ShellTaskManager, ShellTask};
 use crate::tool::CallingConventions;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult, AgentToolStatus,
@@ -261,7 +261,9 @@ pub struct LlmBashConfig {
     pub runtime: ShellRuntimeNote,
     /// `auto` mode: where a command that outlives `wait_ms` goes. Without
     /// it the tool behaves as `wait`.
-    pub tasks: Option<Arc<InProcessTaskManager>>,
+    pub tasks: Option<Arc<dyn ShellTaskManager>>,
+    /// What a handed-over command belongs to (session, Turn task, run).
+    pub task_context: ShellTaskContext,
     /// How the model follows a command that became a task.
     pub task_followup: llm_context::tasks::TaskFollowup,
     /// The run's task bridge (`XLLM_TASK_ENDPOINT` of every command).
@@ -309,6 +311,7 @@ impl LlmBashConfig {
             default_wait_ms: DEFAULT_AUTO_WAIT_MS,
             runtime: ShellRuntimeNote::native(),
             tasks: None,
+            task_context: ShellTaskContext::default(),
             task_followup: llm_context::tasks::TaskFollowup::Tools,
             task_endpoint: None,
             note: None,
@@ -366,8 +369,13 @@ impl LlmBashConfig {
         self
     }
 
-    pub fn with_tasks(mut self, tasks: Arc<InProcessTaskManager>) -> Self {
+    pub fn with_tasks(mut self, tasks: Arc<dyn ShellTaskManager>) -> Self {
         self.tasks = Some(tasks);
+        self
+    }
+
+    pub fn with_task_context(mut self, ctx: ShellTaskContext) -> Self {
+        self.task_context = ctx;
         self
     }
 
@@ -1645,7 +1653,9 @@ impl ShellTool {
         let cancellable = handle.cancellable();
         let locator = handle.locator();
         let task = ShellTask::new(command, handle, &self.config.runtime.kind);
-        let task_id = tasks.register_shell(call_id, task);
+        let task_id = tasks
+            .take_over(&self.config.task_context, call_id, task)
+            .await;
         let mut text = format!(
             "`{command}` is still running after {wait_ms}ms ({} elapsed); it continues as task {task_id} ({locator}).",
             fmt_elapsed(progress.elapsed_ms)

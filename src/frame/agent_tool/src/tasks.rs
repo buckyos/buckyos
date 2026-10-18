@@ -55,6 +55,86 @@ pub(crate) fn next_local_seq() -> u64 {
     LOCAL_SEQ.fetch_add(1, Ordering::SeqCst)
 }
 
+/// Where the task of the session's current Turn is read from at handover
+/// (the Turn opens inside the run, after its tools were assembled).
+pub type ParentTaskLookup = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// What a `shell` command handed over as a task belongs to. Filled by the
+/// host per run; empty for a standalone executor.
+#[derive(Clone, Default)]
+pub struct ShellTaskContext {
+    /// The Agent Session the command runs for.
+    pub session_id: Option<String>,
+    /// The task the session's Turn is (the handed-over command hangs under
+    /// it in a task tree), looked up at handover.
+    pub parent_task: Option<ParentTaskLookup>,
+    /// The run (and its directory, for the execution directory of the
+    /// command): bound late, read at handover.
+    pub run: Option<RunBindingSlot>,
+}
+
+impl std::fmt::Debug for ShellTaskContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellTaskContext")
+            .field("session_id", &self.session_id)
+            .field("parent_task", &self.parent_task.is_some())
+            .field("run", &self.run_binding())
+            .finish()
+    }
+}
+
+impl ShellTaskContext {
+    /// The run binding at this moment.
+    pub fn run_binding(&self) -> Option<RunBinding> {
+        self.run.as_ref().and_then(|r| r.lock().ok()?.clone())
+    }
+
+    /// The task of the session's current Turn, now.
+    pub fn parent_task(&self) -> Option<String> {
+        self.parent_task.as_ref().and_then(|f| f())
+    }
+}
+
+/// Where `shell` hands a command that outlived its wait (`auto` mode): the
+/// task manager of this process ([`InProcessTaskManager`]), or one a host
+/// provides (e.g. the zone's TaskMgr, [`crate::tasks_zone::ZoneShellTasks`]).
+#[async_trait]
+pub trait ShellTaskManager: Send + Sync {
+    /// Take over `task` (its handle included); returns the id the model
+    /// follows the task with.
+    async fn take_over(
+        &self,
+        ctx: &ShellTaskContext,
+        call_id: Option<&str>,
+        task: ShellTask,
+    ) -> String;
+
+    /// The resolver of the tasks this manager creates, with `active()`
+    /// limited to `session_id` when given. `None`: they are `local:` tasks,
+    /// answered by the [`CompositeTaskResolver`] of the run.
+    fn resolver(&self, session_id: Option<&str>) -> Option<Arc<dyn RunningTaskResolver>>;
+
+    /// Take over the tasks a previous process of this host left behind
+    /// (called once at start). Nothing to do for a process-local manager.
+    async fn recover(&self) {}
+}
+
+#[async_trait]
+impl ShellTaskManager for InProcessTaskManager {
+    async fn take_over(
+        &self,
+        _ctx: &ShellTaskContext,
+        call_id: Option<&str>,
+        task: ShellTask,
+    ) -> String {
+        self.register_shell(call_id, task)
+    }
+
+    fn resolver(&self, _session_id: Option<&str>) -> Option<Arc<dyn RunningTaskResolver>> {
+        None
+    }
+}
+
 /// A task of this process.
 #[async_trait]
 pub trait LocalTask: Send + Sync {
@@ -134,11 +214,32 @@ impl ShellTask {
         TaskState::Finished(result)
     }
 
-    async fn poll(&self, timeout: Duration) -> TaskState {
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    pub fn runtime(&self) -> &str {
+        &self.runtime
+    }
+
+    pub fn locator(&self) -> &str {
+        &self.locator
+    }
+
+    /// The result, once the command ended and was observed.
+    pub fn finished(&self) -> Option<TaskResult> {
+        self.finished.lock().expect("shell task").clone()
+    }
+
+    pub(crate) async fn poll(&self, timeout: Duration) -> TaskState {
         if let Some(done) = self.finished.lock().expect("shell task").clone() {
             return TaskState::Finished(done);
         }
         let mut handle = self.handle.lock().await;
+        // Ended while the lock was waited for (a cancel): its result stands.
+        if let Some(done) = self.finished.lock().expect("shell task").clone() {
+            return TaskState::Finished(done);
+        }
         match handle.wait(timeout).await {
             Ok(Some(out)) => self.finish(out, false),
             Ok(None) => {
@@ -197,7 +298,7 @@ impl LocalTask for ShellTask {
     }
 }
 
-fn compact(s: &str, max: usize) -> String {
+pub(crate) fn compact(s: &str, max: usize) -> String {
     let one_line = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() <= max {
         one_line
@@ -347,6 +448,53 @@ pub struct CompositeTaskResolver {
     followup: Mutex<TaskFollowup>,
 }
 
+/// The state of a `shell` task from its execution directory
+/// (`runs/<run>/exec/<call_id>`): the wrapper script records `exit` there
+/// whatever happened to the process that started the command.
+pub fn exec_dir_state(task_id: &str, dir: &Path) -> TaskState {
+    let command = std::fs::read_to_string(dir.join("command")).unwrap_or_default();
+    let command = compact(command.trim(), 80);
+    match read_exit_file(dir) {
+        Some(code) => {
+            let stdout = read_file_tail(&dir.join("stdout"), OUTPUT_TAIL_BYTES * 4);
+            let stderr = read_file_tail(&dir.join("stderr"), OUTPUT_TAIL_BYTES * 4);
+            let mut text = format!(
+                "`{command}` (task {task_id}) exited with code {code}; started by a previous executor, read from {}.",
+                dir.display()
+            );
+            if !stdout.trim().is_empty() {
+                text.push_str("\n--- stdout (tail) ---\n");
+                text.push_str(stdout.trim_end());
+            }
+            if !stderr.trim().is_empty() {
+                text.push_str("\n--- stderr (tail) ---\n");
+                text.push_str(stderr.trim_end());
+            }
+            TaskState::Finished(TaskResult {
+                success: code == 0,
+                output: text,
+                tool_result: Some(llm_context::observation::ToolResultView {
+                    cmd_name: Some(crate::llm_bash::TOOL_SHELL.into()),
+                    cmd_args: Some(command),
+                    return_code: Some(code),
+                    summary: format!("exit={code}"),
+                    ..Default::default()
+                }),
+            })
+        }
+        None if dir.is_dir() => TaskState::Unknown {
+            reason: format!(
+                "`{command}` was started by a previous executor and has not recorded an exit; it may still be running. Output files: {}",
+                dir.display()
+            ),
+        },
+        None => TaskState::Unknown {
+            reason: "this executor did not start the task and has no record of it".into(),
+        },
+    }
+}
+
+
 impl CompositeTaskResolver {
     pub fn new(local: Arc<InProcessTaskManager>, run: RunBindingSlot) -> Self {
         Self {
@@ -380,46 +528,7 @@ impl CompositeTaskResolver {
     }
 
     fn state_from_exec_dir(&self, task_id: &str, dir: &Path) -> TaskState {
-        let command = std::fs::read_to_string(dir.join("command")).unwrap_or_default();
-        let command = compact(command.trim(), 80);
-        match read_exit_file(dir) {
-            Some(code) => {
-                let stdout = read_file_tail(&dir.join("stdout"), OUTPUT_TAIL_BYTES * 4);
-                let stderr = read_file_tail(&dir.join("stderr"), OUTPUT_TAIL_BYTES * 4);
-                let mut text = format!(
-                    "`{command}` (task {task_id}) exited with code {code}; started by a previous executor, read from {}.",
-                    dir.display()
-                );
-                if !stdout.trim().is_empty() {
-                    text.push_str("\n--- stdout (tail) ---\n");
-                    text.push_str(stdout.trim_end());
-                }
-                if !stderr.trim().is_empty() {
-                    text.push_str("\n--- stderr (tail) ---\n");
-                    text.push_str(stderr.trim_end());
-                }
-                TaskState::Finished(TaskResult {
-                    success: code == 0,
-                    output: text,
-                    tool_result: Some(llm_context::observation::ToolResultView {
-                        cmd_name: Some(crate::llm_bash::TOOL_SHELL.into()),
-                        cmd_args: Some(command),
-                        return_code: Some(code),
-                        summary: format!("exit={code}"),
-                        ..Default::default()
-                    }),
-                })
-            }
-            None if dir.is_dir() => TaskState::Unknown {
-                reason: format!(
-                    "`{command}` was started by a previous executor and has not recorded an exit; it may still be running. Output files: {}",
-                    dir.display()
-                ),
-            },
-            None => TaskState::Unknown {
-                reason: "this executor did not start the task and has no record of it".into(),
-            },
-        }
+        exec_dir_state(task_id, dir)
     }
 
     async fn local_state(&self, task_id: &str) -> TaskState {
@@ -509,7 +618,15 @@ impl RunningTaskResolver for CompositeTaskResolver {
 
     async fn active(&self) -> Vec<TaskBrief> {
         let mut out = self.local.briefs().await;
+        if let Some(b) = &self.buckyos {
+            out.extend(b.active().await);
+        }
+        // Followed through the task tools / CLI without a brief of their
+        // own (a resolver that lists nothing): shown as running until read.
         for id in self.watched.lock().expect("watched").iter() {
+            if out.iter().any(|t| &t.task_id == id) || self.result_seen(id) {
+                continue;
+            }
             out.push(TaskBrief {
                 task_id: id.clone(),
                 brief: "task".into(),
@@ -527,7 +644,10 @@ impl RunningTaskResolver for CompositeTaskResolver {
     }
 
     fn result_seen(&self, task_id: &str) -> bool {
-        task_id.starts_with(LOCAL_TASK_PREFIX) && self.local.was_read(task_id)
+        if task_id.starts_with(LOCAL_TASK_PREFIX) {
+            return self.local.was_read(task_id);
+        }
+        self.buckyos.as_ref().is_some_and(|b| b.result_seen(task_id))
     }
 }
 

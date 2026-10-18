@@ -99,7 +99,9 @@ use crate::runtime::files::LocalFileBackend;
 use crate::runtime::{
     AgentRuntime, RuntimeConfig, RuntimeDescriptor, RuntimeInfo, RuntimeOpenCtx, Sandbox,
 };
-use crate::tasks::{task_tools, CompositeTaskResolver, InProcessTaskManager};
+use crate::tasks::{
+    task_tools, CompositeTaskResolver, InProcessTaskManager, ShellTaskContext, ShellTaskManager,
+};
 use crate::tool::TypedToolHandle;
 use crate::{
     AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
@@ -3768,6 +3770,15 @@ pub struct XllmDeps {
     /// 宿主可访问 buckyos task-mgr 时注入的 task 解析器（long-tool TODO §4）；
     /// 进程内 task-mgr 总是存在。
     pub buckyos_tasks: Option<Arc<dyn RunningTaskResolver>>,
+    /// The task manager of this process (`local:` tasks): one per process,
+    /// so a task outlives the run (and the tool set) that handed it over.
+    pub local_tasks: Arc<InProcessTaskManager>,
+    /// Where `shell` hands a command that outlived its wait. `None`: the
+    /// process's own task manager (`local_tasks`). A host whose tasks live
+    /// in a task service (the zone's TaskMgr) sets its manager here.
+    pub shell_tasks: Option<Arc<dyn ShellTaskManager>>,
+    /// What a handed-over command belongs to (set by the host per run).
+    pub shell_task_context: ShellTaskContext,
     pub runtime_env: BTreeMap<String, String>,
     pub runtime_path_prefix: Vec<PathBuf>,
     /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
@@ -3830,6 +3841,9 @@ impl Default for XllmDeps {
             lock_dir: None,
             runtime: None,
             buckyos_tasks: None,
+            local_tasks: InProcessTaskManager::new(),
+            shell_tasks: None,
+            shell_task_context: ShellTaskContext::default(),
             runtime_env: BTreeMap::new(),
             runtime_path_prefix: Vec::new(),
             skip_workdir_lock: false,
@@ -3900,7 +3914,14 @@ pub struct XllmToolManager {
 
 impl XllmToolManager {
     pub fn new(workdir: PathBuf, run_id: &str, loop_model: LoopModel) -> Self {
-        Self::with_run_binding(workdir, run_id, loop_model, new_run_binding_slot(), None)
+        Self::with_run_binding(
+            workdir,
+            run_id,
+            loop_model,
+            new_run_binding_slot(),
+            InProcessTaskManager::new(),
+            None,
+        )
     }
 
     pub fn with_run_binding(
@@ -3908,9 +3929,9 @@ impl XllmToolManager {
         run_id: &str,
         loop_model: LoopModel,
         run: RunBindingSlot,
+        tasks: Arc<InProcessTaskManager>,
         buckyos_tasks: Option<Arc<dyn RunningTaskResolver>>,
     ) -> Self {
-        let tasks = InProcessTaskManager::new();
         let mut resolver = CompositeTaskResolver::new(tasks.clone(), run.clone());
         if let Some(b) = buckyos_tasks {
             resolver = resolver.with_buckyos(b);
@@ -4459,6 +4480,7 @@ struct ShellExtras {
     followup: llm_context::tasks::TaskFollowup,
     endpoint: Option<String>,
     note: Option<String>,
+    context: ShellTaskContext,
 }
 
 /// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `shell`；
@@ -4471,7 +4493,7 @@ fn builtin_bash_group(
     files: Arc<dyn FileBackend>,
     shell: &ShellSettings,
     runtime: ShellRuntimeNote,
-    tasks: Arc<InProcessTaskManager>,
+    tasks: Arc<dyn ShellTaskManager>,
     core: bool,
     extras: ShellExtras,
 ) -> Vec<Arc<dyn AgentTool>> {
@@ -4495,6 +4517,7 @@ fn builtin_bash_group(
         .with_default_wait_ms(shell.wait_ms)
         .with_runtime_note(runtime)
         .with_tasks(tasks)
+        .with_task_context(extras.context)
         .with_task_followup(extras.followup)
         .with_task_endpoint(extras.endpoint)
         .with_note(extras.note);
@@ -4545,6 +4568,10 @@ async fn expand_tool_sources(
                 }
                 let mut extras = ShellExtras {
                     note: deps.shell_note.clone(),
+                    context: ShellTaskContext {
+                        run: Some(manager.run_binding()),
+                        ..deps.shell_task_context.clone()
+                    },
                     ..Default::default()
                 };
                 // `bash_core` follows tasks with the host's command when a
@@ -4560,7 +4587,12 @@ async fn expand_tool_sources(
                         }
                     }
                 }
-                let tasks = manager.tasks();
+                // A host's task manager takes the handed-over commands;
+                // without one they stay in this process.
+                let tasks: Arc<dyn ShellTaskManager> = match &deps.shell_tasks {
+                    Some(host) => host.clone(),
+                    None => manager.tasks(),
+                };
                 for t in builtin_bash_group(
                     workdir,
                     filesystem_policy,
@@ -4641,7 +4673,8 @@ pub(crate) async fn build_runtime_toolset(
         workdir.to_path_buf(),
         run_id,
         loop_model,
-        run,
+        run.clone(),
+        deps.local_tasks.clone(),
         deps.buckyos_tasks.clone(),
     );
     let mut eff = EffectiveTools {

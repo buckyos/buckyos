@@ -17,6 +17,8 @@ use buckyos_api::{
     TaskExecutor, TaskGrantScope, TaskGrantSubject, TaskManagerClient, TaskOutcome, TaskPhase,
     TaskWaitReason, TaskWaitReasonKind, OPENDAN_AGENT_TURN_TASK_SCHEMA_ID,
 };
+use agent_tool::xllm::XllmDeps;
+use agent_tool::{ShellTaskManager, ZoneShellTaskBackend, ZoneShellTasks};
 use libopendan::host::Supervisor;
 use libopendan::protocol::*;
 use libopendan::runner::{TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus};
@@ -269,6 +271,23 @@ impl TaskService for ZoneTaskService {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+}
+
+/// xllm deps of a zone host: `shell` commands that outlive their wait are
+/// tasks of the zone's TaskMgr (`tool.shell/v1`), answered for by any
+/// process of the host; the process's own task manager is the fallback
+/// when TaskMgr cannot be reached.
+pub fn zone_xllm_deps(agent_did: &str, owner_user: Option<String>) -> XllmDeps {
+    let mut deps = XllmDeps::default();
+    let shell_tasks = ZoneShellTasks::new(
+        Arc::new(ZoneShellTaskBackend),
+        agent_did,
+        owner_user,
+        deps.local_tasks.clone(),
+    );
+    deps.buckyos_tasks = shell_tasks.resolver(None);
+    deps.shell_tasks = Some(shell_tasks);
+    deps
 }
 
 /// User part of an app principal (`app:<app>@<user>`).
