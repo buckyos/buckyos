@@ -53,6 +53,9 @@
 11) 环境变量协议：BUCKYOS_*、启动注入、worker env、测试覆盖变量
 - `11_env_contract.md`
 
+12) Node Executor：ThunkObject 执行 / Agent Command Stream / 最终恢复通道（设计稿）
+- `node_exector.md`
+
 
 ## 术语与端口（当前实现的关键常量）
 - system-config 服务主端口：`3200`（见 `src/kernel/sys_config_service/src/main.rs`）
