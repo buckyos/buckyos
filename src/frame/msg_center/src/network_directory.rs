@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(600);
-const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(5);
+/// A name service that does not answer is asked again only after this.
+const DIRECTORY_UNAVAILABLE_TTL: Duration = Duration::from_secs(30);
+const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectoryError {
@@ -121,20 +123,23 @@ pub(crate) fn profile_from_document(did: &DID, doc: &Value) -> DidProfile {
 impl NameServiceDirectory {
     async fn fetch(did: &DID) -> Result<DidProfile, DirectoryError> {
         let resolve = |doc_type| async move {
-            tokio::time::timeout(DIRECTORY_TIMEOUT, name_client::resolve_did(did, doc_type))
-                .await
-                .map_err(|_| name_lib::NSError::Failed("timeout".into()))
-                .and_then(|result| result)
+            match tokio::time::timeout(DIRECTORY_TIMEOUT, name_client::resolve_did(did, doc_type)).await {
+                Ok(Ok(doc)) => Ok(doc),
+                Ok(Err(name_lib::NSError::NotFound(reason))) => Err(DirectoryError::NotFound(reason)),
+                // Key-class DIDs (`did:dev`) and malformed ones have no document to wait for.
+                Ok(Err(name_lib::NSError::InvalidDID(reason))) => Err(DirectoryError::NotFound(reason)),
+                Ok(Err(error)) => Err(DirectoryError::Unavailable(error.to_string())),
+                Err(_) => Err(DirectoryError::Unavailable("timeout".into())),
+            }
         };
+        // The owner document first; a name service that timed out is not
+        // asked a second time.
         let doc = match resolve(Some(name_lib::DidDocType::Owner)).await {
             Ok(doc) => doc,
-            Err(_) => match resolve(None).await {
-                Ok(doc) => doc,
-                Err(name_lib::NSError::NotFound(reason)) => {
-                    return Err(DirectoryError::NotFound(reason))
-                }
-                Err(error) => return Err(DirectoryError::Unavailable(error.to_string())),
-            },
+            Err(DirectoryError::Unavailable(reason)) if reason == "timeout" => {
+                return Err(DirectoryError::Unavailable(reason))
+            }
+            Err(_) => resolve(None).await?,
         };
         let doc = doc
             .to_json_value()
@@ -148,17 +153,19 @@ impl NetworkDirectory for NameServiceDirectory {
     async fn describe(&self, did: &DID) -> Result<DidProfile, DirectoryError> {
         let key = did.to_string();
         if let Some((answer, at)) = self.cache.lock().unwrap().get(&key) {
-            if at.elapsed() < DIRECTORY_CACHE_TTL {
+            let ttl = match answer {
+                Err(DirectoryError::Unavailable(_)) => DIRECTORY_UNAVAILABLE_TTL,
+                _ => DIRECTORY_CACHE_TTL,
+            };
+            if at.elapsed() < ttl {
                 return answer.clone();
             }
         }
         let answer = Self::fetch(did).await;
-        if !matches!(answer, Err(DirectoryError::Unavailable(_))) {
-            self.cache
-                .lock()
-                .unwrap()
-                .insert(key, (answer.clone(), Instant::now()));
-        }
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(key, (answer.clone(), Instant::now()));
         answer
     }
 }

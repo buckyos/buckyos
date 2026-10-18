@@ -394,6 +394,13 @@ async fn lookup_merges_relations_zone_and_resolved_candidates() {
         buckyos_api::ReachabilityState::Local
     );
 
+    // A bare name of someone already known does not go to the name service.
+    let known = lookup("bob").await;
+    assert_eq!(known.input_kind, buckyos_api::LookupInputKind::Name);
+    assert_eq!(known.candidates.len(), 1);
+    assert_eq!(known.candidates[0].did, bob);
+    assert!(known.error.is_none());
+
     let resolved = lookup("nora").await;
     assert_eq!(resolved.input_kind, buckyos_api::LookupInputKind::Name);
     let nora = &resolved.candidates[0];

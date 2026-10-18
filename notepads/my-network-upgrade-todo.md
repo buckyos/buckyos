@@ -2,7 +2,7 @@
 
 > 创建日期：2026-10-17
 > 版本：v0.3（2026-10-17 第二轮 review：后台公共能力放 msg-center，公共 UI 组件放 `src/frame/desktop/src/components/`，其余按建议执行）。v0.2 已定：D2 好友请求 = 向对方 Zone 投递特殊 MsgObject（§3.4）；D5 用 tags 分组，应用之间约定公共 tag（§3.5）。
-> 状态：2026-10-17 已实施 M0–M6（未提交 git），实施记录见 §8；DV 待部署新 msg-center / homestation / desktop 后验收。
+> 状态：2026-10-17 已实施 M0–M6（提交 f5c609c88），实施记录见 §8；2026-10-18 在 `start.py --all` 新装的 DV 上验收通过（§8.5），验收中的修正未提交。
 > 依据：[My Network PRD](../product/my_networks/My_Network_PRD.md)（2026-08）、[My Network 相关协议设计](<../doc/message_hub/My Network相关协议设计.md>)、[Contact Mgr](<../doc/message_hub/Contact Mgr.md>)、[Message Center](<../doc/message_hub/Message Center.md>) §2.2 / §4.5、[HomeStation 架构设计 v0.7](<../doc/homestation/BuckyOS HomeStation 架构设计.md>)、[HomeStation 协议与实现](<../doc/homestation/HomeStation 协议与实现.md>)、MessageHub [UI_DATAMODEL.md](../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)，以及 2026-10-17 对三端代码和后端的核对。
 > 第 2 节“现状”只以源码为准；PRD 和协议文档里写了但没实现的能力，都单独标明。
 
@@ -425,12 +425,29 @@ M0–M6 已实施，未提交 git。与 §3 设计不同或 §3 未定的地方�
 - websdk `npx jest tests/msg_center_client.test.ts`（44 例）。
 - Desktop：`pnpm check`、`pnpm exec eslint src tests`（0 error，8 个既有 warning）、`deno test --config tests/datamodel/messagehub.deno.json --no-check --allow-read --allow-env tests/datamodel/`（137 例）、Playwright（新起 vite）my-network / messagehub* / homestation / users-agents / agent-setup 共 137 例通过。
 - 全量 e2e 跑一次（新 vite 端口）：301 passed / 7 failed，失败都与本改动无关：SN Router 与 mobile App Service 返回键是既有基线；content-open ×2 与 systest 写死 4173 端口；ai-center 完整目录单跑也失败（他人近期改动）；app-service opendan 一例是 page.goto 超时，单跑通过。`pnpm build` 通过。
-- DV 脚本 `test/test_msg_center/test_my_network.ts` 已 `deno check`，未运行。
+- DV 结果见 §8.5。
 
 ### 8.4 未验证与已知缺口
 
-- 未部署到 DV：需部署新的 msg-center、homestation 二进制与 desktop web（以及含新 RBAC 的服务）后跑 `test_my_network.ts`，并用真实登录走一遍 My Network / MessageHub / HomeStation。`realBackend.ts` 与 MessageHub `addPeer` 的真实路径只做过类型检查。
-- 真实跨 Zone 只在两个 msg-center 实例的测试里验证过；实际还依赖名字服务能把对方用户与签名设备（`did:dev`）解析到 Zone。
+- 真实的两个 Zone 之间没有跑过：DV 上验证了接收方（经公网网关的无 Bearer 签名入站、Zone 托管签名的校验）与发送方的路由解析失败路径，发送方签名后真正投到另一个 Zone 的网关还没验证。
 - 没有拒绝群邀请的 RPC（前端归档通知卡代替）；`list_by_member.items` 不带成员数；`msg.list_sessions` 不能按 `request_count` 过滤（前端最多翻 500 个会话）；lookup 不知道对方有没有 HomeStation 主页（“查看主页”可能 404）。
 - `merge_contacts` 不迁移 `friend_requests`；屏蔽 / 冷却造成的丢弃对发送方表现为投递失败；按声称 `from` 扣配额，伪造者可耗掉别人的配额；HomeStation 自己写 tag 会触发一次无变更的重同步。
 - 联系人导入（CSV）与合并在 My Network 中没有入口（旧的内存假实现已删）。
+
+### 8.5 DV 验收（2026-10-18，test.buckyos.io，`start.py --all` 新装，用户 devtest / alice / bob）
+
+部署：`start.py --all` 安装的是提交 f5c609c88 的构建；验收中修正后又替换了 `bin/msg-center/msg_center`（备份 `.bak-<时间>`）与 `bin/control-panel/web`（备份 `web.bak-<时间>`）。
+
+- `test/test_msg_center/test_my_network.ts`（deno，接口层）通过：lookup、用户 tag 的写入与 `tag-not-writable`、他人库写入被拒、Zone 关系 `system-relation`、发往不可达 DID 的请求带原因等待重试后撤回删除、HomeStation 主动关注写出与撤下 `homestation.following`（服务 token + 新 RBAC 规则真实生效）。脚本默认 member 密码改为 dev 种子的 `buckyos2026`，DID 从 `user.list` 取。
+- `tests/dv/my-network.spec.ts`（Playwright，真实登录 bob）两例通过：
+  - 真实好友列表（不含本人）、同 Zone 用户“已是好友”、未知 DID 的错误提示、新建并删除用户 Collection（接口回读 tag）、被邀请的群自动加入、凭邀请链接加入本 Zone 群、Requests 无错误、“发消息”打开 MessageHub。
+  - 他 Zone 好友请求：每次生成新的 `did:dev` 身份签名 `buckyos.friend` 请求，不带 Bearer 经公网网关 PUT 到 `/kapi/msg-center/<bob>/inbox` → 200 accepted，重放 200，未签名 401；bob 的 Requests 出现该请求，联系人为“请求加我”，MessageHub 好友请求卡点“接受”后接口回读 friend / allow。
+- 手工核对：用 OOD 设备私钥（`did:web:ood1.test.buckyos.io#main_key`）代 bob 签名发给 alice → 200 accepted（真实名字服务把设备文档解析到 Zone），同一 kid 换随机私钥 → 403 `invalid-signature`；不存在的本 Zone 用户 → 404；不带 `cyfs-obj-id` 头的 JWT 会按普通 JSON 对象计算 id → 400（发送方 `cyfs_dispatch::send` 总会带该头）。
+- 既有 DV 回归：`homestation.spec`、`object-presentation.spec` 全过；`local-user.spec` “admin creates a real local user…” 失败是旧断言（8 月写的 `/^user$/`，10-09 起徽标显示翻译后的 `User` / `Active`），与本次无关。
+
+验收中发现并已修正（未提交）：
+
+- lookup 对裸名字（如 `bob`）每次都等名字服务超时（Owner 与默认文档各 5 秒，失败不缓存，共 10 秒）。改为：本地已有同名联系人时不解析；Owner 查询超时不再追问、单次 3 秒；暂时无回答缓存 30 秒；按名称输入且本地有结果时不报解析错误。DV 实测从 10 秒降到毫秒级。
+- name_client 拒绝解析 `did:dev` 等密钥型 DID，原先被当作暂时失败每 60 秒重试；现按不存在处理，投递直接 `native-route-unresolved` 不重试。生产中 OOD 设备 DID 是 `did:web:<ood>.<zone>`，Zone 托管签名的校验不受影响（已在 DV 上验证）。
+- My Network 真实列表里出现了 owner 本人（owner 的库里有自己这条 Zone 用户联系人）；`realBackend.listContacts` 现在排除 owner。
+

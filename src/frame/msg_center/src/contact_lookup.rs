@@ -446,7 +446,18 @@ impl MessageCenter {
             candidates.extend(self.relation_groups(owner, keyword.as_deref()).await?);
         }
 
+        // A bare name that already names someone the owner knows is that
+        // person; only a full `did:` asks the name service regardless.
+        let known_name = |candidates: &[LookupCandidate]| {
+            let wanted = input.to_lowercase();
+            candidates.iter().any(|c| {
+                c.name.as_deref().is_some_and(|n| n.to_lowercase() == wanted)
+                    || c.did.id.to_lowercase() == wanted
+                    || c.did.id.to_lowercase().starts_with(&format!("{wanted}."))
+            })
+        };
         let target = match &parsed {
+            Ok(ParsedInput::Name(_)) if known_name(&candidates) => None,
             Ok(ParsedInput::Did(did)) | Ok(ParsedInput::Name(did)) => Some((did.clone(), None)),
             Ok(ParsedInput::Invite(did, invite)) => Some((did.clone(), Some(invite.clone()))),
             Err(e) => {
@@ -462,8 +473,10 @@ impl MessageCenter {
                     candidates.insert(0, resolved);
                 }
                 Err(e) => {
+                    // A name that also matched local people is reported only
+                    // when nothing else was found.
                     let named = matches!(parsed, Ok(ParsedInput::Name(_)));
-                    if !(named && e.code == "not-found" && !candidates.is_empty()) {
+                    if !(named && !candidates.is_empty()) {
                         error = Some(e);
                     }
                 }

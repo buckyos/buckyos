@@ -10,7 +10,7 @@
  *
  * Env: BUCKYOS_TEST_ZONE_HOST (test.buckyos.io), BUCKYOS_TEST_ADMIN_USER (devtest),
  * BUCKYOS_TEST_ADMIN_PASSWORD (bucky2025), BUCKYOS_TEST_MEMBER_USER (bob),
- * BUCKYOS_TEST_MEMBER_PASSWORD (bucky2025).
+ * BUCKYOS_TEST_MEMBER_PASSWORD (buckyos2026, the `start.py --all` dev seed). DIDs come from `user.list`.
  */
 import { buckyos } from "buckyos";
 
@@ -32,9 +32,7 @@ const zoneHost = Deno.env.get("BUCKYOS_TEST_ZONE_HOST")?.trim() || "test.buckyos
 const adminUser = Deno.env.get("BUCKYOS_TEST_ADMIN_USER")?.trim() || "devtest";
 const adminPassword = Deno.env.get("BUCKYOS_TEST_ADMIN_PASSWORD")?.trim() || "bucky2025";
 const memberUser = Deno.env.get("BUCKYOS_TEST_MEMBER_USER")?.trim() || "bob";
-const memberPassword = Deno.env.get("BUCKYOS_TEST_MEMBER_PASSWORD")?.trim() || "bucky2025";
-const adminDid = `did:bns:${adminUser}`;
-const memberDid = `did:bns:${memberUser}`;
+const memberPassword = Deno.env.get("BUCKYOS_TEST_MEMBER_PASSWORD")?.trim() || "buckyos2026";
 const unreachableDid = "did:web:nobody.invalid";
 const userTag = `DV 验收 ${Date.now()}`;
 let lastNonce = Date.now();
@@ -97,6 +95,15 @@ async function waitFor<T>(label: string, probe: () => Promise<T | undefined>, at
 
 const adminToken = await login(adminUser, adminPassword);
 const memberToken = await login(memberUser, memberPassword);
+const zoneUsers = (asRecord(await call("control-panel", "user.list", {}, adminToken), "user.list").users as JsonRecord[]) ?? [];
+const didOf = (userId: string) => {
+  const did = zoneUsers.find((u) => u.user_id === userId && typeof u.did === "string")?.did;
+  assert(typeof did === "string", `user.list has a DID for ${userId}`);
+  return did;
+};
+const adminDid = didOf(adminUser);
+const memberDid = didOf(memberUser);
+console.log(`admin ${adminDid}, member ${memberDid}`);
 const asAdmin = (method: string, params: JsonRecord) => call("msg-center", method, params, adminToken);
 const asMember = (method: string, params: JsonRecord) => call("msg-center", method, params, memberToken);
 const homestation = (method: string, params: JsonRecord) => call("homestation", method, params, adminToken);
@@ -148,9 +155,10 @@ try {
     const list = asRecord(await asAdmin("contact.list_friend_requests", { direction: "outgoing" }), "list");
     const mine = (list.items as JsonRecord[]).find((r) => r.request_id === pendingRequest);
     const state = mine?.delivery ? asRecord(mine.delivery, "delivery") : undefined;
-    return state?.state === "failed" ? state : undefined;
+    // An unknown Zone either fails for good or waits for a retry; both say why.
+    return state && state.state !== "delivered" && state.reason ? state : undefined;
   });
-  console.log(`  ✓ delivery failed: ${delivery.reason}`);
+  console.log(`  ✓ delivery ${delivery.state}: ${delivery.reason}`);
   const cancelled = asRecord(await asAdmin("contact.cancel_friend_request", { request_id: pendingRequest }), "cancel");
   assert(asRecord(cancelled.request, "request").state === "cancelled", "request cancelled");
   pendingRequest = undefined;

@@ -169,7 +169,11 @@ export function createRealNetworkBackend(): NetworkBackend {
     ownerDid,
     shareText: ownerDid,
     lookup: async (input, options) => client().lookup({ input, ...options, contact_mgr_owner: await ownerDid() }),
-    listContacts: async () => client().listContacts({ limit: 1000 }, await ownerDid()),
+    listContacts: async () => {
+      const me = await ownerDid()
+      // The owner's store also holds the owner (a Zone user of their own Zone).
+      return (await client().listContacts({ limit: 1000 }, me)).filter(contact => contact.did !== me)
+    },
     saveContact: async (did, name) => {
       const me = await ownerDid()
       const existing = await client().getContact(did, me)
