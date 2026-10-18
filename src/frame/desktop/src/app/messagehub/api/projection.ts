@@ -39,6 +39,8 @@ export interface ProjectionInput {
   personalTitles: Record<string, string>
   /** Self-host groups the owner participates in, by group DID. */
   groups: Record<string, { name: string }>
+  /** DIDs listed before any conversation exists (`addPeer`). */
+  peers?: Array<{ did: string; name?: string; type?: 'person' | 'agent' }>
   /** Shared titles of named group sessions, by local session key. */
   groupSessionTitles: Record<string, string>
   policies: Record<string, CreationPolicy>
@@ -293,6 +295,12 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
   }
   for (const did of input.agentDids) ensureSeed(did)
   for (const did of Object.keys(input.groups)) ensureSeed(did, { isGroup: true })
+  for (const peer of input.peers ?? []) {
+    if (seeds.has(peer.did) || peer.did === ownerDid) continue
+    const seed = ensureSeed(peer.did, { fromName: peer.name })
+    if (peer.type === 'agent') seed.type = 'agent'
+    if (!parseTunnelDid(peer.did)) seed.domain = 'managed'
+  }
   names[ownerDid] ??= labels.you
 
   const sessions: Session[] = []
@@ -375,7 +383,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       isMuted: false,
       unreadCount: own.reduce((sum, session) => sum + session.unreadCount, 0),
       requestCount: own.reduce((sum, session) => sum + (session.requestCount ?? 0), 0),
-      tags: [...new Set([...(seed.contact?.tags ?? []), ...(seed.contact?.groups ?? [])])].sort(),
+      tags: [...new Set(seed.contact?.tags ?? [])].sort(),
       lastMessage: latest?.lastMessage,
       lastActiveAt: latest?.lastActiveAt ?? 0,
       source: [...seed.sources][0],

@@ -4,8 +4,9 @@ import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { confirmGroupAction } from './confirmDialog'
 import { friendlyDidName } from './api/projection'
-import { InviteMembersForm } from './GroupDialogs'
-import { groupErrorText, parseInviteLink, participating, sortGroupMembers } from './groupModel'
+import { InviteFailures } from './GroupDialogs'
+import { formatInviteLink, GROUP_MEMBER_KINDS, GROUP_MEMBER_LIMIT, groupErrorText, participating, sortGroupMembers } from './groupModel'
+import { useNetworkDialogs } from '../../components/network/dialogs'
 import { hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, GroupMember, MessageHubContext } from './types'
@@ -76,10 +77,11 @@ function MemberMenu({ group, member, context, name, disabled, onRun }: { group: 
 
 /** Membership and management of a self-host group, shown in the group's entity details. */
 export function GroupPanel({ entity, context }: { entity: Entity; context: MessageHubContext }) {
-  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
   const [pending, setPending] = useState(false), [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
-  const [inviteLink, setInviteLink] = useState<string | null>(null), [copied, setCopied] = useState(false)
+  const [inviteToken, setInviteToken] = useState<string | null>(null), [copied, setCopied] = useState(false)
+  const inviteLink = inviteToken ? formatInviteLink(entity.id, inviteToken) : null
   useEffect(() => { void store.ensureGroup(context, entity.id) }, [store, context.ownerDid, context.viewerDid, context.mode, entity.id]) // eslint-disable-line react-hooks/exhaustive-deps
   const group = store.group(context, entity.id)
   const status = store.groupStatus(context, entity.id)
@@ -96,10 +98,16 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
   const members = sortGroupMembers((group.members ?? []).filter(participating))
   const activeCount = members.filter(member => member.state === 'active').length
   const waitingCount = members.length - activeCount
-  const openInvite = () => {
+  const openInvite = async () => {
     const trigger = document.activeElement
-    void dialog.open({ title: t('messagehub.group.inviteTitle', undefined, { name: group.name || entity.name }), size: 'md', dismissible: false, renderBody: controls => <InviteMembersForm context={context} group={group} onCancel={() => controls.close()} onDone={() => controls.close()} /> })
-      .then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
+    const exclude = (group.members ?? []).filter(participating).map(member => ({ did: member.did, reason: t(`messagehub.group.state.${member.state}`) }))
+    const result = await dialogs.pickPeople({ title: t('messagehub.group.inviteTitle', undefined, { name: group.name || entity.name }), confirmLabel: t('messagehub.group.invite'), limit: GROUP_MEMBER_LIMIT, filter: { kinds: GROUP_MEMBER_KINDS, exclude } })
+    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus()
+    if (result.action !== 'selected') return
+    await run(async () => {
+      const failures = await store.inviteGroupMembers(context, group.did, result.people.map(person => person.did))
+      if (failures.length) void dialog.open({ title: t('messagehub.group.inviteFailed'), size: 'sm', dismissible: false, renderBody: controls => <InviteFailures failures={failures} nameOf={nameOf} onClose={() => controls.close()} /> })
+    })
   }
   const remove = async (member: GroupMember) => {
     const name = nameOf(member.did)
@@ -115,8 +123,8 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
     if (!await confirmGroupAction(dialog, t, { title: t('messagehub.group.delete'), body: t('messagehub.group.deleteConfirm', undefined, { name: group.name || entity.name }), confirm: t('messagehub.group.delete') })) return
     await run(() => store.deleteGroup(context, group.did))
   }
-  const createLink = () => run(async () => { setInviteLink(await store.createGroupInviteLink(context, group.did, {})); setCopied(false) })
-  const revokeLink = () => run(async () => { const token = inviteLink ? parseInviteLink(inviteLink)?.invite : undefined; if (token) await store.revokeGroupInviteLink(context, group.did, token); setInviteLink(null) })
+  const createLink = () => run(async () => { setInviteToken(await store.createGroupInviteLink(context, group.did, {})); setCopied(false) })
+  const revokeLink = () => run(async () => { if (inviteToken) await store.revokeGroupInviteLink(context, group.did, inviteToken); setInviteToken(null) })
   const copyLink = async () => { if (!inviteLink) return; try { await navigator.clipboard.writeText(inviteLink); setCopied(true) } catch { setCopied(false) } }
   const manageable = group.myRole && group.lifecycle !== 'deleted' && group.hosted
   return <section className="mb-4 rounded-xl p-3" style={{ background: 'color-mix(in srgb, var(--cp-text) 4%, transparent)' }} data-testid="group-panel" aria-label={t('messagehub.group.membersTitle')}>
@@ -135,7 +143,7 @@ export function GroupPanel({ entity, context }: { entity: Entity; context: Messa
       <h4 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]">{t('messagehub.group.membersTitle')}{group.members ? ` · ${activeCount}` : ''}{group.members && waitingCount > 0 ? <span className="font-normal normal-case tracking-normal"> · {t('messagehub.group.waitingCount', undefined, { count: waitingCount })}</span> : null}</h4>
       {group.can.invite && <div className="flex items-center gap-1">
         <button type="button" className="flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" disabled={pending} onClick={() => void createLink()} title={t('messagehub.group.createInviteLink')} aria-label={t('messagehub.group.createInviteLink')}><Link2 size={15} aria-hidden /></button>
-        <button type="button" className="flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" disabled={pending} onClick={openInvite}><UserPlus size={15} aria-hidden />{t('messagehub.group.invite')}</button>
+        <button type="button" className="flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" disabled={pending} onClick={() => void openInvite()}><UserPlus size={15} aria-hidden />{t('messagehub.group.invite')}</button>
       </div>}
     </div>
     {inviteLink && <div className="mt-2 space-y-1 rounded-lg border border-[color:var(--cp-border)] p-2 text-xs" data-testid="group-invite-link">

@@ -4,7 +4,7 @@ import { MessageHubMockStore } from '../mock/store'
 import { MessageHubApiStore } from '../api/store'
 import type { MessageHubStore } from './types'
 
-export type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OwnerStatus, SyncStatus } from './types'
+export type { ConnectionChoice, ManageAction, MessageHubStore, OutgoingPayload, OwnerStatus, SyncStatus } from './types'
 
 const mockModeValues = new Set(['1', 'true', 'yes', 'mock'])
 

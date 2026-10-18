@@ -18,16 +18,16 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess, rememberLocalObject } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, blockContact, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateContact, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
-import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
+import { createGroupSchema, groupSessionId } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
 import { isValidMsgSessionId, notifySessionCategory, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
-import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
+import type { ConnectionChoice, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
 import { apiObjectAccess } from './objects'
@@ -65,6 +65,8 @@ interface OwnerData {
   agentDids: string[]
   /** Groups the viewer participates in (`group.list_by_member`, self only). */
   groups: Record<string, GroupSummaryEntry>
+  /** DIDs opened without a conversation yet (`addPeer`). */
+  peers: Map<string, { name?: string; type?: 'person' | 'agent' }>
   groupInfo: Map<string, { status: 'loading' | 'ready' | 'error'; value?: GroupInfo; loading?: Promise<void> }>
   groupSessionTitles: Record<string, string>
   /** `group.check_access(session.post)` per local group session key. */
@@ -226,7 +228,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, peers: new Map(), groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -432,6 +434,7 @@ export class MessageHubApiStore implements MessageHubStore {
       policies: {},
       labels: labels(),
       hiddenAccounts: { dids: [this.selfDid], usernames: [this.selfUsername] },
+      peers: [...data.peers].map(([did, info]) => ({ did, ...info })),
     })
     data.projected = { version: data.version, value }
     return value
@@ -465,32 +468,11 @@ export class MessageHubApiStore implements MessageHubStore {
     return entity && detail ? { ...detail, ...entity } : null
   }
 
-  admission(context: MessageHubContext, entityId: string): EntityAdmission | null {
-    if (entityId === UNASSIGNED_ENTITY_ID || entityId === context.ownerDid || this.findEntity(context, entityId)?.systemNotify) return null
-    const contact = this.owner(context.ownerDid).contacts.find(item => item.did === entityId)
-    const grant = contact?.temp_grants?.filter(item => item.expires_at * 1000 > this.now() || item.expires_at > this.now()).sort((a, b) => b.expires_at - a.expires_at)[0]
-    return {
-      accessLevel: contact?.access_level ?? 'stranger',
-      temporaryExpiresAt: grant ? (grant.expires_at > 1e12 ? grant.expires_at : grant.expires_at * 1000) : undefined,
-      canChange: context.mode === 'self' && context.ownerDid === this.selfDid && !this.groupDid(context, entityId),
-    }
-  }
-
-  async setAdmission(context: MessageHubContext, entityId: string, action: 'accept' | 'block') {
-    this.requireOwn(context)
-    if (action === 'accept') {
-      // Accepting a sender that only reached the request box creates its
-      // contact, which is named after what the conversation already shows.
-      const known = this.owner(context.ownerDid).contacts.some(contact => contact.did === entityId)
-      const name = this.findEntity(context, entityId)?.name
-      await updateContact(entityId, { access_level: 'friend', ...(!known && name && name !== entityId ? { name } : {}) }, context.ownerDid)
-    }
-    else await blockContact(entityId, context.ownerDid)
-    await this.ensureOwner(context, true)
-  }
-
-  private groupDid(context: MessageHubContext, entityId: string) {
-    return this.findEntity(context, entityId)?.type === 'group'
+  addPeer(context: MessageHubContext, did: string, info: { name?: string; type?: 'person' | 'agent' } = {}) {
+    if (!this.canView(context) || this.findEntity(context, did)) return
+    const data = this.owner(context.ownerDid)
+    data.peers.set(did, info)
+    this.bump(data)
   }
 
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']): Session[] {
@@ -1364,7 +1346,7 @@ export class MessageHubApiStore implements MessageHubStore {
     this.requireOwn(context)
     try {
       const link = await createGroupInviteLink(groupDid, { ...(options.expiresAt !== undefined ? { expires_at_ms: options.expiresAt } : {}), ...(options.maxUses !== undefined ? { max_uses: options.maxUses } : {}), ...(options.requireApproval !== undefined ? { require_approval: options.requireApproval } : {}) }, crypto.randomUUID())
-      return formatInviteLink(groupDid, link.token)
+      return link.token
     } catch (error) { throw groupFailure(error) }
   }
 

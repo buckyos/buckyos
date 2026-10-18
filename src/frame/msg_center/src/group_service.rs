@@ -178,17 +178,37 @@ impl MessageCenter {
         }
         if method == "group.list_by_member" {
             let mut groups = vec![];
+            let mut invitations = vec![];
             for g in self.groups.list().await? {
-                if g.lifecycle != "deleted"
-                    && (g.role(&actor.did).is_some()
-                        || g.sessions.keys().any(|s| g.effective(Some(s), &actor.did)))
-                    && g.check_client(&actor).is_ok()
+                if g.lifecycle == "deleted" || g.check_client(&actor).is_err() {
+                    continue;
+                }
+                let record = g.members.get(&actor.did.to_string());
+                if g.role(&actor.did).is_some()
+                    || g.sessions.keys().any(|s| g.effective(Some(s), &actor.did))
                 {
-                    groups.push(self.group_doc(&g)?);
+                    let mut item = self.group_doc(&g)?;
+                    item["member"] = json!({
+                        "state": record.map(|m| m.state),
+                        "role": g.role(&actor.did),
+                    });
+                    groups.push(item);
+                } else if let Some(m) = record.filter(|m| {
+                    matches!(m.state, MemberStatus::Invited | MemberStatus::PendingAdminApproval)
+                }) {
+                    // Groups the caller is asked into or waits to be approved for.
+                    let mut item = self.group_doc(&g)?;
+                    item["member"] = json!({
+                        "state": m.state,
+                        "invitation_id": m.invitation_id,
+                        "invited_by": m.invited_by,
+                        "expires_at_ms": m.expires_at_ms,
+                    });
+                    invitations.push(item);
                 }
             }
             let joined = self.joined_groups(&actor.did).await?;
-            return Ok(json!({"items":groups,"joined":joined}));
+            return Ok(json!({"items":groups,"invitations":invitations,"joined":joined}));
         }
         let group: DID = field(&p, "group_did")?;
         if method == "group.sync_joined" {

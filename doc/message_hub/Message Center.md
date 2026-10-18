@@ -1,6 +1,7 @@
 # MessageCenter 设计文档
 
 - 2026-09-07：按当前源码校正 Session UI 接入边界；新增约束为目标契约，未在本次修改中实现。
+- 2026-10-17：原生投递的自动路由与约定接收路径（§2.2）、无 Bearer 的签名入站与 Zone 托管签名（§4.5）、`buckyos.friend` 好友消息（§2.1.4）已实现；真实跨 Zone 只在两个 msg-center 实例的测试中验证。
 
 > **MessageCenter is not an IM server. It is a DID-native, store-and-forward personal messaging system—email upgraded for Personal Servers and Agents.**
 
@@ -120,6 +121,14 @@ App 给 Zone 用户发的通知（System Notify，对 App 的接口见 [System N
 - `kind = notify` 计入会话活跃（§5.8 的 activity 口径、解除归档）。
 - 表 `notifies`（`notify_id, owner_did, requester, idempotency_key, state: delivering|delivered|closed, created_at_ms, row_json`）记录 msg-center 的决定与进度；`send` 每一步幂等、可从断点续做，30 s 一次的清扫补完中断的发送、处理过期（`notice` 归档，`input` 以 `expired` 撤销任务）、关闭任务已结束的行。
 
+#### 2.1.4 `buckyos.friend`：好友请求（2026-10-17）
+
+好友请求与回复是 `kind = Operation` 的 MsgObject，`content.machine = {intent: "buckyos.friend", data: {action: request|accept|reject|cancel|remove, request_id, message?, profile_hint?, expires_at_ms?}}`，只由 msg-center 代 owner 构造（`contact.send_friend_request` 等，见 [Contact Mgr.md](<./Contact Mgr.md>) §3.4 与 [My Network相关协议设计.md](<./My Network相关协议设计.md>) §5–§6），走普通原生投递。
+
+- dispatch 对每个收件人先做屏蔽检查，再识别这个 intent，最后才是 ContactMgr 准入：`accept` / `reject` / `cancel` / `remove` 只改联系人状态，不写邮箱；新的 `request` 建请求记录后按普通准入写一条记录（陌生人进 REQUEST_BOX）；屏蔽、过期、冷却中的请求丢弃（该收件人计入 dropped）。
+- 发送方的 `request` 留一条 SENT 记录；控制消息双方都不留记录。
+- `msg.post_send` 拒绝 `machine.intent = buckyos.friend` 的消息，返回 `friend-messages-use-contact-rpc`：好友状态由 msg-center 为 owner 维护，客户端不能自己发这类消息。入站时 data 不能解析为好友消息的这类消息直接丢弃，不当普通消息投递。
+
 **永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类、接收方分配的序号。
 本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；投递回执由 `ReceiptObj`（`cyrece`）单独表达。
 会话级生命周期需另有 owner 范围元数据（§5.8）。这些变化均不修改原始 MsgObject。
@@ -143,7 +152,7 @@ pub struct DeliveryEnvelope {
 
 两条确定投递分支（也只有这两条）：
 
-- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**：目标设计为确定性解析 DID、Zone 与语义接收点，发送 MsgObject canonical JSON。当前代码已支持本地 dispatch 及显式配置的跨 Zone CYFS 路由；未配置路由返回 `native-route-not-configured`，配置与投递快照不一致返回 `native-route-changed`。不能仅凭 native DID 假设可达；自动解析能力不作已实现承诺。接收与缓存结果见 §4.5。
+- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**（`message_hub.rs`）：本 Zone 目标直接本地 dispatch。他 Zone 目标先用显式配置：群消息用 `cyfs_dispatch.joined_groups`（没有绑定返回 `native-route-not-configured`），个人目标用 `cyfs_dispatch.outgoing[<did>]`（必须带 Bearer `authorization`）。个人目标没有配置时自动路由（`cyfs_dispatch.rs::auto_route`）：经名字服务（`network_directory.rs`）解析目标 DID 的 Zone（用户取 `binded_zone_list` 第一项），投到约定接收点 `cyfs://<zone>/kapi/msg-center/<did>/inbox`，upstream 为 `https://<zone>`（`cyfs_dispatch.zone_origins` 可按 Zone 覆盖），不带 Bearer，发送签名的 MsgObject（§4.5）。DID 没有 Zone 或名字服务确认不存在 → `native-route-unresolved`（不重试）；名字服务暂时无回答 → `native-route-unavailable`（可重试，60 秒后）；配置的路由与投递快照不一致 → `native-route-changed`。路由在执行投递时解析，名字服务答案缓存 10 分钟。接收与缓存结果见 §4.5。
 - `target_did` 是 **local shadow endpoint DID**（`did:msgtunnel:*`）→ **MessageTunnel 投递**：从 DID 内嵌的 `tunnel_instance_id` 在注册表查出 tunnel 实例，平台地址由 DID 内嵌的 account 信息与 tunnel 配置确定。
 
 任何解析失败（未注册的 tunnel 实例、无法解析的 DID、非法格式）都返回错误。**禁止 default tunnel、default chat、last-active fallback。**
@@ -422,7 +431,7 @@ def report_delivery(delivery_id, result):
 原消息自身不是关系消息（否则 `edit-not-allowed`）；原作者此后没有在该会话里撤回（redact）它（否则 `not-found`）。
 不合法的 edit 对该收件人丢弃；没有任何收件人接受时 `dispatch` 返回错误。发送侧 `post_send` 不做此校验。
 
-### 4.5 跨 Zone 原生投递与 Gateway 尽力缓存（2026-09-07 实现边界校正）
+### 4.5 跨 Zone 原生投递与 Gateway 尽力缓存（2026-10-17 实现边界）
 
 原生投递遵循 [CYFS dispatch 协议](<../../../cyfs-ndn/doc/CYFS Protocol/CYFS Protocol.md>)。Gateway 先执行 process-chain 安全过滤，再直接尝试 upstream；只有 upstream 失效才调用配置的 NamedInboxCacheServer。公网 VPS 上的 Gateway 可以因此在家庭 OOD 离线时暂存对象，并按配置后台转投。组件与实现入口见 [NamedInboxCacheServer 设计](../../../cyfs-gateway/doc/NamedInboxCacheServer设计.md)。
 
@@ -437,11 +446,24 @@ def report_delivery(delivery_id, result):
 
 Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除”执行；临时失败或无响应时尽力保留，永久拒绝可以清理。故障、过期清理或重建导致缓存丢失是允许的。发送方重试和 Gateway 排空可能重复或并发发生，接收适配必须按 `(target_zone, semantic_path, obj_id)` 幂等处理，并且只确认路径指定的本地接收点，不能因 MsgObject 带多个 to 就确认其他目标。
 
-CYFS 接收同时接受 `application/cyfs-named-object+json` 与 `application/cyfs-named-object+jwt`。JWT 形式的 MsgObject（`cyfs_dispatch.rs::verify_signed_message`）：
+**接收点**（`cyfs_dispatch.rs::serve`）：接受目标 `cyfs://<本 Zone>/<path>`，`cyfs_dispatch.target_zone` 未配置时取运行时 Zone host。`path` 是 `accepted_paths` 中显式配置的路径（其收件人须是本地收件人 `is_local_recipient`），或约定路径 `/kapi/msg-center/<did>/inbox`。约定路径只服务 msg-center 显式登记的收件人（`is_registered_recipient`：Zone 同步登记的本 Zone 用户与 Agent、本 Zone 托管的群），不是 Zone host 下的任意 DID；未登记的 DID 返回 404 `no-handler`。两者都只确认路径指定的那个收件人。msg-center 的 HTTP 入口里，不属于 kRPC（POST）、群 HTTP 与对象访问的请求进入 CYFS 接收（PUT 投递、GET 状态查询）。
 
-- 要求 `kid` 的 DID 部分等于 `from`，公钥用 name-client `resolve_auth_key(from, #fragment)` 解析（`did:dev` 直接取 DID 内嵌公钥）。`from` 的 DID Document 授权给设备或 Agent 的密钥尚未支持，按 `signer-mismatch` 拒绝。
+**入站认证**：
+
+- 带 Bearer：必须是本 Zone 信任的 session token，`sub`（经 `principal_dids` 映射）为 principal。GET 状态查询只接受这种方式。
+- 不带 Bearer：只接受 `application/cyfs-named-object+jwt`，签名验出的 `from` 即 principal（未签名返回 401 `unauthenticated`）。每个发送方每分钟最多 30 条（进程内计数），超出返回 429 `rate-limited`（可重试）。配额在验签之前扣除，按 JWT 声称的 `from` 计，超额的发送方不会触发签名密钥的名字解析；已知风险：伪造者可以冒用某个 `from` 耗尽它在本 Zone 的配额。
+- 两种方式都要求 `from == principal` 且 `to` 含路径指定的收件人（否则 `sender-or-target-mismatch`），之后照常走 ContactMgr 准入：陌生人进 REQUEST_BOX，屏蔽丢弃并返回 403 `acl-denied`（不可重试）。所有签名消息都放行进准入，跨 Zone 私聊因此可用；垃圾消息是已知风险，目前只靠屏蔽、好友请求冷却与每分钟配额。
+
+CYFS 接收同时接受 `application/cyfs-named-object+json` 与 `application/cyfs-named-object+jwt`。JWT 形式的 MsgObject（`cyfs_dispatch.rs::verify_signed_message_with`）：
+
+- 签名者（`kid` 的 DID 部分）等于 `from`：公钥用 name-client `resolve_auth_key(from, #fragment)` 解析（`did:dev` 直接取 DID 内嵌公钥）。
+- 签名者不是 `from`：先按 **Zone 托管**规则——签名者所在 Zone（`network_directory.rs`）等于 `from` 的 Zone（`from` 是本地收件人时取本 Zone）即接受，与 HomeStation 同一规则；否则要求 `from` 的 DID Document `authentication` 列出该签名者或 `kid`（`from` 为 `did:dev` 时不适用）。都不满足返回 `signer-mismatch`。已知风险：Zone 可以替它的用户签名。用户自有密钥（`security/<user>/key`）未使用。
 - 签名无效返回 `invalid-signature`，未知密钥返回 `unknown-signing-key`，均为不可重试拒绝；解析服务不可用返回可重试的 `signing-key-unavailable`。签名无效时不降级为 JSON 形式接受。
 - 验证通过后，canonical JSON 照常写入 named store，JWT 原文写入 `msg_jwt_originals`（schema v11，按 msg_id，先到者保留）。原生 dispatch 转投该消息时发送 JWT 原文；读取 JWT 原文的 RPC 尚未提供。
+
+**发送签名**：`from` 是本地收件人（本 Zone 用户或 Agent）的消息原生投递到他 Zone 时，若还没有 JWT 原文，msg-center 用 OOD 设备私钥签名（`kid = <device_did>#main_key`），JWT 写入 `msg_jwt_originals` 后发送。启动时读不到设备私钥则不签名，此时只有带 Bearer 的显式配置路由可用。
+
+**验证边界**：真实跨 Zone 投递只在测试中用两个 msg-center 实例模拟两个 Zone 验证过（`test_contact_network.rs::friend_request_and_chat_cross_two_zones`：好友请求与接受往返、好友之间普通私聊进 INBOX、重放不重复、未签名对象与他 Zone 设备代签被拒；目录用测试桩），没有在 DV 上验证（DV 只有一个 Zone）。实际部署还依赖名字服务能把对方用户 DID 与签名设备 DID 解析到 Zone，以及对方 Zone 网关公开 `/kapi/msg-center/`。
 
 当前 `cyfs_dispatch.rs::delivery_report` 已把 accepted 映射为 ok=true，把 cached 映射为
 ok=false、error_code=`cyfs-cached`、retryable=true、retry_after_ms=30000，交由既有投递重试机制处理。
@@ -785,6 +807,9 @@ P3 实现迁移已于 2026-07-14 完成：代码与本文档使用同一套命�
 | `RecipientState` / `DeliveryState` 两个状态机 | 两个独立枚举（`MsgState` 已删除；`READED` → `READ`） |
 | `transport_did` vs `tunnel_instance_id` | `DeliveryEnvelope.transport_did`；registry key 为 `tunnel_instance_id` |
 | `DeliveryExecutor` 接口 | `frame/msg_center/src/msg_tunnel.rs`；MessageHub 与 TgTunnel 共同实现 |
-| MessageHub（原生投递） | `frame/msg_center/src/message_hub.rs`（本 Zone 目标本地 dispatch；跨 Zone hop 待实现，失败明确 DEAD） |
+| MessageHub（原生投递） | `frame/msg_center/src/message_hub.rs`（本 Zone 目标本地 dispatch；他 Zone 目标按显式配置或自动路由投递，本地用户的消息用 Zone 托管签名，§2.2、§4.5） |
+| CYFS 接收、自动路由、JWT 校验 | `frame/msg_center/src/cyfs_dispatch.rs`（`serve`、`auto_route`、`verify_signed_message_with`） |
+| DID → Zone 目录、Zone 签名者 | `frame/msg_center/src/network_directory.rs`（`NetworkDirectory`、`ZoneSigner`） |
+| `buckyos.friend` 与联系人关系 RPC | `frame/msg_center/src/friend_service.rs`、`contact_rpc.rs`、`contact_lookup.rs`；类型在 `buckyos_api::msg_contact`（见 Contact Mgr.md） |
 | `list_session/list_sessions` | `msg.list_session` / `msg.list_sessions` RPC + Session 索引；Desktop 集成代码已保留，MessageHub 页面当前使用 Mock DataModel，待专门集成测试通过后启用 |
 | （已删除）`thread.tunnel_id` | 已从 `ndn_lib::TopicThread` 移除（cyfs-ndn beta2.2） |

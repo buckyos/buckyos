@@ -75,68 +75,6 @@ test.describe('Users & Agents app panel', () => {
   })
 })
 
-test.describe('My Network app panel', () => {
-  test('desktop: relationship collections import and merge contacts', async ({ page }) => {
-    const consoleErrors: string[] = []
-    page.on('console', (message) => {
-      if (message.type() === 'error') consoleErrors.push(message.text())
-    })
-
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await page.goto('/?scenario=normal')
-
-    await page.getByTestId('desktop-app-my-network').click()
-    const win = page.getByTestId('window-my-network')
-    await expect(win).toBeVisible()
-
-    await expect(win.getByRole('complementary').getByText('My Network')).toBeVisible()
-    const networkSidebar = win.getByRole('complementary')
-    await expect(networkSidebar.getByRole('button', { name: /Contacts/ })).toBeVisible()
-    await expect(networkSidebar.getByRole('button', { name: /Friends/ })).toBeVisible()
-    await expect(networkSidebar.getByRole('button', { name: /Joined Groups/ })).toBeVisible()
-
-    await expect(win.getByPlaceholder('Search Contacts…')).toBeVisible()
-    const graceTelegramRow = win.getByRole('button', { name: /Grace\.telegram/ }).first()
-    await expect(graceTelegramRow).toBeVisible()
-
-    await graceTelegramRow.click()
-    await expect(win.getByText('One-way relation')).toBeVisible()
-    await expect(win.getByText('Merge candidate')).toBeVisible()
-    await expect(win.getByText('Social Accounts')).toBeVisible()
-    await win.getByRole('button', { name: 'Comment Login Flow' }).click()
-    await expect(win.getByText('HomeStation Comment Authorization')).toBeVisible()
-    await expect(win.getByText('Session Token = None')).toBeVisible()
-
-    await win.getByRole('button', { name: 'Import', exact: true }).click()
-    await page.getByRole('button', { name: 'Start import' }).click()
-    await expect(page.getByText('Import complete. Two contacts were added to Contacts.')).toBeVisible()
-    await page.getByRole('button', { name: 'Done' }).click()
-    await expect(win.getByRole('button', { name: /Mina\.imported/ })).toBeVisible()
-
-    await graceTelegramRow.locator('input[type="checkbox"]').check()
-    await win.getByRole('button', { name: /Grace\.imported/ }).locator('input[type="checkbox"]').check()
-    await expect(win.getByText('2 selected')).toBeVisible()
-    await win.getByRole('button', { name: 'Merge', exact: true }).click()
-    const mergeDialog = page.getByRole('dialog', { name: 'Merge contacts' })
-    await expect(mergeDialog).toBeVisible()
-    await mergeDialog.getByRole('button', { name: 'Merge' }).click()
-    await expect(win.getByRole('button', { name: /Grace\.imported/ })).toHaveCount(0)
-
-    await win.getByRole('button', { name: 'Add Contact' }).click()
-    await expect(win.getByRole('heading', { name: 'Nora' })).toBeVisible()
-
-    await win.getByRole('button', { name: 'Add Collection' }).click()
-    const collectionDialog = page.getByRole('dialog', { name: 'Add Collection' })
-    await expect(collectionDialog).toBeVisible()
-    await collectionDialog.getByRole('button', { name: 'Import Group' }).click()
-    await collectionDialog.getByLabel('Group Name').fill('Imported Leads')
-    await collectionDialog.getByRole('button', { name: 'Create' }).click()
-    await expect(win.getByRole('button', { name: /Imported Leads/ })).toBeVisible()
-
-    expect(consoleErrors).toEqual([])
-  })
-})
-
 test.describe('Users & Agents mobile panel', () => {
   test.use({
     viewport: { width: 375, height: 812 },

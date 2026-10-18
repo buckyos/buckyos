@@ -2,7 +2,7 @@
 
 > 创建日期：2026-10-17
 > 版本：v0.3（2026-10-17 第二轮 review：后台公共能力放 msg-center，公共 UI 组件放 `src/frame/desktop/src/components/`，其余按建议执行）。v0.2 已定：D2 好友请求 = 向对方 Zone 投递特殊 MsgObject（§3.4）；D5 用 tags 分组，应用之间约定公共 tag（§3.5）。
-> 状态：第 4 节决定已全部确定，待实施。
+> 状态：2026-10-17 已实施 M0–M6（未提交 git），实施记录见 §8；DV 待部署新 msg-center / homestation / desktop 后验收。
 > 依据：[My Network PRD](../product/my_networks/My_Network_PRD.md)（2026-08）、[My Network 相关协议设计](<../doc/message_hub/My Network相关协议设计.md>)、[Contact Mgr](<../doc/message_hub/Contact Mgr.md>)、[Message Center](<../doc/message_hub/Message Center.md>) §2.2 / §4.5、[HomeStation 架构设计 v0.7](<../doc/homestation/BuckyOS HomeStation 架构设计.md>)、[HomeStation 协议与实现](<../doc/homestation/HomeStation 协议与实现.md>)、MessageHub [UI_DATAMODEL.md](../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)，以及 2026-10-17 对三端代码和后端的核对。
 > 第 2 节“现状”只以源码为准；PRD 和协议文档里写了但没实现的能力，都单独标明。
 
@@ -276,56 +276,56 @@ M1–M3（后端）与 M4（前端组件，mock-first）可以并行；M5、M6 �
 ### M0：契约与文档（评审通过后再写代码）
 
 - [x] D1–D12 全部确定（2026-10-17）。
-- [ ] 改写 [My Network 相关协议设计](<../doc/message_hub/My Network相关协议设计.md>) §5–§7：intent 命名、RPC、请求记录、`friend_state` 与 `access_level` 分离；§13 写入结论。
-- [ ] 更新 [Contact Mgr.md](<../doc/message_hub/Contact Mgr.md>)：`friend_state`、`friend_requests`、tag 约定与写权限、`lookup`、`remove_contact`、unblock。
-- [ ] 更新 [Message Center.md](<../doc/message_hub/Message Center.md>) §2.2 / §4.5：自动路由与约定接收路径（G1）、签名入站（G2）、Zone 托管签名（G3）。
-- [ ] 新建 `src/frame/desktop/src/components/network/UI_DATAMODEL.md`：§3.3 的显示规则、GroupRef、Requests 四类条目、错误码到文案的映射；My Network 独有的视图另写在 `app/my-network/` 下。
-- [ ] `app/my-network/launch.ts` 的 `openMyNetwork`，以及 `components/network/` 中四个对话框的 zod 入参与返回值。返回值不含 token 等敏感数据，写法参照 [BuckyOS Sys Dlg.md](<../product/BuckyOS Sys Dlg.md>)，为 M7 留口。
-- [ ] 更新 [My_Network_PRD.md](../product/my_networks/My_Network_PRD.md)：§4.3 / §6.2 / §6.4 写入好友请求与单向关注的语义；§4.5 写 Collection = tag；§15 写“后台公共能力在 msg-center，公共 UI 在 Desktop components，My Network 是关系管理入口”；§19 Q2 / Q3 写入结论。
+- [x] 改写 [My Network 相关协议设计](<../doc/message_hub/My Network相关协议设计.md>) §5–§7：intent 命名、RPC、请求记录、`friend_state` 与 `access_level` 分离；§13 写入结论。
+- [x] 更新 [Contact Mgr.md](<../doc/message_hub/Contact Mgr.md>)：`friend_state`、`friend_requests`、tag 约定与写权限、`lookup`、`remove_contact`、unblock。
+- [x] 更新 [Message Center.md](<../doc/message_hub/Message Center.md>) §2.2 / §4.5：自动路由与约定接收路径（G1）、签名入站（G2）、Zone 托管签名（G3）。
+- [x] 新建 `src/frame/desktop/src/components/network/UI_DATAMODEL.md`：§3.3 的显示规则、GroupRef、Requests 四类条目、错误码到文案的映射；My Network 独有的视图另写在 `app/my-network/` 下。
+- [x] `app/my-network/launch.ts` 的 `openMyNetwork`，以及 `components/network/` 中四个对话框的 zod 入参与返回值。返回值不含 token 等敏感数据，写法参照 [BuckyOS Sys Dlg.md](<../product/BuckyOS Sys Dlg.md>)，为 M7 留口。
+- [x] 更新 [My_Network_PRD.md](../product/my_networks/My_Network_PRD.md)：§4.3 / §6.2 / §6.4 写入好友请求与单向关注的语义；§4.5 写 Collection = tag；§15 写“后台公共能力在 msg-center，公共 UI 在 Desktop components，My Network 是关系管理入口”；§19 Q2 / Q3 写入结论。
 
 ### M1：msg-center 联系人能力
 
-- [ ] `contact.lookup`（§3.2）。
-- [ ] `contact.remove_contact { did }`：删除记录与别名，不删历史消息；系统建立的关系拒绝删除。
-- [ ] unblock：沿用 `update_contact{access_level}`，或新增 `contact.unblock_contact`，二选一。
-- [ ] Contact 新增 `friend_state`；`upsert_zone_contacts` 与 `sync_zone_agent_contacts` 把同 Zone 用户、Agent 与 owner 置为 `friend`。同时把 `AccessGroupLevel::Friend` 改名为 `Allow`（D7），同步 MessageHub、HomeStation `contacts.rs`、websdk 与文档。
-- [ ] tags：按 D11 合并 groups；well-known tag 表；`contact.update_tags` 与按命名空间的写权限（`owner_session.rs` `authorize_contact_scope`）；RBAC 规则同步到 `rbac_config.rs`。
-- [ ] 联系人变更按 owner 发 kevent（好友状态、access_level、tags 变化都发）。
-- [ ] 同步 websdk `msg_center_client.ts` 与 buckyos-api `msg_center_client.rs`。
-- [ ] 按 AGENTS.md 检查 cmd_skills（身份/RBAC 类变更看 `buckyos_admin`），写明受影响与否的依据。
-- [ ] 验证：`cargo test -p msg_center -- --test-threads=1`、`cargo test -p buckyos-api -- --test-threads=1`。
+- [x] `contact.lookup`（§3.2）。
+- [x] `contact.remove_contact { did }`：删除记录与别名，不删历史消息；系统建立的关系拒绝删除。
+- [x] unblock：沿用 `update_contact{access_level}`，或新增 `contact.unblock_contact`，二选一。
+- [x] Contact 新增 `friend_state`；`upsert_zone_contacts` 与 `sync_zone_agent_contacts` 把同 Zone 用户、Agent 与 owner 置为 `friend`。同时把 `AccessGroupLevel::Friend` 改名为 `Allow`（D7），同步 MessageHub、HomeStation `contacts.rs`、websdk 与文档。
+- [x] tags：按 D11 合并 groups；well-known tag 表；`contact.update_tags` 与按命名空间的写权限（`owner_session.rs` `authorize_contact_scope`）；RBAC 规则同步到 `rbac_config.rs`。
+- [x] 联系人变更按 owner 发 kevent（好友状态、access_level、tags 变化都发）。
+- [x] 同步 websdk `msg_center_client.ts` 与 buckyos-api `msg_center_client.rs`。
+- [x] 按 AGENTS.md 检查 cmd_skills（身份/RBAC 类变更看 `buckyos_admin`），写明受影响与否的依据。
+- [x] 验证：`cargo test -p msg_center -- --test-threads=1`、`cargo test -p buckyos-api -- --test-threads=1`。
 
 ### M2：好友请求（本 Zone 先通）
 
-- [ ] §3.4 的五个 RPC 与 `friend_requests` 表；构造 MsgObject 时复用 `notify_group_member` 的模式（存对象 → 本地写邮箱 / 远端写 DeliveryRecord），可以抽出公共的“发送 Operation 消息”函数。
-- [ ] 本地 dispatch 与 `dispatch_to_receiver` 两条入口识别 `buckyos.friend`：建记录、交叉请求直接成为好友、屏蔽丢弃、已发请求方的回复越过 REQUEST_BOX。
-- [ ] 过期清扫、再次请求冷却、按 `(peer, request_id)` 幂等。
-- [ ] 测试：同一个 msg-center 里两个没有同 Zone 好友种子的 owner 走完请求 → 接受 / 忽略 / 取消 / 交叉请求 / 解除 / 屏蔽后请求；重放同一请求不产生重复记录。
+- [x] §3.4 的五个 RPC 与 `friend_requests` 表；构造 MsgObject 时复用 `notify_group_member` 的模式（存对象 → 本地写邮箱 / 远端写 DeliveryRecord），可以抽出公共的“发送 Operation 消息”函数。
+- [x] 本地 dispatch 与 `dispatch_to_receiver` 两条入口识别 `buckyos.friend`：建记录、交叉请求直接成为好友、屏蔽丢弃、已发请求方的回复越过 REQUEST_BOX。
+- [x] 过期清扫、再次请求冷却、按 `(peer, request_id)` 幂等。
+- [x] 测试：同一个 msg-center 里两个没有同 Zone 好友种子的 owner 走完请求 → 接受 / 忽略 / 取消 / 交叉请求 / 解除 / 屏蔽后请求；重放同一请求不产生重复记录。
 
 ### M3：跨 Zone 原生送达（G1–G3）
 
-- [ ] G1：发送方自动路由（DID → 默认 Zone → 约定路径），带缓存；接收方为本 Zone 用户自动接受约定路径；`outgoing` / `accepted_paths` 降为显式覆盖。
-- [ ] G2：无 Bearer 时接受签名的 MsgObject，所有签名消息都放行并进准入（D9）；加同一发送方的冷却。
-- [ ] G3：发送方用 Zone 托管签名；`verify_signed_message` / `authorizes_signer` 接受“签名设备所在 Zone = `from` 的默认 Zone”（D10）。
-- [ ] 测试：两个 msg-center 实例模拟两个 Zone，跑通好友请求往返与普通私聊（参照 HomeStation `Net::new_zones` 多 Zone 测试的做法）。DV 只有一个 Zone，真实跨 Zone 标为未验证。
-- [ ] 回写 Message Center.md §4.5 的实现边界。
+- [x] G1：发送方自动路由（DID → 默认 Zone → 约定路径），带缓存；接收方为本 Zone 用户自动接受约定路径；`outgoing` / `accepted_paths` 降为显式覆盖。
+- [x] G2：无 Bearer 时接受签名的 MsgObject，所有签名消息都放行并进准入（D9）；加同一发送方的冷却。
+- [x] G3：发送方用 Zone 托管签名；`verify_signed_message` / `authorizes_signer` 接受“签名设备所在 Zone = `from` 的默认 Zone”（D10）。
+- [x] 测试：两个 msg-center 实例模拟两个 Zone，跑通好友请求往返与普通私聊（`test_contact_network.rs::friend_request_and_chat_cross_two_zones`）。DV 只有一个 Zone，真实跨 Zone 未验证。
+- [x] 回写 Message Center.md §4.5 的实现边界。
 
 ### M4：公共 UI 组件（mock-first）
 
-- [ ] 在 `src/frame/desktop/src/components/network/` 实现 FindPeople、PeoplePicker、AddFriendDialog、JoinGroupDialog、RelationBadge、RelationActions 和薄缓存，数据走 websdk msg-center 客户端；mock 放同目录 `mock/`，按 `isMockRuntime()` 切换（同 `components/preview/provider.ts`），按 webui-prototype skill 模拟延迟与五种状态（加载 / 空 / 错误 / 部分可达 / 成功）。
-- [ ] 窄屏用 sheet；i18n（en + zh-CN），well-known tag 显示名进字典；浅色和深色都截图核对。
-- [ ] 删除语义与确认强度按 §3.6。
-- [ ] 名称和头像只走 `presentation/`。
+- [x] 在 `src/frame/desktop/src/components/network/` 实现 FindPeople、PeoplePicker、AddFriendDialog、JoinGroupDialog、RelationBadge、RelationActions 和薄缓存，数据走 websdk msg-center 客户端；mock 放同目录 `mock/`，按 `isMockRuntime()` 切换（同 `components/preview/provider.ts`），按 webui-prototype skill 模拟延迟与五种状态（加载 / 空 / 错误 / 部分可达 / 成功）。
+- [x] 窄屏用 sheet；i18n（en + zh-CN），well-known tag 显示名进字典；浅色和深色都截图核对。
+- [x] 删除语义与确认强度按 §3.6。
+- [x] 名称和头像只走 `presentation/`。
 
 ### M5：My Network 本体升级
 
-- [ ] 导航按 PRD §5.3：首页概况（各类数量、最近新增、Requests 数）、Contacts、Friends、Requests、Joined Groups、Collections。Collections 分三段：用户 tag（可编辑）、应用 tag（如“我关注的人”）、系统 tag。
-- [ ] Add Friend、Join Group 两个一级入口改用 M4 组件，删掉写死的 Nora 和 coming soon 对话框。
-- [ ] Requests 视图的四类条目（§3.6）。
-- [ ] Joined Groups：数据来自 `group.list_by_member`；详情页显示群资料、我的状态，提供“在 MessageHub 打开”和“退出”。
-- [ ] 把联系人详情、Collection 组件和 mock seed 从 `app/users-agents/` 移到 `app/my-network/`，Users & Agents 不再持有联系人代码。
-- [ ] 详情页的“发消息”跳 MessageHub；对方有主页时，“查看主页”跳 HomeStation。
-- [ ] 新建 `tests/e2e/pages/my-network.spec.ts`（mock），覆盖：
+- [x] 导航按 PRD §5.3：首页概况（各类数量、最近新增、Requests 数）、Contacts、Friends、Requests、Joined Groups、Collections。Collections 分三段：用户 tag（可编辑）、应用 tag（如“我关注的人”）、系统 tag。
+- [x] Add Friend、Join Group 两个一级入口改用 M4 组件，删掉写死的 Nora 和 coming soon 对话框。
+- [x] Requests 视图的四类条目（§3.6）。
+- [x] Joined Groups：数据来自 `group.list_by_member`；详情页显示群资料、我的状态，提供“在 MessageHub 打开”和“退出”。
+- [x] 把联系人详情、Collection 组件和 mock seed 从 `app/users-agents/` 移到 `app/my-network/`，Users & Agents 不再持有联系人代码。
+- [x] 详情页的“发消息”跳 MessageHub；对方有主页时，“查看主页”跳 HomeStation。
+- [x] 新建 `tests/e2e/pages/my-network.spec.ts`（mock），覆盖：
   - 加好友：本 Zone / 他 Zone / 不可达；处理好友请求与消息请求；
   - 入群：成功 / 待审批 / 需邀请 / 他 Zone 群；
   - 用户 tag 的 Collection 增删；“我关注的人”可见且只读；
@@ -335,23 +335,23 @@ M1–M3（后端）与 M4（前端组件，mock-first）可以并行；M5、M6 �
 
 MessageHub：
 
-- [ ] `MemberPicker` 换成 PeoplePicker（建群、邀请、会话成员与 Guest），`groupMemberCandidates` 的过滤规则并入 PeoplePicker 的 `filter`。
-- [ ] `JoinByLinkForm` + `parseInviteLink` 换成 JoinGroupDialog，入口从建群对话框底部提到“+”菜单。
-- [ ] “新建会话”可以搜索或输入新 DID（FindPeople）。同时修 `resolvedInitialEntityId`：launch 带陌生 DID 时要能打开会话（用草稿实体），否则从 My Network 点“发消息”跳不过来。
-- [ ] 准入横幅与 `AdmissionSection` 改为“加为好友 / 允许消息 / 屏蔽”，调 RelationActions；mock 下也要能演示。
-- [ ] 渲染 `buckyos.friend` 好友请求卡，做法同 `parseGroupNotice`。
-- [ ] 更新 MessageHub UI_DATAMODEL（§4.6 准入部分引用 `components/network/UI_DATAMODEL.md`）；回归 `messagehub*.spec.ts`，尤其是 group、admission、deeplink。
+- [x] `MemberPicker` 换成 PeoplePicker（建群、邀请、会话成员与 Guest），`groupMemberCandidates` 的过滤规则并入 PeoplePicker 的 `filter`。
+- [x] `JoinByLinkForm` + `parseInviteLink` 换成 JoinGroupDialog，入口从建群对话框底部提到“+”菜单。
+- [x] “新建会话”可以搜索或输入新 DID（FindPeople）。同时修 `resolvedInitialEntityId`：launch 带陌生 DID 时要能打开会话（用草稿实体），否则从 My Network 点“发消息”跳不过来。
+- [x] 准入横幅与 `AdmissionSection` 改为“加为好友 / 允许消息 / 屏蔽”，调 RelationActions；mock 下也要能演示。
+- [x] 渲染 `buckyos.friend` 好友请求卡，做法同 `parseGroupNotice`。
+- [x] 更新 MessageHub UI_DATAMODEL（§4.6 准入部分引用 `components/network/UI_DATAMODEL.md`）；回归 `messagehub*.spec.ts`，尤其是 group、admission、deeplink。
 
 HomeStation：
 
-- [ ] 前端 SourceManager 的 Follow 模式改用 FindPeople，HomeStation 注入“关注”动作与 URL 解析器；Describe 模式仍归 HomeStation。后端 `sources.resolve{kind:'follow'}` 只接受 DID，名称匹配交给 `contact.lookup`。
-- [ ] 关注 / 取消关注时调 `contact.update_tags` 维护 `homestation.following`（§3.5），RBAC 给 homestation 开对应权限。
-- [ ] 好友默认关注改读 `friend_state`，订阅联系人变更事件，去掉每小时轮询。
-- [ ] `groups` → tags：`contacts.rs`、`audience.rs`、`publish.rs`、`selection.rs`、`stream.rs`、`api.rs`；受众与“不看”的分组下拉显示 tag 名。
-- [ ] AudiencePicker 的“指定 DID”换成 PeoplePicker；FeedPreferences 中“不看”的人改用 PeoplePicker。
-- [ ] 作者头像迁到 `presentation/`（desktop-object-presentation-todo 的剩余项）。
-- [ ] 他 Zone 访客页的 “Sign in to follow” 本轮不改。
-- [ ] 回归 `homestation.spec.ts` 与 `cargo test -p homestation`。
+- [x] 前端 SourceManager 的 Follow 模式改用 FindPeople，HomeStation 注入“关注”动作与 URL 解析器；Describe 模式仍归 HomeStation。后端 `sources.resolve{kind:'follow'}` 只接受 DID，名称匹配交给 `contact.lookup`。
+- [x] 关注 / 取消关注时调 `contact.update_tags` 维护 `homestation.following`（§3.5），RBAC 给 homestation 开对应权限。
+- [x] 好友默认关注改读 `friend_state`，订阅联系人变更事件，去掉每小时轮询。
+- [x] `groups` → tags：`contacts.rs`、`audience.rs`、`publish.rs`、`selection.rs`、`stream.rs`、`api.rs`；受众与“不看”的分组下拉显示 tag 名。
+- [x] AudiencePicker 的“指定 DID”换成 PeoplePicker；FeedPreferences 中“不看”的人改用 PeoplePicker。
+- [x] 作者头像迁到 `presentation/`（desktop-object-presentation-todo 的剩余项）。
+- [x] 他 Zone 访客页的 “Sign in to follow” 本轮不改。
+- [x] 回归 `homestation.spec.ts` 与 `cargo test -p homestation`。
 
 ### M7：后续
 
@@ -389,3 +389,48 @@ HomeStation：
 | 其他后端 | `src/frame/control_panel/src/user_mgr.rs`、`src/kernel/sys_config_service/src/zone_did_resolver.rs` |
 | 公共展示与跨应用调用 | `src/frame/desktop/src/presentation/`；`app/users-agents/launch.ts`、`app/preview/launch.ts`、`app/web-frame/WebAppFramePanel.tsx` |
 | 文档 | PRD、协议设计、Contact Mgr、Message Center、HomeStation 架构 v0.7 与协议与实现、MessageHub UI_DATAMODEL、[messagehub-group-v2-todo.md](messagehub-group-v2-todo.md)、[zone-did-resolver需求.md](zone-did-resolver需求.md) |
+
+## 8. 实施记录（2026-10-17）
+
+M0–M6 已实施，未提交 git。与 §3 设计不同或 §3 未定的地方以本节为准，契约细节见 [Contact Mgr.md](<../doc/message_hub/Contact Mgr.md>) §3.4–§3.9、[Message Center.md](<../doc/message_hub/Message Center.md>) §2.1.4 / §2.2 / §4.5、[My Network相关协议设计](<../doc/message_hub/My Network相关协议设计.md>) §5–§7、`components/network/UI_DATAMODEL.md`。
+
+### 8.1 落点
+
+| 范围 | 文件 |
+| --- | --- |
+| 共享类型 | buckyos-api 新模块 `msg_contact.rs`（intent、FriendState、FriendRequest*、lookup 类型、well-known tag 与 `contact_tag_kind`、CONTACTS kevent、9 个新方法经 `handle_contact_ext`）；`msg_center_client.rs`（`Allow`、删 `Contact.groups` / `ContactPatch.tags`、`ContactQuery.friend_state/tag`、schema v13 `friend_requests`）；`rbac_config.rs`（`system:homestation` 写 `obj://msg-center/contact_tags/homestation`） |
+| msg-center | `contact_rpc.rs`（权限）、`contact_lookup.rs`、`friend_service.rs`（状态机）、`network_directory.rs`（DID → Zone / 资料，ZoneSigner）、`contact_mgr.rs`（迁移、tag、remove/unblock、变更事件）、`cyfs_dispatch.rs` / `message_hub.rs`（G1–G3）、`group_service.rs`（`list_by_member` 带 `member` 与 `invitations`）、`test_contact_network.rs` |
+| HomeStation 后端 | `contacts.rs`（friend_state、用户 tag、`set_following`）、`sources.rs`（关注写 tag、`reconcile_following`、follow 只收 DID）、`lib.rs` / `main.rs`（订阅 `/msg_center/*/CONTACTS/**` 取代每小时轮询） |
+| websdk | `src/msg_center_client.ts`（类型与 `lookup` / `updateContactTags` / 好友请求等方法）、`sdk_core.ts` 导出；SDK dist 已重建（只跑 SDK 构建，没碰 cli/dist） |
+| Desktop 公共 UI | `src/components/network/`（FindPeople、PeoplePicker、AddFriendDialog、JoinGroupDialog、RelationBadge、RelationActions、TagEditor、薄缓存、zod 入参与返回值、mock） |
+| My Network | `src/app/my-network/`（重写，联系人详情与 Collection 从 users-agents 迁来）、`launch.ts` |
+| MessageHub / HomeStation 前端 | 选人、入群、新会话找人、准入横幅与关系区、好友请求卡、陌生 DID 深链；HomeStation 关注、受众与“不看”选人、作者头像走 presentation |
+| 文档 | 协议设计、Contact Mgr、Message Center、Durable Data Schema、HomeStation 架构与协议实现、Self-Host-Groupv2、Message Tunnel Design、PRD |
+| DV 脚本 | `test/test_msg_center/test_my_network.ts` |
+
+### 8.2 与 §3 不同或补充的决定
+
+- 约定接收路径是 `/kapi/msg-center/<did>/inbox`（Zone 网关原样转发 `/kapi/<service>/*`，不用改网关），只服务 msg-center 已登记的收件人；`cyfs_dispatch.zone_origins` 可覆盖 Zone 源站。显式 `outgoing` 仍须带 Bearer。
+- G2 的防骚扰是每发送方每分钟 30 条的进程内配额（429，在验签之前扣），不是冷却；冷却只用于好友请求（接收方拒绝/忽略后 24h 丢弃该方请求；发送方收到拒绝后 24h 内不能再发）。
+- unblock 新增 `contact.unblock_contact`（屏蔽解除后好友回 Allow，否则 Stranger）。
+- 控制消息（accept / reject / cancel / remove）双方都不留邮箱记录；request 发送方留 SENT，接收方按普通准入写记录。`msg.post_send` 拒绝 `buckyos.friend`，格式不对的这类入站消息直接丢弃。
+- 删除联系人先结清关系：好友解除并通知、撤回自己的待处理请求、忽略对方的；屏蔽（`block_contact` 或 `update_contact{block}`）只结清待处理请求，不解除好友。
+- Zone 同步：`UserContactSettings.tags` 只在首次成为 Zone 联系人时写入，之后只维护 `zone_user` / `zone_agent`；Agent 不再带 `agent` tag。旧数据加载时迁移（`friend` → `allow`、groups 合入 tags、Zone 关系置 friend）。
+- HomeStation 启动、联系人事件后与 `admin.run friends` 都会 `reconcile_following`，把已有的主动关注投影成 tag。
+- Collection 就是 tag 文本，不存描述；空 Collection 不存在（新建时至少选一人）。
+
+### 8.3 验证
+
+- `cargo test -p msg_center -- --test-threads=1`（157 例）、`cargo test -p buckyos-api -- --test-threads=1`、`cargo test -p homestation`（42 例）、`cargo test -p kevent --test usage_contract`、`cargo check --workspace --tests --examples` 全过；`cargo build --release -p msg_center -p homestation` 通过。
+- websdk `npx jest tests/msg_center_client.test.ts`（44 例）。
+- Desktop：`pnpm check`、`pnpm exec eslint src tests`（0 error，8 个既有 warning）、`deno test --config tests/datamodel/messagehub.deno.json --no-check --allow-read --allow-env tests/datamodel/`（137 例）、Playwright（新起 vite）my-network / messagehub* / homestation / users-agents / agent-setup 共 137 例通过。
+- 全量 e2e 跑一次（新 vite 端口）：301 passed / 7 failed，失败都与本改动无关：SN Router 与 mobile App Service 返回键是既有基线；content-open ×2 与 systest 写死 4173 端口；ai-center 完整目录单跑也失败（他人近期改动）；app-service opendan 一例是 page.goto 超时，单跑通过。`pnpm build` 通过。
+- DV 脚本 `test/test_msg_center/test_my_network.ts` 已 `deno check`，未运行。
+
+### 8.4 未验证与已知缺口
+
+- 未部署到 DV：需部署新的 msg-center、homestation 二进制与 desktop web（以及含新 RBAC 的服务）后跑 `test_my_network.ts`，并用真实登录走一遍 My Network / MessageHub / HomeStation。`realBackend.ts` 与 MessageHub `addPeer` 的真实路径只做过类型检查。
+- 真实跨 Zone 只在两个 msg-center 实例的测试里验证过；实际还依赖名字服务能把对方用户与签名设备（`did:dev`）解析到 Zone。
+- 没有拒绝群邀请的 RPC（前端归档通知卡代替）；`list_by_member.items` 不带成员数；`msg.list_sessions` 不能按 `request_count` 过滤（前端最多翻 500 个会话）；lookup 不知道对方有没有 HomeStation 主页（“查看主页”可能 404）。
+- `merge_contacts` 不迁移 `friend_requests`；屏蔽 / 冷却造成的丢弃对发送方表现为投递失败；按声称 `from` 扣配额，伪造者可耗掉别人的配额；HomeStation 自己写 tag 会触发一次无变更的重同步。
+- 联系人导入（CSV）与合并在 My Network 中没有入口（旧的内存假实现已删）。

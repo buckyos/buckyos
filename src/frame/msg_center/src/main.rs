@@ -1,5 +1,8 @@
 mod contact_mgr;
+mod contact_lookup;
+mod contact_rpc;
 mod cyfs_dispatch;
+mod friend_service;
 mod group_http;
 mod group_publication;
 mod group_service;
@@ -11,9 +14,12 @@ mod msg_box_db;
 mod msg_center;
 mod msg_tunnel;
 mod notify;
+mod network_directory;
 mod object_access;
 mod owner_session;
 mod owner_session_db;
+#[cfg(test)]
+mod test_contact_network;
 #[cfg(test)]
 mod test_group_service;
 #[cfg(test)]
@@ -485,7 +491,6 @@ fn build_zone_user_seed(
         .map(|profile| profile.did.clone())
         .unwrap_or_else(|| DID::new("bns", username));
     let mut note = None;
-    let mut groups = vec!["zone_user".to_string()];
     let mut tags = vec!["zone_user".to_string()];
     let mut bindings = Vec::new();
 
@@ -510,7 +515,6 @@ fn build_zone_user_seed(
         }
 
         note = contact_cfg.note;
-        groups.extend(contact_cfg.groups);
         tags.extend(contact_cfg.tags);
 
         for binding in contact_cfg.bindings {
@@ -575,7 +579,6 @@ fn build_zone_user_seed(
         },
         note,
         bindings,
-        groups,
         tags,
     })
 }
@@ -804,12 +807,11 @@ fn zone_contact_seed_signature(seeds: &[ZoneUserContactSeed], agents: &[ZoneAgen
                 .collect();
             bindings.sort();
             format!(
-                "{}|{}|{}|{:?}|{:?}|{:?}|{:?}",
+                "{}|{}|{}|{:?}|{:?}|{:?}",
                 seed.did.to_string(),
                 seed.name,
                 avatar_fingerprint(seed.avatar.as_deref()),
                 seed.note,
-                seed.groups,
                 seed.tags,
                 bindings
             )
@@ -863,7 +865,6 @@ async fn sync_zone_agent_contacts(
                 name: agent.owner().id.clone(),
                 note: None,
                 bindings: vec![],
-                groups: vec![],
                 tags: vec![],
             });
         center.register_local_recipients([agent.did().clone()]);
@@ -879,8 +880,7 @@ async fn sync_zone_agent_contacts(
                     name: agent.display_name(),
                     note: None,
                     bindings: vec![],
-                    groups: vec![],
-                    tags: vec!["agent".to_string()],
+                    tags: vec![],
                 }],
                 agent.owner().clone(),
             )
@@ -1257,6 +1257,23 @@ pub async fn start_msg_center_service() -> Result<()> {
         }
     };
 
+    // Native messages of this Zone's users leave signed by the OOD device
+    // (Zone custody); without the key they can only use configured routes.
+    let zone_signer = match runtime.load_device_private_key() {
+        Ok(()) => runtime
+            .device_private_key
+            .clone()
+            .zip(runtime.device_config.as_ref().map(|d| d.id.to_string()))
+            .map(|(key, device)| network_directory::ZoneSigner {
+                key,
+                kid: format!("{device}#main_key"),
+            }),
+        Err(err) => {
+            warn!("device key unavailable, native messages stay unsigned: {}", err);
+            None
+        }
+    };
+
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register msg-center runtime failed: {}", err))?;
 
@@ -1264,7 +1281,11 @@ pub async fn start_msg_center_service() -> Result<()> {
         .await
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
     *center.cyfs_dispatch.write().unwrap() = cyfs_dispatch::CyfsDispatchSettings::parse(&settings)?;
+    if let Some(signer) = zone_signer {
+        center.zone_signer.set(signer);
+    }
     center.start_idempotency_sweep();
+    center.start_friend_request_sweep();
     center.start_notify_sweep();
     center.start_group_sync();
 

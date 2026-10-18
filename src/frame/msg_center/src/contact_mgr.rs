@@ -1,8 +1,10 @@
 use crate::msg_box_db::MsgBoxDbMgr;
 use buckyos_api::{
-    AccessDecision, AccessGroupLevel, AccountBinding, Contact, ContactPatch, ContactQuery,
-    ContactSource, GrantTemporaryAccessResult, ImportContactEntry, ImportReport, RdbBackend,
-    SetGroupSubscribersResult, TemporaryGrant, TemporaryGrantOutcome,
+    contact_tag_kind, AccessDecision, AccessGroupLevel, AccountBinding, Contact,
+    ContactChangedEvent, ContactPatch, ContactQuery, ContactSource, ContactTagKind, FriendState,
+    GrantTemporaryAccessResult, ImportContactEntry, ImportReport, RdbBackend,
+    SetGroupSubscribersResult, TemporaryGrant, TemporaryGrantOutcome, CONTACT_TAG_ZONE_AGENT,
+    CONTACT_TAG_ZONE_USER,
 };
 use kRPC::RPCErrors;
 use log::info;
@@ -51,7 +53,6 @@ pub struct ZoneUserContactSeed {
     pub avatar: Option<String>,
     pub note: Option<String>,
     pub bindings: Vec<AccountBinding>,
-    pub groups: Vec<String>,
     pub tags: Vec<String>,
 }
 
@@ -521,8 +522,8 @@ impl ContactMgr {
                 temporary_expires_at_ms: None,
                 reason: Some("contact is blocked".to_string()),
             },
-            AccessGroupLevel::Friend => AccessDecision {
-                level: AccessGroupLevel::Friend,
+            AccessGroupLevel::Allow => AccessDecision {
+                level: AccessGroupLevel::Allow,
                 allow_delivery: true,
                 target_box: "INBOX".to_string(),
                 temporary_expires_at_ms: None,
@@ -600,8 +601,8 @@ impl ContactMgr {
                         temporary_expires_at_ms: None,
                         reason: Some("contact is blocked".to_string()),
                     },
-                    AccessGroupLevel::Friend => AccessDecision {
-                        level: AccessGroupLevel::Friend,
+                    AccessGroupLevel::Allow => AccessDecision {
+                        level: AccessGroupLevel::Allow,
                         allow_delivery: true,
                         target_box: "INBOX".to_string(),
                         temporary_expires_at_ms: None,
@@ -719,7 +720,7 @@ impl ContactMgr {
                     });
                 }
 
-                if contact.access_level != AccessGroupLevel::Friend {
+                if contact.access_level != AccessGroupLevel::Allow {
                     contact.access_level = AccessGroupLevel::Temporary;
                 }
                 contact.updated_at = now_ms;
@@ -740,6 +741,16 @@ impl ContactMgr {
         };
 
         self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(
+            owner.as_ref(),
+            "upsert",
+            result
+                .updated
+                .iter()
+                .filter(|outcome| outcome.granted)
+                .map(|outcome| outcome.did.clone())
+                .collect(),
+        );
         Ok(result)
     }
 
@@ -751,6 +762,7 @@ impl ContactMgr {
     ) -> std::result::Result<(), RPCErrors> {
         let owner_key = Self::owner_key(owner.as_ref());
         self.ensure_store_loaded(&owner_key).await?;
+        let blocked = did.clone();
 
         let snapshot = {
             let mut stores = self.stores.write().await;
@@ -759,6 +771,7 @@ impl ContactMgr {
             })?;
 
             let now_ms = Self::now_ms();
+            let did = Self::canonical_did_in_store(store, &did);
             let contact =
                 Self::ensure_contact_exists(store, did, now_ms, ContactSource::ManualCreate);
 
@@ -783,6 +796,7 @@ impl ContactMgr {
         };
 
         self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(owner.as_ref(), "upsert", vec![blocked]);
         Ok(())
     }
 
@@ -847,7 +861,6 @@ impl ContactMgr {
                         name,
                         avatar: entry.avatar,
                         note: entry.note,
-                        groups: entry.groups,
                         tags: entry.tags,
                         bindings: prepared_bindings,
                         seed_platform,
@@ -858,7 +871,6 @@ impl ContactMgr {
                         name,
                         avatar: entry.avatar,
                         note: entry.note,
-                        groups: entry.groups,
                         tags: entry.tags,
                         bindings: prepared_bindings,
                         matched_dids,
@@ -904,7 +916,6 @@ impl ContactMgr {
                         name,
                         avatar,
                         note,
-                        groups,
                         tags,
                         bindings,
                         ..
@@ -922,11 +933,10 @@ impl ContactMgr {
                         };
                         contact.avatar = avatar;
                         contact.note = note;
-                        contact.groups = Self::dedupe_strings(groups);
                         contact.tags = Self::dedupe_strings(tags);
                         contact.is_verified = true;
                         if upgrade_to_friend {
-                            contact.access_level = AccessGroupLevel::Friend;
+                            contact.access_level = AccessGroupLevel::Allow;
                         }
 
                         for binding in bindings {
@@ -943,7 +953,6 @@ impl ContactMgr {
                         name,
                         avatar,
                         note,
-                        groups,
                         tags,
                         bindings,
                         matched_dids,
@@ -989,9 +998,8 @@ impl ContactMgr {
                             contact.is_verified = true;
                             if upgrade_to_friend && contact.access_level != AccessGroupLevel::Block
                             {
-                                contact.access_level = AccessGroupLevel::Friend;
+                                contact.access_level = AccessGroupLevel::Allow;
                             }
-                            contact.groups = Self::merge_string_lists(&contact.groups, groups);
                             contact.tags = Self::merge_string_lists(&contact.tags, tags);
 
                             for binding in bindings {
@@ -1025,6 +1033,7 @@ impl ContactMgr {
         };
 
         self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(owner.as_ref(), "upsert", report.affected_dids.clone());
         Ok(report)
     }
 
@@ -1049,6 +1058,8 @@ impl ContactMgr {
         };
 
         self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(owner.as_ref(), "remove", vec![source_did]);
+        Self::publish_changed(owner.as_ref(), "upsert", vec![target_did]);
         Ok(result)
     }
 
@@ -1121,14 +1132,6 @@ impl ContactMgr {
                 contact.is_verified = is_verified;
             }
 
-            if let Some(groups) = patch.groups {
-                contact.groups = Self::dedupe_strings(groups);
-            }
-
-            if let Some(tags) = patch.tags {
-                contact.tags = Self::dedupe_strings(tags);
-            }
-
             contact.updated_at = now_ms;
             let result = contact.clone();
             store.binding_index = Self::rebuild_binding_index(&store.contacts);
@@ -1136,6 +1139,7 @@ impl ContactMgr {
         };
 
         self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(owner.as_ref(), "upsert", vec![result.did.clone()]);
         Ok(result)
     }
 
@@ -1172,6 +1176,12 @@ impl ContactMgr {
         if let Some(access_level) = query.access_level {
             contacts.retain(|contact| contact.access_level == access_level);
         }
+        if let Some(friend_state) = query.friend_state {
+            contacts.retain(|contact| contact.friend_state == friend_state);
+        }
+        if let Some(tag) = query.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            contacts.retain(|contact| contact.tags.iter().any(|t| t == tag));
+        }
 
         if let Some(keyword) = query.keyword {
             let keyword = keyword.trim().to_ascii_lowercase();
@@ -1195,6 +1205,152 @@ impl ContactMgr {
             .clamp(1, MAX_CONTACT_LIST_LIMIT);
 
         Ok(contacts.into_iter().skip(offset).take(limit).collect())
+    }
+
+    /// Add and remove tags; the caller has already checked which tags it may
+    /// touch. A missing contact is created with `source`.
+    pub async fn update_tags(
+        &self,
+        did: DID,
+        add: Vec<String>,
+        remove: Vec<String>,
+        source: ContactSource,
+        owner: Option<DID>,
+    ) -> std::result::Result<Contact, RPCErrors> {
+        let contact = self
+            .mutate_contact(owner.as_ref(), &did, Some(source), |contact| {
+                contact
+                    .tags
+                    .retain(|tag| !remove.iter().any(|removed| removed == tag));
+                contact.tags = Self::merge_string_lists(&contact.tags, add.clone());
+            })
+            .await?;
+        contact.ok_or_else(|| RPCErrors::ReasonError("contact missing after update".into()))
+    }
+
+    /// Delete a contact record and its aliases; history is untouched.
+    /// Relations msg-center established (Zone users, Agents) are refused.
+    pub async fn remove_contact(
+        &self,
+        did: DID,
+        owner: Option<DID>,
+    ) -> std::result::Result<Contact, RPCErrors> {
+        let owner_key = Self::owner_key(owner.as_ref());
+        self.ensure_store_loaded(&owner_key).await?;
+        let (removed, snapshot) = {
+            let mut stores = self.stores.write().await;
+            let store = stores.get_mut(&owner_key).ok_or_else(|| {
+                RPCErrors::ReasonError("contact store missing after load".to_string())
+            })?;
+            let did = Self::canonical_did_in_store(store, &did);
+            let contact = store
+                .contacts
+                .get(&did)
+                .ok_or_else(|| RPCErrors::NoPermission("not-found".into()))?;
+            if Self::is_system_relation(contact) {
+                return Err(RPCErrors::NoPermission("system-relation".into()));
+            }
+            let removed = store.contacts.remove(&did).expect("contact checked above");
+            store.alias_index.retain(|_, canonical| canonical != &did);
+            for subscribers in store.group_subscribers.values_mut() {
+                subscribers.retain(|subscriber| subscriber != &did);
+            }
+            store.binding_index = Self::rebuild_binding_index(&store.contacts);
+            (removed, store.clone())
+        };
+        self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(owner.as_ref(), "remove", vec![removed.did.clone()]);
+        Ok(removed)
+    }
+
+    /// Lift a block: back to `Allow` for friends, `Stranger` otherwise.
+    pub async fn unblock_contact(
+        &self,
+        did: DID,
+        owner: Option<DID>,
+    ) -> std::result::Result<Contact, RPCErrors> {
+        let contact = self
+            .mutate_contact(owner.as_ref(), &did, None, |contact| {
+                if contact.access_level == AccessGroupLevel::Block {
+                    contact.access_level = if contact.friend_state == FriendState::Friend {
+                        AccessGroupLevel::Allow
+                    } else {
+                        AccessGroupLevel::Stranger
+                    };
+                }
+            })
+            .await?;
+        contact.ok_or_else(|| RPCErrors::NoPermission("not-found".into()))
+    }
+
+    /// Zone users and Agents are related to the owner by the system.
+    pub fn is_system_relation(contact: &Contact) -> bool {
+        contact
+            .tags
+            .iter()
+            .any(|tag| contact_tag_kind(tag) == ContactTagKind::System)
+    }
+
+    /// Change one contact under the store lock and persist it. `create`
+    /// creates a missing contact with that source; without it a missing
+    /// contact yields `None` and nothing is written. Publishes a contact
+    /// change event when the contact actually changed.
+    pub async fn mutate_contact<F>(
+        &self,
+        owner: Option<&DID>,
+        did: &DID,
+        create: Option<ContactSource>,
+        f: F,
+    ) -> std::result::Result<Option<Contact>, RPCErrors>
+    where
+        F: FnOnce(&mut Contact),
+    {
+        let owner_key = Self::owner_key(owner);
+        self.ensure_store_loaded(&owner_key).await?;
+        let (result, snapshot) = {
+            let mut stores = self.stores.write().await;
+            let store = stores.get_mut(&owner_key).ok_or_else(|| {
+                RPCErrors::ReasonError("contact store missing after load".to_string())
+            })?;
+            let did = Self::canonical_did_in_store(store, did);
+            let before = store.contacts.get(&did).cloned();
+            let contact = match create {
+                Some(source) => Self::ensure_contact_exists(store, did, Self::now_ms(), source),
+                None => match store.contacts.get_mut(&did) {
+                    Some(contact) => contact,
+                    None => return Ok(None),
+                },
+            };
+            f(contact);
+            if before.as_ref() == Some(&*contact) {
+                return Ok(Some(contact.clone()));
+            }
+            contact.updated_at = Self::now_ms();
+            let result = contact.clone();
+            store.binding_index = Self::rebuild_binding_index(&store.contacts);
+            (result, store.clone())
+        };
+        self.save_owner_store(&owner_key, &snapshot).await?;
+        Self::publish_changed(owner, "upsert", vec![result.did.clone()]);
+        Ok(Some(result))
+    }
+
+    /// `/msg_center/<owner>/CONTACTS/changed`; the system scope has no viewers.
+    pub(crate) fn publish_changed(owner: Option<&DID>, operation: &str, dids: Vec<DID>) {
+        let Some(owner) = owner else {
+            return;
+        };
+        let event = ContactChangedEvent {
+            owner: owner.clone(),
+            operation: operation.to_string(),
+            dids,
+            request_id: None,
+            updated_at_ms: Self::now_ms(),
+        };
+        crate::msg_center::MessageCenter::publish_event(
+            buckyos_api::contact_changed_event_id(owner),
+            serde_json::to_value(event).unwrap_or_default(),
+        );
     }
 
     pub async fn get_group_subscribers(
@@ -1289,13 +1445,14 @@ impl ContactMgr {
         let owner_key = Self::owner_key(owner.as_ref());
         self.ensure_store_loaded(&owner_key).await?;
 
-        let (updated, snapshot) = {
+        let (updated, changed, snapshot) = {
             let mut stores = self.stores.write().await;
             let store = stores.get_mut(&owner_key).ok_or_else(|| {
                 RPCErrors::ReasonError("contact store missing after load".to_string())
             })?;
             let now_ms = Self::now_ms();
             let mut updated = 0usize;
+            let mut changed = Vec::new();
 
             for seed in contacts {
                 let ZoneUserContactSeed {
@@ -1304,13 +1461,13 @@ impl ContactMgr {
                     avatar,
                     note,
                     bindings,
-                    groups,
                     tags,
                 } = seed;
 
                 let prepared_bindings = Self::prepare_import_bindings(bindings, now_ms);
                 let binding_count = prepared_bindings.len();
                 let created = !store.contacts.contains_key(&did);
+                let before = store.contacts.get(&did).cloned();
                 let contact =
                     Self::ensure_contact_exists(store, did.clone(), now_ms, ContactSource::Shared);
                 let newly_zone_contact =
@@ -1328,27 +1485,38 @@ impl ContactMgr {
                 contact.source = ContactSource::Shared;
                 contact.is_verified = true;
                 if newly_zone_contact && contact.access_level != AccessGroupLevel::Block {
-                    contact.access_level = AccessGroupLevel::Friend;
+                    contact.access_level = AccessGroupLevel::Allow;
                     contact.temp_grants.clear();
                 }
+                contact.friend_state = FriendState::Friend;
                 contact.note = note
                     .as_ref()
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                     .or(contact.note.clone());
 
-                let mut merged_groups = groups;
-                merged_groups.push(membership_tag.to_string());
-                contact.groups = Self::merge_string_lists(&contact.groups, merged_groups);
-
-                let mut merged_tags = tags;
+                // The Zone's own tags for a user are a starting point the owner
+                // may remove later; only the membership tag is kept by the sync.
+                let mut merged_tags = if newly_zone_contact { tags } else { Vec::new() };
                 merged_tags.push(membership_tag.to_string());
                 contact.tags = Self::merge_string_lists(&contact.tags, merged_tags);
 
                 for binding in prepared_bindings {
                     Self::upsert_binding(contact, binding);
                 }
+                if let Some(before) = before.as_ref() {
+                    let mut probe = contact.clone();
+                    probe.updated_at = before.updated_at;
+                    for (binding, old) in probe.bindings.iter_mut().zip(before.bindings.iter()) {
+                        binding.last_active_at = old.last_active_at;
+                    }
+                    if &probe == before {
+                        *contact = before.clone();
+                        continue;
+                    }
+                }
                 contact.updated_at = now_ms;
+                changed.push(did.clone());
                 updated = updated.saturating_add(1);
                 if created {
                     info!(
@@ -1362,10 +1530,13 @@ impl ContactMgr {
             }
 
             store.binding_index = Self::rebuild_binding_index(&store.contacts);
-            (updated, store.clone())
+            (updated, changed, store.clone())
         };
 
-        self.save_owner_store(&owner_key, &snapshot).await?;
+        if !changed.is_empty() {
+            self.save_owner_store(&owner_key, &snapshot).await?;
+            Self::publish_changed(owner.as_ref(), "upsert", changed);
+        }
         Ok(updated)
     }
 
@@ -1406,7 +1577,14 @@ impl ContactMgr {
                 RPCErrors::ReasonError(format!("failed to decode contacts.payload: {}", error))
             })?;
             let did = Self::parse_did(&did_str, "contacts.did")?;
-            let contact: Contact = serde_json::from_str(&payload).map_err(|error| {
+            let mut value: Value = serde_json::from_str(&payload).map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to parse contact payload for {}: {}",
+                    did_str, error
+                ))
+            })?;
+            Self::migrate_contact_payload(&mut value);
+            let contact: Contact = serde_json::from_value(value).map_err(|error| {
                 RPCErrors::ReasonError(format!(
                     "failed to parse contact payload for {}: {}",
                     did_str, error
@@ -1463,6 +1641,51 @@ impl ContactMgr {
             group_subscribers,
             alias_index,
         })
+    }
+
+    /// Stored contacts written before `friend_state` existed: `groups` merge
+    /// into `tags`, the `friend` access level becomes `allow`, and Zone users
+    /// and Agents (the only friendships that existed) become friends.
+    fn migrate_contact_payload(value: &mut Value) {
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        let mut tags: Vec<String> = object
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        if let Some(groups) = object.remove("groups") {
+            let groups = serde_json::from_value::<Vec<String>>(groups).unwrap_or_default();
+            // Zone users carried the Zone's own user groups here; those are
+            // not the owner's groupings.
+            let system = groups
+                .iter()
+                .chain(tags.iter())
+                .any(|t| t == CONTACT_TAG_ZONE_USER || t == CONTACT_TAG_ZONE_AGENT);
+            if system {
+                tags.extend(
+                    groups
+                        .into_iter()
+                        .filter(|g| g == CONTACT_TAG_ZONE_USER || g == CONTACT_TAG_ZONE_AGENT),
+                );
+                if tags.iter().any(|t| t == CONTACT_TAG_ZONE_AGENT) {
+                    tags.retain(|t| t != "agent");
+                }
+            } else {
+                tags.extend(groups);
+            }
+            object.insert("tags".into(), serde_json::json!(Self::dedupe_strings(tags.clone())));
+        }
+        if object.get("access_level").and_then(Value::as_str) == Some("friend") {
+            object.insert("access_level".into(), Value::String("allow".into()));
+            if !object.contains_key("friend_state")
+                && tags
+                    .iter()
+                    .any(|t| t == CONTACT_TAG_ZONE_USER || t == CONTACT_TAG_ZONE_AGENT)
+            {
+                object.insert("friend_state".into(), Value::String("friend".into()));
+            }
+        }
     }
 
     async fn load_alias_index(
@@ -1719,9 +1942,9 @@ impl ContactMgr {
 
     fn binding_priority(contact: &Contact) -> u8 {
         let is_zone_user = contact
-            .groups
+            .tags
             .iter()
-            .any(|group| group.eq_ignore_ascii_case("zone_user"));
+            .any(|tag| tag == CONTACT_TAG_ZONE_USER);
         if is_zone_user {
             return 3;
         }
@@ -1964,7 +2187,7 @@ impl ContactMgr {
             bindings: Vec::new(),
             access_level: AccessGroupLevel::Stranger,
             temp_grants: Vec::new(),
-            groups: Vec::new(),
+            friend_state: FriendState::None,
             tags: Vec::new(),
             created_at: now_ms,
             updated_at: now_ms,
@@ -2016,7 +2239,7 @@ impl ContactMgr {
             bindings: vec![binding],
             access_level: AccessGroupLevel::Stranger,
             temp_grants: Vec::new(),
-            groups: Vec::new(),
+            friend_state: FriendState::None,
             tags: Vec::new(),
             created_at: now_ms,
             updated_at: now_ms,
@@ -2042,7 +2265,7 @@ impl ContactMgr {
                 bindings: Vec::new(),
                 access_level: AccessGroupLevel::Stranger,
                 temp_grants: Vec::new(),
-                groups: Vec::new(),
+                friend_state: FriendState::None,
                 tags: Vec::new(),
                 created_at: now_ms,
                 updated_at: now_ms,
@@ -2233,7 +2456,7 @@ impl ContactMgr {
             target.access_level =
                 Self::merge_access_levels(target.access_level.clone(), source.access_level);
             target.temp_grants = Self::merge_grants(target.temp_grants.clone(), source.temp_grants);
-            target.groups = Self::merge_string_lists(&target.groups, source.groups);
+            target.friend_state = Self::merge_friend_states(target.friend_state, source.friend_state);
             target.tags = Self::merge_string_lists(&target.tags, source.tags);
 
             for binding in source.bindings {
@@ -2301,13 +2524,29 @@ impl ContactMgr {
         fn rank(level: &AccessGroupLevel) -> u8 {
             match level {
                 AccessGroupLevel::Block => 4,
-                AccessGroupLevel::Friend => 3,
+                AccessGroupLevel::Allow => 3,
                 AccessGroupLevel::Temporary => 2,
                 AccessGroupLevel::Stranger => 1,
             }
         }
 
         if rank(&left) >= rank(&right) {
+            left
+        } else {
+            right
+        }
+    }
+
+    fn merge_friend_states(left: FriendState, right: FriendState) -> FriendState {
+        fn rank(state: FriendState) -> u8 {
+            match state {
+                FriendState::Friend => 3,
+                FriendState::IncomingPending => 2,
+                FriendState::OutgoingPending => 1,
+                FriendState::None => 0,
+            }
+        }
+        if rank(left) >= rank(right) {
             left
         } else {
             right
@@ -2382,13 +2621,6 @@ impl ContactMgr {
             return true;
         }
         if contact
-            .groups
-            .iter()
-            .any(|group| group.to_ascii_lowercase().contains(keyword))
-        {
-            return true;
-        }
-        if contact
             .tags
             .iter()
             .any(|tag| tag.to_ascii_lowercase().contains(keyword))
@@ -2418,7 +2650,6 @@ enum PreparedEntry {
         name: String,
         avatar: Option<String>,
         note: Option<String>,
-        groups: Vec<String>,
         tags: Vec<String>,
         bindings: Vec<AccountBinding>,
         seed_platform: String,
@@ -2428,7 +2659,6 @@ enum PreparedEntry {
         name: String,
         avatar: Option<String>,
         note: Option<String>,
-        groups: Vec<String>,
         tags: Vec<String>,
         bindings: Vec<AccountBinding>,
         matched_dids: Vec<DID>,
@@ -2488,6 +2718,42 @@ mod tests {
         let msg_box_db = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
         let mgr = ContactMgr::new_with_msg_box(msg_box_db).await.unwrap();
         (mgr, temp_dir)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stored_contacts_from_before_friend_state_are_migrated() {
+        let (mgr, _tmp) = new_test_mgr().await;
+        let owner = DID::new("bns", "alice");
+        for (did, payload) in [
+            ("did:bns:bob", json!({"did":"did:bns:bob","name":"Bob","source":"shared","is_verified":true,
+                "access_level":"friend","groups":["zone_user","users"],"tags":["zone_user"],"created_at":1,"updated_at":1})),
+            ("did:bns:eve", json!({"did":"did:bns:eve","name":"Eve","source":"manual_create","is_verified":true,
+                "access_level":"friend","groups":["hiking"],"created_at":1,"updated_at":1})),
+        ] {
+            sqlx::query("INSERT INTO contacts (owner_key, did, payload) VALUES (?, ?, ?)")
+                .bind(owner.to_string())
+                .bind(did)
+                .bind(payload.to_string())
+                .execute(mgr.pool())
+                .await
+                .unwrap();
+        }
+        let bob = mgr
+            .get_contact(DID::new("bns", "bob"), Some(owner.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bob.access_level, AccessGroupLevel::Allow);
+        assert_eq!(bob.friend_state, FriendState::Friend);
+        assert_eq!(bob.tags, vec!["zone_user".to_string()]);
+        let eve = mgr
+            .get_contact(DID::new("bns", "eve"), Some(owner))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(eve.access_level, AccessGroupLevel::Allow);
+        assert_eq!(eve.friend_state, FriendState::None);
+        assert_eq!(eve.tags, vec!["hiking".to_string()]);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2585,8 +2851,7 @@ mod tests {
                 name: "Alice".to_string(),
                 note: None,
                 bindings: vec![binding("telegram", "12345")],
-                groups: vec!["zone_user".to_string()],
-                tags: vec![],
+                tags: vec!["zone_user".to_string()],
             }],
             Some(owner.clone()),
         )
@@ -2657,7 +2922,6 @@ mod tests {
                     avatar: None,
                     note: Some("friend".to_string()),
                     bindings: vec![binding("telegram", "user-1")],
-                    groups: vec!["team".to_string()],
                     tags: vec!["vip".to_string()],
                 }],
                 Some(true),
@@ -2672,7 +2936,7 @@ mod tests {
         let contact = mgr.get_contact(did, None).await.unwrap().unwrap();
         assert_eq!(contact.name, "Alice");
         assert_eq!(contact.source, ContactSource::ManualImport);
-        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
+        assert_eq!(contact.access_level, AccessGroupLevel::Allow);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2860,8 +3124,7 @@ mod tests {
                         meta: HashMap::new(),
                     },
                 ],
-                groups: vec!["zone_user".to_string()],
-                tags: vec![],
+                tags: vec!["zone_user".to_string()],
             }],
             Some(owner.clone()),
         )
@@ -2984,7 +3247,6 @@ mod tests {
                     name: "Alice".to_string(),
                     note: Some("zone profile".to_string()),
                     bindings: vec![binding("telegram", "10001")],
-                    groups: vec!["ops".to_string()],
                     tags: vec!["internal".to_string()],
                 }],
                 Some(owner.clone()),
@@ -3000,11 +3262,9 @@ mod tests {
             .unwrap();
         assert_eq!(contact.name, "Alice");
         assert_eq!(contact.source, ContactSource::Shared);
-        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
-        assert!(contact
-            .groups
-            .iter()
-            .any(|group| group.eq_ignore_ascii_case("zone_user")));
+        assert_eq!(contact.access_level, AccessGroupLevel::Allow);
+        assert!(contact.tags.iter().any(|tag| tag == "zone_user"));
+        assert_eq!(contact.friend_state, FriendState::Friend);
 
         let resolved = mgr
             .resolve_did(
@@ -3029,7 +3289,6 @@ mod tests {
             name: "Carol".to_string(),
             note: None,
             bindings: vec![],
-            groups: vec![],
             tags: vec![],
         };
 
@@ -3076,7 +3335,6 @@ mod tests {
             name: "Carol".to_string(),
             note: None,
             bindings: vec![],
-            groups: vec![],
             tags: vec![],
         };
 
@@ -3088,7 +3346,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
+        assert_eq!(contact.access_level, AccessGroupLevel::Allow);
 
         mgr.update_contact(
             member.clone(),
@@ -3122,7 +3380,7 @@ mod tests {
                 sender.clone(),
                 ContactPatch {
                     name: Some("Carol".to_string()),
-                    access_level: Some(AccessGroupLevel::Friend),
+                    access_level: Some(AccessGroupLevel::Allow),
                     ..Default::default()
                 },
                 Some(owner.clone()),
@@ -3131,12 +3389,12 @@ mod tests {
             .unwrap();
         assert_eq!(contact.did, sender);
         assert_eq!(contact.name, "Carol");
-        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
+        assert_eq!(contact.access_level, AccessGroupLevel::Allow);
         let decision = mgr
             .check_access_permission(sender, None, Some(owner))
             .await
             .unwrap();
         assert!(decision.allow_delivery);
-        assert_eq!(decision.level, AccessGroupLevel::Friend);
+        assert_eq!(decision.level, AccessGroupLevel::Allow);
     }
 }

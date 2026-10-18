@@ -338,6 +338,7 @@ impl Station {
                     "comments" => json!({ "synced": self.sync_tracked().await? }),
                     "friends" => {
                         self.sync_friends().await?;
+                        self.reconcile_following().await?;
                         json!({ "ok": true })
                     }
                     other => return Err(bad(format!("unknown task {other}"))),
@@ -356,7 +357,7 @@ impl Station {
         let contacts = self.contacts.list().await;
         let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
         for c in &contacts {
-            for g in &c.groups {
+            for g in &c.tags {
                 groups.entry(g.clone()).or_default().push(c.did.clone());
             }
         }

@@ -150,8 +150,16 @@ async fn friend_derived_follows() {
     assert_eq!(followers, vec![bob.did.clone(), carol.did.clone()]);
     let profile = net.rpc("alice", "profile.get", json!({})).await;
     assert_eq!((profile["followers"].as_i64(), profile["following"].as_i64()), (Some(2), Some(2)));
+    // Friend-derived follows are not mirrored as `homestation.following`.
+    let following = |n: &Node| n.contacts.0.lock().unwrap().iter().filter(|c| c.following).map(|c| c.did.clone()).collect::<Vec<_>>();
+    assert!(following(carol).is_empty());
     // Carol also follows actively; then both friendships end.
     net.rpc("carol", "sources.follow", json!({ "resolution": net.rpc("carol", "sources.resolve", json!({ "kind": "follow", "text": alice.did })).await })).await;
+    assert_eq!(following(carol), vec![alice.did.clone()], "an active follow is tagged in Message Center");
+    // A follow made before the tag existed is projected on the next reconciliation.
+    carol.contacts.0.lock().unwrap().iter_mut().for_each(|c| c.following = false);
+    net.rpc("carol", "admin.run", json!({ "task": "friends" })).await;
+    assert_eq!(following(carol), vec![alice.did.clone()]);
     let sources = net.rpc("bob", "sources.list", json!({})).await;
     let friend_only = sources["sources"][0]["id"].as_str().unwrap().to_string();
     assert_eq!(net.rpc("bob", "sources.unfollow", json!({ "sourceId": friend_only })).await, "friend_basis");
@@ -161,6 +169,10 @@ async fn friend_derived_follows() {
     net.rpc("carol", "admin.run", json!({ "task": "friends" })).await;
     net.deliver_all().await;
     assert_eq!(alice.station.active_followers().await.unwrap(), vec![carol.did.clone()], "Carol's active basis keeps the follow");
+    let carol_sources = net.rpc("carol", "sources.list", json!({})).await;
+    let active = carol_sources["sources"][0]["id"].as_str().unwrap().to_string();
+    net.rpc("carol", "sources.unfollow", json!({ "sourceId": active })).await;
+    assert!(following(carol).is_empty(), "unfollowing removes the tag");
     assert_eq!(net.rpc("bob", "sources.list", json!({})).await["sources"].as_array().unwrap().len(), 0);
 }
 
@@ -187,7 +199,7 @@ async fn friends_without_homestation() {
     let net = Net::new(&["alice", "bob"], &[]).await;
     let (alice, bob) = (net.n("alice"), net.n("bob"));
     let kid = "did:test:alice-kid";
-    alice.contacts.0.lock().unwrap().push(homestation::contacts::ContactInfo { did: kid.into(), name: "kid".into(), friend: true, blocked: false, groups: vec![], avatar: None });
+    alice.contacts.0.lock().unwrap().push(homestation::contacts::ContactInfo { did: kid.into(), name: "kid".into(), friend: true, blocked: false, tags: vec![], following: false, avatar: None });
     alice.add_contact(bob, true, &[]);
     net.rpc("alice", "admin.run", json!({ "task": "friends" })).await;
     let sources = net.rpc("alice", "sources.list", json!({})).await;

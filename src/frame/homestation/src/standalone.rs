@@ -118,6 +118,10 @@ impl crate::contacts::Contacts for SharedContacts {
     async fn list(&self) -> Result<Vec<ContactInfo>, String> {
         self.0.list().await
     }
+
+    async fn set_following(&self, did: &str, following: bool) -> Result<(), String> {
+        self.0.set_following(did, following).await
+    }
 }
 
 struct UserSetup {

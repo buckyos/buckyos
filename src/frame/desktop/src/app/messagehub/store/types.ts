@@ -45,13 +45,6 @@ export type ManageAction = 'archive' | 'restore' | 'delete'
 /** Whether the background refresh of the owner's session list reaches msg-center: `connecting` after a failed refresh until one succeeds. */
 export type SyncStatus = 'online' | 'connecting'
 
-/** Contact admission actions available for an entity in the current context. */
-export interface EntityAdmission {
-  accessLevel?: 'block' | 'stranger' | 'temporary' | 'friend'
-  temporaryExpiresAt?: number
-  canChange: boolean
-}
-
 /**
  * Data layer consumed by every MessageHub component. Two implementations:
  * the interactive mock (`mock/store.ts`) and the msg-center backed store
@@ -84,8 +77,11 @@ export interface MessageHubStore {
   hasMoreEntities(context: MessageHubContext): boolean
   loadMoreEntities(context: MessageHubContext): Promise<void>
   entityDetail(context: MessageHubContext, id: string): EntityDetail | null
-  admission(context: MessageHubContext, entityId: string): EntityAdmission | null
-  setAdmission(context: MessageHubContext, entityId: string, action: 'accept' | 'block'): Promise<void>
+  /**
+   * Lists a DID the owner has no conversation with yet (a person found by search, a link from another
+   * app) as a person or Agent entity, so a conversation with it can open; it stays once a session exists.
+   */
+  addPeer(context: MessageHubContext, did: string, info?: { name?: string; type?: 'person' | 'agent' }): void
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']): Session[]
   defaultSession(context: MessageHubContext, entityId: string): Session | null
   ensureDefaultSession(context: MessageHubContext, entityId: string): Promise<Session | null>
@@ -154,7 +150,7 @@ export interface MessageHubStore {
   transferGroupOwner(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>
   cancelGroupOwnerTransfer(context: MessageHubContext, groupDid: string): Promise<void>
   acceptGroupOwnerTransfer(context: MessageHubContext, groupDid: string, transferId: string): Promise<void>
-  /** Resolves to the link text (`formatInviteLink`). */
+  /** Resolves to the link's token; `formatInviteLink` makes the text to share. */
   createGroupInviteLink(context: MessageHubContext, groupDid: string, options: { expiresAt?: number; maxUses?: number; requireApproval?: boolean }): Promise<string>
   revokeGroupInviteLink(context: MessageHubContext, groupDid: string, token: string): Promise<void>
   /** `group.request_join`; resolves to the resulting member state (`active` or `pending_admin_approval`). */

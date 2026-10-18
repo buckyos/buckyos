@@ -3,6 +3,7 @@
 > **版本**：v0.2
 > **日期**：2026-10-09
 > **v0.2 变更**：一个服务进程服务 Zone 的所有用户（每人独立的发表流、投递入口与数据库），协议路径改为 `/home/<用户名>/...`；新增 DID 查询、Zone 汇总列表、默认发表流、门户 kRPC（`portal.*`）与 Zone 托管签名；删除“每 Zone 只为 owner 发表、同 Zone 用户不派生关注”的旧限制。
+> **2026-10-17**：关系改读 Message Center 的 `friend_state` 与用户 tag（`Contact.groups` 已删除）；主动关注写回 `homestation.following` tag；好友同步由联系人变更事件驱动，不再每小时轮询；`sources.resolve {kind: follow}` 只接受 DID（§5.5）。
 > **文档定位**：《BuckyOS HomeStation 架构设计》v0.7 的首版实现说明，面向实现与联调团队。记录线格式、跨节点接口、Owner kRPC、持久数据、运行方式与验证方法，以及对架构 §21 待定项采取的实现选择。
 > **代码**：`src/frame/homestation`（crate `homestation`）；Desktop 前端在 `src/frame/desktop/src/app/homestation`。
 > **约定**：本文的“实现选择”都可以在宣布网络格式稳定前修改；凡与架构不一致之处以架构为准，并在 §9 列出。
@@ -202,7 +203,7 @@ Push 对象（§13.1）：
 
 | 分组 | 方法 |
 | --- | --- |
-| UI 状态 | `ui.versions`（各领域变化计数，只在数据真正变化时递增，UI 轮询后按需重新验证）、`ui.bootstrap`（含 `user`、`followers`、`following`、`friends`、`groups`、`identities`，供预览读者与“不看”选择；`home: { zone, user, stream, defaultFeed, zoneFeed: { feed, name, writer } }`）、`prefs.get` |
+| UI 状态 | `ui.versions`（各领域变化计数，只在数据真正变化时递增，UI 轮询后按需重新验证）、`ui.bootstrap`（含 `user`、`followers`、`following`、`friends`、`groups`（用户 tag，`{id, name, members}`，`id` 与 `name` 都是 tag 文本）、`identities`，供预览读者与“不看”选择；`home: { zone, user, stream, defaultFeed, zoneFeed: { feed, name, writer } }`）、`prefs.get` |
 | 待读 | `reading.list {query, cursor, limit}`（含 `cards`）、`reading.summary {query}` |
 | 关注补看 | `candidates.list {cursor, includeRead, limit}`、`candidates.open {objId}`、`candidates.admit {objId}` |
 | 条目与资源 | `item.get {objId, reader?}`、`item.cards {objIds}`、`item.wrapped_body`、`item.retry_resources`、`item.fetch {objId, from}` |
@@ -218,7 +219,7 @@ Push 对象（§13.1）：
 | 偏好 | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override: remove\|confirm\|to_assisted\|null}`、`prefs.set_default_audience`、`prefs.set_topics`、`prefs.set_collectors`、`prefs.set_comments_open`、`prefs.mark_less_like` |
 | 反馈与回执 | `feedback.record {objId, event, value?}`、`consumption.join {target, receiver, action, terms?, joined}`、`consumption.report {agreementId, result?}`、`consumption.list` |
 | 评价服务（§6.4） | `eval.evaluate {request}`、`eval.refresh`、`eval.get {id}`、`eval.find {target, profileId?}`、`eval.set_tag_override {target, dimension, tag, action?, replacement?, scope?}`、`eval.overrides {target}`、`eval.changes {since}`、`eval.share {resultId}` |
-| 运维 | `admin.run {task: delivery\|pull\|selection\|comments\|friends}`、`admin.compact_stream {through}` |
+| 运维 | `admin.run {task: delivery\|pull\|selection\|comments\|friends}`（`friends`：同步好友派生关注并对账 `homestation.following`）、`admin.compact_stream {through}` |
 
 评价服务供其他应用与 Agent 调用（在调用者自己的 HomeStation 上）：调用方的 app id 决定修正的作用域，Desktop/control-panel 与 homestation 为 `global`，其他应用为 `app:<id>`（A65）；`eval.set_tag_override` 可以显式要求 `scope: "global"`。
 
@@ -226,7 +227,7 @@ Push 对象（§13.1）：
 
 ### 5.1 受众（§4.5）
 
-受众只存在于 `published.audience`。判定：匿名只看公开；关注者受众给已收到有效关注声明的人（好友也算，好友默认互相关注）；好友与分组按读取时的 Message Center 关系（缓存 30 秒）；指定 DID 按名单；owner 看全部。点赞默认公开；目标受限时，评论、点赞、公开收藏的受众固定为原作者，且不投递收录者；受限对象不能普通转发或引用转发（`repost_blocked:restricted`）。受众调整不签发 Head，只追加 `audience` 变化；扩大后新读者在变化读取里看到该条目，并收到一次 Push。
+受众只存在于 `published.audience`。判定：匿名只看公开；关注者受众给已收到有效关注声明的人（好友也算，好友默认互相关注）；好友（`friend_state = friend`）与分组（用户 tag）按读取时的 Message Center 关系（缓存 30 秒，联系人变更事件到达时作废）；指定 DID 按名单；owner 看全部。点赞默认公开；目标受限时，评论、点赞、公开收藏的受众固定为原作者，且不投递收录者；受限对象不能普通转发或引用转发（`repost_blocked:restricted`）。受众调整不签发 Head，只追加 `audience` 变化；扩大后新读者在变化读取里看到该条目，并收到一次 Push。
 
 ### 5.2 待读管线（§8）
 
@@ -257,8 +258,9 @@ Push 对象（§13.1）：
 
 ### 5.5 来源与关注（§7.6、§7.7）
 
-- Follow：按 DID 或联系人名称解析，读取对方 `/home/<user>/profile` 补充名称；已知没有 HomeStation 的身份返回 `homestation.follow.noHome`；建立来源后发表关注声明并投递，变化读取同步对方发表流（首次用展示读取回填）。
-- 好友：每小时与该用户的 Message Center 联系人同步一次，好友（含同 Zone 用户）派生 `friend` 依据并发表关注声明，没有 HomeStation 的好友（例如 Agent）跳过；好友解除后移除该依据，没有其他依据时撤回关注声明并删除来源（A36）。只有好友依据的来源不能单独取消关注，返回 `friend_basis`，界面引导改用“不看”。
+- Follow：`sources.resolve {kind: follow}` 只接受 DID（不是 DID 返回 `homestation.validation.did`），名称取自 Message Center 联系人；按名称找人由前端调用 Message Center 的 `contact.lookup`。读取对方 `/home/<user>/profile` 补充名称；已知没有 HomeStation 的身份返回 `homestation.follow.noHome`；建立来源后发表关注声明并投递，变化读取同步对方发表流（首次用展示读取回填）。
+- 好友：Message Center 中 `friend_state = friend` 且未拉黑的联系人（含同 Zone 用户）派生 `friend` 依据并发表关注声明，没有 HomeStation 的好友（例如 Agent）跳过；好友解除后移除该依据，没有其他依据时撤回关注声明并删除来源（A36）。同步在服务启动时做一次，之后每当 Message Center 发出该用户的联系人变更事件（kevent `/msg_center/*/CONTACTS/**`，一秒内的连续事件合并处理）时重做，不再每小时轮询。只有好友依据的来源不能单独取消关注，返回 `friend_basis`，界面引导改用“不看”。
+- 我关注的人：以主动依据（`active`）关注某人时，给该联系人加应用 tag `homestation.following`（Message Center `contact.update_tags`，联系人不存在时以陌生人创建；需要 RBAC `obj://msg-center/contact_tags/homestation` 的 write），取消主动关注时移除；好友派生的关注不打这个 tag。`sources` 表是关注的真相源，tag 只是投影：写失败只记日志；服务启动、每次联系人变更事件与 `admin.run friends` 时按 `sources` 对账，只写差异。
 - URL：先探测是否是 HomeStation 页面（`/homestation/<user>` 或 `/home/<user>/…` 取该用户的 `/home/<user>/profile`；`www.`/`homestation.` 短域名或 Zone 根的 `/` 取 `GET /home/` 的默认发表流；`profile.did` 给出 DID；汇总列表不按人关注），再识别 RSS/Atom 或网页声明的 feed，否则作为网站链接卡片来源；这些来源的通知状态为 `unsupported`（A45）。
 - 自然语言：保存意图，生成订阅的 Topic（关键词：拉丁词与中文双字片段），并映射到联系人与收录者频道；意图与映射持久保存（A42）。
 
@@ -322,7 +324,7 @@ cargo run -p homestation -- --data-dir /tmp/hs-a --config hs-a.json
 cargo run -p homestation --example devnet -- --port 4131 --data-dir /tmp/hs-devnet --fresh
 ```
 
-单机配置字段：`owner`、`owner_name`、`user`（owner 的用户名，默认 `owner`）、`zone`、`zone_name`、`users[{user, did, name, contacts, settings, collector, zone_feed_writer}]`（同 Zone 的其他用户）、`default_feed`、`zone_feed_writers`、`private_key_pem` 或 `private_key_file`、`kid`、`listen`、`collector`、`spider`、`workers`、`disclose_admission`、`intervals_s{pull,delivery,select,comments}`、`reading_window`、`tokens{<token>: {principal, did, app_id}}`、`directory{identities{<did>: {zone, user, public_key_x, devices, owner}}, zones{<zone>: <origin>}}`、`contacts[{did, name, friend, blocked, groups, avatar}]`、`settings`（初始用户设置）。
+单机配置字段：`owner`、`owner_name`、`user`（owner 的用户名，默认 `owner`）、`zone`、`zone_name`、`users[{user, did, name, contacts, settings, collector, zone_feed_writer}]`（同 Zone 的其他用户）、`default_feed`、`zone_feed_writers`、`private_key_pem` 或 `private_key_file`、`kid`、`listen`、`collector`、`spider`、`workers`、`disclose_admission`、`intervals_s{pull,delivery,select,comments}`、`reading_window`、`tokens{<token>: {principal, did, app_id}}`、`directory{identities{<did>: {zone, user, public_key_x, devices, owner}}, zones{<zone>: <origin>}}`、`contacts[{did, name, friend, blocked, tags, following, avatar}]`、`settings`（初始用户设置）。
 
 配置中的密钥是 Zone 的签名者，配置里的每个用户自动登记为由它签名；本 Zone 的源站默认指向 `listen`。`devnet` 在一个进程里启动 `me` 的 Zone（Desktop 的用户 `me`，令牌 `tok-me`；同 Zone 的第二个用户 `kai`，令牌 `tok-kai`；`me` 的 m1 与 kai 的 k1 列入汇总列表）、alice、bob、sarah 的 Zone、收录者 index 和一个 RSS 夹具站点，预置好友、关注、各类发表、评论、点赞、引用转发与订阅，节点之间只通过协议路径通信。Desktop 用 `HS_BACKEND=http://127.0.0.1:4131` 接入（见前端 README / UI_DATAMODEL）。
 
@@ -363,6 +365,7 @@ Desktop 前端：`pnpm exec playwright test tests/e2e/pages/homestation.spec.ts`
 | --- | --- |
 | Head 字段 | 增加 `publisher`（§2.3） |
 | 读者身份 | 自签读者证明（§3.2），待对齐 CYFS 跨 Zone 身份机制 |
+| 我关注的人 | `homestation.following` 是 `sources` 的投影，My Network 只读显示；别处对该 tag 的改动会在下次对账时按 `sources` 改回。HomeStation 自己写 tag 也会产生联系人变更事件，多触发一轮不写任何东西的好友同步与对账（已知） |
 | Zone 托管签名 | 服务模式用 OOD 设备密钥替 Zone 的所有用户签名；验证方接受发表者所在 Zone 的设备（已知风险：Zone 可以替其用户签名）。用户自己的密钥（`security/<user>/key`）未使用 |
 | Agent | Zone 内的 Agent 没有 HomeStation：不被关注、不接收投递 |
 | Zone 汇总列表 | 其他 Zone 不能以来源的方式关注汇总列表（URL 探测跳过 `~zone`）；没有置顶或由管理员移出他人条目 |

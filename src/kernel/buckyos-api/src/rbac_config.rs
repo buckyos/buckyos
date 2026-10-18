@@ -207,6 +207,7 @@ g, system:nfs-server, frame
 g, system:aiworkspace, frame
 g, system:homestation, frame
 p, system:homestation, obj://msg-center/owners/*,read,allow
+p, system:homestation, obj://msg-center/contact_tags/homestation,write,allow
 
 "#;
 
@@ -496,6 +497,11 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
         assert!(rbac::enforce("ood1", "system:homestation", &owner, "read", None).await);
         assert!(!rbac::enforce("ood1", "system:homestation", &owner, "write", None).await);
         assert!(!rbac::enforce("ood1", "system:aiworkspace", &owner, "read", None).await);
+        let own_tags = format!("{}homestation", crate::CONTACT_TAGS_RBAC_RESOURCE_PREFIX);
+        let other_tags = format!("{}aiworkspace", crate::CONTACT_TAGS_RBAC_RESOURCE_PREFIX);
+        assert!(rbac::enforce("ood1", "system:homestation", &own_tags, "write", None).await);
+        assert!(!rbac::enforce("ood1", "system:homestation", &other_tags, "write", None).await);
+        assert!(!rbac::enforce("ood1", "system:aiworkspace", &own_tags, "write", None).await);
     }
 
     #[tokio::test]

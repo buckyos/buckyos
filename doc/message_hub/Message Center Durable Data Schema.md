@@ -4,9 +4,9 @@
 
 Service: `msg-center`
 
-MessageCenter persists mailbox projections, delivery state, contacts, group subscriptions,
-idempotency results, tunnel recovery cursors, and UI session state in the
-platform-provided RDB instance. Message objects remain content-addressed in
+MessageCenter persists mailbox projections, delivery state, contacts, friend
+requests, group subscriptions, idempotency results, tunnel recovery cursors, and
+UI session state in the platform-provided RDB instance. Message objects remain content-addressed in
 named store. The corresponding behavior and RPC model are described in
 `doc/message_hub/Message Center.md` and
 `doc/message_hub/Message Tunnel Design.md`.
@@ -22,6 +22,7 @@ named store. The corresponding behavior and RPC model are described in
 | `msg_idempotency` | Prevents replay after restart |
 | `msg_tunnel_cursors` | External ingress recovery position |
 | `contacts`, `contact_metadata`, `group_subscribers` | Contacts and external-group subscriptions |
+| `friend_requests` | Each side's record of a friend request; not reconstructible from messages |
 
 ### Disposable Data
 
@@ -78,6 +79,54 @@ Indexes:
 Primary key: `(tunnel_key, cursor_key)`. This table is internal to msg-center;
 the public UI SessionState RPC cannot read or modify it.
 
+### Table: `friend_requests` (version 13)
+
+One row per friend request as seen by one owner; the other side keeps its own
+row in its own msg-center. Written by `friend_service.rs`; behavior in
+`Contact Mgr.md` §3.4.
+
+| Column | Type | Nullable | Description |
+|---|---|---|---|
+| `owner_key` | TEXT | No | Owner DID whose side this row is |
+| `request_id` | TEXT | No | Id carried by every `buckyos.friend` message of the request; idempotency key |
+| `peer_did` | TEXT | No | Canonical DID of the other side |
+| `direction` | TEXT | No | `incoming` or `outgoing` |
+| `state` | TEXT | No | `pending`, `accepted`, `rejected`, `cancelled`, `expired` or `ignored` |
+| `message` | TEXT | Yes | Note attached to the request (at most 500 characters) |
+| `msg_id` | TEXT | Yes | MsgObject that carried the request |
+| `peer_name` | TEXT | Yes | Incoming: the sender's `profile_hint.name`; outgoing: the local contact name |
+| `peer_avatar` | TEXT | Yes | Same, for the avatar |
+| `delivery_json` | TEXT | Yes | Outgoing only: last known `FriendDelivery` (`pending` / `delivered` / `failed`, `reason`); a pending value is re-derived from `delivery_records` when read |
+| `created_at_ms` | INTEGER/BIGINT | No | Creation time |
+| `expires_at_ms` | INTEGER/BIGINT | No | Creation + 7 days (incoming: capped at receipt + 7 days) |
+| `updated_at_ms` | INTEGER/BIGINT | No | Last state change |
+
+Primary key: `(owner_key, peer_did, request_id)`.
+
+Indexes:
+
+- `idx_friend_requests_owner(owner_key, state, updated_at_ms)` supports listing an owner's requests.
+- `idx_friend_requests_expire(state, expires_at_ms)` supports the expiry sweep (every 10 minutes).
+
+Rows are kept when the contact is removed.
+
+### Contact payload (`contacts.payload`)
+
+`contacts(owner_key, did, payload)` stores one `buckyos_api::Contact` as JSON:
+`did`, `name`, `avatar?`, `note?`, `source`, `is_verified`, `bindings?`,
+`access_level` (`block` / `stranger` / `temporary` / `allow`), `temp_grants?`,
+`friend_state` (`none` / `outgoing_pending` / `incoming_pending` / `friend`),
+`tags?`, `created_at`, `updated_at`. The `groups` field no longer exists.
+
+Payloads written before version 13 are rewritten in memory when an owner store
+is loaded: `groups` are merged into `tags` (contacts carrying `zone_user` /
+`zone_agent` keep only those system tags from `groups`, and `zone_agent`
+contacts lose the legacy `agent` tag), `access_level: friend`
+becomes `allow`, and such contacts that carry a system tag and no
+`friend_state` get `friend_state: friend`.
+An owner store is saved as a whole, so the rewritten payloads reach the table
+with the next write to that store.
+
 ### Existing durable tables
 
 `mailbox_records`, `delivery_records`, `msg_refs`, contact tables, and
@@ -114,15 +163,16 @@ query indexes, and a schema-version bump before enabling these records.
 
 ## 5. Schema Version
 
-The shared msg-center RDB instance schema version is `12`, stored in the
+The shared msg-center RDB instance schema version is `13`, stored in the
 scheduler-provided RDB instance spec. Every DDL or frozen-key semantic change
 increments this version.
 
 ## 6. Upgrade Compatibility Strategy
 
-Beta 2.2 is in no-compat mode. Earlier deployments must adopt the version 12 service schema;
-there is no in-place migration. Version 12 removes the v1 self-host group table
-definitions. Existing database tables are not automatically dropped; this code
+Beta 2.2 is in no-compat mode. Earlier deployments must adopt the version 13 service schema;
+there is no in-place SQL migration. Version 12 removes the v1 self-host group table
+definitions. Version 13 adds `friend_requests` (created with `IF NOT EXISTS`)
+and changes the contact payload, which is migrated on load as described above. Existing database tables are not automatically dropped; this code
 removal does not delete deployed data. Session-addressed queue and sender-mailbox
 idempotency semantics remain unchanged.
 
@@ -143,6 +193,8 @@ idempotency semantics remain unchanged.
 | Clean one conversation bucket | retention/expiry index | Background maintenance |
 | Clean global expired rows | expiry index, 10,000-row batches | Background maintenance |
 | Enumerate oversized buckets | retention/expiry index scan | Hourly background maintenance |
+| List one owner's friend requests | `idx_friend_requests_owner` | Indexed range, newest first |
+| Expire pending friend requests | `idx_friend_requests_expire` | Background sweep every 10 minutes |
 
 Idempotency maintenance never runs in `dispatch` or `post_send` request paths.
 The background worker runs immediately at service startup and then hourly.

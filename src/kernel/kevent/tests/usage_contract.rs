@@ -158,6 +158,14 @@ fn msg_center_box_events_match_current_consumers() {
 }
 
 #[test]
+fn msg_center_contact_events_match_desktop_and_homestation() {
+    let eventid = "/msg_center/alice/CONTACTS/changed";
+    assert_patterns_match(&[String::from("/msg_center/alice/CONTACTS/**")], eventid);
+    assert_patterns_match(&[String::from("/msg_center/*/CONTACTS/**")], eventid);
+    assert_patterns_do_not_match(&[String::from("/msg_center/alice/INBOX/**")], eventid);
+}
+
+#[test]
 fn task_manager_wait_pattern_matches_task_events_only() {
     let task_id = 42;
     let wait_patterns = vec![format!("/task_mgr/{task_id}")];

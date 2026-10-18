@@ -199,27 +199,16 @@ impl Station {
     pub async fn resolve_source_input(&self, kind: &str, text: &str) -> HsResult<SourceResolution> {
         let input = text.trim().to_string();
         match kind {
+            // People are found with Message Center's `contact.lookup`; here the choice is a DID.
             "follow" => {
-                let mut candidates = Vec::new();
-                let lower = input.to_lowercase();
-                for contact in self.contacts.list().await {
-                    if contact.did == self.cfg.owner || contact.blocked {
-                        continue;
-                    }
-                    if contact.did.to_lowercase() == lower || contact.name.to_lowercase().contains(&lower) {
-                        candidates.push(self.person_candidate(&contact.did, Some(contact.name.clone())).await);
-                    }
-                    if candidates.len() >= 4 {
-                        break;
-                    }
+                if !input.starts_with("did:") {
+                    return Err(bad("homestation.validation.did"));
                 }
-                if candidates.is_empty() {
-                    if let Ok(did) = name_lib::DID::from_friendly_name(&input) {
-                        let did = did.to_string();
-                        if did != self.cfg.owner {
-                            candidates.push(self.person_candidate(&did, None).await);
-                        }
-                    }
+                let did = name_lib::DID::from_friendly_name(&input).map_err(|_| bad("homestation.validation.did"))?.to_string();
+                let mut candidates = Vec::new();
+                if did != self.cfg.owner {
+                    let name = self.contacts.get(&did).await.map(|c| c.name);
+                    candidates.push(self.person_candidate(&did, name).await);
                 }
                 Ok(SourceResolution { input_kind: kind.into(), input, candidates, notify_hint: "pending".into(), intent_text: None })
             }
@@ -504,6 +493,9 @@ impl Station {
             })
             .await?;
         self.publish_follow(did, true).await?;
+        if basis == "active" {
+            self.contacts.set_following(did, true).await;
+        }
         let id2 = id.clone();
         let entry = self.own_entry(EntryNamespace::Follows, &follow_key(&self.cfg.owner, did));
         self.db.call(move |c| Ok(c.execute("UPDATE sources SET follow_entry=?2 WHERE id=?1", params![id2, entry])?)).await?;
@@ -568,6 +560,9 @@ impl Station {
         let Some((did, basis)) = row else { return Ok("removed") };
         let mut basis: Vec<String> = serde_json::from_str(&basis).unwrap_or_default();
         basis.retain(|b| b != "active");
+        if let Some(did) = &did {
+            self.contacts.set_following(did, false).await;
+        }
         let id = source_id.to_string();
         let now = now_ms();
         if basis.contains(&"friend".to_string()) {
@@ -610,6 +605,31 @@ impl Station {
         let id = source_id.to_string();
         self.db.call(move |c| Ok(c.execute("UPDATE sources SET paused=?2 WHERE id=?1", params![id, paused as i64])?)).await?;
         self.bump(&["sources"]);
+        Ok(())
+    }
+
+    /// The `homestation.following` tags mirror the people followed with an active basis;
+    /// only differences are written, so a re-run after the resulting change event is quiet.
+    pub async fn reconcile_following(&self) -> HsResult<()> {
+        let active: Vec<String> = self
+            .db
+            .call(|c| {
+                let mut stmt = c.prepare("SELECT did, basis FROM sources WHERE kind='person' AND did IS NOT NULL")?;
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                Ok(rows
+                    .into_iter()
+                    .filter(|(_, basis)| serde_json::from_str::<Vec<String>>(basis).unwrap_or_default().iter().any(|b| b == "active"))
+                    .map(|(did, _)| did)
+                    .collect())
+            })
+            .await?;
+        let tagged: Vec<String> = self.contacts.list().await.into_iter().filter(|c| c.following).map(|c| c.did).collect();
+        for did in active.iter().filter(|d| !tagged.contains(d)) {
+            self.contacts.set_following(did, true).await;
+        }
+        for did in tagged.iter().filter(|d| !active.contains(d)) {
+            self.contacts.set_following(did, false).await;
+        }
         Ok(())
     }
 

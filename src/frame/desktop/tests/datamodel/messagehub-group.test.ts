@@ -1,4 +1,4 @@
-import { formatInviteLink, groupErrorText, parseGroupNotice, parseInviteLink, sortSessionParticipants, withinWindow } from '../../src/app/messagehub/groupModel.ts'
+import { formatInviteLink, groupErrorText, parseGroupNotice, sortSessionParticipants, withinWindow } from '../../src/app/messagehub/groupModel.ts'
 import { displayedContent, foldMessageRelations, isHiddenRelationMessage, mentionsViewer, messageObjId, messageRelations, ownReactionId } from '../../src/app/messagehub/conversation/history/relations.ts'
 import { applyMention, collectMentions, matchMentionCandidates, mentionQueryAt } from '../../src/app/messagehub/conversation/input/mentions.ts'
 import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
@@ -32,13 +32,8 @@ Deno.test('group error texts know the post-proof reason codes and keep unknown o
   equal(groupErrorText(t, Error('agent_observer')), 'messagehub.reason.agent_observer')
 })
 
-Deno.test('invite links round-trip through formatting and parsing', () => {
-  const link = formatInviteLink(GROUP, 'tok/en+1')
-  equal(link, `${GROUP}?invite=tok%2Fen%2B1`)
-  equal(parseInviteLink(` ${link} `), { groupDid: GROUP, invite: 'tok/en+1' })
-  equal(parseInviteLink(GROUP), { groupDid: GROUP })
-  equal(parseInviteLink('https://example.com?invite=x'), null)
-  equal(parseInviteLink(''), null)
+Deno.test('invite links are formatted from the group DID and token; edit windows', () => {
+  equal(formatInviteLink(GROUP, 'tok/en+1'), `${GROUP}?invite=tok%2Fen%2B1`)
   equal([withinWindow(undefined, 0, now), withinWindow(1000, now - 500, now), withinWindow(1000, now - 5000, now), withinWindow(0, now, now)], [true, true, false, false])
 })
 

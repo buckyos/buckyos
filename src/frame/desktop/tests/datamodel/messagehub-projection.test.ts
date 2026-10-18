@@ -10,7 +10,7 @@ const peerEndpoint = 'did:msgtunnel:5397330802.user.tg-main-tunnel'
 const labels: ProjectionLabels = { direct: 'Direct', groupMain: 'Group chat', untitled: 'Untitled', unassigned: 'Unassigned', unassignedDescription: '', you: 'You', previewImage: '[Image]', previewAttachment: '[Attachment]', previewUnavailable: 'Unavailable' }
 const contacts: Contact[] = [
   { did: peerEndpoint, name: 'zzcc ll', source: 'auto_inferred', is_verified: false, access_level: 'stranger', created_at: 1, updated_at: 1, bindings: [{ platform: 'telegram', account_id: '5397330802', display_id: '@wacer2026', tunnel_instance_id: 'tg-main-tunnel', account_type: 'user', endpoint_did: peerEndpoint, last_active_at: 1 }] },
-  { did: 'did:bns:alice', name: 'Alice', source: 'shared', is_verified: true, access_level: 'friend', created_at: 1, updated_at: 1, tags: ['zone_user'] },
+  { did: 'did:bns:alice', name: 'Alice', source: 'shared', is_verified: true, access_level: 'allow', created_at: 1, updated_at: 1, tags: ['zone_user'] },
 ]
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 function chat(from: string, to: string[], text: string, created: number, extra: Partial<MessageObject> = {}): MessageObject { return { from, to, kind: 'chat', created_at_ms: created, content: { format: 'text/plain', content: text }, ...extra } }
@@ -34,7 +34,7 @@ Deno.test('group member INBOX copies attribute to the group, not the owner, in b
 
 Deno.test('group history identifies a group already present in contacts without a group service', () => {
   const group = 'did:bns:team'
-  const contact: Contact = { did: group, name: 'Team', source: 'shared', is_verified: true, access_level: 'friend', created_at: 1, updated_at: 1 }
+  const contact: Contact = { did: group, name: 'Team', source: 'shared', is_verified: true, access_level: 'allow', created_at: 1, updated_at: 1 }
   const inbound = summary('team-session', { box_kind: 'INBOX', from: 'did:bns:alice', to: owner, tags: [`group:${group}`], msg: chat('did:bns:alice', [group], 'hi', 10, { kind: 'group_msg' }) })
   const projected = projectOwner({ ownerDid: owner, summaries: [inbound], contacts: [contact], agentDids: [], personalTitles: {}, groups: {}, groupSessionTitles: {}, policies: {}, labels })
   equal(projected.entities[0].type, 'group')
@@ -182,7 +182,7 @@ Deno.test('group invitations parse only the invite notification', () => {
 })
 
 Deno.test('root and the logged-in account stay out of the entity list but their sessions remain addressable', () => {
-  const zoneUser = (did: string, name: string): Contact => ({ did, name, source: 'shared', is_verified: true, access_level: 'friend', created_at: 1, updated_at: 1, tags: ['zone_user'] })
+  const zoneUser = (did: string, name: string): Contact => ({ did, name, source: 'shared', is_verified: true, access_level: 'allow', created_at: 1, updated_at: 1, tags: ['zone_user'] })
   const all = [zoneUser('did:bns:root', 'root'), zoneUser('did:bns:devtest', 'Dev Test'), zoneUser('did:bns:alice', 'Alice'), zoneUser('did:bns:ops', 'root'), zoneUser('did:web:me.example.com', 'Me')]
   const hidden = { dids: ['did:web:me.example.com'], usernames: ['devtest'] }
   equal(all.map(contact => isHiddenAccount(contact, owner, hidden)), [true, true, false, true, true])
@@ -200,13 +200,25 @@ Deno.test('contact pictures project onto entities and the owner, unloadable ones
   const bob = 'did:bns:bob'
   const carol = 'did:bns:carol'
   const people: Contact[] = [
-    { did: owner, name: 'Me', avatar: 'data:image/png;base64,OWN', source: 'shared', is_verified: true, bindings: [], access_level: 'friend', groups: [], tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
-    { did: bob, name: 'Bob', avatar: 'data:image/jpeg;base64,BOB', source: 'shared', is_verified: true, bindings: [], access_level: 'friend', groups: [], tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
-    { did: carol, name: 'Carol', avatar: 'javascript:alert(1)', source: 'shared', is_verified: true, bindings: [], access_level: 'friend', groups: [], tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
+    { did: owner, name: 'Me', avatar: 'data:image/png;base64,OWN', source: 'shared', is_verified: true, bindings: [], access_level: 'allow', tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
+    { did: bob, name: 'Bob', avatar: 'data:image/jpeg;base64,BOB', source: 'shared', is_verified: true, bindings: [], access_level: 'allow', tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
+    { did: carol, name: 'Carol', avatar: 'javascript:alert(1)', source: 'shared', is_verified: true, bindings: [], access_level: 'allow', tags: ['zone_user'], created_at: 1, updated_at: 1 } as unknown as Contact,
   ]
   const projected = projectOwner({ ownerDid: owner, summaries: [], contacts: people, agentDids: [], personalTitles: {}, groups: {}, groupSessionTitles: {}, policies: {}, labels })
   equal(projected.entityById.get(bob)?.avatar, 'data:image/jpeg;base64,BOB')
   equal(projected.entityById.get(carol)?.avatar, undefined)
   equal(projected.avatars[owner], 'data:image/png;base64,OWN')
   equal(projected.names[owner], 'Me')
+})
+
+Deno.test('peers opened without a conversation are listed as native entities; contacts and tunnels keep their own projection', () => {
+  const nora = 'did:web:nora.example.com'
+  const bot = 'did:web:bot.example.com'
+  const projected = projectOwner({ ownerDid: owner, summaries: [], contacts, agentDids: [], personalTitles: {}, groups: {}, groupSessionTitles: {}, policies: {}, labels, peers: [{ did: nora, name: 'Nora' }, { did: bot, type: 'agent' }, { did: peerEndpoint, name: 'Ignored' }, { did: owner }] })
+  const person = projected.entities.find(item => item.id === nora)!
+  equal([person.type, person.name, person.domain], ['person', 'Nora', 'managed'])
+  equal(creationReason({ viewerDid: owner, ownerDid: owner, mode: 'self' }, person, 'default', { kind: 'native', targetDid: nora }), undefined)
+  equal(projected.entities.find(item => item.id === bot)?.type, 'agent')
+  equal(projected.entities.find(item => item.id === peerEndpoint)?.name, 'zzcc ll')
+  equal(projected.entities.some(item => item.id === owner), false)
 })

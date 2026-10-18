@@ -384,11 +384,6 @@ export function createApiHomeStationStore(transport: Transport): HomeStationStor
       const followers = boot?.followers ?? []
       return { follower: followers.find(did => !friends.includes(did)) ?? followers[0], friend: friends[0] }
     },
-    peekMuteCandidates() {
-      if (!boot) return []
-      const people = boot.identities.filter(identity => identity.kind === 'person' && identity.did).map(identity => identity.did!)
-      return [...new Set([...boot.friends, ...boot.following.map(entry => entry.did), ...people])].filter(did => did !== boot?.owner)
-    },
     peekHome: () => boot?.home ?? null,
 
     async listReading(query, cursor) {

@@ -149,7 +149,7 @@ HomeStation 将三种机制组合起来：
 
 HomeStation 主要增加内容语义、通用标签评价、社交投递规则、发表与收录能力，以及本地阅读管线，不重新建立一套身份系统、消息传输网络或好友关系数据库。
 
-当前工程的 `src/kernel/buckyos-api/src/msg_center_client.rs` 已用 `Contact.access_level` 表达好友等级，并提供 `Contact.groups` 联系人分组。HomeStation 从 Message Center 读取这些关系，派生默认关注、分组展示策略及受众判定；不另建一份权威好友关系。这里的分组指联系人分组，不等同于群聊或 Group Inbox。
+当前工程（2026-10-17）由 Message Center 的联系人模块提供关系，类型在 `src/kernel/buckyos-api/src/msg_center_client.rs` 与 `msg_contact.rs`：`Contact.friend_state` 表达好友关系（`access_level` 只是聊天投递策略，其中 `Block` 表示拉黑）；联系人分组是 `Contact.tags` 中的用户 tag（`Contact.groups` 已删除）。HomeStation 从 Message Center 读取这些关系，派生默认关注、分组展示策略及受众判定，并订阅 Message Center 的联系人变更事件，关系变化即时生效；不另建一份权威好友关系。HomeStation 唯一写回的是应用 tag `homestation.following`：它是主动关注的投影，供 My Network 显示“我关注的人”这一单向关系，关注的真相源仍是 HomeStation 自己的来源记录。这里的分组指联系人分组，不等同于群聊或 Group Inbox。
 
 HomeStation 不经由 Message Center 的消息投递接收 Feed。Message Center 的 `dispatch` 只接收 `MsgObject`，准入按聊天关系执行（`AccessGroupLevel`，陌生来源进入 `RequestBox`），与 Feed 的宽准入（§7.3）不是同一套规则。HomeStation 在自己的语义路径上以 CYFS dispatch 接收 Feed Object、Head、关注声明等小型命名对象（§4.4、§7.4），复用网关的接收侧缓存；只从 Message Center 读取关系数据。CYFS 的 No-Push 约定本来就把评论、通知、索引更新列为跨 Zone 语义事件的典型例子，附件与正文仍由接收方按需 Pull。
 
@@ -1025,7 +1025,7 @@ Spider 有一个必要例外：某些资源只能在当前抓取 Session 中获�
 
 HomeStation 的社交 Inbox 应允许比私人聊天更广泛的内容触达，包括直接好友、主动订阅的发布者、符合用户规则的间接关系，以及用户允许的商业内容来源。
 
-准入在 HomeStation 的投递入口执行。所依据的好友等级与联系人分组读自 Message Center（§3.2），但不套用聊天的陌生来源请求箱规则。
+准入在 HomeStation 的投递入口执行。所依据的好友关系与联系人分组读自 Message Center（§3.2），但不套用聊天的陌生来源请求箱规则。
 
 例如用户关注 A 并在 A 的内容下评论，B 通过 A 或讨论参与关系发现该用户，有机会向其投递内容。但这种可发现性不是绕过接收方权限的通行证：是否允许 B 进入候选，仍由接收方准入规则决定。
 

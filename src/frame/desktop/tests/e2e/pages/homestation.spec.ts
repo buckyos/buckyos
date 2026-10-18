@@ -37,6 +37,39 @@ async function openMenuItem(page: Page, cardText: string, item: RegExp) {
 test.describe('HomeStation prototype (architecture v0.6)', () => {
   test.use({ viewport: { width: 1440, height: 900 } })
 
+  test('people are found with the shared FindPeople and picked with the shared PeoplePicker', async ({ page }) => {
+    const errors = trackErrors(page)
+    await openHomeStation(page)
+    await page.getByTestId('hs-nav-sources').click()
+    const find = page.getByTestId('hs-follow-people')
+    await find.getByLabel('Find people').fill('foodie')
+    await find.getByTestId('find-people-result').filter({ hasText: 'Foodie Explorer' }).getByRole('button', { name: 'Follow' }).click()
+    await expect(page.getByTestId('hs-toast').filter({ hasText: 'Following' })).toBeVisible()
+    await expect(page.getByTestId('hs-source-row').filter({ hasText: 'Foodie Explorer' })).toBeVisible()
+    await find.getByLabel('Find people').fill('david')
+    const david = find.getByTestId('find-people-result').filter({ hasText: 'David Liu' })
+    await expect(david).toBeVisible()
+    await expect(david.getByRole('button', { name: 'Follow' })).toHaveCount(0)
+    await find.getByLabel('Find people').fill('https://nina.buckyos.io/homestation/nina')
+    await expect(find.getByTestId('find-people-section-homestation-url')).toContainText('nina')
+
+    await page.getByTestId('hs-nav-prefs').click()
+    await page.getByTestId('hs-mute-person').click()
+    const picker = page.getByRole('dialog', { name: 'Hide a person' })
+    await picker.getByRole('button', { name: 'Sarah Kim', exact: true }).click()
+    await picker.getByRole('button', { name: 'Hide', exact: true }).click()
+    await expect(page.getByTestId('hs-mute-list')).toContainText('Sarah Kim')
+
+    const audience = page.getByTestId('hs-default-audience')
+    await audience.getByRole('radio', { name: 'Specific DIDs' }).click()
+    await audience.getByTestId('hs-default-audience-choose').click()
+    const who = page.getByRole('dialog', { name: 'Who can see it' })
+    await who.getByRole('button', { name: 'Foodie Explorer', exact: true }).click()
+    await who.getByRole('button', { name: 'Use these people', exact: true }).click()
+    await expect(audience.getByTestId('hs-default-audience-people')).toContainText('Foodie Explorer')
+    expect(errors).toEqual([])
+  })
+
   test('A06 video without ready resources is not offered as playable', async ({ page }) => {
     const errors = trackErrors(page)
     await openHomeStation(page)

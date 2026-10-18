@@ -1,16 +1,15 @@
 /* ── Entity avatar with type indicator ── */
 
-import { Bot, CircleUser, Contact, Users2 } from 'lucide-react'
+import { Bot, CircleUser, Users2 } from 'lucide-react'
 import type { EntityKind } from '../../datamodel/types'
 import { ObjectAvatar } from '../../../../presentation/ObjectIcon'
 
-export type EntityAvatarKind = EntityKind | 'contact'
+export type EntityAvatarKind = EntityKind
 
 const kindIcon: Record<EntityAvatarKind, typeof Bot> = {
   self: CircleUser,
   agent: Bot,
   'local-user': CircleUser,
-  contact: Contact,
   'entity-group': Users2,
 }
 
@@ -18,7 +17,6 @@ const kindColor: Record<EntityAvatarKind, string> = {
   self: 'var(--cp-accent)',
   agent: 'var(--cp-success)',
   'local-user': 'var(--cp-accent)',
-  contact: 'var(--cp-muted)',
   'entity-group': 'var(--cp-warning)',
 }
 

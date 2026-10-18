@@ -2,6 +2,12 @@ import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
 import { groupErrorText, isAgentGroupDisabled, parseGroupNotice } from '../../groupModel'
 import { AgentGroupSettingsLink } from '../../AgentGroupSettingsLink'
+import { parseFriendNotice } from '../../friendNotice'
+import { useEntityRelation } from '../../relation'
+import { networkActions } from '../../../../components/network/cache'
+import { useNetworkDialogs } from '../../../../components/network/dialogs'
+import { useNetworkResource } from '../../../../components/network/hooks'
+import { networkErrorText } from '../../../../components/network/relation'
 import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
@@ -16,6 +22,7 @@ import {
   Reply,
   SmilePlus,
   Trash2,
+  UserPlus,
   Users,
 } from 'lucide-react'
 import {
@@ -100,6 +107,7 @@ type MessageRenderer = (
 const messageRenderers: readonly MessageRenderer[] = [
   message => isActionMessage(message) ? <ActionMessage message={message} /> : null,
   message => message.ui_unavailable === true ? <UnavailableMessage message={message} /> : null,
+  (message, context) => parseFriendNotice(message) ? <FriendRequestMessage message={message} context={context} /> : null,
   (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null,
   (message, context) => messageRelations(message)?.redacted ? <RedactedMessage message={message} context={context} /> : null,
   (message, context) => messageNotify(message) ? <NotifyMessage message={message} context={context} /> : null,
@@ -776,6 +784,63 @@ function NotifyMessage({ message, context }: { message: MessageObject; context: 
   return (
     <div className={rowClass(false, context.continued)}>
       <NotifyCard message={message} data={data} className={`${bubbleWidthClass} w-[420px] min-w-[240px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} footer={<MessageFooter message={message} isSelf={false} mode="card" />} />
+    </div>
+  )
+}
+
+/** A `buckyos.friend` request: the request's current state from msg-center, and its answers for the owner. */
+function FriendRequestMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const { t } = useI18n()
+  const actions = useContext(ConversationMessageActionsContext)
+  const dialogs = useNetworkDialogs()
+  const requests = useNetworkResource('friendRequests')
+  const notice = parseFriendNotice(message)
+  const outgoing = message.from === context.selfDid
+  const peer = outgoing ? message.to?.[0] ?? '' : message.from
+  const relation = useEntityRelation(peer || null)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  if (!notice || notice.action !== 'request') return renderFallbackMessage(message, context)
+  const request = requests.data?.find(item => item.request_id === notice.requestId)
+  const state = request?.state ?? (relation?.friendState === 'friend' ? 'accepted' : undefined)
+  const name = actions.displayName?.(peer) ?? notice.profileHint?.name ?? peer
+  const canAnswer = actions.answerFriendRequests && !outgoing && state === 'pending'
+  const run = async (operation: () => Promise<unknown>) => {
+    setPending(true); setError('')
+    try { await operation() } catch (failure) { setError(networkErrorText(t, failure)) } finally { setPending(false) }
+  }
+  const block = async () => {
+    const confirmed = await dialogs.confirm({ strength: 'explicit', danger: true, title: t('network.confirm.block.title', undefined, { name }), body: t('network.confirm.block.body', undefined, { name }), consequences: [t('network.confirm.block.c1'), t('network.confirm.block.c2')], confirmLabel: t('network.action.block') })
+    if (!confirmed) return
+    await run(async () => {
+      await networkActions.respondFriendRequest(notice.requestId, 'ignore')
+      await networkActions.blockContact(peer)
+    })
+  }
+  const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9'
+  const secondaryClass = 'min-h-11 rounded-lg border px-3 text-sm disabled:opacity-50 md:min-h-9'
+  return (
+    <div className={rowClass(outgoing, context.continued)}>
+      <div className={`${bubbleWidthClass} w-72 min-w-[220px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} data-testid="friend-notice" data-state={state ?? 'unknown'}>
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-accent) 16%, transparent)', color: 'var(--cp-accent)' }} aria-hidden><UserPlus size={17} /></span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>{t(outgoing ? 'messagehub.friend.sent' : 'messagehub.friend.received')}</p>
+            <p className="truncate text-[15px] font-semibold" title={peer}>{name}</p>
+          </div>
+        </div>
+        {notice.message ? <p className="mt-2 whitespace-pre-wrap break-words text-sm">{notice.message}</p> : null}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {canAnswer ? <>
+            <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={pending} onClick={() => void run(() => networkActions.respondFriendRequest(notice.requestId, 'accept'))}>{t('network.action.accept_request')}</button>
+            <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} disabled={pending} onClick={() => void run(() => networkActions.respondFriendRequest(notice.requestId, 'ignore'))}>{t('myNetwork.requests.ignore')}</button>
+            <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)', color: 'var(--cp-danger)' }} disabled={pending} onClick={() => void block()}>{t('network.action.block')}</button>
+          </> : state ? <span className="text-xs font-medium" style={{ color: state === 'accepted' ? 'var(--cp-success)' : 'var(--cp-muted)' }} data-testid="friend-notice-state">{t(`messagehub.friend.state.${state}${outgoing && state === 'pending' ? 'Outgoing' : ''}`, undefined, { name })}</span> : null}
+          {actions.answerFriendRequests && outgoing && state === 'pending' ? <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} disabled={pending} onClick={() => void run(() => networkActions.cancelFriendRequest(notice.requestId))}>{t('network.action.cancel_request')}</button> : null}
+        </div>
+        {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+        <MessageFooter message={message} isSelf={outgoing} mode="card" />
+      </div>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -575,7 +575,7 @@ export interface AccountBinding {
   lastActiveAt?: number
 }
 
-export type AccessGroupLevel = 'block' | 'stranger' | 'temporary' | 'friend'
+export type AccessGroupLevel = 'block' | 'stranger' | 'temporary' | 'allow'
 export type ContactSource = 'manual_import' | 'manual_create' | 'auto_inferred' | 'shared'
 ```
 
@@ -967,12 +967,13 @@ store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup 
 - **群资料 `GroupInfo`**：`group.get_doc` + `group.get_config`（`revision`、`profile`、默认 Session 规则：`receipts`、编辑 / 撤回窗口）+ `group.list_members`（不可见时 `members = null`；含 `invited_by`，结果另带 `pending_owner_transfer`，仅成员可见）+ `group.list_sessions`（`GroupSessionInfo`：共享标题 / 说明 / 公告及其 revision、`lifecycle`、记录 `revision`、`has_guests`、`receipts`）+ `group.check_access`（`GroupCapabilities`：`group.invite_member` / `group.remove_member` / `group.approve_member` / `group.update_role` / `group.moderate` / `group.update_config` / `session.create` / `session.manage` / `session.invite_guest` / `session.update_shared_state` / `message.redact_any` / `session.mention_all`；`transferOwner` 为 `doc.controller === 本人`）。远端托管群只显示「由托管方管理」。
 - **群资料编辑**：Owner / Admin 在群面板修改群名与简介：`group.apply_config { expected_revision, idempotency_key, patch: { profile: { name, description } } }`，`expected_revision` 取 `GroupInfo.revision`。
 - **成员管理**（群面板成员行菜单）：批准 / 拒绝（`group.approve_member` / `group.reject_member`）、设为 / 取消管理员（`group.update_member_role`，不需要本人同意）、转让群主（`group.transfer_owner` 发起，目标成员在 `owner_transfer` 卡片上 `group.accept_owner_transfer`；群主可 `group.cancel_owner_transfer`）、禁言 1 小时 / 解除 / 封禁（`group.moderate { muted_until_ms | blocked }`）。
-- **邀请链接**：`group.create_invite_link` 返回 token，UI 展示为 `<group_did>?invite=<token>`（`formatInviteLink` / `parseInviteLink`），可 `group.revoke_invite_link`；「新建群聊」对话框底部可粘贴链接 `group.request_join { group_did, invite }`（也接受裸群 DID 按 `join_policy` 申请），结果 `pending_admin_approval` 时提示等待审批。
+- **邀请链接**：`group.create_invite_link` 返回 token（store `createGroupInviteLink` 直接返回 token），UI 展示为 `<group_did>?invite=<token>`（`formatInviteLink`），撤销用同一 token 调 `group.revoke_invite_link`。
+- **加入群**：实体列表标题栏「+」菜单的「加入群」打开公共 `JoinGroupDialog`（`components/network/`）：输入群 DID 或邀请链接，`contact.lookup` 解析并预览（`group.get_doc`），`group.request_join { group_did, invite? }`，结果为 `active` / `pending_admin_approval` / `invite-required`；他 Zone 的群提示暂不支持。成功后 `ensureOwner(refresh)` 并打开该群。
 - **Session 参与者**（会话详情「成员」一节，托管群）：`group.list_session_members { group_did, session_id? }` → `GroupSessionParticipants { items: [{ did, kind: group_member | guest, role?, state: included | invited }], complete }`，按会话 key 缓存（`ensureGroupSessionMembers`），群资料重新加载时一并刷新。读者能看到群成员列表时 `complete = true`、列出全部有效参与者；Guest 或成员列表对其隐藏时只列显式参与者与在该 Session 发过言的人（v2 §3.3），界面注明。待接受的 Guest 邀请只对有 `session.invite_guest` 的人列出（「已邀请，尚未加入」）。具名 Session 中，移出按钮（`group.remove_session_member`，确认后执行）对群成员要求 `session.manage`、对 Guest 要求 `session.invite_guest`，不对群主与本人显示；默认 Session 的成员在群面板管理。远端托管群或尚未加载时显示本地 `session.members`。
 - **具名 Session 管理**（会话详情「群会话」一节）：归档 / 删除（`group.archive_session` / `group.delete_session`，带记录 `expected_revision`）、添加成员（`group.update_session { add_members }`）、邀请外部成员（`group.invite_session_guest`，对方在 `session_invite` 卡片上 `group.accept_session_invitation`，不需要 proof）、移出 / 退出（`group.remove_session_member` / `group.leave_session`）。`has_guests` 的 Session 在 Session 列表和详情显示「含外部成员」。
 - **共享状态与昵称**：群会话详情的共享标题 / 说明 / 公告走 `group.get_shared_state` + `group.update_shared_state { session_id?, expected_revision, set, unset, idempotency_key }`，昵称走 `group.get_member_state` + `group.update_member_state`；非群会话仍显示「尚未启用」。
 - **已读回执**：Session 规则 `receipts !== 'hidden'` 时，对本人最新一条群消息查 `group.list_messages` 得到 `session_seq`，再 `group.get_read_markers { session_id?, session_seq }` 显示「N 人已读」（`readers` 规则下附读者名）；标记已读时若已知 seq 则顺带 `group.update_read_marker`（host 也会按 READ 状态推进）。
-- **入口**：实体列表标题栏「+」菜单的「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。候选成员为可经 native 连接到达的人和 Agent，排除 `did:msgtunnel:*`、已拉黑者和自己。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。
+- **入口**：实体列表标题栏「+」菜单的「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。选人一律用公共 `PeoplePicker`：建群对话框内嵌（`embedded`，`filter: { kinds: GROUP_MEMBER_KINDS = ['user', 'agent'], excludeBlocked: true }`，上限 `GROUP_MEMBER_LIMIT`），邀请成员与 Guest 用对话框（已在群里的人以 `exclude` 列出并注明状态），具名 Session 加成员用 `candidates` 限定为群的 active 成员。候选来自 msg-center（`contact.lookup`：本人联系人与本 Zone 用户，可输入新 DID 并保存为联系人）。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。邀请失败的人与原因在关闭选人对话框后单独列出。
 - **邀请与通知**：通知为 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'`，`machine.data = { group_did, action, data }`，投递到与发起者的会话（`dm:<inviter>`），群名取 `group.get_doc`。各 action 的卡片：
 
   | action | data | 卡片 |
@@ -1152,7 +1153,7 @@ function buildOutgoingMessage(draft: ComposerDraft, ctx: OutgoingContext): MsgOb
 export const entityNotePatchSchema = z.object({
   note: z.string().trim().max(280).optional(),
   tags: z.array(z.string().trim().min(1).max(24)).max(16).default([]),
-  accessLevel: z.enum(['block', 'stranger', 'temporary', 'friend']).optional(),
+  accessLevel: z.enum(['block', 'stranger', 'temporary', 'allow']).optional(),
 })
 
 export type EntityNotePatch = z.infer<typeof entityNotePatchSchema>
@@ -1222,25 +1223,19 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 对象回收必须单独按共享引用处理，不能承诺清除所有物理副本。操作成功后再清理本地缓存，
 失败不展示成功结果；能力未提供时禁用对应操作并说明原因。RPC 名称和存储方案在实现阶段定义。
 
-### 4.6 消息请求与联系人准入
+### 4.6 消息请求与联系人关系
 
-后端 `REQUEST_BOX` 已承载低信任来源消息。UI 需提供可发现的请求入口与来源提示，
-按记录的 `box_kind` 标识请求，不把整个 Entity / Session 永久标为陌生人；同一会话可能包含历史请求与普通消息。
-请求入口是已有记录的筛选视图，不制造第二份消息或伪 Entity。完整请求计数 / 分页需后端支持，不能只查最后一条记录。
+后端 `REQUEST_BOX` 承载低信任来源消息。UI 按记录的 `box_kind` 标识请求，不把整个 Entity / Session 永久标为陌生人；同一会话可能包含历史请求与普通消息。
 
-展示当前 owner 的 Contact.access_level 与有上下文的临时授权到期信息。查看、标已读、回复、
-允许后续投递是不同动作；查看请求不授予 friend / temporary 权限。
-授权操作复用 `contact.grant_temporary_access` 或经校验的联系人准入修改，拉黑复用 `contact.block_contact`。
-这些动作调整本 owner 的准入规则，不修改域外实体自身资料；Agent 观察禁用。
+关系的显示规则、可用动作与确认强度统一由 [`components/network/UI_DATAMODEL.md`](../../components/network/UI_DATAMODEL.md) §3 定义，MessageHub 不再自带准入逻辑（store 的 `admission` / `setAdmission` 已删除）：
 
-“接受为联系人”调用 `contact.update_contact(did, { access_level: 'friend' }, owner)`：只因请求到达、
-从未建立联系人的发送者（例如新建的家庭成员）没有联系人记录，后端在设置 `access_level` 时创建该记录
-（2026-09-30，MH2U-2），UI 在本地无联系人时附带当前显示名。以保存结果决定反馈，失败提示“未能更新该联系人”。
-`contact.*` 按 owner 授权：用户只能读写自己 DID 的联系人库（读另含可观察的 Zone Agent），系统库仅服务可写。
+- **请求横幅**（`RelationPanel.tsx` `RequestBanner`）：会话 `requestCount > 0`，且本人视角下对方既不是好友、也未被允许（`allow` 或有效 `temporary`）时显示。内容为请求数、`RelationBadge` 与 `RelationActions`（加好友 = `contact.send_friend_request`，允许消息 = 只改 `access_level: 'allow'`，屏蔽 = `contact.block_contact`，已屏蔽时为解除屏蔽，收到请求时为接受）。关系来自 network 缓存（`contact.list_contacts` + `contact.list_friend_requests`），动作完成后 `ensureOwner(refresh)`。
+- **实体详情「关系」**（`RelationSection`）：人和 Agent 显示完整的 `RelationBadge` 与 `RelationActions`（含解除好友、删除联系人），并可「在“我的网络”中打开」（`openMyNetwork({ entity })`）。群、服务、系统通知和 Agent 观察不显示。
+- **好友请求卡片**：`machine.intent = 'buckyos.friend'`、`data.action = 'request'` 的消息（`friendNotice.ts`）渲染为卡片，状态取 `contact.list_friend_requests` 中同 `request_id` 的记录（`pending` / `accepted` / `ignored` / `rejected` / `cancelled` / `expired`），本人收到的待处理请求可接受 / 忽略 / 屏蔽（屏蔽先 `ignore` 再 `block_contact`），本人发出的可撤回。accept / reject / cancel / remove 不留邮箱记录。
 
-当前改变联系人准入并不会迁移旧 REQUEST_BOX 记录。接受后的历史迁移 / 保留、请求处理状态与幂等结果
-须补显式服务契约；在此之前只准确反馈本次权限变更，不能清空请求列表或伪称历史已转入 INBOX。
-群发言、成员管理等权限仍通过 GroupMgr 判断，不能从联系人 friend 或 native 连接推导。
+当前改变联系人准入并不会迁移旧 REQUEST_BOX 记录；请求计数仍按记录统计，横幅只按关系决定是否出现。群发言、成员管理等权限仍通过 GroupMgr 判断，不能从好友关系或 native 连接推导。
+
+**新联系人与未知 DID**：store `addPeer(context, did, { name?, type? })` 把没有会话的 DID 列为实体（api：`OwnerData.peers` 进入投影，非 tunnel DID 视为 `managed`；mock：同样记在内存，有会话后从会话恢复）。launch / 路由带陌生 DID（例如 My Network 的「发消息」）时先 `addPeer` 再按默认会话规则创建 native 会话；「新建会话」对话框可展开公共 `FindPeople` 按名称或 DID 找人，选中后同样 `addPeer` 并作为目标。
 
 ---
 

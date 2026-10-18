@@ -305,6 +305,8 @@ pub struct CallerIdentity {
     pub user_id: String,
     pub principal_kind: TokenPrincipalKind,
     pub user_did: Option<DID>,
+    /// RBAC app subject of the token (`system:<service>` / `app:<app>`).
+    pub authorization_key: String,
 }
 
 /// A call made inside this process: no session token and no peer address.
@@ -420,6 +422,7 @@ impl MessageCenter {
         };
         Ok(Some(CallerIdentity {
             user_id,
+            authorization_key: claims.target.authorization_key(),
             principal_kind: claims.principal_kind,
             user_did,
         }))

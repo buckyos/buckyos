@@ -153,7 +153,7 @@ pub fn filter_hits(tags: &[EffectiveTag], classified: &Classified, rules: &[Filt
 pub fn is_muted(publisher: &str, rules: &[MuteRule], contacts: &[ContactInfo]) -> bool {
     rules.iter().any(|rule| match rule {
         MuteRule::Person { did, .. } => did == publisher,
-        MuteRule::Group { group_id, .. } => contacts.iter().any(|c| c.did == publisher && c.groups.iter().any(|g| g == group_id)),
+        MuteRule::Group { group_id, .. } => contacts.iter().any(|c| c.did == publisher && c.tags.iter().any(|g| g == group_id)),
     })
 }
 

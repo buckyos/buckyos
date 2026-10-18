@@ -9,9 +9,9 @@ import { useMessageHubStore } from './store'
 import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { groupSharedStateSchema, memberStateSchema, presentationSchema } from './sessionModel'
 import { confirmGroupAction } from './confirmDialog'
-import { PickMembersForm } from './GroupDialogs'
+import { useNetworkDialogs } from '../../components/network/dialogs'
 import { friendlyDidName } from './api/projection'
-import { groupErrorText, groupSessionId, memberCandidates, sortSessionParticipants } from './groupModel'
+import { GROUP_MEMBER_KINDS, groupErrorText, groupSessionId, participating, sortSessionParticipants } from './groupModel'
 import type { Entity, GroupInfo, GroupSessionInfo, MessageHubContext, Session, SessionAccess } from './types'
 import { MemberAvatar } from './HubAvatar'
 
@@ -105,7 +105,7 @@ function ShowActionsToggle({ value, onChange }: { value: boolean; onChange: (val
 
 /** Archive / delete, membership and guest invitations of a named Group Session (`group.*_session`). */
 function GroupSessionSection({ session, entity, context, group, groupSession, onManaged }: { session: Session; entity: Entity; context: MessageHubContext; group: GroupInfo; groupSession: GroupSessionInfo; onManaged: () => void }) {
-  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
   const [pending, setPending] = useState(false), [error, setError] = useState('')
   const run = async (operation: () => Promise<unknown>) => {
     if (pending) return
@@ -122,25 +122,28 @@ function GroupSessionSection({ session, entity, context, group, groupSession, on
     if (!await confirmGroupAction(dialog, t, { title: t('messagehub.group.session.leave'), body: t('messagehub.group.session.leaveConfirm', undefined, { name: title }), confirm: t('messagehub.group.session.leave') })) return
     await run(async () => { await store.leaveGroupSession(context, entity.id, session.id); onManaged() })
   }
-  const pick = (kind: 'members' | 'guest') => {
+  const pick = async (kind: 'members' | 'guest') => {
     const trigger = document.activeElement
     const activeMembers = (group.members ?? []).filter(member => member.state === 'active' && member.did !== context.ownerDid).map(member => member.did)
-    const candidates = kind === 'members'
-      ? activeMembers.map(did => store.findEntity(context, did) ?? { id: did, type: 'person' as const, name: nameOf(did), tags: [], unreadCount: 0, lastActiveAt: 0 })
-      : memberCandidates(store, context).filter(candidate => !(group.members ?? []).some(member => member.did === candidate.id && (member.state === 'active' || member.state === 'invited' || member.state === 'pending_admin_approval')))
-    void dialog.open({ title: t(kind === 'members' ? 'messagehub.group.session.addMembers' : 'messagehub.group.session.inviteGuest'), size: 'md', dismissible: false, renderBody: controls => <PickMembersForm context={context} candidates={candidates} title={t(kind === 'members' ? 'messagehub.group.addMembers' : 'messagehub.group.session.guests')} submitLabel={kind === 'members' ? 'messagehub.group.session.addMembers' : 'messagehub.group.session.inviteGuest'} onCancel={() => controls.close()} onSubmit={async dids => {
+    const title = t(kind === 'members' ? 'messagehub.group.session.addMembers' : 'messagehub.group.session.inviteGuest')
+    const result = await dialogs.pickPeople(kind === 'members'
+      ? { title, confirmLabel: title, candidates: activeMembers.map(did => ({ did, name: nameOf(did), kind: store.findEntity(context, did)?.type === 'agent' ? 'agent' as const : 'user' as const })), filter: { excludeBlocked: false } }
+      : { title, confirmLabel: title, filter: { kinds: GROUP_MEMBER_KINDS, exclude: (group.members ?? []).filter(participating).map(member => ({ did: member.did, reason: t(`messagehub.group.state.${member.state}`) })) } })
+    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus()
+    if (result.action !== 'selected') return
+    const dids = result.people.map(person => person.did)
+    await run(async () => {
       if (kind === 'members') await store.addGroupSessionMembers(context, entity.id, session.id, dids)
       else for (const did of dids) await store.inviteGroupSessionGuest(context, entity.id, session.id, did)
-      controls.close()
-    }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
+    })
   }
   const can = group.can
   if (!group.myRole && !groupSession) return null
   return <DetailSection title={t('messagehub.group.session.title')}>
     <p className="text-[13px] text-[color:var(--cp-muted)]">{t(`messagehub.group.session.lifecycle.${groupSession.lifecycle}`, groupSession.lifecycle)}{groupSession.hasGuests ? ` · ${t('messagehub.group.hasGuests')}` : ''}</p>
     <div className="flex flex-wrap gap-2" data-testid="group-session-actions">
-      {can.manageSession && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => pick('members')}>{t('messagehub.group.session.addMembers')}</button>}
-      {can.inviteGuest && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => pick('guest')}>{t('messagehub.group.session.inviteGuest')}</button>}
+      {can.manageSession && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void pick('members')}>{t('messagehub.group.session.addMembers')}</button>}
+      {can.inviteGuest && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void pick('guest')}>{t('messagehub.group.session.inviteGuest')}</button>}
       {can.manageSession && groupSession.lifecycle === 'active' && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void manage('archive')}>{t('messagehub.group.session.archive')}</button>}
       {can.manageSession && <button type="button" className={`${hubButtonClass} text-[color:var(--cp-danger)]`} disabled={pending} onClick={() => void manage('delete')}>{t('messagehub.group.session.delete')}</button>}
       {group.myRole !== 'owner' && <button type="button" className={`${hubButtonClass} text-[color:var(--cp-danger)]`} disabled={pending} onClick={() => void leave()}>{t('messagehub.group.session.leave')}</button>}

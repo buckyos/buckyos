@@ -57,7 +57,7 @@ Message Hub 是系统默认聊天界面，只是 Group Service 的一个客户�
 ### 1.3 非目标
 
 - 不定义多 host 共识，不要求群消息在成员 Zone 上形成一致的可写副本。
-- 不把联系人分组（`Contact.groups`）升级为群。
+- 不把联系人分组（`Contact.tags`；原 `Contact.groups` 已删除）升级为群。
 - 不定义收益结算、版权登记和递归 DID 集合（见 §13）。
 - 不定义 UI 交互细节。
 - 不做端到端加密。host 能看到全部明文（§1.5）。
@@ -1046,6 +1046,7 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 | Session | `group.create_session`、`group.update_session`、`group.list_sessions`、`group.list_session_members`、`group.invite_session_guest`、`group.accept_session_invitation`、`group.submit_guest_request`、`group.remove_session_member`、`group.leave_session`、`group.archive_session`、`group.delete_session` |
 | 查询 | `group.list_by_member`、`group.check_access(group_did, action, session_id?)`、`group.list_events`、`group.update_read_marker` |
 
+- **`group.list_by_member`**：返回 `{ items, invitations, joined }`。`items` 是调用者所在的本 Zone 托管群（有群角色，或是某个 Session 的有效成员）的群文档，各带 `member: { state, role }`（只是 Session 成员时两者可能为空）；`invitations`（2026-10-17）是调用者处于 `invited` / `pending_admin_approval` 的本 Zone 托管群的群文档，各带 `member: { state, invitation_id, invited_by, expires_at_ms }`；`joined` 是调用者已同步的他 Zone 群（`joined_groups` 表）。已删除的群、`allowed_clients` 不允许当前客户端的群不列出。
 - **读取消息**：成员通过 Message Center 已有的 Session API 读取自己的投影。群主或具有 `group.read_all` 能力的管理者用 `list_box_by_time(mailbox = group_did[/sid], GROUP_INBOX)` 读取，同样经过 §4.1 授权。
 - **发送消息**：使用已有的 `post_send` / `dispatch`，不再新增 `post_group_send` 一类接口。编辑、撤回、回应也是发送一条带 `relates_to` 的消息，不新增 RPC。
 

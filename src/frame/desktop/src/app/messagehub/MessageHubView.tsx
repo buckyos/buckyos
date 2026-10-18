@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { ChevronRight, House, ImagePlay, MessageSquare, MessageSquarePlus, PanelLeftClose, SquarePen, Users } from 'lucide-react'
+import { ChevronRight, House, ImagePlay, LogIn, MessageSquare, MessageSquarePlus, PanelLeftClose, SquarePen, Users } from 'lucide-react'
 import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
@@ -25,6 +25,7 @@ import { SessionDetails } from './SessionDetails'
 import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
 import type { MessageHubContext, Session } from './types'
 import { SessionSidebar } from './SessionSidebar'
+import { useNetworkDialogs } from '../../components/network/dialogs'
 import {
   CONVERSATION_MIN_READING_WIDTH,
   DETAILS_PANEL_WIDTH,
@@ -139,6 +140,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const isDesktop = useMediaQuery('(min-width: 769px)')
   const store = useMessageHubStore()
   const dialog = useWindowDialog()
+  const dialogs = useNetworkDialogs()
   const mediaHost = useMessageMediaHost()
   const identity = useHubIdentity(context)
   const networkOnline = useNetworkOnline()
@@ -151,7 +153,9 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const findRequestedSession = (entityId?: string | null) => initialSessionId
     ? (['active', 'archived'] as const).flatMap(lifecycle => store.sessions(context, entityId ?? undefined, lifecycle)).find(session => session.id === initialSessionId) ?? null
     : null
-  const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : findRequestedSession()?.entityId ?? store.entities(context)[0]?.id ?? null)
+  // A DID the owner has no conversation with yet (a link from My Network) opens as a new peer.
+  const canOpenPeer = (did: string) => context.mode === 'self' && context.ownerDid === context.viewerDid && did !== context.ownerDid && /^did:[a-z0-9]+:\S+$/i.test(did)
+  const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? (canOpenPeer(initialEntityId) ? initialEntityId : null) : findRequestedSession()?.entityId ?? store.entities(context)[0]?.id ?? null)
   const getDefaultSessionId = (entityId: string | null) => entityId ? store.defaultSession(context, entityId)?.id ?? null : null
   const contextEpoch = useRef(0)
   const ownerDid = context.ownerDid
@@ -173,7 +177,9 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     }).catch(() => { if (contextEpoch.current === epoch) setDefaultSessionError(true) })
   }, [store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (resolvedInitialEntityId && !findRequestedSession(resolvedInitialEntityId)) resolveDefaultSession(resolvedInitialEntityId, contextEpoch.current)
+    if (!resolvedInitialEntityId) return
+    if (!store.findEntity(context, resolvedInitialEntityId)) store.addPeer(context, resolvedInitialEntityId)
+    if (!findRequestedSession(resolvedInitialEntityId)) resolveDefaultSession(resolvedInitialEntityId, contextEpoch.current)
   }, [resolvedInitialEntityId, resolveDefaultSession]) // eslint-disable-line react-hooks/exhaustive-deps
   const [filter, setFilter] = useState<EntityFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -311,6 +317,18 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
   }
 
+  const openJoinGroup = async () => {
+    const trigger = document.activeElement
+    const result = await dialogs.joinGroup()
+    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus()
+    if (result.action !== 'joined') return
+    await store.ensureOwner(context, true).catch(() => undefined)
+    if (result.state !== 'active') return
+    setSearchQuery('')
+    setFilter(current => current === 'groups' || current === 'all' ? current : 'all')
+    handleSelectEntity(result.groupDid)
+  }
+
   const handleBack = useCallback(() => {
     setMobileView('entity-list')
     setDetailsTarget(null)
@@ -401,8 +419,6 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     hasOlder: activeSession ? store.hasOlder(context, activeSession.id) : false,
     onLoadOlder: () => activeSession ? store.loadOlder(context, activeSession.id) : Promise.resolve(false),
     onVisibleMessages: (recordIds: string[]) => { if (activeSession) void store.markRead(context, activeSession.id, recordIds) },
-    admission: selectedEntityId ? store.admission(context, selectedEntityId) : null,
-    onAdmission: (action: 'accept' | 'block') => selectedEntityId ? store.setAdmission(context, selectedEntityId, action) : Promise.resolve(),
     onOpenEntity: handleSelectEntity,
     onOpenSessionDetails: () => handleOpenDetails('session'), onOpenDetails: () => handleOpenDetails('entity'),
     draft: activeSession ? store.draft(context, activeSession.id) : '',
@@ -418,6 +434,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const createItems: HeaderMenuItem[] = [
     { key: 'session', label: newSessionLabel, icon: <MessageSquarePlus size={16} />, onSelect: () => openCreate(null), disabled: !canManage, testId: 'new-session' },
     { key: 'group', label: newGroupLabel, icon: <Users size={16} />, onSelect: () => openCreateGroup(), disabled: !canManage, testId: 'new-group' },
+    { key: 'join', label: t('messagehub.group.joinGroup'), icon: <LogIn size={16} />, onSelect: () => { void openJoinGroup() }, disabled: !canManage, testId: 'join-group' },
   ]
   const moreItems: HeaderMenuItem[] = [
     ...(onHome ? [{ key: 'home', label: t('messagehub.home', 'Back to desktop'), icon: <House size={16} />, onSelect: onHome, testId: 'messagehub-home' }] : []),

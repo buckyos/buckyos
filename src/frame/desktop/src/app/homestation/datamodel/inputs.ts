@@ -69,9 +69,6 @@ export const sourceInputSchema = z
     if (value.kind === 'natural' && value.text.length < 4) {
       ctx.addIssue({ code: 'custom', path: ['text'], message: 'homestation.validation.intentTooShort' })
     }
-    if (value.kind === 'follow' && value.text.length < 2) {
-      ctx.addIssue({ code: 'custom', path: ['text'], message: 'homestation.validation.followTooShort' })
-    }
   })
 
 export type SourceInput = z.infer<typeof sourceInputSchema>

@@ -40,6 +40,7 @@ import type { AttachmentInput, PublishInput } from '../datamodel/inputs'
 import { commentTarget, type CommentType, type Did, type EntryUrl, type FeedContent, type FeedObject, type ObjId } from '../protocol/feed'
 import type { CommentList, CommentTypeFilter, EntryDebugView, HomeStationStore, StoreDomain, TagOverride } from '../store/types'
 import { feedEntry, fid, oid, OWNER_DID, reactionEntry, seedDatabase, userOf, zoneOf, type MockDb, type StoredEntry } from './data'
+import { registerNetworkMockHost } from '../../../components/network/mock/hosts'
 
 export interface StoreScenario {
   empty: boolean
@@ -74,6 +75,14 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
   const startedAt = Date.now()
   const db: MockDb = seedDatabase(startedAt, { empty: scenario.empty })
   const id = `hs-${++storeCounter}`
+  registerNetworkMockHost({
+    people: () => [...db.identities.values()]
+      .filter(identity => identity.did !== db.owner && identity.kind === 'person')
+      .map(identity => ({ did: identity.did, name: identity.name, kind: 'user' as const, reachability: 'routable' as const, zone: identity.zone })),
+    group: () => null,
+    groups: () => [],
+    requestJoin: () => Promise.reject(new Error('not-found')),
+  })
   const listeners = new Set<() => void>()
   const domainListeners = new Set<{ domains: StoreDomain[]; listener: () => void }>()
   const failedOnce = new Set<string>()
@@ -648,7 +657,6 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
     peekStatus: () => 'ready' as const,
     peekCollector: () => db.collector,
     peekPreviewReaders: () => ({ follower: 'did:bns:sarah', friend: 'did:bns:bob' }),
-    peekMuteCandidates: (): Did[] => [...new Set([...(db.friends.get(db.owner) ?? []), 'did:bns:sarah', 'did:bns:david'])],
     peekHome: (): HomeInfo => ({ zone: zoneOf(db.owner), user: userOf(db.owner), defaultFeed: userOf(db.owner), zoneFeed: { feed: '~zone', name: `${zoneOf(db.owner)}`, writer: true } }),
     /** Listed entries of the zone feed, newest first (mock portal). */
     zoneEntries: (): EntryUrl[] => [...zoneListed].reverse(),
@@ -1056,11 +1064,12 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
       await delay()
       const query = text.trim()
       if (kind === 'follow') {
-        const lower = query.toLowerCase()
-        const matches = [...db.identities.values()].filter(identity => identity.did !== db.owner && identity.kind !== 'self' && (identity.did.toLowerCase() === lower || identity.name.toLowerCase().includes(lower))).slice(0, 4)
-        const candidates: SourceView[] = matches.map(identity => existingSource(identity.did) ?? { id: `src-${identity.did}`, name: identity.name, kind: 'person', did: identity.did, description: identity.bio, basis: [], notify: 'pending', paused: false, credibility: 'verified_did', updateMode: 'Home feed changes + push' })
-        if (candidates.length === 0 && /^did:[a-z0-9]+:.+/i.test(query)) candidates.push({ id: `src-${query}`, name: query, kind: 'person', did: query, basis: [], notify: 'pending', paused: false, credibility: 'verified_did', updateMode: 'Home feed changes + push' })
-        return { inputKind: kind, input: query, candidates, notifyHint: 'pending' }
+        if (!/^did:[a-z0-9]+:.+/i.test(query)) throw new Error('homestation.validation.did')
+        const identity = db.identities.get(query)
+        const candidate: SourceView = existingSource(query) ?? (identity
+          ? { id: `src-${identity.did}`, name: identity.name, kind: 'person', did: identity.did, description: identity.bio, basis: [], notify: 'pending', paused: false, credibility: 'verified_did', updateMode: 'Home feed changes + push' }
+          : { id: `src-${query}`, name: query, kind: 'person', did: query, basis: [], notify: 'pending', paused: false, credibility: 'verified_did', updateMode: 'Home feed changes + push' })
+        return { inputKind: kind, input: query, candidates: [candidate], notifyHint: 'pending' }
       }
       if (kind === 'url') {
         const host = hostOf(query)

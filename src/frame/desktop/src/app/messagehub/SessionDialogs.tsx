@@ -6,6 +6,8 @@ import { useI18n } from '../../i18n/provider'
 import { createSessionSchema, creationReason } from './sessionModel'
 import { groupErrorText } from './groupModel'
 import { useMessageHubStore } from './store'
+import { FindPeople } from '../../components/network/FindPeople'
+import type { LookupCandidate } from '../../components/network/types'
 import type { MessageHubContext, Session } from './types'
 
 export const hubInputClass = 'mt-1 min-h-11 w-full rounded-lg border border-[color:var(--cp-border)] bg-[color:var(--cp-bg)] px-3 py-2 text-sm'
@@ -43,13 +45,25 @@ export function CreateSessionForm({ context, entityId, onCreated, onCancel }: { 
   const reason = entity ? creationReason(context, entity, store.policy(context, current), choices.find(choice => choice.id === connection)?.binding) : 'binding_unknown'
   const [error, setError] = useState('')
   const busy = useRef(false)
+  const choose = (candidate: LookupCandidate) => {
+    store.addPeer(context, candidate.did, { name: candidate.name, type: candidate.kind === 'agent' ? 'agent' : 'person' })
+    const options = store.connections(context, candidate.did)
+    form.setValue('entityId', candidate.did)
+    form.setValue('connection', options.length === 1 ? options[0].id : '')
+  }
   const submit = (event: FormEvent<HTMLFormElement>) => { void form.handleSubmit(async values => {
     if (busy.current) return
     busy.current = true; setError('')
     try { onCreated(await store.create(context, values)) } catch (failure) { setError(failure instanceof Error && failure.message.startsWith('rejected') ? groupErrorText(t, failure) : t('messagehub.operationFailed')) } finally { busy.current = false }
   })(event) }
   return <DialogFocus onCancel={onCancel}><form onSubmit={submit} className="space-y-4">
-    <label className="block text-sm">{t('messagehub.targetEntity')}<select data-autofocus className={hubInputClass} {...form.register('entityId', { onChange: event => { const options = store.connections(context, event.target.value); form.setValue('connection', options.length === 1 ? options[0].id : '') } })}>{eligible.map(entity => <option value={entity.id} key={entity.id}>{entity.name}</option>)}</select></label>
+    <label className="block text-sm">{t('messagehub.targetEntity')}<select key={eligible.map(entity => entity.id).join('|')} data-autofocus className={hubInputClass} {...form.register('entityId', { onChange: event => { const options = store.connections(context, event.target.value); form.setValue('connection', options.length === 1 ? options[0].id : '') } })}>{eligible.map(entity => <option value={entity.id} key={entity.id}>{entity.name}</option>)}</select></label>
+    {context.mode === 'self' && <details className="rounded-lg border border-[color:var(--cp-border)] px-3" data-testid="new-session-find">
+      <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium">{t('messagehub.findSomeoneNew')}</summary>
+      <div className="pb-3">
+        <FindPeople kinds={['user', 'agent']} showDefault={false} limit={10} actions={[{ id: 'choose', label: t('messagehub.chooseTarget'), primary: true, onSelect: choose }]} />
+      </div>
+    </details>}
     <label className="block text-sm">{t('messagehub.optionalTitle')}<input className={hubInputClass} {...form.register('title')} /></label>
     {form.formState.errors.title && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{t('messagehub.titleLimit')}</p>}
     <label className="block text-sm">{t('messagehub.connection')}<select className={hubInputClass} {...form.register('connection')}><option value="">{t('messagehub.selectConnection')}</option>{choices.map(choice => <option value={choice.id} key={choice.id}>{choice.label}</option>)}</select></label>

@@ -165,7 +165,7 @@ preferred_tunnel / default tunnel       # 默认通道 fallback
 
 - **关联**：shadow endpoint ↔ 正式联系人的 binding 登记与维护。
 - **展示**：给 UI 提供联系人名片、头像、endpoint 列表。
-- **ACL**：入站准入（Friend/Stranger/Block/Temporary）。
+- **ACL**：入站准入（Allow/Stranger/Block/Temporary；`Allow` 原名 Friend，好友关系另见 Contact Mgr.md §3.4）。
 - **merge**：联系人合并与 alias 解析。
 - **reverse lookup**：由 endpoint DID 反查归属联系人（展示/审计用）。
 

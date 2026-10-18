@@ -1,10 +1,11 @@
 import { z } from 'zod'
 import type { MessageObject } from './protocol/msgobj'
-import type { MessageHubStore } from './store/types'
-import type { Entity, GroupInvitation, GroupMember, GroupRole, GroupSessionParticipant, MessageHubContext } from './types'
+import type { GroupInvitation, GroupMember, GroupRole, GroupSessionParticipant } from './types'
 
 export const GROUP_INVITATION_INTENT = 'buckyos.group_invitation'
 export const GROUP_MEMBER_LIMIT = 100
+/** A group holds single native identities: people and Agents, never another group or an external account. */
+export const GROUP_MEMBER_KINDS: Array<'user' | 'agent'> = ['user', 'agent']
 
 export const createGroupSchema = z.object({
   name: z.string().trim().max(64),
@@ -33,34 +34,6 @@ export function defaultGroupName(memberNames: string[]): string {
   if (names.length === 0) return ''
   const head = names.slice(0, 3).join(', ')
   return names.length > 3 ? `${head} +${names.length - 3}` : head
-}
-
-/**
- * People and agents reachable over a native BuckyOS connection. A group only
- * accepts single-entity DIDs (user, agent, device): nested groups and DID
- * Collections are deferred (v2 §13), so another group is never a candidate.
- */
-export function groupMemberCandidates(entities: Entity[], ownerDid: string, hasNative: (entity: Entity) => boolean, blocked: (entity: Entity) => boolean = () => false): Entity[] {
-  const seen = new Set<string>()
-  const result: Entity[] = []
-  const visit = (entity: Entity) => {
-    if (seen.has(entity.id)) return
-    seen.add(entity.id)
-    if ((entity.type === 'person' || entity.type === 'agent') && entity.id !== ownerDid && entity.id.startsWith('did:') && !entity.id.startsWith('did:msgtunnel:') && hasNative(entity) && !blocked(entity)) result.push(entity)
-    entity.children?.forEach(visit)
-  }
-  entities.forEach(visit)
-  return result.sort((a, b) => a.name.localeCompare(b.name))
-}
-
-/** Group member candidates of the owner's contact list, as offered by the member picker. */
-export function memberCandidates(store: MessageHubStore, context: MessageHubContext): Entity[] {
-  return groupMemberCandidates(
-    store.entities(context),
-    context.ownerDid,
-    entity => store.connections(context, entity.id).some(choice => choice.binding.kind === 'native'),
-    entity => store.admission(context, entity.id)?.accessLevel === 'block',
-  )
 }
 
 /** A personal group notification (`invite`, `pending_approval`, `rejected`, `removed`, `owner_transfer`, `session_invite`, `session_removed`). */
@@ -126,14 +99,6 @@ export function groupErrorText(t: (key: string, fallback?: string, variables?: R
 /** Text of an invite link: the group DID plus the token issued by `group.create_invite_link`. */
 export function formatInviteLink(groupDid: string, token: string): string {
   return `${groupDid}?invite=${encodeURIComponent(token)}`
-}
-
-/** A pasted invite link (or a bare group DID, which asks to join without a token). */
-export function parseInviteLink(input: string): { groupDid: string; invite?: string } | null {
-  const trimmed = input.trim()
-  const match = trimmed.match(/^(did:[^?\s]+)(?:\?invite=([^&\s]+))?$/)
-  if (!match) return null
-  return match[2] ? { groupDid: match[1], invite: decodeURIComponent(match[2]) } : { groupDid: match[1] }
 }
 
 /** Whether an edit / recall window (`EditRule`) still allows acting on a message sent at `start`. */

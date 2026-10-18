@@ -29,6 +29,16 @@ impl MessageHubExecutor {
             name: "message-hub".to_string(),
         }
     }
+
+    fn route_changed(message: &str) -> DeliveryReportResult {
+        DeliveryReportResult {
+            ok: false,
+            error_code: Some("native-route-changed".into()),
+            error_message: Some(message.into()),
+            retryable: Some(false),
+            ..Default::default()
+        }
+    }
 }
 
 #[async_trait]
@@ -167,14 +177,14 @@ impl DeliveryExecutor for MessageHubExecutor {
                 })
             }
         } else {
-            let route = self
+            let configured = self
                 .center
                 .cyfs_dispatch
                 .read()
                 .unwrap()
                 .message_route(&msg, &envelope.target_did);
-            let route = match route {
-                Ok(route) => route,
+            let snapshot = envelope.address.as_ref().and_then(|a| a.address.clone());
+            let route = match configured {
                 Err(e) => {
                     return Ok(DeliveryReportResult {
                         ok: false,
@@ -184,44 +194,54 @@ impl DeliveryExecutor for MessageHubExecutor {
                         ..Default::default()
                     })
                 }
-            };
-            if let Some(route) = route {
-                let snapshot = envelope.address.as_ref().and_then(|a| a.address.as_deref());
-                if snapshot != Some(route.target.as_str()) {
-                    return Ok(DeliveryReportResult {
-                        ok: false,
-                        error_code: Some("native-route-changed".into()),
-                        error_message: Some(
-                            "Configured logical receiver differs from the delivery snapshot".into(),
-                        ),
-                        retryable: Some(false),
-                        ..Default::default()
-                    });
+                Ok(Some(route)) => {
+                    if snapshot.as_deref() != Some(route.target.as_str()) {
+                        return Ok(Self::route_changed(
+                            "Configured logical receiver differs from the delivery snapshot",
+                        ));
+                    }
+                    route
                 }
-                let jwt = self
-                    .center
-                    .msg_box_db
-                    .get_msg_jwt(&envelope.msg_id)
-                    .await
-                    .map_err(|error| anyhow!("load message jwt failed: {}", error))?;
-                return crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id)
-                    .await;
+                Ok(None) => match crate::cyfs_dispatch::auto_route(&self.center, &envelope.target_did).await {
+                    Ok(route) => {
+                        if snapshot.as_ref().is_some_and(|s| s != &route.target) {
+                            return Ok(Self::route_changed(
+                                "Resolved receiver differs from the delivery snapshot",
+                            ));
+                        }
+                        route
+                    }
+                    Err(report) => {
+                        warn!(
+                            "message hub cannot route natively: delivery_id={} target={} reason={:?}",
+                            record.record.delivery_id,
+                            envelope.target_did.to_string(),
+                            report.error_message
+                        );
+                        return Ok(report);
+                    }
+                },
+            };
+            let mut jwt = self
+                .center
+                .msg_box_db
+                .get_msg_jwt(&envelope.msg_id)
+                .await
+                .map_err(|error| anyhow!("load message jwt failed: {}", error))?;
+            if jwt.is_none() && self.center.is_local_recipient(&msg.from) {
+                if let Some(signer) = self.center.zone_signer.get() {
+                    let signed = msg
+                        .to_jwt(&signer.key, &signer.kid)
+                        .map_err(|error| anyhow!("sign native message failed: {}", error))?;
+                    self.center
+                        .msg_box_db
+                        .put_msg_jwt(&envelope.msg_id, &signed, MessageCenter::now_ms())
+                        .await
+                        .map_err(|error| anyhow!("keep message jwt failed: {}", error))?;
+                    jwt = Some(signed);
+                }
             }
-            warn!(
-                "message hub has no configured native route: delivery_id={} target={}",
-                record.record.delivery_id,
-                envelope.target_did.to_string()
-            );
-            Ok(DeliveryReportResult {
-                ok: false,
-                error_code: Some("native-route-not-configured".to_string()),
-                error_message: Some(format!(
-                    "target {} has no configured CYFS delivery route",
-                    envelope.target_did.to_string()
-                )),
-                retryable: Some(false),
-                ..Default::default()
-            })
+            crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id).await
         }
     }
 }

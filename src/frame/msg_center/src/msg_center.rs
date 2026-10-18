@@ -91,6 +91,14 @@ pub struct MessageCenter {
     pub(crate) notify_tasks: Arc<crate::notify::NotifyTasksSlot>,
     pub(crate) notify_identity: Arc<RwLock<Option<(DID, Option<String>)>>>,
     pub(crate) notify_lock: Arc<tokio::sync::Mutex<()>>,
+    /// DID → Zone / profile / signing device Zone (`network_directory.rs`).
+    pub(crate) directory: Arc<crate::network_directory::DirectorySlot>,
+    /// OOD device key used to sign native messages of this Zone's users.
+    pub(crate) zone_signer: Arc<crate::network_directory::ZoneSignerSlot>,
+    /// Serializes friend request state changes (`friend_service.rs`).
+    pub(crate) friend_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Unauthenticated signed ingress per sender: (window start, count).
+    pub(crate) ingress_budget: Arc<std::sync::Mutex<HashMap<String, (u64, u32)>>>,
 }
 
 impl MessageCenter {
@@ -128,6 +136,10 @@ impl MessageCenter {
             notify_tasks: Arc::new(crate::notify::NotifyTasksSlot::default()),
             notify_identity: crate::notify::notify_identity_slot(),
             notify_lock: Arc::new(tokio::sync::Mutex::new(())),
+            directory: Arc::new(Default::default()),
+            zone_signer: Arc::new(Default::default()),
+            friend_lock: Arc::new(tokio::sync::Mutex::new(())),
+            ingress_budget: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -206,6 +218,15 @@ impl MessageCenter {
         }
     }
 
+    /// Registered explicitly (Zone users and Agents from the Zone sync, hosted
+    /// groups); the agreed native receive path serves only these.
+    pub(crate) fn is_registered_recipient(&self, did: &DID) -> bool {
+        self.local_recipients
+            .read()
+            .unwrap()
+            .contains(&did.to_string())
+    }
+
     /// Is this DID hosted by this zone? True for explicitly registered
     /// recipients and for DIDs under the zone host (`<agent>.<zone>`,
     /// `telegram.<zone>` aliases, the zone DID itself).
@@ -243,6 +264,24 @@ impl MessageCenter {
         self.contact_mgr
             .upsert_zone_user_contacts(contacts, owner)
             .await
+    }
+
+    /// Signed messages that arrive without a Bearer token: at most
+    /// `INGRESS_BUDGET_PER_MINUTE` per sender and minute.
+    pub(crate) fn take_ingress_budget(&self, sender: &DID) -> bool {
+        const INGRESS_BUDGET_PER_MINUTE: u32 = 30;
+        const WINDOW_MS: u64 = 60_000;
+        let now = Self::now_ms();
+        let mut budget = self.ingress_budget.lock().unwrap();
+        if budget.len() > 10_000 {
+            budget.retain(|_, (start, _)| now.saturating_sub(*start) < WINDOW_MS);
+        }
+        let entry = budget.entry(sender.to_string()).or_insert((now, 0));
+        if now.saturating_sub(entry.0) >= WINDOW_MS {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= INGRESS_BUDGET_PER_MINUTE
     }
 
     pub(crate) fn now_ms() -> u64 {
@@ -465,7 +504,7 @@ impl MessageCenter {
         Self::publish_event(event_id, payload);
     }
 
-    fn publish_delivery_changed_event(record: &DeliveryRecord, operation: &str) {
+    pub(crate) fn publish_delivery_changed_event(record: &DeliveryRecord, operation: &str) {
         let executor_token = record.envelope.transport_did.to_raw_host_name();
         let event_id = format!(
             "/msg_center/{}/delivery_queue_{}/{}",
@@ -765,6 +804,9 @@ impl MessageCenter {
         if let Some((_, body, _)) = self.groups.object(msg_id).await? {
             return serde_json::from_str(&body.ok_or_else(crate::group_types::missing)?)
                 .map_err(|e| RPCErrors::ReasonError(e.to_string()));
+        }
+        if let Some(msg) = self.with_state_read(|state| Ok(state.messages.get(&msg_id.to_string()).cloned()))? {
+            return Ok(msg);
         }
         let msg_id = msg_id.clone();
         let runtime = get_buckyos_api_runtime()?;
@@ -1342,6 +1384,27 @@ impl MessageCenter {
                         result.dropped_recipients.push(recipient);
                         rejected_edit = Some(error);
                         continue;
+                    }
+                }
+
+                if crate::friend_service::is_friend_message(&stored_msg) {
+                    let ingress = match crate::friend_service::friend_data(&stored_msg) {
+                        Some(data) => {
+                            self.accept_friend_message(&recipient, &stored_msg, data)
+                                .await?
+                        }
+                        None => crate::friend_service::FriendIngress::Drop,
+                    };
+                    match ingress {
+                        crate::friend_service::FriendIngress::Drop => {
+                            result.dropped_recipients.push(recipient);
+                            continue;
+                        }
+                        crate::friend_service::FriendIngress::Control => {
+                            result.delivered_recipients.push(recipient);
+                            continue;
+                        }
+                        crate::friend_service::FriendIngress::Mailbox => {}
                     }
                 }
 
@@ -2618,6 +2681,13 @@ impl MsgCenterHandler for MessageCenter {
         .map_err(RPCErrors::ParseRequestError)?;
         self.authorize_mailbox(&ctx, &mailbox, MailboxKind::Sent, "write")
             .await?;
+        // Friend messages carry state msg-center keeps for the owner; only
+        // the `contact.*` friend RPCs build them.
+        if crate::friend_service::is_friend_message(&msg) {
+            return Err(RPCErrors::ParseRequestError(
+                "friend-messages-use-contact-rpc".into(),
+            ));
+        }
         if Self::is_group_message(&msg) {
             Self::validate_ingress_message(&msg)?;
             let actor = self.group_message_actor(&ctx, &msg).await?;
@@ -3330,6 +3400,9 @@ impl MsgCenterHandler for MessageCenter {
     ) -> std::result::Result<(), RPCErrors> {
         self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
             .await?;
+        if let Some(owner) = contact_mgr_owner.as_ref().filter(|o| self.is_local_recipient(o)) {
+            self.settle_friendship(owner, &did, false).await?;
+        }
         self.contact_mgr
             .block_contact(did, reason, contact_mgr_owner)
             .await
@@ -3337,13 +3410,19 @@ impl MsgCenterHandler for MessageCenter {
 
     async fn handle_import_contacts(
         &self,
-        contacts: Vec<ImportContactEntry>,
+        mut contacts: Vec<ImportContactEntry>,
         upgrade_to_friend: Option<bool>,
         contact_mgr_owner: Option<DID>,
         ctx: RPCContext,
     ) -> std::result::Result<ImportReport, RPCErrors> {
         self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
             .await?;
+        // Imported groupings are user tags; system and app tags have owners.
+        for entry in contacts.iter_mut() {
+            entry.tags.retain(|tag| {
+                buckyos_api::contact_tag_kind(tag) == buckyos_api::ContactTagKind::User
+            });
+        }
         self.contact_mgr
             .import_contacts(contacts, upgrade_to_friend, contact_mgr_owner)
             .await
@@ -3372,6 +3451,11 @@ impl MsgCenterHandler for MessageCenter {
     ) -> std::result::Result<Contact, RPCErrors> {
         self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
             .await?;
+        if patch.access_level == Some(AccessGroupLevel::Block) {
+            if let Some(owner) = contact_mgr_owner.as_ref().filter(|o| self.is_local_recipient(o)) {
+                self.settle_friendship(owner, &did, false).await?;
+            }
+        }
         self.contact_mgr
             .update_contact(did, patch, contact_mgr_owner)
             .await
@@ -3428,6 +3512,15 @@ impl MsgCenterHandler for MessageCenter {
         self.contact_mgr
             .set_group_subscribers(group_id, subscribers, contact_mgr_owner)
             .await
+    }
+
+    async fn handle_contact_ext(
+        &self,
+        method: &str,
+        params: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<Value, RPCErrors> {
+        self.contact_ext_rpc(method, params, ctx).await
     }
 
     async fn handle_notify(

@@ -8,7 +8,7 @@ import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, messageNotify, notifySessionCategory, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
-import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
+import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
@@ -17,7 +17,9 @@ import { mockObjectAccess, registerMockUpload } from './objects'
 import { mockAgentGroupAllowed } from '../../../api/control_panel_mock'
 import { MOCK_NOTIFY_SENDER, mockNotifyEntity, mockNotifyMessages, mockNotifySessions } from './notify'
 import { translate } from '../translate'
-import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
+import { didDisplayName } from '../../../presentation/model'
+import type { ConnectionChoice, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
+import { registerNetworkMockHost, type NetworkMockGroup } from '../../../components/network/mock/hosts'
 import { canStage, pendingBubble } from '../store/outgoing'
 
 interface MockGroupSession {
@@ -184,8 +186,37 @@ export class MessageHubMockStore implements MessageHubStore {
   private sync: SyncStatus = 'online'
   /** `groupSessionMembers` results per snapshot, so components see stable values between changes. */
   private sessionMemberLists = new WeakMap<Snapshot, Map<string, GroupSessionParticipants | null>>()
+  /** DIDs opened without a seeded entity (`addPeer`). */
+  private peers = new Map<string, { name?: string; type?: 'person' | 'agent' }>()
   constructor() {
     if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMock: this })
+    registerNetworkMockHost({
+      people: () => this.entities(defaultContext)
+        .flatMap(entity => [entity, ...(entity.children ?? [])])
+        .filter(entity => (entity.type === 'person' || entity.type === 'agent') && entity.id.startsWith('did:') && !entity.systemNotify && !(entity.tags ?? []).includes('zone_user'))
+        .map((entity) => {
+          const native = this.connections(defaultContext, entity.id).some(choice => choice.binding.kind === 'native')
+          return { did: entity.id, name: entity.name, kind: entity.type === 'agent' ? 'agent' as const : native ? 'user' as const : 'msgtunnel' as const, reachability: native ? 'local' as const : 'tunnel' as const, avatar: entity.avatar, friend: entity.type === 'agent' || (entity.tags ?? []).includes('friend') }
+        }),
+      group: (did) => {
+        const group = this.snapshot.groups[did]
+        return group && group.lifecycle !== 'deleted' ? this.networkGroup(group) : null
+      },
+      groups: () => Object.values(this.snapshot.groups).filter(group => group.lifecycle !== 'deleted' && group.members[MOCK_SELF_DID]?.state === 'active').map(group => this.networkGroup(group)),
+      requestJoin: async (did, invite) => (await this.requestGroupJoin(defaultContext, did, invite)) === 'pending_admin_approval' ? 'pending_admin_approval' : 'active',
+    })
+  }
+  private networkGroup(group: MockGroup): NetworkMockGroup {
+    const me = group.members[MOCK_SELF_DID]
+    return {
+      did: group.did,
+      name: group.name,
+      description: group.description,
+      owner: group.ownerDid,
+      joinPolicy: 'invite_only',
+      memberCount: Object.values(group.members).filter(member => member.state === 'active').length,
+      ...(me ? { myState: me.state, ...(me.state === 'active' ? { myRole: me.role } : {}) } : {}),
+    }
   }
   defaultContext() { return defaultContext }
   ownerStatus(context: MessageHubContext): OwnerStatus { return this.canView(context) ? { phase: 'ready' } : { phase: 'denied' } }
@@ -200,7 +231,14 @@ export class MessageHubMockStore implements MessageHubStore {
     const seeded = findEntity(id)
     const group = this.snapshot.groups[id]
     if (seeded) return group ? { ...seeded, name: group.name } : seeded
-    if (!group || (group.members[MOCK_SELF_DID]?.state !== 'active' && !Object.values(this.snapshot.sessions).some(session => session.entityId === id))) return undefined
+    if (!group) {
+      const peer = this.peers.get(id)
+      const session = peer ? undefined : Object.values(this.snapshot.sessions).find(item => item.entityId === id && item.binding.kind === 'native')
+      if (!peer && !session) return undefined
+      const type = peer?.type ?? 'person'
+      return { id, type, name: peer?.name || session?.members[id]?.nickname || didDisplayName(id), tags: [], unreadCount: 0, lastActiveAt: 0, source: 'buckyos', sources: ['buckyos'], domain: 'managed' }
+    }
+    if (group.members[MOCK_SELF_DID]?.state !== 'active' && !Object.values(this.snapshot.sessions).some(session => session.entityId === id)) return undefined
     return { id, type: 'group', name: group.name, tags: ['group'], unreadCount: 0, lastActiveAt: group.createdAt, source: 'buckyos', sources: ['buckyos'], domain: 'managed' }
   }
   hasMoreEntities() { return false }
@@ -209,8 +247,12 @@ export class MessageHubMockStore implements MessageHubStore {
     const entity = this.entities(context).flatMap(item => [item, ...(item.children ?? [])]).find(item => item.id === id)
     return entity ? { ...mockEntityDetails[id], ...entity } : null
   }
-  admission(): EntityAdmission | null { return null }
-  async setAdmission(): Promise<void> { throw Error('backend_unavailable') }
+  addPeer(context: MessageHubContext, did: string, info: { name?: string; type?: 'person' | 'agent' } = {}) {
+    if (!this.canView(context) || this.lookup(did)) return
+    this.peers.set(did, info)
+    this.snapshot = { ...this.snapshot }
+    this.listeners.forEach(listener => listener())
+  }
   historyStatus(): 'ready' { return 'ready' }
   hasOlder() { return false }
   async loadOlder() { return false }
@@ -355,7 +397,8 @@ export class MessageHubMockStore implements MessageHubStore {
       const flags = { isPinned: seed?.isPinned ?? prefs.some(item => item.pinned), isMuted: seed?.isMuted ?? (prefs.length > 0 && prefs.every(item => item.muted)) }
       return { ...entity, ...flags, unreadCount: sessions.reduce((sum, session) => sum + session.unreadCount, 0), lastActiveAt: latest?.lastActiveAt ?? 0, lastMessage: latest?.lastMessage, sessionCreation: { policy, canCreate: !reason, unavailableReason: reason }, children: entity.children?.map(project) }
     }
-    const dynamic = [...Object.keys(this.snapshot.groups).filter(id => !findEntity(id)), MOCK_NOTIFY_SENDER].map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
+    const sessionPeers = Object.values(this.snapshot.sessions).filter(session => session.ownerDid === context.ownerDid).map(session => session.entityId)
+    const dynamic = [...new Set([...Object.keys(this.snapshot.groups), ...this.peers.keys(), ...sessionPeers])].filter(id => id !== MOCK_NOTIFY_SENDER && !findEntity(id)).concat(MOCK_NOTIFY_SENDER).map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
     return [...mockEntities.map(entity => this.lookup(entity.id) ?? entity), ...dynamic].filter(entity => !isHiddenAccount({ did: entity.id, name: entity.name, tags: entity.tags }, context.ownerDid, { dids: [MOCK_SELF_DID] })).map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
   }
   defaultSession(context: MessageHubContext, entityId: string) {
@@ -947,7 +990,7 @@ export class MessageHubMockStore implements MessageHubStore {
       if ((options.expiresAt !== undefined && options.expiresAt <= this.now()) || options.maxUses === 0) throw Error('invalid-invite-link')
       const token = crypto.randomUUID().replace(/-/g, '')
       group.inviteLinks[token] = { requireApproval: options.requireApproval ?? false, revoked: false }
-      return formatInviteLink(groupDid, token)
+      return token
     })
   }
   revokeGroupInviteLink(context: MessageHubContext, groupDid: string, token: string) {

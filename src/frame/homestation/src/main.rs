@@ -200,6 +200,7 @@ async fn service_main() {
         Ok(n) => log::info!("serving the HomeStations of {n} users of {zone}"),
         Err(e) => log::error!("opening user HomeStations: {e}"),
     }
+    tokio::spawn(watch_contact_changes(host.clone()));
     if let Err(e) = serve(AppState { host }, &format!("127.0.0.1:{HOMESTATION_SERVICE_PORT}")).await {
         log::error!("serve failed: {e}");
         std::process::exit(1);
@@ -207,6 +208,50 @@ async fn service_main() {
 }
 
 const ZONE_BRAND_REFRESH: Duration = Duration::from_secs(60);
+
+/// Message Center announces contact changes per owner; a burst is coalesced
+/// and each affected HomeStation re-reads its relations once.
+async fn watch_contact_changes(host: Arc<Host>) {
+    let pattern = format!("/msg_center/*/{}/**", buckyos_api::CONTACT_CHANGED_EVENT_BOX);
+    loop {
+        let reader = match get_buckyos_api_runtime() {
+            Ok(runtime) => match runtime.get_kevent_client().await {
+                Ok(client) => client.create_event_reader(vec![pattern.clone()]).await.map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e.to_string()),
+        };
+        let reader = match reader {
+            Ok(reader) => reader,
+            Err(e) => {
+                log::warn!("contact change events unavailable: {e}");
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
+        };
+        loop {
+            let event = match reader.pull_event(Some(60_000)).await {
+                Ok(Some(event)) => event,
+                Ok(None) => continue,
+                Err(e) => {
+                    log::warn!("contact change events interrupted: {e}");
+                    break;
+                }
+            };
+            let mut owners = std::collections::BTreeSet::new();
+            owners.extend(event.data.get("owner").and_then(|v| v.as_str()).map(str::to_string));
+            while let Ok(Some(more)) = reader.pull_event(Some(1_000)).await {
+                owners.extend(more.data.get("owner").and_then(|v| v.as_str()).map(str::to_string));
+            }
+            for owner in owners {
+                if let Ok(Some(station)) = host.station_for_did(&owner).await {
+                    station.contacts_changed().await;
+                }
+            }
+        }
+        let _ = reader.close().await;
+    }
+}
 
 /// The Zone's display name and icon: the administrator's settings over the ZoneDocument's candidates.
 async fn load_zone_brand() -> Result<ZoneBrand, String> {

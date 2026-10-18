@@ -4575,7 +4575,6 @@ mod tests {
                         last_active_at: 0,
                         meta: HashMap::new(),
                     }],
-                    groups: vec![],
                     tags: vec![],
                 }],
                 Some(agent.clone()),

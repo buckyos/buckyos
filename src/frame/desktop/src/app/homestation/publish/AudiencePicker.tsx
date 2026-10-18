@@ -1,8 +1,10 @@
-import { Globe, Lock, Users, UserCheck, UsersRound } from 'lucide-react'
+import { Globe, Lock, Users, UserCheck, UserPlus, UsersRound } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
+import { useNetworkDialogs } from '../../../components/network/dialogs'
+import { PersonName } from '../../../components/network/Person'
 import type { AudienceSpec } from '../datamodel/types'
-import { useStoreSelector } from '../store/context'
+import { useHomeStationStore, useStoreSelector } from '../store/context'
 import type { HomeStationStore } from '../store/types'
 
 const selectGroups = (store: HomeStationStore) => store.peekGroups()
@@ -10,13 +12,31 @@ const selectGroups = (store: HomeStationStore) => store.peekGroups()
 export function AudiencePicker({ value, onChange, compact = false, idPrefix }: { value: AudienceSpec; onChange: (value: AudienceSpec) => void; compact?: boolean; idPrefix: string }) {
   const { t } = useI18n()
   const groups = useStoreSelector(selectGroups)
-  const [didText, setDidText] = useState(value.kind === 'dids' ? value.dids.join(', ') : '')
+  const dialogs = useNetworkDialogs()
+  const store = useHomeStationStore()
+  const [dids, setDids] = useState(value.kind === 'dids' ? value.dids : [])
+  const [names, setNames] = useState<Record<string, string>>({})
 
   const choose = useCallback((kind: AudienceSpec['kind']) => {
     if (kind === 'group') onChange({ kind, groupId: groups[0]?.id ?? '' })
-    else if (kind === 'dids') onChange({ kind, dids: didText.split(/[\s,]+/).filter(Boolean) })
+    else if (kind === 'dids') onChange({ kind, dids })
     else onChange({ kind })
-  }, [didText, groups, onChange])
+  }, [dids, groups, onChange])
+
+  const pickPeople = async () => {
+    const result = await dialogs.pickPeople({
+      title: t('homestation.audience.choosePeople', 'Who can see it'),
+      confirmLabel: t('homestation.audience.useThese', 'Use these people'),
+      limit: 20,
+      filter: { kinds: ['user', 'agent'] },
+      initialSelection: value.kind === 'dids' ? value.dids : dids,
+    })
+    if (result.action !== 'selected') return
+    const next = result.people.map(person => person.did)
+    setNames(current => ({ ...current, ...Object.fromEntries(result.people.map(person => [person.did, person.name])) }))
+    setDids(next)
+    onChange({ kind: 'dids', dids: next })
+  }
 
   const options: { kind: AudienceSpec['kind']; label: string; icon: React.ReactNode }[] = [
     { kind: 'public', label: t('homestation.audience.public', 'Public'), icon: <Globe size={13} /> },
@@ -61,16 +81,13 @@ export function AudiencePicker({ value, onChange, compact = false, idPrefix }: {
         </label>
       ) : null}
       {value.kind === 'dids' ? (
-        <input
-          className="hs-input mt-2 text-sm"
-          value={didText}
-          placeholder={t('homestation.audience.didsPlaceholder', 'did:bns:alice, did:bns:bob')}
-          aria-label={t('homestation.audience.dids', 'Specific DIDs')}
-          onChange={event => {
-            setDidText(event.target.value)
-            onChange({ kind: 'dids', dids: event.target.value.split(/[\s,]+/).filter(Boolean) })
-          }}
-        />
+        <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid={`${idPrefix}-audience-people`}>
+          {value.dids.map(did => <span key={did} className="hs-badge"><PersonName person={{ did, name: names[did] ?? store.peekIdentity(did).name }} /></span>)}
+          <button type="button" className="hs-chip" onClick={() => void pickPeople()} data-testid={`${idPrefix}-audience-choose`}>
+            <UserPlus size={13} />
+            {value.dids.length ? t('homestation.audience.changePeople', 'Change') : t('homestation.audience.choosePeople', 'Who can see it')}
+          </button>
+        </div>
       ) : null}
       {value.kind !== 'public' ? (
         <p className="mt-1.5 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>

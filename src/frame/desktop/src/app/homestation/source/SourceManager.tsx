@@ -11,6 +11,8 @@ import type { NotifyState, SourceResolution, SourceView, SubscriptionIntent } fr
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useNow, useStoreRevalidate } from '../store/context'
 import { Avatar, ErrorState, ListSkeleton, PageHeader } from '../ui/primitives'
+import { FindPeople, type FindPeopleResolver } from '../../../components/network/FindPeople'
+import type { LookupCandidate } from '../../../components/network/types'
 import { useToast } from '../ui/toastContext'
 
 function notifyBadge(t: Translate, notify: NotifyState) {
@@ -163,7 +165,47 @@ function ResolutionPanel({ resolution, onDone }: { resolution: SourceResolution;
   )
 }
 
-function AddSource() {
+/** Follow mode: people are found through the shared FindPeople (msg-center lookup plus HomeStation page URLs); HomeStation only follows the chosen DID. */
+function FollowPeople({ followed }: { followed: Set<string> }) {
+  const { t } = useI18n()
+  const store = useHomeStationStore()
+  const toast = useToast()
+  const follow = async (candidate: LookupCandidate) => {
+    try {
+      const resolution = await store.resolveSourceInput('follow', candidate.did)
+      await store.follow(resolution)
+      toast({ text: t('homestation.sources.followDone', 'Following. A signed follow notice is on its way.'), tone: 'success' })
+    } catch (error) {
+      toast({ text: t(error instanceof Error ? error.message : '', t('homestation.sources.followFailed', 'Could not follow. Try again.')), tone: 'warning' })
+    }
+  }
+  const homePages: FindPeopleResolver = {
+    id: 'homestation-url',
+    label: t('homestation.sources.homePages', 'HomeStation pages'),
+    matches: input => /^https?:\/\/\S+$/i.test(input),
+    resolve: async (input) => {
+      const resolution = await store.resolveSourceInput('url', input)
+      return resolution.candidates.filter(candidate => candidate.kind === 'person' && candidate.did).map((candidate): LookupCandidate => ({
+        did: candidate.did!, kind: 'user', section: 'resolved', name: candidate.name, reachability: { state: 'unknown' }, relation: { is_contact: false },
+      }))
+    },
+  }
+  return (
+    <div className="mt-2 space-y-2" data-testid="hs-follow-people">
+      <FindPeople
+        kinds={['user', 'agent']}
+        showDefault={false}
+        limit={10}
+        placeholder={t('homestation.sources.followPlaceholder', 'A name or DID, e.g. did:bns:david')}
+        resolvers={[homePages]}
+        actions={[{ id: 'follow', label: t('homestation.sources.follow', 'Follow'), primary: true, icon: <UserPlus size={13} />, appliesTo: candidate => !followed.has(candidate.did), onSelect: follow }]}
+      />
+      <p className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.sources.followNote', 'Following tells them you follow (a signed notice) and reads their home feed. It doesn’t make you friends and doesn’t mean everything enters your feed.')}</p>
+    </div>
+  )
+}
+
+function AddSource({ followed }: { followed: Set<string> }) {
   const { t } = useI18n()
   const store = useHomeStationStore()
   const [resolution, setResolution] = useState<SourceResolution | null>(null)
@@ -186,16 +228,20 @@ function AddSource() {
           </button>
         ))}
       </div>
-      <div className="mt-2 flex items-center gap-2">
-        <Search size={14} style={{ color: 'var(--cp-muted)' }} />
-        <input {...form.register('text')} className="hs-input py-1.5 text-sm" placeholder={modes.find(mode => mode.id === kind)?.placeholder} aria-label={modes.find(mode => mode.id === kind)?.placeholder} data-testid="hs-source-input" />
-        <button type="submit" className="hs-btn whitespace-nowrap" disabled={form.formState.isSubmitting} data-testid="hs-source-resolve">
-          {form.formState.isSubmitting ? <Loader2 size={13} className="animate-spin" /> : null}
-          {t('homestation.sources.resolve', 'Look up')}
-        </button>
-      </div>
-      {error ? <p className="mt-1 text-xs" role="alert" style={{ color: 'var(--cp-danger)' }}>{t(error, 'Check the input.')}</p> : null}
-      {resolution ? <ResolutionPanel resolution={resolution} onDone={() => { setResolution(null); form.reset({ kind, text: '' }) }} /> : null}
+      {kind === 'follow' ? <FollowPeople followed={followed} /> : (
+        <>
+          <div className="mt-2 flex items-center gap-2">
+            <Search size={14} style={{ color: 'var(--cp-muted)' }} />
+            <input {...form.register('text')} className="hs-input py-1.5 text-sm" placeholder={modes.find(mode => mode.id === kind)?.placeholder} aria-label={modes.find(mode => mode.id === kind)?.placeholder} data-testid="hs-source-input" />
+            <button type="submit" className="hs-btn whitespace-nowrap" disabled={form.formState.isSubmitting} data-testid="hs-source-resolve">
+              {form.formState.isSubmitting ? <Loader2 size={13} className="animate-spin" /> : null}
+              {t('homestation.sources.resolve', 'Look up')}
+            </button>
+          </div>
+          {error ? <p className="mt-1 text-xs" role="alert" style={{ color: 'var(--cp-danger)' }}>{t(error, 'Check the input.')}</p> : null}
+          {resolution ? <ResolutionPanel resolution={resolution} onDone={() => { setResolution(null); form.reset({ kind, text: '' }) }} /> : null}
+        </>
+      )}
     </form>
   )
 }
@@ -214,7 +260,7 @@ export function SourceManager() {
     <div className="flex h-full min-h-0 flex-col" data-testid="hs-sources">
       <PageHeader title={t('homestation.nav.sources', 'Sources')} subtitle={t('homestation.sources.subtitle', 'Who and what your HomeStation collects from')} onBack={nav.isDesktop ? undefined : nav.back} backLabel={t('common.back', 'Back')} />
       <div className="desktop-scrollbar mx-auto min-h-0 w-full max-w-[760px] flex-1 overflow-y-auto px-4 py-3">
-        <AddSource />
+        <AddSource followed={new Set(people.filter(source => source.basis.includes('active') && source.did).map(source => source.did!))} />
         {swr.isLoading ? <ListSkeleton rows={3} /> : null}
         {swr.error ? <ErrorState onRetry={() => void mutate()} /> : null}
         {swr.data?.intents.length ? (

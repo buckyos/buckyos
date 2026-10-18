@@ -129,7 +129,6 @@ export function createPortalStore(source: PortalSource, feed: string): HomeStati
     peekEntries: () => [],
     peekCollector: () => null,
     peekPreviewReaders: () => ({}),
-    peekMuteCandidates: () => [],
     peekHome: () => null,
 
     listReading: () => readOnly(),

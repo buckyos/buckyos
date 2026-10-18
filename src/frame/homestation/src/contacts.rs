@@ -1,5 +1,6 @@
-//! Friends and contact groups come from Message Center (§3.2); HomeStation keeps no
-//! authoritative copy, only a short-lived cache.
+//! Friends and contact tags come from Message Center (§3.2); HomeStation keeps no
+//! authoritative copy, only a short-lived cache. The one thing it writes back is the
+//! `homestation.following` tag: a projection of its own follows, so My Network shows them.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,12 @@ pub struct ContactInfo {
     pub friend: bool,
     #[serde(default)]
     pub blocked: bool,
+    /// User tags (the owner's own groupings), used as audience and mute groups.
     #[serde(default)]
-    pub groups: Vec<String>,
+    pub tags: Vec<String>,
+    /// Carries the `homestation.following` tag.
+    #[serde(default)]
+    pub following: bool,
     /// The picture Message Center holds for this identity (the Zone's public one for Zone users and Agents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
@@ -24,6 +29,8 @@ pub struct ContactInfo {
 #[async_trait]
 pub trait Contacts: Send + Sync {
     async fn list(&self) -> Result<Vec<ContactInfo>, String>;
+    /// Add or remove the `homestation.following` tag of `did`.
+    async fn set_following(&self, did: &str, following: bool) -> Result<(), String>;
 }
 
 pub struct StaticContacts(pub Mutex<Vec<ContactInfo>>);
@@ -32,6 +39,24 @@ pub struct StaticContacts(pub Mutex<Vec<ContactInfo>>);
 impl Contacts for StaticContacts {
     async fn list(&self) -> Result<Vec<ContactInfo>, String> {
         Ok(self.0.lock().unwrap().clone())
+    }
+
+    async fn set_following(&self, did: &str, following: bool) -> Result<(), String> {
+        let mut list = self.0.lock().unwrap();
+        match list.iter_mut().find(|c| c.did == did) {
+            Some(contact) => contact.following = following,
+            None if following => list.push(ContactInfo {
+                did: did.to_string(),
+                name: did.to_string(),
+                friend: false,
+                blocked: false,
+                tags: vec![],
+                following: true,
+                avatar: None,
+            }),
+            None => {}
+        }
+        Ok(())
     }
 }
 
@@ -42,7 +67,10 @@ pub struct MsgCenterContacts {
 #[async_trait]
 impl Contacts for MsgCenterContacts {
     async fn list(&self) -> Result<Vec<ContactInfo>, String> {
-        use buckyos_api::{get_buckyos_api_runtime, AccessGroupLevel, ContactQuery};
+        use buckyos_api::{
+            contact_tag_kind, get_buckyos_api_runtime, AccessGroupLevel, ContactQuery, ContactTagKind,
+            FriendState, CONTACT_TAG_HOMESTATION_FOLLOWING,
+        };
         let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
         let client = runtime.get_msg_center_client().await.map_err(|e| e.to_string())?;
         let owner = name_lib::DID::from_str(&self.owner).map_err(|e| e.to_string())?;
@@ -56,9 +84,10 @@ impl Contacts for MsgCenterContacts {
                 contacts.push(ContactInfo {
                     did: contact.did.to_string(),
                     name: contact.name,
-                    friend: contact.access_level == AccessGroupLevel::Friend,
+                    friend: contact.friend_state == FriendState::Friend,
                     blocked: contact.access_level == AccessGroupLevel::Block,
-                    groups: contact.groups,
+                    following: contact.tags.iter().any(|t| t == CONTACT_TAG_HOMESTATION_FOLLOWING),
+                    tags: contact.tags.into_iter().filter(|t| contact_tag_kind(t) == ContactTagKind::User).collect(),
                     avatar: contact.avatar,
                 });
             }
@@ -68,6 +97,21 @@ impl Contacts for MsgCenterContacts {
             offset += len as u64;
         }
         Ok(contacts)
+    }
+
+    async fn set_following(&self, did: &str, following: bool) -> Result<(), String> {
+        use buckyos_api::{get_buckyos_api_runtime, ContactUpdateTagsReq, CONTACT_TAG_HOMESTATION_FOLLOWING};
+        let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+        let client = runtime.get_msg_center_client().await.map_err(|e| e.to_string())?;
+        let tag = vec![CONTACT_TAG_HOMESTATION_FOLLOWING.to_string()];
+        let (add, remove) = if following { (tag, vec![]) } else { (vec![], tag) };
+        let req = ContactUpdateTagsReq {
+            did: name_lib::DID::from_str(did).map_err(|e| e.to_string())?,
+            add,
+            remove,
+            contact_mgr_owner: Some(name_lib::DID::from_str(&self.owner).map_err(|e| e.to_string())?),
+        };
+        client.contact_update_tags(req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 }
 
@@ -105,6 +149,14 @@ impl CachedContacts {
 
     pub async fn invalidate(&self) {
         *self.cache.lock().await = None;
+    }
+
+    /// Mirror a follow into Message Center; a failure leaves the follow itself intact.
+    pub async fn set_following(&self, did: &str, following: bool) {
+        if let Err(e) = self.inner.set_following(did, following).await {
+            log::warn!("following tag of {did} not updated: {e}");
+        }
+        self.invalidate().await;
     }
 
     pub async fn get(&self, did: &str) -> Option<ContactInfo> {

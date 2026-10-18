@@ -185,7 +185,7 @@ export interface AccountBinding {
   meta?: Record<string, string>
 }
 
-export type AccessGroupLevel = 'block' | 'stranger' | 'temporary' | 'friend'
+export type AccessGroupLevel = 'block' | 'stranger' | 'temporary' | 'allow'
 
 export interface Contact {
   did: DID
@@ -197,7 +197,7 @@ export interface Contact {
   bindings?: AccountBinding[]
   access_level: AccessGroupLevel
   temp_grants?: Array<{ context_id: string; granted_at: number; expires_at: number }>
-  groups?: string[]
+  friend_state?: 'none' | 'outgoing_pending' | 'incoming_pending' | 'friend'
   tags?: string[]
   created_at: number
   updated_at: number
@@ -313,8 +313,6 @@ export const updateUiSessionState = (sessionId: string, key: string, value: unkn
 
 export const listContacts = (contactMgrOwner?: DID) => call<Contact[] | null>('contact.list_contacts', contactMgrOwner ? { query: {}, contact_mgr_owner: contactMgrOwner } : { query: {} }).then(list => list ?? [])
 export const getContact = (did: DID, contactMgrOwner?: DID) => call<Contact | null>('contact.get_contact', contactMgrOwner ? { did, contact_mgr_owner: contactMgrOwner } : { did })
-export const updateContact = (did: DID, patch: Record<string, unknown>, contactMgrOwner?: DID) => call<Contact>('contact.update_contact', contactMgrOwner ? { did, patch, contact_mgr_owner: contactMgrOwner } : { did, patch })
-export const blockContact = (did: DID, contactMgrOwner?: DID, reason?: string) => call<unknown>('contact.block_contact', { did, ...(reason ? { reason } : {}), ...(contactMgrOwner ? { contact_mgr_owner: contactMgrOwner } : {}) })
 
 /* ── Self-host Group v2 (msg_center/doc/group-v2-backend.md) ── */
 

@@ -20,11 +20,11 @@ use std::sync::Arc;
 use tempfile::{tempdir, TempDir};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-type TestBody = BoxBody<Bytes, ServerError>;
-fn http_body(data: impl Into<Bytes>) -> TestBody {
+pub(crate) type TestBody = BoxBody<Bytes, ServerError>;
+pub(crate) fn http_body(data: impl Into<Bytes>) -> TestBody {
     Full::new(data.into()).map_err(|e| match e {}).boxed()
 }
-async fn http_fixture<F, Fut>(handler: F) -> (String, tokio::task::JoinHandle<()>)
+pub(crate) async fn http_fixture<F, Fut>(handler: F) -> (String, tokio::task::JoinHandle<()>)
 where
     F: Fn(Request<TestBody>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Response<TestBody>> + Send,
@@ -1633,6 +1633,16 @@ async fn message_hub_group_ui_contract() {
     assert_eq!(mine["items"][0]["doc"]["id"], json!(group()));
     assert_eq!(mine["items"][0]["doc"]["profile"]["name"], "Launch crew");
     assert_eq!(mine["items"][0]["doc"]["owner"], json!(owner()));
+    assert_eq!(mine["items"][0]["member"]["role"], "owner");
+    assert_eq!(mine["items"][0]["member"]["state"], "active");
+    let invited = c
+        .group_rpc("group.list_by_member", json!({}), context(&member()))
+        .await
+        .unwrap();
+    assert_eq!(invited["items"].as_array().unwrap().len(), 0);
+    assert_eq!(invited["invitations"][0]["doc"]["id"], json!(group()));
+    assert_eq!(invited["invitations"][0]["member"]["state"], "invited");
+    assert!(invited["invitations"][0]["member"]["invitation_id"].is_string());
     let sessions = serde_json::to_value(
         c.list_sessions_scoped(owner(), Some(50), None, None, Some(true), None, None)
             .await
@@ -1785,7 +1795,7 @@ async fn friends_join_automatically_strangers_confirm_and_blocked_inviters_are_i
         .update_contact(
             owner(),
             ContactPatch {
-                access_level: Some(AccessGroupLevel::Friend),
+                access_level: Some(AccessGroupLevel::Allow),
                 ..Default::default()
             },
             Some(member()),

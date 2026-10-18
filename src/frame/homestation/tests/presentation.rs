@@ -26,7 +26,7 @@ async fn identities_and_profiles_carry_contact_pictures() {
     {
         let mut list = alice.contacts.0.lock().unwrap();
         list.iter_mut().find(|contact| contact.did == bob.did).unwrap().avatar = Some(BOB_PIC.into());
-        list.push(ContactInfo { did: alice.did.clone(), name: alice.name.clone(), friend: false, blocked: false, groups: vec![], avatar: Some(ALICE_PIC.into()) });
+        list.push(ContactInfo { did: alice.did.clone(), name: alice.name.clone(), friend: false, blocked: false, tags: vec![], following: false, avatar: Some(ALICE_PIC.into()) });
     }
 
     let boot = net.rpc("alice", "ui.bootstrap", json!({})).await;

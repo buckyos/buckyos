@@ -1,5 +1,6 @@
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
+use crate::msg_contact::*;
 use crate::msg_notify::*;
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 12;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 13;
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
 pub const UI_SESSION_PLATFORM_TELEGRAM: &str = "tg";
 
@@ -211,6 +212,27 @@ CREATE TABLE IF NOT EXISTS owner_ui_session_states (
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY (owner, session_id, state_key)
 );
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+    owner_key     TEXT NOT NULL,
+    request_id    TEXT NOT NULL,
+    peer_did      TEXT NOT NULL,
+    direction     TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    message       TEXT,
+    msg_id        TEXT,
+    peer_name     TEXT,
+    peer_avatar   TEXT,
+    delivery_json TEXT,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (owner_key, peer_did, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_friend_requests_owner
+    ON friend_requests(owner_key, state, updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_friend_requests_expire
+    ON friend_requests(state, expires_at_ms);
 "#;
 
 /// Postgres DDL mirroring the sqlite schema above.
@@ -366,6 +388,27 @@ CREATE TABLE IF NOT EXISTS owner_ui_session_states (
     updated_at_ms BIGINT NOT NULL,
     PRIMARY KEY (owner, session_id, state_key)
 );
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+    owner_key     TEXT NOT NULL,
+    request_id    TEXT NOT NULL,
+    peer_did      TEXT NOT NULL,
+    direction     TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    message       TEXT,
+    msg_id        TEXT,
+    peer_name     TEXT,
+    peer_avatar   TEXT,
+    delivery_json TEXT,
+    created_at_ms BIGINT NOT NULL,
+    expires_at_ms BIGINT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (owner_key, peer_did, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_friend_requests_owner
+    ON friend_requests(owner_key, state, updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_friend_requests_expire
+    ON friend_requests(state, expires_at_ms);
 "#;
 
 /// Default rdb-instance config for the msg-center service. The scheduler drops
@@ -1185,7 +1228,9 @@ pub enum AccessGroupLevel {
     Block,
     Stranger,
     Temporary,
-    Friend,
+    /// Messages go straight to the INBOX. Delivery policy only; friendship is
+    /// `Contact.friend_state`.
+    Allow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1210,8 +1255,8 @@ pub struct Contact {
     pub access_level: AccessGroupLevel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub temp_grants: Vec<TemporaryGrant>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<String>,
+    #[serde(default)]
+    pub friend_state: FriendState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     pub created_at: u64,
@@ -1238,8 +1283,6 @@ pub struct ImportContactEntry {
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<AccountBinding>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
@@ -1272,10 +1315,6 @@ pub struct ContactPatch {
     pub source: Option<ContactSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_verified: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub groups: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1300,6 +1339,11 @@ pub struct ContactQuery {
     pub source: Option<ContactSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_level: Option<AccessGroupLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub friend_state: Option<FriendState>,
+    /// Exact tag the contact must carry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyword: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3489,6 +3533,116 @@ impl MsgCenterClient {
             }
         }
     }
+    async fn contact_ext_call<Req: Serialize, Resp: DeserializeOwned>(
+        &self,
+        method: &str,
+        req: &Req,
+        type_name: &str,
+    ) -> std::result::Result<Resp, RPCErrors> {
+        let params = serialize_to_json(req, type_name)?;
+        let result = match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_contact_ext(method, params, RPCContext::default())
+                    .await?
+            }
+            Self::KRPC(client) => client.call(method, params).await?,
+        };
+        parse_rpc_response(result, type_name)
+    }
+
+    /// Find people and groups for an input (`msg_contact`, lookup).
+    pub async fn contact_lookup(
+        &self,
+        req: ContactLookupReq,
+    ) -> std::result::Result<LookupResult, RPCErrors> {
+        self.contact_ext_call(METHOD_CONTACT_LOOKUP, &req, "LookupResult")
+            .await
+    }
+
+    /// Add / remove tags; the caller may only touch the tags it owns.
+    pub async fn contact_update_tags(
+        &self,
+        req: ContactUpdateTagsReq,
+    ) -> std::result::Result<Contact, RPCErrors> {
+        self.contact_ext_call(METHOD_CONTACT_UPDATE_TAGS, &req, "Contact")
+            .await
+    }
+
+    pub async fn contact_remove_contact(
+        &self,
+        did: DID,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<Value, RPCErrors> {
+        let req = ContactDidReq {
+            did,
+            contact_mgr_owner,
+        };
+        self.contact_ext_call(METHOD_CONTACT_REMOVE_CONTACT, &req, "Value")
+            .await
+    }
+
+    pub async fn contact_unblock_contact(
+        &self,
+        did: DID,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<Contact, RPCErrors> {
+        let req = ContactDidReq {
+            did,
+            contact_mgr_owner,
+        };
+        self.contact_ext_call(METHOD_CONTACT_UNBLOCK_CONTACT, &req, "Contact")
+            .await
+    }
+
+    pub async fn contact_send_friend_request(
+        &self,
+        req: ContactSendFriendRequestReq,
+    ) -> std::result::Result<FriendRequestResult, RPCErrors> {
+        self.contact_ext_call(METHOD_CONTACT_SEND_FRIEND_REQUEST, &req, "FriendRequestResult")
+            .await
+    }
+
+    pub async fn contact_respond_friend_request(
+        &self,
+        req: ContactRespondFriendRequestReq,
+    ) -> std::result::Result<FriendRequestResult, RPCErrors> {
+        self.contact_ext_call(
+            METHOD_CONTACT_RESPOND_FRIEND_REQUEST,
+            &req,
+            "FriendRequestResult",
+        )
+        .await
+    }
+
+    pub async fn contact_cancel_friend_request(
+        &self,
+        req: ContactCancelFriendRequestReq,
+    ) -> std::result::Result<FriendRequestResult, RPCErrors> {
+        self.contact_ext_call(
+            METHOD_CONTACT_CANCEL_FRIEND_REQUEST,
+            &req,
+            "FriendRequestResult",
+        )
+        .await
+    }
+
+    pub async fn contact_remove_friend(
+        &self,
+        req: ContactRemoveFriendReq,
+    ) -> std::result::Result<FriendRequestResult, RPCErrors> {
+        self.contact_ext_call(METHOD_CONTACT_REMOVE_FRIEND, &req, "FriendRequestResult")
+            .await
+    }
+
+    pub async fn contact_list_friend_requests(
+        &self,
+        req: ContactListFriendRequestsReq,
+    ) -> std::result::Result<FriendRequestPage, RPCErrors> {
+        self.contact_ext_call(METHOD_CONTACT_LIST_FRIEND_REQUESTS, &req, "FriendRequestPage")
+            .await
+    }
+
     async fn notify_call<Req: Serialize, Resp: DeserializeOwned>(
         &self,
         method: &str,
@@ -4034,6 +4188,18 @@ pub trait MsgCenterHandler: Send + Sync {
         contact_mgr_owner: Option<DID>,
         ctx: RPCContext,
     ) -> std::result::Result<SetGroupSubscribersResult, RPCErrors>;
+
+    /// Relationship methods of the Contact Mgr (`msg_contact`): lookup, tags,
+    /// removal and friend requests. `params` is the request of `method`.
+    async fn handle_contact_ext(
+        &self,
+        method: &str,
+        params: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<Value, RPCErrors> {
+        let _ = (params, ctx);
+        Err(RPCErrors::UnknownMethod(method.to_string()))
+    }
 
     /// `notify.*` (System Notify). `params` is the request of `method`;
     /// the result is the response JSON.
@@ -4589,6 +4755,13 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
+            method if CONTACT_EXT_METHODS.contains(&method) => {
+                let result = self
+                    .0
+                    .handle_contact_ext(req.method.as_str(), req.params, ctx)
+                    .await?;
+                RPCResult::Success(result)
+            }
             METHOD_NOTIFY_SEND | METHOD_NOTIFY_GET | METHOD_NOTIFY_LIST | METHOD_NOTIFY_ACK
             | METHOD_NOTIFY_DISMISS | METHOD_NOTIFY_CANCEL => {
                 let result = self.0.handle_notify(req.method.as_str(), req.params, ctx).await?;
@@ -4703,8 +4876,8 @@ mod tests {
     }
 
     #[test]
-    fn schema_v12_scopes_inboxes_and_has_owner_sessions() {
-        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 12);
+    fn schema_v13_scopes_inboxes_and_has_owner_sessions() {
+        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 13);
         for schema in [MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_RDB_SCHEMA_POSTGRES] {
             assert!(schema.contains("owner_scope     TEXT NOT NULL"));
             assert!(schema.contains("PRIMARY KEY (scope, owner_scope, idempotency_key)"));
@@ -4713,6 +4886,7 @@ mod tests {
             assert!(schema.contains("CREATE TABLE IF NOT EXISTS owner_sessions"));
             assert!(schema.contains("PRIMARY KEY (owner, session_id, state_key)"));
             assert!(schema.contains("CREATE TABLE IF NOT EXISTS msg_jwt_originals"));
+            assert!(schema.contains("PRIMARY KEY (owner_key, peer_did, request_id)"));
         }
     }
 }

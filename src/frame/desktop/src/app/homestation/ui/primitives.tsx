@@ -5,11 +5,15 @@ import { useI18n } from '../../../i18n/provider'
 import type { IdentityView } from '../datamodel/types'
 import { initialOf, usableImageUrl } from '../../../presentation/model'
 import { ObjectImage } from '../../../presentation/ObjectIcon'
+import { useDidPresentation } from '../../../presentation/useDidPresentation'
 
-export function Avatar({ identity, size = 36, className }: { identity: Pick<IdentityView, 'name' | 'hue' | 'avatar'>; size?: number; className?: string }) {
+/** The identity's own picture, else the one its DID document names (shared presentation cache), else the initial on its hue. */
+export function Avatar({ identity, size = 36, className }: { identity: Pick<IdentityView, 'name' | 'hue' | 'avatar'> & Partial<Pick<IdentityView, 'did' | 'kind'>>; size?: number; className?: string }) {
+  const own = usableImageUrl(identity.avatar)
+  const document = useDidPresentation(own ? undefined : identity.did, identity.kind === 'agent' ? 'agent' : 'user')
   return (
     <ObjectImage
-      icons={[usableImageUrl(identity.avatar)]}
+      icons={[own, document?.icons[0]]}
       className={clsx('flex-shrink-0 rounded-full object-cover', className)}
       style={{ width: size, height: size }}
       fallback={<InitialAvatar identity={identity} size={size} className={className} />}

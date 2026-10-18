@@ -2898,7 +2898,6 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 did,
                 note: None,
                 bindings: vec![],
-                groups: vec![],
                 tags: vec![],
             })
             .collect();
@@ -2933,7 +2932,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+        assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Allow);
 
         center
             .handle_block_contact(devtest.clone(), None, Some(lucy.clone()), ctx())
@@ -2988,7 +2987,6 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             name: "Alice".into(),
             note: None,
             bindings: vec![],
-            groups: vec![],
             tags: vec![],
         }];
         crate::sync_zone_agent_contacts(&center, &users, &[agent.clone()])
@@ -3005,7 +3003,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+            assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Allow);
             assert_eq!(contact.name, name);
             assert!(contact.tags.iter().any(|value| value == tag));
             inbound(
@@ -3262,7 +3260,6 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     name: "Alice".into(),
                     note: None,
                     bindings: vec![],
-                    groups: vec![],
                     tags: vec![],
                 }],
                 Some(agent.clone()),
@@ -3355,7 +3352,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         center.register_local_recipients([alice.clone(), bob.clone()]);
         let sender = DID::new("web", "carol.zone.example");
         let accept = buckyos_api::ContactPatch {
-            access_level: Some(buckyos_api::AccessGroupLevel::Friend),
+            access_level: Some(buckyos_api::AccessGroupLevel::Allow),
             ..Default::default()
         };
 
@@ -3370,7 +3367,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             )
             .await
             .unwrap();
-        assert!(!before.allow_delivery || before.level != buckyos_api::AccessGroupLevel::Friend);
+        assert!(!before.allow_delivery || before.level != buckyos_api::AccessGroupLevel::Allow);
         let contact = center
             .handle_update_contact(
                 sender.clone(),
@@ -3380,7 +3377,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             )
             .await
             .unwrap();
-        assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+        assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Allow);
         let after = center
             .handle_check_access_permission(
                 sender.clone(),
@@ -3390,7 +3387,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             )
             .await
             .unwrap();
-        assert_eq!(after.level, buckyos_api::AccessGroupLevel::Friend);
+        assert_eq!(after.level, buckyos_api::AccessGroupLevel::Allow);
         assert!(after.allow_delivery);
 
         // Other edits still need an existing contact.

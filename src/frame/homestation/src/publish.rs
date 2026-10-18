@@ -450,7 +450,7 @@ impl Station {
             AudienceSpec::Public | AudienceSpec::Followers => followers.into_iter().chain(friends).collect(),
             AudienceSpec::Friends => friends,
             AudienceSpec::Group { group_id } => {
-                contacts.iter().filter(|c| !c.blocked && c.groups.iter().any(|g| g == group_id)).map(|c| c.did.clone()).collect()
+                contacts.iter().filter(|c| !c.blocked && c.tags.iter().any(|g| g == group_id)).map(|c| c.did.clone()).collect()
             }
             AudienceSpec::Dids { dids } => dids.clone(),
         };

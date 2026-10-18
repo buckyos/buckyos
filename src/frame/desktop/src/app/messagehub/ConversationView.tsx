@@ -32,7 +32,8 @@ import { notifySessionCategory, type DID, type MessageObject } from './protocol/
 import { useNotifyFilteredReader } from './notify'
 import { NOTIFY_FILTERS, type NotifyFilter } from './notify/model'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
-import { useMessageHubRuntime, useMessageHubStore, type EntityAdmission } from './store'
+import { useMessageHubRuntime, useMessageHubStore } from './store'
+import { RequestBanner } from './RelationPanel'
 import { friendlyDidName } from './api/projection'
 import { parseGroupNotice, withinWindow } from './groupModel'
 import { HubAvatar } from './HubAvatar'
@@ -70,8 +71,6 @@ interface ConversationViewProps {
   hasOlder?: boolean
   onLoadOlder?: () => Promise<boolean>
   onVisibleMessages?: (recordIds: string[]) => void
-  admission?: EntityAdmission | null
-  onAdmission?: (action: 'accept' | 'block') => Promise<void>
   onOpenEntity?: (id: string) => void
   /** Opens the forward target picker for a message. */
   onForward?: (message: MessageObject) => void
@@ -104,8 +103,6 @@ export function ConversationView({
   hasOlder = false,
   onLoadOlder,
   onVisibleMessages,
-  admission = null,
-  onAdmission,
   onOpenEntity,
   onForward,
   sessionPanelDetails,
@@ -117,15 +114,7 @@ export function ConversationView({
   useMessageHubRuntime()
   const context = contextProp ?? store.defaultContext()
   const runtime = session ? store.runtimeFor(context, session.id) : []
-  const [admissionPending, setAdmissionPending] = useState(false)
-  const [admissionError, setAdmissionError] = useState(false)
   const requestCount = session?.requestCount ?? 0
-  const showAdmissionBanner = requestCount > 0 && admission?.accessLevel !== 'friend'
-  const runAdmission = async (action: 'accept' | 'block') => {
-    if (!onAdmission || admissionPending) return
-    setAdmissionPending(true); setAdmissionError(false)
-    try { await onAdmission(action) } catch { setAdmissionError(true) } finally { setAdmissionPending(false) }
-  }
   const canSend = access === undefined || access?.mode === 'read_write'
   // A notification session (`sysnotify:*`) is not a conversation: its cards are filtered, never answered by typing.
   const notifyCategory = session ? notifySessionCategory(session.id) : undefined
@@ -133,11 +122,6 @@ export function ConversationView({
   const historyReader = useNotifyFilteredReader(messageReader, notifyCategory ? notifyFilter : 'all')
   const isGroup = entity.type === 'group'
   const subtitle = session ? [title, session.binding.kind === 'tunnel' ? session.binding.connectionName : ''].filter(Boolean).join(' · ') : t('messagehub.noSessions')
-  const admissionDetail = [
-    t('messagehub.requestBanner', undefined, { count: requestCount }),
-    admission?.accessLevel ? t(`messagehub.access.${admission.accessLevel}`) : '',
-    admission?.temporaryExpiresAt ? t('messagehub.temporaryUntil', undefined, { time: new Date(admission.temporaryExpiresAt).toLocaleString() }) : '',
-  ].filter(Boolean).join(' · ')
   const bodyRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<ConversationComposerHandle>(null)
   const dragDepthRef = useRef(0)
@@ -222,6 +206,7 @@ export function ConversationView({
       } : undefined,
       readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
       handleNotify: isOwner,
+      answerFriendRequests: isOwner,
     }
   }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, onOpenMessage, pinnedId, t, answerState]) // eslint-disable-line react-hooks/exhaustive-deps
   const askerName = answerState ? messageActions.displayName(answerState.question.from) : ''
@@ -347,12 +332,7 @@ export function ConversationView({
         {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40"><SquarePen size={18} /></button>}
         <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>
-      {session && showAdmissionBanner && <div role="note" data-testid="request-banner" title={admissionDetail} className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-3 py-1 text-[13px]">
-        <span className="min-w-0 flex-1 truncate font-medium">{t('messagehub.requestPending', undefined, { count: requestCount })}{admission?.accessLevel && admission.accessLevel !== 'stranger' ? <span className="font-normal text-[color:var(--cp-muted)]"> · {t(`messagehub.access.${admission.accessLevel}`)}</span> : null}</span>
-        {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-11 shrink-0 rounded-lg px-3 font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
-        {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-11 shrink-0 rounded-lg px-3 text-[color:var(--cp-danger)] disabled:opacity-40 md:min-h-9" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
-      </div>}
-      {session && showAdmissionBanner && admissionError && <p role="alert" className="shrink-0 px-3 py-1 text-xs text-[color:var(--cp-danger)]">{t('messagehub.admissionFailed')}</p>}
+      {session ? <RequestBanner entity={entity} context={context} requestCount={requestCount} /> : null}
 
       {notifyCategory ? <div role="group" aria-label={t('messagehub.notify.filter.label')} className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-1.5" data-testid="notify-filter">
         {NOTIFY_FILTERS.map(value => <button key={value} type="button" className="mh-notify-filter" aria-pressed={notifyFilter === value} onClick={() => setNotifyFilter(value)} data-filter={value}>{t(`messagehub.notify.filter.${value}`)}</button>)}

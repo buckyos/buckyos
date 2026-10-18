@@ -98,7 +98,6 @@ export interface HomeStationStore {
   peekEntries(): EntryDebugView[]
   peekCollector(): CollectorView | null
   peekPreviewReaders(): PreviewReaders
-  peekMuteCandidates(): Did[]
   /** The signed-in user's home and zone-feed rights; null on portal pages and before boot. */
   peekHome(): HomeInfo | null
 

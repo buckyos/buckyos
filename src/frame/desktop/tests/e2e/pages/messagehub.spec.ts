@@ -186,6 +186,21 @@ test('New Session includes native users and selecting an empty user creates one 
   expect(await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:buckyos:person:bob').length, OWN)).toBe(1)
 })
 
+test('New Session finds someone new by DID and starts a conversation with them', async ({ page }) => {
+  await openHub(page)
+  await page.getByTestId('hub-create-menu').click()
+  await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByTestId('new-session-find').locator('summary').click()
+  await dialog.getByLabel('Find people').fill('did:bns:nora')
+  await dialog.getByTestId('find-people-result').filter({ hasText: 'Nora' }).getByRole('button', { name: 'Choose' }).click()
+  await expect(dialog.getByRole('combobox').first()).toHaveValue('did:bns:nora')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Entity details: Nora' }).last()).toBeVisible()
+  expect(await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:bns:nora').length, OWN)).toBe(1)
+})
+
 test('agent entity entry creates a missing default and skips pinned or tunnel sessions', async ({ page }) => {
   await openHub(page, 'did:bns:assistant.alice')
   await expect(page.locator('textarea')).toBeVisible()

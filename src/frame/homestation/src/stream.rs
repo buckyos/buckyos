@@ -216,7 +216,7 @@ impl Station {
         ReaderRelations {
             follower,
             friend: contact.as_ref().is_some_and(|c| c.friend && !c.blocked),
-            groups: contact.map(|c| c.groups).unwrap_or_default(),
+            groups: contact.map(|c| c.tags).unwrap_or_default(),
         }
     }
 

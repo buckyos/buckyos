@@ -65,7 +65,7 @@ test('+ holds the new entries and ⋮ the rest; Escape closes a menu back to its
   await openHub(page)
   await page.getByTestId('hub-create-menu').click()
   const create = page.getByRole('menu', { name: 'New' })
-  await expect(create.getByRole('menuitem')).toHaveText(['New Session', 'New group'])
+  await expect(create.getByRole('menuitem')).toHaveText(['New Session', 'New group', 'Join group'])
   await page.keyboard.press('Escape')
   await expect(create).toHaveCount(0)
   await expect(page.getByTestId('hub-create-menu')).toBeFocused()

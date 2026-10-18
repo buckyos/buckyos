@@ -120,7 +120,7 @@ export interface EntityDetail extends Entity {
   note?: string
   createdAt?: number
   /** Contact admission level of the current owner towards this entity. */
-  accessLevel?: 'block' | 'stranger' | 'temporary' | 'friend'
+  accessLevel?: 'block' | 'stranger' | 'temporary' | 'allow'
   isVerified?: boolean
   contactSource?: string
 }

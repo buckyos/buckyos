@@ -3,6 +3,7 @@ import { EyeOff, Filter, Plus, Sparkles, UsersRound } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
+import { useNetworkDialogs } from '../../../components/network/dialogs'
 import { filterRuleInputSchema, type FilterRuleInput } from '../datamodel/inputs'
 import type { AudienceSpec, FilterRule, GenerationTag, MuteRule } from '../datamodel/types'
 import type { HomeStationStore } from '../store/types'
@@ -15,7 +16,6 @@ import { useToast } from '../ui/toastContext'
 const selectMutes = (store: HomeStationStore) => store.peekMuteRules()
 const selectRules = (store: HomeStationStore) => store.peekFilterRules()
 const selectGroups = (store: HomeStationStore) => store.peekGroups()
-const selectPeople = (store: HomeStationStore) => store.peekMuteCandidates()
 const selectHidden = (store: HomeStationStore) => store.peekHiddenSummary()
 const selectSettings = (store: HomeStationStore) => store.peekSettings()
 
@@ -102,18 +102,21 @@ export function FeedPreferences() {
   const mutes = useStoreSelector(selectMutes)
   const rules = useStoreSelector(selectRules)
   const groups = useStoreSelector(selectGroups)
-  const candidates = useStoreSelector(selectPeople)
   const hidden = useStoreSelector(selectHidden)
   const settings = useStoreSelector(selectSettings)
+  const dialogs = useNetworkDialogs()
   const [choice, setChoice] = useState('')
-  const people = candidates.map(did => ({ did, name: store.peekIdentity(did).name }))
 
-  const addMute = () => {
+  const addGroupMute = () => {
     if (!choice) return
-    const [kind, id] = choice.split('|')
-    const rule: MuteRule = kind === 'group' ? { kind: 'group', groupId: id, name: groups.find(group => group.id === id)?.name ?? id } : { kind: 'person', did: id, name: store.peekIdentity(id).name }
-    void store.setMuteRule(rule, true)
+    void store.setMuteRule({ kind: 'group', groupId: choice, name: groups.find(group => group.id === choice)?.name ?? choice }, true)
     setChoice('')
+  }
+  const addPersonMute = async () => {
+    const muted = mutes.flatMap(rule => rule.kind === 'person' ? [{ did: rule.did, reason: t('homestation.prefs.alreadyHidden', 'Already hidden') }] : [])
+    const result = await dialogs.pickPeople({ title: t('homestation.prefs.mutePerson', 'Hide a person'), confirmLabel: t('homestation.prefs.muteAdd', 'Hide'), filter: { kinds: ['user', 'agent'], exclude: muted } })
+    if (result.action !== 'selected') return
+    for (const person of result.people) await store.setMuteRule({ kind: 'person', did: person.did, name: person.name } satisfies MuteRule, true)
   }
 
   return (
@@ -136,16 +139,12 @@ export function FeedPreferences() {
             ))}
           </ul>
           <div className="mt-2 flex items-center gap-2">
-            <select className="hs-input py-1.5 text-sm" value={choice} onChange={event => setChoice(event.target.value)} aria-label={t('homestation.prefs.muteChoose', 'Choose a person or contact group')} data-testid="hs-mute-choice">
-              <option value="">{t('homestation.prefs.muteChoose', 'Choose a person or contact group')}</option>
-              <optgroup label={t('homestation.prefs.people', 'People')}>
-                {people.map(person => <option key={person.did} value={`person|${person.did}`}>{person.name}</option>)}
-              </optgroup>
-              <optgroup label={t('homestation.prefs.groups', 'Contact groups (from Message Center)')}>
-                {groups.map(group => <option key={group.id} value={`group|${group.id}`}>{group.name}</option>)}
-              </optgroup>
+            <button type="button" className="hs-btn" onClick={() => void addPersonMute()} data-testid="hs-mute-person"><Plus size={13} />{t('homestation.prefs.mutePerson', 'Hide a person')}</button>
+            <select className="hs-input py-1.5 text-sm" value={choice} onChange={event => setChoice(event.target.value)} aria-label={t('homestation.prefs.muteGroupChoose', 'Choose a contact group')} data-testid="hs-mute-choice">
+              <option value="">{t('homestation.prefs.muteGroupChoose', 'Choose a contact group')}</option>
+              {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
             </select>
-            <button type="button" className="hs-btn" disabled={!choice} onClick={addMute} data-testid="hs-mute-add"><Plus size={13} />{t('homestation.prefs.muteAdd', 'Hide')}</button>
+            <button type="button" className="hs-btn" disabled={!choice} onClick={addGroupMute} data-testid="hs-mute-add"><Plus size={13} />{t('homestation.prefs.muteAdd', 'Hide')}</button>
           </div>
         </section>
 

@@ -212,21 +212,32 @@ impl Station {
     }
 
     async fn housekeeping_loop(self: Arc<Self>) {
-        let mut first = true;
+        // Friends are synced once here and then on every Message Center contact
+        // change (`contacts_changed`), not polled.
+        if let Err(e) = self.sync_friends().await {
+            log::warn!("friend sync failed: {e}");
+        }
+        if let Err(e) = self.reconcile_following().await {
+            log::warn!("following tag reconciliation failed: {e}");
+        }
         loop {
-            if !first {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-            }
-            first = false;
             if let Err(e) = self.purge_behavior().await {
                 log::warn!("behavior purge failed: {e}");
             }
             if let Err(e) = self.expire_candidates().await {
                 log::warn!("candidate expiry failed: {e}");
             }
-            if let Err(e) = self.sync_friends().await {
-                log::warn!("friend sync failed: {e}");
-            }
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    }
+
+    /// Message Center changed the owner's contacts: relations take effect now.
+    pub async fn contacts_changed(&self) {
+        if let Err(e) = self.sync_friends().await {
+            log::warn!("friend sync after contact change failed: {e}");
+        }
+        if let Err(e) = self.reconcile_following().await {
+            log::warn!("following tag reconciliation failed: {e}");
         }
     }
 }
