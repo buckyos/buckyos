@@ -372,26 +372,6 @@ impl<'a> CallResolver<'a> {
             .as_ref()
             .and_then(|capabilities| capabilities.get("max_output_tokens"))
             .and_then(Value::as_u64);
-        // Some vendor models only accept their own default sampling parameters and reject any
-        // explicit `temperature`/`top_p`/`top_k` with a 400. The model metadata declares that
-        // constraint, and it is forwarded as a resolved parameter so the protocol codec can drop
-        // the canonical values instead of sending a request the provider refuses. Only the Claude
-        // Messages codec defines that resolved parameter, so the flag is emitted only for that
-        // adapter; the same vendor model reached through an aggregate provider keeps its own
-        // protocol's parameter contract.
-        if decision.selected.protocol_adapter_id == crate::protocol::CLAUDE_MESSAGES_ADAPTER_ID
-            && model
-                .semantics
-                .capabilities
-                .as_ref()
-                .and_then(|capabilities| capabilities.get("fixed_sampling"))
-                .and_then(Value::as_bool)
-                == Some(true)
-        {
-            if let Some(object) = normalized.as_object_mut() {
-                object.insert("omit_sampling".to_owned(), Value::Bool(true));
-            }
-        }
         let mut canonical_fields = model.semantics.canonical_fields.unwrap_or_default();
         if let Some(rule) = &provider_rule {
             canonical_fields.extend(rule.action.canonical_fields.clone());
@@ -1573,6 +1553,89 @@ mod tests {
                 (configuration, rules)
             })
             .collect()
+    }
+
+    #[test]
+    fn vendor_models_that_reject_sampling_parameters_declare_remove_rules() {
+        // Claude 5.5 rejects `temperature`, `top_p` and `top_k` with a 400
+        // ("`temperature` is deprecated for this model"). Only the provider rules can express
+        // that: the values have to be removed from the normalized options so the lowering step
+        // drops them from the canonical request. Every channel that exposes the model has to
+        // declare it, so both the direct and the aggregate profile are asserted here.
+        let catalog = metadata_snapshot();
+        let context = MatchContext::from([
+            ("api_type".into(), Value::String("llm".into())),
+            ("operation".into(), Value::String("messages.create".into())),
+        ]);
+        for (profile, model) in [
+            ("claude", "claude-sonnet-5-5"),
+            ("claude", "claude-haiku-5-5"),
+            ("claude", "claude-opus-5-5"),
+            ("openrouter", "anthropic/claude-sonnet-5.5"),
+            ("openrouter", "anthropic/claude-haiku-5.5"),
+            ("openrouter", "anthropic/claude-opus-5.5"),
+        ] {
+            let rule = catalog
+                .resolve_provider_rule(profile, model, &context)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{profile}/{model} must resolve a provider rule"));
+            let removed = rule
+                .matching_request_rules(&context)
+                .iter()
+                .flat_map(|rule| rule.remove.iter().map(String::as_str))
+                .collect::<Vec<_>>();
+            for pointer in ["/temperature", "/top_p", "/top_k"] {
+                assert!(
+                    removed.contains(&pointer),
+                    "{profile}/{model} must remove {pointer}, got {removed:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn models_without_the_constraint_keep_their_sampling_parameters() {
+        let catalog = metadata_snapshot();
+        let context = MatchContext::from([
+            ("api_type".into(), Value::String("llm".into())),
+            ("operation".into(), Value::String("messages.create".into())),
+        ]);
+        for (profile, model) in [
+            ("claude", "claude-opus-4-6"),
+            ("openrouter", "anthropic/claude-opus-4.6"),
+        ] {
+            let rule = catalog
+                .resolve_provider_rule(profile, model, &context)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{profile}/{model} must resolve a provider rule"));
+            let removed = rule
+                .matching_request_rules(&context)
+                .iter()
+                .flat_map(|rule| rule.remove.iter())
+                .collect::<Vec<_>>();
+            assert!(
+                !removed
+                    .iter()
+                    .any(|pointer| pointer.starts_with("/temperature")
+                        || pointer.starts_with("/top_p")
+                        || pointer.starts_with("/top_k")),
+                "{profile}/{model} must keep sampling parameters, got {removed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_normalized_keys_are_dropped_from_the_canonical_request() {
+        // A remove rule edits the normalized options only. The lowering step has to carry that
+        // deletion over to the canonical request, otherwise the typed request keeps the value
+        // and the codec sends a parameter the provider refuses.
+        let canonical = json!({"temperature": 0.4, "top_p": 0.9, "max_output_tokens": 64});
+        let normalized = json!({"max_output_tokens": 64});
+        let rewritten =
+            rewrite_canonical_options(&canonical, &normalized, &["temperature", "top_p"]).unwrap();
+        assert!(rewritten.get("temperature").is_none());
+        assert!(rewritten.get("top_p").is_none());
+        assert_eq!(rewritten["max_output_tokens"], json!(64));
     }
 
     fn api_type_from_mapping_key(key: &str) -> ApiType {

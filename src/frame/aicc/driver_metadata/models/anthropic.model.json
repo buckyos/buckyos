@@ -133,8 +133,7 @@
         "web_search": true,
         "json_schema": true,
         "vision": true,
-        "reasoning": true,
-        "fixed_sampling": true
+        "reasoning": true
       },
       "llm": {
         "spec": "claude-sonnet",
@@ -295,8 +294,7 @@
         "web_search": true,
         "json_schema": true,
         "vision": true,
-        "reasoning": true,
-        "fixed_sampling": true
+        "reasoning": true
       },
       "llm": {
         "spec": "claude-haiku",

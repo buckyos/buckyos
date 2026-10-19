@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 10,
+  "revision_seq": 11,
   "provider_profile_id": "openrouter",
   "reported_cost": {"currency": "USD", "semantics": "total_request_cost"},
   "model_driver_overrides": {
@@ -54,7 +54,10 @@
     {"id": "minimax/speech-2.8-hd", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "defaults": {"openrouter_voice":"English_expressive_narrator","openrouter_response_format":"mp3"}}]},
     {"id": "minimax/speech-2.8-turbo", "operations": {"audio.tts": "audio.speech"}, "request_rules": [{"when": {"api_type": ["audio.tts"], "operation": "audio.speech"}, "defaults": {"openrouter_voice":"English_expressive_narrator","openrouter_response_format":"mp3"}}]},
     {"id": "google/gemini-nano-banana-2.1", "operations": {"image.txt2img": "images.generate", "image.img2img": "images.generate"}, "capability_limits": {"max_context_tokens": 65536}},
-    {"id": "google/gemini-2.5-flash-image", "operations": {"image.txt2img": "images.generate", "image.img2img": "images.generate"}, "capability_limits": {"max_context_tokens": 32768, "max_output_tokens": 8192}}
+    {"id": "google/gemini-2.5-flash-image", "operations": {"image.txt2img": "images.generate", "image.img2img": "images.generate"}, "capability_limits": {"max_context_tokens": 32768, "max_output_tokens": 8192}},
+    {"id": "anthropic/claude-sonnet-5.5", "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"}, "request_rules": [{"when": {"api_type": ["llm", "vision.ocr", "vision.caption"], "operation": "responses.create"}, "set": {"modalities": ["text"]}}, {"remove": ["/temperature", "/top_p", "/top_k"]}]},
+    {"id": "anthropic/claude-haiku-5.5", "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"}, "request_rules": [{"when": {"api_type": ["llm", "vision.ocr", "vision.caption"], "operation": "responses.create"}, "set": {"modalities": ["text"]}}, {"remove": ["/temperature", "/top_p", "/top_k"]}]},
+    {"id": "anthropic/claude-opus-5.5", "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"}, "request_rules": [{"when": {"api_type": ["llm", "vision.ocr", "vision.caption"], "operation": "responses.create"}, "set": {"modalities": ["text"]}}, {"remove": ["/temperature", "/top_p", "/top_k"]}]}
   ],
   "patterns": [
     {
