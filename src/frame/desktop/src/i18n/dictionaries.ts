@@ -14,6 +14,7 @@ import { trayEn, trayZh } from './tray'
 import { filePermissionsEn, filePermissionsZh } from './file-permissions'
 import { networkEn, networkZh } from './network'
 import { myNetworkEn, myNetworkZh } from './my-network'
+import { loadingTipsEn, loadingTipsZh } from './loading-tips'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -25,6 +26,7 @@ const en: Dictionary = {
   ...aiCenterRoutingEn,
   ...messageHubEn,
   ...homeStationEn,
+  ...loadingTipsEn,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': 'Thin desktop layer for layout, launch, and in-place windows.',
   'shell.home': 'Home',
@@ -121,8 +123,8 @@ const en: Dictionary = {
   'runtime.browser': 'Browser',
   'runtime.desktop-app': 'Desktop app',
   'runtime.mobile-app': 'Mobile app',
-  'states.loadingTitle': 'Loading desktop shell',
-  'states.loadingBody': 'Mock provider is preparing pages, widgets, and app manifests.',
+  'states.loading': 'Loading...',
+  'states.tipLabel': 'Tip',
   'states.emptyTitle': 'Layout is empty',
   'states.emptyBody': 'Your Desktop folder is empty. Restore the default items, or add apps from All apps.',
   'states.errorTitle': 'Mock data failed',
@@ -798,6 +800,7 @@ const zhCN: Dictionary = {
   ...aiCenterRoutingZh,
   ...messageHubZh,
   ...homeStationZh,
+  ...loadingTipsZh,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': '用于布局、启动与同容器窗口承载的轻量桌面层。',
   'shell.home': '主页',
@@ -894,8 +897,8 @@ const zhCN: Dictionary = {
   'runtime.browser': '浏览器',
   'runtime.desktop-app': '桌面 App',
   'runtime.mobile-app': '移动 App',
-  'states.loadingTitle': '正在加载桌面',
-  'states.loadingBody': 'Mock provider 正在准备页面、部件与应用 Manifest。',
+  'states.loading': '加载中...',
+  'states.tipLabel': '小贴士',
   'states.emptyTitle': '布局为空',
   'states.emptyBody': '桌面文件夹是空的。可以恢复默认项目，或从“全部应用”把应用添加到桌面。',
   'states.errorTitle': 'Mock 数据加载失败',

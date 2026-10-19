@@ -72,6 +72,7 @@ import { useTray } from './tray/trayModel'
 import { useHasWallpaperPicture, useWallpaperSnapshot } from './wallpaper/store'
 import { AccountAppearanceSync } from './appearance/AccountAppearanceSync'
 import { useI18n } from '../i18n/provider'
+import { loadingTipKeys } from '../i18n/loading-tips'
 import { useAppText } from '../presentation/appText'
 import type {
   AppDefinition,
@@ -1225,18 +1226,17 @@ function DesktopBackgroundSync({ fallback, pageCount }: { fallback: DesktopWallp
 
 function LoadingState() {
   const { t } = useI18n()
+  // One tip per load, kept across re-renders and language switches.
+  const [tipKey] = useState(() => loadingTipKeys[Math.floor(Math.random() * loadingTipKeys.length)])
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-surface)]/72 backdrop-blur-xl">
-      <div className="shell-panel max-w-lg px-7 py-8 text-center">
-        <div className="mx-auto mb-3 flex items-center justify-center">
-          <LoadingOrb size={48} label={t('states.loadingTitle')} />
-        </div>
-        <p className="shell-kicker">Prototype</p>
-        <p className="mt-2 font-display text-2xl font-semibold sm:text-[2rem]">
-          {t('states.loadingTitle')}
-        </p>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[color:var(--cp-muted)]">
-          {t('states.loadingBody')}
+    <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-surface)]/72 px-4 backdrop-blur-xl">
+      <div className="flex max-w-md flex-col items-center text-center">
+        <LoadingOrb size={48} label={t('states.loading')} />
+        <p className="mt-6 text-base font-medium text-[color:var(--cp-text)]">{t('states.loading')}</p>
+        <p className="mt-3 text-sm leading-6 text-[color:var(--cp-muted)]" data-testid="desktop-loading-tip">
+          <span className="font-medium text-[color:var(--cp-text)]">{t('states.tipLabel')}</span>
+          {' · '}
+          {t(tipKey)}
         </p>
       </div>
     </div>
