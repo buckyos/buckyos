@@ -67,6 +67,7 @@ Script: same with `--kind script --source ./script/dist` (dir holding `main.py` 
 Report: App DID, version, `pikg_digest`, task ids and outcome, URL, the request you made and the answer showing the version, the data check. Attach the PIKG (`report.artifacts`) when the user wants the package.
 
 #### Source and extending
+Current repository contracts: [PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md), [package format](https://github.com/buckyos/buckyos/blob/main/doc/pikg/format.md), [App configuration](https://github.com/buckyos/buckyos/blob/main/doc/sdk/app-package-config.md). This manual supplies the task recipe; schemas and historical proposals are maintained in those documents.
 Mounted CLI source `/opt/buckyos/libexec/buckyos-tool/cli/modules/{pikg,pikg_protocol,app}.ts`; samples in the BuckyOS repo `test/app_installer_test/pikg_samples/{static-web,script-host,docker}` and `src/apps/text_editor` (static-web App with SDK, NFSP and settings); websdk `examples/`. Extra scripts go to the project or `$OPENDAN_AGENT_ROOT/tools/`.
 
 Checked against: BuckyOS 0.7.0, Tool/SDK 0.7.131, static-web and Docker samples installed and upgraded, script sample installed, on test.buckyos.io from the host (not yet from an agent container), 2026-10-17.

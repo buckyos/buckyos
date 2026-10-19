@@ -14,7 +14,7 @@ BuckyOS 是一个开源的个人 AI 操作系统，将你的设备、应用、�
 - **OpenDAN 与 Jarvis**：OpenDAN 是基于 Rust 的 Agent Runtime，支持可配置的会话类别与行为循环、记忆和工作区工具、消息与事件路由、任务委派，以及请求人工输入。Jarvis 是系统内置的 Agent 模板，以带版本号的 `.pikg` 应用包交付，提示词、行为配置和翻译资源位于 [`src/apps/jarvis_agent/agent`](src/apps/jarvis_agent/agent)。
 - **AI Compute Center（AICC）**：提供服务商与模型管理、逻辑模型路由、用量日志，以及文本和媒体能力的适配器。桌面中的 AI Center 提供相应的管理界面。
 - **Workflow 与 Task Manager**：支持工作流定义与运行、计划任务、任务进度与控制，以及人工审批或介入。Workflow 和 OpenDAN 与 Task Manager、`kevent` 集成，交换任务状态更新。
-- **应用交付与 SDK/CLI**：支持 `.pikg` 包、经过校验的安装计划、按用户区分的应用实例和网关路由。TypeScript SDK 与 `buckyos` CLI 一起构建并随系统分发；Rust 服务使用 `buckyos-api`。
+- **应用交付与 SDK/CLI**：支持 `.pikg` 包、经过校验的安装计划、按用户区分的应用实例和网关路由。打包、安装、Agent/skill 与设计资料见 [PIKG 文档总览](doc/pikg/README.md)。TypeScript SDK 与 `buckyos` CLI 一起构建并随系统分发；Rust 服务使用 `buckyos-api`。
 - **系统基础设施**：`system-config`、调度器和 `node-daemon` 管理系统目标状态与部署；`verify-hub` 和 RBAC 负责登录与授权。`kmsg` 和 `kevent` 提供消息与事件通知，`repo-service` 和命名对象存储支持内容交付。
 - **开发工作流**：包含各平台的构建与打包流水线、本地开发验证（DV）测试，以及 [`harness/`](harness/README.md) 中的贡献者指南。
 

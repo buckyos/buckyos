@@ -1,5 +1,7 @@
 # 第三方应用开发：从 HTTP Server 到本地 DV 测试
 
+相关命令规范、包类型、Agent/skill、构建与历史设计索引见 [PIKG 文档总览](../pikg/README.md)。
+
 给开发者和 Coding Agent 的最短路径：**安装 SDK → 编写应用 → 打包 PIKG → 安装到 DV → 改代码、升版本、重新打包升级。** 适用于 Beta 2.2；应用包扩展名为 `.pikg`。
 
 ## 1. 在应用项目中安装 SDK

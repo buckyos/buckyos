@@ -756,7 +756,7 @@ candidate -> verified -> active -> degraded -> blocked / archived
 
 Skill 可以由人安装，也可以由 Self-Improve 结晶；但进入 active 前必须验证。Skill 的使用效果要回写 usage history，供后续排名、降权、重测和遗忘。
 
-当前 [Agent Skill.md](Agent%20Skill.md) 描述了现有 skill / tool prompt 注入和目录结构；后续需要把它升级为带生命周期、验证和 provenance 的标准定义。
+本节为原 Skills Mgr 的设计方向，已合并为 [历史研究摘要](../../pikg/history/agent-skills-design.md)，不描述当前安装机制。现行 cmd/goal skill、PIKG 与 Session 冻结规则见 [OpenDAN 开发指南](../../sdk/OpenDAN_Agent_Dev_Guide.md)。
 
 ### 8.5 Self Model
 
@@ -1060,11 +1060,11 @@ Governance：
 | Schedule / Wakeup / Task | Event Runtime | 本文 §5 |
 | Self-Check | Event Runtime / State & Recall | [Agent Self-Check.md](Agent%20Self-Check.md) |
 | Global Object | Object Runtime | 本文 §6，后续需补详细 schema |
-| Tool Indexer / Tool Runtime | Object Runtime / Governance | [Agent Skill.md](Agent%20Skill.md) 需升级 |
+| Tool Indexer / Tool Runtime | Object Runtime / Governance | [历史 Skills Mgr 研究](../../pikg/history/agent-skills-design.md)，非当前实现 |
 | Notebook | State & Recall | [Agent Notebook.md](Agent%20Notebook.md) |
 | Memory | State & Recall | [Agent Memory v2.md](Agent%20Memory%20v2.md) |
 | Hint Recall | State & Recall | [Agent 浮现Hints.md](Agent%20浮现Hints.md) |
-| Skill Registry | State & Recall / Self-Improve | [Agent Skill.md](Agent%20Skill.md) 需升级 |
+| Skill Registry | State & Recall / Self-Improve | [历史 Skills Mgr 研究](../../pikg/history/agent-skills-design.md)，非当前实现 |
 | Self-Improve | Self-Improve Runtime | [Agent Self-Improve.md](Agent%20Self-Improve.md) |
 | Governance | Governance Runtime | 后续需新增详细设计 |
 

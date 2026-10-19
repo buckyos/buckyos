@@ -102,6 +102,7 @@ Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/
 - Your edits to template files in your own AgentRoot survive template updates as local changes; to share them, put them into the template package.
 
 #### Source and extending
+Current repository contracts: [PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md), [package format](https://github.com/buckyos/buckyos/blob/main/doc/pikg/format.md), [App configuration](https://github.com/buckyos/buckyos/blob/main/doc/sdk/app-package-config.md). This manual supplies the task recipe; schemas and historical proposals are maintained in those documents.
 Loader `src/frame/opendan/src/{loader,rootfs,config}.rs`, sessions/skills `src/frame/lib_opendan/src/{template.rs,skills.rs,state/behaviors.rs,bin/xagent.rs}`, templates/agents `src/frame/control_panel/src/agent_mgr.rs` (BuckyOS repo, host). In the container: buckyos-agent sources, the Tool CLI and SDK `.d.ts` under `/opt/buckyos/libexec/buckyos-tool/`.
 
 Checked against: BuckyOS 0.7.0, Tool/SDK 0.7.131, opendan/lib_opendan working tree; Jarvis template packaged and fetched as a plan on test.buckyos.io, template registration/agent creation/skill install not run, 2026-10-17.
