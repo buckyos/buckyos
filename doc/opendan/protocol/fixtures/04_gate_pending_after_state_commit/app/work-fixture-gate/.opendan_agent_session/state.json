@@ -1,7 +1,7 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1792254513925,
+    "heartbeat_ms": 1792411643974,
     "summary": "x"
   },
   "bootstrap_done": true,
@@ -14,10 +14,10 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261017-092833-4fb332",
+    "run_id": "20261019-050723-50e409",
     "turns": [
       {
-        "at_ms": 1792254513913,
+        "at_ms": 1792411643970,
         "hook": "on_init",
         "input_seq": 1,
         "inputs": [
@@ -29,7 +29,7 @@
   },
   "one_line_status": "",
   "open_turn": {
-    "at_ms": 1792254513913,
+    "at_ms": 1792411643970,
     "has_msg": true,
     "hook": "on_init",
     "index": 1,
@@ -37,7 +37,7 @@
     "inputs": [
       "q#1"
     ],
-    "run_id": "20261017-092833-4fb332"
+    "run_id": "20261019-050723-50e409"
   },
   "perception_seq": 0,
   "recent_keys": [
@@ -61,7 +61,7 @@
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1792254513925,
+  "updated_at_ms": 1792411643974,
   "worklog": {
     "committed_bytes": 131,
     "committed_seq": 1
@@ -69,8 +69,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 3524025,
+    "pid": 47106,
     "principal": "app:app2@alice",
-    "runner_id": "rn-38914d903e41483b"
+    "runner_id": "rn-4608eeea671848da"
   }
 }

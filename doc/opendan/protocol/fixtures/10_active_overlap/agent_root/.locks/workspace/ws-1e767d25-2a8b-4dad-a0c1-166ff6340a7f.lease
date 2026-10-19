@@ -2,12 +2,12 @@
   "resource": "workspace:ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
   "epoch": 1,
   "holder": {
-    "runner_id": "rn-98117fb77a3f45df",
+    "runner_id": "rn-39f4f9e69f28451f",
     "principal": "app:app2@alice",
     "host": "${FIXTURE_HOST}",
-    "pid": 3526018,
+    "pid": 47989,
     "runtime_id": "rt-fixture-native"
   },
-  "acquired_at_ms": 1792254515149,
+  "acquired_at_ms": 1792411644779,
   "released_at_ms": null
 }

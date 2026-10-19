@@ -1,14 +1,14 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1792254516260,
+    "heartbeat_ms": 1792411645644,
     "summary": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); eac"
   },
   "bootstrap_done": true,
   "final_report": {
-    "accepted_at_ms": 1792254516288,
+    "accepted_at_ms": 1792411645667,
     "artifacts": [],
-    "id": "cb48aa93bafb1c3e42342f601c5d3902e7e57437e4a1126451a1b23177b7c9ff",
+    "id": "200cb6a27fc5b9f61a7af403bf4c67518144b92206968155a67a9232ae484a05",
     "is_end": true,
     "report": "Item 1 was ticked by its work; nothing else is open.",
     "result": {
@@ -16,7 +16,7 @@
       "distance": "TODO.md has no finished items left",
       "pending": []
     },
-    "run_id": "20261017-092836-93076c",
+    "run_id": "20261019-050725-f274de",
     "source": {
       "call_id": "goal-report",
       "kind": "tool"
@@ -31,14 +31,14 @@
         "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea"
       ],
       "distance": {
-        "observed_at_ms": 1792254516309,
+        "observed_at_ms": 1792411645682,
         "text": "TODO.md has no finished items left"
       },
       "epoch": 1,
       "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
       "goal_revision_seen": 1,
       "last_activation": {
-        "at_ms": 1792254516309,
+        "at_ms": 1792411645682,
         "decision": "no_action",
         "epoch": 1,
         "outcome": "completed",
@@ -72,10 +72,10 @@
       ],
       "rev": 3,
       "schema": "opendan.goal_state/1",
-      "updated_at_ms": 1792254516309,
+      "updated_at_ms": 1792411645682,
       "usage": {
         "activations": 1,
-        "period_start_ms": 1792254516026,
+        "period_start_ms": 1792411645447,
         "tokens": 15,
         "work_tokens": 15,
         "works": 1
@@ -88,7 +88,7 @@
           "total_tokens": 15
         },
         "decision": "no_action",
-        "ended_at_ms": 1792254516309,
+        "ended_at_ms": 1792411645682,
         "epoch": 1,
         "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
         "goal_revision": 1,
@@ -115,7 +115,7 @@
         "schema": "opendan.goal_activation/1",
         "seq": 1,
         "session_id": "goal-89354dfc2794f4b85a309968d2304f7c15bc90a0741e4bca5967d5998168ff0f",
-        "started_at_ms": 1792254516241,
+        "started_at_ms": 1792411645627,
         "summary": "Item 1 was ticked by its work; nothing else is open.",
         "works_absorbed": [
           "work-d5ddc95c475156fc69cd7a79a12e5ed34fe891f89833e68ca71a1164e6f750ea"
@@ -128,11 +128,11 @@
       "acked_index": 1
     }
   },
-  "last_run": "20261017-092836-93076c",
+  "last_run": "20261019-050725-f274de",
   "latest_report": {
-    "accepted_at_ms": 1792254516288,
+    "accepted_at_ms": 1792411645667,
     "artifacts": [],
-    "id": "cb48aa93bafb1c3e42342f601c5d3902e7e57437e4a1126451a1b23177b7c9ff",
+    "id": "200cb6a27fc5b9f61a7af403bf4c67518144b92206968155a67a9232ae484a05",
     "is_end": true,
     "report": "Item 1 was ticked by its work; nothing else is open.",
     "result": {
@@ -140,7 +140,7 @@
       "distance": "TODO.md has no finished items left",
       "pending": []
     },
-    "run_id": "20261017-092836-93076c",
+    "run_id": "20261019-050725-f274de",
     "source": {
       "call_id": "goal-report",
       "kind": "tool"
@@ -168,19 +168,19 @@
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1792254516314,
+  "updated_at_ms": 1792411645685,
   "waiting_for": {
     "kind": "event"
   },
   "worklog": {
-    "committed_bytes": 5159,
+    "committed_bytes": 5172,
     "committed_seq": 9
   },
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 3527189,
+    "pid": 48469,
     "principal": "app:app2@alice",
-    "runner_id": "rn-8c7e95f8a9d24ef9"
+    "runner_id": "rn-bae0cce3d67a4754"
   }
 }

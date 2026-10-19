@@ -1,7 +1,7 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1792254516426,
+    "heartbeat_ms": 1792411645770,
     "summary": "Pick the database of the notes app"
   },
   "bootstrap_done": true,
@@ -10,10 +10,10 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261017-092836-cf967a",
+    "run_id": "20261019-050725-978c32",
     "turns": [
       {
-        "at_ms": 1792254516420,
+        "at_ms": 1792411645767,
         "hook": "on_init",
         "input_seq": 1,
         "turn": 1
@@ -22,11 +22,11 @@
   },
   "one_line_status": "",
   "open_turn": {
-    "at_ms": 1792254516420,
+    "at_ms": 1792411645767,
     "hook": "on_init",
     "index": 1,
     "input_seq": 1,
-    "run_id": "20261017-092836-cf967a"
+    "run_id": "20261019-050725-978c32"
   },
   "perception_seq": 0,
   "recent_keys": [],
@@ -40,11 +40,11 @@
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1792254516479,
+  "updated_at_ms": 1792411645807,
   "waiting_for": {
-    "deadline_ms": 1792265316463,
+    "deadline_ms": 1792422445797,
     "human_tasks": [
-      "local-task-nt-f798f23e219b4249bc6d7cb597d71f65"
+      "local-task-nt-8e725fb5af9b4e66b6d456b3d7772e47"
     ],
     "kind": "input",
     "refs": [
@@ -58,8 +58,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 3519233,
+    "pid": 29203,
     "principal": "app:app2@alice",
-    "runner_id": "rn-7ce57bb987964187"
+    "runner_id": "rn-873954b870d24585"
   }
 }

@@ -362,24 +362,39 @@ fn relativize(dir: &Path) {
         .map(|p| p.display().to_string())
         .unwrap_or(root.clone());
     let host = libopendan::runtime::native_host_id();
-    let uid = fixture_paths::uid();
     let hostname = fixture_paths::hostname();
+    placeholder_uid(dir, &fixture_paths::uid());
     fixture_paths::rewrite(
         dir,
         &[
             (&canon, "${FIXTURE_ROOT}"),
             (&root, "${FIXTURE_ROOT}"),
             (&host, "${FIXTURE_HOST}"),
-            (
-                &format!("\"uid\": \"{uid}\""),
-                "\"uid\": \"${FIXTURE_UID}\"",
-            ),
             (&hostname, "${FIXTURE_HOSTNAME}"),
         ],
     );
     // kmsg lock file is runtime only.
     let _ = std::fs::remove_file(dir.join("kmsg").join(".lock"));
     fixture_paths::compact(dir);
+}
+
+fn placeholder_uid(dir: &Path, uid: &str) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            placeholder_uid(&p, uid);
+        } else if let Ok(mut s) = std::fs::read_to_string(&p) {
+            for quote in ["\"", "\\\""] {
+                for sep in [": ", ":"] {
+                    s = s.replace(
+                        &format!("{quote}uid{quote}{sep}{quote}{uid}{quote}"),
+                        &format!("{quote}uid{quote}{sep}{quote}${{FIXTURE_UID}}{quote}"),
+                    );
+                }
+            }
+            std::fs::write(&p, s).unwrap();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

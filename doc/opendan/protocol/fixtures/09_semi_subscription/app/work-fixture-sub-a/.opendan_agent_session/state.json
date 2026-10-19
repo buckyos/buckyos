@@ -6,7 +6,7 @@
   },
   "bootstrap_done": true,
   "inputs": {},
-  "last_run": "20261017-092834-a745c4",
+  "last_run": "20261019-050724-f9d0c4",
   "live_run": null,
   "one_line_status": "finished: answer",
   "outcome": "succeeded",
@@ -26,16 +26,16 @@
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1792254515040,
+  "updated_at_ms": 1792411644721,
   "worklog": {
-    "committed_bytes": 1215,
+    "committed_bytes": 1228,
     "committed_seq": 6
   },
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 3519233,
+    "pid": 29203,
     "principal": "app:app2@alice",
-    "runner_id": "rn-0f9e5f892a814351"
+    "runner_id": "rn-c7419f0af8844241"
   }
 }

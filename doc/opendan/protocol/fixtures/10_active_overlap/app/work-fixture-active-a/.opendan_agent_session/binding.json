@@ -2,7 +2,7 @@
   "schema": "opendan.binding/4",
   "target": {
     "host": "${FIXTURE_HOST}",
-    "uid": "0"
+    "uid": "${FIXTURE_UID}"
   },
   "runtime_id": "rt-fixture-native",
   "kind": "native",
@@ -18,6 +18,6 @@
     },
     "access": "read_write"
   },
-  "bound_at_ms": 1792254515172,
-  "bound_by": "rn-98117fb77a3f45df"
+  "bound_at_ms": 1792411644797,
+  "bound_by": "rn-39f4f9e69f28451f"
 }

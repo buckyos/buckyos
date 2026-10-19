@@ -23,21 +23,21 @@
     "turn_open": true,
     "activity": {
       "summary": "needs two messages",
-      "heartbeat_ms": 1792254514519
+      "heartbeat_ms": 1792411644356
     },
     "last_runner": {
-      "runner_id": "rn-c3113029f2f34130",
+      "runner_id": "rn-d09713a6a855475e",
       "host": "${FIXTURE_HOST}",
-      "pid": 3519233,
+      "pid": 29203,
       "lock_epoch": 1,
-      "at_ms": 1792254514549
+      "at_ms": 1792411644375
     },
     "last_error": {
       "kind": "provider",
       "message": "llm provider failed (Transient): busy",
       "recoverable": true
     },
-    "updated_at_ms": 1792254514546
+    "updated_at_ms": 1792411644373
   },
   "location_rev": 0
 }
