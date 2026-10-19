@@ -50,6 +50,8 @@ export function isProviderRestricted(error: unknown): boolean {
     message.includes("modelnotopen") ||
     message.includes("has not activated the model") ||
     message.includes("accessdenied") ||
+    (message.includes("access to model denied") &&
+      message.includes("eligible for using the model")) ||
     message.includes("do not have access to the requested resource") ||
     message.includes("invalid x-api-key") ||
     (message.includes("permission denied") && /not found (?:the )?model/.test(message)) ||

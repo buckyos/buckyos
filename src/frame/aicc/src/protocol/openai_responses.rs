@@ -1931,7 +1931,14 @@ fn resource_data_or_url(
         return Ok(url.to_string());
     }
     match source {
-        PublicResourceRef::Url { url, .. } => Ok(url.clone()),
+        PublicResourceRef::Url { url, .. } => match call.context.materialized_resource(source) {
+            Ok(resource) => Ok(format!(
+                "data:{};base64,{}",
+                resource.mime,
+                STANDARD.encode(&resource.bytes)
+            )),
+            Err(_) => Ok(url.clone()),
+        },
         PublicResourceRef::Base64 { mime, data_base64 } => {
             STANDARD
                 .decode(data_base64)

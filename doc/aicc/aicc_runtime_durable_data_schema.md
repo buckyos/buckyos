@@ -18,7 +18,7 @@ Service：`aicc`
 | `aicc_route_trace_event` | AICC 平台 RDB instance | 路由诊断与 task/request 关联 |
 | `aicc_session_route_history` | AICC 平台 RDB instance | 保留 tenant/user/app/session 隔离的上一次 exact model 软偏好 |
 | `aicc_artifact_scope` | AICC 平台 RDB instance | 记录 AICC 生成 Named Object 的租户归属，防止跨租户引用 |
-| `aicc_artifact_url_source` | AICC 平台 RDB instance | 记录 Provider 返回 URL 的来源实例和租户归属，使 AICC 可鉴权后委派下载 |
+| `aicc_artifact_url_source` | AICC 平台 RDB instance | 记录 Provider 返回 URL 的来源实例、实际请求 base URL 和租户/用户归属，供直传判定与鉴权下载 |
 | `aicc_provider_artifact` | AICC 平台 RDB instance | 按内容摘要**或**对象 ID、ProviderInstance、模型原厂和 tenant 保存图片、视频、音频等 artifact 的原生 ID；纯缓存 |
 | `aicc_audit_event` | AICC 平台 RDB instance | 持久安全与管理事件 |
 | Provider inventory LKGS | AICC 平台 RDB instance | 见 Provider 持久 schema |
@@ -65,7 +65,7 @@ Description：按 `tenant + method + idempotency_key` 保存执行状态、pinne
 | `task_id` | TEXT UNIQUE | NO | AICC/task-manager task ID |
 | `body_fingerprint` | TEXT | NO | 去除 idempotency key 后 canonical body 的 SHA-256 |
 | `state` | TEXT | NO | 可查询的执行状态 |
-| `record_json` | TEXT | NO | 完整 `ExecutionRecord`，含 pinned binding、resume descriptor、result/error |
+| `record_json` | TEXT | NO | 完整 `ExecutionRecord`，含 pinned binding、resume descriptor、result/error；native URL 输入可在 resume descriptor 中保存 canonical request 与 fallback target（bytes 或提交时配置的公网 Named Object base URL），重提后只替换远端 task id，不改变本地 task id |
 | `created_at_ms` | BIGINT | NO | Unix ms |
 | `expires_at_ms` | BIGINT | NO | 幂等窗口结束时间 |
 
@@ -145,6 +145,7 @@ Description：AICC 对 Provider 输出中 `ResourceRef::Url` 建立的来源和�
 | `url` | TEXT | NO | Provider 返回的精确 URL；查询命中后必须再次逐字比较以防 hash 冲突 |
 | `provider_instance_name` | TEXT | NO | 产生 URL 的 ProviderInstance |
 | `protocol_adapter_id` | TEXT | NO | 产生 URL 时使用的 Adapter；读取时必须仍与实例匹配 |
+| `provider_request_base_url` | TEXT | NO | 产生结果时该 operation 实际使用的请求 base URL；只用于比较 URL origin，不含 credential |
 | `origin_provider` | TEXT | NO | 产出内容的模型原厂 |
 | `artifact_id` | TEXT | YES | Adapter 显式绑定的 Provider artifact id；缺失时为空 |
 | `content_digest` | TEXT | YES | 完整读取 URL 内容后补全的 `sha256:<hex>`；登记时为空 |
@@ -157,7 +158,7 @@ Description：AICC 对 Provider 输出中 `ResourceRef::Url` 建立的来源和�
 
 Indexes：`idx_aicc_artifact_url_source_tenant(tenant_id, created_at_ms)`、`idx_aicc_artifact_url_source_provider(provider_instance_name, created_at_ms)`。
 
-Constraints：首次登记确定 owner、ProviderInstance 和 `origin_provider`，冲突写入不得改变现有记录。打开 reader 时必须同时满足 URL 已登记、精确 URL 相同、当前 tenant 相同、ProviderInstance 仍存在且 Adapter 未改变；调用方传入 `artifact_id` 时还必须与登记值一致。`expires_at_ms` 非空且小于等于当前时间时记录视为失效并删除，不再尝试下载。内容流完整读到 EOF 后以实际下载字节计算摘要并补全；失败或提前停止保持为空。URL 可能包含 Provider 签名参数，禁止写入日志、错误消息或审计 data。
+Constraints：首次登记确定 owner、ProviderInstance、实际请求 base URL 和 `origin_provider`，冲突写入不得改变现有记录。复用输入时必须先校验 tenant/user；同 ProviderInstance 或结果 URL 与请求 base URL 不同 origin 时可直接传递，跨实例同 origin 时通过原 ProviderInstance 下载为字节。打开 reader 时必须同时满足 URL 已登记、精确 URL 相同、当前 tenant/user 相同、ProviderInstance 仍存在且 Adapter 未改变；调用方传入 `artifact_id` 时还必须与登记值一致。`expires_at_ms` 非空且小于等于当前时间时记录视为失效并删除，不再尝试下载。内容流完整读到 EOF 后以实际下载字节计算摘要并补全；失败或提前停止保持为空。URL 可能包含 Provider 签名参数，禁止写入日志、错误消息或审计 data。
 
 ### 4.6 Table: `aicc_provider_artifact`
 

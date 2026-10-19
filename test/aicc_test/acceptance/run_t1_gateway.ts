@@ -3077,7 +3077,7 @@ async function runCases(
       const cachedV1 = JSON.parse(await Deno.readTextFile(
         join(input.cloudCacheRoot, "revisions", String(revisionV1), "state.json"),
       )) as { target_seq?: unknown; files?: unknown[] };
-      if (cachedV1.target_seq !== revisionV1 || cachedV1.files?.length !== 3) {
+      if (cachedV1.target_seq !== revisionV1 || cachedV1.files?.length !== 4) {
         throw new Error(`cloud revision ${revisionV1} was not fully committed to cache`);
       }
       const catalogV1 = await session.aicc.call("provider.catalog", {}) as {

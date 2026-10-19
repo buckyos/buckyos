@@ -307,9 +307,8 @@ pub(crate) struct MaterializedResource {
     pub bytes: Bytes,
     /// Set when the protocol consumes this resource as a URL, in which case
     /// `bytes` is empty: the payload never entered this process. The URL is
-    /// either the object's own zone URL (for `ResourceRef::NamedObject`, and for
-    /// a `ResourceRef::Base64` payload published to NDN because the protocol
-    /// only takes URLs).
+    /// either a caller-supplied public URL or the object's own public zone URL
+    /// for an unscoped `ResourceRef::NamedObject`.
     pub url: Option<String>,
     pub mime: String,
     pub file_name: Option<String>,

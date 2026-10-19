@@ -86,6 +86,7 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         ("kimi", "kimi-k2.7-code", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code-highspeed", "max_output_tokens"),
         ("kimi", "kimi-k2.8-preview", "max_output_tokens"),
+        ("mistral", "voxtral-small-24b-2507", "max_output_tokens"),
         ("qwen", "qwen2-5-72b-20240919", "max_context_tokens"),
         ("qwen", "qwen2-5-72b-20240919", "max_output_tokens"),
         ("qwen", "qwen3-0-6b-20250429", "max_context_tokens"),

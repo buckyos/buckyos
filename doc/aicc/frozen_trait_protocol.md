@@ -88,7 +88,7 @@ AiccServerHandler<T: AiccHandler>
 | execution | `ExecutionStore`, `TaskManagerPort`, `ProviderExecutionPort`, `UsageCompletionPort` | 幂等执行、TaskMgr 桥接、Provider 执行和一次性用量入账 |
 | resource | `ResourceAuthorizer`, `ResourceStore`, `UrlResourceFetcher` | `ResourceRef` 鉴权、物化和 artifact 写入 |
 
-本地 Named Object 只有在 `services/aicc/settings.public_named_object_base_url` 显式配置公网 HTTPS 下载入口时才能转成 Provider URL。未配置时，`UrlOrBytes` codec 读取对象字节，`UrlOnly` codec 返回资源不可用；不得根据 Zone hostname 推导一个未经部署确认的 `/ndn/` URL。
+未登记为 tenant/user 私有的 Named Object，只有在 `services/aicc/settings.public_named_object_base_url` 显式配置无需用户鉴权的公网 HTTPS 下载入口时才能转成 Provider URL。AICC 登记的私有 Named Object 必须校验 tenant/user 并读取为字节。AICC 登记的 Provider 结果 URL 必须先校验 tenant/user。三种协议输入形态分别处理：`BytesOnly` 在首次 Provider 调用前立即下载 URL；`UrlOrBytes` 首次直传原 URL，被 Provider 明确拒绝后允许恰好一次字节重试；`UrlOnly` 首次直传原 URL，明确拒绝后仅在已配置公网 Named Object 下载入口时下载内容、写入有 owner 记录的 Named Object，并用公网 NDN URL 重试，否则保留原失败且不重试。任何 native task 重提得到的新远端 task id 都必须替换同一 BuckyOS task 的绑定。`UrlOnly` 遇到 Base64 或必须转成私有字节的 Named Object 时仍明确失败，不得根据 Zone hostname 推导一个未经部署确认的 `/ndn/` URL。
 
 禁止创建同时承担路由、发现、wire 编解码和生命周期的“大 Provider trait”。跨层调用必须经过上表端口或不可变数据对象。
 

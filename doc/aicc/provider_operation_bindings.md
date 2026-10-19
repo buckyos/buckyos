@@ -107,6 +107,8 @@ openrouter|openrouter-responses|video.generate|videos.create
 openrouter|openrouter-responses|vision.caption|responses.create
 openrouter|openrouter-responses|vision.ocr|responses.create
 qwen|qwen-responses|image.img2img|dashscope.image_edit
+qwen|qwen-responses|image.img2img|dashscope.image_generation
+qwen|qwen-responses|image.txt2img|dashscope.image_generation
 qwen|qwen-responses|image.txt2img|dashscope.image_synthesis
 qwen|qwen-responses|llm|chat.completions.create
 qwen|qwen-responses|llm|responses.create
@@ -115,11 +117,22 @@ qwen|qwen-responses|vision.caption|chat.completions.create
 qwen|qwen-responses|vision.caption|responses.create
 qwen|qwen-responses|vision.ocr|chat.completions.create
 qwen|qwen-responses|vision.ocr|responses.create
+sn|sn-openai|agent.computer_use|responses.create
+sn|sn-openai|audio.asr|audio.transcriptions
+sn|sn-openai|audio.tts|audio.speech
+sn|sn-openai|embedding.text|embeddings.create
+sn|sn-openai|image.img2img|images.edit
+sn|sn-openai|image.img2img|responses.create
+sn|sn-openai|image.inpaint|images.edit
+sn|sn-openai|image.txt2img|images.generate
+sn|sn-openai|image.txt2img|responses.create
 sn|sn-openai|llm|responses.create
+sn|sn-openai|vision.caption|responses.create
+sn|sn-openai|vision.ocr|responses.create
 typesafe|typesafe-systemone|decision|systemone.evaluate
 <!-- END GENERATED BINDINGS -->
 
-Qwen 的 `responses.create` 委托 `openai-responses` 完成输出解码：若 provider 返回 `image_generation_call.result` 内联数据，基础 codec 必须先将其规范化为结构化 `ResourceRef`，Qwen 层只把 ProviderState namespace 改为 `qwen`。结果物化后公开 output 与 ProviderState 中不得残留 base64，回放时再恢复 Qwen/OpenAI-compatible wire 字符串。`dashscope.image_synthesis`、`dashscope.image_edit` 和 `dashscope.video_synthesis` 的官方结果是 URL，作为 URL artifact 保留，不属于内联数据泄漏。
+Qwen 的 `responses.create` 委托 `openai-responses` 完成输出解码：若 provider 返回 `image_generation_call.result` 内联数据，基础 codec 必须先将其规范化为结构化 `ResourceRef`，Qwen 层只把 ProviderState namespace 改为 `qwen`。结果物化后公开 output 与 ProviderState 中不得残留 base64，回放时再恢复 Qwen/OpenAI-compatible wire 字符串。`qwen-image-3*` 的文生图和图生图都绑定 `dashscope.image_generation`，以 `X-DashScope-Async: enable` 提交到 `/api/v1/services/aigc/image-generation/generation`，再通过 `/api/v1/tasks/{task_id}` 查询状态和结果；官方协议未声明取消端点，因此该 operation 不声明 cancel。旧版 Qwen 与 Wan 的 `dashscope.image_synthesis`、`dashscope.image_edit` 绑定保持独立。DashScope 图片和视频的官方结果是 URL，作为 URL artifact 保留，不属于内联数据泄漏。
 
 运行时的最终选择还取决于具体模型匹配到的 Provider Rules。本文档只描述所有可执行绑定，
 不表示每个模型都支持这里列出的全部 API type。

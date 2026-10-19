@@ -324,9 +324,8 @@ impl fmt::Debug for ResourceMetadata {
 ///   (nothing is downloaded), a `Base64` stays bytes, and a `NamedObject` is
 ///   handed over as the zone's NDN object URL whenever the zone serves named
 ///   objects over HTTP — which avoids inlining a possibly large payload.
-/// - `UrlOnly`: the field is an absolute URL and nothing else. A `Base64`
-///   payload is published into the local NDN store first so that it gains an
-///   object URL of its own.
+/// - `UrlOnly`: the field is an absolute public URL and nothing else. Private
+///   byte payloads are rejected instead of being published to a public URL.
 /// - `BytesOnly`: the field carries the payload itself (multipart upload,
 ///   `bytesBase64Encoded`, ...). A `Url` is downloaded and a `NamedObject` is
 ///   read before encoding.
@@ -1293,7 +1292,10 @@ impl ResourceManager {
                     metadata.file_name = fetched.file_name.or(metadata.file_name);
                     fetched.bytes
                 }
-                ResourceRef::Base64 { data_base64, mime } => {
+                ResourceRef::Base64 {
+                    data_base64,
+                    mime: _,
+                } => {
                     self.authorizer
                         .authorize(
                             context,
@@ -2007,28 +2009,6 @@ fn inspect_zip(
     Ok(())
 }
 
-/// Names the object under which a `ResourceRef::Base64` payload is published
-/// when the selected protocol needs a URL. The name only has to be a safe file
-/// name — the object's real identity is its content hash, not this string.
-fn inline_resource_name(key: &ResourceKey, mime: &str) -> String {
-    let extension = mime
-        .split_once('/')
-        .map(|(_, subtype)| subtype.split(';').next().unwrap_or_default())
-        .map(|subtype| subtype.trim().replace(['+', '.'], "-"))
-        .filter(|subtype| {
-            !subtype.is_empty()
-                && subtype.len() <= 16
-                && subtype
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        });
-    let digest = key.as_str().rsplit(':').next().unwrap_or("resource");
-    match extension {
-        Some(extension) => format!("resource-{digest}.{extension}"),
-        None => format!("resource-{digest}.bin"),
-    }
-}
-
 fn validate_artifact_spec(spec: &ArtifactSpec) -> Result<(), ResourceError> {
     if spec.name.trim().is_empty()
         || spec.name.len() > 255
@@ -2519,7 +2499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn url_only_form_publishes_base64_payloads_so_they_gain_an_object_url() {
+    async fn url_only_form_rejects_private_base64_payloads() {
         let authorizer = Arc::new(RecordingAuthorizer::default());
         let store = Arc::new(FakeStore::default());
         let manager = serving_manager(authorizer.clone(), store.clone())
@@ -2534,35 +2514,20 @@ mod tests {
             .inspect(&context(), std::slice::from_ref(&source))
             .await
             .unwrap();
-        let materialized = manager
+        let error = manager
             .materialize_after_provider_selected(&context(), "provider-call", inspected)
             .await
-            .unwrap();
-        assert_eq!(materialized[0].bytes(), b"");
-        let url = materialized[0].url().unwrap();
-        assert!(
-            url.starts_with(ZONE_BASE_URL),
-            "unexpected object URL: {url}"
-        );
-        // `WriteArtifact` is authorized for the object we just created.
+            .unwrap_err();
+        assert_eq!(error.failure, ResourceFailure::Unavailable);
+        assert!(error.message.contains("private bytes"));
         assert_eq!(
             authorizer.operations.lock().unwrap().as_slice(),
             &[
                 ResourceAccessOperation::Inspect,
-                ResourceAccessOperation::ReadContent,
-                ResourceAccessOperation::WriteArtifact
+                ResourceAccessOperation::ReadContent
             ]
         );
-        // The URL must carry the canonical `{obj_type}:{hex}` spelling (the one
-        // `ObjId::to_string` emits), not the base32 spelling of `Display`.
-        let advertised = url.strip_prefix(ZONE_BASE_URL).unwrap();
-        assert!(
-            advertised.contains(':'),
-            "object URL must use the `{{obj_type}}:{{hex}}` form, got {advertised}"
-        );
-        // The payload really landed in the store under the advertised object.
-        let stored = store.files.lock().unwrap().get(advertised).cloned();
-        assert_eq!(stored.map(|entry| entry.1), Some(payload.to_vec()));
+        assert!(store.files.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

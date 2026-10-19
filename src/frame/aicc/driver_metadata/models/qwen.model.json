@@ -3,9 +3,32 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 5,
+  "revision_seq": 7,
   "required_features": [],
   "models": [
+    {
+      "id": "qwen3-embedding-8b",
+      "parameter_scale": "8b",
+      "api_types": ["embedding.text"],
+      "capabilities": {
+        "max_context_tokens": 32768,
+        "embedding_dimensions_max": 4096
+      }
+    },
+    {
+      "id": "qwen-image-3.0-pro",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "capabilities": {
+        "image_generation": true
+      }
+    },
+    {
+      "id": "wan3.0-video",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "capabilities": {
+        "video_generation": true
+      }
+    },
     {
       "id": "wanx2.1-t2i-turbo",
       "api_types": ["image.txt2img"],
@@ -95,9 +118,10 @@
       "id": "qwen3.8-27b",
       "local_deployable": true,
       "parameter_scale": "27b",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -117,9 +141,10 @@
       "id": "qwen3.6-35b-a3b",
       "local_deployable": true,
       "parameter_scale": "35b-a3b",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -137,9 +162,10 @@
     },
     {
       "parameter_scale": "max",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -157,10 +183,33 @@
       }
     },
     {
+      "parameter_scale": "max",
+      "api_types": ["llm", "vision.caption"],
+      "capabilities": {
+        "streaming": true,
+        "vision": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072
+      },
+      "id": "qwen3.8-max-0902",
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["minimal", "low", "medium", "high", "xhigh"],
+        "stability": "stable",
+        "weight": 38
+      }
+    },
+    {
       "parameter_scale": "flash",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -179,7 +228,7 @@
     },
     {
       "parameter_scale": "omni-flash",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -221,10 +270,33 @@
       }
     },
     {
+      "id": "qwen3.7-max-2026-06-08",
+      "parameter_scale": "max",
+      "api_types": ["llm", "vision.caption"],
+      "capabilities": {
+        "streaming": true,
+        "vision": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 65536
+      },
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable",
+        "weight": 37
+      }
+    },
+    {
       "parameter_scale": "plus",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -243,9 +315,10 @@
     },
     {
       "parameter_scale": "flash",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -264,11 +337,12 @@
     },
     {
       "parameter_scale": "plus",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
+        "vision": true,
         "reasoning": true,
         "max_context_tokens": 1000000,
         "max_output_tokens": 65536
@@ -285,9 +359,10 @@
     },
     {
       "parameter_scale": "flash",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -306,9 +381,10 @@
     },
     {
       "parameter_scale": "plus",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -327,9 +403,10 @@
     },
     {
       "parameter_scale": "flash",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -348,9 +425,10 @@
     },
     {
       "parameter_scale": "397b-a17b",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -370,9 +448,10 @@
     },
     {
       "parameter_scale": "122b-a10b",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -392,9 +471,10 @@
     },
     {
       "parameter_scale": "35b-a3b",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -414,9 +494,10 @@
     },
     {
       "parameter_scale": "27b",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.caption"],
       "capabilities": {
         "streaming": true,
+        "vision": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
@@ -432,6 +513,16 @@
         "supported_efforts": ["none", "thinking"],
         "stability": "stable",
         "weight": 35
+      }
+    },
+    {
+      "id": "qwen3.5-ocr",
+      "parameter_scale": "ocr",
+      "api_types": ["vision.ocr"],
+      "capabilities": {
+        "vision": true,
+        "max_context_tokens": 65536,
+        "max_output_tokens": 16384
       }
     },
     {

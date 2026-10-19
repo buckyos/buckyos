@@ -8,6 +8,7 @@ pub(crate) struct RuntimeInferencePort {
     pub(super) storage: Arc<AiccStorage>,
     pub(super) resource_store: Arc<dyn ResourceStore>,
     pub(super) url_fetcher: Arc<dyn UrlResourceFetcher>,
+    artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
     model_health: Arc<ModelHealthRegistry>,
     governance: Arc<QuotaService>,
 }
@@ -34,6 +35,82 @@ fn cached_materialization(
         .map(|(_, _, materialized)| materialized.clone())
 }
 
+pub(super) fn same_url_origin(left: &str, right: &str) -> bool {
+    let Ok(left) = reqwest::Url::parse(left) else {
+        return false;
+    };
+    let Ok(right) = reqwest::Url::parse(right) else {
+        return false;
+    };
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+struct ProviderArtifactUrlFetcher {
+    reader: Arc<RuntimeProviderExecutionPort>,
+    tenant_id: String,
+    user_id: String,
+}
+
+#[async_trait]
+impl UrlResourceFetcher for ProviderArtifactUrlFetcher {
+    async fn fetch(
+        &self,
+        url: &reqwest::Url,
+        max_bytes: u64,
+    ) -> Result<FetchedResource, ResourceError> {
+        let mut reader = self
+            .reader
+            .open_artifact_url_reader(&self.tenant_id, &self.user_id, url.as_str(), None)
+            .await
+            .map_err(|error| {
+                ResourceError::new(
+                    if error.code == AiccErrorCode::PolicyDenied {
+                        ResourceFailure::Unauthorized
+                    } else {
+                        ResourceFailure::Unavailable
+                    },
+                    error.message,
+                )
+            })?;
+        if reader
+            .content_length
+            .is_some_and(|content_length| content_length > max_bytes)
+        {
+            return Err(ResourceError::new(
+                ResourceFailure::LimitExceeded,
+                "Provider artifact exceeds byte limit",
+            ));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = reader.body.next().await {
+            let chunk = chunk.map_err(|_| {
+                ResourceError::new(
+                    ResourceFailure::Unavailable,
+                    "Provider artifact read failed",
+                )
+            })?;
+            if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(ResourceError::new(
+                    ResourceFailure::LimitExceeded,
+                    "Provider artifact exceeds byte limit",
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(FetchedResource {
+            bytes,
+            mime: reader.content_type,
+            file_name: url
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+        })
+    }
+}
+
 impl RuntimeInferencePort {
     pub(crate) fn new(
         runtime: Arc<RuntimeState>,
@@ -43,6 +120,7 @@ impl RuntimeInferencePort {
         storage: Arc<AiccStorage>,
         resource_store: Arc<dyn ResourceStore>,
         url_fetcher: Arc<dyn UrlResourceFetcher>,
+        artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
         model_health: Arc<ModelHealthRegistry>,
         governance: Arc<QuotaService>,
     ) -> Self {
@@ -54,6 +132,7 @@ impl RuntimeInferencePort {
             storage,
             resource_store,
             url_fetcher,
+            artifact_url_reader,
             model_health,
             governance,
         }
@@ -375,20 +454,6 @@ impl RuntimeInferencePort {
                 .map(|requirement| requirement.request_pointer.as_str())
                 .collect::<Vec<_>>(),
         );
-        let manager = ResourceManager::new(
-            Arc::new(AuthenticatedResourceAuthorizer {
-                tenant_id: caller.tenant_id.clone(),
-                caller_id: caller.user_id.clone(),
-                storage: self.storage.clone(),
-                token: Some(caller.token.clone()),
-            }),
-            self.resource_store.clone(),
-            self.url_fetcher.clone(),
-            ResourceLimits::default(),
-        )
-        .map_err(resource_rpc_error)?
-        .with_input_form(input_form)
-        .with_object_url_provider(named_object_url_provider(settings));
         let resources = call
             .resource_requirements
             .iter()
@@ -421,6 +486,90 @@ impl RuntimeInferencePort {
                 }
             }
         }
+        let runtime = self.runtime.capture().await;
+        let mut protected_resources = Vec::new();
+        let mut ordinary_resources = Vec::new();
+        for resource in &resources {
+            let protected = match resource {
+                ResourceRef::Url { url, .. } => {
+                    let source = self
+                        .storage
+                        .artifact_url_source(url, now_ms() as i64)
+                        .await
+                        .map_err(|_| {
+                            inference_error(
+                                AiccErrorCode::InternalError,
+                                "Provider artifact source lookup failed",
+                            )
+                        })?;
+                    if let Some(source) = source {
+                        if source.tenant_id != caller.tenant_id || source.user_id != caller.user_id
+                        {
+                            return Err(inference_error(
+                                AiccErrorCode::PolicyDenied,
+                                "Provider artifact belongs to another user",
+                            ));
+                        }
+                        if input_form.requires_url()
+                            || source.provider_instance_name == call.provider_instance_name
+                        {
+                            false
+                        } else {
+                            let request_base_url = if source.provider_request_base_url.is_empty() {
+                                runtime
+                                    .providers
+                                    .get(&source.provider_instance_name)
+                                    .map(|provider| provider.config.base_url.as_str())
+                                    .unwrap_or("")
+                            } else {
+                                &source.provider_request_base_url
+                            };
+                            request_base_url.is_empty() || same_url_origin(url, request_base_url)
+                        }
+                    } else {
+                        false
+                    }
+                }
+                ResourceRef::NamedObject { obj_id } => {
+                    let owner = self
+                        .storage
+                        .artifact_owner(&obj_id.to_string())
+                        .await
+                        .map_err(|_| {
+                            inference_error(
+                                AiccErrorCode::InternalError,
+                                "artifact ownership lookup failed",
+                            )
+                        })?;
+                    if let Some((tenant_id, user_id)) = owner {
+                        if tenant_id != caller.tenant_id || user_id != caller.user_id {
+                            return Err(inference_error(
+                                AiccErrorCode::PolicyDenied,
+                                "AICC artifact belongs to another user",
+                            ));
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                // Inline bytes are private request content. They may be sent
+                // to a byte-capable Provider, but must never be published to a
+                // public object URL just to satisfy a URL-only wire grammar.
+                ResourceRef::Base64 { .. } => true,
+            };
+            if protected {
+                protected_resources.push(resource.clone());
+            } else {
+                ordinary_resources.push(resource.clone());
+            }
+        }
+        if input_form.requires_url() && !protected_resources.is_empty() {
+            return Err(inference_error(
+                AiccErrorCode::ResourceInvalid,
+                "Provider protocol requires a public URL but the input resource is owner-scoped",
+            ));
+        }
         // A `ResourceRef::NamedObject` input carries the object id with it, and
         // the resource key is derived from that same id — so this map recovers
         // the id the key was built from. That matters because the object id is
@@ -435,21 +584,80 @@ impl RuntimeInferencePort {
                 _ => None,
             })
             .collect::<HashMap<_, _>>();
-        let materialized = match cached_materialization(cache, input_form, &resources) {
-            Some(materialized) => materialized,
-            None => {
-                let inspected = manager
-                    .inspect(&context, &resources)
-                    .await
-                    .map_err(resource_rpc_error)?;
-                let materialized = manager
-                    .materialize_after_provider_selected(&context, &call.exact_model, inspected)
-                    .await
-                    .map_err(resource_rpc_error)?;
-                cache.push((input_form, resources.clone(), materialized.clone()));
-                materialized
-            }
-        };
+        let authorizer = Arc::new(AuthenticatedResourceAuthorizer {
+            tenant_id: caller.tenant_id.clone(),
+            caller_id: caller.user_id.clone(),
+            storage: self.storage.clone(),
+            token: Some(caller.token.clone()),
+        });
+        let mut materialized = Vec::new();
+        if !ordinary_resources.is_empty() {
+            let ordinary = match cached_materialization(cache, input_form, &ordinary_resources) {
+                Some(materialized) => materialized,
+                None => {
+                    let manager = ResourceManager::new(
+                        authorizer.clone(),
+                        self.resource_store.clone(),
+                        self.url_fetcher.clone(),
+                        ResourceLimits::default(),
+                    )
+                    .map_err(resource_rpc_error)?
+                    .with_input_form(input_form)
+                    .with_object_url_provider(named_object_url_provider(settings));
+                    let inspected = manager
+                        .inspect(&context, &ordinary_resources)
+                        .await
+                        .map_err(resource_rpc_error)?;
+                    let materialized = manager
+                        .materialize_after_provider_selected(&context, &call.exact_model, inspected)
+                        .await
+                        .map_err(resource_rpc_error)?;
+                    cache.push((input_form, ordinary_resources.clone(), materialized.clone()));
+                    materialized
+                }
+            };
+            materialized.extend(ordinary);
+        }
+        if !protected_resources.is_empty() {
+            let protected_form = ResourceInputForm::BytesOnly;
+            let protected =
+                match cached_materialization(cache, protected_form, &protected_resources) {
+                    Some(materialized) => materialized,
+                    None => {
+                        let manager = ResourceManager::new(
+                            authorizer,
+                            self.resource_store.clone(),
+                            Arc::new(ProviderArtifactUrlFetcher {
+                                reader: self.artifact_url_reader.clone(),
+                                tenant_id: caller.tenant_id.clone(),
+                                user_id: caller.user_id.clone(),
+                            }),
+                            ResourceLimits::default(),
+                        )
+                        .map_err(resource_rpc_error)?
+                        .with_input_form(protected_form);
+                        let inspected = manager
+                            .inspect(&context, &protected_resources)
+                            .await
+                            .map_err(resource_rpc_error)?;
+                        let materialized = manager
+                            .materialize_after_provider_selected(
+                                &context,
+                                &call.exact_model,
+                                inspected,
+                            )
+                            .await
+                            .map_err(resource_rpc_error)?;
+                        cache.push((
+                            protected_form,
+                            protected_resources.clone(),
+                            materialized.clone(),
+                        ));
+                        materialized
+                    }
+                };
+            materialized.extend(protected);
+        }
         for resource in materialized {
             let parts = resource.into_codec_parts().map_err(resource_rpc_error)?;
             if let Some(url) = parts.url.clone() {
@@ -594,7 +802,7 @@ impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
             if let ResourceTarget::NamedObject { obj_id } = target {
                 let owner = self
                     .storage
-                    .artifact_tenant(&obj_id.to_string())
+                    .artifact_owner(&obj_id.to_string())
                     .await
                     .map_err(|_| {
                         ResourceError::new(
@@ -602,13 +810,12 @@ impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
                             "artifact ownership lookup failed",
                         )
                     })?;
-                if owner
-                    .as_ref()
-                    .is_some_and(|owner| owner != &context.tenant_id)
-                {
+                if owner.is_some_and(|(tenant_id, user_id)| {
+                    tenant_id != context.tenant_id || user_id != context.caller_id
+                }) {
                     return Err(ResourceError::new(
                         ResourceFailure::Unauthorized,
-                        "AICC artifact belongs to another tenant",
+                        "AICC artifact belongs to another user",
                     ));
                 }
                 if owner.is_none() {

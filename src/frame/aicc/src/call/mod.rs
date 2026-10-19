@@ -1297,7 +1297,7 @@ fn provider_parameters(
     parameters
 }
 
-fn collect_resource_requirements(value: &Value) -> Vec<ResourceRequirement> {
+pub(crate) fn collect_resource_requirements(value: &Value) -> Vec<ResourceRequirement> {
     fn visit(value: &Value, pointer: &str, output: &mut Vec<ResourceRequirement>) {
         if value.get("kind").and_then(Value::as_str).is_some() {
             if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
@@ -2774,6 +2774,8 @@ mod tests {
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|chat.completions.create".into()));
         assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
+        assert!(golden.contains(&"sn|sn-openai|embedding.text|embeddings.create".into()));
+        assert!(golden.contains(&"sn|sn-openai|image.txt2img|images.generate".into()));
     }
     #[test]
     fn request_rewrites_cannot_override_a_selected_effort() {

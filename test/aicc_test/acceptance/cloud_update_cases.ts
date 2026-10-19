@@ -73,6 +73,25 @@ async function cloudProviderRules(
   };
 }
 
+async function snProviderRules(
+  revisionSeq: number,
+  phase: "v1" | "v2",
+): Promise<Record<string, unknown>> {
+  const rules = await json(join(metadataRoot, "providers/sn.provider.json"));
+  rules.revision_seq = revisionSeq;
+  if (phase === "v1") {
+    const overrides = rules.model_driver_overrides;
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) {
+      throw new Error("builtin SN rules have no model_driver_overrides");
+    }
+    delete (overrides as Record<string, unknown>)["text-embedding-3-small"];
+    rules.models = objects(rules.models, "sn.provider.models").filter((model) =>
+      model.id !== "text-embedding-3-small"
+    );
+  }
+  return rules;
+}
+
 async function cloudKnownProvider(
   revisionSeq: number,
   marker: "v1" | "v2",
@@ -115,6 +134,12 @@ export async function buildCloudUpdateFiles(
       contents: await cloudProviderRules(revisionSeq, phase),
     },
     {
+      catalog_kind: "provider_rules",
+      catalog_id: "sn",
+      revision_seq: revisionSeq,
+      contents: await snProviderRules(revisionSeq, phase),
+    },
+    {
       catalog_kind: "known_provider",
       catalog_id: CLOUD_TEST_PROFILE_ID,
       revision_seq: revisionSeq,
@@ -135,6 +160,11 @@ export function cloudUpdateTombstones(
     {
       catalog_kind: "provider_rules",
       catalog_id: CLOUD_TEST_RULES_ID,
+      revision_seq: revisionSeq,
+    },
+    {
+      catalog_kind: "provider_rules",
+      catalog_id: "sn",
       revision_seq: revisionSeq,
     },
     {

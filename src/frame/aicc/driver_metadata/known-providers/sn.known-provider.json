@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "catalog_id": "sn",
   "providers": [
     {
@@ -18,7 +18,15 @@
       "connection": {
         "region": { "mode": "unsupported" },
         "workspace": { "mode": "unsupported" },
-        "account": { "mode": "optional" }
+        "account": { "mode": "optional" },
+        "operation_base_urls": {
+          "embeddings.create": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "images.generate": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "images.edit": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "audio.speech": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "audio.transcriptions": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "videos.create": "https://sn.buckyos.ai/api/v1/ai/v1"
+        }
       },
       "ui_hints": {
         "credential": {

@@ -1588,12 +1588,24 @@
             "audio.asr"
           ],
           "conformance_test_model_ids": {
-            "llm": ["gemini-4-argon"],
-            "vision.ocr": ["gemini-4-argon"],
-            "vision.caption": ["gemini-4-argon"],
-            "vision.detect": ["gemini-4-argon"],
-            "vision.segment": ["gemini-4-argon"],
-            "audio.asr": ["gemini-4-argon"]
+            "llm": [
+              "gemini-4-argon"
+            ],
+            "vision.ocr": [
+              "gemini-4-argon"
+            ],
+            "vision.caption": [
+              "gemini-4-argon"
+            ],
+            "vision.detect": [
+              "gemini-4-argon"
+            ],
+            "vision.segment": [
+              "gemini-4-argon"
+            ],
+            "audio.asr": [
+              "gemini-4-argon"
+            ]
           },
           "operation": "interactions.create",
           "http_method": "POST",
@@ -3612,9 +3624,15 @@
             "vision.caption"
           ],
           "conformance_test_model_ids": {
-            "llm": ["google/gemini-4-argon"],
-            "vision.ocr": ["google/gemini-4-argon"],
-            "vision.caption": ["google/gemini-4-argon"]
+            "llm": [
+              "google/gemini-4-argon"
+            ],
+            "vision.ocr": [
+              "google/gemini-4-argon"
+            ],
+            "vision.caption": [
+              "google/gemini-4-argon"
+            ]
           },
           "operation": "responses.create",
           "http_method": "POST",
@@ -3630,10 +3648,14 @@
             "input"
           ],
           "required_body_values": {
-            "/modalities": ["text"]
+            "/modalities": [
+              "text"
+            ]
           },
           "required_body_values_by_model": {
-            "google/gemini-4-argon": {"/background": true}
+            "google/gemini-4-argon": {
+              "/background": true
+            }
           },
           "allowed_body_fields": [
             "model",
@@ -4022,70 +4044,250 @@
           "id": "openrouter.audio.speech.v1",
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
-          "api_types": ["audio.tts"],
-          "conformance_test_model_ids": {"audio.tts": ["minimax/speech-2.8-hd", "minimax/speech-2.8-turbo", "google/gemini-3.1-flash-tts-preview", "google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"]},
+          "api_types": [
+            "audio.tts"
+          ],
+          "conformance_test_model_ids": {
+            "audio.tts": [
+              "minimax/speech-2.8-hd",
+              "minimax/speech-2.8-turbo",
+              "google/gemini-3.1-flash-tts-preview",
+              "google/gemini-3.8-flash-lite-tts",
+              "google/gemini-3.8-flash-tts"
+            ]
+          },
           "operation": "audio.speech",
           "http_method": "POST",
           "path": "/api/v1/audio/speech",
-          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
           "content_type": "application/json",
-          "required_body_fields": ["model", "input", "voice"],
-          "allowed_body_fields": ["model", "input", "input_references", "instructions", "provider", "response_format", "session_id", "speed", "trace", "user", "voice"],
-          "body_field_types": {"model": ["string"], "input": ["string"], "voice": ["string"]},
-          "canonical_request_overrides": {"voice": {"style": "warm"}},
+          "required_body_fields": [
+            "model",
+            "input",
+            "voice"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "input_references",
+            "instructions",
+            "provider",
+            "response_format",
+            "session_id",
+            "speed",
+            "trace",
+            "user",
+            "voice"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "string"
+            ],
+            "voice": [
+              "string"
+            ]
+          },
+          "canonical_request_overrides": {
+            "voice": {
+              "style": "warm"
+            }
+          },
           "required_body_values_by_model": {
-            "google/gemini-3.1-flash-tts-preview": {"/voice": "Sulafat"},
-            "google/gemini-3.8-flash-lite-tts": {"/voice": "Sulafat"},
-            "google/gemini-3.8-flash-tts": {"/voice": "Sulafat"},
-            "minimax/speech-2.8-hd": {"/response_format": "mp3"},
-            "minimax/speech-2.8-turbo": {"/response_format": "mp3"}
+            "google/gemini-3.1-flash-tts-preview": {
+              "/voice": "Sulafat"
+            },
+            "google/gemini-3.8-flash-lite-tts": {
+              "/voice": "Sulafat"
+            },
+            "google/gemini-3.8-flash-tts": {
+              "/voice": "Sulafat"
+            },
+            "minimax/speech-2.8-hd": {
+              "/response_format": "mp3"
+            },
+            "minimax/speech-2.8-turbo": {
+              "/response_format": "mp3"
+            }
           },
           "success_content_type": "audio/mpeg",
           "success_fixture_base64": "SUQzAwAAAAA=",
-          "official_sources": ["https://openrouter.ai/openapi.json", "https://ai.google.dev/gemini-api/docs/speech-generation", "https://platform.minimax.io/docs/api-reference/speech-t2a-http.md"],
+          "official_sources": [
+            "https://openrouter.ai/openapi.json",
+            "https://ai.google.dev/gemini-api/docs/speech-generation",
+            "https://platform.minimax.io/docs/api-reference/speech-t2a-http.md"
+          ],
           "evidence_summary": "OpenRouter speech uses JSON POST /api/v1/audio/speech; aggregated TTS providers require a provider-supported voice string, and the response is raw audio bytes. Google officially lists Sulafat as Warm (checked 2026-10-20); Gemini TTS conformance requests a warm voice and requires Sulafat on the wire rather than a fixed provider default."
         },
         {
           "id": "openrouter.audio.transcriptions.v1",
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
-          "api_types": ["audio.asr"],
-          "conformance_test_model_ids": {"audio.asr": ["google/gemini-3.5-transcribe"]},
+          "api_types": [
+            "audio.asr"
+          ],
+          "conformance_test_model_ids": {
+            "audio.asr": [
+              "google/gemini-3.5-transcribe"
+            ]
+          },
           "operation": "audio.transcriptions",
           "http_method": "POST",
           "path": "/api/v1/audio/transcriptions",
-          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
           "content_type": "multipart/form-data",
-          "required_body_fields": ["file", "model"],
-          "allowed_body_fields": ["file", "model", "chunking_strategy", "language", "prompt", "response_format", "temperature", "timestamp_granularities"],
-          "body_field_types": {"file": ["object"], "model": ["string"]},
-          "success_fixture": {"text": "BUCKYOS-AICC-4827", "usage": {"type": "tokens", "input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
-          "official_sources": ["https://openrouter.ai/openapi.json"],
+          "required_body_fields": [
+            "file",
+            "model"
+          ],
+          "allowed_body_fields": [
+            "file",
+            "model",
+            "chunking_strategy",
+            "language",
+            "prompt",
+            "response_format",
+            "temperature",
+            "timestamp_granularities"
+          ],
+          "body_field_types": {
+            "file": [
+              "object"
+            ],
+            "model": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "text": "BUCKYOS-AICC-4827",
+            "usage": {
+              "type": "tokens",
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "official_sources": [
+            "https://openrouter.ai/openapi.json"
+          ],
           "evidence_summary": "OpenRouter transcription accepts OpenAI-compatible multipart file/model input and returns transcript text with optional usage."
         },
         {
           "id": "openrouter.chat.audio.v1",
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
-          "api_types": ["audio.music"],
+          "api_types": [
+            "audio.music"
+          ],
           "operation": "chat.completions.create",
           "http_method": "POST",
           "path": "/api/v1/chat/completions",
-          "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
           "content_type": "application/json",
-          "required_body_fields": ["model", "messages", "modalities", "stream"],
-          "allowed_body_fields": ["model", "messages", "modalities", "seed", "stream"],
-          "body_field_types": {"model": ["string"], "messages": ["array"], "modalities": ["array"], "seed": ["number"], "stream": ["boolean"]},
-          "required_body_values": {"/stream": true},
+          "required_body_fields": [
+            "model",
+            "messages",
+            "modalities",
+            "stream"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "messages",
+            "modalities",
+            "seed",
+            "stream"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "messages": [
+              "array"
+            ],
+            "modalities": [
+              "array"
+            ],
+            "seed": [
+              "number"
+            ],
+            "stream": [
+              "boolean"
+            ]
+          },
+          "required_body_values": {
+            "/stream": true
+          },
           "success_content_type": "text/event-stream",
           "success_chunk_fixtures": [
-            {"id": "chatcmpl-openrouter-music-mock", "choices": [{"index": 0, "delta": {"audio": {"data": "UklG", "transcript": "BUCKYOS-"}}, "finish_reason": null}]},
-            {"id": "chatcmpl-openrouter-music-mock", "choices": [{"index": 0, "delta": {"audio": {"data": "RgAAAAA=", "transcript": "AICC-4827"}}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cost": 0}}
+            {
+              "id": "chatcmpl-openrouter-music-mock",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "audio": {
+                      "data": "UklG",
+                      "transcript": "BUCKYOS-"
+                    }
+                  },
+                  "finish_reason": null
+                }
+              ]
+            },
+            {
+              "id": "chatcmpl-openrouter-music-mock",
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "audio": {
+                      "data": "RgAAAAA=",
+                      "transcript": "AICC-4827"
+                    }
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 3,
+                "total_tokens": 7,
+                "cost": 0
+              }
+            }
           ],
           "success_chunk_string_expansions": [
-            {"chunk_index": 0, "path": ["choices", 0, "delta", "audio", "data"], "value": "UklG", "repeat": 70000}
+            {
+              "chunk_index": 0,
+              "path": [
+                "choices",
+                0,
+                "delta",
+                "audio",
+                "data"
+              ],
+              "value": "UklG",
+              "repeat": 70000
+            }
           ],
-          "official_sources": ["https://openrouter.ai/docs/guides/overview/multimodal/audio", "https://openrouter.ai/openapi.json"],
+          "official_sources": [
+            "https://openrouter.ai/docs/guides/overview/multimodal/audio",
+            "https://openrouter.ai/openapi.json"
+          ],
           "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE]."
         },
         {
@@ -6024,6 +6226,13 @@
           "forbidden_body_paths": [
             "/audio/data"
           ],
+          "canonical_request_overrides": {
+            "audio": {
+              "kind": "url",
+              "url": "https://storage.googleapis.com/cloud-samples-data/speech/brooklyn_bridge.wav",
+              "mime_hint": "audio/wav"
+            }
+          },
           "async_protocol": "doubao_asr",
           "async_steps": [
             {
@@ -6574,26 +6783,55 @@
         "llm": [
           "qwen3.8-max",
           "qwen3.8-flash",
+          "qwen3.8-2.4t-a95b",
+          "qwen3.8-27b",
+          "qwen3.7-max",
+          "qwen3.7-max-2026-06-08",
           "qwen3.7-plus",
-          "qwen3.8-omni-flash"
+          "qwen3.7-flash",
+          "qwen3.6-plus",
+          "qwen3.6-flash",
+          "qwen3.6-35b-a3b",
+          "qwen3.5-plus",
+          "qwen3.5-flash",
+          "qwen3.5-397b-a17b",
+          "qwen3.5-122b-a10b",
+          "qwen3.5-35b-a3b",
+          "qwen3.5-27b",
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-0902"
         ],
         "vision.ocr": [
-          "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.7-plus",
-          "qwen3.8-omni-flash"
+          "qwen3.5-ocr"
         ],
         "vision.caption": [
           "qwen3.8-max",
           "qwen3.8-flash",
+          "qwen3.8-27b",
+          "qwen3.7-max-2026-06-08",
           "qwen3.7-plus",
-          "qwen3.8-omni-flash"
+          "qwen3.7-flash",
+          "qwen3.6-plus",
+          "qwen3.6-flash",
+          "qwen3.6-35b-a3b",
+          "qwen3.5-plus",
+          "qwen3.5-flash",
+          "qwen3.5-397b-a17b",
+          "qwen3.5-122b-a10b",
+          "qwen3.5-35b-a3b",
+          "qwen3.5-27b",
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-0902"
         ],
         "image.txt2img": [
-          "wanx2.1-t2i-turbo"
+          "wanx2.1-t2i-turbo",
+          "qwen-image-3.0-pro"
         ],
         "image.img2img": [
-          "qwen-image-edit"
+          "qwen-image-edit",
+          "qwen-image-3.0-pro"
         ],
         "video.generate": [
           "wan2.6-t2v"
@@ -6875,7 +7113,7 @@
       ],
       "test_model_ids": {
         "llm": "qwen3.8-max",
-        "vision.ocr": "qwen3.8-max",
+        "vision.ocr": "qwen3.8-flash",
         "vision.caption": "qwen3.8-max",
         "image.txt2img": "wanx2.1-t2i-turbo",
         "image.img2img": "qwen-image-edit",
@@ -7210,12 +7448,106 @@
           }
         },
         {
+          "id": "qwen.dashscope.image_generation.v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": [
+            "image.txt2img",
+            "image.img2img"
+          ],
+          "test_model_ids": {
+            "image.txt2img": "qwen-image-3.0-pro",
+            "image.img2img": "qwen-image-3.0-pro"
+          },
+          "operation": "dashscope.image_generation",
+          "http_method": "POST",
+          "path": "/api/v1/services/aigc/image-generation/generation",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "parameters"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "object"
+            ],
+            "parameters": [
+              "object"
+            ]
+          },
+          "official_sources": [
+            "https://help.aliyun.com/en/model-studio/qwen-image-generation-and-editing-api-reference"
+          ],
+          "evidence_summary": "Qwen Image 3.0 generation and editing use the unified message body with DashScope asynchronous submission and task polling.",
+          "required_headers": {
+            "x-dashscope-async": "enable"
+          },
+          "async_protocol": "qwen_media",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            }
+          ],
+          "success_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "PENDING"
+            }
+          },
+          "async_result_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "SUCCEEDED",
+              "choices": [
+                {
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "image": "http://mock-artifact/artifacts/result.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "usage": {
+              "image_count": 1
+            }
+          }
+        },
+        {
           "id": "qwen.dashscope.image_edit.v1",
           "protocol_adapter_id": "qwen-responses",
           "api_version": "compatible-v1",
           "api_types": [
             "image.img2img"
           ],
+          "test_model_ids": {
+            "image.img2img": "qwen-image-edit"
+          },
           "operation": "dashscope.image_edit",
           "http_method": "POST",
           "path": "/api/v1/services/aigc/multimodal-generation/generation",
@@ -7352,6 +7684,13 @@
       "provider_driver": "sn-ai-provider",
       "provider_profile_id": "sn",
       "endpoint_path": "/api/v1/ai",
+      "operation_endpoint_paths": {
+        "embeddings.create": "/api/v1/ai/v1",
+        "images.generate": "/api/v1/ai/v1",
+        "images.edit": "/api/v1/ai/v1",
+        "audio.speech": "/api/v1/ai/v1",
+        "audio.transcriptions": "/api/v1/ai/v1"
+      },
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
@@ -7383,14 +7722,11 @@
         ]
       },
       "official_variant_sources": [
-        "https://developers.openai.com/api/docs/models/gpt-5.5",
-        "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
-        "https://developers.openai.com/api/docs/models/gpt-5.4",
-        "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
-        "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
-        "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
-        "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
-        "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/CD/cluster_config/release/apps.ts"
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://openrouter.ai/z-ai/glm-5",
+        "https://openrouter.ai/z-ai/glm-5.3",
+        "https://platform.kimi.com/docs/guide/kimi-k3.html",
+        "https://openrouter.ai/qwen/qwen3.8-max-0902"
       ],
       "official_variant_rules": [
         {

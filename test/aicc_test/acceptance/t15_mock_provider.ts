@@ -1656,8 +1656,12 @@ export function createT15MockHandler(
           : chunks.join("\n") + "\n");
         return;
       }
+      const useInlineArtifactFixture =
+        selection.scenario === "inline_artifact_success" ||
+        (contract.inline_artifact_success_fixture !== undefined &&
+          contract.variant_api_types?.includes(selection.api_type ?? ""));
       const rawFixture = structuredClone(
-        selection.scenario === "inline_artifact_success"
+        useInlineArtifactFixture
           ? contract.inline_artifact_success_fixture ?? {}
           : contract.success_fixture ?? {},
       ) as Record<string, unknown>;

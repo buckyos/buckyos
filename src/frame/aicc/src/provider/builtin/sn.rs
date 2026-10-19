@@ -11,7 +11,7 @@ use super::super::{
 #[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
-use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
+use crate::catalog::ProviderRulesCatalog;
 #[cfg(test)]
 use crate::protocol::{
     openai_responses_adapter, register_sn_openai_adapter, CodecRegistry,
@@ -19,7 +19,7 @@ use crate::protocol::{
 };
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, ProtocolResultValue,
-    ResolvedCredential, OPENAI_RESPONSES_OPERATION_ID, SN_OPENAI_ADAPTER_ID,
+    ResolvedCredential, SN_OPENAI_ADAPTER_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{generate_sn_user_device_token, login_sn_user_by_device_token};
@@ -147,11 +147,6 @@ pub(crate) fn sn_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
 }
 
 #[cfg(test)]
-pub(crate) fn sn_catalog_files() -> Vec<CurrentCatalogFile> {
-    super::builtin_catalog_files(&[SN_PROVIDER_PROFILE_ID])
-}
-
-#[cfg(test)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InstanceFieldDeclarations {
@@ -197,11 +192,7 @@ pub(crate) fn sn_dialect_contract() -> SnDialectContract {
     SnDialectContract {
         base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
         override_points: BTreeSet::from(["credential_resolution"]),
-        unsupported_api_types: sn_provider_rules(0)
-            .patterns
-            .into_iter()
-            .flat_map(|rule| rule.remove_api_types)
-            .collect(),
+        unsupported_api_types: BTreeSet::new(),
     }
 }
 
@@ -337,7 +328,7 @@ fn parse_sn_models(
                 api_types: None,
                 supported_features: None,
                 unsupported_features: BTreeSet::new(),
-                remote_methods: Some(BTreeSet::from([OPENAI_RESPONSES_OPERATION_ID.to_owned()])),
+                remote_methods: None,
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
@@ -691,13 +682,10 @@ impl SnClock for SystemSnClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{
-        CatalogBuildOptions, CatalogDocuments, CatalogSnapshot, KnownProviderCatalog,
-        ModelDriverCatalog,
-    };
+    use crate::catalog::CatalogBuildOptions;
     use crate::protocol::{HttpBody, ProtocolError, OPENAI_RESPONSES_OPERATION_ID};
     use crate::provider::{InventoryBuilder, StaticCredentialResolver};
-    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
+    use crate::settings::MetadataSources;
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     use reqwest::StatusCode;
@@ -793,12 +781,18 @@ mod tests {
         assert_eq!(known.display_name, "BuckyOS SN");
         assert_eq!(known.base_url, "https://sn.buckyos.ai/api/v1/ai");
         assert_eq!(
-            rules.patterns[0].operations["llm"],
+            rules
+                .models
+                .iter()
+                .find(|rule| rule.id == "qwen3.6-plus")
+                .unwrap()
+                .operations["llm"],
             OPENAI_RESPONSES_OPERATION_ID
         );
+        assert!(rules.patterns[0].exclude);
         assert_eq!(
-            rules.patterns[0].remove_api_types,
-            BTreeSet::from(["image.img2img".to_owned(), "image.txt2img".to_owned()])
+            known.connection.operation_base_urls["embeddings.create"],
+            "https://sn.buckyos.ai/api/v1/ai/v1"
         );
         assert_eq!(sn_dynamic_login_profile(), SN_DYNAMIC_LOGIN_PROFILE_ID);
 
@@ -819,17 +813,8 @@ mod tests {
     }
 
     #[test]
-    fn wp15_loads_sn_provider_catalogs_with_the_referenced_model_drivers() {
-        let builtin = sn_catalog_files()
-            .into_iter()
-            .chain(
-                super::super::builtin_catalog_files(&["openai", "glm", "kimi", "qwen"])
-                    .into_iter()
-                    .filter(|file| file.kind == CatalogKind::ModelDriver),
-            )
-            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+    fn wp15_loads_sn_provider_catalogs_with_referenced_model_drivers() {
+        let builtin = crate::settings::load_builtin_metadata().unwrap();
         let catalog = MetadataSources {
             builtin,
             ..MetadataSources::default()
@@ -852,9 +837,32 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            3
+            4
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
+        for driver in ["bytedance", "glm", "kimi", "mistral", "openai", "qwen"] {
+            assert!(catalog.model_driver(driver).is_some(), "missing {driver}");
+        }
+        let ui_tars = catalog
+            .model_driver("bytedance")
+            .unwrap()
+            .models
+            .iter()
+            .find(|model| model.id == "ui-tars-1.5-7b")
+            .unwrap();
+        assert!(ui_tars
+            .api_types
+            .as_ref()
+            .unwrap()
+            .contains("agent.computer_use"));
+        let voxtral = catalog
+            .model_driver("mistral")
+            .unwrap()
+            .models
+            .iter()
+            .find(|model| model.id == "voxtral-small-24b-2507")
+            .unwrap();
+        assert!(voxtral.api_types.as_ref().unwrap().contains("audio.asr"));
     }
 
     #[test]
@@ -882,10 +890,7 @@ mod tests {
             sn_dialect_contract().override_points,
             BTreeSet::from(["credential_resolution"])
         );
-        assert_eq!(
-            sn_dialect_contract().unsupported_api_types,
-            BTreeSet::from(["image.img2img".to_owned(), "image.txt2img".to_owned()])
-        );
+        assert!(sn_dialect_contract().unsupported_api_types.is_empty());
         let derived_codec = registry
             .codec(
                 SN_OPENAI_ADAPTER_ID,
@@ -894,6 +899,13 @@ mod tests {
             )
             .unwrap();
         assert!(Arc::ptr_eq(&base_codec, &derived_codec));
+        assert!(registry
+            .codec(
+                SN_OPENAI_ADAPTER_ID,
+                crate::protocol::OPENAI_EMBEDDINGS_OPERATION_ID,
+                buckyos_api::ApiType::EmbeddingText,
+            )
+            .is_ok());
         assert_eq!(
             registry.adapter(OPENAI_RESPONSES_ADAPTER_ID),
             Some(&original_base)
@@ -931,6 +943,7 @@ mod tests {
         assert_eq!(snapshot.models[0].provider_model_id, "gpt-4.1");
         assert_eq!(snapshot.models[1].provider_model_id, "gpt-5");
         assert_eq!(snapshot.models[0].api_types, None);
+        assert_eq!(snapshot.models[0].remote_methods, None);
         let request = transport.request.lock().unwrap();
         let request = request.as_ref().unwrap();
         assert_eq!(request.method, Method::GET);
@@ -1073,64 +1086,13 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_presets_follow_model_metadata_for_both_auth_modes() {
-        let model_driver: ModelDriverCatalog = serde_json::from_value(json!({
-            "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 2,
-            "schema_revision": 0,
-            "model_driver_id": "openai",
-            "revision_seq": 1,
-            "models": [
-                {
-                    "id": "gpt-future",
-                    "api_types": ["llm", "image.txt2img"],
-                    "llm": {
-                        "spec": "gpt-spec",
-                        "effort": "medium",
-                        "default_effort": "medium",
-                        "supported_efforts": ["none", "medium", "max"],
-                        "stability": "stable",
-                        "weight": 1.0
-                    }
-                },
-                {
-                    "id": "gpt-native",
-                    "api_types": ["llm", "image.txt2img"],
-                    "llm": {
-                        "spec": "gpt-spec",
-                        "effort": "native",
-                        "default_effort": "native",
-                        "supported_efforts": ["native"],
-                        "stability": "stable",
-                        "weight": 1.0
-                    }
-                }
-            ],
-            "patterns": [],
-            "defaults": {},
-            "specs": [{"id":"gpt-spec","direct_only":true}]
-        }))
-        .unwrap();
-        let catalog = CatalogSnapshot::build(
+    fn rules_and_discovery_build_complete_sn_inventory() {
+        let catalog = MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..MetadataSources::default()
+        }
+        .build_snapshot(
             crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
-            CatalogDocuments {
-                model_drivers: vec![
-                    model_driver,
-                    super::super::builtin_model_driver("glm"),
-                    super::super::builtin_model_driver("kimi"),
-                    super::super::builtin_model_driver("qwen"),
-                ],
-                provider_rules: vec![sn_provider_rules(1)],
-                known_providers: vec![KnownProviderCatalog {
-                    exchange_rates: None,
-                    format: "buckyos.aicc.known-provider-catalog".to_owned(),
-                    schema_version: 1,
-                    schema_revision: 0,
-                    revision_seq: 1,
-                    catalog_id: "builtin".to_owned(),
-                    providers: vec![sn_known_provider()],
-                }],
-            },
             &CatalogBuildOptions::default(),
         )
         .unwrap();
@@ -1138,53 +1100,139 @@ mod tests {
         let mut registry = CodecRegistry::default();
         registry.register_codecs(base, codecs).unwrap();
         register_sn_openai_adapter(&mut registry).unwrap();
-        let api_key = resolve_sn_provider_instance(SnProviderInstanceInput {
-            provider_instance_name: "sn-key",
-            base_url: None,
-            account: None,
-            auth: ProviderAuthConfig::ApiKey {
-                credential_ref: "secret://sn/api-key".to_owned(),
-                credential_kind: None,
+        let instance = dynamic_instance().runtime;
+        let inventory = InventoryBuilder::build(
+            &sn_profile(),
+            &instance,
+            ProviderDiscoverySnapshot {
+                revision: Some("sn-v1".to_owned()),
+                discovered_at_ms: 1,
+                health: ProviderHealthState::Healthy,
+                models: [
+                    "gpt-6-astra",
+                    "gpt-6-sol",
+                    "gpt-6-luna",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                    "gpt-5.5-pro",
+                    "gpt-5.5",
+                    "gpt-5.4",
+                    "gpt-5.4-pro",
+                    "gpt-5.4-mini",
+                    "gpt-5.4-nano",
+                    "gpt-5.3-codex",
+                    "gpt-image-2",
+                    "text-embedding-3-large",
+                    "text-embedding-3-small",
+                    "gpt-4o-mini-transcribe",
+                    "gpt-4o-transcribe-diarize",
+                    "gpt-4o-mini-tts",
+                    "gpt-realtime-2.1",
+                    "sora-2",
+                    "sora-2-pro",
+                    "glm-5",
+                    "glm-5.3",
+                    "kimi-k3",
+                    "qwen-image-3-pro",
+                    "qwen3-embedding-8b",
+                    "qwen3.6-plus",
+                    "qwen3.7-plus",
+                    "qwen3.8-max-0902",
+                    "ui-tars-1.5-7b",
+                    "voxtral-small-24b-2507",
+                    "wan-3.0",
+                ]
+                .into_iter()
+                .map(|provider_model_id| DiscoveredModel {
+                    provider_model_id: provider_model_id.to_owned(),
+                    api_types: None,
+                    supported_features: None,
+                    unsupported_features: BTreeSet::new(),
+                    remote_methods: None,
+                    availability: ModelAvailability::Available,
+                    deprecated: false,
+                    pricing: None,
+                    video: None,
+                })
+                .collect(),
             },
         })
         .unwrap();
-        for instance in [api_key.runtime, dynamic_instance().runtime] {
-            let discovery = parse_sn_models(
-                br#"{"models":[{"id":"gpt-future"},{"id":"gpt-native"}]}"#,
-                None,
-            )
-            .unwrap();
-            let inventory = InventoryBuilder::build(
-                &sn_profile(),
-                &instance,
-                discovery,
-                &catalog,
-                &registry,
-            )
-            .unwrap();
-            assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
-            assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
-            assert!(inventory.unmatched_models.is_empty());
-            assert!(inventory.unavailable_presets.is_empty());
-            assert_eq!(inventory.models.len(), 2);
-            for model in &inventory.models {
-                assert_eq!(model.api_types, vec![buckyos_api::ApiType::Llm]);
-                assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
-                let variants = model
-                    .variants
+        assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
+        assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
+        assert_eq!(inventory.models.len(), 29);
+        assert!(inventory.unmatched_models.is_empty());
+        assert!(
+            inventory.unavailable_presets.is_empty(),
+            "unexpected unavailable presets: {:?}",
+            inventory.unavailable_presets
+        );
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| !model.api_types.is_empty()));
+        for excluded in ["gpt-realtime-2.1", "sora-2", "sora-2-pro", "wan-3.0"] {
+            assert!(
+                !inventory
+                    .models
                     .iter()
-                    .map(|variant| variant.name.as_str())
-                    .collect::<Vec<_>>();
-                if model.provider_model_id == "gpt-future" {
-                    assert_eq!(
-                        variants,
-                        ["reasoning-max", "reasoning-medium", "reasoning-none"]
-                    );
-                } else {
-                    assert_eq!(model.provider_model_id, "gpt-native");
-                    assert!(variants.is_empty());
-                }
-            }
+                    .any(|model| model.provider_model_id == excluded),
+                "{excluded} must remain excluded until SN exposes its complete protocol"
+            );
         }
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "qwen3.6-plus")
+            .unwrap();
+        assert_eq!(
+            model.api_types,
+            vec![
+                buckyos_api::ApiType::Llm,
+                buckyos_api::ApiType::VisionCaption,
+            ]
+        );
+        assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+        let embedding = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "qwen3-embedding-8b")
+            .unwrap();
+        assert_eq!(
+            embedding.operations["embedding.text"],
+            crate::protocol::OPENAI_EMBEDDINGS_OPERATION_ID
+        );
+        let image = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "qwen-image-3-pro")
+            .unwrap();
+        assert_eq!(image.operations["image.txt2img"], "images.generate");
+        assert_eq!(image.operations["image.img2img"], "images.edit");
+        let ui_tars = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "ui-tars-1.5-7b")
+            .unwrap();
+        assert!(!ui_tars
+            .api_types
+            .contains(&buckyos_api::ApiType::AgentComputerUse));
+        let voxtral = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "voxtral-small-24b-2507")
+            .unwrap();
+        assert_eq!(voxtral.api_types, vec![buckyos_api::ApiType::Llm]);
+        let diarize = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-4o-transcribe-diarize")
+            .unwrap();
+        assert_eq!(
+            diarize.api_types,
+            vec![buckyos_api::ApiType::AudioSpeechRecognition]
+        );
+        assert_eq!(diarize.operations["audio.asr"], "audio.transcriptions");
     }
 }

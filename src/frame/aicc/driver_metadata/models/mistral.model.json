@@ -1,0 +1,32 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 2,
+  "schema_revision": 0,
+  "model_driver_id": "mistral",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "voxtral-small-24b-2507",
+      "parameter_scale": "24b",
+      "api_types": ["llm", "audio.asr"],
+      "capabilities": {
+        "max_context_tokens": 32768,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true
+      },
+      "llm": {
+        "spec": "voxtral-small",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable",
+        "weight": 24
+      }
+    }
+  ],
+  "patterns": [],
+  "defaults": {},
+  "specs": [{"id": "voxtral-small", "direct_only": true}]
+}

@@ -352,7 +352,14 @@ fn resource_string(
         return Ok(url.to_string());
     }
     match resource {
-        ResourceRef::Url { url, .. } => Ok(url.clone()),
+        ResourceRef::Url { url, .. } => match context.materialized_resource(resource) {
+            Ok(materialized) => Ok(format!(
+                "data:{};base64,{}",
+                materialized.mime,
+                STANDARD.encode(&materialized.bytes)
+            )),
+            Err(_) => Ok(url.clone()),
+        },
         ResourceRef::Base64 { mime, data_base64 } => {
             STANDARD.decode(data_base64).map_err(|_| {
                 ProtocolError::invalid_request("GLM video image contains invalid base64")

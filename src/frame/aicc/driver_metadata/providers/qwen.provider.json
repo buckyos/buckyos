@@ -27,6 +27,42 @@
   },
   "models": [
     {
+      "id": "cmaas-qwen3.8-flash",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "id": "qwen3.7-max",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "id": "qwen3.7-max-preview",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "id": "qwen3.7-max-2026-05-17",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "id": "qwen3.7-max-2026-05-20",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "id": "qwen3.7-max-2026-06-08",
+      "operations": {
+        "llm": "responses.create",
+        "vision.caption": "responses.create"
+      }
+    },
+    {
+      "id": "qwen3.5-ocr",
+      "operations": { "vision.ocr": "responses.create" }
+    },
+    {
       "id": "MiniMax/MiniMax-M2.1",
       "operations": { "llm": "chat.completions.create" },
       "capability_limits": { "max_output_tokens": 131072 }
@@ -61,6 +97,13 @@
         "llm": "chat.completions.create",
         "vision.ocr": "chat.completions.create",
         "vision.caption": "chat.completions.create"
+      }
+    },
+    {
+      "match": "qwen-image-3*",
+      "operations": {
+        "image.txt2img": "dashscope.image_generation",
+        "image.img2img": "dashscope.image_generation"
       }
     },
     {
@@ -414,12 +457,26 @@
     },
     {
       "model_driver": "qwen",
+      "variant": "reasoning-minimal",
+      "match": {
+        "origin_model_id": "qwen3.8-max-0902",
+        "variant": "reasoning-minimal"
+      },
+      "provider_options": {
+        "reasoning": {
+          "effort": "minimal"
+        }
+      }
+    },
+    {
+      "model_driver": "qwen",
       "variant": "reasoning-low",
       "match": {
         "origin_model_id": [
           "qwen3.8-max",
           "qwen3.8-flash",
-          "qwen3.8-omni-flash"
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-0902"
         ],
         "variant": "reasoning-low"
       },
@@ -436,7 +493,8 @@
         "origin_model_id": [
           "qwen3.8-max",
           "qwen3.8-flash",
-          "qwen3.8-omni-flash"
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-0902"
         ],
         "variant": "reasoning-medium"
       },
@@ -448,12 +506,26 @@
     },
     {
       "model_driver": "qwen",
+      "variant": "reasoning-high",
+      "match": {
+        "origin_model_id": "qwen3.8-max-0902",
+        "variant": "reasoning-high"
+      },
+      "provider_options": {
+        "reasoning": {
+          "effort": "high"
+        }
+      }
+    },
+    {
+      "model_driver": "qwen",
       "variant": "reasoning-xhigh",
       "match": {
         "origin_model_id": [
           "qwen3.8-max",
           "qwen3.8-flash",
-          "qwen3.8-omni-flash"
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-0902"
         ],
         "variant": "reasoning-xhigh"
       },
