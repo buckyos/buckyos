@@ -158,6 +158,12 @@ function t15FieldValue(
   model: string,
   apiType: string,
 ): unknown {
+  if (contract.body_field_formats?.[field] === "http_url") {
+    return `https://fixtures.example/${field}`;
+  }
+  if (contract.body_field_formats?.[field] === "http_url_or_data_uri") {
+    return "data:application/octet-stream;base64,dDE1LWZpeHR1cmU=";
+  }
   if (field === "model") return model;
   if (field === "messages") {
     return [{ role: "user", content: "BUCKYOS-AICC-4827" }];
@@ -367,7 +373,6 @@ test("T2 fixture NDN service is isolated and routed only for the run lifetime", 
     ],
   );
 });
-
 test("cloud update fixtures replace complete catalog files and tombstone every cloud identity", async () => {
   const first = await buildCloudUpdateFiles(42, "v1");
   const second = await buildCloudUpdateFiles(43, "v2");
@@ -2663,7 +2668,7 @@ test("T2 provider matrix has one minimal cell per physical model and API type", 
   assert.equal(cells.length, 1);
   assert.equal(cells[0].exact_model, "fal-ai/esrgan@fal-test-a");
   assert.equal(cells[0].method, "image.upscale");
-  assert.equal(cells[0].resource_representation, undefined);
+  assert.equal(cells[0].resource_representation, "url");
   assert.equal(cells[0].variant, undefined);
 });
 
@@ -4224,6 +4229,50 @@ test("T1.5 shared endpoints require API-specific media fields", async () => {
   }
 });
 
+test("T1.5 fal contracts accept Base64 data URIs and reject other URI schemes", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (
+    const contractId of [
+      "fal.esrgan.queue-v1",
+      "fal.imageutils-rembg.queue-v1",
+      "fal.deepfilternet3.queue-v1",
+      "fal.video-upscaler.queue-v1",
+    ]
+  ) {
+    const contract = protocolContract(catalog, "fal", contractId);
+    const field = contract.required_body_fields[0];
+    const headers = new Headers({
+      "content-type": contract.content_type,
+      authorization: "Key t15-secret",
+    });
+    const dataUriErrors = validateProviderRequest(contract, {
+      method: contract.http_method,
+      pathname: contract.path,
+      query: new URLSearchParams(),
+      headers,
+      body: { [field]: "data:image/png;base64,aW1hZ2U=" },
+    });
+    assert.deepEqual(
+      dataUriErrors,
+      [],
+      `${contractId} rejected a Base64 data URI`,
+    );
+    const invalidErrors = validateProviderRequest(contract, {
+      method: contract.http_method,
+      pathname: contract.path,
+      query: new URLSearchParams(),
+      headers,
+      body: { [field]: "file:///tmp/provider-input" },
+    });
+    assert.ok(
+      invalidErrors.includes(
+        `body field ${field} must be an HTTP(S) URL or Base64 data URI`,
+      ),
+      `${contractId} accepted an unsupported resource URI`,
+    );
+  }
+});
+
 test("T1.5 Provider mock implements each machine discovery contract and rejects catalog-only discovery", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
   const handler = createT15MockHandler(catalog);
@@ -4491,61 +4540,81 @@ test("T1.5 async lifecycle validates and captures official poll/result wire", as
     }).errors.join(";"),
     /authentication/,
   );
+  const rembg = protocolContract(
+    catalog,
+    "fal",
+    "fal.imageutils-rembg.queue-v1",
+  );
+  assert.deepEqual(
+    validateProviderAuxiliaryRequest(rembg, {
+      method: "GET",
+      pathname: "/fal-ai/imageutils/requests/fal_mock_1/status",
+      query: new URLSearchParams(),
+      headers: new Headers({ authorization: "Key test-key" }),
+    }).errors,
+    [],
+  );
 
   const handler = createT15MockHandler(catalog);
-  const server = createServer((request, response) =>
-    void handler(request, response)
-  );
+  const server = createServer((request, response) => void handler(request, response));
   await new Promise<void>((resolvePromise, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolvePromise);
   });
-  context.after(() =>
-    new Promise<void>((resolvePromise, reject) =>
-      server.close((error) => error ? reject(error) : resolvePromise())
-    )
-  );
+  context.after(() => new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise())));
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const baseUrl = `http://127.0.0.1:${address.port}`;
-  assert.equal(
-    (await fetch(`${baseUrl}/__mock/select`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        provider_driver: "fal",
-        contract_id: contract.id,
-        scenario: "async_success",
-      }),
-    })).status,
-    200,
-  );
   const headers = { authorization: "Key test-key" };
-  assert.equal(
-    (await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1/status`, {
-      headers,
-    })).status,
-    200,
-  );
-  assert.equal(
-    (await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1`, { headers }))
-      .status,
-    200,
-  );
-  assert.equal(
-    (await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1/response`, {
-      headers,
-    })).status,
-    200,
-  );
+  for (
+    const falContract of catalog.providers.find((provider) => provider.provider_driver === "fal")!.contracts
+  ) {
+    assert.equal(
+      (await fetch(`${baseUrl}/__mock/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider_driver: "fal",
+          contract_id: falContract.id,
+          scenario: "async_success",
+        }),
+      })).status,
+      200,
+    );
+    const resourceField = falContract.required_body_fields[0];
+    const mediaType = resourceField === "audio_url" ? "audio/wav" : resourceField === "video_url" ? "video/mp4" : "image/png";
+    const submitted = await fetch(`${baseUrl}${falContract.path}`, {
+      method: "POST",
+      headers: { ...headers, "content-type": falContract.content_type },
+      body: JSON.stringify({
+        [resourceField]: `data:${mediaType};base64,dDE1LWZpeHR1cmU=`,
+      }),
+    });
+    assert.equal(submitted.status, 200, falContract.id);
+    const links = await submitted.json() as {
+      response_url: string;
+      status_url: string;
+      cancel_url: string;
+    };
+    assert.equal((await fetch(links.status_url, { headers })).status, 200);
+    assert.equal((await fetch(links.response_url, { headers })).status, 200);
+    assert.equal(
+      (await fetch(links.cancel_url, { method: "PUT", headers })).status,
+      202,
+    );
+    const canonicalResult = falContract.async_steps?.find((step) => step.name === "result" && !step.path.endsWith("/response"));
+    assert.ok(canonicalResult);
+    assert.equal(
+      (await fetch(
+        `${baseUrl}${canonicalResult.path.replace("{request_id}", "fal_mock_1")}`,
+        { headers },
+      )).status,
+      200,
+    );
+  }
   const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
     requests: Array<{ async_step?: string; validation_errors: string[] }>;
   };
-  assert.deepEqual(audit.requests.map((request) => request.async_step), [
-    "poll",
-    "result",
-    "result",
-  ]);
   assert.ok(
     audit.requests.every((request) => request.validation_errors.length === 0),
   );

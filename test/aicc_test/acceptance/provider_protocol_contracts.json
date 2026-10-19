@@ -549,6 +549,7 @@
           "required_body_fields": ["image_url"],
           "allowed_body_fields": ["image_url", "scale", "tile", "face", "model", "output_format"],
           "body_field_types": { "image_url": ["string"] },
+          "body_field_formats": { "image_url": "http_url_or_data_uri" },
           "async_protocol": "fal_queue",
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}/status" },
@@ -556,10 +557,10 @@
             { "name": "result", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/esrgan/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/fal-ai/esrgan/requests/fal_mock_1/response", "status_url": "http://mock/fal-ai/esrgan/requests/fal_mock_1/status", "cancel_url": "http://mock/fal-ai/esrgan/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "image": { "url": "http://mock-artifact/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 1024, "height": 1024 } },
           "official_sources": ["https://fal.ai/models/fal-ai/esrgan/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
-          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan and returns an image result after queue completion."
+          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response."
         },
         {
           "id": "fal.imageutils-rembg.queue-v1",
@@ -574,17 +575,18 @@
           "required_body_fields": ["image_url"],
           "allowed_body_fields": ["image_url", "sync_mode", "crop_to_bbox"],
           "body_field_types": { "image_url": ["string"] },
+          "body_field_formats": { "image_url": "http_url_or_data_uri" },
           "async_protocol": "fal_queue",
           "async_steps": [
-            { "name": "poll", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/status" },
-            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}" },
-            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/response" },
-            { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/cancel" }
+            { "name": "poll", "http_method": "GET", "path": "/fal-ai/imageutils/requests/{request_id}/status" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/requests/{request_id}/response" },
+            { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/imageutils/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/fal-ai/imageutils/requests/fal_mock_1/response", "status_url": "http://mock/fal-ai/imageutils/requests/fal_mock_1/status", "cancel_url": "http://mock/fal-ai/imageutils/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "image": { "url": "http://mock-artifact/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 512, "height": 512 } },
           "official_sources": ["https://fal.ai/docs/model-api-reference/image-generation-api/imageutils", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
-          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg and returns an image result after queue completion."
+          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle strips the /rembg subpath to the fal-ai/imageutils app root, while returned response_url uses the /response alias."
         },
         {
           "id": "fal.deepfilternet3.queue-v1",
@@ -599,6 +601,7 @@
           "required_body_fields": ["audio_url"],
           "allowed_body_fields": ["audio_url", "sync_mode", "audio_format", "bitrate"],
           "body_field_types": { "audio_url": ["string"] },
+          "body_field_formats": { "audio_url": "http_url_or_data_uri" },
           "async_protocol": "fal_queue",
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}/status" },
@@ -606,10 +609,10 @@
             { "name": "result", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/deepfilternet3/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/fal-ai/deepfilternet3/requests/fal_mock_1/response", "status_url": "http://mock/fal-ai/deepfilternet3/requests/fal_mock_1/status", "cancel_url": "http://mock/fal-ai/deepfilternet3/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "audio_file": { "url": "http://mock-artifact/artifacts/result.wav", "content_type": "audio/wav", "file_name": "result.wav", "file_size": 2048 }, "timings": { "preprocess": 0.01, "inference": 0.01, "postprocess": 0.01 } },
           "official_sources": ["https://fal.ai/models/fal-ai/deepfilternet3/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
-          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3 and returns audio_file plus timings after completion."
+          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias."
         },
         {
           "id": "fal.video-upscaler.queue-v1",
@@ -624,6 +627,7 @@
           "required_body_fields": ["video_url"],
           "allowed_body_fields": ["video_url", "scale"],
           "body_field_types": { "video_url": ["string"] },
+          "body_field_formats": { "video_url": "http_url_or_data_uri" },
           "async_protocol": "fal_queue",
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}/status" },
@@ -631,10 +635,10 @@
             { "name": "result", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/video-upscaler/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/fal-ai/video-upscaler/requests/fal_mock_1/response", "status_url": "http://mock/fal-ai/video-upscaler/requests/fal_mock_1/status", "cancel_url": "http://mock/fal-ai/video-upscaler/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "video": { "url": "http://mock-artifact/artifacts/result.mp4", "content_type": "video/mp4", "file_name": "result.mp4", "file_size": 4096 } },
           "official_sources": ["https://fal.ai/models/fal-ai/video-upscaler/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
-          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and returns a video result after completion."
+          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and accepts hosted HTTP(S) URLs or Base64 data URIs through fal Files. Queue lifecycle exposes canonical result retrieval and the returned /response alias."
         }
       ]
     },
