@@ -481,7 +481,10 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     let audio_input_token = parse_nonnegative_price("audio", pricing.audio.as_deref())?;
     let audio_output_token =
         parse_nonnegative_price("audio_output", pricing.audio_output.as_deref())?;
-    let amount = parse_nonnegative_price("request", pricing.request.as_deref())?;
+    // OpenRouter publishes `"request": "0"` next to token rates in its own catalog examples.
+    // A zero fee is not unit billing, so it must not switch the entry to `PricingUnit::Request`.
+    let amount = parse_nonnegative_price("request", pricing.request.as_deref())?
+        .filter(|value| *value > 0.0);
     if input_token.is_none()
         && output_token.is_none()
         && cache_input_token.is_none()
@@ -493,7 +496,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     {
         return Ok(None);
     }
-    let ratio_exception = input_token.filter(|value| *value > 0.0).and_then(|input| {
+    let mut ratio_exception = input_token.filter(|value| *value > 0.0).and_then(|input| {
         let anomalous = cache_input_token.is_some_and(|value| value > input)
             || cache_write_input_token.is_some_and(|value| value / input > 10.0)
             || cache_write_1h_input_token.is_some_and(|value| value / input > 10.0)
@@ -501,6 +504,33 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         anomalous
             .then(|| "OpenRouter official model catalog reports this token price ratio".to_owned())
     });
+    // `Pricing` cannot express a per-request fee together with token rates: catalog validation
+    // rejects that combination and `discover()` validates the whole snapshot, so keeping both
+    // would let one model block the entire provider catalog. Token rates stay authoritative and
+    // the omitted fee is recorded so the catalog snapshot still explains the discrepancy.
+    let has_token_rates = input_token.is_some()
+        || output_token.is_some()
+        || cache_input_token.is_some()
+        || cache_write_input_token.is_some()
+        || cache_write_1h_input_token.is_some()
+        || audio_input_token.is_some()
+        || audio_output_token.is_some();
+    if has_token_rates {
+        if let Some(fee) = amount {
+            let note = format!(
+                "OpenRouter also charges {fee} USD per request; AICC bills the declared token rates"
+            );
+            ratio_exception = Some(match ratio_exception {
+                Some(existing) => format!("{existing}; {note}"),
+                None => note,
+            });
+        }
+    }
+    let (unit, amount) = if has_token_rates {
+        (None, None)
+    } else {
+        (amount.map(|_| crate::catalog::PricingUnit::Request), amount)
+    };
     Ok(Some(Pricing {
         currency: "USD".to_owned(),
         source_url: Some("https://openrouter.ai/api/v1/models?output_modalities=all".into()),
@@ -516,7 +546,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         output_token,
         cache_input_token,
         estimated_cost: None,
-        unit: amount.map(|_| crate::catalog::PricingUnit::Request),
+        unit,
         amount,
         rules: Vec::new(),
         tiers: None,
@@ -783,6 +813,58 @@ mod tests {
         assert_eq!(pricing.output_token, Some(0.000007));
         assert!(pricing.ratio_exception.is_some());
         crate::catalog::validate_pricing("z-ai/glm-5.2", &pricing).unwrap();
+    }
+
+    #[test]
+    fn zero_request_fee_keeps_token_billing() {
+        // The official catalog examples publish `"request": "0"` next to token rates. Treating
+        // it as unit billing makes catalog validation reject the model, which fails the whole
+        // discovery snapshot.
+        let pricing = parse_pricing(Some(ModelPricing {
+            prompt: Some("0.00003".into()),
+            completion: Some("0.00006".into()),
+            request: Some("0".into()),
+            ..Default::default()
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(pricing.input_token, Some(0.00003));
+        assert_eq!(pricing.output_token, Some(0.00006));
+        assert_eq!(pricing.unit, None);
+        assert_eq!(pricing.amount, None);
+        crate::catalog::validate_pricing("openrouter/example", &pricing).unwrap();
+    }
+
+    #[test]
+    fn non_zero_request_fee_with_token_rates_never_breaks_the_snapshot() {
+        let pricing = parse_pricing(Some(ModelPricing {
+            prompt: Some("0.00003".into()),
+            completion: Some("0.00006".into()),
+            request: Some("0.002".into()),
+            ..Default::default()
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(pricing.unit, None);
+        assert_eq!(pricing.amount, None);
+        assert!(pricing
+            .ratio_exception
+            .as_deref()
+            .is_some_and(|note| note.contains("0.002 USD per request")));
+        crate::catalog::validate_pricing("openrouter/example", &pricing).unwrap();
+    }
+
+    #[test]
+    fn request_only_model_stays_unit_priced() {
+        let pricing = parse_pricing(Some(ModelPricing {
+            request: Some("0.01".into()),
+            ..Default::default()
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(pricing.unit, Some(crate::catalog::PricingUnit::Request));
+        assert_eq!(pricing.amount, Some(0.01));
+        crate::catalog::validate_pricing("openrouter/example", &pricing).unwrap();
     }
 
     #[test]

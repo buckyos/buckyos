@@ -146,13 +146,23 @@ impl ClaudeMessagesCodec {
         if !request.tools.is_empty() {
             body.insert("tools".to_string(), encode_tools(request)?);
         }
-        if let Some(temperature) = request.temperature {
+        // Models that only accept their vendor default sampling parameters reject any explicit
+        // value (Claude Sonnet 5.5 rejects non-default values; Haiku 5.5 additionally rejects
+        // `temperature` != 1, `top_p` != 0.99, sending both, and any `top_k`). The constraint is
+        // declared by the model metadata and reaches the codec as `omit_sampling`.
+        let omit_sampling = call
+            .input
+            .resolved_parameters
+            .get("omit_sampling")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(temperature) = request.temperature.filter(|_| !omit_sampling) {
             body.insert(
                 "temperature".to_string(),
                 finite_number("temperature", temperature)?,
             );
         }
-        if let Some(top_p) = request.top_p {
+        if let Some(top_p) = request.top_p.filter(|_| !omit_sampling) {
             body.insert("top_p".to_string(), finite_number("top_p", top_p)?);
         }
         if !request.stop.is_empty() {
@@ -169,7 +179,7 @@ impl ClaudeMessagesCodec {
         if request.execution_mode == AiccExecutionMode::Stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
-        apply_resolved_parameters(&mut body, &call.input.resolved_parameters)?;
+        apply_resolved_parameters(&mut body, &call.input.resolved_parameters, omit_sampling)?;
         apply_response_format(&mut body, request.response_format.as_ref())?;
 
         let mut headers = HeaderMap::new();
@@ -834,6 +844,7 @@ fn encode_tools(request: &LlmChatInvokeRequest) -> ProtocolResultValue<Value> {
 fn apply_resolved_parameters(
     body: &mut Map<String, Value>,
     parameters: &BTreeMap<String, Value>,
+    omit_sampling: bool,
 ) -> ProtocolResultValue<()> {
     const ALLOWED: &[&str] = &[
         "max_tokens",
@@ -849,7 +860,13 @@ fn apply_resolved_parameters(
         "top_p",
     ];
     for (name, value) in parameters {
-        if matches!(name.as_str(), "provider_model_id" | "stream") {
+        if matches!(
+            name.as_str(),
+            "provider_model_id" | "stream" | "omit_sampling"
+        ) {
+            continue;
+        }
+        if omit_sampling && matches!(name.as_str(), "temperature" | "top_p" | "top_k") {
             continue;
         }
         if name == "web_search" {
@@ -2369,6 +2386,62 @@ mod tests {
         // Deterministic: the same blocks are dropped on every request.
         assert_eq!(body, encode());
     }
+
+    #[test]
+    fn fixed_sampling_models_omit_explicit_sampling_parameters() {
+        // Claude Sonnet 5.5 rejects non-default sampling values and Haiku 5.5 additionally
+        // rejects `temperature` != 1, `top_p` != 0.99, sending both, and any `top_k`. Model
+        // metadata declares `fixed_sampling`, which reaches the codec as `omit_sampling`.
+        let mut request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::text(AiRole::User, "hello")],
+        );
+        request.max_output_tokens = Some(1024);
+        request.temperature = Some(0.0);
+        request.top_p = Some(0.9);
+        let input = input(
+            request,
+            &[("omit_sampling", json!(true)), ("top_k", json!(40))],
+        );
+        let context = context();
+        let wire = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context,
+            })
+            .unwrap();
+        let HttpBody::Json(body) = &wire.body else {
+            panic!("claude messages must encode a JSON body");
+        };
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("top_k").is_none());
+        assert_eq!(body["max_tokens"], json!(1024));
+    }
+
+    #[test]
+    fn models_without_the_constraint_keep_canonical_sampling_parameters() {
+        let mut request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::text(AiRole::User, "hello")],
+        );
+        request.max_output_tokens = Some(1024);
+        request.temperature = Some(0.25);
+        let input = input(request, &[]);
+        let context = context();
+        let wire = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context,
+            })
+            .unwrap();
+        let HttpBody::Json(body) = &wire.body else {
+            panic!("claude messages must encode a JSON body");
+        };
+        assert_eq!(body["temperature"], json!(0.25));
+    }
 }
 
 #[cfg(test)]
@@ -2412,6 +2485,7 @@ mod review_parameter_tests {
                 ("top_p".into(), json!(0.8)),
                 ("stop_sequences".into(), json!(["STOP"])),
             ]),
+            false,
         )
         .unwrap();
         assert_eq!(body, canonical);
@@ -2422,7 +2496,8 @@ mod review_parameter_tests {
         ] {
             assert!(apply_resolved_parameters(
                 &mut Map::new(),
-                &BTreeMap::from([(field.into(), value)])
+                &BTreeMap::from([(field.into(), value)]),
+                false,
             )
             .is_err());
         }

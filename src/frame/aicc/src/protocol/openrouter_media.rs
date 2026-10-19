@@ -468,11 +468,33 @@ impl OperationCodec for OpenRouterMusicCodec {
     }
 }
 
+/// Picks the speech voice for a request.
+///
+/// The caller's `VoiceSpec::style` wins over the configured provider default: the style -> voice
+/// map is declared in the provider rules next to that default, so the fixed default only applies
+/// when the caller expressed no style (or expressed one the provider has no mapping for).
+fn speech_voice(
+    parameters: &BTreeMap<String, Value>,
+    voice: &buckyos_api::VoiceSpec,
+) -> Option<Value> {
+    let styled = voice
+        .style
+        .and_then(|style| serde_json::to_value(style).ok())
+        .and_then(|style| style.as_str().map(str::to_owned))
+        .and_then(|style| {
+            parameters
+                .get("openrouter_voice_styles")
+                .and_then(Value::as_object)?
+                .get(&style)
+                .cloned()
+        });
+    styled.or_else(|| parameters.get("openrouter_voice").cloned())
+}
+
 #[derive(Clone)]
 struct OpenRouterSpeechCodec {
     descriptor: OperationDescriptor,
 }
-
 #[async_trait]
 impl OperationCodec for OpenRouterSpeechCodec {
     fn descriptor(&self) -> &OperationDescriptor {
@@ -504,13 +526,13 @@ impl OperationCodec for OpenRouterSpeechCodec {
             ("model".to_string(), json!(model)),
             ("input".to_string(), json!(request.text)),
         ]);
-        if let Some(value) = call.input.resolved_parameters.get("openrouter_voice") {
+        if let Some(value) = speech_voice(&call.input.resolved_parameters, &request.voice) {
             if !value.is_string() {
                 return Err(ProtocolError::invalid_request(
-                    "OpenRouter speech openrouter_voice must be a string",
+                    "OpenRouter speech voice must be a string",
                 ));
             }
-            body.insert("voice".to_string(), value.clone());
+            body.insert("voice".to_string(), value);
         }
         for field in ["instructions"] {
             if let Some(value) = call.input.resolved_parameters.get(field) {

@@ -1263,8 +1263,14 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     .await?
                 {
                     NativeTaskOutput::Result(mut output) => {
-                        // Billing seconds come from the Provider; the request's
-                        // own duration is only the fallback the codec declared.
+                        // Billing seconds come from the Provider; the request's own duration is
+                        // only the fallback the codec declared. A native task settles its cost on
+                        // the status response while the result step only downloads the artifact,
+                        // so the reported cost is merged into the final output as well.
+                        let reported_cost =
+                            result_usage.as_ref().and_then(|usage| usage.reported_cost);
+                        let settled_cost =
+                            result_usage.as_ref().and_then(|usage| usage.cost.clone());
                         let seconds = result_usage
                             .as_ref()
                             .and_then(|usage| usage.video_seconds)
@@ -1276,8 +1282,15 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                     .map(|seconds| seconds as f64)
                             });
                         let usage = output.usage.get_or_insert_with(Default::default);
+                        if usage.reported_cost.is_none() {
+                            usage.reported_cost = reported_cost;
+                        }
+                        if usage.cost.is_none() {
+                            usage.cost = settled_cost;
+                        }
                         if let Some(seconds) = seconds {
                             usage.video_seconds = usage.video_seconds.or(Some(seconds));
+
                         }
                         // A charge reported with the terminal status (OpenRouter
                         // `usage.cost`) belongs to the result that follows it.

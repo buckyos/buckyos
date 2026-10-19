@@ -2154,6 +2154,35 @@ test("Provider credentials accept TOML values or provider-specific environment v
   });
 });
 
+test("Provider credential overrides report the instance they resolved to", () => {
+  // `[instances.<driver>].name` defaults to an empty string in the example config. The patch
+  // still resolves a concrete instance, and the runner needs that name to refresh inventory.
+  const original = {
+    providers: [
+      {
+        provider_instance_name: "openai-single",
+        provider_profile_id: "openai",
+      },
+    ],
+  };
+  const resolved: Record<string, string> = {};
+  applyProviderTokens(original, { openai: "token", openrouter: "router" }, {}, {}, resolved);
+  assert.deepEqual(resolved, {
+    openai: "openai-single",
+    openrouter: "openrouter-main",
+  });
+
+  const explicit: Record<string, string> = {};
+  applyProviderTokens(
+    original,
+    { openrouter: "router" },
+    { openrouter: "router-t2" },
+    {},
+    explicit,
+  );
+  assert.deepEqual(explicit, { openrouter: "router-t2" });
+});
+
 test("Provider credential overrides apply configured static inventory subsets", () => {
   const rules = configuredProviderInstanceOverrides({
     "provider_credentials.doubao-speech.enabled_inventory_models": [

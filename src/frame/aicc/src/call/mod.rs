@@ -372,6 +372,26 @@ impl<'a> CallResolver<'a> {
             .as_ref()
             .and_then(|capabilities| capabilities.get("max_output_tokens"))
             .and_then(Value::as_u64);
+        // Some vendor models only accept their own default sampling parameters and reject any
+        // explicit `temperature`/`top_p`/`top_k` with a 400. The model metadata declares that
+        // constraint, and it is forwarded as a resolved parameter so the protocol codec can drop
+        // the canonical values instead of sending a request the provider refuses. Only the Claude
+        // Messages codec defines that resolved parameter, so the flag is emitted only for that
+        // adapter; the same vendor model reached through an aggregate provider keeps its own
+        // protocol's parameter contract.
+        if decision.selected.protocol_adapter_id == crate::protocol::CLAUDE_MESSAGES_ADAPTER_ID
+            && model
+                .semantics
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.get("fixed_sampling"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            if let Some(object) = normalized.as_object_mut() {
+                object.insert("omit_sampling".to_owned(), Value::Bool(true));
+            }
+        }
         let mut canonical_fields = model.semantics.canonical_fields.unwrap_or_default();
         if let Some(rule) = &provider_rule {
             canonical_fields.extend(rule.action.canonical_fields.clone());

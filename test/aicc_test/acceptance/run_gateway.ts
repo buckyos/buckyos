@@ -975,18 +975,24 @@ async function main(): Promise<void> {
     normalizeInventories(await session.aicc.call("models.list", {}))
       .map((inventory) => inventory.provider_instance_name),
   );
-  const execute = () => executeAcceptance({
-    options,
-    session,
-    runStartedAt,
-    runId,
-    outputDir,
-    baseline,
-    officialCatalogs,
-    uploadedFixtureIds,
-    configuredFixtures,
-  });
-  options.providerTokens = selectProviderTokens(options.providerTokens, options.providers);
+  const resolvedProviderInstances: Record<string, string> = {};
+  const execute = () =>
+    executeAcceptance({
+      options,
+      session,
+      runStartedAt,
+      runId,
+      outputDir,
+      baseline,
+      officialCatalogs,
+      uploadedFixtureIds,
+      configuredFixtures,
+      resolvedProviderInstances,
+    });
+  options.providerTokens = selectProviderTokens(
+    options.providerTokens,
+    options.providers,
+  );
   const tokenDrivers = providerTokenDrivers(options.providerTokens);
   let outcome: { report: AcceptanceReport; effectiveBaseline: Record<string, unknown> };
   let cleanupFailure: SettingsCleanupError<typeof outcome> | undefined;
@@ -1004,6 +1010,7 @@ async function main(): Promise<void> {
             options.providerTokens,
             options.providerInstances,
             options.providerInstanceOverrides,
+            resolvedProviderInstances,
           ),
         execute,
         refreshClients: async () => {
@@ -1113,7 +1120,10 @@ async function executeAcceptance(input: {
   officialCatalogs: ProviderInventory[];
   uploadedFixtureIds: string[];
   configuredFixtures: FixtureRefs;
-}): Promise<{ report: AcceptanceReport; effectiveBaseline: Record<string, unknown> }> {
+  resolvedProviderInstances: Record<string, string>;
+}): Promise<
+  { report: AcceptanceReport; effectiveBaseline: Record<string, unknown> }
+> {
   const {
     options,
     session,
@@ -1124,6 +1134,7 @@ async function executeAcceptance(input: {
     officialCatalogs,
     uploadedFixtureIds,
     configuredFixtures,
+    resolvedProviderInstances,
   } = input;
   const { ndm_proxy } = await import("buckyos");
   const ndm = ndm_proxy.createNdmProxyClient({
@@ -1145,19 +1156,56 @@ async function executeAcceptance(input: {
     ? options.providers
     : baseline.providers.map((provider) => provider.provider_driver);
   const credentialDrivers = providerTokenDrivers(options.providerTokens);
-  const discoveryInventories = options.applyProviderCredentials && credentialDrivers.length > 0
-    ? await waitForProviderInventories({
+  // A credential override resolves the target instance inside the patched settings (either the
+  // single existing instance or a created `<driver>-main`). `applyProviderTokens` reports those
+  // names back so a run that leaves `[instances.<driver>].name` empty keeps working; the inventory
+  // of the resolved instance is awaited before it is selected. Providers without a temporary
+  // credential still refresh from their own inventory, so mixed runs stay complete.
+  if (options.applyProviderCredentials && credentialDrivers.length > 0) {
+    await waitForProviderInventories({
       aicc: session.aicc,
       expectedDrivers: credentialDrivers,
-      expectedInstances: options.providerInstances,
+      expectedInstances: resolvedProviderInstances,
       timeoutMs: options.timeoutMs,
-    })
-    : normalizeInventories(await session.aicc.call("models.list", {}));
-  const selectedBeforeRefresh = selectSingleProviderInstances({
-    inventories: discoveryInventories,
-    drivers: selectedDrivers,
-    configured: options.providerInstances,
-  });
+    });
+  }
+  const selectedBeforeRefresh = await (async () => {
+    if (!(options.applyProviderCredentials && credentialDrivers.length > 0)) {
+      return selectSingleProviderInstances({
+        inventories: normalizeInventories(
+          await session.aicc.call("models.list", {}),
+        ),
+        drivers: selectedDrivers,
+        configured: options.providerInstances,
+      });
+    }
+    const credentialTargets = credentialDrivers.map((driver) => {
+      const instance = resolvedProviderInstances[driver] ??
+        options.providerInstances[driver];
+      if (!instance) {
+        throw new Error(`missing configured Provider instance for ${driver}`);
+      }
+      return {
+        provider_driver: driver,
+        provider_instance_name: instance,
+        models: [],
+      };
+    });
+    const remainingDrivers = selectedDrivers.filter((driver) =>
+      !credentialDrivers.includes(driver)
+    );
+    if (remainingDrivers.length === 0) return credentialTargets;
+    return [
+      ...credentialTargets,
+      ...selectSingleProviderInstances({
+        inventories: normalizeInventories(
+          await session.aicc.call("models.list", {}),
+        ),
+        drivers: remainingDrivers,
+        configured: options.providerInstances,
+      }),
+    ];
+  })();
   const refreshed = await refreshProviderInventoriesUntilSuccess({
     aicc: session.aicc,
     selectedInventories: selectedBeforeRefresh,

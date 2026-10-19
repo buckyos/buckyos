@@ -247,6 +247,9 @@ export function applyProviderTokens(
   tokens: ProviderTokens,
   selectedInstances: Record<string, string>,
   instanceOverrides: ProviderInstanceOverrides = {},
+  // Reports the instance each token was actually applied to, so callers that left
+  // `[instances.<driver>].name` empty can refresh the right instance instead of failing.
+  resolvedInstances: Record<string, string> = {},
 ): Record<string, unknown> {
   const settings = structuredClone(original);
   const providers = Array.isArray(settings.providers)
@@ -274,17 +277,23 @@ export function applyProviderTokens(
         selected.credentials = { api_token: { inline_secret: token } };
         applyDriverDefaults(selected, driver);
         applyInstanceOverrides(selected, instanceOverrides[driver]);
+        resolvedInstances[driver] = selectedName;
         continue;
       }
       const created = defaultInstance(driver, selectedName, token);
       applyInstanceOverrides(created, instanceOverrides[driver]);
       providers.push(created);
+      resolvedInstances[driver] = selectedName;
       continue;
     }
     if (candidates.length === 1) {
       candidates[0].credentials = { api_token: { inline_secret: token } };
       applyDriverDefaults(candidates[0], driver);
       applyInstanceOverrides(candidates[0], instanceOverrides[driver]);
+      const name = candidates[0].provider_instance_name;
+      if (typeof name === "string" && name.trim()) {
+        resolvedInstances[driver] = name.trim();
+      }
       continue;
     }
     if (candidates.length === 0) {
@@ -303,13 +312,11 @@ export function applyProviderTokens(
         "doubao-speech": "doubao-speech-main",
         qwen: "qwen-main",
       };
-      const created = defaultInstance(
-        driver,
-        selectedName || defaultNames[driver],
-        token,
-      );
+      const name = selectedName || defaultNames[driver];
+      const created = defaultInstance(driver, name, token);
       applyInstanceOverrides(created, instanceOverrides[driver]);
       providers.push(created);
+      resolvedInstances[driver] = name;
       continue;
     }
     if (candidates.length > 1) {
