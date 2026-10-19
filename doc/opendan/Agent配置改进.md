@@ -703,8 +703,7 @@ Workflow DSL 时就尾大不掉。要么不要,要么一次性全要。
 
 2. **`[capabilities]` 最终 schema**:§5.3 v0 直接沿用现状三个字段,但需要在同一段下表达三类能力
    (v2 内建 Action / skill bundle / 传统 function-call tool),且每类都有"上层引用 + 下层细节定义"
-   的解耦诉求。需要等 [Agent Skill](./Agent%20Skill.md) 与 ToolManager 的配置形态一起定下来再收敛。
-   beta2.3 重做。
+   的解耦诉求。当前 skill 机制以 [OpenDAN 开发指南](../sdk/OpenDAN_Agent_Dev_Guide.md) 为准；与 ToolManager 的组合配置仍属本稿的后续设计，不定义当前 PIKG 或 skill 安装格式。
 
 3. **`process_stack_limit` 超限语义**(已落地为 v0 行为,保留为开放问题以备调优):
    `[session.<class>].process_stack_limit` 在 Fork / Independent 切换前由 `switch_behavior`

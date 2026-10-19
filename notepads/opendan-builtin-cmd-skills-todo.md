@@ -24,7 +24,7 @@
 | xllm | `src/frame/agent_tool_cli_dev/src/lib.rs` 提供 `agent_tool xllm`，核心在 `src/frame/agent_tool/src/xllm.rs`。 | 独立使用手册、执行环境与边界说明；不能假定裸 `xllm` 已在 Session PATH。 |
 | 开发与发布 | 已有 AIWorkspace RPC/程序宿主、PIKG 工具、Jarvis 模板和系统构建脚本。App CLI 尚无 `app publish`；后台存在 `app.publish` RPC。 | 开发场景手册、可执行样例，以及发布链路的 CLI 缺口。后台写入 Repo/NamedStore candidate 不等于完成 App DID 权威发布。 |
 
-传统 agent-skills（`skills/ + skill.yaml + SKILL.md`）已废弃，代码已于 2026-10-17 删除：`src/frame/agent_tool/src/skills_mgr.rs`、`agent_tool_cli_dev` 的 `agent-skills` CLI、Jarvis 的 `try_create_new_skill` / `improve_skills` 行为；opendan 的 AgentRoot 骨架由 `skills/` 改为 `cmd_skills/`；`doc/opendan/Agent元能力/Agent Skill.md` 标为废弃。self-improve 的 `DiscoverSkillCoverageGap` 信号不依赖 skills_mgr，暂留（self-improve 模块本版本未启用）。新的 skill 在安装时分为两类：cmd_skills（命令手册，可带工具）和 goal_skills（Goal 使用）。本文负责 cmd_skills 的选择、装配与两类 skill 的安装入口；goal_skills 在 Goal 中如何引用属于 Goal 的 TODO。
+传统 agent-skills（`skills/ + skill.yaml + SKILL.md`）已废弃，代码已于 2026-10-17 删除：`src/frame/agent_tool/src/skills_mgr.rs`、`agent_tool_cli_dev` 的 `agent-skills` CLI、Jarvis 的 `try_create_new_skill` / `improve_skills` 行为；opendan 的 AgentRoot 骨架由 `skills/` 改为 `cmd_skills/`；旧 Agent Skill 设计已合并为 [历史摘要](../doc/pikg/history/agent-skills-design.md)。self-improve 的 `DiscoverSkillCoverageGap` 信号不依赖 skills_mgr，暂留（self-improve 模块本版本未启用）。新的 skill 在安装时分为两类：cmd_skills（命令手册，可带工具）和 goal_skills（Goal 使用）。本文负责 cmd_skills 的选择、装配与两类 skill 的安装入口；goal_skills 在 Goal 中如何引用属于 Goal 的 TODO。
 
 ## 2. 首批手册与交付约定
 

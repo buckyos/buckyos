@@ -249,7 +249,7 @@ v1 不做会话轮换（同一对端切到新的 UI Session）。以后要做时
 
 Loader 自己不带任何写死的权限假设。它需要什么权限，取决于它加载的那个 Agent 包（agent-rootfs）里的声明，做法与现在的 app-loader 一致：
 
-- **声明**：Agent 包声明这个 Agent 需要的权限（上限），与 AppDoc 的 `permissions` 同一套语义。位置是 `dapp_meta/app.json` 的 `permissions`（现在是空数组）：Agent 包本身就是一个 app。条目格式沿用 [permissions 配置指南](<./service_config_tips + permissions 实用配置指南.md>)，不新造一套；`agent.toml` 不放权限。
+- **声明**：Agent 包声明这个 Agent 需要的权限（上限），与 AppDoc 的 `permissions` 同一套语义。位置是 `dapp_meta/app.json` 的 `permissions`（现在是空数组）：Agent 包本身就是一个 app。条目格式沿用 [App 包配置](../doc/sdk/app-package-config.md)，不新造一套；`agent.toml` 不放权限。
 - **授予**：安装时用户批准的是声明的子集；调度器据此下发授权。Loader 运行时以 app principal 身份使用这些授权，不自行扩大。
 - **用在哪**：
   - msg-center：读写 Agent DID 的 inbox、写 sent、写 Agent 名下的 UI 状态（§4.2）。**v1 先跳过**：现有 scope 里没有对应条目，不声明、不校验声明，直接按 msg-center 当前的行为使用（§9.1 第 16 项、§9.2）。
@@ -544,4 +544,3 @@ zone 形态下的 token 路径已在 DV 环境验证（§10.6）：页面先 `GE
 4. `agent.delegate`：把 `opendan_legacy/src/dispatch_adapter.rs` 一组搬过来，启动任务换成创建 work session（M5 删除 legacy 之前做，或先把这组文件留下）。
 5. §10.2 第 8、9、12、13、14 项；Agent State 服务的 zone 服务发现；`serve` / `run_session` 改用 `Supervisor`。
 6. `groupchat_route`、`self_check`、`self_improve_*`、`try_create_new_skill` 等 behavior 仍是旧结构（目录 `list` 时跳过并告警）；`[[loader.ui]] on = "msg.group"` 规则在 Jarvis 包里没有启用。
-

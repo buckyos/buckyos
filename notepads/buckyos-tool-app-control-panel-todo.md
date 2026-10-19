@@ -3,8 +3,7 @@
 > 状态：待实施  
 > 基线日期：2026-08-22  
 > 产品需求真相源：[`buckyos-websdk/doc/modules/app.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/app.md)<br>
-> 现有 Installer 设计清单：`notepads/app-installer-base-interface-todo.md`、
-> `notepads/app-installer-v0.5-implementation-todo.md`
+> Installer 的现行合同见 [App 安装协议](../doc/App%20安装协议.md)；旧基础接口/v0.5 清单已合并为 [历史摘要](../doc/pikg/history/installer-and-preinstall.md)。本任务记录不替代当前协议。
 
 本文只列出 **buckyos-tool 的 app 模块开始实现前**，Control Panel 及其直接依赖的基础服务
 必须补齐的能力。它不是 CLI 实现计划，也不重复 App Installer v0.5 已完成的通用 PIKG、
@@ -131,7 +130,7 @@ CLI 通过解析内部 Task JSON、system-config key 或 `app_instance_id` 拼�
 - [ ] 只看共享类型即可区分用户输入、Installer 推导结果、动态状态和运行结果。
 - [ ] CLI 可以把 typed Plan 序列化成 JSON，再无损提交回来；服务端不信任客户端填写的 OS、
   arch、capabilities 或最终 AppSpec，必须重新校验。
-- [ ] 与 `app-installer-base-interface-todo.md` 中 Target/Plan/Approval 未完成项合并收口，不再
+- [ ] 按当前安装协议核对 Target/Plan/Approval 边界；旧基础接口清单只用于历史追溯，不再
   保留两套相互矛盾的类型草案。
 
 影响入口：
