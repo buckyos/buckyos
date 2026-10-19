@@ -26,6 +26,7 @@ pnpm run build
 | [playwright.config.ts](playwright.config.ts) | 默认 Desktop 页面；部分 spec 有独立夹具或真实环境跳过条件 |
 | [playwright.aicc.config.ts](playwright.aicc.config.ts) | AI Center 模型与路由的 Mock UI |
 | [playwright.aiworkspace.config.ts](playwright.aiworkspace.config.ts) | `tests/aiworkspace`：真实独立后台、静态身份、受控模型、离线生产构建 |
+| [playwright.aiworkspace.zone.config.ts](playwright.aiworkspace.zone.config.ts) | [AI Workspace Zone DV](../../../doc/testing/aiworkspace-zone.md)：真实登录、同 Zone 双用户、权限、持久化、幂等及手机视口 |
 | [playwright.homestation.config.ts](playwright.homestation.config.ts) | HomeStation devnet 与 RSS 夹具 |
 | [playwright.real.config.ts](playwright.real.config.ts) | `tests/e2e/real`：已运行 Zone 或代理服务，需各 spec 的显式开关与数据前置 |
 | [playwright.dv.config.ts](playwright.dv.config.ts) | `tests/dv`：真实 Zone UI |
