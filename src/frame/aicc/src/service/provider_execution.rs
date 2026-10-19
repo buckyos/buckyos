@@ -1310,9 +1310,27 @@ impl RuntimeProviderExecutionPort {
                         &call.context,
                     )
                     .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                let response = Self::send_cancelable(cancellation, transport.send(request))
+                let mut response = Self::send_cancelable(cancellation, transport.send(request))
                     .await
                     .map_err(ProviderStartFailure::after_accept)?;
+                let continuation = self.codecs.continuation_request(
+                    &call.protocol_adapter_id, &call.operation, call.api_type,
+                    &response, &call.input, &call.context,
+                ).map_err(ProviderStartFailure::after_accept)?;
+                let mut continuation_usage = None;
+                if let Some((request, usage)) = continuation {
+                    continuation_usage = usage;
+                    response = Self::send_cancelable(cancellation, transport.send(request))
+                        .await.map_err(ProviderStartFailure::after_accept)?;
+                    if self.codecs.continuation_request(
+                        &call.protocol_adapter_id, &call.operation, call.api_type,
+                        &response, &call.input, &call.context,
+                    ).map_err(ProviderStartFailure::after_accept)?.is_some() {
+                        return Err(ProviderStartFailure::after_accept(ProtocolError::invalid_response(
+                            "Provider exceeded the observation handshake limit",
+                        )));
+                    }
+                }
                 let decoded = self
                     .codecs
                     .decode_with_input(
@@ -1327,6 +1345,10 @@ impl RuntimeProviderExecutionPort {
                 match decoded {
                     crate::protocol::ProtocolExecution::Immediate(output) => {
                         let mut output = output;
+                        if let Some(usage) = continuation_usage {
+                            merge_continuation_usage(output.usage.get_or_insert_with(Default::default), usage)
+                                .map_err(ProviderStartFailure::after_accept)?;
+                        }
                         if let AiccCall::DecisionEvaluate(request) = &call.input.canonical_request {
                             let output = Self::validate_decision_output(
                                 request,
@@ -2007,6 +2029,42 @@ fn merge_native_result_usage(
     }
 }
 
+fn merge_continuation_usage(target: &mut buckyos_api::AiUsage, source: buckyos_api::AiUsage) -> Result<(), ProtocolError> {
+    macro_rules! add {
+        ($($field:ident),*) => {$(
+            target.$field = match (target.$field, source.$field) {
+                (None, None) => None,
+                (left, right) => Some(left.unwrap_or(0).checked_add(right.unwrap_or(0))
+                    .ok_or_else(|| ProtocolError::invalid_response("continuation usage overflow"))?),
+            };
+        )*};
+    }
+    add!(input_tokens, output_tokens, total_tokens, cache_read_input_tokens,
+        cache_write_input_tokens, cache_write_1h_input_tokens, reasoning_tokens,
+        audio_input_tokens, image_input_tokens, audio_output_tokens, image_output_tokens,
+        image_units, request_units, characters);
+    macro_rules! add_float {
+        ($($field:ident),*) => {$(
+            if source.$field.is_some() {
+                let sum = target.$field.unwrap_or(0.0) + source.$field.unwrap_or(0.0);
+                if !sum.is_finite() { return Err(ProtocolError::invalid_response("continuation usage overflow")); }
+                target.$field = Some(sum);
+            }
+        )*};
+    }
+    add_float!(audio_seconds, video_seconds, reported_cost);
+    if let Some(cost) = source.cost {
+        if let Some(target_cost) = target.cost.as_mut() {
+            if target_cost.currency != cost.currency {
+                return Err(ProtocolError::invalid_response("continuation usage currency mismatch"));
+            }
+            target_cost.amount += cost.amount;
+            if !target_cost.amount.is_finite() { return Err(ProtocolError::invalid_response("continuation cost overflow")); }
+        } else { target.cost = Some(cost); }
+    }
+    Ok(())
+}
+
 fn health_failure_kind(error: &ProtocolError) -> HealthFailureKind {
     if error.is_account_exhausted() {
         HealthFailureKind::Permanent
@@ -2274,3 +2332,15 @@ mod tests {
         ));
     }
 }
+    #[test]
+    fn continuation_usage_sums_both_calls_and_rejects_currency_changes() {
+        let mut target = buckyos_api::AiUsage {input_tokens:Some(4),output_tokens:Some(3),total_tokens:Some(7),
+            request_units:Some(1),cost:Some(buckyos_api::AiCost::new(0.01,"USD")),..Default::default()};
+        let source = target.clone();
+        merge_continuation_usage(&mut target, source).unwrap();
+        assert_eq!(target.total_tokens, Some(14));
+        assert_eq!(target.request_units, Some(2));
+        assert_eq!(target.cost.as_ref().unwrap().amount, 0.02);
+        assert!(merge_continuation_usage(&mut target,buckyos_api::AiUsage {
+            cost:Some(buckyos_api::AiCost::new(1.0,"CNY")),..Default::default()}).is_err());
+    }

@@ -572,6 +572,7 @@ export function createT15MockHandler(
           scenarios.add("inline_artifact_success");
         }
         if (contract.async_protocol) {
+          if (contract.async_protocol === "openai_responses") scenarios.add("background_ignored");
           scenarios.add("async_success");
           scenarios.add("async_failed");
           scenarios.add("async_poll_timeout");
@@ -811,6 +812,22 @@ export function createT15MockHandler(
             status: "cancelled",
           });
         }
+      }
+      if (contract.async_protocol === "openai_responses" && url.pathname.startsWith(`${contract.path}/`)) {
+        const prior = requests.filter((item) => item.pathname === url.pathname);
+        const step = request.method === "POST" ? "cancel" : prior.length === 0 ? "poll" : "result";
+        const errors = captureAuxiliary(step);
+        if (errors.length) return json(response, 400, {type:"t15_mock_contract_violation",errors});
+        const status = step === "cancel" ? "cancelled"
+          : selection.scenario === "async_failed" ? "failed"
+          : selection.scenario === "async_poll_timeout" ? "in_progress" : "completed";
+        if (selection.scenario === "async_artifact_unavailable" && step === "result") {
+          return json(response, 404, {error:{type:"not_found",message:"Response expired"}});
+        }
+        const fixture = selection.api_type?.startsWith("image.") || selection.scenario === "inline_artifact_success"
+          ? contract.inline_artifact_success_fixture : contract.async_result_fixture;
+        return json(response, 200, {...structuredClone(fixture), id:"resp_background_mock_1", status,
+          ...(status === "failed" ? {error:{code:"server_error",message:"Generation failed"}} : {})});
       }
 
       if (contract.async_protocol === "fal_queue") {
@@ -1624,6 +1641,32 @@ export function createT15MockHandler(
       }
       if (selection.scenario === "missing_required_response_field") {
         return json(response, 200, {});
+      }
+      if (contract.async_protocol === "openai_responses") {
+        if (selection.scenario === "background_ignored") {
+          return json(response,200,{...contract.async_result_fixture,background:false,status:"completed"});
+        }
+        return json(response, 200, contract.success_fixture);
+      }
+      if (contract.computer_screenshot_handshake) {
+        const body = parsedBody as Record<string, unknown>;
+        const prior = requests.slice(0, -1).filter((item) => item.pathname === contract.path);
+        if (prior.length === 0) {
+          return json(response, 200, {id:"resp_observation_mock_1",status:"completed",
+            output:[{type:"computer_call",call_id:"call_observation_mock_1",actions:[{type:"screenshot"}]}],
+            usage:{input_tokens:4,output_tokens:3,total_tokens:7}});
+        }
+        const firstBody = prior[0].body as {input:Array<{content:Array<{image_url?:string}>}>};
+        const output = (body.input as Array<Record<string, unknown>>)?.[0];
+        const screenshot = output?.output as Record<string, unknown> | undefined;
+        const errors = body.previous_response_id === "resp_observation_mock_1" &&
+            output?.type === "computer_call_output" && output.call_id === "call_observation_mock_1" &&
+            screenshot?.type === "computer_screenshot" && screenshot.detail === "original" &&
+            screenshot.image_url === firstBody.input[0].content[1].image_url
+          ? [] : ["invalid computer screenshot call_id, response ID, or observation"];
+        requests.at(-1)!.validation_errors.push(...errors);
+        if (errors.length) return json(response, 400, {type:"t15_mock_contract_violation",errors});
+        return json(response, 200, contract.success_fixture);
       }
       if (contract.success_fixture_base64) {
         response.writeHead(200, {

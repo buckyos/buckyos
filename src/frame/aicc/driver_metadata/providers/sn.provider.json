@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 4,
+  "revision_seq": 5,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -43,10 +43,10 @@
       "id": "gpt-6-astra",
       "operations": {
         "llm": "responses.create",
-        "vision.ocr": "responses.create",
+        "vision.ocr": "responses.background",
         "vision.caption": "responses.create",
-        "image.txt2img": "responses.create",
-        "image.img2img": "responses.create",
+        "image.txt2img": "responses.background",
+        "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
       },
       "request_rules": [{"remove": ["/temperature", "/top_p", "/logprobs", "/top_logprobs"]}]
@@ -55,10 +55,10 @@
       "id": "gpt-6-sol",
       "operations": {
         "llm": "responses.create",
-        "vision.ocr": "responses.create",
+        "vision.ocr": "responses.background",
         "vision.caption": "responses.create",
-        "image.txt2img": "responses.create",
-        "image.img2img": "responses.create",
+        "image.txt2img": "responses.background",
+        "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
       },
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p", "/logprobs", "/top_logprobs"]}]
@@ -67,62 +67,62 @@
       "id": "gpt-6-luna",
       "operations": {
         "llm": "responses.create",
-        "vision.ocr": "responses.create",
+        "vision.ocr": "responses.background",
         "vision.caption": "responses.create",
-        "image.txt2img": "responses.create",
-        "image.img2img": "responses.create",
+        "image.txt2img": "responses.background",
+        "image.img2img": "responses.background",
         "agent.computer_use": "responses.create"
       },
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p", "/logprobs", "/top_logprobs"]}]
     },
     {
       "id": "gpt-5.6-sol",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create", "agent.computer_use": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background", "agent.computer_use": "responses.create"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.6-terra",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create", "agent.computer_use": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background", "agent.computer_use": "responses.create"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.6-luna",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create", "agent.computer_use": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background", "agent.computer_use": "responses.create"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.5-pro",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.5",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.4",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.4-pro",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.4-mini",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.4-nano",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create", "image.txt2img": "responses.create", "image.img2img": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create", "image.txt2img": "responses.background", "image.img2img": "responses.background"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {
       "id": "gpt-5.3-codex",
-      "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"},
+      "operations": {"llm": "responses.create", "vision.ocr": "responses.background", "vision.caption": "responses.create"},
       "request_rules": [{"when": {"/reasoning/effort": {"not": "none"}}, "remove": ["/temperature", "/top_p"]}]
     },
     {"id": "gpt-image-2", "operations": {"image.txt2img": "images.generate", "image.img2img": "images.edit", "image.inpaint": "images.edit"}},

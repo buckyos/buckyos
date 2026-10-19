@@ -122,12 +122,13 @@ sn|sn-openai|audio.asr|audio.transcriptions
 sn|sn-openai|audio.tts|audio.speech
 sn|sn-openai|embedding.text|embeddings.create
 sn|sn-openai|image.img2img|images.edit
-sn|sn-openai|image.img2img|responses.create
+sn|sn-openai|image.img2img|responses.background
 sn|sn-openai|image.inpaint|images.edit
 sn|sn-openai|image.txt2img|images.generate
-sn|sn-openai|image.txt2img|responses.create
+sn|sn-openai|image.txt2img|responses.background
 sn|sn-openai|llm|responses.create
 sn|sn-openai|vision.caption|responses.create
+sn|sn-openai|vision.ocr|responses.background
 sn|sn-openai|vision.ocr|responses.create
 typesafe|typesafe-systemone|decision|systemone.evaluate
 <!-- END GENERATED BINDINGS -->
@@ -136,3 +137,9 @@ Qwen 的 `responses.create` 委托 `openai-responses` 完成输出解码：若 p
 
 运行时的最终选择还取决于具体模型匹配到的 Provider Rules。本文档只描述所有可执行绑定，
 不表示每个模型都支持这里列出的全部 API type。
+
+SN 的 GPT OCR 和 Responses 生图由 `sn.provider.json` 选择 `responses.background`。该 operation 仅声明 NativeTask，提交使用 `POST responses` 与 `background=true`，状态和结果使用 `GET responses/{id}`，取消使用 `POST responses/{id}/cancel`。公开 immediate 请求仍返回统一的 BuckyOS task，不公开 Provider 原生执行模式；缺少上游异步能力时不切换同步接口。OpenAI 直连及其他派生 Provider 的 operation 配置不变。
+
+OpenAI computer-use 强制使用声明的 computer tool。首轮只请求 screenshot 时，Adapter 可将本次已授权的输入截图作为关联 `call_id` 的 `computer_call_output` 回传，并用 `previous_response_id` 续轮一次；不执行业务动作，不自动确认安全检查，不放宽调用方动作白名单。两轮 usage 合并后归入原 task。HTTP future 中断时，未绑定远端任务的本地执行进入结果未知的失败终态，不自动重发；已绑定原生任务或已暂存结果沿用持久生命周期恢复。
+
+公共内部执行端口变更的背景与必要性：单次 `encode/decode` 无法完成官方 computer-use 的截图握手，故增加默认不启用的 codec continuation hook，协议细节仍留在 OpenAI codec；无需让通用执行器识别厂商或模型名称。Gateway 断开导致 future 被丢弃时，任务可能停在已提交状态且失去执行者，这属于所有 Provider 共用的执行生命周期不变量，因此由执行 lease 统一收敛，不能只在 SN codec 修补。两处均不改变公共 kRPC、SDK DTO、资源权限或模型原厂参数。

@@ -12,6 +12,14 @@ import { FAILURE_CLASSES, RESULT_STATUSES } from "./types.ts";
 
 export const ACCEPTANCE_REPORT_SCHEMA_VERSION = 1 as const;
 
+export function resumedRunStartedAt(runId:string): string {
+  const match=/^aicc-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-[a-f0-9]{8}$/.exec(runId);
+  if(!match) throw new Error("invalid resume run ID");
+  const value=`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`;
+  if(!Number.isFinite(Date.parse(value))) throw new Error("invalid resume run timestamp");
+  return value;
+}
+
 const SECRET_KEY = /(?:api[_-]?key|authorization|password|private[_-]?key|session[_-]?token|refresh[_-]?token|access[_-]?token|cookie)/i;
 const SECRET_VALUE = /(?:bearer\s+[a-z0-9._~+/=-]+|sk-[a-z0-9_-]{12,}|-----BEGIN [A-Z ]+PRIVATE KEY-----)/ig;
 

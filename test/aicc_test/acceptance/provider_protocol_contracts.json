@@ -599,8 +599,14 @@
             "model",
             "input",
             "reasoning",
-            "tools"
+            "tools",
+            "tool_choice",
+            "previous_response_id"
           ],
+          "required_body_values": {
+            "/tool_choice": "required"
+          },
+          "computer_screenshot_handshake": true,
           "body_field_types": {
             "model": [
               "string"
@@ -623,12 +629,14 @@
                 "id": "computer_mock_1",
                 "call_id": "computer_call_mock_1",
                 "status": "completed",
-                "action": {
-                  "type": "click",
-                  "button": "left",
-                  "x": 640,
-                  "y": 360
-                },
+                "actions": [
+                  {
+                    "type": "click",
+                    "button": "left",
+                    "x": 640,
+                    "y": 360
+                  }
+                ],
                 "pending_safety_checks": []
               }
             ],

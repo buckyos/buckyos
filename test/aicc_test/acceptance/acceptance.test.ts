@@ -51,7 +51,8 @@ import {
   usageEventFinance,
 } from "./usage_audit.ts";
 import { selectSingleProviderInstances } from "./inventory_selection.ts";
-import { assertResponseShape, buildExactRequest } from "./payloads.ts";
+import { assertResponseShape, buildExactRequest, firstReusableResource } from "./payloads.ts";
+import {resumedRunStartedAt} from "./report.ts";
 import { manifestCoverage, routeExposureCoverage } from "./run_t1_gateway.ts";
 import {
   applyProviderTokens,
@@ -86,8 +87,11 @@ import { buildT1Coverage } from "./coverage.ts";
 import {
   callChatCompletions,
   callInference,
+  hasCompletedInference,
   openAiccArtifact,
   reauthenticatingRpcClient,
+  refreshingGatewaySession,
+  type GatewaySession,
   type RpcClient,
 } from "./gateway.ts";
 import {
@@ -109,6 +113,7 @@ import {
   buildT15TypedParams,
   exactModel,
   variantCells,
+  variantWireDiagnostics,
 } from "./run_t15_gateway.ts";
 import {
   createT15MockHandler,
@@ -203,7 +208,11 @@ function t15FieldValue(
     return [{ type: "text", text: "BUCKYOS-AICC-4827" }];
   }
   if (field === "content") return { parts: [{ text: "BUCKYOS-AICC-4827" }] };
-  if (field === "tools") return [{ type: "computer_preview" }];
+  if (field === "tools") return [{ type: contract.computer_screenshot_handshake ? "computer" : "computer_preview" }];
+  if (field === "input" && contract.computer_screenshot_handshake) {
+    return [{role:"user",content:[{type:"input_text",text:"Click the button"},
+      {type:"input_image",image_url:"data:image/png;base64,cG5n"}]}];
+  }
   if (
     field === "response_format" &&
     contract.id === "gemini.interactions.tts.v1beta"
@@ -3060,6 +3069,47 @@ test("T2 embedding assertion verifies usage, cost, space, count, and finite dime
     }), /item count|finite vector/);
 });
 
+test("generated-artifact continuation selects a complete ResourceRef, never manifest metadata", () => {
+  assert.deepEqual(firstReusableResource([{obj_id:"cyfile:metadata",mime:"image/png"},
+    {kind:"named_object",obj_id:"cyfile:resource",_content_type:"image"}]),{kind:"named_object",obj_id:"cyfile:resource"});
+  assert.throws(()=>firstReusableResource([{obj_id:"cyfile:metadata"}]),/ResourceRef/);
+  assert.throws(()=>firstReusableResource([{kind:"base64",data_base64:"aW1hZ2U="}]),/ResourceRef/);
+});
+
+test("resume completion lookup is owner-scoped and rejects ambiguous task keys", async () => {
+  const lookup=async(tasks:Array<{task_id:string}>,outcome="Succeeded")=>await hasCompletedInference({userId:"owner",idempotencyKey:"run:case",
+    taskManager:{call:async(method,params)=>{
+      if(method==="list_tasks"){
+        assert.equal(params.creator_user_id,"owner");assert.equal(params.idempotency_key,"run:case");return {tasks};
+      }
+      assert.equal(params.task_id,"t1");return {phase:"Terminal",outcome};
+    }}});
+  assert.equal(await lookup([{task_id:"t1"}]),true);
+  assert.equal(await lookup([{task_id:"t1"}],"Failed"),false);
+  assert.equal(await lookup([]),false);
+  await assert.rejects(()=>lookup([{task_id:"t1"},{task_id:"t2"}]),/multiple tasks/);
+});
+
+test("T2 resume retains the original audit window and rejects paths", () => {
+  assert.equal(resumedRunStartedAt("aicc-2026-10-19T09-42-55-268Z-f490ac88"),"2026-10-19T09:42:55.268Z");
+  assert.throws(()=>resumedRunStartedAt("../../aicc-run"),/invalid resume/);
+});
+
+test("T2 typed image results are independent of optional provider message content", () => {
+  const cell = {
+    case_id:"image",provider_driver:"sn-ai-provider",provider_instance:"one",
+    exact_model:"image@one",provider_model_id:"image",api_type:"image.txt2img",
+    method:"images.generate",baseline_status:"active" as const,input_kinds:["text"],
+    output_kinds:["image"],source_urls:[],
+  };
+  const response = {task_id:"task",status:"succeeded",usage:{input_tokens:2},
+    images:[{kind:"named_object",obj_id:"cyfile:test"}],
+    message:{role:"assistant",content:[{type:"text",text:""}]}};
+  assert.doesNotThrow(() => assertResponseShape(cell,response));
+  assert.throws(() => assertResponseShape(cell,{...response,images:[]}),/artifact output/);
+  assert.throws(() => assertResponseShape(cell,{...response,images:[{kind:"named_object"}]}),/addressable/);
+});
+
 test("T2 successful protocol response cannot omit durable accounting fields", () => {
   const cell = {
     case_id: "llm",
@@ -3289,6 +3339,71 @@ test("T2 artifact downloads go through the authenticated AICC endpoint", async (
       artifact_id: "provider-artifact-1",
     },
   }]);
+});
+
+test("Gateway session renews all service clients and download credentials together", async () => {
+  const token = (exp: number) => `header.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.signature`;
+  const expiredToken = token(Math.floor(Date.now() / 1000) - 1);
+  const freshToken = token(Math.floor(Date.now() / 1000) + 900);
+  const calls: string[] = [];
+  const initialClient: RpcClient = { call: async () => { throw new Error("expired client must not be used"); } };
+  const initial: GatewaySession = { sessionToken: expiredToken, userId: "owner", aicc: initialClient, taskManager: initialClient, systemConfig: initialClient };
+  let logins = 0;
+  const session = refreshingGatewaySession(initial, async () => {
+    logins += 1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const client: RpcClient = { call: async (method) => { calls.push(method); return method; } };
+    return { sessionToken: freshToken, userId: "owner", aicc: client, taskManager: client, systemConfig: client };
+  });
+  assert.deepEqual(await Promise.all([
+    session.aicc.call("models.list", {}), session.taskManager.call("get_task", {}), session.systemConfig.call("sys_config_get", {}),
+  ]), ["models.list", "get_task", "sys_config_get"]);
+  await session.ensureAuthenticated?.();
+  assert.equal(logins, 1);
+  assert.equal(session.sessionToken, freshToken);
+  assert.equal(calls.length, 3);
+});
+
+test("T2 computer use grounds its click in a matching screenshot and viewport", () => {
+  const cell = {
+    case_id: "computer", provider_driver: "sn-ai-provider", provider_instance: "sn-test",
+    exact_model: "gpt-6-sol@sn-test", provider_model_id: "gpt-6-sol", api_type: "agent.computer_use",
+    method: "agent.computer_use", baseline_status: "active" as const,
+    input_kinds: ["text", "image"], output_kinds: ["computer_action"], source_urls: [],
+  };
+  const request = buildExactRequest({ cell, runId: "computer-test", fixtures: {} });
+  const input = (request.payload as { input_json: Record<string, unknown> }).input_json;
+  const environment = input.environment as { viewport: { width: number; height: number }; screenshot: { data_base64: string } };
+  const screenshot = Buffer.from(environment.screenshot.data_base64, "base64");
+  assert.equal(screenshot.readUInt32BE(16), environment.viewport.width);
+  assert.equal(screenshot.readUInt32BE(20), environment.viewport.height);
+  assert.deepEqual(environment.viewport, { width: 1280, height: 720 });
+  assert.match(String(input.task), /click.*blue rectangular button/);
+  const response = (type: string, x: number, y: number) => ({
+    task_id: "computer-task", status: "succeeded", usage: {}, cost: {},
+    actions: [{ type, x, y }], requires_next_observation: true,
+  });
+  assert.doesNotThrow(() => assertResponseShape(cell, response("left_click", 610, 350)));
+  assert.throws(() => assertResponseShape(cell, response("left_click", 100, 100)), /inside the screenshot button/);
+  assert.throws(() => assertResponseShape(cell, response("right_click", 640, 360)), /inside the screenshot button/);
+});
+
+test("Gateway session retries only expired authentication and preserves request identity", async () => {
+  let logins = 0;
+  const params = { idempotency_key: "same-call" };
+  const initialClient: RpcClient = { call: async () => { throw new Error("Invalid token: ExpiredSignature"); } };
+  const session = refreshingGatewaySession({ sessionToken: "opaque", userId: "owner", aicc: initialClient, taskManager: initialClient, systemConfig: initialClient }, async () => {
+    logins += 1;
+    const client: RpcClient = { call: async (method, request) => {
+      assert.equal(request, params);
+      if (method === "model-failure") throw new Error("Provider returned HTTP 500");
+      return "ok";
+    } };
+    return { sessionToken: "renewed", userId: "owner", aicc: client, taskManager: client, systemConfig: client };
+  });
+  assert.equal(await session.aicc.call("inference", params), "ok");
+  await assert.rejects(session.aicc.call("model-failure", params), /Provider returned HTTP 500/);
+  assert.equal(logins, 1);
 });
 
 test("T2 request defaults are driven by the capability baseline cell", () => {
@@ -5188,6 +5303,37 @@ test("T1.5 async lifecycle validates and captures official poll/result wire", as
   );
 });
 
+test("computer Mock enforces screenshot correlation and background Mock forbids synchronous submits", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog,"sn-ai-provider","sn.openai-responses.computer.v1");
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request,response) => void handler(request,response));
+  await new Promise<void>((resolvePromise) => server.listen(0,"127.0.0.1",resolvePromise));
+  context.after(() => new Promise<void>((resolvePromise,reject) => server.close((error) => error ? reject(error) : resolvePromise())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await fetch(`${baseUrl}/__mock/select`,{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({provider_driver:"sn-ai-provider",contract_id:contract.id,api_type:"agent.computer_use",scenario:"success"})});
+  const first = t15ProviderRequest(baseUrl,contract,"gpt-6-sol");
+  const response = await (await fetch(first.url,first.init)).json() as {id:string;output:Array<{call_id:string;actions:Array<{type:string}>}>};
+  assert.equal(response.output[0].actions[0].type,"screenshot");
+  const body = JSON.parse(first.init.body as string);
+  const follow = {...body,previous_response_id:response.id,input:[{type:"computer_call_output",call_id:"wrong",
+    output:{type:"computer_screenshot",image_url:body.input[0].content[1].image_url,detail:"original"}}]};
+  assert.equal((await fetch(first.url,{...first.init,body:JSON.stringify(follow)})).status,400);
+  follow.input[0].call_id = response.output[0].call_id;
+  const final = await fetch(first.url,{...first.init,body:JSON.stringify(follow)});
+  assert.equal(final.status,200);
+  assert.equal((await final.json()).output[0].actions[0].type,"click");
+  const background = protocolContract(catalog,"sn-ai-provider","sn.openai-responses.background.v1");
+  const request = t15ProviderRequest(baseUrl,background,"gpt-6-sol");
+  const fields = JSON.parse(request.init.body as string);
+  fields.background = false;
+  assert.ok(validateProviderRequest(background,{method:"POST",pathname:background.path,query:new URLSearchParams(),
+    headers:new Headers(request.init.headers),body:fields}).some((error) => error.includes("background")));
+});
+
 test("T1.5 Provider mock completes every declared async lifecycle", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
   const handler = createT15MockHandler(catalog);
@@ -5218,6 +5364,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
   assert.deepEqual(
     new Set(asyncContracts.map(({ contract }) => contract.async_protocol)),
     new Set([
+      "openai_responses",
       "openai_video",
       "fal_queue",
       "minimax_video_v2",
@@ -5588,6 +5735,28 @@ test("T1.5 variants are independently derived from official expectations", async
   );
 });
 
+test("SN OCR variants select synchronous or background contracts by documented model scope", async () => {
+  const catalog = structuredClone(await loadProviderProtocolCatalog());
+  const provider = catalog.providers.find((item) => item.provider_driver === "sn-ai-provider")!;
+  const selected = ["gpt-6-sol","kimi-k3","qwen3.7-plus"];
+  provider.official_variant_rules = provider.official_variant_rules!.map((rule) => ({...rule,
+    model_ids:rule.model_ids.filter((model) => selected.includes(model))})).filter((rule) => rule.model_ids.length);
+  const models = provider.official_variant_rules.flatMap((rule) => rule.model_ids.flatMap((model) => [
+    {exact_model:`${model}@sn-test`,provider_model_id:model,api_types:["vision.ocr"],logical_mounts:[]},
+    ...Object.keys(rule.variants).map((variant) => ({exact_model:`${model}:${variant}@sn-test`,
+      provider_model_id:`${model}:${variant}`,api_types:["vision.ocr"],logical_mounts:[]}))]));
+  const cells = variantCells(catalog,{provider_driver:"sn-ai-provider",provider_instance_name:"sn-test",models});
+  assert.ok(cells.length > 0);
+  for (const cell of cells) {
+    assert.equal(cell.contract_id,cell.model.provider_model_id.startsWith("gpt-")
+      ? "sn.openai-responses.background.v1" : "sn.openai-responses.v1");
+  }
+  const requests = [{body:{model:"gpt-6-sol",reasoning:{effort:"low"}}},{body:null},{body:null}];
+  assert.deepEqual(variantWireDiagnostics("gpt-6-sol",{reasoning:{effort:"low"}},requests),[]);
+  assert.ok(variantWireDiagnostics("gpt-6-sol",{reasoning:{effort:"high"}},requests).some((error) => error.includes("reasoning")));
+  assert.ok(variantWireDiagnostics("other",{},requests).some((error) => error.includes("model")));
+});
+
 test("T1.5 aggregate variants use their documented wire contract", async () => {
   const catalog = structuredClone(await loadProviderProtocolCatalog());
   const provider = catalog.providers.find((candidate) =>
@@ -5926,6 +6095,7 @@ test("report schema rejects version drift and duplicate case ids", () => {
 });
 
 test("named artifact validation reads and verifies ZIP entries", async () => {
+  let captured: Uint8Array | undefined;
   const bytes = new Uint8Array(
     await readFile(
       join(here, "../../jarvis_media_dv/assets/archive_mixed.zip"),
@@ -5941,7 +6111,11 @@ test("named artifact validation reads and verifies ZIP entries", async () => {
         },
       }),
     }),
-  }, { obj_id: "mix256:test", label: "application/zip" });
+  }, { obj_id: "mix256:test", label: "application/zip",capture:async (value,audit) => {
+    assert.equal(audit.size,value.length);
+    captured = new Uint8Array(value);
+  } });
+  assert.deepEqual(captured,bytes);
   assert.equal(audit.size, bytes.length);
   assert.match(audit.sha256, /^[0-9a-f]{64}$/);
   assert.ok((audit.archive_entries?.length ?? 0) > 0);

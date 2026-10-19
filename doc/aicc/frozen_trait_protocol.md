@@ -133,6 +133,8 @@ public DTO / AiccCall
 
 编码器接收 canonical request、已解析参数、已物化资源、endpoint、credential 和 limits。凭据不得进入 Debug、route trace、task data 或用户响应。
 
+`OperationCodec::continuation_request` 可依据官方协议从响应生成一次必要的无副作用续轮请求和该轮 usage；默认不续轮。执行端保留原任务、凭据、资源与取消边界，限制为一次续轮并合并 usage。当前仅用于 OpenAI computer-use 的 screenshot 握手，不执行调用方环境中的动作，也不将 Provider 异步协议降级为同步。
+
 ### 4.3 URL artifact 下载
 
 `open_artifact_url_reader(url, artifact_id?)` 的职责链冻结为：service 按精确 URL 查询持久来源并校验 tenant/可选 artifact id，找到原 ProviderInstance，ProviderInstance 解析自己的 credential，再按 `protocol_adapter_id` 调用 `CodecRegistry` 的 artifact 下载协议。默认 `ArtifactDownloadProtocol` 只允许与 Provider base URL 同 origin 的 HTTP(S) URL，使用 Provider credential 发起 GET，并返回有大小上限的异步 byte stream。

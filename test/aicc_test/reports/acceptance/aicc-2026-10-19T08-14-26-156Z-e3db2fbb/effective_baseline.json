@@ -1,0 +1,1800 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-19T08:14:43.678Z",
+  "source_baseline_revision": "2026-10-19.3",
+  "official_catalog_fetched_at": "2026-10-19T08:14:26.373Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_instance_name": "sn-ai-provider-default",
+      "attempt_count": 1,
+      "before_inventory_revision": "c1e4241e7fe7d6d355f6213f0820283e998fc2872c8805af03d4757402e5d7bf",
+      "refresh_inventory_revision": "52:1792386871620",
+      "unmatched_count": 0,
+      "after_inventory_revision": "c1e4241e7fe7d6d355f6213f0820283e998fc2872c8805af03d4757402e5d7bf"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "53:1792386871620",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "http://127.0.0.1:18081/compatible-mode/v1",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792338670318,
+          "state": "degraded"
+        },
+        "inventory": {
+          "model_count": 43,
+          "revision": "t15-qwen-t15-20261018154540-3965387-qwen-isolation-3",
+          "state": "loaded",
+          "unavailable_presets": [
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-4.7",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "ZHIPU/GLM-5.3-Flash",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "low",
+              "provider_model_id": "qwen3.8-2.4t-a95b",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "medium",
+              "provider_model_id": "qwen3.8-2.4t-a95b",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "xhigh",
+              "provider_model_id": "qwen3.8-2.4t-a95b",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3.5-27b",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "qwen3.5-27b",
+              "reason": "missing_channel_mapping"
+            }
+          ],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "MiniMax-M2.1",
+            "MiniMax-M2.5",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-0731",
+            "deepseek-v4-pro",
+            "deepseek-v4-pro-0813",
+            "deepseek-v4.1-flash",
+            "glm-4.7",
+            "glm-5",
+            "glm-5.1",
+            "glm-5.2",
+            "glm-5.3",
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "kimi-k3"
+          ],
+          "updated_at_ms": 1792338670318
+        },
+        "protocol_adapter_id": "qwen-responses",
+        "provider_instance_name": "t15-20261018154540-3965387-qwen-isolation-3",
+        "provider_profile_id": "qwen",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792397667145,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 22,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-mini-tts",
+            "gpt-4o-transcribe-diarize",
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-image-2",
+            "kimi-k3",
+            "text-embedding-3-large",
+            "text-embedding-3-small"
+          ],
+          "updated_at_ms": 1792397667145
+        },
+        "operation_base_urls": {
+          "audio.speech": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "audio.transcriptions": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "embeddings.create": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "images.edit": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "images.generate": "https://sn.buckyos.ai/api/v1/ai/v1",
+          "videos.create": "https://sn.buckyos.ai/api/v1/ai/v1"
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 6060
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_instance_name": "sn-ai-provider-default",
+      "inventory_revision": "official-snapshot-2026-10-19T08:14:26.373Z",
+      "models": [
+        {
+          "provider_model_id": "glm-5"
+        },
+        {
+          "provider_model_id": "glm-5.3"
+        },
+        {
+          "provider_model_id": "gpt-4o-mini-transcribe"
+        },
+        {
+          "provider_model_id": "gpt-4o-mini-tts"
+        },
+        {
+          "provider_model_id": "gpt-4o-transcribe-diarize"
+        },
+        {
+          "provider_model_id": "gpt-5.3-codex"
+        },
+        {
+          "provider_model_id": "gpt-5.4"
+        },
+        {
+          "provider_model_id": "gpt-5.4-mini"
+        },
+        {
+          "provider_model_id": "gpt-5.4-nano"
+        },
+        {
+          "provider_model_id": "gpt-5.4-pro"
+        },
+        {
+          "provider_model_id": "gpt-5.5"
+        },
+        {
+          "provider_model_id": "gpt-5.5-pro"
+        },
+        {
+          "provider_model_id": "gpt-5.6-luna"
+        },
+        {
+          "provider_model_id": "gpt-5.6-sol"
+        },
+        {
+          "provider_model_id": "gpt-5.6-terra"
+        },
+        {
+          "provider_model_id": "gpt-6-astra"
+        },
+        {
+          "provider_model_id": "gpt-6-luna"
+        },
+        {
+          "provider_model_id": "gpt-6-sol"
+        },
+        {
+          "provider_model_id": "gpt-image-2"
+        },
+        {
+          "provider_model_id": "gpt-realtime-2.1"
+        },
+        {
+          "provider_model_id": "kimi-k3"
+        },
+        {
+          "provider_model_id": "sora-2"
+        },
+        {
+          "provider_model_id": "sora-2-pro"
+        },
+        {
+          "provider_model_id": "text-embedding-3-large"
+        },
+        {
+          "provider_model_id": "text-embedding-3-small"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_instance_name": "sn-ai-provider-default",
+      "inventory_revision": "c1e4241e7fe7d6d355f6213f0820283e998fc2872c8805af03d4757402e5d7bf",
+      "models": [
+        {
+          "exact_model": "glm-5.3:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "glm-5.3:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "glm-5.3:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "glm-5.3:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3@sn-ai-provider-default",
+          "provider_model_id": "glm-5.3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "glm-5:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5:reasoning-thinking@sn-ai-provider-default",
+          "provider_model_id": "glm-5:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5@sn-ai-provider-default",
+          "provider_model_id": "glm-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-4o-mini-transcribe@sn-ai-provider-default",
+          "provider_model_id": "gpt-4o-mini-transcribe",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr"
+          ],
+          "logical_mounts": [
+            "audio.asr",
+            "audio.asr.gpt-4o-mini-transcribe",
+            "audio.asr.openai"
+          ]
+        },
+        {
+          "exact_model": "gpt-4o-mini-tts@sn-ai-provider-default",
+          "provider_model_id": "gpt-4o-mini-tts",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.tts"
+          ],
+          "logical_mounts": [
+            "audio.tts",
+            "audio.tts.gpt-4o-mini-tts",
+            "audio.tts.openai"
+          ]
+        },
+        {
+          "exact_model": "gpt-4o-transcribe-diarize@sn-ai-provider-default",
+          "provider_model_id": "gpt-4o-transcribe-diarize",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr"
+          ],
+          "logical_mounts": [
+            "audio.asr",
+            "audio.asr.gpt-4o-transcribe-diarize",
+            "audio.asr.openai"
+          ]
+        },
+        {
+          "exact_model": "gpt-5.3-codex:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.3-codex:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.3-codex:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.3-codex:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.3-codex:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.3-codex:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.3-codex:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.3-codex:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.3-codex@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.3-codex",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-mini:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-mini:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-mini:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-mini:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-mini:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-mini:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-mini:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-mini:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-mini:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-mini:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-mini@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-mini",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-nano:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-nano:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-nano:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-nano:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-nano:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-nano:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-nano:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-nano:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-nano:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-nano:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-nano@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-nano",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-pro:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-pro:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-pro:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-pro:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-pro:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-pro:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4-pro@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4-pro",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.4@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.4",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5-pro:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5-pro:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5-pro:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5-pro:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5-pro:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5-pro:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5-pro@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5-pro",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.5@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-luna@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-luna",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-sol@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-sol",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-5.6-terra@sn-ai-provider-default",
+          "provider_model_id": "gpt-5.6-terra",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-astra:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-astra:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-astra:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-astra:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-astra:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-astra:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-astra:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-astra:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-astra:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-astra:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-astra@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-astra",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-luna@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-luna",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol:reasoning-medium@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol:reasoning-none@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol:reasoning-xhigh@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-6-sol@sn-ai-provider-default",
+          "provider_model_id": "gpt-6-sol",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "agent.computer_use",
+            "image.img2img",
+            "image.txt2img",
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "gpt-image-2@sn-ai-provider-default",
+          "provider_model_id": "gpt-image-2",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.inpaint",
+            "image.txt2img"
+          ],
+          "logical_mounts": [
+            "image.img2img",
+            "image.img2img.gpt-image-2",
+            "image.img2img.gpt_image",
+            "image.img2img.openai",
+            "image.inpaint",
+            "image.inpaint.gpt-image-2",
+            "image.inpaint.openai",
+            "image.txt2img",
+            "image.txt2img.gpt-image-2",
+            "image.txt2img.gpt_image",
+            "image.txt2img.openai"
+          ]
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-high@sn-ai-provider-default",
+          "provider_model_id": "kimi-k3:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-low@sn-ai-provider-default",
+          "provider_model_id": "kimi-k3:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-max@sn-ai-provider-default",
+          "provider_model_id": "kimi-k3:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3@sn-ai-provider-default",
+          "provider_model_id": "kimi-k3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "text-embedding-3-large@sn-ai-provider-default",
+          "provider_model_id": "text-embedding-3-large",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "embedding.text"
+          ],
+          "logical_mounts": [
+            "embedding.text",
+            "embedding.text.openai",
+            "embedding.text.text-embedding-3-large"
+          ]
+        },
+        {
+          "exact_model": "text-embedding-3-small@sn-ai-provider-default",
+          "provider_model_id": "text-embedding-3-small",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "embedding.text"
+          ],
+          "logical_mounts": [
+            "embedding.text",
+            "embedding.text.openai",
+            "embedding.text.text-embedding-3-small"
+          ]
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-luna@sn-ai-provider-default",
+      "provider_model_id": "gpt-5.6-luna",
+      "physical_model_id": "gpt-5.6-luna",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-sol@sn-ai-provider-default",
+      "provider_model_id": "gpt-5.6-sol",
+      "physical_model_id": "gpt-5.6-sol",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-terra@sn-ai-provider-default",
+      "provider_model_id": "gpt-5.6-terra",
+      "physical_model_id": "gpt-5.6-terra",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-astra@sn-ai-provider-default",
+      "provider_model_id": "gpt-6-astra",
+      "physical_model_id": "gpt-6-astra",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-luna@sn-ai-provider-default",
+      "provider_model_id": "gpt-6-luna",
+      "physical_model_id": "gpt-6-luna",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-sol@sn-ai-provider-default",
+      "provider_model_id": "gpt-6-sol",
+      "physical_model_id": "gpt-6-sol",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-luna@sn-ai-provider-default",
+      "provider_model_id": "gpt-5.6-luna",
+      "physical_model_id": "gpt-5.6-luna",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-sol@sn-ai-provider-default",
+      "provider_model_id": "gpt-5.6-sol",
+      "physical_model_id": "gpt-5.6-sol",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-terra@sn-ai-provider-default",
+      "provider_model_id": "gpt-5.6-terra",
+      "physical_model_id": "gpt-5.6-terra",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-astra@sn-ai-provider-default",
+      "provider_model_id": "gpt-6-astra",
+      "physical_model_id": "gpt-6-astra",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-luna@sn-ai-provider-default",
+      "provider_model_id": "gpt-6-luna",
+      "physical_model_id": "gpt-6-luna",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-sol@sn-ai-provider-default",
+      "provider_model_id": "gpt-6-sol",
+      "physical_model_id": "gpt-6-sol",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.sn-ai-provider.sn-ai-provider-default.gpt-5.6-luna.agent.computer_use",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-luna@sn-ai-provider-default",
+      "api_type": "agent.computer_use",
+      "method": "agent.computer_use",
+      "input_kinds": [
+        "observation",
+        "action",
+        "environment_state",
+        "session_state"
+      ],
+      "output_kinds": [
+        "structured"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-ai-provider-default.gpt-5.6-sol.agent.computer_use",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-sol@sn-ai-provider-default",
+      "api_type": "agent.computer_use",
+      "method": "agent.computer_use",
+      "input_kinds": [
+        "observation",
+        "action",
+        "environment_state",
+        "session_state"
+      ],
+      "output_kinds": [
+        "structured"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-ai-provider-default.gpt-5.6-terra.agent.computer_use",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-5.6-terra@sn-ai-provider-default",
+      "api_type": "agent.computer_use",
+      "method": "agent.computer_use",
+      "input_kinds": [
+        "observation",
+        "action",
+        "environment_state",
+        "session_state"
+      ],
+      "output_kinds": [
+        "structured"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-ai-provider-default.gpt-6-astra.agent.computer_use",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-astra@sn-ai-provider-default",
+      "api_type": "agent.computer_use",
+      "method": "agent.computer_use",
+      "input_kinds": [
+        "observation",
+        "action",
+        "environment_state",
+        "session_state"
+      ],
+      "output_kinds": [
+        "structured"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-ai-provider-default.gpt-6-luna.agent.computer_use",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-luna@sn-ai-provider-default",
+      "api_type": "agent.computer_use",
+      "method": "agent.computer_use",
+      "input_kinds": [
+        "observation",
+        "action",
+        "environment_state",
+        "session_state"
+      ],
+      "output_kinds": [
+        "structured"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-ai-provider-default.gpt-6-sol.agent.computer_use",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-ai-provider-default",
+      "exact_model": "gpt-6-sol@sn-ai-provider-default",
+      "api_type": "agent.computer_use",
+      "method": "agent.computer_use",
+      "input_kinds": [
+        "observation",
+        "action",
+        "environment_state",
+        "session_state"
+      ],
+      "output_kinds": [
+        "structured"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://developers.openai.com/api/docs/models"
+      ]
+    }
+  ]
+}

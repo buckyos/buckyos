@@ -40,6 +40,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   "doubao-speech": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com", "help.aliyun.com"]),
   "sn-ai-provider": new Set([
+    "developers.openai.com",
     "github.com",
     "openrouter.ai",
     "platform.kimi.com",
@@ -66,6 +67,7 @@ export type ProviderProtocolContract = {
   conformance_test_model_ids?: Record<string, string[]>;
   native_history_matrix?: boolean;
   provider_switch_matrix?: boolean;
+  model_ids_by_api_type?: Record<string, string[]>;
   variant_api_types?: string[];
   operation: string;
   http_method: string;
@@ -108,6 +110,7 @@ export type ProviderProtocolContract = {
     | "claude_messages"
     | "gemini_interactions";
   async_protocol?:
+    | "openai_responses"
     | "fal_queue"
     | "gemini_interactions"
     | "minimax_video"
@@ -137,6 +140,7 @@ export type ProviderProtocolContract = {
     repeat: number;
   }>;
   async_result_fixture?: Record<string, unknown>;
+  computer_screenshot_handshake?: boolean;
   success_fixture_base64?: string;
   provider_artifact_identity?: {
     returns_api_types: string[];
@@ -665,6 +669,18 @@ export function validateProviderProtocolCatalog(
               );
             }
           }
+        }
+      }
+      if (contract.model_ids_by_api_type !== undefined) {
+        const scopes = object(contract.model_ids_by_api_type, `${id}.model_ids_by_api_type`);
+        for (const [apiType, values] of Object.entries(scopes)) {
+          if (![...(contract.api_types as string[]), ...((contract.variant_api_types as string[] | undefined) ?? [])].includes(apiType)) {
+            throw new Error(`${id}.model_ids_by_api_type has undeclared API ${apiType}`);
+          }
+          const models = stringArray(values, `${id}.model_ids_by_api_type.${apiType}`);
+          const pool = [...((provider.official_first_party_model_ids as Record<string,string[]> | undefined)?.[apiType] ?? []),
+            ...((provider.official_aggregated_model_ids as Record<string,string[]> | undefined)?.[apiType] ?? [])];
+          if (models.some((model) => !pool.includes(model))) throw new Error(`${id} model scope contains an undocumented model`);
         }
       }
       for (const [field, rawTypes] of Object.entries(bodyFieldTypes)) {
@@ -1498,12 +1514,36 @@ function validateNestedProviderBody(
       "body field input must be a non-empty array of strings or objects",
     );
   }
-  if (contract.operation === "responses.create" && Array.isArray(body.input)) {
+  if (["responses.create", "responses.background"].includes(contract.operation) && Array.isArray(body.input)) {
     validateOpenAiResponsesInput(
       body.input,
       errors,
       contract.id === "qwen.responses.compatible-v1",
     );
+  }
+  if (contract.computer_screenshot_handshake) {
+    const tools = Array.isArray(body.tools) ? body.tools : [];
+    if (tools.length !== 1 || recordValue(tools[0])?.type !== "computer") {
+      errors.push("computer-use requires exactly the computer tool");
+    }
+    const input = Array.isArray(body.input) ? body.input : [];
+    if (input.length !== 1) errors.push("computer-use requires one observation input");
+    const item = recordValue(input[0]);
+    if (body.previous_response_id !== undefined) {
+      const output = recordValue(item?.output);
+      if (typeof body.previous_response_id !== "string" || !body.previous_response_id ||
+          item?.type !== "computer_call_output" || typeof item.call_id !== "string" || !item.call_id ||
+          output?.type !== "computer_screenshot" || typeof output.image_url !== "string" ||
+          output.detail !== "original") {
+        errors.push("invalid computer_call_output screenshot observation");
+      }
+    } else {
+      const content = Array.isArray(item?.content) ? item.content : [];
+      if (item?.role !== "user" || content.length !== 2 || recordValue(content[0])?.type !== "input_text" ||
+          recordValue(content[1])?.type !== "input_image" || typeof recordValue(content[1])?.image_url !== "string") {
+        errors.push("computer-use requires task text and initial screenshot");
+      }
+    }
   }
   if (
     contract.operation === "chat.completions.create" &&
@@ -2613,6 +2653,14 @@ export function buildT15Manifest(
           } as AcceptanceCase);
         }
         if (apiType === primaryApiType && contract.async_protocol) {
+          if (contract.async_protocol === "openai_responses") {
+            cases.push({...common,
+              case_id:caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.background-ignored`),
+              mock_scenario:"background_ignored",expected_task_status:"failed",
+              expected_error_class:"provider_protocol_failed",
+              expected_wire_fixture:`${contract.id}.request.async`,response_fixture:`${contract.id}.background.ignored`,
+            } as AcceptanceCase);
+          }
           cases.push({
             ...common,
             case_id: caseId(

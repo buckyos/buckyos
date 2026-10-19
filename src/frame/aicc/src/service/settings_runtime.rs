@@ -488,9 +488,9 @@ impl ProviderValidator for RuntimeProviderValidator {
             operation_base_urls: request.operation_base_urls,
             region: request.region,
             workspace: request.workspace,
-            account: request.account,
+            account: request.account.clone(),
             auth,
-            dynamic_login_user_name: None,
+            dynamic_login_user_name: request.account,
         };
         match manager
             .validate_draft(

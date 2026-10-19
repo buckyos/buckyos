@@ -1253,6 +1253,14 @@ impl InferencePort for RuntimeInferencePort {
             })
             .await
             .map_err(|error| error.to_krpc_error())?;
+        if receipt.provider_task_ref.is_some() && !receipt.state.is_terminal() {
+            let execution = Arc::clone(&self.execution);
+            let task_id = receipt.task_id.clone();
+            let initial_poll_after = receipt.initial_poll_after;
+            tokio::spawn(async move {
+                let _ = execution.drive_native_after(&task_id, initial_poll_after).await;
+            });
+        }
         self.storage
             .write_route_trace(&RouteTraceRecord {
                 trace: AiccRouteTraceEvent {
@@ -1277,16 +1285,6 @@ impl InferencePort for RuntimeInferencePort {
             })
             .await
             .map_err(|error| inference_error(AiccErrorCode::InternalError, error.to_string()))?;
-        if receipt.provider_task_ref.is_some() && !receipt.state.is_terminal() {
-            let execution = Arc::clone(&self.execution);
-            let task_id = receipt.task_id.clone();
-            let initial_poll_after = receipt.initial_poll_after;
-            tokio::spawn(async move {
-                let _ = execution
-                    .drive_native_after(&task_id, initial_poll_after)
-                    .await;
-            });
-        }
         inference_response(receipt, public_route_trace(&routed.decision))
     }
 }

@@ -6,7 +6,9 @@ use super::{
 pub(crate) const SN_OPENAI_ADAPTER_ID: &str = "sn-openai";
 
 pub(crate) fn sn_openai_adapter() -> ProtocolResultValue<AdapterDescriptor> {
-    let (base, _) = openai_responses_adapter();
+    let (mut base, _) = openai_responses_adapter();
+    let (background, _) = super::openai_responses::background_responses_registration();
+    base.operations.insert(background.operation_id.clone(), background);
     Ok(AdapterDescriptor {
         protocol_family_id: base.protocol_family_id,
         protocol_adapter_id: SN_OPENAI_ADAPTER_ID.to_owned(),
@@ -22,5 +24,8 @@ pub(crate) fn sn_openai_adapter() -> ProtocolResultValue<AdapterDescriptor> {
 }
 
 pub(crate) fn register_sn_openai_adapter(registry: &mut CodecRegistry) -> ProtocolResultValue<()> {
-    registry.register_derived(sn_openai_adapter()?, CodecRegistration::default())
+    let (_, native_task_codecs) = super::openai_responses::background_responses_registration();
+    registry.register_derived(sn_openai_adapter()?, CodecRegistration {
+        operation_codecs:Vec::new(),native_task_codecs,
+    })
 }

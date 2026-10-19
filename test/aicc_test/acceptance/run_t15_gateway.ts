@@ -1,4 +1,5 @@
 import { decisionInput, assertDecisionResult } from "./decision.ts";
+import {firstReusableResource} from "./payloads.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -313,6 +314,7 @@ async function capturedRequests(baseUrl: string): Promise<
     pathname?: string;
     body?: unknown;
     async_step?: "poll" | "result" | "cancel";
+    method?: string;
   }>
 > {
   const response = await fetch(`${baseUrl}/__mock/requests`);
@@ -1307,17 +1309,7 @@ function artifactSources(
 }
 
 function firstReusableArtifact(value: unknown): Record<string, unknown> {
-  const source = artifactSources(value).find((candidate) =>
-    typeof candidate.obj_id === "string" ||
-    typeof candidate.url === "string" ||
-    typeof candidate.data_base64 === "string"
-  );
-  if (!source) {
-    throw new Error(
-      "generated artifact source did not expose a reusable resource reference",
-    );
-  }
-  return source;
+  return firstReusableResource(artifactSources(value));
 }
 
 async function downloadUrlArtifacts(
@@ -1403,6 +1395,25 @@ export function assertT15ResponseMapping(
       `typed ${apiType} response is missing Provider operation attribution`,
     );
   }
+}
+
+export function variantWireDiagnostics(
+  expectedModel: string,
+  expectedOptions: Record<string, unknown>,
+  requests: Array<{body?:unknown;pathname?:string}>,
+): string[] {
+  const submit = requests.find((request) => request.body && typeof request.body === "object");
+  const body = submit?.body as Record<string,unknown> | undefined;
+  const diagnostics: string[] = [];
+  if (body?.model !== expectedModel && !submit?.pathname?.includes(encodeURIComponent(expectedModel))) {
+    diagnostics.push(`variant model was not lowered to ${expectedModel}`);
+  }
+  for (const [name,expected] of Object.entries(expectedOptions)) {
+    if (JSON.stringify(body?.[name]) !== JSON.stringify(expected)) {
+      diagnostics.push(`variant Provider option ${name} was not lowered to ${JSON.stringify(expected)}`);
+    }
+  }
+  return diagnostics;
 }
 
 async function executeCase(
@@ -1619,6 +1630,12 @@ async function executeCase(
   const observedAsyncSteps = new Set(
     requests.map((request) => request.async_step).filter(Boolean),
   );
+  if (contract.computer_screenshot_handshake && !expectsFailure) {
+    const turns = requests.filter((request) => request.method === "POST" && request.pathname === contract.path);
+    if (turns.length !== 2 || (turns[1].body as Record<string, unknown>)?.previous_response_id !== "resp_observation_mock_1") {
+      diagnostics.push("computer-use did not complete the correlated screenshot handshake");
+    }
+  }
   if (testCase.mock_scenario === "async_success") {
     for (
       const step of contract.async_steps?.filter((candidate) =>
@@ -1646,35 +1663,12 @@ async function executeCase(
     testCase.model_selector?.kind === "exact" &&
     model.exact_model === testCase.model_selector.value
   );
-  if (selectedModel?.provider_actual_model_id) {
-    const providerRequest = requests.at(-1);
-    const body =
-      providerRequest?.body && typeof providerRequest.body === "object"
-        ? providerRequest.body as Record<string, unknown>
-        : {};
-    if (
-      body.model !== selectedModel.provider_actual_model_id &&
-      !providerRequest?.pathname?.includes(
-        encodeURIComponent(selectedModel.provider_actual_model_id),
-      )
-    ) {
-      diagnostics.push(
-        `variant model was not lowered to ${selectedModel.provider_actual_model_id}`,
-      );
-    }
-    for (
-      const [name, expected] of Object.entries(
-        testCase.expected_provider_options ?? {},
-      )
-    ) {
-      if (JSON.stringify(body[name]) !== JSON.stringify(expected)) {
-        diagnostics.push(
-          `variant Provider option ${name} was not lowered to ${
-            JSON.stringify(expected)
-          }`,
-        );
-      }
-    }
+  const variantProvider = catalog.providers.find((provider) => provider.provider_driver === testCase.provider_driver);
+  const expectedVariantModel = selectedModel && variantProvider?.official_variant_rules?.flatMap((rule) =>
+    rule.model_ids.filter((modelId) => Object.keys(rule.variants).some((variant) =>
+      `${modelId}:${variant}` === selectedModel.provider_model_id))).at(0);
+  if (expectedVariantModel) {
+    diagnostics.push(...variantWireDiagnostics(expectedVariantModel,testCase.expected_provider_options ?? {},requests));
   }
   if (testCase.tags.includes("cloud_update")) {
     const body = requests.at(-1)?.body;
@@ -2180,8 +2174,9 @@ export function variantCells(
       return officialModels.size === 0 || officialModels.has(baseModelId);
     }).map((apiType) => {
       const candidates = provider.contracts.filter((candidate) =>
-          candidate.api_types.includes(apiType) ||
-          candidate.variant_api_types?.includes(apiType)
+          (candidate.api_types.includes(apiType) ||
+          candidate.variant_api_types?.includes(apiType)) &&
+          (!candidate.model_ids_by_api_type?.[apiType] || candidate.model_ids_by_api_type[apiType].includes(baseModelId))
         );
       const aggregated = new Set(
         provider.official_aggregated_model_ids?.[apiType] ?? [],

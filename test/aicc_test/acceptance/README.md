@@ -108,6 +108,18 @@ T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。
 
+T2 在提供用户名和密码时会提前续期 Gateway 登录，并在服务明确返回 token 过期时重新登录后重发同一请求，保留原 idempotency key；Provider 协议或推理错误不会触发此重发。RPC、任务查询和 NDN 下载使用同一份更新后的登录凭据。仅提供 session token 时无法自动重新登录，应确保其有效期覆盖整轮测试。计划调用数和费用包含按模型/源 API 去重的生成物前置调用。
+
+`agent.computer_use` 使用 `generate_fixtures.py` 生成的 1280×720 截图，其中只有一个蓝色按钮；请求要求单次左键点击，断言坐标位于按钮范围内且需要下一次观察。截图与 viewport 一致，不要求模型输出固定中心像素。该用例依据 [OpenAI computer-use 官方流程](https://developers.openai.com/api/docs/guides/tools-computer-use)：允许协议先请求截图，AICC 最多使用当前输入 observation 完成一次无副作用握手，业务动作白名单不放宽，也不在真实桌面执行点击。调用预算为每个 computer-use 单元最多两次上游请求，费用估算亦按两次预留；AICC usage.request_units 记录实际轮数。
+
+已确认的外部协议缺口可用 `--skip-case '完整case_id=证据与原因'` 显式登记；只能跳过本轮选定的单元，报告保留 `platform_limitation`、零调用和原因，不计为通过。SN 的 Responses 生图和 GPT OCR 使用独立的 `responses.background` NativeTask operation；不支持异步提交或查询时不回退同步协议。背景任务的 T1.5 依据 [Responses background 官方协议](https://developers.openai.com/api/docs/guides/background) 验证提交、查询、结果、取消、失败、超时和过期响应。
+
+需要人工语义复核时，传入 `--capture-artifacts` 将已下载并通过结构校验的制品保存到本轮报告目录的 `artifacts/`，避免远端清理后失去复核依据；不会新增模型调用。该目录只保留本地证据，不能提交 Git，逐 case audit 的 `metadata.local_review_file` 记录本地路径。
+
+进程中断且尚未生成 `summary.md` 时，可用相同配置、目标及预算加 `--resume-run <run-id>` 恢复。必须保留该轮目录；Runner 复用原幂等键、原任务和用量审计时间窗，由 AICC 的请求指纹拒绝内容不一致的重放，不覆盖已有完整报告。调用计数含恢复时的幂等 RPC 重放，不能直接当成新增上游推理次数；新增任务及实际上游请求应通过 TaskMgr 和用量证据核对。恢复不会把 SN 异步缺口改为同步调用。
+
+恢复时先按当前 owner 和原幂等键核对 TaskMgr。已成功任务仅进行幂等回读，不占真实 Provider 的启动间隔；未完成或未创建的任务仍经过完整调度门禁。图生图等前置生成的结果复用只接受带 `kind` 和对应地址字段的 canonical `ResourceRef`，不把 `materialized_artifacts` 中的 `{obj_id, mime}` 清单项当作输入引用。T1.5 与 T2 共用此引用选择规则。
+
 TypeSafe 的 T1.5 依据官方 System One 文档，固定混合 choice/score/noul fixture 在 `fixtures/typesafe-systemone.json`。T2 的 decision cell 先携带题型/容量要求调用 `route.resolve`，再向所选 exact model 发一批三题，验证完整概率、已知标记、优先级和 usage。`--provider typesafe` 只执行当前有限 Jev 物理模型集合；线上调用仍需已配置实例、凭据与明确授权。
 
 OpenRouter Decisions 的独立 wire/catalog/schema fixture 在 `fixtures/openrouter-*`，
