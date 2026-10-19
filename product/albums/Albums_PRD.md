@@ -338,7 +338,7 @@ flowchart LR
 | Users & Agents / 系统身份与授权 | 选择当前 Zone 用户和内部用户组，复用身份、成员停用及授权来源 | [Users & Agents PRD](../users_and_agents/Users_Agents_PRD.md) |
 | File Browser / 系统文件选择 | 导入当前用户有权读取的来源文件；Albums 负责相册组织与托管结果 | [File Browser PRD](../bucky_file/filebrowser_PRD.md) |
 | Preview Component / Pipeline | 复用图片、视频、音频渲染与格式转换；Albums 提供源内容和浏览上下文 | [Preview PRD](../bucky_file/BuckyOS%20Preview%20App-Component%20PRD.md) |
-| 系统分享窗口 | 复用内部资源链接和成员选择；相册权限仍由 Albums 与系统授权共同约束 | [Share Content 说明](../control_panel/share_content.md) |
+| 系统分享窗口 | 复用内部资源链接和成员选择；相册权限仍由 Albums 与系统授权共同约束 | [sysdlg/share](<../BuckyOS Sys Dlg.md#sysdlgshare>) |
 | Task Center / TaskManager | 已进入服务端的持久处理任务接入统一任务体系，Albums 展示同一任务的业务进度；浏览器本地传输不伪装成后台任务 | [Task Center PRD](../task_center/TaskCenter_mgr.md) |
 | MessageHub | 基础版提供可由用户发送的内部链接，后续再接入相册更新通知 | [MessageHub PRD](../message_hub/MessageHub_Web_UI_PRD.md) |
 

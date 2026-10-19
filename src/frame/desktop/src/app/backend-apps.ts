@@ -13,6 +13,7 @@ export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'diagnostics',
   'users-agents',
   'my-network',
+  'my-content',
   'app-service',
   'preview',
   'aiworkspace',

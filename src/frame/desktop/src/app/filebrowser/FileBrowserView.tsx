@@ -54,6 +54,7 @@ import { PermissionsDialog } from './dialogs/PermissionsDialog'
 import type { PermissionsRequest } from './dialogs/PermissionsDialog'
 import type { TargetRequest } from './dialogs/MoveTargetDialog'
 import { commandState } from './menu/commands'
+import { SHARE_DIALOG_PATH, useSystemDialog } from '../../sysdlg'
 import './filebrowser.css'
 import type { FileItem } from './data/FolderReader'
 import { installFileBrowserData } from './data/install'
@@ -164,6 +165,7 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
   const { setBatchTask } = operationFeedback
   const [targetRequest, setTargetRequest] = useState<TargetRequest | null>(null)
   const [permissionsRequest, setPermissionsRequest] = useState<PermissionsRequest | null>(null)
+  const systemDialog = useSystemDialog()
   const busyRef = useRef(false)
   const [dragTarget, setDragTarget] = useState<string | null>(null)
   const [pathEditSignal, setPathEditSignal] = useState(0)
@@ -918,6 +920,9 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
         if (first) requestRename(pane, first)
         break
       case 'move-to': requestMove(pane, entries); break
+      case 'share':
+        if (first) void systemDialog.open(SHARE_DIALOG_PATH, { source: first.entry.path, title: first.entry.name })
+        break
       case 'permissions':
         if (first) setPermissionsRequest({ path: first.entry.path, name: first.entry.name, onSaved: () => pane.list.reload() })
         break

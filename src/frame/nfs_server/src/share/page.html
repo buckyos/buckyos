@@ -1,0 +1,183 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>{{TITLE}}</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5d6676; --line: #e3e6eb;
+  --accent: #2f6fde; --accent-text: #ffffff; --hover: #f0f3f8; --danger: #c43c3c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --card: #1c2027; --text: #e7eaf0; --muted: #9aa3b2; --line: #2c323c;
+    --accent: #5b8ef0; --accent-text: #0e1218; --hover: #232832; --danger: #ef7a7a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+main { max-width: 880px; margin: 0 auto; padding: 32px 16px 48px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+h1 { font-size: 20px; margin: 0 0 4px; word-break: break-word; }
+.meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.crumbs { margin: 16px 0 8px; font-size: 14px; color: var(--muted); word-break: break-all; }
+.crumbs a { color: var(--accent); text-decoration: none; }
+ul.items { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+ul.items li { display: flex; align-items: center; gap: 12px; padding: 10px 6px; border-bottom: 1px solid var(--line); }
+ul.items li:hover { background: var(--hover); }
+ul.items .icon { width: 22px; text-align: center; flex: none; }
+ul.items a.name { flex: 1; color: var(--text); text-decoration: none; word-break: break-all; }
+ul.items .size { color: var(--muted); font-size: 13px; flex: none; }
+.actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.btn { display: inline-block; border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 8px; padding: 8px 14px; text-decoration: none; cursor: pointer; font: inherit; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.preview { margin-top: 16px; }
+.preview img, .preview video { max-width: 100%; max-height: 70vh; border-radius: 8px; display: block; }
+.preview audio { width: 100%; }
+.preview pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; max-height: 60vh; overflow: auto; font-size: 13px; }
+form.lock { display: flex; flex-direction: column; gap: 12px; max-width: 360px; }
+form.lock input { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.error { color: var(--danger); font-size: 14px; min-height: 1.4em; }
+.foot { margin-top: 18px; color: var(--muted); font-size: 12px; text-align: center; }
+.empty { color: var(--muted); padding: 24px 0; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card" id="app"><div class="empty">…</div></div>
+  <div class="foot" id="foot"></div>
+</main>
+<script>
+(function () {
+  var BOOT = {{BOOT}};
+  var zh = /^zh/i.test(navigator.language || '');
+  var T = zh ? {
+    locked: '此分享需要密码', password: '密码', open: '打开', wrong: '密码不正确', limited: '尝试次数过多，请稍后再试',
+    download: '下载', openNew: '在新标签页打开', expires: '到期', never: '不自动到期', items: '项', root: '全部文件',
+    empty: '文件夹为空', unavailable: '分享不存在或已失效', foot: '通过 BuckyOS 分享 · 内容为分享时的快照', noPreview: '此类型不提供预览，请下载查看',
+    downloadOff: '分享者关闭了下载'
+  } : {
+    locked: 'This share is password protected', password: 'Password', open: 'Open', wrong: 'Wrong password', limited: 'Too many attempts, try again later',
+    download: 'Download', openNew: 'Open in new tab', expires: 'Expires', never: 'Does not expire', items: 'items', root: 'All files',
+    empty: 'This folder is empty', unavailable: 'This share does not exist or is no longer available', foot: 'Shared with BuckyOS · content is a snapshot taken when it was shared', noPreview: 'No preview for this type; download it to view',
+    downloadOff: 'The sharer turned off downloads'
+  };
+  var app = document.getElementById('app');
+  document.getElementById('foot').textContent = T.foot;
+
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    for (var k in (attrs || {})) {
+      if (k === 'text') e.textContent = attrs[k];
+      else if (k === 'onclick') e.onclick = attrs[k];
+      else e.setAttribute(k, attrs[k]);
+    }
+    (children || []).forEach(function (c) { if (c) e.appendChild(c); });
+    return e;
+  }
+  function size(n) {
+    if (n == null) return '';
+    var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + u[i];
+  }
+  function when(ts) { return ts ? new Date(ts * 1000).toLocaleString() : T.never; }
+  function enc(path) { return path.split('/').filter(Boolean).map(encodeURIComponent).join('/'); }
+  function contentUrl(path, dl) { return BOOT.base + '/d' + (path ? '/' + enc(path) : '') + (dl ? '?download=1' : ''); }
+  function params() { var p = new URLSearchParams(location.search); return { p: p.get('p') || '', f: p.get('f') || '' }; }
+  function go(q) { history.pushState(null, '', q ? '?' + q : location.pathname); render(); }
+
+  function lockForm() {
+    var input = el('input', { type: 'password', placeholder: T.password, autocomplete: 'current-password', 'aria-label': T.password });
+    var err = el('div', { class: 'error', role: 'alert' });
+    var form = el('form', { class: 'lock' }, [el('h1', { text: T.locked }), input, err, el('button', { class: 'btn primary', type: 'submit', text: T.open })]);
+    form.onsubmit = function (ev) {
+      ev.preventDefault();
+      fetch(BOOT.base + '/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: input.value }), credentials: 'same-origin' })
+        .then(function (r) {
+          if (r.ok) { BOOT.locked = false; render(); return; }
+          err.textContent = r.status === 429 ? T.limited : T.wrong;
+        });
+    };
+    app.replaceChildren(form);
+    input.focus();
+  }
+
+  function preview(file, path, allowDownload) {
+    var box = el('div', { class: 'preview' });
+    var url = contentUrl(path, false), mime = file.mime || '';
+    if (/^image\//.test(mime)) box.appendChild(el('img', { src: url, alt: file.name }));
+    else if (/^video\//.test(mime)) box.appendChild(el('video', { src: url, controls: '', preload: 'metadata' }));
+    else if (/^audio\//.test(mime)) box.appendChild(el('audio', { src: url, controls: '', preload: 'metadata' }));
+    else if (mime === 'text/plain') {
+      var pre = el('pre', { text: '…' });
+      box.appendChild(pre);
+      fetch(url, { headers: { Range: 'bytes=0-262143' }, credentials: 'same-origin' }).then(function (r) { return r.text(); }).then(function (t) { pre.textContent = t; });
+    } else if (mime !== 'application/pdf') box.appendChild(el('div', { class: 'empty', text: T.noPreview }));
+    var actions = el('div', { class: 'actions' }, [
+      allowDownload ? el('a', { class: 'btn primary', href: contentUrl(path, true), text: T.download }) : el('span', { class: 'meta', text: T.downloadOff }),
+      mime === 'application/pdf' || /^(image|video|audio)\//.test(mime) ? el('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener noreferrer', text: T.openNew }) : null
+    ]);
+    return [actions, box];
+  }
+
+  function header(m, extra) {
+    return [
+      el('h1', { text: m.title }),
+      el('div', { class: 'meta' }, [
+        el('span', { text: size(m.total_size) }),
+        m.kind === 'folder' && m.item_count != null ? el('span', { text: m.item_count + ' ' + T.items }) : null,
+        el('span', { text: T.expires + ': ' + when(m.expires_at) })
+      ].concat(extra || []))
+    ];
+  }
+
+  function crumbs(path) {
+    var parts = path.split('/').filter(Boolean), nodes = [el('a', { href: '#', text: T.root, onclick: function (e) { e.preventDefault(); go(''); } })];
+    parts.forEach(function (name, i) {
+      nodes.push(document.createTextNode(' / '));
+      var sub = parts.slice(0, i + 1).join('/');
+      nodes.push(i === parts.length - 1 ? el('span', { text: name }) : el('a', { href: '#', text: name, onclick: function (e) { e.preventDefault(); go('p=' + encodeURIComponent(sub)); } }));
+    });
+    return el('div', { class: 'crumbs' }, nodes);
+  }
+
+  function render() {
+    if (BOOT.locked) return lockForm();
+    var q = params(), path = q.f || q.p;
+    fetch(BOOT.base + '/meta?p=' + encodeURIComponent(path), { credentials: 'same-origin' }).then(function (r) {
+      if (r.status === 401) { BOOT.locked = true; return lockForm(); }
+      if (!r.ok) { app.replaceChildren(el('div', { class: 'empty', text: T.unavailable })); return; }
+      return r.json().then(function (m) {
+        document.title = m.title;
+        var nodes = header(m);
+        if (m.kind === 'file') {
+          if (path) nodes.push(crumbs(path));
+          nodes = nodes.concat(preview(m.file, path, m.allow_download));
+        } else {
+          nodes.push(crumbs(path));
+          if (!m.items.length) nodes.push(el('div', { class: 'empty', text: T.empty }));
+          var list = el('ul', { class: 'items' });
+          m.items.forEach(function (it) {
+            var sub = (path ? path + '/' : '') + it.name;
+            var link = el('a', { class: 'name', href: '#', text: it.name, onclick: function (e) {
+              e.preventDefault();
+              go((it.kind === 'dir' ? 'p=' : 'f=') + encodeURIComponent(sub));
+            } });
+            list.appendChild(el('li', {}, [el('span', { class: 'icon', text: it.kind === 'dir' ? '📁' : '📄' }), link, el('span', { class: 'size', text: size(it.size) })]));
+          });
+          nodes.push(list);
+        }
+        app.replaceChildren.apply(app, nodes);
+      });
+    });
+  }
+  window.addEventListener('popstate', render);
+  render();
+})();
+</script>
+</body>
+</html>

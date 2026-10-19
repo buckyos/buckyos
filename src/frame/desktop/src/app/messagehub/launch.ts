@@ -1,6 +1,19 @@
 import { z } from 'zod'
 import type { MessageHubContext } from './types'
 
+/** A share handed over by the system share dialog: an attachment (`objId`) or a link (`url`). */
+export const sharedLaunchSchema = z.object({
+  shareId: z.string().min(1),
+  objId: z.string().min(1).optional(),
+  name: z.string(),
+  size: z.number().optional(),
+  mime: z.string().nullable().optional(),
+  url: z.string().url().nullable().optional(),
+  title: z.string().optional(),
+})
+
+export type SharedLaunch = z.infer<typeof sharedLaunchSchema>
+
 export const messageHubLaunchSchema = z.object({
   kind: z.literal('messagehub'),
   entityId: z.string().startsWith('did:').nullable(),
@@ -9,6 +22,7 @@ export const messageHubLaunchSchema = z.object({
   /** Locates this message (the ObjId of its anchor) in the session and opens its details. */
   messageId: z.string().min(1).nullable().optional(),
   context: z.object({ viewerDid: z.string().startsWith('did:'), ownerDid: z.string().startsWith('did:'), mode: z.enum(['self', 'observe']) }),
+  share: sharedLaunchSchema.optional(),
 })
 
 /** Partial context from a route / launch; the viewer is always the logged-in user. */

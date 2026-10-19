@@ -99,7 +99,8 @@ VirtualPlane 只在 NamespacePlane 内部按 Node kind 路由,WebUI 不得感知
 - 导出根目录(export roots)由服务配置声明:哪些本地目录以哪个逻辑路径暴露。
   v1 至少支持多个 root 映射到当前 Zone 的 `cyfs:///` 命名空间一级子目录。
 - 鉴权:每个请求带 Verify Hub session token(NFSP §7.1 第一行),无凭证即匿名;授权按路径 ACL,
-  见 §11。分享链接走 `grant` 签发的 bearer cap(数据面尚不放行)。`uid/gid` 不进协议。
+  见 §11。分享(§12):`share.*` 的快照分享经 `share.<zone>/s/{token}` 放行;`grant` 签发的活子树
+  bearer cap 数据面仍不放行。`uid/gid` 不进协议。
 
 ---
 
@@ -237,7 +238,8 @@ View/Collection/namespace binding 成员显示"失联"并提供重新定位或 u
 | 视图 | `open_view` + 通用 `list(view_ref)` | 只读;`view_patch` 延后 |
 | 集合 | `create_collection` / `open_collection` / `collection_patch` + 通用 `list` | 完整;只管理引用/Group,不是上传目标 |
 | 搜索 | `search` | v1 只做 `name` mode,但**响应结构完整**(带 `match_source`/`sources[]`),后续加 mode 不改结构 |
-| 分享 | `grant` / `revoke` | 完整(bearer cap) |
+| 分享 | `grant` / `revoke` | 签发完整(活子树 bearer cap),数据面不放行 |
+| 分享(实现扩展) | `share.capabilities/plan/create/operation/get/list/update/stop/hide`、`share.app.handoff/report`、`share.public.list`、`share.stats` | 完整(§12,`hello` 广告 `share`) |
 | 派生 | `repr`(thumb256/thumb1024) | 完整(产物进 NamedStore) |
 | 通知 | `watch`(SSE) | 完整;统一 `container_changed(ref,revision)` + 有损 `resync` |
 
@@ -285,7 +287,8 @@ Node/Entry/list 报文也不得退回 Folder-only 形态。
   每次打开 reader 前 `verify_local_link` 重校 qcid,失配响亮失败(检测而非防护,
   失败模式正确)。
 - **Link → Store 单向提升**,触发时刻 = **对外承诺的生命周期超过本地文件时**:
-  - `grant` 分享一个文件/子树;
+  - `grant` 分享一个文件/子树(首期以 `share.*` 的分享快照实现:Store 模式写入 named store 并 pin,
+    §12;`grant` 本身与 commit 路径的 link 模式仍未接 NamedStore);
   - 生成 pinned URL;
   - (未来)`publish_dir` / 广告 Frozen。
   本地自用的 commit 保持 link;坏了会 `VerifyError`,由 Reconciler 重绑重算。
@@ -490,7 +493,8 @@ UTF-8 边界截断到 255 字节。目标目录是自身或源的后代时拒绝
 - 无凭证 = 匿名，只能到达授予 `public` 的路径。显式 Bearer 无效时报错（`PERMISSION_DENIED`，
   `reason: "unauthenticated"`）；失效 cookie 降级为匿名，保证公开内容可读。
 - User 主体按 `system/zone_owner_user_id` 区分 Zone owner 与普通用户；System/Device 主体
-  （Zone 服务、节点上的 CLI）视同 owner；App/Agent 主体暂不允许直接访问文件。
+  （Zone 服务、节点上的 CLI）视同 owner；App/Agent 主体只能调用 `share.*`（以其用户身份读源文件，审计记
+  app），其余方法与数据面一律拒绝（`reason: "delegated_session"`）。
 - hello 会话绑定发起它的身份，hello 结果带 `identity {user_id, role: admin|user|anonymous}`；
   之后身份不同的请求返回 `reason: "session_principal_changed"`，客户端重新 hello。watch、
   上传分片同样核对身份。Desktop 的列表缓存在身份变化时整体清空。
@@ -546,10 +550,30 @@ UTF-8 边界截断到 255 字节。目标目录是自身或源的后代时拒绝
 - 列表中的文件链接节点本身可见（名字与链接所在目录的权限一致），不暴露目标内容。
 - watch 连接建立后不随 token 过期而断开；`obj:sha256:` 锚点上的 meta 按内容共享（v1 用户 meta 只写
   `live:` 锚点）。
-- App/Agent 主体的文件访问、`grant` cap 的数据面放行、`library` 中“只能删除自己的文件”尚未实现。
+- App/Agent 主体的文件平面访问、`grant` 活子树 cap 的数据面放行、`library` 中“只能删除自己的文件”尚未实现。
 - ACL 路径按字节精确匹配。大小写不敏感或做 Unicode 归一化的文件系统（macOS APFS、Windows NTFS）上，
   换大小写/归一化形式可以绕开 `inherit=false` 的保护记录；当前只在 Linux 上提供该保证。
 - 独立模式未给 `--auth-test-config` 时不鉴权，非 loopback 监听会在启动时告警；debug API 只允许 owner 级主体。
 - 接受任意 target 的用户 token（与复制扩展一致），即同一用户在任何应用中拿到的 token 都可访问
   其文件；按应用收窄需要 App 级授权模型。
+
+## 12. 分享（ShareContentMgr，实现扩展）
+
+2026-10-19 实现，设计与实施记录见 `notepads/share-content-mgr-tech-design-todo.md`（§3 设计、§9 记录）。
+代码在 `src/frame/nfs_server/src/share/`，客户端见 websdk `nfsp.ts` 的 `share*` 方法、CLI `buckyos share`、
+Desktop `sysdlg/share` 与“我的内容”。
+
+- **快照**：源需 `read` 权限（同进程 `resolve_for`），文件/目录写成 FileObject / DirObject，字节以 32 MiB
+  分段读入、哈希并以 Store 模式写入本节点 named store（单 chunk ≤ 32 MiB，更大用 chunk list），pin owner
+  `share:<share_id>`。目录默认排除 `.git/`、`node_modules/`、`.env*`、`*.key`、`*.pem`、`.DS_Store`、符号链接与无读
+  权限项。≤ 64 MiB 请求内完成，更大的后台执行并（可用时）镜像为 `nfs.share_snapshot/v1` 任务。
+- **数据面**：`share.<zone>/s/{token}`（页面）、`/meta`、`/unlock`、`/d[/{inner}]`；每请求校验凭据、到期与状态，
+  不可用一律 404；只认 `obj:` 快照凭据。token 为 `HMAC(secret, cap_id)`，`grants` 只存其 sha256。密码 pbkdf2-sha256，
+  解锁 cookie 随 `password_rev` 失效，每 token 每分钟 10 次。HTML 等只下载不渲染，响应带 `CSP: sandbox`。
+  `share.<zone>` 上 `/nfs/v1/*` 返回 404（按 `X-Forwarded-Host`/`Host` 判断）。
+- **数据**：filedb 新表 `share_*`、`public_observations`；凭据仍在 `grants`。sweeper 每分钟处理到期与停止中的分享，
+  统计每 5 秒落库、按小时聚合、访问日志保留 90 天，Public 每 5 分钟扫描。
+- **`access_urls`**：`srv/publish` 下的文件增加 `public`；单节点查询时，调用者自己的有效链接增加 `signed`。
+- **独立模式**：`--named-store <dir>` 开启分享，`--share-base-url`（默认 `http://<listen>`）、`--public-base-url`；
+  未鉴权时所有调用者视为用户 `local`。
 

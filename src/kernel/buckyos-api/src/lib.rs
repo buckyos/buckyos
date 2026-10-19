@@ -3,7 +3,6 @@ use std::env;
 
 use log::{info, warn};
 
-mod content_mgr_client;
 mod control_panel;
 mod device_identity;
 mod msg_center_client;
@@ -13,6 +12,7 @@ mod aiworkspace_client;
 mod homestation_client;
 mod nfs_server_client;
 mod nfs_copy;
+mod nfs_share;
 pub mod msg_queue;
 mod scheduler_client;
 mod sn_user_client;
@@ -60,7 +60,6 @@ pub use app_doc::*;
 pub use app_identity::*;
 pub use app_install::*;
 pub use app_schema::*;
-pub use content_mgr_client::*;
 pub use control_panel::*;
 pub use cyfs_gateway_api::{
     generate_sn_device_token, get_real_sn_host_name, sn_auth_login, sn_auth_register,
@@ -83,6 +82,7 @@ pub use system_config::*;
 pub use task_dispatcher::*;
 pub use task_mgr::*;
 pub use nfs_copy::*;
+pub use nfs_share::*;
 pub use taskdata::*;
 pub use thunk_object::*;
 pub use verify_hub_client::*;

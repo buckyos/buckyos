@@ -53,6 +53,9 @@ pub enum Actor {
     /// Zone owner, a trusted system service, or standalone mode without auth.
     Admin(Option<String>),
     User(String),
+    /// An App or Agent session acting for `user` (D13): only `share.*`
+    /// accepts it, as that user's file actor; path ACLs never grant it.
+    Delegated { user: String, app: String, admin: bool },
     Anonymous,
 }
 
@@ -60,8 +63,25 @@ impl Actor {
     pub fn user_id(&self) -> Option<&str> {
         match self {
             Actor::Admin(u) => u.as_deref(),
-            Actor::User(u) => Some(u),
+            Actor::User(u) | Actor::Delegated { user: u, .. } => Some(u),
             Actor::Anonymous => None,
+        }
+    }
+
+    /// The app behind a delegated session.
+    pub fn app_id(&self) -> Option<&str> {
+        match self {
+            Actor::Delegated { app, .. } => Some(app),
+            _ => None,
+        }
+    }
+
+    /// The actor whose file access a delegated session borrows.
+    pub fn file_actor(&self) -> Actor {
+        match self {
+            Actor::Delegated { user, admin: true, .. } => Actor::Admin(Some(user.clone())),
+            Actor::Delegated { user, .. } => Actor::User(user.clone()),
+            other => other.clone(),
         }
     }
 
@@ -72,12 +92,16 @@ impl Actor {
     pub fn label(&self) -> String {
         match self {
             Actor::Admin(Some(u)) | Actor::User(u) => format!("{}{}", USER_PREFIX, u),
+            Actor::Delegated { user, app, .. } => format!("app:{}@{}", app, user),
             Actor::Admin(None) => "system".to_string(),
             Actor::Anonymous => PUBLIC.to_string(),
         }
     }
 
     fn matches(&self, principal: &str) -> bool {
+        if matches!(self, Actor::Delegated { .. }) {
+            return false;
+        }
         match principal {
             PUBLIC => true,
             ZONE_USERS => !matches!(self, Actor::Anonymous),
@@ -183,6 +207,9 @@ impl AclTable {
         if actor.is_admin() {
             return Level::Manage;
         }
+        if matches!(actor, Actor::Delegated { .. }) {
+            return Level::None;
+        }
         if let (Some(owner), Some(me)) = (home_owner(root, rel), actor.user_id()) {
             if owner == me {
                 return Level::Manage;
@@ -205,6 +232,7 @@ impl AclTable {
         match actor {
             Actor::Admin(_) => Level::Read,
             Actor::User(_) => Level::Traverse,
+            Actor::Delegated { .. } => Level::None,
             Actor::Anonymous => {
                 let map = self.map.read().unwrap();
                 if map.values().any(|r| r.grant_for(actor) >= Level::Read) {

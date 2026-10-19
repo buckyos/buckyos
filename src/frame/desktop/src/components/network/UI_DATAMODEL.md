@@ -112,6 +112,7 @@ type RequestItem =
 - `useLookup(input, { kinds, limit })`：250ms 防抖调用 `contact.lookup`；15 秒内相同问题共享答案；任一关系变更后清空并重问（不闪 loading）。
 - 结果按 `section` 分段：`resolved`（查找结果）→ `relation`（我的关系）→ `zone`（本 Zone）；宿主解析器（`FindPeopleResolver`）的结果单独成段，段标题由宿主给。
 - 空输入返回本人联系人与本 Zone 用户，PeoplePicker 用它做默认列表。
+- 真实后端支持 HTTP(S) 站点根地址（可带末尾 `/`），按配置将 Web3 bridge 域名还原为 DID；例如 `https://lurenpluto.web3.buckyos.ai` 查找 `did:bns:lurenpluto`。URL 解析由 `contact.lookup` 统一处理，前端与 SDK 透传原始输入。
 
 ### 4.1 五种状态
 

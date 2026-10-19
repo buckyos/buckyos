@@ -488,7 +488,7 @@ impl AppState {
             }
         }
         if want.has("access") {
-            out["access_urls"] = json!(self.access_urls(node));
+            out["access_urls"] = json!(self.access_urls(actor, node, true));
         }
         if want.has("meta") {
             let anchors = self.meta_anchors(node)?;
@@ -557,24 +557,26 @@ impl AppState {
         Ok(out)
     }
 
-    fn access_urls(&self, node: &Node) -> Vec<Value> {
-        match node {
-            Node::Native { root, rel, meta, .. } if meta.kind != "dir" => {
-                let r = self.node_ref(node);
-                let node_id = match &r {
-                    WireRef::Live { node_id, .. } => node_id.clone(),
-                    _ => unreachable!(),
-                };
-                vec![
-                    json!({"kind": "fs", "url": canonical_path(root, rel), "primary": true}),
-                    json!({"kind": "read", "url": format!("/nfs/v1/read/{}", node_id)}),
-                ]
+    /// NFSP §3.6 access URLs: `fs`, `read` (session-authorized), `public` for
+    /// files under `srv/publish` (served as `public.<zone>`), and — for the
+    /// caller's own active share links, on single-node lookups — `signed`.
+    fn access_urls(&self, actor: &Actor, node: &Node, with_signed: bool) -> Vec<Value> {
+        let Node::Native { root, rel, meta, .. } = node else { return Vec::new() };
+        let mut out = vec![json!({"kind": "fs", "url": canonical_path(root, rel), "primary": true})];
+        if meta.kind != "dir" {
+            if let WireRef::Live { node_id, .. } = self.node_ref(node) {
+                out.push(json!({"kind": "read", "url": format!("/nfs/v1/read/{}", node_id)}));
             }
-            Node::Native { root, rel, .. } => {
-                vec![json!({"kind": "fs", "url": canonical_path(root, rel), "primary": true})]
+            if let Some(url) = crate::share::public::in_publish(root, rel).and_then(|r| crate::share::public::public_url(self, &r)) {
+                out.push(json!({"kind": "public", "url": url}));
             }
-            _ => Vec::new(),
         }
+        if with_signed {
+            if let Some(user) = actor.user_id() {
+                out.extend(self.share_signed_urls(user, &canonical_path(root, rel)));
+            }
+        }
+        out
     }
 
     /// Meta anchor strings for a node: `live:n_<id>` plus `obj:sha256:<hash>`
@@ -899,7 +901,7 @@ impl AppState {
                 attrs.insert("_ino".into(), json!(meta.id.ino));
             }
             if want.has("access") {
-                attrs.insert("access_urls".into(), json!(self.access_urls(node)));
+                attrs.insert("access_urls".into(), json!(self.access_urls(actor, node, false)));
             }
         }
         Ok(json!({

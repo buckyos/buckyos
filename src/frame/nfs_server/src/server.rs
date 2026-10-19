@@ -44,11 +44,18 @@ pub fn build_router(state: SharedState) -> Router {
             "/nfs/v1/uploads/{fb}",
             patch(upload_patch).head(upload_head).layer(axum::extract::DefaultBodyLimit::disable()),
         )
-        .route("/nfs/v1/{method}", post(control_handler));
+        .route("/nfs/v1/{method}", post(control_handler))
+        .route("/s/{token}", get(crate::share::serving::page))
+        .route("/s/{token}/meta", get(crate::share::serving::meta))
+        .route("/s/{token}/unlock", post(crate::share::serving::unlock))
+        .route("/s/{token}/d", get(crate::share::serving::download_root))
+        .route("/s/{token}/d/{*inner}", get(crate::share::serving::download_inner));
     if state.config.debug_api {
         router = router.route("/nfs/v1/debug/{action}", post(debug_handler));
     }
-    router.with_state(state)
+    router
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::share::serving::host_guard))
+        .with_state(state)
 }
 
 // ---------- control plane ----------
@@ -85,6 +92,11 @@ async fn control_handler(
         Ok(a) => a,
         Err(e) => return envelope_error(&state, e),
     };
+    if !(method == "hello" || method == "bye" || method.starts_with("share.")) {
+        if let Err(e) = crate::auth::require_file_actor(&actor) {
+            return envelope_error(&state, e);
+        }
+    }
     if method == "hello" {
         return match op_hello(&state, &env, actor) {
             Ok(v) => envelope_ok(&state, v),
@@ -102,7 +114,8 @@ async fn control_handler(
         };
     }
     // Exactly-once for write ops (NFSP §6.3).
-    let is_write = WRITE_METHODS.contains(&method.as_str());
+    let is_write = WRITE_METHODS.contains(&method.as_str())
+        || crate::share::rpc::WRITE_METHODS.contains(&method.as_str());
     if is_write {
         let seq = match env.seq {
             Some(s) => s,
@@ -120,7 +133,7 @@ async fn control_handler(
             }
             Err(e) => return envelope_error(&state, e),
         }
-        let result = dispatch(&state, &actor, &method, &env, &session).await;
+        let result = dispatch(&state, &actor, &method, &env, &session, creds.bearer()).await;
         return match result {
             Ok(v) => {
                 state.sessions.record_seq(&session, env.seq.unwrap(), v.clone());
@@ -129,7 +142,7 @@ async fn control_handler(
             Err(e) => envelope_error(&state, e),
         };
     }
-    match dispatch(&state, &actor, &method, &env, &session).await {
+    match dispatch(&state, &actor, &method, &env, &session, creds.bearer()).await {
         Ok(v) => envelope_ok(&state, v),
         Err(e) => envelope_error(&state, e),
     }
@@ -196,6 +209,7 @@ fn op_hello(state: &SharedState, env: &Envelope, actor: Actor) -> NfsResult<Valu
         "role": match &actor {
             Actor::Admin(_) => "admin",
             Actor::User(_) => "user",
+            Actor::Delegated { .. } => "delegated",
             Actor::Anonymous => "anonymous",
         },
     });
@@ -224,10 +238,14 @@ async fn dispatch(
     method: &str,
     env: &Envelope,
     session: &str,
+    bearer: Option<&str>,
 ) -> NfsResult<Value> {
     let want = WantMask::from_opt(&env.want);
     let at = env.at.as_ref();
     let args = &env.args;
+    if method.starts_with("share.") {
+        return crate::share::rpc::dispatch(state, actor, method, args, bearer).await;
+    }
     match method {
         "bye" => {
             state.leases.release_session(session);
@@ -384,6 +402,9 @@ async fn watch_handler(
         Ok(a) => a,
         Err(e) => return envelope_error(&state, e),
     };
+    if let Err(e) = crate::auth::require_file_actor(&actor) {
+        return envelope_error(&state, e);
+    }
     if let Err(e) = session_for(&state, q.session.as_deref(), &actor) {
         return envelope_error(&state, e);
     }
@@ -448,6 +469,9 @@ async fn read_handler(
         Ok(a) => a,
         Err(e) => return envelope_error(&state, e),
     };
+    if let Err(e) = crate::auth::require_file_actor(&actor) {
+        return envelope_error(&state, e);
+    }
     let node = match state.resolve_ref_for(&actor, &WireRef::live(node_id, 0), Level::Read, "read") {
         Ok(n) => n,
         Err(e) => return envelope_error(&state, e),
@@ -568,7 +592,7 @@ fn file_stream(
 }
 
 /// Parses a single-range `bytes=` header. Ok(None) = no/ignorable header.
-fn parse_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
+pub(crate) fn parse_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
     let h = match header {
         Some(h) => h,
         None => return Ok(None),
@@ -616,6 +640,7 @@ fn parse_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()>
 /// Upload chunks must come from the principal whose session holds the lease.
 async fn upload_owner_check(state: &SharedState, fb: &str, headers: &HeaderMap) -> NfsResult<()> {
     let actor = authenticate(state, &Credentials::from_headers(headers)).await?;
+    crate::auth::require_file_actor(&actor)?;
     let owner = state.leases.session_of_upload(fb).and_then(|s| state.sessions.actor(&s));
     match owner {
         Some(owner) if owner == actor => Ok(()),

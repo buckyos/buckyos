@@ -15,6 +15,7 @@ import { portalHref, portalShareUrl } from './links'
 import { MePage } from './MePage'
 import { installHomeStationPreviewSource } from './media'
 import { HsNavContext, useHsNav, type HsNav, type HsPage } from './navContext'
+import { ComposePrefillContext, type HomeStationCompose } from './launch'
 import { PublicProfileView, type PreviewReader } from './PublicProfileView'
 import { FeedPreferences } from './prefs/FeedPreferences'
 import { MyPublications } from './publish/MyPublications'
@@ -168,10 +169,12 @@ function PublishHeader() {
   return <PageHeader title={t('homestation.publish.title', 'New post')} onBack={nav.back} backLabel={t('common.back', 'Back')} />
 }
 
-export function HomeStationView() {
+export function HomeStationView({ compose }: { compose?: HomeStationCompose } = {}) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
-  const [pages, setPages] = useState<HsPage[]>([{ name: 'feed' }])
+  const [pages, setPages] = useState<HsPage[]>(() => (compose ? [{ name: 'feed' }, { name: 'publish' }] : [{ name: 'feed' }]))
+  const pendingCompose = useRef<HomeStationCompose | null>(compose ?? null)
+  const prefill = useMemo(() => ({ peek: () => pendingCompose.current, clear: () => { pendingCompose.current = null } }), [])
   const [query, setQuery] = useState<ReadingQuery>(DEFAULT_QUERY)
   const [readingMode, setReadingMode] = useState<ReadingMode>('standard')
   const [showSearch, setShowSearch] = useState(false)
@@ -253,6 +256,7 @@ export function HomeStationView() {
 
   return (
     <HomeStationStoreProvider>
+      <ComposePrefillContext.Provider value={prefill}>
       <HsNavContext.Provider value={nav}>
         <div className="hs-root relative flex h-full w-full overflow-hidden" style={{ background: 'var(--cp-bg)', cursor: resizing ? 'col-resize' : undefined }} data-testid="homestation" ref={layoutRef}>
           <ToastHost>
@@ -326,6 +330,7 @@ export function HomeStationView() {
           </ToastHost>
         </div>
       </HsNavContext.Provider>
+      </ComposePrefillContext.Provider>
     </HomeStationStoreProvider>
   )
 }

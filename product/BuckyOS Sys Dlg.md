@@ -85,7 +85,46 @@ type AppInstallerDialogResult =
 
 ## sysdlg/share
 
-分享NamedObject （文件、对象...）
+能被任何 App 使用的系统分享窗口（类似文件选择窗口），以弹出窗口实现。首期输入是 Zone 内的文件或文件夹，
+后台是 nfs-server 的分享模块（`share.*`，技术设计见 `notepads/share-content-mgr-tech-design-todo.md`）。
+
+### 拉起参数
+
+```ts
+interface ShareDialogParams {
+  /** DFS 路径（File Browser 显示的形式），如 `/home/alice/report.pdf`。 */
+  source: string
+  title?: string
+  preferred?: 'link' | 'messagehub' | 'homestation'
+}
+```
+
+Desktop 内调用：`useSystemDialog().open('sysdlg/share', params)`（`src/frame/desktop/src/sysdlg/`）。只做 SPA
+内调用，没有独立 URL。
+
+### 流程
+
+- 打开即调用 `share.capabilities` 与 `share.plan`（无副作用）：摘要（大小、项数、未包含项）、已有有效链接（可直接
+  复制）、已公开提示（位于 Public 目录或 ACL 含 public 读）。打开再关闭不产生任何记录。
+- 链接：访问范围（持链接者 / 持链接并知道密码），期限（1 天 / 7 天（默认）/ 30 天 / 不自动到期 / 指定日期，显示
+  时区），允许下载。“创建链接”后显示链接与“复制链接”：打开面板到复制链接共 3 次主要操作。超过 64 MiB 的快照在
+  后台准备，显示进度，可“后台继续”或取消；读取期间原文件变化时提示并可“改为分享当前版本”。
+- 应用：MessageHub（文件作为附件发送，文件夹或超过 32 MiB 时发不过期链接）与 HomeStation（照片、视频、音频且
+  不超过 32 MiB 时作为动态附件，否则带不过期链接卡片）。提交前说明会用哪种方式；确认后打开目标应用，由目标应用
+  选择收件人或可见范围，完成或取消后回传 `share.app.report`。
+- 上线：文件夹含 `index.html` 时提示受管理站点上线尚未提供，给出复制到 Public 或分享链接两条替代；`.pikg` 文件
+  引导到 App Service 安装。
+- 管理入口：“在‘我的内容’中管理”打开独立 App `my-content`。
+
+### Dialog 返回值
+
+```ts
+type ShareDialogResult =
+  | { action: 'created'; shareId: string; url: string }
+  | { action: 'handed_off'; shareId: string; app: 'messagehub' | 'homestation' }
+  | { action: 'background'; operationId: string }
+  | { action: 'close' }
+```
 
 ## sysdlg/select
 

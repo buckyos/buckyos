@@ -220,7 +220,7 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 - `klog/slog`：仓库包含 Raft 日志、state store、snapshot、分段日志及索引实现，但当前主安装 module 清单未包含相应 daemon。若发布包启用这些服务，应追加 term/vote/membership/log entry/state-machine snapshot 和记录序列化的版本契约；不能把它们当普通文本日志处理。
 - DCFS/fs_meta/fs_buffer：当前单机路径与未来分布式文件系统不能混为一谈；交付并启用时，应补 inode/dentry、overlay、journal、chunk 映射和存储拓扑格式。
-- `share_content_mgr.rs` 含 published_items/item_revisions/access_logs/access_stats 和默认 `data/share_content_mgr.sqlite3`，本次未在 control-panel 入口找到启用引用。若发布产物接入，应追加分享 ID/URL、发布版本、权限与撤回状态；不能仅因源码里有 DDL 就声称已上线。
+- control-panel 旧 `share_content_mgr.rs`（`data/share_content_mgr.sqlite3`）从未启用，已于 2026-10-19 删除；分享改由 nfs-server 实现，数据在 filedb（`data/.fsdb/filedb.sqlite`）的 `share_*` 表，快照对象在 named store 并以 `share:<share_id>` pin（`product/bucky_file/nfs_server.md` §12）。
 - 其他预装/第三方 App：OS 要保留挂载的数据目录与 App 绑定；若随 OS 同时升级 App，还要取得该 App 自己的 schema 与转换方案。前端原型、本地 mock 不自动视为已经上线的服务存储。
 
 ## 5. 已确认的版本与文档缺口

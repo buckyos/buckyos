@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import clsx from 'clsx'
 import { CircleAlert, Globe2, Image, Link2, Loader2, Mic, RotateCw, Send, Video, X } from 'lucide-react'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useContext, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
 import { linkCardSchema, publishInputSchema, type AttachmentInput, type PublishInput } from '../datamodel/inputs'
@@ -10,6 +10,9 @@ import { useHsNav } from '../navContext'
 import { useHomeStationStore, useStoreSelector } from '../store/context'
 import { useToast } from '../ui/toastContext'
 import { AudiencePicker } from './AudiencePicker'
+import { reportShareDelivery } from '../../../api/shares'
+import type { PublishTask } from '../datamodel/types'
+import { ComposePrefillContext } from '../launch'
 
 const selectSettings = (store: HomeStationStore) => store.peekSettings()
 const selectHome = (store: HomeStationStore) => store.peekHome()
@@ -41,10 +44,19 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   const compact = variant === 'compact'
   const idPrefix = compact ? 'hs-quick' : 'hs-publish'
 
+  // A post handed over by the system share dialog pre-fills the full composer once.
+  const prefillSource = useContext(ComposePrefillContext)
+  const [prefill] = useState(() => (compact ? null : prefillSource.peek()))
   const form = useForm<PublishInput>({
     resolver: zodResolver(publishInputSchema),
-    defaultValues: { text: '', attachments: [], link: null, audience: settings.defaultAudience },
+    defaultValues: {
+      text: prefill?.text ?? '',
+      attachments: (prefill?.attachments ?? []).map(attachment => ({ ...attachment, id: crypto.randomUUID() })),
+      link: prefill?.link ? { url: prefill.link.url, title: prefill.link.title, summary: prefill.link.summary ?? '' } : null,
+      audience: settings.defaultAudience,
+    },
   })
+  const [sharedId, setSharedId] = useState(prefill?.shareId ?? null)
   const attachments = useWatch({ control: form.control, name: 'attachments' })
   const link = useWatch({ control: form.control, name: 'link' })
   const text = useWatch({ control: form.control, name: 'text' })
@@ -80,7 +92,12 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
     setLinkOpen(false)
   }
 
-  const finish = () => {
+  const finish = (task?: PublishTask) => {
+    if (sharedId) {
+      reportShareDelivery(sharedId, 'confirmed', { businessRef: { entry: task?.entry ?? null, obj_id: task?.objId ?? null } })
+      setSharedId(null)
+      prefillSource.clear()
+    }
     setFailed(false)
     form.reset({ text: '', attachments: [], link: null, audience: form.getValues('audience'), zoneFeed: form.getValues('zoneFeed') })
     setPublishKey(newPublishKey())
@@ -94,13 +111,13 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
       setFailed(true)
       return
     }
-    finish()
+    finish(task)
   })
 
   const retry = async () => {
     const task = await store.retryPublish(publishKey)
     if (task.stage === 'failed') return
-    finish()
+    finish(task)
   }
 
   const errors = form.formState.errors

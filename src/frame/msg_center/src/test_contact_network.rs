@@ -418,6 +418,59 @@ async fn lookup_merges_relations_zone_and_resolved_candidates() {
     assert_eq!(bad.error.unwrap().code, "invalid-input");
 }
 
+#[tokio::test]
+async fn lookup_finds_remote_user_from_zone_url_without_creating_contact() {
+    let zone = "z.example";
+    let alice = user("alice", zone);
+    let remote = DID::new("bns", "lurenpluto");
+    let (c, _tmp) = open("lookup-url", zone, &[alice.clone()]).await;
+    c.directory.set(StaticDirectory::with(vec![(
+        remote.clone(),
+        LookupKind::User,
+        "lurenpluto",
+        "lurenpluto.web3.buckyos.ai",
+    )]));
+    for input in [
+        "https://lurenpluto.web3.buckyos.ai",
+        "https://lurenpluto.web3.buckyos.ai/",
+        "lurenpluto.web3.buckyos.ai",
+    ] {
+        let result: LookupResult = serde_json::from_value(
+            rpc(
+                &c,
+                "contact.lookup",
+                json!({
+                    "input":input,
+                    "kinds":["user","agent","msgtunnel","unknown"],
+                    "contact_mgr_owner":alice,
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.input, input);
+        assert_eq!(result.input_kind, buckyos_api::LookupInputKind::Name);
+        assert!(result.error.is_none());
+        assert_eq!(result.candidates.len(), 1);
+        let candidate = &result.candidates[0];
+        assert_eq!(candidate.did, remote);
+        assert_eq!(candidate.kind, LookupKind::User);
+        assert_eq!(candidate.name.as_deref(), Some("lurenpluto"));
+        assert_eq!(candidate.section, buckyos_api::LookupSection::Resolved);
+        assert_eq!(
+            candidate.reachability.state,
+            buckyos_api::ReachabilityState::Routable
+        );
+        assert_eq!(
+            candidate.reachability.zone.as_deref(),
+            Some("lurenpluto.web3.buckyos.ai")
+        );
+        assert!(!candidate.relation.is_contact);
+        assert!(contact(&c, &alice, &remote).await.is_none());
+    }
+}
+
 struct Verifier;
 
 #[async_trait::async_trait]

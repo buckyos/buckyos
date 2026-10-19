@@ -20,7 +20,7 @@ use buckyos_api::{
     AppServiceSpec, AvailabilityEffect, KernelServiceSpec, NodeConfig,
     SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
     UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
-    APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT,
+    APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT, NFS_SERVER_SERVICE_NAME,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -1214,6 +1214,18 @@ pub(crate) async fn update_node_gateway_info(
                             .or_insert_with(|| service_entry.clone());
                     }
                 }
+            } else if spec_id == NFS_SERVER_SERVICE_NAME {
+                // `share.<zone>/s/{token}`: share links served by nfs-server (its own
+                // origin, apart from the Desktop), see notepads/share-content-mgr-tech-design-todo.md.
+                if let Some(selector) = selector.as_ref() {
+                    node_gateway_info.app_info.insert(
+                        "share".to_string(),
+                        NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+                            service_id: spec_id.clone(),
+                            selector: selector.clone(),
+                        }),
+                    );
+                }
             }
         }
     }
@@ -1664,6 +1676,7 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         "www".to_string(),
         "sys".to_string(),
         "homestation".to_string(),
+        "share".to_string(),
     ]);
     if let Some(raw) = input.get("services/gateway/settings") {
         let settings: ZoneGatewaySettings = serde_json::from_str(raw)?;

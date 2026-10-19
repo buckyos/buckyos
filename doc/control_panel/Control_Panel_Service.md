@@ -1,7 +1,7 @@
 # BuckyOS Control Panel Service 技术需求文档
 
 > 本文件描述 `src/frame/control_panel` 中 **Control Panel Service** 的技术需求与设计。
-> 内容发布与分享子系统（Share Content Mgr / Bucky-CMS）有独立文档 [`ShareContentMgr.md`](./ShareContentMgr.md)，本文不再展开。
+> 内容发布与分享子系统（Share Content Mgr / Bucky-CMS）的旧设计见 [`ShareContentMgr.md`](./ShareContentMgr.md)；第一阶段分享已改在 nfs-server 实现（`product/bucky_file/nfs_server.md` §12），control-panel 不再承载。
 
 ---
 

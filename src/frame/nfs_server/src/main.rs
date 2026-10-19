@@ -4,7 +4,9 @@
 //!
 //!   nfs_server --listen 127.0.0.1:3260 --data-dir ./nfs-data \
 //!              --export home=/srv/home --export media=/srv/media \
-//!              [--scan-interval-secs 30] [--debug-api] [--log-level info]
+//!              [--scan-interval-secs 30] [--debug-api] [--log-level info] \
+//!              [--named-store ./store] [--share-base-url http://127.0.0.1:3260] \
+//!              [--public-base-url http://127.0.0.1:8080]
 //!
 //! BuckyOS service mode (no --data-dir/--export; how node_daemon launches it):
 //! logs in via buckyos-api (KernelService runtime, heartbeat included), serves
@@ -17,12 +19,14 @@
 //! and authorized against path ACLs (the zone owner keeps full access).
 
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, NfsServerSettings,
-    NFS_SERVER_SERVICE_NAME, NFS_SERVER_SERVICE_PORT,
+    init_buckyos_api_runtime, set_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntimeType,
+    NfsServerSettings, NFS_SERVER_SERVICE_NAME, NFS_SERVER_SERVICE_PORT,
 };
 use buckyos_kit::{get_buckyos_root_dir, init_logging};
 use clap::{Arg, ArgAction, Command};
-use nfs_server::config::{config_from_data_root, parse_export_spec, AuthMode, AuthTestConfig, ServerConfig};
+use nfs_server::config::{
+    config_from_data_root, parse_export_spec, AuthMode, AuthTestConfig, NamedStoreSource, ServerConfig,
+};
 use nfs_server::state::AppState;
 
 fn main() {
@@ -64,6 +68,21 @@ fn main() {
             Arg::new("auth-test-config")
                 .long("auth-test-config")
                 .help("Test token key + zone owner JSON enabling ACL auth; standalone loopback + --debug-api only"),
+        )
+        .arg(
+            Arg::new("named-store")
+                .long("named-store")
+                .help("Directory of a local named store for share snapshots (standalone mode)"),
+        )
+        .arg(
+            Arg::new("share-base-url")
+                .long("share-base-url")
+                .help("Origin of share links (standalone; default http://<listen>)"),
+        )
+        .arg(
+            Arg::new("public-base-url")
+                .long("public-base-url")
+                .help("Origin serving the srv/publish export anonymously (standalone mode)"),
         )
         .arg(
             Arg::new("log-level")
@@ -116,6 +135,13 @@ fn standalone_config(matches: &clap::ArgMatches) -> ServerConfig {
     }
     config.scan_interval_secs = parse_scan_interval(matches).unwrap_or(0);
     config.debug_api = matches.get_flag("debug-api");
+    if let Some(dir) = matches.get_one::<String>("named-store") {
+        config.named_store = NamedStoreSource::Dir(dir.into());
+    }
+    config.share.base_url = Some(
+        matches.get_one::<String>("share-base-url").cloned().unwrap_or_else(|| format!("http://{}", config.listen)),
+    );
+    config.share.public_base_url = matches.get_one::<String>("public-base-url").cloned();
     if let Some(path) = matches.get_one::<String>("copy-test-config") {
         assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "copy test config requires standalone loopback and --debug-api");
         config.copy_test = Some(serde_json::from_slice(&std::fs::read(path).expect("copy test config")).expect("copy test config JSON"));
@@ -160,6 +186,10 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
         std::process::exit(1);
     }
     runtime.set_main_service_port(NFS_SERVER_SERVICE_PORT).await;
+    let zone_host = runtime
+        .get_zone_config()
+        .and_then(|z| z.zone_document().ok())
+        .map(|doc| zone_document_hostname(&doc).trim_end_matches('.').to_ascii_lowercase());
 
     // Settings are optional: a zone booted before this service existed has no
     // services/nfs-server/settings key yet — fall back to defaults.
@@ -188,6 +218,17 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
     };
     config.listen = format!("127.0.0.1:{}", NFS_SERVER_SERVICE_PORT);
     config.auth = AuthMode::Runtime;
+    // Share links live on their own origin (`share.<zone>`, routed here by the
+    // gateway's APP_INFO), Public is the gateway's `public.<zone>` dir server.
+    config.named_store = NamedStoreSource::Runtime;
+    match &zone_host {
+        Some(zone) => {
+            config.share.base_url = Some(format!("https://share.{}", zone));
+            config.share.public_base_url = Some(format!("https://public.{}", zone));
+            config.share.zone_host = Some(zone.clone());
+        }
+        None => log::warn!("zone host unknown: share links are disabled"),
+    }
     config.scan_interval_secs = settings.scan_interval_secs;
     // CLI --debug-api / --scan-interval-secs still win over settings (dev use).
     config.debug_api = settings.debug_api || matches.get_flag("debug-api");
@@ -223,6 +264,8 @@ async fn serve(config: ServerConfig) {
         log::info!("reconciler scan loop disabled (scan interval 0)");
     }
     tokio::spawn(nfs_server::copy::recovery_loop(state.clone()));
+    nfs_server::share::rpc::recover_operations(&state);
+    tokio::spawn(nfs_server::share::sweeper_loop(state.clone()));
     let app = nfs_server::server::build_router(state);
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,

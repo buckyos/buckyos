@@ -93,11 +93,55 @@ async fn verify(state: &AppState, token: &str) -> NfsResult<Actor> {
         }
         // Zone services and zone devices (CLI on a node) are trusted, as in control-panel.
         TokenPrincipalKind::System | TokenPrincipalKind::Device => Ok(Actor::Admin(None)),
-        other => Err(unauthenticated(format!(
-            "{} sessions cannot access files directly",
-            other.as_str()
-        ))),
+        // Apps act for the signed-in user (`sub`); Agents for the user owning them.
+        // Only `share.*` accepts these (D13); the file plane rejects them.
+        TokenPrincipalKind::App => {
+            let admin = is_zone_owner(state, &claims.subject).await;
+            Ok(Actor::Delegated { user: claims.subject, app: claims.app_id, admin })
+        }
+        TokenPrincipalKind::Agent => {
+            let (user, app) = agent_owner(&claims.subject)
+                .await
+                .ok_or_else(|| unauthenticated(format!("{} is no agent of this zone", claims.subject)))?;
+            let admin = is_zone_owner(state, &user).await;
+            Ok(Actor::Delegated { user, app, admin })
+        }
     }
+}
+
+/// Rejects App/Agent sessions outside `share.*`.
+pub fn require_file_actor(actor: &Actor) -> NfsResult<()> {
+    match actor {
+        Actor::Delegated { .. } => Err(NfsError::new(
+            ErrorCode::PermissionDenied,
+            "app and agent sessions cannot access files directly",
+        )
+        .with("reason", serde_json::json!("delegated_session"))),
+        _ => Ok(()),
+    }
+}
+
+/// `(owner user id, agent id)` of a zone agent DID, from `users/<u>/agents/<id>/spec`.
+async fn agent_owner(subject: &str) -> Option<(String, String)> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+    if let Some(hit) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(subject).cloned()) {
+        return Some(hit);
+    }
+    let did = name_lib::DID::from_str(subject).ok()?;
+    let agent_id = buckyos_api::AgentId::from_agent_did(&did).ok()?;
+    let client = buckyos_api::get_buckyos_api_runtime().ok()?.get_system_config_client().await.ok()?;
+    for user in client.list("users").await.ok()? {
+        let Ok(spec) = client.get(&buckyos_api::agent_spec_key(&user, &agent_id)).await else { continue };
+        let Ok(spec) = serde_json::from_str::<buckyos_api::AgentSpec>(&spec.value) else { continue };
+        if spec.agent_doc.id == did {
+            let hit = (user, agent_id.as_str().to_string());
+            CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(subject.to_string(), hit.clone());
+            return Some(hit);
+        }
+    }
+    None
 }
 
 pub(crate) async fn is_zone_owner(state: &AppState, user_id: &str) -> bool {
@@ -108,6 +152,15 @@ pub(crate) async fn is_zone_owner(state: &AppState, user_id: &str) -> bool {
             None => false,
         },
         AuthMode::Disabled => true,
+    }
+}
+
+/// The zone owner's user id (the test owner in TestKey mode, none without auth).
+pub(crate) async fn zone_owner_id(state: &AppState) -> Option<String> {
+    match &state.config.auth {
+        AuthMode::TestKey { zone_owner, .. } => Some(zone_owner.clone()),
+        AuthMode::Runtime => zone_owner(state).await,
+        AuthMode::Disabled => None,
     }
 }
 

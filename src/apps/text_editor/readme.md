@@ -769,7 +769,7 @@ interface RecoveryEntry {
 
 - **新建**：`Alt+N` 或起始页“新建”，得到 `untitled:<n>` 文档，首次修改即创建 `untitled.<bufferId>.buf` 缓冲区，首次保存进入另存为。
 - **另存为**：P0 由编辑器内置的轻量位置选择器完成（以当前目录为起点，用 NFSP `list` 浏览目录并输入文件名）。目标已存在时先确认覆盖，确认后被覆盖的目标文件先存入恢复区（`side: disk`，原因 `conflict-overwrite`）；写入使用 `open_write({ parent_ref, name })`，并检查 `target.exists` 与确认结果一致，避免静默覆盖。成功后文档关联到新路径，原缓冲区删除。
-- P1 改为系统级文件选择器，经 App Frame 调用（`product/control_panel/share_content.md` 已把“类似文件选择窗口的系统窗口”作为系统组件方向）。
+- P1 改为系统级文件选择器，经 App Frame 调用（`product/BuckyOS Sys Dlg.md` 已把“类似文件选择窗口的系统窗口”作为系统组件方向，`sysdlg/share` 已实现）。
 
 ### 8.10 外部变化感知
 
@@ -1012,7 +1012,7 @@ macOS 上非保留键用 `⌘` 替代 `Ctrl`；`⌥` 组合在 macOS 输入时�
 
 原始需求第 4 点。P0 只保证不与下列设计冲突，不实现。
 
-- **分享入口**：编辑器经 App Frame 发 `share.request{ sources }`（新增消息，P2），由系统通用分享窗口（`product/control_panel/share_content.md`）处理。分享对象是不可变快照：`ShareContentMgr` 把内容发布为 ObjId 并设置 `public | token_required | encrypted` 策略，而不是把活文件暴露出去。
+- **分享入口**：编辑器经 App Frame 发 `share.request{ sources }`（新增消息，P2），由系统通用分享窗口（`product/BuckyOS Sys Dlg.md` 的 `sysdlg/share`）处理。分享对象是不可变快照：`ShareContentMgr` 把内容发布为 ObjId 并设置 `public | token_required | encrypted` 策略，而不是把活文件暴露出去。
 - **批注不写入原文件**：批注是独立的 overlay 对象，锚定到被批注快照的 ObjId，使用 W3C Web Annotation 风格的双选择器：`TextQuoteSelector{ exact, prefix, suffix }` + `TextPositionSelector{ start, end }`。位置用于快速定位，引文用于在内容变化后重新锚定。
 - **存储候选**：AI Workspace 的 `buckyos.annotation` overlay（`doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` §3.7，已有 `shared` / `user:<x>` 作用域和 `comment` 权限，文本范围锚点已预留但未实现），或 msg-center 会话线程。NFSP `user` meta 不合适：没有按用户隔离、不能删除、没有 CAS。
 - **编辑器侧**：接收方以只读“批注模式”打开快照，选中文本添加批注；所有者在活文件视图中按引文重新锚定后显示批注，锚定失败的批注集中列为“已失效”。

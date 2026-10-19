@@ -3,7 +3,8 @@
 //! filesystem cannot express. Entity files/dirs get rows lazily (惰性锚定).
 //!
 //! Persistent tables: entities, anchors, namespace_bindings, views, view_groups,
-//! view_base, view_patch, collections, collection_nodes, meta_records, grants, acls.
+//! view_base, view_patch, collections, collection_nodes, meta_records, grants, acls,
+//! and the share module's `share_*` / `public_observations` (share/db.rs).
 //! Cache tables (rebuildable, may be lost): content_index.
 
 use crate::error::{internal, not_found, NfsResult};
@@ -274,16 +275,18 @@ impl FileDb {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::share::db::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 
     pub fn open_memory() -> NfsResult<FileDb> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::share::db::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 

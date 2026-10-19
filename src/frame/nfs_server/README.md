@@ -70,19 +70,21 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 | 集合 | `create_collection` / `open_collection` / `collection_patch` + 通用 `list` | ✅ add_ref/remove_entry/move_entries/create_group/rename_group;成员只存 Ref,`canonical_path` 读取时批量补全 |
 | 搜索 | `search` | ✅ name mode;响应结构完整(`match_source`/`explain`/`sources[]`);先序遍历 + 路径游标 |
 | 权限 | `get_acl` / `set_acl` / `list_acls` | ✅ 路径 ACL(实现扩展);继承/关闭继承、内置 owner 规则、owner 可列出全部记录 |
-| 分享 | `grant` / `revoke` | ⚠️ 需 `manage`;签发/撤销/落库完整,**数据面尚不凭 cap 放行** |
+| 分享(活子树) | `grant` / `revoke` | ⚠️ 需 `manage`;签发/撤销/落库完整,**数据面不凭活子树 cap 放行** |
+| 分享(快照) | `share.*`(实现扩展) | ✅ 快照进 named store 并 pin;`/s/{token}` 访客页/下载/密码/到期;审计、访问统计、Public 投影、MessageHub/HomeStation 交接;详见产品文档 §12 |
 | 派生 | `repr` | ❌ 未实现、不广告(依赖缩略图管线 + NamedStore) |
 | 通知 | `watch`(SSE) | ✅ `container_changed`/`meta_changed`/`resync`;连接首事件恒为 `resync`(D11);watch_token 过滤 |
 | 数据面 | `GET /nfs/v1/read/{node_id}` | ✅ Range/ETag(弱)/If-None-Match/Content-Disposition;**不发 immutable**(link 语义,§4.2) |
 
-`hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name` `acl`,
+`hello` 广告的 features:`view` `collection` `reference-binding` `watch.sse` `search.name` `acl` `share`,
 并返回 `identity {user_id, role}`。
 不广告(未实现):`frozen-subtree` `search.semantic` `repr` `get_tree` `publish_dir`。
 
 ## filedb(§3.2 最小持久集)
 
 持久表:`entities` `anchors` `namespace_bindings` `views` `view_groups` `view_base`
-`view_patch` `collections` `collection_nodes` `meta_records` `grants` `acls` + `kv`(handle 签名密钥)。
+`view_patch` `collections` `collection_nodes` `meta_records` `grants` `acls` + `kv`(handle 签名密钥、分享 token 密钥),
+分享模块的 `share_*` 与 `public_observations`(`src/share/db.rs`)。
 缓存表(可全量重建):`content_index`(hash → 本地路径,支撑 probe/秒传)。
 
 惰性锚定:只有进入 View/Collection、被写 meta、被分享、或作为 binding parent/target 时
@@ -131,7 +133,7 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 
 ## 后续接入(不在 v1)
 
-1. cap 校验(grant 数据面放行)与 App/Agent 主体的文件访问。按请求鉴权与路径 ACL 已完成。
+1. 活子树 cap 校验(grant 数据面放行)与 App/Agent 主体的文件平面访问。按请求鉴权、路径 ACL 与快照分享已完成。
 2. NamedStore link 模式(`add_chunk_by_link_to_local_file` / qcid 阶梯)替换 `content_index`。
 3. `repr` 缩略图、`view_patch`、`get_tree`、`publish_dir`/Frozen、referral 设备视图。
 4. NativeTree trait 冻结(M7):第二个实现(fs_meta)落地时从 `namespace.rs` 提取。

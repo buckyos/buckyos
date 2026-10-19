@@ -112,6 +112,9 @@ servers:
               else
                 map-add REQ X-Forwarded-Proto "http";
               end
+              # HTTP/2 requests carry the host as :authority only; services that serve
+              # several hosts (nfs-server: zone /nfs/v1 vs share.<zone>/s/*) read this.
+              map-add REQ X-Forwarded-Host $REQ.host;
 
               if eq $REQ.host "public.${THIS_ZONE_HOST}" then
                 return --from chain $(exec forward_to_public);

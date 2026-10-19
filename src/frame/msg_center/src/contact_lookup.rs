@@ -43,8 +43,38 @@ fn is_name_like(input: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
 }
 
+fn lookup_name(input: &str, web_host: bool) -> std::result::Result<DID, LookupError> {
+    let canonical = if web_host {
+        format!("did:web:{input}")
+    } else {
+        input.to_string()
+    };
+    let did = DID::from_friendly_name(&canonical)
+        .map_err(|error| lookup_error("invalid-input", error.to_string()))?;
+    let default_bridges;
+    let bridges = match name_lib::KNOWN_WEB3_BRIDGE_CONFIG.get() {
+        Some(bridges) => bridges,
+        None => {
+            default_bridges = name_client::get_default_web3_bridge_config();
+            &default_bridges
+        }
+    };
+    for (method, bridge) in bridges {
+        if input
+            .strip_suffix(&format!(".{bridge}"))
+            .is_some_and(|name| !name.is_empty())
+        {
+            if let Some(mapped) = DID::from_host_name_by_bridge(input, method, bridge) {
+                return DID::from_friendly_name(&mapped.to_string())
+                    .map_err(|error| lookup_error("invalid-input", error.to_string()));
+            }
+        }
+    }
+    Ok(did)
+}
+
 /// `<group_did>?invite=<token>`, a URL carrying `group`/`group_did` and
-/// `invite`, a DID, a BNS or domain name, or free text.
+/// `invite`, a DID, an HTTP(S) origin, a BNS or domain name, or free text.
 pub(crate) fn parse_lookup_input(raw: &str) -> std::result::Result<ParsedInput, LookupError> {
     let input = raw.trim();
     if input.is_empty() {
@@ -76,8 +106,30 @@ pub(crate) fn parse_lookup_input(raw: &str) -> std::result::Result<ParsedInput, 
             .map(ParsedInput::Did)
             .map_err(|error| lookup_error("invalid-input", error.to_string()));
     }
+    if input.contains("://")
+        || input.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+        })
+    {
+        let url = reqwest::Url::parse(input)
+            .map_err(|error| lookup_error("invalid-input", error.to_string()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(lookup_error("invalid-input", "expected an HTTP(S) origin URL"));
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| lookup_error("invalid-input", "URL has no host"))?;
+        return lookup_name(host, true).map(ParsedInput::Name);
+    }
     if is_name_like(input) {
-        if let Ok(did) = DID::from_friendly_name(input) {
+        if let Ok(did) = lookup_name(input, false) {
             return Ok(ParsedInput::Name(did));
         }
     }
@@ -531,5 +583,58 @@ mod tests {
         );
         assert_eq!(parse_lookup_input("did:x").unwrap_err().code, "invalid-input");
         assert_eq!(parse_lookup_input("a?b=1").unwrap_err().code, "invalid-input");
+    }
+
+    #[test]
+    fn origin_urls_and_bridge_domains_resolve_to_canonical_dids() {
+        for input in [
+            "https://lurenpluto.web3.buckyos.ai",
+            "http://lurenpluto.web3.buckyos.ai/",
+            "https://lurenpluto.web3.buckyos.ai:443/",
+            "http://lurenpluto.web3.buckyos.ai:80/",
+            "  https://LURENPLUTO.web3.buckyos.ai/  ",
+            "lurenpluto.web3.buckyos.ai",
+        ] {
+            assert_eq!(
+                parse_lookup_input(input).unwrap(),
+                ParsedInput::Name(DID::new("bns", "lurenpluto")),
+                "{input}"
+            );
+        }
+        for input in ["https://example.com", "https://example.com/"] {
+            assert_eq!(
+                parse_lookup_input(input).unwrap(),
+                ParsedInput::Name(DID::new("web", "example.com"))
+            );
+        }
+        for host in ["notweb3.buckyos.ai", "web3.buckyos.ai"] {
+            assert_eq!(
+                parse_lookup_input(&format!("https://{host}/")).unwrap(),
+                ParsedInput::Name(DID::new("web", host))
+            );
+        }
+        assert_eq!(
+            parse_lookup_input("did:web:lurenpluto.web3.buckyos.ai").unwrap(),
+            ParsedInput::Did(DID::new("web", "lurenpluto.web3.buckyos.ai"))
+        );
+    }
+
+    #[test]
+    fn unsupported_urls_report_invalid_input() {
+        for input in [
+            "https://",
+            "ftp://lurenpluto.web3.buckyos.ai",
+            "https://user:password@lurenpluto.web3.buckyos.ai",
+            "https://lurenpluto.web3.buckyos.ai:8443",
+            "https://lurenpluto.web3.buckyos.ai/profile",
+            "https://lurenpluto.web3.buckyos.ai?user=lurenpluto",
+            "https://lurenpluto.web3.buckyos.ai/#profile",
+        ] {
+            assert_eq!(
+                parse_lookup_input(input).unwrap_err().code,
+                "invalid-input",
+                "{input}"
+            );
+        }
     }
 }

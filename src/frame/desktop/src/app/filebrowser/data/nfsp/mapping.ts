@@ -108,12 +108,16 @@ function absoluteUrl(url: string): string {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${nfspBaseUrl()}${url}`
 }
 
-/** Pick the externally usable URL from access metadata (`kind: "read"`). */
+/**
+ * The anonymous address from access metadata: `kind: "public"`, which
+ * nfs-server returns for files under `srv/publish` (`public.<zone>`). The
+ * `read` entry needs a session, so it is never offered as a public address.
+ */
 function publicUrlOf(attrs: Entry['target']['attrs']): string | undefined {
   const urls = attrs?.access_urls
   if (!Array.isArray(urls)) return undefined
-  const read = urls.find((u) => u.kind === 'read')
-  return read ? absoluteUrl(read.url) : undefined
+  const pub = urls.find((u) => u.kind === 'public')
+  return pub ? absoluteUrl(pub.url) : undefined
 }
 
 export interface EntryMapContext {

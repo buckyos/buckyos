@@ -207,7 +207,7 @@ fn valid_task_id(id: &str) -> bool {
 fn rpc_error(e: impl std::fmt::Display) -> NfsError {
     internal(format!("task-manager: {e}"))
 }
-async fn client(state: &SharedState) -> NfsResult<TaskManagerClient> {
+pub(crate) async fn client(state: &SharedState) -> NfsResult<TaskManagerClient> {
     if let Some(config) = &state.config.copy_test {
         return Ok(config.task_client());
     }

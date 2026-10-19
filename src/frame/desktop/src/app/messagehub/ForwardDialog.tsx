@@ -10,7 +10,7 @@ import { useMessageHubStore } from './store'
 import type { Entity, MessageHubContext } from './types'
 
 /** Picks the entity whose default session receives a copy of `message`. */
-export function ForwardMessageForm({ context, message, confirmationFor, onDone, onCancel }: { context: MessageHubContext; message: MessageObject; confirmationFor: (sessionId: string) => string | undefined; onDone: (entity: Entity) => void; onCancel: () => void }) {
+export function ForwardMessageForm({ context, message, confirmationFor, onDone, onCancel }: { context: MessageHubContext; message: MessageObject; confirmationFor: (sessionId: string) => string | undefined; onDone: (entity: Entity, sessionId: string) => void; onCancel: () => void }) {
   const { t } = useI18n(), store = useMessageHubStore()
   const [query, setQuery] = useState('')
   const [pending, setPending] = useState<string | null>(null)
@@ -25,7 +25,7 @@ export function ForwardMessageForm({ context, message, confirmationFor, onDone, 
       const session = await store.ensureDefaultSession(context, entity.id)
       if (!session) throw Error('session_missing')
       await store.forward(context, session.id, message, confirmationFor(session.id))
-      onDone(entity)
+      onDone(entity, session.id)
     } catch (failure) {
       setError(failure instanceof Error && failure.message.startsWith('rejected') ? groupErrorText(t, failure) : t('messagehub.forward.failed', undefined, { name: entity.name }))
     } finally { busy.current = false; setPending(null) }

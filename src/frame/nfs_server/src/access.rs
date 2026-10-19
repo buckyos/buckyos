@@ -72,7 +72,7 @@ impl AppState {
             Node::Collection(c) => collection_level(actor, c),
             Node::CollectionGroup { collection, .. } => collection_level(actor, collection),
             Node::View(_) | Node::ViewGroup { .. } => match actor {
-                Actor::Anonymous => Level::None,
+                Actor::Anonymous | Actor::Delegated { .. } => Level::None,
                 _ => Level::Read,
             },
         }

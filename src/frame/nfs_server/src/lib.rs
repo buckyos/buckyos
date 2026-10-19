@@ -4,8 +4,9 @@
 //! Runs either as a buckyos system service (node_daemon launch, buckyos-api
 //! login/heartbeat, cyfs:/// backed by $BUCKYOS_ROOT/data) or standalone via
 //! CLI flags for independent testing. Every request is authenticated (auth.rs)
-//! and authorized against path ACLs (acl.rs, access.rs); NamedStore is not
-//! integrated yet. See README.md for scope, honest degradations, and how to
+//! and authorized against path ACLs (acl.rs, access.rs). The share module
+//! (share/) snapshots files into the named store and serves share links on
+//! `share.<zone>`. See README.md for scope, honest degradations, and how to
 //! run it.
 
 pub mod access;
@@ -24,6 +25,7 @@ pub mod reconciler;
 pub mod search;
 pub mod server;
 pub mod session;
+pub mod share;
 pub mod state;
 pub mod types;
 pub mod uploads;

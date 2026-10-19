@@ -270,10 +270,13 @@ well-known tag（`WELL_KNOWN_CONTACT_TAGS`，buckyos-api 与 websdk 各一份；
 | 空 | `empty` | 列出联系人与已加入的群 |
 | `<group_did>?invite=<token>`，或 query 里同时有 `group` / `group_did` 与 `invite` 的 URL | `invite_link` | 解析该群 |
 | `did:` 开头 | `did` | 解析该 DID |
+| HTTP(S) 站点根地址（可带末尾 `/`） | `name` | 解析域名对应的 DID；已配置的 Web3 bridge 域名还原为对应方法的 DID，例如 `https://lurenpluto.web3.buckyos.ai` → `did:bns:lurenpluto` |
 | 只含小写字母、数字、`-`、`.`，且 `DID::from_friendly_name` 能解析（BNS 名、域名） | `name` | 关键字匹配；本地已有联系人的显示名等于输入，或其 DID 主体等于输入或以 `<输入>.` 开头时不再解析，否则解析 |
 | 其他 | `text` | 关键字匹配 |
 
-带 `?` 但不是邀请链接、DID 不合法时 `error.code = invalid-input`。
+不带协议的 Web3 bridge 域名也按配置还原 DID；普通友好名称沿用 `DID::from_friendly_name` 的规则。站点 URL 中的普通域名按 `did:web` 解析。
+
+带 `?` 但不是邀请链接、DID 不合法、站点 URL 带凭据、非默认端口、非根路径或 fragment 时 `error.code = invalid-input`。
 
 候选按段（`section`）排序，同一 DID 只留一条：
 

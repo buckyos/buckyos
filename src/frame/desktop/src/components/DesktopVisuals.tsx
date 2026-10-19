@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Network,
   ScanEye,
+  Share2,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -50,6 +51,7 @@ const iconMap = {
   'agent-setup': UserRoundPlus,
   'agent-guide': Sparkles,
   'my-network': Network,
+  'my-content': Share2,
   clock: Clock3,
   notepad: StickyNote,
 }
