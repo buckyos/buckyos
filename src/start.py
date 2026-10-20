@@ -1,6 +1,7 @@
 #!/usr/bin/env -S uv run
 
 import argparse
+import json
 from contextlib import contextmanager
 import os
 import shutil
@@ -257,6 +258,58 @@ def update_files(install_all=False,config_group_name=None):
 
     
 
+def _missing_paios_images(buckyos_root: Path) -> list[str]:
+    """paios images node_daemon needs but cannot find, in local image mode.
+
+    Release installs pin the images in bin/paios-images/ and load them from the
+    bundled tarballs; dev installs use <repo>:latest-<arch> from the local store
+    (repo overridable in etc/devenv.json). node_daemon never pulls either.
+    """
+    if (buckyos_root / "bin" / "paios-images" / "paios_images.json").is_file():
+        return []
+    docker = _find_command("docker")
+    if docker is None:
+        return []
+    arch = "aarch64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+    repos = {"aios": "paios/aios", "exttool": "paios/exttool"}
+    try:
+        overrides = json.loads((buckyos_root / "etc" / "devenv.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        overrides = {}
+    if isinstance(overrides, dict):
+        for name in repos:
+            value = overrides.get(name)
+            if isinstance(value, str) and value.strip():
+                repos[name] = value.strip()
+    missing = []
+    for repo in repos.values():
+        reference = f"{repo}:latest-{arch}"
+        inspected = subprocess.run(
+            [docker, "image", "inspect", reference],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **_windows_subprocess_kwargs(),
+        )
+        if inspected.returncode != 0:
+            missing.append(reference)
+    return missing
+
+
+def _warn_missing_paios_images(buckyos_root: Path) -> None:
+    missing = _missing_paios_images(buckyos_root)
+    if not missing:
+        return
+    print("")
+    print("!" * 72)
+    print("WARNING: paios images missing; Agents and script apps will fail to deploy.")
+    print("node_daemon does not pull them. Get them with one of:")
+    for reference in missing:
+        print(f"  docker pull {reference}")
+    print("  uv run build.py            (from the repository root; pre-pulls them)")
+    print("  ./build_aios --local-test  (build the worker image from local source)")
+    print("!" * 72)
+
+
 def start_system():
     """Start BuckyOS system"""
     print("Starting BuckyOS system...")
@@ -282,6 +335,7 @@ def start_system():
         print(f"BuckyOS system started: {node_daemon_path}")
         print(f"node_daemon pid: {pid}")
         print("System is running in background...")
+        _warn_missing_paios_images(Path(buckyos_root))
         
     except Exception as e:
         print(f"Failed to start system: {e}")

@@ -1,3 +1,4 @@
+use crate::paios_images::{self, exttool_volume_name, PaiosDocker, PaiosImageKind, ResolvedImage};
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use crate::wslc;
@@ -26,10 +27,6 @@ use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS: [&str; 4] = ["www", "http", "https", "main"];
-/// Default repo for the unified Worker Image (paios/aios). This single image
-/// now hosts both Agent and HostScript apps — the legacy buckyos/script-service
-/// image is gone (see notepads/paios容器需求.md §6.3, §8).
-const DEFAULT_WORKER_IMAGE_REPO: &str = "paios/aios";
 const AGENT_RUNTIME_HOST_GATEWAY: &str = "host.docker.internal";
 /// Read-only source mount inside the container. The image entrypoint
 /// file-syncs this into the instance volume's working copy, replacing the
@@ -58,29 +55,10 @@ const BUCKYOS_TOOL_MOUNT_ENTRIES: [&str; 4] = ["cli", "dist", "package.json", "d
 /// Read-only view of the agent's installed `pkg_list.agent_skills` sub package.
 const WORKER_CONTAINER_AGENT_SKILLS_ROOT: &str = "/mnt/buckyos/agent_skills";
 const NODE_GATEWAY_PORT: u16 = 3180;
-/// Shared named volume that serves as the default ExtTool Volume. All
-/// containers on the same node mount this volume read-only at
-/// WORKER_CONTAINER_EXTTOOL_ROOT; if empty (first start), the image's baked
-/// tool layout wins.
-const DEFAULT_EXTTOOL_VOLUME_NAME: &str = "buckyos-exttool";
-const DEVENV_JSON_FILE_NAME: &str = "devenv.json";
-const DEVENV_JSON_AIOS_KEY: &str = "aios";
-const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
-/// Seed image that populates the buckyos-exttool named volume on first use
-/// (see publish/exttool + build_exttool). Node_daemon runs this image once
-/// per host with the volume mounted so Docker auto-copies the baked
-/// /opt/buckyos/tools/ tree into the empty volume.
-const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
-
-static EXTTOOL_PREPARE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 const IMAGE_REPO_DIGEST_CACHE_TTL: Duration = Duration::from_secs(300);
 const IMAGE_REPO_DIGEST_CACHE_LIMIT: usize = 256;
 static IMAGE_REPO_DIGESTS: OnceLock<std::sync::Mutex<HashMap<String, (Instant, Vec<String>)>>> =
     OnceLock::new();
-
-pub(crate) fn exttool_prepare_lock() -> &'static tokio::sync::Mutex<()> {
-    EXTTOOL_PREPARE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
 
 pub(crate) struct DockerExecOutcome {
     pub(crate) ok: bool,
@@ -105,6 +83,8 @@ pub(crate) const DOCKER_LABEL_RUNTIME_KEY: &str = "buckyos.runtime_key";
 pub(crate) const DOCKER_LABEL_PKG_ID: &str = "buckyos.pkg_id";
 pub(crate) const DOCKER_LABEL_PKG_OBJID: &str = "buckyos.pkg_objid";
 pub(crate) const DOCKER_LABEL_IMAGE_DIGEST: &str = "buckyos.image_digest";
+/// ExtTool volume a worker container mounts ("" when it runs without one).
+pub(crate) const DOCKER_LABEL_EXTTOOL_VOLUME: &str = "buckyos.exttool_volume";
 pub(crate) const DOCKER_LABEL_APP_DOC_OBJECT_ID: &str = "buckyos.app_doc_object_id";
 pub(crate) const DOCKER_LABEL_SPEC_GENERATION: &str = "buckyos.spec_generation";
 
@@ -326,6 +306,7 @@ pub struct AppLoader {
     platform: PlatformTarget,
     support_container_override: Option<bool>,
     worker_image_repo_override: Option<String>,
+    paios_root_override: Option<PathBuf>,
     docker_command_runner: Option<DockerCommandRunner>,
     safe_mode: bool,
 }
@@ -347,6 +328,7 @@ impl AppLoader {
             platform: PlatformTarget::current(),
             support_container_override: None,
             worker_image_repo_override: None,
+            paios_root_override: None,
             docker_command_runner: None,
             safe_mode: false,
         }
@@ -360,6 +342,7 @@ impl AppLoader {
             platform: PlatformTarget::current(),
             support_container_override: None,
             worker_image_repo_override: None,
+            paios_root_override: None,
             docker_command_runner: None,
             safe_mode: false,
         }
@@ -377,6 +360,13 @@ impl AppLoader {
 
     pub(crate) fn with_worker_image_repo_override(mut self, image_repo: impl Into<String>) -> Self {
         self.worker_image_repo_override = Some(image_repo.into());
+        self
+    }
+
+    /// BuckyOS root whose `bin/paios-images/` and `etc/devenv.json` choose the
+    /// paios images (tests).
+    pub(crate) fn with_paios_images_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.paios_root_override = Some(root.into());
         self
     }
 
@@ -473,6 +463,7 @@ impl AppLoader {
             self.app_id, self.owner_user_id, runtime
         );
 
+        let mut worker = None;
         let desc = match runtime {
             RuntimeType::Docker => self
                 .docker_image_desc()
@@ -493,6 +484,24 @@ impl AppLoader {
                         ServiceInstanceState::NotExist,
                     ));
                 }
+                // A worker container matches only the current worker image and
+                // ExtTool volume, so an image upgrade (new release package or
+                // a rebuilt local image) recreates it.
+                let image = self.worker_image()?;
+                let exttool = self.paios_image(PaiosImageKind::Exttool)?;
+                let expectation = self
+                    .paios_docker()
+                    .worker_expectation(&image, exttool.as_ref())
+                    .await?;
+                let Some(image_id) = expectation.image_id else {
+                    return Ok(AppDeploymentObservation::without_container(
+                        ServiceInstanceState::NotExist,
+                    ));
+                };
+                worker = Some((
+                    Self::worker_desc_with_image(desc, image_id.as_str()),
+                    expectation.exttool_volume.unwrap_or_default(),
+                ));
                 desc
             }
             RuntimeType::Vm => {
@@ -502,11 +511,21 @@ impl AppLoader {
             }
         };
 
+        let desc = worker.as_ref().map(|(desc, _)| desc).unwrap_or(desc);
         let container = if let Some(mut container) = self.inspect_current_docker_container().await?
         {
-            if self
-                .resolve_runtime_identity(&mut container.identity, desc)
-                .await?
+            let exttool_matches = worker.as_ref().map_or(true, |(_, volume)| {
+                container
+                    .identity
+                    .labels
+                    .get(DOCKER_LABEL_EXTTOOL_VOLUME)
+                    .map(String::as_str)
+                    == Some(volume.as_str())
+            });
+            if exttool_matches
+                && self
+                    .resolve_runtime_identity(&mut container.identity, desc)
+                    .await?
             {
                 let state = if container.running {
                     ServiceInstanceState::Started
@@ -532,21 +551,23 @@ impl AppLoader {
             None
         };
 
-        let (image_name, digest) = if runtime == RuntimeType::Docker {
+        let state = if worker.is_some() {
+            ServiceInstanceState::Stopped
+        } else {
             let image_name = desc.docker_image_name.clone().ok_or_else(|| {
                 ControlRuntItemErrors::ParserConfigError(format!(
                     "docker_image_name is missing for app {}",
                     self.app_id
                 ))
             })?;
-            (image_name, desc.docker_image_digest.as_deref())
-        } else {
-            (self.worker_image_name(), None)
-        };
-        let state = if self.check_docker_image_exists(&image_name, digest).await? {
-            ServiceInstanceState::Stopped
-        } else {
-            ServiceInstanceState::NotExist
+            if self
+                .check_docker_image_exists(&image_name, desc.docker_image_digest.as_deref())
+                .await?
+            {
+                ServiceInstanceState::Stopped
+            } else {
+                ServiceInstanceState::NotExist
+            }
         };
         Ok(AppDeploymentObservation {
             state,
@@ -586,12 +607,12 @@ impl AppLoader {
                 )]
             }
             (RuntimeType::HostScript, ControlOperation::Status) => {
-                self.preview_host_script_status()
+                self.preview_host_script_status()?
             }
             (RuntimeType::Agent, ControlOperation::Deploy) => self.preview_agent_deploy()?,
             (RuntimeType::Agent, ControlOperation::Start) => self.preview_agent_start()?,
             (RuntimeType::Agent, ControlOperation::Stop) => vec![self.preview_agent_stop()],
-            (RuntimeType::Agent, ControlOperation::Status) => self.preview_agent_status(),
+            (RuntimeType::Agent, ControlOperation::Status) => self.preview_agent_status()?,
             (RuntimeType::Vm, _) => {
                 return Err(ControlRuntItemErrors::NotSupport(
                     "vm runtime is reserved but not implemented".to_string(),
@@ -1229,7 +1250,8 @@ impl AppLoader {
         service_port: Option<u16>,
         desc: Option<&SubPkgDesc>,
     ) -> Result<()> {
-        let image_name = self.worker_image_name();
+        let (image, image_id, exttool_volume) = self.worker_runtime().await?;
+        let image_name = image.reference;
         let container_name = self.container_name();
         let instance_volume = self.instance_volume_name();
         let env_vars = self
@@ -1268,32 +1290,22 @@ impl AppLoader {
             instance_volume, WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
         ));
 
-        // Shared ExtTool Volume — mounted across all worker containers on
-        // this node when it has been seeded. On first start Docker seeds the
-        // empty named volume from the image's baked /opt/buckyos/tools/
-        // layout (FreeCAD tool package, pre-warmed uv/deno caches). Mounted
-        // read-only per §9 permission matrix — new tool packages are
-        // installed by the control plane via an ad-hoc management
-        // container, not by apps.
+        // Shared ExtTool Volume — one per ExtTool image id, seeded during
+        // deploy from paios/exttool (pre-warmed uv/deno caches, optional tool
+        // packages) and mounted read-only per the §9 permission matrix; new
+        // tool packages are installed by the control plane, not by apps.
         //
-        // If the ExtTool image was unreachable during deploy, the volume is
-        // absent and we skip the mount entirely. The Worker image bakes a
-        // minimal /opt/buckyos/tools layout of its own, and entrypoint.sh
-        // no-ops gracefully when no tool cache is present, so apps that
+        // When ExtTool is unavailable the volume is absent and we skip the
+        // mount. The Worker image bakes a minimal /opt/buckyos/tools layout of
+        // its own and entrypoint.sh no-ops without a tool cache, so apps that
         // don't exercise baked tools still start.
-        if self
-            .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
-            .await?
-        {
+        if let Some(volume) = exttool_volume.as_ref() {
             args.push("-v".to_string());
-            args.push(format!(
-                "{}:{}:ro",
-                DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
-            ));
+            args.push(format!("{}:{}:ro", volume, WORKER_CONTAINER_EXTTOOL_ROOT));
         } else {
             warn!(
-                "{} volume is absent; starting {} without the ExtTool mount",
-                DEFAULT_EXTTOOL_VOLUME_NAME, container_name
+                "no ExtTool volume is available; starting {} without the ExtTool mount",
+                container_name
             );
         }
 
@@ -1335,10 +1347,17 @@ impl AppLoader {
         }
 
         if let Some(desc) = desc {
-            for (key, value) in self.docker_runtime_labels(desc) {
+            let desc = Self::worker_desc_with_image(desc, image_id.as_str());
+            for (key, value) in self.docker_runtime_labels(&desc) {
                 args.push("--label".to_string());
                 args.push(format!("{key}={value}"));
             }
+            args.push("--label".to_string());
+            args.push(format!(
+                "{}={}",
+                DOCKER_LABEL_EXTTOOL_VOLUME,
+                exttool_volume.as_deref().unwrap_or("")
+            ));
         }
 
         if let Some(container_param) = &self.install_config().container_param {
@@ -1347,7 +1366,7 @@ impl AppLoader {
 
         args.push(image_name.clone());
 
-        let output = run_command("docker", &args, None, None).await?;
+        let output = self.run_docker(&args).await?;
         ensure_success("docker run (worker)", &output)?;
 
         info!(
@@ -2072,184 +2091,80 @@ impl AppLoader {
         }
     }
 
-    fn worker_image_repo(&self) -> String {
-        if let Some(repo) = &self.worker_image_repo_override {
-            return repo.clone();
-        }
-
-        resolve_devenv_aios_image_repo().unwrap_or_else(|| DEFAULT_WORKER_IMAGE_REPO.to_string())
+    fn paios_root(&self) -> PathBuf {
+        self.paios_root_override
+            .clone()
+            .unwrap_or_else(get_buckyos_root_dir)
     }
 
-    fn worker_image_name(&self) -> String {
-        let arch_tag = match self.platform.arch {
-            PlatformArch::Aarch64 => "latest-aarch64",
-            PlatformArch::Amd64 => "latest-amd64",
-        };
-        format!("{}:{arch_tag}", self.worker_image_repo())
-    }
-
-    async fn prepare_worker_image(&self) -> Result<()> {
-        let image_name = self.worker_image_name();
-        if self
-            .check_docker_image_exists(image_name.as_str(), None)
-            .await?
-        {
-            return Ok(());
-        }
-
-        info!(
-            "worker image {} missing for app {}, pulling now",
-            image_name, self.app_id
-        );
-        self.pull_docker_image(image_name.as_str(), None).await?;
-
-        if !self
-            .check_docker_image_exists(image_name.as_str(), None)
-            .await?
-        {
-            return Err(ControlRuntItemErrors::ExecuteError(
-                "deploy".to_string(),
-                format!("worker image {} prepared but validation failed", image_name),
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn exttool_image_repo(&self) -> String {
-        resolve_devenv_exttool_image_repo()
-            .unwrap_or_else(|| DEFAULT_EXTTOOL_IMAGE_REPO.to_string())
-    }
-
-    fn exttool_image_name(&self) -> String {
-        let arch_tag = match self.platform.arch {
-            PlatformArch::Aarch64 => "latest-aarch64",
-            PlatformArch::Amd64 => "latest-amd64",
-        };
-        format!("{}:{arch_tag}", self.exttool_image_repo())
-    }
-
-    async fn check_docker_volume_exists(&self, volume: &str) -> Result<bool> {
-        let output = self
-            .run_docker(&[
-                "volume".to_string(),
-                "ls".to_string(),
-                "--format={{.Name}}".to_string(),
-            ])
-            .await?;
-        ensure_success("container volume ls", &output)?;
-        Ok(container_list_contains_name(&output.stdout, volume))
-    }
-
-    async fn ensure_docker_volume(&self, volume: &str) -> Result<()> {
-        let args = vec![
-            "volume".to_string(),
-            "create".to_string(),
-            volume.to_string(),
-        ];
-        let output = self.run_docker(&args).await?;
-        ensure_success("docker volume create", &output)
-    }
-
-    async fn seed_exttool_volume(&self, image_name: &str) -> Result<()> {
-        let args = vec![
-            "run".to_string(),
-            "--rm".to_string(),
-            "-v".to_string(),
-            format!(
-                "{}:{}",
-                DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
-            ),
-            image_name.to_string(),
-            "true".to_string(),
-        ];
-        let output = self.run_docker(&args).await?;
-        ensure_success("docker run (exttool seed)", &output)
-    }
-
-    /// Make sure the shared `buckyos-exttool` named volume exists and has
-    /// been populated with the ExtTool image payload at least once.
-    ///
-    /// Seeding relies on Docker's "auto-copy the image's files into an
-    /// empty named volume" behaviour: running *any* container from
-    /// `paios/exttool:<arch>` with the volume mounted at
-    /// `/opt/buckyos/tools` is enough. Re-seeding after an image upgrade
-    /// currently requires an explicit `docker volume rm buckyos-exttool`
-    /// (§6.3 of paios容器需求.md — OverlayFS lower/upper is the design
-    /// target that makes upgrades seamless; until then this is the
-    /// pragmatic seam).
-    ///
-    /// If the ExtTool image is not available (not yet built/pushed, or the
-    /// registry is unreachable), we deliberately leave the volume absent.
-    /// The worker container launch path treats a missing volume as "no
-    /// ExtTool mount", so apps that don't need baked tools still start —
-    /// and once the image becomes reachable a later deploy will seed the
-    /// volume cleanly, instead of being locked into an empty one forever.
-    async fn run_docker(&self, args: &[String]) -> Result<CommandOutput> {
-        if let Some(runner) = self.docker_command_runner.as_ref() {
-            let executed = runner(args.to_vec()).await;
-            return Ok(CommandOutput {
-                command_line: render_command_for_log("docker", args),
-                status: docker_exit_status(executed.ok),
-                stdout: executed.stdout,
-                stderr: executed.stderr,
-            });
-        }
-        run_command("docker", args, None, None).await
-    }
-
-    pub(crate) async fn prepare_exttool_volume(&self) -> Result<()> {
-        let _guard = exttool_prepare_lock().lock().await;
-        self.prepare_exttool_volume_serialised().await
-    }
-
-    async fn prepare_exttool_volume_serialised(&self) -> Result<()> {
-        let volume_exists = self
-            .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
-            .await?;
-
-        let image_name = self.exttool_image_name();
-        if !self
-            .check_docker_image_exists(image_name.as_str(), None)
-            .await?
-        {
-            info!("exttool image {} missing, pulling now", image_name);
-            let pull_started = Instant::now();
-            if let Err(pull_error) = self.pull_docker_image(image_name.as_str(), None).await {
-                error!(
-                    "exttool image {} unavailable after {:.1}s: {}. Skipping {} volume seed; worker containers will start without the ExtTool mount until the image becomes reachable.",
-                    image_name,
-                    pull_started.elapsed().as_secs_f64(),
-                    pull_error,
-                    DEFAULT_EXTTOOL_VOLUME_NAME
-                );
-                return Ok(());
+    fn paios_image(&self, kind: PaiosImageKind) -> Result<Option<ResolvedImage>> {
+        if kind == PaiosImageKind::Aios {
+            if let Some(repo) = &self.worker_image_repo_override {
+                return Ok(Some(paios_images::local_image(
+                    kind,
+                    self.platform.arch,
+                    repo.as_str(),
+                )));
             }
-            info!(
-                "exttool image {} pulled in {:.1}s",
-                image_name,
-                pull_started.elapsed().as_secs_f64()
-            );
         }
+        paios_images::resolve(kind, self.platform.arch, self.paios_root().as_path())
+            .map_err(|error| ControlRuntItemErrors::ExecuteError("paios_images".to_string(), error))
+    }
 
-        if !volume_exists {
-            self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
-                .await?;
-            info!(
-                "seeding {} from {} (copies the image payload; can take several minutes)",
-                DEFAULT_EXTTOOL_VOLUME_NAME, image_name
-            );
-            let seed_started = Instant::now();
-            self.seed_exttool_volume(image_name.as_str()).await?;
-            info!(
-                "seeded {} from {} in {:.1}s",
-                DEFAULT_EXTTOOL_VOLUME_NAME,
-                image_name,
-                seed_started.elapsed().as_secs_f64()
-            );
-        }
+    /// The unified Worker Image (paios/aios) hosting Agent and HostScript apps
+    /// (paios容器需求.md §6.3, §8): pinned by bin/paios-images/ in release
+    /// packages, `<repo>:latest-<arch>` otherwise.
+    fn worker_image(&self) -> Result<ResolvedImage> {
+        self.paios_image(PaiosImageKind::Aios)?.ok_or_else(|| {
+            ControlRuntItemErrors::ExecuteError(
+                "paios_images".to_string(),
+                "no worker (aios) image is configured".to_string(),
+            )
+        })
+    }
 
-        Ok(())
+    fn worker_image_name(&self) -> Result<String> {
+        Ok(self.worker_image()?.reference)
+    }
+
+    fn paios_docker(&self) -> PaiosDocker<'_> {
+        PaiosDocker::new(self.docker_command_runner.as_ref())
+    }
+
+    async fn prepare_worker_image(&self) -> Result<String> {
+        let image = self.worker_image()?;
+        self.paios_docker().ensure_image(&image).await
+    }
+
+    /// Seed the shared ExtTool volume (paios/exttool) of this node. Returns
+    /// the volume, or `None` when ExtTool is unavailable and workers start
+    /// without it (logged as an error).
+    pub(crate) async fn prepare_exttool_volume(&self) -> Result<Option<String>> {
+        let worker = self.worker_image()?;
+        let exttool = self.paios_image(PaiosImageKind::Exttool)?;
+        self.paios_docker()
+            .prepare_exttool(exttool.as_ref(), worker.reference.as_str())
+            .await
+    }
+
+    /// Worker image id + ExtTool volume for a new worker container.
+    async fn worker_runtime(&self) -> Result<(ResolvedImage, String, Option<String>)> {
+        let image = self.worker_image()?;
+        let docker = self.paios_docker();
+        let image_id = docker.ensure_image(&image).await?;
+        let exttool = self.paios_image(PaiosImageKind::Exttool)?;
+        let expectation = docker.worker_expectation(&image, exttool.as_ref()).await?;
+        Ok((image, image_id, expectation.exttool_volume))
+    }
+
+    fn worker_desc_with_image(desc: &SubPkgDesc, image_id: &str) -> SubPkgDesc {
+        let mut desc = desc.clone();
+        desc.docker_image_digest = Some(image_id.to_string());
+        desc
+    }
+
+    async fn run_docker(&self, args: &[String]) -> Result<CommandOutput> {
+        run_docker_with(self.docker_command_runner.as_ref(), args).await
     }
 
     async fn build_worker_runtime_env(
@@ -2636,18 +2551,7 @@ impl AppLoader {
             .host_script_pkg_id()
             .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
         let mut commands = vec![CommandSpec::new("pkg-install", [pkg_id])];
-        commands.push(CommandSpec::new(
-            "docker",
-            ["pull", self.worker_image_name().as_str()],
-        ));
-        commands.push(CommandSpec::new(
-            "docker",
-            ["pull", self.exttool_image_name().as_str()],
-        ));
-        commands.push(CommandSpec::new(
-            "docker",
-            ["volume", "create", DEFAULT_EXTTOOL_VOLUME_NAME],
-        ));
+        commands.extend(self.preview_paios_images()?);
         Ok(commands)
     }
 
@@ -2655,7 +2559,7 @@ impl AppLoader {
         self.preview_worker_start("script", None, self.host_script_desc())
     }
 
-    fn preview_host_script_status(&self) -> Vec<CommandSpec> {
+    fn preview_host_script_status(&self) -> Result<Vec<CommandSpec>> {
         self.preview_worker_status()
     }
 
@@ -2667,19 +2571,60 @@ impl AppLoader {
         if let Some(skills_pkg_id) = self.agent_skills_pkg_id() {
             commands.push(CommandSpec::new("pkg-install", [skills_pkg_id]));
         }
-        commands.push(CommandSpec::new(
-            "docker",
-            ["pull", self.worker_image_name().as_str()],
-        ));
-        commands.push(CommandSpec::new(
-            "docker",
-            ["pull", self.exttool_image_name().as_str()],
-        ));
-        commands.push(CommandSpec::new(
-            "docker",
-            ["volume", "create", DEFAULT_EXTTOOL_VOLUME_NAME],
-        ));
+        commands.extend(self.preview_paios_images()?);
         Ok(commands)
+    }
+
+    /// Worker + ExtTool preparation without pulling: pinned images load from
+    /// their tarball when missing, local images must exist; the ExtTool volume
+    /// is seeded once per ExtTool image id.
+    fn preview_paios_images(&self) -> Result<Vec<CommandSpec>> {
+        let ensure = |image: &ResolvedImage| match image.pinned.as_ref() {
+            Some(pinned) => CommandSpec::new(
+                "docker",
+                ["load", "-i", pinned.tar_path.to_string_lossy().as_ref()],
+            ),
+            None => CommandSpec::new(
+                "docker",
+                [
+                    "image",
+                    "inspect",
+                    "--format={{json .}}",
+                    image.reference.as_str(),
+                ],
+            ),
+        };
+        let mut commands = vec![ensure(&self.worker_image()?)];
+        if let Some(exttool) = self.paios_image(PaiosImageKind::Exttool)? {
+            let volume = self.preview_exttool_volume(&exttool);
+            commands.push(ensure(&exttool));
+            commands.push(CommandSpec::new(
+                "docker",
+                ["volume", "create", volume.as_str()],
+            ));
+            commands.push(CommandSpec::new(
+                "docker",
+                [
+                    "run".to_string(),
+                    "--rm".to_string(),
+                    "-v".to_string(),
+                    format!("{volume}:{WORKER_CONTAINER_EXTTOOL_ROOT}"),
+                    "--entrypoint".to_string(),
+                    "/bin/sh".to_string(),
+                    exttool.reference.clone(),
+                    "-c".to_string(),
+                    format!("touch {WORKER_CONTAINER_EXTTOOL_ROOT}/.buckyos-seeded-<image id 12>"),
+                ],
+            ));
+        }
+        Ok(commands)
+    }
+
+    fn preview_exttool_volume(&self, exttool: &ResolvedImage) -> String {
+        match exttool.pinned.as_ref() {
+            Some(pinned) => exttool_volume_name(pinned.platform.image_id.as_str()),
+            None => format!("{}-<image id 12>", paios_images::EXTTOOL_VOLUME_PREFIX),
+        }
     }
 
     fn preview_agent_start(&self) -> Result<Vec<CommandSpec>> {
@@ -2691,7 +2636,7 @@ impl AppLoader {
         CommandSpec::new("docker", ["rm", "-f", self.container_name().as_str()])
     }
 
-    fn preview_agent_status(&self) -> Vec<CommandSpec> {
+    fn preview_agent_status(&self) -> Result<Vec<CommandSpec>> {
         self.preview_worker_status()
     }
 
@@ -2701,7 +2646,7 @@ impl AppLoader {
         service_port: Option<u16>,
         desc: Option<&SubPkgDesc>,
     ) -> Result<Vec<CommandSpec>> {
-        let image_name = self.worker_image_name();
+        let image_name = self.worker_image_name()?;
         let instance_volume = self.instance_volume_name();
         let mut docker_run_args = vec![
             "run".to_string(),
@@ -2717,11 +2662,14 @@ impl AppLoader {
             "{}:{}:rw",
             instance_volume, WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
         ));
-        docker_run_args.push("-v".to_string());
-        docker_run_args.push(format!(
-            "{}:{}:ro",
-            DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
-        ));
+        if let Some(exttool) = self.paios_image(PaiosImageKind::Exttool)? {
+            docker_run_args.push("-v".to_string());
+            docker_run_args.push(format!(
+                "{}:{}:ro",
+                self.preview_exttool_volume(&exttool),
+                WORKER_CONTAINER_EXTTOOL_ROOT
+            ));
+        }
         docker_run_args.push("-v".to_string());
         docker_run_args.push(format!("<app_pkg>:{}:ro", WORKER_CONTAINER_PKG_SOURCE_ROOT));
         docker_run_args.push("-v".to_string());
@@ -2837,16 +2785,16 @@ impl AppLoader {
         ])
     }
 
-    fn preview_worker_status(&self) -> Vec<CommandSpec> {
+    fn preview_worker_status(&self) -> Result<Vec<CommandSpec>> {
         let filter = format!("name=^{}$", self.container_name());
-        vec![
+        Ok(vec![
             CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
             CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
             CommandSpec::new(
                 "docker",
-                ["images", "-q", self.worker_image_name().as_str()],
+                ["images", "-q", self.worker_image_name()?.as_str()],
             ),
-        ]
+        ])
     }
 
     fn preview_env_keys(&self, role: PackageRole) -> Vec<String> {
@@ -2889,7 +2837,7 @@ impl AppLoader {
 #[cfg(test)]
 impl AppLoader {
     pub(crate) fn test_worker_image_name(&self) -> String {
-        self.worker_image_name()
+        self.worker_image_name().unwrap()
     }
 
     pub(crate) fn test_instance_volume_name(&self) -> String {
@@ -3438,11 +3386,28 @@ fn append_host_gateway_run_args(args: &mut Vec<String>) {
     args.push(format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"));
 }
 
-struct CommandOutput {
-    command_line: String,
-    status: std::process::ExitStatus,
-    stdout: String,
-    stderr: String,
+pub(crate) struct CommandOutput {
+    pub(crate) command_line: String,
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
+/// Run a docker (or WSLC) command, or hand it to the test runner.
+pub(crate) async fn run_docker_with(
+    runner: Option<&DockerCommandRunner>,
+    args: &[String],
+) -> Result<CommandOutput> {
+    if let Some(runner) = runner {
+        let executed = runner(args.to_vec()).await;
+        return Ok(CommandOutput {
+            command_line: render_command_for_log("docker", args),
+            status: docker_exit_status(executed.ok),
+            stdout: executed.stdout,
+            stderr: executed.stderr,
+        });
+    }
+    run_command("docker", args, None, None).await
 }
 
 fn render_command_for_log(program: &str, args: &[String]) -> String {
@@ -3527,7 +3492,7 @@ fn docker_exit_status(ok: bool) -> std::process::ExitStatus {
     }
 }
 
-fn ensure_success(step: &str, output: &CommandOutput) -> Result<()> {
+pub(crate) fn ensure_success(step: &str, output: &CommandOutput) -> Result<()> {
     if output.status.success() {
         return Ok(());
     }
@@ -3553,99 +3518,6 @@ fn format_command_failure(step: &str, output: &CommandOutput) -> String {
     )
 }
 
-pub(crate) fn resolve_aios_image_repo_from_paths<I, P>(paths: I) -> Option<String>
-where
-    I: IntoIterator<Item = P>,
-    P: AsRef<Path>,
-{
-    let mut visited = HashSet::new();
-
-    for candidate in paths {
-        let candidate = candidate.as_ref();
-        let path_key = candidate.to_string_lossy().to_string();
-        if !visited.insert(path_key) || !candidate.is_file() {
-            continue;
-        }
-
-        match parse_aios_image_repo_from_devenv(candidate) {
-            Ok(Some(image_repo)) => return Some(image_repo),
-            Ok(None) => {}
-            Err(error) => warn!(
-                "ignore invalid {} at {}: {}",
-                DEVENV_JSON_FILE_NAME,
-                candidate.display(),
-                error
-            ),
-        }
-    }
-
-    None
-}
-
-fn resolve_devenv_aios_image_repo() -> Option<String> {
-    resolve_aios_image_repo_from_paths([devenv_json_path()])
-}
-
-fn parse_aios_image_repo_from_devenv(path: &Path) -> std::result::Result<Option<String>, String> {
-    parse_image_repo_from_devenv(path, DEVENV_JSON_AIOS_KEY)
-}
-
-pub(crate) fn resolve_exttool_image_repo_from_paths<I, P>(paths: I) -> Option<String>
-where
-    I: IntoIterator<Item = P>,
-    P: AsRef<Path>,
-{
-    let mut visited = HashSet::new();
-
-    for candidate in paths {
-        let candidate = candidate.as_ref();
-        let path_key = candidate.to_string_lossy().to_string();
-        if !visited.insert(path_key) || !candidate.is_file() {
-            continue;
-        }
-
-        match parse_image_repo_from_devenv(candidate, DEVENV_JSON_EXTTOOL_KEY) {
-            Ok(Some(image_repo)) => return Some(image_repo),
-            Ok(None) => {}
-            Err(error) => warn!(
-                "ignore invalid {} at {}: {}",
-                DEVENV_JSON_FILE_NAME,
-                candidate.display(),
-                error
-            ),
-        }
-    }
-
-    None
-}
-
-fn resolve_devenv_exttool_image_repo() -> Option<String> {
-    resolve_exttool_image_repo_from_paths([devenv_json_path()])
-}
-
-fn parse_image_repo_from_devenv(
-    path: &Path,
-    key: &str,
-) -> std::result::Result<Option<String>, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|error| format!("read {} failed: {}", path.display(), error))?;
-    let value = serde_json::from_str::<Value>(raw.as_str())
-        .map_err(|error| format!("parse {} failed: {}", path.display(), error))?;
-
-    Ok(value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string))
-}
-
-fn devenv_json_path() -> PathBuf {
-    get_buckyos_root_dir()
-        .join("etc")
-        .join(DEVENV_JSON_FILE_NAME)
-}
-
 fn trim_to_option(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -3667,7 +3539,7 @@ pub(crate) fn docker_missing_text(text: &str) -> bool {
         || lower.contains("no such volume")
 }
 
-fn docker_object_missing(output: &CommandOutput) -> bool {
+pub(crate) fn docker_object_missing(output: &CommandOutput) -> bool {
     docker_missing_text(&output.stderr) || docker_missing_text(&output.stdout)
 }
 

@@ -67,7 +67,9 @@ uv run src/start.py --skip-update
 
 区分两份本地配置：仓库根目录的 `devenv.json` 为普通 `build_aios` / `build_exttool` 提供默认镜像仓库名；node-daemon 实际读取的是 `$BUCKYOS_ROOT/etc/devenv.json`，例如 `{"aios": "local/aios-test", "exttool": "local/exttool-test"}`。字段填写不带 tag 的仓库名，运行时自动追加 `:latest-amd64` 或 `:latest-aarch64`。这些是个人开发配置，通常不提交到 Git。`start.py --all` 会保留含本地镜像覆盖的运行时 `devenv.json`，并在命令末尾提示；要恢复默认的 `paios/aios` / `paios/exttool`，手动删除对应覆盖键后重启。
 
-修改 ExtTool 内容时，使用 `./build_exttool --image local/exttool-test --arch amd64`（ARM64 使用 `aarch64`），并在运行时 `devenv.json` 设置 `exttool`。已有的 `buckyos-exttool` Docker 卷不会因镜像重建而自动刷新；需要停止相关容器、确认卷内容可丢弃后移除该卷，再启动以重新填充。
+node-daemon 从不拉取 paios 镜像。开发安装（没有 `$BUCKYOS_ROOT/bin/paios-images/paios_images.json`）直接使用本地的 `<repo>:latest-<arch>`，缺失时 deploy 报错；`uv run build.py` 会预拉取 `paios/aios`、`paios/exttool` 的 `latest-<arch>`（被 `devenv.json` 覆盖的除外），`start.py` 启动后发现缺镜像会打印 `docker pull` 命令。更新到新的 `latest` 用 `docker pull`；镜像变化后重启或等下一次状态检查，Worker 容器会按新镜像重建。正式安装包带清单和镜像 tar，锁定到配套镜像（见 `doc/app_service/rust_app_loader.md` §9.1.1）。
+
+修改 ExtTool 内容时，使用 `./build_exttool --image local/exttool-test --arch amd64`（ARM64 使用 `aarch64`），并在运行时 `devenv.json` 设置 `exttool`。ExtTool 卷按镜像 id 命名（`buckyos-exttool-<id12>`），镜像重建后下一次 deploy 会自动播种新卷，旧卷不再使用，可在确认无容器使用后删除。
 
 ### 测试与验证
 

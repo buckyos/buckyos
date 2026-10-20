@@ -2,13 +2,13 @@ use crate::app_loader::{
     buckyos_tool_mounts, command_matches_agent_process, command_matches_exact_agent_process,
     container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
-    docker_runtime_matches_target, exttool_prepare_lock, inspect_docker_image_layout,
-    normalize_digest, parse_docker_container_inspect, resolve_aios_image_repo_from_paths,
-    AppLoader, CommandSpec, ControlOperation, DockerCommandRunner, DockerExecOutcome,
-    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
-    DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
+    docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
+    parse_docker_container_inspect, AppLoader, CommandSpec, ControlOperation, DockerCommandRunner,
+    DockerExecOutcome, DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget,
+    RuntimeType, DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
     DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
 };
+use crate::paios_images::exttool_prepare_lock;
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
     AppDoc, AppId, AppInstanceId, AppServiceInstanceConfig, AppServiceSpec, AppType,
@@ -172,6 +172,7 @@ fn build_service_loader(
     AppLoader::new_for_service(&app_instance_id, config)
         .with_platform(platform)
         .with_container_support_override(support_container)
+        .with_paios_images_root(local_paios_root())
 }
 
 fn package_matches_platform(key: &str, platform: PlatformTarget) -> bool {
@@ -262,6 +263,11 @@ fn build_spec_config(app_doc: &AppDoc) -> ServiceSpecConfig {
 }
 
 fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
+    build_agent_loader_with_paios_root(platform, local_paios_root())
+        .with_worker_image_repo_override("paios/aios")
+}
+
+fn build_agent_loader_with_paios_root(platform: PlatformTarget, root: &Path) -> AppLoader {
     let app_doc = build_agent_doc_without_category();
     let install_config = build_spec_config(&app_doc);
     let app_spec = build_test_app_spec(app_doc, install_config);
@@ -272,7 +278,14 @@ fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
     AppLoader::new_for_service(&app_instance_id, config)
         .with_platform(platform)
         .with_container_support_override(true)
-        .with_worker_image_repo_override("paios/aios")
+        .with_paios_images_root(root)
+}
+
+/// A BuckyOS root without bin/paios-images/ or etc/devenv.json: local image
+/// mode with the default repos, independent of the machine running the tests.
+fn local_paios_root() -> &'static Path {
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| tempdir().unwrap()).path()
 }
 
 fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
@@ -338,36 +351,6 @@ fn default_tmp_mount_uses_platform_valid_host_path() {
             .join("alice")
             .join("demo.example")
     );
-}
-
-#[test]
-fn resolve_aios_image_repo_from_paths_reads_devenv_override() {
-    let temp_dir = unique_temp_path("node-daemon-devenv");
-    fs::create_dir_all(&temp_dir).unwrap();
-    let devenv_path = temp_dir.join("devenv.json");
-    fs::write(&devenv_path, r#"{"aios":"paios/aios_dev"}"#).unwrap();
-
-    let resolved =
-        resolve_aios_image_repo_from_paths([temp_dir.join("missing.json"), devenv_path.clone()]);
-
-    assert_eq!(resolved.as_deref(), Some("paios/aios_dev"));
-
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn resolve_aios_image_repo_from_paths_ignores_missing_or_empty_values() {
-    let temp_dir = unique_temp_path("node-daemon-devenv-empty");
-    fs::create_dir_all(&temp_dir).unwrap();
-    let devenv_path = temp_dir.join("devenv.json");
-    fs::write(&devenv_path, "{\"aios\":\"   \"}").unwrap();
-
-    let resolved =
-        resolve_aios_image_repo_from_paths([temp_dir.join("missing.json"), devenv_path.clone()]);
-
-    assert_eq!(resolved, None);
-
-    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -799,7 +782,14 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_eq!(deploy.runtime, RuntimeType::Agent);
     assert_programs(
         &deploy.commands,
-        &["pkg-install", "pkg-install", "docker", "docker", "docker"],
+        &[
+            "pkg-install",
+            "pkg-install",
+            "docker",
+            "docker",
+            "docker",
+            "docker",
+        ],
     );
     assert_eq!(
         deploy.commands[0].args,
@@ -809,18 +799,37 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         deploy.commands[1].args,
         vec![test_exact_package_id("skills.jarvis-agent.example", 4)]
     );
+    // Local image mode never pulls: images must already be in the store.
     assert_eq!(
         deploy.commands[2].args,
-        vec!["pull", "paios/aios:latest-amd64"]
+        vec![
+            "image",
+            "inspect",
+            "--format={{json .}}",
+            "paios/aios:latest-amd64"
+        ]
     );
     assert_eq!(
         deploy.commands[3].args,
-        vec!["pull", "paios/exttool:latest-amd64"]
+        vec![
+            "image",
+            "inspect",
+            "--format={{json .}}",
+            "paios/exttool:latest-amd64"
+        ]
     );
     assert_eq!(
         deploy.commands[4].args,
-        vec!["volume", "create", "buckyos-exttool"]
+        vec!["volume", "create", "buckyos-exttool-<image id 12>"]
     );
+    assert!(deploy.commands[5]
+        .args
+        .iter()
+        .any(|arg| arg == "buckyos-exttool-<image id 12>:/opt/buckyos/tools"));
+    assert!(!deploy
+        .commands
+        .iter()
+        .any(|command| command.args.first().map(String::as_str) == Some("pull")));
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Agent);
@@ -881,12 +890,11 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .args
         .iter()
         .any(|arg| arg == &format!("buckyos-instance-{runtime_key}:/opt/buckyos/instance:rw")));
-    // Default ExtTool Volume (§6.1) mounted ro — image seeds it with
-    // FreeCADCmd + pre-warmed uv/deno caches on first start.
+    // ExtTool Volume (§6.1) of the current ExtTool image, mounted ro.
     assert!(start.commands[1]
         .args
         .iter()
-        .any(|arg| arg == "buckyos-exttool:/opt/buckyos/tools:ro"));
+        .any(|arg| arg == "buckyos-exttool-<image id 12>:/opt/buckyos/tools:ro"));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
@@ -962,7 +970,12 @@ fn agent_control_commands_support_custom_runtime_image_repo() {
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(
         deploy.commands[2].args,
-        vec!["pull", "paios/aios_dev:latest-amd64"]
+        vec![
+            "image",
+            "inspect",
+            "--format={{json .}}",
+            "paios/aios_dev:latest-amd64"
+        ]
     );
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
@@ -1012,7 +1025,8 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
         .with_container_support_override(false)
-        .with_worker_image_repo_override("paios/aios");
+        .with_worker_image_repo_override("paios/aios")
+        .with_paios_images_root(local_paios_root());
 
     let preview = loader.preview_operation(ControlOperation::Start).unwrap();
     let runtime_key = test_runtime_key("desktop-tool");
@@ -1043,7 +1057,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .iter()
-        .any(|a| a == "buckyos-exttool:/opt/buckyos/tools:ro"));
+        .any(|a| a == "buckyos-exttool-<image id 12>:/opt/buckyos/tools:ro"));
     assert!(preview.commands[1]
         .args
         .iter()
@@ -1115,7 +1129,7 @@ fn host_script_stop_preview_uses_docker_rm() {
 }
 
 #[test]
-fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
+fn host_script_deploy_preview_checks_local_images_without_pulling() {
     let config = LocalAppInstanceConfig {
         target_state: ServiceInstanceState::Started,
         enable: true,
@@ -1126,23 +1140,63 @@ fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
         .with_container_support_override(false)
-        .with_worker_image_repo_override("paios/aios");
+        .with_worker_image_repo_override("paios/aios")
+        .with_paios_images_root(local_paios_root());
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(preview.runtime, RuntimeType::HostScript);
-    assert_eq!(preview.commands.len(), 4);
-    assert_eq!(preview.commands[0].program, "pkg-install");
-    assert_eq!(preview.commands[1].program, "docker");
-    assert_eq!(preview.commands[1].args[0], "pull");
-    assert!(preview.commands[1].args[1].contains("paios/aios:"));
-    assert_eq!(preview.commands[2].program, "docker");
-    assert_eq!(preview.commands[2].args[0], "pull");
-    assert!(preview.commands[2].args[1].contains("paios/exttool:"));
-    assert_eq!(preview.commands[3].program, "docker");
+    assert_programs(
+        &preview.commands,
+        &["pkg-install", "docker", "docker", "docker", "docker"],
+    );
+    assert_eq!(preview.commands[1].args[..2], ["image", "inspect"]);
+    assert_eq!(preview.commands[1].args[3], "paios/aios:latest-amd64");
+    assert_eq!(preview.commands[2].args[3], "paios/exttool:latest-amd64");
     assert_eq!(
         preview.commands[3].args,
-        vec!["volume", "create", "buckyos-exttool"]
+        vec!["volume", "create", "buckyos-exttool-<image id 12>"]
     );
+}
+
+#[test]
+fn pinned_deploy_preview_loads_bundled_tarballs() {
+    let root = tempdir().unwrap();
+    let images = root.path().join("bin/paios-images");
+    fs::create_dir_all(&images).unwrap();
+    fs::write(
+        images.join("paios_images.json"),
+        include_str!("testdata/paios_images.v1.json"),
+    )
+    .unwrap();
+    let loader = build_agent_loader_with_paios_root(
+        PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64),
+        root.path(),
+    );
+
+    let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
+    let docker = deploy
+        .commands
+        .iter()
+        .filter(|command| command.program == "docker")
+        .map(|command| command.args.clone())
+        .collect::<Vec<_>>();
+    let aios_tar = images.join("aios-amd64-7329ae7f4108.tar.gz");
+    let exttool_tar = images.join("exttool-amd64-444444444444.tar.gz");
+    assert_eq!(docker[0], vec!["load", "-i", aios_tar.to_str().unwrap()]);
+    assert_eq!(docker[1], vec!["load", "-i", exttool_tar.to_str().unwrap()]);
+    assert_eq!(
+        docker[2],
+        vec!["volume", "create", "buckyos-exttool-444444444444"]
+    );
+    assert!(docker[3].contains(&"paios/exttool:0.7.0-07787a750c1e-amd64".to_string()));
+
+    let start = loader.preview_operation(ControlOperation::Start).unwrap();
+    assert!(start.commands[1]
+        .args
+        .contains(&"paios/aios:0.7.0-835b5bd44125-amd64".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"buckyos-exttool-444444444444:/opt/buckyos/tools:ro".to_string()));
 }
 
 #[test]
@@ -1160,10 +1214,12 @@ fn host_script_aarch64_uses_correct_image_tag() {
             PlatformArch::Aarch64,
         ))
         .with_container_support_override(false)
-        .with_worker_image_repo_override("paios/aios");
+        .with_worker_image_repo_override("paios/aios")
+        .with_paios_images_root(local_paios_root());
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
-    assert_eq!(preview.commands[1].args[1], "paios/aios:latest-aarch64");
+    assert_eq!(preview.commands[1].args[3], "paios/aios:latest-aarch64");
+    assert_eq!(preview.commands[2].args[3], "paios/exttool:latest-aarch64");
 }
 
 #[test]
@@ -1251,11 +1307,13 @@ fn exttool_prepare_lock_is_process_wide_and_exclusive() {
     );
 }
 
+const FAKE_EXTTOOL_ID: &str =
+    "sha256:4c1a2e5b6d7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819";
+
 #[derive(Clone)]
 struct FakeDockerState {
     log: Arc<Mutex<Vec<String>>>,
-    image_pulled: Arc<AtomicBool>,
-    volume_created: Arc<AtomicBool>,
+    volumes: Arc<Mutex<Vec<String>>>,
 }
 
 fn fake_docker_runner(state: FakeDockerState) -> DockerCommandRunner {
@@ -1272,56 +1330,30 @@ fn fake_docker_runner(state: FakeDockerState) -> DockerCommandRunner {
     })
 }
 
+fn ok_outcome(stdout: impl Into<String>) -> DockerExecOutcome {
+    DockerExecOutcome {
+        ok: true,
+        stdout: stdout.into(),
+        stderr: String::new(),
+    }
+}
+
 async fn fake_docker_outcome(args: &[String], state: &FakeDockerState) -> DockerExecOutcome {
-    let sub = args.first().map(String::as_str).unwrap_or("");
-    let second = args.get(1).map(String::as_str).unwrap_or("");
-    if sub == "volume" && second == "ls" {
-        if state.volume_created.load(Ordering::SeqCst) {
-            DockerExecOutcome {
-                ok: true,
-                stdout: "buckyos-exttool\n".to_string(),
-                stderr: String::new(),
-            }
-        } else {
-            DockerExecOutcome {
-                ok: true,
-                stdout: String::new(),
-                stderr: String::new(),
-            }
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    match args.as_slice() {
+        ["volume", "ls", ..] => ok_outcome(state.volumes.lock().unwrap().join("\n")),
+        ["volume", "create", name] => {
+            state.volumes.lock().unwrap().push(name.to_string());
+            ok_outcome(format!("{name}\n"))
         }
-    } else if sub == "volume" && second == "create" {
-        state.volume_created.store(true, Ordering::SeqCst);
-        DockerExecOutcome {
-            ok: true,
-            stdout: format!("{}\n", args.get(2).map(String::as_str).unwrap_or("")),
-            stderr: String::new(),
+        ["image", "inspect", "--format={{json .}}", "paios/exttool:latest-amd64"] => {
+            ok_outcome(serde_json::json!({ "Id": FAKE_EXTTOOL_ID }).to_string())
         }
-    } else if sub == "images" {
-        DockerExecOutcome {
-            ok: true,
-            stdout: if state.image_pulled.load(Ordering::SeqCst) {
-                "4c1a2e5b\n".to_string()
-            } else {
-                String::new()
-            },
-            stderr: String::new(),
+        ["run", ..] => {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            ok_outcome("")
         }
-    } else if sub == "pull" {
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        state.image_pulled.store(true, Ordering::SeqCst);
-        DockerExecOutcome {
-            ok: true,
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    } else if sub == "run" {
-        DockerExecOutcome {
-            ok: true,
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    } else {
-        panic!("fake docker received an unexpected command: {args:?}");
+        _ => panic!("fake docker received an unexpected command: {args:?}"),
     }
 }
 
@@ -1333,11 +1365,10 @@ fn count_entries(entries: &[String], needle: &str) -> usize {
 }
 
 #[tokio::test]
-async fn concurrent_prepare_exttool_volume_runs_pull_and_seed_exactly_once() {
+async fn concurrent_prepare_exttool_volume_seeds_exactly_once_without_pulling() {
     let state = FakeDockerState {
         log: Arc::new(Mutex::new(Vec::new())),
-        image_pulled: Arc::new(AtomicBool::new(false)),
-        volume_created: Arc::new(AtomicBool::new(false)),
+        volumes: Arc::new(Mutex::new(Vec::new())),
     };
     let runner = fake_docker_runner(state.clone());
 
@@ -1355,6 +1386,7 @@ async fn concurrent_prepare_exttool_volume_runs_pull_and_seed_exactly_once() {
     )
     .with_platform(platform)
     .with_container_support_override(false)
+    .with_paios_images_root(local_paios_root())
     .with_docker_command_runner(runner);
 
     let prepare_both = async {
@@ -1367,40 +1399,38 @@ async fn concurrent_prepare_exttool_volume_runs_pull_and_seed_exactly_once() {
         tokio::time::timeout(Duration::from_secs(5), prepare_both)
             .await
             .expect("both prepares should finish promptly");
-    assert!(
-        agent_result.is_ok(),
-        "agent prepare failed: {agent_result:?}"
-    );
-    assert!(
-        host_script_result.is_ok(),
-        "host script prepare failed: {host_script_result:?}"
-    );
+    let volume = "buckyos-exttool-4c1a2e5b6d7f";
+    assert_eq!(agent_result.unwrap().as_deref(), Some(volume));
+    assert_eq!(host_script_result.unwrap().as_deref(), Some(volume));
 
     let entries = state.log.lock().unwrap().clone();
+    assert_eq!(count_entries(&entries, "volume ls"), 2, "{entries:?}");
     assert_eq!(
-        count_entries(&entries, "volume ls"),
+        count_entries(
+            &entries,
+            "image inspect --format={{json .}} paios/exttool:latest-amd64"
+        ),
         2,
-        "both callers must run their own volume check: {entries:?}"
+        "both callers must check the local ExtTool image: {entries:?}"
     );
+    assert_eq!(count_entries(&entries, "pull"), 0, "{entries:?}");
     assert_eq!(
-        count_entries(&entries, "images -q paios/exttool"),
-        2,
-        "both callers must run their own image check: {entries:?}"
-    );
-    assert_eq!(
-        count_entries(&entries, "pull paios/exttool"),
-        1,
-        "the slow image pull must happen exactly once: {entries:?}"
-    );
-    assert_eq!(
-        count_entries(&entries, "volume create buckyos-exttool"),
+        count_entries(&entries, &format!("volume create {volume}")),
         1,
         "the volume must be created exactly once: {entries:?}"
     );
     assert_eq!(
-        count_entries(&entries, "run --rm -v buckyos-exttool:"),
+        count_entries(
+            &entries,
+            "touch /opt/buckyos/tools/.buckyos-seeded-4c1a2e5b6d7f"
+        ),
         1,
         "the volume seeding run must happen exactly once: {entries:?}"
+    );
+    assert_eq!(
+        count_entries(&entries, "test -f /seed/.buckyos-seeded-4c1a2e5b6d7f"),
+        1,
+        "the second caller only checks the seed marker: {entries:?}"
     );
 }
 

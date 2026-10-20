@@ -35,7 +35,7 @@ uv run src/start.py --skip-update
 uv run src/stop.py
 ```
 
-WSLC 的会话、镜像、容器和卷与调用用户及权限上下文关联。请让 node-daemon、镜像导入和 stop.py 使用同一个 Windows 用户及相同的管理员权限级别；交互式用户拉取的镜像不能假定在 LocalSystem 服务中可见。不要在已有容器运行时切换运行时；先用原运行时停止，两个运行时的镜像和命名卷分别保存。
+WSLC 的会话、镜像、容器和卷与调用用户及权限上下文关联。请让 node-daemon、镜像导入和 stop.py 使用同一个 Windows 用户及相同的管理员权限级别；交互式用户拉取的镜像不能假定在 LocalSystem 服务中可见。正式安装包的 paios 镜像（`bin/paios-images/`）因此由 node-daemon 在自己的上下文里从包内 tar 执行 `load` 导入，安装器不导入；换了运行用户或权限级别后，node-daemon 会从 tar 重新导入。不要在已有容器运行时切换运行时；先用原运行时停止，两个运行时的镜像和命名卷分别保存。
 
 ## 运行行为
 
