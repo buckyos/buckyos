@@ -1,8 +1,8 @@
 # paios 镜像随版本发布 TODO：镜像清单锁定 + 全量安装包（issue #672）
 
 > 创建日期：2026-10-19
-> 版本：v0.3（2026-10-20：用户裁决 D1–D10 全按建议、D5 移出 FreeCAD、按 §5.0 顺序直接推 main；按 M0 实测修订 §3.2 / §3.5 的 tar 寻址；开始实施，记录见 §9）。v0.2（2026-10-19：根据 Actions run 39361968276 和 pve-pack-system 源码，修正 §2.4 对打包流水线的描述，补上 Linux onlinepack 这条安装路径，并相应修改 D4、M0、M4 和验收）。v0.1（初稿）。
-> 状态：实施中。§4 已裁决；进度和与设计不同之处见 §9。
+> 版本：v0.4（2026-10-20：用户确认打包机侧完成后 M2 合入 main，全部 M0–M7 完成）。v0.3（2026-10-20：用户裁决 D1–D10 全按建议、D5 移出 FreeCAD、按 §5.0 顺序直接推 main；按 M0 实测修订 §3.2 / §3.5 的 tar 寻址；开始实施，记录见 §9）。v0.2（2026-10-19：根据 Actions run 39361968276 和 pve-pack-system 源码，修正 §2.4 对打包流水线的描述，补上 Linux onlinepack 这条安装路径，并相应修改 D4、M0、M4 和验收）。v0.1（初稿）。
+> 状态：已完成（A6、A7 未做，见 §9.8）。§4 已裁决；实施记录和与设计不同之处见 §9。
 > 依据：[issue #672](https://github.com/buckyos/buckyos/issues/672) 正文与评论（wugren：安装包体验最好、出错少，但包大，镜像不该有 2G；waterflier：docker.io 会限流，确定走安装包方案，2G 的原因待查）；2026-10-19 对 buckyos（main `f31715059`）、buckyos-devkit、sn-business（`CD/cluster_config/ci`）、pve-pack-system（`README.md`、`doc/artifact_pack_entry.md`、`doc/onlinepack.md`、`installer/linux.sh`，HEAD `94f68cbdb`）的源码核对；Actions run [39361968276](https://github.com/buckyos/buckyos/actions/runs/39361968276) 的 job 和 artifact 列表；`doc/CI/BuckyOS的CI发布流程.md`、`doc/CI/prd_buckyos_packaging.md`、`doc/CI/impl_buckyos_packaging.md`、`doc/app_service/paios容器需求.md`、`product/buckyos_desktop_installer/新版本离线安装包的构建思路.md`；本机 `docker image inspect` / `docker history` / 远端 manifest 实测。
 > 第 2 节“现状”只以源码和实测为准。
 
@@ -448,7 +448,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 
 ### M2：node_daemon 锁定模式 / 本机模式，去掉 pull [buckyos]（与 M5 同一个 PR）
 
-> 2026-10-20：M2+M5+M6 已实现并通过本机 DV，提交在分支 `paios-images-m2`（fbf42ab8b），**等打包机部署 M4 后再合入 main**（§9.5）。
+> 2026-10-20：M2+M5+M6 已实现并通过本机 DV（分支 `paios-images-m2`，fbf42ab8b）；用户确认打包机侧完成后合入 main（merge 09694b564，§9.3）。
 
 - [x] 按 §3.4 改造 app_loader：`worker_image_name`、`prepare_worker_image`、exttool 的卷名、播种、标记和跳过逻辑、`run_worker_container` 的标签、`observe_deployment` 的身份比对、两个 preview 函数，并删掉 worker 和 exttool 路径上的 pull。
 - [x] 启动后台预加载（锁定模式），和 deploy 共用锁，Docker 不可用时退避重试。
@@ -597,6 +597,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
   5. 真实 CI 产物：从 R2 公开域名下载 run 39385674475 的清单和 amd64 tar（aios 458 MB、exttool 11 MB，HEAD 和 sha256 均一致），放进 `bin/paios-images/` 后重启：预加载 12.2 s 从 tar 载入 `paios/aios:0.7.0-b91b891ca3ff-amd64`（`.Id` 等于清单的 config digest）；回收删掉了上一轮 node_daemon load 的 `paios/aios:dv-…` tag；三个 Worker 改用 CI 镜像运行，Agent 端口 HTTP 200，容器内 `/opt/buckyos/tools` 有 `.buckyos-seeded-d59491422db1`，`freecadcmd` 输出新的占位说明。
   6. 运行中恢复 `devenv.json`（D7）：约 30 s 内三个 Worker 自动按 `local/aios-test` 重建（无需重启），日志有覆盖告警；告警原来每轮都打，已改为每个进程只打一次。
   - DV 后已还原：删除清单和 tar、状态文件和测试 tag，`devenv.json` 原样恢复，zone 停止（与开始前一致）。未做：Jarvis 实际 LLM 对话（镜像内运行时没有改动，只验证了 Agent 服务可访问）；containerd 存储、OrbStack、Docker Desktop、WSLC 上的 node_daemon 实跑。
+- 合入（2026-10-20）：用户确认打包机侧完成后 `git merge --no-ff` 进 main（09694b564，无冲突）。合入后并行跑 `cargo test -p node_daemon` 时 main 上原有的 `exttool_prepare_lock_is_process_wide_and_exclusive` 偶发失败：它用 `try_lock` 假定锁空闲，而并行的 ExtTool 播种测试正持有这把锁（上面的验证用的是 `--test-threads=1`，所以没暴露）；改为 `blocking_lock` 等锁（3db8ee701），并行连跑 5 次 126 项都通过。CI 见 §9.4 run 6。
 
 ### 9.4 M3：CI 导出、继承、清单写入 payload
 
@@ -614,6 +615,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
   - **发现并修复的问题**：run 2、run 3 的 `upload-payloads` 被跳过——它没有写状态函数，隐式 `success()` 会沿依赖链看到被跳过的镜像构建（`resolve-paios-images` 依赖它们），只要镜像没变就不上传 payload。改为 `!cancelled()` 加上对四个直接依赖结果的显式判断。修复前这两次 run 的 payload 没有进 R2（R2 上仍是 run 1 的同版本 payload，onlinepack 会因 Last-Modified 对不上而拒绝发布，直到下一次成功上传）。
   4. run 39400318783（3c9b09169，即上面的修复；改了 `build-all.yml`，它在两个镜像的路径列表里）：两个镜像都重建，`Upload component payloads to R2` 成功；R2 上 `buckyos-linux-amd64-0.7.0+build261020.paios_images.json` 的 `buckyos_revision` 和两个镜像 revision 都是 3c9b09169，指针同步更新（aios amd64 370 MB / aarch64 359 MB，exttool 10.9 / 10.4 MB）。
   5. run 39411084310（7f23502b9，只改 notepads）：`build-aios`、`build-exttool` 都是 skipped，清单从指针继承，`Upload component payloads to R2` 照常运行并成功；R2 旁挂清单的 `buckyos_revision` 是 7f23502b9，两个镜像 revision 仍是 3c9b09169。上面的上传被跳过问题已确认修复。
+  6. run 39429150151（3db8ee701，M2 合入后）：M2 改了 `build_exttool` 的注释，exttool 重建、aios 继承；全部 job 成功，payload 上传；R2 旁挂清单 `buckyos_revision` 3db8ee701，aios 3c9b09169，exttool 3db8ee701。
   - “上一次镜像构建失败后下一次仍会构建”没有人为制造失败来验证，依据是指针只在导出成功后写入。
 
 ### 9.5 M4：打包取 tar、安装包校验、在线安装下载 tar
@@ -623,7 +625,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 - pve-pack-system：`installer/linux.sh` 解出 payload 后、停旧服务前按本机架构用 `tar.path` 拼当前 base URL 下载 tar，校验 size+sha256，`$BUCKYOS_ROOT/bin/paios-images/` 里已有同 sha256 的文件直接复用；校验失败在动旧安装之前中止。`bin/onlinepack.py` 新增 `paios_images()`：读 `buckyos/<payload>.paios_images.json` 旁挂清单，对该架构每个 tar 做 HEAD 并比对 size，没有旁挂清单或不一致就拒绝发布；`check_and_publish_onlinepack.py` 用带认证的 R2 GET/HEAD。核对过的 ref / image_id 记在发布回执的 payload 记录里。`doc/onlinepack.md` 已同步。
 - 验证：pack-installer `python3 -m unittest discover -s tests` 56 项通过；sn-business `package-kit` 6 项通过；pve-pack-system 117 项通过（新增 `tests/test_online_paios_images.py`，其中 `linux.sh --stage-dir` 用假 curl 做了端到端安装、复用和篡改中止）。
 - 本机模拟打包机 Linux builder（2026-10-20）：取 run 39385674475 的 `buckyos-linux-amd64-0.7.0+build261020` payload（带清单）→ `stage_paios_images.py` 从 R2 下载 437 MB + 10 MB 并校验 → pack-installer `make_local_deb.py build-pkg`（项目定义用 b91b891ca 的 `bucky_project.yaml`，没有叠加 cyfs-gateway payload）→ `verify-pkg --require-paios-images` 通过，deb 596 MB。没有在干净 VM 上安装这个 deb（§6 验收 1 需要打包机产物 + 真实 VM）。
-- 部署：打包机上的 `/root/sn-business`（含子模块）和 pve-pack-system 都不会自动更新，需要在打包机上 `git pull` 后才生效；Linux 在线安装的 `linux.sh` 要等打包机下一次 `check_and_publish_onlinepack.py` 才会上传到 R2。**这两步完成并验证之前不能合入 M2。**
+- 部署：打包机上的 `/root/sn-business`（含子模块）和 pve-pack-system 都不会自动更新，需要在打包机上 `git pull` 后才生效；Linux 在线安装的 `linux.sh` 要等打包机下一次 `check_and_publish_onlinepack.py` 才会上传到 R2。这两步完成并验证之前不能合入 M2；2026-10-20 用户确认已完成，随后合入 M2（§9.3）。
 
 ### 9.8 M7：镜像瘦身
 
