@@ -1293,18 +1293,16 @@ fn exttool_prepare_lock_is_process_wide_and_exclusive() {
         "the ExtTool guard must be a single process-wide lock"
     );
 
-    let held = guard
-        .try_lock()
-        .expect("the ExtTool guard should be free here");
+    // Tests running in parallel take this lock while they prepare ExtTool, so
+    // wait for it instead of assuming it is free.
+    let held = guard.blocking_lock();
     assert!(
         guard.try_lock().is_err(),
         "a second caller must not enter while the ExtTool guard is held"
     );
     drop(held);
-    assert!(
-        guard.try_lock().is_ok(),
-        "the ExtTool guard must be released once the holder is done"
-    );
+    // Re-acquiring proves the guard is released once the holder is done.
+    drop(guard.blocking_lock());
 }
 
 const FAKE_EXTTOOL_ID: &str =
