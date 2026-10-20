@@ -606,7 +606,13 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
   - `build-all.yml`：`detect-image-changes` 总是 checkout，先用 R2 凭据读两个指针（校验后存 artifact `paios-image-pointers` 作为快照），再按指针 revision 做 `merge-base --is-ancestor` + `git diff`；路径列表加上两个导出脚本。新增 `resolve-paios-images`（总是运行；非 `buckyos/buckyos` main 时输出 `pinned=false`；main 上 detect 或任一镜像构建不是 success/skipped 就失败；构建了用本次 fragment，跳过了用指针快照；跑 `test_paios_images.py`、`assemble`、`validate --check-urls`，上传 `paios-images-manifest`）。三个平台构建 `needs` 它且要求 success，传入 `paios_images` 输入。`upload-payloads` 给每个 `buckyos-*.tar.gz` 旁边放一份 `<payload>.paios_images.json`（§3.6 末尾的二选一，选了“CI 另外上传清单小文件”）。
   - `build-{linux,macos,windows}.yml`：新增 `paios_images` 输入；为 true 时下载 manifest、复制到 `$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json` 并 `validate`，位置在 `buckyos-install` 之后、`write-install-descriptor.py` 之前。
 - 与设计不同：本地 `build_aios --push` 不推不可变 tag（避免开发机覆盖 CI 的 tag）；主线上镜像构建失败时平台构建不再继续（以前互不依赖），保证 main 上传到 R2 的 payload 一定带清单。
-- 验证：actionlint 1.7.7 只剩 `build-windows.yml` 原有的 shellcheck 报错（与本改动无关）。CI 实跑结果见下。
+- 验证：actionlint 1.7.7 只剩 `build-windows.yml` 原有的 shellcheck 报错（与本改动无关）。
+- CI 实跑（2026-10-20）：
+  1. run 39385674475（b91b891ca，还没有指针）：两个镜像都构建、导出到 R2 并写了指针；`resolve-paios-images` 组装清单并 HEAD 校验 4 个 tar；5 个平台构建全部成功；Linux amd64 payload 里有 `bin/paios-images/paios_images.json` 且 `.install-buckyos.json` 声明了该模块；`upload-payloads` 把 `<payload>.paios_images.json` 旁挂清单传到了 R2。
+  2. run 39389340246（47a6e822d，只改子模块）：detect 判定两个镜像都 “unchanged since published revision b91b891ca”，不构建，清单从指针快照继承（`images.*.revision` 早于 `buckyos_revision`）。
+  3. run 39390683744（559883fde，M7 改了 `build_aios`、`publish/aios/`）：只重建 aios（exttool 继承），指针更新为 559883fde；CI 导出的瘦身后 aios tar amd64 370 MB（原 458 MB）、aarch64 360 MB（原 443 MB）。
+  - **发现并修复的问题**：run 2、run 3 的 `upload-payloads` 被跳过——它没有写状态函数，隐式 `success()` 会沿依赖链看到被跳过的镜像构建（`resolve-paios-images` 依赖它们），只要镜像没变就不上传 payload。改为 `!cancelled()` 加上对四个直接依赖结果的显式判断。修复前这两次 run 的 payload 没有进 R2（R2 上仍是 run 1 的同版本 payload，onlinepack 会因 Last-Modified 对不上而拒绝发布，直到下一次成功上传）。
+  - “上一次镜像构建失败后下一次仍会构建”没有人为制造失败来验证，依据是指针只在导出成功后写入。
 
 ### 9.5 M4：打包取 tar、安装包校验、在线安装下载 tar
 
@@ -614,6 +620,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 - sn-business：`package-kit/stage_paios_images.py`（读 staging 里的清单 → 缓存 `<cache>/<name>/<arch>/<sha256>.tar.gz`，HTTP Range 续传，校验 size+sha256 → 复制到 `bin/paios-images/`，每个镜像每个架构保留 4 份）；三个 builder 脚本在组装 staging 后调用，`verify-pkg` 传 `--require-paios-images`；`create_package_result.py --paios-images <summary>` 把每个架构的 ref / image_id / revision 写进 `package-result.json` 的 `paios_images`；README 补了缓存目录和网络要求。macOS arm64 包本来就跳过 `verify-pkg`（交叉架构不能跑 Mach-O 检查），这次没有改。
 - pve-pack-system：`installer/linux.sh` 解出 payload 后、停旧服务前按本机架构用 `tar.path` 拼当前 base URL 下载 tar，校验 size+sha256，`$BUCKYOS_ROOT/bin/paios-images/` 里已有同 sha256 的文件直接复用；校验失败在动旧安装之前中止。`bin/onlinepack.py` 新增 `paios_images()`：读 `buckyos/<payload>.paios_images.json` 旁挂清单，对该架构每个 tar 做 HEAD 并比对 size，没有旁挂清单或不一致就拒绝发布；`check_and_publish_onlinepack.py` 用带认证的 R2 GET/HEAD。核对过的 ref / image_id 记在发布回执的 payload 记录里。`doc/onlinepack.md` 已同步。
 - 验证：pack-installer `python3 -m unittest discover -s tests` 56 项通过；sn-business `package-kit` 6 项通过；pve-pack-system 117 项通过（新增 `tests/test_online_paios_images.py`，其中 `linux.sh --stage-dir` 用假 curl 做了端到端安装、复用和篡改中止）。
+- 本机模拟打包机 Linux builder（2026-10-20）：取 run 39385674475 的 `buckyos-linux-amd64-0.7.0+build261020` payload（带清单）→ `stage_paios_images.py` 从 R2 下载 437 MB + 10 MB 并校验 → pack-installer `make_local_deb.py build-pkg`（项目定义用 b91b891ca 的 `bucky_project.yaml`，没有叠加 cyfs-gateway payload）→ `verify-pkg --require-paios-images` 通过，deb 596 MB。没有在干净 VM 上安装这个 deb（§6 验收 1 需要打包机产物 + 真实 VM）。
 - 部署：打包机上的 `/root/sn-business`（含子模块）和 pve-pack-system 都不会自动更新，需要在打包机上 `git pull` 后才生效；Linux 在线安装的 `linux.sh` 要等打包机下一次 `check_and_publish_onlinepack.py` 才会上传到 R2。**这两步完成并验证之前不能合入 M2。**
 
 ### 9.8 M7：镜像瘦身

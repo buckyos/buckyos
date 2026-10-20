@@ -241,7 +241,12 @@ jobs:
   upload-payloads:
     name: Upload component payloads to R2
     needs: [resolve-paios-images, build-windows, build-linux, build-macos]
-    if: github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos'
+    # Explicit results: the implicit success() would also see image builds that
+    # were skipped because the images did not change, and skip the upload.
+    if: >-
+      ${{ !cancelled() && github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos'
+      && needs.resolve-paios-images.result == 'success' && needs.build-windows.result == 'success'
+      && needs.build-linux.result == 'success' && needs.build-macos.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
