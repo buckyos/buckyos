@@ -12,21 +12,19 @@ VERSION_FILE="$SRC_DIR/VERSION"
 VERSION_TAG="${VERSION_TAG:-}"
 SUPPORTED_ARCHES=("amd64" "aarch64")
 # Core runtime + predefined Worker Image CLI tool set (see container
-# requirements §6.3). No compile toolchain — Crafter is deferred.
+# requirements §6.3). No compile toolchain — Crafter is deferred. Python apps
+# use uv with this system Python 3.12; Node.js comes from the official tarball
+# (NODE_VERSION in the Dockerfile), not Debian's EOL nodejs/npm.
 RUNTIME_PACKAGES=(
-  "bash" "ca-certificates" "curl" "git" "jq" "locales" "rsync"
+  "bash" "ca-certificates" "curl" "git" "jq" "rsync"
   "tmux" "tree" "unzip" "xz-utils"
-  "python3" "python3-venv"
-  "nodejs" "npm"
+  "python3"
   "ffmpeg" "imagemagick" "poppler-utils" "pandoc" "tesseract-ocr"
 )
-# Legacy flag kept for CLI compat; the Worker Image always ships the tool set.
-WORKSPACE_PACKAGES=()
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
 PUSH=0
 PREPARE_CONTEXT_DIR=""
-INSTALL_WORKSPACE_TOOLS=1
 ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
 BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
 AICC_TOOL_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/aicc-tool"
@@ -43,7 +41,7 @@ AIOS_BUILD_CREATED=""
 
 usage() {
   cat <<'EOF'
-Usage: ./build_aios [--local-test] [--push] [--prepare-context <dir>] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
+Usage: ./build_aios [--local-test] [--push] [--prepare-context <dir>] [--image <name>] [--tag <tag>] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
 
 Builds the OpenDAN, agent_tool and xagent binaries with cargo and the OpenDAN WebUI with pnpm for:
   - amd64   -> x86_64-unknown-linux-musl
@@ -70,7 +68,6 @@ Options:
                   <image>:<immutable_tag>-<arch> and pins release packages to it.
   --image <name>  Override image name, default: devenv.json["aios"] or paios/aios
   --tag <tag>     Override version tag, default: src/VERSION
-  --runtime-only  Install only required runtime dependencies in the image
   --arch <arch>   Build only one architecture (amd64|aarch64); can be repeated
   --apt-package   Add an extra apt package to the image; can be repeated
   --reuse-cargo-target
@@ -109,10 +106,6 @@ while [[ $# -gt 0 ]]; do
     --tag)
       VERSION_TAG="$2"
       shift 2
-      ;;
-    --runtime-only)
-      INSTALL_WORKSPACE_TOOLS=0
-      shift
       ;;
     --arch)
       SELECTED_ARCHES+=("$2")
@@ -533,10 +526,13 @@ FROM ubuntu:24.04
 ARG TARGET_ARCH
 ARG OPENDAN_SHA256
 ARG DENO_VERSION=v2.9.2
+ARG NODE_VERSION=v24.21.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Runtime + predefined worker CLI tools (see container spec §6.3).
+# Runtime + predefined worker CLI tools (see container spec §6.3). The GPU /
+# LLVM stack that ffmpeg's SDL/GL dependencies drag in is never linked by the
+# headless tools, so it is dropped in the same layer (~190 MB).
 RUN apt-get update && apt-get install -y --no-install-recommends \
 EOF
 
@@ -546,14 +542,25 @@ EOF
 
     cat <<'EOF'
     && rm -rf /var/lib/apt/lists/* \
-    && locale-gen en_US.UTF-8
+    && rm -f /usr/lib/*-linux-gnu/libLLVM*.so* /usr/lib/*-linux-gnu/libgallium-*.so \
+       /usr/lib/*-linux-gnu/libGLX_mesa.so* \
+    && rm -rf /usr/lib/*-linux-gnu/dri
 
-ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# uv — managed Python + dependency installer used by Script apps.
+# Node.js LTS (official build; npm/npx/corepack included).
+RUN case "${TARGET_ARCH}" in amd64) node_arch=x64 ;; aarch64) node_arch=arm64 ;; *) exit 1 ;; esac && \
+    node_tar="node-${NODE_VERSION}-linux-${node_arch}.tar.xz" && \
+    curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/${node_tar}" && \
+    curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" | grep " ${node_tar}\$" | sha256sum -c - && \
+    tar -xJf "${node_tar}" -C /usr/local --strip-components=1 --no-same-owner \
+      --exclude='*/include' --exclude='*/share/doc' --exclude='*/CHANGELOG.md' --exclude='*/README.md' && \
+    rm -f "${node_tar}" && \
+    node --version && npm --version
+
+# uv — dependency installer used by Script apps, on the system Python 3.12.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
-RUN uv python install 3.12
 
 # Deno — TypeScript runtime used by Script apps and Worker-layer Agents.
 RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- "${DENO_VERSION}" && \
@@ -595,12 +602,13 @@ RUN --mount=type=bind,source=buckyos-tool-check-dist,target=/opt/buckyos/libexec
     command -v edit_image >/dev/null && \
     aicc-tool --help >/dev/null && \
     gen_image --help >/dev/null && \
-    edit_image --help >/dev/null
+    edit_image --help >/dev/null && \
+    rm -rf /root/.cache/deno
 
 # ExtTool Volume mount point — kept empty in the Worker image. The real
-# payload (FreeCAD, pre-warmed uv/deno caches, tool packages) ships in the
-# separate paios/exttool image and lands in the buckyos-exttool named
-# volume, which node_daemon mounts here ro at run time (§6.3 of paios容器需求.md).
+# payload (pre-warmed uv/deno caches, optional tool packages) ships in the
+# separate paios/exttool image and lands in the buckyos-exttool-<image id>
+# named volume, which node_daemon mounts here ro at run time (§6.3 of paios容器需求.md).
 RUN mkdir -p \
     /opt/buckyos/bin/opendan \
     /opt/buckyos/data \
@@ -610,17 +618,13 @@ RUN mkdir -p \
     /opt/buckyos/tools/bin \
     /mnt/buckyos/pkg
 
-COPY opendan /opt/buckyos/bin/opendan/opendan
-COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
-COPY xagent /opt/buckyos/bin/opendan/xagent
+COPY --chmod=755 opendan agent_tool xagent /opt/buckyos/bin/opendan/
 COPY web /opt/buckyos/bin/opendan/web
-RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool /opt/buckyos/bin/opendan/xagent && \
-    printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -
+RUN printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -
 
 # Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
 # agent/script/custom dispatch.
-COPY entrypoint.sh /opt/buckyos/entrypoint.sh
-RUN chmod 755 /opt/buckyos/entrypoint.sh
+COPY --chmod=755 entrypoint.sh /opt/buckyos/entrypoint.sh
 
 ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance \
@@ -1407,15 +1411,6 @@ main() {
   log "Target arches: $(package_list_to_string "${target_arches[@]}")"
   log "Cargo target dir: $cargo_target_dir ($cargo_target_mode)"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
-  if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
-    if [[ ${#WORKSPACE_PACKAGES[@]} -gt 0 ]]; then
-      log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
-    else
-      log "Workspace packages: (none)"
-    fi
-  else
-    log "Workspace packages: skipped (--runtime-only)"
-  fi
   if [[ ${#EXTRA_APT_PACKAGES[@]} -gt 0 ]]; then
     log "Extra apt packages: $(package_list_to_string "${EXTRA_APT_PACKAGES[@]}")"
   fi

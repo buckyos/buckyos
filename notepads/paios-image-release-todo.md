@@ -425,34 +425,36 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 
 ### M0：实测与核对（不改行为）[buckyos、sn-business]
 
-- [ ] 在下面四种环境里，用 CI 方式（pull by digest、tag、`docker save | gzip`）做一个 aios tar，`docker load` 之后记录 `.Id`、`RepoDigests`、`RootFS.Layers`，看是否等于 config digest；并确认 `docker run <ref>` 和 `docker image inspect` 的输出可用：
+- [~] 在下面四种环境里，用 CI 方式（pull by digest、tag、`docker save | gzip`）做一个 aios tar，`docker load` 之后记录 `.Id`、`RepoDigests`、`RootFS.Layers`，看是否等于 config digest；并确认 `docker run <ref>` 和 `docker image inspect` 的输出可用：
   - Ubuntu 24.04 上的 Docker Engine（经典存储）；
   - 开启了 containerd image store 的 Docker Engine；
   - macOS 上的 OrbStack 和 Docker Desktop；
   - Windows 上的 WSLC（`load -i` 能否直接吃 `.tar.gz`，能否吃 zstd）。
   - 结论决定 §3.3 第三条兜底要不要实现，以及 tar 用 gzip 还是 zstd。
-- [ ] 确认 `docker/build-push-action@v7` 现在返回的 `digest` 是 image manifest 还是 index，以及加上 `provenance: false` 之后的结果。
-- [ ] R2 桶 `buckyos-installer` 的公开域名已经确定是 `https://buckyos-installer.tbudr.top`（pve-pack-system `config/onlinepack.toml`）。要确认的是：新前缀 `paios-images/` 能公开读取；1 GB 级的对象经过 CDN 下载正常，并且支持 Range（用于断点续传）。
-- [ ] 实测各平台 payload 的压缩后大小，估算全量包大小；用一个 2.5 GB 的假 payload 验证 NSIS 的限制。
-- [ ] 确认 `observe_deployment` 返回“容器存在但身份不匹配”时，reconcile 会停掉老容器并重建（找到具体代码路径并写进 §9）。
-- [ ] 确认 `bin/` 根 package env（`service_pkg.rs:35`）不会把 `bin/paios-images/` 当成 pkg 去解析。
+- [x] 确认 `docker/build-push-action@v7` 现在返回的 `digest` 是 image manifest 还是 index，以及加上 `provenance: false` 之后的结果。
+- [x] R2 桶 `buckyos-installer` 的公开域名已经确定是 `https://buckyos-installer.tbudr.top`（pve-pack-system `config/onlinepack.toml`）。要确认的是：新前缀 `paios-images/` 能公开读取；1 GB 级的对象经过 CDN 下载正常，并且支持 Range（用于断点续传）。
+- [x] 实测各平台 payload 的压缩后大小，估算全量包大小；用一个 2.5 GB 的假 payload 验证 NSIS 的限制。
+- [x] 确认 `observe_deployment` 返回“容器存在但身份不匹配”时，reconcile 会停掉老容器并重建（找到具体代码路径并写进 §9）。
+- [x] 确认 `bin/` 根 package env（`service_pkg.rs:35`）不会把 `bin/paios-images/` 当成 pkg 去解析。
 - 产出：实测结果写进 §9.1；有影响设计的，先更新 §3 再动手。
 
 ### M1：清单格式、解析与目录占位 [buckyos]
 
-- [ ] `src/rootfs/bin/paios-images/README.md`；在 `src/bucky_project.yaml` 的 `apps.buckyos.modules` 里加 `paios_images: bin/paios-images/`。
-- [ ] `src/kernel/node_daemon/src/paios_images.rs`：实现结构体、`load_manifest`、`resolve`，以及字段规则（§3.2）。此时**还不接入 app_loader**。
-- [ ] fixture `src/kernel/node_daemon/src/testdata/paios_images.v1.json`。单测覆盖：文件不存在；解析失败；schema 不一致；缺当前架构；`tar.file` 带路径时被拒绝；未知字段被忽略；devenv 优先级（D7）。
-- [ ] `.github/scripts/paios_images.py` 的 `fragment`、`assemble`、`validate` 子命令，以及 `.github/scripts/test_paios_images.py`，与 Rust 共用同一份 fixture。
+- [x] `src/rootfs/bin/paios-images/README.md`；在 `src/bucky_project.yaml` 的 `apps.buckyos.modules` 里加 `paios_images: bin/paios-images/`。
+- [x] `src/kernel/node_daemon/src/paios_images.rs`：实现结构体、`load_manifest`、`resolve`，以及字段规则（§3.2）。此时**还不接入 app_loader**。
+- [x] fixture `src/kernel/node_daemon/src/testdata/paios_images.v1.json`。单测覆盖：文件不存在；解析失败；schema 不一致；缺当前架构；`tar.file` 带路径时被拒绝；未知字段被忽略；devenv 优先级（D7）。
+- [x] `.github/scripts/paios_images.py` 的 `fragment`、`assemble`、`validate` 子命令，以及 `.github/scripts/test_paios_images.py`，与 Rust 共用同一份 fixture。
 - 验证：`cargo test -p node_daemon paios_images -- --test-threads=1`；`uv run python -m unittest .github/scripts/test_paios_images.py`（按 `test_install_descriptor.py` 的实际运行方式调整）；`buckyos-install --app=buckyos --all --target-rootfs=<tmp>` 能把 README 装进 `bin/paios-images/`。
 
 ### M2：node_daemon 锁定模式 / 本机模式，去掉 pull [buckyos]（与 M5 同一个 PR）
 
-- [ ] 按 §3.4 改造 app_loader：`worker_image_name`、`prepare_worker_image`、exttool 的卷名、播种、标记和跳过逻辑、`run_worker_container` 的标签、`observe_deployment` 的身份比对、两个 preview 函数，并删掉 worker 和 exttool 路径上的 pull。
-- [ ] 启动后台预加载（锁定模式），和 deploy 共用锁，Docker 不可用时退避重试。
-- [ ] WSLC：补上 inspect 的格式映射和 `test_wslc.rs` 用例（只在 Windows 上编译）。
-- [ ] 修正 `app_loader.rs:31` 的注释路径。
-- [ ] 测试（`test_app_loader.rs`，复用 `:795`、`:1336` 那种记录命令的写法）：
+> 2026-10-20：M2+M5+M6 已实现并通过本机 DV，提交在分支 `paios-images-m2`（fbf42ab8b），**等打包机部署 M4 后再合入 main**（§9.5）。
+
+- [x] 按 §3.4 改造 app_loader：`worker_image_name`、`prepare_worker_image`、exttool 的卷名、播种、标记和跳过逻辑、`run_worker_container` 的标签、`observe_deployment` 的身份比对、两个 preview 函数，并删掉 worker 和 exttool 路径上的 pull。
+- [x] 启动后台预加载（锁定模式），和 deploy 共用锁，Docker 不可用时退避重试。
+- [x] WSLC：补上 inspect 的格式映射和 `test_wslc.rs` 用例（只在 Windows 上编译）。
+- [x] 修正 `app_loader.rs:31` 的注释路径。
+- [x] 测试（`test_app_loader.rs`，复用 `:795`、`:1336` 那种记录命令的写法）：
   - 锁定模式，镜像已存在且身份匹配：不执行 load，不执行 pull。
   - 锁定模式，镜像缺失：先校验 tar 的 sha256，再 `docker load`，再校验身份。
   - tar 的 sha256 不一致：报错，不执行 load，不执行 pull。
@@ -472,10 +474,10 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 
 ### M3：CI 导出、继承、清单写入 payload [buckyos]
 
-- [ ] `build_aios`、`build_exttool`：不可变 tag；exttool 补上 build arg、label 和 `metadata.env` 字段（§3.5-1）。
-- [ ] `build-aios.yml`、`build-exttool.yml`：`provenance: false`、`sbom: false`；新增不可变 tag；新增 `export` job（pull by digest、inspect、tag、save、上传 R2、片段 artifact、写指针）；新增 R2 secrets。
-- [ ] `build-all.yml`：`detect-image-changes` 改为和指针比较，并保存指针快照 artifact；新增 `resolve-paios-images` job；三个平台构建加 `needs`，透传 R2 secrets。
-- [ ] `build-linux.yml`、`build-macos.yml`、`build-windows.yml`：下载 `paios-images-manifest`，写入 `$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json`（artifact 不存在时跳过）。
+- [x] `build_aios`、`build_exttool`：不可变 tag；exttool 补上 build arg、label 和 `metadata.env` 字段（§3.5-1）。
+- [x] `build-aios.yml`、`build-exttool.yml`：`provenance: false`、`sbom: false`；新增不可变 tag；新增 `export` job（pull by digest、inspect、tag、save、上传 R2、片段 artifact、写指针）；新增 R2 secrets。
+- [x] `build-all.yml`：`detect-image-changes` 改为和指针比较，并保存指针快照 artifact；新增 `resolve-paios-images` job；三个平台构建加 `needs`，透传 R2 secrets。
+- [x] `build-linux.yml`、`build-macos.yml`、`build-windows.yml`：下载 `paios-images-manifest`，写入 `$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json`（artifact 不存在时跳过）。
 - 验证：
   - 首次运行时还没有指针 → 必须构建，并且会写出指针。
   - 只改 `doc/` → 不构建，清单继承指针，`images.aios.revision` 早于 `buckyos_revision`。
@@ -485,31 +487,31 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 
 ### M4：打包取 tar、安装包校验、在线安装下载 tar [sn-business、buckyos-pack-installer、pve-pack-system]
 
-- [ ] sn-business：`package-kit/stage_paios_images.py`；三个打包脚本调用它；`create_package_result.py` 记录 `paios_images`；在 README 里说明缓存目录和网络要求（能访问 R2）。
-- [ ] buckyos-pack-installer：`verify-pkg` 支持 `--require-paios-images`，sn-business 打包时传入；处理 M0 发现的压缩和体积问题；Windows 按 D10 处理。
-- [ ] 更新 buckyos 主仓库里的子模块指针。
-- [ ] pve-pack-system：`installer/linux.sh` 按 §3.6 下载、校验并安装 tar（真实安装和 `--stage` 两种模式）；`onlinepack.py` 发布前对 tar 做 HEAD 校验，并决定清单从哪里读（从 payload 里解出，或用 CI 单独上传的清单小文件，见 §3.6）；在 `tests/` 里补对应用例（参照 `tests/test_artifact_pack_orchestrator.py` 的写法）。artifact pack 的调度（`artifact_pack_orchestrator.py`）不需要改动，它调用的 sn-business `pack` 已经在上面处理了。
+- [x] sn-business：`package-kit/stage_paios_images.py`；三个打包脚本调用它；`create_package_result.py` 记录 `paios_images`；在 README 里说明缓存目录和网络要求（能访问 R2）。
+- [x] buckyos-pack-installer：`verify-pkg` 支持 `--require-paios-images`，sn-business 打包时传入；处理 M0 发现的压缩和体积问题；Windows 按 D10 处理。
+- [x] 更新 buckyos 主仓库里的子模块指针。
+- [x] pve-pack-system：`installer/linux.sh` 按 §3.6 下载、校验并安装 tar（真实安装和 `--stage` 两种模式）；`onlinepack.py` 发布前对 tar 做 HEAD 校验，并决定清单从哪里读（从 payload 里解出，或用 CI 单独上传的清单小文件，见 §3.6）；在 `tests/` 里补对应用例（参照 `tests/test_artifact_pack_orchestrator.py` 的写法）。artifact pack 的调度（`artifact_pack_orchestrator.py`）不需要改动，它调用的 sn-business `pack` 已经在上面处理了。
 - 验证：
   - 通过 artifact pack 跑一次完整打包（`python3 bin/artifact_pack_orchestrator.py --config config/artifact-pack.toml --force`，或者只跑 sn-business 的 `pack --cluster ci`），五种安装包都包含清单和对应架构的 tar（`verify-pkg` 通过）；记录各安装包的大小。
   - Linux 在线安装：在新的 Ubuntu 24.04 amd64 和 arm64 上用 `install.sh` 各装一次，`$BUCKYOS_ROOT/bin/paios-images/` 下有清单和对应架构的 tar，sha256 一致。
 
 ### M5：开发流程与文档 [buckyos]（与 M2 同一个 PR）
 
-- [ ] `build.py`、`start.py`、`make_local_pkg.py --paios-images local`、`diagnose_jarvis_orbstack.sh`（§3.7）。
-- [ ] `src/tools/tests/` 下补充或修改 `build.py` 镜像列表和 `start.py` 预检查的测试（参照 `test_start_entrypoint.py` 的写法）。
-- [ ] 按 §3.7 列出的文档逐一更新。
+- [x] `build.py`、`start.py`、`make_local_pkg.py --paios-images local`、`diagnose_jarvis_orbstack.sh`（§3.7）。
+- [x] `src/tools/tests/` 下补充或修改 `build.py` 镜像列表和 `start.py` 预检查的测试（参照 `test_start_entrypoint.py` 的写法）。
+- [x] 按 §3.7 列出的文档逐一更新。
 - 验证：`uv run python -m unittest discover -s tools/tests -p 'test_*.py'`（在 `src/` 下运行）；在没有任何 paios 镜像的机器上跑 `uv run build.py`，之后 Agent 可以正常运行。
 
 ### M6：旧镜像和旧卷回收 [buckyos]（取决于 D9）
 
-- [ ] 状态文件 `local/node_daemon/paios_images_state.json`；预加载完成后执行回收（§3.4）；旧的 `buckyos-exttool` 卷在没有容器使用时被删除。
+- [x] 状态文件 `local/node_daemon/paios_images_state.json`；预加载完成后执行回收（§3.4）；旧的 `buckyos-exttool` 卷在没有容器使用时被删除。
 - 验证：从版本 A 覆盖安装到版本 B（镜像 id 不同），重启后 A 的镜像和卷被删掉，B 正常运行；开发者自己 `docker pull` 下来的镜像不会被删。
 
 ### M7：镜像瘦身 [buckyos]（可以并行）
 
-- [ ] aios A1–A5（§3.8）。每改一项，在镜像里跑一遍 ffmpeg 转码、imagemagick、pdftotext、tesseract、`uv venv`、deno、node 的冒烟命令，并跑通一次 Jarvis 对话的 DV。
-- [ ] 按 D5 处理 exttool：E1，或者 E2 加 E3。
-- [ ] 删掉或标注 `publish/aios/Dockerfile`；处理 `--runtime-only`。
+- [x] aios A1–A5（§3.8）。每改一项，在镜像里跑一遍 ffmpeg 转码、imagemagick、pdftotext、tesseract、`uv venv`、deno、node 的冒烟命令，并跑通一次 Jarvis 对话的 DV。
+- [x] 按 D5 处理 exttool：E1，或者 E2 加 E3。
+- [x] 删掉或标注 `publish/aios/Dockerfile`；处理 `--runtime-only`。
 - 验证：在 §9 记录改动前后的 `docker image inspect` 大小和 registry 压缩后大小。
 
 ## 6. 验收
@@ -580,6 +582,22 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 - 与设计不同：`resolve` 自己读 `<root>/etc/devenv.json`，不再经 app_loader 的 devenv 解析；`tar` 多了 `path` 字段（§3.2）。
 - 验证：`cargo test -p node_daemon paios_images -- --test-threads=1` 10 项通过；`cargo test -p node_daemon -- --test-threads=1` 119 项通过；`python3 -m unittest discover -s .github/scripts -p 'test_*.py'` 13 项通过；`uv run buckyos-install --app=buckyos --all --target-rootfs=<tmp>` 后 `bin/paios-images/` 只有 README.md。
 
+### 9.3 M2 + M5 + M6：node_daemon 锁定模式 / 本机模式、开发流程、旧镜像回收
+
+- node_daemon：`paios_images.rs` 增加 `PaiosDocker`（复用 app_loader 的 docker 执行和测试 runner）：`ensure_image`（按 ref 加锁；锁定模式校验身份，不符或缺失时先流式校验 tar 再 `docker load` 再校验；本机模式只看存在；都不 pull）、`prepare_exttool`（卷名 `buckyos-exttool-<id12>`、`.buckyos-seeded-<id12>` 标记、无标记重建、锁定模式播种后 `image rm` 种子镜像、拿不到时 error 日志降级）、`worker_expectation`（状态检查用的镜像 id + 可挂载卷，真实 docker 下缓存 30 s，load/播种后失效）、`collect_garbage`（D9）和 `spawn_preload`（锁定模式启动即后台预加载，5 s 起指数退避到 5 min，成功后回收）。`local/node_daemon/paios_images_state.json` 记录 node_daemon 自己 load 过的 ref。
+- app_loader：删掉 worker / exttool 的 pull、`DEFAULT_*` 常量和 devenv 解析（devenv 改由 `paios_images::resolve` 读）；`worker_image_name()` 返回 `Result`；`run_worker_container` 挂载 `buckyos-exttool-<id12>`，标签写实际镜像 id 和 `buckyos.exttool_volume`；`observe_deployment` 对 HostScript / Agent 用当前镜像 id 复用原有三重比对，再比对 ExtTool 卷标签，镜像不在本地时返回 `NotExist`；preview 改为 `image inspect` / `load -i` / 卷创建 / 播种命令。新增 `with_paios_images_root()` 测试钩子，测试全部改为不依赖本机 `/opt/buckyos`。
+- 与设计不同：WSLC 不需要新增格式映射——身份检查用已有的 `{{json .}}` 投影，`load`、`volume rm`、`image rm` 都是原样透传。D6 里“把原因写进 deploy 结果”没有单独做：降级在 node_daemon 日志里是 error，deploy 本身成功。
+- 开发流程：`build.py` 预拉取 `paios/aios`、`paios/exttool` 的 `latest-<arch>`（运行时 `devenv.json` 覆盖的跳过）；`start.py` 启动后在本机模式下检查这两个镜像，缺了打印醒目的 `docker pull` 提示，自己不拉；`make_local_pkg.py build-pkg --paios-images local` 把本机 `latest-<arch>` 打成 `paios/<name>:local-<id12>-<arch>` 并写清单（离线测试包用）；`diagnose_jarvis_orbstack.sh` 有清单时按清单 ref 诊断并列出 ExtTool 卷。文档：`AGENTS.md`、`doc/CI/impl_buckyos_packaging.md`（§5、§15.2）、`doc/app_service/rust_app_loader.md` §9.1.1、`doc/windows_wslc.md`、cmd_skill `buckyos_dev_release`。
+- 验证：`cargo test -p node_daemon -- --test-threads=1` 126 项通过（新增锁定模式 load / 篡改 / 缺 tar / 身份不符 / 本机模式缺镜像不 pull / ExtTool 播种与标记与重建 / D6 / D8 / 状态检查期望 / 回收）；`src/` 下 `uv run python -m unittest discover -s tools/tests -p 'test_*.py'` 通过（新增 `test_build_paios_images.py` 和 start 预检查用例）。
+- 本机 DV（2026-10-20，Docker 26.1.5 经典存储，zone test.buckyos.io，3 个 Worker：Agent tmgr1、xman@bob 和脚本应用 systest；`buckyos-build.py -s node_daemon` 后安装）：
+  1. 本机模式（`devenv.json` 的 `aios=local/aios-test`）：deploy 播种 `buckyos-exttool-d59491422db1` 用时 0.5 s；容器标签 `buckyos.image_digest`、`buckyos.exttool_volume` 正确；75 s 内没有重建循环；`start.py` 没有缺镜像警告。
+  2. 锁定模式（移走 `devenv.json`，用同一批本机镜像生成清单和 tar）：预加载 0.2 s 完成（镜像已在且身份匹配，不 load），随后回收删掉了旧的 `buckyos-exttool` 卷；三个 Worker 用 `paios/aios:dv-…` 运行，`check.py` 为 Running。
+  3. 自愈：`docker rmi` 掉锁定 tag → 下一轮状态检查 `NotExist` → 三个应用共用一次 load（含 541 MB sha256 校验共 8.3 s）→ 容器重建。没有 pull。
+  4. 篡改：改 tar 一个字节后再 rmi → 每个应用报 `bin/paios-images/aios-amd64-….tar.gz is corrupted (size … sha256 …, expected …)`，没有 pull，原有容器保持运行；恢复 tar 后自动 load 恢复。据此加了按 size/mtime/期望 sha256 缓存校验结果，避免损坏时每轮重算 sha256。
+  5. 真实 CI 产物：从 R2 公开域名下载 run 39385674475 的清单和 amd64 tar（aios 458 MB、exttool 11 MB，HEAD 和 sha256 均一致），放进 `bin/paios-images/` 后重启：预加载 12.2 s 从 tar 载入 `paios/aios:0.7.0-b91b891ca3ff-amd64`（`.Id` 等于清单的 config digest）；回收删掉了上一轮 node_daemon load 的 `paios/aios:dv-…` tag；三个 Worker 改用 CI 镜像运行，Agent 端口 HTTP 200，容器内 `/opt/buckyos/tools` 有 `.buckyos-seeded-d59491422db1`，`freecadcmd` 输出新的占位说明。
+  6. 运行中恢复 `devenv.json`（D7）：约 30 s 内三个 Worker 自动按 `local/aios-test` 重建（无需重启），日志有覆盖告警；告警原来每轮都打，已改为每个进程只打一次。
+  - DV 后已还原：删除清单和 tar、状态文件和测试 tag，`devenv.json` 原样恢复，zone 停止（与开始前一致）。未做：Jarvis 实际 LLM 对话（镜像内运行时没有改动，只验证了 Agent 服务可访问）；containerd 存储、OrbStack、Docker Desktop、WSLC 上的 node_daemon 实跑。
+
 ### 9.4 M3：CI 导出、继承、清单写入 payload
 
 - 落点：
@@ -589,3 +607,19 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
   - `build-{linux,macos,windows}.yml`：新增 `paios_images` 输入；为 true 时下载 manifest、复制到 `$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json` 并 `validate`，位置在 `buckyos-install` 之后、`write-install-descriptor.py` 之前。
 - 与设计不同：本地 `build_aios --push` 不推不可变 tag（避免开发机覆盖 CI 的 tag）；主线上镜像构建失败时平台构建不再继续（以前互不依赖），保证 main 上传到 R2 的 payload 一定带清单。
 - 验证：actionlint 1.7.7 只剩 `build-windows.yml` 原有的 shellcheck 报错（与本改动无关）。CI 实跑结果见下。
+
+### 9.5 M4：打包取 tar、安装包校验、在线安装下载 tar
+
+- buckyos-pack-installer（`src/publish` 子模块）：`package_common.verify_paios_images()`（按文件名定位，兼容 NSIS 展开后目录被打平）+ `package_arch_from_name()`；deb / rpm / macOS pkg / Windows exe 的 `verify-pkg` 都加了 `--require-paios-images`。rpm 用 `rpm2cpio | cpio` 只解出 `bin/paios-images/`；macOS 用 bsdtar 只解出 `buckyos.pkg/Payload` 里的 `bin/paios-images/`；deb、exe 用已有的解包目录。payload 带清单时即使不传该参数也会校验 tar。
+- sn-business：`package-kit/stage_paios_images.py`（读 staging 里的清单 → 缓存 `<cache>/<name>/<arch>/<sha256>.tar.gz`，HTTP Range 续传，校验 size+sha256 → 复制到 `bin/paios-images/`，每个镜像每个架构保留 4 份）；三个 builder 脚本在组装 staging 后调用，`verify-pkg` 传 `--require-paios-images`；`create_package_result.py --paios-images <summary>` 把每个架构的 ref / image_id / revision 写进 `package-result.json` 的 `paios_images`；README 补了缓存目录和网络要求。macOS arm64 包本来就跳过 `verify-pkg`（交叉架构不能跑 Mach-O 检查），这次没有改。
+- pve-pack-system：`installer/linux.sh` 解出 payload 后、停旧服务前按本机架构用 `tar.path` 拼当前 base URL 下载 tar，校验 size+sha256，`$BUCKYOS_ROOT/bin/paios-images/` 里已有同 sha256 的文件直接复用；校验失败在动旧安装之前中止。`bin/onlinepack.py` 新增 `paios_images()`：读 `buckyos/<payload>.paios_images.json` 旁挂清单，对该架构每个 tar 做 HEAD 并比对 size，没有旁挂清单或不一致就拒绝发布；`check_and_publish_onlinepack.py` 用带认证的 R2 GET/HEAD。核对过的 ref / image_id 记在发布回执的 payload 记录里。`doc/onlinepack.md` 已同步。
+- 验证：pack-installer `python3 -m unittest discover -s tests` 56 项通过；sn-business `package-kit` 6 项通过；pve-pack-system 117 项通过（新增 `tests/test_online_paios_images.py`，其中 `linux.sh --stage-dir` 用假 curl 做了端到端安装、复用和篡改中止）。
+- 部署：打包机上的 `/root/sn-business`（含子模块）和 pve-pack-system 都不会自动更新，需要在打包机上 `git pull` 后才生效；Linux 在线安装的 `linux.sh` 要等打包机下一次 `check_and_publish_onlinepack.py` 才会上传到 R2。**这两步完成并验证之前不能合入 M2。**
+
+### 9.8 M7：镜像瘦身
+
+- exttool（E1 + E2，随 M3 一起推送 b91b891ca）：FreeCAD 默认不再打包（`FREECAD_APPIMAGE_URL_*` 默认为空，`freecadcmd` 是说明怎样自行构建带 FreeCAD 镜像的占位命令）；Dockerfile 改成两阶段，最终镜像只有 `busybox:1.36.1` + `/opt/buckyos/tools`。本机 `docker image inspect` 从 3,673 MB 降到 33.6 MB；CI 导出的 tar：amd64 10.9 MB、aarch64 10.4 MB（原来 amd64 压缩后 1,122 MB）。E3 不需要了。
+- aios（A1–A5）：apt 层装完后在同一层删掉 `libLLVM*`、`libgallium-*`、`libGLX_mesa*` 和 `dri/`（ldd 核对过 ffmpeg 等工具不链接它们，ffmpeg 只链接很小的 `libxcb-dri3`）；去掉 `uv python install 3.12` 和 `python3-venv`，`uv venv` 离线用系统 Python 3.12.3；Debian 的 nodejs 18 + npm 换成官方 Node `v24.21.0` tarball（按 `SHASUMS256.txt` 校验，去掉 include 和文档）；`locales` + `en_US.UTF-8` 换成 `C.UTF-8`；deno check 后清 `/root/.cache/deno`；二进制和 entrypoint 改用 `COPY --chmod=755`。删掉了没人引用的 `publish/aios/Dockerfile`，去掉了不起作用的 `--runtime-only`。A6（pandoc）、A7（合并 Rust 二进制）没有做。
+- 大小（本机构建 `local/aios-slim` 对比 CI 的 `paios/aios:0.7.0-b91b891ca3ff-amd64`）：解压后 1,068 MB 对 1,385 MB；`docker save | gzip -1` 408 MB 对 508 MB（CI 的 gzip -6 基线是 458 MB，按比例约 370 MB）。
+- 冒烟（`--network none`）：ffmpeg 转码 / 抽帧、imagemagick 缩放旋转、tesseract 加载 eng 数据、pdftotext 抽取手写 PDF 文本、pandoc、`uv venv --offline`（系统 Python）、node 24 + `npm init`、deno、UTF-8、`xagent --help` 全部通过；基线镜像同样的脚本也通过（基线镜像没有字体，`convert -annotate` 本来就不可用，所以冒烟不依赖字体）。zone DV：`devenv.json` 指向 `local/aios-slim` 后三个 Worker 正常运行，Agent 端口 HTTP 200，opendan 日志里只有启动期网关未就绪的登录重试（基线一样）。DV 后 `devenv.json` 已恢复、zone 已停止。
+- 全量包估算（amd64，D5 + A1–A5 之后）：payload 约 170–210 MB + aios tar 约 370–410 MB + exttool tar 11 MB ≈ 0.6 GB，Windows 安装包远低于 NSIS 的 2 GB 上限（§9.1：总数据超过 2 GiB 时 makensis 直接崩溃）。D10 的 zip 兜底方案不需要。

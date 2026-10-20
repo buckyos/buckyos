@@ -120,7 +120,7 @@ fi
 
 # File-level sync is the replacement for the old overlayfs/fuse-overlayfs model.
 # It runs entirely inside the container and behaves identically on Linux,
-# macOS and Windows (Docker Desktop). See notepads/paios容器需求.md §7.4.
+# macOS and Windows (Docker Desktop). See doc/app_service/paios容器需求.md §7.4.
 sync_tree_with_upstream_policy() {
   local src="$1"
   local dst="$2"
