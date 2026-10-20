@@ -4,6 +4,9 @@
 //! identity and services come from the BuckyOS runtime, the agent from the
 //! AgentSpec bound to this app instance. `--dev` runs the same Loader
 //! outside a zone on a development file queue (no msg-center).
+//!
+//! The aios image ships only this executable: `xagent` and `agent_tool` are
+//! symlinks to it, and [`main`] dispatches on the name it was invoked as.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -468,7 +471,25 @@ fn pin_host_identity() {
     std::env::set_var(HOST_ID_ENV, format!("{device}/{instance}"));
 }
 
+/// The file name of argv[0] without the platform's executable suffix.
+fn invoked_name() -> Option<String> {
+    let arg0 = std::env::args_os().next()?;
+    let name = std::path::Path::new(&arg0).file_name()?.to_str()?;
+    Some(
+        name.strip_suffix(std::env::consts::EXE_SUFFIX)
+            .unwrap_or(name)
+            .to_string(),
+    )
+}
+
 fn main() {
+    match invoked_name().as_deref() {
+        Some("xagent") => libopendan::xagent_cli::main(),
+        Some(name) if agent_tool_cli_dev::handles_invocation_name(name) => {
+            agent_tool_cli_dev::main()
+        }
+        _ => {}
+    }
     init_logging("opendan", true);
     pin_host_identity();
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");

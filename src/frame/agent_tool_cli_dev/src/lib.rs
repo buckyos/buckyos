@@ -373,6 +373,27 @@ enum AgentMemoryVerb {
     Migrate,
 }
 
+/// Run the `agent_tool` command line and exit with its status: the
+/// `agent_tool` binary, and the multi-call `opendan` executable when it is
+/// invoked under a name [`handles_invocation_name`] accepts (aios image).
+pub fn main() -> ! {
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    let output = rt.block_on(run_process());
+    if !output.stdout.is_empty() {
+        print!("{}", output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        eprint!("{}", output.stderr);
+    }
+    std::process::exit(output.exit_code);
+}
+
+/// Whether a process invoked as `name` (the file name of argv[0]) is this
+/// CLI: `agent_tool` itself or one of the tools it serves by name.
+pub fn handles_invocation_name(name: &str) -> bool {
+    name == MAIN_BINARY_NAME || is_tool_name(name)
+}
+
 pub async fn run_process() -> CliRunOutput {
     let args = env::args_os().collect::<Vec<_>>();
 
@@ -5950,6 +5971,17 @@ methods = ["x_call"]
         .await;
         let err = result.expect_err("set without --reason must fail at parse");
         assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn invocation_names_route_to_this_cli_only_when_it_serves_them() {
+        for name in ["agent_tool", "read_file", "agent-memory", "dcrontab"] {
+            assert!(handles_invocation_name(name), "{name}");
+        }
+        // The multi-call `opendan` executable keeps these for itself.
+        for name in ["opendan", "xagent", "llm_understand_media", ""] {
+            assert!(!handles_invocation_name(name), "{name}");
+        }
     }
 
     #[test]

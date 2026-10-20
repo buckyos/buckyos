@@ -39,6 +39,7 @@ Usage: ./build_exttool [--push] [--prepare-context <dir>] [--image <name>] [--ta
 Builds the paios/exttool Docker image that seeds the `buckyos-exttool`
 named volume with:
   * pre-warmed uv and Deno caches
+  * the pandoc tool package (static release, pinned in install_pandoc.sh)
   * optional baked tool packages (FreeCAD CLI, see FREECAD_APPIMAGE_URL_*)
   * the /opt/buckyos/tools/{store,bin,uv-cache,deno-cache} layout
     (see paios容器需求.md §9)
@@ -257,9 +258,12 @@ main() {
   if [[ ! -f "$EXTTOOL_DIR/Dockerfile" ]]; then
     echo "Missing $EXTTOOL_DIR/Dockerfile" >&2; exit 1
   fi
-  if [[ ! -f "$EXTTOOL_DIR/install_freecad.sh" ]]; then
-    echo "Missing $EXTTOOL_DIR/install_freecad.sh" >&2; exit 1
-  fi
+  local script
+  for script in install_pandoc.sh install_freecad.sh; do
+    if [[ ! -f "$EXTTOOL_DIR/$script" ]]; then
+      echo "Missing $EXTTOOL_DIR/$script" >&2; exit 1
+    fi
+  done
 
   resolve_default_image_name
   resolve_version_tag
@@ -293,6 +297,7 @@ main() {
     context_dir="$tmp_root/$arch"
     mkdir -p "$context_dir"
     cp "$EXTTOOL_DIR/Dockerfile" "$context_dir/Dockerfile"
+    cp "$EXTTOOL_DIR/install_pandoc.sh" "$context_dir/install_pandoc.sh"
     cp "$EXTTOOL_DIR/install_freecad.sh" "$context_dir/install_freecad.sh"
     if [[ -z "$PREPARE_CONTEXT_DIR" ]]; then
       build_image_for_arch "$arch" "$context_dir"

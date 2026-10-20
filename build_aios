@@ -14,12 +14,13 @@ SUPPORTED_ARCHES=("amd64" "aarch64")
 # Core runtime + predefined Worker Image CLI tool set (see container
 # requirements §6.3). No compile toolchain — Crafter is deferred. Python apps
 # use uv with this system Python 3.12; Node.js comes from the official tarball
-# (NODE_VERSION in the Dockerfile), not Debian's EOL nodejs/npm.
+# (NODE_VERSION in the Dockerfile), not Debian's EOL nodejs/npm. pandoc is a
+# tool package of the ExtTool volume (publish/exttool/install_pandoc.sh).
 RUNTIME_PACKAGES=(
   "bash" "ca-certificates" "curl" "git" "jq" "rsync"
   "tmux" "tree" "unzip" "xz-utils"
   "python3"
-  "ffmpeg" "imagemagick" "poppler-utils" "pandoc" "tesseract-ocr"
+  "ffmpeg" "imagemagick" "poppler-utils" "tesseract-ocr"
 )
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
@@ -43,7 +44,7 @@ usage() {
   cat <<'EOF'
 Usage: ./build_aios [--local-test] [--push] [--prepare-context <dir>] [--image <name>] [--tag <tag>] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
 
-Builds the OpenDAN, agent_tool and xagent binaries with cargo and the OpenDAN WebUI with pnpm for:
+Builds the multi-call OpenDAN binary (also run as agent_tool and xagent) with cargo and the OpenDAN WebUI with pnpm for:
   - amd64   -> x86_64-unknown-linux-musl
   - aarch64 -> aarch64-unknown-linux-musl
 
@@ -618,9 +619,12 @@ RUN mkdir -p \
     /opt/buckyos/tools/bin \
     /mnt/buckyos/pkg
 
-COPY --chmod=755 opendan agent_tool xagent /opt/buckyos/bin/opendan/
+COPY --chmod=755 opendan /opt/buckyos/bin/opendan/
 COPY web /opt/buckyos/bin/opendan/web
-RUN printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -
+# One multi-call executable: agent_tool and xagent dispatch on argv[0].
+RUN printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c - && \
+    ln -s opendan /opt/buckyos/bin/opendan/agent_tool && \
+    ln -s opendan /opt/buckyos/bin/opendan/xagent
 
 # Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
 # agent/script/custom dispatch.
@@ -636,7 +640,7 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
     PATH="/opt/buckyos/tools/bin:/opt/buckyos/bin/opendan:${PATH}"
 
-RUN xagent --help >/dev/null
+RUN xagent --help >/dev/null && agent_tool --help >/dev/null
 
 EXPOSE 3180
 
@@ -1077,8 +1081,6 @@ build_runtime_binaries() {
   local python_bin="$4"
   local rust_target
   local source_opendan
-  local source_agent_tool
-  local source_xagent
   local -a cargo_cmd
   local -a env_cmd
   local -a env_lines
@@ -1101,19 +1103,15 @@ build_runtime_binaries() {
     exit 1
   fi
 
+  # One executable: agent_tool and xagent are symlinks to opendan in the image,
+  # which dispatches on argv[0] (frame/opendan/src/main.rs).
   source_opendan="$cargo_target_dir/$rust_target/release/opendan"
-  source_agent_tool="$cargo_target_dir/$rust_target/release/agent_tool"
-  source_xagent="$cargo_target_dir/$rust_target/release/xagent"
 
   cargo_cmd=(
     cargo
     build
     -p
     opendan
-    -p
-    agent_tool_cli_dev
-    -p
-    libopendan
     --release
     --target
     "$rust_target"
@@ -1148,7 +1146,7 @@ build_runtime_binaries() {
     env_cmd+=("${normalized_env_lines[@]}")
   fi
 
-  log "Building opendan, agent_tool_cli_dev and libopendan for $arch using target $rust_target via ${cargo_cmd[*]}"
+  log "Building opendan for $arch using target $rust_target via ${cargo_cmd[*]}"
   (
     cd "$SRC_DIR"
     "${env_cmd[@]}" "${cargo_cmd[@]}"
@@ -1159,21 +1157,9 @@ build_runtime_binaries() {
     exit 1
   fi
 
-  if [[ ! -f "$source_agent_tool" ]]; then
-    echo "Expected build output not found: $source_agent_tool" >&2
-    exit 1
-  fi
-
-  if [[ ! -f "$source_xagent" ]]; then
-    echo "Expected build output not found: $source_xagent" >&2
-    exit 1
-  fi
-
   mkdir -p "$context_dir"
   cp "$source_opendan" "$context_dir/opendan"
-  cp "$source_agent_tool" "$context_dir/agent_tool"
-  cp "$source_xagent" "$context_dir/xagent"
-  chmod 755 "$context_dir/opendan" "$context_dir/agent_tool" "$context_dir/xagent"
+  chmod 755 "$context_dir/opendan"
 
   if [[ ! -f "$ENTRYPOINT_SOURCE" ]]; then
     echo "Missing paios/aios entrypoint at $ENTRYPOINT_SOURCE" >&2

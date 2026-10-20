@@ -16,6 +16,7 @@
 //! - [`runner`]: drives a session to its end condition.
 //! - [`goal`]: Goals and their Goal Sessions (derivation, run
 //!   opportunities, budgets); the Goal object is in [`state::GoalStore`].
+//! - [`xagent_cli`]: the `xagent` command line.
 
 pub mod api;
 pub mod bridge;
@@ -37,6 +38,7 @@ pub mod skills;
 pub mod state;
 pub mod template;
 pub mod todos;
+pub mod xagent_cli;
 
 pub use api::{
     create_self_improve_session, create_session, post_input, read_session, InputChannel,

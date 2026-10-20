@@ -396,7 +396,7 @@ render plan 由两类输入合成：
 
 | 层 | 路径 | 权限 | 承载 | 持久化 |
 |----|------|------|------|--------|
-| System Bin | `/opt/buckyos/tools/store/` | rx，所有 App 共享 | Worker Image 预置 CLI（ffmpeg/pandoc/...） | 随镜像 |
+| System Bin | `/opt/buckyos/tools/store/` | rx，所有 App 共享 | Worker Image 预置 CLI（ffmpeg/imagemagick/...） | 随镜像 |
 | Runtime Bin | `/opt/buckyos/tools/bin/` | rx，App-scoped symlink view | 从 `store/` + ExtTool Volume 渲染（Crafter 镜像产出工具包接入处） | 容器临时，按 manifest 重建 |
 | Agent Bin | Agent Root 下 `/tools/`（Instance Volume 内） | rwx 给 Agent | Agent 自演化脚本；升级走文件级合并（paios §7.4 R-15） | 持久化（Instance Volume） |
 | Session Bin（声明） | session 目录 `./tools/` | rwx | tool.toml / 脚本源 / 工具包元数据 / 交付物（平台无关） | 持久化（跨 OS 可迁移） |
@@ -405,7 +405,7 @@ render plan 由两类输入合成：
 **渲染规则**（2026-05-14 修订：改为 PATH 拼接 + Session 渲染的极简模型）：
 
 - **System / Runtime / Agent 三层**：每层就是一个普通的 bin 目录，**不做任何渲染**，
-  直接按顺序拼到 PATH 即可。系统工具（ffmpeg/pandoc/...）、卷工具（ExtTool Volume）、
+  直接按顺序拼到 PATH 即可。系统工具（ffmpeg/imagemagick/...）、卷工具（ExtTool Volume，如 pandoc）、
   Agent 自写脚本，都是"现成就摆在 bin 里"的文件。
 - **Session Exec Bin 是唯一需要"渲染"的层**，承担两件事：
   1. **Agent tools 落地**：session 启动时把 Agent Root FS 的 `/tools/` 内容自动拷过去（一份

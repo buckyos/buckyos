@@ -1,8 +1,8 @@
 # paios 镜像随版本发布 TODO：镜像清单锁定 + 全量安装包（issue #672）
 
 > 创建日期：2026-10-19
-> 版本：v0.4（2026-10-20：用户确认打包机侧完成后 M2 合入 main，全部 M0–M7 完成）。v0.3（2026-10-20：用户裁决 D1–D10 全按建议、D5 移出 FreeCAD、按 §5.0 顺序直接推 main；按 M0 实测修订 §3.2 / §3.5 的 tar 寻址；开始实施，记录见 §9）。v0.2（2026-10-19：根据 Actions run 39361968276 和 pve-pack-system 源码，修正 §2.4 对打包流水线的描述，补上 Linux onlinepack 这条安装路径，并相应修改 D4、M0、M4 和验收）。v0.1（初稿）。
-> 状态：已完成（A6、A7 未做，见 §9.8）。§4 已裁决；实施记录和与设计不同之处见 §9。
+> 版本：v0.5（2026-10-20：用户同意后做了 A6（pandoc 移到 ExtTool）和 A7（三个 Rust 二进制合并），§9.8）。v0.4（2026-10-20：用户确认打包机侧完成后 M2 合入 main，全部 M0–M7 完成）。v0.3（2026-10-20：用户裁决 D1–D10 全按建议、D5 移出 FreeCAD、按 §5.0 顺序直接推 main；按 M0 实测修订 §3.2 / §3.5 的 tar 寻址；开始实施，记录见 §9）。v0.2（2026-10-19：根据 Actions run 39361968276 和 pve-pack-system 源码，修正 §2.4 对打包流水线的描述，补上 Linux onlinepack 这条安装路径，并相应修改 D4、M0、M4 和验收）。v0.1（初稿）。
+> 状态：已完成。§4 已裁决；实施记录和与设计不同之处见 §9。
 > 依据：[issue #672](https://github.com/buckyos/buckyos/issues/672) 正文与评论（wugren：安装包体验最好、出错少，但包大，镜像不该有 2G；waterflier：docker.io 会限流，确定走安装包方案，2G 的原因待查）；2026-10-19 对 buckyos（main `f31715059`）、buckyos-devkit、sn-business（`CD/cluster_config/ci`）、pve-pack-system（`README.md`、`doc/artifact_pack_entry.md`、`doc/onlinepack.md`、`installer/linux.sh`，HEAD `94f68cbdb`）的源码核对；Actions run [39361968276](https://github.com/buckyos/buckyos/actions/runs/39361968276) 的 job 和 artifact 列表；`doc/CI/BuckyOS的CI发布流程.md`、`doc/CI/prd_buckyos_packaging.md`、`doc/CI/impl_buckyos_packaging.md`、`doc/app_service/paios容器需求.md`、`product/buckyos_desktop_installer/新版本离线安装包的构建思路.md`；本机 `docker image inspect` / `docker history` / 远端 manifest 实测。
 > 第 2 节“现状”只以源码和实测为准。
 
@@ -385,7 +385,7 @@ aios 按风险从低到高（估算基于 §2.6 的实测）：
 | A3 | apt 的 `npm` 换成官方 tarball，并顺带离开已经 EOL 的 Node 18 | ~96 / ~14 MB |
 | A4 | `locales` + `locale-gen` 换成 `C.UTF-8` | ~20 / ~5 MB |
 | A5 | 在 `:572` 的 RUN 里清掉 deno 缓存；把 `:615-616` 的 `RUN chmod` 改成 `COPY --chmod=755`（本地和 demo 构建能省 82.6 MB） | 4 MB，外加本地构建的 82.6 MB |
-| A6 | pandoc 移到 ExtTool 或按需安装。这是产品决定，要同步修改 `paios容器需求.md` §6.3，用户同意前不做 | 196 / ~38 MB |
+| A6 | pandoc 移到 ExtTool 或按需安装。这是产品决定，要同步修改 `paios容器需求.md` §6.3，用户同意前不做（2026-10-20 用户同意，移到 ExtTool，§9.8） | 196 / ~38 MB |
 | A7 | 三个 Rust 二进制合并成一个，按调用名分派 | ~45 / ~18 MB（工作量中等） |
 
 A1–A5 做完后，aios 预计约 980 MB / 355 MB；再加上 A6、A7，约 740 MB / 300 MB。
@@ -512,6 +512,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 - [x] aios A1–A5（§3.8）。每改一项，在镜像里跑一遍 ffmpeg 转码、imagemagick、pdftotext、tesseract、`uv venv`、deno、node 的冒烟命令，并跑通一次 Jarvis 对话的 DV。
 - [x] 按 D5 处理 exttool：E1，或者 E2 加 E3。
 - [x] 删掉或标注 `publish/aios/Dockerfile`；处理 `--runtime-only`。
+- [x] A6（pandoc 移到 ExtTool）、A7（三个 Rust 二进制合并成一个，按调用名分派）。
 - 验证：在 §9 记录改动前后的 `docker image inspect` 大小和 registry 压缩后大小。
 
 ## 6. 验收
@@ -630,7 +631,11 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 ### 9.8 M7：镜像瘦身
 
 - exttool（E1 + E2，随 M3 一起推送 b91b891ca）：FreeCAD 默认不再打包（`FREECAD_APPIMAGE_URL_*` 默认为空，`freecadcmd` 是说明怎样自行构建带 FreeCAD 镜像的占位命令）；Dockerfile 改成两阶段，最终镜像只有 `busybox:1.36.1` + `/opt/buckyos/tools`。本机 `docker image inspect` 从 3,673 MB 降到 33.6 MB；CI 导出的 tar：amd64 10.9 MB、aarch64 10.4 MB（原来 amd64 压缩后 1,122 MB）。E3 不需要了。
-- aios（A1–A5）：apt 层装完后在同一层删掉 `libLLVM*`、`libgallium-*`、`libGLX_mesa*` 和 `dri/`（ldd 核对过 ffmpeg 等工具不链接它们，ffmpeg 只链接很小的 `libxcb-dri3`）；去掉 `uv python install 3.12` 和 `python3-venv`，`uv venv` 离线用系统 Python 3.12.3；Debian 的 nodejs 18 + npm 换成官方 Node `v24.21.0` tarball（按 `SHASUMS256.txt` 校验，去掉 include 和文档）；`locales` + `en_US.UTF-8` 换成 `C.UTF-8`；deno check 后清 `/root/.cache/deno`；二进制和 entrypoint 改用 `COPY --chmod=755`。删掉了没人引用的 `publish/aios/Dockerfile`，去掉了不起作用的 `--runtime-only`。A6（pandoc）、A7（合并 Rust 二进制）没有做。
+- aios（A1–A5）：apt 层装完后在同一层删掉 `libLLVM*`、`libgallium-*`、`libGLX_mesa*` 和 `dri/`（ldd 核对过 ffmpeg 等工具不链接它们，ffmpeg 只链接很小的 `libxcb-dri3`）；去掉 `uv python install 3.12` 和 `python3-venv`，`uv venv` 离线用系统 Python 3.12.3；Debian 的 nodejs 18 + npm 换成官方 Node `v24.21.0` tarball（按 `SHASUMS256.txt` 校验，去掉 include 和文档）；`locales` + `en_US.UTF-8` 换成 `C.UTF-8`；deno check 后清 `/root/.cache/deno`；二进制和 entrypoint 改用 `COPY --chmod=755`。删掉了没人引用的 `publish/aios/Dockerfile`，去掉了不起作用的 `--runtime-only`。A6、A7 后来也做了，见下。
 - 大小（本机构建 `local/aios-slim` 对比 CI 的 `paios/aios:0.7.0-b91b891ca3ff-amd64`）：解压后 1,068 MB 对 1,385 MB；`docker save | gzip -1` 408 MB 对 508 MB（CI 的 gzip -6 基线是 458 MB，按比例约 370 MB）。
 - 冒烟（`--network none`）：ffmpeg 转码 / 抽帧、imagemagick 缩放旋转、tesseract 加载 eng 数据、pdftotext 抽取手写 PDF 文本、pandoc、`uv venv --offline`（系统 Python）、node 24 + `npm init`、deno、UTF-8、`xagent --help` 全部通过；基线镜像同样的脚本也通过（基线镜像没有字体，`convert -annotate` 本来就不可用，所以冒烟不依赖字体）。zone DV：`devenv.json` 指向 `local/aios-slim` 后三个 Worker 正常运行，Agent 端口 HTTP 200，opendan 日志里只有启动期网关未就绪的登录重试（基线一样）。DV 后 `devenv.json` 已恢复、zone 已停止。
+- A6（2026-10-20 用户同意）：pandoc 不再是 aios 的 apt 包，改成 ExtTool 工具包——`publish/exttool/install_pandoc.sh` 下载官方静态发行版 3.12.1（版本和两个架构的 sha256 固定在脚本里，与 GitHub release 的 asset digest 一致），只保留二进制放在 `tools/store/pandoc/bin/`，`tools/bin/` 下的 `pandoc`、`pandoc-lua`、`pandoc-server` 都是指向它的相对符号链接（`tools/bin` 本来就在 Worker 的 PATH 上）。`build_exttool` 把脚本复制进构建上下文。`paios容器需求.md` §6.3 和 `NewOpenDANRuntime.md` 的 bin 分层表已同步。ExtTool 不可用（D6）时 Worker 照常启动，只是没有 pandoc。注意 `publish/*` 在 `.gitignore` 里，新脚本要 `git add -f`。
+- A7：`libopendan` 的 `src/bin/xagent.rs` 主体移到库模块 `xagent_cli`（入口 `xagent_cli::main()`，`xagent` 二进制只剩一行），`agent_tool_cli_dev` 增加 `main()` 和 `handles_invocation_name()`；`opendan` 的 `main()` 先按 argv[0] 的文件名分派：`xagent` → xagent，`agent_tool` 或 agent_tool 按名提供的工具 → agent_tool，其他 → 加载器。镜像里只有 `opendan` 一个文件，`agent_tool`、`xagent` 是指向它的符号链接；`build_aios` 只编译 `-p opendan`。因为 Linux 的 `current_exe()` 会解析符号链接，独立运行的 xagent 给会话生成 `agent-session` 包装脚本时改为优先用同目录的 `xagent`（加载器本来就用 `beside_exe("xagent")`）。主机 payload 里的三个二进制不变（Windows 上不适合用符号链接）。
+- A6 + A7 的大小（本机 `local/aios-slim` 对比 A1–A5 后的 CI 镜像，amd64）：aios 解压后 1,068 MB → 820 MB（二进制 82.6 MB → 35.6 MB，pandoc 约 200 MB）；`docker save | gzip -6` 370 MB → 313 MB。exttool 33.6 MB → 199 MB，gzip -6 10.9 MB → 46 MB。两个 tar 合计 381 MB → 359 MB：A7 省约 18 MB 压缩后体积；A6 主要是让 aios 镜像变小，总量只少约 3 MB（官方静态 pandoc 158 MB，Debian 的 pandoc 加数据包 196 MB）。
+- A6 + A7 验证：`cargo test -p agent_tool_cli_dev -p opendan -p libopendan` 416 项通过（新增调用名分派的单元测试）。断网容器冒烟：模拟 node_daemon 播种 ExtTool 卷后挂进 aios 容器，pandoc 3.12.1 完成 md→docx→gfm、html、epub、pptx 转换，`pandoc-lua` 执行 Lua，`pandoc-server --help` 正常；ffmpeg、imagemagick、pdftotext、tesseract、node 24、deno、`uv venv --offline` 照常可用；`xagent new --msg` 在容器里建会话并驱动（无 zone，模型调用按预期失败），会话 `.runtime/bin/agent-session` 内容是 `exec "/opt/buckyos/bin/opendan/xagent"`，实际调用 `agent-session sessions` 和 `llm_understand_media --help` 都由正确的入口处理；`opendan --dev` 启动后 HTTP 200、WebUI 可访问，进程名仍是 `opendan`（`stop.py` 按名字杀 `xagent` / `agent_tool` 不受影响）。没有在真实 zone 上做 DV：当时本机 zone 正被使用（07:34 刚启动），没有打断它。
 - 全量包估算（amd64，D5 + A1–A5 之后）：payload 约 170–210 MB + aios tar 约 370–410 MB + exttool tar 11 MB ≈ 0.6 GB，Windows 安装包远低于 NSIS 的 2 GB 上限（§9.1：总数据超过 2 GiB 时 makensis 直接崩溃）。D10 的 zip 兜底方案不需要。

@@ -54,6 +54,14 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh && \
     deno cache /tmp/warm.ts && \
     rm /tmp/warm.ts
 
+# --- pandoc tool package --------------------------------------------------
+# The official static release (pinned version + sha256 in the script); the
+# aios worker image no longer installs pandoc itself.
+COPY install_pandoc.sh /tmp/install_pandoc.sh
+RUN chmod 755 /tmp/install_pandoc.sh && \
+    TARGET_ARCH="${TARGET_ARCH}" /tmp/install_pandoc.sh && \
+    rm -f /tmp/install_pandoc.sh
+
 # --- FreeCAD CLI tool package (optional) -----------------------------------
 # FreeCAD is not part of the default image (it was ~90% of its size). With
 # FREECAD_APPIMAGE_URL set, build_exttool bakes the AppImage under
@@ -78,7 +86,7 @@ ARG IMAGE_VERSION
 ARG SOURCE_REVISION
 ARG BUILD_CREATED
 LABEL org.opencontainers.image.title="paios/exttool (BuckyOS ExtTool Volume seed)" \
-      org.opencontainers.image.description="Seed image for the buckyos-exttool-<id> named volume: pre-warmed uv/deno caches + optional baked tool packages. Content at /opt/buckyos/tools/ is auto-copied into the empty named volume on first mount." \
+      org.opencontainers.image.description="Seed image for the buckyos-exttool-<id> named volume: pre-warmed uv/deno caches + pandoc + optional baked tool packages. Content at /opt/buckyos/tools/ is auto-copied into the empty named volume on first mount." \
       org.opencontainers.image.vendor="BuckyOS DAO" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
