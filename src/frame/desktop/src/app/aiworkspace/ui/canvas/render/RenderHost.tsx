@@ -31,7 +31,7 @@
  * move, resize or turn, the lines bound to them are re-routed and repainted per frame without React; dragging
  * near the edge of the canvas pans it. */
 
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { Lock, RotateCw } from 'lucide-react'
 import type { Placement } from '../../../api/types'
 import { ConnectorFrame } from '../connectors/ConnectorFrame'
@@ -962,17 +962,26 @@ export function RenderHost(props: RenderHostProps) {
     finishDrag(false)
   }
 
-  const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    const target = event.target as HTMLElement
-    // a scrollable editor keeps its own wheel
-    const scrollable = target.closest<HTMLElement>('.aiws-table-scroll, .aiws-prose-host, textarea, .aiws-html-host')
-    if (scrollable && scrollable.scrollHeight > scrollable.clientHeight && !event.ctrlKey && !event.metaKey) return
-    event.preventDefault()
-    const p = screenPoint(event)
-    if (event.ctrlKey || event.metaKey) camera.zoomAt(p.x, p.y, Math.exp(-event.deltaY * 0.0015))
-    else if (event.shiftKey) camera.panBy(-event.deltaY, 0)
-    else camera.panBy(-event.deltaX, -event.deltaY)
-  }
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const onWheel = (event: WheelEvent) => {
+      if (event.defaultPrevented) return
+      const target = event.target instanceof Element ? event.target : null
+      const scrollable = target?.closest<HTMLElement>('.aiws-table-scroll, .aiws-prose-host, textarea, .aiws-html-host')
+      const dx = event.shiftKey ? event.deltaY : event.deltaX
+      const dy = event.shiftKey ? 0 : event.deltaY
+      if (scrollable && !event.ctrlKey && !event.metaKey &&
+        ((dx !== 0 && scrollable.scrollWidth > scrollable.clientWidth) || (dy !== 0 && scrollable.scrollHeight > scrollable.clientHeight))) return
+      event.preventDefault()
+      if (event.ctrlKey || event.metaKey) {
+        const rect = root.getBoundingClientRect()
+        camera.zoomAt(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * 0.0015))
+      } else camera.panBy(-dx, -dy)
+    }
+    root.addEventListener('wheel', onWheel, { passive: false })
+    return () => root.removeEventListener('wheel', onWheel)
+  }, [camera])
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -1286,7 +1295,6 @@ export function RenderHost(props: RenderHostProps) {
       onPointerUp={onPointerUp}
       onPointerCancel={(event) => { if (event.pointerType !== 'touch') finishDrag(true) }}
       onDragStart={(event) => { if (!insideEditor(event.target)) event.preventDefault() }}
-      onWheel={onWheel}
       onContextMenu={onContextMenu}
       onPointerLeave={() => {
         if (!dragRef.current) { changeHover(null); setToolSnap(null) }

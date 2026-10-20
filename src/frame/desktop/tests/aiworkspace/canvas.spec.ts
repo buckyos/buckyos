@@ -186,6 +186,102 @@ test('UI05 a drag is one commit and one undo step; Esc cancels with zero commits
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(beforeZoom)
 })
 
+test('trackpad wheel cancels browser gestures while panning and zooming once across canvas remounts', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `wheel ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  const canvas = page.getByTestId('aiws-canvas')
+  const world = page.getByTestId('aiws-world')
+  const gestures: { deltaX: number; deltaY: number; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean }[] = [
+    { deltaX: 80, deltaY: 0 },
+    { deltaX: -50, deltaY: 0 },
+    { deltaX: 60, deltaY: 25 },
+    { deltaX: 0, deltaY: 30, shiftKey: true },
+    { deltaX: 0, deltaY: -100, ctrlKey: true },
+    { deltaX: 0, deltaY: 100, metaKey: true },
+  ]
+  for (const gesture of gestures) {
+    const result = await canvas.evaluate((element, init) => {
+      const world = element.querySelector<HTMLElement>('[data-testid="aiws-world"]')!
+      const read = () => {
+        const matrix = new DOMMatrixReadOnly(getComputedStyle(world).transform)
+        return { x: matrix.m41, y: matrix.m42, zoom: matrix.a }
+      }
+      const before = read()
+      const rect = element.getBoundingClientRect()
+      const event = new WheelEvent('wheel', { ...init, bubbles: true, cancelable: true, clientX: rect.x + 700, clientY: rect.y + 700 })
+      element.dispatchEvent(event)
+      return { prevented: event.defaultPrevented, before, after: read() }
+    }, gesture)
+    expect(result.prevented).toBe(true)
+    if (gesture.ctrlKey || gesture.metaKey) {
+      expect(result.after.zoom / result.before.zoom).toBeCloseTo(Math.exp(-gesture.deltaY * 0.0015), 5)
+    } else {
+      expect(result.after.x - result.before.x).toBeCloseTo(-(gesture.shiftKey ? gesture.deltaY : gesture.deltaX), 5)
+      expect(result.after.y - result.before.y).toBeCloseTo(gesture.shiftKey ? 0 : -gesture.deltaY, 5)
+      expect(result.after.zoom).toBe(result.before.zoom)
+    }
+  }
+  await page.getByTestId('aiws-top-sources').click()
+  await expect(canvas).toHaveCount(0)
+  await page.getByTestId('aiws-top-canvas').click()
+  await expect(canvas).toBeVisible()
+  const before = await world.evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform)
+    return { x: matrix.m41, y: matrix.m42 }
+  })
+  const box = (await canvas.boundingBox())!
+  await page.mouse.move(box.x + 700, box.y + box.height - 50)
+  await page.mouse.wheel(75, 25)
+  await expect.poll(() => world.evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform)
+    return { x: matrix.m41, y: matrix.m42 }
+  })).toEqual({ x: before.x - 75, y: before.y - 25 })
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+})
+
+test('trackpad wheel preserves horizontal and vertical table scrolling with overscroll containment', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `wheel-table ${Date.now()}`)
+  expect((await api.commit(ALICE, ws, [
+    { op: 'tree.place', entity_id: 'blk-sales', placement: { x: 40, y: 190, w: 360, h: 650 } },
+  ])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const table = page.getByTestId('aiws-table-scroll-blk-sales')
+  const world = page.getByTestId('aiws-world')
+  await expect.poll(() => table.evaluate((element) => ({
+    horizontal: element.scrollWidth > element.clientWidth,
+    vertical: element.scrollHeight > element.clientHeight,
+  }))).toEqual({ horizontal: true, vertical: false })
+  await expect(table).toHaveCSS('overscroll-behavior-x', 'contain')
+  await expect(table).toHaveCSS('overscroll-behavior-y', 'contain')
+  const transform = await world.evaluate((element) => (element as HTMLElement).style.transform)
+  const wheelDefaultPrevented = (deltaX: number, deltaY: number) => table.evaluate((element, delta) => {
+    const event = new WheelEvent('wheel', { ...delta, bubbles: true, cancelable: true })
+    element.dispatchEvent(event)
+    return event.defaultPrevented
+  }, { deltaX, deltaY })
+  expect(await wheelDefaultPrevented(120, 0)).toBe(false)
+  await table.hover({ position: { x: 80, y: 70 } })
+  await page.mouse.wheel(120, 0)
+  await expect.poll(() => table.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+  expect(await world.evaluate((element) => (element as HTMLElement).style.transform)).toBe(transform)
+  await table.evaluate((element) => { element.scrollLeft = element.scrollWidth })
+  expect(await wheelDefaultPrevented(120, 0)).toBe(false)
+  expect(await world.evaluate((element) => (element as HTMLElement).style.transform)).toBe(transform)
+
+  expect((await api.commit(ALICE, ws, [
+    { op: 'tree.place', entity_id: 'blk-sales', placement: { x: 40, y: 190, w: 360, h: 220 } },
+  ])).status).toBe('accepted')
+  await expect.poll(() => table.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+  await table.hover({ position: { x: 80, y: 70 } })
+  await page.mouse.wheel(0, 100)
+  await expect.poll(() => table.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  expect(await world.evaluate((element) => (element as HTMLElement).style.transform)).toBe(transform)
+  await table.evaluate((element) => { element.scrollTop = element.scrollHeight })
+  expect(await wheelDefaultPrevented(0, 100)).toBe(false)
+  expect(await world.evaluate((element) => (element as HTMLElement).style.transform)).toBe(transform)
+})
+
 test('UI06 two clients move the same Block: the later arrival wins, the other is told and can re-apply', async ({ page, api, browser }) => {
   const ws = await api.demo(ALICE, 'quarterly', `ui06 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)

@@ -438,6 +438,7 @@
 .aiws-canvas-main { flex: 1 1 auto; min-width: 0; position: relative; overflow: clip; }
 .aiws-canvas { position: absolute; inset: 0; z-index: 0; isolation: isolate; overflow: clip; background: var(--cp-bg); background-image: radial-gradient(circle, color-mix(in srgb, var(--cp-border) 45%, transparent) 1px, transparent 1px); background-size: 24px 24px; touch-action: none; user-select: none; cursor: default; outline: none; }
 .aiws-canvas-mode-view { cursor: grab; }
+.aiws-canvas :is(.aiws-block-body, .aiws-table-scroll, .aiws-prose-host, textarea, .aiws-html-host) { overscroll-behavior: contain; }
 .aiws-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: auto; isolation: isolate; }
 .aiws-world.is-moving { will-change: transform; }
 /* a frame draws nothing (标准对象的交互改进 §4.1): the type draws its own look, the overlay draws the states */
