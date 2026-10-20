@@ -30,17 +30,21 @@ import {
   getMessageSenderName,
   getMessageStableId,
   messageNotify,
+  messageVoice,
   type RefItem,
   type DID,
   type MessageDeliveryStatus,
   type MessageObject,
+  type VoiceNote,
 } from '../../protocol/msgobj'
 import { MessageAttachmentView } from '../media/MediaAttachment'
+import { VoiceNoteView } from '../media/VoiceNote'
+import { emojiOnlyCount } from '../input/emoji'
 import { knownAttachmentKind } from '../media/objectCache'
 import { outgoingUpload } from '../../store/outgoing'
 import type { OutgoingUpload } from '../../store/types'
 import { formatAttachmentSize } from '../input/attachmentDraft'
-import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, type AttachmentKind } from '../media/source'
+import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, type AttachmentKind, type MessageAttachment } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
@@ -111,7 +115,9 @@ const messageRenderers: readonly MessageRenderer[] = [
   (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null,
   (message, context) => messageRelations(message)?.redacted ? <RedactedMessage message={message} context={context} /> : null,
   (message, context) => messageNotify(message) ? <NotifyMessage message={message} context={context} /> : null,
+  (message, context) => voiceOf(message, context.messageIndex) ? <VoiceMessage message={message} context={context} /> : null,
   (message, context) => hasAttachmentRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
+  (message, context) => isBigEmoji(message) ? <BigEmojiMessage message={message} context={context} /> : null,
   (message, context) => isTextFormat(effectiveContent(message).format) ? <TextMessage message={message} context={context} /> : null,
   renderFallbackMessage,
 ]
@@ -237,6 +243,61 @@ function TextMessage({ message, context: { isGroup, selfDid, continued, peerMark
   )
 }
 
+/** Nothing but one to three emoji: shown large on the canvas, without a bubble. */
+function isBigEmoji(message: MessageObject): boolean {
+  const content = effectiveContent(message)
+  return isTextFormat(content.format) && !(content.refs?.length) && emojiOnlyCount(content.content ?? '') > 0
+}
+
+function BigEmojiMessage({ message, context: { isGroup, selfDid, continued } }: { message: MessageObject; context: MessageRenderContext }) {
+  const details = useBubbleDetails(message)
+  const isSelf = message.from === selfDid
+  const text = displayedContent(message).trim()
+  return (
+    <div className={rowClass(isSelf, continued)}>
+      <div className={`mh-bubble ${bubbleWidthClass} flex flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-emoji" data-message-id={messageObjId(message)} {...details}>
+        {!isSelf && isGroup && !continued ? <p className="mb-1 text-[13px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{getMessageSenderName(message)}</p> : null}
+        <ReplyQuote message={message} />
+        <p className="mh-big-emoji" data-count={emojiOnlyCount(text)}>{text}</p>
+        <div className="max-w-full">
+          <MessageFooter message={message} isSelf={isSelf} deliveryStatus={getMessageDeliveryStatus(message)} selfDid={selfDid} frameless />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** The voice note of a message (`MsgObject.voice`): its only `data_obj` ref, while no edit replaced the content. */
+function voiceOf(message: MessageObject, messageIndex: number): { voice: VoiceNote; attachment: MessageAttachment & { objId: string } } | null {
+  const voice = messageVoice(message)
+  if (!voice || messageRelations(message)?.edited) return null
+  const refs = (message.content.refs ?? []).filter(ref => ref.target.type === 'data_obj')
+  if (refs.length !== 1) return null
+  const attachment = attachmentOfRef(refs[0], `${getMessageStableId(message, messageIndex)}#0`)
+  return attachment?.objId ? { voice, attachment: { ...attachment, objId: attachment.objId } } : null
+}
+
+function VoiceMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const details = useBubbleDetails(message)
+  const note = voiceOf(message, context.messageIndex)
+  if (!note) return null
+  const isSelf = message.from === context.selfDid
+  const caption = displayedContent(message).trim()
+  const upload = outgoingUpload(message)
+  return (
+    <div className={rowClass(isSelf, context.continued)}>
+      <div className={`mh-bubble ${bubbleWidthClass} min-w-[200px]`} style={bubbleStyle(isSelf, context.continued)} data-testid="message-voice" data-message-id={messageObjId(message)} {...details}>
+        {!isSelf && context.isGroup && !context.continued ? <p className="mb-1 text-[13px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{getMessageSenderName(message)}</p> : null}
+        <ReplyQuote message={message} />
+        <VoiceNoteView id={messageObjId(message) ?? note.attachment.id} objId={note.attachment.objId} voice={note.voice} isSelf={isSelf} />
+        {upload ? <UploadProgress upload={upload} alignEnd={isSelf} /> : null}
+        {caption ? <p className={`${bodyTextClass} mt-1.5 whitespace-pre-wrap break-words`}>{caption}</p> : null}
+        <MessageFooter message={message} isSelf={isSelf} deliveryStatus={getMessageDeliveryStatus(message)} selfDid={context.selfDid} />
+      </div>
+    </div>
+  )
+}
+
 /** The quoted target of a `thread` message. */
 function ReplyQuote({ message }: { message: MessageObject }) {
   const { t } = useI18n()
@@ -334,7 +395,7 @@ function useMessageActionSet(message: MessageObject, mode: ActionMode) {
     edit: can?.edit ?? false,
     redact: can?.redact ?? false,
     recall: can?.recall ?? false,
-    copy: plain && (displayedContent(message).trim().length > 0 || (effectiveContent(message).refs?.length ?? 0) > 0),
+    copy: plain && (displayedContent(message).trim().length > 0 || ((effectiveContent(message).refs?.length ?? 0) > 0 && !messageVoice(message))),
     forward: sendable && !!forward,
     remove: !!remove,
     pin: sendable && !!pin && !!messageObjId(message),

@@ -103,9 +103,8 @@ const DELIVERY_COLUMNS: &str = r#"
 "#;
 
 impl MsgBoxDbMgr {
-    /// Open a pool against `connection`. `schema` is the DDL to apply (usually
-    /// what the service spec carried for the chosen backend); an empty / None
-    /// value means "use the compile-time default for `backend`".
+    /// Open a pool against `connection`, applying the service spec's DDL and
+    /// the required schema compiled into this version of the service.
     pub async fn open(
         connection: &str,
         backend: RdbBackend,
@@ -175,19 +174,17 @@ impl MsgBoxDbMgr {
     }
 
     async fn apply_schema(&self, override_ddl: Option<&str>) -> std::result::Result<(), RPCErrors> {
-        // The service spec's DDL wins; the compiled-in DDL is the fallback
-        // when the spec carries none for this backend.
-        let ddl: &str =
-            override_ddl
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(match self.backend() {
-                    RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
-                    RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
-                });
-        for statement in split_sql_statements(ddl) {
-            self.pool().execute(statement.as_str()).await.map_err(|e| {
-                RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
-            })?;
+        let required_ddl = match self.backend() {
+            RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
+            RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
+        };
+        let override_ddl = override_ddl.filter(|ddl| !ddl.trim().is_empty() && *ddl != required_ddl);
+        for ddl in override_ddl.into_iter().chain(std::iter::once(required_ddl)) {
+            for statement in split_sql_statements(ddl) {
+                self.pool().execute(statement.as_str()).await.map_err(|e| {
+                    RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
+                })?;
+            }
         }
         Ok(())
     }
@@ -2262,6 +2259,73 @@ mod tests {
         assert_eq!(got.box_kind, MailboxKind::Inbox);
         assert_eq!(got.state, RecipientState::Unread);
         assert_eq!(got.session_id.as_deref(), Some("topic-1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_service_schema_adds_friend_requests_and_preserves_existing_data() {
+        let (mgr, tmp) = setup_test_mgr().await;
+        let owner = sample_owner();
+        let record = sample_record(&owner, MailboxKind::Inbox, "before-upgrade");
+        mgr.upsert_record(&record).await.unwrap();
+        mgr.pool().execute("DROP TABLE friend_requests").await.unwrap();
+        mgr.pool().close().await;
+
+        let stale_ddl = MSG_CENTER_RDB_SCHEMA_SQLITE
+            .split_once("CREATE TABLE IF NOT EXISTS friend_requests")
+            .unwrap()
+            .0;
+        let stale_ddl = format!(
+            "{stale_ddl}\nCREATE TABLE IF NOT EXISTS deployment_metadata (name TEXT PRIMARY KEY);"
+        );
+        let conn = format!("sqlite://{}?mode=rwc", tmp.path().join("msg-box.db").display());
+        let mgr = MsgBoxDbMgr::open(&conn, RdbBackend::Sqlite, Some(&stale_ddl))
+            .await
+            .unwrap();
+        let restored = mgr
+            .get_record(&owner, &record.record_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(&record).unwrap()
+        );
+        mgr.pool()
+            .execute("INSERT INTO deployment_metadata(name) VALUES ('retained')")
+            .await
+            .unwrap();
+        let indexes = sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'friend_requests'",
+        )
+        .fetch_all(mgr.pool())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+        assert!(indexes.iter().any(|name| name == "idx_friend_requests_owner"));
+        assert!(indexes.iter().any(|name| name == "idx_friend_requests_expire"));
+        mgr.pool()
+            .execute(
+                "INSERT INTO friend_requests (owner_key, request_id, peer_did, direction, state,
+                    created_at_ms, expires_at_ms, updated_at_ms)
+                 VALUES ('did:bns:alice', 'request-1', 'did:bns:bob', 'outgoing', 'pending', 1, 2, 1)",
+            )
+            .await
+            .unwrap();
+        mgr.pool().close().await;
+
+        let mgr = MsgBoxDbMgr::open(&conn, RdbBackend::Sqlite, Some(&stale_ddl))
+            .await
+            .unwrap();
+        for table in ["mailbox_records", "friend_requests", "deployment_metadata"] {
+            let count: i64 = sqlx::query(&format!("SELECT COUNT(*) AS count FROM {table}"))
+                .fetch_one(mgr.pool())
+                .await
+                .unwrap()
+                .get("count");
+            assert_eq!(count, 1, "{table}");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

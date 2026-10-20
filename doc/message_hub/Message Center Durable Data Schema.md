@@ -169,12 +169,17 @@ increments this version.
 
 ## 6. Upgrade Compatibility Strategy
 
-Beta 2.2 is in no-compat mode. Earlier deployments must adopt the version 13 service schema;
-there is no in-place SQL migration. Version 12 removes the v1 self-host group table
-definitions. Version 13 adds `friend_requests` (created with `IF NOT EXISTS`)
-and changes the contact payload, which is migrated on load as described above. Existing database tables are not automatically dropped; this code
-removal does not delete deployed data. Session-addressed queue and sender-mailbox
-idempotency semantics remain unchanged.
+Beta 2.2 is in no-compat mode. On startup, msg-center applies the service spec's
+DDL followed by the current backend's compiled required DDL. Both are idempotent:
+an older stored spec cannot suppress newly required tables or indexes, and
+deployment-specific additions remain. This does not rewrite the stored spec version
+or migrate existing column definitions or types.
+
+Version 12 removes the v1 self-host group table definitions. Version 13 adds
+`friend_requests` and its indexes with `IF NOT EXISTS`, and changes the contact
+payload, which is migrated on load as described above. Existing database tables
+are not automatically dropped; code removal does not delete deployed data.
+Session-addressed queue and sender-mailbox idempotency semantics remain unchanged.
 
 ## 7. Extensibility Rules
 

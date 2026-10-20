@@ -5,7 +5,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess, rememberLocalObject } from '../conversation/history/objectAccess'
 import { jpegName, normalizeImageFile } from '../conversation/input/imageNormalize'
 import type { ConversationMessageReader } from '../conversation/history/types'
-import { getMessageStableId, messageNotify, notifySessionCategory, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
+import { getMessageStableId, messageNotify, messageVoice, notifySessionCategory, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
@@ -552,7 +552,7 @@ export class MessageHubMockStore implements MessageHubStore {
       if (target && target.from === message.from && session.lastMessage?.timestamp === target.created_at_ms) session.lastMessage = { ...session.lastMessage, text: messageSummaryText(message) }
     }
     if (!isMessageActivity(message)) return
-    if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: messageNotify(message)?.prompt.title ?? message.content.content ?? '', timestamp: message.created_at_ms }
+    if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: messageNotify(message)?.prompt.title ?? (messageVoice(message) ? messageSummaryText(message) : message.content.content ?? ''), timestamp: message.created_at_ms }
     session.lastActiveAt = Math.max(session.lastActiveAt, message.created_at_ms)
     session.lifecycle = 'active'
     if (incoming) session.unreadCount++
@@ -561,6 +561,7 @@ export class MessageHubMockStore implements MessageHubStore {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
     const message = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: payload.content.trim(), createdAtMs: this.submittedAt(payload) })
     if (payload.machine) message.content = { ...message.content, machine: payload.machine }
+    if (payload.voice && payload.attachments.length === 1) message.voice = payload.voice
     if (payload.relatesTo) {
       const { rel, target: targetId, key } = payload.relatesTo
       const group = session ? this.snapshot.groups[session.entityId] : undefined
@@ -671,14 +672,16 @@ export class MessageHubMockStore implements MessageHubStore {
   resend(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
     const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: message.content.content ?? '', createdAtMs: this.now() })
-    return this.sendMessage(context, id, { ...outgoing, content: { ...message.content } }, confirmation)
+    const voice = messageVoice(message)
+    return this.sendMessage(context, id, { ...outgoing, content: { ...message.content }, ...(voice ? { voice } : {}) }, confirmation)
   }
   forward(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
     const effective = effectiveContent(message)
     const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: effective.content ?? '', createdAtMs: this.now() })
     const refs = (effective.refs ?? []).filter(ref => ref.target.type === 'data_obj')
-    return this.sendMessage(context, id, { ...outgoing, content: { ...outgoing.content, format: effective.format ?? outgoing.content.format, ...(refs.length ? { refs } : {}) } }, confirmation)
+    const voice = messageVoice(message)
+    return this.sendMessage(context, id, { ...outgoing, content: { ...outgoing.content, format: effective.format ?? outgoing.content.format, ...(refs.length ? { refs } : {}) }, ...(voice && refs.length === 1 ? { voice } : {}) }, confirmation)
   }
   deleteMessage(context: MessageHubContext, id: string, message: MessageObject) {
     return this.mutate(next => {

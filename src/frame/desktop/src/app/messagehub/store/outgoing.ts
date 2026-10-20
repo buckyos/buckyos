@@ -31,6 +31,7 @@ export function pendingBubble(
     ...(base.to_session !== undefined ? { to_session: base.to_session } : {}),
     ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}),
     ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}),
+    ...(payload.voice && refs.length === 1 ? { voice: payload.voice } : {}),
     created_at_ms: payload.submittedAt ?? base.now,
     content: { format: 'text/plain', content: payload.content.trim(), ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) },
     ui_message_id: pendingBubbleId(payload.localId),

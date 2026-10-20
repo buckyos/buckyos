@@ -23,7 +23,7 @@ import {
 } from '../datamodel/sessionApi'
 import { createGroupSchema, groupSessionId } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
-import { isValidMsgSessionId, notifySessionCategory, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
+import { isValidMsgSessionId, messageVoice, notifySessionCategory, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
@@ -104,6 +104,9 @@ interface ReceiptState {
 
 const RECEIPT_PAGE = 256
 
+/** Message-level fields an outgoing message may carry besides its content. */
+type OutgoingMeta = Pick<MsgObject, 'relates_to' | 'mentions' | 'voice'>
+
 function labels(): ProjectionLabels {
   return {
     direct: translate('messagehub.session.direct', 'Direct Message'),
@@ -114,6 +117,7 @@ function labels(): ProjectionLabels {
     you: translate('messagehub.you', 'You'),
     previewImage: translate('messagehub.preview.image', '[Image]'),
     previewAttachment: translate('messagehub.preview.attachment', '[Attachment]'),
+    previewVoice: translate('messagehub.preview.voice', '[Voice message]'),
     previewUnavailable: translate('messagehub.preview.unavailable', 'Message unavailable'),
     systemNotify: translate('messagehub.notify.entity', 'System notifications'),
     notifyCategories: { todo: translate('messagehub.notify.category.todo', 'To-do'), agent: translate('messagehub.notify.category.agent', 'Agent'), app: translate('messagehub.notify.category.app', 'App notifications') },
@@ -930,7 +934,7 @@ export class MessageHubApiStore implements MessageHubStore {
       showUpload({ phase: 'preparing' })
       const text = payload.content.trim()
       const attachmentSignature = payload.attachments.map(item => `${item.relativePath ?? item.file.name}:${item.file.size}:${item.file.lastModified}`).join('|')
-      const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null])
+      const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null, payload.voice ?? null])
       const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:${await hashKey(`${text}\n${attachmentSignature}\n${relationSignature}`)}`
       // The idempotency key is reused when the composer retries the same payload,
       // so an unknown result (timeout) can never produce a second message.
@@ -945,7 +949,7 @@ export class MessageHubApiStore implements MessageHubStore {
       }
       uploads.forEach(upload => rememberLocalObject(upload.objId, upload.file, upload.name))
       const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
-      const meta: Pick<MsgObject, 'relates_to' | 'mentions'> = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}) }
+      const meta: OutgoingMeta = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}), ...(payload.voice && refs.length === 1 ? { voice: payload.voice } : {}) }
       await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta, { createdAtMs: payload.submittedAt, replaces: localId && pendingBubbleId(localId) })
     } finally {
       if (localId) this.sendingLocalIds.delete(localId)
@@ -986,7 +990,8 @@ export class MessageHubApiStore implements MessageHubStore {
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:resend:${messageIdOf(message)}`
     const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
-    await this.postOutgoing(context, session, content, pendingKey, idempotencyKey)
+    const voice = messageVoice(message)
+    await this.postOutgoing(context, session, content, pendingKey, idempotencyKey, voice ? { voice } : {})
   }
 
   async forward(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined) {
@@ -997,7 +1002,8 @@ export class MessageHubApiStore implements MessageHubStore {
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:forward:${messageIdOf(message)}`
     const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
-    await this.postOutgoing(context, session, content, pendingKey, idempotencyKey)
+    const voice = messageVoice(message)
+    await this.postOutgoing(context, session, content, pendingKey, idempotencyKey, voice && refs.length === 1 ? { voice } : {})
   }
 
   /**
@@ -1017,7 +1023,7 @@ export class MessageHubApiStore implements MessageHubStore {
     this.bump(data)
   }
 
-  private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: Pick<MsgObject, 'relates_to' | 'mentions'> = {}, placement: { createdAtMs?: number; replaces?: string } = {}) {
+  private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: OutgoingMeta = {}, placement: { createdAtMs?: number; replaces?: string } = {}) {
     const data = this.owner(context.ownerDid)
     const sessionId = session.id
     const target = this.sendTarget(session)

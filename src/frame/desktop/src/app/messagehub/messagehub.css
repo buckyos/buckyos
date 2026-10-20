@@ -569,3 +569,376 @@
   font-size: 12px;
   color: var(--cp-accent);
 }
+
+/* Emoji: the composer panel (Telegram desktop layout: search, categories,
+   tab bar) and emoji-only messages shown large on the canvas. */
+.mh-emoji-panel,
+.mh-big-emoji {
+  --mh-emoji-font: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+}
+
+.mh-emoji-panel {
+  display: flex;
+  flex-direction: column;
+  width: 352px;
+  max-width: 100%;
+  height: min(360px, 50vh);
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--cp-shadow, #0f172a) 18%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-emoji-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 4px;
+  padding: 0 10px;
+  min-height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  color: var(--cp-muted);
+}
+
+.mh-emoji-search input {
+  min-width: 0;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--cp-text);
+  font-size: 14px;
+  outline: none;
+}
+
+.mh-emoji-search:focus-within {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cp-accent) 45%, transparent);
+}
+
+.mh-emoji-scroll {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 6px;
+}
+
+.mh-emoji-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 4px 4px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  color: var(--cp-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mh-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+}
+
+.mh-emoji-grid button {
+  display: flex;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-family: var(--mh-emoji-font);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.mh-emoji-grid button:hover,
+.mh-emoji-grid button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}
+
+.mh-emoji-grid button:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cp-accent) 60%, transparent);
+}
+
+.mh-emoji-empty {
+  display: flex;
+  justify-content: center;
+  padding: 24px 12px;
+  color: var(--cp-muted);
+  font-size: 13px;
+}
+
+.mh-emoji-tabs {
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--cp-border);
+}
+
+.mh-emoji-tabs button {
+  display: flex;
+  height: 32px;
+  min-width: 32px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--cp-muted);
+}
+
+.mh-emoji-tabs button:hover,
+.mh-emoji-tabs button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  outline: none;
+}
+
+.mh-emoji-tabs button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--cp-accent) 14%, transparent);
+  color: var(--cp-accent);
+}
+
+.mh-big-emoji {
+  font-family: var(--mh-emoji-font);
+  font-size: 36px;
+  line-height: 1.2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mh-big-emoji[data-count="1"] {
+  font-size: 56px;
+}
+
+.mh-big-emoji[data-count="2"] {
+  font-size: 44px;
+}
+
+/* Voice notes: the bubble player and the recording bar over the composer
+   input. Peer bubbles draw in the accent colour, own bubbles in their text
+   colour. */
+.mh-voice {
+  --mh-voice-ink: var(--cp-accent);
+  --mh-voice-on-ink: var(--cp-surface-opaque, #fff);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.mh-voice[data-self] {
+  --mh-voice-ink: var(--cp-message-self-text);
+  --mh-voice-on-ink: var(--cp-message-self-bg);
+}
+
+.mh-voice-play {
+  display: flex;
+  height: 44px;
+  width: 44px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--mh-voice-ink);
+  color: var(--mh-voice-on-ink);
+}
+
+.mh-voice-play:focus-visible,
+.mh-voice-wave:focus-visible,
+.mh-voice-rate:focus-visible {
+  outline: 2px solid var(--mh-voice-ink);
+  outline-offset: 2px;
+}
+
+.mh-voice-wave {
+  display: flex;
+  height: 22px;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 4px;
+}
+
+.mh-voice-wave > span {
+  width: 3px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--mh-voice-ink) 38%, transparent);
+}
+
+.mh-voice-wave > span[data-played] {
+  background: var(--mh-voice-ink);
+}
+
+.mh-voice-time {
+  opacity: 0.8;
+}
+
+.mh-voice-unplayed {
+  height: 6px;
+  width: 6px;
+  border-radius: 999px;
+  background: var(--mh-voice-ink);
+}
+
+.mh-voice-rate {
+  min-height: 20px;
+  border-radius: 999px;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--mh-voice-ink) 16%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mh-voice-recording {
+  position: absolute;
+  inset: 0 46px 0 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  padding: 0 12px;
+  border-radius: 21px 0 0 21px;
+  background: var(--cp-message-canvas);
+  color: var(--cp-text);
+}
+
+.mh-voice-recording[data-mode="locked"] {
+  padding-left: 2px;
+}
+
+.mh-voice-discard {
+  display: flex;
+  height: 40px;
+  width: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-danger);
+}
+
+.mh-voice-discard:hover,
+.mh-voice-discard:focus-visible {
+  background: color-mix(in srgb, var(--cp-danger) 12%, transparent);
+  outline: none;
+}
+
+.mh-voice-rec-dot {
+  height: 10px;
+  width: 10px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cp-muted) 60%, transparent);
+}
+
+.mh-voice-rec-dot[data-live] {
+  background: var(--cp-danger);
+  animation: mh-voice-blink 1s ease-in-out infinite;
+}
+
+@keyframes mh-voice-blink {
+  50% { opacity: 0.25; }
+}
+
+.mh-voice-slide {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--cp-muted);
+  font-size: 14px;
+}
+
+.mh-voice-warning {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--cp-warning) 75%, var(--cp-text));
+  font-size: 13px;
+}
+
+.mh-voice-live {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  height: 24px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.mh-voice-live > span {
+  width: 3px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: var(--cp-accent);
+}
+
+.mh-voice-lock {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: calc(50% - 15px);
+  display: flex;
+  width: 30px;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 0;
+  border-radius: 15px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-muted);
+  pointer-events: none;
+}
+
+.mh-voice-error {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mh-voice-button {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-muted);
+  transition: transform 90ms linear, background-color 120ms ease;
+}
+
+.mh-voice-button[data-state="hold"],
+.mh-voice-button[data-state="locked"] {
+  background: var(--cp-accent);
+  color: var(--cp-surface-opaque, #fff);
+}
+
+.mh-voice-button[data-state="hold"] {
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--cp-accent) 22%, transparent);
+}

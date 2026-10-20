@@ -1,4 +1,5 @@
-import { messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, messageObjId, type AgentAsk, type MessageObject, type MsgContent, type MsgRelation } from '../../protocol/msgobj'
+import { messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, messageObjId, messageVoice, type AgentAsk, type MessageObject, type MsgContent, type MsgRelation, type VoiceNote } from '../../protocol/msgobj'
+import { formatVoiceDuration } from '../media/voice'
 
 /** Reactions to one message, grouped by key (`CYFS 标准对象` §16.3). */
 export interface MessageReaction {
@@ -154,7 +155,7 @@ export function foldMessageRelations(messages: readonly MessageObject[]): Messag
     const target = targetIndex === undefined ? undefined : visible[targetIndex]
     const targetView = targetIndex === undefined ? undefined : views.get(targetIndex)
     viewOf(index).replyTo = target
-      ? { id: relation.target, from: target.from, senderName: typeof target.ui_sender_name === 'string' ? target.ui_sender_name : undefined, content: targetView?.redacted ? '' : summaryOf(targetView?.edited?.content ?? target.content), found: true }
+      ? { id: relation.target, from: target.from, senderName: typeof target.ui_sender_name === 'string' ? target.ui_sender_name : undefined, content: targetView?.redacted ? '' : summaryOf(targetView?.edited?.content ?? target.content, targetView?.edited ? undefined : messageVoice(target)), found: true }
       : { id: relation.target, from: '', content: '', found: false }
   })
   for (const [index, view] of views) {
@@ -218,9 +219,11 @@ export function ownReactionId(message: MessageObject, viewerDid: string, key: st
   return messageRelations(message)?.reactions?.find(item => item.key === key)?.messages[viewerDid]
 }
 
-function summaryOf(content: MsgContent): string {
+/** A voice note without text reads as a microphone and its duration. */
+function summaryOf(content: MsgContent, voice?: VoiceNote): string {
   const text = (content.content ?? '').trim()
   if (text) return text
+  if (voice) return `🎤 ${formatVoiceDuration(voice.duration_ms)}`
   return (content.refs ?? []).map(ref => ref.label ?? (ref.target.type === 'data_obj' ? ref.target.uri_hint ?? ref.target.obj_id : ref.target.did)).join('\n')
 }
 
@@ -235,7 +238,7 @@ export function effectiveContent(message: MessageObject): MsgContent {
 
 /** Plain text standing for a message: its displayed text, or the names of its attachments when it has none. */
 export function messageSummaryText(message: MessageObject): string {
-  return summaryOf(effectiveContent(message))
+  return summaryOf(effectiveContent(message), messageRelations(message)?.edited ? undefined : messageVoice(message))
 }
 
 export function displayedContent(message: MessageObject): string {

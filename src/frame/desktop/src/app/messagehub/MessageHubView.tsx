@@ -390,7 +390,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const isResizingEntityList = entityListResizer.active
   const isResizingSessionSidebar = sessionSidebarResizer.active
 
-  const toOutgoing = (payload: ConversationComposerSubmitPayload): OutgoingPayload => ({ content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}), ...(payload.localId ? { localId: payload.localId, submittedAt: payload.submittedAt } : {}) })
+  const toOutgoing = (payload: ConversationComposerSubmitPayload): OutgoingPayload => ({ content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })), ...(payload.relatesTo ? { relatesTo: payload.relatesTo } : {}), ...(payload.mentions ? { mentions: payload.mentions } : {}), ...(payload.machine ? { machine: payload.machine } : {}), ...(payload.voice ? { voice: payload.voice } : {}), ...(payload.localId ? { localId: payload.localId, submittedAt: payload.submittedAt } : {}) })
   const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
     if (!activeSession || !selectedEntityId) throw Error('session_missing')
     await store.send(context, activeSession.id, toOutgoing(payload), writeConfirmations[activeSession.id])

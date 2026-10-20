@@ -110,6 +110,39 @@ function makeFakeMov(): Blob {
   return new Blob([new Uint8Array([...head, ...new Array(8192).fill(0)])], { type: 'video/quicktime' })
 }
 
+/** A 16 kHz mono WAV whose loudness rises and falls like speech, for voice-note fixtures. */
+function makeVoiceWav(seconds: number): Blob {
+  const rate = 16_000
+  const count = Math.round(seconds * rate)
+  const view = new DataView(new ArrayBuffer(44 + count * 2))
+  const ascii = (offset: number, text: string) => [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)))
+  ascii(0, 'RIFF')
+  view.setUint32(4, 36 + count * 2, true)
+  ascii(8, 'WAVEfmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  ascii(36, 'data')
+  view.setUint32(40, count * 2, true)
+  for (let index = 0; index < count; index += 1) {
+    const time = index / rate
+    const envelope = Math.max(0, Math.sin(time * Math.PI * 2.2)) * (0.45 + 0.4 * Math.sin(time * 1.7))
+    view.setInt16(44 + index * 2, Math.round(Math.sin(time * Math.PI * 2 * 220) * envelope * 12_000), true)
+  }
+  return new Blob([view.buffer], { type: 'audio/wav' })
+}
+
+/** Waveform of `cyfile:mock-voice-note`, as the recorder would have sent it. */
+export const MOCK_VOICE_NOTE = {
+  objId: 'cyfile:mock-voice-note',
+  label: 'voice-20261019-091500.wav',
+  voice: { duration_ms: 3200, waveform: [2, 12, 24, 30, 28, 18, 6, 1, 0, 4, 15, 26, 31, 27, 16, 5, 0, 2, 10, 21, 27, 25, 15, 4, 0, 1, 8, 17, 22, 20, 11, 3] },
+}
+
 const generators = () => import('../../../components/preview/mockProvider')
 
 const MOCK_OBJECTS: Record<string, MockObject> = {
@@ -125,6 +158,7 @@ const MOCK_OBJECTS: Record<string, MockObject> = {
     },
   },
   'cyfile:mock-video-interview': { name: 'interview-cut.mov', mimeType: 'video/quicktime', make: async () => makeFakeMov() },
+  [MOCK_VOICE_NOTE.objId]: { name: MOCK_VOICE_NOTE.label, mimeType: 'audio/wav', make: async () => makeVoiceWav(MOCK_VOICE_NOTE.voice.duration_ms / 1000) },
   'cyfile:mock-doc-brief': { name: 'design-brief.pdf', mimeType: 'application/pdf', make: async () => (await generators()).makeMockPdf('Design brief', ['Dashboard redesign — goals, scope and review dates.', 'Generated MessageHub mock attachment.']) },
 }
 

@@ -1,7 +1,7 @@
 import type { z } from 'zod'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import type { ConversationMessageReader } from '../conversation/history/types'
-import type { MachineContent, MessageObject, MsgMentions, MsgRelation } from '../protocol/msgobj'
+import type { MachineContent, MessageObject, MsgMentions, MsgRelation, VoiceNote } from '../protocol/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { createGroupSchema } from '../groupModel'
 import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
@@ -11,6 +11,7 @@ import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, 
  * for a relation message (edit / redact / reaction / reply) the MsgObject v2
  * `relates_to` and structured `mentions`, which travel in the message itself.
  * `machine` becomes `content.machine` (an answer that picked an option).
+ * `voice` marks the only attachment as a voice note (`MsgObject.voice`).
  */
 export interface OutgoingPayload {
   content: string
@@ -18,6 +19,7 @@ export interface OutgoingPayload {
   relatesTo?: MsgRelation
   mentions?: MsgMentions
   machine?: MachineContent
+  voice?: VoiceNote
   localId?: string
   submittedAt?: number
 }

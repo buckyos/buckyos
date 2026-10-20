@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.16（2026-10-19：Telegram 式语音消息（`MsgObject.voice`）、Composer 表情面板与纯 emoji 大字显示，见 §3.5.1 / §3.5.2 / §3.5.7 / §4.2）；v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -662,7 +662,9 @@ export type ConversationStatusType =
 
 | 渲染器 | 触发条件 | 消费字段 |
 |---|---|---|
+| `VoiceMessage` | `messageVoice()` 读出 `voice`、内容未被 edit 替换、`content.refs` 恰有一个 `data_obj` 且有 `ObjectAccess` | `voice`、`refs[0]`、`content.content`（caption），见 §3.5.7 |
 | `AttachmentMessage` | `content.refs` 中存在 `data_obj`：已注册 `ObjectAccess` 的对象引用，或 `uri_hint` 为 HTTP(S) 图片 URL | `refs[]`、`content.content`（caption） |
+| `BigEmojiMessage` | 文本格式、无 refs，正文只有 1–3 个 emoji（`emojiOnlyCount`，空白忽略；无 U+FE0F 的文本样式符号如 `©` 不算） | `content.content`，无气泡、按个数放大 |
 | `renderTextMessage` | `content.format` ∈ `text/plain` / `text/markdown` / `text/html` | `content.content` |
 | `renderFallbackMessage` | 其余 | `content.format`、`content.content` |
 | 通知卡片 `NotifyCard` | `kind === 'notify'` 且 `content.machine.intent === 'buckyos.notify'`（`messageNotify()` 能读出数据） | `machine.data`（`NotifyMessageData`）+ `notify.get` 的状态，见 §3.5.6 |
@@ -720,6 +722,7 @@ Entity / Session 列表的摘要必须由消息对象派生，不得由后端另
 | 消息形态 | 摘要 |
 |---|---|
 | 文本类 | `content.content` 首行，截断至 120 字符 |
+| 语音消息（`voice`，无正文） | i18n `messagehub.preview.voice` + 时长 `m:ss`；会话内的引用、置顶、转发预览用 `🎤 m:ss`，纯语音消息不提供“复制” |
 | 图片引用 | i18n `messagehub.preview.image` + `refs[0].label`（若有） |
 | 其他 format | i18n `messagehub.preview.attachment` + `content.format` |
 | 易失状态消息（typing / processing 等） | 不参与摘要，跳过取上一条非状态消息 |
@@ -887,6 +890,34 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 **TaskCenter 兼容**：`input` 的 TaskMgr 任务（`human.input/v1`，`input.notify.notify_id`）在 TaskCenter 视图模型里带 `notifyId`；它不进入首页的 approve / reject “System Notifications”卡片，任务列表与详情给出“在 MessageHub 中处理”链接（`/messagehub?notify=<id>`）。列表刷新时也读取 `human.input/v1` 任务的详情，以便已结束的通知任务也能链接。
 
 **Mock**（`mock/notify.ts`）：三个分类会话各有数据——待办（一条待回答、一条已回答），Agent（Work 提问：CodeAssistant 会话 `session-coder-notify` 里的副本 + 主记录；Goal 提问；提醒 `notice`（也有副本）；已回答（Agent 代答）与超时撤销的历史），应用通知（备份完成 `notice`、同步冲突 `input`、已忽略与已过期的历史）。通知与任务状态存在 `localStorage`（`buckyos.messagehub.mock-notify.v1`），同一浏览器的两个标签页共享，`storage` 事件充当 kevent；测试钩子 `window.__messageHubMockNotify`（`configure({commitDelayMs, failNext})`、`answerElsewhere`、`close`、`view`）。
+
+#### 3.5.7 语音消息与表情（2026-10-19，参照 Telegram）
+
+- 协议：语音消息 = 普通附件消息 + 顶层 `meta` 扩展 `voice: { duration_ms, waveform }`（与 `agent_task` / `agent_ask` 同为扁平化的 `meta`，
+  msg-center 只保留声明字段与 `proof` 为保留键，`voice` 原样存储）。`content.refs` 恰有一个音频 `data_obj`（`label = voice-YYYYMMDD-HHMMSS.<ext>`），
+  `content.content` 为空。`waveform` 最多 `VOICE_WAVEFORM_SAMPLES = 64` 个 0–31 的整数，录音时每 50ms 取一次 RMS，按段取最大值并以全段峰值归一化，
+  使接收方不下载音频就能画出波形。`messageVoice()` 宽松读取：edit 上的不算、时长非正数视为没有、越界电平钳位、缺波形画平线。
+  其它客户端（OpenDAN、Telegram 隧道）只看到一个音频附件；Jarvis 的路由提示要求用 `llm_understand_media` 理解音频附件。
+- 录音（`input/VoiceRecorder.tsx`）：输入框为空（无文字、无附件、不在编辑）时发送键换成麦克风。按住即录、松开发送；
+  左滑超过 110px 丢弃，上滑超过 70px 锁定为免提录音（录音条左侧出现删除键，右侧按钮变为发送）；按下不足 350ms 即松开（单击）、
+  回车 / 空格、或松开时麦克风授权仍未完成，都直接进入免提录音；Esc 丢弃。短于 0.5 秒的录音丢弃，最长 5 分钟（到时自动发送）。
+  `MediaRecorder` 依次选择 `audio/webm;codecs=opus`、`audio/ogg;codecs=opus`、`audio/mp4`（Safari），码率 32 kbps；
+  不支持 `MediaRecorder` / `getUserMedia` 或非安全上下文时不显示麦克风。授权被拒、无麦克风、启动失败在按钮上方给出提示。
+  静音保护（DV 发现：macOS Chrome 发出的语音整段都是 0 采样，麦克风没有声音进来）：电平计在 AudioContext 处于 running 时
+  记录峰值，连续 1.5 秒峰值低于半个 16-bit 量化步（1/65536）或音轨 `muted`，录音条显示“听不到声音：<设备名>”；
+  整段都是数字静音的录音不发送，提示检查静音、笔记本合盖或在网站设置里换麦克风。电平计没在工作时（AudioContext 未运行）不做判断。
+  开始录音会暂停正在播放的语音。发送走 Composer 的同一发送队列（§4.2）：回复、Agent 提问的回答态都照常带 `relates_to`；
+  发送失败时录音作为附件放回输入框（卡片显示“语音消息 · 时长”），单独再发仍是语音消息，与其它附件一起发则是普通音频文件。
+- 播放（`media/VoiceNote.tsx`、`media/voicePlayer.ts`）：圆形播放键 + 波形（已播部分实色）+ 时间（播放中为当前位置）；
+  点击 / 拖动波形跳转，波形是 `role=slider`（← → 5 秒、Home / End）；播放中可切换 1× / 1.5× / 2×。全页只有一个音频元素，
+  开始一条会停掉另一条。时长以 `voice.duration_ms` 为准（MediaRecorder 产出的 WebM 常无时长元数据）。
+  收到的语音在首次播放前显示圆点；倍速与“已播放”记录在本机 localStorage `buckyos.messagehub.voice.v1`（最多 500 条），不跨设备同步。
+- 表情（`input/EmojiPanel.tsx`、`input/emoji.ts`）：输入框右侧笑脸按钮打开面板：最近使用（默认 16 个常用，记录在 localStorage
+  `buckyos.messagehub.emoji.v1`，最多 24 个）+ 8 个分类，底部分类栏跳转并随滚动高亮，顶部按英文名搜索（CLDR 名称，词首匹配）。
+  数据 `input/emojiData.ts` 由 Unicode emoji-test.txt 17.0 生成：fully-qualified、Emoji 14.0 及以前、不含肤色变体，共 1849 个，
+  面板首次打开时按需加载。选中插入到光标处，面板保持打开、焦点留在输入框（触屏打开面板时收起键盘）；方向键在网格内移动，Esc 关闭。
+- 未做：录音后试听再发送、肤色选择、中文关键词搜索、贴纸 / GIF、回应面板复用完整表情集、跨设备同步最近表情与已播放状态、
+  自动连播下一条语音、Safari 播放 WebM/Opus 的兼容转码。
 
 ### 3.6 会话时间线投影模型
 
@@ -1094,6 +1125,8 @@ export type ConversationComposerSubmitPayload = ComposerDraft
   保证顺序；任一条失败即停止，把失败项与仍在排队的项按顺序放回输入框（位于当前输入之前）并提示，
   组件已卸载时写回持久草稿。草稿只由 Composer 写；`store.send` 成功后不得再清空持久草稿，否则会覆盖下一条。
   输入法组合中的 Enter 不提交。
+- 语音与表情（2026-10-19，§3.5.7）：空输入框的发送键是麦克风，录音得到的单个附件带 `voice`（`ComposerAttachmentInput.voice`），
+  提交时成为 `ConversationComposerSubmitPayload.voice` / `OutgoingPayload.voice`；表情面板把 emoji 插入光标处，与手输文字无区别。
 - 提交即出气泡（2026-10-12）：每次提交带 `localId` 与 `submittedAt`（作为消息 `created_at_ms`，msg-center 以它为 sort_key），
   Composer 在队列变化时调用 `store.stageOutgoing(context, sessionId, queued)`，队列里尚未发出的每一项立即显示为待发气泡
   （`ui_message_id = pending:<localId>`、`ui_staged`、`ui_delivery_status: 'sending'`，附件消息 `ui_upload.phase = 'queued'`）；
@@ -1112,6 +1145,7 @@ function buildOutgoingMessage(draft: ComposerDraft, ctx: OutgoingContext): MsgOb
 | 草稿部分 | 目标位置 |
 |---|---|
 | `content`（trim 后） | `content.content`，`content.format = 'text/plain'` |
+| 语音（只有一个附件且带 `voice`） | 附件照常上传进 `content.refs`，另写顶层 `voice: { duration_ms, waveform }`；待发气泡同样带 `voice`，上传期间即可播放本地文件。转发、重新发送保留 `voice` |
 | 每个附件 | 先上传到 named_store 得到 `obj_id`，再追加一项 `content.refs[]`：`{ role: 'input', target: { type: 'data_obj', obj_id, uri_hint }, label: relativePath ?? file.name }`；上传完成后本地文件登记为该 `obj_id` 的内容，自己刚发的附件显示、预览、下载都不再从服务端回读 |
 | 会话归属 | 原生具名会话使用 `to_session = session.id`（MsgObject v2）；默认会话（`dm:*`、与实体同 id 的会话）省略 `to_session`；`thread.topic` 不承载会话；目标连接 / 远端上下文映射见下 |
 | 发送者 | 首期仅自己的可写 Session：`from = context.sessionOwnerDid = context.viewerDid`；Agent 观察模式禁止构造出站消息 |

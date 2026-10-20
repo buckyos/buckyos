@@ -5,7 +5,8 @@
  */
 import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from '../types'
 import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
-import { messageNotify, notifySessionCategory, type MessageObject, type NotifyCategory } from '../protocol/msgobj'
+import { messageNotify, messageVoice, notifySessionCategory, type MessageObject, type NotifyCategory } from '../protocol/msgobj'
+import { formatVoiceDuration } from '../conversation/media/voice'
 import { isActionMessage, isMessageActivity } from '../sessionModel'
 import { didDisplayName, usableImageUrl } from '../../../presentation/model'
 
@@ -22,6 +23,8 @@ export interface ProjectionLabels {
   you: string
   previewImage: string
   previewAttachment: string
+  /** A voice note without text, followed by its duration. */
+  previewVoice?: string
   previewUnavailable: string
   /** Name of the system notify sender's entity. */
   systemNotify?: string
@@ -191,6 +194,8 @@ export function summarizeMessage(msg: MessageObject | null | undefined, labels: 
   const dataRef = refs.find(ref => ref.target.type === 'data_obj')
   const format = msg.content.format ?? 'text/plain'
   const isText = format.startsWith('text/')
+  const voice = messageVoice(msg)
+  if (voice && dataRef && !content.trim()) return `${labels.previewVoice ?? labels.previewAttachment} ${formatVoiceDuration(voice.duration_ms)}`
   if (dataRef && !content.trim()) {
     const label = dataRef.label ? ` ${dataRef.label}` : ''
     return `${format.startsWith('image/') ? labels.previewImage : labels.previewAttachment}${label}`

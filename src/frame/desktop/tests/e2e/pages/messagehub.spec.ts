@@ -704,7 +704,9 @@ test('touch controls have names and 44px targets; message status is readable tex
     page.getByRole('button', { name: /^Entity details:/ }),
     page.getByRole('button', { name: 'Session details', exact: true }),
     composer.getByRole('button', { name: 'Add attachment', exact: true }),
-    composer.getByRole('button', { name: 'Send', exact: true }),
+    composer.getByRole('button', { name: 'Emoji', exact: true }),
+    // An empty input offers a voice message in place of Send.
+    composer.getByRole('button', { name: 'Record a voice message', exact: true }),
   ]
   for (const target of targets) {
     const box = await target.boundingBox()
@@ -714,6 +716,9 @@ test('touch controls have names and 44px targets; message status is readable tex
   await page.locator('input[type="file"]').first().setInputFiles('package.json')
   await expect(composer.getByRole('button', { name: 'Remove package.json', exact: true })).toBeVisible()
   await page.locator('textarea').fill('Status check')
+  const send = await composer.getByRole('button', { name: 'Send', exact: true }).boundingBox()
+  expect(send?.width ?? 0).toBeGreaterThanOrEqual(44)
+  expect(send?.height ?? 0).toBeGreaterThanOrEqual(44)
   await page.locator('textarea').press('Enter')
   await expect(page.getByTestId('conversation-history').getByRole('img', { name: 'Sent', exact: true })).toBeVisible()
 })

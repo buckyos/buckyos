@@ -187,6 +187,20 @@ export interface AgentAsk {
 export const AGENT_ASK_ANSWER_INTENT = 'agent_ask.answer'
 
 /**
+ * `voice`: this message is a voice note, the audio file of its only
+ * `data_obj` ref. `waveform` holds up to `VOICE_WAVEFORM_SAMPLES` levels of
+ * 0–`VOICE_WAVEFORM_MAX` over the whole clip, for drawing it before the audio
+ * is loaded. Other clients see an ordinary audio attachment.
+ */
+export interface VoiceNote {
+  duration_ms: number
+  waveform: number[]
+}
+
+export const VOICE_WAVEFORM_SAMPLES = 64
+export const VOICE_WAVEFORM_MAX = 31
+
+/**
  * MsgObject v2 (`CYFS 标准对象` §16).
  *
  * Rust flattens `meta` into the top-level object, so unknown keys are allowed
@@ -219,6 +233,8 @@ export interface MsgObject {
   agent_task?: AgentTaskRef
   /** Flattened `meta` extension, read only through `messageAgentAsk`. */
   agent_ask?: AgentAsk
+  /** Flattened `meta` extension, read only through `messageVoice`. */
+  voice?: VoiceNote
   [key: string]: unknown
 }
 
@@ -299,6 +315,21 @@ export function messageAgentAsk(message: MessageObject): AgentAsk | undefined {
     ...(typeof turn === 'number' && Number.isFinite(turn) ? { turn } : {}),
     input: options.length > 0 ? { kind: 'choice', options, allow_text: raw.allow_text === true } : { kind: 'text', options: [], allow_text: true },
   }
+}
+
+/**
+ * The `voice` of a voice note, or `undefined` when there is none or it is
+ * malformed. An edit never carries one; out-of-range levels are clamped and
+ * a missing waveform reads as a flat line.
+ */
+export function messageVoice(message: MessageObject): VoiceNote | undefined {
+  if (message.relates_to?.rel === 'edit') return undefined
+  const value: unknown = message.voice
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const { duration_ms: duration, waveform } = value as { duration_ms?: unknown; waveform?: unknown }
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) return undefined
+  const levels = Array.isArray(waveform) ? waveform.slice(0, VOICE_WAVEFORM_SAMPLES).map(level => (typeof level === 'number' && Number.isFinite(level) ? Math.min(VOICE_WAVEFORM_MAX, Math.max(0, Math.round(level))) : 0)) : []
+  return { duration_ms: Math.round(duration), waveform: levels }
 }
 
 /** The option an answer picked (`content.machine` with `agent_ask.answer`), when it names one. */

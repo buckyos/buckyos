@@ -3,11 +3,15 @@
  * chunk list that the msg-center object route cannot serve, so they would be
  * delivered but could never be opened; they are refused before upload.
  */
+import type { VoiceNote } from '../../protocol/msgobj'
+
 export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
 
 export interface ComposerAttachmentInput {
   file: File
   relativePath?: string
+  /** A recorded voice note: sent alone it goes out as one (`MsgObject.voice`), next to other files as an audio file. */
+  voice?: VoiceNote
 }
 
 export interface ComposerAttachmentItem extends ComposerAttachmentInput {
@@ -111,6 +115,7 @@ export function createAttachmentItem(
     kind: input.file.type.startsWith('image/') ? 'image' : 'file',
     previewUrl,
     relativePath: input.relativePath,
+    ...(input.voice ? { voice: input.voice } : {}),
   }
 }
 
