@@ -1107,6 +1107,18 @@
       "contracts": [
         {
           "id": "anthropic.messages.2023-06-01",
+          "forbidden_body_paths_by_model": {
+            "claude-sonnet-5-5": [
+              "/temperature",
+              "/top_p",
+              "/top_k"
+            ],
+            "claude-haiku-5-5": [
+              "/temperature",
+              "/top_p",
+              "/top_k"
+            ]
+          },
           "protocol_adapter_id": "claude-messages",
           "api_version": "2023-06-01",
           "api_types": [
@@ -3419,6 +3431,16 @@
       "contracts": [
         {
           "id": "openrouter.responses.v1",
+          "forbidden_body_paths_by_model": {
+            "anthropic/claude-sonnet-5.5": [
+              "/temperature",
+              "/top_p"
+            ],
+            "anthropic/claude-haiku-5.5": [
+              "/temperature",
+              "/top_p"
+            ]
+          },
           "protocol_adapter_id": "openrouter-responses",
           "api_version": "v1",
           "api_types": [

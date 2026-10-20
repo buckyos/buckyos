@@ -71,13 +71,9 @@ async function main(): Promise<void> {
     if (retained.length === 0) delete next[sectionName];
     else object.instances = retained;
   }
-  const allowPartial = Deno.args.includes("--allow-partial");
-  if (
-    removed.length !== 6 &&
-    !(allowPartial && removed.length > 0 && removed.length < 6)
-  ) {
+  if (removed.length === 0) {
     throw new Error(
-      `refusing cleanup: expected exactly 6 run-scoped instances, found ${removed.length}`,
+      `refusing cleanup: no run-scoped instance matched ${runId}`,
     );
   }
   await session.systemConfig.call("sys_config_set", {

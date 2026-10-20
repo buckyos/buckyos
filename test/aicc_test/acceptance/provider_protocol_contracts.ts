@@ -81,6 +81,7 @@ export type ProviderProtocolContract = {
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
   forbidden_body_paths?: string[];
+  forbidden_body_paths_by_model?: Record<string, string[]>;
   canonical_request_overrides?: Record<string, unknown>;
   generation_config?: {
     allowed_fields: string[];
@@ -539,6 +540,47 @@ export function validateProviderProtocolCatalog(
         const pointers = stringArray(contract[field], `${id}.${field}`);
         if (pointers.some((pointer) => !pointer.startsWith("/"))) {
           throw new Error(`${id}.${field} entries must be JSON pointers`);
+        }
+      }
+      if (contract.forbidden_body_paths_by_model !== undefined) {
+        const byModel = object(
+          contract.forbidden_body_paths_by_model,
+          `${id}.forbidden_body_paths_by_model`,
+        );
+        for (const [modelId, rawPointers] of Object.entries(byModel)) {
+          nonEmptyString(modelId, `${id}.forbidden_body_paths_by_model key`);
+          const pointers = stringArray(
+            rawPointers,
+            `${id}.forbidden_body_paths_by_model.${modelId}`,
+          );
+          if (pointers.some((pointer) => !pointer.startsWith("/"))) {
+            throw new Error(
+              `${id}.forbidden_body_paths_by_model.${modelId} entries must be JSON pointers`,
+            );
+          }
+        }
+        const knownModels = new Set([
+          ...Object.values(
+            (provider.official_first_party_model_ids ?? {}) as Record<
+              string,
+              string[]
+            >,
+          ).flat(),
+          ...Object.values(
+            (provider.official_aggregated_model_ids ?? {}) as Record<
+              string,
+              string[]
+            >,
+          ).flat(),
+          ...Object.values(testModelIds as Record<string, string>),
+          ...Object.values(contractTestModelIds as Record<string, string>),
+        ]);
+        for (const modelId of Object.keys(byModel)) {
+          if (!knownModels.has(modelId)) {
+            throw new Error(
+              `${id}.forbidden_body_paths_by_model.${modelId} is not a documented model of ${provider.provider_driver}`,
+            );
+          }
         }
       }
       for (const required of contract.required_body_fields as string[]) {
@@ -1109,7 +1151,13 @@ export function validateProviderRequest(
       errors.push(`body ${pointer} is required`);
     }
   }
-  for (const pointer of contract.forbidden_body_paths ?? []) {
+  const forbiddenPointers = [
+    ...(contract.forbidden_body_paths ?? []),
+    ...(typeof body.model === "string"
+      ? contract.forbidden_body_paths_by_model?.[body.model] ?? []
+      : []),
+  ];
+  for (const pointer of forbiddenPointers) {
     if (pointerValue(pointer) !== undefined) {
       errors.push(`body ${pointer} is forbidden`);
     }
@@ -2670,6 +2718,60 @@ export function buildT15Manifest(
       expected_provider_instance: `t15-custom-${testCase.provider_driver}`,
     })),
   );
+  // Vendor models that reject explicit sampling parameters must have those
+  // parameters stripped by Provider Rules before the request reaches the wire.
+  // Each provider keeps a control case on a model without the constraint, so the
+  // assertion cannot pass just because the harness never sends the values.
+  const samplingConstraints: Array<{
+    provider_driver: string;
+    contract_id: string;
+    stripped_model: string;
+    forwarded_model: string;
+  }> = [
+    {
+      provider_driver: "claude",
+      contract_id: "anthropic.messages.2023-06-01",
+      stripped_model: "claude-sonnet-5-5",
+      forwarded_model: "claude-sonnet-5",
+    },
+    {
+      provider_driver: "openrouter",
+      contract_id: "openrouter.responses.v1",
+      stripped_model: "anthropic/claude-sonnet-5.5",
+      forwarded_model: "anthropic/claude-sonnet-5",
+    },
+  ];
+  for (const constraint of samplingConstraints) {
+    const samplingBase = cases.find((testCase) =>
+      testCase.provider_driver === constraint.provider_driver &&
+      testCase.protocol_contract_id === constraint.contract_id &&
+      testCase.api_type === "llm" &&
+      testCase.mock_scenario === "success" &&
+      !testCase.tags.includes("model_api_conformance")
+    );
+    if (!samplingBase) {
+      throw new Error(
+        `${constraint.contract_id} LLM contract is required for the sampling constraint cases`,
+      );
+    }
+    const samplingVariants: Array<[string, string, string]> = [
+      ["sampling-omitted", constraint.stripped_model, "sampling_omitted"],
+      ["sampling-forwarded", constraint.forwarded_model, "sampling_forwarded"],
+    ];
+    for (const [suffix, modelId, tag] of samplingVariants) {
+      cases.push({
+        ...samplingBase,
+        case_id: caseId(
+          `t1.5.${constraint.provider_driver}.${constraint.contract_id}.llm.${suffix}`,
+        ),
+        priority: "P0",
+        tags: [...samplingBase.tags, tag],
+        model_selector: { kind: "exact", value: modelId },
+        mock_scenario: "success",
+        expected_wire_fixture: `${constraint.contract_id}.request.${suffix}`,
+      } as AcceptanceCase);
+    }
+  }
   for (const variant of variants) {
     const contract = protocolContract(
       catalog,

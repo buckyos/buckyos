@@ -762,6 +762,10 @@ export function buildT15TypedParams(
         ? "openrouter"
         : "openai";
       const structuredOutput = requestKey.endsWith(".structured-output");
+      // The sampling probes send explicit sampling parameters so the Provider
+      // Rules removal (or forwarding) is observable on the wire.
+      const samplingProbe = requestKey.endsWith(".sampling-omitted") ||
+        requestKey.endsWith(".sampling-forwarded");
       const providerSwitch = requestKey.endsWith(".provider-switch");
       const videoInput = requestKey.endsWith(".video-input");
       const providerState = typedOptions.foreignProviderState;
@@ -954,6 +958,7 @@ export function buildT15TypedParams(
           }
           : {}),
         max_output_tokens: 32,
+        ...(samplingProbe ? { temperature: 0.4, top_p: 0.9 } : {}),
       };
     }
     case "embedding.text":
@@ -1582,6 +1587,28 @@ async function executeCase(
       diagnostics.push(
         "Claude canonical JSON Schema was not lowered to output_config.format",
       );
+    }
+  }
+  if (testCase.tags.includes("sampling_omitted")) {
+    for (const field of ["temperature", "top_p", "top_k"]) {
+      if (wireBody && wireBody[field] !== undefined) {
+        diagnostics.push(
+          `sampling parameter ${field} reached the wire for a model that rejects it: ${
+            JSON.stringify(wireBody[field])
+          }`,
+        );
+      }
+    }
+  }
+  if (testCase.tags.includes("sampling_forwarded")) {
+    for (const [field, expected] of [["temperature", 0.4], ["top_p", 0.9]]) {
+      if (wireBody?.[field] !== expected) {
+        diagnostics.push(
+          `sampling parameter ${field} was not forwarded: expected ${expected}, got ${
+            JSON.stringify(wireBody?.[field])
+          }`,
+        );
+      }
     }
   }
   const contract = protocolContract(
