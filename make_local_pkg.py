@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1121,6 +1121,78 @@ def _prepare_common_build_root(
     )
 
 
+def _paios_images_module() -> Any:
+    import importlib.util
+
+    script = REPO_ROOT / ".github" / "scripts" / "paios_images.py"
+    spec = importlib.util.spec_from_file_location("paios_images", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _stage_local_paios_images(target: TargetScript, *, dry_run: bool) -> None:
+    """Pin this machine's paios/aios and paios/exttool latest-<arch> images into the
+    staged root (bin/paios-images/), like a release package, for offline test installs."""
+    import gzip
+    import hashlib
+
+    paios_images = _paios_images_module()
+    arch = "aarch64" if target.architecture in ("arm64", "aarch64") else "amd64"
+    out_dir = target.build_root / "buckyos" / "bin" / "paios-images"
+    if dry_run:
+        print(f"[paios-images] would pin local paios/aios and paios/exttool latest-{arch} into {out_dir}")
+        return
+    images: dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix="buckyos-paios-images-") as temporary:
+        for name in ("aios", "exttool"):
+            source = f"paios/{name}:latest-{arch}"
+            inspected = subprocess.run(["docker", "image", "inspect", source], capture_output=True, text=True)
+            if inspected.returncode != 0:
+                raise RuntimeError(f"{source} is not in the local Docker store: {inspected.stderr.strip()}")
+            data = json.loads(inspected.stdout)[0]
+            image_id = data["Id"]
+            short_id = image_id.split(":", 1)[-1][:12]
+            reference = f"paios/{name}:local-{short_id}-{arch}"
+            _run_checked(["docker", "tag", image_id, reference])
+            tar_path = out_dir / f"{name}-{arch}-{short_id}.tar.gz"
+            print(f"[paios-images] docker save {reference} -> {tar_path}")
+            with tar_path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as packed:
+                saving = subprocess.Popen(["docker", "save", reference], stdout=subprocess.PIPE)
+                assert saving.stdout is not None
+                shutil.copyfileobj(saving.stdout, packed, 4 * 1024 * 1024)
+                if saving.wait() != 0:
+                    raise RuntimeError(f"docker save {reference} failed")
+            inspect_file = Path(temporary) / f"{name}.json"
+            inspect_file.write_text(json.dumps(data), encoding="utf-8")
+            digests = [item.split("@", 1)[1] for item in data.get("RepoDigests") or [] if "@" in item]
+            entry = paios_images.platform_entry(
+                name, arch, reference, inspect_file, digests[0] if digests else None, tar_path, "https://local.invalid"
+            )
+            entry["tar"].pop("path")
+            entry["tar"].pop("url")
+            labels = (data.get("Config") or {}).get("Labels") or {}
+            images[name] = {
+                "repo": f"paios/{name}",
+                "version": labels.get("org.opencontainers.image.version", "local"),
+                "revision": labels.get("org.opencontainers.image.revision") or "local-" + short_id,
+                "created": labels.get("org.opencontainers.image.created", ""),
+                "platforms": {arch: entry},
+            }
+    revision = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    manifest = {
+        "schema": paios_images.SCHEMA,
+        "buckyos_revision": revision or "local",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "images": images,
+    }
+    paios_images.validate(manifest)
+    (out_dir / "paios_images.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"[paios-images] pinned local images: " + ", ".join(f"{name}={images[name]['platforms'][arch]['image_id']}" for name in images))
+
+
 def prepare_root(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="make_local_pkg.py prepare-root")
     parser.add_argument("--arch", default=None, help="Override detected architecture")
@@ -1181,6 +1253,13 @@ def build_pkg(argv: list[str]) -> int:
         default=None,
         help="Collect devkit cargo timing reports under this directory",
     )
+    parser.add_argument(
+        "--paios-images",
+        choices=("none", "local"),
+        default="none",
+        help="none: package without bin/paios-images/paios_images.json (installed node_daemon uses local "
+        "latest-<arch> images); local: pin and bundle this machine's paios/aios and paios/exttool latest-<arch>",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args, forwarded = parser.parse_known_args(argv)
 
@@ -1200,6 +1279,8 @@ def build_pkg(argv: list[str]) -> int:
         )
     else:
         print("[prepare] skipped by --skip-prepare")
+    if args.paios_images == "local":
+        _stage_local_paios_images(target, dry_run=bool(args.dry_run))
 
     if args.version:
         version = args.version

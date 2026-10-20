@@ -416,8 +416,21 @@ done <"$OWNERS_FILE"
 
 capture_cmd "$CONTAINERS_FILE" docker ps -a --no-trunc --filter "label=buckyos.app_id=${JARVIS_APP_ID}"
 append_cmd "$CONTAINERS_FILE" docker ps --no-trunc --filter "label=buckyos.app_id=${JARVIS_APP_ID}"
-append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-aarch64"
-append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-amd64"
+PAIOS_MANIFEST="$BUCKYOS_ROOT_RESOLVED/bin/paios-images/paios_images.json"
+if [[ -f "$PAIOS_MANIFEST" ]]; then
+  append_cmd "$CONTAINERS_FILE" cat "$PAIOS_MANIFEST"
+  append_cmd "$CONTAINERS_FILE" ls -l "$BUCKYOS_ROOT_RESOLVED/bin/paios-images"
+  while IFS= read -r pinned_ref; do
+    [[ -n "$pinned_ref" ]] && append_cmd "$CONTAINERS_FILE" docker image inspect "$pinned_ref"
+  done < <(python3 -c 'import json, sys
+for image in json.load(open(sys.argv[1]))["images"].values():
+    for entry in image["platforms"].values():
+        print(entry["ref"])' "$PAIOS_MANIFEST" 2>/dev/null)
+else
+  append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-aarch64"
+  append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-amd64"
+fi
+append_cmd "$CONTAINERS_FILE" docker volume ls --filter name=buckyos-exttool
 
 collect_recent_logs "$LOG_ROOT" "$NODE_LOG_FILE" '*node_daemon*' '*node-daemon*' 5
 collect_recent_logs "$AGENT_LOG_ROOT" "$AGENT_LOG_FILE" '*jarvis*' '*.log' 8

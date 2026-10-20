@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build_exttool — build the paios/exttool image that seeds the
-# buckyos-exttool named volume (see notepads/paios容器需求.md §6.3).
+# buckyos-exttool-<image id> named volume (see doc/app_service/paios容器需求.md §6.3).
 #
 # Unlike build_aios this script does not cross-compile any Rust code;
 # everything we ship is already OS packages, downloaded AppImages, and

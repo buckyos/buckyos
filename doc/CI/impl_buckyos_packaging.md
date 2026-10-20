@@ -353,6 +353,12 @@ publish:
 - 目标目录存在且非空时，跳过整个目录。
 - 目标目录存在但为空时，复制默认目录内容。
 
+paios 镜像（`modules.paios_images: bin/paios-images/`，`overwrite`）：
+
+- CI payload 的这个目录带 `paios_images.json`，锁定 `paios/aios`、`paios/exttool` 每个架构的镜像身份和 `docker save` tar（格式见 `notepads/paios-image-release-todo.md` §3.2）。
+- 正式安装包把目标架构的 tar 放到清单旁边（CD 打包机在组装 staging 后用 sn-business `stage_paios_images.py` 从 R2 取）；开发环境安装只有 README，node_daemon 因此处于本机镜像模式。
+- 安装器不执行 `docker load`。node_daemon 启动后在后台从 tar 加载并校验镜像，任何模式下都不从 registry 拉取 paios 镜像。覆盖安装删除 `bin/` 时旧版本的 tar 一起清掉。
+
 ## 6. 内部 manifest
 
 不提供新的用户配置 manifest，也不提供 `make-manifest` 作为主流程入口。
@@ -1014,6 +1020,7 @@ rpm 安装逻辑参照 deb：同样使用 `overwrite` / `preserve_existing` 规�
 - Linux deb/rpm 不包含 `BuckyOSApp`。
 - macOS pkg 包含 Distribution choices。
 - deb/rpm 元数据包含依赖声明。
+- payload 带 `bin/paios-images/paios_images.json` 时，目标架构每个镜像的 tar 存在且大小、sha256 与清单一致。`--require-paios-images`（CD 打包时传入）要求清单和 tar 必须存在。
 
 安装验收测试不在本文定义，由 CD 系统文档负责。
 

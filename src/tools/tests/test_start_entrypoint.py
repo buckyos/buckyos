@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -254,6 +255,35 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
             with patch.object(module, "SDK_TOOL_DIR", tool_dir):
                 self.assertTrue(module._sdk_tool_distribution_ready())
 
+
+    def test_missing_paios_images_checks_local_mode_images_only(self) -> None:
+        module = _load_start_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "etc").mkdir()
+            (root / "etc" / "devenv.json").write_text('{"aios": "local/aios-test"}', encoding="utf-8")
+            inspected = []
+
+            def fake_run(args, **kwargs):
+                inspected.append(args[-1])
+                return subprocess.CompletedProcess(args, 0 if args[-1].startswith("local/") else 1)
+
+            with (
+                patch.object(module, "_find_command", return_value="docker"),
+                patch.object(module.platform, "machine", return_value="x86_64"),
+                patch.object(module.subprocess, "run", side_effect=fake_run),
+            ):
+                self.assertEqual(module._missing_paios_images(root), ["paios/exttool:latest-amd64"])
+                self.assertEqual(inspected, ["local/aios-test:latest-amd64", "paios/exttool:latest-amd64"])
+
+                (root / "bin" / "paios-images").mkdir(parents=True)
+                (root / "bin" / "paios-images" / "paios_images.json").write_text("{}", encoding="utf-8")
+                inspected.clear()
+                self.assertEqual(module._missing_paios_images(root), [])
+                self.assertEqual(inspected, [])
+
+            with patch.object(module, "_find_command", return_value=None):
+                self.assertEqual(module._missing_paios_images(Path(temporary) / "missing"), [])
 
 if __name__ == "__main__":
     unittest.main()

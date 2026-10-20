@@ -112,12 +112,43 @@ def resolve_filebrowser_image(arch: str) -> str:
     return match.group(1)
 
 
-def default_docker_images() -> tuple[str, str]:
+def installed_buckyos_root() -> Path:
+    root = os.environ.get("BUCKYOS_ROOT")
+    if root:
+        return Path(root).expanduser()
+    if platform.system() == "Windows":
+        return Path(os.path.expandvars("%AppData%")) / "buckyos"
+    return Path("/opt/buckyos")
+
+
+def local_paios_overrides(buckyos_root: Path) -> dict[str, str]:
+    """Image repos that $BUCKYOS_ROOT/etc/devenv.json points node_daemon at (local builds)."""
+    try:
+        config = json.loads((buckyos_root / "etc" / "devenv.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(config, dict):
+        return {}
+    return {
+        key: value.strip()
+        for key, value in config.items()
+        if key in ("aios", "exttool") and isinstance(value, str) and value.strip()
+    }
+
+
+def default_docker_images() -> list[str]:
+    """Images a dev install needs locally. node_daemon never pulls the paios
+    worker/ExtTool images; it uses <repo>:latest-<arch> as found."""
     arch = normalized_arch()
-    return (
-        "paios/aios:latest",
-        resolve_filebrowser_image(arch),
-    )
+    overrides = local_paios_overrides(installed_buckyos_root())
+    images = []
+    for name in ("aios", "exttool"):
+        if name in overrides:
+            print(f"Using local {name} image {overrides[name]}:latest-{arch} (etc/devenv.json); not pulling.", flush=True)
+            continue
+        images.append(f"paios/{name}:latest-{arch}")
+    images.append(resolve_filebrowser_image(arch))
+    return images
 
 
 def json_string_fragment(value: str) -> str:

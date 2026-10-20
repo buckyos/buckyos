@@ -1783,6 +1783,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         real_machine_config = machine_config.unwrap();
     }
     info!("machine_config: {:?}", &real_machine_config);
+    crate::paios_images::spawn_preload();
 
     init_name_lib(&real_machine_config.web3_bridge)
         .await
