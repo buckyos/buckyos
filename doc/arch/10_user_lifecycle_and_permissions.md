@@ -268,6 +268,16 @@ $BUCKYOS_ROOT/data/home/<owner_user_id>/.local/share/<app_id>/   # 宿主视角
 
 App 访问 system-config / kRPC 资源时，服务端 `BuckyOSRuntime::enforce()` 透明执行权限判断（`src/kernel/buckyos-api/src/runtime.rs`），失败返回 `NoPermission`。`app` 角色按 `{app}` 模板隔离（只能动自己 `apps/{app}/*` 子树）。App **声明**所需权限用 `PermissionItem`，以 `scope_path` 标识 RBAC 资源路径（如 `kapi/aicc`、`user/home`、`zone/library`、`wan`，见 `src/kernel/buckyos-api/src/permission.rs`、`doc/App 安装协议.md`），超出默认沙箱的需安装时用户显式授权，批准结果写入 `AppServiceSpec.permission`。
 
+### 6.4 Agent 创建授权
+
+Add Agent 向导默认授予当前登录用户的读写权限，也可选择只读。API 字段为 `agent.create.permission_mode`，取值 `read_write`（默认）/ `read_only`，保存到 `AgentSpec.permission_mode`，在 `agent.list` / `agent.get` 中返回。授权 Owner 来自登录身份，Agent 的模板更新和创建重试保留此选择；该字段不属于 Agent 可自行调整的 settings。
+
+Agent runtime App 的 API 权限按该模式继承 Owner 的权限，仍经过用户与 App 双主体校验，不能超出 Owner 的授权。只读模式限制用户数据与配置写入（包括 Agent settings/profile），保留自身 info、service-instance 状态上报及自身 mailbox 的收发写入；AgentRoot 内的 Session、任务与记忆继续运行。Docker 中 Owner home 按模式挂载，而自己的 AgentRoot 始终读写，供 Session、记忆、工作区和技能持久化；准确路径见 [`path_usage.md`](../path_usage.md)。宿主调试遵循宿主进程文件权限，不提供 Docker 的只读挂载隔离。
+
+只读授权不开放可用于重新登录的原始凭据：`users/<user>/settings`（含密码哈希）、`users/<user>/agents/<agent>/key` 与 `security/*` 的 system-config 读取被拒绝。需要读取这些原始记录的 API 也可能返回权限错误。
+
+Control Panel 的 RPC、Desktop HTTP 写入口与 NFS `share.*` 写入口也校验 Agent 授权。OpenDAN kRPC 只为只读 Agent 保留其自身 AppInstance 的 AgentRoot / Session / 技能写操作，禁止修改其他 Agent 和 `agent.profile_set`；用户本人登录 Agent WebUI 的 User token 按原有 Owner 权限处理。
+
 ---
 
 ## 7. 待补齐项（本文定义为标准，实现需对齐）

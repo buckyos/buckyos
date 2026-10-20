@@ -17,6 +17,7 @@ import type {
   AgentCreateStep,
   AgentEntry,
   AgentNameCheck,
+  AgentPermissionMode,
   AgentProfile,
   AgentSettings,
   AgentStatus,
@@ -43,6 +44,7 @@ interface MockAgent {
   agent_did: string
   owner_user_id: string
   owner_did: string
+  permission_mode: AgentPermissionMode
   name: string
   profile: AgentProfile
   settings: AgentSettings
@@ -116,6 +118,7 @@ function defaultState(): MockState {
         agent_did: 'did:bns:assistant.alice',
         owner_user_id: 'alice',
         owner_did: 'did:bns:alice',
+        permission_mode: 'read_write',
         name: 'assistant',
         profile: { display_name: 'BuckyOS Assistant', bio: 'Your personal AI assistant on BuckyOS.' },
         settings: { ...defaultSettings(), msg_tunnels: [{ platform: 'telegram', bot_account_id: 'bucky_bot' }] },
@@ -316,6 +319,7 @@ function toEntry(state: MockState, agent: MockAgent): AgentEntry {
     agent_did: agent.agent_did,
     owner_user_id: agent.owner_user_id,
     owner_did: agent.owner_did,
+    permission_mode: agent.permission_mode,
     name: agent.name,
     display_name: displayName(agent),
     profile: { ...agent.profile },
@@ -378,6 +382,10 @@ function zonePresentation(state: MockState) {
 function createAgent(state: MockState, params: Record<string, unknown>) {
   requireCreator(state)
   const request = params as unknown as AgentCreateRequest
+  const permissionMode = request.permission_mode ?? 'read_write'
+  if (permissionMode !== 'read_write' && permissionMode !== 'read_only') {
+    throw new MockRpcError('invalid_permission_mode: expected read_write or read_only')
+  }
   const existing = state.agents.find((agent) => agent.idempotency_key === request.idempotency_key && agent.install.state !== 'removed')
   if (existing) {
     return { agent_id: existing.agent_id, agent_did: existing.agent_did, status: { ...existing.install } }
@@ -407,6 +415,7 @@ function createAgent(state: MockState, params: Record<string, unknown>) {
     agent_did: check.agent_did,
     owner_user_id: state.account.user_id,
     owner_did: state.account.did,
+    permission_mode: permissionMode,
     name,
     profile: {
       ...(request.profile.display_name?.trim() ? { display_name: request.profile.display_name.trim() } : {}),

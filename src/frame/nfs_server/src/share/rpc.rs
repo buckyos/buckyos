@@ -112,6 +112,7 @@ pub async fn dispatch(
     args: &Value,
     bearer: Option<&str>,
 ) -> NfsResult<Value> {
+    require_agent_share_permission(state, actor, method).await?;
     let p = principal(state, actor, args).await?;
     match method {
         "share.capabilities" => Ok(capabilities(state)),
@@ -128,6 +129,93 @@ pub async fn dispatch(
         "share.public.list" => public_list(state, args).await,
         "share.stats" => stats(state, &p, args),
         other => Err(NfsError::new(ErrorCode::Unsupported, format!("unknown method '{}'", other))),
+    }
+}
+
+async fn require_agent_share_permission(
+    state: &SharedState,
+    actor: &Actor,
+    method: &str,
+) -> NfsResult<()> {
+    if !WRITE_METHODS.contains(&method)
+        || !matches!(state.config.auth, crate::config::AuthMode::Runtime)
+    {
+        return Ok(());
+    }
+    let Actor::Delegated { user, app, .. } = actor else {
+        return Ok(());
+    };
+    let runtime = buckyos_api::get_buckyos_api_runtime()
+        .map_err(|error| internal(error.to_string()))?;
+    let client = runtime
+        .get_system_config_client()
+        .await
+        .map_err(|error| internal(error.to_string()))?;
+    let mode = if app.starts_with("app:") || app.starts_with("system:") {
+        let target = buckyos_api::AuthTarget::from_canonical_key(app)
+            .map_err(|error| NfsError::new(ErrorCode::PermissionDenied, error))?;
+        let buckyos_api::AuthTarget::App { app_instance_id } = target else {
+            return Ok(());
+        };
+        buckyos_api::load_agent_permission_mode(client.as_ref(), &app_instance_id)
+            .await
+            .map_err(|error| internal(error.to_string()))?
+    } else {
+        let agent_id = buckyos_api::AgentId::parse(app)
+            .map_err(|error| NfsError::new(ErrorCode::PermissionDenied, error))?;
+        let key = buckyos_api::agent_spec_key(user, &agent_id);
+        let value = client.get(&key).await.map_err(|error| internal(error.to_string()))?;
+        let spec: buckyos_api::AgentSpec =
+            serde_json::from_str(&value.value).map_err(|error| internal(error.to_string()))?;
+        spec.validate().map_err(internal)?;
+        if spec.agent_id != agent_id
+            || spec.binding.target_app_instance_id.owner_user_id() != user
+        {
+            return Err(NfsError::new(
+                ErrorCode::PermissionDenied,
+                "Agent identity or owner does not match its permission record",
+            ));
+        }
+        Some(spec.permission_mode)
+    };
+    check_agent_share_permission(mode, method)
+}
+
+fn check_agent_share_permission(
+    mode: Option<buckyos_api::AgentPermissionMode>,
+    method: &str,
+) -> NfsResult<()> {
+    if mode == Some(buckyos_api::AgentPermissionMode::ReadOnly)
+        && WRITE_METHODS.contains(&method)
+    {
+        return Err(
+            NfsError::new(
+                ErrorCode::PermissionDenied,
+                format!("read-only Agent cannot call {method}"),
+            )
+            .with("reason", json!("agent_read_only")),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod agent_permission_tests {
+    use super::*;
+    use buckyos_api::AgentPermissionMode::{ReadOnly, ReadWrite};
+
+    #[test]
+    fn agent_permission_blocks_share_writes_but_preserves_queries_and_ordinary_apps() {
+        for method in WRITE_METHODS {
+            let error = check_agent_share_permission(Some(ReadOnly), method).unwrap_err();
+            assert_eq!(error.code, ErrorCode::PermissionDenied);
+            assert_eq!(error.details["reason"], "agent_read_only");
+            assert!(check_agent_share_permission(Some(ReadWrite), method).is_ok());
+            assert!(check_agent_share_permission(None, method).is_ok());
+        }
+        for method in ["share.get", "share.list", "share.plan", "share.operation", "share.stats"] {
+            assert!(check_agent_share_permission(Some(ReadOnly), method).is_ok());
+        }
     }
 }
 

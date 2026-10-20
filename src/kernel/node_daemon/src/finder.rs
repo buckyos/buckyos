@@ -807,31 +807,13 @@ pub(crate) fn add_discovered_device_cache(discovered: &HashMap<String, Discovere
     let Some(name_client) = name_client::GLOBAL_NAME_CLIENT.get() else {
         return;
     };
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        warn!("add discovered device doc cache skipped: no tokio runtime");
+        return;
+    };
     for node in discovered.values() {
         let device_did = node.device_doc.id.clone();
-        if !node.device_doc_jwt.is_empty() {
-            match EncodedDocument::from_str(node.device_doc_jwt.clone()) {
-                Ok(device_doc) => {
-                    if let Err(err) = name_client.add_observed_cache(
-                        device_did.clone(),
-                        Some(DidDocType::Device),
-                        device_doc,
-                        Some(name_client::UpdateSource::UdpDiscovery),
-                    ) {
-                        warn!(
-                            "add discovered device doc cache failed, did={:?}, err={}",
-                            device_did, err
-                        );
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        "parse discovered device doc jwt failed, did={:?}, err={}",
-                        device_did, err
-                    );
-                }
-            }
-        }
+        // Info 免验证,进进程内 Info 缓存(同 zone 的地址解析读取)。
         if let Err(err) =
             name_client.add_device_info_cache(device_did.clone(), node.device_info.clone())
         {
@@ -840,6 +822,37 @@ pub(crate) fn add_discovered_device_cache(discovered: &HashMap<String, Discovere
                 device_did, err
             );
         }
+        if node.device_doc_jwt.is_empty() {
+            continue;
+        }
+        let device_doc = match EncodedDocument::from_str(node.device_doc_jwt.clone()) {
+            Ok(device_doc) => device_doc,
+            Err(err) => {
+                warn!(
+                    "parse discovered device doc jwt failed, did={:?}, err={}",
+                    device_did, err
+                );
+                continue;
+            }
+        };
+        // UDP 发现到的设备文档只是候选(normal 来源),由 resolve 时按 owner 链验签。
+        handle.spawn(async move {
+            if let Err(err) = name_client
+                .commit_candidate_doc(
+                    &device_did,
+                    Some(DidDocType::Device),
+                    &device_doc,
+                    name_client::SourceRef::normal("udp-discovery"),
+                    name_client.default_resolve_opts(),
+                )
+                .await
+            {
+                warn!(
+                    "add discovered device doc cache failed, did={:?}, err={}",
+                    device_did, err
+                );
+            }
+        });
     }
 }
 
@@ -1016,21 +1029,6 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             Ok(name_client::NameInfo::new(name))
         }
 
-        async fn query_did(
-            &self,
-            did: &DID,
-            doc_type: Option<name_client::DidDocType>,
-            _from_ip: Option<IpAddr>,
-        ) -> name_lib::NSResult<EncodedDocument> {
-            Err(name_lib::NSError::NotFound(format!(
-                "{}#{}",
-                did.to_string(),
-                doc_type
-                    .as_ref()
-                    .map(name_client::DidDocType::as_str)
-                    .unwrap_or("")
-            )))
-        }
     }
 
     async fn ensure_name_client_for_tests() {
@@ -1044,18 +1042,16 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             let _ = name_client::IS_NAME_LIB_INITED.set(true);
         }
         let client = name_client::GLOBAL_NAME_CLIENT.get().unwrap();
-        client
-            .add_provider(Box::new(EmptyNameProvider), Some(-100))
-            .await;
-        client
-            .add_method_supplement("bns", Box::new(EmptyNameProvider))
-            .await;
-        client.set_local_authority_override(
+        client.add_dns_provider(Box::new(EmptyNameProvider)).await;
+        client.lock_document(
             DID::new("bns", "alice"),
             DidDocType::Owner,
             test_owner_document(),
-            "node-daemon-test",
-            None,
+            name_client::LockOptions {
+                scope: "node-daemon-test".to_string(),
+                simulate_history: true,
+                ..Default::default()
+            },
         );
     }
 

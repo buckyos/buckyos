@@ -1,7 +1,7 @@
 ---
 name: share
 description: Give someone a file or folder from the Zone as a link — snapshot, optional password and expiry — then list your shares, see views and downloads, change or stop them.
-requires: the buckyos command (agent container: /usr/local/bin/buckyos; host: $BUCKYOS_ROOT/bin/buckyos); the file must be readable by your owner
+requires: the buckyos command (agent container: /usr/local/bin/buckyos; host: $BUCKYOS_ROOT/bin/buckyos); the file must be readable by your owner; creating or changing shares requires read_write Agent permission
 ---
 #### When to use
 A person needs a file you produced or one the owner keeps, outside this conversation: make a link and hand it over.
@@ -21,9 +21,9 @@ buckyos share stats [--share-id <share_id>] [--days 30] [--granularity day|hour]
 
 #### Paths
 - `<path>` is a Zone path as Files shows it, `/home/<owner>/Documents/report.pdf`, or `cyfs:///home/<owner>/…`.
-- In the agent container `/home/<owner>/.local/share/<app_id>/agents/<agent_id>/` (your AgentRoot) is the same path in
-  the Zone: files you write there can be shared by that absolute path. `/tmp`, `/opt/…` and other container paths are
-  not in the Zone; write the file under your AgentRoot first.
+- Docker AgentRoot is `/opt/buckyos/data/home/<owner>/.local/share/<app_id>/agents/<agent_id>/`; use the Zone path
+  `/home/<owner>/.local/share/<app_id>/agents/<agent_id>/` when sharing a file there. `/tmp` and runtime/cache paths
+  are not in the Zone; write the file under your AgentRoot first.
 - The link carries a snapshot taken now. Later edits of the file are not in it; share again for a new version.
 - Folders leave out `.git/`, `node_modules/`, `.env*`, `*.key`, `*.pem`, `.DS_Store`, symlinks and what the owner cannot
   read; `share get` lists them under `excluded`. Up to 20 000 items.
@@ -42,6 +42,9 @@ buckyos share stats [--share-id <share_id>] [--days 30] [--granularity day|hour]
 
 #### When it fails
 Errors come as `SHARE_<REASON>`:
+- `SHARE_AGENT_READ_ONLY` (`PERMISSION_DENIED`, reason `agent_read_only`): the owner selected `read_only` when
+  creating the Agent. You can list/read shares and write your own AgentRoot, but cannot create/update/stop/hide
+  shares or initiate/report app handoffs. Give the owner the file path and let them use the Desktop share dialog.
 - `SHARE_SOURCE_NOT_READABLE`: your owner cannot read that path. `SHARE_SOURCE_UNSUPPORTED`: not a file or folder.
 - `SHARE_TOO_LARGE` / `SHARE_TOO_MANY_ITEMS`: over 64 GiB or 20 000 items; share a smaller folder.
 - `SHARE_PLAN_STALE`: the source changed between plan and create; run create again.
@@ -52,8 +55,8 @@ Errors come as `SHARE_<REASON>`:
 
 #### Before you share
 - Anything under `/srv/publish` is already public at `https://public.<zone>/<path>`; give that address instead.
-- Reading a file is enough to share it (a known risk): only share what the user asked to send, and confirm before
-  sharing something outside the task.
+- With `read_write` Agent permission, reading a file is enough to share it (a known risk): only share what the
+  user asked to send, and confirm before sharing something outside the task.
 
 Checked against: BuckyOS 0.7.0 + Tool/SDK from websdk source on test.buckyos.io, 2026-10-19 — create/list/get/update/
 stop/stats with a user session injected like the container's, and `--yes` on the host as the device; not yet run from

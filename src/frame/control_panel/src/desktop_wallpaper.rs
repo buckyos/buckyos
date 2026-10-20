@@ -165,6 +165,14 @@ impl ControlPanelServer {
 
         let path = req.uri().path().to_string();
         let method = req.method().clone();
+        let permission_method = if method == Method::GET {
+            "desktop.wallpaper.get"
+        } else {
+            "desktop.wallpaper.write"
+        };
+        if let Err(error) = principal.require_agent_permission(permission_method) {
+            return Self::wallpaper_error(StatusCode::FORBIDDEN, &error.to_string());
+        }
         if path == WALLPAPER_ROUTE && method == Method::POST {
             return self.store_wallpaper(req, &dir).await;
         }

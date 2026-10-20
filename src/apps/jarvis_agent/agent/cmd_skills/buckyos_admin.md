@@ -22,6 +22,9 @@ buckyos system info                                 # BuckyOS version, build_ver
   On a host, `buckyos` uses the device identity on `127.0.0.1:3180` and asks for `--yes`.
 - Container paths are not host paths. Your `/opt/buckyos/logs` is the host's `$BUCKYOS_ROOT/logs/apps/<instance-hash>/`;
   the host's `etc/`, `security/`, `bin/`, other containers and processes are not visible to you.
+- Agent creation defaults to `permission_mode: read_write`; the owner can choose `read_only` in Add Agent.
+  `agent get <agent_id>` returns the selected mode. Owner home follows that mode; `$OPENDAN_AGENT_ROOT` is always
+  writable for sessions, memory, workspaces, tools and skills. This grant is in AgentSpec, not agent settings.
 - `buckyos` missing or ".../buckyos-tool/... not found": the Tool mount is not deployed in this container. Say so and
   give the owner the exact host commands instead of guessing results.
 - Host-side `uv run src/check.py` (repo) checks processes and ports. "Activation Ready" means waiting for activation,
@@ -97,15 +100,17 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
 - Exit codes: 2 usage; 3 auth (`AUTH_REQUIRED`, `INVALID_SESSION`, `SESSION_EXPIRED`); 4 permission
   (`PERMISSION_DENIED`, `CONFIRMATION_REQUIRED`); 5 `SERVICE_UNAVAILABLE` (`fetch failed`, retryable);
   6 operation (`RESOURCE_NOT_FOUND`, `OPERATION_FAILED`); 8 timeout.
-- Agent identity (expected from the RBAC policy and control-panel code, not yet observed from a container):
-  system-config checks both the agent app (`app:<agent_id>`) and the owner. Readable: `boot/config`, `services/*/info`,
-  your own `users/<owner>/agents/<agent_id>/{settings,profile,info,spec}` and `users/<owner>/apps/<agent_id>/{settings,info,spec}`
-  (settings, profile and info writable). Refused with `No read permission` / `No write permission`: `system/*`
-  (`rbac` included; use `system info` for the version), `nodes/*`, `devices/*`, `users/<owner>/settings`, other apps' keys, desktop
-  state, `agents/*/key`. Control-panel verbs (`system`, `log`, `app`, `agent`, `diagnostic`) judge the owner's user type:
-  an admin owner's agent is expected to pass; a normal user's agent gets `requires administrator privileges` from
-  `diagnostic`. Developer mode, app availability and Zone display need a user's Control Panel login. `task list`
-  shows the tasks your agent created.
+- Agent identity: system-config checks both the agent app (`app:<agent_id>`) and the owner. The app inherits the
+  owner's authorized operations according to `permission_mode`; this does not grant operations the owner lacks.
+  `read_only` blocks user-data/configuration writes, including agent settings/profile, while retaining the Agent's
+  own info, service-instance reporting and mailbox delivery. Local AgentRoot writes still work. Check the actual result before
+  reporting a change; `No read permission` / `No write permission` is a refusal.
+  Control-panel RPC, Desktop writes and sharing also enforce read-only Agent grants; switching from a raw
+  system-config write to a higher-level API does not authorize it.
+  Read-only grants exclude raw login credentials: `users/<u>/settings` (password hash),
+  `users/<u>/agents/<agent>/key` and `security/*`. An API that needs those records can also be refused.
+  Control-panel methods still enforce their user-type and user-login requirements; for example a normal user's
+  agent cannot collect an administrator diagnostic bundle. `task list` shows the tasks your agent created.
 - A refusal is an answer: report the code and the owner-side path; don't retry as another identity or route around
   it through raw keys.
 - `SESSION_EXPIRED` in a long `tail`/`wait`: the injected token lasts minutes and is refreshed per shell call; rerun in

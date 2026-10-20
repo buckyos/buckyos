@@ -10,6 +10,7 @@ Making a new Agent template or changing one (identity text, behaviors, session c
 - Template = a PIKG with `categories:["agent"]` (`app_type agent`), sub package `agent` (the AgentRootFS files) and optionally `agent_skills`; it needs a `www` http endpoint (Jarvis: inner_port 4060). Jarvis is the built-in one (`bundled:jarvis.buckyos.bns.did`); your own package working copy is readable at `/opt/buckyos/bin/<agent_id>/`.
 - Agent = its own DID created at `agent.create`: AgentId `<name>.<zone>` = AppId of a per-Agent App built from the template, AppInstanceId `<agent_id>@<owner>`, `AgentSpec.binding` → that instance and service `www`. Control Panel generates the key (system-config `users/<owner>/agents/<agent_id>/key`); the Loader writes `.meta/identity.json` and `.meta/role_supplement.md`. A template therefore carries no keys, sessions, memory or state.
 - AgentRoot (`$OPENDAN_AGENT_ROOT`, host `data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/`) = template files + instance data (`.meta/`, `state/`, `sessions/`, `memory/`, `notebook/`, `workspace/`, installed skills). On a template update (agents with `template_auto_update`), new files are added and files you never changed are replaced; files changed locally are kept (with a warning), files dropped from the package stay, installed skills are untouched, and running sessions keep what they froze.
+- The owner's creation choice `permission_mode` is `read_write` by default or `read_only`. Owner home follows that mode; your own `$OPENDAN_AGENT_ROOT` always stays writable for sessions, memory, workspaces, tools and skills. This is stored in `AgentSpec`, not in `agent.toml` or editable agent settings; template updates preserve it.
 
 #### Before you start
 ```
@@ -77,8 +78,8 @@ There is no `pikg init --kind agent`. Leave `.meta/`, `state/`, `sessions/`, `me
 
 #### Register the template and create an Agent (owner)
 - Register: `buckyos app fetch <pikg> --plan p.json --policy local-developer` then `buckyos --yes app install <pikg> --plan p.json --policy local-developer` → `action template_registered`, `template_id installed:<app_id>` (no task; a newer version → `template_updated`; from the code, not run on 2026-10-17). There is no command to unregister a template; use throw-away names in tests.
-- Create: Desktop "Add Agent" (pick the template) or control-panel kRPC `agent.create {idempotency_key, name, template_id, template_auto_update?, allow_group?}` then `agent.create.status {agent_id}`; read `agent.list_templates`, `agent.list`, `agent.get`. No `buckyos` CLI verb exists for these. Hand the owner these steps; your agent identity is not expected to create Agents.
-- Check: the new Agent answers in Message Center, `agent.get` shows `template installed:<app_id>` and `loaded_version`, its AgentRoot has a fresh `.meta/identity.json`.
+- Create: Desktop "Add Agent" (pick the template and read-write/read-only access) or control-panel kRPC `agent.create {idempotency_key, name, template_id, permission_mode?, template_auto_update?, allow_group?}` then `agent.create.status {agent_id}`; `permission_mode` accepts `read_write` (default) or `read_only`. Read `agent.list_templates`, `agent.list`, `agent.get`. No `buckyos` CLI verb exists for these. Hand the owner these steps; your agent identity is not expected to create Agents.
+- Check: the new Agent answers in Message Center, `agent.get` shows `template installed:<app_id>`, `loaded_version` and the selected `permission_mode`, its AgentRoot has a fresh `.meta/identity.json`. Verify read-only user data and writable AgentRoot in the deployed container; host debugging uses host process permissions.
 
 #### Extend with skill packages
 ```

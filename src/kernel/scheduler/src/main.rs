@@ -347,7 +347,8 @@ mod test {
     use buckyos_api::test_config;
     use jsonwebtoken::{jwk::Jwk, DecodingKey};
     use name_client::{
-        NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
+        Carrier, DidDocType, NameClient, NameClientConfig, ResolveOpts, Revision, Source,
+        SourceAnswer, SourceRef, SourceTier, GLOBAL_NAME_CLIENT,
     };
     use name_lib::{
         DeviceDocument, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
@@ -724,9 +725,9 @@ mod test {
             .into_iter()
             .map(|(did, doc)| (did.to_raw_host_name(), doc))
             .collect();
-        client
-            .add_provider(Box::new(StaticProvider::new(docs)), None)
-            .await;
+        let provider = Arc::new(StaticProvider::new(docs));
+        client.set_method_authority("bns", provider.clone());
+        client.set_method_authority("web", provider);
         let _ = GLOBAL_NAME_CLIENT.set(client);
     }
 
@@ -803,31 +804,24 @@ mod test {
     }
 
     #[async_trait]
-    impl NsProvider for StaticProvider {
-        fn get_id(&self) -> String {
+    impl Source for StaticProvider {
+        fn id(&self) -> String {
             "static-provider".to_string()
         }
 
-        async fn query(
-            &self,
-            name: &str,
-            _record_type: Option<RecordType>,
-            _from_ip: Option<IpAddr>,
-        ) -> name_lib::NSResult<NameInfo> {
-            Err(NSError::NotFound(name.to_string()))
-        }
-
-        async fn query_did(
+        async fn get_document(
             &self,
             did: &DID,
-            _doc_type: Option<name_client::DidDocType>,
-            _from_ip: Option<IpAddr>,
-        ) -> name_lib::NSResult<EncodedDocument> {
-            let host = did.to_host_name();
-            self.docs
-                .get(&host)
-                .cloned()
-                .ok_or_else(|| NSError::NotFound(host))
+            _doc_type: &DidDocType,
+            _revision: &Revision,
+            _opts: &ResolveOpts,
+        ) -> SourceAnswer {
+            let sref = SourceRef::provider(self.id(), SourceTier::Authority);
+            let host = did.to_raw_host_name();
+            match self.docs.get(&host) {
+                Some(doc) => SourceAnswer::new(sref).with_body(doc.clone(), Carrier::Body),
+                None => SourceAnswer::no_answer(sref, host),
+            }
         }
     }
 }

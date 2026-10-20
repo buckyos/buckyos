@@ -287,85 +287,69 @@ impl NameClientAppResolver {
         Self
     }
 
-    fn resolve_policy_for(policy: InstallPolicy) -> name_client::ResolvePolicy {
-        let mut resolve_policy = name_client::ResolvePolicy::default();
-        match policy {
-            InstallPolicy::StrictPublic => {
-                resolve_policy.allow_stale_cache = false;
-                resolve_policy.allow_unverified_cache_when_unavailable = false;
-                resolve_policy.allow_self_signed_when_missing = false;
-            }
-            InstallPolicy::Normal | InstallPolicy::SystemInternal => {}
-            InstallPolicy::TrustedShare => {
-                resolve_policy.allow_unverified_cache_when_unavailable = true;
-            }
-            InstallPolicy::LocalDeveloper => {
-                resolve_policy.allow_unverified_cache_when_unavailable = true;
-                resolve_policy.allow_self_signed_when_missing = true;
-            }
-        }
-        resolve_policy
+    /// 重构后的 resolver 不再提供"未验证兜底 / Missing 自签名入场"开关:resolve
+    /// 永远只返回验证通过的文档。TrustedShare / LocalDeveloper 场景下本机安装的
+    /// App Document 由 `app_installer` 写入本机 locker(hosts 语义),因此这里对所有
+    /// 策略使用同一套默认选项。
+    fn resolve_opts_for(_policy: InstallPolicy) -> name_client::ResolveOpts {
+        name_client::ResolveOpts::default()
     }
 
     /// AppDIDs under the current Zone (the App each Agent is built into shares
-    /// the AgentDID) are only known through the local authority override; the
-    /// Zone Resolver would answer them Missing before the override is read.
+    /// the AgentDID) are only known through the local locker; the Zone locker
+    /// would answer them Missing before the local locker is read.
     fn is_current_zone_subname(app_did: &DID) -> bool {
         buckyos_api::get_buckyos_api_runtime()
             .ok()
             .is_some_and(|runtime| app_did.upper_did().as_ref() == Some(&runtime.zone_id))
     }
 
-    fn map_document_status(status: Option<&name_client::DocumentStatus>) -> DocumentStatus {
-        match status {
-            Some(name_client::DocumentStatus::Active) => DocumentStatus::Active,
-            Some(name_client::DocumentStatus::Missing) => DocumentStatus::Missing,
-            Some(name_client::DocumentStatus::Expired) => DocumentStatus::Expired,
-            Some(name_client::DocumentStatus::Revoked) => DocumentStatus::Revoked,
-            Some(name_client::DocumentStatus::Tombstoned) => DocumentStatus::Tombstoned,
-            Some(name_client::DocumentStatus::Migrated) => DocumentStatus::Migrated,
-            // 没有权威回答 != Missing（实现规则 5）。
-            None => DocumentStatus::Unknown,
+    /// DID 级 / 类型级状态 → 协议状态。`invalid`(权威确定性校验拒绝)对安装器
+    /// 等同 Missing。
+    fn map_result_status(result: &name_client::DocResult) -> DocumentStatus {
+        match result.did_state.as_ref() {
+            Some(name_client::DidState::Tombstoned) => return DocumentStatus::Tombstoned,
+            Some(name_client::DidState::Migrated { .. }) => return DocumentStatus::Migrated,
+            _ => {}
+        }
+        match result.type_state.as_ref() {
+            Some(name_client::TypeState::Revoked) => DocumentStatus::Revoked,
+            Some(name_client::TypeState::Missing) | Some(name_client::TypeState::Invalid { .. }) => {
+                DocumentStatus::Missing
+            }
+            Some(name_client::TypeState::Expired) => DocumentStatus::Expired,
+            Some(name_client::TypeState::Active) => DocumentStatus::Active,
+            // 没有权威回答 != Missing(实现规则 5):有验证通过的选择即 Active。
+            None => {
+                if result.select(&name_client::Revision::current()).is_some() {
+                    DocumentStatus::Active
+                } else {
+                    DocumentStatus::Unknown
+                }
+            }
         }
     }
 
-    fn map_evidence(evidence: Option<name_client::BodyEvidence>) -> Option<DidEvidenceLevel> {
-        evidence.map(|value| match value {
-            name_client::BodyEvidence::Anchored => DidEvidenceLevel::Anchored,
-            name_client::BodyEvidence::NeedProof => DidEvidenceLevel::NeedProof,
-            name_client::BodyEvidence::UnproofInfo => DidEvidenceLevel::UnproofInfo,
-        })
+    fn map_evidence(choice: &name_client::Choice) -> DidEvidenceLevel {
+        if choice.report.is_published || choice.source.tier == name_client::SourceTier::Authority {
+            DidEvidenceLevel::Anchored
+        } else {
+            DidEvidenceLevel::NeedProof
+        }
     }
 
-    fn map_verification(
-        status: Option<name_client::VerificationStatus>,
-    ) -> Option<DidVerificationStatus> {
-        status.map(|value| match value {
-            name_client::VerificationStatus::Passed => DidVerificationStatus::Passed,
-            name_client::VerificationStatus::Failed => DidVerificationStatus::Failed,
-            name_client::VerificationStatus::Unavailable => DidVerificationStatus::Unavailable,
-            name_client::VerificationStatus::NotAttempted => DidVerificationStatus::NotAttempted,
-        })
-    }
-
-    fn map_cache_status(status: Option<name_client::CacheStatus>) -> Option<DidCacheStatus> {
-        status.map(|value| match value {
-            name_client::CacheStatus::Disabled => DidCacheStatus::Disabled,
-            name_client::CacheStatus::Miss => DidCacheStatus::Miss,
-            name_client::CacheStatus::Hit => DidCacheStatus::Hit,
-            name_client::CacheStatus::Refresh => DidCacheStatus::Refresh,
-            name_client::CacheStatus::Fallback => DidCacheStatus::Fallback,
-            name_client::CacheStatus::UnauthenticatedInfoHit => {
-                DidCacheStatus::UnauthenticatedInfoHit
-            }
-            name_client::CacheStatus::ZoneHit => DidCacheStatus::ZoneHit,
-            name_client::CacheStatus::ObservedFallback => DidCacheStatus::ObservedFallback,
-        })
+    fn map_verification(choice: &name_client::Choice) -> DidVerificationStatus {
+        if choice.report.is_signed || choice.source.tier != name_client::SourceTier::Normal {
+            DidVerificationStatus::Passed
+        } else {
+            DidVerificationStatus::NotAttempted
+        }
     }
 
     fn map_resolve_error_status(error: &name_lib::NSError) -> DocumentStatus {
         match error {
             name_lib::NSError::NotFound(_) => DocumentStatus::Missing,
+            name_lib::NSError::Disabled(_) => DocumentStatus::Revoked,
             _ => DocumentStatus::Unknown,
         }
     }
@@ -378,13 +362,19 @@ impl AppDidResolver for NameClientAppResolver {
         app_did: &DID,
         policy: InstallPolicy,
     ) -> Result<ResolvedApp, InstallError> {
-        let mut resolve_policy = Self::resolve_policy_for(policy);
+        let mut resolve_opts = Self::resolve_opts_for(policy);
         if Self::is_current_zone_subname(app_did) {
-            resolve_policy.use_zone_resolver = false;
+            resolve_opts = resolve_opts.without_zone_lock();
         }
         let doc_type = name_client::DidDocType::Custom(APP_DID_DOC_TYPE.to_string());
 
-        let result = name_client::resolve_did_ex(app_did, Some(doc_type), resolve_policy).await;
+        let result = name_client::resolve_did_ex(
+            app_did,
+            Some(doc_type),
+            name_client::Revision::current(),
+            resolve_opts,
+        )
+        .await;
 
         let resolved = match result {
             Ok(resolved) => resolved,
@@ -421,36 +411,29 @@ impl AppDidResolver for NameClientAppResolver {
             }
         };
 
-        let buckyos_meta = &resolved.document_metadata.buckyos;
-        let warnings: Vec<String> = resolved
-            .resolution_metadata
-            .warnings
-            .iter()
-            .map(|warning| format!("{warning:?}"))
-            .collect();
-        let mut document_status = Self::map_document_status(buckyos_meta.document_status.as_ref());
-        if matches!(document_status, DocumentStatus::Unknown)
-            && warnings
-                .iter()
-                .any(|warning| warning.contains("LocalAuthorityOverride"))
-        {
-            document_status = DocumentStatus::Active;
-        }
+        let warnings: Vec<String> = resolved.reasons.clone();
+        let document_status = Self::map_result_status(&resolved);
+        let choice = resolved
+            .select(&name_client::Revision::current())
+            .cloned();
 
         let document_value = if matches!(
             document_status,
             DocumentStatus::Active | DocumentStatus::Expired
         ) {
-            match resolved.document.clone().to_json_value() {
-                Ok(value) => Some(value),
-                Err(err) => {
-                    return Err(InstallError::new(
-                        InstallStage::Resolve,
-                        InstallErrorCode::VerificationFailed,
-                        false,
-                        format!("decode resolved app document failed: {err}"),
-                    ))
-                }
+            match choice.as_ref() {
+                Some(choice) => match choice.doc.clone().to_json_value() {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        return Err(InstallError::new(
+                            InstallStage::Resolve,
+                            InstallErrorCode::VerificationFailed,
+                            false,
+                            format!("decode resolved app document failed: {err}"),
+                        ))
+                    }
+                },
+                None => None,
             }
         } else {
             None
@@ -460,44 +443,34 @@ impl AppDidResolver for NameClientAppResolver {
             .as_ref()
             .map(|value| build_named_object_by_json(OBJ_TYPE_APP_DOC, value).0);
 
-        // migration_target：name-client 元数据未直接暴露，Migrated 时从 body 提取。
-        let migration_target = if matches!(document_status, DocumentStatus::Migrated) {
-            resolved
-                .document
-                .clone()
-                .to_json_value()
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("migration_target")
-                        .and_then(|v| v.as_str())
-                        .and_then(|raw| DID::from_str(raw).ok())
-                })
-        } else {
-            None
-        };
+        let migration_target = resolved.migration_target();
 
-        // expected_owner：权威绑定优先，否则名字结构确定性上级；
-        // 绝不读 candidate 自声明。
-        let expected_owner = app_did.upper_did();
+        // expected_owner:权威绑定优先,否则名字结构确定性上级;绝不读 candidate 自声明。
+        let expected_owner = resolved
+            .owner_binding
+            .clone()
+            .or_else(|| app_did.upper_did());
 
         let snapshot = DidResolutionSnapshot {
             app_did: app_did.clone(),
             doc_type: AppDocType,
             app_doc_object_id,
             local_authority_app_doc_object_id: None,
-            resolver_id: resolved.resolution_metadata.resolver_id.clone(),
+            resolver_id: choice.as_ref().map(|c| c.source.id.clone()),
             document_status,
-            document_version: buckyos_meta.document_version,
-            authority_seq: buckyos_meta.authority_seq,
-            effective_owner: None,
+            document_version: choice.as_ref().map(|c| c.revision.iat),
+            authority_seq: None,
+            effective_owner: resolved.owner_binding.clone(),
             expected_owner,
-            evidence: Self::map_evidence(resolved.resolution_metadata.evidence),
-            verification_status: Self::map_verification(
-                resolved.resolution_metadata.verification_status,
-            ),
-            cache_status: Self::map_cache_status(resolved.resolution_metadata.cache_status),
-            doc_hash: None,
+            evidence: choice.as_ref().map(Self::map_evidence),
+            verification_status: choice.as_ref().map(Self::map_verification),
+            // 本机 locker 回答(原 LocalAuthorityOverride)按本机命中标记;其余不区分。
+            cache_status: if resolved.locked {
+                Some(DidCacheStatus::Hit)
+            } else {
+                None
+            },
+            doc_hash: choice.as_ref().map(|c| c.revision.hash.clone()),
             warnings,
             migration_target,
             resolved_at: Some(buckyos_get_unix_timestamp()),

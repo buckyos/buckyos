@@ -4,6 +4,7 @@ import type {
   AgentCreateRequest,
   AgentCreateStep,
   AgentEntry,
+  AgentPermissionMode,
   AgentStatus,
   AgentTemplate,
   UserDetail,
@@ -224,6 +225,7 @@ export interface AgentSetupDraft {
   bio: string
   bioEdited: boolean
   roleSupplement: string
+  permissionMode: AgentPermissionMode
   allowGroup: boolean
   templateId: string | null
   templateAutoUpdate: boolean
@@ -249,6 +251,7 @@ export function newAgentSetupDraft(source: AgentSetupSource, idempotencyKey: str
     bio: '',
     bioEdited: false,
     roleSupplement: '',
+    permissionMode: 'read_write',
     allowGroup: false,
     templateId: null,
     templateAutoUpdate: true,
@@ -281,6 +284,7 @@ export function parseAgentSetupDraft(raw: unknown, source: AgentSetupSource): Ag
     bio: stringField(value.bio, base.bio),
     bioEdited: boolField(value.bioEdited, base.bioEdited),
     roleSupplement: stringField(value.roleSupplement, base.roleSupplement),
+    permissionMode: value.permissionMode === 'read_only' ? 'read_only' : 'read_write',
     allowGroup: boolField(value.allowGroup, base.allowGroup),
     templateId: typeof value.templateId === 'string' && value.templateId ? value.templateId : null,
     templateAutoUpdate: boolField(value.templateAutoUpdate, base.templateAutoUpdate),
@@ -329,6 +333,7 @@ export function buildAgentCreateRequest(draft: AgentSetupDraft, botToken: string
       ...(bio ? { bio } : {}),
     },
     role_supplement: draft.roleSupplement.trim(),
+    permission_mode: draft.permissionMode,
     allow_group: draft.allowGroup,
     allow_other_users: false,
     template_id: draft.templateId ?? '',

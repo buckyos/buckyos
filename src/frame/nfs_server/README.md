@@ -24,6 +24,10 @@ KernelService 身份 login(含心跳),读取 `services/nfs-server/settings`
 - 每个请求验证调用者的 Verify Hub session token（Bearer 或 SSO cookie），再按路径 ACL 授权；
   Zone owner 全权限，用户管理自己的 `home/<user_id>`，其余靠 ACL 记录授予，匿名只到 `public`。
   详见下文“鉴权与权限”及产品文档 §11。
+- App/Agent token 仅能访问 `share.*`，不能直接访问文件平面。服务模式下，绑定 Agent 的 runtime App
+  和独立 AgentDID 调用还检查 `AgentSpec.permission_mode`；`read_only` 拒绝
+  `share.create/update/stop/hide/app.handoff/app.report`，返回 `PERMISSION_DENIED` 与
+  `reason: agent_read_only`。读取分享、普通 App 和真实用户会话继续遵循原有授权。
 
 集成点:`buckyos-api/src/nfs_server_client.rs`(常量 + Settings)、
 `scheduler/system_config_builder.rs::add_nfs_server()`、
@@ -49,7 +53,7 @@ nfs_server --listen 127.0.0.1:3260 \
 - `--debug-api`:开启 `POST /nfs/v1/debug/{reconcile|create_view}`(仅测试/开发)。
 - 不鉴权:独立模式默认所有请求全权限。`--auth-test-config`(须 loopback + `--debug-api`)给出
   `{"public_key": "<ed25519 x>", "zone_owner": "<user_id>"}` 后,按该测试密钥验证 token,
-  规则与服务模式相同。
+  路径 ACL 规则与服务模式相同；AgentSpec 权限查询仅在服务模式生效。
 
 ```bash
 cargo test -p nfs_server        # 单元与集成测试，不需要外部服务

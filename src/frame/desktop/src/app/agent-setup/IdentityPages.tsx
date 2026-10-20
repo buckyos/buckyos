@@ -8,7 +8,7 @@ import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
 import type { NameCheckState } from './hooks'
 import { draftDisplayName, type AgentSetupDraft, type ClassifiedAgentError } from './model'
-import { Section, StatusPill } from './ui'
+import { OptionCard, Section, StatusPill } from './ui'
 import { ObjectAvatar } from '../../presentation/ObjectIcon'
 import type { ObjectPresentation } from '../../presentation/model'
 
@@ -237,15 +237,29 @@ export function PermissionsPage({
       </Section>
 
       <Section title={t('agentSetup.permission.title')}>
-        <div className="flex items-start gap-3" data-testid="agent-setup-permission">
-          <ShieldCheck size={18} className="mt-0.5 shrink-0 text-[color:var(--cp-accent)]" />
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.permission.same')}</p>
-            <p className="text-[12px] leading-5 text-[color:var(--cp-muted)]">
-              {t('agentSetup.permission.role', undefined, { role: t(userTypeLabelKey(account.user_type)) })}
-              {' '}
-              {t('agentSetup.permission.advanced')}
-            </p>
+        <div className="space-y-3" data-testid="agent-setup-permission">
+          <p className="text-[12px] leading-5 text-[color:var(--cp-muted)]">
+            {t('agentSetup.permission.role', undefined, { role: t(userTypeLabelKey(account.user_type)) })}
+          </p>
+          <div className="space-y-3" role="radiogroup" aria-label={t('agentSetup.permission.title')}>
+            <OptionCard
+              testId="agent-setup-permission-read-write"
+              selected={draft.permissionMode === 'read_write'}
+              onSelect={() => update({ permissionMode: 'read_write' })}
+              title={t('agentSetup.permission.read_write')}
+              description={t('agentSetup.permission.readWriteHint')}
+            />
+            <OptionCard
+              testId="agent-setup-permission-read-only"
+              selected={draft.permissionMode === 'read_only'}
+              onSelect={() => update({ permissionMode: 'read_only' })}
+              title={t('agentSetup.permission.read_only')}
+              description={t('agentSetup.permission.readOnlyHint')}
+            />
+          </div>
+          <div className="flex items-start gap-2 text-[12px] leading-5 text-[color:var(--cp-muted)]">
+            <ShieldCheck size={16} className="mt-0.5 shrink-0 text-[color:var(--cp-accent)]" />
+            <p>{t('agentSetup.permission.agentRoot')}</p>
           </div>
         </div>
       </Section>

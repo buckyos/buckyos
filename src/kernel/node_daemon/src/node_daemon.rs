@@ -2289,21 +2289,6 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             Ok(name_client::NameInfo::new(name))
         }
 
-        async fn query_did(
-            &self,
-            did: &DID,
-            doc_type: Option<name_client::DidDocType>,
-            _from_ip: Option<std::net::IpAddr>,
-        ) -> name_lib::NSResult<EncodedDocument> {
-            Err(name_lib::NSError::NotFound(format!(
-                "{}#{}",
-                did.to_string(),
-                doc_type
-                    .as_ref()
-                    .map(name_client::DidDocType::as_str)
-                    .unwrap_or("")
-            )))
-        }
     }
 
     async fn ensure_name_client_for_tests() {
@@ -2317,18 +2302,16 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             let _ = name_client::IS_NAME_LIB_INITED.set(true);
         }
         let client = name_client::GLOBAL_NAME_CLIENT.get().unwrap();
-        client
-            .add_provider(Box::new(EmptyNameProvider), Some(-100))
-            .await;
-        client
-            .add_method_supplement("bns", Box::new(EmptyNameProvider))
-            .await;
-        client.set_local_authority_override(
+        client.add_dns_provider(Box::new(EmptyNameProvider)).await;
+        client.lock_document(
             DID::new("bns", "alice"),
             DidDocType::Owner,
             test_owner_document(),
-            "node-daemon-test",
-            None,
+            name_client::LockOptions {
+                scope: "node-daemon-test".to_string(),
+                simulate_history: true,
+                ..Default::default()
+            },
         );
     }
 
@@ -2572,15 +2555,13 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let resolved_info = name_client::resolve_did_ex(
             &peer_did,
             Some(name_client::DOC_TYPE_INFO),
-            name_client::ResolvePolicy::default(),
+            name_client::Revision::current(),
+            name_client::ResolveOpts::default(),
         )
         .await
         .unwrap();
-        assert_eq!(
-            resolved_info.document_metadata.buckyos.document_status,
-            None
-        );
-        assert_eq!(resolved_info.document_metadata.deactivated, None);
+        assert!(resolved_info.type_state.is_none());
+        assert!(!resolved_info.is_disabled());
     }
 
     #[tokio::test]

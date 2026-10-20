@@ -8,7 +8,7 @@ use buckyos_api::{
     DeploymentIdentity, LocalAppInstanceConfig, ServiceInstanceState, ServiceSpecConfig,
     SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV, BUCKYOS_APP_INSTANCE_ID_ENV,
     BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
-    BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT,
+    BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT, APP_PERMISSION_USER_HOME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -1947,7 +1947,35 @@ impl AppLoader {
     }
 
     fn worker_storage_dir(&self) -> PathBuf {
-        get_buckyos_root_dir().join("storage")
+        let storage = get_buckyos_root_dir().join("storage");
+        if self.effective_app_type() == AppType::Agent {
+            storage.join("apps").join(self.runtime_key())
+        } else {
+            storage
+        }
+    }
+
+    fn agent_home_access(&self) -> Option<&'static str> {
+        if self.effective_app_type() != AppType::Agent {
+            return None;
+        }
+        let permissions = match &self.config {
+            LoaderConfig::Service(config) => &config.node_execution_spec.permission,
+            LoaderConfig::Local(config) => &config.app_doc.permissions,
+        };
+        let mut access = None;
+        for permission in permissions {
+            if permission.scope_path != APP_PERMISSION_USER_HOME {
+                continue;
+            }
+            let next = if permission.actions.iter().any(|action| action == "write") {
+                "rw"
+            } else {
+                "ro"
+            };
+            access = Some(if access == Some("ro") { "ro" } else { next });
+        }
+        access
     }
 
     fn worker_pkg_dir(&self) -> String {
@@ -1969,6 +1997,11 @@ impl AppLoader {
         let data_root = self.app_data_dir();
         let log_root = self.worker_log_dir();
         let storage_root = self.worker_storage_dir();
+        if role == PackageRole::AgentPkg {
+            for private_root in [&data_root, &log_root, &storage_root] {
+                validate_agent_private_mount(private_root)?;
+            }
+        }
         ensure_directory(&data_root, true)?;
         ensure_directory(&log_root, true)?;
         ensure_directory(&storage_root, true)?;
@@ -2012,7 +2045,6 @@ impl AppLoader {
                 &config.access,
                 default_mount_permission(&container_path, &self.app_id, &self.owner_user_id),
             );
-            ensure_directory(&host_path, permission == "rw")?;
             mounts.insert(container_path, (host_path, permission));
         }
 
@@ -2031,7 +2063,6 @@ impl AppLoader {
             };
             let host_path = base_local_cache_dir.join(&relative_path);
             let permission = mount_access_to_docker(&config.access, "rw");
-            ensure_directory(&host_path, permission == "rw")?;
             mounts.insert(container_path, (host_path, permission));
         }
         for (container_path, config) in &self.install_config().external_mount_point {
@@ -2039,11 +2070,38 @@ impl AppLoader {
             let host_relative = config.target_path.to_string_lossy();
             let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
             let permission = mount_access_to_docker(&config.access, "ro");
-            ensure_directory(&host_path, permission == "rw")?;
             mounts.insert(container_path, (host_path, permission));
         }
 
         if role == PackageRole::AgentPkg {
+            let home_root = get_buckyos_root_dir()
+                .join("data/home")
+                .join(&self.owner_user_id);
+            if let Some(access) = self.agent_home_access() {
+                validate_agent_private_mount(&home_root)?;
+                mounts.insert(
+                    format!("/opt/buckyos/data/home/{}", self.owner_user_id),
+                    (home_root.clone(), access),
+                );
+            }
+            let app_data_path = Path::new(&app_data_container);
+            mounts.retain(|container_path, _| {
+                !Path::new(container_path).starts_with(app_data_path)
+            });
+            mounts.insert(app_data_container, (data_root.clone(), "rw"));
+            let private_roots = [
+                resolve_mount_boundary_path(&data_root)?,
+                resolve_mount_boundary_path(&log_root)?,
+                resolve_mount_boundary_path(&storage_root)?,
+            ];
+            if self.agent_home_access() != Some("rw") {
+                for (_, (host_path, permission)) in mounts.iter_mut() {
+                    let resolved = resolve_mount_boundary_path(host_path)?;
+                    if !private_roots.iter().any(|root| resolved.starts_with(root)) {
+                        *permission = "ro";
+                    }
+                }
+            }
             let tool_root = get_buckyos_root_dir().join(BUCKYOS_TOOL_RELATIVE_DIR);
             for (container_path, host_path) in buckyos_tool_mounts(&tool_root) {
                 mounts.insert(container_path, (host_path, "ro"));
@@ -2056,17 +2114,29 @@ impl AppLoader {
             }
         }
 
-        let mut result: Vec<(String, PathBuf, &'static str)> = mounts
-            .into_iter()
-            .map(|(container_path, (host_path, permission))| {
-                let resolved = canonicalize_mount_path(host_path.as_path());
-                (
-                    trim_trailing_slash(container_path.as_str()).to_string(),
+        let mut result = Vec::new();
+        for (container_path, (host_path, permission)) in mounts {
+            if role == PackageRole::AgentPkg {
+                let resolved = resolve_mount_boundary_path(&host_path)?;
+                if !resolved.is_file() {
+                    ensure_directory(&resolved, false)?;
+                }
+                result.push((
+                    trim_trailing_slash(&container_path).to_string(),
                     resolved,
                     permission,
-                )
-            })
-            .collect();
+                ));
+            } else {
+                if !host_path.is_file() {
+                    ensure_directory(&host_path, permission == "rw")?;
+                }
+                result.push((
+                    trim_trailing_slash(&container_path).to_string(),
+                    canonicalize_mount_path(&host_path),
+                    permission,
+                ));
+            }
+        }
         result.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
 
         // Prepend the named-volume mount as a synthetic entry the caller can
@@ -2848,6 +2918,13 @@ impl AppLoader {
         self.default_volume_mounts().remove("/tmp").unwrap()
     }
 
+    pub(crate) fn test_agent_volume_mounts(
+        &self,
+        pkg_root: &Path,
+    ) -> Result<Vec<(String, PathBuf, &'static str)>> {
+        self.build_worker_volume_mounts(pkg_root, PackageRole::AgentPkg, None)
+    }
+
     pub(crate) fn with_docker_command_runner(mut self, runner: DockerCommandRunner) -> Self {
         self.docker_command_runner = Some(runner);
         self
@@ -3275,6 +3352,67 @@ fn canonicalize_mount_path(path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn resolve_mount_boundary_path(path: &Path) -> Result<PathBuf> {
+    if path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err(ControlRuntItemErrors::ParserConfigError(format!(
+            "agent mount path contains parent-dir segment: {}",
+            path.display()
+        )));
+    }
+    let mut existing = path;
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        if fs::symlink_metadata(existing).is_ok() {
+            return Err(ControlRuntItemErrors::ParserConfigError(format!(
+                "agent mount path contains an unresolved symlink: {}",
+                path.display()
+            )));
+        }
+        let name = existing.file_name().ok_or_else(|| {
+            ControlRuntItemErrors::ParserConfigError(format!(
+                "cannot resolve agent mount path: {}",
+                path.display()
+            ))
+        })?;
+        suffix.push(name);
+        existing = existing.parent().ok_or_else(|| {
+            ControlRuntItemErrors::ParserConfigError(format!(
+                "cannot resolve agent mount path: {}",
+                path.display()
+            ))
+        })?;
+    }
+    let mut resolved = fs::canonicalize(existing).map_err(|error| {
+        ControlRuntItemErrors::ParserConfigError(format!(
+            "cannot resolve agent mount path {}: {error}",
+            path.display()
+        ))
+    })?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn validate_agent_private_mount(path: &Path) -> Result<()> {
+    let root = get_buckyos_root_dir();
+    let expected = resolve_mount_boundary_path(&root)?.join(path.strip_prefix(&root).map_err(
+        |_| {
+            ControlRuntItemErrors::ParserConfigError(format!(
+                "agent private mount escapes BUCKYOS_ROOT: {}",
+                path.display()
+            ))
+        },
+    )?);
+    if resolve_mount_boundary_path(path)? != expected {
+        return Err(ControlRuntItemErrors::ParserConfigError(format!(
+            "agent private mount must not be redirected through a symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn normalize_path_value(value: &str) -> String {

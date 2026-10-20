@@ -46,6 +46,7 @@ function entry(overrides: Partial<AgentEntry> = {}, install: Partial<AgentStatus
     agent_did: 'did:web:xiaobai.test.buckyos.io',
     owner_user_id: 'devtest',
     owner_did: 'did:web:devtest.test.buckyos.io',
+    permission_mode: 'read_write',
     name: 'xiaobai',
     display_name: '小白',
     profile: { display_name: '小白', avatar: 'data:image/jpeg;base64,AAAA' },
@@ -128,13 +129,15 @@ Deno.test('creation steps follow the status, with the tunnel only when one was s
 })
 
 Deno.test('drafts restore only for their own entry and never keep secrets', () => {
-  const draft = { ...newAgentSetupDraft('jarvis_guide', 'key-1'), page: 'channel' as const, channel: 'telegram' as const, botToken: 'secret' }
+  const draft = { ...newAgentSetupDraft('jarvis_guide', 'key-1'), page: 'channel' as const, channel: 'telegram' as const, permissionMode: 'read_only' as const, botToken: 'secret' }
   const restored = parseAgentSetupDraft(JSON.parse(JSON.stringify(draft)), 'jarvis_guide')
   assertEquals(restored?.page, 'channel', 'page restored')
+  assertEquals(restored?.permissionMode, 'read_only', 'permission choice restored')
   assertEquals(restored && 'botToken' in restored, false, 'no token field')
   assertEquals(parseAgentSetupDraft(draft, 'users_agents'), null, 'other entry')
   assertEquals(newAgentSetupDraft('jarvis_guide', 'k').name, 'jarvis', 'guide prefill')
   assertEquals(newAgentSetupDraft('users_agents', 'k').displayName, '', 'Add Agent starts blank')
+  assertEquals(newAgentSetupDraft('users_agents', 'k').permissionMode, 'read_write', 'new Agents default to read and write')
 })
 
 Deno.test('a template fills only an untouched bio, and the create request follows the contract', () => {
@@ -153,6 +156,7 @@ Deno.test('a template fills only an untouched bio, and the create request follow
     name: 'xiaobai',
     profile: { display_name: '小白', bio: 'Mine' },
     role_supplement: '日本語で',
+    permission_mode: 'read_write',
     allow_group: false,
     allow_other_users: false,
     template_id: 'bundled:jarvis',
@@ -160,7 +164,8 @@ Deno.test('a template fills only an untouched bio, and the create request follow
     desktop_entry: 'jarvis_guide',
     msg_tunnel: { platform: 'telegram', bot_token: '1:token' },
   }, 'request')
-  const plain = buildAgentCreateRequest({ ...newAgentSetupDraft('users_agents', 'k2'), name: 'b', templateId: 't' }, 'ignored')
+  const plain = buildAgentCreateRequest({ ...newAgentSetupDraft('users_agents', 'k2'), name: 'b', templateId: 't', permissionMode: 'read_only' }, 'ignored')
+  assertEquals(plain.permission_mode, 'read_only', 'read-only choice is sent to the backend')
   assertEquals(['desktop_entry' in plain, 'msg_tunnel' in plain], [false, false], 'Add Agent sends no desktop entry and a skipped channel sends no tunnel')
 })
 

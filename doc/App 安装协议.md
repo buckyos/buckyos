@@ -427,7 +427,9 @@ mutate_shortcut({ plan }) -> SchedulerShortcutMutationRecord
 
 ## 6. Agent 投影
 
-`AgentSpec v1` 保存 AgentId、AgentDID、AgentDocument snapshot/ObjectId、generation 和 `AgentServiceBinding v1`。binding 重复保存并校验 AgentDID/ObjectId，且必须包含目标 AppInstanceId、service_name 和 generation。
+`AgentSpec v1` 保存 AgentId、AgentDID、AgentDocument snapshot/ObjectId、generation、`permission_mode` 和 `AgentServiceBinding v1`。binding 重复保存并校验 AgentDID/ObjectId，且必须包含目标 AppInstanceId、service_name 和 generation。
+
+`agent.create.permission_mode` 可选 `read_write` / `read_only`，省略时为 `read_write`，并保存为 `AgentSpec.permission_mode`。创建向导默认授予当前用户的读写权限，可选择只读；构造 AppDoc 与安装批准的 `user/home` 权限同步使用 `actions: ["read", "write"]` / `["read"]`。重试与模板更新保留创建时的授权。AgentRoot 位于用户 App 数据目录的 `agents/<agent_id>/`，在两种模式下均保持读写。普通 App 的权限声明与安装批准流程不受该 Agent 创建默认值影响。
 
 Scheduler 将 Agent gateway/service endpoint 投影到 binding 的目标 runtime service；RBAC group 和 verify-hub token principal 使用 canonical AgentDID。node-daemon 只运行普通 runtime AppInstance，不创建 Agent 容器身份。runtime 卸载前 Control Panel 扫描所有用户的 AgentSpec；任何 binding 引用都会拒绝卸载。
 

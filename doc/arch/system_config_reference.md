@@ -39,7 +39,7 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/doc` | 用户 DID Document / Owner Document。 | scheduler 初始化管理员；control-panel 创建/接受用户 | system-config DID resolver、登录和权限流程。 |
 | `users/<user_id>/key` | 用户私钥材料。 | control-panel 创建用户 | 用户身份管理。敏感数据。 |
 | `users/<user_id>/apps/<app_id>/spec` | `AppServiceSpec`，以 AppId 为 key、以 AppInstanceId 绑定 Owner；AppName/AppHostName/AppIndex 是 registry 同 revision 的只读投影。 | scheduler InstallPlan executor | scheduler 调度、rdb_mgr、Control Panel 展示和生命周期管理。Control Panel 安装器不得直接创建该 key。 |
-| `users/<user_id>/agents/<agent_id>/spec` | `AgentSpec`，保存 AgentDocument snapshot、AgentId、generation 和指向普通 runtime AppInstanceId/service_name 的 `AgentServiceBinding`。 | scheduler bootstrap/Agent 安装事务 | gateway、service discovery、RBAC、Control Panel Agent 管理。 |
+| `users/<user_id>/agents/<agent_id>/spec` | `AgentSpec`，保存 AgentDocument snapshot、AgentId、generation、`permission_mode`（`read_write` 默认 / `read_only`）和指向普通 runtime AppInstanceId/service_name 的 `AgentServiceBinding`。 | Control Panel Agent 创建事务 | gateway、service discovery、RBAC、Control Panel Agent 管理；权限模式由创建时的 UI/API 授权保存，Agent 自己的 AgentRoot 始终读写。 |
 | `users/<user_id>/apps/<app_id>/install_record` | `InstallRecord`：DID/AppDoc 快照、Package Meta ObjectId、PIKG digest、目标 DeploymentIdentity、task/fingerprint 和安装状态。 | scheduler InstallPlan executor；Control Panel 后续状态收敛 | 安装审计、升级判断和状态聚合。 |
 | `users/<user_id>/agents/<agent_id>/install_record` | `AgentInstallRecord`，记录 AgentId、AgentDoc ObjectId、binding target、generation 和绑定状态。 | scheduler bootstrap/Agent 安装事务 | Agent binding 审计与管理。 |
 | `users/<user_id>/apps/<app_id>/settings` | app 自有 settings JSON。schema 由 app 约定。 | app runtime 通过 `update_my_settings`；也可由管理界面写入 | app runtime 通过 `get_my_settings` 读取。 |

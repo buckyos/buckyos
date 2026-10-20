@@ -181,6 +181,7 @@ export type AgentTunnelState = 'none' | 'pending' | 'bound' | 'failed' | 'skippe
 export type AgentTemplateSource = 'bundled' | 'installed'
 export type AgentNameUnavailableReason = 'invalid' | 'reserved' | 'user_exists' | 'agent_exists' | 'host_taken'
 export type AgentDesktopEntry = 'jarvis_guide'
+export type AgentPermissionMode = 'read_write' | 'read_only'
 
 export interface AgentCreateError {
   step: AgentCreateStep
@@ -255,6 +256,7 @@ export interface AgentEntry {
   agent_did: string
   owner_user_id: string
   owner_did: string
+  permission_mode: AgentPermissionMode
   name: string
   display_name: string
   profile: AgentProfile
@@ -307,6 +309,7 @@ export interface AgentCreateRequest {
   name: string
   profile: AgentProfile
   role_supplement: string
+  permission_mode: AgentPermissionMode
   allow_group: boolean
   allow_other_users: boolean
   template_id: string

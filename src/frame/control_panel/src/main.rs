@@ -111,6 +111,139 @@ struct RpcAuthPrincipal {
     owner_did: String,
     is_user_session: bool,
     is_control_panel_session: bool,
+    agent_permission_mode: Option<buckyos_api::AgentPermissionMode>,
+}
+
+impl RpcAuthPrincipal {
+    fn require_agent_permission(&self, method: &str) -> Result<(), RPCErrors> {
+        if self.agent_permission_mode == Some(buckyos_api::AgentPermissionMode::ReadOnly)
+            && !matches!(
+                method,
+                "ui.locale.get"
+                    | "ui.dashboard"
+                    | "user.list"
+                    | "user.get"
+                    | "user.profile.get"
+                    | "user.invite.get"
+                    | "agent.check_name"
+                    | "agent.list_templates"
+                    | "agent.create.status"
+                    | "agent.list"
+                    | "agent.get"
+                    | "agent.profile.get"
+                    | "system.overview"
+                    | "system.buckyos_info.get"
+                    | "system.dev_mode.get"
+                    | "system.status"
+                    | "system.metrics"
+                    | "network.overview"
+                    | "system.logs.list"
+                    | "system.logs.query"
+                    | "system.logs.tail"
+                    | "system.logs.download"
+                    | "diagnostic.export"
+                    | "system.update.check"
+                    | "apps.list"
+                    | "apps.details"
+                    | "apps.status"
+                    | "apps.availability.get"
+                    | "apps.availability.check"
+                    | "apps.staging.status"
+                    | "apps.install.status"
+                    | "apps.upgrade.check"
+                    | "zone.overview"
+                    | "zone.devices.list"
+                    | "zone.certificates.list"
+                    | "zone.presentation.get"
+                    | "gateway.overview"
+                    | "gateway.file.get"
+                    | "container.overview"
+                    | "desktop.session.list"
+                    | "desktop.state.get"
+                    | "desktop.wallpaper.get"
+            )
+        {
+            return Err(RPCErrors::NoPermission(format!(
+                "read-only Agent cannot call {method}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod agent_permission_tests {
+    use super::*;
+    use buckyos_api::AgentPermissionMode::{ReadOnly, ReadWrite};
+
+    fn principal(mode: Option<buckyos_api::AgentPermissionMode>) -> RpcAuthPrincipal {
+        RpcAuthPrincipal {
+            username: "alice".to_string(),
+            owner_user_id: "alice".to_string(),
+            authenticated_app_id: "helper.example.com@alice".to_string(),
+            user_type: UserType::Admin,
+            owner_did: "did:web:alice.example.com".to_string(),
+            is_user_session: false,
+            is_control_panel_session: false,
+            agent_permission_mode: mode,
+        }
+    }
+
+    #[test]
+    fn agent_permission_blocks_admin_rpc_and_desktop_writes() {
+        let read_only = principal(Some(ReadOnly));
+        for method in [
+            "agent.profile.set",
+            "agent.update",
+            "user.profile.set",
+            "user.create",
+            "apps.start",
+            "apps.submit",
+            "apps.uninstall",
+            "container.action",
+            "download.create",
+            "diagnostic.collect",
+            "ui.locale.set",
+            "desktop.session.create",
+            "desktop.session.rename",
+            "desktop.session.delete",
+            "desktop.state.set",
+            "desktop.state.delete",
+            "desktop.wallpaper.write",
+            "future.read",
+        ] {
+            assert!(
+                matches!(
+                    read_only.require_agent_permission(method),
+                    Err(RPCErrors::NoPermission(_))
+                ),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_permission_keeps_reads_and_unrestricted_principals() {
+        let read_only = principal(Some(ReadOnly));
+        for method in [
+            "agent.get",
+            "agent.create.status",
+            "apps.list",
+            "apps.status",
+            "system.logs.query",
+            "gateway.file.get",
+            "desktop.session.list",
+            "desktop.state.get",
+            "desktop.wallpaper.get",
+        ] {
+            assert!(read_only.require_agent_permission(method).is_ok(), "{method}");
+        }
+        for mode in [None, Some(ReadWrite)] {
+            let caller = principal(mode);
+            assert!(caller.require_agent_permission("apps.submit").is_ok());
+            assert!(caller.require_agent_permission("desktop.state.set").is_ok());
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -862,6 +995,7 @@ impl RPCHandler for ControlPanelServer {
 
         let principal = self.authenticate_rpc_request(&req).await?;
         if let Some(principal) = principal.as_ref() {
+            principal.require_agent_permission(&req.method)?;
             log::debug!(
                 "control-panel rpc auth: method={}, user={}, type={:?}",
                 req.method,

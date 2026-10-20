@@ -148,11 +148,17 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 由 `agent_mgr` 管理。Zone Owner、Admin 与普通 User 都只能为自己创建 Agent，Limited 被拒绝（`limited_user`）。创建 Agent = 基于 Agent 模板构造一个独立 App（AppDID = AgentDID，AppId = AgentId，实例 `<agent_id>@<owner>`）并以创建者身份安装，再写入绑定到它的 AgentSpec。记录在 `users/{owner}/agents/{agent_id}/{spec,key,install_record,settings,profile,info}`；`install_record` 是创建状态的唯一真相，后台驱动按 `runtime → bind → tunnel → start` 推进并可恢复。产品行为见 `product/users_and_agents/BuckyOS Agent的初始化流程PRD.md`。错误以 `ReasonError("<code>: …")` 返回。
 
+`agent.create` 的可选字段 `permission_mode` 为 `read_write`（默认）或 `read_only`。Add Agent 向导默认选择读写，用户可选择只读；该选择保存到 `AgentSpec.permission_mode`，并在 `agent.list` / `agent.get` 的 Agent 条目顶层返回。构造 App 和安装批准中的 `user/home` 权限分别使用 `actions: ["read", "write"]` 或 `["read"]`；创建重试和模板自动更新沿用该 Agent 的选择。授权范围以创建者为准，不接受客户端指定其他 Owner。
+
+Agent 按所选模式使用 Owner 的权限；只读模式限制用户数据写入，Agent 自己的 `agent_root` 始终可读写，以保存 Session、记忆、工作区、技能和运行状态。该字段是创建授权，不放在可由 Agent 修改的 `settings` 或 `agent.toml` 中；`agent.update` 不提供权限模式切换。
+
+Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式；只读 Agent 仅允许明确列出的读取 RPC，用户/Agent 配置、App 生命周期、容器操作等写请求返回 `NoPermission`。`/api/desktop` 的状态/会话写操作与壁纸上传使用同一限制。用户本人登录 Agent 页面取得的 User session token 继续按用户权限处理。
+
 | 方法 | 说明 |
 |---|---|
 | `agent.check_name` | 名称检查（与 `user.create` 共用）：DNS 标签、保留名、用户名、任何用户名下的 AgentId（含进行中）、已分配的 App/实例主机名；不可用时给出建议名 |
 | `agent.list_templates` | 系统内置模板（`system/install_settings.agent_templates`）与调用者用 CLI 安装的模板（`users/{owner}/agent_templates/*`）；`template_id` 为 `bundled:<app_id>` / `installed:<app_id>` |
-| `agent.create` | 以 `idempotency_key` 幂等；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info` |
+| `agent.create` | 以 `idempotency_key` 幂等；`permission_mode` 默认 `read_write`，可选 `read_only`；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info` |
 | `agent.create.status` / `agent.create.retry` / `agent.create.cancel` | 查询创建状态；从失败步骤继续（`skip_tunnel` 放弃通道完成创建）；写入 spec 前取消 |
 | `agent.list` / `agent.get` | 本人名下（Admin 为全部）的 Agent，包括进行中与失败的创建；settings 中不含 Bot Token |
 | `agent.update` | 本期只允许修改 `allow_group` |

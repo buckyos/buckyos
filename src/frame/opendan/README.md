@@ -21,6 +21,10 @@
 
 zone 内每个 Agent 是一个由模板构造的独立 App（AppId = AgentId，实例 `<agent_id>@<owner>`），由 control_panel 创建。Loader 启动后在 `users/<owner>/agents/*/spec` 里找绑定到本实例的 AgentSpec；还没有时一直等待（每 5 秒查一次，不退出），多于一个时报错退出。AgentRoot 在 `data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/`。
 
+Add Agent 默认授予当前用户的读写权限，用户可选只读；对应 `agent.create.permission_mode` / `AgentSpec.permission_mode` 的 `read_write`（默认）与 `read_only`。Docker 内 Owner home 按该模式挂载，AgentRoot 在两种模式下始终读写。Session、记忆和技能写入 AgentRoot，不要求用户 home 可写。该授权由创建流程保存，模板更新沿用；不在 `agent.toml` 中设置。宿主调试进程遵循宿主文件权限，不具备 Docker 的只读挂载隔离。
+
+OpenDAN kRPC 对只读 Agent 的 App token 同样检查该授权：保留已有 Owner 校验下的读取，AgentRoot / Session / 技能写操作仅允许操作自己的 AppInstance；禁止 `agent.profile_set`、修改其他 Agent 与未知方法。用户本人登录 Agent WebUI 的 User token 继续按 Owner 权限处理。
+
 | 记录（`users/<owner>/agents/<agent_id>/…`） | Loader 的用法 |
 |---|---|
 | `spec` | `agent_doc.owner` 是 Owner DID；`agent_doc_object_id` / `generation` 用于 AgentRoot 身份与 `info` |

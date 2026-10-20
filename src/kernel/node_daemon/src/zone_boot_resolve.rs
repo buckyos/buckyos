@@ -27,7 +27,10 @@ use serde::{Deserialize, Serialize};
 
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
-use name_client::{resolve_did, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT};
+use name_client::{
+    resolve_did, DnsProvider, LockOptions, ResolveOpts, Revision, Source, SourceRef,
+    GLOBAL_NAME_CLIENT,
+};
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
     DID,
@@ -405,15 +408,27 @@ where
 }
 
 async fn discover_zone_boot_from_dns(
-    dns_provider: &dyn NsProvider,
+    dns_provider: &dyn Source,
     zone_did: &DID,
     node_identity: &LocalNodeIdentityConfig,
     owner_public_key: &DecodingKey,
 ) -> Result<ZoneDocument, String> {
-    discover_step(
-        "dns_direct(boot)",
-        dns_provider.query_did(zone_did, Some(DidDocType::Boot), None),
-    )
+    // 直查 DNS 来源(不经 resolver 管线):本地 owner key 验签,不依赖发布状态。
+    let opts = ResolveOpts::default()
+        .strictly_offline()
+        .normalize(Duration::from_secs(DISCOVER_STEP_TIMEOUT_SECS));
+    discover_step("dns_direct(boot)", async {
+        let answer = dns_provider
+            .get_document(zone_did, &DidDocType::Boot, &Revision::current(), &opts)
+            .await;
+        answer.body.ok_or_else(|| {
+            name_lib::NSError::NotFound(format!(
+                "boot document for {}: {}",
+                zone_did.to_string(),
+                answer.reason.unwrap_or_else(|| "no answer".to_string())
+            ))
+        })
+    })
     .await
     .and_then(|doc| decode_signed_zone_boot_document(&doc, node_identity, owner_public_key))
 }
@@ -480,7 +495,7 @@ pub async fn boot_resolve_zone_document(
     if let Some(zone_document) =
         load_debug_zone_document_override(node_identity, &owner_public_key)?
     {
-        update_zone_document_cache(&zone_document);
+        update_zone_document_cache(&zone_document).await;
         return Ok(zone_document);
     }
 
@@ -570,11 +585,11 @@ pub async fn boot_resolve_zone_document(
 
     // Accept 之后写入 did cache：让本进程（及 runtime 各组件）后续 resolve
     // 当前 zone 的 did 时有确定回答。cache 只是投影，Accept 决策不依赖它。
-    update_zone_document_cache(&accepted);
+    update_zone_document_cache(&accepted).await;
     Ok(accepted)
 }
 
-fn update_zone_document_cache(zone_document: &ZoneDocument) {
+async fn update_zone_document_cache(zone_document: &ZoneDocument) {
     let doc_value = match serde_json::to_value(zone_document) {
         Ok(value) => value,
         Err(err) => {
@@ -589,11 +604,18 @@ fn update_zone_document_cache(zone_document: &ZoneDocument) {
         warn!("Name client not initialized; skip accepted zone document cache projection");
         return;
     };
-    if let Err(err) = name_client.add_verified_cache(
-        zone_document.id.clone(),
-        Some(DidDocType::Zone),
-        EncodedDocument::JsonLd(doc_value),
-    ) {
+    // 已被本节点 Accept 的 Zone Document 以本机配置 trust 候选投递(免 Owner 验签,
+    // 参与 best,不改变 latest);更高 iat 的正式版本仍可替代它。
+    if let Err(err) = name_client
+        .commit_candidate_doc(
+            &zone_document.id,
+            Some(DidDocType::Zone),
+            &EncodedDocument::JsonLd(doc_value),
+            SourceRef::configured_trust("node-daemon-accepted-zone"),
+            name_client.default_resolve_opts(),
+        )
+        .await
+    {
         warn!(
             "update accepted zone document into did cache failed: {}",
             err
@@ -623,12 +645,18 @@ pub fn install_local_owner_trust(node_identity: &LocalNodeIdentityConfig) -> Res
     owner_document.set_default_zone_did(node_identity.zone_did.clone());
     let doc_value = serde_json::to_value(&owner_document)
         .map_err(|err| format!("serialize local owner document failed: {}", err))?;
-    client.set_local_authority_override(
+    // 本机 locker(hosts 语义,模拟发布):owner_did#owner 的解析在本进程内闭环。
+    client.lock_document(
         owner_did.clone(),
         DidDocType::Owner,
         EncodedDocument::JsonLd(doc_value),
-        "node-daemon-boot-trust",
-        None,
+        // simulate_history:Root Trust 代表"该 owner key 自始有效",锁定文档对任意
+        // closest(iat) 都是签发时的 Owner 依据,Boot 期间不在线取 Owner 历史版本。
+        LockOptions {
+            scope: "node-daemon-boot-trust".to_string(),
+            simulate_history: true,
+            ..Default::default()
+        },
     );
     info!(
         "installed local owner trust for {} (boot never resolves owner document online)",
@@ -646,9 +674,9 @@ pub async fn register_zone_resolver_cache(zone_did: &DID) {
         warn!("register zone resolver cache skipped: name lib is not initialized");
         return;
     };
-    client.set_zone_resolver_endpoint("http://127.0.0.1:3180");
+    client.set_zone_locker_endpoint("http://127.0.0.1:3180");
     info!(
-        "registered zone resolver cache for {} -> http://127.0.0.1:3180",
+        "registered zone locker for {} -> http://127.0.0.1:3180",
         zone_did.to_string()
     );
 }
@@ -671,27 +699,23 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl NsProvider for StaticBootProvider {
-        fn get_id(&self) -> String {
+    impl Source for StaticBootProvider {
+        fn id(&self) -> String {
             "static-boot-provider".to_string()
         }
 
-        async fn query(
-            &self,
-            name: &str,
-            _record_type: Option<name_client::RecordType>,
-            _from_ip: Option<std::net::IpAddr>,
-        ) -> name_lib::NSResult<name_client::NameInfo> {
-            Err(name_lib::NSError::NotFound(name.to_string()))
-        }
-
-        async fn query_did(
+        async fn get_document(
             &self,
             _did: &DID,
-            _doc_type: Option<DidDocType>,
-            _from_ip: Option<std::net::IpAddr>,
-        ) -> name_lib::NSResult<EncodedDocument> {
-            Ok(self.document.clone())
+            _doc_type: &DidDocType,
+            _revision: &Revision,
+            _opts: &ResolveOpts,
+        ) -> name_client::SourceAnswer {
+            name_client::SourceAnswer::new(name_client::SourceRef::provider(
+                self.id(),
+                name_client::SourceTier::Authority,
+            ))
+            .with_body(self.document.clone(), name_client::Carrier::Body)
         }
     }
 

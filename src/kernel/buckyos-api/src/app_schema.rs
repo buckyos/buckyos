@@ -344,6 +344,14 @@ impl AgentServiceBinding {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPermissionMode {
+    #[default]
+    ReadWrite,
+    ReadOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpec {
@@ -353,6 +361,8 @@ pub struct AgentSpec {
     pub agent_doc_object_id: ObjId,
     pub agent_doc: AgentDocument,
     pub binding: AgentServiceBinding,
+    #[serde(default)]
+    pub permission_mode: AgentPermissionMode,
     pub generation: u64,
 }
 

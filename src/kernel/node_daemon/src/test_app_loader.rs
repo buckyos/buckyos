@@ -12,8 +12,9 @@ use crate::paios_images::exttool_prepare_lock;
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
     AppDoc, AppId, AppInstanceId, AppServiceInstanceConfig, AppServiceSpec, AppType,
-    DeploymentIdentity, DeploymentPackage, LocalAppInstanceConfig, ServiceEndpointConfig,
-    ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc, OBJ_TYPE_APP_DOC,
+    DeploymentIdentity, DeploymentPackage, LocalAppInstanceConfig, MountPointConfig,
+    PermissionItem, ServiceEndpointConfig, ServiceInstanceState, ServiceSpecConfig,
+    ServiceState, SubPkgDesc, APP_PERMISSION_USER_HOME, OBJ_TYPE_APP_DOC,
 };
 use name_lib::DID;
 use ndn_lib::ObjId;
@@ -78,6 +79,176 @@ fn build_agent_doc_without_category() -> AppDoc {
     .service_port("main", 4060)
     .build()
     .unwrap()
+}
+
+#[test]
+fn agent_permission_mount_boundaries() {
+    if std::env::var_os("BUCKYOS_AGENT_MOUNTS_TEST_CHILD").is_none() {
+        let root = tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "test_app_loader::agent_permission_mount_boundaries", "--nocapture"])
+            .env("BUCKYOS_ROOT", root.path())
+            .env("BUCKYOS_AGENT_MOUNTS_TEST_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let root = buckyos_kit::get_buckyos_root_dir();
+    let home = root.join("data/home/alice");
+    let data = home.join(".local/share/jarvis-agent.example");
+    let pkg = root.join("test-package");
+    fs::create_dir_all(&pkg).unwrap();
+    fs::create_dir_all(home.join("Documents")).unwrap();
+    for (actions, expected_access) in [
+        (vec!["read".into()], "ro"),
+        (vec!["read".into(), "write".into()], "rw"),
+    ] {
+        let mut app_doc = build_agent_doc_without_category();
+        app_doc.permissions.push(PermissionItem {
+            scope_path: APP_PERMISSION_USER_HOME.into(),
+            required: true,
+            actions,
+            exp: None,
+        });
+        let mut config = build_spec_config(&app_doc);
+        config.data_mount_point.insert(
+            "/opt/buckyos/data/home/alice".into(),
+            MountPointConfig {
+                target_path: "data/home/alice".into(),
+                access: "read_write".into(),
+            },
+        );
+        config.data_mount_point.insert(
+            "/home-alias".into(),
+            MountPointConfig {
+                target_path: "data/home/alice/Documents".into(),
+                access: "read_write".into(),
+            },
+        );
+        config.external_mount_point.insert(
+            "/external-home-alias".into(),
+            MountPointConfig {
+                target_path: "data/home/alice/Documents".into(),
+                access: "read_write".into(),
+            },
+        );
+        config.external_mount_point.insert(
+            "/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example".into(),
+            MountPointConfig {
+                target_path: "data/home/alice/Documents".into(),
+                access: "read_only".into(),
+            },
+        );
+        config.external_mount_point.insert(
+            "/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example/agents/reader".into(),
+            MountPointConfig {
+                target_path: "data/home/alice/Documents".into(),
+                access: "read_only".into(),
+            },
+        );
+        let spec = build_test_app_spec(app_doc, config);
+        let instance = AppServiceInstanceConfig::new("ood1", &spec).unwrap();
+        let loader = AppLoader::new_for_service(&spec.app_instance_id.to_string(), instance);
+        let mounts = loader.test_agent_volume_mounts(&pkg).unwrap();
+        for target in [
+            "/opt/buckyos/data/home/alice",
+            "/home-alias",
+            "/external-home-alias",
+        ] {
+            let (_, _, access) = mounts.iter().find(|(path, _, _)| path == target).unwrap();
+            assert_eq!(*access, expected_access, "{target}");
+        }
+        let (_, actual, access) = mounts
+            .iter()
+            .find(|(path, _, _)| {
+                path == "/opt/buckyos/data/home/alice/.local/share/jarvis-agent.example"
+            })
+            .unwrap();
+        assert_eq!(actual, &fs::canonicalize(&data).unwrap());
+        assert_eq!(*access, "rw");
+        assert!(!mounts.iter().any(|(path, _, _)| path.ends_with("/agents/reader")));
+        let (_, storage, access) = mounts
+            .iter()
+            .find(|(path, _, _)| path == "/opt/buckyos/storage")
+            .unwrap();
+        assert_eq!(*access, "rw");
+        assert!(storage.starts_with(root.join("storage/apps")));
+        assert_ne!(storage, &root.join("storage"));
+        if let Ok(image) = std::env::var("BUCKYOS_AGENT_MOUNTS_DOCKER_IMAGE") {
+            let mut command = std::process::Command::new("docker");
+            command.args([
+                "run", "--rm", "--network", "none", "--user", "0", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--entrypoint", "sh",
+            ]);
+            for (target, source, access) in &mounts {
+                command.args(["-v", &format!("{}:{target}:{access}", source.display())]);
+            }
+            let writes = [
+                "/opt/buckyos/data/home/alice/Documents/agent-permissions-test",
+                "/home-alias/agent-permissions-test",
+                "/external-home-alias/agent-permissions-test",
+            ]
+            .map(|path| {
+                if expected_access == "ro" {
+                    format!("if printf denied > {path}; then exit 23; fi")
+                } else {
+                    format!("printf allowed > {path}")
+                }
+            })
+            .join("\n");
+            let script = format!(
+                "set -eu\nmkdir -p /opt/buckyos/data/home/alice/.local/share/jarvis-agent.example/agents/reader\nprintf writable > /opt/buckyos/data/home/alice/.local/share/jarvis-agent.example/agents/reader/state\n{writes}"
+            );
+            let output = command.args([&image, "-c", &script]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{expected_access}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                fs::read_to_string(data.join("agents/reader/state")).unwrap(),
+                "writable"
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        let alias = root.join("home-link");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let mut app_doc = build_agent_doc_without_category();
+        app_doc.permissions.push(PermissionItem {
+            scope_path: APP_PERMISSION_USER_HOME.into(),
+            required: true,
+            actions: vec!["read".into()],
+            exp: None,
+        });
+        let mut config = build_spec_config(&app_doc);
+        config.external_mount_point.insert(
+            "/symlink-alias".into(),
+            MountPointConfig {
+                target_path: "home-link/new-directory".into(),
+                access: "read_write".into(),
+            },
+        );
+        let spec = build_test_app_spec(app_doc, config);
+        let instance = AppServiceInstanceConfig::new("ood1", &spec).unwrap();
+        let loader = AppLoader::new_for_service(&spec.app_instance_id.to_string(), instance);
+        let mounts = loader.test_agent_volume_mounts(&pkg).unwrap();
+        let (_, host, access) = mounts.iter().find(|(path, _, _)| path == "/symlink-alias").unwrap();
+        assert_eq!(host, &home.join("new-directory"));
+        assert_eq!(*access, "ro");
+        fs::remove_dir_all(&data).unwrap();
+        std::os::unix::fs::symlink(home.join("Documents"), &data).unwrap();
+        assert!(loader.test_agent_volume_mounts(&pkg).is_err());
+    }
 }
 
 fn build_web_doc() -> AppDoc {

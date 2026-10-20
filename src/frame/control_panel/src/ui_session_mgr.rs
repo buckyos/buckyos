@@ -253,6 +253,12 @@ impl ControlPanelServer {
             .map_err(|e| server_err!(ServerErrorCode::BadRequest, "invalid JSON body: {}", e))?;
 
         let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if let Err(error) = principal.require_agent_permission(&format!("desktop.{action}")) {
+            return self.desktop_json_response(
+                StatusCode::FORBIDDEN,
+                json!({"ok": false, "error": error.to_string()}),
+            );
+        }
 
         let userid = &principal.username;
 

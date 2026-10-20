@@ -52,9 +52,10 @@ test.describe('Agent setup wizard', () => {
     await wizard.getByTestId('agent-setup-role').fill('Answer in Chinese by default.')
     await nextPage(wizard)
 
-    // Step 1b: Owner and permissions are read-only; sharing is not supported; group chats default off.
     await expect(wizard.getByTestId('agent-setup-owner')).toContainText('alice')
-    await expect(wizard.getByTestId('agent-setup-permission')).toContainText('same permissions as you')
+    await expect(wizard.getByTestId('agent-setup-permission-read-write').getByRole('radio')).toBeChecked()
+    await expect(wizard.getByTestId('agent-setup-permission-read-only').getByRole('radio')).not.toBeChecked()
+    await expect(wizard.getByTestId('agent-setup-permission')).toContainText('always has read and write access to its own working directory')
     await expect(wizard.getByTestId('agent-setup-sharing')).toContainText('Not supported yet')
     await expect(wizard.getByRole('switch', { name: 'Allow other users to use this Agent' })).toBeDisabled()
     await expect(wizard.getByRole('switch', { name: 'Allow this Agent to join group chats' })).not.toBeChecked()
@@ -84,10 +85,15 @@ test.describe('Agent setup wizard', () => {
     // Confirmation, then the status panel.
     await expect(wizard.getByTestId('agent-setup-confirm-name')).toHaveText('小白')
     await expect(wizard.getByTestId('agent-setup-confirm-channel')).toContainText('None')
+    await expect(wizard.getByTestId('agent-setup-confirm-permission')).toContainText('Read and write (default)')
     await wizard.getByTestId('agent-setup-create').click()
     const status = wizard.getByTestId('agent-setup-status')
     await expect(status).toBeVisible()
     await expect(status).toHaveAttribute('data-state', /provisioning|bound/)
+    expect(await page.evaluate((key) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      return state.agents.find((agent: { name: string }) => agent.name === 'xiaobai')?.permission_mode
+    }, MOCK_KEY)).toBe('read_write')
 
     // Closing during creation does not cancel it; the guide reopens this creation's status.
     await page.getByTestId('window-agent-setup').getByRole('button', { name: 'Close' }).first().click()
@@ -124,6 +130,34 @@ test.describe('Agent setup wizard', () => {
     await addAgent.click({ force: true })
     await expect(page.getByRole('alert').filter({ hasText: 'Your account type cannot create Agents.' })).toBeVisible()
     await expect(page.getByTestId('window-agent-setup')).toHaveCount(0)
+  })
+
+  test('read-only permissions survive a reload and are used to create the Agent', async ({ page }) => {
+    await seedMock(page, { step_ms: 250 })
+    await page.goto('/?scenario=normal')
+    let wizard = await openGuideWizard(page)
+    await wizard.getByTestId('agent-setup-name').fill('reader')
+    await expect(wizard.getByTestId('agent-setup-name-available')).toBeVisible()
+    await nextPage(wizard)
+    await wizard.getByTestId('agent-setup-permission-read-only').getByRole('radio').click()
+    await expect(wizard.getByTestId('agent-setup-permission-read-write').getByRole('radio')).not.toBeChecked()
+
+    await page.reload()
+    wizard = await openGuideWizard(page)
+    await expect(wizard.getByTestId('agent-setup-permission-read-only').getByRole('radio')).toBeChecked()
+    await nextPage(wizard)
+    await expect(wizard.getByTestId('agent-setup-runtime-summary')).toContainText('Read only')
+    await nextPage(wizard)
+    await wizard.getByTestId('agent-setup-skip-channel').click()
+    const permission = wizard.getByTestId('agent-setup-confirm-permission')
+    await expect(permission).toContainText('Read only')
+    await expect(permission).toContainText('always has read and write access to its own working directory')
+    await wizard.getByTestId('agent-setup-create').click()
+    await expect(wizard.getByTestId('agent-setup-status-success')).toBeVisible({ timeout: 15_000 })
+    expect(await page.evaluate((key) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      return state.agents.find((agent: { name: string }) => agent.name === 'reader')?.permission_mode
+    }, MOCK_KEY)).toBe('read_only')
   })
 
   test('Telegram needs the Owner identity; it is added on the profile and re-checked without losing the draft', async ({ page }) => {

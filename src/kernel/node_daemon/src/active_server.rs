@@ -18,7 +18,9 @@ use http_body_util::{BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
-use name_client::{BodyEvidence, NameClient, ResolvePolicy, ResolveSourcePolicy, GLOBAL_NAME_CLIENT};
+use name_client::{
+    select_authority_current, NameClient, ResolveOpts, Revision, SourceRef, GLOBAL_NAME_CLIENT,
+};
 use name_lib::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -629,11 +631,17 @@ impl ActiveServer {
         persist_activation(&req, &effective_owner, &zone_info)?;
 
         if let Some(name_client) = GLOBAL_NAME_CLIENT.get() {
-            if let Err(error) = name_client.add_verified_cache(
-                req.prepared.names.zone_did.clone(),
-                Some(DidDocType::Zone),
-                EncodedDocument::Jwt(req.signed_documents.zone_document_jwt.clone()),
-            ) {
+            // 激活时签出的 Zone Document 以本机配置 trust 候选投递(不改变 latest)。
+            if let Err(error) = name_client
+                .commit_candidate_doc(
+                    &req.prepared.names.zone_did,
+                    Some(DidDocType::Zone),
+                    &EncodedDocument::Jwt(req.signed_documents.zone_document_jwt.clone()),
+                    SourceRef::configured_trust("node-daemon-activation"),
+                    name_client.default_resolve_opts(),
+                )
+                .await
+            {
                 warn!("project activated zone document into DID cache failed: {error}");
             }
         } else {
@@ -700,20 +708,27 @@ async fn check_device_authority(
     device: &DeviceDocument,
     expected_jwt: &str,
 ) -> Result<(), String> {
-    let mut policy = ResolvePolicy::default();
-    policy.source = ResolveSourcePolicy::RemoteAuthority;
-    policy.allow_self_signed_when_missing = false;
-    policy.allow_unverified_cache_when_unavailable = false;
-    policy.allow_stale_cache = false;
-    let resolved = client
-        .resolve_did_ex(&device.id, None, policy)
+    // AuthorityCurrent 门禁:关闭两种 locker,只查 authority 并要求本轮真实回答;
+    // 只接受本轮 authority receipt 精确绑定的有效文档。
+    let opts = ResolveOpts::default()
+        .authority_only()
+        .without_local_lock()
+        .without_zone_lock()
+        .with_force_authority_query()
+        .normalize(std::time::Duration::from_secs(20));
+    let result = client
+        .resolve_did_ex(&device.id, Some(DidDocType::Device), Revision::current(), opts.clone())
         .await
         .map_err(|error| error.to_string())?;
-    if device.exp <= buckyos_get_unix_timestamp()
-        || resolved.resolution_metadata.evidence != Some(BodyEvidence::Anchored)
-        || resolved.document != EncodedDocument::Jwt(expected_jwt.to_string())
-    {
-        return Err("Device authority did not return the current published DeviceDocument JWT".into());
+    let current = select_authority_current(&result, opts.receipts());
+    let matches = current
+        .as_ref()
+        .map_or(false, |choice| choice.doc == EncodedDocument::Jwt(expected_jwt.to_string()));
+    if device.exp <= buckyos_get_unix_timestamp() || !matches {
+        return Err(format!(
+            "Device authority did not return the current published DeviceDocument JWT: {}",
+            result.reason()
+        ));
     }
     Ok(())
 }
@@ -1842,7 +1857,12 @@ mod tests {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = vec![0; 8192];
                 let len = stream.read(&mut request).await.unwrap();
-                assert!(String::from_utf8_lossy(&request[..len]).starts_with("GET /.well-known/did.json "));
+                let request_line = String::from_utf8_lossy(&request[..len]).to_string();
+                assert!(
+                    request_line.starts_with("GET /.well-known/device.json ")
+                        || request_line.starts_with("GET /.well-known/did.json "),
+                    "unexpected request: {request_line}"
+                );
                 let body = state.read().await.clone();
                 let status = if body.is_some() { "200 OK" } else { "404 Not Found" };
                 let body = body.unwrap_or_default();
@@ -1851,9 +1871,9 @@ mod tests {
             }
         });
         let client = NameClient::new(NameClientConfig {
-            cache_backend: CacheBackend::Memory, enable_zone_resolver: false, ..Default::default()
+            cache_backend: CacheBackend::Memory, enable_zone_locker: false, ..Default::default()
         });
-        client.set_method_authority("web", Box::new(WebProvider::new_with_scheme("http"))).await;
+        client.set_method_authority("web", Arc::new(WebProvider::new_with_scheme("http")));
         check_device_authority(&client, &device, &jwt).await.unwrap();
         *published.write().await = None;
         assert!(check_device_authority(&client, &device, &jwt).await.is_err());

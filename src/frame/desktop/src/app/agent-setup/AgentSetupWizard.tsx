@@ -329,7 +329,7 @@ function WizardBody({
   const summaryRows: Array<[string, string]> = [
     [t('agentSetup.summary.agent'), `${displayName} (${effectiveDraft.name})`],
     [t('agentSetup.owner.title'), account.user_name || account.user_id],
-    [t('agentSetup.permission.title'), t('agentSetup.permission.same')],
+    [t('agentSetup.permission.title'), t(`agentSetup.permission.${effectiveDraft.permissionMode}`)],
     [t('agentSetup.access.title'), `${t('agentSetup.confirm.ownerOnly')} · ${t('agentSetup.access.group')}: ${effectiveDraft.allowGroup ? yes : no}`],
     [t('agentSetup.loader.label'), 'OpenDAN'],
     [t('agentSetup.template.label'), selectedTemplate ? `${selectedTemplate.show_name || selectedTemplate.name} v${selectedTemplate.version}` : '-'],

@@ -60,6 +60,16 @@ Agent 容器另有两组只读 bind mount(普通 script 容器没有):
 OpenDAN 在该 App 数据目录下继续按 AgentId 隔离 AgentRootFS：
 `/home/$username/.local/share/$appid/agents/$agent_id`。
 
+Agent 创建向导的 `permission_mode` 默认 `read_write`，可选 `read_only`。对应用户 home 的读写 / 只读挂载；AgentRoot 始终可读写，用户选择只读仍可保存 Session、记忆、工作区和技能。实际 Docker Worker 路径带 `/opt/buckyos/data` 前缀：
+
+| 目录 | 容器路径 | 宿主路径 | Agent 权限 |
+| --- | --- | --- | --- |
+| Owner home | `/opt/buckyos/data/home/<owner>/` | `$BUCKYOS_ROOT/data/home/<owner>/` | `permission_mode` 为 `read_write` 时读写，`read_only` 时只读 |
+| AgentRoot | `/opt/buckyos/data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/` | `$BUCKYOS_ROOT/data/home/<owner>/.local/share/<agent_id>/agents/<agent_id>/` | 始终读写 |
+| Agent 私有 storage | `/opt/buckyos/storage/` | `$BUCKYOS_ROOT/storage/apps/<runtime_key>/` | 始终读写，`runtime_key` 为 AppInstanceId 派生的目录键 |
+
+Agent 的 storage 不挂载宿主全局 `storage/`；其他 Worker 的既有 storage 映射不变。`BUCKYOS_ROOT` 本身可为符号链接，其下 Agent 使用的 home、App 数据、日志与私有 storage 挂载根不能经符号链接重定向。模板声明不能把只读 Owner home 重新开放为可写目录。API 访问还需经过用户与 runtime App 两侧的授权校验。`debug_jarvis.sh` / `opendan --dev` 直接运行在宿主进程环境中，文件访问受宿主进程权限约束，不提供 Docker 的只读挂载隔离。
+
 当应用关闭兼容性开关后，应用使用buckyos-sdk访问cyfs://,所有的到cyfs://的自动mount都会消失，本地文件读写只有/tmp/会成功
 
 ## 单机版特例

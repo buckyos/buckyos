@@ -209,12 +209,15 @@ pub(crate) fn register_app_doc_authority(
     let name_client = name_client::get_name_client().ok_or_else(|| {
         RPCErrors::ReasonError("name client unavailable for local App authority".to_string())
     })?;
-    name_client.set_local_authority_override(
+    // 本机 locker(hosts 语义):本 Zone 的 App Document 在本进程内闭环解析。
+    name_client.lock_document(
         app_did.clone(),
         name_client::DidDocType::Custom(crate::app_install_resolver::APP_DID_DOC_TYPE.to_string()),
         name_lib::EncodedDocument::JsonLd(app_doc_value),
-        scope,
-        None,
+        name_client::LockOptions {
+            scope: scope.to_string(),
+            ..Default::default()
+        },
     );
     Ok(())
 }
@@ -3583,6 +3586,7 @@ impl ControlPanelServer {
             owner_did: String::new(),
             is_user_session: false,
             is_control_panel_session: true,
+            agent_permission_mode: None,
         };
         let mut options = serde_json::json!({
             "policy": "SYSTEM_INTERNAL",
@@ -4387,6 +4391,7 @@ mod submit_action_tests {
             owner_did: "did:bns:devtest".to_string(),
             is_user_session: false,
             is_control_panel_session: false,
+            agent_permission_mode: None,
         }
     }
 

@@ -20,15 +20,16 @@ use buckyos_api::{
     agent_info_key, agent_install_record_key, agent_key_path, agent_profile_key,
     agent_settings_key, agent_short_name, agent_spec_key, agent_template_record_key,
     get_buckyos_api_runtime, user_app_spec_key, AgentCreateError, AgentCreateStep, AgentId,
-    AgentInstallRecord, AgentInstallState, AgentMsgTunnelSettings, AgentProfile, AgentRuntimeInfo,
-    AgentServiceBinding, AgentSettings, AgentSpec, AgentTemplateConfig, AgentTemplateRecord,
-    AgentTemplateSource, AgentTunnelState, AppDataDisposition, AppDoc, AppId, AppInstallTaskData,
-    AppInstanceId, AppRegistry, AppServiceSpec, AppType, AppUpdateTaskData, InstallError,
-    InstallErrorCode, InstallInspection, InstallSource, InstallSourceIdentity, InstallStage,
-    PikgStagingPurpose, PreInstallPlanSeed, SystemConfigClient, SystemConfigError,
-    SystemInstallSettings, TaskOutcome, TaskPhase, UserPrivateProfile, UserType,
-    AGENT_SPEC_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID, APP_REGISTRY_KEY,
-    APP_UNINSTALL_TASK_SCHEMA_ID, APP_UPDATE_TASK_SCHEMA_ID, MSG_CENTER_SERVICE_NAME,
+    AgentInstallRecord, AgentInstallState, AgentMsgTunnelSettings, AgentPermissionMode,
+    AgentProfile, AgentRuntimeInfo, AgentServiceBinding, AgentSettings, AgentSpec,
+    AgentTemplateConfig, AgentTemplateRecord, AgentTemplateSource, AgentTunnelState,
+    AppDataDisposition, AppDoc, AppId, AppInstallTaskData, AppInstanceId, AppRegistry,
+    AppServiceSpec, AppType, AppUpdateTaskData, InstallError, InstallErrorCode, InstallInspection,
+    InstallSource, InstallSourceIdentity, InstallStage, PermissionItem, PikgStagingPurpose,
+    PreInstallPlanSeed, SystemConfigClient, SystemConfigError, SystemInstallSettings, TaskOutcome,
+    TaskPhase, UserPrivateProfile, UserType, AGENT_SPEC_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID,
+    APP_PERMISSION_USER_HOME, APP_REGISTRY_KEY, APP_UNINSTALL_TASK_SCHEMA_ID,
+    APP_UPDATE_TASK_SCHEMA_ID, MSG_CENTER_SERVICE_NAME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, KVAction};
 use futures::future::BoxFuture;
@@ -698,6 +699,7 @@ pub(crate) async fn build_agent_runtime_pikg(
     template: &PikgReader,
     agent_id: &AgentId,
     show_name: &str,
+    permission_mode: AgentPermissionMode,
     work_dir: &Path,
 ) -> Result<AgentRuntimePikg, RPCErrors> {
     let inspection = template.inspection();
@@ -713,6 +715,18 @@ pub(crate) async fn build_agent_runtime_pikg(
     app_doc.show_name = show_name.to_string();
     app_doc.owner = zone_did;
     app_doc.base_on = Some(inspection.app_doc_object_id.clone());
+    app_doc
+        .permissions
+        .retain(|permission| permission.scope_path != APP_PERMISSION_USER_HOME);
+    app_doc.permissions.push(PermissionItem {
+        scope_path: APP_PERMISSION_USER_HOME.to_string(),
+        required: true,
+        actions: match permission_mode {
+            AgentPermissionMode::ReadWrite => vec!["read".to_string(), "write".to_string()],
+            AgentPermissionMode::ReadOnly => vec!["read".to_string()],
+        },
+        exp: None,
+    });
 
     tokio::fs::create_dir_all(work_dir)
         .await
@@ -788,6 +802,7 @@ fn new_agent_spec(
     owner: &str,
     owner_did: DID,
     public_key: Jwk,
+    permission_mode: AgentPermissionMode,
 ) -> Result<AgentSpec, RPCErrors> {
     let agent_did = agent_id.agent_did();
     let agent_doc = AgentDocument::new(agent_did.clone(), owner_did, public_key);
@@ -813,6 +828,7 @@ fn new_agent_spec(
             service_name: AGENT_SERVICE_NAME.to_string(),
             generation: 1,
         },
+        permission_mode,
         generation: 1,
     };
     spec.validate().map_err(RPCErrors::ReasonError)?;
@@ -929,6 +945,7 @@ pub(crate) struct AgentCreateRequest {
     pub idempotency_key: String,
     pub name: String,
     pub profile: AgentProfile,
+    pub permission_mode: AgentPermissionMode,
     pub role_supplement: String,
     pub allow_group: bool,
     pub allow_other_users: bool,
@@ -975,6 +992,14 @@ impl AgentCreateRequest {
                 .unwrap_or_default()
                 .to_string(),
             profile: parse_profile(params.get("profile"))?,
+            permission_mode: match params.get("permission_mode") {
+                None => AgentPermissionMode::default(),
+                Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                    RPCErrors::ParseRequestError(
+                        "permission_mode must be read_write or read_only".to_string(),
+                    )
+                })?,
+            },
             role_supplement: params
                 .get("role_supplement")
                 .and_then(Value::as_str)
@@ -994,6 +1019,7 @@ impl AgentCreateRequest {
         let material = json!({
             "name": self.name,
             "profile": self.profile,
+            "permission_mode": self.permission_mode,
             "role_supplement": self.role_supplement,
             "allow_group": self.allow_group,
             "allow_other_users": self.allow_other_users,
@@ -1817,6 +1843,7 @@ fn internal_principal(owner: &str) -> RpcAuthPrincipal {
         owner_did: String::new(),
         is_user_session: false,
         is_control_panel_session: true,
+        agent_permission_mode: None,
     }
 }
 
@@ -2207,13 +2234,26 @@ impl ControlPanelServer {
             .await
             .unwrap_or_default();
         let show_name = profile.resolved_display_name(&record.agent_id);
+        let spec = match record.pending_spec.as_ref() {
+            Some(spec) => spec.clone(),
+            None => get_json::<AgentSpec>(kv, &agent_spec_key(owner, &record.agent_id))
+                .await
+                .map_err(|error| AgentFailure::new("spec_invalid", error, false))?
+                .map(|(spec, _)| spec)
+                .ok_or_else(|| AgentFailure::new("spec_missing", "AgentSpec is missing", false))?,
+        };
         let work_dir = crate::app_install_driver::pikg_staging_root()
             .join(format!(".agent-runtime-{}", uuid::Uuid::new_v4().simple()));
         let prepared = async {
-            let built =
-                build_agent_runtime_pikg(&template.reader, &record.agent_id, &show_name, &work_dir)
-                    .await
-                    .map_err(|error| AgentFailure::new("runtime_build_failed", error, true))?;
+            let built = build_agent_runtime_pikg(
+                &template.reader,
+                &record.agent_id,
+                &show_name,
+                spec.permission_mode,
+                &work_dir,
+            )
+            .await
+            .map_err(|error| AgentFailure::new("runtime_build_failed", error, true))?;
             let runtime = get_buckyos_api_runtime()
                 .map_err(|error| AgentFailure::new("runtime_stage_failed", error, true))?;
             let staged = self
@@ -2575,6 +2615,8 @@ impl ControlPanelServer {
             "name": agent_short_name(agent_id),
             "display_name": profile.resolved_display_name(agent_id),
             "profile": profile,
+            "permission_mode": spec.as_ref().or(record.pending_spec.as_ref())
+                .map(|spec| spec.permission_mode).unwrap_or_default(),
             "settings": settings_view(&settings),
             "install": self.agent_status(owner, record).await,
             "template": {
@@ -2730,7 +2772,13 @@ impl ControlPanelServer {
         let (private_key, public_key) = generate_ed25519_key_pair();
         let public_key: Jwk = serde_json::from_value(public_key)
             .map_err(|error| RPCErrors::ReasonError(format!("invalid generated key: {error}")))?;
-        let spec = new_agent_spec(&agent_id, &owner, owner_did, public_key)?;
+        let spec = new_agent_spec(
+            &agent_id,
+            &owner,
+            owner_did,
+            public_key,
+            request.permission_mode,
+        )?;
         let record = initial_record(
             spec,
             &request,
@@ -3280,7 +3328,11 @@ mod tests {
             Ok((*kind, state))
         }
 
-        async fn resume_runtime(&self, _owner: &str, task_id: &str) -> Result<String, AgentFailure> {
+        async fn resume_runtime(
+            &self,
+            _owner: &str,
+            task_id: &str,
+        ) -> Result<String, AgentFailure> {
             self.call(format!("resume_runtime {task_id}"));
             Ok(task_id.to_string())
         }
@@ -3361,6 +3413,12 @@ mod tests {
             "last_update_time": 1791542214u64,
             "exp": 1949222214u64,
             "categories": ["agent"],
+            "permissions": [{
+                "scope_path": "user/home",
+                "required": false,
+                "actions": ["read", "write"],
+                "exp": null
+            }],
             "pkg_list": {
                 "agent": {
                     "pkg_id": format!("all.agent.jarvis.buckyos.bns.did#{version}"),
@@ -3450,6 +3508,7 @@ mod tests {
             OWNER,
             DID::from_str("did:web:devtest.test.buckyos.io").unwrap(),
             serde_json::from_value(public_key).unwrap(),
+            AgentPermissionMode::ReadWrite,
         )
         .unwrap();
         let request = AgentCreateRequest::parse(&json!({
@@ -3665,6 +3724,7 @@ mod tests {
         assert_eq!(request.profile.bio, None);
         assert!(request.template_auto_update);
         assert!(!request.allow_other_users);
+        assert_eq!(request.permission_mode, AgentPermissionMode::ReadWrite);
         let settings = request.settings();
         assert!(settings.allow_group);
         assert_eq!(settings.desktop_entry.as_deref(), Some("jarvis_guide"));
@@ -3690,15 +3750,66 @@ mod tests {
         assert_eq!(bare_telegram_account("42"), "42");
     }
 
+    #[test]
+    fn create_permission_mode_is_validated_and_fingerprinted() {
+        let mut params = json!({
+            "idempotency_key": "permissions",
+            "name": "reader",
+            "template_id": "bundled:jarvis.buckyos.bns.did",
+        });
+        let default_request = AgentCreateRequest::parse(&params).unwrap();
+        params["permission_mode"] = json!("read_write");
+        assert_eq!(
+            default_request.fingerprint(),
+            AgentCreateRequest::parse(&params).unwrap().fingerprint()
+        );
+        params["permission_mode"] = json!("read_only");
+        let request = AgentCreateRequest::parse(&params).unwrap();
+        assert_eq!(request.permission_mode, AgentPermissionMode::ReadOnly);
+        assert_ne!(default_request.fingerprint(), request.fingerprint());
+        let (_, public_key) = generate_ed25519_key_pair();
+        let spec = new_agent_spec(
+            &AgentId::parse("reader.test.buckyos.io").unwrap(),
+            OWNER,
+            DID::from_str("did:web:devtest.test.buckyos.io").unwrap(),
+            serde_json::from_value(public_key).unwrap(),
+            request.permission_mode,
+        )
+        .unwrap();
+        let record = initial_record(
+            spec,
+            &request,
+            &request.fingerprint(),
+            request.template_id.clone(),
+            AgentTemplateSource::Bundled,
+            built("0.7.0"),
+            1,
+        );
+        assert_eq!(
+            record.pending_spec.unwrap().permission_mode,
+            AgentPermissionMode::ReadOnly
+        );
+        for invalid in [json!("admin"), json!(true), json!(null), json!(1)] {
+            params["permission_mode"] = invalid;
+            assert!(AgentCreateRequest::parse(&params).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn constructed_runtime_pikg_rebases_identity_and_packages() {
         let dir = temp_dir("construct");
         let template_path = template_pikg(&dir, "0.7.0").await;
         let template = PikgReader::open(&template_path, None).await.unwrap();
         let agent_id = AgentId::parse("xiaobai.test.buckyos.io").unwrap();
-        let built = build_agent_runtime_pikg(&template, &agent_id, "小白", &dir.join("a"))
-            .await
-            .unwrap();
+        let built = build_agent_runtime_pikg(
+            &template,
+            &agent_id,
+            "小白",
+            AgentPermissionMode::ReadWrite,
+            &dir.join("a"),
+        )
+        .await
+        .unwrap();
         let doc = &built.app_doc;
         assert_eq!(doc.app_did().to_string(), "did:web:xiaobai.test.buckyos.io");
         assert_eq!(doc.owner, zone());
@@ -3706,6 +3817,18 @@ mod tests {
         assert_eq!(doc.show_name, "小白");
         assert_eq!(doc.version, "0.7.0");
         assert_eq!(doc.get_app_type(), AppType::Agent);
+        let home = doc
+            .permissions
+            .iter()
+            .find(|p| p.scope_path == APP_PERMISSION_USER_HOME)
+            .unwrap();
+        assert!(home.required);
+        assert_eq!(home.actions, ["read", "write"]);
+        let params = crate::app_install_planner::default_install_params(
+            doc,
+            buckyos_api::InstallPolicy::SystemInternal,
+        );
+        assert!(params.permissions.contains(home));
         assert_eq!(
             doc.base_on.as_ref(),
             Some(&template.inspection().app_doc_object_id)
@@ -3744,20 +3867,44 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let again = build_agent_runtime_pikg(&template, &agent_id, "小白", &dir.join("b"))
-            .await
-            .unwrap();
+        let again = build_agent_runtime_pikg(
+            &template,
+            &agent_id,
+            "小白",
+            AgentPermissionMode::ReadWrite,
+            &dir.join("b"),
+        )
+        .await
+        .unwrap();
         let again = PikgReader::open(&again.path, None).await.unwrap();
         assert_eq!(again.pikg_digest(), reader.pikg_digest());
         let other = build_agent_runtime_pikg(
             &template,
             &AgentId::parse("helper.test.buckyos.io").unwrap(),
             "Helper",
+            AgentPermissionMode::ReadOnly,
             &dir.join("c"),
         )
         .await
         .unwrap();
         assert_ne!(other.app_doc_object_id, built.app_doc_object_id);
+        let home = other
+            .app_doc
+            .permissions
+            .iter()
+            .find(|p| p.scope_path == APP_PERMISSION_USER_HOME)
+            .unwrap();
+        assert_eq!(home.actions, ["read"]);
+        assert!(home.required);
+        assert_eq!(
+            other
+                .app_doc
+                .permissions
+                .iter()
+                .filter(|p| p.scope_path == APP_PERMISSION_USER_HOME)
+                .count(),
+            1
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

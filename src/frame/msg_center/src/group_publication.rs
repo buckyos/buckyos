@@ -40,7 +40,7 @@ impl MessageCenter {
             tokio::time::timeout(std::time::Duration::from_secs(10), client.exec_tx(actions, None)).await.map_err(db_error)?.map_err(db_error)?;
             let sql = self.msg_box_db.render_sql("UPDATE group_doc_publications SET published_generation=? WHERE group_did=? AND generation=?");
             sqlx::query(&sql).bind(generation).bind(&did).bind(generation).execute(self.msg_box_db.pool()).await.map_err(db_error)?;
-            if let Some(names) = name_client::get_name_client() {names.invalidate_did_cache(name_lib::DID::from_str(&did).map_err(invalid)?, Some(name_lib::DidDocType::custom("group")));}
+            if let Some(names) = name_client::get_name_client() {let _ = names.invalidate_did_cache(&name_lib::DID::from_str(&did).map_err(invalid)?, &name_lib::DidDocType::custom("group")).await;}
         }
         Ok(())
     }

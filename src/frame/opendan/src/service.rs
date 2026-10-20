@@ -21,6 +21,10 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use buckyos_api::{
+    load_agent_permission_mode, validate_verify_hub_token_claims, AgentPermissionMode,
+    AppInstanceId, AuthTarget, TokenPrincipalKind, TokenUse,
+};
 use buckyos_http_server::{serve_http_by_rpc_handler, HttpServer, ServerError, ServerResult, StreamInfo};
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
@@ -118,6 +122,7 @@ impl StateService {
             Access::Open { who } => Ok(who.clone()),
             Access::Zone {
                 owner,
+                app_id,
                 trust_loopback,
                 ..
             } => {
@@ -129,6 +134,7 @@ impl StateService {
                 })?;
                 let runtime = buckyos_api::get_buckyos_api_runtime()?;
                 let token = runtime.verify_trusted_session_token(token).await?;
+                let claims = validate_verify_hub_token_claims(&token, TokenUse::Session)?;
                 let user = token
                     .sub
                     .clone()
@@ -137,6 +143,16 @@ impl StateService {
                     return Err(RPCErrors::NoPermission(format!(
                         "{user} is not the owner of this agent"
                     )));
+                }
+                if claims.principal_kind == TokenPrincipalKind::App {
+                    let AuthTarget::App { app_instance_id } = &claims.target else {
+                        return Err(RPCErrors::InvalidToken(
+                            "an app principal requires an app target".to_string(),
+                        ));
+                    };
+                    let client = runtime.get_system_config_client().await?;
+                    let mode = load_agent_permission_mode(client.as_ref(), app_instance_id).await?;
+                    authorize_agent_method(mode, app_instance_id, app_id, owner, &req.method)?;
                 }
                 Ok(match token.appid.as_deref().filter(|a| !a.is_empty()) {
                     Some(app) => format!("app:{app}@{user}"),
@@ -361,6 +377,77 @@ impl StateService {
     }
 }
 
+fn authorize_agent_method(
+    mode: Option<AgentPermissionMode>,
+    caller: &AppInstanceId,
+    target_app_id: &str,
+    target_owner: &str,
+    method: &str,
+) -> Result<(), RPCErrors> {
+    if mode != Some(AgentPermissionMode::ReadOnly) || is_read(method) {
+        return Ok(());
+    }
+    if caller.app_id().as_str() == target_app_id
+        && caller.owner_user_id() == target_owner
+        && method != "agent.profile_set"
+        && (is_write(method) || is_operation(method))
+    {
+        return Ok(());
+    }
+    Err(RPCErrors::NoPermission(format!(
+        "read-only Agent cannot call {method} on this Agent"
+    )))
+}
+
+fn is_read(method: &str) -> bool {
+    matches!(
+        method,
+        "agent.info"
+            | "sessions.lookup"
+            | "sessions.query"
+            | "sessions.children_of"
+            | "activity.active"
+            | "perception.last_seq"
+            | "perception.cursor"
+            | "perception.backlog"
+            | "perception.read"
+            | "cognition.recall_hints"
+            | "artifacts.head"
+            | "artifacts.version"
+            | "artifacts.versions"
+            | "artifacts.list"
+            | "workspaces.lookup"
+            | "workspaces.query"
+            | "workspaces.list"
+            | "workspaces.runtime_impact"
+            | "runtimes.list"
+            | "runtimes.lookup"
+            | "behaviors.identity"
+            | "behaviors.get"
+            | "behaviors.list"
+            | "behaviors.revision"
+            | "behaviors.cmd_skill"
+            | "skills.list"
+            | "goals.list"
+            | "goals.get"
+            | "goals.revision"
+            | "goals.changes"
+            | "goals.state"
+            | "goals.epoch_state"
+            | "goals.activations"
+            | "goals.schedule"
+            | "notify.state"
+            | "notify.list"
+            | "session.read"
+            | "session.worklog"
+            | "agent.profile"
+            | "usage.models"
+            | "ui.bindings"
+            | "home.workspaces"
+            | "loader.status"
+    )
+}
+
 /// Methods outside the Agent State facade that change something.
 fn is_operation(method: &str) -> bool {
     matches!(
@@ -440,5 +527,82 @@ impl HttpServer for StateService {
 
     fn http3_port(&self) -> Option<u16> {
         None
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    const OWN_APP: &str = "reader.test.buckyos.io";
+    const OTHER_APP: &str = "helper.test.buckyos.io";
+
+    fn authorize(mode: Option<AgentPermissionMode>, method: &str, target: &str) -> bool {
+        let caller = format!("{OWN_APP}@alice").parse::<AppInstanceId>().unwrap();
+        authorize_agent_method(mode, &caller, target, "alice", method).is_ok()
+    }
+
+    #[test]
+    fn read_only_agent_can_observe_own_and_other_agents() {
+        for method in [
+            "agent.info", "sessions.lookup", "sessions.query", "sessions.children_of",
+            "activity.active", "perception.last_seq", "perception.cursor", "perception.backlog",
+            "perception.read", "cognition.recall_hints", "artifacts.head", "artifacts.version",
+            "artifacts.versions", "artifacts.list", "workspaces.lookup", "workspaces.query",
+            "workspaces.list", "workspaces.runtime_impact", "runtimes.list", "runtimes.lookup",
+            "behaviors.identity", "behaviors.get", "behaviors.list", "behaviors.revision",
+            "behaviors.cmd_skill", "skills.list", "goals.list", "goals.get", "goals.revision",
+            "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
+            "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog",
+            "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status",
+        ] {
+            for target in [OWN_APP, OTHER_APP] {
+                assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");
+            }
+        }
+    }
+
+    #[test]
+    fn read_only_agent_writes_only_its_own_state() {
+        for method in [
+            "sessions.register", "sessions.post_input", "sessions.verify",
+            "cognition.notebook_append", "artifacts.decide", "workspaces.create",
+            "workspaces.import", "workspaces.discover", "workspaces.check", "workspaces.update",
+            "workspaces.archive", "workspaces.unregister", "workspaces.set_runtime_available",
+            "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister",
+            "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart",
+            "notify.send", "notify.cancel", "notify.answer", "skills.install", "skills.remove",
+            "session.stop", "session.decide", "session.post", "goals.activate", "goals.post",
+        ] {
+            assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, OWN_APP), "{method}");
+            assert!(!authorize(Some(AgentPermissionMode::ReadOnly), method, OTHER_APP), "{method}");
+        }
+        let caller = format!("{OWN_APP}@bob").parse::<AppInstanceId>().unwrap();
+        assert!(authorize_agent_method(
+            Some(AgentPermissionMode::ReadOnly), &caller, OWN_APP, "alice", "session.post"
+        ).is_err());
+    }
+
+    #[test]
+    fn read_only_agent_cannot_edit_profiles_or_call_unclassified_methods() {
+        for method in [
+            "agent.profile_set", "goals.write_state", "goals.append_activations",
+            "goals.prepare_epoch", "goals.end_epoch", "goals.write_schedule",
+            "agent.future_get", "sessions.delete", "unknown",
+        ] {
+            for target in [OWN_APP, OTHER_APP] {
+                assert!(!authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");
+            }
+        }
+    }
+
+    #[test]
+    fn read_write_agents_and_normal_apps_keep_existing_access() {
+        for mode in [None, Some(AgentPermissionMode::ReadWrite)] {
+            for target in [OWN_APP, OTHER_APP] {
+                assert!(authorize(mode, "agent.profile_set", target));
+                assert!(authorize(mode, "session.post", target));
+            }
+        }
     }
 }

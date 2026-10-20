@@ -69,8 +69,9 @@ export function ConfirmPage({
         ) : null}
       </Section>
 
-      <Section title={t('agentSetup.permission.title')}>
-        <p className="text-sm text-[color:var(--cp-text)]">{t('agentSetup.permission.same')}</p>
+      <Section title={t('agentSetup.permission.title')} testId="agent-setup-confirm-permission">
+        <p className="text-sm text-[color:var(--cp-text)]">{t(`agentSetup.permission.${draft.permissionMode}`)}</p>
+        <p className="mt-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.permission.agentRoot')}</p>
       </Section>
 
       <Section title={t('agentSetup.access.title')}>

@@ -86,6 +86,11 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 
  */
 pub const DEFAULT_RBAC_POLICY: &str = r#"
+p, agent_read_only, obj://config/users/{user}/settings,all,deny
+p, agent_read_only, obj://config/users/{user}/agents/{agent}/key,all,deny
+p, agent_read_only, obj://config/security/*,all,deny
+p, agent_read_write, obj://*, all,allow
+p, agent_read_only, obj://*, ^(read|list|query|subscribe)$,allow
 p, system:scheduler, obj://config/system/content_registry,all,allow
 p, kernel, obj://config/system/content_registry,write|create|delete,deny
 p, system, obj://config/system/content_registry,write|create|delete,deny
