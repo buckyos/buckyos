@@ -612,6 +612,7 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
   2. run 39389340246（47a6e822d，只改子模块）：detect 判定两个镜像都 “unchanged since published revision b91b891ca”，不构建，清单从指针快照继承（`images.*.revision` 早于 `buckyos_revision`）。
   3. run 39390683744（559883fde，M7 改了 `build_aios`、`publish/aios/`）：只重建 aios（exttool 继承），指针更新为 559883fde；CI 导出的瘦身后 aios tar amd64 370 MB（原 458 MB）、aarch64 360 MB（原 443 MB）。
   - **发现并修复的问题**：run 2、run 3 的 `upload-payloads` 被跳过——它没有写状态函数，隐式 `success()` 会沿依赖链看到被跳过的镜像构建（`resolve-paios-images` 依赖它们），只要镜像没变就不上传 payload。改为 `!cancelled()` 加上对四个直接依赖结果的显式判断。修复前这两次 run 的 payload 没有进 R2（R2 上仍是 run 1 的同版本 payload，onlinepack 会因 Last-Modified 对不上而拒绝发布，直到下一次成功上传）。
+  4. run 39400318783（3c9b09169，即上面的修复；改了 `build-all.yml`，它在两个镜像的路径列表里）：两个镜像都重建，`Upload component payloads to R2` 成功；R2 上 `buckyos-linux-amd64-0.7.0+build261020.paios_images.json` 的 `buckyos_revision` 和两个镜像 revision 都是 3c9b09169，指针同步更新（aios amd64 370 MB / aarch64 359 MB，exttool 10.9 / 10.4 MB）。
   - “上一次镜像构建失败后下一次仍会构建”没有人为制造失败来验证，依据是指针只在导出成功后写入。
 
 ### 9.5 M4：打包取 tar、安装包校验、在线安装下载 tar
