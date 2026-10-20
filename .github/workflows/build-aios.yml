@@ -7,6 +7,10 @@ on:
         required: true
       DOCKERHUB_TOKEN:
         required: true
+      R2_ACCESS_KEY_ID:
+        required: false
+      R2_SECRET_ACCESS_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -23,6 +27,7 @@ jobs:
       version: ${{ steps.context.outputs.version }}
       revision: ${{ steps.context.outputs.revision }}
       created: ${{ steps.context.outputs.created }}
+      immutable_tag: ${{ steps.context.outputs.immutable_tag }}
       aarch64_sha256: ${{ steps.context.outputs.aarch64_sha256 }}
       amd64_digest: ${{ steps.amd64.outputs.digest }}
     env:
@@ -94,6 +99,7 @@ jobs:
         set -euo pipefail
         bash ./build_aios --prepare-context "$AIOS_CONTEXT_DIR" --image paios/aios
         cat "$AIOS_CONTEXT_DIR/metadata.env" >> "$GITHUB_OUTPUT"
+        grep -Eq '^immutable_tag=.+' "$AIOS_CONTEXT_DIR/metadata.env" || { echo "AIOS build needs a clean checkout" >&2; exit 1; }
     - name: Archive AIOS aarch64 context
       run: |
         set -euo pipefail
@@ -115,7 +121,10 @@ jobs:
         context: ${{ runner.temp }}/aios-context/amd64
         platforms: linux/amd64
         push: true
+        provenance: false
+        sbom: false
         tags: |
+          paios/aios:${{ steps.context.outputs.immutable_tag }}-amd64
           paios/aios:${{ steps.context.outputs.version }}-amd64
           paios/aios:latest-amd64
         build-args: |
@@ -158,7 +167,10 @@ jobs:
         context: ${{ runner.temp }}/aios-context/aarch64
         platforms: linux/arm64
         push: true
+        provenance: false
+        sbom: false
         tags: |
+          paios/aios:${{ needs.build.outputs.immutable_tag }}-aarch64
           paios/aios:${{ needs.build.outputs.version }}-aarch64
           paios/aios:latest-aarch64
         build-args: |
@@ -191,3 +203,42 @@ jobs:
           --tag "paios/aios:latest" \
           "paios/aios@$AMD64_DIGEST" \
           "paios/aios@$AARCH64_DIGEST"
+  export:
+    name: AIOS release tarballs
+    needs: [build, build-aarch64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Export AIOS tarballs to R2
+      env:
+        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        PAIOS_WRITE_POINTER: ${{ github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos' && '1' || '0' }}
+        VERSION: ${{ needs.build.outputs.version }}
+        REVISION: ${{ needs.build.outputs.revision }}
+        CREATED: ${{ needs.build.outputs.created }}
+        IMMUTABLE_TAG: ${{ needs.build.outputs.immutable_tag }}
+        AMD64_DIGEST: ${{ needs.build.outputs.amd64_digest }}
+        AARCH64_DIGEST: ${{ needs.build-aarch64.outputs.digest }}
+      run: |
+        set -euo pipefail
+        out="$RUNNER_TEMP/paios-image-aios"
+        mkdir -p "$out"
+        printf 'version=%s\nrevision=%s\ncreated=%s\nimmutable_tag=%s\n' \
+          "$VERSION" "$REVISION" "$CREATED" "$IMMUTABLE_TAG" > "$out/metadata.env"
+        bash .github/scripts/paios_image_export.sh aios paios/aios "$out/metadata.env" \
+          "$AMD64_DIGEST" "$AARCH64_DIGEST" "$out"
+    - name: Upload AIOS manifest fragment
+      uses: actions/upload-artifact@v6
+      with:
+        name: paios-image-aios
+        path: ${{ runner.temp }}/paios-image-aios/paios-image-aios.json
+        if-no-files-found: error
+        retention-days: 30

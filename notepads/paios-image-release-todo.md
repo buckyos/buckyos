@@ -1,8 +1,8 @@
 # paios 镜像随版本发布 TODO：镜像清单锁定 + 全量安装包（issue #672）
 
 > 创建日期：2026-10-19
-> 版本：v0.2（同日：根据 Actions run 39361968276 和 pve-pack-system 源码，修正 §2.4 对打包流水线的描述，补上 Linux onlinepack 这条安装路径，并相应修改 D4、M0、M4 和验收）。v0.1（初稿）。
-> 状态：未实施。§4 的 D1–D10 待用户裁决；M0 只做实测和核对，不改行为，可以先做。
+> 版本：v0.3（2026-10-20：用户裁决 D1–D10 全按建议、D5 移出 FreeCAD、按 §5.0 顺序直接推 main；按 M0 实测修订 §3.2 / §3.5 的 tar 寻址；开始实施，记录见 §9）。v0.2（2026-10-19：根据 Actions run 39361968276 和 pve-pack-system 源码，修正 §2.4 对打包流水线的描述，补上 Linux onlinepack 这条安装路径，并相应修改 D4、M0、M4 和验收）。v0.1（初稿）。
+> 状态：实施中。§4 已裁决；进度和与设计不同之处见 §9。
 > 依据：[issue #672](https://github.com/buckyos/buckyos/issues/672) 正文与评论（wugren：安装包体验最好、出错少，但包大，镜像不该有 2G；waterflier：docker.io 会限流，确定走安装包方案，2G 的原因待查）；2026-10-19 对 buckyos（main `f31715059`）、buckyos-devkit、sn-business（`CD/cluster_config/ci`）、pve-pack-system（`README.md`、`doc/artifact_pack_entry.md`、`doc/onlinepack.md`、`installer/linux.sh`，HEAD `94f68cbdb`）的源码核对；Actions run [39361968276](https://github.com/buckyos/buckyos/actions/runs/39361968276) 的 job 和 artifact 列表；`doc/CI/BuckyOS的CI发布流程.md`、`doc/CI/prd_buckyos_packaging.md`、`doc/CI/impl_buckyos_packaging.md`、`doc/app_service/paios容器需求.md`、`product/buckyos_desktop_installer/新版本离线安装包的构建思路.md`；本机 `docker image inspect` / `docker history` / 远端 manifest 实测。
 > 第 2 节“现状”只以源码和实测为准。
 
@@ -207,7 +207,8 @@ aios 各层：apt 层 976 MB / 306 MB（`render_dockerfile` `:538-547`）占了�
             "file": "aios-amd64-<image_id 前 12 位>.tar.gz",
             "sha256": "<tar 文件 sha256>",
             "size": 480000000,
-            "url": "https://buckyos-installer.tbudr.top/paios-images/aios/amd64/<image_id hex>.tar.gz"
+            "path": "paios-images/aios/amd64/<tar sha256>.tar.gz",
+            "url": "https://buckyos-installer.tbudr.top/paios-images/aios/amd64/<tar sha256>.tar.gz"
           }
         },
         "aarch64": { "...": "同上" }
@@ -221,7 +222,8 @@ aios 各层：apt 层 976 MB / 306 MB（`render_dockerfile` `:538-547`）占了�
 规则：
 
 - `schema` 必须完全相等，未知字段忽略（向前兼容）。`platforms` 的键只能是 `amd64` 或 `aarch64`，和 `PlatformArch` 一一对应：macOS arm64 用 `aarch64`，Windows 只有 `amd64`。
-- `tar.file` 只能是文件名：不能含 `/`、`\`、`..`，按清单所在目录解析。`tar.url` **只给打包流程用**，运行时永远不下载。
+- `tar.file` 只能是文件名：不能含 `/`、`\`、`..`，按清单所在目录解析。`tar.path` 是相对安装源根（`https://buckyos-installer.tbudr.top`）的对象路径，必须以 `paios-images/` 开头，Linux 在线安装用它拼自己的 base URL（支持 `BUCKYOS_DOWNLOAD_BASE_URL` 换域名）；`tar.url` 是 `path` 的完整地址，给打包流程用。运行时永远不下载。
+- R2 对象按 **tar 的 sha256** 寻址，不按 image id：M0 实测 `docker save` 不是字节稳定的（§9.1），按 image id 寻址时“已存在就跳过”会让清单里的 sha256 和 R2 上的文件对不上。
 - `images` 至少要有 `aios`。exttool 缺失按 D6 处理。
 - Rust 和 Python 共用一份 fixture：`src/kernel/node_daemon/src/testdata/paios_images.v1.json`。
 
@@ -295,7 +297,7 @@ app_loader 的改动：
 3. **导出 tar 并上传 R2**：`build-aios.yml` 和 `build-exttool.yml` 各加一个 `export` job，依赖构建 job，在 `ubuntu-24.04` 上运行。对每个架构：
    1. `docker pull --platform linux/<arch> paios/<name>@<digest>`，再用 `docker image inspect` 取 `image_id` 和 `RootFS.Layers`。
    2. `docker tag <image_id> <ref>`，然后 `docker save <ref> | gzip -n > <file>`，记录 sha256 和 size。gzip 是兼容性底线；改用 zstd 的前提是 M0 确认各运行时（含 WSLC）的 `docker load` 都支持。
-   3. 上传到 R2 的 `buckyos-installer/paios-images/<name>/<arch>/<image_id hex>.tar.gz`，按内容寻址，已存在就跳过。
+   3. 上传到 R2 的 `buckyos-installer/paios-images/<name>/<arch>/<tar sha256>.tar.gz`，按内容寻址，已存在就跳过。
    4. 生成片段 `paios-image-<name>.json`（结构就是清单里 `images.<name>` 那一段），作为 Actions artifact 上传。
    5. 两个架构都成功、并且 `github.ref == refs/heads/main && github.repository == buckyos/buckyos` 时，才把片段写到指针 `paios-images/main/<name>.json`。
    - 这两个 reusable workflow 要新增 secrets `R2_ACCESS_KEY_ID` 和 `R2_SECRET_ACCESS_KEY`，`build-all.yml` 负责透传。
@@ -352,7 +354,7 @@ app_loader 的改动：
   2. 用现有的 `download()` 写法（curl 加 https 限定和重试）下载到 `$WORK`，校验 size 和 sha256，然后放进 `package/bin/paios-images/<file>`，跟其他模块一起安装。
   3. 校验失败就中止安装，不留下半装的 `bin/`。
 - 这一步是**安装时从 R2 下载**，不是运行时从 docker.io pull，和“BuckyOS 不主动 pull”的原则不冲突，也避开了 docker.io 限流。代价是在线安装要多下载约 1.6 GB（amd64，§2.6；D5 落地后约 0.6 GB），要在安装输出里打印进度和总大小。
-- `tar.url` 必须在 `base_url` 之下（即 `https://buckyos-installer.tbudr.top/paios-images/...`），`linux.sh` 不接受其他域名的 URL。CI 上传时 key 就用 `paios-images/<name>/<arch>/<image_id hex>.tar.gz`（§3.5-3），两边一致。
+- `linux.sh` 只用 `tar.path`（必须以 `paios-images/` 开头）拼当前的下载 base URL，不使用 `tar.url`，所以不会去访问别的域名。CI 上传时 key 就是 `tar.path`（§3.5-3），两边一致。
 - `bin/onlinepack.py` / `check_and_publish_onlinepack.py` 发布前，对所选 buckyos payload 里清单列出的每个 tar 做一次带认证的 R2 HEAD，校验 size，都存在才发布 manifest 和 `version.tsv`。这和现在对 payload 的 HEAD 校验是同一种做法。这一步需要先解出 payload 里的清单。如果不想在发布时下载整个 payload（`doc/onlinepack.md` 写明发布流程不下载 payload），可以让 CI 把清单另外作为一个独立的小文件上传到 R2，例如 `buckyos/<payload 名>.paios_images.json`。M4 决定用哪种。
 - `--stage` 模式（`STAGE_DIR`）也要走同样的下载和校验，这样它的输出才能和真实安装一致。
 
@@ -398,7 +400,7 @@ exttool：
 
 另外：删掉已经不用的 `publish/aios/Dockerfile`，或者在文件头注明“以 `build_aios` 的 `render_dockerfile` 为准”，避免以后再改错文件。让 `build_aios --runtime-only` 要么真正生效，要么删掉这个参数。
 
-## 4. 待用户决定
+## 4. 待用户决定（2026-10-19 已裁决：全部按“建议”列执行，D5 选择移出 FreeCAD）
 
 | # | 问题 | 建议 |
 | --- | --- | --- |
@@ -554,6 +556,36 @@ M0 → M1 → M3 → M4（传统安装包和 Linux 在线安装两部分都要�
 
 （实施后填写。每个 M 一节：落点、验证命令和结果、与 §3 设计不同的地方、遗留问题。）
 
-### 9.1 M0 实测结果
+### 9.1 M0 实测结果（2026-10-20）
 
-（待填）
+用到的脚本和原始输出在会话草稿区，没有进仓库；结论如下。
+
+| 项 | 结果 | 对设计的影响 |
+| --- | --- | --- |
+| registry 上 `paios/aios:latest-amd64` 的形态 | 是带 attestation manifest 的 **index**（`627cb262…` 是 amd64 image manifest，`35ba75b8…` 是 attestation）。`build-push-action` 现在输出的 `digest` 是这个 index | §3.5-2 的 `provenance: false`、`sbom: false` 必须加，已加 |
+| Docker Engine 26.1.5（经典存储，本机） | 按 CI 方式 pull by digest → tag → `docker save \| gzip -n`（458,226,988 字节，save+gzip 45 s）→ rmi → `docker load`：`.Id` = config digest `7329ae7f…`，`RepoDigests` 为空，`RootFS.Layers` 与 pull 时一致，revision label 保留，`docker run <ref>` 正常 | 第一条规则（`.Id == image_id`）可用 |
+| Docker Engine 29.9.1（`docker:29-dind`，默认 containerd image store） | 同一个 tar load 后 `.Id` = `sha256:15a94a4b…`，是 **tar 内 index 引用的 manifest 的 digest**，既不是 config digest 也不是 registry manifest digest；`RepoDigests` 是 `paios/aios@sha256:15a94a4b…`；`RootFS.Layers` 与 revision label 一致；`docker images` 显示 2.95 GB（解压+压缩合计，印证 §2.6 第 3 条“2G”来源） | §3.3 第三条兜底（`rootfs_layers_sha256` + revision）**必须实现**，已实现 |
+| `docker save` 是否字节稳定 | 同一镜像两次 `docker save \| gzip -n` 的 sha256 不同 | R2 对象 key **改为按 tar 的 sha256 寻址**（`paios-images/<name>/<arch>/<tar sha256>.tar.gz`），否则“已存在就跳过”会让清单里的 sha256 与 R2 上的文件不一致 |
+| zstd | `docker load -i x.tar.zst` 在 26.1.5 经典存储和 29.9.1 containerd 存储上都成功；zstd -3 为 429 MB，比 gzip 小 6% | OrbStack、Docker Desktop、WSLC 未测，按 §3.5-3 保持 gzip |
+| R2 公开域名 | 用 pve-pack-system 的 R2 凭据往 `paios-images/m0-probe.json` 写入、经 `https://buckyos-installer.tbudr.top` 公开读取成功（`cf-cache-status: DYNAMIC`，不缓存），随后删除。现有 216 MB payload 的 HEAD 有 `Content-Length`、`Accept-Ranges: bytes`，Range 请求返回 206 | 新前缀可公开读；1 GB 级对象的 CDN 下载留到 M3 第一次真实上传后验证 |
+| 平台 payload 压缩后大小（run 39361968276） | windows-amd64 168 MB、apple-amd64 166 MB、apple-aarch64 158 MB、linux-amd64 206 MB、linux-aarch64 203 MB | 全量包 ≈ payload + aios tar 458 MB + exttool tar（瘦身后见 §9.8） |
+| NSIS（3.11，Ubuntu 包） | 单个 2.5 GiB 文件：`makensis` 直接失败 `failed creating mmap`（lzma 和 `SetCompress off` 都一样）；单个 1.1 GiB 文件成功。多文件合计超 2 GiB 的结果见 §9.8 | D10：Windows 全量包只能靠瘦身压到 2 GB 以内 |
+| `observe_deployment` 不匹配后的 reconcile | `run_item.rs::ensure_run_item_state`：容器身份不匹配且镜像存在时 `observe_deployment` 返回 `Stopped`（镜像不存在返回 `NotExist`）→ `start_run_item` → `start_agent` / `start_host_script` 先 `deploy()`，再 `stop_agent()`（`docker rm -f`）后按新镜像 `run_worker_container` | §3.4 第 4 条的思路成立，不需要新增 reconcile 分支 |
+| `bin/` 根 package env | `service_pkg.rs::new_system_package_env` 按 pkg 名 `load`，不扫描目录 | `bin/paios-images/` 不会被当成 pkg |
+| devkit 安装 | `buckyos-install --app=buckyos --all --target-rootfs=<tmp>` 后 `bin/paios-images/` 只有 README.md | 开发安装自然处于本机模式 |
+
+### 9.2 M1：清单格式、解析与目录占位
+
+- 落点：`src/rootfs/bin/paios-images/README.md`；`src/bucky_project.yaml` 的 `apps.buckyos.modules.paios_images`；`src/kernel/node_daemon/src/paios_images.rs`（`load_manifest` / `resolve` / `parse_image_inspect` / `matches_pinned` / `verify_tar` / 本机模式缺镜像提示）；fixture `src/kernel/node_daemon/src/testdata/paios_images.v1.json`（aios amd64 一项用的是 M0 实测的真实值）；`.github/scripts/paios_images.py`（`platform` / `fragment` / `assemble` / `validate` / `validate-fragment`）与 `.github/scripts/test_paios_images.py`，两边共用 fixture。
+- 与设计不同：`resolve` 自己读 `<root>/etc/devenv.json`，不再经 app_loader 的 devenv 解析；`tar` 多了 `path` 字段（§3.2）。
+- 验证：`cargo test -p node_daemon paios_images -- --test-threads=1` 10 项通过；`cargo test -p node_daemon -- --test-threads=1` 119 项通过；`python3 -m unittest discover -s .github/scripts -p 'test_*.py'` 13 项通过；`uv run buckyos-install --app=buckyos --all --target-rootfs=<tmp>` 后 `bin/paios-images/` 只有 README.md。
+
+### 9.4 M3：CI 导出、继承、清单写入 payload
+
+- 落点：
+  - `build_aios` / `build_exttool`：`--prepare-context` 的 `metadata.env` 增加 `immutable_tag=<VERSION>-<rev12>`（工作区 dirty 时为空，CI 检查非空）；`build_exttool` 增加 `revision`、`created`，并把 `IMAGE_VERSION` / `SOURCE_REVISION` / `BUILD_CREATED` 传给 Dockerfile 写 OCI label。
+  - `build-aios.yml` / `build-exttool.yml`：`provenance: false`、`sbom: false`；多推一个 `<immutable_tag>-<arch>`；新增 `export` job 调 `.github/scripts/paios_image_export.sh`（pull by digest → tag → `docker save | gzip -n` → `paios_images.py platform` → R2 按 sha256 上传，已存在跳过 → `fragment`），上传 artifact `paios-image-<name>`；main 上写指针 `paios-images/main/<name>.json`。R2 用 runner 自带的 AWS CLI（`AWS_REQUEST_CHECKSUM_CALCULATION=when_required`）。
+  - `build-all.yml`：`detect-image-changes` 总是 checkout，先用 R2 凭据读两个指针（校验后存 artifact `paios-image-pointers` 作为快照），再按指针 revision 做 `merge-base --is-ancestor` + `git diff`；路径列表加上两个导出脚本。新增 `resolve-paios-images`（总是运行；非 `buckyos/buckyos` main 时输出 `pinned=false`；main 上 detect 或任一镜像构建不是 success/skipped 就失败；构建了用本次 fragment，跳过了用指针快照；跑 `test_paios_images.py`、`assemble`、`validate --check-urls`，上传 `paios-images-manifest`）。三个平台构建 `needs` 它且要求 success，传入 `paios_images` 输入。`upload-payloads` 给每个 `buckyos-*.tar.gz` 旁边放一份 `<payload>.paios_images.json`（§3.6 末尾的二选一，选了“CI 另外上传清单小文件”）。
+  - `build-{linux,macos,windows}.yml`：新增 `paios_images` 输入；为 true 时下载 manifest、复制到 `$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json` 并 `validate`，位置在 `buckyos-install` 之后、`write-install-descriptor.py` 之前。
+- 与设计不同：本地 `build_aios --push` 不推不可变 tag（避免开发机覆盖 CI 的 tag）；主线上镜像构建失败时平台构建不再继续（以前互不依赖），保证 main 上传到 R2 的 payload 一定带清单。
+- 验证：actionlint 1.7.7 只剩 `build-windows.yml` 原有的 shellcheck 报错（与本改动无关）。CI 实跑结果见下。

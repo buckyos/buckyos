@@ -22,12 +22,15 @@ SELECTED_ARCHES=()
 PUSH=0
 PREPARE_CONTEXT_DIR=""
 
-# FreeCAD AppImage URLs — picked by target arch. Override via env at build
-# time (FREECAD_APPIMAGE_URL_AMD64 / _AARCH64) to pin a specific release or
-# point at an internal mirror. Empty string means "ship a stub", which still
-# gives a working volume layout for tests that don't exercise FreeCAD.
-: "${FREECAD_APPIMAGE_URL_AMD64:=https://github.com/FreeCAD/FreeCAD/releases/download/1.0.1/FreeCAD_1.0.1-conda-Linux-x86_64-py311.AppImage}"
+# FreeCAD is optional and not in the default image (it was ~90% of its
+# size). Set FREECAD_APPIMAGE_URL_AMD64 / _AARCH64 at build time to bake an
+# AppImage, e.g. the upstream 1.0.1 build:
+#   https://github.com/FreeCAD/FreeCAD/releases/download/1.0.1/FreeCAD_1.0.1-conda-Linux-x86_64-py311.AppImage
+# Empty means "ship a stub" that explains how to build an image with FreeCAD.
+: "${FREECAD_APPIMAGE_URL_AMD64:=}"
 : "${FREECAD_APPIMAGE_URL_AARCH64:=}"
+EXTTOOL_SOURCE_REVISION=""
+EXTTOOL_BUILD_CREATED=""
 
 usage() {
   cat <<'EOF'
@@ -36,7 +39,7 @@ Usage: ./build_exttool [--push] [--prepare-context <dir>] [--image <name>] [--ta
 Builds the paios/exttool Docker image that seeds the `buckyos-exttool`
 named volume with:
   * pre-warmed uv and Deno caches
-  * baked tool packages (FreeCAD CLI)
+  * optional baked tool packages (FreeCAD CLI, see FREECAD_APPIMAGE_URL_*)
   * the /opt/buckyos/tools/{store,bin,uv-cache,deno-cache} layout
     (see paios容器需求.md §9)
 
@@ -56,8 +59,12 @@ Options:
   -h, --help      Show this help
 
 Env overrides:
-  FREECAD_APPIMAGE_URL_AMD64     FreeCAD AppImage URL for amd64
-  FREECAD_APPIMAGE_URL_AARCH64   FreeCAD AppImage URL for aarch64 (empty -> stub)
+  FREECAD_APPIMAGE_URL_AMD64     FreeCAD AppImage URL for amd64 (empty -> stub, default)
+  FREECAD_APPIMAGE_URL_AARCH64   FreeCAD AppImage URL for aarch64 (empty -> stub, default)
+
+--prepare-context also writes immutable_tag=<tag>-<commit12> to metadata.env
+when the work tree is clean; CI publishes <image>:<immutable_tag>-<arch> and
+pins release packages to it (bin/paios-images/paios_images.json).
 EOF
 }
 
@@ -77,6 +84,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 log() { printf '[build_exttool] %s\n' "$*"; }
+
+resolve_build_metadata() {
+  local revision="unknown"
+  if revision="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null)"; then
+    if ! git -C "$ROOT_DIR" diff --quiet --ignore-submodules HEAD --; then
+      revision="${revision}-dirty"
+    fi
+  fi
+  EXTTOOL_SOURCE_REVISION="$revision"
+  EXTTOOL_BUILD_CREATED="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+}
+
+immutable_tag() {
+  if [[ "$EXTTOOL_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+    printf '%s-%s\n' "$VERSION_TAG" "${EXTTOOL_SOURCE_REVISION:0:12}"
+  fi
+}
 
 resolve_python() {
   if [[ -x "$ROOT_DIR/venv/bin/python" ]]; then echo "$ROOT_DIR/venv/bin/python"; return; fi
@@ -199,6 +223,9 @@ build_image_for_arch() {
     --platform "$platform"
     --build-arg "TARGET_ARCH=$arch"
     --build-arg "FREECAD_APPIMAGE_URL=$freecad_url"
+    --build-arg "IMAGE_VERSION=$VERSION_TAG"
+    --build-arg "SOURCE_REVISION=$EXTTOOL_SOURCE_REVISION"
+    --build-arg "BUILD_CREATED=$EXTTOOL_BUILD_CREATED"
     --tag "$version_arch_tag"
     --tag "$latest_arch_tag"
     -f "$context_dir/Dockerfile"
@@ -236,6 +263,7 @@ main() {
 
   resolve_default_image_name
   resolve_version_tag
+  resolve_build_metadata
   resolved_arches="$(resolve_selected_arches)"
   mapfile -t target_arches <<< "$resolved_arches"
 
@@ -257,6 +285,7 @@ main() {
   fi
 
   log "Version tag: $VERSION_TAG"
+  log "Source revision: $EXTTOOL_SOURCE_REVISION"
   log "Image repo:  $IMAGE_NAME"
   log "Target arches: ${target_arches[*]}"
 
@@ -273,6 +302,9 @@ main() {
   if [[ -n "$PREPARE_CONTEXT_DIR" ]]; then
     {
       printf 'version=%s\n' "$VERSION_TAG"
+      printf 'revision=%s\n' "$EXTTOOL_SOURCE_REVISION"
+      printf 'created=%s\n' "$EXTTOOL_BUILD_CREATED"
+      printf 'immutable_tag=%s\n' "$(immutable_tag)"
       for arch in "${target_arches[@]}"; do
         printf '%s_freecad_url=%s\n' "$arch" "$(freecad_url_for_arch "$arch")"
       done
@@ -292,9 +324,8 @@ main() {
       log "  $IMAGE_NAME:$VERSION_TAG-$arch"
       log "  $IMAGE_NAME:latest-$arch"
     done
-    log "Seed the named volume with:"
-    log "  docker volume create buckyos-exttool"
-    log "  docker run --rm -v buckyos-exttool:/opt/buckyos/tools $IMAGE_NAME:latest-<arch>"
+    log "node_daemon seeds a buckyos-exttool-<image id 12> volume from it on the next deploy"
+    log "(set \"exttool\": \"$IMAGE_NAME\" in \$BUCKYOS_ROOT/etc/devenv.json to use it)."
   fi
 }
 

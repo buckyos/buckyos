@@ -42,60 +42,76 @@ git checkout到正确的版本，然后编译运行
 
 ### AIOS 镜像 CI
 
-`.github/workflows/build-all.yml` 在推送到 `main` 时，先比较本次 push 前后的提交，
-仅在 AIOS 相关文件变化时调用 `build-aios.yml` 编译并发布 AIOS。手动触发始终构建 AIOS；
-首次推送或无法找到对比基准时也会构建。其他平台的构建仍按原有规则执行。
-该 workflow 在 Ubuntu runner 上准备两个架构的
-musl C/C++ 工具链和 ARM64 容器模拟环境，执行
+`.github/workflows/build-all.yml` 在推送到 `main` 和手动触发时运行。`detect-image-changes`
+先从 R2 读取上一次成功发布的镜像指针 `paios-images/main/aios.json`（由导出 job 写入，
+记录镜像的源码提交），再用 `git diff <指针 revision> HEAD -- <路径列表>` 判断 AIOS 是否需要重建。
+以下情况都会重建：手动触发、指针不存在、指针 revision 不是当前提交的祖先。因为比较基准是上次成功
+发布的镜像而不是上一次 push，镜像构建失败后，下一次 push 即使没改 AIOS 路径也会重新构建。
+指针内容另存为 artifact `paios-image-pointers`，后续 job 用这份快照，避免并发 run 期间指针变化。
+
+路径列表在 `Detect paios image changes` 步骤的 `aios_paths` 中，包括 `build_aios`、`publish/aios/`、
+OpenDAN 及其本地 Rust 依赖、`src/tools/buckyos-agent/`、Rust 补丁、Cargo 清单与锁文件、版本号、
+工程配置、两个 workflow 和 `.github/scripts/paios_image*`。新增本地源码依赖时需要同步更新。
+外部仓库的 `main` 更新不会触发本仓库的路径检测，需要手动触发重新构建。
+
+`build-aios.yml` 在 Ubuntu runner 上准备两个架构的 musl C/C++ 工具链，执行
 `bash ./build_aios --prepare-context "$RUNNER_TEMP/aios-context" --image paios/aios`
-编译 Rust 二进制并导出两个架构的 Docker 构建上下文。
-随后由 `docker/build-push-action` 分别构建和推送镜像，再使用其返回的 digest 合并多架构 manifest。
+编译 Rust 二进制并导出两个架构的 Docker 构建上下文，再由 `docker/build-push-action`
+（`provenance: false`、`sbom: false`，使返回的 digest 是单架构 image manifest）分别构建推送，
+最后用两个 digest 合并多架构 manifest。
 
 `--prepare-context <dir>` 要求输出目录尚不存在，生成 `<dir>/amd64/`、`<dir>/aarch64/`
-及 `metadata.env`（版本、源码提交、构建时间和各架构 OpenDAN SHA-256）。
-此模式不调用 Docker，不能与 `--push` 同时使用；本地仍可使用 `build_aios --push` 直接构建发布。
+及 `metadata.env`（版本、源码提交、构建时间、各架构 OpenDAN SHA-256，以及工作区干净时的
+`immutable_tag=<version>-<提交前 12 位>`；CI 要求它非空）。此模式不调用 Docker，不能与 `--push`
+同时使用；本地仍可使用 `build_aios --push` 直接构建发布（不推不可变 tag）。
 
-检测范围配置在 `build-all.yml` 的 `Detect AIOS changes` 步骤中，包括 `build_aios`、
-`publish/aios/`、OpenDAN 及其本地 Rust 依赖、`src/tools/buckyos-agent/`、Rust 补丁、
-Cargo 清单与锁文件、版本号、工程配置以及这两个 workflow。
-新增本地源码依赖时需要同步更新路径列表。外部仓库的 `main` 更新不会触发本仓库的路径检测，
-需要通过手动触发重新构建。
+标签：`<version>-<rev12>-<arch>`（不可变，正式包锁定的就是它）、`<version>-<arch>`、`latest-<arch>`，
+以及 `<version>`、`latest` 多架构 manifest。`latest-*` 供开发环境使用。
 
-仓库需要配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` Actions secrets，账号/token
-必须有 Docker Hub `paios/aios` 的推送权限。缺少凭据时 AIOS job 会直接失败。
+推送完成后 `export` job 对每个架构 pull by digest、打不可变 tag、`docker save | gzip -n`，
+按 tar 的 sha256 上传到 R2 `buckyos-installer/paios-images/aios/<arch>/<sha256>.tar.gz`（已存在则跳过），
+生成清单片段（artifact `paios-image-aios`），并在 main 上更新指针 `paios-images/main/aios.json`。
+脚本是 `.github/scripts/paios_image_export.sh` 和 `.github/scripts/paios_images.py`。
 
-版本取自 `src/VERSION`，发布 `<version>-amd64`、`<version>-aarch64`、
-`latest-amd64`、`latest-aarch64`，以及 `<version>` 和 `latest` 多架构 manifest。
-两个架构在同一个 job 内构建，AIOS 发布流程通过 concurrency 串行执行，避免同时更新同一组标签。
-手动触发的 `enable_tests` 控制原有各平台的 Cargo 测试；AIOS 保留生成的 Dockerfile 中的镜像构建检查。
+仓库需要 Actions secrets `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`（`paios/aios`、`paios/exttool`
+的推送权限）以及 `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`（`buckyos-installer` 桶读写）。
+AIOS 发布流程通过 concurrency 串行执行，避免同时更新同一组标签。手动触发的 `enable_tests`
+控制各平台的 Cargo 测试；AIOS 保留生成的 Dockerfile 中的镜像构建检查。
 
 ### ExtTool 镜像 CI
 
-`build-all.yml` 同时检测 ExtTool 变更，路径包括 `build_exttool`、`publish/exttool/`、
-`src/VERSION`、`build-all.yml` 和 `build-exttool.yml`。相关文件变化才调用 `build-exttool.yml`；
-手动触发、首次推送或无法找到对比基准时始终构建。AIOS 和 ExtTool 分别判断是否需要构建。
+ExtTool 和 AIOS 分别判断是否需要构建，规则相同，指针是 `paios-images/main/exttool.json`，
+路径列表 `exttool_paths` 包括 `build_exttool`、`publish/exttool/`、`src/VERSION`、`build-all.yml`、
+`build-exttool.yml` 和两个导出脚本。
 
 ExtTool 不需要 Rust 或 musl 工具链。workflow 执行
 `bash ./build_exttool --prepare-context "$RUNNER_TEMP/exttool-context" --image paios/exttool`，
-导出两个架构的 Dockerfile、FreeCAD 安装脚本及 `metadata.env`（版本和各架构 FreeCAD 下载地址）。
-输出目录必须尚不存在，导出模式不调用 Docker，不能与 `--push` 同时使用。
-本地仍可使用 `build_exttool --push`。
+导出两个架构的 Dockerfile、FreeCAD 安装脚本及 `metadata.env`（版本、源码提交、构建时间、
+`immutable_tag` 和各架构 FreeCAD 下载地址），用 QEMU 构建两个架构，标签、导出和指针规则与 AIOS 相同。
 
-登录、ARM64 模拟、Buildx 初始化和镜像构建推送使用与 AIOS 相同的 Docker 官方 Actions，
-两架构构建成功后按返回的 digest 合并 manifest。发布到 `paios/exttool`，标签规则与 AIOS 相同，
-版本取自 `src/VERSION`。复用 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，凭据需有
-`paios/exttool` 的推送权限。ExtTool 使用独立的发布 concurrency group。
+镜像分两阶段：Ubuntu 阶段预热 uv / Deno 缓存并安装工具包，最终镜像只有 busybox 加
+`/opt/buckyos/tools`（约 34 MB）。FreeCAD 是可选工具，默认不打包，`freecadcmd` 是说明如何启用的占位命令；
+需要时用 `FREECAD_APPIMAGE_URL_AMD64` / `FREECAD_APPIMAGE_URL_AARCH64` 指定 AppImage 后自行构建。
 
-FreeCAD 下载地址沿用 `build_exttool` 的配置；当前 aarch64 地址为空，因此 ARM64 镜像提供
-会报告未安装的 FreeCAD 占位命令。后续启用 ARM64 FreeCAD 时应更新脚本中的对应地址。
+### 镜像清单与平台 payload
+
+`resolve-paios-images` 在镜像构建之后运行：本次构建了的镜像用本次的清单片段，没构建的继承指针快照，
+组装成 `paios_images.json`（`buckyos_revision` 是本次提交），校验每个 tar 的公开 URL 可访问且大小一致，
+上传为 artifact `paios-images-manifest`。main 上任一镜像构建失败时它会失败，平台构建也不再继续；
+非 `buckyos/buckyos` 的 main（fork、手动触发其他分支）时不生成清单，payload 处于本机镜像模式。
+
+Linux、macOS、Windows 构建依赖它，在 `buckyos-install` 之后把清单放到
+`$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json`。`upload-payloads` 上传 payload 时，
+在每个 `buckyos-*.tar.gz` 旁边放一份 `<payload>.paios_images.json`，供在线安装发布流程读取。
+镜像 tar 不进 payload：传统安装包由打包机按清单从 R2 取对应架构的 tar，Linux 在线安装在安装时从 R2 下载。
+清单格式和 node_daemon 的锁定模式见 `notepads/paios-image-release-todo.md` §3。
 
 我们构建的发布目标有
 
 - deb/rpm 全新安装包 (最好是一个下载安装脚本，总是可以在最新版上)
 
   - 该最新版的URL也可以支持一些出厂硬件在首次激活前的自动更新
-  - 有两个版本的安装包，一个是标准的在线安装包，只包含必要的基础服务，其它服务都是通过repo升级机制从source service上下载的。另一个是完整版安装包，安装成功后已经相当于更新到了最新版本
-  - 完整版安装包通常会比在线安装包的版本更新（虽然时间不长）
+  - 两种安装方式：离线全量安装包（deb/rpm/pkg/exe，带目标架构的 paios 镜像 tar）和 Linux 在线安装（`curl … | sh`，安装时从 R2 下载 payload 和镜像 tar）。两者装完都带同一份 `bin/paios-images/paios_images.json` 和 tar，BuckyOS 运行时不再从 docker.io 拉取 paios 镜像
 - buckyos desktop 安装包
 - 将buckyos的pkg_list发布到source-service上，当前channel且启用了自动更新的运行中系统，会很快更新到新版本上
 

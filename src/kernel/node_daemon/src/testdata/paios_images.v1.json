@@ -1,0 +1,76 @@
+{
+  "schema": "buckyos.paios-images/v1",
+  "buckyos_revision": "cd85b4707a4f1c2e9d3b6a8f0e1d2c3b4a596877",
+  "generated_at": "2026-10-20T05:00:00Z",
+  "future_field": {"ignored": true},
+  "images": {
+    "aios": {
+      "repo": "paios/aios",
+      "version": "0.7.0",
+      "revision": "835b5bd44125cd923444206782fe34ff9e0c3225",
+      "created": "2026-10-19T17:20:11Z",
+      "platforms": {
+        "amd64": {
+          "ref": "paios/aios:0.7.0-835b5bd44125-amd64",
+          "image_id": "sha256:7329ae7f4108b9c68d409eb64ceafb25f640df7c3f503573e3083063c00a4080",
+          "manifest_digest": "sha256:627cb262f3dbd758fb6153e8f31241e87e6d043587fe423b01f1c894e489ef9c",
+          "rootfs_layers_sha256": "sha256:6c4911051c7f7610e32bdcce4e58391238ebc4730433ab8e47ee449866c0d069",
+          "tar": {
+            "file": "aios-amd64-7329ae7f4108.tar.gz",
+            "sha256": "3b9ed1cd2eb6fa609206372ab4e0ee65433f50790d721df17f77dfc7f7a3278c",
+            "size": 458226988,
+            "path": "paios-images/aios/amd64/3b9ed1cd2eb6fa609206372ab4e0ee65433f50790d721df17f77dfc7f7a3278c.tar.gz",
+            "url": "https://buckyos-installer.tbudr.top/paios-images/aios/amd64/3b9ed1cd2eb6fa609206372ab4e0ee65433f50790d721df17f77dfc7f7a3278c.tar.gz"
+          }
+        },
+        "aarch64": {
+          "ref": "paios/aios:0.7.0-835b5bd44125-aarch64",
+          "image_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "manifest_digest": "sha256:6438ca1a78df1111111111111111111111111111111111111111111111111111",
+          "rootfs_layers_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "tar": {
+            "file": "aios-aarch64-111111111111.tar.gz",
+            "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "size": 447000000,
+            "path": "paios-images/aios/aarch64/3333333333333333333333333333333333333333333333333333333333333333.tar.gz",
+            "url": "https://buckyos-installer.tbudr.top/paios-images/aios/aarch64/3333333333333333333333333333333333333333333333333333333333333333.tar.gz"
+          }
+        }
+      }
+    },
+    "exttool": {
+      "repo": "paios/exttool",
+      "version": "0.7.0",
+      "revision": "07787a750c1e2f3a4b5c6d7e8f9a0b1c2d3e4f50",
+      "created": "2026-10-19T12:40:00Z",
+      "platforms": {
+        "amd64": {
+          "ref": "paios/exttool:0.7.0-07787a750c1e-amd64",
+          "image_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "manifest_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "rootfs_layers_sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "tar": {
+            "file": "exttool-amd64-444444444444.tar.gz",
+            "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "size": 98000000,
+            "path": "paios-images/exttool/amd64/7777777777777777777777777777777777777777777777777777777777777777.tar.gz",
+            "url": "https://buckyos-installer.tbudr.top/paios-images/exttool/amd64/7777777777777777777777777777777777777777777777777777777777777777.tar.gz"
+          }
+        },
+        "aarch64": {
+          "ref": "paios/exttool:0.7.0-07787a750c1e-aarch64",
+          "image_id": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "manifest_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "rootfs_layers_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tar": {
+            "file": "exttool-aarch64-888888888888.tar.gz",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size": 92000000,
+            "path": "paios-images/exttool/aarch64/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.tar.gz",
+            "url": "https://buckyos-installer.tbudr.top/paios-images/exttool/aarch64/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.tar.gz"
+          }
+        }
+      }
+    }
+  }
+}

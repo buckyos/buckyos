@@ -10,6 +10,11 @@ on:
         required: false
         type: boolean
         default: false
+      paios_images:
+        description: Pin paios images with the paios-images-manifest artifact of this run
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -109,6 +114,20 @@ jobs:
         mkdir -p "$STAGE_ROOT/buckyos"
         buckyos-install --app=buckyos --all --target-rootfs="$STAGE_ROOT/buckyos"
         test -n "$(find "$STAGE_ROOT/buckyos" -mindepth 1 -print -quit)"
+    - name: Download paios_images.json
+      if: ${{ inputs.paios_images }}
+      uses: actions/download-artifact@v6
+      with:
+        name: paios-images-manifest
+        path: ${{ runner.temp }}/paios-images-manifest
+    - name: Pin paios images
+      if: ${{ inputs.paios_images }}
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+      run: |
+        set -euo pipefail
+        cp "$RUNNER_TEMP/paios-images-manifest/paios_images.json" "$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json"
+        python3 .github/scripts/paios_images.py validate "$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json"
     - name: Get staged BuckyOS version
       id: version
       env:

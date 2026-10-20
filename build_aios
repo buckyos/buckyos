@@ -65,7 +65,9 @@ Options:
   --push          Push arch-specific images and create multi-arch manifests
   --prepare-context <dir>
                   Compile and export Docker contexts plus metadata.env to a new directory;
-                  skip Docker build/push. Cannot be combined with --push.
+                  skip Docker build/push. Cannot be combined with --push. On a clean work
+                  tree metadata.env carries immutable_tag=<tag>-<commit12>; CI publishes
+                  <image>:<immutable_tag>-<arch> and pins release packages to it.
   --image <name>  Override image name, default: devenv.json["aios"] or paios/aios
   --tag <tag>     Override version tag, default: src/VERSION
   --runtime-only  Install only required runtime dependencies in the image
@@ -1443,6 +1445,11 @@ main() {
       printf 'version=%s\n' "$VERSION_TAG"
       printf 'revision=%s\n' "$AIOS_SOURCE_REVISION"
       printf 'created=%s\n' "$AIOS_BUILD_CREATED"
+      if [[ "$AIOS_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+        printf 'immutable_tag=%s-%s\n' "$VERSION_TAG" "${AIOS_SOURCE_REVISION:0:12}"
+      else
+        printf 'immutable_tag=\n'
+      fi
       for arch in "${target_arches[@]}"; do
         printf '%s_sha256=%s\n' "$arch" "$(sha256_file "$PREPARE_CONTEXT_DIR/$arch/opendan")"
       done

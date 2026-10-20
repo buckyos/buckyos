@@ -2,9 +2,10 @@
 # Fetch + extract a FreeCAD AppImage into /opt/buckyos/tools/store/freecad/
 # and register /opt/buckyos/tools/bin/freecadcmd as the launcher.
 #
-# FREECAD_APPIMAGE_URL is set by build_exttool per target arch. When unset
-# (arch without a prebuilt AppImage), install a loud stub so callers find
-# out at call time instead of silently picking up system freecadcmd.
+# FREECAD_APPIMAGE_URL is set by build_exttool per target arch. FreeCAD is
+# optional and not in the default image: when unset, install a loud stub so
+# callers find out at call time instead of silently picking up a system
+# freecadcmd.
 
 set -euo pipefail
 
@@ -16,12 +17,12 @@ mkdir -p "$STORE_DIR" "$BIN_DIR"
 if [[ -z "${FREECAD_APPIMAGE_URL:-}" ]]; then
   cat > "$BIN_DIR/freecadcmd" <<'STUB'
 #!/usr/bin/env bash
-echo "[freecadcmd] not bundled for this architecture in paios/exttool" >&2
-echo "[freecadcmd] set FREECAD_APPIMAGE_URL at build time to enable" >&2
+echo "[freecadcmd] FreeCAD is not bundled in this paios/exttool image" >&2
+echo "[freecadcmd] build one with FREECAD_APPIMAGE_URL_<AMD64|AARCH64>=<AppImage URL> ./build_exttool" >&2
 exit 127
 STUB
   chmod 755 "$BIN_DIR/freecadcmd"
-  printf '{"bundled": false, "reason": "no FREECAD_APPIMAGE_URL at build time"}\n' > "$STORE_DIR/meta.json"
+  printf '{"bundled": false, "reason": "FreeCAD is optional; no FREECAD_APPIMAGE_URL at build time"}\n' > "$STORE_DIR/meta.json"
   exit 0
 fi
 

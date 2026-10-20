@@ -17,30 +17,56 @@ jobs:
     permissions:
       contents: read
     outputs:
-      aios_changed: ${{ steps.changes.outputs.changed }}
-      exttool_changed: ${{ steps.exttool.outputs.changed }}
+      aios_changed: ${{ steps.changes.outputs.aios }}
+      exttool_changed: ${{ steps.changes.outputs.exttool }}
     steps:
     - name: Checkout
-      if: ${{ github.event_name == 'push' }}
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
-    - name: Detect AIOS changes
+    - name: Read last published paios images
+      # paios-images/main/<name>.json is written by the image export jobs after a
+      # successful main build; it is the base for change detection and the image
+      # that release packages inherit when nothing changed.
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: auto
+        AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+        AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/paios-image-pointers"
+        mkdir -p "$dir"
+        if [[ -z "$AWS_ACCESS_KEY_ID" ]]; then
+          echo "No R2 credentials; every paios image counts as changed."
+          exit 0
+        fi
+        for name in aios exttool; do
+          if aws --endpoint-url https://87e0bdf811b13ee87fd0bcec7a4fd1e7.r2.cloudflarestorage.com s3api get-object \
+              --bucket buckyos-installer --key "paios-images/main/$name.json" "$dir/pointer-$name.json" >/dev/null 2>"$dir/$name.err"; then
+            python3 .github/scripts/paios_images.py validate-fragment "$name" "$dir/pointer-$name.json"
+          elif grep -qE '\(NoSuchKey\)|\(404\)|Not Found' "$dir/$name.err"; then
+            echo "No published $name image yet."
+            rm -f "$dir/pointer-$name.json"
+          else
+            cat "$dir/$name.err" >&2
+            exit 1
+          fi
+        done
+    - name: Detect paios image changes
       id: changes
       env:
         EVENT_NAME: ${{ github.event_name }}
-        BEFORE: ${{ github.event.before }}
         AFTER: ${{ github.sha }}
       run: |
         set -euo pipefail
-        if [[ "$EVENT_NAME" == "workflow_dispatch" ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        paths=(
+        dir="$RUNNER_TEMP/paios-image-pointers"
+        aios_paths=(
           .github/workflows/build-all.yml
           .github/workflows/build-aios.yml
+          .github/scripts/paios_image_export.sh
+          .github/scripts/paios_images.py
           build_aios
           publish/aios/
           src/frame/opendan/
@@ -57,44 +83,46 @@ jobs:
           src/VERSION
           src/bucky_project.yaml
         )
-        if git diff --quiet "$BEFORE" "$AFTER" -- "${paths[@]}"; then
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-        else
-          status=$?
-          if [[ "$status" -ne 1 ]]; then
-            exit "$status"
-          fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-        fi
-    - name: Detect ExtTool changes
-      id: exttool
-      env:
-        EVENT_NAME: ${{ github.event_name }}
-        BEFORE: ${{ github.event.before }}
-        AFTER: ${{ github.sha }}
-      run: |
-        set -euo pipefail
-        if [[ "$EVENT_NAME" == "workflow_dispatch" ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        paths=(
+        exttool_paths=(
           .github/workflows/build-all.yml
           .github/workflows/build-exttool.yml
+          .github/scripts/paios_image_export.sh
+          .github/scripts/paios_images.py
           build_exttool
           publish/exttool/
           src/VERSION
         )
-        if git diff --quiet "$BEFORE" "$AFTER" -- "${paths[@]}"; then
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-        else
-          status=$?
-          if [[ "$status" -ne 1 ]]; then
-            exit "$status"
+        changed() {
+          local name="$1"; shift
+          local pointer="$dir/pointer-$name.json" base
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || ! -f "$pointer" ]]; then
+            echo true; return
           fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-        fi
+          base="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["revision"])' "$pointer")"
+          if ! git merge-base --is-ancestor "$base" "$AFTER" 2>/dev/null; then
+            echo "$name: published revision $base is not an ancestor of $AFTER" >&2
+            echo true; return
+          fi
+          if git diff --quiet "$base" "$AFTER" -- "$@"; then
+            echo "$name: unchanged since published revision $base" >&2
+            echo false
+          else
+            echo "$name: changed since published revision $base" >&2
+            echo true
+          fi
+        }
+        echo "aios=$(changed aios "${aios_paths[@]}")" >> "$GITHUB_OUTPUT"
+        echo "exttool=$(changed exttool "${exttool_paths[@]}")" >> "$GITHUB_OUTPUT"
+        cat "$GITHUB_OUTPUT"
+    - name: Keep pointer snapshot
+      # Later jobs inherit from this snapshot instead of re-reading R2, so a
+      # concurrent run moving the pointer cannot split detection and inheritance.
+      uses: actions/upload-artifact@v6
+      with:
+        name: paios-image-pointers
+        path: ${{ runner.temp }}/paios-image-pointers/pointer-*.json
+        if-no-files-found: ignore
+        retention-days: 30
   build-aios:
     needs: detect-image-changes
     if: ${{ needs.detect-image-changes.outputs.aios_changed == 'true' }}
@@ -102,6 +130,8 @@ jobs:
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   build-exttool:
     needs: detect-image-changes
     if: ${{ needs.detect-image-changes.outputs.exttool_changed == 'true' }}
@@ -109,37 +139,108 @@ jobs:
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  resolve-paios-images:
+    # Release payloads carry bin/paios-images/paios_images.json pinning the image
+    # built in this run, or the last published one when it did not change.
+    needs: [detect-image-changes, build-aios, build-exttool]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    outputs:
+      pinned: ${{ steps.assemble.outputs.pinned }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+    - name: Download image fragments and pointer snapshot
+      if: ${{ github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos' }}
+      uses: actions/download-artifact@v6
+      with:
+        pattern: paios-image-*
+        merge-multiple: true
+        path: ${{ runner.temp }}/paios-image-fragments
+    - name: Assemble paios_images.json
+      id: assemble
+      env:
+        PINNED: ${{ github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos' }}
+        RESULTS: ${{ toJSON(needs) }}
+      run: |
+        set -euo pipefail
+        if [[ "$PINNED" != true ]]; then
+          echo "Not a buckyos/buckyos main build; payloads stay in local image mode."
+          echo "pinned=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        python3 -m unittest discover -s .github/scripts -p 'test_paios_images.py'
+        dir="$RUNNER_TEMP/paios-image-fragments"
+        detect="$(python3 -c 'import json, os; print(json.loads(os.environ["RESULTS"])["detect-image-changes"]["result"])')"
+        [[ "$detect" == success ]] || { echo "detect-image-changes finished with $detect" >&2; exit 1; }
+        args=()
+        for name in aios exttool; do
+          result="$(python3 -c 'import json, os, sys; print(json.loads(os.environ["RESULTS"])["build-" + sys.argv[1]]["result"])' "$name")"
+          case "$result" in
+            success) source="$dir/paios-image-$name.json" ;;
+            skipped) source="$dir/pointer-$name.json" ;;
+            *) echo "build-$name finished with $result; refusing to pin images" >&2; exit 1 ;;
+          esac
+          [[ -f "$source" ]] || { echo "missing $source for $name ($result)" >&2; exit 1; }
+          echo "$name: $result -> $(basename "$source")"
+          args+=(--fragment "$name=$source")
+        done
+        mkdir -p "$RUNNER_TEMP/paios-images-manifest"
+        manifest="$RUNNER_TEMP/paios-images-manifest/paios_images.json"
+        python3 .github/scripts/paios_images.py assemble "${args[@]}" \
+          --buckyos-revision "$GITHUB_SHA" --output "$manifest"
+        python3 .github/scripts/paios_images.py validate "$manifest" --check-urls
+        cat "$manifest"
+        echo "pinned=true" >> "$GITHUB_OUTPUT"
+    - name: Upload paios_images.json
+      if: ${{ steps.assemble.outputs.pinned == 'true' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: paios-images-manifest
+        path: ${{ runner.temp }}/paios-images-manifest/paios_images.json
+        if-no-files-found: error
   build-windows:
     strategy:
       fail-fast: false
       matrix:
         arch: ["x86_64"]
+    needs: resolve-paios-images
+    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' }}
     uses: ./.github/workflows/build-windows.yml
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
+      paios_images: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
   build-linux:
     strategy:
       fail-fast: false
       matrix:
         arch: ["x86_64", "aarch64"]
+    needs: resolve-paios-images
+    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' }}
     uses: ./.github/workflows/build-linux.yml
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
+      paios_images: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
   build-macos:
     strategy:
       fail-fast: false
       matrix:
         arch: ["x86_64", "aarch64"]
+    needs: resolve-paios-images
+    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' }}
     uses: ./.github/workflows/build-macos.yml
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
+      paios_images: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
 
   upload-payloads:
     name: Upload component payloads to R2
-    needs: [build-windows, build-linux, build-macos]
+    needs: [resolve-paios-images, build-windows, build-linux, build-macos]
     if: github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -155,6 +256,22 @@ jobs:
           pattern: buckyos-*
           merge-multiple: true
           path: ${{ runner.temp }}/payloads
+      - name: Download paios_images.json
+        if: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: paios-images-manifest
+          path: ${{ runner.temp }}/paios-images-manifest
+      - name: Add paios_images.json next to each payload
+        # Lets release tooling (onlinepack) see the pinned images without
+        # downloading payloads: buckyos/<payload>.paios_images.json.
+        if: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
+        run: |
+          set -euo pipefail
+          for payload in "$RUNNER_TEMP"/payloads/buckyos-*.tar.gz; do
+            cp "$RUNNER_TEMP/paios-images-manifest/paios_images.json" "${payload%.tar.gz}.paios_images.json"
+          done
+          ls -l "$RUNNER_TEMP/payloads"
       - name: Upload component payloads to R2
         uses: ryand56/r2-upload-action@latest
         with:
