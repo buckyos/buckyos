@@ -5708,6 +5708,29 @@ test("OpenRouter complete official catalog checks alias drift and plans one Jev 
 });
 
 
+test("OpenRouter Gemini speech rejects a provider default that overrides the requested warm voice", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "openrouter", "openrouter.audio.speech.v1");
+  for (const model of contract.conformance_test_model_ids!["audio.tts"].filter(
+    (model) => model.startsWith("google/"),
+  )) {
+    const request = t15ProviderRequest("https://mock.test", contract, model, {});
+    const wire = {
+      method: "POST",
+      pathname: new URL(request.url).pathname,
+      query: new URLSearchParams(),
+      headers: new Headers(request.init.headers),
+      body: JSON.parse(request.init.body as string),
+    };
+    wire.headers.set("content-type", "application/json");
+    assert.deepEqual(validateProviderRequest(contract, wire), [], model);
+    assert.ok(validateProviderRequest(contract, {
+      ...wire,
+      body: { ...wire.body, voice: "Kore" },
+    }).length > 0, `${model} accepted a default voice instead of Sulafat`);
+  }
+});
+
 test("review media wire regressions reject invalid sizes, duration, missing input, and removed fields", async () => {
   const catalog = await loadProviderProtocolCatalog();
   for (const [provider, id, valid, invalid] of [

@@ -3760,14 +3760,18 @@
           "required_body_fields": ["model", "input", "voice"],
           "allowed_body_fields": ["model", "input", "input_references", "instructions", "provider", "response_format", "session_id", "speed", "trace", "user", "voice"],
           "body_field_types": {"model": ["string"], "input": ["string"], "voice": ["string"]},
+          "canonical_request_overrides": {"voice": {"style": "warm"}},
           "required_body_values_by_model": {
+            "google/gemini-3.1-flash-tts-preview": {"/voice": "Sulafat"},
+            "google/gemini-3.8-flash-lite-tts": {"/voice": "Sulafat"},
+            "google/gemini-3.8-flash-tts": {"/voice": "Sulafat"},
             "minimax/speech-2.8-hd": {"/response_format": "mp3"},
             "minimax/speech-2.8-turbo": {"/response_format": "mp3"}
           },
           "success_content_type": "audio/mpeg",
           "success_fixture_base64": "SUQzAwAAAAA=",
           "official_sources": ["https://openrouter.ai/openapi.json", "https://ai.google.dev/gemini-api/docs/speech-generation", "https://platform.minimax.io/docs/api-reference/speech-t2a-http.md"],
-          "evidence_summary": "OpenRouter speech uses JSON POST /api/v1/audio/speech; aggregated TTS providers require a provider-supported voice string, and the response is raw audio bytes."
+          "evidence_summary": "OpenRouter speech uses JSON POST /api/v1/audio/speech; aggregated TTS providers require a provider-supported voice string, and the response is raw audio bytes. Google officially lists Sulafat as Warm (checked 2026-10-20); Gemini TTS conformance requests a warm voice and requires Sulafat on the wire rather than a fixed provider default."
         },
         {
           "id": "openrouter.audio.transcriptions.v1",

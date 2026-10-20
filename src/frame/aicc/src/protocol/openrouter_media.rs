@@ -468,27 +468,15 @@ impl OperationCodec for OpenRouterMusicCodec {
     }
 }
 
-/// Picks the speech voice for a request.
-///
-/// The caller's `VoiceSpec::style` wins over the configured provider default: the style -> voice
-/// map is declared in the provider rules next to that default, so the fixed default only applies
-/// when the caller expressed no style (or expressed one the provider has no mapping for).
-fn speech_voice(
-    parameters: &BTreeMap<String, Value>,
-    voice: &buckyos_api::VoiceSpec,
-) -> Option<Value> {
-    let styled = voice
-        .style
-        .and_then(|style| serde_json::to_value(style).ok())
-        .and_then(|style| style.as_str().map(str::to_owned))
-        .and_then(|style| {
-            parameters
-                .get("openrouter_voice_styles")
-                .and_then(Value::as_object)?
-                .get(&style)
-                .cloned()
-        });
-    styled.or_else(|| parameters.get("openrouter_voice").cloned())
+fn speech_voice(parameters: &BTreeMap<String, Value>) -> Option<Value> {
+    parameters
+        .get("generation_config")
+        .and_then(|config| config.get("speech_config"))
+        .and_then(Value::as_array)
+        .and_then(|speech| speech.first())
+        .and_then(|speech| speech.get("voice"))
+        .cloned()
+        .or_else(|| parameters.get("openrouter_voice").cloned())
 }
 
 #[derive(Clone)]
@@ -526,7 +514,7 @@ impl OperationCodec for OpenRouterSpeechCodec {
             ("model".to_string(), json!(model)),
             ("input".to_string(), json!(request.text)),
         ]);
-        if let Some(value) = speech_voice(&call.input.resolved_parameters, &request.voice) {
+        if let Some(value) = speech_voice(&call.input.resolved_parameters) {
             if !value.is_string() {
                 return Err(ProtocolError::invalid_request(
                     "OpenRouter speech voice must be a string",
@@ -716,6 +704,26 @@ mod tests {
         assert_eq!(error.http_status, Some(503));
         assert_eq!(error.retry_after, Some(Duration::from_secs(3)));
     }
+
+    #[test]
+    fn speech_voice_prefers_the_canonical_voice_over_the_provider_default() {
+        let parameters = BTreeMap::from([
+            ("openrouter_voice".to_owned(), json!("Kore")),
+            (
+                "generation_config".to_owned(),
+                json!({"speech_config": [{"voice": "Sulafat"}]}),
+            ),
+        ]);
+        assert_eq!(speech_voice(&parameters), Some(json!("Sulafat")));
+        assert_eq!(
+            speech_voice(&BTreeMap::from([(
+                "openrouter_voice".to_owned(),
+                json!("Kore"),
+            )])),
+            Some(json!("Kore"))
+        );
+    }
+
     #[tokio::test]
     async fn music_decodes_official_streaming_audio_shape_and_cost() {
         let codec = OpenRouterMusicCodec {
