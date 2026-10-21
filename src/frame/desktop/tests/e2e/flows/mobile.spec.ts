@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { openFromAllApps } from '../fixtures/desktop'
 
 test.use({
@@ -37,26 +37,7 @@ test('mobile viewport opens in-place app with system title bar', async ({
 
   await page.reload()
   const settingsButton = page.getByRole('button', { name: 'Settings' })
-  const settingsBox = await settingsButton.boundingBox()
-  expect(settingsBox).not.toBeNull()
-
-  const startX = (settingsBox?.x ?? 0) + (settingsBox?.width ?? 0) / 2
-  const startY = (settingsBox?.y ?? 0) + (settingsBox?.height ?? 0) / 2
-
-  await settingsButton.dispatchEvent('pointerdown', {
-    bubbles: true,
-    clientX: startX,
-    clientY: startY,
-    pointerId: 1,
-    pointerType: 'touch',
-  })
-  await page.locator('body').dispatchEvent('pointerup', {
-    bubbles: true,
-    clientX: startX + 7,
-    clientY: startY + 6,
-    pointerId: 1,
-    pointerType: 'touch',
-  })
+  await settingsButton.tap()
   await expect(page.getByPlaceholder('Search settings')).toBeVisible()
   await expect(page.getByRole('button', { name: 'General' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'App menu' })).toBeVisible()
@@ -84,26 +65,7 @@ test('mobile launcher shows AI Center and opens panel content', async ({
   const aiCenterButton = page.getByRole('button', { name: 'AI Center' })
   await expect(aiCenterButton).toBeVisible()
 
-  const aiCenterBox = await aiCenterButton.boundingBox()
-  expect(aiCenterBox).not.toBeNull()
-
-  const startX = (aiCenterBox?.x ?? 0) + (aiCenterBox?.width ?? 0) / 2
-  const startY = (aiCenterBox?.y ?? 0) + (aiCenterBox?.height ?? 0) / 2
-
-  await aiCenterButton.dispatchEvent('pointerdown', {
-    bubbles: true,
-    clientX: startX,
-    clientY: startY,
-    pointerId: 3,
-    pointerType: 'touch',
-  })
-  await page.locator('body').dispatchEvent('pointerup', {
-    bubbles: true,
-    clientX: startX + 6,
-    clientY: startY + 5,
-    pointerId: 3,
-    pointerType: 'touch',
-  })
+  await aiCenterButton.tap()
 
   await expect(page.getByText('AI Features Not Enabled')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Get Started' })).toBeVisible()
@@ -113,6 +75,93 @@ test('mobile launcher shows AI Center and opens panel content', async ({
 
   expect(consoleErrors).toEqual([])
 })
+
+async function touchGesture(
+  page: Page,
+  tile: Locator,
+  offsets: Array<{ x: number; y: number }>,
+) {
+  await tile.tap({ trial: true })
+  const box = await tile.boundingBox()
+  expect(box).not.toBeNull()
+  const x = box!.x + box!.width / 2
+  const y = box!.y + box!.height / 2
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x, y, id: 1 }],
+    })
+    for (const offset of offsets) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ x: x + offset.x, y: y + offset.y, id: 1 }],
+      })
+    }
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: [],
+    })
+  } finally {
+    await cdp.detach()
+  }
+}
+
+for (const offset of [{ x: 5, y: 0 }, { x: 7, y: 6 }]) {
+  test(`mobile launcher opens after a short touch with ${offset.x},${offset.y}px drift`, async ({ page }) => {
+    await page.goto('/?scenario=normal')
+    await touchGesture(page, page.getByRole('button', { name: 'Settings', exact: true }), [offset])
+    await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+  })
+}
+
+test('mobile launcher touch drag moves an icon without opening the app', async ({ page }) => {
+  await page.goto('/?scenario=normal')
+  const settings = page.getByRole('button', { name: 'Settings', exact: true })
+  await settings.tap({ trial: true })
+  const before = await settings.boundingBox()
+  expect(before).not.toBeNull()
+  await touchGesture(page, settings, [
+    { x: 0, y: -30 },
+    { x: 0, y: -80 },
+    { x: 0, y: -140 },
+  ])
+  await expect.poll(async () => {
+    const after = await settings.boundingBox()
+    return Math.abs((after?.y ?? before!.y) - before!.y)
+  }).toBeGreaterThan(60)
+  await expect(page.getByRole('button', { name: 'Minimize' })).toHaveCount(0)
+  await settings.tap()
+  await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+})
+
+test('mobile launcher does not open an app after dragging away and back', async ({ page }) => {
+  await page.goto('/?scenario=normal')
+  const settings = page.getByRole('button', { name: 'Settings', exact: true })
+  await touchGesture(page, settings, [
+    { x: 0, y: -30 },
+    { x: 0, y: -80 },
+    { x: 0, y: -30 },
+    { x: 0, y: 0 },
+  ])
+  await expect(page.getByRole('button', { name: 'Minimize' })).toHaveCount(0)
+  await expect(settings).toBeVisible()
+  await settings.tap()
+  await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+})
+
+for (const input of ['mouse', 'Enter', 'Space']) {
+  test(`mobile launcher opens with ${input}`, async ({ page }) => {
+    await page.goto('/?scenario=normal')
+    const settings = page.getByRole('button', { name: 'Settings', exact: true })
+    if (input === 'mouse') {
+      await settings.click()
+    } else {
+      await settings.press(input)
+    }
+    await expect(page.getByPlaceholder('Search settings')).toBeVisible()
+  })
+}
 
 test('mobile demos exposes dialog trigger and opens centered dialog', async ({
   page,
@@ -191,37 +240,14 @@ test('mobile App Service opens without redundant back button on detail page', as
   const appServiceButton = page.getByRole('button', { name: 'App Service' })
   await expect(appServiceButton).toBeVisible()
 
-  const box = await appServiceButton.boundingBox()
-  expect(box).not.toBeNull()
-
-  const startX = (box?.x ?? 0) + (box?.width ?? 0) / 2
-  const startY = (box?.y ?? 0) + (box?.height ?? 0) / 2
-
-  await appServiceButton.dispatchEvent('pointerdown', {
-    bubbles: true,
-    clientX: startX,
-    clientY: startY,
-    pointerId: 5,
-    pointerType: 'touch',
-  })
-  await page.locator('body').dispatchEvent('pointerup', {
-    bubbles: true,
-    clientX: startX + 6,
-    clientY: startY + 5,
-    pointerId: 5,
-    pointerType: 'touch',
-  })
+  await appServiceButton.tap()
 
   // Home page should be visible with app cards
   await expect(page.getByRole('heading', { name: 'App Service' })).toBeVisible()
-  await expect(page.getByText('Nostr Relay')).toBeVisible()
-
-  // Click on Gitea (error state) to open detail page
-  const giteaCard = page.getByRole('button', { name: /Gitea/ }).first()
-  await giteaCard.click()
-
-  // Detail page should show Gitea info
-  await expect(page.getByText('Private Git hosting for development inside this Zone.')).toBeVisible()
+  const appCard = page.getByTestId('app-service-card-nostr-relay.buckyos.bns.did@alice')
+  await expect(appCard).toBeVisible()
+  await appCard.tap()
+  await expect(page.getByTestId('app-service-runtime-status')).toBeVisible()
 
   // The in-page "← Back" text button should NOT be present on mobile
   // (the title bar already provides back navigation via its own back arrow)
