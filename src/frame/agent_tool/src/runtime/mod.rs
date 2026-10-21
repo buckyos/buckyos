@@ -1,4 +1,5 @@
 pub mod files;
+pub mod node;
 pub mod ssh;
 pub mod tmux;
 
@@ -40,6 +41,19 @@ pub struct RuntimeConfig {
     pub tmux: Option<TmuxConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_ssh: Option<SshConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_node: Option<RemoteNodeConfig>,
+}
+
+/// Target of a `remote_node` runtime: the Node Executor of `node_did`, logged
+/// in under `profile_id`. Endpoint and credentials come from the host.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteNodeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -84,8 +98,8 @@ impl RuntimeConfig {
             reason,
         };
         match self.kind() {
-            "native" | "tmux" | "remote_ssh" => {}
-            "container" | "container_host" | "remote_node" | "http_proxy_runtime" => {
+            "native" | "tmux" | "remote_ssh" | "remote_node" => {}
+            "container" | "container_host" | "http_proxy_runtime" => {
                 return Err(XllmError::Capability(format!(
                     "runtime `{}` is planned but not implemented",
                     self.kind()
@@ -101,6 +115,11 @@ impl RuntimeConfig {
                 "remote_ssh connection block requires kind: remote_ssh".into()
             ));
         }
+        if self.remote_node.is_some() && self.kind() != "remote_node" && self.kind.is_some() {
+            return Err(bad(
+                "remote_node connection block requires kind: remote_node".into()
+            ));
+        }
         for (k, v) in &self.env {
             if !valid_env_key(k) || v.contains('\0') {
                 return Err(bad(format!("invalid env key or value `{k}`")));
@@ -112,6 +131,7 @@ impl RuntimeConfig {
         if complete {
             if self.tmux.is_some() && self.kind() != "tmux"
                 || self.remote_ssh.is_some() && self.kind() != "remote_ssh"
+                || self.remote_node.is_some() && self.kind() != "remote_node"
             {
                 return Err(bad("connection block does not match runtime kind".into()));
             }
@@ -156,13 +176,37 @@ impl RuntimeConfig {
                         ));
                     }
                 }
+                "remote_node" => {
+                    let n = self
+                        .remote_node
+                        .as_ref()
+                        .ok_or_else(|| bad("remote_node.node_did is required".into()))?;
+                    let did = n.node_did.as_deref().unwrap_or("");
+                    let profile = n.profile_id.as_deref().unwrap_or("");
+                    if !did.starts_with("did:") || did.chars().any(|c| c.is_whitespace()) {
+                        return Err(bad("remote_node.node_did must be a device DID".into()));
+                    }
+                    if !buckyos_api::is_valid_profile_id(profile) {
+                        return Err(bad("remote_node.profile_id is required".into()));
+                    }
+                    let cwd = self.workdir.as_deref().unwrap_or("");
+                    if !cwd.starts_with('/') || cwd.contains('\0') {
+                        return Err(bad(
+                            "remote_node requires an explicit absolute workdir on the node".into(),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
         Ok(())
     }
+    /// Whether the workdir names a path on another machine.
+    pub fn is_remote(&self) -> bool {
+        matches!(self.kind(), "remote_ssh" | "remote_node")
+    }
     pub fn resolve_paths(&mut self, source: &Path) {
-        if self.kind.is_some() && self.kind() != "remote_ssh" {
+        if self.kind.is_some() && !self.is_remote() {
             if let Some(p) = &mut self.workdir {
                 *p = crate::xllm::resolve_config_path(p, source)
                     .display()
@@ -208,6 +252,15 @@ impl RuntimeConfig {
             }
             if t.mode.is_some() {
                 b.mode = t.mode;
+            }
+        }
+        if let Some(n) = &other.remote_node {
+            let b = self.remote_node.get_or_insert_with(Default::default);
+            if n.node_did.is_some() {
+                b.node_did = n.node_did.clone();
+            }
+            if n.profile_id.is_some() {
+                b.profile_id = n.profile_id.clone();
             }
         }
         if let Some(s) = &other.remote_ssh {
@@ -762,7 +815,26 @@ pub struct RuntimeRegistry;
 impl RuntimeRegistry {
     pub fn from_config(config: &RuntimeConfig) -> Result<Arc<dyn AgentRuntime>> {
         config.validate(true)?;
+        if config.kind() == node::REMOTE_NODE_KIND {
+            return Err(XllmError::Capability(
+                "runtime `remote_node` needs a host that provides a Node Executor connector".into(),
+            ));
+        }
         Ok(Arc::new(Runtime::from_config(config.clone())))
+    }
+
+    /// Like `from_config`, with the host-provided Node Executor connector.
+    pub fn from_config_with(config: &RuntimeConfig, deps: &XllmDeps) -> Result<Arc<dyn AgentRuntime>> {
+        if config.kind() == node::REMOTE_NODE_KIND {
+            config.validate(true)?;
+            let connector = deps.node_executor.clone().ok_or_else(|| {
+                XllmError::Capability(
+                    "runtime `remote_node` needs a host that provides a Node Executor connector".into(),
+                )
+            })?;
+            return Ok(Arc::new(node::RemoteNodeRuntime::new(config.clone(), connector)));
+        }
+        Self::from_config(config)
     }
 }
 
@@ -775,7 +847,7 @@ pub async fn open_runtime(
     config.validate(true)?;
     let runtime = match &deps.runtime {
         Some(r) => r.clone(),
-        None => RuntimeRegistry::from_config(config)?,
+        None => RuntimeRegistry::from_config_with(config, deps)?,
     };
     if deps.runtime.is_some() {
         let provided = runtime.config();

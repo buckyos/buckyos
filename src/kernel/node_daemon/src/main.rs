@@ -13,6 +13,7 @@ mod kernel_mgr; // support manager kernel service (run in native, run for system
 mod kevent_server;
 mod local_app_mgr;
 mod node_daemon;
+mod node_executor_host;
 mod paios_images;
 mod region_probe;
 mod run_item;
@@ -33,6 +34,9 @@ use log::*;
 use std::panic;
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(node_executor::worker::WORKER_ARG) {
+        node_executor::worker::worker_main();
+    }
     let matches = Command::new("BuckyOS Node Daemon")
         .version(get_version())
         .arg(

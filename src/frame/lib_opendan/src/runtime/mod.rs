@@ -345,9 +345,21 @@ pub fn runtime_for_session(
     if config.id.is_none() && config.kind() != "tmux" {
         config.id = cfg.runtime.requirement.runtime_id.clone();
     }
+    refuse_remote_node(&config)?;
     settle_for_session(sd, cfg, agent_root, &mut config)?;
     agent_tool::runtime::RuntimeRegistry::from_config(&config)
         .map_err(|e| OpenDanError::Bind(e.to_string()))
+}
+
+/// Remote execution of a whole Session (helper deployment, workspace split,
+/// narrow credentials) is a later stage; refuse before any inference.
+fn refuse_remote_node(config: &agent_tool::runtime::RuntimeConfig) -> Result<()> {
+    if config.kind() == agent_tool::runtime::node::REMOTE_NODE_KIND {
+        return Err(OpenDanError::Bind(
+            "Capability: an Agent Session cannot run on remote_node yet; use remote_node with xllm".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The runtime a drive uses: the provided one, checked against what the
@@ -364,6 +376,7 @@ pub fn session_runtime(
     if let Some(r) = declared_runtime(sd, cfg)? {
         config.merge_over(&r);
     }
+    refuse_remote_node(&config)?;
     settle_for_session(sd, cfg, agent_root, &mut config)?;
     let differs = original.kind() != config.kind()
         || original.id.as_ref().is_some_and(|id| config.id.as_ref() != Some(id))
@@ -654,4 +667,20 @@ pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<V
         .await
         .map_err(|e| OpenDanError::Bind(e.to_string()))?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_refuse_remote_node_before_binding() {
+        let config = agent_tool::runtime::RuntimeConfig {
+            kind: Some("remote_node".into()),
+            ..Default::default()
+        };
+        let err = refuse_remote_node(&config).unwrap_err().to_string();
+        assert!(err.contains("Capability"), "{err}");
+        assert!(refuse_remote_node(&agent_tool::runtime::RuntimeConfig::default()).is_ok());
+    }
 }

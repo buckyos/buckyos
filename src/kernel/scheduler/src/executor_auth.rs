@@ -1,0 +1,536 @@
+//! Node Executor authorization snapshot (doc/arch/node_exector.md §5.4–5.6).
+//!
+//! `nodes/<node>/settings.executor` (administrator input) plus the
+//! authoritative device, AgentSpec, AgentSettings and App records become
+//! `nodes/<node>/config.executor` and exact RBAC rules in one transaction.
+//! The revision digests the inputs; the generation grows only when the
+//! revision changes; the lease is renewed only after the inputs are verified.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use buckyos_api::{
+    agent_settings_key, executor_revision, user_app_spec_key, AgentSettings, AgentSpec,
+    AppInstanceId, AppServiceSpec, ExecutorConfig, ExecutorLimits, ExecutorPrincipalBinding,
+    ExecutorProfile, ExecutorSettings, NodeSettings, NODE_EXECUTOR_LEASE_MS,
+    NODE_EXECUTOR_RENEW_BEFORE_MS,
+};
+use buckyos_kit::KVAction;
+use log::*;
+use name_lib::DeviceInfo;
+use serde_json::{json, Value};
+
+struct Derived {
+    allowed_devices: Vec<String>,
+    principal_bindings: BTreeMap<String, ExecutorPrincipalBinding>,
+    profiles: BTreeMap<String, ExecutorProfile>,
+    limits: ExecutorLimits,
+}
+
+fn node_ids(input: &HashMap<String, String>) -> Vec<String> {
+    let mut ids: Vec<String> = input
+        .keys()
+        .filter_map(|k| {
+            let parts: Vec<&str> = k.split('/').collect();
+            match parts.as_slice() {
+                ["nodes", node, "config"] => Some(node.to_string()),
+                _ => None,
+            }
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+fn executor_settings(input: &HashMap<String, String>, node_id: &str) -> Option<ExecutorSettings> {
+    let raw = input.get(&buckyos_api::node_settings_key(node_id))?;
+    match serde_json::from_str::<NodeSettings>(raw) {
+        Ok(settings) => settings.executor,
+        Err(err) => {
+            warn!("executor: nodes/{node_id}/settings is invalid: {err}");
+            None
+        }
+    }
+}
+
+fn current_config(input: &HashMap<String, String>, node_id: &str) -> Option<ExecutorConfig> {
+    let raw = input.get(&buckyos_api::node_config_key(node_id))?;
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let executor = value.get("executor")?;
+    if executor.is_null() {
+        return None;
+    }
+    serde_json::from_value(executor.clone()).ok()
+}
+
+fn agent_specs(input: &HashMap<String, String>) -> Vec<AgentSpec> {
+    let mut keys: Vec<&String> = input.keys().collect();
+    keys.sort();
+    keys.into_iter()
+        .filter(|k| matches!(k.split('/').collect::<Vec<_>>().as_slice(), ["users", _, "agents", _, "spec"]))
+        .filter_map(|k| match serde_json::from_str::<AgentSpec>(&input[k]) {
+            Ok(spec) if spec.validate().is_ok() => Some(spec),
+            _ => {
+                warn!("executor: ignore invalid AgentSpec at {k}");
+                None
+            }
+        })
+        .collect()
+}
+
+fn device_dids(input: &HashMap<String, String>) -> BTreeSet<String> {
+    input
+        .iter()
+        .filter(|(k, _)| k.starts_with("devices/") && k.ends_with("/info"))
+        .filter_map(|(_, v)| serde_json::from_str::<DeviceInfo>(v).ok())
+        .map(|info| info.device_doc.id.to_string())
+        .collect()
+}
+
+fn agent_enabled(input: &HashMap<String, String>, spec: &AgentSpec) -> bool {
+    let owner = spec.binding.target_app_instance_id.owner_user_id();
+    match input.get(&agent_settings_key(owner, &spec.agent_id)) {
+        None => true,
+        Some(raw) => serde_json::from_str::<AgentSettings>(raw)
+            .map(|s| s.enabled)
+            .unwrap_or(false),
+    }
+}
+
+fn app_installed(input: &HashMap<String, String>, instance: &AppInstanceId) -> bool {
+    input
+        .get(&user_app_spec_key(instance.owner_user_id(), instance.app_id()))
+        .and_then(|raw| serde_json::from_str::<AppServiceSpec>(raw).ok())
+        .map(|spec| spec.is_installed())
+        .unwrap_or(false)
+}
+
+/// Principal mapping of §7.2: one existing AgentSpec per App instance
+/// (disabled Agents count), AppDID == AgentDID.
+fn derive(
+    node_id: &str,
+    settings: &ExecutorSettings,
+    input: &HashMap<String, String>,
+    specs: &[AgentSpec],
+) -> Option<Derived> {
+    if !settings.enabled {
+        return None;
+    }
+    if let Err(err) = settings.validate() {
+        warn!("executor: nodes/{node_id}/settings.executor rejected: {err}");
+        return None;
+    }
+    let known = device_dids(input);
+    let allowed_devices: Vec<String> = settings
+        .allowed_devices
+        .iter()
+        .filter(|d| {
+            let ok = known.contains(*d);
+            if !ok {
+                warn!("executor: nodes/{node_id}: allowed device {d} is not a known device");
+            }
+            ok
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if allowed_devices.is_empty() {
+        warn!("executor: nodes/{node_id}: no known allowed device");
+        return None;
+    }
+    let mut per_instance: HashMap<&AppInstanceId, usize> = HashMap::new();
+    for spec in specs {
+        *per_instance
+            .entry(&spec.binding.target_app_instance_id)
+            .or_default() += 1;
+    }
+    let principals: BTreeSet<&String> = settings
+        .profiles
+        .values()
+        .flat_map(|p| p.principals.iter())
+        .collect();
+    let mut principal_bindings = BTreeMap::new();
+    for agent_did in principals {
+        let Some(spec) = specs.iter().find(|s| &s.agent_did.to_string() == agent_did) else {
+            warn!("executor: principal {agent_did} has no AgentSpec");
+            continue;
+        };
+        let instance = &spec.binding.target_app_instance_id;
+        if per_instance.get(instance).copied().unwrap_or(0) != 1 {
+            warn!("executor: principal {agent_did} shares runtime {instance}; not mapped");
+            continue;
+        }
+        if instance.app_id().app_did().to_string() != *agent_did {
+            warn!("executor: principal {agent_did} runtime {instance} has a different AppDID");
+            continue;
+        }
+        principal_bindings.insert(
+            agent_did.clone(),
+            ExecutorPrincipalBinding {
+                app_instance_id: instance.clone(),
+                agent_generation: spec.generation,
+                binding_generation: spec.binding.generation,
+                enabled: agent_enabled(input, spec),
+                app_installed: app_installed(input, instance),
+                permission_mode: spec.permission_mode,
+            },
+        );
+    }
+    Some(Derived {
+        allowed_devices,
+        principal_bindings,
+        profiles: settings.profiles.clone(),
+        limits: settings.limits.clone(),
+    })
+}
+
+fn revision_of(node_id: &str, d: &Derived) -> String {
+    executor_revision(&json!({
+        "node": node_id,
+        "allowed_devices": d.allowed_devices,
+        "principal_bindings": d.principal_bindings,
+        "profiles": d.profiles,
+        "limits": d.limits,
+    }))
+}
+
+fn set_executor(node_id: &str, config: &ExecutorConfig) -> (String, KVAction) {
+    let value = serde_json::to_value(config).unwrap_or(Value::Null);
+    (
+        buckyos_api::node_config_key(node_id),
+        KVAction::SetByJsonPath(HashMap::from([("/executor".to_string(), Some(value))])),
+    )
+}
+
+/// Snapshot writes for every node, and whether any generation changed (the
+/// RBAC tail must then be rebuilt in the same transaction).
+pub(crate) fn update_executor_snapshots(
+    input: &HashMap<String, String>,
+    now_ms: u64,
+) -> (HashMap<String, KVAction>, bool) {
+    let specs = agent_specs(input);
+    let mut actions = HashMap::new();
+    let mut changed = false;
+    for node_id in node_ids(input) {
+        let current = current_config(input, &node_id);
+        let derived = executor_settings(input, &node_id)
+            .and_then(|s| derive(&node_id, &s, input, &specs));
+        let next = match (derived, current) {
+            (Some(d), current) => {
+                let revision = revision_of(&node_id, &d);
+                match current {
+                    Some(c) if c.enabled && c.revision == revision => {
+                        if c.auth_valid_until_ms <= now_ms + NODE_EXECUTOR_RENEW_BEFORE_MS {
+                            Some(ExecutorConfig {
+                                auth_valid_until_ms: now_ms + NODE_EXECUTOR_LEASE_MS,
+                                ..c
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    c => {
+                        changed = true;
+                        Some(ExecutorConfig {
+                            enabled: true,
+                            revision,
+                            generation: c.map(|c| c.generation + 1).unwrap_or(1),
+                            auth_valid_until_ms: now_ms + NODE_EXECUTOR_LEASE_MS,
+                            allowed_devices: d.allowed_devices,
+                            principal_bindings: d.principal_bindings,
+                            profiles: d.profiles,
+                            limits: d.limits,
+                        })
+                    }
+                }
+            }
+            (None, Some(c)) if c.enabled => {
+                changed = true;
+                Some(ExecutorConfig {
+                    enabled: false,
+                    revision: executor_revision(&json!({"node": node_id, "disabled": true})),
+                    generation: c.generation + 1,
+                    auth_valid_until_ms: now_ms,
+                    allowed_devices: Vec::new(),
+                    principal_bindings: BTreeMap::new(),
+                    profiles: BTreeMap::new(),
+                    limits: c.limits,
+                })
+            }
+            (None, _) => None,
+        };
+        if let Some(next) = next {
+            let (key, action) = set_executor(&node_id, &next);
+            actions.insert(key, action);
+        }
+    }
+    (actions, changed)
+}
+
+fn rbac_literal(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        if "\\.^$|?*+()[]{}".contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Exact rules for both RBAC sides of the mapped App token: the owner user
+/// and `app:<AppId>`, per node profile, actions limited to the granted ops.
+pub(crate) fn executor_rbac_lines(input: &HashMap<String, String>) -> Vec<String> {
+    let specs = agent_specs(input);
+    let mut lines = Vec::new();
+    for node_id in node_ids(input) {
+        let Some(settings) = executor_settings(input, &node_id) else {
+            continue;
+        };
+        let Some(d) = derive(&node_id, &settings, input, &specs) else {
+            continue;
+        };
+        let snapshot = ExecutorConfig {
+            enabled: true,
+            revision: String::new(),
+            generation: 1,
+            auth_valid_until_ms: 0,
+            allowed_devices: d.allowed_devices,
+            principal_bindings: d.principal_bindings,
+            profiles: d.profiles,
+            limits: d.limits,
+        };
+        for (profile_id, profile) in &snapshot.profiles {
+            let resource = format!(
+                "obj://node/{}/executor/{}",
+                rbac_literal(&node_id),
+                rbac_literal(profile_id)
+            );
+            for agent_did in &profile.principals {
+                let ops = snapshot.granted_ops(profile_id, agent_did);
+                if ops.is_empty() {
+                    continue;
+                }
+                let binding = &snapshot.principal_bindings[agent_did];
+                let actions = format!(
+                    "^executor\\.({})$",
+                    ops.iter().map(|op| op.as_str()).collect::<Vec<_>>().join("|")
+                );
+                let owner = binding.app_instance_id.owner_user_id();
+                let app = binding.app_instance_id.app_id().as_str();
+                lines.push(format!("p, {owner}, {resource}, {actions}, allow"));
+                lines.push(format!("p, app:{app}, {resource}, {actions}, allow"));
+            }
+        }
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::{
+        AgentId, AgentPermissionMode, AgentServiceBinding, ExecutorOp, ExecutorRunAs,
+        AGENT_SPEC_SCHEMA_VERSION,
+    };
+    use name_lib::{generate_ed25519_key_pair, AgentDocument, DeviceDocument, DID};
+
+    const NOW: u64 = 1_800_000_000_000;
+
+    fn agent_spec(owner: &str, name: &str, instance_name: &str) -> AgentSpec {
+        let agent_did = DID::new("web", &format!("{name}.example.com"));
+        let (_, public_key) = generate_ed25519_key_pair();
+        let agent_doc = AgentDocument::new(
+            agent_did.clone(),
+            DID::new("web", &format!("{owner}.example.com")),
+            serde_json::from_value(public_key).unwrap(),
+        );
+        let (agent_doc_object_id, _) = ndn_lib::build_named_object_by_json(
+            "agentdoc",
+            &serde_json::to_value(&agent_doc).unwrap(),
+        );
+        let agent_id = AgentId::from_agent_did(&agent_did).unwrap();
+        AgentSpec {
+            schema_version: AGENT_SPEC_SCHEMA_VERSION,
+            agent_id,
+            agent_did: agent_did.clone(),
+            agent_doc_object_id: agent_doc_object_id.clone(),
+            agent_doc,
+            permission_mode: AgentPermissionMode::ReadWrite,
+            binding: AgentServiceBinding {
+                schema_version: AGENT_SPEC_SCHEMA_VERSION,
+                agent_did,
+                agent_doc_object_id,
+                target_app_instance_id: format!("{instance_name}.example.com@{owner}")
+                    .parse()
+                    .unwrap(),
+                service_name: "www".into(),
+                generation: 1,
+            },
+            generation: 1,
+        }
+    }
+
+    fn put_spec(input: &mut HashMap<String, String>, spec: &AgentSpec) {
+        let owner = spec.binding.target_app_instance_id.owner_user_id().to_string();
+        input.insert(
+            buckyos_api::agent_spec_key(&owner, &spec.agent_id),
+            serde_json::to_string(spec).unwrap(),
+        );
+    }
+
+    fn put_app(input: &mut HashMap<String, String>, instance: &AppInstanceId) {
+        let spec = crate::system_config_agent::app_lifecycle_tests::app_spec();
+        input.insert(
+            user_app_spec_key(instance.owner_user_id(), instance.app_id()),
+            serde_json::to_string(&spec).unwrap(),
+        );
+    }
+
+    fn base_input(agent: &AgentSpec) -> (HashMap<String, String>, String) {
+        let device = DeviceInfo::from_device_doc(&DeviceDocument::new(
+            "ood1",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        ));
+        let device_did = device.device_doc.id.to_string();
+        let settings = NodeSettings {
+            executor: Some(ExecutorSettings {
+                enabled: true,
+                allowed_devices: vec![device_did.clone(), "did:dev:unknown".into()],
+                profiles: BTreeMap::from([(
+                    "dev".to_string(),
+                    ExecutorProfile {
+                        run_as: ExecutorRunAs { uid: 1001, gid: 1001 },
+                        workdir_roots: vec!["/home/devtest/ws".into()],
+                        env: BTreeMap::new(),
+                        principals: vec![agent.agent_did.to_string()],
+                        ops: ExecutorOp::ALL.to_vec(),
+                    },
+                )]),
+                limits: ExecutorLimits::default(),
+            }),
+        };
+        let mut input = HashMap::from([
+            ("devices/ood1/info".to_string(), serde_json::to_string(&device).unwrap()),
+            (
+                "nodes/ood1/config".to_string(),
+                json!({"node_id": "ood1", "node_did": device_did, "kernel": {}, "apps": {},
+                       "frame_services": {}, "state": "running"})
+                .to_string(),
+            ),
+            ("nodes/ood1/settings".to_string(), serde_json::to_string(&settings).unwrap()),
+        ]);
+        put_spec(&mut input, agent);
+        (input, device_did)
+    }
+
+    fn apply(input: &mut HashMap<String, String>, actions: &HashMap<String, KVAction>) -> Option<ExecutorConfig> {
+        for (key, action) in actions {
+            let KVAction::SetByJsonPath(paths) = action else { panic!() };
+            let mut value: Value = serde_json::from_str(&input[key]).unwrap();
+            for (path, v) in paths {
+                buckyos_kit::set_json_by_path(&mut value, path, v.as_ref());
+            }
+            input.insert(key.clone(), value.to_string());
+        }
+        current_config(input, "ood1")
+    }
+
+    #[test]
+    fn snapshot_generation_lease_and_one_to_one_mapping() {
+        let jarvis = agent_spec("devtest", "jarvis", "jarvis");
+        let (mut input, device_did) = base_input(&jarvis);
+        let (actions, changed) = update_executor_snapshots(&input, NOW);
+        assert!(changed);
+        let first = apply(&mut input, &actions).unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(first.allowed_devices, vec![device_did]);
+        assert_eq!(first.auth_valid_until_ms, NOW + NODE_EXECUTOR_LEASE_MS);
+        let binding = &first.principal_bindings[&jarvis.agent_did.to_string()];
+        assert!(binding.enabled && !binding.app_installed);
+
+        // Inside the lease nothing is written; near its end only the deadline moves.
+        assert!(update_executor_snapshots(&input, NOW + 1_000).0.is_empty());
+        let (actions, changed) = update_executor_snapshots(&input, NOW + 15_000);
+        assert!(!changed);
+        let renewed = apply(&mut input, &actions).unwrap();
+        assert_eq!((renewed.generation, &renewed.revision), (1, &first.revision));
+        assert_eq!(renewed.auth_valid_until_ms, NOW + 15_000 + NODE_EXECUTOR_LEASE_MS);
+
+        // An input change bumps the generation.
+        put_app(&mut input, &jarvis.binding.target_app_instance_id);
+        let (actions, changed) = update_executor_snapshots(&input, NOW + 16_000);
+        assert!(changed);
+        let installed = apply(&mut input, &actions).unwrap();
+        assert_eq!(installed.generation, 2);
+        assert!(installed.principal_bindings[&jarvis.agent_did.to_string()].app_installed);
+
+        // A second Agent on the same runtime (not even a principal) removes the mapping.
+        let helper = agent_spec("devtest", "helper", "jarvis");
+        put_spec(&mut input, &helper);
+        let actions = update_executor_snapshots(&input, NOW + 17_000).0;
+        let shared = apply(&mut input, &actions).unwrap();
+        assert_eq!(shared.generation, 3);
+        assert!(shared.principal_bindings.is_empty());
+
+        // Removing the settings publishes a disabled snapshot once.
+        input.remove("nodes/ood1/settings");
+        let actions = update_executor_snapshots(&input, NOW + 18_000).0;
+        let disabled = apply(&mut input, &actions).unwrap();
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.generation, 4);
+        assert!(update_executor_snapshots(&input, NOW + 19_000).0.is_empty());
+    }
+
+    #[test]
+    fn agent_did_must_equal_app_did_and_disabled_agents_are_flagged() {
+        let odd = agent_spec("devtest", "odd", "runtime");
+        let (input, _) = base_input(&odd);
+        let config = {
+            let mut input = input.clone();
+            let actions = update_executor_snapshots(&input, NOW).0;
+            apply(&mut input, &actions).unwrap()
+        };
+        assert!(config.principal_bindings.is_empty());
+
+        let jarvis = agent_spec("devtest", "jarvis", "jarvis");
+        let (mut input, _) = base_input(&jarvis);
+        input.insert(
+            agent_settings_key("devtest", &jarvis.agent_id),
+            json!({"enabled": false}).to_string(),
+        );
+        let actions = update_executor_snapshots(&input, NOW).0;
+        let config = apply(&mut input, &actions).unwrap();
+        assert!(!config.principal_bindings[&jarvis.agent_did.to_string()].enabled);
+        assert!(executor_rbac_lines(&input).is_empty());
+    }
+
+    #[tokio::test]
+    async fn rbac_lines_grant_both_sides_and_respect_read_only() {
+        let mut jarvis = agent_spec("devtest", "jarvis", "jarvis");
+        let (mut input, _) = base_input(&jarvis);
+        put_app(&mut input, &jarvis.binding.target_app_instance_id);
+        let lines = executor_rbac_lines(&input);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("p, devtest, obj://node/ood1/executor/dev, ^executor\\.("));
+        assert!(lines[1].starts_with("p, app:jarvis.example.com, obj://node/ood1/executor/dev,"));
+
+        let enforce = |policy: String| async move {
+            let config = buckyos_api::build_current_rbac_config(Some(&policy));
+            rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        };
+        let resource = "obj://node/ood1/executor/dev";
+        let KVAction::Update(policy) = crate::system_config_agent::update_rbac_for_test(&input).await["system/rbac/policy"].clone() else { panic!() };
+        enforce(policy).await;
+        assert!(rbac::enforce("devtest", "app:jarvis.example.com", resource, "executor.exec", None).await);
+        assert!(!rbac::enforce("devtest", "app:jarvis.example.com", "obj://node/ood2/executor/dev", "executor.exec", None).await);
+        assert!(!rbac::enforce("mallory", "app:jarvis.example.com", resource, "executor.exec", None).await);
+
+        jarvis.permission_mode = AgentPermissionMode::ReadOnly;
+        put_spec(&mut input, &jarvis);
+        let KVAction::Update(policy) = crate::system_config_agent::update_rbac_for_test(&input).await["system/rbac/policy"].clone() else { panic!() };
+        enforce(policy).await;
+        assert!(rbac::enforce("devtest", "app:jarvis.example.com", resource, "executor.read", None).await);
+        assert!(!rbac::enforce("devtest", "app:jarvis.example.com", resource, "executor.exec", None).await);
+    }
+}

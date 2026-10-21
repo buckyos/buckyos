@@ -132,12 +132,36 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
             Err(XllmError::Config { .. })
         ));
     }
-    for kind in [
-        "container",
-        "container_host",
-        "remote_node",
-        "http_proxy_runtime",
-    ] {
+    let node = RuntimeConfig {
+        kind: Some("remote_node".into()),
+        workdir: Some("/home/devtest/ws".into()),
+        remote_node: Some(RemoteNodeConfig {
+            node_did: Some("did:web:ood1.test.buckyos.io".into()),
+            profile_id: Some("dev".into()),
+        }),
+        ..Default::default()
+    };
+    assert!(matches!(
+        RuntimeRegistry::from_config(&node),
+        Err(XllmError::Capability(_))
+    ));
+    assert!(matches!(
+        RuntimeRegistry::from_config_with(&node, &XllmDeps::default()),
+        Err(XllmError::Capability(_))
+    ));
+    let mut no_profile = node.clone();
+    no_profile.remote_node.as_mut().unwrap().profile_id = None;
+    assert!(matches!(
+        RuntimeRegistry::from_config(&no_profile),
+        Err(XllmError::Config { .. })
+    ));
+    let parsed = crate::xllm::parse_llm_context_file(
+        Path::new(".llm_context"),
+        "runtime: {kind: remote_node, workdir: /home/devtest/ws, remote_node: {node_did: did:web:ood1.test.buckyos.io, profile_id: dev}}",
+    )
+    .unwrap();
+    assert_eq!(parsed.runtime.unwrap(), node);
+    for kind in ["container", "container_host", "http_proxy_runtime"] {
         assert!(matches!(
             RuntimeRegistry::from_config(&RuntimeConfig {
                 kind: Some(kind.into()),

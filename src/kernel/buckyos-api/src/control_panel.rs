@@ -180,6 +180,8 @@ pub struct NodeConfig {
     pub apps: HashMap<AppInstanceId, AppServiceInstanceConfig>,
     pub frame_services: HashMap<String, FrameServiceInstanceConfig>,
     pub state: NodeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<crate::ExecutorConfig>,
 }
 
 impl NodeConfig {

@@ -68,7 +68,8 @@ Input:
 Model:
   --provider buckyos|openai    --model <name>    --file-model <name>
   buckyos model names: llm.chat (logical) or model[:variant]@provider (exact)
-  --runtime native|tmux|remote_ssh    execution mechanism (connection fields from config)
+  --runtime native|tmux|remote_ssh|remote_node
+                                      execution mechanism (connection fields from config)
   --loop-model function_call|behavior
   --tools | --no-tools         override every file-level tool switch
 
@@ -802,7 +803,9 @@ async fn run_new(mut opts: CliOpts) -> i32 {
         && input.attachments.is_empty();
 
     let observer = Arc::new(StderrObserver::new(level));
-    let deps = XllmDeps::default().with_observer(observer.clone());
+    let deps = XllmDeps::default()
+        .with_observer(observer.clone())
+        .with_node_executor(Arc::new(crate::runtime::node::BuckyosNodeConnector));
     let prepared = match XllmTask::prepare(&workdir, input, opts.overrides(), &deps).await {
         Ok(p) => p,
         Err(err) => {
@@ -1161,7 +1164,9 @@ async fn run_resume(mut opts: CliOpts) -> i32 {
     };
     let store = store_for(&opts, &workdir);
     let observer = Arc::new(StderrObserver::new(level));
-    let deps = XllmDeps::default().with_observer(observer.clone());
+    let deps = XllmDeps::default()
+        .with_observer(observer.clone())
+        .with_node_executor(Arc::new(crate::runtime::node::BuckyosNodeConnector));
     let start = XllmRun::resume(
         &store,
         opts.run.as_deref(),

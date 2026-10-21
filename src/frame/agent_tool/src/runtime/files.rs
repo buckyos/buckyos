@@ -13,6 +13,47 @@ pub trait FileBackend: Send + Sync + std::fmt::Debug {
     async fn exists(&self, path: &Path) -> Result<bool, AgentToolError>;
     async fn read(&self, path: &Path) -> Result<Vec<u8>, AgentToolError>;
     async fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), AgentToolError>;
+    /// Backends behind an executor perform a whole `write_file` as one remote
+    /// operation; `None` means read/write run here.
+    async fn write_whole(
+        &self,
+        _path: &Path,
+        _mode: WholeWriteMode,
+        _content: &[u8],
+    ) -> Option<Result<WholeWriteResult, AgentToolError>> {
+        None
+    }
+    /// Same for `edit_file`: match exactly once and replace on the target.
+    async fn edit_once(
+        &self,
+        _path: &Path,
+        _old: &str,
+        _new: &str,
+    ) -> Option<Result<WholeEditResult, AgentToolError>> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WholeWriteMode {
+    Replace,
+    Append,
+    CreateNew,
+}
+
+#[derive(Debug, Clone)]
+pub struct WholeWriteResult {
+    pub created: bool,
+    pub changed: bool,
+    pub size: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct WholeEditResult {
+    /// The content before the edit, for the diff.
+    pub original: Vec<u8>,
+    pub line: usize,
+    pub changed: bool,
 }
 
 #[derive(Debug)]

@@ -1628,6 +1628,9 @@ async fn update_rbac(
             }
         }
     }
+    for line in crate::executor_auth::executor_rbac_lines(input_config) {
+        push_policy_line(&mut rbac_policy, line);
+    }
     for app_id in read_only_apps {
         push_policy_line(
             &mut rbac_policy,
@@ -1650,6 +1653,15 @@ async fn update_rbac(
     );
 
     Ok(result)
+}
+
+#[cfg(test)]
+pub(crate) async fn update_rbac_for_test(
+    input_config: &HashMap<String, String>,
+) -> HashMap<String, KVAction> {
+    update_rbac(input_config, &NodeScheduler::new_empty(1))
+        .await
+        .unwrap()
 }
 
 fn rbac_literal(value: &str) -> String {
@@ -2461,6 +2473,19 @@ pub(crate) async fn build_schedule_plan(
         } else if scheduler_ctx.specs != last_schedule_snapshot.specs
             || scheduler_ctx.users != last_schedule_snapshot.users
         {
+            need_update_rbac = true;
+        }
+    }
+
+    if !is_boot {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let (executor_actions, executor_changed) =
+            crate::executor_auth::update_executor_snapshots(input_system_config, now_ms);
+        extend_kv_action_map(&mut tx_actions, &executor_actions);
+        if executor_changed {
             need_update_rbac = true;
         }
     }

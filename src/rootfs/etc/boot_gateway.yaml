@@ -26,6 +26,12 @@ collections:
     type: json_map
     file_path: ./node_gateway_info.json#node_info
     only_read_file: true
+  # Devices allowed to open Node Executor streams; node_daemon rewrites the
+  # file from the current authorization snapshot (empty when it is invalid).
+  EXECUTOR_ACL:
+    type: json_map
+    file_path: ./node_executor_acl.json#allowed
+    only_read_file: true
 
 stacks:
   node_rtcp:
@@ -38,6 +44,16 @@ stacks:
         id: main
         priority: 1
         blocks:
+          # Node Executor port: only RTCP-authenticated devices in the ACL,
+          # always to the loopback listener.
+          node_executor:
+            id: node_executor
+            priority: 0
+            block: |
+              if eq ${REQ.dest_port} "3184" then
+                match-include $EXECUTOR_ACL ${REQ.source_device_id} || reject;
+                forward "tcp:///127.0.0.1:3184";
+              end
           default:
             id: default
             priority: 1
@@ -73,7 +89,45 @@ stacks:
             block: |
               return "server node_gateway";
 
+  # Agent-side entry to remote Node Executors: SOCKS5 CONNECT <node-host>:3184
+  # from local processes or containers.
+  node_executor_entry:
+    protocol: tcp
+    bind: "0.0.0.0:3185"
+    hook_point:
+      main:
+        priority: 1
+        blocks:
+          default:
+            priority: 1
+            block: |
+              if match ${REQ.conn_source_ip} "127.*" then
+                return "server node_executor_socks";
+              end
+              if match ${REQ.conn_source_ip} "172.*" then
+                return "server node_executor_socks";
+              end
+              reject;
+
 servers:
+  node_executor_socks:
+    type: socks
+    target: rtcp://executor.invalid/
+    hook_point:
+      main:
+        priority: 1
+        blocks:
+          default:
+            priority: 1
+            block: |
+              eq ${REQ.target.port} "3184" || return "REJECT";
+              if eq ${REQ.target.type} "ip" then
+                eq ${REQ.target.ip} "127.0.0.1" && return "DIRECT";
+                return "REJECT";
+              end
+              eq ${REQ.target.type} "domain" || return "REJECT";
+              return "PROXY rtcp://${REQ.target.host}/";
+
   buckyos_public:
     type: dir
     root_path: ../data/srv/publish/

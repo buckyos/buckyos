@@ -1,5 +1,6 @@
 #![allow(unused_mut, unused, dead_code)]
 mod app;
+mod executor_auth;
 mod install_plan_executor;
 mod scheduler;
 mod scheduler_server;

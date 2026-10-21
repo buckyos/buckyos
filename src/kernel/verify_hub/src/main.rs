@@ -419,6 +419,18 @@ async fn validate_refresh_principal(
     }
 }
 
+async fn check_app_principal_target(target: &AuthTarget) -> Result<()> {
+    if let AuthTarget::App { app_instance_id } = target {
+        buckyos_api::check_agent_runtime_session(&get_system_config_client().await?, app_instance_id)
+            .await
+            .map_err(|error| {
+                warn!("App session refused for {}: {}", app_instance_id, error);
+                error
+            })?;
+    }
+    Ok(())
+}
+
 async fn resolve_user_auth_target(user_id: &str, target: &AuthTarget) -> Result<AuthTarget> {
     match target {
         AuthTarget::App { app_instance_id } => {
@@ -996,6 +1008,9 @@ impl VerifyHubApiHandler for VerifyHubServer {
         } else {
             target.clone()
         };
+        if principal_kind == SessionPrincipalKind::App {
+            check_app_principal_target(&target).await?;
+        }
         //let token_jti = rpc_session_token.jti.ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
 
         // ============================================================
@@ -1066,6 +1081,9 @@ impl VerifyHubApiHandler for VerifyHubServer {
         } else {
             claims.target
         };
+        if principal_kind == SessionPrincipalKind::App {
+            check_app_principal_target(&target).await?;
+        }
 
         info!("Handle refresh token request for session: {}", session_key);
 

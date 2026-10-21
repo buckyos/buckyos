@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::runtime::files::{FileBackend, LocalFileBackend};
+use crate::runtime::files::{FileBackend, LocalFileBackend, WholeWriteMode};
 use async_trait::async_trait;
 use log::warn;
 use schemars::JsonSchema;
@@ -249,6 +249,32 @@ impl TypedTool for EditFileTool {
             )
             .await?;
 
+        if let Some(result) = self
+            .cfg
+            .backend
+            .edit_once(&abs_path, &old_string, &new_string)
+            .await
+        {
+            let result = result?;
+            let original_content = String::from_utf8_lossy(&result.original).to_string();
+            let updated_content = original_content.replacen(old_string.as_str(), &new_string, 1);
+            let (diff, diff_truncated) = build_simple_diff(
+                &file_path,
+                &original_content,
+                &updated_content,
+                self.cfg.max_diff_lines,
+            );
+            return Ok(EditFileOutput {
+                matched: true,
+                changed: result.changed,
+                operation: "replace".to_string(),
+                line_no: Some(result.line),
+                diff,
+                diff_truncated,
+                file_path,
+            });
+        }
+
         let original_content =
             String::from_utf8_lossy(&self.cfg.backend.read(&abs_path).await?).to_string();
         let matches: Vec<usize> = original_content
@@ -462,6 +488,41 @@ impl TypedTool for WriteFileTool {
                 &self.cfg.allowed_write_roots,
             )
             .await?;
+
+        let whole_mode = match mode {
+            "append" => WholeWriteMode::Append,
+            "new" => WholeWriteMode::CreateNew,
+            _ => WholeWriteMode::Replace,
+        };
+        self.cfg.ensure_write_size_allowed(&file_path, content.len())?;
+        if self.cfg.allow_create {
+            if let Some(result) = self
+                .cfg
+                .backend
+                .write_whole(&abs_path, whole_mode, content.as_bytes())
+                .await
+            {
+                let result = result?;
+                let operation = match mode {
+                    "append" => "append",
+                    "new" => "new",
+                    _ if result.created => "create",
+                    _ => "write",
+                }
+                .to_string();
+                return Ok(WriteFileOutput {
+                    created: result.created,
+                    changed: result.changed,
+                    bytes_written: result.size,
+                    line_count: count_content_lines(&content),
+                    file_path,
+                    operation,
+                    content_preview: build_content_preview(&content),
+                    content_len: content.len(),
+                    bytes_after: result.size,
+                });
+            }
+        }
 
         let exists = self.cfg.backend.exists(&abs_path).await?;
         if mode == "new" && exists {

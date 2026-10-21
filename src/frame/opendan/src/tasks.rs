@@ -287,6 +287,8 @@ pub fn zone_xllm_deps(agent_did: &str, owner_user: Option<String>) -> XllmDeps {
     );
     deps.buckyos_tasks = shell_tasks.resolver(None);
     deps.shell_tasks = Some(shell_tasks);
+    deps.node_executor = agent_tool::runtime::node::SocksNodeConnector::from_buckyos_runtime()
+        .map(|c| c as Arc<dyn agent_tool::runtime::node::NodeExecutorConnector>);
     deps
 }
 

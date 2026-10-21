@@ -1454,7 +1454,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
             if v.get("kind").and_then(Yaml::as_str).is_some_and(|k| {
                 matches!(
                     k,
-                    "container" | "container_host" | "remote_node" | "http_proxy_runtime"
+                    "container" | "container_host" | "http_proxy_runtime"
                 )
             }) {
                 return Err(XllmError::Capability(format!(
@@ -1731,7 +1731,7 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         let f = &layer.file;
         if let Some(runtime) = &f.runtime {
             merged.runtime.merge_over(runtime);
-            if runtime.workdir.is_some() && merged.runtime.kind() != "remote_ssh" {
+            if runtime.workdir.is_some() && !merged.runtime.is_remote() {
                 let base = layer.path.parent().unwrap_or(Path::new("."));
                 merged.runtime.workdir = runtime
                     .workdir
@@ -3767,6 +3767,10 @@ pub struct XllmDeps {
     pub lock_dir: Option<PathBuf>,
     /// 执行体（默认按 `.llm_context` 的 runtime 配置构造）。
     pub runtime: Option<Arc<dyn AgentRuntime>>,
+    /// How a `remote_node` runtime reaches Node Executors (stream + App
+    /// session token); provided by a BuckyOS host. `None`: `remote_node` is a
+    /// Capability error.
+    pub node_executor: Option<Arc<dyn crate::runtime::node::NodeExecutorConnector>>,
     /// 宿主可访问 buckyos task-mgr 时注入的 task 解析器（long-tool TODO §4）；
     /// 进程内 task-mgr 总是存在。
     pub buckyos_tasks: Option<Arc<dyn RunningTaskResolver>>,
@@ -3840,6 +3844,7 @@ impl Default for XllmDeps {
             observer: Arc::new(NoopRunObserver),
             lock_dir: None,
             runtime: None,
+            node_executor: None,
             buckyos_tasks: None,
             local_tasks: InProcessTaskManager::new(),
             shell_tasks: None,
@@ -3880,6 +3885,14 @@ impl XllmDeps {
 
     pub fn with_runtime(mut self, runtime: Arc<dyn AgentRuntime>) -> Self {
         self.runtime = Some(runtime);
+        self
+    }
+
+    pub fn with_node_executor(
+        mut self,
+        connector: Arc<dyn crate::runtime::node::NodeExecutorConnector>,
+    ) -> Self {
+        self.node_executor = Some(connector);
         self
     }
 
@@ -4457,6 +4470,7 @@ fn shell_runtime_note(descriptor: &RuntimeDescriptor) -> ShellRuntimeNote {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        "remote_node" => descriptor.host.clone().unwrap_or_default(),
         "remote_ssh" => descriptor
             .target
             .get("connection")
@@ -7992,7 +8006,7 @@ impl XllmRun {
             &store,
             &run_id,
             Path::new(&config.runtime_descriptor.workdir),
-            tools.enabled && config.runtime.kind() != "remote_ssh",
+            tools.enabled && !config.runtime.is_remote(),
             &deps,
         )
         .await?;
@@ -8167,7 +8181,7 @@ impl XllmRun {
             store,
             &run_id_s,
             Path::new(&record.config.runtime_descriptor.workdir),
-            record.config.tools.enabled && record.config.runtime.kind() != "remote_ssh",
+            record.config.tools.enabled && !record.config.runtime.is_remote(),
             &deps,
         )
         .await?;
@@ -8194,7 +8208,7 @@ impl XllmRun {
         }
         let runtime = match &deps.runtime {
             Some(r) => r.clone(),
-            None => crate::runtime::RuntimeRegistry::from_config(&record.config.runtime)?,
+            None => crate::runtime::RuntimeRegistry::from_config_with(&record.config.runtime, &deps)?,
         };
         let mut runtime_deps = deps.clone();
         runtime_deps.runtime = Some(runtime.clone());
@@ -12778,6 +12792,12 @@ impl XllmToolManager {
         self.runner = Some(runner);
         self.descriptor = Some(descriptor);
         self.info = Some(info);
+    }
+
+    /// How this run's task resolver reads `shell` tasks a previous executor
+    /// left on the runtime (remote runtimes keep no local exec directory).
+    pub(crate) fn set_runtime_recovery(&self, reader: Arc<dyn crate::tasks::RuntimeRecoveryReader>) {
+        self.resolver.set_recovery(reader);
     }
     pub fn runtime_info(&self) -> Option<&RuntimeInfo> {
         self.info.as_ref()

@@ -138,6 +138,7 @@ apps:
     data_paths: 
     - bin/applist.json
     - etc/node_gateway_info.json
+    - etc/node_executor_acl.json
     - etc/user_gateway.yaml
     - etc/post_gateway.yaml
     - etc/node_gateway_params.json

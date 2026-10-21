@@ -51,6 +51,16 @@ buckyos system info                                 # BuckyOS version, build_ver
   (your own calls only); per-model health and prices: `ai_provider health <exact_model>|models` (agent container).
   Adding/editing providers or routing: no CLI verb, the owner uses Control Panel AI settings.
 - Developer mode, Zone display, desktop appearance: Desktop UI (`system/buckyos_dev_config` needs a sudo token the CLI lacks).
+- Node Executor (Agents running commands/files on a node, `doc/arch/node_exector.md`): the setting is the `executor`
+  field of `nodes/<node>/settings` (`enabled`, `allowed_devices` = exact device DIDs from `devices/<id>/info`,
+  `profiles.<id>` = `run_as{uid,gid}` (non-root), `workdir_roots`, `env`, `principals` = exact Agent DIDs, `ops`, and
+  `limits`); writing it needs an owner sudo token. The scheduler turns it into `nodes/<node>/config.executor` (never
+  edit): check `generation` grew, the Agent is in `principal_bindings` with `enabled`/`app_installed` true (a runtime
+  shared by two AgentSpecs is not mapped), and `auth_valid_until_ms` keeps moving (30 s lease). On the node:
+  `etc/node_executor_acl.json` lists the allowed devices, node_daemon logs `node executor opened, store_id=…`, the
+  executor listens on `127.0.0.1:3184`, Agents enter through the gateway SOCKS entry `:3185`. Its ledger is
+  `local/node_daemon/executor/`; a reinstall (`start.py --all`/`--reinstall`) clears `local/`, gives a new store_id, and
+  earlier runs then report StoreMismatch instead of resuming.
 - The rest goes through raw `system-config get|list|set|set-file|append`. Settings (user-adjustable, fine to edit):
   `users/<u>/apps/<app>/settings`, `users/<u>/agents/<agent>/{settings,profile}`, `services/<svc>/settings`,
   `users/<u>/desktop/<session>/<state>`. Config (derived by the scheduler, rewritten or broken by hand edits):

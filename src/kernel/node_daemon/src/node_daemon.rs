@@ -1328,42 +1328,6 @@ async fn get_system_config_client(
     }
 }
 
-#[cfg(unix)]
-fn reap_exited_children_nonblocking() -> usize {
-    let mut reaped = 0usize;
-
-    loop {
-        let mut status = 0i32;
-        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if pid > 0 {
-            reaped += 1;
-            info!("reaped exited child process pid={} status={}", pid, status);
-            continue;
-        }
-
-        if pid == 0 {
-            break;
-        }
-
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::ECHILD) => break,
-            Some(libc::EINTR) => continue,
-            _ => {
-                warn!("waitpid(-1, WNOHANG) failed: {}", err);
-                break;
-            }
-        }
-    }
-
-    reaped
-}
-
-#[cfg(not(unix))]
-fn reap_exited_children_nonblocking() -> usize {
-    0
-}
-
 async fn node_daemon_main_loop(
     node_id: &str,
     node_host_name: &str,
@@ -1395,7 +1359,7 @@ async fn node_daemon_main_loop(
     let mut name_provider_registered = false;
 
     loop {
-        let reaped = reap_exited_children_nonblocking();
+        let reaped = crate::service_pkg::reap_detached_children();
         if reaped > 0 {
             info!("node daemon reaped {} exited child process(es)", reaped);
         }
@@ -1988,6 +1952,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     if let Err(err) = write_boot_node_gateway_config(&keep_tunnels) {
         warn!("write boot node_gateway.json failed: {}", err);
     }
+    if let Err(err) = crate::node_executor_host::write_boot_executor_acl() {
+        warn!("write boot node_executor_acl.json failed: {}", err);
+    }
 
     keep_cyfs_gateway_service(
         node_id.as_str(),
@@ -2222,6 +2189,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         start_node_kevent_service(kevent_service).await;
         warn!("kevent service returned, node_daemon will continue without kevent http endpoint");
     });
+
+    crate::node_executor_host::spawn_node_executor(
+        device_name.clone(),
+        node_identity.device_did.to_string(),
+    );
 
     node_daemon_main_loop(node_id, &device_name, is_ood, is_desktop)
         .await

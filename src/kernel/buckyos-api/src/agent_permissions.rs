@@ -1,7 +1,7 @@
 use crate::{
-    agent_spec_key, user_app_spec_key, AgentId, AgentPermissionMode, AgentSpec, AppInstanceId,
-    AppServiceSpec, AppType, PermissionItem, SystemConfigClient, SystemConfigError,
-    APP_PERMISSION_USER_HOME,
+    agent_settings_key, agent_spec_key, user_app_spec_key, AgentId, AgentPermissionMode,
+    AgentSettings, AgentSpec, AppInstanceId, AppServiceSpec, AppType, PermissionItem,
+    SystemConfigClient, SystemConfigError, APP_PERMISSION_USER_HOME,
 };
 use ::kRPC::{RPCErrors, Result};
 
@@ -72,6 +72,71 @@ pub async fn load_agent_permission_mode(
     ))
 }
 
+/// An App session for an Agent-backed runtime (AppType::Agent, or the target
+/// of some AgentSpec binding) requires a valid, enabled Agent bound to it.
+/// Ordinary Apps are unaffected.
+pub async fn check_agent_runtime_session(
+    client: &SystemConfigClient,
+    instance: &AppInstanceId,
+) -> Result<()> {
+    let owner = instance.owner_user_id();
+    let entries = match client.list(&format!("users/{owner}/agents")).await {
+        Ok(entries) => entries,
+        Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+        Err(error) => {
+            return Err(RPCErrors::ReasonError(format!("read Agent bindings: {error}")))
+        }
+    };
+    let mut bound = Vec::new();
+    for entry in entries {
+        let Ok(agent_id) = AgentId::parse(&entry) else {
+            continue;
+        };
+        let spec = match client.get(&agent_spec_key(owner, &agent_id)).await {
+            Ok(value) => serde_json::from_str::<AgentSpec>(&value.value).ok(),
+            Err(SystemConfigError::KeyNotFound(_)) => None,
+            Err(error) => {
+                return Err(RPCErrors::ReasonError(format!("read AgentSpec: {error}")))
+            }
+        };
+        let Some(spec) = spec else { continue };
+        if !spec.binding.references_runtime(instance) {
+            continue;
+        }
+        let valid = spec.validate().is_ok() && spec.agent_id == agent_id;
+        let enabled = match client.get(&agent_settings_key(owner, &agent_id)).await {
+            Ok(value) => serde_json::from_str::<AgentSettings>(&value.value)
+                .map(|s| s.enabled)
+                .unwrap_or(false),
+            Err(SystemConfigError::KeyNotFound(_)) => true,
+            Err(error) => {
+                return Err(RPCErrors::ReasonError(format!("read AgentSettings: {error}")))
+            }
+        };
+        bound.push(valid && enabled);
+    }
+    let app_type = match client.get(&user_app_spec_key(owner, instance.app_id())).await {
+        Ok(value) => serde_json::from_str::<AppServiceSpec>(&value.value)
+            .ok()
+            .map(|spec| spec.app_doc.get_app_type()),
+        Err(SystemConfigError::KeyNotFound(_)) => None,
+        Err(error) => return Err(RPCErrors::ReasonError(format!("read App spec: {error}"))),
+    };
+    agent_runtime_session_allowed(&bound, app_type)
+}
+
+fn agent_runtime_session_allowed(bound: &[bool], app_type: Option<AppType>) -> Result<()> {
+    if bound.is_empty() && app_type != Some(AppType::Agent) {
+        return Ok(());
+    }
+    if bound.iter().any(|ok| *ok) {
+        return Ok(());
+    }
+    Err(RPCErrors::NoPermission(
+        "AgentRuntimeNotBound: no valid enabled Agent binds this App".to_string(),
+    ))
+}
+
 fn runtime_permission_mode(
     app_type: AppType,
     permissions: &[PermissionItem],
@@ -110,6 +175,15 @@ fn merge_permission_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_runtime_sessions_need_an_enabled_binding() {
+        assert!(agent_runtime_session_allowed(&[], None).is_ok());
+        assert!(agent_runtime_session_allowed(&[], Some(AppType::AppService)).is_ok());
+        assert!(agent_runtime_session_allowed(&[], Some(AppType::Agent)).is_err());
+        assert!(agent_runtime_session_allowed(&[false], Some(AppType::AppService)).is_err());
+        assert!(agent_runtime_session_allowed(&[false, true], Some(AppType::Agent)).is_ok());
+    }
 
     #[test]
     fn agent_permission_shared_runtime_keeps_most_restrictive_mode() {

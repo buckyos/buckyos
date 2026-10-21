@@ -1,0 +1,25 @@
+[package]
+name = "node_executor"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO"]
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+fs2 = { workspace = true }
+buckyos-api = { path = "../buckyos-api" }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+agent_tool = { path = "../../frame/agent_tool" }
+kRPC = { workspace = true }
+name-lib = { workspace = true }
+llm_context = { path = "../../frame/llm_context" }

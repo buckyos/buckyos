@@ -2028,6 +2028,12 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Host of this runtime's node gateway (loopback, or the docker host
+    /// gateway inside a container).
+    pub fn get_local_gateway_host(&self) -> String {
+        self.resolve_local_service_host()
+    }
+
     fn resolve_local_service_host(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => self

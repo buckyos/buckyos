@@ -53,7 +53,7 @@ const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 /// Bytes of output kept in a progress / cancel text.
 pub const OUTPUT_TAIL_BYTES: usize = 2048;
 pub(crate) const LOCAL_ENGINE: &str = "native";
-pub(crate) const TIMEOUT_EXIT_CODE: i32 = 124;
+pub const TIMEOUT_EXIT_CODE: i32 = 124;
 const UNLIMITED_TIMEOUT: Duration = Duration::from_secs(365 * 24 * 3600);
 
 /// How long `shell` waits inside the call.
@@ -143,6 +143,10 @@ impl ShellRuntimeNote {
             ),
             "remote_ssh" => format!(
                 "The command runs on the remote host `{}`; it keeps running if this executor is interrupted or exits.",
+                self.target
+            ),
+            "remote_node" => format!(
+                "The command runs on node `{}` through its Node Executor; it keeps running if this executor or its connection goes away, an interrupt cancels it on the node, and it is bounded by the node's maximum execution time.",
                 self.target
             ),
             _ => "The command is a child process of this executor: an interrupt or a timeout ends its process group; processes it leaves behind after returning are not managed.".into(),

@@ -437,10 +437,18 @@ impl InProcessTaskManager {
 /// `RunningTaskResolver` of one run: the in-process task manager, the
 /// run's execution directories (for `shell` tasks of a previous executor)
 /// and, when the host has one, the buckyos task-mgr.
+/// Reads `local:shell:<call_id>` tasks a previous executor left on a runtime
+/// without a local execution directory (`remote_node`): only queries.
+#[async_trait]
+pub trait RuntimeRecoveryReader: Send + Sync {
+    async fn shell_state(&self, run: &RunBinding, task_id: &str, call_id: &str) -> Option<TaskState>;
+}
+
 pub struct CompositeTaskResolver {
     local: Arc<InProcessTaskManager>,
     run: RunBindingSlot,
     buckyos: Option<Arc<dyn RunningTaskResolver>>,
+    recovery: Mutex<Option<Arc<dyn RuntimeRecoveryReader>>>,
     /// Non-local tasks this context follows (ids seen in results).
     watched: Mutex<BTreeSet<String>>,
     /// How the model follows tasks in this run (set when the tools are
@@ -501,6 +509,7 @@ impl CompositeTaskResolver {
             local,
             run,
             buckyos: None,
+            recovery: Mutex::new(None),
             watched: Mutex::new(BTreeSet::new()),
             followup: Mutex::new(TaskFollowup::Tools),
         }
@@ -508,6 +517,10 @@ impl CompositeTaskResolver {
 
     pub fn set_followup(&self, followup: TaskFollowup) {
         *self.followup.lock().expect("followup") = followup;
+    }
+
+    pub fn set_recovery(&self, reader: Arc<dyn RuntimeRecoveryReader>) {
+        *self.recovery.lock().expect("recovery") = Some(reader);
     }
 
     pub fn with_buckyos(mut self, resolver: Arc<dyn RunningTaskResolver>) -> Self {
@@ -540,11 +553,27 @@ impl CompositeTaskResolver {
                 }
                 state
             }
-            None => match self.shell_exec_dir(task_id) {
-                Some(dir) => self.state_from_exec_dir(task_id, &dir),
-                None => TaskState::Unknown {
-                    reason: "this executor did not start the task and has no record of it".into(),
-                },
+            None => {
+                let recovery = self.recovery.lock().expect("recovery").clone();
+                if let (Some(reader), Some(binding), Some(call_id)) = (
+                    recovery,
+                    self.run_binding(),
+                    task_id.strip_prefix(&format!("{LOCAL_TASK_PREFIX}shell:")),
+                ) {
+                    if let Some(state) = reader.shell_state(&binding, task_id, call_id).await {
+                        return state;
+                    }
+                }
+                self.exec_dir_or_unknown(task_id)
+            }
+        }
+    }
+
+    fn exec_dir_or_unknown(&self, task_id: &str) -> TaskState {
+        match self.shell_exec_dir(task_id) {
+            Some(dir) => self.state_from_exec_dir(task_id, &dir),
+            None => TaskState::Unknown {
+                reason: "this executor did not start the task and has no record of it".into(),
             },
         }
     }

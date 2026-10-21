@@ -8,6 +8,7 @@ members = [
     "./kernel/sys_config_service",
     "./kernel/verify_hub",
     "./kernel/node_daemon",
+    "./kernel/node_executor",
     "./kernel/scheduler",
     "./kernel/task_manager",
     "./kernel/workflow",

@@ -16,6 +16,8 @@
 | 3181 | node_daemon kevent 订阅端口（main / http） | 仅本机 |
 | 3182 | device active 协议用的 http 端口 | 仅局域网 |
 | 3183 | kevent native 端口 | 仅本机 |
+| 3184 | Node Executor Command Stream（node_daemon 内置，只监听 127.0.0.1，远端经 RTCP + gateway 设备 ACL 进入） | 仅本机 |
+| 3185 | node-gateway 的 Node Executor SOCKS5 入口（Agent 打开到 `<node-host>:3184` 的 RTCP Stream） | 仅本机与容器网桥 |
 | 3200 | system_config 端口 | 仅局域网 |
 
 ## 内核服务端口（kernel service）
