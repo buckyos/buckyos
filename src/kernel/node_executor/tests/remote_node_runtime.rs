@@ -1,6 +1,8 @@
 //! agent_tool's `remote_node` runtime against a real executor (in-process
 //! streams, real workers as uid 65534). Needs root.
 
+#![cfg(target_os = "linux")]
+
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

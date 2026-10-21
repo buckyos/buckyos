@@ -2,19 +2,27 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::Stdio;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use buckyos_api::{ExecutorError, ExecutorErrorCode, ExecutorRunAs};
+#[cfg(target_os = "linux")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
+#[cfg(target_os = "linux")]
+use tokio::process::Command;
 
 use crate::worker::{WorkerJob, WorkerReply};
 
 /// Reads the script from stdin, then runs it with stdin on /dev/null, so the
 /// command text never appears in argv.
+#[cfg(target_os = "linux")]
 pub const SHELL_WRAPPER: &str = "IFS= read -r -d '' __nx_script; exec </dev/null; eval \"$__nx_script\"";
+#[cfg(target_os = "linux")]
 const MAX_REPLY_LINE: usize = 64 * 1024;
+#[cfg(target_os = "linux")]
 const FILE_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
@@ -32,12 +40,14 @@ pub fn default_shell() -> PathBuf {
     PathBuf::from("/bin/bash")
 }
 
+#[cfg(target_os = "linux")]
 fn internal(msg: impl Into<String>) -> ExecutorError {
     ExecutorError::new(ExecutorErrorCode::Internal, msg)
 }
 
 /// setgroups([]) + setgid + setuid (std, before exec), a new process group,
 /// no_new_privs, and every inherited descriptor marked close-on-exec.
+#[cfg(target_os = "linux")]
 fn drop_privileges(cmd: &mut Command, run_as: &ExecutorRunAs) {
     cmd.uid(run_as.uid).gid(run_as.gid).process_group(0);
     unsafe {
@@ -63,6 +73,7 @@ fn drop_privileges(cmd: &mut Command, run_as: &ExecutorRunAs) {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn spawn_shell(
     shell: &Path,
     run_as: &ExecutorRunAs,
@@ -85,6 +96,20 @@ pub fn spawn_shell(
     cmd.spawn()
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn spawn_shell(
+    _shell: &Path,
+    _run_as: &ExecutorRunAs,
+    _cwd: &Path,
+    _env: &BTreeMap<String, String>,
+) -> std::io::Result<Child> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "node executor execution requires Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
 pub fn signal_group(pgid: u32, signal: i32) {
     if pgid > 1 {
         unsafe {
@@ -101,6 +126,7 @@ pub enum FileJobOutcome {
     Unknown(ExecutorError),
 }
 
+#[cfg(target_os = "linux")]
 pub async fn run_file_job(
     launcher: &WorkerLauncher,
     run_as: &ExecutorRunAs,
@@ -186,4 +212,18 @@ pub async fn run_file_job(
         return FileJobOutcome::Unknown(internal("worker reply payload length mismatch"));
     }
     FileJobOutcome::Reply(reply, payload)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn run_file_job(
+    _launcher: &WorkerLauncher,
+    _run_as: &ExecutorRunAs,
+    _job: &WorkerJob,
+    _payload: &[u8],
+    _max_reply_payload: u64,
+) -> FileJobOutcome {
+    FileJobOutcome::SpawnFailed(ExecutorError::new(
+        ExecutorErrorCode::Capability,
+        "node executor file operations require Linux",
+    ))
 }

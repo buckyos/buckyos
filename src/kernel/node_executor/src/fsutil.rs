@@ -9,7 +9,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 pub fn fsync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
+    #[cfg(unix)]
+    File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 fn tmp_sibling(path: &Path) -> std::path::PathBuf {

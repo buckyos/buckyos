@@ -624,6 +624,7 @@ async fn describe(
     })
 }
 
+#[cfg(unix)]
 fn hostname() -> String {
     let mut buf = [0u8; 256];
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
@@ -632,6 +633,11 @@ fn hostname() -> String {
     }
     let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).to_string()
+}
+
+#[cfg(not(unix))]
+fn hostname() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
 }
 
 fn begin_upload(

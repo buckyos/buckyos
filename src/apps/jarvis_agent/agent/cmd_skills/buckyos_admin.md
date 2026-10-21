@@ -60,7 +60,9 @@ buckyos system info                                 # BuckyOS version, build_ver
   `etc/node_executor_acl.json` lists the allowed devices, node_daemon logs `node executor opened, store_id=…`, the
   executor listens on `127.0.0.1:3184`, Agents enter through the gateway SOCKS entry `:3185`. Its ledger is
   `local/node_daemon/executor/`; a reinstall (`start.py --all`/`--reinstall`) clears `local/`, gives a new store_id, and
-  earlier runs then report StoreMismatch instead of resuming.
+  earlier runs then report StoreMismatch instead of resuming. Command/file execution currently requires a Linux
+  node_daemon running as root. Windows, macOS, and non-root Linux hosts expose only control capabilities
+  (`open_stream`, `describe`, `query`, `cancel`); execution, file operations, and workdir resolution return `Capability`.
 - The rest goes through raw `system-config get|list|set|set-file|append`. Settings (user-adjustable, fine to edit):
   `users/<u>/apps/<app>/settings`, `users/<u>/agents/<agent>/{settings,profile}`, `services/<svc>/settings`,
   `users/<u>/desktop/<session>/<state>`. Config (derived by the scheduler, rewritten or broken by hand edits):

@@ -81,7 +81,7 @@ pub struct NodeExecutor {
 /// Linux to switch to the profile's OS identity; otherwise only the control
 /// operations remain and the rest return Capability.
 fn host_capabilities() -> BTreeSet<ExecutorOp> {
-    let mut caps: BTreeSet<ExecutorOp> = [
+    let caps: BTreeSet<ExecutorOp> = [
         ExecutorOp::OpenStream,
         ExecutorOp::Describe,
         ExecutorOp::Query,
@@ -89,13 +89,16 @@ fn host_capabilities() -> BTreeSet<ExecutorOp> {
     ]
     .into_iter()
     .collect();
-    if cfg!(target_os = "linux") && unsafe { libc::geteuid() } == 0 {
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::geteuid() } == 0 {
+        let mut caps = caps;
         caps.extend([
             ExecutorOp::Exec,
             ExecutorOp::Read,
             ExecutorOp::Write,
             ExecutorOp::Edit,
         ]);
+        return caps;
     }
     caps
 }

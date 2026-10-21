@@ -1,6 +1,8 @@
 //! End-to-end Command Stream tests over in-memory streams with real worker
 //! processes. Running them needs root (the worker drops to uid 65534).
 
+#![cfg(target_os = "linux")]
+
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

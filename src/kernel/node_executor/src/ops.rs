@@ -16,10 +16,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, watch};
 
 use crate::now_ms;
-use crate::spawn::{run_file_job, signal_group, spawn_shell, FileJobOutcome, WorkerLauncher};
+#[cfg(target_os = "linux")]
+use crate::spawn::signal_group;
+use crate::spawn::{run_file_job, spawn_shell, FileJobOutcome, WorkerLauncher};
 use crate::store::{Dedupe, OpBudget, OpIdentity, OpRequestRecord, Store, STORE_SCHEMA_VERSION};
 use crate::worker::WorkerJob;
 
+#[cfg(target_os = "linux")]
 const TERM_GRACE: Duration = Duration::from_secs(2);
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 const PUSH_CHUNK: usize = 16 * 1024;
@@ -637,9 +640,17 @@ impl OpsManager {
         let stdout = summaries.iter().find(|s| s.0 == ExecutorChannel::Stdout).map(|s| s.1.clone());
         let stderr = summaries.iter().find(|s| s.0 == ExecutorChannel::Stderr).map(|s| s.1.clone());
 
-        use std::os::unix::process::ExitStatusExt;
         let (exit_code, signal) = match &status {
-            Ok(s) => (s.code(), s.signal()),
+            Ok(s) => {
+                #[cfg(unix)]
+                let signal = {
+                    use std::os::unix::process::ExitStatusExt;
+                    s.signal()
+                };
+                #[cfg(not(unix))]
+                let signal = None;
+                (s.code(), signal)
+            }
             Err(_) => (None, None),
         };
         let storage_failed = *storage_failed.lock().unwrap();
@@ -935,6 +946,7 @@ async fn collect(
 
 /// SIGTERM the process group, SIGKILL after a grace period, and confirm the
 /// leader exited.
+#[cfg(target_os = "linux")]
 async fn terminate(pgid: u32, child: &mut tokio::process::Child) {
     signal_group(pgid, libc::SIGTERM);
     if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_err() {
@@ -942,6 +954,12 @@ async fn terminate(pgid: u32, child: &mut tokio::process::Child) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+async fn terminate(_pgid: u32, child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+}
+
+#[cfg(unix)]
 fn passwd_entry(uid: u32) -> Option<(String, String)> {
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
@@ -953,4 +971,9 @@ fn passwd_entry(uid: u32) -> Option<(String, String)> {
     let home = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) }.to_string_lossy().to_string();
     let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }.to_string_lossy().to_string();
     Some((home, name))
+}
+
+#[cfg(not(unix))]
+fn passwd_entry(_uid: u32) -> Option<(String, String)> {
+    None
 }

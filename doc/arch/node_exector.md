@@ -224,7 +224,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 - `run_as`、roots、env 是管理员授权上限，请求不能自选 UID、shell、结果目录或扩大 roots。
 - 形态 A 的 worker UID 非 0 且不同于 daemon；非 root daemon 返回 Capability，不以同 UID 执行。形态 C 的 `run_as` 无意义，由宿主 App 权限决定。
 - roots 约束 cwd 和内置文件工具，**不约束 shell 内任意程序的 I/O**；OS 账号权限才是实际边界。不把 roots 描述成 sandbox。
-- 未知字段、空白名单、不支持平台、非法 uid/gid 均拒绝启用；旧 NodeConfig 无该段时行为不变。
+- 未知字段、空白名单、非法 uid/gid 均拒绝启用；未实现 worker 的平台仅开放控制能力，执行请求返回 Capability；旧 NodeConfig 无该段时行为不变。
 
 RBAC 派生：对资源 `obj://node/<node_name>/executor/<profile_id>`，生成通过 §7.2 映射的原 token owner 与绑定 `app:<AppId>` 两侧的精确规则；动作是 `executor.open_stream/describe/exec/read/write/edit/cancel/query`。沿用既有 RBAC 的 `(sub, target.authorization_key())` 检查；不把原 token 的 sub 改成 AgentDID，也不伪造 JWT。AgentDID 与完整 AppInstance 的校验由 Executor 的 profile/binding 准入补足，不能只依赖不含 owner 的 app 授权键。操作权限取 profile.ops、AgentSpec.permission_mode 与 RBAC 的交集；ReadOnly 拒绝 exec/write/edit。query/cancel 还要求 §7.3 的操作归属一致。删除授权、改 binding、收紧 permission_mode 或停用都触发撤权。设置管理权限与 Agent 调用权限分别定义；不给 App 侧读 Agent 私钥的权限。
 
@@ -699,7 +699,7 @@ cargo check --workspace
 - 正常授权采用有界传播和短租期，控制面不可用会暂停执行入口并取消活跃操作；断线可恢复不代表执行可以永久脱离授权控制面。
 - Frozen 的 DoS 面（§9.4）；等待期不能区分合法用户与持同一 key 的攻击者（§9.5）。
 - 形态 C 的后台运行、权限与各平台能力未验证；cyfs-gateway-lib 在移动端的可嵌入性未验证。
-- 非 root daemon 下 Command Stream 不可用（返回 Capability），桌面安装版需单独处理。
+- 命令与文件执行仅支持 Linux root daemon；非 root Linux、Windows/macOS 保留 `open_stream` / `describe` / `query` / `cancel` 控制能力，执行、文件操作及带 workdir 的 describe 返回 Capability。Linux worker 的降权、进程组与 `/proc/self/fd` 实现按目标平台隔离编译。
 - Windows/macOS 的 worker 降权未设计。
 - 恢复端点的结果真实性在 D-10 定稿前只依赖 HTTPS。
 
