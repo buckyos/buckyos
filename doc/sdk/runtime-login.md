@@ -76,7 +76,7 @@ Verify Hub 的 `login_by_jwt` 会验证断言的签名、过期时间、`sub`、
 
 ### refresh_token
 
-`refresh_token` 只用于调用 verify-hub 的 `refresh_token`，固定为 `token_use=refresh, sudo=false`，并与对应 session 携带完全相同的 AuthTarget。它当前有效期是 7 天，`aud` 为 `verify-hub`。每次 refresh 都会返回新的 token pair，旧 refresh token 立即失效。
+`refresh_token` 只用于调用 verify-hub 的 `refresh_token`，固定为 `token_use=refresh, sudo=false`，并与对应 session 携带完全相同的 AuthTarget。它当前有效期是 7 天，`aud` 为 `verify-hub`。每次 refresh 都会返回新的 token pair，并替换掉这条会话（family）的 refresh token。刚被替换的上一枚在 10 秒宽限期内再次出示时，verify-hub 返回这条 family 当前的那对 token，不再签发也不撤销；超出宽限期或更早的 refresh token 再次出示会被当成重用，整条 family 被撤销。
 
 业务服务不能把 refresh token 或 LoginAssertion 当 session token 用。共享本地验签入口只信任 `iss/kid=verify-hub` 且通过 `token_use=session + AuthTarget` 集中校验的 token。
 
@@ -160,7 +160,7 @@ const account = await buckyos.login();
 
 前端登录页调用 `buckyos.hashPassword(username, password, nonce)` 后再提交。verify-hub 会用 `UserSettings.password + login_nonce` 计算 SHA-256，并和提交值比较。
 
-因此，直接调用 raw RPC 时不要把明文密码传给 verify-hub；也不要复用 `login_nonce`。同一 `username + app_instance_id + login_nonce` 成功后会进入缓存，再次使用会被当成重放。verify-hub 会在密码登录、用户 JWT/SSO、sudo 和 refresh 前重新检查用户状态及 App–User 可用关系，失败时返回 `AppAccessDenied`。
+因此，直接调用 raw RPC 时不要把明文密码传给 verify-hub；也不要复用 `login_nonce`。同一 `username + app_instance_id + login_nonce` 成功后会进入缓存，再次使用会被当成重放。verify-hub 会在密码登录、用户 JWT/SSO、sudo 和 refresh 前重新检查用户状态及 App–User 可用关系：用户 inactive、实例不存在或已删除、availability 拒绝时返回 `AppAccessDenied`；读 system-config 失败等暂时性错误原样返回，不报成 `AppAccessDenied`。
 
 ## Web SSO 与 runtime login 的关系
 
@@ -218,7 +218,7 @@ token 绑定的逻辑 App 或具体 Owner 实例和当前 runtime/app 不一致�
 
 ### refresh 后旧 token 失效
 
-这是预期行为。refresh token 是轮换的，每次 refresh 成功后都必须保存新的 refresh token。旧 refresh token 再次使用会失败，并可能触发 session 撤销。
+这是预期行为。refresh token 是轮换的，每次 refresh 成功后都必须保存新的 refresh token。刚被轮换掉的那一枚只在 10 秒宽限期内还能用，返回的是当前那对 token（同一 host 的多个页面共用 refresh cookie、同时续期时靠它不掉登录）；超过宽限期再用旧 refresh token 会失败，并撤销整条 session，之后新的 refresh token 也无法续期。logout 删除的会话不会经宽限期复活。
 
 浏览器 SSO 场景下由 `/sso_refresh` 负责写回新的 HttpOnly cookie；如果自己调用 verify-hub client，就必须更新本地保存的 refresh token。
 

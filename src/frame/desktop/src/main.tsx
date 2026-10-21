@@ -12,16 +12,11 @@ import { isPublicRoute } from './publicRoutes'
 import { isPortalRoot } from './app/homestation/links'
 import { registerDesktopServiceWorker } from './serviceWorker'
 import { setPresentationViewer } from './presentation/zone'
+import { redirectToDesktopLogin } from './auth/loginRedirect'
 
 interface AccountInfo {
   session_token?: unknown
   user_id?: unknown
-}
-
-function redirectToDesktopLogin() {
-  const loginUrl = new URL('/login', window.location.origin)
-  loginUrl.searchParams.set('redirect_url', window.location.href)
-  window.location.replace(loginUrl.toString())
 }
 
 function accountSessionToken(accountInfo: AccountInfo | null): string {

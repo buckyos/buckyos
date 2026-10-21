@@ -945,6 +945,7 @@ impl ControlPanelServer {
 
         let req_seq = rpc_request.seq;
         let req_trace_id = rpc_request.trace_id.clone();
+        let carries_credentials = rpc_request.method.starts_with("auth.");
         let response = match self.handle_rpc_call(rpc_request, client_ip).await {
             Ok(response) => response,
             Err(error) => {
@@ -962,8 +963,11 @@ impl ControlPanelServer {
             )
         })?;
 
-        Ok(http::Response::builder()
-            .header(CONTENT_TYPE, "application/json")
+        let mut response = http::Response::builder().header(CONTENT_TYPE, "application/json");
+        if carries_credentials {
+            response = response.header(CACHE_CONTROL, "no-store");
+        }
+        Ok(response
             .body(Self::boxed_http_body(body_json))
             .map_err(|error| {
                 server_err!(
@@ -986,7 +990,16 @@ impl RPCHandler for ControlPanelServer {
             req.token = Self::extract_rpc_session_token(&req);
         }
 
-        let principal = self.authenticate_rpc_request(&req).await?;
+        let principal = match self.authenticate_rpc_request(&req).await {
+            Ok(principal) => principal,
+            Err(RPCErrors::InvalidToken(reason))
+                if req.method == sys_auth_backend::PREPARE_APP_LAUNCH_METHOD =>
+            {
+                info!("prepare_app_launch source session rejected: {}", reason);
+                return Ok(Self::app_launch_source_inactive_response(req.seq));
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(principal) = principal.as_ref() {
             principal.require_agent_permission(&req.method)?;
             log::debug!(
@@ -1003,6 +1016,10 @@ impl RPCHandler for ControlPanelServer {
             "ui.locale.set" => self.handle_ui_locale_set(req).await,
             // Auth
             "auth.login" => self.handle_auth_login(req).await,
+            sys_auth_backend::PREPARE_APP_LAUNCH_METHOD => {
+                self.handle_auth_prepare_app_launch(req, principal.as_ref())
+                    .await
+            }
 
             // User Mgr
             "user.list" => self.handle_user_list(req, principal.as_ref()).await,

@@ -1,5 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test'
-import { openFromAllApps, pinTaskbarApps } from '../fixtures/desktop'
+import { openFromAllApps, pinTaskbarApps, routeAppHost } from '../fixtures/desktop'
 
 // The taskbar tests below exercise its mechanics with these pins rather than the defaults.
 const systemPins = ['settings', 'diagnostics', 'users-agents', 'my-network']
@@ -357,13 +357,11 @@ test('systest opens its zone subdomain inside a desktop window', async ({ page }
     }
   })
 
-  await page.route('http://systest.localhost:4173/**', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'text/html',
-      body: '<main data-testid="systest-fixture">Systest fixture</main>',
-    })
-  })
+  const callbacks = await routeAppHost(
+    page,
+    'http://systest.localhost:4173/**',
+    '<main data-testid="systest-fixture">Systest fixture</main>',
+  )
 
   await page.goto('/?scenario=normal')
 
@@ -371,11 +369,12 @@ test('systest opens its zone subdomain inside a desktop window', async ({ page }
   await expect(page.getByTestId('window-systest')).toBeVisible()
   await expect(page.getByTestId('systest-frame')).toHaveAttribute(
     'src',
-    'http://systest.localhost:4173/',
+    /^http:\/\/systest\.localhost:4173\/sso_callback\?nonce=\d+&redirect_url=http%3A%2F%2Fsystest\.localhost%3A4173%2F$/,
   )
   await expect(
     page.frameLocator('[data-testid="systest-frame"]').getByTestId('systest-fixture'),
   ).toHaveText('Systest fixture')
+  expect(callbacks).toHaveLength(1)
 
   expect(consoleErrors).toEqual([])
 })

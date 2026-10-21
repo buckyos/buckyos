@@ -563,8 +563,11 @@ impl AppAvailabilityResolver {
 
     pub async fn get_user_settings(&self, user_id: &str) -> Result<UserSettings, RPCErrors> {
         let key = format!("users/{user_id}/settings");
-        let value = self.client.get(&key).await.map_err(|error| {
-            RPCErrors::ReasonError(format!("user `{user_id}` not found: {error}"))
+        let value = self.client.get(&key).await.map_err(|error| match error {
+            SystemConfigError::KeyNotFound(_) => {
+                RPCErrors::KeyNotExist(format!("user `{user_id}` not found: {error}"))
+            }
+            error => RPCErrors::ReasonError(format!("read user `{user_id}` failed: {error}")),
         })?;
         let settings: UserSettings = serde_json::from_str(&value.value).map_err(|error| {
             RPCErrors::ReasonError(format!("invalid user settings for `{user_id}`: {error}"))
@@ -577,17 +580,35 @@ impl AppAvailabilityResolver {
         Ok(settings)
     }
 
+    async fn get_owner_settings(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<Option<UserSettings>, RPCErrors> {
+        match self.get_user_settings(owner_user_id).await {
+            Ok(settings) => Ok(Some(settings)),
+            Err(RPCErrors::KeyNotExist(_) | RPCErrors::NoPermission(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn resolve_installation(
         &self,
         app_instance_id: &AppInstanceId,
     ) -> Result<ResolvedAppInstallation, RPCErrors> {
         let spec_path =
             user_app_spec_key(app_instance_id.owner_user_id(), app_instance_id.app_id());
-        let value = self.client.get(&spec_path).await.map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "app instance `{app_instance_id}` not found: {error}"
-            ))
-        })?;
+        let value = self
+            .client
+            .get(&spec_path)
+            .await
+            .map_err(|error| match error {
+                SystemConfigError::KeyNotFound(_) => RPCErrors::KeyNotExist(format!(
+                    "app instance `{app_instance_id}` not found: {error}"
+                )),
+                error => RPCErrors::ReasonError(format!(
+                    "read app instance `{app_instance_id}` failed: {error}"
+                )),
+            })?;
         let spec: AppServiceSpec = serde_json::from_str(&value.value).map_err(|error| {
             RPCErrors::ReasonError(format!("invalid app spec `{spec_path}`: {error}"))
         })?;
@@ -599,7 +620,7 @@ impl AppAvailabilityResolver {
             )));
         }
         if !spec.is_installed() {
-            return Err(RPCErrors::ReasonError(format!(
+            return Err(RPCErrors::KeyNotExist(format!(
                 "APP_NOT_INSTALLED: app instance `{app_instance_id}` has been deleted"
             )));
         }
@@ -642,9 +663,8 @@ impl AppAvailabilityResolver {
         let target_user = self.get_user_settings(user_id).await?;
         let installation = self.resolve_installation(app_instance_id).await?;
         let owner_settings = self
-            .get_user_settings(&installation.spec.owner_user_id)
-            .await
-            .ok();
+            .get_owner_settings(&installation.spec.owner_user_id)
+            .await?;
         let policy = self
             .load_policy(app_instance_id)
             .await?
@@ -664,9 +684,8 @@ impl AppAvailabilityResolver {
     ) -> Result<AppAvailabilityDecision, RPCErrors> {
         let installation = self.resolve_installation(app_instance_id).await?;
         let owner_settings = self
-            .get_user_settings(&installation.spec.owner_user_id)
-            .await
-            .ok();
+            .get_owner_settings(&installation.spec.owner_user_id)
+            .await?;
         let policy = self
             .load_policy(app_instance_id)
             .await?

@@ -202,8 +202,9 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 **(a) 登录鉴权层**（`sys_auth_backend`）—— 处理登入/登出与 token：
 
 * `auth.login`：取 `username` + `password` + 结构化 `target`；SSO 模式以 Gateway/redirect 为真相源解析 `AuthTarget::App(AppInstanceId)` 或 `AuthTarget::System(SystemServiceId)`，前端 `appid` 只做一致性检查。根域 `_` 固定解析为 `System(control-panel)`，不创建 `control-panel@system`。若带 `redirect_url`，pending nonce 同时绑定 target、canonical origin 和完整 redirect。
-* `auth.refresh` / `auth.verify` / `auth.logout` / `auth.issue_sso_token`：刷新 / 校验 / 注销 / 签发 SSO token。
-* HTTP 侧：`/sso_callback` 只有在 pending/callback/实际 request 的 origin、redirect 和 Gateway route target 全部一致，且 token pair 的 target/use 合法后才写两枚 host-only cookie；失败会尽力吊销 pending refresh。`/sso_refresh` 在调用 Verify Hub 前后都校验当前 origin/route 和 target，任何失败都清 cookie；`/sso_logout` 尽力吊销后始终清 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散。
+* `auth.refresh` / `auth.verify` / `auth.logout`：刷新 / 校验 / 注销。
+* `auth.prepare_app_launch`：桌面免密打开 App。参数只有 `app_instance_id` 和 `redirect_url`（最终 App URL），不接受 `username`、`target` 等自报身份的字段。要求普通（非 sudo）Control Panel 用户会话，不在公开白名单内；通用认证对本方法返回 `InvalidToken` 时（缺 token、验签或有效期失败、用户 inactive、读 user settings 失败）映射为 `source_session_inactive` 结果。`redirect_url` 按与 SSO 相同的 Gateway route 规则解析，必须是与 `app_instance_id` 完全一致的 App target，否则返回 `invalid_target`（读 gateway info 失败等仍是 RPC error）。随后以本服务的服务会话调用 verify-hub `delegate_user_session`（verify-hub 只接受 Control Panel 服务会话调用），并把原始桌面 token 作为来源证明；`source_inactive` / `access_denied` 映射为 `source_session_inactive` / `access_denied`。返回的 token pair 必须是同一用户、目标实例的普通 User session/refresh 且未过期，才和密码登录一样存进 60 秒一次性 pending，响应 `{ "status": "ready", "callback_url": "<app origin>/sso_callback?nonce=…&redirect_url=…" }`，不含 token。所有 `auth.*` 响应带 `Cache-Control: no-store`。结果状态、桌面处理和已知取舍见 [SSO.md](../sdk/SSO.md)“从桌面打开 App”。
+* HTTP 侧：`/sso_callback` 只有在 pending/callback/实际 request 的 origin、redirect 和 Gateway route target 全部一致，且 token pair 的 target/use 合法后才写两枚 host-only cookie（响应 `Cache-Control: no-store`）；失败会尽力吊销 pending refresh。nonce、token 和含 nonce 的 URL 不写入日志。`/sso_refresh` 在调用 Verify Hub 前后都校验当前 origin/route 和 target，任何失败都清 cookie；`/sso_logout` 尽力吊销后始终清 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散。
 * **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），从 `sub` 解出 username，加载 `users/{username}/settings` 校验状态为 `Active`，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
 
 **(b) 桌面 UI Session 状态层**（`ui_session_mgr`）—— 持久化每个用户的桌面会话（外观/窗口布局/图标布局/小组件布局）：
@@ -315,7 +316,6 @@ identifier / staging handle
 | `auth.refresh` | 刷新 token |
 | `auth.verify` | 校验 token |
 | `auth.logout` | 注销 |
-| `auth.issue_sso_token` | 签发 SSO token |
 | `user.invite.get` | 凭邀请链接读邀请详情 |
 | `user.invite.accept` | 凭邀请链接接受邀请、激活账号 |
 | `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
@@ -373,4 +373,4 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 2. **原子事务**：跨路径写用 `exec_tx`；唯一已知的尾随非原子点是 RBAC `append`，需知情并择机收敛。
 3. **最小越权**：受保护路径用调用者 token 访问 `system_config`，RBAC 在 `system_config` 侧对调用者直接生效。
 4. **异步任务化**：App 安装类重操作返回 `task_id` + 后台任务推进 + 仓库追加审计凭证，进度可观测、操作可审计。
-5. **公开面最小化**：未登录可达面被收敛为 8 个公开 RPC 方法 + 3 个 SSO HTTP 路由 + 静态 UI；前端再以 `publicRoutes` 显式列白 `/login`、`/userprofile`。
+5. **公开面最小化**：未登录可达面被收敛为 7 个公开 RPC 方法 + 3 个 SSO HTTP 路由 + 静态 UI；前端再以 `publicRoutes` 显式列白 `/login`、`/userprofile`。

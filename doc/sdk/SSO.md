@@ -77,7 +77,7 @@ POST /sso_refresh
 ```
 
 - 返回**短期 session_token**（放在响应体里，供 JS 读取并用于后续请求）。
-- 同时轮换 `buckyos_refresh_token`（旧的立即失效），并把短期 token 写入独立的 host-only `buckyos_session_token`。
+- 同时轮换 `buckyos_refresh_token`，并把短期 token 写入独立的 host-only `buckyos_session_token`。被替换的旧 refresh token 只有 10 秒宽限期：同一 host 的多个窗口共用这枚 cookie，同时续期时，后到的请求拿到的是同一对新 token，不会撤销会话；超出宽限期再出示旧 token 按重用处理，整条会话被撤销。
 - session 快过期时再调一次 `/sso_refresh` 续期即可，无需重新登录。
 
 ### 4. 带着 session_token 调 kRPC
@@ -99,6 +99,49 @@ POST `/sso_logout`：吊销 refresh token，并清掉当前 App host 下的 `buc
 
 ---
 
+## 从桌面打开 App（免密启动）
+
+用户已经登录 BuckyOS 桌面（Zone 根域上的 `System(control-panel)` 会话）时，从桌面打开一个有权访问的 Web App 不会再出现登录页。桌面不把自己的 token 交给 App，也不共享父域 Cookie，而是为目标 App 实例换一张一次性票据：
+
+```text
+1. 桌面先构造最终 App URL（含 path、query 和 AppFrame 的 #bfp=<frame nonce>），然后
+   POST /kapi/control-panel  auth.prepare_app_launch
+     params: { app_instance_id, redirect_url: <最终 App URL> }   sys[1] = 桌面 session token
+2. Control Panel 校验来源是普通（非 sudo）Control Panel 用户会话，按 Gateway route 解析
+   redirect_url 得到 AuthTarget::App，并要求与 app_instance_id 完全一致；
+   再以自己的服务会话调用 verify-hub delegate_user_session，换出同一用户、目标实例的
+   普通 User token pair，存进 60 秒的一次性 pending（与密码登录共用）。
+   响应只含 callback_url，不含 token：
+     { "status": "ready", "callback_url": "https://<app-host>/sso_callback?nonce=…&redirect_url=…" }
+3. 桌面让 iframe 导航到 callback_url；后续与上文第 2–4 步相同：/sso_callback 写入目标 host 的
+   两枚 host-only Cookie 并 302 回完整 redirect_url，App 页面再用 /sso_refresh 恢复会话。
+```
+
+新 token 的 `sub` 仍是操作者，`app_owner_user_id` 是安装者；它不继承桌面的 system target，也不带 sudo。用户仍受 App availability 和业务 RBAC 约束。
+
+`auth.prepare_app_launch` 把预期内的失败放在成功响应的 `status` 里，桌面只按这个枚举分支（kRPC 错误在线上只是文本）：
+
+| `status` | 含义 | 桌面处理 |
+| --- | --- | --- |
+| `ready` | 附带 `callback_url` | 导航 iframe |
+| `source_session_inactive` | 桌面会话认证失败，或来源会话已注销、不存在（如 verify-hub 重启） | 强制刷新一次桌面会话后重试一次；仍是该状态显示错误和重试；刷新失败才进入登录页 |
+| `access_denied` | availability 拒绝：无权、实例不存在或已删除、owner 不可用 | 显示无权访问，不自动重试 |
+| `invalid_target` | URL/route 不合法、不在本 Zone、不是 App route，或与 `app_instance_id` 不一致 | 显示无法打开；内容打开回退到 Preview |
+
+kRPC error、HTTP 非 200 和网络错误都按暂时性失败处理（显示重试，不跳登录页）。
+
+verify-hub 的 `delegate_user_session` 只接受 Control Panel 服务会话作为调用方（`sys` 中的 token 必须是 verify-hub 签发、`principal_kind` 为 System 或 Device、target 为 `System(control-panel)`、非 sudo）。`/kapi/verify-hub` 对浏览器可达，用户会话或其它服务直接调用会被拒绝，浏览器因此拿不到委托出的 token pair。来源 token 必须是本 Zone verify-hub 签发、仍属于活跃会话（未注销）的 Control Panel 用户 session；来源会话 refresh 后，同一会话里旧但未过期的 access token 仍可用。桌面 logout 完成后不能再提交新委托。
+
+退出语义与已知取舍（第一版有意接受）：
+
+- 委托出的 App 会话与桌面会话相互独立：桌面 logout 只阻止之后的新委托，已签发的 callback 票据仍按 60 秒 TTL 可用，App 会话按自身 logout/有效期结束，refresh 轮换后可一直续期。因此泄露一枚 15 分钟有效的桌面 session 就能换出长期有效的 App 会话。
+- 每次启动都签一条新会话并覆盖目标 host 的 Cookie，不探测已有会话。被覆盖的旧会话和过期未兑换的 pending 一样留在 verify-hub 内存里，直到 refresh 过期（7 天）被清理。
+- refresh 宽限期内，出示上一枚 refresh 能拿到当前 token；被窃取的旧 refresh 只在合法轮换后的几秒内有用。
+- 同一 App host 的多个窗口共享这组 Cookie：从另一桌面用户重新启动会把该 host 上的登录切换成新用户。
+- pending 票据在 Control Panel 进程内存，会话缓存在 verify-hub 进程内存；第一版沿用单实例部署前提。
+
+---
+
 ## Session Token 是什么
 
 登录的目标是让 client 拿到一个可保存、可复用的 **Session Token**，它代表一个已完成认证的会话，至少包含：
@@ -114,7 +157,7 @@ exp / jti      过期时间、nonce
 iss            签发方（Zone 的 verify-hub）
 ```
 
-> 一次登录通常返回**短期 session_token + 长期 refresh token**。session 过期用 refresh 流程换新；refresh token 一旦使用立即轮换，旧的失效。
+> 一次登录通常返回**短期 session_token + 长期 refresh token**。session 过期用 refresh 流程换新；refresh token 一旦使用立即轮换，旧的只在 10 秒宽限期内返回当前那对 token，之后再用即视为重用并撤销整条会话。
 
 对鉴权方而言，登录方式（密码 / 钱包 / Passkey）是**透明的**——只看 token 可信不可信、token 里声明的用户/App/权限上下文是什么。这就是为什么扩展登录方式不需要改下游业务。
 
@@ -218,7 +261,8 @@ sudo 由 verify-hub 提供：弹出提权对话框，要求管理员**再次输�
 
 - verify-hub `auth.login`（用户名/DID + 密码）签发 session_token + refresh_token。
 - websdk `AuthClient.login()` -> `sys.<zone>/login?redirect_url=`。
-- control panel `/sso_callback`（把 nonce、canonical origin/route 与 AuthTarget 一起校验后才写 cookie）、`/sso_refresh`（只接受同 origin/route 的 refresh target并轮换 token）、`/sso_logout`。
+- control panel `/sso_callback`（把 nonce、canonical origin/route 与 AuthTarget 一起校验后才写 cookie）、`/sso_refresh`（只接受同 origin/route 的 refresh target并轮换 token，旧 refresh 有 10 秒宽限期）、`/sso_logout`。
+- 桌面免密启动 App：control panel `auth.prepare_app_launch` + verify-hub `delegate_user_session`（仅 Control Panel 可调用）。
 - session_token 多通道传递（X-Auth / Bearer / query / kRPC token）+ trust keys 验签 + RBAC。
 - sudo 机制（提权对话框 + 短时 sudo token，受 appid 限制）。
 

@@ -9,6 +9,8 @@ import { appFrames, openContent } from '../content/open'
 import { openPreview } from '../preview/launch'
 import { isMockRuntime } from '../../runtime'
 import { useAppText } from '../../presentation/appText'
+import { useAppLaunch } from './launch'
+import { AppLaunchStatus } from './AppLaunchStatus'
 export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: AppContentLoaderProps) {
   const iframe = useRef<HTMLIFrameElement>(null)
   const title = useAppText()(app).title
@@ -32,13 +34,16 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
       url.hash = `bfp=${nonce}`; return url.href
     } catch { return undefined }
   }, [origin, nonce, request, payload])
+  const appLaunch = useAppLaunch(app.appInstanceId ?? app.id, src)
+  const frameUrl = appLaunch.outcome?.kind === 'ready' ? appLaunch.outcome.url : undefined
+  const unopenable = !src || appLaunch.outcome?.kind === 'invalid_target'
   const latest = useRef({ request, themeMode, locale })
   useEffect(() => { latest.current = { request, themeMode, locale } }, [request, themeMode, locale])
   useEffect(() => {
-    if (!src && request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) }
-  }, [src, request, title])
+    if (unopenable && request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) }
+  }, [unopenable, request, title])
   useEffect(() => {
-    if (!origin || !windowId || !src) return
+    if (!origin || !windowId || !frameUrl) return
     const { request, themeMode, locale } = latest.current
     const frame = new AppFrameHost({ target: () => iframe.current?.contentWindow ?? null, origin,
       init: { nonce, windowId, theme: { mode: themeMode }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, shellCapabilities: ['content.open', 'beforeClose', 'back'] },
@@ -55,7 +60,7 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
       catch { return window.confirm(locale.startsWith('zh') ? '应用无响应，是否强制关闭？' : 'App is not responding. Force close?') }
     })
     return () => { unregister(); appFrames.delete(windowId); frame.dispose(); host.current = undefined }
-  }, [origin, src, windowId, app.id, app.appInstanceId, nonce, payload?.handlerKey])
+  }, [origin, frameUrl, windowId, app.id, app.appInstanceId, nonce, payload?.handlerKey])
   useEffect(() => { host.current?.update({ theme: { mode: themeMode }, locale }); host.current?.send('frame.themeChanged', { mode: themeMode }); host.current?.send('frame.localeChanged', { locale }) }, [themeMode, locale])
   // A click inside the (cross-origin) iframe never reaches the shell document, so the window
   // container's pointer handling cannot raise this window. What the shell does observe is that
@@ -75,5 +80,6 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     return true
   })
   if (!src) return <p>Unable to open {title}</p>
-  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={src} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) } }} />
+  if (!frameUrl) return <AppLaunchStatus outcome={appLaunch.outcome} title={title} onRetry={appLaunch.retry} />
+  return <iframe ref={iframe} className="block h-full w-full border-0" data-testid="web-app-frame" src={frameUrl} title={title} allow="clipboard-read; clipboard-write; fullscreen" onError={() => { if (request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) } }} />
 }

@@ -59,3 +59,26 @@ export async function pinTaskbarApps(page: Page, appIds: string[]) {
     }
   }, appIds)
 }
+
+export const MOCK_APP_LAUNCH_KEY = 'buckyos.mock.app-launch'
+
+/**
+ * Serves a web App host the way the Gateway does for a desktop launch: `/sso_callback` sends the
+ * browser on to the `redirect_url` it was given, every other path gets `body`. Records the callback
+ * URLs it saw. The callback redirects from a page, not with a 302: Playwright does not route the
+ * request a fulfilled redirect leads to, which would reach the dev server instead of the fixture.
+ */
+export async function routeAppHost(page: Page, url: string | RegExp, body: string): Promise<string[]> {
+  const callbacks: string[] = []
+  await page.route(url, async (route) => {
+    const requested = new URL(route.request().url())
+    if (requested.pathname === '/sso_callback') {
+      callbacks.push(requested.href)
+      const target = JSON.stringify(requested.searchParams.get('redirect_url') ?? '/')
+      await route.fulfill({ status: 200, contentType: 'text/html', body: `<script>location.replace(${target})</script>` })
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'text/html', body })
+  })
+  return callbacks
+}

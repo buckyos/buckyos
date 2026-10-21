@@ -2,7 +2,7 @@
 
 日期：2026-10-21
 
-状态：待实施（2026-10-21 按 review 修订：结果状态枚举、delegate 只允许 Control Panel 调用、refresh 宽限期、已知取舍）。面向后续 Code Agent；本任务交付代码、回归测试及接入文档。
+状态：已实施（2026-10-21），单测、Desktop e2e 与 test.buckyos.io 真实 Zone DV 通过，改动未提交。实施记录见文末。（同日先按 review 修订：结果状态枚举、delegate 只允许 Control Panel 调用、refresh 宽限期、已知取舍。）
 
 ## 目标与范围
 
@@ -140,51 +140,51 @@ Cache-Control: no-store
 
 ### A Verify Hub 和共享协议
 
-- [ ] 在 `buckyos-api/src/verify_hub_client.rs` 新增 `delegate_user_session` 的 request、client 方法、handler trait 方法和 RPC adapter，参数为 `source_session_token` 与结构化 `target`。结果带 `status`：`issued`（附现有 `TokenPair` 的两个字段）、`source_inactive`、`access_denied`；其它失败仍走 RPC error。adapter 把请求 `sys` 中的调用方 token（`req.token`）一并交给 handler。同步更新相关 trait 测试实现（`MockVerifyHub`）。
-- [ ] Verify Hub 只接受 Control Panel 调用该方法。调用方 token 必须通过 verify-hub 签名、issuer、有效期和 claims 校验，且满足 `token_use=session`、`principal_kind` 为 System 或 Device（沿用 task-manager、nfs-server 对服务主体的判定）、target 为 `System(control-panel)`、`sudo=false`。用户 session（包括桌面 token 本身）、其他服务、未换票的设备签名 LoginAssertion 一律以 `NoPermission` 拒绝。Control Panel 是 KernelService，`get_verify_hub_client()` 走 `get_zone_service_krpc_client`，会带上 runtime 的服务 session；启动早期 runtime token 尚未换成 verify-hub session 时调用会失败，按暂时性失败处理。
-- [ ] 在 Verify Hub 实现该方法。来源必须通过本 Zone verify-hub 签名、issuer、有效期及完整 claims 校验，并满足 `principal_kind=user`、`token_use=session`、`AuthTarget::System(control-panel)`、`sudo=false`。签名或有效期失败、用户 inactive、来源 family 不活跃时返回 `source_inactive`；来源种类不符属于调用方错误，返回 `InvalidToken`。
-- [ ] 从已验证来源 token 取 `sub`；复用用户 active 检查并拒绝 root 等现有禁止的主体。来源身份不能由 Control Panel service token、设备 assertion、参数中的 appid 或 Referer 替代。
-- [ ] 第一版仅接受 App target，调用 `resolve_user_auth_target` 复用 availability 判定，拒绝时返回 `access_denied`。普通 App session、同名 `App(control-panel@user)`、system/device/app principal、refresh 和 sudo token 均不能作为来源；不得给此接口开放任意 System target。
-- [ ] 拆开 availability 的拒绝和暂时性失败。`AppAvailabilityResolver` 目前把 system-config 的 `KeyNotFound` 和读失败都转成 `ReasonError`，`resolve_user_auth_target` 又把 `check_user` 的任何错误都映射成 `NoPermission("AppAccessDenied")`，暂时性失败因此会冒充无权访问。按枚举拆分：用户或实例 spec 不存在、实例已删除映射为 `KeyNotExist`（保留现有消息文本），用户 inactive 保持 `NoPermission`。`resolve_user_auth_target` 只把这两类和 `decision.allowed=false` 报为 `AppAccessDenied`，其它错误原样返回。密码登录、sudo、refresh 共用这条路径，拒绝语义不变，只是暂时性失败不再冒充拒绝。
-- [ ] 生成独立随机 session_id，并通过 `generate_token_pair` 签发同一用户、目标实例的普通 User token pair；不消耗或轮换桌面 refresh。复用现有按 session_key 存放的 `TOKEN_CACHE`、`REFRESH_TOKEN_CACHE` 和 refresh 生命周期（verify-hub 没有专门的 App token 缓存）。
+- [x] 在 `buckyos-api/src/verify_hub_client.rs` 新增 `delegate_user_session` 的 request、client 方法、handler trait 方法和 RPC adapter，参数为 `source_session_token` 与结构化 `target`。结果带 `status`：`issued`（附现有 `TokenPair` 的两个字段）、`source_inactive`、`access_denied`；其它失败仍走 RPC error。adapter 把请求 `sys` 中的调用方 token（`req.token`）一并交给 handler。同步更新相关 trait 测试实现（`MockVerifyHub`）。
+- [x] Verify Hub 只接受 Control Panel 调用该方法。调用方 token 必须通过 verify-hub 签名、issuer、有效期和 claims 校验，且满足 `token_use=session`、`principal_kind` 为 System 或 Device（沿用 task-manager、nfs-server 对服务主体的判定）、target 为 `System(control-panel)`、`sudo=false`。用户 session（包括桌面 token 本身）、其他服务、未换票的设备签名 LoginAssertion 一律以 `NoPermission` 拒绝。Control Panel 是 KernelService，`get_verify_hub_client()` 走 `get_zone_service_krpc_client`，会带上 runtime 的服务 session；启动早期 runtime token 尚未换成 verify-hub session 时调用会失败，按暂时性失败处理。
+- [x] 在 Verify Hub 实现该方法。来源必须通过本 Zone verify-hub 签名、issuer、有效期及完整 claims 校验，并满足 `principal_kind=user`、`token_use=session`、`AuthTarget::System(control-panel)`、`sudo=false`。签名或有效期失败、用户 inactive、来源 family 不活跃时返回 `source_inactive`；来源种类不符属于调用方错误，返回 `InvalidToken`。
+- [x] 从已验证来源 token 取 `sub`；复用用户 active 检查并拒绝 root 等现有禁止的主体。来源身份不能由 Control Panel service token、设备 assertion、参数中的 appid 或 Referer 替代。
+- [x] 第一版仅接受 App target，调用 `resolve_user_auth_target` 复用 availability 判定，拒绝时返回 `access_denied`。普通 App session、同名 `App(control-panel@user)`、system/device/app principal、refresh 和 sudo token 均不能作为来源；不得给此接口开放任意 System target。
+- [x] 拆开 availability 的拒绝和暂时性失败。`AppAvailabilityResolver` 目前把 system-config 的 `KeyNotFound` 和读失败都转成 `ReasonError`，`resolve_user_auth_target` 又把 `check_user` 的任何错误都映射成 `NoPermission("AppAccessDenied")`，暂时性失败因此会冒充无权访问。按枚举拆分：用户或实例 spec 不存在、实例已删除映射为 `KeyNotExist`（保留现有消息文本），用户 inactive 保持 `NoPermission`。`resolve_user_auth_target` 只把这两类和 `decision.allowed=false` 报为 `AppAccessDenied`，其它错误原样返回。密码登录、sudo、refresh 共用这条路径，拒绝语义不变，只是暂时性失败不再冒充拒绝。
+- [x] 生成独立随机 session_id，并通过 `generate_token_pair` 签发同一用户、目标实例的普通 User token pair；不消耗或轮换桌面 refresh。复用现有按 session_key 存放的 `TOKEN_CACHE`、`REFRESH_TOKEN_CACHE` 和 refresh 生命周期（verify-hub 没有专门的 App token 缓存）。
 
 ### B 来源会话存活与并发
 
 当前 `verify_token` 的验签与 claims 校验不能证明来源尚未注销；logout 删除会话缓存后，旧 JWT 仍可能未到 exp。新委托入口必须额外检查活跃会话。
 
-- [ ] 用 `(sub, target.canonical_key(), session_id)` 查来源会话，复用现有 `REFRESH_TOKEN_CACHE` 中未过期的 family 记录，不新增会话数据库。
-- [ ] 不把来源 access token 的 jti 与最新 access token jti 做相等判断：正常 refresh 保留 session_id、替换 token，旧但未过期的 access token 仍属于同一活跃会话。
-- [ ] 收敛 refresh/cache 临界区。现有 refresh 先读取校验，在锁外查询用户和 availability，再删除旧 refresh、签发、插入；中间会出现暂时性“不活跃”，logout 之后还可能重新插入而复活会话。`REFRESH_TOKEN_CACHE` 本身就是一把全局 Mutex，不新增锁结构：网络查询放在锁外，签发后在一次加锁内以旧 refresh jti 做 compare-and-replace，记录已删除则拒绝提交。保留 `validate_active_refresh_token` 的重用检测和整条 family 撤销语义；CAS 发现旧 refresh 已被消费时不能静默降级为只拒绝这一次请求，宽限期是唯一例外（见下条）。
-- [ ] 增加 refresh 宽限期，解决同一 host 多窗口并发续期（见“当前实现”的说明）。family 记录额外保存上一枚 refresh 的 jti 和轮换时间。如果出示的正是刚被轮换掉的上一枚，且在宽限期内（秒级常量，例如 10 秒），就返回该 family 当前的那对 token，不再签发也不撤销；当前 session 可以取自同一 session_key 的 `TOKEN_CACHE`，也可以随 family 记录保存。更旧的 jti 或超出宽限期，仍按重用撤销整条 family。CAS 失败时同样适用这条规则；logout 删除记录后不能经宽限复活。不在 websdk 加跨窗口锁：Web Locks 只在安全上下文可用，DV 配置默认 `force_https: false`，用 HTTP 访问时没有这个 API。
-- [ ] 在同一次 `REFRESH_TOKEN_CACHE` 加锁内确认来源 family 仍然存在，并插入新的目标 family，保证 logout 完成后不能再提交新委托。网络查询、用户和 availability 查询放在锁外，避免长时间持锁。
-- [ ] 明确第一版注销语义：桌面 logout 禁止后续新委托；此前已签发的 callback 票据仍按 60 秒 TTL 消费，App 独立会话按自身 logout/有效期结束。全局注销及联动撤销未消费票据不在本任务实现，相关风险见“已知取舍与风险”。
+- [x] 用 `(sub, target.canonical_key(), session_id)` 查来源会话，复用现有 `REFRESH_TOKEN_CACHE` 中未过期的 family 记录，不新增会话数据库。
+- [x] 不把来源 access token 的 jti 与最新 access token jti 做相等判断：正常 refresh 保留 session_id、替换 token，旧但未过期的 access token 仍属于同一活跃会话。
+- [x] 收敛 refresh/cache 临界区。现有 refresh 先读取校验，在锁外查询用户和 availability，再删除旧 refresh、签发、插入；中间会出现暂时性“不活跃”，logout 之后还可能重新插入而复活会话。`REFRESH_TOKEN_CACHE` 本身就是一把全局 Mutex，不新增锁结构：网络查询放在锁外，签发后在一次加锁内以旧 refresh jti 做 compare-and-replace，记录已删除则拒绝提交。保留 `validate_active_refresh_token` 的重用检测和整条 family 撤销语义；CAS 发现旧 refresh 已被消费时不能静默降级为只拒绝这一次请求，宽限期是唯一例外（见下条）。
+- [x] 增加 refresh 宽限期，解决同一 host 多窗口并发续期（见“当前实现”的说明）。family 记录额外保存上一枚 refresh 的 jti 和轮换时间。如果出示的正是刚被轮换掉的上一枚，且在宽限期内（秒级常量，例如 10 秒），就返回该 family 当前的那对 token，不再签发也不撤销；当前 session 可以取自同一 session_key 的 `TOKEN_CACHE`，也可以随 family 记录保存。更旧的 jti 或超出宽限期，仍按重用撤销整条 family。CAS 失败时同样适用这条规则；logout 删除记录后不能经宽限复活。不在 websdk 加跨窗口锁：Web Locks 只在安全上下文可用，DV 配置默认 `force_https: false`，用 HTTP 访问时没有这个 API。
+- [x] 在同一次 `REFRESH_TOKEN_CACHE` 加锁内确认来源 family 仍然存在，并插入新的目标 family，保证 logout 完成后不能再提交新委托。网络查询、用户和 availability 查询放在锁外，避免长时间持锁。
+- [x] 明确第一版注销语义：桌面 logout 禁止后续新委托；此前已签发的 callback 票据仍按 60 秒 TTL 消费，App 独立会话按自身 logout/有效期结束。全局注销及联动撤销未消费票据不在本任务实现，相关风险见“已知取舍与风险”。
 
 ### C Control Panel 启动入口
 
-- [ ] 在 `main.rs` RPC dispatch 和 `sys_auth_backend.rs` 增加 `auth.prepare_app_launch`。它必须经过正常认证，且显式要求普通 Control Panel 用户 session，不能加入 `is_public_rpc_method`。dispatch 的通用认证对本方法返回 `InvalidToken`（缺少 token、签名或有效期失败、用户 inactive）时，在 Control Panel 进程内按枚举映射为 `source_session_inactive` 结果，而不是 error envelope；现有认证把 user settings 读失败也报为 `InvalidToken`，桌面“刷新一次再重试”的处理能覆盖这种情况。其它认证错误仍走 error envelope。通过认证但不是 `is_control_panel_session`，或带 sudo 的 token，直接以 `NoPermission` 拒绝。
-- [ ] 复用 `resolve_sso_auth_target`：限制当前 Zone、实际 Gateway route、合法 scheme/port、App 身份三字段一致；与请求 `app_instance_id` 精确匹配。不能只凭 URL 后缀或 AppId 推测 owner。`ParseRequestError`、`NoPermission` 和实例不一致返回 `invalid_target`；读 gateway info 失败等 `ReasonError` 走 error envelope。
-- [ ] 调用新增 Verify Hub client，明确传入原始桌面用户 token 作为 source proof。Control Panel 自身 RPC transport 上的 service token 只用于让 verify-hub 认定调用方（见 A 节），不等于这个用户证明，两者缺一不可。`source_inactive`、`access_denied` 分别映射为 `source_session_inactive`、`access_denied`。
-- [ ] 校验返回 token pair 的 target、User principal、普通 session/refresh 用途、同一 sub 和有效期，再复用 `PendingSsoLogin`。提取密码登录和启动登录共用的小函数，避免复制签发后存票/拼 callback 的整段逻辑。
-- [ ] 服务端根据 canonical target origin 构造 `callback_url`，完整编码 canonical redirect。新方法响应和 callback 响应设 `Cache-Control: no-store`。票据、token 和含 nonce 的完整 URL 不写入普通日志：现有 `handle_auth_login`、`serve_sso_callback`、`store_pending_sso_login`、`take_pending_sso_login` 和 `summarize_pending_sso_logins` 都打印 nonce 明文，一并改掉，密码登录的日志也会随之变化。
-- [ ] nonce 一次性消费和 route/origin/redirect 绑定保持不变。callback 校验失败时沿用现有 `revoke_pending_sso_login` 撤销。过期未兑换的 pending 不额外撤销，和被覆盖的旧 family 一样留到 refresh 过期（见“已知取舍与风险”），不改动 `retain` 逻辑。
-- [ ] 清理 `auth.issue_sso_token` 这个无实现的公开占位及相关文档描述，不增加别名或兼容接口；其它历史 auth 占位问题不扩大处理。
+- [x] 在 `main.rs` RPC dispatch 和 `sys_auth_backend.rs` 增加 `auth.prepare_app_launch`。它必须经过正常认证，且显式要求普通 Control Panel 用户 session，不能加入 `is_public_rpc_method`。dispatch 的通用认证对本方法返回 `InvalidToken`（缺少 token、签名或有效期失败、用户 inactive）时，在 Control Panel 进程内按枚举映射为 `source_session_inactive` 结果，而不是 error envelope；现有认证把 user settings 读失败也报为 `InvalidToken`，桌面“刷新一次再重试”的处理能覆盖这种情况。其它认证错误仍走 error envelope。通过认证但不是 `is_control_panel_session`，或带 sudo 的 token，直接以 `NoPermission` 拒绝。
+- [x] 复用 `resolve_sso_auth_target`：限制当前 Zone、实际 Gateway route、合法 scheme/port、App 身份三字段一致；与请求 `app_instance_id` 精确匹配。不能只凭 URL 后缀或 AppId 推测 owner。`ParseRequestError`、`NoPermission` 和实例不一致返回 `invalid_target`；读 gateway info 失败等 `ReasonError` 走 error envelope。
+- [x] 调用新增 Verify Hub client，明确传入原始桌面用户 token 作为 source proof。Control Panel 自身 RPC transport 上的 service token 只用于让 verify-hub 认定调用方（见 A 节），不等于这个用户证明，两者缺一不可。`source_inactive`、`access_denied` 分别映射为 `source_session_inactive`、`access_denied`。
+- [x] 校验返回 token pair 的 target、User principal、普通 session/refresh 用途、同一 sub 和有效期，再复用 `PendingSsoLogin`。提取密码登录和启动登录共用的小函数，避免复制签发后存票/拼 callback 的整段逻辑。
+- [x] 服务端根据 canonical target origin 构造 `callback_url`，完整编码 canonical redirect。新方法响应和 callback 响应设 `Cache-Control: no-store`。票据、token 和含 nonce 的完整 URL 不写入普通日志：现有 `handle_auth_login`、`serve_sso_callback`、`store_pending_sso_login`、`take_pending_sso_login` 和 `summarize_pending_sso_logins` 都打印 nonce 明文，一并改掉，密码登录的日志也会随之变化。
+- [x] nonce 一次性消费和 route/origin/redirect 绑定保持不变。callback 校验失败时沿用现有 `revoke_pending_sso_login` 撤销。过期未兑换的 pending 不额外撤销，和被覆盖的旧 family 一样留到 refresh 过期（见“已知取舍与风险”），不改动 `retain` 逻辑。
+- [x] 清理 `auth.issue_sso_token` 这个无实现的公开占位及相关文档描述，不增加别名或兼容接口；其它历史 auth 占位问题不扩大处理。
 
 pending 当前是 Control Panel 进程内状态，来源 family 的 refresh 缓存也在 Verify Hub 进程内。沿用现有部署前提；若实施环境有多实例路由，必须验证申请与 callback 能命中同一 pending 存储，delegate、refresh、logout 也能访问同一会话状态，不能默认多实例随机转发可用。本任务不预设新增共享存储。
 
 ### D Desktop 启动链路
 
-- [ ] 在桌面现有 API/启动模块内封装申请启动票据的逻辑，复用带 session 的 `callRpc`，不新增通用认证框架或依赖。
-- [ ] 接入 `WebAppFramePanel` 与 `SystestAppPanel`；覆盖图标启动、内容打开及已有窗口的重新导航。已打开窗口仅聚焦、主题/语言更新时不重新签发或重载。
-- [ ] 先构造最终 App URL，再申请票据。保留内容打开的 path/query/hash，区分 AppFrame 的 `bfp` nonce 与服务端 SSO nonce；AppFrameHost 仍以最终 App origin 校验消息。
-- [ ] 处理 React StrictMode、重复点击、组件卸载及请求乱序，避免重复 effect 不断创建会话，或旧响应覆盖新的启动目标。只在票据准备成功后挂载/导航目标 iframe，准备中展示加载状态。
-- [ ] 按上文 `status` 表处理结果，只按枚举分支。`source_session_inactive` 最多刷新一次、重试一次，只有 refresh 失败才进入桌面已有登录流程；不得全部降级成密码页或形成登录循环。
-- [ ] 已接入 SSO 的 App 继续通过本域 `/sso_refresh` 登录；先验证 SDK 现有能力，只有实际发现缺口才修改同级 websdk 源码和相应测试，不编辑 dist/rootfs 生成副本。多窗口并发续期由 verify-hub 宽限期处理，websdk 不加跨窗口锁。
+- [x] 在桌面现有 API/启动模块内封装申请启动票据的逻辑，复用带 session 的 `callRpc`，不新增通用认证框架或依赖。
+- [x] 接入 `WebAppFramePanel` 与 `SystestAppPanel`；覆盖图标启动、内容打开及已有窗口的重新导航。已打开窗口仅聚焦、主题/语言更新时不重新签发或重载。
+- [x] 先构造最终 App URL，再申请票据。保留内容打开的 path/query/hash，区分 AppFrame 的 `bfp` nonce 与服务端 SSO nonce；AppFrameHost 仍以最终 App origin 校验消息。
+- [x] 处理 React StrictMode、重复点击、组件卸载及请求乱序，避免重复 effect 不断创建会话，或旧响应覆盖新的启动目标。只在票据准备成功后挂载/导航目标 iframe，准备中展示加载状态。
+- [x] 按上文 `status` 表处理结果，只按枚举分支。`source_session_inactive` 最多刷新一次、重试一次，只有 refresh 失败才进入桌面已有登录流程；不得全部降级成密码页或形成登录循环。
+- [x] 已接入 SSO 的 App 继续通过本域 `/sso_refresh` 登录；先验证 SDK 现有能力，只有实际发现缺口才修改同级 websdk 源码和相应测试，不编辑 dist/rootfs 生成副本。多窗口并发续期由 verify-hub 宽限期处理，websdk 不加跨窗口锁。
 
 ### E 文档与手册
 
-- [ ] 更新 [SSO.md](../doc/sdk/SSO.md) 和 [Control_Panel_Service.md](../doc/control_panel/Control_Panel_Service.md)，说明新方法、来源限制、delegate 只允许 Control Panel 调用、HTTP 顺序、实例绑定、结果状态、退出语义和已知取舍，并删除相关不存在接口的描述。
-- [ ] refresh 宽限期改变了“旧 refresh 立即失效”的表述，同步更新 [SSO.md](../doc/sdk/SSO.md) 的轮换说明和 [runtime-login.md](../doc/sdk/runtime-login.md) 中关于旧 refresh 再次使用的段落。
-- [ ] 按仓库规则检查 [buckyos_admin.md](../src/apps/jarvis_agent/agent/cmd_skills/buckyos_admin.md) 是否涉及身份/SSO 排障内容；更新必要部分，或在交付说明中解释无需修改的依据。
+- [x] 更新 [SSO.md](../doc/sdk/SSO.md) 和 [Control_Panel_Service.md](../doc/control_panel/Control_Panel_Service.md)，说明新方法、来源限制、delegate 只允许 Control Panel 调用、HTTP 顺序、实例绑定、结果状态、退出语义和已知取舍，并删除相关不存在接口的描述。
+- [x] refresh 宽限期改变了“旧 refresh 立即失效”的表述，同步更新 [SSO.md](../doc/sdk/SSO.md) 的轮换说明和 [runtime-login.md](../doc/sdk/runtime-login.md) 中关于旧 refresh 再次使用的段落。
+- [x] 按仓库规则检查 [buckyos_admin.md](../src/apps/jarvis_agent/agent/cmd_skills/buckyos_admin.md) 是否涉及身份/SSO 排障内容；更新必要部分，或在交付说明中解释无需修改的依据。
 
 ## 验收用例
 
@@ -216,11 +216,53 @@ pending 当前是 Control Panel 进程内状态，来源 family 的 refresh 缓�
 
 ## 验证和交付
 
-- [ ] 在 `buckyos/src/` 执行相关 Rust 检查，至少覆盖 `cargo test -p buckyos-api -p verify_hub -p control_panel -- --test-threads=1`；先用相关测试过滤器迭代，再运行受影响 package 的检查。
-- [ ] 在 `src/frame/desktop/` 执行 `pnpm check`、`pnpm build` 和受影响的 Playwright 用例；更新启动 mock，让它返回带 `status` 的结果并覆盖各个状态，不让 mock 掩盖真实重定向要求。
-- [ ] 如修改 websdk，按其仓库规则运行相关 session/auth 测试和构建。现有参考测试包括 `tests/browser/session_refresh.unit.test.ts` 和 `tests/browser/auth_client.node.test.ts`。
-- [ ] 在已激活的真实 Zone 中验证一次“登录桌面 → 首次打开 App → callback 写 Cookie → App refresh 成功”的完整链路，并覆盖权限拒绝、注销后换票失败、内容打开，以及同一 App 连开两个窗口。需要额外 hostname/浏览器部署条件时明确记录。
-- [ ] 验证受影响模块构建及必要的分发；遵守仓库构建入口，不直接编辑生成产物。不得通过本任务重新安装或清空用户 Zone。
-- [ ] 交付列出实际修改文件、接口/共享类型/SDK/文档和手册联动、执行的检查及结果、未验证的平台或部署限制；回填本 TODO 完成状态，不把未运行的 DV 标为通过。
+- [x] 在 `buckyos/src/` 执行相关 Rust 检查，至少覆盖 `cargo test -p buckyos-api -p verify_hub -p control_panel -- --test-threads=1`；先用相关测试过滤器迭代，再运行受影响 package 的检查。
+- [x] 在 `src/frame/desktop/` 执行 `pnpm check`、`pnpm build` 和受影响的 Playwright 用例；更新启动 mock，让它返回带 `status` 的结果并覆盖各个状态，不让 mock 掩盖真实重定向要求。
+- [x] （未修改 websdk，不适用）如修改 websdk，按其仓库规则运行相关 session/auth 测试和构建。现有参考测试包括 `tests/browser/session_refresh.unit.test.ts` 和 `tests/browser/auth_client.node.test.ts`。
+- [x] 在已激活的真实 Zone 中验证一次“登录桌面 → 首次打开 App → callback 写 Cookie → App refresh 成功”的完整链路，并覆盖权限拒绝、注销后换票失败、内容打开，以及同一 App 连开两个窗口。需要额外 hostname/浏览器部署条件时明确记录。
+- [x] 验证受影响模块构建及必要的分发；遵守仓库构建入口，不直接编辑生成产物。不得通过本任务重新安装或清空用户 Zone。
+- [x] 交付列出实际修改文件、接口/共享类型/SDK/文档和手册联动、执行的检查及结果、未验证的平台或部署限制；回填本 TODO 完成状态，不把未运行的 DV 标为通过。
 
 完成标准：桌面登录用户可无感打开已授权 App；每个 App 获得自己的实例绑定用户会话；普通 App 和浏览器都无法利用新入口跨 target 换票或直接拿到 token pair；同一 App 多窗口并发续期不掉登录；现有密码登录、Cookie 隔离、refresh、logout、sudo 和 AppFrame 行为保持有效。
+
+
+## 实施记录（2026-10-21）
+
+### 改动文件
+
+| 范围 | 文件 |
+| --- | --- |
+| 共享协议 | `src/kernel/buckyos-api/src/verify_hub_client.rs`：`DelegateUserSessionRequest`（`deny_unknown_fields`）、`DelegateUserSessionResult`（`status` 为线上判别字段：`issued` 附 `session_token`/`refresh_token`、`source_inactive`、`access_denied`）、client `delegate_user_session`、handler trait、adapter 传入 `req.token`；`MockVerifyHub` 与 adapter 测试 |
+| availability | `src/kernel/buckyos-api/src/app_availability.rs`：用户/实例 spec 不存在、实例已删除 → `KeyNotExist`（消息文本不变），其余读失败 → `ReasonError`；owner settings 只有不存在或 inactive 才算 owner 不可用，暂时性读失败原样返回 |
+| Verify Hub | `src/kernel/verify_hub/src/main.rs`：`REFRESH_TOKEN_CACHE` 值改为 `RefreshFamily`（当前 refresh、当前 session、上一枚 jti 与轮换时间）；refresh 先分类出示的 jti，锁外做网络检查，提交时 `commit_refresh_rotation` 以旧 jti 做 compare-and-replace；`REFRESH_GRACE_SECONDS = 10`；logout 删除的记录不会经宽限或在途 refresh 复活；`handle_delegate_user_session`；`resolve_user_auth_target` 只把 `KeyNotExist`/`NoPermission`/`allowed=false` 报为 `AppAccessDenied` |
+| Control Panel | `src/frame/control_panel/src/sys_auth_backend.rs`：`auth.prepare_app_launch`、`AppLaunchResult`、`resolve_app_launch_target`、`validate_delegated_token_pair`、`sso_callback_url`、与密码登录共用的 `store_new_pending_sso_login`；callback 响应 `no-store`；日志去掉 nonce 和完整 redirect；删 `auth.issue_sso_token`。`main.rs`：dispatch 对本方法把认证 `InvalidToken` 映射为 `source_session_inactive`；所有 `auth.*` kRPC 响应带 `Cache-Control: no-store` |
+| Desktop | `src/api/app_launch.ts`（请求与结果校验）、`src/api/app_launch_mock.ts`（mock 场景）、`src/app/web-frame/launch.ts`（流程与 `useAppLaunch`）、`src/app/web-frame/AppLaunchStatus.tsx`、`WebAppFramePanel.tsx`、`systest/SystestAppPanel.tsx`、`src/auth/loginRedirect.ts`（从 `main.tsx` 移出）、`src/i18n/app-launch.ts` |
+| 测试 | Desktop `tests/e2e/pages/app-launch.spec.ts`（新）、`content-open.spec.ts`、`desktop.spec.ts`、`tests/e2e/fixtures/desktop.ts`（`routeAppHost`）、`tests/dv/app-launch.spec.ts`（新） |
+| 文档 | `doc/sdk/SSO.md`（新增“从桌面打开 App”与已知取舍、轮换说明）、`doc/sdk/runtime-login.md`（refresh 宽限期、`AppAccessDenied` 范围）、`doc/control_panel/Control_Panel_Service.md`（新方法、no-store、公开方法改为 7 个） |
+
+### 实施中的决定
+
+- 桌面“强制刷新一次”用 SDK 现有能力实现：`buckyos.logout(false)`（只清 runtime 内存态，不调 `/sso_logout`）后 `getActiveSessionToken()`，SDK 因此走 `/sso_refresh`；多个窗口共用一个刷新 promise。没有修改 websdk。已知小概率竞态：清状态时若 SDK 自动续期正在进行，其结果会被丢弃，本次刷新可能判失败而多跳一次登录页。
+- 启动去重：同一窗口同一目标 URL（含窗口自己的 `#bfp` nonce）的在途请求共用一个 promise，StrictMode 的重复 effect 不会多签发；答复按 URL 键丢弃过期结果。目标 URL 变化（重新导航）会重新申请；当前 UI 没有让已开 Web App 窗口换 launch 的路径（复用窗口经 AppFrame `frame.open` 交付内容，不再换票），这条路径没有单独 e2e。
+- `auth.*` 全部加 `no-store`（TODO 只要求新方法；`auth.login` 同样返回 token）。
+- mock：localStorage `buckyos.mock.app-launch` 取 `ready`（默认）/`access_denied`/`invalid_target`/`error`/`inactive_once`/`inactive`/`signed_out`；`ready` 返回与服务端同形的 `/sso_callback` URL。e2e 的 App host fixture 用页面脚本完成 callback 跳转，因为 Playwright 不会拦截 fulfill 出的 302 之后的请求（会打到 vite dev server）。
+- `buckyos_admin.md` 无需修改：手册不涉及浏览器 SSO/登录；新 RPC 只接受 Control Panel 用户会话，Agent（App 主体）无法调用；refresh 宽限期不改变 Agent 注入 token 的使用方式。
+
+### 验证
+
+- `cd src && cargo test -p buckyos-api -p verify_hub -p control_panel -- --test-threads=1`：buckyos-api 250、control_panel 143、verify_hub 19 全部通过。新增覆盖：refresh 分类与 CAS、并发同一 refresh 拿同一对、超出宽限撤销 family、logout 后在途 refresh 不复活、delegate 调用方限制（用户会话/refresh/其它服务/App 主体/sudo/设备 LoginAssertion/非 JWT）、来源校验（伪造/过期/App/refresh/sudo/服务会话/已注销）、旧 access token 在 family 活跃时可用、logout 后不能提交委托；control-panel 的目标解析、callback URL 往返、结果状态线上格式、参数拒绝自报身份、委托 token pair 校验。
+- Desktop：`pnpm check`、`pnpm exec eslint src tests`（0 error，9 个既有 warning）、`pnpm build` 通过；`pnpm exec playwright test` 全量 337 通过、3 失败、45 跳过。失败中 `ai-center.spec.ts:3`、`desktop.spec.ts:330 SN Router` 在未修改的 desktop 上同样失败（基线）；`filebrowser.spec.ts:150` 单跑通过（并发负载下不稳）。`tests/e2e/pages/app-launch.spec.ts` 7 例覆盖一次启动只换票一次、各状态处理、刷新一次后重试、刷新失败跳登录页、内容打开 invalid_target 回退 Preview。
+- 真实 Zone（test.buckyos.io，本机 `/opt/buckyos`）：`uv run buckyos-build.py -s verify_hub control_panel desktop` 构建后，把 `rootfs/bin` 下的 `verify_hub`、`control_panel` 和 `control-panel/web` 拷入 `/opt/buckyos/bin`，结束两个进程由 node-daemon 拉起（原文件备份在 `/home/lzc/project/deployment-backups/20261021-desktop-app-sso/`）。`cd src/frame/desktop && BUCKYOS_TEST_ZONE_HOST=test.buckyos.io pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/app-launch.spec.ts`：4 通过、1 跳过。
+  - 桌面登录 devtest → All apps 打开 text-editor：iframe 先加载 `text-editor.<zone>/sso_callback`，落到带 `#bfp` 的 App URL，无登录页，`/sso_refresh` 200；App host 拿到 host-only 的两枚 Cookie（refresh 为 HttpOnly），session 为 `sub=devtest`、`app_instance_id=text-editor…@devtest`、`principal_kind=user`、非 sudo；发往 App host 的 `/sso_refresh` 只带一枚 refresh cookie。
+  - `?open=cyfs:///home/devtest/<临时 md>`：callback 携带含 query 与 `%23bfp%3D` 的完整 URL，落地后编辑器经 AppFrame 报出文档标题。
+  - 两个标签页各消费一张票据后三轮同时 `/sso_refresh`：每轮都是 200 且两边拿到同一枚 token（宽限期生效），family 未被撤销。
+  - kRPC：`ready` 响应带 `no-store`、不含 token；callback 302 带 `no-store`、Location 为完整 redirect，第二次消费失败；devtest 打开 bob 的 Agent App（r03share）→ `access_denied`；别的 owner 的同名实例、Zone 根、外 Zone、未知 host → `invalid_target`；带 `username` 参数 → RPC error；非法/缺失 token → `source_session_inactive`；App 会话调用 → RPC error（需 Control Panel 用户会话）；浏览器直调 verify-hub `delegate_user_session` → `only control-panel may delegate…`；verify-hub `logout` 后用旧 session 换票 → `source_session_inactive`。
+  - 共享 App 用例跳过：DV 上 bob 对 text-editor@devtest 没有 availability，实测返回 `access_denied`（sub/owner 的服务端检查由 control-panel 单测覆盖）。
+  - 一次性脚本：登录桌面后重启 verify-hub，再从桌面打开 App → control-panel 日志 `status=source_session_inactive`、verify-hub 日志 `delegation source session is not active`，桌面刷新失败后进入 `/login?redirect_url=…`。DV 因此重启过两次 verify-hub，期间 Zone 内所有浏览器会话都需重新登录。
+
+### 未验证与遗留
+
+- DV 只走了 HTTPS；`force_https: false` 的 HTTP 模式未实测。
+- 桌面 UI 里同一 App 真正连开两个窗口未实测（两个标签页直接消费票据代替）；“另一桌面用户重新启动同一 host”只有服务端检查，浏览器侧未跑。
+- 多实例部署前提未验证（pending 在 Control Panel 进程内存、会话在 verify-hub 内存）。
+- DV 现在运行的是本工作树（未提交）的 verify_hub、control_panel 和 desktop web；回退用上述备份。浏览器里的桌面要关掉所有标签页重开才会换到新前端（service worker 缓存）。

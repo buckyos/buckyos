@@ -2,10 +2,12 @@ import { test, expect, type Page } from '@playwright/test'
 import { readdir, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { routeAppHost } from '../fixtures/desktop'
 
 async function files(page: Page) {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.route(/http:\/\/(notes|reader)-fixture\.localhost:4173\//, route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Handler fixture</title><pre id="source"></pre><script>
+  const callbacks = await routeAppHost(page, /http:\/\/(notes|reader)-fixture\.localhost:4173\//, `<!doctype html><title>Handler fixture</title><pre id="source"></pre><output id="href"></output><script>
+    document.querySelector('#href').textContent = location.href;
     const nonce = new URLSearchParams(location.hash.slice(1)).get('bfp');
     const send = (type, payload, replyTo) => parent.postMessage({ protocol: 'buckyos.app-frame', version: 1, type, payload, replyTo }, 'http://127.0.0.1:4173');
     addEventListener('message', e => {
@@ -16,11 +18,11 @@ async function files(page: Page) {
       if (m.type === 'frame.beforeClose') send('frame.beforeCloseResult', { decision: 'allow' }, m.id);
     });
     send('frame.hello', { nonce, appCapabilities: ['open', 'beforeClose'] });
-  </script>` }))
+  </script>`)
   await page.goto('/?scenario=normal&contentApps=1')
   await page.getByTestId('desktop-app-files').click()
   await page.locator('aside').getByRole('button', { name: /Documents/ }).first().click()
-  return page.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first()
+  return Object.assign(page.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first(), { callbacks })
 }
 
 test('generic handler opens from Files, receives session, reuses frame and closes', async ({ page }) => {
@@ -28,12 +30,20 @@ test('generic handler opens from Files, receives session, reuses frame and close
   await file.dblclick()
   const frame = page.getByTestId('web-app-frame')
   await expect(frame).toHaveCount(1)
-  await expect(frame).toHaveAttribute('src', /notes-fixture.*src=.*Kyoto/)
+  await expect(frame).toHaveAttribute('src', /^http:\/\/notes-fixture\.localhost:4173\/sso_callback\?nonce=\d+&redirect_url=/)
   await expect(page.frameLocator('[data-testid="web-app-frame"]').locator('#source')).toContainText('Kyoto Trip Plan.md')
+  // The callback lands on the full App URL: path, query and the AppFrame nonce in the hash.
+  const landed = new URL(await page.frameLocator('[data-testid="web-app-frame"]').locator('#href').textContent() ?? '')
+  expect(landed.pathname).toBe('/open')
+  expect(landed.searchParams.get('src')).toContain('Kyoto')
+  expect(landed.hash).toMatch(/^#bfp=[0-9a-f-]{36}$/)
+  expect(file.callbacks).toHaveLength(1)
   await expect(page.getByTestId('window-notes-fixture')).toContainText('Fixture: Kyoto Trip Plan.md')
   await page.getByTestId('window-files').click({ position: { x: 10, y: 10 } })
   await file.dblclick()
   await expect(frame).toHaveCount(1)
+  // Reusing the open frame hands the document over without a new sign-in.
+  expect(file.callbacks).toHaveLength(1)
 })
 
 test('Open with lists both handlers and Preview; defaults and disabling affect double click', async ({ page }) => {
@@ -47,12 +57,12 @@ test('Open with lists both handlers and Preview; defaults and disabling affect d
   const chooser = page.getByRole('dialog', { name: 'Choose default app…' })
   await chooser.getByLabel('Reader Fixture').check()
   await chooser.getByRole('button', { name: 'Open', exact: true }).click()
-  await expect(page.getByTestId('web-app-frame')).toHaveAttribute('src', /reader-fixture/)
+  await expect(page.getByTestId('web-app-frame')).toHaveAttribute('src', /^http:\/\/reader-fixture\./)
   await page.reload()
   await page.getByTestId('desktop-app-files').click()
   await page.locator('aside').getByRole('button', { name: /Documents/ }).first().click()
   await page.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first().dblclick()
-  await expect(page.getByTestId('web-app-frame')).toHaveAttribute('src', /reader-fixture/)
+  await expect(page.getByTestId('web-app-frame')).toHaveAttribute('src', /^http:\/\/reader-fixture\./)
   await page.evaluate(() => localStorage.setItem('mock.content.defaults', JSON.stringify({ schema_version: 1, defaults: {}, disabled: ['notes.fixture.bns.did@owner#text', 'reader.fixture.bns.did@owner#text'] })))
   await page.reload()
   await page.getByTestId('desktop-app-files').click()

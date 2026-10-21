@@ -25,6 +25,9 @@ const SUDO_SESSION_TOKEN_EXPIRE_SECONDS: u64 = 3 * 60;
 // Refresh token: long-lived, used to obtain new token pairs
 const REFRESH_TOKEN_EXPIRE_SECONDS: u64 = 7 * 24 * 3600; // 7 days
 const MAX_LOGIN_NONCE_AGE_SECONDS: u64 = 3600 * 8; // 8 hours
+                                                   // The refresh token rotated away last is still answered with the current pair for this long,
+                                                   // so pages of one host refreshing over the same cookie at once do not revoke their family.
+const REFRESH_GRACE_SECONDS: u64 = 10;
 use buckyos_http_server::*;
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
@@ -60,6 +63,89 @@ struct TrustedKey {
     issuer_kind: TrustedIssuerKind,
 }
 
+#[derive(Clone, Debug)]
+struct RotatedRefresh {
+    jti: String,
+    rotated_at: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RefreshFamily {
+    refresh_token: RPCSessionToken,
+    session_token: String,
+    previous_refresh: Option<RotatedRefresh>,
+}
+
+impl RefreshFamily {
+    fn new(session_token: &RPCSessionToken, refresh_token: RPCSessionToken) -> Self {
+        Self {
+            refresh_token,
+            session_token: session_token.to_string(),
+            previous_refresh: None,
+        }
+    }
+
+    fn token_pair(&self) -> TokenPair {
+        TokenPair {
+            session_token: self.session_token.clone(),
+            refresh_token: self.refresh_token.to_string(),
+        }
+    }
+
+    fn is_live(&self, now: u64) -> bool {
+        self.refresh_token.exp.map(|exp| exp > now).unwrap_or(false)
+    }
+}
+
+#[derive(Debug)]
+enum RefreshPresentation {
+    Current,
+    Grace(TokenPair),
+    Missing,
+    Reused,
+}
+
+fn classify_refresh_presentation(
+    family: Option<&RefreshFamily>,
+    jti: &str,
+    now: u64,
+) -> RefreshPresentation {
+    let Some(family) = family else {
+        return RefreshPresentation::Missing;
+    };
+    if family.refresh_token.jti.as_deref() == Some(jti) {
+        return RefreshPresentation::Current;
+    }
+    match family.previous_refresh.as_ref() {
+        Some(previous)
+            if previous.jti == jti
+                && now.saturating_sub(previous.rotated_at) <= REFRESH_GRACE_SECONDS =>
+        {
+            RefreshPresentation::Grace(family.token_pair())
+        }
+        _ => RefreshPresentation::Reused,
+    }
+}
+
+#[derive(Debug)]
+enum RefreshCommit {
+    Committed,
+    Grace(TokenPair),
+    LoggedOut,
+    Reused,
+}
+
+struct PresentedRefresh {
+    token: RPCSessionToken,
+    session_key: String,
+    jti: String,
+}
+
+struct DelegationSource {
+    user_id: String,
+    session_key: String,
+}
+
 type SessionPrincipalKind = TokenPrincipalKind;
 
 const VERIFY_HUB_ISSUER: &str = "verify-hub";
@@ -79,9 +165,9 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     // Cache for session tokens, keyed by session_key (userid_appid_session_id)
     static ref TOKEN_CACHE: Arc<Mutex<HashMap<String, RPCSessionToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    // Cache for valid refresh tokens, keyed by session_key
-    // When a refresh token is used, the old one is invalidated and replaced with new one
-    static ref REFRESH_TOKEN_CACHE: Arc<Mutex<HashMap<String, RPCSessionToken>>> =
+    // Active refresh families, keyed by session_key. Refresh rotates the record in place;
+    // logout and reuse detection remove it.
+    static ref REFRESH_TOKEN_CACHE: Arc<Mutex<HashMap<String, RefreshFamily>>> =
         Arc::new(Mutex::new(HashMap::new()));
     static ref TRUSTKEY_CACHE: Arc<Mutex<HashMap<String, TrustedKey>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -284,12 +370,16 @@ async fn generate_token_pair(
     Ok((token_pair, session_token, refresh_token))
 }
 
-/// Cache refresh token for validation during refresh flow
-async fn cache_refresh_token(key: &str, token: RPCSessionToken) {
-    REFRESH_TOKEN_CACHE
-        .lock()
-        .await
-        .insert(key.to_string(), token);
+/// Start a refresh family for a freshly issued token pair
+async fn cache_refresh_family(
+    key: &str,
+    session_token: &RPCSessionToken,
+    refresh_token: RPCSessionToken,
+) {
+    REFRESH_TOKEN_CACHE.lock().await.insert(
+        key.to_string(),
+        RefreshFamily::new(session_token, refresh_token),
+    );
 }
 
 async fn gc_token_caches() {
@@ -302,7 +392,7 @@ async fn gc_token_caches() {
 
     {
         let mut cache = REFRESH_TOKEN_CACHE.lock().await;
-        cache.retain(|_, token| token.exp.map(|exp| exp > now).unwrap_or(false));
+        cache.retain(|_, family| family.is_live(now));
     }
 }
 
@@ -311,19 +401,7 @@ async fn revoke_session_tokens(session_key: &str) {
     REFRESH_TOKEN_CACHE.lock().await.remove(session_key);
 }
 
-/// Load refresh token from cache for validation
-async fn load_refresh_token_from_cache(key: &str) -> Option<RPCSessionToken> {
-    let cache = REFRESH_TOKEN_CACHE.lock().await;
-    cache.get(key).cloned()
-}
-
-/// Invalidate (remove) a refresh token from cache
-/// Called when a refresh token is used to ensure it cannot be reused
-async fn invalidate_refresh_token(key: &str) {
-    REFRESH_TOKEN_CACHE.lock().await.remove(key);
-}
-
-async fn validate_active_refresh_token(refresh_jwt: &str) -> Result<(RPCSessionToken, String)> {
+async fn verify_presented_refresh(refresh_jwt: &str) -> Result<PresentedRefresh> {
     let jwt_payload = verify_verify_hub_jwt(refresh_jwt, None).await?;
 
     let rpc_session_token: RPCSessionToken =
@@ -348,44 +426,196 @@ async fn validate_active_refresh_token(refresh_jwt: &str) -> Result<(RPCSessionT
         claims.target.canonical_key(),
         session_id
     );
-    let refresh_jti = rpc_session_token
+    let jti = rpc_session_token
         .jti
         .clone()
         .ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
 
-    let cached_refresh = load_refresh_token_from_cache(session_key.as_str()).await;
-    if cached_refresh.is_none() {
-        warn!(
-            "Refresh token not found in cache for session: {}",
-            session_key
-        );
-        warn!(
-            "Refresh reuse detected (cache-miss), revoking session: {}",
-            session_key
-        );
-        revoke_session_tokens(session_key.as_str()).await;
-        return Err(RPCErrors::ReasonError(
-            "Refresh token not found or already invalidated".to_string(),
+    Ok(PresentedRefresh {
+        token: rpc_session_token,
+        session_key,
+        jti,
+    })
+}
+
+/// Accepts the family's current refresh token, or the one it replaced within the grace
+/// window (answered with the current pair). Any other presentation revokes the family.
+async fn check_presented_refresh(presented: &PresentedRefresh) -> Result<Option<TokenPair>> {
+    let now = buckyos_get_unix_timestamp();
+    let presentation = {
+        let cache = REFRESH_TOKEN_CACHE.lock().await;
+        classify_refresh_presentation(
+            cache.get(presented.session_key.as_str()),
+            presented.jti.as_str(),
+            now,
+        )
+    };
+    match presentation {
+        RefreshPresentation::Current => Ok(None),
+        RefreshPresentation::Grace(token_pair) => Ok(Some(token_pair)),
+        RefreshPresentation::Missing => {
+            warn!(
+                "Refresh reuse detected (cache-miss), revoking session: {}",
+                presented.session_key
+            );
+            revoke_session_tokens(presented.session_key.as_str()).await;
+            Err(RPCErrors::ReasonError(
+                "Refresh token not found or already invalidated".to_string(),
+            ))
+        }
+        RefreshPresentation::Reused => {
+            warn!(
+                "Refresh reuse detected (jti-mismatch), revoking session: {}",
+                presented.session_key
+            );
+            revoke_session_tokens(presented.session_key.as_str()).await;
+            Err(RPCErrors::ReasonError(
+                "Invalid refresh token jti".to_string(),
+            ))
+        }
+    }
+}
+
+/// Compare-and-replace of the family's refresh token: commits only while `old_jti` is still
+/// current, so a logout or a competing rotation that happened meanwhile is never overwritten.
+async fn commit_refresh_rotation(
+    session_key: &str,
+    old_jti: &str,
+    session_token: &RPCSessionToken,
+    refresh_token: RPCSessionToken,
+) -> RefreshCommit {
+    let now = buckyos_get_unix_timestamp();
+    let mut cache = REFRESH_TOKEN_CACHE.lock().await;
+    match classify_refresh_presentation(cache.get(session_key), old_jti, now) {
+        RefreshPresentation::Current => {
+            if let Some(family) = cache.get_mut(session_key) {
+                family.previous_refresh = Some(RotatedRefresh {
+                    jti: old_jti.to_string(),
+                    rotated_at: now,
+                });
+                family.refresh_token = refresh_token;
+                family.session_token = session_token.to_string();
+            }
+            RefreshCommit::Committed
+        }
+        RefreshPresentation::Grace(token_pair) => RefreshCommit::Grace(token_pair),
+        RefreshPresentation::Missing => RefreshCommit::LoggedOut,
+        RefreshPresentation::Reused => {
+            cache.remove(session_key);
+            RefreshCommit::Reused
+        }
+    }
+}
+
+async fn source_family_is_live(session_key: &str) -> bool {
+    let now = buckyos_get_unix_timestamp();
+    REFRESH_TOKEN_CACHE
+        .lock()
+        .await
+        .get(session_key)
+        .map(|family| family.is_live(now))
+        .unwrap_or(false)
+}
+
+/// Inserts the delegated family only while the source family is still live, in the same
+/// critical section, so nothing can be delegated from a session once its logout completed.
+async fn commit_delegated_family(
+    source_session_key: &str,
+    session_key: &str,
+    session_token: &RPCSessionToken,
+    refresh_token: RPCSessionToken,
+) -> bool {
+    let now = buckyos_get_unix_timestamp();
+    let mut cache = REFRESH_TOKEN_CACHE.lock().await;
+    if !cache
+        .get(source_session_key)
+        .map(|family| family.is_live(now))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    cache.insert(
+        session_key.to_string(),
+        RefreshFamily::new(session_token, refresh_token),
+    );
+    true
+}
+
+fn control_panel_target() -> Result<AuthTarget> {
+    Ok(AuthTarget::system(
+        SystemServiceId::parse(CONTROL_PANEL_SERVICE_UNIQUE_ID).map_err(RPCErrors::ReasonError)?,
+    ))
+}
+
+/// Only the Control Panel service may exchange a user's session: /kapi/verify-hub is
+/// reachable from browsers, and a delegated token pair must never be returned to them.
+async fn authorize_delegate_caller(caller_token: Option<&str>) -> Result<()> {
+    let denied =
+        || RPCErrors::NoPermission("only control-panel may delegate user sessions".to_string());
+    let caller_token = caller_token.ok_or_else(denied)?;
+    let payload = verify_verify_hub_jwt(caller_token, None)
+        .await
+        .map_err(|error| {
+            warn!("delegate_user_session caller token rejected: {}", error);
+            denied()
+        })?;
+    let caller: RPCSessionToken = serde_json::from_value(payload).map_err(|_| denied())?;
+    let claims =
+        validate_verify_hub_token_claims(&caller, TokenUse::Session).map_err(|_| denied())?;
+    if caller.sudo
+        || !matches!(
+            claims.principal_kind,
+            SessionPrincipalKind::System | SessionPrincipalKind::Device
+        )
+        || claims.target != control_panel_target()?
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
+
+/// `None` when the source cannot prove a session (bad signature, expired, malformed):
+/// the caller should report it as an inactive source rather than an error.
+async fn verify_delegation_source(source_session_token: &str) -> Result<Option<DelegationSource>> {
+    let payload = match verify_verify_hub_jwt(source_session_token, None).await {
+        Ok(payload) => payload,
+        Err(error) => {
+            info!("delegation source token rejected: {}", error);
+            return Ok(None);
+        }
+    };
+    let source: RPCSessionToken = serde_json::from_value(payload).map_err(|_| {
+        RPCErrors::InvalidToken("delegation source is not a session token".to_string())
+    })?;
+    let claims = validate_verify_hub_token_claims(&source, TokenUse::Session)?;
+    let control_panel = control_panel_target()?;
+    if claims.principal_kind != SessionPrincipalKind::User
+        || claims.target != control_panel
+        || source.sudo
+    {
+        return Err(RPCErrors::InvalidToken(
+            "delegation source must be a Control Panel user session".to_string(),
         ));
     }
-
-    let cached_refresh = cached_refresh.unwrap();
-    if cached_refresh.jti.as_deref() != Some(refresh_jti.as_str()) {
-        warn!(
-            "Invalid refresh token jti. Expected: {:?}, Got: {:?}",
-            cached_refresh.jti, rpc_session_token.jti
-        );
-        warn!(
-            "Refresh reuse detected (jti-mismatch), revoking session: {}",
-            session_key
-        );
-        revoke_session_tokens(session_key.as_str()).await;
-        return Err(RPCErrors::ReasonError(
-            "Invalid refresh token jti".to_string(),
-        ));
-    }
-
-    Ok((rpc_session_token, session_key))
+    let user_id = source
+        .sub
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RPCErrors::InvalidToken("delegation source missing sub".to_string()))?
+        .to_string();
+    reject_root_session_subject(user_id.as_str())?;
+    let session_id = get_token_session_id(&source)
+        .map_err(|_| RPCErrors::InvalidToken("delegation source missing session".to_string()))?;
+    Ok(Some(DelegationSource {
+        session_key: format!(
+            "{}_{}_{}",
+            user_id,
+            control_panel.canonical_key(),
+            session_id
+        ),
+        user_id,
+    }))
 }
 
 async fn validate_refresh_principal(
@@ -444,7 +674,12 @@ async fn resolve_user_auth_target(user_id: &str, target: &AuthTarget) -> Result<
                         "app availability check failed user={} app_instance_id={}: {}",
                         user_id, app_instance_id, error
                     );
-                    RPCErrors::NoPermission("AppAccessDenied".to_string())
+                    match error {
+                        RPCErrors::KeyNotExist(_) | RPCErrors::NoPermission(_) => {
+                            RPCErrors::NoPermission("AppAccessDenied".to_string())
+                        }
+                        error => error,
+                    }
                 })?;
             if !decision.allowed {
                 warn!(
@@ -1051,8 +1286,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
         // Cache by original session_key to mark login JWT as used
         cache_token(session_key.as_str(), session_token.clone()).await;
         // Cache by new session_key for future refresh operations
+        cache_refresh_family(new_session_key.as_str(), &session_token, refresh_token).await;
         cache_token(new_session_key.as_str(), session_token).await;
-        cache_refresh_token(new_session_key.as_str(), refresh_token).await;
 
         info!(
             "Login successful for user: {}. Session: {}. Token pair generated.",
@@ -1067,13 +1302,21 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair> {
         gc_token_caches().await;
-        let (rpc_session_token, session_key) = validate_active_refresh_token(refresh_jwt).await?;
-        let userid = rpc_session_token
+        let presented = verify_presented_refresh(refresh_jwt).await?;
+        if let Some(token_pair) = check_presented_refresh(&presented).await? {
+            info!(
+                "Refresh within grace period for session: {}, returning current token pair",
+                presented.session_key
+            );
+            return Ok(token_pair);
+        }
+        let userid = presented
+            .token
             .sub
             .clone()
             .ok_or(RPCErrors::ReasonError("Missing sub".to_string()))?;
-        let session_id = get_token_session_id(&rpc_session_token)?;
-        let claims = validate_verify_hub_token_claims(&rpc_session_token, TokenUse::Refresh)?;
+        let session_id = get_token_session_id(&presented.token)?;
+        let claims = validate_verify_hub_token_claims(&presented.token, TokenUse::Refresh)?;
         let principal_kind = claims.principal_kind;
         validate_refresh_principal(userid.as_str(), principal_kind).await?;
         let target = if principal_kind == SessionPrincipalKind::User {
@@ -1085,38 +1328,70 @@ impl VerifyHubApiHandler for VerifyHubServer {
             check_app_principal_target(&target).await?;
         }
 
-        info!("Handle refresh token request for session: {}", session_key);
+        info!(
+            "Handle refresh token request for session: {}",
+            presented.session_key
+        );
 
-        // Step 7: IMPORTANT - Invalidate the old refresh token immediately
-        // This ensures the old refresh token cannot be reused (one-time use)
-        invalidate_refresh_token(session_key.as_str()).await;
-        info!("Old refresh token invalidated for session: {}", session_key);
-
-        // Step 8: Generate new token pair (session_token + refresh_token)
         let (token_pair, session_token, refresh_token) =
             generate_token_pair(&target, userid.as_str(), session_id, principal_kind).await?;
 
-        // Step 9: Cache the new tokens
-        cache_token(session_key.as_str(), session_token).await;
-        cache_refresh_token(session_key.as_str(), refresh_token).await;
-
-        info!(
-            "Refresh successful for session: {}. New token pair generated.",
-            session_key
-        );
-        Ok(buckyos_api::TokenPair {
-            session_token: token_pair.session_token,
-            refresh_token: token_pair.refresh_token,
-        })
+        match commit_refresh_rotation(
+            presented.session_key.as_str(),
+            presented.jti.as_str(),
+            &session_token,
+            refresh_token,
+        )
+        .await
+        {
+            RefreshCommit::Committed => {
+                cache_token(presented.session_key.as_str(), session_token).await;
+                info!(
+                    "Refresh successful for session: {}. New token pair generated.",
+                    presented.session_key
+                );
+                Ok(token_pair)
+            }
+            RefreshCommit::Grace(current_pair) => {
+                info!(
+                    "Concurrent refresh for session: {} already rotated, returning current token pair",
+                    presented.session_key
+                );
+                Ok(current_pair)
+            }
+            RefreshCommit::LoggedOut => {
+                warn!(
+                    "Refresh for session: {} lost to a logout, not committing",
+                    presented.session_key
+                );
+                Err(RPCErrors::ReasonError(
+                    "Refresh token not found or already invalidated".to_string(),
+                ))
+            }
+            RefreshCommit::Reused => {
+                warn!(
+                    "Refresh reuse detected (concurrent rotation), revoking session: {}",
+                    presented.session_key
+                );
+                revoke_session_tokens(presented.session_key.as_str()).await;
+                Err(RPCErrors::ReasonError(
+                    "Invalid refresh token jti".to_string(),
+                ))
+            }
+        }
     }
 
     async fn handle_logout(&self, refresh_jwt: &str) -> Result<bool> {
         gc_token_caches().await;
-        let (_rpc_session_token, session_key) = validate_active_refresh_token(refresh_jwt).await?;
+        let presented = verify_presented_refresh(refresh_jwt).await?;
+        check_presented_refresh(&presented).await?;
 
-        info!("Handle logout request for session: {}", session_key);
-        revoke_session_tokens(session_key.as_str()).await;
-        info!("Logout successful for session: {}", session_key);
+        info!(
+            "Handle logout request for session: {}",
+            presented.session_key
+        );
+        revoke_session_tokens(presented.session_key.as_str()).await;
+        info!("Logout successful for session: {}", presented.session_key);
 
         Ok(true)
     }
@@ -1150,8 +1425,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
             generate_token_pair(&target, username, session_id, SessionPrincipalKind::User).await?;
 
         // Step 6: Cache both tokens
+        cache_refresh_family(session_key.as_str(), &session_token, refresh_token).await;
         cache_token(session_key.as_str(), session_token).await;
-        cache_refresh_token(session_key.as_str(), refresh_token).await;
 
         info!("Token pair cached for session: {}", session_key);
 
@@ -1208,6 +1483,84 @@ impl VerifyHubApiHandler for VerifyHubServer {
         Ok(SudoByPasswordResponse {
             session_token: session_token.to_string(),
         })
+    }
+
+    async fn handle_delegate_user_session(
+        &self,
+        caller_token: Option<&str>,
+        source_session_token: &str,
+        target: &AuthTarget,
+    ) -> Result<DelegateUserSessionResult> {
+        gc_token_caches().await;
+        authorize_delegate_caller(caller_token).await?;
+        if !matches!(target, AuthTarget::App { .. }) {
+            return Err(RPCErrors::NoPermission(
+                "delegate_user_session only issues App targets".to_string(),
+            ));
+        }
+        let Some(source) = verify_delegation_source(source_session_token).await? else {
+            return Ok(DelegateUserSessionResult::SourceInactive);
+        };
+        if !source_family_is_live(source.session_key.as_str()).await {
+            info!(
+                "delegation source session is not active: {}",
+                source.session_key
+            );
+            return Ok(DelegateUserSessionResult::SourceInactive);
+        }
+
+        let resolver = AppAvailabilityResolver::new(Arc::new(get_system_config_client().await?));
+        match resolver.get_user_settings(source.user_id.as_str()).await {
+            Ok(_) => {}
+            Err(RPCErrors::KeyNotExist(_) | RPCErrors::NoPermission(_)) => {
+                return Ok(DelegateUserSessionResult::SourceInactive);
+            }
+            Err(error) => return Err(error),
+        }
+        let target = match resolve_user_auth_target(source.user_id.as_str(), target).await {
+            Ok(target) => target,
+            Err(RPCErrors::NoPermission(_)) => {
+                return Ok(DelegateUserSessionResult::AccessDenied);
+            }
+            Err(error) => return Err(error),
+        };
+
+        let session_id: u64 = rand::thread_rng().gen();
+        let session_key = format!(
+            "{}_{}_{}",
+            source.user_id,
+            target.canonical_key(),
+            session_id
+        );
+        let (token_pair, session_token, refresh_token) = generate_token_pair(
+            &target,
+            source.user_id.as_str(),
+            session_id,
+            SessionPrincipalKind::User,
+        )
+        .await?;
+        if !commit_delegated_family(
+            source.session_key.as_str(),
+            session_key.as_str(),
+            &session_token,
+            refresh_token,
+        )
+        .await
+        {
+            info!(
+                "delegation source session ended before commit: {}",
+                source.session_key
+            );
+            return Ok(DelegateUserSessionResult::SourceInactive);
+        }
+        cache_token(session_key.as_str(), session_token).await;
+        info!(
+            "Delegated session of {} to {}. Session: {}",
+            source.session_key,
+            target.canonical_key(),
+            session_key
+        );
+        Ok(DelegateUserSessionResult::Issued(token_pair))
     }
 
     async fn handle_verify_token(
@@ -2048,46 +2401,508 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         assert_eq!(parsed.aud.as_deref(), Some("system-config"));
     }
 
-    /// Test refresh token cache operations
-    #[tokio::test]
-    async fn test_refresh_token_cache() {
-        println!("\n=== Test: Refresh token cache operations ===");
+    async fn signed_verify_hub_token(mut token: RPCSessionToken) -> String {
+        let private_key = VERIFY_HUB_PRIVATE_KEY.read().await;
+        let jwt = token
+            .generate_jwt(Some(VERIFY_HUB_ISSUER.to_string()), &private_key)
+            .unwrap();
+        token.token = Some(jwt);
+        token.to_string()
+    }
 
-        let mut test_token = RPCSessionToken {
+    fn unique_user(prefix: &str) -> String {
+        format!("{}{}", prefix, rand::thread_rng().gen::<u32>())
+    }
+
+    /// A user's Control Panel session, issued through a root-signed LoginAssertion so no
+    /// system-config lookup is needed.
+    async fn control_panel_user_login(user: &str) -> TokenPair {
+        let private_key = setup_test_environment().await;
+        let assertion = RPCSessionToken {
             token_type: RPCSessionTokenType::Normal,
-            jti: Some("123456".to_string()),
+            jti: Some(rand::thread_rng().gen::<u64>().to_string()),
+            appid: Some("control-panel".to_string()),
+            aud: None,
+            sub: Some(user.to_string()),
+            token: None,
+            iss: Some("root".to_string()),
+            exp: Some(buckyos_get_unix_timestamp() + 600),
+            sudo: false,
+            extra: HashMap::new(),
+        };
+        let jwt = assertion
+            .generate_jwt(Some("root".to_string()), &private_key)
+            .unwrap();
+        VerifyHubServer::new()
+            .handle_login_by_jwt(jwt.as_str(), &system_target("control-panel"))
+            .await
+            .unwrap()
+    }
+
+    async fn service_session(service_id: &str, principal_kind: SessionPrincipalKind) -> String {
+        generate_session_token(
+            &system_target(service_id),
+            "ood1",
+            rand::thread_rng().gen(),
+            rand::thread_rng().gen(),
+            SESSION_TOKEN_EXPIRE_SECONDS,
+            None,
+            false,
+            principal_kind,
+        )
+        .await
+        .unwrap()
+        .to_string()
+    }
+
+    fn session_key_of(token: &str) -> String {
+        let token = RPCSessionToken::from_string(token).unwrap();
+        let claims = validate_verify_hub_token_claims(&token, token_use(&token).unwrap()).unwrap();
+        format!(
+            "{}_{}_{}",
+            token.sub.as_deref().unwrap(),
+            claims.target.canonical_key(),
+            get_token_session_id(&token).unwrap()
+        )
+    }
+
+    fn test_family(refresh_jti: &str, previous: Option<(&str, u64)>) -> RefreshFamily {
+        let token = |jti: &str| RPCSessionToken {
+            token_type: RPCSessionTokenType::Normal,
+            jti: Some(jti.to_string()),
             appid: Some("test-app".to_string()),
             aud: None,
             sub: Some("test-user".to_string()),
-            token: Some("test-token-value".to_string()),
-            iss: Some("verify-hub".to_string()),
+            token: Some(format!("jwt-{jti}")),
+            iss: Some(VERIFY_HUB_ISSUER.to_string()),
             exp: Some(buckyos_get_unix_timestamp() + 3600),
             sudo: false,
             extra: HashMap::new(),
         };
-        set_token_session_id(&mut test_token, 789);
+        RefreshFamily {
+            refresh_token: token(refresh_jti),
+            session_token: format!("session-{refresh_jti}"),
+            previous_refresh: previous.map(|(jti, rotated_at)| RotatedRefresh {
+                jti: jti.to_string(),
+                rotated_at,
+            }),
+        }
+    }
 
-        let cache_key = "test_cache_key";
+    #[test]
+    fn refresh_presentation_accepts_current_and_recent_previous_only() {
+        let now = 1_000_000;
+        let family = test_family("r2", Some(("r1", now - REFRESH_GRACE_SECONDS)));
+        assert!(matches!(
+            classify_refresh_presentation(Some(&family), "r2", now),
+            RefreshPresentation::Current
+        ));
+        match classify_refresh_presentation(Some(&family), "r1", now) {
+            RefreshPresentation::Grace(pair) => {
+                assert_eq!(pair.session_token, "session-r2");
+                assert_eq!(pair.refresh_token, "jwt-r2");
+            }
+            other => panic!("expected grace, got {other:?}"),
+        }
+        assert!(matches!(
+            classify_refresh_presentation(Some(&family), "r1", now + 1),
+            RefreshPresentation::Reused
+        ));
+        assert!(matches!(
+            classify_refresh_presentation(Some(&family), "r0", now),
+            RefreshPresentation::Reused
+        ));
+        assert!(matches!(
+            classify_refresh_presentation(None, "r2", now),
+            RefreshPresentation::Missing
+        ));
+    }
 
-        // Test cache is initially empty
-        let initial = load_refresh_token_from_cache(cache_key).await;
-        assert!(initial.is_none(), "Cache should be initially empty");
+    #[tokio::test]
+    async fn refresh_rotation_commit_is_compare_and_replace() {
+        let key = format!("cas_test_{}", rand::thread_rng().gen::<u64>());
+        REFRESH_TOKEN_CACHE
+            .lock()
+            .await
+            .insert(key.clone(), test_family("r1", None));
+        let next = test_family("r2", None);
+        let session = next.refresh_token.clone();
 
-        // Test caching token
-        cache_refresh_token(cache_key, test_token.clone()).await;
-        let cached = load_refresh_token_from_cache(cache_key).await;
-        assert!(cached.is_some(), "Token should be cached");
+        assert!(matches!(
+            commit_refresh_rotation(&key, "r1", &session, next.refresh_token.clone()).await,
+            RefreshCommit::Committed
+        ));
+        let family = REFRESH_TOKEN_CACHE.lock().await.get(&key).cloned().unwrap();
+        assert_eq!(family.refresh_token.jti.as_deref(), Some("r2"));
+        assert_eq!(family.previous_refresh.as_ref().unwrap().jti, "r1");
+
+        let losing = test_family("r2b", None);
+        match commit_refresh_rotation(&key, "r1", &session, losing.refresh_token).await {
+            RefreshCommit::Grace(pair) => assert_eq!(pair.refresh_token, "jwt-r2"),
+            other => panic!("expected grace, got {other:?}"),
+        }
         assert_eq!(
-            cached.unwrap().jti,
-            test_token.jti,
-            "Cached token should match"
+            REFRESH_TOKEN_CACHE
+                .lock()
+                .await
+                .get(&key)
+                .unwrap()
+                .refresh_token
+                .jti
+                .as_deref(),
+            Some("r2")
         );
 
-        // Test invalidating token
-        invalidate_refresh_token(cache_key).await;
-        let after_invalidate = load_refresh_token_from_cache(cache_key).await;
-        assert!(after_invalidate.is_none(), "Token should be invalidated");
+        assert!(matches!(
+            commit_refresh_rotation(&key, "r0", &session, test_family("r3", None).refresh_token)
+                .await,
+            RefreshCommit::Reused
+        ));
+        assert!(REFRESH_TOKEN_CACHE.lock().await.get(&key).is_none());
 
-        println!("Refresh token cache operations work correctly!");
+        assert!(matches!(
+            commit_refresh_rotation(&key, "r2", &session, test_family("r4", None).refresh_token)
+                .await,
+            RefreshCommit::LoggedOut
+        ));
+        assert!(REFRESH_TOKEN_CACHE.lock().await.get(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_refresh_with_one_token_shares_one_pair() {
+        // User principals read their settings on refresh; a System principal family needs no
+        // system-config and exercises the same rotation path.
+        let private_key = setup_test_environment().await;
+        let (login_jwt, _) =
+            generate_service_login_assertion("alice", "control-panel", "ood1", &private_key)
+                .unwrap();
+        let service_pair = VerifyHubServer::new()
+            .handle_login_by_jwt(login_jwt.as_str(), &system_target("control-panel"))
+            .await
+            .unwrap();
+        let handler = VerifyHubServer::new();
+        let (first, second) = tokio::join!(
+            handler.handle_refresh_token(service_pair.refresh_token.as_str()),
+            handler.handle_refresh_token(service_pair.refresh_token.as_str()),
+        );
+        let (first, second) = (first.unwrap(), second.unwrap());
+        assert_eq!(first.refresh_token, second.refresh_token);
+        assert_eq!(first.session_token, second.session_token);
+        assert_ne!(first.refresh_token, service_pair.refresh_token);
+
+        let late = handler
+            .handle_refresh_token(service_pair.refresh_token.as_str())
+            .await
+            .unwrap();
+        assert_eq!(late.refresh_token, first.refresh_token);
+        let next = handler
+            .handle_refresh_token(first.refresh_token.as_str())
+            .await
+            .unwrap();
+        assert_ne!(next.refresh_token, first.refresh_token);
+    }
+
+    #[tokio::test]
+    async fn stale_refresh_outside_grace_revokes_family() {
+        let private_key = setup_test_environment().await;
+        let (login_jwt, _) =
+            generate_service_login_assertion("alice", "control-panel", "ood1", &private_key)
+                .unwrap();
+        let handler = VerifyHubServer::new();
+        let pair = handler
+            .handle_login_by_jwt(login_jwt.as_str(), &system_target("control-panel"))
+            .await
+            .unwrap();
+        let rotated = handler
+            .handle_refresh_token(pair.refresh_token.as_str())
+            .await
+            .unwrap();
+        let key = session_key_of(&pair.refresh_token);
+        REFRESH_TOKEN_CACHE
+            .lock()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .previous_refresh
+            .as_mut()
+            .unwrap()
+            .rotated_at -= REFRESH_GRACE_SECONDS + 1;
+
+        assert!(handler
+            .handle_refresh_token(pair.refresh_token.as_str())
+            .await
+            .is_err());
+        assert!(handler
+            .handle_refresh_token(rotated.refresh_token.as_str())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn logout_cannot_be_undone_by_grace_or_inflight_refresh() {
+        let private_key = setup_test_environment().await;
+        let (login_jwt, _) =
+            generate_service_login_assertion("alice", "control-panel", "ood1", &private_key)
+                .unwrap();
+        let handler = VerifyHubServer::new();
+        let pair = handler
+            .handle_login_by_jwt(login_jwt.as_str(), &system_target("control-panel"))
+            .await
+            .unwrap();
+        let rotated = handler
+            .handle_refresh_token(pair.refresh_token.as_str())
+            .await
+            .unwrap();
+        assert!(handler
+            .handle_logout(rotated.refresh_token.as_str())
+            .await
+            .unwrap());
+        assert!(handler
+            .handle_refresh_token(pair.refresh_token.as_str())
+            .await
+            .is_err());
+        let key = session_key_of(&rotated.refresh_token);
+        let rotated_jti = RPCSessionToken::from_string(&rotated.refresh_token)
+            .unwrap()
+            .jti
+            .unwrap();
+        let session = RPCSessionToken::from_string(&rotated.session_token).unwrap();
+        let refresh = RPCSessionToken::from_string(&rotated.refresh_token).unwrap();
+        assert!(matches!(
+            commit_refresh_rotation(&key, &rotated_jti, &session, refresh).await,
+            RefreshCommit::LoggedOut
+        ));
+        assert!(REFRESH_TOKEN_CACHE.lock().await.get(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn delegate_accepts_only_the_control_panel_service_as_caller() {
+        setup_test_environment().await;
+        let desktop = control_panel_user_login(&unique_user("caller")).await;
+        let handler = VerifyHubServer::new();
+        let notes = app_target("notes@bob");
+        let private_key = setup_test_environment().await;
+        let (device_assertion, _) =
+            generate_service_login_assertion("ood1", "control-panel", "ood1", &private_key)
+                .unwrap();
+        let mut sudo_service = RPCSessionToken::from_string(
+            &service_session("control-panel", SessionPrincipalKind::System).await,
+        )
+        .unwrap();
+        sudo_service.sudo = true;
+        let sudo_service = signed_verify_hub_token(sudo_service).await;
+        let user_app_session = generate_session_token(
+            &notes,
+            "alice",
+            1,
+            2,
+            SESSION_TOKEN_EXPIRE_SECONDS,
+            None,
+            false,
+            SessionPrincipalKind::User,
+        )
+        .await
+        .unwrap()
+        .to_string();
+
+        for caller in [
+            None,
+            Some(desktop.session_token.clone()),
+            Some(desktop.refresh_token.clone()),
+            Some(service_session("task-manager", SessionPrincipalKind::System).await),
+            Some(service_session("control-panel", SessionPrincipalKind::App).await),
+            Some(user_app_session),
+            Some(device_assertion),
+            Some(sudo_service),
+            Some("not-a-jwt".to_string()),
+        ] {
+            let result = handler
+                .handle_delegate_user_session(
+                    caller.as_deref(),
+                    desktop.session_token.as_str(),
+                    &notes,
+                )
+                .await;
+            assert!(
+                matches!(result, Err(RPCErrors::NoPermission(_))),
+                "caller {caller:?} must be refused, got {result:?}"
+            );
+        }
+
+        for principal_kind in [SessionPrincipalKind::System, SessionPrincipalKind::Device] {
+            let caller = service_session("control-panel", principal_kind).await;
+            let result = handler
+                .handle_delegate_user_session(Some(caller.as_str()), "not-a-jwt", &notes)
+                .await;
+            assert!(
+                matches!(result, Ok(DelegateUserSessionResult::SourceInactive)),
+                "{principal_kind:?} control-panel caller must pass, got {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delegate_rejects_sources_that_are_not_live_control_panel_user_sessions() {
+        setup_test_environment().await;
+        let user = unique_user("source");
+        let desktop = control_panel_user_login(&user).await;
+        let caller = service_session("control-panel", SessionPrincipalKind::System).await;
+        let handler = VerifyHubServer::new();
+        let notes = app_target("notes@bob");
+        let delegate = |source: String, target: AuthTarget| {
+            let handler = handler.clone();
+            let caller = caller.clone();
+            async move {
+                handler
+                    .handle_delegate_user_session(Some(caller.as_str()), source.as_str(), &target)
+                    .await
+            }
+        };
+
+        assert!(matches!(
+            delegate(
+                desktop.session_token.clone(),
+                system_target("control-panel")
+            )
+            .await,
+            Err(RPCErrors::NoPermission(_))
+        ));
+
+        let mut expired = RPCSessionToken::from_string(&desktop.session_token).unwrap();
+        expired.exp = Some(buckyos_get_unix_timestamp() - 600);
+        let expired = signed_verify_hub_token(expired).await;
+        let forged = {
+            let mut parts = desktop.session_token.split('.');
+            let (header, payload, signature) = (
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+            );
+            let mut claims: Value = serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(payload)
+                    .unwrap(),
+            )
+            .unwrap();
+            claims["sub"] = Value::from("mallory");
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&claims).unwrap());
+            format!("{header}.{payload}.{signature}")
+        };
+        for source in ["not-a-jwt".to_string(), expired, forged] {
+            assert!(matches!(
+                delegate(source, notes.clone()).await,
+                Ok(DelegateUserSessionResult::SourceInactive)
+            ));
+        }
+
+        let app_session = generate_session_token(
+            &app_target("control-panel@alice"),
+            &user,
+            1,
+            2,
+            SESSION_TOKEN_EXPIRE_SECONDS,
+            None,
+            false,
+            SessionPrincipalKind::User,
+        )
+        .await
+        .unwrap()
+        .to_string();
+        let mut sudo = RPCSessionToken::from_string(&desktop.session_token).unwrap();
+        sudo.sudo = true;
+        let sudo = signed_verify_hub_token(sudo).await;
+        for source in [
+            desktop.refresh_token.clone(),
+            app_session,
+            sudo,
+            service_session("control-panel", SessionPrincipalKind::System).await,
+            service_session("control-panel", SessionPrincipalKind::Device).await,
+        ] {
+            let result = delegate(source, notes.clone()).await;
+            assert!(
+                matches!(result, Err(RPCErrors::InvalidToken(_))),
+                "got {result:?}"
+            );
+        }
+
+        assert!(handler
+            .handle_logout(desktop.refresh_token.as_str())
+            .await
+            .unwrap());
+        assert!(matches!(
+            delegate(desktop.session_token.clone(), notes.clone()).await,
+            Ok(DelegateUserSessionResult::SourceInactive)
+        ));
+    }
+
+    #[tokio::test]
+    async fn delegation_source_stays_live_across_refresh_and_ends_at_logout() {
+        setup_test_environment().await;
+        let desktop = control_panel_user_login(&unique_user("family")).await;
+        let source = verify_delegation_source(&desktop.session_token)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.session_key, session_key_of(&desktop.refresh_token));
+        assert!(source_family_is_live(&source.session_key).await);
+
+        // A refresh keeps session_id and replaces the pair; the older access token still names
+        // the same live family.
+        let old_jti = RPCSessionToken::from_string(&desktop.refresh_token)
+            .unwrap()
+            .jti
+            .unwrap();
+        let (_, session, refresh) = generate_token_pair(
+            &system_target("control-panel"),
+            &source.user_id,
+            get_token_session_id(&RPCSessionToken::from_string(&desktop.session_token).unwrap())
+                .unwrap(),
+            SessionPrincipalKind::User,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            commit_refresh_rotation(&source.session_key, &old_jti, &session, refresh).await,
+            RefreshCommit::Committed
+        ));
+        let again = verify_delegation_source(&desktop.session_token)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(source_family_is_live(&again.session_key).await);
+
+        let (_, target_session, target_refresh) = generate_token_pair(
+            &app_target("notes@bob"),
+            &source.user_id,
+            7,
+            SessionPrincipalKind::User,
+        )
+        .await
+        .unwrap();
+        let target_key = format!("{}_app:notes@bob_7_test", source.user_id);
+        assert!(
+            commit_delegated_family(
+                &source.session_key,
+                &target_key,
+                &target_session,
+                target_refresh.clone(),
+            )
+            .await
+        );
+        assert!(REFRESH_TOKEN_CACHE.lock().await.contains_key(&target_key));
+
+        revoke_session_tokens(&source.session_key).await;
+        REFRESH_TOKEN_CACHE.lock().await.remove(&target_key);
+        assert!(
+            !commit_delegated_family(
+                &source.session_key,
+                &target_key,
+                &target_session,
+                target_refresh,
+            )
+            .await
+        );
+        assert!(!REFRESH_TOKEN_CACHE.lock().await.contains_key(&target_key));
     }
 }

@@ -303,6 +303,46 @@ impl RefreshTokenRequest {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegateUserSessionRequest {
+    pub source_session_token: String,
+    pub target: AuthTarget,
+}
+
+impl DelegateUserSessionRequest {
+    pub fn new(source_session_token: String, target: AuthTarget) -> Self {
+        Self {
+            source_session_token,
+            target,
+        }
+    }
+
+    pub fn to_json(&self) -> Result<Value> {
+        serde_json::to_value(self).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to serialize DelegateUserSessionRequest: {error}"
+            ))
+        })
+    }
+
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse DelegateUserSessionRequest: {error}"
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DelegateUserSessionResult {
+    Issued(TokenPair),
+    SourceInactive,
+    AccessDenied,
+}
+
 pub enum VerifyHubClient {
     InProcess(Box<dyn VerifyHubApiHandler>),
     KRPC(Box<kRPC>),
@@ -425,6 +465,28 @@ impl VerifyHubClient {
         }
     }
 
+    pub async fn delegate_user_session(
+        &self,
+        source_session_token: &str,
+        target: AuthTarget,
+    ) -> Result<DelegateUserSessionResult> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_delegate_user_session(None, source_session_token, &target)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let params =
+                    DelegateUserSessionRequest::new(source_session_token.to_string(), target)
+                        .to_json()?;
+                let result = client.call("delegate_user_session", params).await?;
+                serde_json::from_value(result)
+                    .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))
+            }
+        }
+    }
+
     pub async fn verify_token(
         &self,
         session_token: &str,
@@ -478,6 +540,13 @@ pub trait VerifyHubApiHandler: Send + Sync {
         aud: Option<String>,
         login_nonce: u64,
     ) -> Result<SudoByPasswordResponse>;
+
+    async fn handle_delegate_user_session(
+        &self,
+        caller_token: Option<&str>,
+        source_session_token: &str,
+        target: &AuthTarget,
+    ) -> Result<DelegateUserSessionResult>;
 }
 
 /// Adapter that exposes a VerifyHubHandler as a RPCHandler.
@@ -568,6 +637,21 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                 let ok = self.0.handle_logout(&refresh_jwt.refresh_token).await?;
                 RPCResult::Success(
                     serde_json::to_value(ok)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
+            }
+            "delegate_user_session" => {
+                let request = DelegateUserSessionRequest::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_delegate_user_session(
+                        req.token.as_deref(),
+                        &request.source_session_token,
+                        &request.target,
+                    )
+                    .await?;
+                RPCResult::Success(
+                    serde_json::to_value(result)
                         .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
                 )
             }
@@ -722,6 +806,37 @@ mod tests {
         .is_err());
     }
 
+    #[test]
+    fn delegate_result_status_is_the_wire_discriminant() {
+        for (result, expected) in [
+            (
+                DelegateUserSessionResult::SourceInactive,
+                json!({"status": "source_inactive"}),
+            ),
+            (
+                DelegateUserSessionResult::AccessDenied,
+                json!({"status": "access_denied"}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&result).unwrap(), expected);
+        }
+        let issued: DelegateUserSessionResult = serde_json::from_value(json!({
+            "status": "issued",
+            "session_token": "s",
+            "refresh_token": "r"
+        }))
+        .unwrap();
+        assert!(matches!(
+            issued,
+            DelegateUserSessionResult::Issued(TokenPair { ref session_token, ref refresh_token })
+                if session_token == "s" && refresh_token == "r"
+        ));
+        assert!(serde_json::from_value::<DelegateUserSessionResult>(json!({
+            "status": "revoked"
+        }))
+        .is_err());
+    }
+
     #[derive(Default, Debug)]
     struct MockCalls {
         login_jwt: Option<(String, AuthTarget)>,
@@ -730,6 +845,7 @@ mod tests {
         verify_token: Option<(String, Option<AuthTarget>)>,
         refresh_token: Option<String>,
         logout: Option<String>,
+        delegate: Option<(Option<String>, String, AuthTarget)>,
     }
 
     #[derive(Clone)]
@@ -818,6 +934,24 @@ mod tests {
             let mut calls = self.calls.lock().unwrap();
             calls.verify_token = Some((session_token.to_string(), expected_target));
             Ok(true)
+        }
+
+        async fn handle_delegate_user_session(
+            &self,
+            caller_token: Option<&str>,
+            source_session_token: &str,
+            target: &AuthTarget,
+        ) -> Result<DelegateUserSessionResult> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.delegate = Some((
+                caller_token.map(str::to_string),
+                source_session_token.to_string(),
+                target.clone(),
+            ));
+            Ok(DelegateUserSessionResult::Issued(TokenPair {
+                session_token: "delegated-session".to_string(),
+                refresh_token: "delegated-refresh".to_string(),
+            }))
         }
     }
 
@@ -975,7 +1109,55 @@ mod tests {
             _ => panic!("Expected success response"),
         }
 
+        let delegate_req = RPCRequest {
+            method: "delegate_user_session".to_string(),
+            params: json!({
+                "source_session_token": "desktop-session",
+                "target": {"kind": "app", "app_instance_id": "notes@bob"}
+            }),
+            seq: 11,
+            token: Some("control-panel-service".to_string()),
+            trace_id: None,
+        };
+        let delegate_resp = rpc_handler.handle_rpc_call(delegate_req, ip).await.unwrap();
+        match delegate_resp.result {
+            RPCResult::Success(value) => {
+                assert_eq!(
+                    value,
+                    json!({
+                        "status": "issued",
+                        "session_token": "delegated-session",
+                        "refresh_token": "delegated-refresh"
+                    })
+                );
+            }
+            _ => panic!("Expected success response"),
+        }
+        let unknown_field_req = RPCRequest {
+            method: "delegate_user_session".to_string(),
+            params: json!({
+                "source_session_token": "desktop-session",
+                "target": {"kind": "app", "app_instance_id": "notes@bob"},
+                "username": "alice"
+            }),
+            seq: 12,
+            token: Some("control-panel-service".to_string()),
+            trace_id: None,
+        };
+        assert!(matches!(
+            rpc_handler.handle_rpc_call(unknown_field_req, ip).await,
+            Err(RPCErrors::ParseRequestError(_))
+        ));
+
         let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.delegate.clone().unwrap(),
+            (
+                Some("control-panel-service".to_string()),
+                "desktop-session".to_string(),
+                AuthTarget::app("notes@bob".parse().unwrap()),
+            )
+        );
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-2");
         assert_eq!(params, AuthTarget::system("kernel".parse().unwrap()));
