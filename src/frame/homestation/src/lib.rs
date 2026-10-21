@@ -23,6 +23,7 @@ pub mod protocol;
 pub mod publish;
 pub mod pull;
 pub mod resources;
+pub mod retention;
 pub mod selection;
 pub mod settings;
 pub mod sign;
@@ -209,6 +210,22 @@ impl Station {
         tokio::spawn(async move { station.comment_sync_loop().await });
         let station = self.clone();
         tokio::spawn(async move { station.housekeeping_loop().await });
+        let station = self.clone();
+        tokio::spawn(async move { station.retention_loop().await });
+    }
+
+    /// Finishes interrupted pins and releases, and backfills older entries (D17).
+    async fn retention_loop(self: Arc<Self>) {
+        loop {
+            match self.reconcile_retentions().await {
+                Ok(report) if report.pinned + report.released + report.failed > 0 || !report.issues.is_empty() => {
+                    log::info!("retention of {}: {:?}", self.cfg.user, report)
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("retention reconcile failed: {e}"),
+            }
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
     }
 
     async fn housekeeping_loop(self: Arc<Self>) {

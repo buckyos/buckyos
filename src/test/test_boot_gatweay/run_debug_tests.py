@@ -119,6 +119,9 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
             "kevent": {
                 "selector": build_selector(("ood1", 10165, 10)),
             },
+            "nfs-server": {
+                "selector": build_selector(("ood1", 4110, 10)),
+            },
         },
         "node_route_map": {
             "ood2": "rtcp://ood2.test.buckyos.io/",
@@ -376,7 +379,7 @@ def assertions_for_case(case_name: str):
             request_header_equals("X-Forwarded-Proto", "https"),
         ]
     if case_name == "req_ndm_ok":
-        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:4110")]
     if case_name == "req_service_system_config_identifiers_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]
     if case_name == "req_service_system_config_well_known_ok":

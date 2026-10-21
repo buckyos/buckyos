@@ -265,6 +265,9 @@ pub trait ChunkStore: Send + Sync {
     /// Named objects stored by other zone apps (FileObjects uploaded through NDM).
     async fn get_named_object(&self, obj_id: &str) -> HsResult<Option<String>>;
     async fn put_named_object(&self, obj_id: &str, body: &str) -> HsResult<()>;
+    /// Keeps `obj_id` and everything it references for `owner` until released (share design D17).
+    async fn retain(&self, obj_id: &str, owner: &str) -> HsResult<()>;
+    async fn release(&self, obj_id: &str, owner: &str) -> HsResult<()>;
 }
 
 pub struct FsChunkStore {
@@ -318,6 +321,15 @@ impl ChunkStore for FsChunkStore {
         tokio::fs::create_dir_all(&self.dir).await.map_err(|e| HsError::Internal(e.to_string()))?;
         tokio::fs::write(self.path(obj_id)?, body).await.map_err(|e| HsError::Internal(e.to_string()))
     }
+
+    /// The folder store never collects anything.
+    async fn retain(&self, _obj_id: &str, _owner: &str) -> HsResult<()> {
+        Ok(())
+    }
+
+    async fn release(&self, _obj_id: &str, _owner: &str) -> HsResult<()> {
+        Ok(())
+    }
 }
 
 pub struct NdmChunkStore {
@@ -361,6 +373,22 @@ impl ChunkStore for NdmChunkStore {
     async fn put_named_object(&self, obj_id: &str, body: &str) -> HsResult<()> {
         let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
         self.ndm.put_object(&id, body).await.map_err(|e| HsError::Internal(format!("named store: {e}")))
+    }
+
+    async fn retain(&self, obj_id: &str, owner: &str) -> HsResult<()> {
+        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
+        self.ndm
+            .pin(&id, owner, named_store::PinScope::Recursive, None)
+            .await
+            .map_err(|e| HsError::Internal(format!("named store pin: {e}")))
+    }
+
+    async fn release(&self, obj_id: &str, owner: &str) -> HsResult<()> {
+        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(format!("invalid id: {e}")))?;
+        match self.ndm.unpin(&id, owner).await {
+            Ok(()) | Err(ndn_lib::NdnError::NotFound(_)) => Ok(()),
+            Err(e) => Err(HsError::Internal(format!("named store unpin: {e}"))),
+        }
     }
 }
 

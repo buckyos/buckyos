@@ -29,11 +29,14 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 name-lib = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
+rbac = { workspace = true }
+kRPC = { workspace = true }
+buckyos-http-server = { workspace = true }
+http-body-util = { workspace = true }
 pbkdf2 = "0.12"
 hmac = "0.12"
 
 [dev-dependencies]
 tempfile = { workspace = true }
 reqwest = { workspace = true }
-kRPC = { workspace = true }
 jsonwebtoken = { workspace = true }

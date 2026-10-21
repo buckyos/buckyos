@@ -758,21 +758,51 @@ function buildGroupRunners(
   const ndmProxyGroup = async (): Promise<SelftestCaseResult[]> => {
     return [
       await runSelftestCase(
-        "ndm_proxy queries a missing object through the node gateway",
+        "ndm_proxy writes, registers and reads back its own object",
+        async () => {
+          const data = new TextEncoder().encode(`systest ndm_proxy ${Date.now()}`);
+          const chunkId = sdk.ndn.ChunkId.fromMix256Result(
+            data.length,
+            sdk.ndn.sha256Bytes(data),
+          ).toString();
+          await sdk.ndm_proxy.putChunk(chunkId, data);
+          const [objId, objData] = new sdk.ndn.FileObject(
+            "systest-ndm-proxy.txt",
+            data.length,
+            chunkId,
+          ).genObjId();
+          await sdk.ndm_proxy.putObject({ obj_id: objId.toString(), obj_data: objData });
+          const result = await sdk.ndm_proxy.queryObjectById({ obj_id: objId.toString() });
+          if (result.state !== "object") {
+            throw new Error(`expected the registered object, got ${result.state}`);
+          }
+          return { objId: objId.toString(), state: result.state };
+        },
+      ),
+      await runSelftestCase(
+        "ndm_proxy denies reading an object this app does not hold",
         async () => {
           const objId = new sdk.ndn.ObjId(
             sdk.ndn.OBJ_TYPE_FILE,
             crypto.getRandomValues(new Uint8Array(32)),
           ).toString();
-          const result = await sdk.ndm_proxy.queryObjectById({ obj_id: objId });
-          if (result.state !== "not_exist") {
-            throw new Error(`expected a missing object, got ${result.state}`);
+          try {
+            await sdk.ndm_proxy.queryObjectById({ obj_id: objId });
+          } catch (error) {
+            if (
+              error instanceof sdk.ndm_proxy.NdmProxyApiError &&
+              error.status === 403 &&
+              error.errorCode === "permission_denied"
+            ) {
+              return { access: "denied", status: error.status };
+            }
+            throw error;
           }
-          return { objId, state: result.state };
+          throw new Error("app read an object it never uploaded or registered");
         },
       ),
       await runSelftestCase(
-        "ndm_proxy rejects restricted outboxCount on the app gateway",
+        "ndm_proxy rejects restricted outboxCount for apps",
         async () => {
           try {
             await sdk.ndm_proxy.outboxCount();
@@ -780,9 +810,7 @@ function buildGroupRunners(
             if (
               error instanceof sdk.ndm_proxy.NdmProxyApiError &&
               error.status === 403 &&
-              error.message.includes(
-                "restricted operation 'outbox_count' is disabled on this gateway",
-              )
+              error.errorCode === "permission_denied"
             ) {
               return { access: "denied", status: error.status };
             }

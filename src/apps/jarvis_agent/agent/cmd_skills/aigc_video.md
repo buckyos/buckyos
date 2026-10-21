@@ -1,7 +1,7 @@
 ---
 name: aigc_video
 description: Make videos with the zone's AI models — text or image to clip, video restyle/extend/upscale as far as the providers support it, and multi-shot films from a storyboard (images, narration, clips, ffmpeg assembly with subtitles), with task ids recorded so long jobs resume instead of being paid twice.
-requires: aios agent container with the buckyos-agent commands on PATH (gen_video, img2video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves the video method
+requires: aios agent container with the buckyos-agent commands on PATH (gen_video, img2video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves the video method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
 ---
 #### When to use
 - One clip from a description (`gen_video`) or from a still (`img2video`); restyle a clip (`video2video`); continue one (`extend_video`); raise resolution (`upscale_video`).

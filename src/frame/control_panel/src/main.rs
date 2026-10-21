@@ -46,9 +46,6 @@ use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use log::info;
-use named_store::{
-    NamedDataMgrNodeGateway, NamedDataMgrZoneGateway, NdmNodeGatewayConfig, NdmZoneGatewayConfig,
-};
 use serde_json::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
@@ -358,8 +355,6 @@ struct ControlPanelServer {
     install_runner: Arc<app_install_runner::InstallRunner>,
     running_update_batch_tasks: Arc<tokio::sync::Mutex<HashSet<String>>>,
     staging_store: Arc<app_staging::PikgStagingStore>,
-    ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
-    ndm_node_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
     agent_drives: Arc<std::sync::Mutex<HashMap<String, bool>>>,
 }
 
@@ -395,8 +390,6 @@ impl ControlPanelServer {
             install_runner,
             running_update_batch_tasks: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             staging_store,
-            ndm_gateway: None,
-            ndm_node_gateway: None,
             agent_drives: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -1295,7 +1288,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
-    let mut control_panel_server = ControlPanelServer::new();
+    let control_panel_server = ControlPanelServer::new();
     // Agent 运行时 App 的本地 AppDoc 授权只在内存中，恢复安装任务前先重新注册。
     agent_mgr::register_agent_runtime_authorities().await;
     // 启动安装任务恢复循环；正常路径由业务 RPC 直接执行，TaskManager
@@ -1304,37 +1297,6 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     control_panel_server.app_installer.start_lifecycle_runner();
     control_panel_server.start_update_batch_runner();
     control_panel_server.start_download_recovery();
-
-    // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）
-    let runtime = get_buckyos_api_runtime()
-        .map_err(|err| anyhow::anyhow!("get runtime for ndm gateway failed: {}", err))?;
-    match runtime.get_named_store().await {
-        Ok(store_mgr) => {
-            let ndm_cache_dir = runtime
-                .get_cache_folder()
-                .unwrap_or_else(|_| get_buckyos_root_dir().join("cache").join("control-panel"))
-                .join("ndm_upload_cache");
-            let store_mgr = Arc::new(store_mgr);
-            let ndm_config = NdmZoneGatewayConfig {
-                cache_dir: ndm_cache_dir,
-                ..Default::default()
-            };
-            let ndm_gw = Arc::new(NamedDataMgrZoneGateway::new(store_mgr.clone(), ndm_config));
-            let ndm_node_gw = Arc::new(NamedDataMgrNodeGateway::new(
-                store_mgr,
-                NdmNodeGatewayConfig::default(),
-            ));
-            control_panel_server.ndm_gateway = Some(ndm_gw);
-            control_panel_server.ndm_node_gateway = Some(ndm_node_gw);
-            info!("NDM zone gateway initialized");
-        }
-        Err(e) => {
-            log::warn!(
-                "NDM zone gateway not available (named store not ready: {}), ndm upload disabled",
-                e
-            );
-        }
-    }
 
     let control_panel_server = Arc::new(control_panel_server);
     // Bind to the default control-panel service port.
@@ -1350,16 +1312,6 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     let _ = runner.add_http_server("/sso_logout".to_string(), control_panel_server.clone());
     // Control-panel desktop API endpoints.
     let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
-
-    // NDM zone gateway: 注册 /ndm 路径，供系统 App 使用 NDM 上传协议
-    if let Some(ref ndm_gw) = control_panel_server.ndm_gateway {
-        let _ = runner.add_http_server("/ndm".to_string(), ndm_gw.clone());
-        info!("NDM zone gateway registered at /ndm");
-    }
-    if let Some(ref ndm_node_gw) = control_panel_server.ndm_node_gateway {
-        let _ = runner.add_http_server("/ndm/proxy/v1".to_string(), ndm_node_gw.clone());
-        info!("NDM node gateway registered at /ndm/proxy/v1");
-    }
 
     // 添加 web (best-effort, skip if path cannot be resolved)
     let web_dir = std::env::current_exe()

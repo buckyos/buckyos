@@ -105,6 +105,22 @@ CREATE TABLE IF NOT EXISTS object_grants (
   PRIMARY KEY (obj_id, entry)
 );
 
+CREATE TABLE IF NOT EXISTS retentions (
+  entry TEXT NOT NULL,
+  obj_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (entry, obj_id)
+);
+
+CREATE TABLE IF NOT EXISTS retention_issues (
+  entry TEXT NOT NULL,
+  obj_id TEXT NOT NULL,
+  issue TEXT NOT NULL,
+  checked_at INTEGER NOT NULL,
+  PRIMARY KEY (entry, obj_id)
+);
+
 CREATE TABLE IF NOT EXISTS publish_tasks (
   key TEXT PRIMARY KEY,
   stage TEXT NOT NULL,

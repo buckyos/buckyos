@@ -2892,6 +2892,9 @@ impl MessageCenter {
         }
         let group = msg.to[0].clone();
         let id = msg.gen_obj_id().0;
+        // Held before the group transaction locks the database; a rejected
+        // message drops its holds below.
+        self.retain_attachments(&id, &msg).await?;
         let mut tx = self.groups.begin(&group).await?;
         let key = format!("message:{}", id.to_string());
         if let Some(saved) = tx.state.operations.get(&key) {
@@ -2930,6 +2933,11 @@ impl MessageCenter {
             },
         );
         tx.commit().await?;
+        if result.ok {
+            self.confirm_attachments(&id).await;
+        } else {
+            self.drop_unaccepted_attachments(&id).await;
+        }
         if let Some(group) = &result.delivered_group {
             Self::publish_event(
                 format!("/msg_center/group/{}/changed", group.to_string()),

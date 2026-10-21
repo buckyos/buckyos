@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "smoke": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors nfs_server_dv.ts",
-    "test": "pnpm run smoke"
+    "ndm": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors ndm_dv.ts",
+    "test": "pnpm run smoke && pnpm run ndm"
   },
   "dependencies": {
     "buckyos": "latest"

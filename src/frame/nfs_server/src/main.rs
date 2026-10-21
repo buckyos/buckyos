@@ -266,6 +266,7 @@ async fn serve(config: ServerConfig) {
     tokio::spawn(nfs_server::copy::recovery_loop(state.clone()));
     nfs_server::share::rpc::recover_operations(&state);
     tokio::spawn(nfs_server::share::sweeper_loop(state.clone()));
+    tokio::spawn(nfs_server::ndm::sweeper_loop(state.clone()));
     let app = nfs_server::server::build_router(state);
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,

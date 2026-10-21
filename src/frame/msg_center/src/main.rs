@@ -1,3 +1,4 @@
+mod attachment_retention;
 mod contact_mgr;
 mod contact_lookup;
 mod contact_rpc;
@@ -1288,6 +1289,8 @@ pub async fn start_msg_center_service() -> Result<()> {
     center.start_friend_request_sweep();
     center.start_notify_sweep();
     center.start_group_sync();
+    center.set_attachment_store(Arc::new(attachment_retention::RuntimeAttachmentStore));
+    center.start_attachment_retention();
 
     let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
     register_message_hub(&center, executor_mgr.as_ref()).await?;

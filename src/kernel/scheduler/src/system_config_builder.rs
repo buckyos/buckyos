@@ -577,7 +577,8 @@ impl SystemConfigBuilder {
         .await?;
         // NFSP is a zone-level protocol: the gateway exposes it at the root
         // `/nfs/v1/*` path (see boot_gateway.yaml get_service_info_from_req),
-        // not under /kapi/<service>. Keep the spec metadata in sync.
+        // not under /kapi/<service>; the NDM protocols `/ndm/*` go to this
+        // service the same way. Keep the spec metadata in sync.
         if let Some(expose) = config.spec_config.expose_config.get_mut("www") {
             expose.route = ServiceExposeRouteConfig::Web {
                 sub_hostname: Vec::new(),

@@ -1,7 +1,7 @@
 ---
 name: aigc_audio
 description: Produce audio through the zone's AI models — read text aloud (text to speech), generate music, clean up a recording — then check that the file plays and hand it over; transcription is a side tool.
-requires: aios agent container with the buckyos-agent commands on PATH (text_to_speech, gen_music, enhance_audio, speech_to_text) plus ffmpeg/ffprobe, and an AICC provider that serves the audio method
+requires: aios agent container with the buckyos-agent commands on PATH (text_to_speech, gen_music, enhance_audio, speech_to_text) plus ffmpeg/ffprobe, and an AICC provider that serves the audio method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
 ---
 #### When to use
 - Typical requests: "read this aloud", "make a 30-second voice-over", "a short jingle for the intro", "remove the hum from this recording".

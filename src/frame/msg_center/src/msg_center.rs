@@ -99,6 +99,8 @@ pub struct MessageCenter {
     pub(crate) friend_lock: Arc<tokio::sync::Mutex<()>>,
     /// Unauthenticated signed ingress per sender: (window start, count).
     pub(crate) ingress_budget: Arc<std::sync::Mutex<HashMap<String, (u64, u32)>>>,
+    /// Where accepted messages hold their attachments (`attachment_retention.rs`).
+    pub(crate) attachment_store: Arc<crate::attachment_retention::AttachmentStoreSlot>,
 }
 
 impl MessageCenter {
@@ -114,6 +116,7 @@ impl MessageCenter {
         let contact_mgr = ContactMgr::new_with_msg_box(msg_box_db.clone()).await?;
         let groups = crate::group_store::GroupStore::open(msg_box_db.clone()).await?;
         let notifies = crate::notify::NotifyStore::open(msg_box_db.clone()).await?;
+        crate::attachment_retention::open_tables(&msg_box_db).await?;
         let hosted = groups
             .list()
             .await?
@@ -140,6 +143,7 @@ impl MessageCenter {
             zone_signer: Arc::new(Default::default()),
             friend_lock: Arc::new(tokio::sync::Mutex::new(())),
             ingress_budget: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            attachment_store: Arc::new(Default::default()),
         })
     }
 
@@ -1467,6 +1471,9 @@ impl MessageCenter {
             }
         }
 
+        if !mailbox_records.is_empty() {
+            self.retain_attachments(&stored_msg_id, &stored_msg).await?;
+        }
         let now_ms = Self::now_ms();
         let expires_at_ms = if receiver.is_some() {
             None
@@ -1491,6 +1498,9 @@ impl MessageCenter {
         {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
+                if !mailbox_records.is_empty() {
+                    self.confirm_attachments(&stored_msg_id).await;
+                }
                 self.note_records_committed(&mailbox_records).await;
                 for record in mailbox_records.iter() {
                     Self::publish_box_changed_event(record, "upsert");
@@ -1871,6 +1881,7 @@ impl MessageCenter {
             deliveries,
             reason: None,
         };
+        self.retain_attachments(&stored_msg_id, &stored_msg).await?;
         let expires_at_ms = Self::idempotency_expires_at(now_ms);
         match self
             .msg_box_db
@@ -1891,6 +1902,7 @@ impl MessageCenter {
         {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
+                self.confirm_attachments(&stored_msg_id).await;
                 self.note_records_committed(std::slice::from_ref(&sent_record))
                     .await;
                 Self::publish_box_changed_event(&sent_record, "upsert");

@@ -577,3 +577,25 @@ Desktop `sysdlg/share` 与“我的内容”。
 - **独立模式**：`--named-store <dir>` 开启分享，`--share-base-url`（默认 `http://<listen>`）、`--public-base-url`；
   未鉴权时所有调用者视为用户 `local`。
 
+- **停止重试**：停止时先置 `stopping`（访客立即 404），unpin 失败保持 `stopping`，sweeper 每分钟重试到释放为止；
+  pin owner 按分享区分，重试或重启不会释放其他分享对同一快照的保留（`tests/share.rs` 注入 named store 写锁验证）。
+- **应用附件**：交给 MessageHub、HomeStation 的附件由接收应用自己保留（D17）；停止分享只释放 `share:<share_id>`。
+
+## 13. NDM 网关（实现扩展）
+
+2026-10-20 由 control-panel 迁入（技术设计 D18/D19）。网关把 `/ndm/*` 原样转发到 nfs-server，代码在
+`src/frame/nfs_server/src/ndm/`；协议报文见 cyfs-ndn `doc/NDM Protocol/` 的 zone 与 proxy 协议，BuckyOS 部署差异写在
+zone 协议 §2.4。
+
+- **`/ndm/v1/uploads`**（tus 1.0.0，每 chunk 一个会话）由 nfs-server 自己实现：会话绑定已验证主体（用户 + 目标 App），
+  他人的 `HEAD`/`PATCH`/`DELETE` 一律 404；会话与暂存字节在 filedb `ndm_uploads` 与 `data_dir/ndm_uploads/`，重启后可续传；
+  支持 `DELETE` 终止；闲置超过 `ndm.session_ttl_secs`（默认 1 小时）的未完成会话由 sweeper 连同暂存文件清理；
+  完成的 chunk 写入 named store 并加 24 小时 Lease（`ndm-upload:<session_id>`），终止只释放该租约，不删 chunk。
+- **查重、`/ndm/v1/store/*` 与 `/ndm/proxy/v1/*`** 先在 nfs-server 授权，再交给 cyfs-ndn 的 `NamedDataMgrZoneGateway` /
+  `NamedDataMgrNodeGateway`（后者受限能力打开，由前置授权决定）。
+- **授权**：RBAC 资源 `obj://ndm/uploads`（write）、`obj://ndm/objects`（read）、`obj://ndm/retain`（write）、
+  `obj://ndm/manage`（write），用户主体与 App/服务主体都要放行；默认策略见 buckyos-api `rbac_config.rs`。
+  本主体上传、写入或登记过的对象记入 `ndm_holdings`，可读回；`put_object` 要求对象体哈希到 id、引用的 chunk/子对象
+  由本主体持有（manage 除外）；pin 类调用要求 manage，或 retain 且 owner 在 `<App 主体>/<用户>/` 前缀下。
+- **已知边界**：`chunk_hash` 秒传不证明持有内容；读写模式之外的 Agent 没有对象读取权；独立模式未鉴权时所有调用者
+  视为 `local` 且全部放行。

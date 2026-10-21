@@ -2490,3 +2490,172 @@ fn member_kind_comes_from_the_owner_document_not_the_zone_document() {
     let lucy = DID::from_str("did:web:lucy.demo.buckyos.io").unwrap();
     assert!(member_entity_kind(&lucy, &owner_doc).is_err());
 }
+
+mod attachment_holds {
+    use super::*;
+    use crate::attachment_retention::{attachment_owner, AttachmentStore};
+    use named_store::{NamedDataMgr, NamedLocalStore, PinScope, StoreLayout, StoreTarget};
+    use ndn_lib::{NdnError, ObjId};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// The real store, with a switch that makes pins fail.
+    struct Flaky {
+        store: NamedDataMgr,
+        fail: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl AttachmentStore for Flaky {
+        async fn retain(&self, obj_id: &ObjId, owner: &str) -> Result<()> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(kRPC::RPCErrors::ReasonError("named store: injected failure".into()));
+            }
+            self.store.retain(obj_id, owner).await
+        }
+        async fn release(&self, obj_id: &ObjId, owner: &str) -> Result<()> {
+            self.store.release(obj_id, owner).await
+        }
+        async fn issue(&self, obj_id: &ObjId) -> Option<String> {
+            self.store.issue(obj_id).await
+        }
+    }
+
+    async fn open_store(dir: &std::path::Path) -> NamedDataMgr {
+        let store = NamedLocalStore::get_named_store_by_path(dir.to_path_buf()).await.unwrap();
+        let store_id = store.store_id().to_string();
+        let mgr = NamedDataMgr::new();
+        mgr.register_store(Arc::new(tokio::sync::Mutex::new(store))).await;
+        let target = StoreTarget { store_id, device_did: String::new(), capacity: None, used: None, readonly: false, enabled: true, weight: 1 };
+        mgr.add_layout(StoreLayout::new(1, vec![target], 0, 0)).await;
+        mgr
+    }
+
+    /// One GC pass as a deployment would run it: deliver pending pin cascades, then evict.
+    async fn run_gc(mgr: &NamedDataMgr) -> named_store::GcReport {
+        let id = mgr.get_store_ids().await.pop().unwrap();
+        let store = mgr.get_store(&id).await.unwrap();
+        let store = store.lock().await;
+        loop {
+            let batch = store.fetch_outbox_ready(100).await.unwrap();
+            if batch.is_empty() {
+                break;
+            }
+            for entry in batch {
+                store.apply_edge(entry.msg.clone()).await.unwrap();
+                store.complete_outbox_entry(entry.seq).await.unwrap();
+            }
+        }
+        store.gc_round(0).await.unwrap()
+    }
+
+    /// A file as a share snapshot leaves it: chunk + FileObject, pinned by the share.
+    async fn snapshot(mgr: &NamedDataMgr, name: &str, data: &[u8]) -> (ObjId, ObjId) {
+        let chunk = ndn_lib::ChunkHasher::new(None).unwrap().calc_mix_chunk_id_from_bytes(data).unwrap();
+        mgr.put_chunk(&chunk, data).await.unwrap();
+        let file = ndn_lib::FileObject::new(name.to_string(), data.len() as u64, chunk.to_string());
+        let (id, body) = file.gen_obj_id();
+        mgr.put_object(&id, &body).await.unwrap();
+        mgr.pin(&id, "share:s", PinScope::Recursive, None).await.unwrap();
+        (id, chunk.to_obj_id())
+    }
+
+    fn with_refs(mut msg: MsgObject, ids: &[&ObjId]) -> MsgObject {
+        for id in ids {
+            msg.content.refs.push(ndn_lib::RefItem {
+                role: ndn_lib::RefRole::Output,
+                target: ndn_lib::RefTarget::DataObj { obj_id: (*id).clone(), uri_hint: None },
+                label: None,
+            });
+        }
+        msg
+    }
+
+    fn direct(from: &DID, to: &DID, text: &str, created: u64) -> MsgObject {
+        let mut msg = MsgObject { from: from.clone(), to: vec![to.clone()], kind: MsgObjKind::Chat, created_at_ms: created, ..Default::default() };
+        msg.content.content = text.into();
+        msg
+    }
+
+    async fn holds(mgr: &NamedDataMgr, obj: &ObjId, msg: &ObjId) -> bool {
+        match mgr.anchor_state(obj, &attachment_owner(msg)).await {
+            Ok(_) => true,
+            Err(NdnError::NotFound(_)) => false,
+            Err(e) => panic!("anchor_state: {e}"),
+        }
+    }
+
+    async fn rows(c: &MessageCenter, state: &str) -> i64 {
+        let sql = c.msg_box_db.render_sql("SELECT COUNT(*) AS n FROM msg_attachment_retentions WHERE state=?");
+        sqlx::Row::try_get(&sqlx::query(&sql).bind(state).fetch_one(c.msg_box_db.pool()).await.unwrap(), "n").unwrap()
+    }
+
+    #[tokio::test]
+    async fn attachments_are_held_while_a_message_references_them() {
+        let (c, tmp, _) = center().await;
+        let mgr = open_store(&tmp.path().join("store")).await;
+        let flaky = Arc::new(Flaky { store: mgr.clone(), fail: AtomicBool::new(false) });
+        c.set_attachment_store(flaky.clone());
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        call(&c, &owner(), "group.create_session", json!({"session_id":"files"})).await.unwrap();
+        let (only_group, _) = snapshot(&mgr, "a.txt", b"only in the group").await;
+        let (shared, _) = snapshot(&mgr, "b.txt", b"in the group and a direct message").await;
+        let (inbound, inbound_chunk) = snapshot(&mgr, "c.txt", b"dispatched to the owner").await;
+
+        // Hosted group, local send and dispatch all hold before they accept.
+        let group_msg = with_refs(message(&owner(), Some("files"), "files", 1), &[&only_group, &shared]);
+        assert!(c.accept_group_message(&actor(owner()), group_msg.clone(), None).await.unwrap().ok);
+        let group_id = group_msg.gen_obj_id().0;
+        let dm = with_refs(direct(&owner(), &member(), "for you", 2), &[&shared]);
+        let dm_id = c.post_send_internal(dm, None).await.unwrap().msg_id;
+        let incoming = with_refs(direct(&member(), &owner(), "for you too", 3), &[&inbound]);
+        let incoming_id = incoming.gen_obj_id().0;
+        assert!(c.handle_dispatch(incoming, None, None, context(&member())).await.unwrap().ok);
+        assert!(holds(&mgr, &only_group, &group_id).await && holds(&mgr, &shared, &group_id).await);
+        assert!(holds(&mgr, &shared, &dm_id).await);
+        assert!(holds(&mgr, &inbound, &incoming_id).await);
+        assert_eq!(rows(&c, "held").await, 4);
+
+        // The shares stop; GC keeps everything messages reference.
+        for id in [&only_group, &shared, &inbound] {
+            mgr.unpin(id, "share:s").await.unwrap();
+        }
+        assert_eq!(run_gc(&mgr).await.evicted_objects, 0);
+
+        // A recall ends the group message: its holds go, the direct message keeps the shared file.
+        let mut recall = message(&owner(), Some("files"), "", 4);
+        recall.relates_to = Some(MsgRelation { rel: MsgRelType::Redact, target: group_id.clone(), key: None });
+        assert!(c.accept_group_message(&actor(owner()), recall, None).await.unwrap().ok);
+        assert_eq!(rows(&c, "releasing").await, 2);
+        let report = c.reconcile_attachments(0).await.unwrap();
+        assert_eq!(report.released, 2, "{report:?}");
+        assert!(!holds(&mgr, &only_group, &group_id).await && !holds(&mgr, &shared, &group_id).await);
+        assert!(holds(&mgr, &shared, &dm_id).await);
+        assert_eq!(run_gc(&mgr).await.evicted_objects, 1);
+        assert!(!mgr.is_object_exist(&only_group).await.unwrap());
+        assert!(mgr.is_object_exist(&shared).await.unwrap() && mgr.is_object_exist(&inbound).await.unwrap());
+
+        // A failed pin fails the send; the reconcile drops the half-made hold; a retry works.
+        let (late, _) = snapshot(&mgr, "d.txt", b"sent while the store failed").await;
+        let retry = with_refs(direct(&owner(), &member(), "retry", 5), &[&late]);
+        flaky.fail.store(true, Ordering::SeqCst);
+        assert!(c.post_send_internal(retry.clone(), None).await.is_err());
+        assert_eq!(rows(&c, "pending").await, 1);
+        c.reconcile_attachments(0).await.unwrap();
+        assert_eq!(rows(&c, "pending").await, 0);
+        flaky.fail.store(false, Ordering::SeqCst);
+        let retry_id = c.post_send_internal(retry, None).await.unwrap().msg_id;
+        assert!(holds(&mgr, &late, &retry_id).await);
+
+        // Backfill: messages accepted before holds were recorded get them once; unreadable content is reported.
+        mgr.unpin(&shared, &attachment_owner(&dm_id)).await.unwrap();
+        for sql in ["DELETE FROM msg_attachment_retentions WHERE msg_id=?", "DELETE FROM msg_attachment_meta WHERE name<>?"] {
+            sqlx::query(&c.msg_box_db.render_sql(sql)).bind(dm_id.to_string()).execute(c.msg_box_db.pool()).await.unwrap();
+        }
+        mgr.remove_chunk(&ndn_lib::ChunkId::from_obj_id(&inbound_chunk)).await.unwrap();
+        let report = c.reconcile_attachments(0).await.unwrap();
+        assert_eq!(report.backfilled_messages, 1, "{report:?}");
+        assert!(holds(&mgr, &shared, &dm_id).await);
+        assert_eq!(report.issues, vec![(incoming_id.to_string(), inbound.to_string(), "content_missing".to_string())]);
+    }
+}

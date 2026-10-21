@@ -131,6 +131,18 @@ struct UserSetup {
 }
 
 pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, model: Option<Arc<dyn ModelClient>>) -> HsResult<Standalone> {
+    let chunks: Arc<dyn ChunkStore> = Arc::new(FsChunkStore { dir: data_dir.join("chunks") });
+    build_with_store(cfg, data_dir, config_dir, model, chunks)
+}
+
+/// As [`build`], with file contents in `chunks` (a named store in retention tests).
+pub fn build_with_store(
+    cfg: StandaloneConfig,
+    data_dir: &Path,
+    config_dir: Option<&Path>,
+    model: Option<Arc<dyn ModelClient>>,
+    chunks: Arc<dyn ChunkStore>,
+) -> HsResult<Standalone> {
     std::fs::create_dir_all(data_dir).map_err(|e| HsError::Internal(format!("data dir: {e}")))?;
     let pem = match (&cfg.private_key_pem, &cfg.private_key_file) {
         (Some(pem), _) => pem.clone(),
@@ -201,7 +213,6 @@ pub fn build(cfg: StandaloneConfig, data_dir: &Path, config_dir: Option<&Path>, 
         template.comment_sync_interval = Duration::from_secs(v);
     }
 
-    let chunks: Arc<dyn ChunkStore> = Arc::new(FsChunkStore { dir: data_dir.join("chunks") });
     let users_dir = data_dir.join("users");
     let setups = Arc::new(setups);
     let builder = {

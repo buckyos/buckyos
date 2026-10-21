@@ -276,6 +276,7 @@ impl FileDb {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::share::db::SCHEMA)?;
+        conn.execute_batch(crate::ndm::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 
@@ -283,6 +284,7 @@ impl FileDb {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::share::db::SCHEMA)?;
+        conn.execute_batch(crate::ndm::SCHEMA)?;
         Ok(FileDb { conn: Mutex::new(conn) })
     }
 

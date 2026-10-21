@@ -183,6 +183,14 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
   会话绑定、probe/dedup 侧信道、collection、copy、watch、符号链接、单文件写、孤儿记录)。Desktop 真实后端用例见
   `tests/e2e/pages/filebrowser.permissions.nfsp.spec.ts`(`FB_ACL_E2E=1`,文件头有命令)。
 
+## NDM 网关
+
+`/ndm/v1/*`（浏览器/App 上传协议）与 `/ndm/proxy/v1/*`（受信进程代理）由本服务承接（`src/ndm/`），
+每个请求都要会话 token，并按 RBAC 资源 `obj://ndm/{uploads,objects,retain,manage}` 授权；tus 上传会话绑定主体、
+持久化可续传、支持终止与过期清理；查重、store API 与 proxy 授权后交给 cyfs-ndn 的现成处理器。说明见
+`product/bucky_file/nfs_server.md` §13。回归：`cargo test -p nfs_server --test ndm`（真实 RBAC 模型 + 默认策略，
+覆盖归属、续传、终止、过期、登记校验、未授权读取与权限分离）。
+
 ## 编辑器取消写入
 
 控制面写操作 `abort_write { lease_id }` 使用当前 NFSP `session` 与递增 `seq`。有效租约只能由所属会话取消；成功返回 `{ "aborted": true }`、释放租约并删除暂存上传。不存在或已提交的租约重复取消也成功，便于客户端在 `finally` 清理。跨会话取消返回 `LEASE_CONFLICT`。NFSP 会话绑定发起 hello 的身份，因此租约也只属于该用户。

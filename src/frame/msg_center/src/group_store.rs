@@ -221,6 +221,8 @@ impl GroupTransaction<'_> {
             "UPDATE group_objects SET body_json=NULL,jwt=NULL WHERE obj_id=?",
             "DELETE FROM msg_jwt_originals WHERE msg_id=?",
             "UPDATE delivery_records SET state='DEAD' WHERE msg_id=? AND state!='SENT'",
+            // Its attachments are released by the attachment retention reconcile.
+            "UPDATE msg_attachment_retentions SET state='releasing' WHERE msg_id=?",
         ] {
             let sql = self.store.db.render_sql(stmt);
             sqlx::query(&sql)

@@ -9,7 +9,12 @@ const execFileAsync = promisify(execFile)
 const TEST_ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 export const PIKG_SAMPLES_ROOT = path.join(TEST_ROOT, 'pikg_samples')
-const NPX = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+const BUCKYOS_BIN = path.join(
+  TEST_ROOT,
+  'node_modules',
+  '.bin',
+  process.platform === 'win32' ? 'buckyos.cmd' : 'buckyos',
+)
 
 export function dockerTarget() {
   switch (process.arch) {
@@ -43,12 +48,10 @@ export async function runCommand(command, args, options = {}) {
   }
 }
 
-async function runPikgTool(args) {
-  const { stdout } = await runCommand(NPX, [
-    'buckyos',
-    '--non-interactive',
-    ...args,
-  ])
+// The tool reads only its arguments and the working directory, so it runs
+// inside the sample project where `dapp_meta` and `dapp_dist` sit side by side.
+async function runPikgTool(args, cwd) {
+  const { stdout } = await runCommand(BUCKYOS_BIN, ['--non-interactive', ...args], { cwd })
   let envelope
   try {
     envelope = JSON.parse(stdout)
@@ -118,9 +121,9 @@ export async function configurePikgSample(
 
 export async function buildPikgProject(projectDir) {
   const metaDir = path.join(projectDir, 'dapp_meta')
-  const build = await runPikgTool(['pikg', 'build', metaDir])
-  const pack = await runPikgTool(['pikg', 'pack', build.dist_dir])
-  const info = await runPikgTool(['pikg', 'info', pack.pikg_path])
+  const build = await runPikgTool(['pikg', 'build', metaDir], projectDir)
+  const pack = await runPikgTool(['pikg', 'pack', build.dist_dir], projectDir)
+  const info = await runPikgTool(['pikg', 'info', pack.pikg_path], projectDir)
   const appDoc = JSON.parse(
     await readFile(path.join(build.dist_dir, 'APPDOC.json'), 'utf8'),
   )

@@ -1,6 +1,6 @@
 /**
  * Attachment upload through the zone NDM gateway (`/ndm/v1/uploads`, served
- * by control-panel). Files are materialized into FileObjects client-side and
+ * by nfs-server). Files are materialized into FileObjects client-side and
  * uploaded with the SDK import session; the resulting object ids become
  * `refs[].target.obj_id` on the outgoing message.
  */

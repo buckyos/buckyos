@@ -341,9 +341,11 @@ impl Station {
                         self.reconcile_following().await?;
                         json!({ "ok": true })
                     }
+                    "retention" => json!(self.reconcile_retentions().await?),
                     other => return Err(bad(format!("unknown task {other}"))),
                 }
             }
+            "admin.retention" => self.retention_status().await?,
             "admin.compact_stream" => {
                 self.compact_stream(arg(p, "through")?).await?;
                 json!({ "ok": true })

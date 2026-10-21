@@ -104,6 +104,8 @@ pub struct NfsSessionClaims {
     pub subject: String,
     pub principal_kind: TokenPrincipalKind,
     pub app_id: String,
+    /// RBAC subject of the target (`app:<app_id>` or `system:<service>`).
+    pub authorization_key: String,
 }
 
 pub async fn verify_nfs_session_token(
@@ -131,6 +133,7 @@ pub async fn verify_nfs_session_token(
         subject: subject.clone(),
         principal_kind: claims.principal_kind,
         app_id: claims.target.canonical_key(),
+        authorization_key: claims.target.authorization_key(),
     })
 }
 

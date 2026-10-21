@@ -1,8 +1,8 @@
 # ShareContentMgr 技术设计 TODO：分享链接、Public 投影与“我的内容”（PRD 第一阶段）
 
 > 创建日期：2026-10-18
-> 版本：v0.6（2026-10-20，用户确认后续收尾决策 D16–D19，明确允许 breaking change；任务与验收见 §10）。v0.5（2026-10-19 M0–M5 完成：DV 验收通过并修掉 4 个 DV 问题，记录见 §9.7）。v0.4（同日 M0–M4 实施）。v0.3（同日用户确认 D13–D15 按建议执行）。v0.2（同日）按用户对 D1–D12 的回复重写：后台整体放 nfs-server，数据面走 nfs-server 的 cyfs 协议能力；应用分享目标为 MessageHub 与 HomeStation；管理中心是独立 App“我的内容”，要能看到内容的消费情况。v0.1 的 control-panel 方案已作废。
-> 状态：M0–M5 已完成并提交（`835b5bd44`）。test.buckyos.io 上 DV 验收通过（§9.7，`tests/dv/share.spec.ts` 4 例 + 手工探针）；与 §3 不同之处见 §9.2。后续 7 项收尾已批准、尚未实施，见 §10；批准设计不代表代码已完成。
+> 版本：v0.7（2026-10-20，§10 七项收尾全部实施并在 test.buckyos.io 验收，记录见 §10.1）。v0.6（2026-10-20，用户确认后续收尾决策 D16–D19，明确允许 breaking change；任务与验收见 §10）。v0.5（2026-10-19 M0–M5 完成：DV 验收通过并修掉 4 个 DV 问题，记录见 §9.7）。v0.4（同日 M0–M4 实施）。v0.3（同日用户确认 D13–D15 按建议执行）。v0.2（同日）按用户对 D1–D12 的回复重写：后台整体放 nfs-server，数据面走 nfs-server 的 cyfs 协议能力；应用分享目标为 MessageHub 与 HomeStation；管理中心是独立 App“我的内容”，要能看到内容的消费情况。v0.1 的 control-panel 方案已作废。
+> 状态：M0–M5 已完成并提交（`835b5bd44`）。test.buckyos.io 上 DV 验收通过（§9.7，`tests/dv/share.spec.ts` 4 例 + 手工探针）；与 §3 不同之处见 §9.2。§10 的 7 项收尾已于 2026-10-20 实施并验收（§10.1），改动尚未提交 git；未验证项与已知限制见 §10.1 末尾。
 > 依据：[ShareContentMgr PRD v0.1](../product/control_panel/ShareContentMgr_PRD.md)、[分享/发布/上线产品设计](<../doc/control_panel/BuckyOS 的分享_发布_上线 功能的产品设计.md>) §17–§18、[nfs_server 技术需求](../product/bucky_file/nfs_server.md) §3.2 / §4.1 / §5 / §11、[NFSP v0](../../cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md) §3.6 / §5.5 / §7.3、[旧 ShareContentMgr 设计](../doc/control_panel/ShareContentMgr.md)（只借用统计表形状），以及 2026-10-18～19 对 buckyos / cyfs-ndn / cyfs-gateway / buckyos-websdk 的源码核对。
 > 第 2 节保留实施前的源码核对基线，第 9 节保留 M0–M5 实施与验证记录，不能把其中历史状态重复算作待办。后续目标以 §4.3、§10 为准；当前实现仍须核对源码。
 
@@ -312,7 +312,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 1. 面板选 MessageHub → `share.app.handoff`，`delivery_state=handed_off`。
 2. Desktop `openAppWindow('messagehub', {launch:{requestId, payload:{share:{shareId, objId, name, size, mime}}}})`；`messageHubLaunchSchema` 加 `share`，复用 `ForwardMessageForm` 选人，以 `{type:'data_obj', obj_id}` 写 refs 发送，不重新上传。
 3. 发送成功 → `share.app.report {confirmed, business_ref:{session_id, message_id}}`；关闭未发 → `canceled`；无回传显示“结果未确认 + 交接时间”（T06）。
-4. 接收方经 msg-center 对象路由读取，授权来自消息引用。停止这条投递只释放 nfs-server 的保留，不撤回消息；msg-center 独立保留有效消息所引用的附件及其依赖（D17，待 §10 R05 实施）。
+4. 接收方经 msg-center 对象路由读取，授权来自消息引用。停止这条投递只释放 nfs-server 的保留，不撤回消息；msg-center 独立保留有效消息所引用的附件及其依赖（D17，已实施，见 §10.1 R05）。
 
 **HomeStation（发动态）**
 
@@ -320,7 +320,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 2. `share.app.handoff {target_app:"homestation"}` 快照（≤ 32 MiB 必然是单 chunk FileObject，HomeStation 的 `load_local` 能从 named store 拿到）。`mode=link` 时在同一操作里再建一条 `kind=link` 的分享（`access=holder`、`expires_at=NULL`），返回其 `url` 与 `link_share_id`；两条分享在“我的内容”里互相关联。
 3. Desktop 打开 HomeStation 并进入 composer：HomeStation App 增加启动参数 `{compose:{attachments?:[{kind, name, object, status:"uploaded"}], link?:{url, title, summary?}, text?}}`，`PublishComposer` 以预填附件或链接卡片打开；用户选可见范围、写文字后由 HomeStation 自己调 `publish.create`。链接卡片标题取分享标题并截到 120 字。
 4. `publish.create` 返回后前端回传 `share.app.report {confirmed, business_ref:{entry, obj_id}}`。动态的可见性与撤回归 HomeStation 管，“我的内容”里给“在 HomeStation 查看”入口。
-5. 停止这条投递只释放 nfs-server 的 pin；HomeStation 的 `object_grants` 决定可读性，附件及 chunk 还须由 HomeStation 独立保留（D17，待 §10 R05 实施），不能把对象元数据入库当作内容已保留。文案说明“撤回动态请在 HomeStation 操作”。`mode=link` 时停止关联的链接分享会让动态里的链接失效，停止确认框要写明这一点。
+5. 停止这条投递只释放 nfs-server 的 pin；HomeStation 的 `object_grants` 决定可读性，附件及 chunk 由 HomeStation 独立保留（D17，已实施，见 §10.1 R05），不把对象元数据入库当作内容已保留。文案说明“撤回动态请在 HomeStation 操作”。`mode=link` 时停止关联的链接分享会让动态里的链接失效，停止确认框要写明这一点。
 
 两个目标都要求 nfs-server、msg-center、HomeStation 与 named store 在同一节点；单 OOD 成立，多 OOD 部署记为已知限制。
 
@@ -360,7 +360,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 - token 256 bit、只存哈希；密码 pbkdf2-sha256（`pbkdf2` 已在 Cargo.lock）≥ 600k 轮；解锁限速；404 不区分状态；日志不打 token 与密码。
 - 分享响应带 `CSP: sandbox`，HTML 只下载不渲染；访客页在 `share.<zone>`，与控制台不同源（T35）。
 - 已知风险（按“先能力后安全”记录）：Agent 经 Delegated 身份可外发其 owner 可读的文件（D13）；读取权限即可外发，无单列“外发”授权；多 OOD 时快照所在节点与 msg-center/HomeStation 不同会读不到。
-- M0–M5 核对发现：`/ndm/*`、`/ndm/proxy/v1` 由 gateway 直转且 control-panel 处理器内无会话检查。2026-10-20 已批准纳入后续独立迁移切片（D18–D19、§10 R07），不再仅记录为另开 issue。
+- M0–M5 核对发现：`/ndm/*`、`/ndm/proxy/v1` 由 gateway 直转且 control-panel 处理器内无会话检查。2026-10-20 已迁到 nfs-server 并逐请求鉴权（D18–D19，见 §10.1 R07）。
 
 ## 4. 决策
 
@@ -588,16 +588,13 @@ MessageHub 文件/文件夹、HTML 只下载、Public 观察与越界软链接�
 
 ### 9.4 未验证 / 已知风险
 
-- **Agent 身份未在 DV 实测**：Agent 容器内 docker exec 拿不到 Agent token（只有 session shell 有），App/Agent token →
-  `Delegated` 只有 `tests/share.rs` 的 App token 用例覆盖；Agent owner 查找（扫描 `users/*/agents/<id>/spec`）未在真实 Zone 跑过。
-- `stopping` 状态重试 unpin 只有 sweeper 代码路径，没有单测；多 OOD 时快照所在节点与 msg-center/HomeStation 不同会读不到（§3.10 已列）。
-- 停止应用投递会释放 nfs-server 的 pin：MessageHub 消息、HomeStation 动态引用的 chunk 之后成为 GC 候选，除非这些服务
-  自己 pin（当时没有自动 GC 循环，DV 上停止后 alice 仍能读到附件）。2026-10-20 已决定由接收应用独立保留，见 D17；实现与 GC 验证仍待 §10 R05 完成。
+- Agent 身份已于 2026-10-20 在真实 Zone 的 Agent 会话中验证（§10.1 R03）；`stopping` 重试已有失败注入单测（R04）；
+  应用附件已由接收应用独立保留（R05）。多 OOD 时快照所在节点与 msg-center/HomeStation 不同会读不到（§3.10 已列，D16 继续延期）。
 - 已知风险照 §3.15：读取权限即可外发；Agent 可外发 owner 能读的文件。
 
 ### 9.5 未做
 
-- §7 对 ShareContentMgr PRD 与 NFSP v0（cyfs-ndn 仓库）的回写尚未完成；2026-10-20 已获用户确认，纳入 §10 R01–R02。
+- §7 对 ShareContentMgr PRD 与 NFSP v0（cyfs-ndn 仓库）的回写已于 2026-10-20 完成（§10.1 R01–R02）。
 - 文件夹打包下载（zip）、HomeStation 互动数拉取、收入列（数据结构未预留展示）、T07/T12–T15 超出入口路由的部分。上述继续延期，另见 D16；T16 的全局空间统计也不在本轮范围。
 
 ### 9.6 DV 部署（2026-10-19 历史步骤，已由 §9.7 完成）
@@ -650,17 +647,17 @@ DV 发现并已修复（修复后用备份方式替换 `/opt/buckyos/bin/nfs-ser
 清理：探针与用例建的分享均已停止（filedb 中 0 条 active、0 个未释放 pin），手工夹具 `/opt/buckyos/data/home/bob/share-dv` 已删除；
 HomeStation 上 bob 的测试动态（3 条）与发给 alice 的测试消息保留。
 
-## 10. 后续收尾 TODO（2026-10-20 已批准，尚未实施）
+## 10. 后续收尾 TODO（2026-10-20 已批准，同日实施，记录见 §10.1）
 
 以下 7 项是后续执行清单；M0–M5 的完成记录不替代本节验收。每项完成后勾选并追加实际验证命令、结果与证据位置，不把历史 DV 结果算作新实现的验证。
 
-- [ ] **R01：ShareContentMgr PRD 回写。** 按 §7 更新服务归属、已交付基线、Public、管理中心和阶段边界，并同步 D17 的应用附件保留语义；删除与当前目标矛盾的描述。
-- [ ] **R02：NFSP v0 回写。** 在 `cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md` 更新 signed URL 主机、快照目标与 BuckyOS 实现范围；NDM 协议变化同步对应 SDK/网关文档，不把 NFSP 路径授权等同于原始对象全库权限。
-- [ ] **R03：真实 Agent 身份 DV。** 在真实 Zone 的 Agent 会话中调用 `buckyos share`，验证 Agent owner 解析、源路径权限、审计主体及有效权限限制；用户会话、设备身份、伪造或测试 token 不能替代。凭据按现有 runtime 注入方式获取，证据不包含 token。
-- [ ] **R04：unpin 失败重试。** 注入存储释放失败，确认分享进入 `stopping` 后访客访问立即失效；恢复存储后 sweeper 可重试至释放完成，重复执行/重启不误释放其他引用。覆盖失败路径，不能以正常到期测试替代。
-- [ ] **R05：应用附件独立保留。** 按 D17 实现两应用的接收、引用存续、释放、失败恢复及当前有效记录的保留补齐。隔离测试存储中实际执行 GC：停止分享并释放其 pin 后，已发送消息/已发布动态的附件及依赖仍可读；移除最后有效业务引用后可回收；共享引用不受误删；链接模式按链接状态失效。
-- [ ] **R06：旧回归套件。** 修复或适配 `test/nfs_server_test` 的登录辅助并运行真实套件；记录命令和结果，不以 Files UI 覆盖替代。适配目标版本接口即可，不为旧登录方式增加兼容分支。
-- [ ] **R07：NDM 独立迁移。** 按 D18–D19 完成宿主、路由、授权、SDK 和消费方联动；删除 control-panel 对应实现。验证用户上传/续传/对象登记、失败取消与过期清理、跨用户会话拒绝、匿名拒绝、无授权对象读取拒绝、受授权 AppClient/AppService 操作与管理权限隔离；消息附件上传、应用包上传/安装、相关 SDK/proxy 与系统 App 测试通过。
+- [x] **R01：ShareContentMgr PRD 回写。** 按 §7 更新服务归属、已交付基线、Public、管理中心和阶段边界，并同步 D17 的应用附件保留语义；删除与当前目标矛盾的描述。
+- [x] **R02：NFSP v0 回写。** 在 `cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md` 更新 signed URL 主机、快照目标与 BuckyOS 实现范围；NDM 协议变化同步对应 SDK/网关文档，不把 NFSP 路径授权等同于原始对象全库权限。
+- [x] **R03：真实 Agent 身份 DV。** 在真实 Zone 的 Agent 会话中调用 `buckyos share`，验证 Agent owner 解析、源路径权限、审计主体及有效权限限制；用户会话、设备身份、伪造或测试 token 不能替代。凭据按现有 runtime 注入方式获取，证据不包含 token。
+- [x] **R04：unpin 失败重试。** 注入存储释放失败，确认分享进入 `stopping` 后访客访问立即失效；恢复存储后 sweeper 可重试至释放完成，重复执行/重启不误释放其他引用。覆盖失败路径，不能以正常到期测试替代。
+- [x] **R05：应用附件独立保留。** 按 D17 实现两应用的接收、引用存续、释放、失败恢复及当前有效记录的保留补齐。隔离测试存储中实际执行 GC：停止分享并释放其 pin 后，已发送消息/已发布动态的附件及依赖仍可读；移除最后有效业务引用后可回收；共享引用不受误删；链接模式按链接状态失效。
+- [x] **R06：旧回归套件。** 修复或适配 `test/nfs_server_test` 的登录辅助并运行真实套件；记录命令和结果，不以 Files UI 覆盖替代。适配目标版本接口即可，不为旧登录方式增加兼容分支。
+- [x] **R07：NDM 独立迁移。** 按 D18–D19 完成宿主、路由、授权、SDK 和消费方联动；删除 control-panel 对应实现。验证用户上传/续传/对象登记、失败取消与过期清理、跨用户会话拒绝、匿名拒绝、无授权对象读取拒绝、受授权 AppClient/AppService 操作与管理权限隔离；消息附件上传、应用包上传/安装、相关 SDK/proxy 与系统 App 测试通过。
 
 交付时同时满足：
 
@@ -669,3 +666,100 @@ HomeStation 上 bob 的测试动态（3 条）与发给 alice 的测试消息保
 - 接口变化同步共享类型、前后端、SDK/CLI、生成来源与分发产物。按仓库规则检查 `share`、`buckyos_admin`、`buckyos_dev_release`、`buckyos_app_dev` 及实际受影响的 cmd_skills，修改或写明无需修改的依据。
 - 本节记录实际完成状态、证据和未验证项；没有验证的场景不能标记通过。后续阶段功能与已接受限制继续明确列出，不扩写为本轮已交付能力。
 
+
+### 10.1 实施与验收记录（2026-10-20）
+
+本机构建 `uv run buckyos-build.py -s nfs_server msg_center homestation control_panel desktop jarvis_agent`（exit 0），
+`uv run start.py` 部署到 test.buckyos.io（数据保留）；之后 nfs-server 与 systest 的一处修正以热替换部署
+（备份 `*.bak-r07-20261020`）。证据目录 `/home/lzc/project/share_dv_runs/20261020/`（日志不含会话 token，分享链接 token 已脱敏）。
+改动均未提交 git，涉及 buckyos、buckyos-websdk（含重建的 dist）、cyfs-ndn（仅文档）三个仓库。
+
+**R01 PRD 回写**：`product/control_panel/ShareContentMgr_PRD.md` 升 v0.2。§3.1 内置分享服务改为 nfs-server；§3.2 改写为当前
+实现基线（旧桩已删、无存量数据、NDM 由 nfs-server 承接）；§4/§11 Public 不报对象准备状态；§4/§6.2 首期只开放持链接与密码，
+指定用户/好友不开放，补 NDM 读取授权一句；§9.2、§15.1 写入 D17 应用附件保留语义；§13 管理中心改为“我的内容”并加消费情况；
+§19.1 NDN 数据授权阻塞范围改为对象直链（第二阶段）；§19.2 记录旧数据核对结果。纯文档，已核对引用路径。
+
+**R02 NFSP v0 与 NDM 协议回写（cyfs-ndn 仓库）**：`doc/NamedFileSystem_Protocol_v0.md` §3.6 `signed` 主机为 `share.<zone>` 并写明
+BuckyOS 实现范围（`public` 只报路径、`cyfs`/`pinned` 未实现）；§5.5 cap token 记快照为目标、HMAC token、每请求核对、活子树 cap
+不放行；§7.3 表格改主机，并写明 NFSP 路径授权不等于 NDM 全库读取权。`doc/NDM Protocol/named-data-mgr-zone-protocol.md` 新增
+§2.4（BuckyOS 部署：鉴权、RBAC 资源、会话归属、termination、租约、`put_object` 对应关系校验、读取规则）与路由表 `DELETE` 行；
+`named-data-mgr-proxy-protocol.md` §13 补 BuckyOS 授权映射。buckyos 侧 `product/bucky_file/nfs_server.md` 新增 §13 与 §12 两条，
+nfs-server README 新增“NDM 网关”。
+
+**R03 真实 Agent 身份**：为普通用户 bob 建 Agent `r03share.test.buckyos.io`（`test/test_opendan/agent_target.ts --create`，
+`BUCKYOS_TEST_ADMIN_USER=bob`），以 bob 身份经 `test_agent_loader.ts` 发消息，Agent 在自己的 UI Session 中用 bash 动作执行
+`buckyos share create /home/bob/r03/agent-note.txt …` 成功（`sh_d04cefd19cfe4fd3`），执行 `buckyos share create /home/devtest/r03-private.txt …`
+返回 `SHARE_SOURCE_NOT_READABLE`。以 bob 的 NFSP 会话 `share.get` 核对：`owner_user_id=bob`、`created_by_app` 与审计
+`actor_app_id=app:r03share.test.buckyos.io@bob`、`actor_user_id=bob`、`source=cli`（Agent 经 CLI 调用，source 记调用通道）。
+凭据是 runtime 注入会话 shell 的 Agent 运行时 App token，未经 docker exec 或测试 token。之后停止该分享并删除夹具；Agent 本身保留。
+证据 `r03_agent_conversation.log`、`r03_share_audit.txt`。注：Loader 的容器端口 10080 在 Deno fetch 的屏蔽端口表里，测试经 socat 转发到 18080。
+
+**R04 unpin 失败重试**：`tests/share.rs::unpin_failure_keeps_stopping_until_sweeper_releases`。同一文件两条分享（同一快照、各自 pin），
+另开 SQLite 连接对 named store 加 `BEGIN EXCLUSIVE` 制造真实的 “database is locked”：停止后状态为 `stopping`、页面/meta/下载立即 404、
+sweeper 重试仍失败；释放锁后以新的 `AppState`（模拟重启）跑两轮 sweeper 完成释放，另一分享的 pin 保留且链接可读；
+随后执行 GC（投递 pin 级联 + `gc_round`）：剩余分享保护下快照与 chunk 不被回收，最后一条分享停止后快照对象被回收、chunk 失去保护。
+
+**R05 应用附件独立保留**：
+- HomeStation：`src/retention.rs`（新）+ `retentions`/`retention_issues` 表。`publish_version` 先记 `pending` 并以 owner
+  `homestation:<entry>` Recursive pin 动态版本引用的 FileObject（wraps/cover/media），发布事务内转 `held`；事务失败当场撤销。
+  Head 变为撤回时释放（`set_entry_state` 后 `sync_retention`），失败留 `releasing`；`retention_loop` 每 10 分钟（启动即跑）
+  续做中断的 pin/释放、补齐旧动态、把内容读不到的记入 `retention_issues`；`admin.run {task:"retention"}`、`admin.retention` 查看。
+  `ensure_file` 现要求附件内容 chunk 在库，否则 `upload_missing`。`ChunkStore` 增 `retain/release`（文件夹存储为空操作）。
+- msg-center：`src/attachment_retention.rs`（新）+ `msg_attachment_{retentions,issues,meta}` 表（与 GroupStore 同样在启动时建表）。
+  `post_send`、`dispatch`（含跨 Zone 投递与 Telegram 入站）与托管群 `accept_group_message` 在提交记录前以 owner `msg-center:<msg_id>`
+  pin 消息的 `data_obj` 附件，失败则拒绝该消息；群消息在拿群锁之前 pin（在群事务里写保留表会自锁），被拒消息当场释放。
+  `GroupTransaction::redact`（撤回、删除会话无其余记录）在事务内把行置 `releasing`；`start_attachment_retention` 每分钟释放、
+  续做超过 10 分钟的 `pending`、一次性补齐历史消息（加入的群消息附件在托管 Zone，不在本地 pin），并检查已保留附件是否可读。
+  私聊消息没有服务端删除，按 D17 不因单人视图删除而释放。
+- 隔离 GC 验证：`cargo test -p homestation --test retention`（`build_with_store` + 临时 NamedDataMgr；停止分享 pin 后 GC 不回收、内容
+  经 `/home/<user>/objects/<id>/content` 可读；两条动态共享附件撤回一条仍保留；撤回最后一条后 GC 回收 FileObject、chunk 失去保护；
+  pin 失败使发布失败且 reconcile 清掉半成品、重试成功；释放失败留 `releasing` 后补做；删除保留记录模拟旧动态由 reconcile 补齐；
+  删 chunk 记 `content_missing`）。`cargo test -p msg_center attachment_holds`（群消息、post_send、dispatch 三条接收路径；停止分享后 GC
+  不回收；撤回群消息释放其保留、私聊仍保留共享附件；GC 回收只被群消息引用的对象；pin 失败使发送失败、reconcile 清理、重试成功；
+  补齐旧消息与 `content_missing` 报告）。链接模式：`tests/share.rs::app_handoffs` 增加“已确认的动态链接在停止关联链接分享后 404”。
+- 真实 Zone：`tests/dv/share.spec.ts` 4/4（含 MessageHub、HomeStation 交接），跑完分享已停止，named store 中只余
+  `homestation:<entry>` 与 `msg-center:<msg_id>` 两条 Recursive pin，两应用保留表均为 `held`；之后匿名读 HomeStation 附件 200、
+  alice 经 msg-center 读 PDF 200、匿名 401（`r05_pins_after_share_dv.txt`、`r05_read_after_stop.txt`）。部署后 msg-center 补齐已跑完
+  （仅 2 条无附件历史消息）。`tests/dv/homestation.spec.ts` 2/2。
+
+**R06 旧回归套件**：`test/test_helpers/buckyos_client.ts` 的 AppClient 登录改为在 `~/buckycli/<zone>/` 找开发配置生成的 owner 私钥，
+并以系统目标 `control-panel` 登录（verify-hub 只允许 control-panel/kernel/system-config 做交互式用户登录，`buckycli` App 目标被拒
+`AppAccessDenied`）；日志不再打印 token。`cd test/nfs_server_test && pnpm test`：部署前 5/5、部署后 smoke 5/5 + NDM 7/7
+（`r06_nfs_server_test.log`、`r06_r07_nfs_server_test.log`）。
+
+**R07 NDM 迁移**：
+- 宿主与路由：nfs-server `src/ndm/`（`uploads.rs` 原生 tus 会话；`forward.rs` 鉴权后交给 cyfs-ndn `NamedDataMgrZoneGateway` /
+  `NamedDataMgrNodeGateway`，后者受限能力打开、由前置授权决定）；`boot_gateway.yaml` 的 `/ndm/*` 改转 nfs-server；control-panel 删除
+  NDM 初始化、字段与挂载；gateway 调试用例 `req_ndm_ok` 期望改为 nfs-server（`uv run src/test/test_boot_gatweay/run_debug_tests.py` 29/29）。
+- 授权：buckyos-api 默认 RBAC 增 `obj://ndm/{uploads,objects,retain,manage}`（users/app：uploads；admin：四项；frame：uploads/objects/
+  retain；agent：objects），用户主体与 App/服务主体都要放行（`runtime.enforce`，测试模式用同一模型与默认策略）；`NfsSessionClaims`
+  增 `authorization_key`。上传会话按“用户 + 目标 App”归属，他人 HEAD/PATCH/DELETE 404；会话与暂存在 filedb `ndm_uploads` 与
+  `data/.fsdb/ndm_uploads/`，可跨重启续传；支持 tus `DELETE`；sweeper 每分钟清理闲置会话（`ndm.session_ttl_secs` 默认 1 小时）
+  与过了 24 小时租约的完成会话；完成 chunk 与登记对象各加 24 小时 Lease。`put_object` 校验对象体哈希到 id、子对象由本主体持有；
+  读需 objects 权限或本主体持有（`ndm_holdings`）；pin 类需 manage，或 retain 且 owner 在 `<App 主体>/<用户>/` 下。proxy 写 chunk 时把
+  解码后的规范 id 写回 URI，客户端无需再把 `%3A` 改回冒号。
+- SDK/调用方：websdk `ndm_client.ts` 的 tus 上传每个 chunk 前取运行时会话并带 `Authorization: Bearer`（`StartUploadOptions.sessionToken`
+  可覆盖），dist 已重建；Desktop 注释更新；sys_test 的 `ndm_proxy` 自测改为“写入并登记后能读回 / 读未持有对象 403 / 受限操作 403”
+  （按 `errorCode` 判断，不匹配文本）；`test/app_installer_test/pikg_sample_builder.mjs` 改在样例工程目录内调用本地 `buckyos`
+  （CLI 只允许读参数路径与当前目录）；aigc_image/audio/video 手册 requires 注明存储结果经 NDM proxy 读取、只有读写模式 Agent 可读。
+  其余手册（share、buckyos_admin、buckyos_dev_release、buckyos_app_dev）不涉及 NDM 宿主与权限，无需修改。
+- 单测：`cargo test -p nfs_server`（53 单元 + 8 acl + 19 integration + 3 ndm + 11 share）；`cargo test -p msg_center`（162）；
+  `cargo test -p homestation`（全部）；`cargo test -p buckyos-api -p control_panel`（242 + 138 等全过）；`cargo test -p libopendan --test
+  xagent_cli skills_are`、`--test xagent_lib work_sessions_take` 通过；websdk `npx jest tests/ndm_client.test.ts tests/ndm_proxy.test.ts`
+  49/49；Desktop `tsc -p tsconfig.app.json` 通过。`tests/ndm.rs`：归属与续传（跨重启）、登记校验（伪造对象体 400、未上传者 403）、
+  未授权读取 403、管理员可读、GC 下租约保护、终止只释放本会话租约、闲置过期（PATCH 410、sweeper 删暂存）、App/Agent/frame/管理员权限分离、匿名 401。
+- 真实 Zone：`test/nfs_server_test/ndm_dv.ts`（`pnpm run ndm`）7/7：路由与 termination 广告、匿名拒绝、bob 的上传被 devtest 会话
+  HEAD/PATCH/DELETE 均 404、半途 HEAD 续传、伪造对象体 400、读回、devtest 登记的对象 bob 按 id 读与登记均 403、bob 的管理调用 403
+  而 devtest 可以、终止后 HEAD 404。MessageHub 附件上传：`tests/dv/messagehub-voice.spec.ts` 2/2（浏览器 tus + `put_object` 经 nfs-server）。
+  应用包：`BUCKYOS_TEST_ADMIN_PASSWORD=… BUCKYOS_TEST_ZONE_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_SKIP_AGENT=1 BUCKYOS_TEST_SKIP_DOCKER=1
+  pnpm test`（test/app_installer_test）静态 Web 样例构建、经 `/ndm/proxy/v1` 上传登记、finalize、安装、第二 owner 安装与升级通过。
+  系统 App：systest AppService `POST /sdk/appservice/selftest/ndm_proxy` 3/3、全量 18/18（`r07_systest_*.json`）。
+
+**未验证 / 已知限制**：
+- named store 的 `gc_round` 只回收 `objects` 表里的对象行，chunk 从不进入回收候选（chunk 只在 `objects` 里有 shadow 行）；生产也没有
+  GC 循环与 outbox 投递（pin 级联要先投递 outbox）。因此“可回收”对 chunk 只验证到失去保护，未验证字节删除；这是 cyfs-ndn 的现状，未改。
+- 真实 Zone 未验证：上传会话的闲置过期（TTL 1 小时，仅单测以 1 秒验证）、systest 浏览器页在 App 主机上的 tus 上传（websdk
+  `test:browser:real` 的准备脚本仍写旧的 systest 安装路径，未修）、Agent/Docker 应用包样例、Agent 经 NDM proxy 读取 AIGC 结果。
+- `chunk_hash` 秒传不证明持有内容，可借此登记引用他人 chunk 的 FileObject（读取仍需业务授权）；只读模式 Agent 没有 NDM 对象读取权；
+  独立模式未鉴权时 NDM 全部放行。msg-center 对跨 Zone 入站消息 pin 的附件通常不在本节点，会记 `object_missing`。
+- 部署副作用：为 R03 新建的 Agent `r03share.test.buckyos.io`（属主 bob）仍在运行；share DV 的 HomeStation 动态与 MessageHub 测试消息保留。

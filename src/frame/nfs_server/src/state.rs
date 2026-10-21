@@ -29,6 +29,7 @@ pub struct AppState {
     /// Reconciler's per-dir fingerprints from the previous scan (see reconciler.rs).
     pub scan_state: std::sync::Mutex<crate::reconciler::ScanState>,
     pub share: crate::share::ShareMgr,
+    pub ndm: crate::ndm::NdmMgr,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -51,6 +52,7 @@ impl AppState {
         let copies = crate::copy::CopyJournal::open(&config.data_dir)?;
         let acls = AclTable::load(&db)?;
         let share = crate::share::ShareMgr::new(&db)?;
+        let ndm = crate::ndm::NdmMgr::new(config.ndm_staging_dir())?;
         if matches!(config.auth, crate::config::AuthMode::Runtime) {
             seed_default_acls(&config, &db, &acls)?;
         }
@@ -67,6 +69,7 @@ impl AppState {
             acls,
             zone_owner: std::sync::RwLock::new(None),
             share,
+            ndm,
             db,
             config,
         }))

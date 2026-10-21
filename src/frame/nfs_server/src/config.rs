@@ -62,6 +62,21 @@ impl Default for ShareConfig {
     }
 }
 
+/// NDM gateway settings (ndm/).
+#[derive(Debug, Clone)]
+pub struct NdmConfig {
+    /// An unfinished upload session idle this long is discarded with its staged bytes.
+    pub session_ttl_secs: u64,
+    /// Staged bytes of unfinished uploads per caller; older sessions are evicted first.
+    pub principal_quota: u64,
+}
+
+impl Default for NdmConfig {
+    fn default() -> Self {
+        NdmConfig { session_ttl_secs: 3600, principal_quota: 512 * 1024 * 1024 }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct AuthTestConfig {
     pub public_key: String,
@@ -86,6 +101,7 @@ pub struct ServerConfig {
     pub auth: AuthMode,
     pub named_store: NamedStoreSource,
     pub share: ShareConfig,
+    pub ndm: NdmConfig,
 }
 
 impl ServerConfig {
@@ -104,6 +120,7 @@ impl ServerConfig {
             auth: AuthMode::Disabled,
             named_store: NamedStoreSource::None,
             share: ShareConfig::default(),
+            ndm: NdmConfig::default(),
         }
     }
 
@@ -117,6 +134,10 @@ impl ServerConfig {
 
     pub fn staging_dir(&self) -> PathBuf {
         self.data_dir.join("staging")
+    }
+
+    pub fn ndm_staging_dir(&self) -> PathBuf {
+        self.data_dir.join("ndm_uploads")
     }
 }
 

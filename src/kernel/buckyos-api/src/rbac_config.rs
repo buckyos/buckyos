@@ -191,6 +191,17 @@ p, system:msg-center,obj://msg-center/*,all,allow
 p, agent_runtime,obj://msg-center/*,all,allow
 p, agent,obj://msg-center/*,all,allow
 
+p, frame, obj://ndm/uploads, write, allow
+p, frame, obj://ndm/objects, read, allow
+p, frame, obj://ndm/retain, write, allow
+p, admin, obj://ndm/uploads, write, allow
+p, admin, obj://ndm/objects, read, allow
+p, admin, obj://ndm/retain, write, allow
+p, admin, obj://ndm/manage, write, allow
+p, users, obj://ndm/uploads, write, allow
+p, app, obj://ndm/uploads, write, allow
+p, agent, obj://ndm/objects, read, allow
+
 g, system:node-daemon, kernel
 g, system:scheduler, kernel
 g, system:system-config, kernel

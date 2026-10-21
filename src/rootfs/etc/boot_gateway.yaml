@@ -208,7 +208,9 @@ servers:
               elif match $REQ.path "/sso_logout" then
                 global SERVICE_ID="control-panel";
               elif match $REQ.path "/ndm/*" then
-                global SERVICE_ID="control-panel";
+                # NDM 上传与代理协议（/ndm/v1/*、/ndm/proxy/v1/*）：nfs-server 承接，
+                # 原样转发；每个请求的身份与授权由 nfs-server 自己判。
+                global SERVICE_ID="nfs-server";
               elif match $REQ.path "/nfs/v1/*" then
                 # NFSP v0（NamedFileSystem_Protocol_v0）：zone 级通用协议入口，
                 # 与 /ndn 同级，不走 /kapi/<service> 形态；路径原样转发到 nfs-server。

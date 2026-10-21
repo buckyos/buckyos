@@ -6,7 +6,8 @@
 //! CLI flags for independent testing. Every request is authenticated (auth.rs)
 //! and authorized against path ACLs (acl.rs, access.rs). The share module
 //! (share/) snapshots files into the named store and serves share links on
-//! `share.<zone>`. See README.md for scope, honest degradations, and how to
+//! `share.<zone>`. The NDM gateway (ndm/) serves the Zone's upload and proxy
+//! protocols over the node named store. See README.md for scope, honest degradations, and how to
 //! run it.
 
 pub mod access;
@@ -21,6 +22,7 @@ pub mod fsutil;
 pub mod handle;
 pub mod mutate;
 pub mod namespace;
+pub mod ndm;
 pub mod reconciler;
 pub mod search;
 pub mod server;

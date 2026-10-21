@@ -566,6 +566,19 @@ async fn app_handoffs() {
     assert_eq!(alice.ok("share.get", json!({"share_id": h["link_share_id"]})).await["status"], "stopped");
     assert_eq!(srv.get(&format!("/s/{}", token_of(url))).send().await.unwrap().status(), 404);
 
+    // A posted link stays a link (D17): stopping the link share ends it even though the post was confirmed.
+    let op = alice
+        .ok("share.app.handoff", json!({"source": {"path": "home/alice/paper.pdf"}, "target_app": "homestation", "idempotency_key": "h3"}))
+        .await;
+    let h = &op["handoff"];
+    let url = h["url"].as_str().unwrap();
+    alice.ok("share.app.report", json!({"share_id": h["share_id"], "delivery_state": "confirmed", "business_ref": {"entry": "e3"}})).await;
+    assert_eq!(srv.get(&format!("/s/{}", token_of(url))).send().await.unwrap().status(), 200);
+    let link = alice.ok("share.get", json!({"share_id": h["link_share_id"]})).await;
+    alice.ok("share.stop", json!({"share_id": h["link_share_id"], "revision": link["revision"]})).await;
+    assert_eq!(srv.get(&format!("/s/{}", token_of(url))).send().await.unwrap().status(), 404);
+    assert_eq!(alice.ok("share.get", json!({"share_id": h["share_id"]})).await["delivery_state"], "confirmed");
+
     // MessageHub takes files as data_obj attachments, folders as links.
     let op = alice
         .ok("share.app.handoff", json!({"source": {"path": "home/alice/report.txt"}, "target_app": "messagehub", "idempotency_key": "m1"}))
@@ -654,4 +667,92 @@ async fn public_projection_and_host_guard() {
         .await
         .unwrap();
     assert_eq!(blocked.status(), 404);
+}
+
+async fn local_store(state: &SharedState) -> std::sync::Arc<tokio::sync::Mutex<named_store::NamedStore>> {
+    let mgr = state.share.store(&state.config).await.unwrap();
+    let id = mgr.get_store_ids().await.pop().unwrap();
+    mgr.get_store(&id).await.unwrap()
+}
+
+async fn content_chunk(state: &SharedState, file: &ndn_lib::ObjId) -> ndn_lib::ObjId {
+    let mgr = state.share.store(&state.config).await.unwrap();
+    let body: Value = serde_json::from_str(&mgr.get_object(file).await.unwrap()).unwrap();
+    ndn_lib::ObjId::new(body["content"].as_str().unwrap()).unwrap()
+}
+
+/// One GC pass as a deployment would run it: deliver pending pin cascades, then evict.
+async fn run_gc(state: &SharedState) -> named_store::GcReport {
+    let store = local_store(state).await;
+    let store = store.lock().await;
+    loop {
+        let batch = store.fetch_outbox_ready(100).await.unwrap();
+        if batch.is_empty() {
+            break;
+        }
+        for entry in batch {
+            store.apply_edge(entry.msg.clone()).await.unwrap();
+            store.complete_outbox_entry(entry.seq).await.unwrap();
+        }
+    }
+    store.gc_round(0).await.unwrap()
+}
+
+#[tokio::test]
+async fn unpin_failure_keeps_stopping_until_sweeper_releases() {
+    let srv = start().await;
+    let alice = srv.client("alice").await;
+    let first = alice.create("home/alice/report.txt", json!({"access": "holder"})).await;
+    let second = alice.create("home/alice/report.txt", json!({"access": "holder"})).await;
+    let obj_id = first["share"]["obj_id"].as_str().unwrap().to_string();
+    assert_eq!(second["share"]["obj_id"], obj_id.as_str(), "same content, same snapshot");
+    let (a, b) = (first["share_id"].as_str().unwrap().to_string(), second["share_id"].as_str().unwrap().to_string());
+    let (ta, tb) = (token_of(first["url"].as_str().unwrap()), token_of(second["url"].as_str().unwrap()));
+    let oid = ndn_lib::ObjId::new(&obj_id).unwrap();
+    let pin_of = |id: &str| format!("share:{id}");
+
+    // Another writer holds the named store database: unpin fails with "database is locked".
+    let blocker = rusqlite::Connection::open(srv.data.parent().unwrap().join("store/named_store.db")).unwrap();
+    blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+    let stopped = alice.ok("share.stop", json!({"share_id": a, "revision": 1})).await;
+    assert_eq!(stopped["status"], "stopping");
+    for path in [format!("/s/{ta}"), format!("/s/{ta}/meta"), format!("/s/{ta}/d")] {
+        assert_eq!(srv.get(&path).send().await.unwrap().status(), 404, "visitors lose access at once: {path}");
+    }
+    nfs_server::share::sweep_once(&srv.state).await;
+    let got = alice.ok("share.get", json!({"share_id": a})).await;
+    assert_eq!(got["status"], "stopping", "a failed retry keeps the share stopping");
+    assert!(got["retention"][0]["released_at"].is_null());
+    let mgr = srv.state.share.store(&srv.state.config).await.unwrap();
+    assert!(mgr.anchor_state(&oid, &pin_of(&a)).await.is_ok(), "pin still held");
+
+    // Storage recovers; a restarted server's sweeper finishes the stop.
+    blocker.execute_batch("ROLLBACK").unwrap();
+    drop(blocker);
+    let restarted = AppState::new(srv.state.config.clone()).unwrap();
+    nfs_server::share::sweep_once(&restarted).await;
+    nfs_server::share::sweep_once(&restarted).await;
+    let got = alice.ok("share.get", json!({"share_id": a})).await;
+    assert_eq!(got["status"], "stopped");
+    assert!(got["retention"][0]["released_at"].is_i64());
+    assert_eq!(got["audit"].as_array().unwrap().iter().filter(|e| e["action"] == "stop").count(), 1);
+    let mgr = restarted.share.store(&restarted.config).await.unwrap();
+    assert!(matches!(mgr.anchor_state(&oid, &pin_of(&a)).await, Err(ndn_lib::NdnError::NotFound(_))));
+    assert!(mgr.anchor_state(&oid, &pin_of(&b)).await.is_ok(), "the other share keeps its own pin");
+
+    // GC with the remaining share's pin: the snapshot and its chunk stay protected.
+    let report = run_gc(&restarted).await;
+    assert_eq!(report.evicted_objects, 0, "{report:?}");
+    let chunk = content_chunk(&restarted, &oid).await;
+    assert_eq!(mgr.debug_dump_expand_state(&oid).await.unwrap().eviction_class, 2);
+    assert_eq!(mgr.debug_dump_expand_state(&chunk).await.unwrap().eviction_class, 1);
+    let body = srv.get(&format!("/s/{tb}/d")).send().await.unwrap();
+    assert_eq!(body.text().await.unwrap(), "hello share world");
+
+    // Once the last share stops, the snapshot is collected and its chunk loses protection.
+    assert_eq!(alice.ok("share.stop", json!({"share_id": b, "revision": 1})).await["status"], "stopped");
+    assert_eq!(run_gc(&restarted).await.evicted_objects, 1);
+    assert!(!mgr.is_object_exist(&oid).await.unwrap());
+    assert_eq!(mgr.debug_dump_expand_state(&chunk).await.unwrap().eviction_class, 0);
 }

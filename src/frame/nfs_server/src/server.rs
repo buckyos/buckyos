@@ -13,7 +13,7 @@ use axum::extract::{Path as AxPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, options, patch, post, put};
 use axum::Router;
 use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::{json, Value};
@@ -49,7 +49,24 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/s/{token}/meta", get(crate::share::serving::meta))
         .route("/s/{token}/unlock", post(crate::share::serving::unlock))
         .route("/s/{token}/d", get(crate::share::serving::download_root))
-        .route("/s/{token}/d/{*inner}", get(crate::share::serving::download_inner));
+        .route("/s/{token}/d/{*inner}", get(crate::share::serving::download_inner))
+        .route("/ndm/v1/uploads", options(crate::ndm::uploads::options).post(crate::ndm::uploads::create))
+        .route(
+            "/ndm/v1/uploads/{id}",
+            patch(crate::ndm::uploads::patch)
+                .head(crate::ndm::uploads::head)
+                .delete(crate::ndm::uploads::terminate)
+                .post(crate::ndm::uploads::post_override)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/ndm/v1/objects/lookup", get(crate::ndm::forward::lookup))
+        .route("/ndm/v1/store/{method}", post(crate::ndm::forward::store_api))
+        .route("/ndm/proxy/v1/rpc/{method}", post(crate::ndm::forward::proxy_rpc))
+        .route("/ndm/proxy/v1/read/{*kind}", post(crate::ndm::forward::proxy_read))
+        .route(
+            "/ndm/proxy/v1/write/chunk/{chunk_id}",
+            put(crate::ndm::forward::proxy_write).layer(axum::extract::DefaultBodyLimit::disable()),
+        );
     if state.config.debug_api {
         router = router.route("/nfs/v1/debug/{action}", post(debug_handler));
     }

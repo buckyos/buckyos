@@ -8,11 +8,12 @@
  *
  * 初始化流程参照 buckyos-websdk/tests/app-client/integration/app_client_test.ts：
  *   1. 从环境变量或默认值构造 AppClient 配置
- *   2. 自动从本地搜索私钥 (~/.buckyos, /opt/buckyos/etc 等)
+ *   2. 自动从本地搜索私钥（~/buckycli/<zone>：开发配置生成的 owner 私钥；~/.buckyos、/opt/buckyos/etc 等）
  *   3. 本地签名 JWT 并 login
  *
  * 环境变量（均可选，有默认值）：
- *   BUCKYOS_TEST_APP_ID          — appId，默认 "buckycli"
+ *   BUCKYOS_TEST_APP_ID          — 登录目标系统服务（verify-hub 只允许 control-panel/kernel/system-config
+ *                                  做交互式用户登录），默认 "control-panel"
  *   BUCKYOS_TEST_ZONE_HOST       — zone 主机名，默认 "test.buckyos.io"
  *   BUCKYOS_TEST_VERIFY_HUB_URL  — verify-hub 服务地址
  *   BUCKYOS_TEST_SYSTEM_CONFIG_URL — system-config 服务地址
@@ -88,12 +89,13 @@ let cached: TestRuntime | null = null;
 export async function initTestRuntime(): Promise<TestRuntime> {
   if (cached) return cached;
 
-  const appId = getEnv("BUCKYOS_TEST_APP_ID", "buckycli")!;
+  const appId = getEnv("BUCKYOS_TEST_APP_ID", "control-panel")!;
   const zoneHost = getEnv("BUCKYOS_TEST_ZONE_HOST", "test.buckyos.io")!;
 
   const homeDir = Deno.env.get("HOME") ?? "";
   const privateKeySearchPaths = [
     getEnv("BUCKYOS_TEST_APP_CLIENT_DIR"),
+    `${homeDir}/buckycli/${zoneHost}`,
     "/opt/buckyos/etc/.buckycli",
     "/opt/buckyos/etc",
     `${homeDir}/.buckycli`,
@@ -104,6 +106,7 @@ export async function initTestRuntime(): Promise<TestRuntime> {
 
   await buckyos.initBuckyOS(appId, {
     appId,
+    authTarget: { kind: "system", service_id: appId },
     ownerUserId: "devtest",
     runtimeType: RuntimeType.AppClient,
     zoneHost,
@@ -115,7 +118,7 @@ export async function initTestRuntime(): Promise<TestRuntime> {
   // 等待本地签名的 JWT 时间生效
   await sleep(1100);
   const accountInfo = await buckyos.login();
-  console.log("accountInfo", accountInfo);
+  console.log("accountInfo", { user_id: accountInfo?.user_id, user_name: accountInfo?.user_name });
   if (!accountInfo?.session_token) {
     throw new Error("AppClient login failed to produce a session token");
   }

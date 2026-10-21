@@ -44,6 +44,11 @@ impl Credentials {
     pub fn bearer(&self) -> Option<&str> {
         self.bearer.as_deref()
     }
+
+    /// Cookie tokens in preference order (`buckyos_session_token` first).
+    pub fn cookie_tokens(&self) -> &[String] {
+        &self.cookies
+    }
 }
 
 fn cookie_rank(name: &str) -> u8 {

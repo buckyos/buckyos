@@ -319,6 +319,14 @@ impl Station {
     /// Create the entry with its first Head, or publish a new version on it (§16.4 编辑).
     pub async fn publish_version(&self, version: NewVersion) -> HsResult<Published> {
         let obj = self.sign_object(version.obj_type, &version.claims)?;
+        let files = match obj.obj_type.as_str() {
+            OBJ_TYPE_FEED => serde_json::from_value::<FeedObject>(obj.body.clone()).map(|f| crate::retention::file_parts(&f)).unwrap_or_default(),
+            _ => vec![],
+        };
+        let entry = version.entry.clone();
+        // The files are held before anyone can see the version (D17); a failure below is
+        // undone here or by the retention reconcile.
+        self.retain_parts(&entry, &files).await?;
         let signer = self.signer.clone();
         let owner = self.cfg.owner.clone();
         let key = match EntryRef::parse(&version.entry).map_err(bad)? {
@@ -367,10 +375,20 @@ impl Station {
                 let restricted = !audience.is_public();
                 let (head_obj_id, seq) =
                     write_own_head(&tx, &signer, &owner, &version.entry, HeadState::Active, Some(&obj.obj_id), restricted, now)?;
+                crate::retention::confirm_pending(&tx, &version.entry, now)?;
                 tx.commit()?;
                 Ok(Published { entry: version.entry, obj_id: Some(obj.obj_id), head_obj_id, seq, state: HeadState::Active })
             })
-            .await?;
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(e) => {
+                if let Err(undo) = self.sync_retention(&entry).await {
+                    log::warn!("releasing the files of unpublished {entry} failed: {undo}");
+                }
+                return Err(e);
+            }
+        };
         self.bump(&["published", "profile"]);
         self.zone_touch(&result.entry, "head").await;
         Ok(result)
@@ -398,6 +416,10 @@ impl Station {
                 Ok(Published { entry, obj_id: current, head_obj_id, seq, state })
             })
             .await?;
+        // A withdrawn entry stops holding its files; a failure is retried by the reconcile.
+        if let Err(e) = self.sync_retention(&result.entry).await {
+            log::warn!("retention of {} after {:?} not settled: {e}", result.entry, result.state);
+        }
         self.bump(&["published", "profile", "comments", "saved"]);
         self.zone_touch(&result.entry, "head").await;
         Ok(result)
@@ -808,9 +830,14 @@ impl Station {
         Ok(row)
     }
 
+    /// The attachment's FileObject and its content must be here before a post may use it.
     async fn ensure_file(&self, obj_id: &str) -> HsResult<StoredObject> {
-        match crate::objects::load_local(&self.db, self.chunks.as_ref(), obj_id).await? {
-            Some(obj) if obj.obj_type == OBJ_TYPE_FILE => Ok(obj),
+        let obj = match crate::objects::load_local(&self.db, self.chunks.as_ref(), obj_id).await? {
+            Some(obj) if obj.obj_type == OBJ_TYPE_FILE => obj,
+            _ => return Err(HsError::Unavailable("upload_missing".into())),
+        };
+        match obj.body.get("content").and_then(Value::as_str) {
+            Some(content) if self.chunks.has_chunk(&normalize_obj_id(content)).await => Ok(obj),
             _ => Err(HsError::Unavailable("upload_missing".into())),
         }
     }
