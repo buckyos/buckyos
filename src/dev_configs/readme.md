@@ -1,91 +1,62 @@
 # Overview of the `dev_configs` Directory
 
-Each typical environment is a directory that holds all information and configuration needed for a typical "distributed test environment".
-- `nodes.json` defines how many VMs exist in this environment. Format: `vm_name -> vm_config`. A `vm_config` can reference a VM template (Multipass format).
-- `apps` directory (important): contains `$appname.json` files that define basic behavior for a set of apps.
-- `$vm_template.yaml` is the template used for initialization.
+This directory holds the VM-based distributed test environments driven by `buckyos-devtest` (from `buckyos-devkit`). The full workflow, troubleshooting notes and test cases are in [doc/CI/基于VM的开发环境构造.md](../../doc/CI/基于VM的开发环境构造.md).
+
+- `<group>.json`: one workspace group (a typical topology). `nodes` maps node id -> VM config (template, disk, init/instance commands, apps and their params); `app_configs` can pull app definitions from sibling repos.
+- `apps/<app>.json`: how an app is built on the host, pushed, installed, started and stopped on a node.
+- `templates/<vm_template>.yaml`: Multipass cloud-init templates.
+- `aicc.json`, `msg_center.json`: service configuration samples, not devtest groups.
+
+Groups:
+
+- `sntest`: the most commonly used environment, 2 VMs: SN (`web3-gateway` from the sibling `cyfs-gateway` repo) + `alice-ood1` (OOD behind a simulated NAT, reached through the SN relay).
+- `full`: SN + `web` + `alice-ood1` + `bob-ood1` + `charlie-ood1`.
+
 Note: the current development machine is `ood1@test.buckyos.io`, and it always acts as a WAN node without SN.
 
-- `2zone_sn`: the most commonly used environment, with 3 VM nodes: SN + Alice.ood1 (port mapping) + bob.ood1 (LAN)
+## Dev Loop
 
-## VM Environment
-
-### Hardware environment config (usually multiple sets can exist)
-- `vm_config.json` (VM environment config)
-- `vm_init.yaml`
-
-### Base software environment
-- Some configs depend on IPs of already-created VMs, so you must wait until VM node instances start and get IPs before continuing
-- Build iptables rules
-- Pre-installed CA certificates (can also be generated)
-
-## Deploy Software (dev-environment related)
-### Understanding `app_list.json`
-
-### Step1. Build
-### Step2. Build config (rootfs) based on node-name
-### Step3. Push to the target node
-
-Environment setup is complete; you now have a set of running VMs (in Init state).
+Run from `buckyos/src`. Snapshots keep VM IPs; recreating VMs changes them, so reinstall after `create_vms`.
 
 ```
-main.py $group_name clean_vms
-main.py $group_name create_vms
-```
+uv run buckyos-devtest $group_name clean_vms
+uv run buckyos-devtest $group_name create_vms
+uv run buckyos-devtest $group_name snapshot init
 
+uv run ./build_for_vm_test.py
+uv run buckyos-devtest $group_name install
+uv run buckyos-devtest $group_name snapshot installed
 
------------------ Dev Loop ----------------
-`Use VM snapshots to speed up development`
-
-1. Create a snapshot before software is deployed: `init`
-```
-main.py $group_name snapshot init
-```
-
-2. Deploy the latest software, test cases, and config: `installed`
-```
-main.py $group_name install --all
-main.py $group_name snapshot installed
-```
-3. Start software as needed for tests: `started`
-```
-main.py $group_name start --all
-main.py $group_name snapshot started
+uv run buckyos-devtest $group_name start
 ```
 
 loop:
 ```
-    4.1 Restore to the `started` snapshot
-    main.py $group_name restore started
-    4.2 Run test cases
-    main.py #groupname run $node_id /opt/testcases/xxx.py
+uv run buckyos-devtest $group_name restore installed
+uv run buckyos-devtest $group_name start
+uv run buckyos-devtest $group_name run $node_id "<command>"
 ```
 
-
-### Update software
+Update software after `uv run ./build_for_vm_test.py`:
 ```
-main.py $group_name update --all
-```
-
-### Update config (reinstall)
-```
-main.py $group_name restore init
-main.py $group_name install --all
-main.py $group_name snapshot installed
+uv run buckyos-devtest $group_name update
 ```
 
-
-## Build and Run Test Cases
-- Different test cases have different base software requirements
-
-## Collect Logs
+Update config (reinstall):
 ```
-main.py #$group_name clog
+uv run buckyos-devtest $group_name restore init
+uv run buckyos-devtest $group_name install
+uv run buckyos-devtest $group_name snapshot installed
 ```
 
-## Check App Status
+Collect logs into `/tmp/clogs/<node_id>/`:
 ```
-main.py $group_name info
+uv run buckyos-devtest $group_name clog
+```
+
+Show VM IPs:
+```
+uv run buckyos-devtest $group_name info_vms
 ```
 
 

@@ -12,7 +12,6 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_VM_ROOTFS = Path("/opt/buckyosvm")
-DEFAULT_WEB3_GATEWAY_ROOT = Path("/opt/web3-gateway")
 DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
 
 
@@ -149,12 +148,6 @@ def _parse_args() -> argparse.Namespace:
         help="Path to sibling cyfs-gateway/src",
     )
     parser.add_argument(
-        "--web3-gateway-root",
-        type=Path,
-        default=Path(os.environ.get("BUCKYOS_WEB3_GATEWAY_ROOT", DEFAULT_WEB3_GATEWAY_ROOT)),
-        help="VM test web3-gateway staging directory used by devtest as source",
-    )
-    parser.add_argument(
         "--node-group",
         default=None,
         help="Optional make_config.ts group, e.g. alice.ood1",
@@ -167,7 +160,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-install",
         action="store_true",
-        help="Skip installing BuckyOS, cyfs-gateway, and web3-gateway into staging roots.",
+        help="Skip installing BuckyOS and cyfs-gateway into the base rootfs.",
     )
     return parser.parse_args()
 
@@ -179,14 +172,12 @@ def main() -> int:
     base_rootfs = rootfs / "base"
     current_rootfs = rootfs / "current"
     cyfs_gateway_src = _find_cyfs_gateway_src(args.cyfs_gateway_src)
-    web3_gateway_root = args.web3_gateway_root.expanduser().resolve()
 
     print(f"* VM test target: linux/{target}", flush=True)
     print(f"* VM test rootfs: {rootfs}", flush=True)
     print(f"* VM test base rootfs: {base_rootfs}", flush=True)
     print(f"* VM test current rootfs: {current_rootfs}", flush=True)
     print(f"* cyfs-gateway src: {cyfs_gateway_src}", flush=True)
-    print(f"* web3-gateway root: {web3_gateway_root}", flush=True)
 
     try:
         if not args.skip_build or not args.skip_install:
@@ -199,8 +190,6 @@ def main() -> int:
         if not args.skip_install:
             _install_app(SCRIPT_DIR, "buckyos", base_rootfs)
             _install_app(cyfs_gateway_src, "cyfs-gateway", base_rootfs)
-            web3_gateway_root.mkdir(parents=True, exist_ok=True)
-            _install_app(cyfs_gateway_src, "web3-gateway", web3_gateway_root)
 
         if args.node_group:
             _prepare_node_rootfs(base_rootfs, current_rootfs, args.node_group)

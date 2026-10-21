@@ -53,13 +53,14 @@
           "hostnamectl set-hostname alice-ood1",
           "sudo mkdir -p /opt/buckyos",
           "sudo chown -R ubuntu:ubuntu /opt/buckyos",
-          "sudo iptables -I INPUT 1 -i lo -j ACCEPT",
-          "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
+          "sudo tee /etc/systemd/system/sntest-nat-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=sntest: reject inbound 80/443/2980 to simulate a NAT OOD\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
+          "sudo systemctl daemon-reload && sudo systemctl enable --now sntest-nat-firewall.service"
         ],
         "instance_commands": [
             "sudo mkdir -p /etc/systemd/resolved.conf.d",
-            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
-            "sudo systemctl restart systemd-resolved"
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDNSStubListenerExtra=172.17.0.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo systemctl restart systemd-resolved",
+            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker"
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"

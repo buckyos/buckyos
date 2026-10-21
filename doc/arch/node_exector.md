@@ -1,7 +1,8 @@
 # Node Executor 设计
 
-> 版本：v1.0-draft，2026-10-18
+> 版本：v1.1-draft，2026-10-20
 > 状态：设计稿。本文合并了三份来源，统一成一个组件设计；"当前代码事实"与"本文新增设计"在各节分开标注，代码事实以源码为准。
+> 本次范围调整：Thunk 执行器整体后置；先完成 FunctionObject 执行契约及其与 Command Stream、恢复脚本的能力对比，再单独排期。首期聚焦 Command Stream。
 > 来源：
 > 1. 本文件旧版（node_Executor 需求）：执行 Scheduler 下发的 ThunkObject（Function Instance）。
 > 2. `notepads/node-agent-runtime-todo.md`（2026-10-13）：Agent 在指定 Node 上执行 shell/文件工具的 `remote_node` 运行时。
@@ -14,11 +15,11 @@
 
 **Node Executor 是设备本地的执行组件：接收经过授权的执行请求，按设备当前执行态、请求来源和权限配置完成执行，并以可查询、可恢复的方式返回结果。**
 
-它有三类生产者，共用一条管线：
+规划中的三类请求来源如下。各来源分别完成准入与结果适配，底层进程管理能力按需复用；来源①的完整执行契约待定，不作为首期的依赖：
 
 ```text
                  ┌────────────────────────────────┐
- Scheduler /     │ ① ThunkObject（Function Instance）│   期望状态：Node Config
+ Scheduler /     │ ① ThunkObject（后续阶段）          │   候选交付：Node Config
  Workflow ──────▶│                                │
                  │                                │
  Agent ─────────▶│ ② Command Stream（登录会话）      │──▶ 准入 ─▶ 执行 ─▶ 结果/状态
@@ -39,8 +40,8 @@
 | 本文名称 | 含义 | 来源中的旧称 | 代码落点（建议） |
 | --- | --- | --- | --- |
 | Node Executor | 设备本地执行组件（本文主体） | node_Executor、NodeAgentRuntimeService、Node Executor | 新 crate `src/kernel/node_executor`（lib），node_daemon 内嵌 |
-| 执行请求 | 一次被要求执行的工作单元，三类之一 | thunk / command / operation / 签名命令 | `ExecRequest` |
-| Thunk 路径 | 来源①：Scheduler 下发 ThunkObject | node_Executor 需求全文 | `node_executor::thunk` |
+| 执行请求 | 一次被要求执行的工作单元，三类之一 | thunk / command / operation / 签名命令 | 各来源独立 DTO；公共执行描述按实际复用需要定义 |
+| Thunk 路径 | 来源①：Scheduler 下发 ThunkObject，整体后置 | node_Executor 需求全文 | 后续 `node_executor::thunk`，待 §6.2 完成 |
 | Command Stream | 来源②：Agent 在可信隧道上的登录会话 | 模式二、remote_node、Command Stream | `node_executor::stream` |
 | 恢复脚本 | 来源③：按 SEQ 拉取的完整签名脚本 | 模式一、签名命令 | `node_executor::recovery` |
 | 执行态（Posture） | 设备当前允许哪类来源、信任哪些公钥 | 安全等级 | `Posture::{Normal, Frozen, Recovery}` |
@@ -58,11 +59,11 @@
 
 | 入口 | 事实 | 对本设计的意义 |
 | --- | --- | --- |
-| `src/kernel/buckyos-api/src/thunk_object.rs` | 已定义 `FunctionType{ExecPkg, Script(lang), OPTask(lang), Operator}`、`FunctionObject`（requirements/affinity/params_type/result_type）、`ThunkObject{fun_id, params, metadata}`、`ThunkExecutionResult{thunk_obj_id, task_id, status, result_obj_id, result, result_url, error, metrics}`、`ThunkExecutionStatus{Waiting, Dispatched, Success, Failed, Cancelled}` | 来源①的数据结构已存在，本文沿用，不改字段语义 |
-| `src/kernel/scheduler/src/thunk_runner.rs` | `DefaultThunkRunner::run_thunk` 会校验参数、选节点并返回 `Dispatched` 回执；但 `ExternalTaskThunkDispatchBackend` 只返回 `"next_step": "external dispatcher should bind task to runner/node"`，**没有把 thunk 真正送到节点** | 节点侧执行从未闭环，本文补上下发与回报 |
+| `src/kernel/buckyos-api/src/thunk_object.rs` | 已定义 `FunctionType{ExecPkg, Script(lang), OPTask(lang), Operator}`、`FunctionObject`（content/is_pure/timeout/requirements/affinity/params_type/result_type）、`ThunkObject{fun_id, params, metadata}`、`ThunkExecutionResult` 与状态枚举；`params_type` 仍有迁移标准 JSON Schema 的 TODO | 已有类型骨架，完整执行契约尚未定稿；来源①后置，不提前冻结字段语义 |
+| `src/kernel/scheduler/src/thunk_runner.rs` | `DefaultThunkRunner::run_thunk` 做参数初步检查、选节点并返回 `Dispatched` 回执；默认 ObjId 检查只判断字符串非空；`ExternalTaskThunkDispatchBackend` 只返回 `"next_step": "external dispatcher should bind task to runner/node"`，**没有把 thunk 真正送到节点** | 后续需补对象校验与执行闭环，首期不接通此 backend |
 | `src/kernel/scheduler/src/scheduler.rs` | 有 `OPTask{id, creator_id, body, max_timeout_sec, status, start_time}`；`check_node_op_tasks` 是空实现 | OPTask 状态回收的位置已预留 |
 | `doc/task_mgr/task_mgr.md` §5.7、§7 | `scheduler.dispatch_thunk` 只有 schema、无生产者；beta2.2 起 TaskMgr 不含调度语义，"谁创建，谁执行" | 节点不能靠扫描 TaskMgr 领活；结果回写要经任务 owner |
-| `doc/workflow/workflow service.md` §6.2 | workflow 创建 Thunk 任务后调用 `schedule_thunk`，由 **scheduler** 把状态写回 task_manager | 节点结果 → scheduler → TaskMgr 的链路已被约定 |
+| `src/kernel/workflow/src/task_tracker.rs`、`src/kernel/task_manager/src/server.rs` | workflow 的 Thunk 子任务绑定 workflow 为 executor；TaskMgr 校验结果写入者是否为绑定的 runner | 后续若由 scheduler 写回，需先定义执行权交接；旧 workflow 文档的回报链路不能直接作为实现契约 |
 | `src/kernel/node_daemon/src/node_daemon.rs` | 约 5 秒一轮收敛；`NodeConfig{node_id, node_did, kernel, apps, frame_services, state}`；Unix 上 `reap_exited_children_nonblocking` 做全局 `waitpid(-1)` | 需要新增 config 段；全局 waitpid 与 worker 的 Child 冲突，是前置修复 |
 | `src/kernel/node_daemon/src/app_loader.rs` | 把 `$BUCKYOS_ROOT/storage/` 以 rw 挂进 App/Agent 容器，容器内为 root | **Executor 的私有状态不能放 storage/** |
 | `src/kernel/node_daemon/src/run_item.rs` | `RunItemControl{deploy, start, stop, get_state}` 与 `ensure_run_item_state` | Thunk 的"一个实例"语义可复用其状态观测方式，但 thunk 不是长驻服务 |
@@ -87,6 +88,7 @@
 6. **不承诺 exactly-once 副作用。** 持久去重阻止重复派发；启动后的未知状态如实返回，不自动重跑（遵循长命令 TODO 的 OS 父子进程语义）。
 7. **先提供当前确实需要的能力。** v1 不做审批系统、通用沙箱、队列、跨 Zone。早期安全顾虑写入 §15 已知风险，不预先加隔离机制。
 8. **协议定义机制，实现决定策略。** 独立服务与嵌入 Library 共享协议与核心逻辑，不形成两套 Executor。
+9. **Thunk 执行器整体后置。** 先完成 §6.1 的能力对比和 §6.2 的 FunctionObject 契约；首期不增加 `config.thunks`、Thunk runner 或 TaskMgr 回报链路，不要求 Command Stream 先包装成 FunctionObject。
 
 ---
 
@@ -105,7 +107,7 @@
 
 | 形态 | 宿主 | 适用设备 | 可用来源 | 宿主权限 |
 | --- | --- | --- | --- | --- |
-| A. node_daemon 内置模块 | node_daemon 进程（S1 内核组件） | OOD / Node | ①②③ | 系统级（可切换 OS 用户） |
+| A. node_daemon 内置模块 | node_daemon 进程（S1 内核组件） | OOD / Node | 首期②；P2③；①另行排期 | 系统级（可切换 OS 用户） |
 | B. Agent Daemon 独立服务 | 独立常驻进程，内含 cyfs-gateway-lib + node_executor | 桌面电脑、能装后台服务的终端 | ②（③ 看是否有后台保障） | 安装时授予 |
 | C. Agent Daemon 嵌入 App | 单进程 App 内以 Library 形式嵌入 | Android/iOS/盒子等不便装服务的设备 | ② | 不超过 App 自身权限 |
 
@@ -162,7 +164,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 
 | 执行态 | 进入条件 | 允许来源 | 信任的公钥 |
 | --- | --- | --- | --- |
-| Normal | 默认；Zone 可达且 Node Config 有效 | ① ② | system-config 中的 Device/Agent 文档、verify-hub trust keys |
+| Normal | 默认；Zone 可达且 Node Config 有效 | ②；①待后续实现 | system-config 中的 Device/Agent 文档、verify-hub trust keys |
 | Frozen | 确认有效恢复声明且本设备在范围内（§9） | 无（只保留查询/验证/等待的最小逻辑） | 恢复信任根 |
 | Recovery | Frozen + 等待期满 + 恢复授权仍有效 | ③，以及恢复配置明确允许的 ② | 恢复信任根 + 恢复配置列出的设备/主体 |
 
@@ -170,7 +172,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 
 ### 5.4 Node Config 承载正常授权
 
-来源①的授权就是 Node Config 本身：scheduler 写进 `nodes/<node>/config` 的 thunk 才会被执行。
+来源①整体后置。候选交付方式是由 scheduler 写 `nodes/<node>/config.thunks`；启用前须按 §6.2 定义调用者、FunctionObject 与目标节点的授权规则，Node Config 中出现任务只代表派发结果。
 
 来源②的授权是 `nodes/<node>/config.executor`（由管理员可写的 `nodes/<node>/settings.executor` 确定性派生）。`Device` 类设备没有 nodes/ 条目，使用 `devices/<name>/executor_config`（D-6）。字段示例（设计，非现有 schema）：
 
@@ -213,9 +215,36 @@ Executor 是系统服务时可具有被授予的系统能力；嵌入普通 App 
 
 ---
 
-## 6. 来源①：ThunkObject（Scheduler / Workflow 路径）
+## 6. 来源①：ThunkObject（整体后置，待 FunctionObject 定义）
 
-### 6.1 基本逻辑
+本节保留后续设计输入。FunctionObject 的 Rust 类型已存在，但代码/包的解析、运行环境、权限、输入输出及副作用语义尚未形成完整契约。Thunk 的 schema 接线、scheduler 派发、节点 runner、TaskMgr 回报与端到端验收整体后置，完成 §6.2 后再单独排期；不列入 P0/P1/P2 的交付要求。这与 `doc/workflow/executor list.md` 将 `func::` / `optask::` 列为后续阶段的方向一致。
+
+### 6.1 三条路径的脚本执行能力对比
+
+`FunctionType::Script(lang)` 与 `OPTask(lang)` 已用 `content` 表达脚本内容；Command Stream 的 `exec` 也能向 shell 提交脚本；来源③则执行完整签名的脚本。三者都能表达具有副作用的程序，实际能力受各自授权与宿主权限约束。
+
+| 比较项 | Thunk / FunctionObject（待定稿） | Command Stream（§7） | 恢复脚本（§8–9） |
+| --- | --- | --- | --- |
+| 提交单元 | FunctionObject 定义代码/包及类型，ThunkObject 绑定 `fun_id`、本次参数和 metadata | 已登录主体直接提交 `exec{op_id, cmd, cwd, env_overrides, execution_timeout_ms}` | 签名覆盖脚本、seq、目标范围与恢复轮次 |
+| 定位与调度 | scheduler 根据资源/亲和性选节点；定义对象的发布、解析与 `fun_id` 校验仍需明确 | 调用方选定 Node/profile；目标离线即失败 | 恢复声明指定目标范围，设备主动拉取 |
+| 授权依据 | 提交者、函数定义与目标节点的授权关系待定，OPTask 的宿主权限需单独定义 | 正常 Zone 身份、设备准入、profile 与 OS 身份取交集 | 恢复信任根、执行态、等待期及当前签名授权 |
+| 运行环境 | 脚本解释器、依赖、包入口、容器/宿主选择与 OS 身份尚未形成完整契约 | 首期为 profile 指定的 OS 身份与允许的 env、经 roots 校验的请求 cwd 下的 shell；roots 不隔离 shell I/O | 运行于恢复条件下；解释器与必要依赖必须在故障设备上可用 |
+| 输入与结果 | 具名参数和 `Fixed/Object/Stream/Iterator` 结果类型；序列化、交付、完成条件待明确 | 命令、文件数据；返回退出状态、stdout/stderr 或文件工具结果 | 脚本与执行回执；accepted、exec_state、delivered 分开持久化 |
+| 副作用与重试 | `is_pure`、结果缓存、执行实例与重试 attempt 的关系待定义 | `op_id` 去重；启动后未知状态只查询，不自动重跑 | 每轮 seq 单调推进；结果重报不触发脚本重跑 |
+
+复用边界：可按实际需要共享进程启动、输出收集、超时、取消和本地执行记录；各来源保留自己的准入、操作标识和结果适配。FunctionObject 的 `is_pure` 是声明，不能仅凭它认定任意脚本无副作用、可缓存或可自动重试。Command Stream 与恢复脚本先按各自契约实现；是否把其中某类调用包装成 FunctionObject，留到定义完整后决定。
+
+### 6.2 Thunk 开发前的设计条件
+
+1. **定义与代码绑定**：明确各 `func_type` 的 `content` 格式、包/代码引用、入口与版本解析，以及 `fun_id` 如何绑定实际执行的 FunctionObject；确定 registry / NamedStore 的解析和校验责任。
+2. **运行环境与权限**：定义解释器、依赖、cwd/env、宿主或容器选择、OS 身份和资源上限；明确提交者对函数与目标节点的授权，尤其是 OPTask 的宿主执行权限。与 §7/§8 对照后再确定共享执行组件。
+3. **输入输出契约**：补全参数 schema、ObjId 可用性检查、四类结果的传输与终结语义；确定业务结果、stdout/stderr 与 Executor 状态的边界，明确超时单位及失败表示。
+4. **副作用与实例语义**：定义 `is_pure`、幂等性、缓存、重试 attempt 和取消的关系；明确 Thunk 身份及跨节点唯一派发记录，避免丢回执后的重试在另一节点再次执行。
+5. **任务归属与回报**：明确 workflow / scheduler 谁绑定 TaskMgr runner、谁提交结果和取消，统一 TaskId、runner_epoch 与 revision；现有 scheduler 请求仍用整数 TaskId，TaskMgr 已用字符串 TaskId，需在接入时一起处理。
+
+上述契约定稿并完成对比后，再重审以下候选方案；既有类型、runner hint 或流程草图不作为提前接通执行的依据。
+
+### 6.3 候选交付流程
 
 ```text
 Workflow/Agent 创建 Thunk 任务（TaskMgr）并调用 scheduler.run_thunk
@@ -229,42 +258,44 @@ Executor 把 ThunkExecutionResult 写到 nodes/<node>/thunk_state/<thunk_obj_id>
 scheduler check_node_op_tasks 读取观测状态 → 写回 TaskMgr → 从 config.thunks 移除
 ```
 
-这样做的原因：
+候选方案的考虑：
 - 与 app/service 一样，Node Config 是期望状态、节点上报是观测状态，scheduler 收敛二者，符合 `04_scheduler.md` 的模型。
-- TaskMgr 不含调度语义（§7 "谁创建谁执行"），节点不扫描 TaskMgr 领活；结果经 scheduler 写回任务，符合 workflow §6.2 的约定。
+- 节点不扫描 TaskMgr 领活；图中的 scheduler 写回以 §6.2 的 runner 归属方案成立为前提。若保留 workflow 为 runner，需改为由 workflow 接收回报并提交结果。
 - kevent 只是加速通道，不是真相源（dispatch center §6.1 同样原则）。
 
 观测状态只放 `ThunkExecutionResult`（结果对象 id / 小结果值 / url / error / metrics），stdout 等大输出写入 Executor 本地目录并按需发布为 Named Object，不进 system-config（TODO §11 的结论）。
 
-### 6.2 四类 FunctionType 的运行方式
+### 6.4 四类 FunctionType 的候选运行方式
 
-| FunctionType | 含义 | 运行位置 | 参数传递 | v1 |
+以下沿用旧需求作为比较输入，运行环境与参数协议均待 §6.2 定稿。
+
+| FunctionType | 含义 | 候选运行位置 | 候选参数传递 | 排期 |
 | --- | --- | --- | --- | --- |
-| `OPTask(lang)` | 运维脚本，会影响 NodeState，一般是 bash | 宿主直接运行，**绝不进容器**；以 daemon 身份或 `run_as` 指定身份 | `THIS_THUNK` 环境变量 = thunk JSON | 是 |
-| `ExecPkg` | 启动一个 Pkg 进程，把 ThunkObject 当参数 | 按 pkg 类型决定是否进容器（复用 app_loader 的 runtime 判定） | 同上 | 是 |
-| `Script(lang)` | 脚本（如 Python） | 默认在 aios 的 `node_executor` 容器里运行 | 同上 | 是（Linux） |
-| `Operator` | 算子，为本地 FineTune/训练预留 | 待定 | 待定 | 否 |
+| `OPTask(lang)` | 运维脚本，会影响 NodeState，一般是 bash | 旧方案为宿主直接运行；实际 OS 身份与授权待定 | `THIS_THUNK` 环境变量 = thunk JSON | 整体后置 |
+| `ExecPkg` | 启动一个 Pkg 进程，把 ThunkObject 当参数 | 评估复用 app_loader 的 runtime 判定 | 同上 | 整体后置 |
+| `Script(lang)` | 脚本（如 Python） | 旧方案为 aios 的 `node_executor` 容器；待与 Command Stream worker 比较 | 同上 | 整体后置 |
+| `Operator` | 算子，为本地 FineTune/训练预留 | 待定 | 待定 | 暂不支持 |
 
-Func 执行协议（沿用旧需求）：
+Func 执行协议草图（沿用旧需求；stdout 与业务结果的分离方式待定）：
 
 ```text
 env THIS_THUNK=<thunk_json_str>
 func_exe > <exec_dir>/executor_result.json      # 内容为 ThunkExecutionResult 的 JSON
 ```
 
-Executor 启动前校验 `FunctionObject.params_type`：`ObjId` 参数须在 NamedStore 存在（scheduler 已校一次，节点再校一次，`CheckByRunner` 由 runner 自查）。`result_type` 为 `Object` 时，runner 负责把结果写入 Named Store 并填 `result_obj_id`。
+候选参数校验：Executor 启动前校验 `FunctionObject.params_type`，`ObjId` 参数须在 NamedStore 存在，`CheckByRunner` 由 runner 自查；scheduler 当前默认检查仍为占位逻辑。候选结果交付：`result_type` 为 `Object` 时，runner 把结果写入 Named Store 并填 `result_obj_id`；其余结果类型随 §6.2 一起定义。
 
-### 6.3 状态管理
+### 6.5 候选状态管理
 
-- **一个 ThunkObject 只能有一个运行实例。** 以 `thunk_obj_id` 为键持久记录 `{task_id, pid, exec_dir, started_at, deadline}`；重复出现在 config 中不重启。
+- 单实例与重试的具体作用域按 §6.2 定义；节点侧拟以 `thunk_obj_id` 为键持久记录 `{task_id, pid, exec_dir, started_at, deadline}`，重复出现在 config 中不重启。跨节点派发还需 scheduler 持久归属记录。
 - 超时按 `FunctionObject.timeout` 与 `OPTask.max_timeout_sec`；超时发 SIGTERM，宽限后 SIGKILL，状态置 `Failed(timeout)`。
 - 取消：scheduler 从 `config.thunks` 移除且观测状态未终结 → Executor 取消并置 `Cancelled`。
 - Executor 不管理 `task.data` 的业务内容；Func 实现不写时，data 只有标准 metadata。
 - daemon 重启后：已有 `starting`/`running` 记录但无法确认进程归属的 thunk，报 `Failed(unknown)`，不重跑（原则 6）。
 
-### 6.4 OPTask 是 break-glass
+### 6.6 OPTask 的候选用途
 
-`optask::<pkg>@<device>` 只用于低频运维、修复、测试（executor list.md）。遵循 beta3 §11.1：Agent 发起的 OPTask 修复前需有恢复点、限定范围、记录计划。v1 由调用方保证，Executor 只记录 `creator_id`。
+`optask::<pkg>@<device>` 的候选用途是低频运维、修复、测试（executor list.md）。恢复点、限定范围和计划记录沿用 beta3 §11.1；执行授权仍须按 §6.2 定义。该用途与 Command Stream 修复命令、来源③签名脚本有交集，后续需确认独立入口的必要性和权限差异，OPTask 不单独提前交付。
 
 ---
 
@@ -475,7 +506,7 @@ Owner 在声明里给出端点，设备主动连接取恢复配置，然后：
 $BUCKYOS_ROOT/local/node_daemon/executor/        （形态 A；0700，daemon 私有）
   posture.json             执行态、恢复轮次、进入时间、等待截止
   recovery/seq.json        {round, local_seq, accepted[], exec_state{}, delivered{}}
-  thunks/<thunk_obj_id>/   record.json、executor_result.json、stdout、stderr
+  thunks/<thunk_obj_id>/   后续 Thunk 阶段候选目录，格式待 §6.2 定稿，首期不创建
   streams/<op_id>/         record.json（去重 + 状态）、stdout、stderr
 ```
 
@@ -488,41 +519,40 @@ $BUCKYOS_ROOT/local/node_daemon/executor/        （形态 A；0700，daemon 私
 
 ## 12. 配置与接线清单
 
-| 位置 | 变更 |
-| --- | --- |
-| `buckyos-api/src/control_panel.rs` | `NodeConfig` 增加可选 `thunks: HashMap<ObjId, ThunkDispatch>` 与 `executor: Option<ExecutorConfig>`；缺省无 |
-| `buckyos-api` 新文件 | `ExecutorConfig`/settings、Command Stream 帧 DTO、`ThunkDispatch`；不引用 agent_tool/libopendan |
-| scheduler | `thunk_runner` 的 dispatch backend 改为写 `config.thunks`；`check_node_op_tasks` 读 `thunk_state` 写回 TaskMgr；settings.executor → config.executor 派生 + RBAC 精确规则 |
-| 新 crate `src/kernel/node_executor` | admission、posture、thunk runners、stream server、worker、recovery；不依赖 libopendan |
-| node_daemon | 薄装配：reconcile 时交 `config.thunks`/`config.executor` 给 Executor；共享 HTTP/stream listener；worker 子命令入口；修全局 waitpid |
-| cyfs-gateway 配置 | 本机 `executor` 目标 → `127.0.0.1:<port>` 的 stream 路由；Agent 侧 stream 转发入口 |
-| agent_tool / libopendan | `remote_node` kind、`NodeCommandHandle`、文件工具代理、locator、recovery reader、factory |
-| verify-hub | 非 User 主体校验 AgentSpec.binding |
-| control-panel / WebUI | `settings.executor`、`devices/<name>/executor_config` 编辑；设备能力展示 |
+| 位置 | 首期及既定后续阶段 | Thunk 后置项（§6.2 完成后再定） |
+| --- | --- | --- |
+| `buckyos-api/src/control_panel.rs` | `NodeConfig` 增加可选 `executor: Option<ExecutorConfig>`；缺省无 | `config.thunks` 与 `ThunkDispatch` 的 schema |
+| `buckyos-api` 新文件 | `ExecutorConfig`/settings、Command Stream 帧 DTO；不引用 agent_tool/libopendan | FunctionObject / Thunk 的完整执行协议 |
+| scheduler | settings.executor → config.executor 派生 + RBAC 精确规则 | Thunk 提交授权、唯一节点归属、dispatch backend、状态回收 |
+| 新 crate `src/kernel/node_executor` | admission、stream server、worker；P2 增加恢复 posture/recovery；不依赖 libopendan | thunk runners，与已有执行组件的复用边界 |
+| node_daemon | 薄装配：reconcile 时交 `config.executor` 给 Executor；stream listener；worker 子命令入口；修全局 waitpid | Thunk 配置收敛与执行状态回报 |
+| workflow / TaskMgr | 无本次 Thunk 接线要求 | TaskId 协议、runner 归属、epoch/revision、结果与取消链路 |
+| cyfs-gateway 配置 | 本机 `executor` 目标 → `127.0.0.1:<port>` 的 stream 路由；Agent 侧 stream 转发入口 | — |
+| agent_tool / libopendan | `remote_node` kind、`NodeCommandHandle`、文件工具代理、locator、recovery reader、factory | — |
+| verify-hub | 非 User 主体校验 AgentSpec.binding | — |
+| control-panel / WebUI | `settings.executor`、`devices/<name>/executor_config` 编辑；设备能力展示 | — |
 
 ---
 
 ## 13. 实施分期与验收
 
-每阶段默认关闭；不提前暴露只有传输没有授权/去重的执行接口。
+每阶段默认关闭；不提前暴露只有传输没有授权/去重的执行接口。P0 聚焦来源②，配置权限是 Command Stream 开放的前置条件。来源③仍在 P2；来源①整体后置，完成 §6.2 的设计条件后另行排期，不阻塞 P0/P1/P2。
 
 | 阶段 | 内容 | 退出标准 |
 | --- | --- | --- |
-| P0-A Thunk 闭环 | §6：config.thunks 下发、OPTask/ExecPkg/Script 运行、thunk_state 回报、scheduler 写回 TaskMgr、单实例/超时/取消 | workflow 的 `func::` 在 Linux Node 上端到端跑通 |
+| P0-A 配置与权限 | §5.4、§12：settings → config 派生、RBAC、verify-hub binding 校验 | 撤权立即生效；未授权主体零执行；完成后才开放 P0-B |
 | P0-B Command Stream（形态 A，Linux） | §7.1–7.5：RTCP stream 路由、登录、exec/read/write/edit、去重、断线查询、worker 降权、waitpid 修复 | hosted xllm 注入 `remote_node` 完成 shell + 文件工具 |
-| P0-C 配置与权限 | §5.4、§12：settings → config 派生、RBAC、verify-hub binding 校验 | 撤权立即生效；未授权主体零执行 |
 | P1 Agent 侧完整接线 | §7.6：descriptor、locator、recovery reader、PromptExec 显式 call_id | Runner 崩溃后能查询不重放 |
 | P1 轻量客户端（形态 B） | 桌面独立 Agent Daemon；`devices/<name>/executor_config`；上线/退出 | Jarvis 能在授权电脑上 read/edit 文件 |
 | P2 恢复通道 | §8、§9：posture、声明发现、本地触发、等待期、签名脚本、恢复 Stream | 无头 OOD 在 Zone 不可达时可被 Owner 恢复 |
 | P2 形态 C | 移动端嵌入；平台适配层 | 电视盒子配置场景 |
+| 后续：Thunk（未排期） | 先定稿 §6.2 的 FunctionObject 执行契约与三路径分工，再重审 config.thunks、各类 runner、状态回报及 TaskMgr 接线 | 开工前完成契约评审；实现后的端到端标准据此制定，候选场景见下表 |
 | 后续 | 完整 Session 远端运行（TODO §9.4）、Operator、Windows/macOS worker、跨 Zone | — |
 
-验收场景（合并三份来源）：
+Command Stream、轻量客户端与恢复通道的验收场景（随各自阶段执行）：
 
 | 场景 | 必须观察到 |
 | --- | --- |
-| config.thunks 重复出现 / daemon 重启 | 同一 thunk 不重复启动；unknown 不重跑 |
-| OPTask 超时 | SIGTERM→SIGKILL，`Failed(timeout)` 回报，TaskMgr 可见 |
 | 对端设备不在 allowed_devices | Tunnel 可建，Stream 登录拒绝 |
 | 同一 Tunnel 另一 Agent 开新 Stream | 不继承前一 Stream 身份与权限 |
 | 只读 profile | write/edit 拒绝；exec 不可用或仅白名单 |
@@ -540,6 +570,15 @@ $BUCKYOS_ROOT/local/node_daemon/executor/        （形态 A；0700，daemon 私
 | 本地触发 | 立即退出 Frozen 或立即进入 Recovery |
 | Zone 正常可达 | 日常不依赖 Owner key，不触碰恢复入口 |
 | App 版本权限低 | 同一协议下只开放宿主支持的能力 |
+
+Thunk 后续阶段的候选验收场景（不纳入 P0/P1/P2）：
+
+| 场景 | 待契约定稿后验证 |
+| --- | --- |
+| FunctionObject 解析并执行 | 定义内容与 fun_id 一致；实际环境、参数及结果符合已定稿契约 |
+| 重复派发 / 回执丢失后重新选节点 / daemon 重启 | 全局归属与节点去重共同阻止重复执行；unknown 不自动重跑 |
+| OPTask 超时 / 取消 | 确认实际进程状态，并由合法 runner 向 TaskMgr 提交结果 |
+| workflow `func::` 端到端 | 提交授权、派发、执行、结果及任务归属形成完整闭环 |
 
 验证命令（实施阶段，在 `src/` 下）：
 
@@ -561,13 +600,13 @@ cargo check --workspace
 
 | # | 决策 | 选项 | 建议 | 状态 |
 | --- | --- | --- | --- | --- |
-| D-1 | v1 真实消费方 | a. 独立 xllm（hosted）；b. OpenDAN Session；c. Workflow `func::` | a + Workflow Thunk（P0-A/B 并行），Session 后置 | 待定 |
+| D-1 | v1 真实消费方 | a. 独立 xllm（hosted）；b. OpenDAN Session；c. Workflow `func::` | a；c 整体后置，先完成 §6.1–6.2 再排期；Session 后置 | Thunk 后置已定；a 待定 |
 | D-2 | Agent 流登录凭据 | a. 现有 App session token（AppDID==AgentDID）；b. TODO §5.2 的 Agent 专属 IdentityRoots + token provider | a；b 作为已知风险 | 待定 |
 | D-3 | Command Stream 传输 | a. RTCP Stream + 本机 gateway stream 转发；b. TODO §5.1 的 S2S kRPC over HTTP 3181 | a（双向流、与轻量客户端同一路径、中转由 RTCP 解决） | 待定 |
 | D-4 | 离线持久队列 | a. 无（目标离线即失败）；b. TODO 的 spool；c. 复用 Task Dispatch Center | a；需要时 c | 待定 |
 | D-5 | Executor 核心代码位置 | a. 新 crate `kernel/node_executor`，node_daemon 与 Agent Daemon 共用；b. TODO 的 `libopendan::node_agent_runtime`（node_daemon → libopendan） | a（轻量客户端不能拉 libopendan） | 待定 |
 | D-6 | `Device` 类设备的配置位置 | a. `devices/<name>/executor_config`（control-panel 写）；b. 让 scheduler 也为 Device 生成 nodes/ 条目 | a | 待定 |
-| D-7 | Thunk 结果回报通道 | a. `nodes/<node>/thunk_state` + scheduler 收敛；b. 节点直接 kRPC 调 scheduler；c. 节点直接写 TaskMgr | a（与 app 状态同模型；kevent 加速） | 待定 |
+| D-7 | Thunk 结果回报通道 | a. `nodes/<node>/thunk_state` + scheduler 收敛；b. 节点直接 kRPC 调 scheduler；c. 节点直接写 TaskMgr | a 为候选；随 FunctionObject 结果契约和 TaskMgr runner 归属一起重审 | 后置待定 |
 | D-8 | 只读 Agent 的 exec | a. 不开放 exec；b. 命令白名单；c. 开放但记录 | a 为默认，b 后续 | 待定 |
 | D-9 | 恢复脚本签名密钥 | a. Owner Root Key；b. 激活时固化的独立恢复签名 key（公钥进 node_identity） | b（符合 Root Key 不入日常；泄露面分离） | 待定 |
 | D-10 | §8.4 签名字段/作用域/失败是否消耗序号 | — | 定稿时随 D-9 一起定 | 待定 |
@@ -576,7 +615,7 @@ cargo check --workspace
 | D-13 | 私钥泄露后的撤销/替换 | 依赖 BNS/OwnerDocument 轮换（Reset & Unbind §8.2） | 不在本文解决，只留接口：恢复信任根可被新 OwnerDocument 替换 | 待定 |
 | D-14 | 轻量客户端的 Gateway 复用 | 已有独立 gateway 的设备如何复用；多隔离 App 的协议栈实例与设备身份如何协调 | 一台设备一个设备身份；多 App 共享本机 gateway，嵌入式仅在无 gateway 时启用 | 待定 |
 | D-15 | 已登录 Stream 遇到撤权/执行态变化 | a. 立即关流并取消；b. 允许收尾 | a | 待定 |
-| D-16 | `Script` 的 node_executor 容器镜像 | 复用 aios 镜像还是独立镜像 | 复用 aios | 待定 |
+| D-16 | `Script` 的执行环境 | 复用 Command Stream worker、aios 容器或独立环境 | 先定义语言、依赖与权限契约，再比较；原 aios 方案仅作候选 | 后置待定 |
 | D-17 | Operator 类型 | 暂不支持 | 维持 | 已定 |
 
 ---
@@ -596,5 +635,6 @@ cargo check --workspace
 ## 16. 与来源文档的关系
 
 - 本文发布后，`notepads/node-agent-runtime-todo.md` 与 `notepads/BuckyOS Node Executor设计思路.md` 降为历史输入；与本文冲突处以本文为准。TODO 中更细的 wire 字段、状态机与崩溃窗口分析（其 §6–§8）在 P0-B 实施时按 D-3 的传输结论迁移到本文或协议文档。
+- Thunk 的后置范围与 `doc/workflow/executor list.md` 的后续阶段方向一致；本文 §6.3–6.6 保留旧执行器方案作比较输入，待 §6.2 定稿后更新，不作为首期实施契约。
 - `BuckyOS 系统故障的诊断和恢复(beta3).md` §10.3 的第二诊断链路由本文 §9 具体化；该文 §11 的 Agent 修复前置条件对本文来源①的 OPTask 与来源②的修复类命令同样适用。
 - `Reset & Unbind.md` §2.3 的物理控制权要求对应本文 §9.1 本地触发；§7.1 对远程擦除的保守态度同样适用于远程恢复脚本的能力边界。
