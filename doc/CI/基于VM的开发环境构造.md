@@ -1,8 +1,8 @@
 # 基于虚拟机的分布式开发环境基础设施
 
-本文档介绍位于 `buckyos-devkit` 下的开发环境基础设施。这套工具基于 Multipass 虚拟机，旨在快速构建、部署和测试 BuckyOS 的分布式环境（如 2zone + SN）。
+本文档介绍位于 `buckyos-devkit` 下的开发环境基础设施。这套工具默认基于 Multipass 虚拟机，在 Proxmox VE 宿主机上也可以改用 PVE 虚拟机（见第 6 节），旨在快速构建、部署和测试 BuckyOS 的分布式环境（如 2zone + SN）。
 
-**关于 IP 与快照**：Multipass 的 `stop`/`start`、`snapshot`/`restore` 不会改变 VM 的 IP。只有 `clean_vms` + `create_vms` 重建 VM 时 IP 才会变。SN 的配置和 alice 的 DNS 设置都写入了当时的 SN IP，所以重建 VM 后必须重新 `install`，不能沿用重建前的快照。
+**关于 IP 与快照**：两种后端的 `stop`/`start`、`snapshot`/`restore` 都不会改变 VM 的 IP。只有 `clean_vms` + `create_vms` 重建 VM 时 IP 才会变。SN 的配置和 alice 的 DNS 设置都写入了当时的 SN IP，所以重建 VM 后必须重新 `install`，不能沿用重建前的快照。
 
 ## 1. 核心概念与目录结构
 
@@ -20,7 +20,7 @@ alice 的 rootfs 由 `make_config.ts` 预生成身份，其中包含 `etc/alice.
 
 ## 2. 前置准备
 
-1. **安装 Multipass**：确保系统已安装 Multipass 且有权限创建/启动虚拟机。Linux 上的 Multipass 是 snap 包，只能直接读写宿主机 `$HOME` 下的文件；devkit 的 Multipass 后端通过 `multipass transfer` 的 stdin/stdout 传输 tar 包，所以 staging 目录放在 `/opt`、`/tmp` 下也能推送。旧版 devkit 直接把宿主机路径交给 `multipass transfer`，在 Linux 上会报 `cannot access ...: No such file or directory`。
+1. **安装 Multipass**（使用 PVE 后端时改看第 6 节）：确保系统已安装 Multipass 且有权限创建/启动虚拟机。Linux 上的 Multipass 是 snap 包，只能直接读写宿主机 `$HOME` 下的文件；devkit 的 Multipass 后端通过 `multipass transfer` 的 stdin/stdout 传输 tar 包，所以 staging 目录放在 `/opt`、`/tmp` 下也能推送。旧版 devkit 直接把宿主机路径交给 `multipass transfer`，在 Linux 上会报 `cannot access ...: No such file or directory`。
 2. **Python 环境**：需要 Python 3.12+ 和 [uv](https://docs.astral.sh/uv/)。在仓库内用 `uv run` 执行命令，`buckyos-devkit` 由根目录 `pyproject.toml` 引入（GitHub `main` 分支），具体提交锁定在 `uv.lock`；需要更新 devkit 时执行 `uv lock --upgrade-package buckyos-devkit`。只有在仓库外使用时才需要 `pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"`。
 3. **构建工具链**：Rust、Node.js/pnpm、Deno 等，与本机构建 BuckyOS 相同；同级目录需要有 `cyfs-gateway` 仓库。
 4. **磁盘空间**：release 构建缓存在 `/tmp/rust_build/buckyos` 和 `/tmp/rust_build/cyfs-gateway`（合计约 30G），两台 VM 约 10G。
@@ -291,8 +291,8 @@ uv run buckyos-devtest sntest start
 - **`info_vms`**：显示虚拟机的 IPv4 地址。
 
 ### 快照管理
-- **`snapshot <name>`**：对组内所有 VM 创建同名快照（会先停止 VM，打完快照再启动）。同名快照已存在时会失败，需先停止 VM 再用 `multipass delete --purge <vm>.<name>` 删除。
-- **`restore <name>`**：将组内所有 VM 恢复到指定快照并重新启动。
+- **`snapshot <name>`**：对组内所有 VM 创建同名快照。Multipass 会先停止 VM，打完快照再启动；PVE 打在线快照，不重启。同名快照已存在时会失败：Multipass 需先停止 VM 再用 `multipass delete --purge <vm>.<name>` 删除，PVE 用 `qm delsnapshot <vmid> <name>`。
+- **`restore <name>`**：将组内所有 VM 恢复到指定快照并重新启动，返回前等待 VM 可以执行命令。
 
 ### 应用部署与管理
 - **`install [device_id] [--apps ...]`**：
@@ -441,3 +441,53 @@ BuckyOS 的构建流程依赖 `src/make_config.ts` 脚本来生成特定于节�
   }
 }
 ```
+
+## 6. 使用 PVE 后端
+
+在 Proxmox VE 宿主机上可以用 PVE 虚拟机代替 Multipass。group 配置、App 配置、命令和测试用例都不变，只需要在执行 devtest 的 shell 里选择后端并提供本机参数。
+
+在 PVE 9.2 上用 noble 云镜像实测 sntest（每个 VM 1 核 1G）：`create_vms` 约 5 分钟，`install` 约 2.5 分钟（含 alice 拉取 paios 镜像），`start` 约 1.5 分钟，`restore` 约 30 秒；第三阶段的三组测试结果与 Multipass 相同。
+
+### 6.1 前置条件
+
+- 在 PVE 宿主机上以 root 运行：devkit 直接调用 `qm`、`pvesh`、`pvesm`。
+- 有一个启用了 `snippets` 内容类型的目录存储（默认的 `local` 通常已启用，看 `/etc/pve/storage.cfg`）。devkit 把 `vm_template` 对应的 cloud-init 写成 `<存储路径>/snippets/buckyos-<vmid>-<模板名>.yaml`，通过 `--cicustom` 挂给 VM；`clean_vms` 删除 VM 时一并删除。
+- VM 镜像二选一：
+  - `image`：Ubuntu 云镜像文件，如 `https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img`。每个 VM 都用 `qm disk import` 导入一份，并在 cloud-init 里追加安装 `qemu-guest-agent`。
+  - `template_vmid`：已装好并启用 `qemu-guest-agent` 的模板 VM，创建时完整克隆。
+- VM 挂在 `bridge`（默认 `vmbr0`）上，从该网段的 DHCP 取地址。文件传输需要 VM 能访问宿主机在该网桥上的地址，宿主机防火墙（`pve-firewall`）不能拦截。
+
+### 6.2 选择后端与本机参数
+
+```bash
+export BUCKYOS_VM_BACKEND=pve
+export BUCKYOS_PVE_VM_PARAMS='{"image": "/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img", "storage": "local-lvm"}'
+
+# 之后与 Multipass 完全相同，例如：
+uv run buckyos-devtest sntest create_vms
+```
+
+`BUCKYOS_PVE_VM_PARAMS` 是一个 JSON 对象，提供与本机有关的 `vm_params` 默认值；group 配置里的 `vm_params`（`cpu`、`memory`、`disk` 等）优先。可用的键：
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `image` / `template_vmid` | 无，必须提供其一 | VM 来源 |
+| `storage` | `local-lvm` | VM 磁盘与 cloud-init 盘所在存储 |
+| `bridge` | `vmbr0` | `net0` 挂接的网桥 |
+| `snippet_storage` | 第一个启用 snippets 的存储 | cloud-init 模板写入位置 |
+| `ipconfig0` | `ip=dhcp` | PVE cloud-init 网络配置 |
+| `agent_timeout` | `180` | 开机后等待 guest agent 的秒数 |
+| `cloud_init_timeout` | `600` | 等待 cloud-init 完成的秒数 |
+
+这两个环境变量要对同一 shell 里的所有 devtest 命令生效，包括 `sn-dev-smoke.sh` 的 S7/S8 内部调用的 `buckyos-devtest`。忘记设置 `BUCKYOS_VM_BACKEND` 时，命令会去操作同名的 Multipass VM。
+
+### 6.3 与 Multipass 的差异
+
+- **VM 名称**：PVE 里的 VM 名就是 node id（`sn`、`alice-ood1`），VMID 自动分配。同名 VM 必须唯一，已有同名 VM 时 `create_vms` 会跳过创建。
+- **网络**：VM 和宿主机在同一个局域网里，SN 的 53/80/443/2980 端口对整个局域网可见；alice 只对 80/443/2980 做了拒绝。group 配置里的 `network`（`lan_id`/`type`）两种后端都不使用。
+- **镜像**：用 noble 云镜像时 VM 是 Ubuntu 24.04，`/tmp` 不是 tmpfs。
+- **创建**：`create_vms` 会等待 cloud-init 完成；init 命令失败时直接报错并删除该 VM（Multipass 后端不检查 init 命令的退出码）。
+- **快照**：`qm snapshot` 是在线快照，几秒完成，不重启 VM。`restore` 回滚后启动 VM，等到 guest agent 可用并且 VM 拿到地址才返回。DHCP 按 MAC 分配，restore 后 IP 不变；重建 VM 后 IP 会变，需要重新 `install`。
+- **命令执行**：通过 `qm guest exec` 以 root 执行，单条命令超时 300 秒。命令里含非 ASCII 字符时，devkit 会先做 base64 编码，否则 guest-exec 会超时并让 agent 短暂失联。
+- **文件传输**：devkit 在宿主机上为单个文件临时开一个 HTTP 端点，绑定在 VM 访问宿主机所用的地址上，端口和路径都随机；VM 内用 curl 下载或上传，传完即关闭。VM 访问不到宿主机时退回 guest agent 通道，这条通道每 MiB 约需 3 秒，推送 rootfs 会非常慢。
+

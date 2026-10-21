@@ -1,16 +1,16 @@
 # ShareContentMgr 技术设计 TODO：分享链接、Public 投影与“我的内容”（PRD 第一阶段）
 
 > 创建日期：2026-10-18
-> 版本：v0.5（2026-10-19 M0–M5 完成：DV 验收通过并修掉 4 个 DV 问题，记录见 §9.7）。v0.4（同日 M0–M4 实施）。v0.3（同日用户确认 D13–D15 按建议执行）。v0.2（同日）按用户对 D1–D12 的回复重写：后台整体放 nfs-server，数据面走 nfs-server 的 cyfs 协议能力；应用分享目标为 MessageHub 与 HomeStation；管理中心是独立 App“我的内容”，要能看到内容的消费情况。v0.1 的 control-panel 方案已作废。
-> 状态：M0–M5 完成。test.buckyos.io 上 DV 验收通过（§9.7，`tests/dv/share.spec.ts` 4 例 + 手工探针）；与 §3 不同之处见 §9.2。
+> 版本：v0.6（2026-10-20，用户确认后续收尾决策 D16–D19，明确允许 breaking change；任务与验收见 §10）。v0.5（2026-10-19 M0–M5 完成：DV 验收通过并修掉 4 个 DV 问题，记录见 §9.7）。v0.4（同日 M0–M4 实施）。v0.3（同日用户确认 D13–D15 按建议执行）。v0.2（同日）按用户对 D1–D12 的回复重写：后台整体放 nfs-server，数据面走 nfs-server 的 cyfs 协议能力；应用分享目标为 MessageHub 与 HomeStation；管理中心是独立 App“我的内容”，要能看到内容的消费情况。v0.1 的 control-panel 方案已作废。
+> 状态：M0–M5 已完成并提交（`835b5bd44`）。test.buckyos.io 上 DV 验收通过（§9.7，`tests/dv/share.spec.ts` 4 例 + 手工探针）；与 §3 不同之处见 §9.2。后续 7 项收尾已批准、尚未实施，见 §10；批准设计不代表代码已完成。
 > 依据：[ShareContentMgr PRD v0.1](../product/control_panel/ShareContentMgr_PRD.md)、[分享/发布/上线产品设计](<../doc/control_panel/BuckyOS 的分享_发布_上线 功能的产品设计.md>) §17–§18、[nfs_server 技术需求](../product/bucky_file/nfs_server.md) §3.2 / §4.1 / §5 / §11、[NFSP v0](../../cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md) §3.6 / §5.5 / §7.3、[旧 ShareContentMgr 设计](../doc/control_panel/ShareContentMgr.md)（只借用统计表形状），以及 2026-10-18～19 对 buckyos / cyfs-ndn / cyfs-gateway / buckyos-websdk 的源码核对。
-> 第 2 节“现状”只以源码为准。文档里规划了但代码没有的能力，一律标明“未实现”。
+> 第 2 节保留实施前的源码核对基线，第 9 节保留 M0–M5 实施与验证记录，不能把其中历史状态重复算作待办。后续目标以 §4.3、§10 为准；当前实现仍须核对源码。
 
 ## 1. 目标与范围
 
 PRD 第一阶段要求交付“普通分享的完整生命周期”和“受支持网站或服务的上线衔接”。本设计把 ShareContentMgr 实现为 nfs-server 的一个模块：nfs-server 本来就是 Zone 的文件服务器，按 NFSP 设计承担 cyfs 数据面（cap token、`/s/{token}` 分享链接、`access_urls`、Link → Store 提升），分享是它已规划但未完成的那一块。
 
-本轮做：
+M0–M5 交付范围：
 
 1. **nfs-server 分享模块**：快照（文件/目录 → NDN 对象，Store 模式，pin 保留）、分享记录、cap 凭据、审计、访问统计；以 NFSP 扩展方法 `share.*` 提供管理接口。
 2. **分享数据面**：`https://share.<zone>/s/{token}` 访客页与下载，持链接者或密码访问，服务端执行到期与停止。
@@ -20,7 +20,9 @@ PRD 第一阶段要求交付“普通分享的完整生命周期”和“受支�
 
 不做（PRD 第二、三阶段或明确排除）：独立内容发布与长期入口切版、Public 对象化与“保存为独立发布”、第三方分享目标注册、Static Web 本地打包 PIKG、收录者、BNS、交易与收入（“我的内容”预留列，不实现）、live 子树 cap 的数据面放行（§3.5）。
 
-## 2. 现状（2026-10-18～19 核对）
+2026-10-20 批准的后续范围：两份文档回写、真实 Agent DV、unpin 失败重试测试、应用附件保留、旧回归套件、NDM 网关迁移，共 7 项（§10）。本版本允许 breaking change，相关服务、SDK、前端与测试按同一版本同步修改，不承担旧版本兼容义务。
+
+## 2. 实施前现状（2026-10-18～19 核对，历史基线）
 
 ### 2.1 nfs-server
 
@@ -310,7 +312,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 1. 面板选 MessageHub → `share.app.handoff`，`delivery_state=handed_off`。
 2. Desktop `openAppWindow('messagehub', {launch:{requestId, payload:{share:{shareId, objId, name, size, mime}}}})`；`messageHubLaunchSchema` 加 `share`，复用 `ForwardMessageForm` 选人，以 `{type:'data_obj', obj_id}` 写 refs 发送，不重新上传。
 3. 发送成功 → `share.app.report {confirmed, business_ref:{session_id, message_id}}`；关闭未发 → `canceled`；无回传显示“结果未确认 + 交接时间”（T06）。
-4. 接收方经 msg-center 对象路由读取，授权来自消息引用。停止这条投递只释放保留，不撤回消息，文案照此写。
+4. 接收方经 msg-center 对象路由读取，授权来自消息引用。停止这条投递只释放 nfs-server 的保留，不撤回消息；msg-center 独立保留有效消息所引用的附件及其依赖（D17，待 §10 R05 实施）。
 
 **HomeStation（发动态）**
 
@@ -318,7 +320,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 2. `share.app.handoff {target_app:"homestation"}` 快照（≤ 32 MiB 必然是单 chunk FileObject，HomeStation 的 `load_local` 能从 named store 拿到）。`mode=link` 时在同一操作里再建一条 `kind=link` 的分享（`access=holder`、`expires_at=NULL`），返回其 `url` 与 `link_share_id`；两条分享在“我的内容”里互相关联。
 3. Desktop 打开 HomeStation 并进入 composer：HomeStation App 增加启动参数 `{compose:{attachments?:[{kind, name, object, status:"uploaded"}], link?:{url, title, summary?}, text?}}`，`PublishComposer` 以预填附件或链接卡片打开；用户选可见范围、写文字后由 HomeStation 自己调 `publish.create`。链接卡片标题取分享标题并截到 120 字。
 4. `publish.create` 返回后前端回传 `share.app.report {confirmed, business_ref:{entry, obj_id}}`。动态的可见性与撤回归 HomeStation 管，“我的内容”里给“在 HomeStation 查看”入口。
-5. 停止这条投递只释放 nfs-server 的 pin；HomeStation 已入自己库的对象与 grant 不受影响（它自己的 `object_grants` 决定可读性）。文案说明“撤回动态请在 HomeStation 操作”。`mode=link` 时停止关联的链接分享会让动态里的链接失效，停止确认框要写明这一点。
+5. 停止这条投递只释放 nfs-server 的 pin；HomeStation 的 `object_grants` 决定可读性，附件及 chunk 还须由 HomeStation 独立保留（D17，待 §10 R05 实施），不能把对象元数据入库当作内容已保留。文案说明“撤回动态请在 HomeStation 操作”。`mode=link` 时停止关联的链接分享会让动态里的链接失效，停止确认框要写明这一点。
 
 两个目标都要求 nfs-server、msg-center、HomeStation 与 named store 在同一节点；单 OOD 成立，多 OOD 部署记为已知限制。
 
@@ -358,7 +360,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 - token 256 bit、只存哈希；密码 pbkdf2-sha256（`pbkdf2` 已在 Cargo.lock）≥ 600k 轮；解锁限速；404 不区分状态；日志不打 token 与密码。
 - 分享响应带 `CSP: sandbox`，HTML 只下载不渲染；访客页在 `share.<zone>`，与控制台不同源（T35）。
 - 已知风险（按“先能力后安全”记录）：Agent 经 Delegated 身份可外发其 owner 可读的文件（D13）；读取权限即可外发，无单列“外发”授权；多 OOD 时快照所在节点与 msg-center/HomeStation 不同会读不到。
-- 核对副产物，与本设计无关：`/ndm/*`、`/ndm/proxy/v1` 由 gateway 直转且 control-panel 处理器内无会话检查，单独开 issue。
+- M0–M5 核对发现：`/ndm/*`、`/ndm/proxy/v1` 由 gateway 直转且 control-panel 处理器内无会话检查。2026-10-20 已批准纳入后续独立迁移切片（D18–D19、§10 R07），不再仅记录为另开 issue。
 
 ## 4. 决策
 
@@ -386,6 +388,54 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 | D13 | nfs-server 是否接受 App/Agent token 调 `share.*` | 接受，按 token `sub` 视为该用户并记录 app；文件平面仍拒绝 | 新增 `Actor::Delegated { user, app }`（§3.2）；外发风险记入 §3.15 |
 | D14 | HomeStation 不支持的内容（PDF 等非媒体，或单个 > 32 MiB）怎么发动态 | 自动建一条不自动到期、持链接者的分享链接，以 `link` 卡片发动态 | `share.app.handoff` 的 `mode=link`（§3.6、§3.10），`shares.related_share_id` 关联两条分享（§3.3） |
 | D15 | 给 nfs-server 引入 `ndn-lib`、`named_store`、`ndn-toolkit` 依赖 | 同意引入 | 三项用 workspace 声明（`branch = "main"`）；standalone 模式加 `--named-store <dir>` 生成单桶配置供测试（M0） |
+
+### 4.3 已定（2026-10-20，后续收尾与 breaking change）
+
+用户确认：“这个版本是breaking change,所以可以没有负担的完成修改。你的建议我觉得都OK，补入文档吧”。以下为已批准、待实施的目标；涉及既有设计的调整以本节为准。
+
+| # | 决策 | 已确认的执行范围 |
+| --- | --- | --- |
+| D16 | 本轮范围与兼容原则 | 完成 §10 的 7 项收尾，NDM 单独作为实施切片；接口、数据结构和调用方式可直接调整，联动升级服务、SDK、前端及测试，不增加兼容层、双栈、旧服务转发或双写。 |
+| D17 | 应用附件保留 | MessageHub/HomeStation 接收附件后承担独立保留责任；分享停止不撤回已发送消息或已发布动态，也不释放应用的保留。 |
+| D18 | NDM 宿主与协议 | nfs-server 承接 Zone 上传与 NDM proxy 网关，control-panel 移除对应初始化和挂载；继续使用同节点 NamedStore，目标路由为 `/ndm/v1/*` 与 `/ndm/proxy/v1/*`。 |
+| D19 | NDM 授权边界 | 用户上传按主体隔离；proxy 按已验证身份与明确授权区分普通对象操作、读取及管理操作，保留受授权 AppClient/AppService/System/Device 的业务能力。 |
+
+**D16：范围与实现自由度**
+
+- PRD 与 NFSP v0 回写已获确认，作为交付项执行，不再等待单独确认。涉及 `buckyos`、`buckyos-websdk`、`cyfs-ndn`、`cyfs-gateway` 的实现、契约、测试、生成来源与分发产物按实际影响联动。
+- 保持现有阶段边界：不扩展 ZIP、View/Collection 分享、HomeStation 互动统计、独立发布、长期入口、交易收入及完整网站上线；不在本轮补全 T07、T12–T16 超出既定范围的能力或 T20–T34。收入预留位未实现的状态如实记录，不扩展成交易功能。
+- 多 OOD 跨节点对象复制/读取继续延期；本轮部署保持 nfs-server、msg-center、HomeStation 与目标 NamedStore 同节点。不新设独立“外发权限”，沿用现有身份、路径权限与 Agent 权限约束。
+- 数据库结构、pin owner 编码、适配层、重试间隔及测试夹具由 code agent 按现有组件自行确定。breaking change 不要求实现旧版数据库格式迁移；保留的当前有效业务记录按 D17 补齐对象保留。
+
+**D17：附件接管与释放语义**
+
+- MessageHub/HomeStation 后端在确认接收成功前，为附件根对象及其依赖建立独立、持久的保留；不依赖前端 `share.app.report` 才建立 pin，也不把读取授权或对象元数据入库视为保留完成。
+- 应用保留随有效业务引用存续，不以分享的到期时间为 TTL。停止分享、释放 `share:<share_id>` 的 pin、隐藏列表记录，都不能释放应用仍需要的对象。
+- 应用的有效业务引用消失后才释放对应保留；同一对象被其他消息、动态或分享引用时仍应存续。单个用户隐藏/删除本地视图不代表所有有效引用消失，按各应用实际业务生命周期判断。
+- 接收、持久化、pin/unpin 的失败与重启需要可恢复、可重试，重复接收应幂等，不能对外确认成功后留下无保留的附件。若环境保留了当前有效消息或动态，按当前可读取格式扫描并补齐对象保留；不要求兼容旧版存储格式。对象或依赖已缺失时记录未修复项与证据，不能仅凭 pin 记录创建成功就宣称补齐，也不通过旧版本兼容迁移重建历史内容。
+- `mode=link` 仅交付链接，不将链接目标转为应用独立附件；关联分享停止或到期后，链接仍应失效。
+
+**D18：迁移契约与调用方联动**
+
+- `/ndm/v1/*` 与 `/ndm/proxy/v1/*` 作为目标协议入口，不代表必须兼容旧客户端。保留内容寻址的对象 ID 语义；请求字段、认证方式、SDK 接口与内部结构可按目标设计直接修改，消费方同轮更新。
+- nfs-server 承接对应处理器、上传暂存及清理责任，网关路由转向 nfs-server；完成后删除 control-panel 的 NDM 初始化、字段及挂载。部署配置和 scheduler 派生路由按实际需要同步。
+- 联动检查 SDK 的上传、续传与 proxy 客户端，Desktop MessageHub 附件上传，系统 App 与应用包上传/安装测试。服务端新增鉴权时同步 SDK 凭据传递，不能只改服务端。
+- `app.publish` 仍是应用包发布，`TrustedShare` 仍是安装信任策略，不按旧分享管理器清理；它们的 NDM 消费链路如受影响，随迁移适配。
+
+**D19：授权矩阵与上传归属**
+
+复用现有 token 验证与 RBAC/服务授权机制，实施时列明主体、操作、资源范围的实际映射；没有可验证授权依据的请求默认拒绝，不另建独立授权体系。
+
+| 主体/操作 | 目标约束 |
+| --- | --- |
+| 普通用户上传 | 创建时绑定已验证主体；查询、HEAD/PATCH 续传、完成/登记 FileObject、取消均校验归属，仅持上传 ID 不足以操作。登记对象必须校验与本次获授权上传的对应关系。 |
+| 对象读取 | 已登录或知道 obj_id 不构成全库读取权；继续通过消息、动态、分享等业务授权读取，proxy 对象读取须有明确授权。 |
+| AppClient/AppService/System/Device | 依据真实验证的 token 身份与授予的 NDM 权限放行相应操作；不能仅按 runtime 标签、请求自报 app_id 或 token 类别一概授权，也不能一刀切禁止既有受授权 App 消费能力。 |
+| App/Agent 上传或对象操作 | 仅在获得相应 NDM 权限且满足既有主体约束时开放；允许 `share.*` 不自动授予 NDM 权限。 |
+| 删除、pin/unpin、GC 等管理操作 | 与普通上传/对象操作分别授权；应用的保留操作仅作用于其受授权的业务范围，不能释放其他主体的保留。 |
+| 匿名或分享链接 token | 不获得上传、proxy 或 NDM 管理权限；匿名访客仅经既定分享数据面与对应业务公开接口访问。 |
+
+上传失败、取消、过期后的暂存清理由 nfs-server 负责；只能清理该上传持有的临时资源或保留，不能删除其他业务仍引用的内容。清理时机与重试参数由实现确定，并提供可验证的完成条件。
 
 ## 5. 实施切片
 
@@ -460,7 +510,7 @@ https://share.<zone>/s/{token}/d/{inner}    目录分享内的文件
 
 ## 9. 实施记录
 
-### 9.1 落点（2026-10-19，未提交 git）
+### 9.1 落点（2026-10-19 实施记录，已随 `835b5bd44` 提交）
 
 - **nfs-server**（`src/frame/nfs_server/`）：`src/share/` —— `mod.rs`（ShareMgr：named store 句柄、token/密码/解锁
   cookie、统计缓冲、sweeper）、`db.rs`（§3.3 表 + 查询；shares 冗余 `source_path` 便于按源查已有链接）、
@@ -542,15 +592,15 @@ MessageHub 文件/文件夹、HTML 只下载、Public 观察与越界软链接�
   `Delegated` 只有 `tests/share.rs` 的 App token 用例覆盖；Agent owner 查找（扫描 `users/*/agents/<id>/spec`）未在真实 Zone 跑过。
 - `stopping` 状态重试 unpin 只有 sweeper 代码路径，没有单测；多 OOD 时快照所在节点与 msg-center/HomeStation 不同会读不到（§3.10 已列）。
 - 停止应用投递会释放 nfs-server 的 pin：MessageHub 消息、HomeStation 动态引用的 chunk 之后成为 GC 候选，除非这些服务
-  自己 pin（当前没有自动 GC 循环，DV 上停止后 alice 仍能读到附件）。是否让 msg-center/HomeStation 自行 pin 待定。
+  自己 pin（当时没有自动 GC 循环，DV 上停止后 alice 仍能读到附件）。2026-10-20 已决定由接收应用独立保留，见 D17；实现与 GC 验证仍待 §10 R05 完成。
 - 已知风险照 §3.15：读取权限即可外发；Agent 可外发 owner 能读的文件。
 
 ### 9.5 未做
 
-- §7 对 ShareContentMgr PRD 与 NFSP v0（cyfs-ndn 仓库）的回写建议未动，等用户确认。
-- 文件夹打包下载（zip）、HomeStation 互动数拉取、收入列（数据结构未预留展示）、T07/T12–T15 超出入口路由的部分。
+- §7 对 ShareContentMgr PRD 与 NFSP v0（cyfs-ndn 仓库）的回写尚未完成；2026-10-20 已获用户确认，纳入 §10 R01–R02。
+- 文件夹打包下载（zip）、HomeStation 互动数拉取、收入列（数据结构未预留展示）、T07/T12–T15 超出入口路由的部分。上述继续延期，另见 D16；T16 的全局空间统计也不在本轮范围。
 
-### 9.6 DV 部署（需用户执行）
+### 9.6 DV 部署（2026-10-19 历史步骤，已由 §9.7 完成）
 
 产物已在 `src/rootfs/`。scheduler 改动只影响派生的 gateway_info，不需要 `--all`：
 
@@ -599,4 +649,23 @@ DV 发现并已修复（修复后用备份方式替换 `/opt/buckyos/bin/nfs-ser
 
 清理：探针与用例建的分享均已停止（filedb 中 0 条 active、0 个未释放 pin），手工夹具 `/opt/buckyos/data/home/bob/share-dv` 已删除；
 HomeStation 上 bob 的测试动态（3 条）与发给 alice 的测试消息保留。
+
+## 10. 后续收尾 TODO（2026-10-20 已批准，尚未实施）
+
+以下 7 项是后续执行清单；M0–M5 的完成记录不替代本节验收。每项完成后勾选并追加实际验证命令、结果与证据位置，不把历史 DV 结果算作新实现的验证。
+
+- [ ] **R01：ShareContentMgr PRD 回写。** 按 §7 更新服务归属、已交付基线、Public、管理中心和阶段边界，并同步 D17 的应用附件保留语义；删除与当前目标矛盾的描述。
+- [ ] **R02：NFSP v0 回写。** 在 `cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md` 更新 signed URL 主机、快照目标与 BuckyOS 实现范围；NDM 协议变化同步对应 SDK/网关文档，不把 NFSP 路径授权等同于原始对象全库权限。
+- [ ] **R03：真实 Agent 身份 DV。** 在真实 Zone 的 Agent 会话中调用 `buckyos share`，验证 Agent owner 解析、源路径权限、审计主体及有效权限限制；用户会话、设备身份、伪造或测试 token 不能替代。凭据按现有 runtime 注入方式获取，证据不包含 token。
+- [ ] **R04：unpin 失败重试。** 注入存储释放失败，确认分享进入 `stopping` 后访客访问立即失效；恢复存储后 sweeper 可重试至释放完成，重复执行/重启不误释放其他引用。覆盖失败路径，不能以正常到期测试替代。
+- [ ] **R05：应用附件独立保留。** 按 D17 实现两应用的接收、引用存续、释放、失败恢复及当前有效记录的保留补齐。隔离测试存储中实际执行 GC：停止分享并释放其 pin 后，已发送消息/已发布动态的附件及依赖仍可读；移除最后有效业务引用后可回收；共享引用不受误删；链接模式按链接状态失效。
+- [ ] **R06：旧回归套件。** 修复或适配 `test/nfs_server_test` 的登录辅助并运行真实套件；记录命令和结果，不以 Files UI 覆盖替代。适配目标版本接口即可，不为旧登录方式增加兼容分支。
+- [ ] **R07：NDM 独立迁移。** 按 D18–D19 完成宿主、路由、授权、SDK 和消费方联动；删除 control-panel 对应实现。验证用户上传/续传/对象登记、失败取消与过期清理、跨用户会话拒绝、匿名拒绝、无授权对象读取拒绝、受授权 AppClient/AppService 操作与管理权限隔离；消息附件上传、应用包上传/安装、相关 SDK/proxy 与系统 App 测试通过。
+
+交付时同时满足：
+
+- 受影响服务及 SDK/Desktop 的相关测试与构建通过；真实 Zone 中验证迁移后的网关路由、MessageHub/HomeStation 交接、Agent 分享和应用包上传/安装。
+- R05 的 GC 验证使用隔离数据，不能用“未执行 GC 时仍可读取”证明保留正确；无须在本轮上线自动 GC 调度。
+- 接口变化同步共享类型、前后端、SDK/CLI、生成来源与分发产物。按仓库规则检查 `share`、`buckyos_admin`、`buckyos_dev_release`、`buckyos_app_dev` 及实际受影响的 cmd_skills，修改或写明无需修改的依据。
+- 本节记录实际完成状态、证据和未验证项；没有验证的场景不能标记通过。后续阶段功能与已接受限制继续明确列出，不扩写为本轮已交付能力。
 
