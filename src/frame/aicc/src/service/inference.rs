@@ -53,6 +53,25 @@ struct ProviderArtifactUrlFetcher {
     user_id: String,
 }
 
+fn provider_url_requires_bytes(
+    input_form: ResourceInputForm,
+    url: &str,
+    source_instance: &str,
+    target_instance: &str,
+    source_base_url: Option<&str>,
+) -> bool {
+    if input_form == ResourceInputForm::BytesOnly {
+        true
+    } else if input_form.requires_url() || source_instance == target_instance {
+        false
+    } else {
+        source_base_url
+            .filter(|base_url| !base_url.is_empty())
+            .map(|base_url| same_url_origin(url, base_url))
+            .unwrap_or(true)
+    }
+}
+
 #[async_trait]
 impl UrlResourceFetcher for ProviderArtifactUrlFetcher {
     async fn fetch(
@@ -60,54 +79,9 @@ impl UrlResourceFetcher for ProviderArtifactUrlFetcher {
         url: &reqwest::Url,
         max_bytes: u64,
     ) -> Result<FetchedResource, ResourceError> {
-        let mut reader = self
-            .reader
-            .open_artifact_url_reader(&self.tenant_id, &self.user_id, url.as_str(), None)
+        self.reader
+            .fetch_artifact_url_resource(&self.tenant_id, &self.user_id, url, max_bytes)
             .await
-            .map_err(|error| {
-                ResourceError::new(
-                    if error.code == AiccErrorCode::PolicyDenied {
-                        ResourceFailure::Unauthorized
-                    } else {
-                        ResourceFailure::Unavailable
-                    },
-                    error.message,
-                )
-            })?;
-        if reader
-            .content_length
-            .is_some_and(|content_length| content_length > max_bytes)
-        {
-            return Err(ResourceError::new(
-                ResourceFailure::LimitExceeded,
-                "Provider artifact exceeds byte limit",
-            ));
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = reader.body.next().await {
-            let chunk = chunk.map_err(|_| {
-                ResourceError::new(
-                    ResourceFailure::Unavailable,
-                    "Provider artifact read failed",
-                )
-            })?;
-            if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
-                return Err(ResourceError::new(
-                    ResourceFailure::LimitExceeded,
-                    "Provider artifact exceeds byte limit",
-                ));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(FetchedResource {
-            bytes,
-            mime: reader.content_type,
-            file_name: url
-                .path_segments()
-                .and_then(|mut segments| segments.next_back())
-                .filter(|name| !name.is_empty())
-                .map(str::to_owned),
-        })
     }
 }
 
@@ -510,22 +484,16 @@ impl RuntimeInferencePort {
                                 "Provider artifact belongs to another user",
                             ));
                         }
-                        if input_form.requires_url()
-                            || source.provider_instance_name == call.provider_instance_name
-                        {
-                            false
-                        } else {
-                            let request_base_url = if source.provider_request_base_url.is_empty() {
-                                runtime
-                                    .providers
-                                    .get(&source.provider_instance_name)
-                                    .map(|provider| provider.config.base_url.as_str())
-                                    .unwrap_or("")
-                            } else {
-                                &source.provider_request_base_url
-                            };
-                            request_base_url.is_empty() || same_url_origin(url, request_base_url)
-                        }
+                        provider_url_requires_bytes(
+                            input_form,
+                            url,
+                            &source.provider_instance_name,
+                            &call.provider_instance_name,
+                            runtime
+                                .providers
+                                .get(&source.provider_instance_name)
+                                .map(|provider| provider.config.base_url.as_str()),
+                        )
                     } else {
                         false
                     }
@@ -1866,6 +1834,42 @@ pub(crate) trait DriverMetadataPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_url_input_policy_uses_instance_and_protocol_form() {
+        let base = Some("https://provider.example/v1");
+        for (url, source_base) in [
+            ("https://provider.example/result.png", base),
+            ("https://cdn.example/result.png?signature=x", base),
+            ("https://provider.example/result.png", None),
+        ] {
+            for target in ["source", "other"] {
+                assert!(provider_url_requires_bytes(
+                    ResourceInputForm::BytesOnly, url, "source", target, source_base
+                ));
+                assert!(!provider_url_requires_bytes(
+                    ResourceInputForm::UrlOnly, url, "source", target, source_base
+                ));
+            }
+            assert!(!provider_url_requires_bytes(
+                ResourceInputForm::UrlOrBytes, url, "source", "source", source_base
+            ));
+        }
+        assert!(provider_url_requires_bytes(
+            ResourceInputForm::UrlOrBytes,
+            "https://provider.example/result.png", "source", "other", base
+        ));
+        assert!(!provider_url_requires_bytes(
+            ResourceInputForm::UrlOrBytes,
+            "https://cdn.example/result.png?signature=x", "source", "other", base
+        ));
+        for missing_base in [None, Some("")] {
+            assert!(provider_url_requires_bytes(
+                ResourceInputForm::UrlOrBytes,
+                "https://provider.example/result.png", "source", "other", missing_base
+            ));
+        }
+    }
 
     #[test]
     fn resource_materialization_cache_is_scoped_by_codec_input_form() {

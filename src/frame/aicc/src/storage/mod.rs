@@ -197,7 +197,6 @@ pub(crate) struct ArtifactUrlSourceRecord {
     pub url: String,
     pub provider_instance_name: String,
     pub protocol_adapter_id: String,
-    pub provider_request_base_url: String,
     pub origin_provider: String,
     pub artifact_id: Option<String>,
     pub content_digest: Option<String>,
@@ -549,7 +548,6 @@ impl AiccStorage {
             record.url.as_str(),
             record.provider_instance_name.as_str(),
             record.protocol_adapter_id.as_str(),
-            record.provider_request_base_url.as_str(),
             record.origin_provider.as_str(),
             record.tenant_id.as_str(),
             record.user_id.as_str(),
@@ -573,13 +571,12 @@ impl AiccStorage {
         let url_hash = sha256_hex(record.url.as_bytes());
         let sql = self.sql(
             "INSERT INTO aicc_artifact_url_source
-             (url_hash,url,provider_instance_name,protocol_adapter_id,provider_request_base_url,origin_provider,artifact_id,
+             (url_hash,url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
               content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(url_hash) DO UPDATE SET
               provider_instance_name=excluded.provider_instance_name,
               protocol_adapter_id=excluded.protocol_adapter_id,
-              provider_request_base_url=excluded.provider_request_base_url,
               origin_provider=excluded.origin_provider,
               artifact_id=excluded.artifact_id,
               content_digest=excluded.content_digest,
@@ -596,7 +593,6 @@ impl AiccStorage {
             .bind(&record.url)
             .bind(&record.provider_instance_name)
             .bind(&record.protocol_adapter_id)
-            .bind(&record.provider_request_base_url)
             .bind(&record.origin_provider)
             .bind(&record.artifact_id)
             .bind(&record.content_digest)
@@ -622,7 +618,7 @@ impl AiccStorage {
             ));
         }
         let sql = self.sql(
-            "SELECT url,provider_instance_name,protocol_adapter_id,provider_request_base_url,origin_provider,artifact_id,
+            "SELECT url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
                     content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms
              FROM aicc_artifact_url_source WHERE url_hash=?",
         );
@@ -653,7 +649,6 @@ impl AiccStorage {
             url: stored_url,
             provider_instance_name: row.get("provider_instance_name"),
             protocol_adapter_id: row.get("protocol_adapter_id"),
-            provider_request_base_url: row.get("provider_request_base_url"),
             origin_provider: row.get("origin_provider"),
             artifact_id: row.get("artifact_id"),
             content_digest: row.get("content_digest"),
@@ -2461,7 +2456,6 @@ mod tests {
             url: "https://provider.example/files/one?token=secret".into(),
             provider_instance_name: "provider-main".into(),
             protocol_adapter_id: "provider-adapter".into(),
-            provider_request_base_url: "https://provider.example/api/v1".into(),
             origin_provider: "openai".into(),
             artifact_id: Some("video.mp4".into()),
             content_digest: None,
@@ -2508,7 +2502,6 @@ mod tests {
             url: "https://provider.example/files/reused".into(),
             provider_instance_name: "provider-old".into(),
             protocol_adapter_id: "adapter-old".into(),
-            provider_request_base_url: "https://provider.example/api/v1".into(),
             origin_provider: "openai".into(),
             artifact_id: Some("artifact-old".into()),
             content_digest: None,
@@ -2695,7 +2688,6 @@ mod tests {
             url: "https://provider.example/files/generated".into(),
             provider_instance_name: "aggregator-primary".into(),
             protocol_adapter_id: "aggregator-adapter".into(),
-            provider_request_base_url: "https://provider.example/api/v1".into(),
             origin_provider: "openai".into(),
             artifact_id: Some("video_456".into()),
             content_digest: None,

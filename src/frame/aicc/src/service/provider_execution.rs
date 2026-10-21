@@ -34,7 +34,6 @@ impl RuntimeProviderExecutionPort {
         storage: &AiccStorage,
         provider_instance_name: &str,
         protocol_adapter_id: &str,
-        provider_request_base_url: &str,
         origin_provider: &str,
         context: &ResourceAccessContext,
         output: &mut ProtocolOutput,
@@ -49,7 +48,6 @@ impl RuntimeProviderExecutionPort {
                     url: url.clone(),
                     provider_instance_name: provider_instance_name.to_owned(),
                     protocol_adapter_id: protocol_adapter_id.to_owned(),
-                    provider_request_base_url: provider_request_base_url.to_owned(),
                     origin_provider: origin_provider.to_owned(),
                     artifact_id: provider_artifact_refs
                         .get(&artifact.name)
@@ -145,7 +143,6 @@ impl RuntimeProviderExecutionPort {
             self.storage.as_ref(),
             &call.provider_instance_name,
             &call.protocol_adapter_id,
-            &call.context.base_url,
             &call.context.state_coordinate.origin_provider,
             context,
             output,
@@ -291,6 +288,62 @@ impl RuntimeProviderExecutionPort {
         .any(|needle| text.contains(needle))
     }
 
+    pub(super) async fn fetch_artifact_url_resource(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        url: &reqwest::Url,
+        max_bytes: u64,
+    ) -> Result<FetchedResource, ResourceError> {
+        let mut reader = self
+            .open_artifact_url_reader(tenant_id, user_id, url.as_str(), None)
+            .await
+            .map_err(|error| {
+                ResourceError::new(
+                    if error.code == AiccErrorCode::PolicyDenied {
+                        ResourceFailure::Unauthorized
+                    } else {
+                        ResourceFailure::Unavailable
+                    },
+                    error.message,
+                )
+            })?;
+        if reader
+            .content_length
+            .is_some_and(|content_length| content_length > max_bytes)
+        {
+            return Err(ResourceError::new(
+                ResourceFailure::LimitExceeded,
+                "Provider artifact exceeds byte limit",
+            ));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = reader.body.next().await {
+            let chunk = chunk.map_err(|_| {
+                ResourceError::new(
+                    ResourceFailure::Unavailable,
+                    "Provider artifact read failed",
+                )
+            })?;
+            if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(ResourceError::new(
+                    ResourceFailure::LimitExceeded,
+                    "Provider artifact exceeds byte limit",
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(FetchedResource {
+            bytes,
+            mime: reader.content_type,
+            file_name: url
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+        })
+    }
+
     async fn fetch_url_resource(
         &self,
         url: &str,
@@ -306,59 +359,18 @@ impl RuntimeProviderExecutionPort {
             .map_err(|_| {
                 ProtocolError::invalid_configuration("artifact URL source lookup failed")
             })?;
-        if let Some(source) = source {
-            if source.tenant_id != access.tenant_id || source.user_id != access.caller_id {
-                return Err(ProtocolError::new(
-                    ProtocolErrorKind::Authentication,
-                    "Provider artifact belongs to another user",
-                ));
-            }
-            let snapshot = self.runtime.capture().await;
-            let request_base_url = if source.provider_request_base_url.is_empty() {
-                snapshot
-                    .providers
-                    .get(&source.provider_instance_name)
-                    .map(|provider| provider.config.base_url.as_str())
-                    .unwrap_or("")
-            } else {
-                &source.provider_request_base_url
-            };
-            if !request_base_url.is_empty()
-                && super::inference::same_url_origin(url, request_base_url)
-            {
-                let mut reader = self
-                    .open_artifact_url_reader(
-                        &access.tenant_id,
-                        &access.caller_id,
-                        url,
-                        source.artifact_id.as_deref(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        ProtocolError::new(ProtocolErrorKind::Transport, error.message)
-                    })?;
-                let mut bytes = Vec::new();
-                while let Some(chunk) = reader.body.next().await {
-                    let chunk = chunk.map_err(|error| {
-                        ProtocolError::new(ProtocolErrorKind::Transport, error.message)
-                    })?;
-                    if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
-                        return Err(ProtocolError::invalid_request(
-                            "Provider artifact exceeds byte limit",
-                        ));
-                    }
-                    bytes.extend_from_slice(&chunk);
-                }
-                return Ok(FetchedResource {
-                    bytes,
-                    mime: reader.content_type,
-                    file_name: parsed
-                        .path_segments()
-                        .and_then(|mut parts| parts.next_back())
-                        .filter(|name| !name.is_empty())
-                        .map(str::to_owned),
+        if source.is_some() {
+            return self
+                .fetch_artifact_url_resource(&access.tenant_id, &access.caller_id, &parsed, max_bytes)
+                .await
+                .map_err(|error| {
+                    let kind = match error.failure {
+                        ResourceFailure::Unauthorized => ProtocolErrorKind::Authentication,
+                        ResourceFailure::LimitExceeded => ProtocolErrorKind::InvalidRequest,
+                        _ => ProtocolErrorKind::Transport,
+                    };
+                    ProtocolError::new(kind, error.message)
                 });
-            }
         }
         self.url_fetcher
             .fetch(&parsed, max_bytes)
@@ -1426,14 +1438,12 @@ impl RuntimeProviderExecutionPort {
                 let storage = self.storage.clone();
                 let provider_instance_name = call.provider_instance_name.clone();
                 let protocol_adapter_id = call.protocol_adapter_id.clone();
-                let provider_request_base_url = call.context.base_url.clone();
                 let resource_context = call.resource_access_context.clone();
                 let events = stream.events.then(move |event| {
                     let source = source.clone();
                     let storage = storage.clone();
                     let provider_instance_name = provider_instance_name.clone();
                     let protocol_adapter_id = protocol_adapter_id.clone();
-                    let provider_request_base_url = provider_request_base_url.clone();
                     let resource_context = resource_context.clone();
                     async move {
                         let mut event = event?;
@@ -1459,7 +1469,6 @@ impl RuntimeProviderExecutionPort {
                                     storage.as_ref(),
                                     &provider_instance_name,
                                     &protocol_adapter_id,
-                                    &provider_request_base_url,
                                     &source.origin_provider,
                                     context,
                                     output,
@@ -1864,11 +1873,6 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                             self.storage.as_ref(),
                             &binding.provider_instance_name,
                             &binding.protocol_adapter_id,
-                            &binding
-                                .resume
-                                .as_ref()
-                                .ok_or(NativeTaskResumeError::CredentialUnavailable)?
-                                .base_url,
                             &binding.origin_provider,
                             &binding
                                 .resume

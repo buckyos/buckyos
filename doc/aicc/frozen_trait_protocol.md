@@ -137,7 +137,9 @@ public DTO / AiccCall
 
 ### 4.3 URL artifact 下载
 
-`open_artifact_url_reader(url, artifact_id?)` 的职责链冻结为：service 按精确 URL 查询持久来源并校验 tenant/可选 artifact id，找到原 ProviderInstance，ProviderInstance 解析自己的 credential，再按 `protocol_adapter_id` 调用 `CodecRegistry` 的 artifact 下载协议。默认 `ArtifactDownloadProtocol` 只允许与 Provider base URL 同 origin 的 HTTP(S) URL，使用 Provider credential 发起 GET，并返回有大小上限的异步 byte stream。
+`open_artifact_url_reader(url, artifact_id?)` 的职责链冻结为：service 按精确 URL 查询持久来源并校验 tenant/user/可选 artifact id，找到原 ProviderInstance，ProviderInstance 解析自己的 credential，再按 `protocol_adapter_id` 调用 `CodecRegistry` 的 artifact 下载协议。默认 `ArtifactDownloadProtocol` 对与 Provider 当前 base URL 同 origin 的 HTTP(S) URL 使用 Provider credential；对允许的跨域公网 HTTPS URL 不附带 Provider credential，并返回有大小上限的异步 byte stream。
+
+内部资源初次物化和 URL fallback 下载已登记的 Provider URL 时复用该 reader，与对调用方提供的下载接口使用同一来源查询、授权及 Adapter 下载协议，不根据单独存储的 endpoint 快照另选下载分支。只有未登记的普通输入 URL 才使用通用 URL fetcher。输入透传判断保留同 ProviderInstance 优先及跨域公开 URL 优先规则，来源配置通过已存的 `provider_instance_name` 读取；`BytesOnly` 对所有已登记 Provider URL 都先下载字节。此处仅收敛 AICC 内部实现，不改变公共 DTO、CLI 或 Agent 调用方式。
 
 Adapter 默认复用该实现。只有认证 header、URL 变换、请求 method 或响应 envelope 确实不同的协议，才注册自定义 `ArtifactDownloadProtocol`；不得为每个 Provider 品牌复制下载函数。未登记 URL 不进入 Adapter，AICC 不按 host 猜测 Provider。
 
