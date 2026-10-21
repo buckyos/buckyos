@@ -3,7 +3,7 @@
 > 版本：v1.2-draft，2026-10-21
 > 状态：设计稿。本文合并了三份来源，统一成一个组件设计；"当前代码事实"与"本文新增设计"在各节分开标注，代码事实以源码为准。
 > 本次范围调整：Thunk 执行器整体后置；先完成 FunctionObject 执行契约及其与 Command Stream、恢复脚本的能力对比，再单独排期。首期聚焦 Command Stream。
-> 实施：P0（P0-A 配置与权限、P0-B Command Stream）已按本文实现，落点、wire 固化与实现差异见 §17；2026-10-21 已在单 OOD DV Zone 验证（§17.7）。
+> 实施：P0（P0-A 配置与权限、P0-B Command Stream）已按本文实现，落点、wire 固化与实现差异见 §17；2026-10-21 已在单 OOD DV Zone 验证（§17.7）。同日补齐 macOS 形态 A 的 worker，并在 macOS 上以 root 通过测试（§17.8）。
 > 首期裁决：Linux 形态 A + hosted xllm；严格的一对一 App/Agent 身份映射；设备准入由 cyfs-gateway process-chain 完成，Executor 不接收 remote device 身份；授权快照、跨 Stream 操作归属、持久 store_id 与最小恢复链路一起交付。远端 PromptExec 首期关闭。
 > 来源：
 > 1. 本文件旧版（node_Executor 需求）：执行 Scheduler 下发的 ThunkObject（Function Instance）。
@@ -402,6 +402,7 @@ Stream 上是长度前缀的 JSON 控制帧 + 二进制数据帧（单帧 ≤ 16
 ### 7.5 worker 与权限边界（形态 A）
 
 - 每个 `exec` 一个 worker 子进程：清 supplementary groups → setgid/setuid → 清 capabilities + no_new_privs → 清 env/fd；任一步失败即不执行。
+- Linux 与 macOS 的 root daemon 共用同一降权序列：组表显式设为 `[gid]` 后 setgid/setuid，切换后核对 uid/euid/gid/egid 与内核组表，不符即不执行。macOS 的 egid 就是组表首项（XNU `cr_groups[0]`），`setgroups(0, NULL)` 会把 egid 置为 0（wheel），不能用来清组表。macOS 没有 capabilities 与 no_new_privs，降权后的进程仍可执行 setuid 程序，实际边界是 run_as 账号本身（§15）。
 - 文件 read/write/edit **也在 worker 身份下**完成，不在高权限 daemon 里做 I/O。
 - 路径/roots/symlink 校验在目标 worker 实际 I/O 处完成，以受控目录句柄避免校验后路径被调包；Executor 内同一 canonical path 的写操作串行化。临时文件 + rename 防止半写，expected_hash 检测冲突，但不承诺与外部 shell 写入之间的事务/CAS 隔离。
 - env 从 profile 构造再叠加允许的覆盖；禁止注入 daemon token、设备密钥、`BUCKYOS_*` 身份变量、控制侧 Session 路径。
@@ -605,7 +606,7 @@ $BUCKYOS_ROOT/local/node_daemon/executor/        （形态 A；0700，daemon 私
 | P2 恢复通道 | §8、§9：posture、声明发现、本地触发、等待期、签名脚本、恢复 Stream | 无头 OOD 在 Zone 不可达时可被 Owner 恢复 |
 | P2 形态 C | 移动端嵌入；平台适配层 | 电视盒子配置场景 |
 | 后续：Thunk（未排期） | 先定稿 §6.2 的 FunctionObject 执行契约与三路径分工，再重审 config.thunks、各类 runner、状态回报及 TaskMgr 接线 | 开工前完成契约评审；实现后的端到端标准据此制定，候选场景见下表 |
-| 后续 | 远端 PromptExec（先完成持久 run/call 契约）、完整 Session 远端运行（TODO §9.4）、Operator、Windows/macOS worker、跨 Zone | — |
+| 后续 | 远端 PromptExec（先完成持久 run/call 契约）、完整 Session 远端运行（TODO §9.4）、Operator、Windows worker、跨 Zone | — |
 
 Command Stream、轻量客户端与恢复通道的验收场景（随各自阶段执行）：
 
@@ -699,8 +700,9 @@ cargo check --workspace
 - 正常授权采用有界传播和短租期，控制面不可用会暂停执行入口并取消活跃操作；断线可恢复不代表执行可以永久脱离授权控制面。
 - Frozen 的 DoS 面（§9.4）；等待期不能区分合法用户与持同一 key 的攻击者（§9.5）。
 - 形态 C 的后台运行、权限与各平台能力未验证；cyfs-gateway-lib 在移动端的可嵌入性未验证。
-- 命令与文件执行仅支持 Linux root daemon；非 root Linux、Windows/macOS 保留 `open_stream` / `describe` / `query` / `cancel` 控制能力，执行、文件操作及带 workdir 的 describe 返回 Capability。Linux worker 的降权、进程组与 `/proc/self/fd` 实现按目标平台隔离编译。
-- Windows/macOS 的 worker 降权未设计。
+- 命令与文件执行支持 Linux 与 macOS 的 root daemon；非 root daemon 与 Windows 保留 `open_stream` / `describe` / `query` / `cancel` 控制能力，执行、文件操作及带 workdir 的 describe 返回 Capability。降权、进程组与 fd 路径校验（Linux `/proc/self/fd`，macOS `F_GETPATH`）按目标平台隔离编译。
+- Windows 的 worker 降权未设计。
+- macOS 没有 no_new_privs：降权后的 shell 仍可执行 setuid 程序（如 sudo），run_as 应使用不在 admin 组、没有 sudo 权限的专用账号。macOS 上 uid/gid 65534 没有对应账号，`nobody` 是 4294967294（-2）。TCC 保护的目录（Desktop、Documents、Downloads 等）不受 Unix 权限约束，作为 roots 时可能需要给 node_daemon 授予“完全磁盘访问权限”，否则访问被拒（Forbidden）；此项未在真机验证。
 - 恢复端点的结果真实性在 D-10 定稿前只依赖 HTTPS。
 
 ---
@@ -754,8 +756,8 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 ### 17.4 执行与账本
 
 - 账本 `$BUCKYOS_ROOT/local/node_daemon/executor/`：`meta.json`、`owner.lock`（flock 单写者）、`operations/<key-hash>/{request.json,state.json,result.json,stdout,stderr,content,upload}`、`tombstones/<key-hash>.json`、`tmp/`。key-hash = sha256(`["op", store_id, agent_did, app_instance_id, profile, runtime_id, op_id]`)，另以 run/call 元组做第二唯一键。记录在 tmp 下写全并 fsync 后整目录 rename 发布，之后才回复 accepted；result.json 写一次。重启时 starting/running 而无结果的记 unknown（effect_unknown），meta 缺失但有记录、node_did 不符、记录损坏均拒绝打开（节点日志报错，执行器保持关闭）。
-- exec：先以目标身份跑一次 worker 解析 cwd（须在 roots 内），再在串行控制门内检查取消、直接 spawn `bash --noprofile --norc -c <wrapper>`（std 做 setgroups/setgid/setuid，pre_exec 设 no_new_privs、清 ambient caps、`close_range(CLOEXEC)`，独立进程组），脚本经 stdin 读入后 stdin 改为 /dev/null，不进 argv。**差异**：shell 进程本身就是降权 worker，没有再套一层持有 shell 的 worker。stdout/stderr 各保留前 N 字节、超出继续 drain；leader 退出后最多再等 500 ms 读管道；超时/取消对进程组 SIGTERM，2 s 后 SIGKILL，以 wait 确认后才发布 timed_out/cancelled；正常结束不清理后台进程。
-- 文件操作：node_daemon 以 `--executor-worker` 重入自身、以 profile 身份执行；路径在打开后的 fd（`/proc/self/fd`）上校验是否在 roots 内；写入为同目录临时文件 + fsync + renameat + 目录 fsync；`write` 可创建 roots 内缺失的父目录；同一 canonical 路径的写串行；expected_hash 不符为 Conflict。read/edit 的内容快照写入 `content`，query 读取的是快照而非现场文件。文件操作一旦开始不可中断，取消请求之后按自然结果发布。
+- exec：先以目标身份跑一次 worker 解析 cwd（须在 roots 内），再在串行控制门内检查取消、直接 spawn `bash --noprofile --norc -c <wrapper>`（独立进程组；pre_exec 内显式 setgroups([gid])/setgid/setuid 并核对，以目标身份 chdir，继承的 fd 置 CLOEXEC（Linux 用 `close_range`，macOS 或 close_range 不可用时按 RLIMIT_NOFILE 逐个 fcntl）；Linux 另设 no_new_privs、清 ambient caps），脚本经 stdin 读入后 stdin 改为 /dev/null，不进 argv。**差异**：shell 进程本身就是降权 worker，没有再套一层持有 shell 的 worker。stdout/stderr 各保留前 N 字节、超出继续 drain；leader 退出后最多再等 500 ms 读管道；超时/取消对进程组 SIGTERM，2 s 后 SIGKILL，以 wait 确认后才发布 timed_out/cancelled；正常结束不清理后台进程。
+- 文件操作：node_daemon 以 `--executor-worker` 重入自身、以 profile 身份执行；路径在打开后的 fd（Linux `/proc/self/fd`，macOS `F_GETPATH`）上校验是否在 roots 内；写入为同目录临时文件 + fsync + renameat + 目录 fsync；`write` 可创建 roots 内缺失的父目录；同一 canonical 路径的写串行；expected_hash 不符为 Conflict。read/edit 的内容快照写入 `content`，query 读取的是快照而非现场文件。文件操作一旦开始不可中断，取消请求之后按自然结果发布。
 - 容量：准入前按操作预留空间（exec 为 2×输出上限，文件为 max_file_bytes），计入 max_records（含墓碑）与 max_store_bytes，超出 CapacityExceeded；GC 每 60 s 先写墓碑再删目录，墓碑不按 TTL 删除。
 - 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit 返回 Capability。
 
@@ -796,3 +798,15 @@ DV 中发现并已修正：SOCKS hook 对 IP 目标只有 `REQ.target.type = "ip
 - 跨节点 RTCP 路径：单 OOD Zone 没有第二台设备；以节点名经 RTCP 连回本机失败（gateway 报 `resolve remote device did:web:ood1… canonical did:dev failed`），同节点按设计走 DIRECT。`node_executor` 守卫块只在 cyfs-gateway 单测里用真实 process-chain 引擎验证过，`close_connections` 关闭存活 RTCP 转发也只有单测（DV 调用时没有存活的转发）。
 - 快照租期在控制面失联时到期（单测覆盖，未在 DV 停 scheduler 验证）；ReadOnly Agent 的 DV（未改动现有 Agent 的 permission_mode）。
 - 验证结束后已把 `nodes/ood1/settings.executor` 置为 `enabled=false`（快照 generation 5、ACL 为空）；新二进制保持部署。重新启用只需把 `enabled` 改回 true。
+
+### 17.8 macOS 形态 A（2026-10-21）
+
+- 范围：macOS 上以 root 运行的 node_daemon 开放 exec/read/write/edit，协议、配置结构与账本不变；非 root daemon 与 Windows 仍只有控制能力。
+- 降权不再使用 std 的 `Command::uid/gid`。它在 setgid 之后调用 `setgroups(0, NULL)`，XNU（`kern_prot.c::setgroups_internal`）把空组表补成 `{0}`，而 egid 就是 `cr_groups[0]`，worker 因此以 egid 0（wheel）运行。bash 启动时会把 egid 复位为 rgid，文件 worker 不会。现在 Linux/macOS 共用 pre_exec：`setgroups(1, [gid])` → setgid → setuid → 用 `getgroups` 系统调用与 get[e]uid/get[e]gid 核对 → 以目标身份 chdir → 继承的 fd 置 CLOEXEC。macOS 没有 close_range，按 RLIMIT_NOFILE 逐个 fcntl；Linux 的 close_range 不可用时同样回退到逐个 fcntl。Linux 保留 no_new_privs 与清 ambient caps，macOS 没有对应机制（§15）。
+- 路径校验：`worker_linux.rs` 改名为 `worker_unix.rs`，macOS 用 `fcntl(F_GETPATH)` 取 fd 路径。roots 与请求路径经 realpath 解析，`/tmp`、`/var` 等变为 `/private/...`，与 F_GETPATH 结果一致。
+- profile 未设置 LANG 时，macOS 默认 `en_US.UTF-8`（macOS 没有 `C.UTF-8`），Linux 仍为 `C.UTF-8`。
+- 测试：`tests/executor.rs` 与 `tests/remote_node_runtime.rs` 改为 Linux/macOS 编译。exec 用例新增 egid 与 fd 泄漏检查；文件用例新增 root:0 0640 文件不可读，用于发现 worker 残留 group 0；`spawn` 单测覆盖逐个 fcntl 的回退路径。测试辅助函数 `wait_done` 改为不带 channel 长轮询到终态、再读 stdout，与 agent_tool remote_node 的 `wait_terminal` + `read_channel` 一致：原先带 stdout channel 且 offset 固定为 0，已有输出时 query 立即返回，40 次轮询会在终态发布前耗尽。macOS 上 `sync_all` 走 `F_FULLFSYNC`（本机约 4 ms/次，普通 fsync 约 0.03 ms），输出结束到终态之间的窗口变长，两个 exec 用例因此稳定失败。
+- 已验证（Linux）：root 下 `cargo test -p node_executor -- --test-threads=1` 全部通过（单测 4、端到端 8、platform 2、remote_node 1）；以 nobody 运行 platform 测试 2 项通过；分别构造“不标 CLOEXEC”和“worker egid 0 且不核对”两种变异，新用例均失败；`cargo build -p node_daemon` 通过。
+- 已验证（macOS 15.7.7 arm64）：非 root 下同一命令通过，platform 2 项覆盖能力拒绝分支，端到端用例跳过。以 root 运行同一批测试可执行文件，RLIMIT_NOFILE 为 1048575 与 256 时均全部通过（单测 4、端到端 8、platform 2、remote_node 1），端到端用例另重复 3 轮通过。用 std `Command::uid/gid` 启动 `/usr/bin/id` 得到 `egid=0(wheel) groups=0(wheel)`，证实上述 XNU 行为。变异：降权改回 std 的 setgid → `setgroups(0, NULL)` → setuid 且不核对，文件用例读到 root:0 0640 文件而失败，exec 用例通过（bash 复位了 egid）；去掉 fd 置 CLOEXEC，exec 用例报 leaked-fd。`cargo check -p node_daemon` 通过。
+- 逐个 fcntl 的开销与 RLIMIT_NOFILE 成正比：上限 1048575 时每次 spawn 约 0.1 s（端到端用例共 11.3 s，上限 256 时 8.6 s）。正式安装由 LaunchDaemon 启动，默认软上限 256，可忽略；从调高 ulimit 的 shell 启动开发环境时，每个 exec 多约 0.2 s（解析 cwd 与 shell 各 spawn 一次）。
+- 未验证：macOS DV（真实 Zone 中以 root 运行的 node_daemon 经网关 SOCKS 入口执行）；TCC 保护目录作为 roots 的行为（§15）。

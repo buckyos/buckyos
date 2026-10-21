@@ -2,28 +2,30 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Stdio;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 
 use buckyos_api::{ExecutorError, ExecutorErrorCode, ExecutorRunAs};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::process::Command;
 
 use crate::worker::{WorkerJob, WorkerReply};
 
 /// Reads the script from stdin, then runs it with stdin on /dev/null, so the
 /// command text never appears in argv.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub const SHELL_WRAPPER: &str = "IFS= read -r -d '' __nx_script; exec </dev/null; eval \"$__nx_script\"";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const MAX_REPLY_LINE: usize = 64 * 1024;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const FILE_JOB_TIMEOUT: Duration = Duration::from_secs(120);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const MAX_FD_SWEEP: libc::rlim_t = 1 << 20;
 
 #[derive(Debug, Clone)]
 pub struct WorkerLauncher {
@@ -40,40 +42,96 @@ pub fn default_shell() -> PathBuf {
     PathBuf::from("/bin/bash")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn internal(msg: impl Into<String>) -> ExecutorError {
     ExecutorError::new(ExecutorErrorCode::Internal, msg)
 }
 
-/// setgroups([]) + setgid + setuid (std, before exec), a new process group,
-/// no_new_privs, and every inherited descriptor marked close-on-exec.
-#[cfg(target_os = "linux")]
-fn drop_privileges(cmd: &mut Command, run_as: &ExecutorRunAs) {
-    cmd.uid(run_as.uid).gid(run_as.gid).process_group(0);
+/// In the child before exec: a new process group; on Linux no_new_privs and
+/// no ambient capabilities; then setgroups([gid]) + setgid + setuid, checked
+/// afterwards, chdir as the target user, and every inherited descriptor
+/// marked close-on-exec. The group list is always set explicitly: on macOS
+/// `setgroups(0, NULL)` (what std's `Command::uid` uses) makes the egid 0.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn drop_privileges(cmd: &mut Command, run_as: &ExecutorRunAs, cwd: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let uid = run_as.uid as libc::uid_t;
+    let gid = run_as.gid as libc::gid_t;
+    let cwd = std::ffi::CString::new(cwd.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    cmd.process_group(0);
     unsafe {
-        cmd.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+        cmd.pre_exec(move || {
+            #[cfg(target_os = "linux")]
+            {
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+                    0,
+                    0,
+                    0,
+                );
+            }
+            if libc::setgroups(1, &gid) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            libc::prctl(
-                libc::PR_CAP_AMBIENT,
-                libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
-                0,
-                0,
-                0,
-            );
-            libc::syscall(
-                libc::SYS_close_range,
-                3 as libc::c_uint,
-                libc::c_uint::MAX,
-                libc::CLOSE_RANGE_CLOEXEC as libc::c_uint,
-            );
+            let mut groups = [0 as libc::gid_t; 4];
+            let count = libc::getgroups(groups.len() as libc::c_int, groups.as_mut_ptr());
+            if libc::getuid() != uid
+                || libc::geteuid() != uid
+                || libc::getgid() != gid
+                || libc::getegid() != gid
+                || count != 1
+                || groups[0] != gid
+            {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            if libc::chdir(cwd.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            mark_inherited_fds_cloexec();
             Ok(())
         });
     }
+    Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+unsafe fn mark_inherited_fds_cloexec() {
+    #[cfg(target_os = "linux")]
+    if libc::syscall(
+        libc::SYS_close_range,
+        3 as libc::c_uint,
+        libc::c_uint::MAX,
+        libc::CLOSE_RANGE_CLOEXEC as libc::c_uint,
+    ) == 0
+    {
+        return;
+    }
+    sweep_fds_cloexec();
+}
+
+/// Async-signal-safe fallback: fcntl every descriptor below RLIMIT_NOFILE.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+unsafe fn sweep_fds_cloexec() {
+    let mut limit: libc::rlimit = std::mem::zeroed();
+    let max = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+        limit.rlim_cur.min(MAX_FD_SWEEP)
+    } else {
+        MAX_FD_SWEEP
+    };
+    for fd in 3..max as libc::c_int {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn spawn_shell(
     shell: &Path,
     run_as: &ExecutorRunAs,
@@ -87,16 +145,15 @@ pub fn spawn_shell(
         .arg(SHELL_WRAPPER)
         .env_clear()
         .envs(env)
-        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(false);
-    drop_privileges(&mut cmd, run_as);
+    drop_privileges(&mut cmd, run_as, cwd)?;
     cmd.spawn()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn spawn_shell(
     _shell: &Path,
     _run_as: &ExecutorRunAs,
@@ -105,11 +162,11 @@ pub fn spawn_shell(
 ) -> std::io::Result<Child> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "node executor execution requires Linux",
+        "node executor execution requires Linux or macOS",
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn signal_group(pgid: u32, signal: i32) {
     if pgid > 1 {
         unsafe {
@@ -126,7 +183,7 @@ pub enum FileJobOutcome {
     Unknown(ExecutorError),
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn run_file_job(
     launcher: &WorkerLauncher,
     run_as: &ExecutorRunAs,
@@ -139,13 +196,12 @@ pub async fn run_file_job(
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LANG", "C.UTF-8")
-        .current_dir("/")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    drop_privileges(&mut cmd, run_as);
-    let mut child = match cmd.spawn() {
+    let spawned = drop_privileges(&mut cmd, run_as, Path::new("/")).and_then(|_| cmd.spawn());
+    let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
             return FileJobOutcome::SpawnFailed(internal(format!(
@@ -214,7 +270,7 @@ pub async fn run_file_job(
     FileJobOutcome::Reply(reply, payload)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub async fn run_file_job(
     _launcher: &WorkerLauncher,
     _run_as: &ExecutorRunAs,
@@ -224,6 +280,19 @@ pub async fn run_file_job(
 ) -> FileJobOutcome {
     FileJobOutcome::SpawnFailed(ExecutorError::new(
         ExecutorErrorCode::Capability,
-        "node executor file operations require Linux",
+        "node executor file operations require Linux or macOS",
     ))
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    #[test]
+    fn fd_sweep_marks_inherited_descriptors_close_on_exec() {
+        let fd = unsafe { libc::dup(2) };
+        assert!(fd > 2);
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC, 0);
+        unsafe { super::sweep_fds_cloexec() };
+        assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC, 0);
+        unsafe { libc::close(fd) };
+    }
 }

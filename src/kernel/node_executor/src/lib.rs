@@ -78,8 +78,8 @@ pub struct NodeExecutor {
 }
 
 /// Operations the host can actually perform. Form A needs a root daemon on
-/// Linux to switch to the profile's OS identity; otherwise only the control
-/// operations remain and the rest return Capability.
+/// Linux or macOS to switch to the profile's OS identity; otherwise only the
+/// control operations remain and the rest return Capability.
 fn host_capabilities() -> BTreeSet<ExecutorOp> {
     let caps: BTreeSet<ExecutorOp> = [
         ExecutorOp::OpenStream,
@@ -89,7 +89,7 @@ fn host_capabilities() -> BTreeSet<ExecutorOp> {
     ]
     .into_iter()
     .collect();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if unsafe { libc::geteuid() } == 0 {
         let mut caps = caps;
         caps.extend([

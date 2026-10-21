@@ -52,15 +52,15 @@ pub struct WorkerReply {
     pub file_size: u64,
 }
 
-#[cfg(target_os = "linux")]
-#[path = "worker_linux.rs"]
-mod linux;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "worker_unix.rs"]
+mod unix;
 
-#[cfg(target_os = "linux")]
-pub use linux::worker_main;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use unix::worker_main;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn worker_main() -> ! {
-    eprintln!("node executor file operations require Linux");
+    eprintln!("node executor file operations require Linux or macOS");
     std::process::exit(2)
 }

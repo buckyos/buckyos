@@ -16,16 +16,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, watch};
 
 use crate::now_ms;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::spawn::signal_group;
 use crate::spawn::{run_file_job, spawn_shell, FileJobOutcome, WorkerLauncher};
 use crate::store::{Dedupe, OpBudget, OpIdentity, OpRequestRecord, Store, STORE_SCHEMA_VERSION};
 use crate::worker::WorkerJob;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const TERM_GRACE: Duration = Duration::from_secs(2);
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 const PUSH_CHUNK: usize = 16 * 1024;
+#[cfg(target_os = "macos")]
+const DEFAULT_LANG: &str = "en_US.UTF-8";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_LANG: &str = "C.UTF-8";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelReason {
@@ -508,7 +512,7 @@ impl OpsManager {
         }
         env.entry("PATH".into())
             .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
-        env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
+        env.entry("LANG".into()).or_insert_with(|| DEFAULT_LANG.into());
         if let Some((home, name)) = passwd_entry(profile.run_as.uid) {
             env.entry("HOME".into()).or_insert(home);
             env.entry("USER".into()).or_insert(name.clone());
@@ -946,7 +950,7 @@ async fn collect(
 
 /// SIGTERM the process group, SIGKILL after a grace period, and confirm the
 /// leader exited.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn terminate(pgid: u32, child: &mut tokio::process::Child) {
     signal_group(pgid, libc::SIGTERM);
     if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_err() {
@@ -954,7 +958,7 @@ async fn terminate(pgid: u32, child: &mut tokio::process::Child) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 async fn terminate(_pgid: u32, child: &mut tokio::process::Child) {
     let _ = child.start_kill();
 }

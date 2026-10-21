@@ -1,7 +1,7 @@
 //! End-to-end Command Stream tests over in-memory streams with real worker
 //! processes. Running them needs root (the worker drops to uid 65534).
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
@@ -26,6 +26,10 @@ fn is_root() -> bool {
 extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
+    #[link_name = "dup"]
+    fn libc_dup(fd: i32) -> i32;
+    #[link_name = "close"]
+    fn libc_close(fd: i32) -> i32;
 }
 
 fn agent_did(app: &str) -> String {
@@ -304,11 +308,16 @@ impl Client {
         self.reply(&rid).await
     }
 
-    /// Wait for a terminal state; returns status and the stdout chunk.
+    /// Wait for a terminal state; returns status and the stdout chunk. Polls
+    /// without a channel: with one, any retained output at offset 0 ends the
+    /// wait at once.
     async fn wait_done(&mut self, op_id: &str) -> (ExecutorOpStatus, Vec<u8>) {
         for _ in 0..40 {
-            if let ExecutorServerMessage::QueryOk(q) = self.query(op_id, Some(ExecutorChannel::Stdout), 1000).await {
+            if let ExecutorServerMessage::QueryOk(q) = self.query(op_id, None, 1000).await {
                 if q.op.state.is_terminal() {
+                    let ExecutorServerMessage::QueryOk(q) = self.query(op_id, Some(ExecutorChannel::Stdout), 0).await else {
+                        panic!("operation {op_id}: stdout query failed");
+                    };
                     let data = base64::engine::general_purpose::STANDARD
                         .decode(q.chunk.unwrap().data_b64)
                         .unwrap();
@@ -452,15 +461,25 @@ async fn exec_runs_as_profile_user_with_clean_env_and_dedupes() {
     let Some(env) = setup().await else { return };
     let mut c = Client::connect(&env).await;
     c.login().await;
-    let cmd = "id -u; pwd; env | sort; echo oops >&2; exit 3";
+    let leaked = unsafe { libc_dup(2) };
+    assert!(leaked > 2);
+    let cmd = format!(
+        "id -u; id -g; pwd; [ -e /dev/fd/{leaked} ] && echo leaked-fd; env | sort; echo oops >&2; exit 3"
+    );
+    let cmd = cmd.as_str();
     let r = c.exec("op-1", "call-1", cmd, &env.work).await;
     assert!(!accepted(&r).duplicate);
     let (status, stdout) = c.wait_done("op-1").await;
+    unsafe { libc_close(leaked) };
     assert_eq!(status.state, ExecutorOpState::Failed);
     let result = status.result.unwrap();
     assert_eq!(result.exit_code, Some(3));
     let text = String::from_utf8(stdout).unwrap();
-    assert!(text.starts_with(&format!("{NOBODY}\n{}\n", env.work.canonicalize().unwrap().display())), "{text}");
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some(NOBODY.to_string().as_str()), "{text}");
+    assert_eq!(lines.next(), Some(NOBODY.to_string().as_str()), "egid: {text}");
+    assert_eq!(lines.next(), Some(env.work.canonicalize().unwrap().to_str().unwrap()), "{text}");
+    assert!(!text.contains("leaked-fd"), "{text}");
     assert!(!text.contains("BUCKYOS_"), "{text}");
     assert!(text.contains("PATH=/usr/bin:/bin"));
     assert_eq!(result.stderr.unwrap().total_bytes, 5);
@@ -653,6 +672,33 @@ async fn file_tools_run_as_worker_with_atomic_replace_and_hash_checks() {
     let (escaped, _) = c.wait_done("r2").await;
     assert_eq!(escaped.state, ExecutorOpState::Failed);
     assert_eq!(escaped.result.unwrap().error.unwrap().code, ExecutorErrorCode::Forbidden);
+
+    // The worker keeps no group 0: a root:0 0640 file inside the roots stays unreadable.
+    let guarded = env.work.join("root-group.txt");
+    std::fs::write(&guarded, b"group 0 only").unwrap();
+    std::os::unix::fs::chown(&guarded, Some(0), Some(0)).unwrap();
+    std::fs::set_permissions(&guarded, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let rid = c.rid();
+    let store_id = c.store_id.clone();
+    accepted(
+        &c.simple(
+            ExecutorClientMessage::Read(ExecutorReadRequest {
+                request_id: rid.clone(),
+                store_id,
+                op_id: "r3".into(),
+                run_id: "run1".into(),
+                call_id: "cr3".into(),
+                path: guarded.to_string_lossy().to_string(),
+                offset: 0,
+                length: None,
+            }),
+            rid,
+        )
+        .await,
+    );
+    let (guarded_read, _) = c.wait_done("r3").await;
+    assert_eq!(guarded_read.state, ExecutorOpState::Failed);
+    assert_eq!(guarded_read.result.unwrap().error.unwrap().code, ExecutorErrorCode::Forbidden);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

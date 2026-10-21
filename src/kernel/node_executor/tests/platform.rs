@@ -155,11 +155,11 @@ impl Fixture {
 }
 
 fn supports_execution() -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         unsafe { libc::geteuid() == 0 }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         false
     }
@@ -259,7 +259,7 @@ async fn unsupported_hosts_reject_operations_before_creating_records_or_uploads(
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn worker_entrypoint_rejects_file_jobs_on_unsupported_platforms() {
     use std::io::Write;

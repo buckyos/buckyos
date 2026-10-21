@@ -1,9 +1,10 @@
-//! Worker side: runs as the profile's OS identity (setgroups/setgid/setuid
-//! and no_new_privs are applied by the parent at spawn). It performs one file
-//! job read from stdin and writes `reply-json\n` + payload to stdout.
+//! Worker side: runs as the profile's OS identity (the identity switch is
+//! applied by the parent at spawn, see `spawn::drop_privileges`). It performs
+//! one file job read from stdin and writes `reply-json\n` + payload to stdout.
 //!
-//! Paths are checked on the opened descriptor (`/proc/self/fd/N`), so a path
-//! swapped after resolution cannot redirect the I/O outside the roots.
+//! Paths are checked on the opened descriptor (`/proc/self/fd/N` on Linux,
+//! `F_GETPATH` on macOS), so a path swapped after resolution cannot redirect
+//! the I/O outside the roots.
 
 use std::ffi::CString;
 use std::io::{self, BufRead, Read, Write};
@@ -402,8 +403,21 @@ fn ensure_under(real: &Path, roots: &[PathBuf], shown: &str) -> Result<(), Execu
     }
 }
 
+#[cfg(target_os = "linux")]
 fn fd_path(fd: i32) -> io::Result<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{fd}"))
+}
+
+#[cfg(target_os = "macos")]
+fn fd_path(fd: i32) -> io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut buf = vec![0u8; libc::MAXPATHLEN as usize];
+    if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    buf.truncate(len);
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(buf)))
 }
 
 /// A write target: a verified parent directory handle plus the entry name.
