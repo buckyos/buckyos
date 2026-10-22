@@ -1,31 +1,54 @@
-//! Parent side of worker processes: privilege drop at spawn, bounded I/O.
+//! Parent side of worker processes: identity switch at spawn (root Unix
+//! daemon), process group / job control, bounded I/O. A Windows host runs
+//! workers as its own user.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Stdio;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 
 use buckyos_api::{ExecutorError, ExecutorErrorCode, ExecutorRunAs};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Child;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
 use crate::worker::{WorkerJob, WorkerReply};
 
 /// Reads the script from stdin, then runs it with stdin on /dev/null, so the
 /// command text never appears in argv.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
 pub const SHELL_WRAPPER: &str = "IFS= read -r -d '' __nx_script; exec </dev/null; eval \"$__nx_script\"";
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+
+/// Reads the whole script from stdin as UTF-8 (stdin is then at EOF), so the
+/// command text never appears in argv, and runs it as a script block. The
+/// exit code is the script's `exit`, else the last native command's, 1 on a
+/// terminating error.
+#[cfg(windows)]
+pub const SHELL_WRAPPER: &str = r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$__nx_buffer = [System.IO.MemoryStream]::new()
+[Console]::OpenStandardInput().CopyTo($__nx_buffer)
+$__nx_script = [ScriptBlock]::Create($utf8.GetString($__nx_buffer.ToArray()))
+Remove-Variable __nx_buffer
+$global:LASTEXITCODE = 0
+try {
+    & $__nx_script
+    exit $LASTEXITCODE
+} catch {
+    [Console]::Error.WriteLine($_.ToString())
+    exit 1
+}"#;
+
 const MAX_REPLY_LINE: usize = 64 * 1024;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 const FILE_JOB_TIMEOUT: Duration = Duration::from_secs(120);
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
+const TERM_GRACE: Duration = Duration::from_secs(2);
+#[cfg(unix)]
 const MAX_FD_SWEEP: libc::rlim_t = 1 << 20;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone)]
 pub struct WorkerLauncher {
@@ -33,6 +56,7 @@ pub struct WorkerLauncher {
     pub args: Vec<String>,
 }
 
+#[cfg(unix)]
 pub fn default_shell() -> PathBuf {
     for candidate in ["/bin/bash", "/usr/bin/bash"] {
         if Path::new(candidate).exists() {
@@ -42,7 +66,20 @@ pub fn default_shell() -> PathBuf {
     PathBuf::from("/bin/bash")
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// PowerShell 7 when it is on PATH, else Windows PowerShell.
+#[cfg(windows)]
+pub fn default_shell() -> PathBuf {
+    if let Some(path) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("pwsh.exe"))
+            .find(|file| file.is_file())
+    }) {
+        return path;
+    }
+    PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+        .join("System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+}
+
 fn internal(msg: impl Into<String>) -> ExecutorError {
     ExecutorError::new(ExecutorErrorCode::Internal, msg)
 }
@@ -52,9 +89,11 @@ fn internal(msg: impl Into<String>) -> ExecutorError {
 /// afterwards, chdir as the target user, and every inherited descriptor
 /// marked close-on-exec. The group list is always set explicitly: on macOS
 /// `setgroups(0, NULL)` (what std's `Command::uid` uses) makes the egid 0.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn drop_privileges(cmd: &mut Command, run_as: &ExecutorRunAs, cwd: &Path) -> std::io::Result<()> {
+#[cfg(unix)]
+fn drop_privileges(cmd: &mut Command, run_as: Option<&ExecutorRunAs>, cwd: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
+    let run_as = run_as
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH))?;
     let uid = run_as.uid as libc::uid_t;
     let gid = run_as.gid as libc::gid_t;
     let cwd = std::ffi::CString::new(cwd.as_os_str().as_bytes())
@@ -99,7 +138,7 @@ fn drop_privileges(cmd: &mut Command, run_as: &ExecutorRunAs, cwd: &Path) -> std
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
 unsafe fn mark_inherited_fds_cloexec() {
     #[cfg(target_os = "linux")]
     if libc::syscall(
@@ -115,7 +154,7 @@ unsafe fn mark_inherited_fds_cloexec() {
 }
 
 /// Async-signal-safe fallback: fcntl every descriptor below RLIMIT_NOFILE.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
 unsafe fn sweep_fds_cloexec() {
     let mut limit: libc::rlimit = std::mem::zeroed();
     let max = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
@@ -131,13 +170,104 @@ unsafe fn sweep_fds_cloexec() {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
+fn signal_group(pgid: u32, signal: i32) {
+    if pgid > 1 {
+        unsafe {
+            libc::kill(-(pgid as i32), signal);
+        }
+    }
+}
+
+/// A job object holding a shell and everything it starts. Closing the handle
+/// leaves the processes running (no KILL_ON_JOB_CLOSE): what a command leaves
+/// in the background after exiting normally is not managed, as on Unix.
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> *mut c_void;
+        fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
+        fn TerminateJobObject(job: *mut c_void, exit_code: u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    pub struct Job(*mut c_void);
+
+    // A kernel handle, usable from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        pub fn assign(child: &tokio::process::Child) -> std::io::Result<Job> {
+            let process = child
+                .raw_handle()
+                .ok_or_else(|| std::io::Error::other("the shell exited before job assignment"))?;
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let job = Job(handle);
+            if unsafe { AssignProcessToJobObject(job.0, process as *mut c_void) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        pub fn terminate(&self) {
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// A running shell with the handle that stops everything it started.
+pub struct ShellProcess {
+    pub child: Child,
+    #[cfg(unix)]
+    pgid: u32,
+    #[cfg(windows)]
+    job: job::Job,
+}
+
+impl ShellProcess {
+    pub fn pid(&self) -> u32 {
+        self.child.id().unwrap_or(0)
+    }
+
+    /// Unix: SIGTERM the process group, SIGKILL after a grace period.
+    /// Windows: terminate the job. The caller confirms the exit by waiting.
+    pub async fn terminate(&mut self) {
+        #[cfg(unix)]
+        {
+            signal_group(self.pgid, libc::SIGTERM);
+            if tokio::time::timeout(TERM_GRACE, self.child.wait()).await.is_err() {
+                signal_group(self.pgid, libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        self.job.terminate();
+    }
+}
+
+#[cfg(unix)]
 pub fn spawn_shell(
     shell: &Path,
-    run_as: &ExecutorRunAs,
+    run_as: Option<&ExecutorRunAs>,
     cwd: &Path,
     env: &BTreeMap<String, String>,
-) -> std::io::Result<Child> {
+) -> std::io::Result<ShellProcess> {
     let mut cmd = Command::new(shell);
     cmd.arg("--noprofile")
         .arg("--norc")
@@ -150,29 +280,78 @@ pub fn spawn_shell(
         .stderr(Stdio::piped())
         .kill_on_drop(false);
     drop_privileges(&mut cmd, run_as, cwd)?;
-    cmd.spawn()
+    let child = cmd.spawn()?;
+    let pgid = child.id().unwrap_or(0);
+    Ok(ShellProcess { child, pgid })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// The shell joins its job before it is given the script, so nothing the
+/// command starts escapes cancellation.
+#[cfg(windows)]
 pub fn spawn_shell(
-    _shell: &Path,
-    _run_as: &ExecutorRunAs,
-    _cwd: &Path,
-    _env: &BTreeMap<String, String>,
-) -> std::io::Result<Child> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "node executor execution requires Linux or macOS",
-    ))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn signal_group(pgid: u32, signal: i32) {
-    if pgid > 1 {
-        unsafe {
-            libc::kill(-(pgid as i32), signal);
+    shell: &Path,
+    run_as: Option<&ExecutorRunAs>,
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> std::io::Result<ShellProcess> {
+    use base64::Engine;
+    if run_as.is_some() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH));
+    }
+    let wrapper: Vec<u8> = SHELL_WRAPPER.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut cmd = Command::new(shell);
+    cmd.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+    ])
+    .arg(base64::engine::general_purpose::STANDARD.encode(wrapper))
+    .env_clear()
+    .envs(env)
+    .current_dir(cwd)
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .creation_flags(CREATE_NO_WINDOW)
+    .kill_on_drop(false);
+    let mut child = cmd.spawn()?;
+    match job::Job::assign(&child) {
+        Ok(job) => Ok(ShellProcess { child, job }),
+        Err(e) => {
+            let _ = child.start_kill();
+            Err(e)
         }
     }
+}
+
+#[cfg(unix)]
+fn prepare_worker(cmd: &mut Command, run_as: Option<&ExecutorRunAs>) -> std::io::Result<()> {
+    cmd.env("PATH", "/usr/bin:/bin").env("LANG", "C.UTF-8");
+    drop_privileges(cmd, run_as, Path::new("/"))
+}
+
+#[cfg(windows)]
+fn prepare_worker(cmd: &mut Command, run_as: Option<&ExecutorRunAs>) -> std::io::Result<()> {
+    if run_as.is_some() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH));
+    }
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", root);
+    }
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    Ok(())
+}
+
+fn kill_worker(child: &mut Child) {
+    #[cfg(unix)]
+    signal_group(child.id().unwrap_or(0), libc::SIGKILL);
+    #[cfg(windows)]
+    let _ = child.start_kill();
 }
 
 /// Outcome of a file job: `Unknown` means the worker died without a reply,
@@ -183,10 +362,9 @@ pub enum FileJobOutcome {
     Unknown(ExecutorError),
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn run_file_job(
     launcher: &WorkerLauncher,
-    run_as: &ExecutorRunAs,
+    run_as: Option<&ExecutorRunAs>,
     job: &WorkerJob,
     payload: &[u8],
     max_reply_payload: u64,
@@ -194,23 +372,15 @@ pub async fn run_file_job(
     let mut cmd = Command::new(&launcher.program);
     cmd.args(&launcher.args)
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("LANG", "C.UTF-8")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let spawned = drop_privileges(&mut cmd, run_as, Path::new("/")).and_then(|_| cmd.spawn());
+    let spawned = prepare_worker(&mut cmd, run_as).and_then(|_| cmd.spawn());
     let mut child = match spawned {
         Ok(c) => c,
-        Err(e) => {
-            return FileJobOutcome::SpawnFailed(internal(format!(
-                "cannot start executor worker as uid {}: {e}",
-                run_as.uid
-            )))
-        }
+        Err(e) => return FileJobOutcome::SpawnFailed(internal(format!("cannot start executor worker: {e}"))),
     };
-    let pid = child.id().unwrap_or(0);
     let mut line = match serde_json::to_vec(job) {
         Ok(v) => v,
         Err(e) => return FileJobOutcome::SpawnFailed(internal(e.to_string())),
@@ -241,12 +411,12 @@ pub async fn run_file_job(
     let (out, err) = match collected {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            signal_group(pid, libc::SIGKILL);
+            kill_worker(&mut child);
             let _ = child.wait().await;
             return FileJobOutcome::Unknown(internal(format!("worker io failed: {e}")));
         }
         Err(_) => {
-            signal_group(pid, libc::SIGKILL);
+            kill_worker(&mut child);
             let _ = child.wait().await;
             return FileJobOutcome::Unknown(internal("worker timed out"));
         }
@@ -270,21 +440,7 @@ pub async fn run_file_job(
     FileJobOutcome::Reply(reply, payload)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub async fn run_file_job(
-    _launcher: &WorkerLauncher,
-    _run_as: &ExecutorRunAs,
-    _job: &WorkerJob,
-    _payload: &[u8],
-    _max_reply_payload: u64,
-) -> FileJobOutcome {
-    FileJobOutcome::SpawnFailed(ExecutorError::new(
-        ExecutorErrorCode::Capability,
-        "node executor file operations require Linux or macOS",
-    ))
-}
-
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(test, unix))]
 mod tests {
     #[test]
     fn fd_sweep_marks_inherited_descriptors_close_on_exec() {

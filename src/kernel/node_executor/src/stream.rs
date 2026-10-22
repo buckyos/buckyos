@@ -354,6 +354,9 @@ fn authorize(
         .ok_or_else(|| e(ExecutorErrorCode::Unavailable, "authorization snapshot is not valid"))?;
     let grant = current_grant(inner, session.id)
         .ok_or_else(|| e(ExecutorErrorCode::Forbidden, "stream is closing"))?;
+    if !crate::CONTROL_OPS.contains(&op) && !crate::host_honors_run_as(&grant.profile) {
+        return Err(e(ExecutorErrorCode::Capability, crate::RUN_AS_MISMATCH));
+    }
     if !grant.caps.contains(&op) {
         return Err(e(
             ExecutorErrorCode::Forbidden,
@@ -581,9 +584,12 @@ async fn describe(
             if !inner.host_caps.contains(&ExecutorOp::Exec) {
                 return Err(e(ExecutorErrorCode::Capability, "this host cannot resolve a workdir"));
             }
+            if !crate::host_honors_run_as(&grant.profile) {
+                return Err(e(ExecutorErrorCode::Capability, crate::RUN_AS_MISMATCH));
+            }
             match run_file_job(
                 &inner.launcher,
-                &grant.profile.run_as,
+                grant.profile.run_as.as_ref(),
                 &WorkerJob::ResolveDir {
                     path,
                     roots: grant.profile.workdir_roots.clone(),
@@ -607,8 +613,8 @@ async fn describe(
         target: ExecutorRuntimeTarget {
             node_did: inner.node_did.clone(),
             profile_id: grant.profile_id.clone(),
-            uid: grant.profile.run_as.uid,
-            gid: grant.profile.run_as.gid,
+            uid: grant.profile.run_as.as_ref().map(|r| r.uid),
+            gid: grant.profile.run_as.as_ref().map(|r| r.gid),
             workdir,
             store_id: inner.store.store_id().to_string(),
             protocol_version: NODE_EXECUTOR_PROTOCOL_VERSION,
@@ -654,7 +660,7 @@ fn begin_upload(
     if req.content_length > ctx.limits.max_file_bytes {
         return Err(e(ExecutorErrorCode::InvalidArgument, "content_length exceeds max_file_bytes"));
     }
-    if !req.path.starts_with('/') {
+    if !crate::is_host_absolute(&req.path) {
         return Err(e(ExecutorErrorCode::InvalidArgument, "path must be absolute"));
     }
     inner.store.reserve(&ctx.limits, req.content_length)?;

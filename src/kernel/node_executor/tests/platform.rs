@@ -13,6 +13,10 @@ use tokio::io::DuplexStream;
 const APP: &str = "jarvis.test.buckyos.io";
 const OWNER: &str = "devtest";
 const NODE: &str = "did:web:ood1.test.buckyos.io";
+#[cfg(unix)]
+const TEST_ROOT: &str = "/executor-test";
+#[cfg(windows)]
+const TEST_ROOT: &str = r"C:\executor-test";
 
 struct Verifier;
 
@@ -54,6 +58,10 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn open() -> Self {
+        Self::open_with(host_run_as()).await
+    }
+
+    async fn open_with(run_as: Option<ExecutorRunAs>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let executor = NodeExecutor::open(ExecutorHost {
             node_id: "ood1".into(),
@@ -89,11 +97,8 @@ impl Fixture {
             profiles: BTreeMap::from([(
                 "dev".into(),
                 ExecutorProfile {
-                    run_as: ExecutorRunAs {
-                        uid: 65534,
-                        gid: 65534,
-                    },
-                    workdir_roots: vec!["/executor-test".into()],
+                    run_as,
+                    workdir_roots: vec![TEST_ROOT.into()],
                     env: BTreeMap::new(),
                     principals: vec![agent],
                     ops: ExecutorOp::ALL.to_vec(),
@@ -154,14 +159,32 @@ impl Fixture {
     }
 }
 
+/// What a profile carries on this host: a Windows host runs as its own user.
+fn host_run_as() -> Option<ExecutorRunAs> {
+    (!cfg!(windows)).then_some(ExecutorRunAs {
+        uid: 65534,
+        gid: 65534,
+    })
+}
+
+fn foreign_run_as() -> Option<ExecutorRunAs> {
+    match host_run_as() {
+        Some(_) => None,
+        None => Some(ExecutorRunAs {
+            uid: 65534,
+            gid: 65534,
+        }),
+    }
+}
+
 fn supports_execution() -> bool {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(unix)]
     {
         unsafe { libc::geteuid() == 0 }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
     {
-        false
+        true
     }
 }
 
@@ -203,16 +226,10 @@ async fn control_stream_advertises_host_capabilities_without_starting_a_worker()
     assert!(fixture.dir.path().join("ledger/meta.json").is_file());
 }
 
-#[tokio::test]
-async fn unsupported_hosts_reject_operations_before_creating_records_or_uploads() {
-    if supports_execution() {
-        return;
-    }
-    let mut fixture = Fixture::open().await;
-    fixture.login().await;
-    let store_id = fixture.executor.store_id();
+fn worker_requests(store_id: &str) -> Vec<ExecutorClientMessage> {
+    let file = format!("{TEST_ROOT}/file");
     let mut requests = vec![serde_json::json!({
-        "type": "describe", "request_id": "describe", "workdir": "/executor-test",
+        "type": "describe", "request_id": "describe", "workdir": TEST_ROOT,
     })];
     for kind in ["exec", "read", "write", "edit"] {
         let mut request = serde_json::json!({
@@ -220,14 +237,14 @@ async fn unsupported_hosts_reject_operations_before_creating_records_or_uploads(
             "op_id": kind, "run_id": "run1", "call_id": kind,
         });
         let fields = match kind {
-            "exec" => serde_json::json!({"cmd": "exit 0", "cwd": "/executor-test"}),
-            "read" => serde_json::json!({"path": "/executor-test/file"}),
+            "exec" => serde_json::json!({"cmd": "exit 0", "cwd": TEST_ROOT}),
+            "read" => serde_json::json!({"path": file}),
             "write" => serde_json::json!({
-                "path": "/executor-test/file", "mode": "replace",
+                "path": file, "mode": "replace",
                 "content_length": 1, "content_hash": executor_content_hash(b"x"),
             }),
             "edit" => serde_json::json!({
-                "path": "/executor-test/file",
+                "path": file,
                 "edits": [{"old_string": "old", "new_string": "new"}],
             }),
             _ => unreachable!(),
@@ -238,8 +255,15 @@ async fn unsupported_hosts_reject_operations_before_creating_records_or_uploads(
             .extend(fields.as_object().unwrap().clone());
         requests.push(request);
     }
-    for request in requests {
-        let request: ExecutorClientMessage = serde_json::from_value(request).unwrap();
+    requests
+        .into_iter()
+        .map(|r| serde_json::from_value(r).unwrap())
+        .collect()
+}
+
+async fn assert_capability_without_records(fixture: &mut Fixture) {
+    let store_id = fixture.executor.store_id();
+    for request in worker_requests(&store_id) {
         let request_id = request.request_id().unwrap().to_string();
         let response = fixture.request(request).await;
         let ExecutorServerMessage::Error(reply) = response else {
@@ -259,33 +283,32 @@ async fn unsupported_hosts_reject_operations_before_creating_records_or_uploads(
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-#[test]
-fn worker_entrypoint_rejects_file_jobs_on_unsupported_platforms() {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+#[tokio::test]
+async fn unsupported_hosts_reject_operations_before_creating_records_or_uploads() {
+    if supports_execution() {
+        return;
+    }
+    let mut fixture = Fixture::open().await;
+    fixture.login().await;
+    assert_capability_without_records(&mut fixture).await;
+}
 
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("protected.txt");
-    std::fs::write(&path, b"original").unwrap();
-    let job = node_executor::worker::WorkerJob::Write {
-        path: path.to_string_lossy().into_owned(),
-        roots: vec![dir.path().to_string_lossy().into_owned()],
-        mode: ExecutorWriteMode::Replace,
-        expected_hash: None,
-        content_length: 7,
-        max_bytes: 1024,
-    };
-    let mut input = serde_json::to_vec(&job).unwrap();
-    input.extend_from_slice(b"\nchanged");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_node_executor_worker"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let _ = child.stdin.take().unwrap().write_all(&input);
-    let output = child.wait_with_output().unwrap();
-    assert!(!output.status.success());
-    assert_eq!(std::fs::read(path).unwrap(), b"original");
+/// A root Unix daemon needs `run_as`; a Windows host cannot switch users.
+#[tokio::test]
+async fn profiles_whose_run_as_does_not_fit_the_host_keep_only_control_ops() {
+    if !supports_execution() {
+        return;
+    }
+    let mut fixture = Fixture::open_with(foreign_run_as()).await;
+    let login = fixture.login().await;
+    assert_eq!(
+        login.caps.into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            ExecutorOp::OpenStream,
+            ExecutorOp::Describe,
+            ExecutorOp::Query,
+            ExecutorOp::Cancel,
+        ])
+    );
+    assert_capability_without_records(&mut fixture).await;
 }

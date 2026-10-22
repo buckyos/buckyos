@@ -190,7 +190,7 @@ impl RuntimeConfig {
                         return Err(bad("remote_node.profile_id is required".into()));
                     }
                     let cwd = self.workdir.as_deref().unwrap_or("");
-                    if !cwd.starts_with('/') || cwd.contains('\0') {
+                    if !buckyos_api::is_absolute_node_path(cwd) {
                         return Err(bad(
                             "remote_node requires an explicit absolute workdir on the node".into(),
                         ));

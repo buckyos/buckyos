@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use buckyos_api::{ExecutorCloseReason, ExecutorClosing, ExecutorConfig, ExecutorOp, ExecutorLimits};
+use buckyos_api::{
+    ExecutorCloseReason, ExecutorClosing, ExecutorConfig, ExecutorLimits, ExecutorOp, ExecutorProfile,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 
@@ -77,31 +79,59 @@ pub struct NodeExecutor {
     inner: Arc<ExecutorInner>,
 }
 
-/// Operations the host can actually perform. Form A needs a root daemon on
-/// Linux or macOS to switch to the profile's OS identity; otherwise only the
-/// control operations remain and the rest return Capability.
+pub(crate) const CONTROL_OPS: [ExecutorOp; 4] = [
+    ExecutorOp::OpenStream,
+    ExecutorOp::Describe,
+    ExecutorOp::Query,
+    ExecutorOp::Cancel,
+];
+
+const WORKER_OPS: [ExecutorOp; 4] = [
+    ExecutorOp::Exec,
+    ExecutorOp::Read,
+    ExecutorOp::Write,
+    ExecutorOp::Edit,
+];
+
+/// Operations the host can actually perform. On Linux and macOS form A needs
+/// a root daemon to switch to the profile's OS identity. On Windows the
+/// daemon runs in the desktop session (not as a service) and executes as
+/// that user. Otherwise only the control operations remain and the rest
+/// return Capability.
 fn host_capabilities() -> BTreeSet<ExecutorOp> {
-    let caps: BTreeSet<ExecutorOp> = [
-        ExecutorOp::OpenStream,
-        ExecutorOp::Describe,
-        ExecutorOp::Query,
-        ExecutorOp::Cancel,
-    ]
-    .into_iter()
-    .collect();
+    let mut caps: BTreeSet<ExecutorOp> = CONTROL_OPS.into_iter().collect();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if unsafe { libc::geteuid() } == 0 {
-        let mut caps = caps;
-        caps.extend([
-            ExecutorOp::Exec,
-            ExecutorOp::Read,
-            ExecutorOp::Write,
-            ExecutorOp::Edit,
-        ]);
-        return caps;
+    let can_run = unsafe { libc::geteuid() } == 0;
+    #[cfg(windows)]
+    let can_run = true;
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let can_run = false;
+    if can_run {
+        caps.extend(WORKER_OPS);
     }
     caps
 }
+
+/// Whether this host runs the profile's operations under the identity the
+/// profile names: a root Unix daemon needs `run_as` to switch to, a Windows
+/// host cannot switch users, so its profiles leave `run_as` out.
+pub(crate) fn host_honors_run_as(profile: &ExecutorProfile) -> bool {
+    if cfg!(windows) {
+        profile.run_as.is_none()
+    } else {
+        profile.run_as.is_some()
+    }
+}
+
+pub(crate) fn is_host_absolute(path: &str) -> bool {
+    !path.contains('\0') && std::path::Path::new(path).is_absolute()
+}
+
+pub(crate) const RUN_AS_MISMATCH: &str = if cfg!(windows) {
+    "this host runs operations as its own user and cannot switch to the profile's run_as"
+} else {
+    "the profile has no run_as to switch to"
+};
 
 impl NodeExecutor {
     /// Open the ledger (single writer) and start the lease watchdog and GC.

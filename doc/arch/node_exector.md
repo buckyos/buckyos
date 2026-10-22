@@ -223,6 +223,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
 - 缺省关闭。开启要求至少一个完整 profile；首期 `principals` 逐个匹配权威 Agent DID，不接受通配或 User/普通 App 直登。
 - `run_as`、roots、env 是管理员授权上限，请求不能自选 UID、shell、结果目录或扩大 roots。
 - 形态 A 的 worker UID 非 0 且不同于 daemon；非 root daemon 返回 Capability，不以同 UID 执行。形态 C 的 `run_as` 无意义，由宿主 App 权限决定。
+- Windows 上 node_daemon 在用户桌面会话中运行（不是系统服务，否则无法使用桌面软件），不能切换用户：profile 必须省略 `run_as`，操作以 node_daemon 所属的桌面用户身份执行。Unix 上省略 `run_as`、Windows 上设置 `run_as` 的 profile 都只授予控制能力，执行类请求返回 Capability。
 - roots 约束 cwd 和内置文件工具，**不约束 shell 内任意程序的 I/O**；OS 账号权限才是实际边界。不把 roots 描述成 sandbox。
 - 未知字段、空白名单、非法 uid/gid 均拒绝启用；未实现 worker 的平台仅开放控制能力，执行请求返回 Capability；旧 NodeConfig 无该段时行为不变。
 
@@ -403,7 +404,8 @@ Stream 上是长度前缀的 JSON 控制帧 + 二进制数据帧（单帧 ≤ 16
 
 - 每个 `exec` 一个 worker 子进程：清 supplementary groups → setgid/setuid → 清 capabilities + no_new_privs → 清 env/fd；任一步失败即不执行。
 - Linux 与 macOS 的 root daemon 共用同一降权序列：组表显式设为 `[gid]` 后 setgid/setuid，切换后核对 uid/euid/gid/egid 与内核组表，不符即不执行。macOS 的 egid 就是组表首项（XNU `cr_groups[0]`），`setgroups(0, NULL)` 会把 egid 置为 0（wheel），不能用来清组表。macOS 没有 capabilities 与 no_new_privs，降权后的进程仍可执行 setuid 程序，实际边界是 run_as 账号本身（§15）。
-- 文件 read/write/edit **也在 worker 身份下**完成，不在高权限 daemon 里做 I/O。
+- Windows 不降权：shell 是 PowerShell（PATH 中的 `pwsh.exe`，否则用系统自带的 `powershell.exe`），以 `-NoProfile -NonInteractive -EncodedCommand` 运行固定包装脚本；脚本内容经 stdin 以 UTF-8 传入后作为 ScriptBlock 执行，进程退出码取 `$LASTEXITCODE`，未捕获的终止错误写入 stderr 并以 1 退出。进程不带窗口（`CREATE_NO_WINDOW`），并在写入脚本前加入独立 Job Object；cancel/timeout 通过 `TerminateJobObject` 结束整棵进程树。Job 不设置 KILL_ON_JOB_CLOSE，正常退出后后台进程保留，与 Unix 行为一致。env 不继承 daemon 环境，只从白名单（PATH、PATHEXT、SystemRoot、TEMP、USERPROFILE、APPDATA 等）复制 profile 未定义的变量。
+- 文件 read/write/edit **也在 worker 身份下**完成，不在高权限 daemon 里做 I/O。Windows 的文件 worker 与 daemon 同身份，但仍在独立子进程中执行：先用 `FILE_FLAG_BACKUP_SEMANTICS` 打开父目录且不共享 DELETE（持有期间父目录不能被改名），再用 `GetFinalPathNameByHandleW` 取得实际路径并与 roots 比较；读取不跟随 reparse point（`FILE_FLAG_OPEN_REPARSE_POINT`），写入使用同目录临时文件并 rename。
 - 路径/roots/symlink 校验在目标 worker 实际 I/O 处完成，以受控目录句柄避免校验后路径被调包；Executor 内同一 canonical path 的写操作串行化。临时文件 + rename 防止半写，expected_hash 检测冲突，但不承诺与外部 shell 写入之间的事务/CAS 隔离。
 - env 从 profile 构造再叠加允许的覆盖；禁止注入 daemon token、设备密钥、`BUCKYOS_*` 身份变量、控制侧 Session 路径。
 - 输出由父进程经有界管道收集；cancel 不被大输出堵塞；杀 worker 不等于 shell 已停，缺确认即 unknown。
@@ -606,7 +608,7 @@ $BUCKYOS_ROOT/local/node_daemon/executor/        （形态 A；0700，daemon 私
 | P2 恢复通道 | §8、§9：posture、声明发现、本地触发、等待期、签名脚本、恢复 Stream | 无头 OOD 在 Zone 不可达时可被 Owner 恢复 |
 | P2 形态 C | 移动端嵌入；平台适配层 | 电视盒子配置场景 |
 | 后续：Thunk（未排期） | 先定稿 §6.2 的 FunctionObject 执行契约与三路径分工，再重审 config.thunks、各类 runner、状态回报及 TaskMgr 接线 | 开工前完成契约评审；实现后的端到端标准据此制定，候选场景见下表 |
-| 后续 | 远端 PromptExec（先完成持久 run/call 契约）、完整 Session 远端运行（TODO §9.4）、Operator、Windows worker、跨 Zone | — |
+| 后续 | 远端 PromptExec（先完成持久 run/call 契约）、完整 Session 远端运行（TODO §9.4）、Operator、跨 Zone | — |
 
 Command Stream、轻量客户端与恢复通道的验收场景（随各自阶段执行）：
 
@@ -700,8 +702,9 @@ cargo check --workspace
 - 正常授权采用有界传播和短租期，控制面不可用会暂停执行入口并取消活跃操作；断线可恢复不代表执行可以永久脱离授权控制面。
 - Frozen 的 DoS 面（§9.4）；等待期不能区分合法用户与持同一 key 的攻击者（§9.5）。
 - 形态 C 的后台运行、权限与各平台能力未验证；cyfs-gateway-lib 在移动端的可嵌入性未验证。
-- 命令与文件执行支持 Linux 与 macOS 的 root daemon；非 root daemon 与 Windows 保留 `open_stream` / `describe` / `query` / `cancel` 控制能力，执行、文件操作及带 workdir 的 describe 返回 Capability。降权、进程组与 fd 路径校验（Linux `/proc/self/fd`，macOS `F_GETPATH`）按目标平台隔离编译。
-- Windows 的 worker 降权未设计。
+- 命令与文件执行支持 Linux、macOS 的 root daemon 和 Windows 桌面会话中的 daemon；非 root 的 Unix daemon 保留 `open_stream` / `describe` / `query` / `cancel` 控制能力，执行、文件操作及带 workdir 的 describe 返回 Capability。降权、进程组/Job Object 与句柄路径校验（Linux `/proc/self/fd`，macOS `F_GETPATH`，Windows `GetFinalPathNameByHandleW`）按目标平台隔离编译。
+- Windows 不切换用户：Agent 拥有 node_daemon 所属桌面用户的全部权限（含该用户能访问的所有文件、凭据和已登录的桌面软件），roots 只约束 cwd 与内置文件工具。只应把 Windows 节点的 profile 授权给完全受信任的 Agent。
+- Windows 的进程在 spawn 之后、写入脚本之前才加入 Job Object；加入失败时结束该进程并报错。PowerShell 包装脚本设置 `$ErrorActionPreference = 'Stop'`，非终止错误也会中断脚本并以 1 退出。
 - macOS 没有 no_new_privs：降权后的 shell 仍可执行 setuid 程序（如 sudo），run_as 应使用不在 admin 组、没有 sudo 权限的专用账号。macOS 上 uid/gid 65534 没有对应账号，`nobody` 是 4294967294（-2）。TCC 保护的目录（Desktop、Documents、Downloads 等）不受 Unix 权限约束，作为 roots 时可能需要给 node_daemon 授予“完全磁盘访问权限”，否则访问被拒（Forbidden）；此项未在真机验证。
 - 恢复端点的结果真实性在 D-10 定稿前只依赖 HTTPS。
 
@@ -810,3 +813,14 @@ DV 中发现并已修正：SOCKS hook 对 IP 目标只有 `REQ.target.type = "ip
 - 已验证（macOS 15.7.7 arm64）：非 root 下同一命令通过，platform 2 项覆盖能力拒绝分支，端到端用例跳过。以 root 运行同一批测试可执行文件，RLIMIT_NOFILE 为 1048575 与 256 时均全部通过（单测 4、端到端 8、platform 2、remote_node 1），端到端用例另重复 3 轮通过。用 std `Command::uid/gid` 启动 `/usr/bin/id` 得到 `egid=0(wheel) groups=0(wheel)`，证实上述 XNU 行为。变异：降权改回 std 的 setgid → `setgroups(0, NULL)` → setuid 且不核对，文件用例读到 root:0 0640 文件而失败，exec 用例通过（bash 复位了 egid）；去掉 fd 置 CLOEXEC，exec 用例报 leaked-fd。`cargo check -p node_daemon` 通过。
 - 逐个 fcntl 的开销与 RLIMIT_NOFILE 成正比：上限 1048575 时每次 spawn 约 0.1 s（端到端用例共 11.3 s，上限 256 时 8.6 s）。正式安装由 LaunchDaemon 启动，默认软上限 256，可忽略；从调高 ulimit 的 shell 启动开发环境时，每个 exec 多约 0.2 s（解析 cwd 与 shell 各 spawn 一次）。
 - 未验证：macOS DV（真实 Zone 中以 root 运行的 node_daemon 经网关 SOCKS 入口执行）；TCC 保护目录作为 roots 的行为（§15）。
+
+### 17.9 Windows 桌面会话（2026-10-21）
+
+- 范围：Windows 上 node_daemon 在用户桌面会话中运行，不切换用户，开放 exec/read/write/edit；Command Stream 协议与账本不变。
+- 配置：`ExecutorProfile.run_as` 改为可选，`ExecutorRuntimeTarget.uid/gid` 同为可选。roots 接受 Unix 绝对路径与盘符绝对路径（`C:\...`、`D:/...`），拒绝 UNC、盘符相对路径（`C:ws`）与 `..`。登录时 profile 的 `run_as` 与宿主不符（Windows 有 run_as、Unix 没有）只授予控制能力，执行类请求返回 Capability（§5.4）。
+- 执行：PowerShell 包装脚本、Job Object 结束进程树、env 白名单（§7.5）。文件 worker 拆为平台无关的 `worker.rs` 与 `worker_unix.rs` / `worker_windows.rs`；Windows 用父目录句柄 + `GetFinalPathNameByHandleW` 校验 roots，结果路径去掉 `\\?\` 前缀。Win32 函数沿用 agent_tool 的做法直接声明 FFI，未新增依赖。
+- agent_tool：remote_node 的 workdir 校验改用 `buckyos_api::is_absolute_node_path`；目标节点 `os == "windows"` 时 shell 工具提示使用 PowerShell 语法；workdir 为盘符路径时按 Windows 规则做词法解析和 roots 比较（不区分大小写），与控制侧 OS 无关，因此 Linux 上的 Jarvis 也能驱动 Windows 节点。
+- 测试：新增 `tests/windows.rs`（真实 PowerShell 与 worker 进程）：describe、cwd/env 注入与密钥变量过滤、UTF-8 中文输出、stderr、外部命令与 `exit` 的退出码、终止错误、cwd 越界；cancel 与 timeout 均结束 `Start-Process` 启动的孙进程；文件工具的创建、哈希冲突、父目录创建、edit 行号、越界与指向 roots 外的 junction 均为 Forbidden。`tests/platform.rs` 新增 run_as 与宿主不符时只保留控制能力的用例。
+- 已验证（Windows）：`cargo test -p node_executor`（单测 3、platform 3、windows 3）、`cargo test -p buckyos-api node_executor`、`cargo test -p scheduler executor_auth`、`cargo check -p node_daemon` 通过；变异：把 Job 终止改为只杀 shell，cancel 用例因孙进程写出标记文件而失败。`cargo test -p agent_tool --lib` 中新增与 runtime 用例通过，agent_memory/read_tool 的 25 个用例在 Windows 上因文件被占用（拒绝访问）失败，与本次改动无关。
+- 已验证（Linux，WSL Debian root）：`cargo test -p node_executor -- --test-threads=1` 全部通过（单测 4、端到端 8、platform 3、remote_node 1）；`cargo check -p node_daemon` 通过；agent_tool lib 除缺少 `rg` 的 3 个 grep_tool 用例外全部通过。
+- 未验证：Windows DV（真实 Zone 中 Windows 节点经网关 SOCKS 入口执行）；由 Linux 控制侧驱动 Windows 节点的端到端链路。

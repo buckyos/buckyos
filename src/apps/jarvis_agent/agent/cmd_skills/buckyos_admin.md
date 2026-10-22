@@ -53,7 +53,8 @@ buckyos system info                                 # BuckyOS version, build_ver
 - Developer mode, Zone display, desktop appearance: Desktop UI (`system/buckyos_dev_config` needs a sudo token the CLI lacks).
 - Node Executor (Agents running commands/files on a node, `doc/arch/node_exector.md`): the setting is the `executor`
   field of `nodes/<node>/settings` (`enabled`, `allowed_devices` = exact device DIDs from `devices/<id>/info`,
-  `profiles.<id>` = `run_as{uid,gid}` (non-root), `workdir_roots`, `env`, `principals` = exact Agent DIDs, `ops`, and
+  `profiles.<id>` = `run_as{uid,gid}` (non-root; omitted for Windows nodes), `workdir_roots` (absolute node paths,
+  e.g. `C:\Users\<u>\ws` on Windows), `env`, `principals` = exact Agent DIDs, `ops`, and
   `limits`); writing it needs an owner sudo token. The scheduler turns it into `nodes/<node>/config.executor` (never
   edit): check `generation` grew, the Agent is in `principal_bindings` with `enabled`/`app_installed` true (a runtime
   shared by two AgentSpecs is not mapped), and `auth_valid_until_ms` keeps moving (30 s lease). On the node:
@@ -61,9 +62,12 @@ buckyos system info                                 # BuckyOS version, build_ver
   executor listens on `127.0.0.1:3184`, Agents enter through the gateway SOCKS entry `:3185`. Its ledger is
   `local/node_daemon/executor/`; a reinstall (`start.py --all`/`--reinstall`) clears `local/`, gives a new store_id, and
   earlier runs then report StoreMismatch instead of resuming. Command/file execution requires a Linux or macOS
-  node_daemon running as root; on macOS give `run_as` a dedicated non-admin account (no no_new_privs there, and uid
-  65534 has no account). Windows and non-root hosts expose only control capabilities (`open_stream`, `describe`,
-  `query`, `cancel`); execution, file operations, and workdir resolution return `Capability`.
+  node_daemon running as root, or a Windows node_daemon in the user's desktop session; on macOS give `run_as` a
+  dedicated non-admin account (no no_new_privs there, and uid 65534 has no account). Windows cannot switch users:
+  operations run as the desktop user with all of that user's rights, the shell is PowerShell, and only trusted
+  Agents should get a Windows profile. A profile whose `run_as` does not fit the host (missing on Unix, present on
+  Windows) and non-root Unix hosts expose only control capabilities (`open_stream`, `describe`, `query`, `cancel`);
+  execution, file operations, and workdir resolution return `Capability`.
 - The rest goes through raw `system-config get|list|set|set-file|append`. Settings (user-adjustable, fine to edit):
   `users/<u>/apps/<app>/settings`, `users/<u>/agents/<agent>/{settings,profile}`, `services/<svc>/settings`,
   `users/<u>/desktop/<session>/<state>`. Config (derived by the scheduler, rewritten or broken by hand edits):

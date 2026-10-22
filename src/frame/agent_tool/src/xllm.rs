@@ -4484,6 +4484,7 @@ fn shell_runtime_note(descriptor: &RuntimeDescriptor) -> ShellRuntimeNote {
     ShellRuntimeNote {
         kind: descriptor.kind.clone(),
         target,
+        os: descriptor.capabilities.os.clone(),
     }
 }
 

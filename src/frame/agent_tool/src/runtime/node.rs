@@ -692,11 +692,53 @@ impl NodeClient {
 }
 
 /// Lexical resolution against the remote workdir; the node resolves
-/// symlinks and enforces its roots.
+/// symlinks and enforces its roots. A Windows workdir (`C:\...`) follows
+/// Windows path rules whatever OS this side runs on.
 fn remote_resolve(root: &Path, raw: &str, allowed: &[PathBuf]) -> Result<PathBuf, AgentToolError> {
-    let lexical = crate::path_utils::resolve_path_from_root(root, raw)?;
-    check_allowed(&lexical, allowed)?;
-    Ok(lexical)
+    let root_text = root.to_string_lossy();
+    if !is_drive_path(&root_text) {
+        let lexical = crate::path_utils::resolve_path_from_root(root, raw)?;
+        check_allowed(&lexical, allowed)?;
+        return Ok(lexical);
+    }
+    if raw.trim().is_empty() {
+        return Err(AgentToolError::InvalidArgs("path cannot be empty".to_string()));
+    }
+    let lexical = if is_drive_path(raw) {
+        normalize_drive_path(raw)
+    } else {
+        normalize_drive_path(&format!("{root_text}\\{raw}"))
+    };
+    let inside = |root: &PathBuf| {
+        let root = normalize_drive_path(&root.to_string_lossy()).to_ascii_lowercase();
+        let path = lexical.to_ascii_lowercase();
+        path == root || path.starts_with(&format!("{}\\", root.trim_end_matches('\\')))
+    };
+    if !allowed.is_empty() && !allowed.iter().any(inside) {
+        return Err(AgentToolError::InvalidArgs(format!("path not allowed by policy: {lexical}")));
+    }
+    Ok(PathBuf::from(lexical))
+}
+
+fn is_drive_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/')
+}
+
+/// `C:/a/./b/../c` → `C:\a\c`; `..` stops at the drive root.
+fn normalize_drive_path(path: &str) -> String {
+    let (drive, rest) = path.split_at(2);
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split(['\\', '/']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    format!("{}\\{}", drive.to_ascii_uppercase(), parts.join("\\"))
 }
 
 fn current_call_id(what: &str) -> Result<String, AgentToolError> {
@@ -1546,5 +1588,23 @@ impl NodeExecutorConnector for BuckyosNodeConnector {
 
     async fn session_token(&self) -> Result<String, String> {
         self.inner().await.map_err(|e| e.to_string())?.session_token().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_workdirs_resolve_with_windows_rules_on_any_host() {
+        let root = Path::new(r"C:\Users\owner\ws");
+        let allowed = [root.to_path_buf()];
+        let resolve = |raw: &str| remote_resolve(root, raw, &allowed).map(|p| p.to_string_lossy().to_string());
+        assert_eq!(resolve("src/main.rs").unwrap(), r"C:\Users\owner\ws\src\main.rs");
+        assert_eq!(resolve(r"a\..\b.txt").unwrap(), r"C:\Users\owner\ws\b.txt");
+        assert_eq!(resolve(r"c:/users/OWNER/ws/x").unwrap(), r"C:\users\OWNER\ws\x");
+        assert!(resolve(r"..\other").is_err());
+        assert!(resolve(r"D:\ws").is_err());
+        assert_eq!(remote_resolve(root, r"D:\x\..\y", &[]).unwrap(), PathBuf::from(r"D:\y"));
     }
 }

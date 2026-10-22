@@ -16,20 +16,47 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, watch};
 
 use crate::now_ms;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::spawn::signal_group;
 use crate::spawn::{run_file_job, spawn_shell, FileJobOutcome, WorkerLauncher};
 use crate::store::{Dedupe, OpBudget, OpIdentity, OpRequestRecord, Store, STORE_SCHEMA_VERSION};
 use crate::worker::WorkerJob;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const TERM_GRACE: Duration = Duration::from_secs(2);
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 const PUSH_CHUNK: usize = 16 * 1024;
 #[cfg(target_os = "macos")]
 const DEFAULT_LANG: &str = "en_US.UTF-8";
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 const DEFAULT_LANG: &str = "C.UTF-8";
+/// Host variables a Windows shell needs that a profile normally leaves out;
+/// the profile's own values win. Identity and control-side variables are
+/// never copied.
+#[cfg(windows)]
+const WINDOWS_HOST_ENV: [&str; 25] = [
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "ComSpec",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "USERNAME",
+    "USERDOMAIN",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "PUBLIC",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelReason {
@@ -105,7 +132,7 @@ fn internal(e: impl std::fmt::Display) -> ExecutorError {
 
 fn validate_spec(spec: &ExecutorOpSpec, limits: &ExecutorLimits) -> Result<(), ExecutorError> {
     let abs = |p: &str| -> Result<(), ExecutorError> {
-        if !p.starts_with('/') || p.contains('\0') {
+        if !crate::is_host_absolute(p) {
             return Err(err(
                 ExecutorErrorCode::InvalidArgument,
                 format!("path `{p}` must be absolute"),
@@ -510,13 +537,25 @@ impl OpsManager {
         for (k, v) in overrides {
             env.insert(k.clone(), v.clone());
         }
-        env.entry("PATH".into())
-            .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
-        env.entry("LANG".into()).or_insert_with(|| DEFAULT_LANG.into());
-        if let Some((home, name)) = passwd_entry(profile.run_as.uid) {
-            env.entry("HOME".into()).or_insert(home);
-            env.entry("USER".into()).or_insert(name.clone());
-            env.entry("LOGNAME".into()).or_insert(name);
+        #[cfg(unix)]
+        {
+            env.entry("PATH".into())
+                .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
+            env.entry("LANG".into()).or_insert_with(|| DEFAULT_LANG.into());
+            if let Some((home, name)) = profile.run_as.as_ref().and_then(|r| passwd_entry(r.uid)) {
+                env.entry("HOME".into()).or_insert(home);
+                env.entry("USER".into()).or_insert(name.clone());
+                env.entry("LOGNAME".into()).or_insert(name);
+            }
+        }
+        #[cfg(windows)]
+        for name in WINDOWS_HOST_ENV {
+            if env.keys().any(|k| k.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            if let Ok(value) = std::env::var(name) {
+                env.insert(name.to_string(), value);
+            }
         }
         env
     }
@@ -534,7 +573,7 @@ impl OpsManager {
         let run_as = op.profile.run_as.clone();
         let cwd = match self
             .worker_job(
-                &run_as,
+                run_as.as_ref(),
                 &WorkerJob::ResolveDir {
                     path: cwd.clone(),
                     roots: op.profile.workdir_roots.clone(),
@@ -562,7 +601,7 @@ impl OpsManager {
                 ExecutorOpState::Cancelled,
             );
         }
-        let mut child = match spawn_shell(&self.shell, &run_as, &cwd, &env) {
+        let mut shell = match spawn_shell(&self.shell, run_as.as_ref(), &cwd, &env) {
             Ok(c) => c,
             Err(e) => {
                 drop(gate);
@@ -572,11 +611,11 @@ impl OpsManager {
                 );
             }
         };
-        let pid = child.id().unwrap_or(0);
+        let pid = shell.pid();
         drop(gate);
         self.mark_running(op, Some(pid)).await;
 
-        let mut stdin = child.stdin.take().expect("piped stdin");
+        let mut stdin = shell.child.stdin.take().expect("piped stdin");
         let script = cmd.clone().into_bytes();
         tokio::spawn(async move {
             let _ = stdin.write_all(&script).await;
@@ -588,8 +627,8 @@ impl OpsManager {
         let storage_failed = Arc::new(Mutex::new(false));
         let mut collectors = Vec::new();
         for (channel, pipe) in [
-            (ExecutorChannel::Stdout, child.stdout.take().map(Pipe::Out)),
-            (ExecutorChannel::Stderr, child.stderr.take().map(Pipe::Err)),
+            (ExecutorChannel::Stdout, shell.child.stdout.take().map(Pipe::Out)),
+            (ExecutorChannel::Stderr, shell.child.stderr.take().map(Pipe::Err)),
         ] {
             let Some(pipe) = pipe else { continue };
             collectors.push(tokio::spawn(collect(
@@ -612,17 +651,17 @@ impl OpsManager {
         tokio::pin!(sleep);
         let status = loop {
             tokio::select! {
-                status = child.wait() => break status,
+                status = shell.child.wait() => break status,
                 _ = &mut sleep, if !timed_out && cancelled.is_none() => {
                     timed_out = true;
-                    terminate(pid, &mut child).await;
+                    shell.terminate().await;
                 }
                 changed = cancel_rx.changed(), if cancelled.is_none() && !timed_out => {
                     if changed.is_err() { continue; }
                     let reason = *cancel_rx.borrow();
                     if let Some(reason) = reason {
                         cancelled = Some(reason);
-                        terminate(pid, &mut child).await;
+                        shell.terminate().await;
                     }
                 }
             }
@@ -699,7 +738,7 @@ impl OpsManager {
         }
     }
 
-    async fn worker_job(&self, run_as: &ExecutorRunAs, job: &WorkerJob, payload: &[u8], max_reply: u64) -> FileJobOutcome {
+    async fn worker_job(&self, run_as: Option<&ExecutorRunAs>, job: &WorkerJob, payload: &[u8], max_reply: u64) -> FileJobOutcome {
         run_file_job(&self.launcher, run_as, job, payload, max_reply).await
     }
 
@@ -723,7 +762,7 @@ impl OpsManager {
         if let ExecutorOpSpec::Write { path, .. } | ExecutorOpSpec::Edit { path, .. } = &record.spec {
             let target = match self
                 .worker_job(
-                    &run_as,
+                    run_as.as_ref(),
                     &WorkerJob::ResolveTarget {
                         path: path.clone(),
                         roots: roots.clone(),
@@ -807,7 +846,7 @@ impl OpsManager {
         drop(gate);
         self.mark_running(op, None).await;
         let reply_payload = if matches!(record.spec, ExecutorOpSpec::Write { .. }) { 0 } else { max_file };
-        match self.worker_job(&run_as, &job, &payload, reply_payload).await {
+        match self.worker_job(run_as.as_ref(), &job, &payload, reply_payload).await {
             FileJobOutcome::SpawnFailed(e) => Self::failed(e, ExecutorOpState::Failed),
             FileJobOutcome::Unknown(e) => {
                 if mutating {
@@ -948,21 +987,6 @@ async fn collect(
     )
 }
 
-/// SIGTERM the process group, SIGKILL after a grace period, and confirm the
-/// leader exited.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn terminate(pgid: u32, child: &mut tokio::process::Child) {
-    signal_group(pgid, libc::SIGTERM);
-    if tokio::time::timeout(TERM_GRACE, child.wait()).await.is_err() {
-        signal_group(pgid, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-async fn terminate(_pgid: u32, child: &mut tokio::process::Child) {
-    let _ = child.start_kill();
-}
-
 #[cfg(unix)]
 fn passwd_entry(uid: u32) -> Option<(String, String)> {
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
@@ -975,9 +999,4 @@ fn passwd_entry(uid: u32) -> Option<(String, String)> {
     let home = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) }.to_string_lossy().to_string();
     let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }.to_string_lossy().to_string();
     Some((home, name))
-}
-
-#[cfg(not(unix))]
-fn passwd_entry(_uid: u32) -> Option<(String, String)> {
-    None
 }

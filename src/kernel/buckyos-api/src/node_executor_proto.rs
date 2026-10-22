@@ -320,8 +320,11 @@ pub struct ExecutorLoginOk {
 pub struct ExecutorRuntimeTarget {
     pub node_did: String,
     pub profile_id: String,
-    pub uid: u32,
-    pub gid: u32,
+    /// The profile's `run_as`; absent when operations run as the host's user.
+    #[serde(default)]
+    pub uid: Option<u32>,
+    #[serde(default)]
+    pub gid: Option<u32>,
     #[serde(default)]
     pub workdir: Option<String>,
     pub store_id: String,

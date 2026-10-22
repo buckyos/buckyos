@@ -121,6 +121,8 @@ pub struct ShellRuntimeNote {
     pub kind: String,
     /// tmux session name / SSH host, when relevant.
     pub target: String,
+    /// OS of a `remote_node` target (`std::env::consts::OS` naming).
+    pub os: String,
 }
 
 impl ShellRuntimeNote {
@@ -128,11 +130,17 @@ impl ShellRuntimeNote {
         Self {
             kind: "native".into(),
             target: String::new(),
+            os: String::new(),
         }
     }
 
+    /// Windows nodes run `remote_node` commands in PowerShell, like native.
     fn powershell(&self) -> bool {
-        cfg!(windows) && self.kind == "native"
+        match self.kind.as_str() {
+            "native" => cfg!(windows),
+            "remote_node" => self.os == "windows",
+            _ => false,
+        }
     }
 
     fn lifecycle_sentence(&self) -> String {
@@ -2508,11 +2516,23 @@ mod tests {
             .with_runtime_note(ShellRuntimeNote {
                 kind: "tmux".into(),
                 target: "od_x".into(),
+                os: String::new(),
             });
         let spec = ShellTool::new(cfg).spec();
         assert!(spec.description.contains("Default timeout 90s, max 120s"));
         assert!(spec.description.contains("tmux session `od_x`"));
         assert!(spec.description.contains("bash"));
+
+        for (os, language) in [("windows", "PowerShell"), ("linux", "bash")] {
+            let (_dir, workspace) = ws();
+            let cfg = LlmBashConfig::local_workspace(workspace).with_runtime_note(ShellRuntimeNote {
+                kind: "remote_node".into(),
+                target: "did:web:pc.test.buckyos.io".into(),
+                os: os.into(),
+            });
+            let spec = ShellTool::new(cfg).spec();
+            assert!(spec.description.contains(&format!("with {language} syntax")), "{os}");
+        }
         assert!(spec.usage.unwrap_or_default().contains("timeout_ms=90000"));
     }
 

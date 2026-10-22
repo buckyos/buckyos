@@ -155,6 +155,12 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
         RuntimeRegistry::from_config(&no_profile),
         Err(XllmError::Config { .. })
     ));
+    for (workdir, ok) in [(r"C:\Users\devtest\ws", true), ("ws", false), (r"C:ws", false)] {
+        let mut windows_node = node.clone();
+        windows_node.workdir = Some(workdir.into());
+        let result = RuntimeRegistry::from_config(&windows_node);
+        assert_eq!(!matches!(result, Err(XllmError::Config { .. })), ok, "{workdir}");
+    }
     let parsed = crate::xllm::parse_llm_context_file(
         Path::new(".llm_context"),
         "runtime: {kind: remote_node, workdir: /home/devtest/ws, remote_node: {node_did: did:web:ood1.test.buckyos.io, profile_id: dev}}",

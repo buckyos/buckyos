@@ -197,10 +197,12 @@ pub fn map_login(
             "the Agent is not a principal of this profile",
         ));
     }
+    let fits_host = crate::host_honors_run_as(profile);
     let caps: BTreeSet<ExecutorOp> = config
         .granted_ops(profile_id, agent_did)
         .intersection(host_caps)
         .copied()
+        .filter(|op| fits_host || crate::CONTROL_OPS.contains(op))
         .collect();
     if !caps.contains(&ExecutorOp::OpenStream) {
         return Err(denied(ExecutorErrorCode::Forbidden, "open_stream is not granted"));

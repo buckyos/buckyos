@@ -86,7 +86,10 @@ pub struct ExecutorRunAs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorProfile {
-    pub run_as: ExecutorRunAs,
+    /// OS identity a root Unix daemon switches to. Absent on hosts that run
+    /// operations as their own user and cannot switch (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<ExecutorRunAs>,
     pub workdir_roots: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -103,15 +106,14 @@ impl ExecutorProfile {
         if !is_valid_profile_id(profile_id) {
             return Err(format!("invalid executor profile id `{profile_id}`"));
         }
-        if self.run_as.uid == 0 || self.run_as.gid == 0 {
+        if self.run_as.as_ref().is_some_and(|r| r.uid == 0 || r.gid == 0) {
             return Err(format!("profile `{profile_id}`: run_as must not be root"));
         }
         if self.workdir_roots.is_empty() {
             return Err(format!("profile `{profile_id}`: workdir_roots is empty"));
         }
         for root in &self.workdir_roots {
-            if !root.starts_with('/') || root.contains('\0') || root.split('/').any(|c| c == "..")
-            {
+            if !is_absolute_node_path(root) || root.split(['/', '\\']).any(|c| c == "..") {
                 return Err(format!(
                     "profile `{profile_id}`: workdir root `{root}` must be an absolute path"
                 ));
@@ -341,6 +343,17 @@ fn validate_allowed_devices(devices: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Absolute path on a node of any supported OS: `/...` or `C:\...` / `C:/...`.
+/// The node checks it again against its own path rules.
+pub fn is_absolute_node_path(path: &str) -> bool {
+    if path.contains('\0') {
+        return false;
+    }
+    let b = path.as_bytes();
+    path.starts_with('/')
+        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+}
+
 pub fn is_valid_profile_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -370,10 +383,10 @@ mod tests {
 
     fn profile() -> ExecutorProfile {
         ExecutorProfile {
-            run_as: ExecutorRunAs {
+            run_as: Some(ExecutorRunAs {
                 uid: 1001,
                 gid: 1001,
-            },
+            }),
             workdir_roots: vec!["/home/owner/ws".into()],
             env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
             principals: vec!["did:web:jarvis.test.buckyos.io".into()],
@@ -394,9 +407,18 @@ mod tests {
         };
         settings.validate().unwrap();
 
-        settings.profiles.get_mut("dev").unwrap().run_as.uid = 0;
+        settings.profiles.get_mut("dev").unwrap().run_as.as_mut().unwrap().uid = 0;
         assert!(settings.validate().is_err());
-        settings.profiles.get_mut("dev").unwrap().run_as.uid = 1001;
+        settings.profiles.get_mut("dev").unwrap().run_as = None;
+        settings.validate().unwrap();
+        settings.profiles.get_mut("dev").unwrap().workdir_roots =
+            vec![r"C:\Users\owner\ws".into(), "D:/data".into()];
+        settings.validate().unwrap();
+        for root in [r"C:\Users\..\ws", r"\\server\share", "C:ws", "ws"] {
+            settings.profiles.get_mut("dev").unwrap().workdir_roots = vec![root.into()];
+            assert!(settings.validate().is_err(), "{root}");
+        }
+        settings.profiles.get_mut("dev").unwrap().workdir_roots = vec!["/home/owner/ws".into()];
         settings.profiles.get_mut("dev").unwrap().principals = vec!["*".into()];
         assert!(settings.validate().is_err());
         settings.profiles.get_mut("dev").unwrap().principals =

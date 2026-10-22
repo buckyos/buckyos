@@ -400,7 +400,7 @@ mod tests {
                 profiles: BTreeMap::from([(
                     "dev".to_string(),
                     ExecutorProfile {
-                        run_as: ExecutorRunAs { uid: 1001, gid: 1001 },
+                        run_as: Some(ExecutorRunAs { uid: 1001, gid: 1001 }),
                         workdir_roots: vec!["/home/devtest/ws".into()],
                         env: BTreeMap::new(),
                         principals: vec![agent.agent_did.to_string()],
