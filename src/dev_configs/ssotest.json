@@ -1,0 +1,148 @@
+{
+    "app_configs": {
+      "web3-gateway": "../../cyfs-gateway/src/dev_configs/apps/web3-gateway.json"
+    },
+    "nodes": {
+      "sn": {
+        "node_id": "sn",
+        "vm_template": "ubuntu_sn",
+        "vm_params": {
+          "cpu": 1,
+          "memory": "2G",
+          "disk": "8G"
+        },
+        "network": {
+          "lan_id": "wan",
+          "type": "bridge"
+        },
+        "apps": {
+          "web3-gateway": {
+            "node_group_name": "sn_server"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname sn",
+          "sudo mkdir -p /opt/web3-gateway",
+          "sudo chown -R ubuntu:ubuntu /opt/web3-gateway",
+          "sudo iptables -I INPUT -p udp --dport 53 -j ACCEPT",
+          "sudo iptables -I INPUT -p tcp --dport 53 -j ACCEPT"
+        ],
+        "instance_commands": [
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn.ip}} web3.devtests.org' >> /etc/hosts\""
+          ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+
+      "alice-ood1": {
+        "node_id": "alice_ood1",
+        "vm_template": "ubuntu_basic",
+        "vm_params": {
+          "cpu": 2,
+          "memory": "4G",
+          "disk": "16G",
+          "agent_timeout": 900
+        },
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "alice.ood1"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname alice-ood1",
+          "sudo mkdir -p /opt/buckyos",
+          "sudo chown -R ubuntu:ubuntu /opt/buckyos",
+          "sudo tee /etc/systemd/system/ssotest-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=ssotest: reject inbound 80/443/2980 to simulate a NAT OOD\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
+          "sudo systemctl daemon-reload && sudo systemctl enable --now ssotest-firewall.service"
+        ],
+        "instance_commands": [
+            "sudo mkdir -p /etc/systemd/resolved.conf.d",
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org ~charlie.me\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDNSStubListenerExtra=172.17.0.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo systemctl restart systemd-resolved",
+            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker",
+            "sudo sh -c \"echo '{{charlie-ood1.ip}} charlie.me' >> /etc/hosts\""
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+
+      "bob-ood1": {
+        "node_id": "bob_ood1",
+        "vm_template": "ubuntu_basic",
+        "vm_params": {
+          "cpu": 2,
+          "memory": "4G",
+          "disk": "16G",
+          "agent_timeout": 900
+        },
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "bob.ood1"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname bob-ood1",
+          "sudo mkdir -p /opt/buckyos",
+          "sudo chown -R ubuntu:ubuntu /opt/buckyos"
+        ],
+        "instance_commands": [
+            "sudo mkdir -p /etc/systemd/resolved.conf.d",
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org ~charlie.me\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDNSStubListenerExtra=172.17.0.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo systemctl restart systemd-resolved",
+            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker",
+            "sudo sh -c \"echo '{{charlie-ood1.ip}} charlie.me' >> /etc/hosts\""
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      },
+
+      "charlie-ood1": {
+        "node_id": "charlie_ood1",
+        "vm_template": "ubuntu_basic",
+        "vm_params": {
+          "cpu": 2,
+          "memory": "4G",
+          "disk": "16G",
+          "agent_timeout": 900
+        },
+        "network": {
+          "lan_id": "lan",
+          "type": "nat"
+        },
+        "apps": {
+          "buckyos" : {
+            "node_group": "charlie.ood1"
+          }
+        },
+        "init_commands": [
+          "sudo hostnamectl set-hostname charlie-ood1",
+          "sudo mkdir -p /opt/buckyos",
+          "sudo chown -R ubuntu:ubuntu /opt/buckyos",
+          "sudo tee /etc/systemd/system/ssotest-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=ssotest: the router maps 80/443 and the RTCP port 2981, not 2980\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp --dport 2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
+          "sudo systemctl daemon-reload && sudo systemctl enable --now ssotest-firewall.service"
+        ],
+        "instance_commands": [
+            "sudo mkdir -p /etc/systemd/resolved.conf.d",
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org ~charlie.me\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDNSStubListenerExtra=172.17.0.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo systemctl restart systemd-resolved",
+            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker"
+        ],
+        "directories": {
+          "logs": "/opt/buckyos/logs"
+        }
+      }
+    },
+    "instance_order": ["sn", "alice-ood1", "bob-ood1", "charlie-ood1"]
+  }

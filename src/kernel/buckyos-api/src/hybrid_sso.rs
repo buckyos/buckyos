@@ -774,6 +774,16 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+/// The Zone that vouches for an owner DID in DID federation (contract §9.1): the first
+/// `binded_zone_list` entry, or, when the list is empty, the DID itself — a self-hosted Zone
+/// whose owner DID is also the Zone DID (`did:bns:alice` owning `alice.bns.did`) binds no other
+/// zone. A DID that is no Zone then fails when its ZoneDocument is resolved.
+pub fn owner_canonical_zone(owner: &name_lib::OwnerDocument) -> name_lib::DID {
+    owner
+        .get_default_zone_did()
+        .unwrap_or_else(|| owner.id.clone())
+}
+
 /// base64url(sha256(secret)) as stored in invite records.
 pub fn invite_secret_digest(secret: &str) -> String {
     use base64::Engine;
@@ -823,16 +833,27 @@ mod tests {
     fn ceiling_claims_round_trip_and_fail_closed() {
         let mut t = token();
         bind_token_ceiling(&mut t, &SessionCeiling::external());
-        assert_eq!(token_session_ceiling(&t).unwrap(), SessionCeiling::external());
+        assert_eq!(
+            token_session_ceiling(&t).unwrap(),
+            SessionCeiling::external()
+        );
         bind_token_ceiling(&mut t, &SessionCeiling::unrestricted());
         assert!(!t.extra.contains_key(TOKEN_RESTRICTED_CLAIM));
-        assert_eq!(token_session_ceiling(&t).unwrap(), SessionCeiling::unrestricted());
+        assert_eq!(
+            token_session_ceiling(&t).unwrap(),
+            SessionCeiling::unrestricted()
+        );
 
-        t.extra.insert(TOKEN_RESTRICTED_CLAIM.into(), Value::Bool(true));
+        t.extra
+            .insert(TOKEN_RESTRICTED_CLAIM.into(), Value::Bool(true));
         assert!(token_session_ceiling(&t).is_err());
-        t.extra.insert(TOKEN_SCOPES_CLAIM.into(), serde_json::json!(["msg_group", "bogus"]));
+        t.extra.insert(
+            TOKEN_SCOPES_CLAIM.into(),
+            serde_json::json!(["msg_group", "bogus"]),
+        );
         assert!(token_session_ceiling(&t).is_err());
-        t.extra.insert(TOKEN_RESTRICTED_CLAIM.into(), Value::String("yes".into()));
+        t.extra
+            .insert(TOKEN_RESTRICTED_CLAIM.into(), Value::String("yes".into()));
         assert!(token_session_ceiling(&t).is_err());
         let mut scoped_unrestricted = token();
         scoped_unrestricted
@@ -843,7 +864,8 @@ mod tests {
 
     #[test]
     fn denial_round_trips_through_the_rpc_error_code() {
-        let denial = AccessDenial::new(DenyReason::ResourceGrantMissing).at("aiworkspace", "doc.read");
+        let denial =
+            AccessDenial::new(DenyReason::ResourceGrantMissing).at("aiworkspace", "doc.read");
         let error = denial.clone().into_rpc_error();
         assert_eq!(error.detail().unwrap().code, ACCESS_DENIED_ERROR_CODE);
         assert_eq!(AccessDenial::from_rpc_error(&error), Some(denial));
@@ -889,6 +911,21 @@ mod tests {
         assert!(!effective.self_register && effective.password);
         assert_eq!(closed, vec![EntryMethod::SelfRegister]);
         assert!(effective.allows_session(Some(AuthMethod::Password)));
+    }
+
+    #[test]
+    fn a_self_hosted_owner_is_its_own_canonical_zone() {
+        let key: jsonwebtoken::jwk::Jwk = serde_json::from_value(serde_json::json!({
+            "kty": "OKP", "crv": "Ed25519", "x": "qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"
+        }))
+        .unwrap();
+        let alice = name_lib::DID::new("bns", "alice");
+        let mut owner =
+            name_lib::OwnerDocument::new(alice.clone(), "alice".into(), "Alice".into(), key);
+        assert_eq!(owner_canonical_zone(&owner), alice);
+        let charlie_me = name_lib::DID::new("web", "charlie.me");
+        owner.set_default_zone_did(charlie_me.clone());
+        assert_eq!(owner_canonical_zone(&owner), charlie_me);
     }
 
     #[test]
@@ -951,7 +988,10 @@ mod tests {
             Err(InviteLoginRefusal::PasswordRequired)
         );
         record.state = InviteState::Revoked;
-        assert_eq!(record.check_credential(&good, now), Err(InviteLoginRefusal::Revoked));
+        assert_eq!(
+            record.check_credential(&good, now),
+            Err(InviteLoginRefusal::Revoked)
+        );
         assert_eq!(
             InviteLoginRefusal::Expired.denial().reason,
             DenyReason::CredentialState

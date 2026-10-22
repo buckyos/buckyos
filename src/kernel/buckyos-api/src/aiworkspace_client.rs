@@ -96,7 +96,11 @@ impl AiWorkspaceClient {
 
     /// Call `method` and return the `result` object as is. Callers branch on
     /// `ok` / `status` / `error.code`, never on error text.
-    pub async fn call(&self, method: &str, params: Value) -> std::result::Result<Value, ::kRPC::RPCErrors> {
+    pub async fn call(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> std::result::Result<Value, ::kRPC::RPCErrors> {
         self.client.call(method, params).await
     }
 }

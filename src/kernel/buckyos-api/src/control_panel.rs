@@ -308,7 +308,10 @@ pub struct UserGroupDirectory {
 
 impl UserGroupDirectory {
     pub fn defined_group_ids(&self) -> std::collections::HashSet<String> {
-        self.groups.iter().map(|group| group.group_id.clone()).collect()
+        self.groups
+            .iter()
+            .map(|group| group.group_id.clone())
+            .collect()
     }
 
     pub fn projection_rules(&self) -> Vec<ContactProjectionRule> {
@@ -501,7 +504,11 @@ impl ControlPanelClient {
     /// (defaults while none were saved).
     pub async fn load_user_groups(&self) -> Result<UserGroupDirectory> {
         let mut groups = Vec::new();
-        let ids = match self.system_config_client.list(USER_GROUPS_CONFIG_PREFIX).await {
+        let ids = match self
+            .system_config_client
+            .list(USER_GROUPS_CONFIG_PREFIX)
+            .await
+        {
             Ok(ids) => ids,
             Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
             Err(error) => return Err(system_config_read_error(USER_GROUPS_CONFIG_PREFIX, error)),
@@ -536,7 +543,10 @@ impl ControlPanelClient {
             ),
             Err(SystemConfigError::KeyNotFound(_)) => None,
             Err(error) => {
-                return Err(system_config_read_error(CONTACT_PROJECTIONS_CONFIG_KEY, error))
+                return Err(system_config_read_error(
+                    CONTACT_PROJECTIONS_CONFIG_KEY,
+                    error,
+                ))
             }
         };
         Ok(UserGroupDirectory {
@@ -569,9 +579,10 @@ impl ControlPanelClient {
                     .get(&key)
                     .await
                     .map_err(|error| system_config_read_error(&key, error))?;
-                let settings: UserSettings = serde_json::from_str(&value.value).map_err(|error| {
-                    RPCErrors::InvalidToken(format!("unusable account record `{key}`: {error}"))
-                })?;
+                let settings: UserSettings =
+                    serde_json::from_str(&value.value).map_err(|error| {
+                        RPCErrors::InvalidToken(format!("unusable account record `{key}`: {error}"))
+                    })?;
                 Ok(ZoneUserPrincipal::Account(settings))
             }
             kind => Err(RPCErrors::InvalidToken(format!(

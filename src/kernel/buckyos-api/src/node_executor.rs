@@ -68,7 +68,10 @@ impl ExecutorOp {
     }
 
     pub fn is_mutating(&self) -> bool {
-        matches!(self, ExecutorOp::Exec | ExecutorOp::Write | ExecutorOp::Edit)
+        matches!(
+            self,
+            ExecutorOp::Exec | ExecutorOp::Write | ExecutorOp::Edit
+        )
     }
 
     pub fn allowed_by(&self, mode: AgentPermissionMode) -> bool {
@@ -106,7 +109,11 @@ impl ExecutorProfile {
         if !is_valid_profile_id(profile_id) {
             return Err(format!("invalid executor profile id `{profile_id}`"));
         }
-        if self.run_as.as_ref().is_some_and(|r| r.uid == 0 || r.gid == 0) {
+        if self
+            .run_as
+            .as_ref()
+            .is_some_and(|r| r.uid == 0 || r.gid == 0)
+        {
             return Err(format!("profile `{profile_id}`: run_as must not be root"));
         }
         if self.workdir_roots.is_empty() {
@@ -121,7 +128,9 @@ impl ExecutorProfile {
         }
         for key in self.env.keys() {
             if !is_valid_env_name(key) || is_forbidden_env_name(key) {
-                return Err(format!("profile `{profile_id}`: env `{key}` is not allowed"));
+                return Err(format!(
+                    "profile `{profile_id}`: env `{key}` is not allowed"
+                ));
             }
         }
         if self.env.values().any(|v| v.contains('\0')) {
@@ -142,7 +151,9 @@ impl ExecutorProfile {
             return Err(format!("profile `{profile_id}`: duplicated ops"));
         }
         if !ops.contains(&ExecutorOp::OpenStream) {
-            return Err(format!("profile `{profile_id}`: ops must include open_stream"));
+            return Err(format!(
+                "profile `{profile_id}`: ops must include open_stream"
+            ));
         }
         Ok(())
     }
@@ -335,9 +346,13 @@ fn validate_allowed_devices(devices: &[String]) -> Result<(), String> {
     for device in devices {
         if !device.starts_with("did:")
             || device.contains('*')
-            || device.chars().any(|c| c.is_whitespace() || c == '"' || c == '\\')
+            || device
+                .chars()
+                .any(|c| c.is_whitespace() || c == '"' || c == '\\')
         {
-            return Err(format!("allowed device `{device}` must be an exact device DID"));
+            return Err(format!(
+                "allowed device `{device}` must be an exact device DID"
+            ));
         }
     }
     Ok(())
@@ -351,7 +366,10 @@ pub fn is_absolute_node_path(path: &str) -> bool {
     }
     let b = path.as_bytes();
     path.starts_with('/')
-        || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/'))
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/'))
 }
 
 pub fn is_valid_profile_id(id: &str) -> bool {
@@ -407,7 +425,14 @@ mod tests {
         };
         settings.validate().unwrap();
 
-        settings.profiles.get_mut("dev").unwrap().run_as.as_mut().unwrap().uid = 0;
+        settings
+            .profiles
+            .get_mut("dev")
+            .unwrap()
+            .run_as
+            .as_mut()
+            .unwrap()
+            .uid = 0;
         assert!(settings.validate().is_err());
         settings.profiles.get_mut("dev").unwrap().run_as = None;
         settings.validate().unwrap();
@@ -463,11 +488,7 @@ mod tests {
         assert!(ops.contains(&ExecutorOp::Read));
         assert!(!ops.contains(&ExecutorOp::Exec));
 
-        config
-            .principal_bindings
-            .get_mut(&agent)
-            .unwrap()
-            .enabled = false;
+        config.principal_bindings.get_mut(&agent).unwrap().enabled = false;
         assert!(config.granted_ops("dev", &agent).is_empty());
     }
 

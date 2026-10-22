@@ -56,7 +56,9 @@ pub(super) fn is_desktop_item_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME_BYTES
         && !name.starts_with('.')
-        && !name.chars().any(|c| c == '/' || c == '\\' || c.is_control())
+        && !name
+            .chars()
+            .any(|c| c == '/' || c == '\\' || c.is_control())
 }
 
 /// A shortcut or widget file, the only entries the desktop itself writes.
@@ -110,7 +112,13 @@ fn check_object(name: &str, text: &str) -> Result<(), String> {
 fn shortcut_file_name(label: &str) -> Option<String> {
     let cleaned = label
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect::<String>();
     let stem = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let stem = stem.trim_start_matches('.');
@@ -119,18 +127,30 @@ fn shortcut_file_name(label: &str) -> Option<String> {
 }
 
 /// The shortcuts `system/install_settings` declares for pre-installed Apps, named apart from `seed`.
-pub(super) fn declared_shortcuts(settings: &SystemInstallSettings, seed: &[DesktopSeedItem]) -> Vec<DesktopSeedItem> {
+pub(super) fn declared_shortcuts(
+    settings: &SystemInstallSettings,
+    seed: &[DesktopSeedItem],
+) -> Vec<DesktopSeedItem> {
     let mut taken: Vec<String> = seed.iter().map(|item| item.name.to_lowercase()).collect();
     let mut apps: Vec<_> = settings
         .pre_install_apps
         .iter()
-        .filter_map(|(app_id, config)| config.desktop_shortcut.as_ref().map(|shortcut| (app_id, shortcut)))
+        .filter_map(|(app_id, config)| {
+            config
+                .desktop_shortcut
+                .as_ref()
+                .map(|shortcut| (app_id, shortcut))
+        })
         .collect();
     apps.sort_by(|a, b| a.0.cmp(b.0));
     let mut items = Vec::new();
     for (app_id, shortcut) in apps {
         let Some(name) = shortcut_file_name(&shortcut.name) else {
-            log::warn!("desktop: install_settings shortcut name {:?} for {} is not a file name", shortcut.name, app_id);
+            log::warn!(
+                "desktop: install_settings shortcut name {:?} for {} is not a file name",
+                shortcut.name,
+                app_id
+            );
             continue;
         };
         let stem = &name[..name.len() - ".lnk".len()];
@@ -143,7 +163,10 @@ pub(super) fn declared_shortcuts(settings: &SystemInstallSettings, seed: &[Deskt
         taken.push(candidate.to_lowercase());
         items.push(DesktopSeedItem {
             name: candidate,
-            text: format!("{}\n", serde_json::to_string_pretty(&json!({ "app": app_id })).unwrap_or_default()),
+            text: format!(
+                "{}\n",
+                serde_json::to_string_pretty(&json!({ "app": app_id })).unwrap_or_default()
+            ),
         });
     }
     items
@@ -187,7 +210,10 @@ fn unix_seconds(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
-pub(super) async fn list_items(dir: &Path, seed: &[DesktopSeedItem]) -> Result<(bool, Vec<Value>), String> {
+pub(super) async fn list_items(
+    dir: &Path,
+    seed: &[DesktopSeedItem],
+) -> Result<(bool, Vec<Value>), String> {
     let created = ensure_folder(dir, seed)
         .await
         .map_err(|error| format!("prepare the Desktop folder: {}", error))?;
@@ -213,7 +239,10 @@ pub(super) async fn list_items(dir: &Path, seed: &[DesktopSeedItem]) -> Result<(
             "size": if is_dir { 0 } else { meta.len() },
             "mtime": unix_seconds(&meta),
         });
-        if meta.is_file() && is_desktop_object_name(&name) && meta.len() as usize <= MAX_OBJECT_BYTES {
+        if meta.is_file()
+            && is_desktop_object_name(&name)
+            && meta.len() as usize <= MAX_OBJECT_BYTES
+        {
             if let Ok(bytes) = tokio::fs::read(entry.path()).await {
                 item["text"] = Value::String(String::from_utf8_lossy(&bytes).into_owned());
             }
@@ -224,7 +253,12 @@ pub(super) async fn list_items(dir: &Path, seed: &[DesktopSeedItem]) -> Result<(
     Ok((created, items))
 }
 
-pub(super) async fn write_item(dir: &Path, name: &str, text: &str, create: bool) -> Result<(), String> {
+pub(super) async fn write_item(
+    dir: &Path,
+    name: &str,
+    text: &str,
+    create: bool,
+) -> Result<(), String> {
     check_object(name, text)?;
     tokio::fs::create_dir_all(dir)
         .await
@@ -295,7 +329,10 @@ mod tests {
         assert!(parse_seed(None).unwrap().is_empty());
         assert!(parse_seed(Some(&Value::Null)).unwrap().is_empty());
         assert!(parse_seed(Some(&json!([{"name": "run.sh", "text": ""}]))).is_err());
-        assert!(parse_seed(Some(&json!([{"name": "x.lnk", "text": "a".repeat(MAX_OBJECT_BYTES + 1)}]))).is_err());
+        assert!(parse_seed(Some(
+            &json!([{"name": "x.lnk", "text": "a".repeat(MAX_OBJECT_BYTES + 1)}])
+        ))
+        .is_err());
         assert!(parse_seed(Some(&json!({"name": "x.lnk"}))).is_err());
     }
 
@@ -331,11 +368,17 @@ mod tests {
     #[tokio::test]
     async fn the_seed_is_written_once_and_an_emptied_folder_stays_empty() {
         let dir = temp_desktop();
-        let defaults = seed(&[("Clock.widget", r#"{"widget":"clock"}"#), ("Files.lnk", r#"{"app":"files"}"#)]);
+        let defaults = seed(&[
+            ("Clock.widget", r#"{"widget":"clock"}"#),
+            ("Files.lnk", r#"{"app":"files"}"#),
+        ]);
 
         let (created, items) = list_items(&dir, &defaults).await.unwrap();
         assert!(created);
-        let names: Vec<_> = items.iter().map(|item| item["name"].as_str().unwrap()).collect();
+        let names: Vec<_> = items
+            .iter()
+            .map(|item| item["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, ["Clock.widget", "Files.lnk"]);
         assert_eq!(items[1]["text"], r#"{"app":"files"}"#);
         assert_eq!(items[1]["kind"], "file");
@@ -377,11 +420,21 @@ mod tests {
     async fn create_never_replaces_an_item() {
         let dir = temp_desktop();
         write_item(&dir, "Notes.widget", "one", true).await.unwrap();
-        let error = write_item(&dir, "Notes.widget", "two", true).await.unwrap_err();
+        let error = write_item(&dir, "Notes.widget", "two", true)
+            .await
+            .unwrap_err();
         assert!(error.starts_with("exists:"));
-        assert_eq!(std::fs::read_to_string(dir.join("Notes.widget")).unwrap(), "one");
-        write_item(&dir, "Notes.widget", "three", false).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("Notes.widget")).unwrap(), "three");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Notes.widget")).unwrap(),
+            "one"
+        );
+        write_item(&dir, "Notes.widget", "three", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Notes.widget")).unwrap(),
+            "three"
+        );
         // A missing item is already deleted.
         delete_item(&dir, "Gone.lnk").await.unwrap();
 

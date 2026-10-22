@@ -4540,8 +4540,14 @@ mod submit_action_tests {
             supersedes: Some("t-failed"),
         };
         assert_ne!(
-            ControlPanelServer::internal_intent_id(old_runtime, "alice", &app_id, "digest-a", &seed)
-                .unwrap(),
+            ControlPanelServer::internal_intent_id(
+                old_runtime,
+                "alice",
+                &app_id,
+                "digest-a",
+                &seed
+            )
+            .unwrap(),
             ControlPanelServer::internal_intent_id(
                 retried_runtime,
                 "alice",

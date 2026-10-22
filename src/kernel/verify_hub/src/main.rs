@@ -1527,9 +1527,18 @@ impl VerifyHubApiHandler for VerifyHubServer {
         };
         // The nonce replay cache is memory only; a family of this nonce surviving
         // a restart still marks the login as already used.
-        if self.families().get(session.family_key().as_str())?.is_some() {
-            warn!("{} login nonce {} already opened a family", username, login_nonce);
-            return Err(RPCErrors::ReasonError("Login nonce already used".to_string()));
+        if self
+            .families()
+            .get(session.family_key().as_str())?
+            .is_some()
+        {
+            warn!(
+                "{} login nonce {} already opened a family",
+                username, login_nonce
+            );
+            return Err(RPCErrors::ReasonError(
+                "Login nonce already used".to_string(),
+            ));
         }
         mark_used(
             nonce_key.as_str(),
@@ -1918,8 +1927,11 @@ impl VerifyHubApiHandler for VerifyHubServer {
             self.state.federation.canonical_host(&did),
         )
         .await
-        .unwrap_or_else(|_| Err(RPCErrors::ReasonError("canonical zone resolution timed out".to_string())))
-        {
+        .unwrap_or_else(|_| {
+            Err(RPCErrors::ReasonError(
+                "canonical zone resolution timed out".to_string(),
+            ))
+        }) {
             Ok(host) => host,
             Err(error) => {
                 warn!(
@@ -1939,13 +1951,18 @@ impl VerifyHubApiHandler for VerifyHubServer {
         };
         let assertion = match tokio::time::timeout(
             FEDERATION_PEER_TIMEOUT,
-            self.state
-                .federation
-                .exchange(&canonical_host, sso_settings.dev_federation_http, exchange),
+            self.state.federation.exchange(
+                &canonical_host,
+                sso_settings.dev_federation_http,
+                exchange,
+            ),
         )
         .await
-        .unwrap_or_else(|_| Err(RPCErrors::ReasonError("federation code exchange timed out".to_string())))
-        {
+        .unwrap_or_else(|_| {
+            Err(RPCErrors::ReasonError(
+                "federation code exchange timed out".to_string(),
+            ))
+        }) {
             Ok(ExchangeFederationCodeResult::Ok { assertion }) => assertion,
             Ok(ExchangeFederationCodeResult::InvalidCode) => {
                 return denied(

@@ -43,7 +43,10 @@ pub(super) fn wallpaper_extension(bytes: &[u8]) -> Option<&'static str> {
         Some("gif")
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some("webp")
-    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && matches!(&bytes[8..12], b"avif" | b"avis") {
+    } else if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && matches!(&bytes[8..12], b"avif" | b"avis")
+    {
         Some("avif")
     } else {
         None
@@ -71,7 +74,9 @@ pub(super) fn is_wallpaper_asset_name(name: &str) -> bool {
         return false;
     };
     stem.len() == 32
-        && stem.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        && stem
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
         && WALLPAPER_EXTENSIONS.contains(&extension)
 }
 
@@ -156,11 +161,18 @@ impl ControlPanelServer {
             .await
         {
             Ok(Some(principal)) => principal,
-            Ok(None) => return Self::wallpaper_error(StatusCode::UNAUTHORIZED, "authentication required"),
-            Err(error) => return Self::wallpaper_error(StatusCode::UNAUTHORIZED, &error.to_string()),
+            Ok(None) => {
+                return Self::wallpaper_error(StatusCode::UNAUTHORIZED, "authentication required")
+            }
+            Err(error) => {
+                return Self::wallpaper_error(StatusCode::UNAUTHORIZED, &error.to_string())
+            }
         };
         let Some(dir) = wallpaper_dir(&principal.username) else {
-            return Self::wallpaper_error(StatusCode::BAD_REQUEST, "this account has no home folder");
+            return Self::wallpaper_error(
+                StatusCode::BAD_REQUEST,
+                "this account has no home folder",
+            );
         };
 
         let path = req.uri().path().to_string();
@@ -181,7 +193,10 @@ impl ControlPanelServer {
                 return Self::serve_wallpaper(&dir, asset).await;
             }
         }
-        Self::wallpaper_error(StatusCode::METHOD_NOT_ALLOWED, "use POST to upload, GET to read")
+        Self::wallpaper_error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "use POST to upload, GET to read",
+        )
     }
 
     async fn store_wallpaper(
@@ -189,7 +204,10 @@ impl ControlPanelServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         dir: &Path,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let bytes = match Limited::new(req.into_body(), MAX_WALLPAPER_BYTES).collect().await {
+        let bytes = match Limited::new(req.into_body(), MAX_WALLPAPER_BYTES)
+            .collect()
+            .await
+        {
             Ok(collected) => collected.to_bytes(),
             Err(_) => {
                 return Self::wallpaper_error(
@@ -216,7 +234,10 @@ impl ControlPanelServer {
         .await;
         if let Err(error) = stored {
             log::error!("desktop: store wallpaper in {}: {}", dir.display(), error);
-            return Self::wallpaper_error(StatusCode::INTERNAL_SERVER_ERROR, "the picture could not be saved");
+            return Self::wallpaper_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the picture could not be saved",
+            );
         }
         prune_wallpapers(dir, &asset).await;
 
@@ -240,7 +261,10 @@ impl ControlPanelServer {
             }
             Err(error) => {
                 log::error!("desktop: read wallpaper {}: {}", asset, error);
-                return Self::wallpaper_error(StatusCode::INTERNAL_SERVER_ERROR, "the picture could not be read");
+                return Self::wallpaper_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the picture could not be read",
+                );
             }
         };
         let extension = asset.rsplit('.').next().unwrap_or("jpg");
@@ -269,7 +293,10 @@ mod tests {
 
     #[test]
     fn picture_types_come_from_the_bytes() {
-        assert_eq!(wallpaper_extension(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), Some("jpg"));
+        assert_eq!(
+            wallpaper_extension(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]),
+            Some("jpg")
+        );
         assert_eq!(wallpaper_extension(b"\x89PNG\r\n\x1a\n...."), Some("png"));
         assert_eq!(wallpaper_extension(b"GIF89a......"), Some("gif"));
         assert_eq!(wallpaper_extension(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
@@ -288,10 +315,17 @@ mod tests {
         assert!(!is_wallpaper_asset_name(&format!("{}.svg", "a".repeat(32))));
         assert!(!is_wallpaper_asset_name(&format!("{}.png", "A".repeat(32))));
         assert!(!is_wallpaper_asset_name(&format!("{}.png", "a".repeat(31))));
-        assert!(!is_wallpaper_asset_name(&format!("{}.png.part", "a".repeat(32))));
+        assert!(!is_wallpaper_asset_name(&format!(
+            "{}.png.part",
+            "a".repeat(32)
+        )));
     }
 
-    fn wallpaper_request(method: Method, uri: &str, headers: &[(&str, &str)]) -> http::Request<BoxBody<Bytes, ServerError>> {
+    fn wallpaper_request(
+        method: Method,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> http::Request<BoxBody<Bytes, ServerError>> {
         let mut builder = http::Request::builder().method(method).uri(uri);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
@@ -303,17 +337,43 @@ mod tests {
 
     #[test]
     fn a_picture_read_takes_the_sso_session_cookie_an_upload_does_not() {
-        let cookies = "control-panel_token=stale-password-login; buckyos_session_token=fresh-sso-session";
-        let read = wallpaper_request(Method::GET, "/api/desktop/wallpaper/x.jpg", &[("Cookie", cookies)]);
-        assert_eq!(ControlPanelServer::wallpaper_request_token(&read).as_deref(), Some("fresh-sso-session"));
+        let cookies =
+            "control-panel_token=stale-password-login; buckyos_session_token=fresh-sso-session";
+        let read = wallpaper_request(
+            Method::GET,
+            "/api/desktop/wallpaper/x.jpg",
+            &[("Cookie", cookies)],
+        );
+        assert_eq!(
+            ControlPanelServer::wallpaper_request_token(&read).as_deref(),
+            Some("fresh-sso-session")
+        );
 
-        let only_sso = wallpaper_request(Method::GET, "/api/desktop/wallpaper/x.jpg", &[("Cookie", "buckyos_session_token=sso")]);
-        assert_eq!(ControlPanelServer::wallpaper_request_token(&only_sso).as_deref(), Some("sso"));
+        let only_sso = wallpaper_request(
+            Method::GET,
+            "/api/desktop/wallpaper/x.jpg",
+            &[("Cookie", "buckyos_session_token=sso")],
+        );
+        assert_eq!(
+            ControlPanelServer::wallpaper_request_token(&only_sso).as_deref(),
+            Some("sso")
+        );
 
-        let with_header = wallpaper_request(Method::GET, "/api/desktop/wallpaper/x.jpg", &[("Cookie", cookies), ("X-Auth", "header-token")]);
-        assert_eq!(ControlPanelServer::wallpaper_request_token(&with_header).as_deref(), Some("header-token"));
+        let with_header = wallpaper_request(
+            Method::GET,
+            "/api/desktop/wallpaper/x.jpg",
+            &[("Cookie", cookies), ("X-Auth", "header-token")],
+        );
+        assert_eq!(
+            ControlPanelServer::wallpaper_request_token(&with_header).as_deref(),
+            Some("header-token")
+        );
 
-        let upload = wallpaper_request(Method::POST, "/api/desktop/wallpaper", &[("Cookie", "buckyos_session_token=sso")]);
+        let upload = wallpaper_request(
+            Method::POST,
+            "/api/desktop/wallpaper",
+            &[("Cookie", "buckyos_session_token=sso")],
+        );
         assert_eq!(ControlPanelServer::wallpaper_request_token(&upload), None);
     }
 
@@ -327,7 +387,10 @@ mod tests {
             ("d".to_string(), at(2)),
             ("new".to_string(), at(5)),
         ];
-        assert_eq!(wallpapers_to_prune(pictures.clone(), "new", 3), vec!["d", "a"]);
+        assert_eq!(
+            wallpapers_to_prune(pictures.clone(), "new", 3),
+            vec!["d", "a"]
+        );
         // The current picture is kept even when its file is not the newest.
         assert_eq!(wallpapers_to_prune(pictures, "a", 3), vec!["c", "d"]);
     }

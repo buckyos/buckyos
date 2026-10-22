@@ -1,6 +1,6 @@
 use crate::{
-    AppId, AppInstanceId, AppServiceSpec, AuthTarget, SystemConfigClient,
-    SystemConfigError, SystemServiceId, UserSettings, UserType,
+    AppId, AppInstanceId, AppServiceSpec, AuthTarget, SystemConfigClient, SystemConfigError,
+    SystemServiceId, UserSettings, UserType,
 };
 use ::kRPC::{RPCErrors, RPCSessionToken};
 use serde::{Deserialize, Serialize};
@@ -224,13 +224,18 @@ pub fn token_principal_kind(token: &RPCSessionToken) -> Result<TokenPrincipalKin
 
 pub fn bind_token_external(token: &mut RPCSessionToken) {
     bind_token_principal_kind(token, TokenPrincipalKind::User);
-    token
-        .extra
-        .insert(TOKEN_EXTERNAL_CLAIM.to_string(), serde_json::Value::Bool(true));
+    token.extra.insert(
+        TOKEN_EXTERNAL_CLAIM.to_string(),
+        serde_json::Value::Bool(true),
+    );
 }
 
 pub fn token_is_external(token: &RPCSessionToken) -> bool {
-    token.extra.get(TOKEN_EXTERNAL_CLAIM).and_then(serde_json::Value::as_bool) == Some(true)
+    token
+        .extra
+        .get(TOKEN_EXTERNAL_CLAIM)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 pub fn bind_token_target(
@@ -513,11 +518,9 @@ pub fn evaluate_app_availability(
         match_availability_group_rule(&policy.group_rules, target_user.filter(|_| !is_guest))
     {
         return match effect {
-            AvailabilityEffect::Allow => allowed(
-                AvailabilityMatchType::Group,
-                Some(group_id),
-                "group_allow",
-            ),
+            AvailabilityEffect::Allow => {
+                allowed(AvailabilityMatchType::Group, Some(group_id), "group_allow")
+            }
             AvailabilityEffect::Deny => denied("group_deny"),
         };
     }
@@ -872,7 +875,10 @@ mod tests {
             rule("guest", AvailabilityEffect::Allow),
         ];
         assert!(validate_availability_rules(&rules, &[]).is_ok());
-        assert!(validate_availability_rules(&[rule("group:Bad", AvailabilityEffect::Allow)], &[]).is_err());
+        assert!(
+            validate_availability_rules(&[rule("group:Bad", AvailabilityEffect::Allow)], &[])
+                .is_err()
+        );
         let mut carol = UserSettings {
             user_id: "carol".into(),
             user_type: UserType::Limited,
@@ -885,16 +891,29 @@ mod tests {
             groups: Vec::new(),
             password_state: crate::PasswordState::Set,
         };
-        let decide = |settings: Option<&UserSettings>| match_availability_group_rule(&rules, settings);
-        assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Deny, "limited".into())));
+        let decide =
+            |settings: Option<&UserSettings>| match_availability_group_rule(&rules, settings);
+        assert_eq!(
+            decide(Some(&carol)),
+            Some((AvailabilityEffect::Deny, "limited".into()))
+        );
         carol.groups = vec!["customer".into(), "minors".into()];
-        assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Allow, "group:customer".into())));
+        assert_eq!(
+            decide(Some(&carol)),
+            Some((AvailabilityEffect::Allow, "group:customer".into()))
+        );
         carol.groups = vec!["minors".into()];
-        assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Deny, "group:minors".into())));
+        assert_eq!(
+            decide(Some(&carol)),
+            Some((AvailabilityEffect::Deny, "group:minors".into()))
+        );
         carol.user_type = UserType::User;
         carol.groups.clear();
         assert_eq!(decide(Some(&carol)), None);
-        assert_eq!(decide(None), Some((AvailabilityEffect::Allow, "guest".into())));
+        assert_eq!(
+            decide(None),
+            Some((AvailabilityEffect::Allow, "guest".into()))
+        );
     }
 
     #[test]

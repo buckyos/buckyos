@@ -13,10 +13,10 @@ use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use buckyos_api::{
-    get_buckyos_api_runtime, zone_document_hostname, AccessDenial, AuthTarget, DenyReason,
-    FederationProfile, IssueFederationCodeRequest, LoginByRemoteVerifyHubRequest,
-    LoginByRemoteVerifyHubResult, SsoSettings, UserPrivateProfile, UserSettings,
-    CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    get_buckyos_api_runtime, owner_canonical_zone, zone_document_hostname, AccessDenial,
+    AuthTarget, DenyReason, FederationProfile, IssueFederationCodeRequest,
+    LoginByRemoteVerifyHubRequest, LoginByRemoteVerifyHubResult, SsoSettings, UserPrivateProfile,
+    UserSettings, CONTROL_PANEL_SERVICE_UNIQUE_ID,
 };
 use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult};
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
@@ -81,10 +81,7 @@ impl ZoneDirectory for NameServiceDirectory {
                 RPCErrors::ReasonError(format!("owner document of {}: {error}", did.to_string()))
             },
         )?;
-        let zone = owner.get_default_zone_did().ok_or_else(|| {
-            RPCErrors::ReasonError(format!("{} names no canonical zone", did.to_string()))
-        })?;
-        self.zone_host(&zone).await
+        self.zone_host(&owner_canonical_zone(&owner)).await
     }
 
     async fn zone_host(&self, zone_did: &DID) -> Result<String, RPCErrors> {
@@ -293,7 +290,7 @@ fn federation_check(
             AccessDenial::new(DenyReason::SessionCeilingExceeded).with_detail("did_mismatch")
         );
     }
-    if account.owner.get_default_zone_did().as_ref() != Some(this_zone) {
+    if owner_canonical_zone(&account.owner) != *this_zone {
         return Err(
             AccessDenial::new(DenyReason::SessionKindNotAllowed).with_detail("not_canonical_zone")
         );
@@ -1080,6 +1077,15 @@ mod tests {
             )),
             DenyReason::SessionKindNotAllowed
         );
+        // A self-hosted Zone: the owner DID is the Zone DID and binds no other zone.
+        let self_hosted = DID::from_str("did:bns:alice").unwrap();
+        assert!(federation_check(
+            &user,
+            "did:bns:alice",
+            &account(UserType::User, None),
+            &self_hosted
+        )
+        .is_ok());
         let mut suspended = account(UserType::User, Some(here.clone()));
         suspended.settings.state = UserState::Suspended("x".to_string());
         assert_eq!(

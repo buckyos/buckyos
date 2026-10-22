@@ -886,7 +886,9 @@ mod tests {
         document
             .extra_info
             .insert("display_name".to_string(), json!(" Home Cloud "));
-        document.extra_info.insert("description".to_string(), json!(""));
+        document
+            .extra_info
+            .insert("description".to_string(), json!(""));
         document.extra_info.insert("icon".to_string(), json!(42));
         assert_eq!(
             ZonePresentationFields::from_zone_document(&document),

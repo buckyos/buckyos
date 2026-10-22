@@ -141,8 +141,9 @@ pub fn contact_tag_kind(tag: &str) -> ContactTagKind {
 pub fn contact_tag_app(tag: &str) -> Option<&str> {
     let (app, rest) = tag.split_once('.')?;
     let ident = |s: &str, extra: char| {
-        s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == extra)
+        s.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == extra
+        })
     };
     let valid = !app.is_empty()
         && !rest.is_empty()
@@ -537,7 +538,10 @@ pub fn contact_changed_event_id(owner: &DID) -> String {
 }
 
 /// The machine data of a friend message, if `content` carries one.
-pub fn friend_message_data(machine_intent: Option<&str>, data: &Value) -> Option<FriendMessageData> {
+pub fn friend_message_data(
+    machine_intent: Option<&str>,
+    data: &Value,
+) -> Option<FriendMessageData> {
     if machine_intent != Some(FRIEND_INTENT) {
         return None;
     }
@@ -556,7 +560,10 @@ mod tests {
             contact_tag_kind(CONTACT_TAG_HOMESTATION_FOLLOWING),
             ContactTagKind::App
         );
-        assert_eq!(contact_tag_app("homestation.following"), Some("homestation"));
+        assert_eq!(
+            contact_tag_app("homestation.following"),
+            Some("homestation")
+        );
         for user in ["家人", "Team A", "a.", ".x", "Work.Friends", "v1.2 notes"] {
             assert_eq!(contact_tag_kind(user), ContactTagKind::User, "{user}");
         }

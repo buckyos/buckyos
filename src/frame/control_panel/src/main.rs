@@ -260,7 +260,10 @@ mod agent_permission_tests {
             "desktop.state.get",
             "desktop.wallpaper.get",
         ] {
-            assert!(read_only.require_agent_permission(method).is_ok(), "{method}");
+            assert!(
+                read_only.require_agent_permission(method).is_ok(),
+                "{method}"
+            );
         }
         for mode in [None, Some(ReadWrite)] {
             let caller = principal(mode);

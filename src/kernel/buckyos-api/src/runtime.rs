@@ -24,7 +24,6 @@ use name_client::*;
 use name_lib::*;
 use named_store::NamedDataMgr;
 
-use crate::{commit_notify_answer, wait_notify_loop, NotifyAnswer, NotifyKind, NotifyView};
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
@@ -41,6 +40,7 @@ use crate::task_dispatcher::{TaskDispatcherClient, TASK_DISPATCHER_SERVICE_NAME}
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::workflow_service::{WorkflowServiceClient, WORKFLOW_SERVICE_NAME};
+use crate::{commit_notify_answer, wait_notify_loop, NotifyAnswer, NotifyKind, NotifyView};
 use crate::{
     get_buckyos_api_runtime, get_service_session_token_env_key, load_local_device_config,
     load_local_device_private_key, load_local_node_identity_config,
@@ -1542,9 +1542,11 @@ impl BuckyOSRuntime {
         let token = self.verify_session_signature(token_str).await?;
         let ceiling = crate::token_session_ceiling(&token)?;
         if ceiling.restricted && !self.targets_this_app(&token)? {
-            return Err(crate::AccessDenial::new(crate::DenyReason::SessionKindNotAllowed)
-                .at(self.app_id.clone(), "*")
-                .into_rpc_error());
+            return Err(
+                crate::AccessDenial::new(crate::DenyReason::SessionKindNotAllowed)
+                    .at(self.app_id.clone(), "*")
+                    .into_rpc_error(),
+            );
         }
         Ok(token)
     }
@@ -1560,9 +1562,11 @@ impl BuckyOSRuntime {
         let token = self.verify_session_signature(token_str).await?;
         let ceiling = crate::token_session_ceiling(&token)?;
         if !ceiling.allows(scope) {
-            return Err(crate::AccessDenial::new(crate::DenyReason::SessionCeilingExceeded)
-                .at(self.app_id.clone(), scope.as_str())
-                .into_rpc_error());
+            return Err(
+                crate::AccessDenial::new(crate::DenyReason::SessionCeilingExceeded)
+                    .at(self.app_id.clone(), scope.as_str())
+                    .into_rpc_error(),
+            );
         }
         Ok(token)
     }
@@ -2293,7 +2297,12 @@ impl BuckyOSRuntime {
             None => None,
         };
         wait_notify_loop(
-            || async { self.get_msg_center_client().await?.notify_get(notify_id).await },
+            || async {
+                self.get_msg_center_client()
+                    .await?
+                    .notify_get(notify_id)
+                    .await
+            },
             deadline_ms,
             |d| {
                 let reader = reader.as_ref();

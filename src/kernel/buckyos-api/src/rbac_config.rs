@@ -362,7 +362,8 @@ mod tests {
     #[tokio::test]
     async fn an_app_may_notify_its_user_but_not_read_the_mailbox() {
         let _guard = TEST_LOCK.lock().await;
-        let config = build_current_rbac_config(Some("g, alice, users\ng, ood1, ood\ng, app:notes, app"));
+        let config =
+            build_current_rbac_config(Some("g, alice, users\ng, ood1, ood\ng, app:notes, app"));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
             .unwrap();
@@ -520,9 +521,10 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
         rbac::create_enforcer(&config.model, &config.policy)
             .await
             .unwrap();
-        let owner = crate::MailboxAddress::new(name_lib::DID::from_str("did:bns:alice").unwrap(), None)
-            .unwrap()
-            .owner_resource();
+        let owner =
+            crate::MailboxAddress::new(name_lib::DID::from_str("did:bns:alice").unwrap(), None)
+                .unwrap()
+                .owner_resource();
         assert!(rbac::enforce("ood1", "system:homestation", &owner, "read", None).await);
         assert!(!rbac::enforce("ood1", "system:homestation", &owner, "write", None).await);
         assert!(!rbac::enforce("ood1", "system:aiworkspace", &owner, "read", None).await);
@@ -613,7 +615,16 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
         assert!(rbac::enforce("carol", app, &owner.contacts_resource(), "write", None).await);
         assert!(!rbac::enforce("carol", app, &owner.owner_resource(), "read", None).await);
         assert!(rbac::enforce("bob", app, &owner.contacts_resource(), "write", None).await);
-        assert!(rbac::enforce("ood1", "system:homestation", &owner.contacts_resource(), "read", None).await);
+        assert!(
+            rbac::enforce(
+                "ood1",
+                "system:homestation",
+                &owner.contacts_resource(),
+                "read",
+                None
+            )
+            .await
+        );
     }
 
     #[test]
@@ -1342,14 +1353,26 @@ g, app:gallery, app
     #[tokio::test]
     async fn content_preferences_are_shell_only_and_registry_scheduler_only() {
         let _guard = TEST_LOCK.lock().await;
-        let config = build_current_rbac_config(Some("g, alice, users\ng, app:editor, app\ng, ood1, ood"));
-        rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        let config =
+            build_current_rbac_config(Some("g, alice, users\ng, app:editor, app\ng, ood1, ood"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
         let registry = "obj://config/system/content_registry";
         let defaults = "obj://config/users/alice/content_defaults";
         assert!(rbac::enforce("alice", "app:editor", registry, "read", None).await);
         assert!(rbac::enforce("alice", "system:control-panel", defaults, "write", None).await);
         assert!(!rbac::enforce("alice", "app:editor", defaults, "write", None).await);
-        assert!(!rbac::enforce("alice", "system:control-panel", "obj://config/users/bob/content_defaults", "write", None).await);
+        assert!(
+            !rbac::enforce(
+                "alice",
+                "system:control-panel",
+                "obj://config/users/bob/content_defaults",
+                "write",
+                None
+            )
+            .await
+        );
         assert!(rbac::enforce("ood1", "system:scheduler", registry, "write", None).await);
         assert!(!rbac::enforce("kernel", "system:node-daemon", registry, "write", None).await);
         assert!(!rbac::enforce("ood1", "system:control-panel", registry, "write", None).await);
@@ -1438,8 +1461,14 @@ g, app:gallery, app
         assert!(forced.await.unwrap().unwrap());
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(
-            rbac::enforce("alice", "system:control-panel", "obj://config/system/x", "read", None)
-                .await
+            rbac::enforce(
+                "alice",
+                "system:control-panel",
+                "obj://config/system/x",
+                "read",
+                None
+            )
+            .await
         );
     }
 

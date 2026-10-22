@@ -17,7 +17,11 @@ fn fixture(name: &str) -> Value {
 fn round_trip<T: DeserializeOwned + Serialize>(name: &str) -> T {
     let wire = fixture(name);
     let typed: T = serde_json::from_value(wire.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
-    assert_eq!(serde_json::to_value(&typed).unwrap(), wire, "{name} does not round-trip");
+    assert_eq!(
+        serde_json::to_value(&typed).unwrap(),
+        wire,
+        "{name} does not round-trip"
+    );
     typed
 }
 
@@ -39,11 +43,17 @@ fn identity_fixtures_round_trip() {
     }
     assert!(matches!(
         round_trip::<CurrentIdentity>("current_identity_admin.json"),
-        CurrentIdentity::Account { restricted: false, .. }
+        CurrentIdentity::Account {
+            restricted: false,
+            ..
+        }
     ));
     assert!(matches!(
         round_trip::<CurrentIdentity>("current_identity_external.json"),
-        CurrentIdentity::External { restricted: true, .. }
+        CurrentIdentity::External {
+            restricted: true,
+            ..
+        }
     ));
     assert_eq!(
         round_trip::<CurrentIdentity>("current_identity_anonymous.json"),

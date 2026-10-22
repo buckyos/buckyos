@@ -157,7 +157,9 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         require_admin(principal)?;
-        let group_id = Self::require_param_str(&req, "group_id")?.trim().to_string();
+        let group_id = Self::require_param_str(&req, "group_id")?
+            .trim()
+            .to_string();
         validate_user_group_id(&group_id)?;
         let name = group_name_param(&req, true)?.unwrap_or_default();
         let description = Self::param_str(&req, "description")
@@ -186,7 +188,10 @@ impl ControlPanelServer {
             .create(&key, &value)
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to create group: {}", e)))?;
-        info!("User group '{}' created by '{}'", group_id, principal.username);
+        info!(
+            "User group '{}' created by '{}'",
+            group_id, principal.username
+        );
         Ok(RPCResponse::new(
             RPCResult::Success(json!({ "ok": true, "group": group })),
             req.seq,
@@ -237,7 +242,11 @@ impl ControlPanelServer {
         require_admin(principal)?;
         let group_id = Self::require_param_str(&req, "group_id")?;
         let directory = load_user_group_directory().await?;
-        if !directory.groups.iter().any(|group| group.group_id == group_id) {
+        if !directory
+            .groups
+            .iter()
+            .any(|group| group.group_id == group_id)
+        {
             return Err(RPCErrors::KeyNotExist(format!("user group '{}'", group_id)));
         }
         let client = service_client().await?;
@@ -272,7 +281,10 @@ impl ControlPanelServer {
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to delete group: {}", e)))?;
         propagate("user_group.delete").await?;
-        info!("User group '{}' deleted by '{}'", group_id, principal.username);
+        info!(
+            "User group '{}' deleted by '{}'",
+            group_id, principal.username
+        );
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
                 "ok": true,
@@ -297,7 +309,9 @@ impl ControlPanelServer {
                 .get(key)
                 .map(|value| {
                     serde_json::from_value::<Vec<String>>(value.clone()).map_err(|e| {
-                        RPCErrors::ParseRequestError(format!("{key} must be a list of user ids: {e}"))
+                        RPCErrors::ParseRequestError(format!(
+                            "{key} must be a list of user ids: {e}"
+                        ))
                     })
                 })
                 .transpose()
@@ -306,7 +320,11 @@ impl ControlPanelServer {
         let add = user_list("add")?;
         let remove = user_list("remove")?;
         let directory = load_user_group_directory().await?;
-        if !directory.groups.iter().any(|group| group.group_id == group_id) {
+        if !directory
+            .groups
+            .iter()
+            .any(|group| group.group_id == group_id)
+        {
             return Err(RPCErrors::KeyNotExist(format!("user group '{}'", group_id)));
         }
         let client = service_client().await?;
@@ -431,15 +449,33 @@ mod tests {
         };
         let params = json!({ "group_id": "customer", "name": "Customer", "rules": [] });
         let req = |method: &str| RPCRequest::new(method, params.clone());
-        let denied = |result: Result<RPCResponse, RPCErrors>| {
-            matches!(result, Err(RPCErrors::ReasonError(reason)) if reason == "Admin privileges required")
-        };
+        let denied = |result: Result<RPCResponse, RPCErrors>| matches!(result, Err(RPCErrors::ReasonError(reason)) if reason == "Admin privileges required");
         let p = Some(&principal);
-        assert!(denied(server.handle_user_group_list(req("user_group.list"), p).await));
-        assert!(denied(server.handle_user_group_create(req("user_group.create"), p).await));
-        assert!(denied(server.handle_user_group_update(req("user_group.update"), p).await));
-        assert!(denied(server.handle_user_group_delete(req("user_group.delete"), p).await));
-        assert!(denied(server.handle_user_group_set_members(req("user_group.set_members"), p).await));
+        assert!(denied(
+            server
+                .handle_user_group_list(req("user_group.list"), p)
+                .await
+        ));
+        assert!(denied(
+            server
+                .handle_user_group_create(req("user_group.create"), p)
+                .await
+        ));
+        assert!(denied(
+            server
+                .handle_user_group_update(req("user_group.update"), p)
+                .await
+        ));
+        assert!(denied(
+            server
+                .handle_user_group_delete(req("user_group.delete"), p)
+                .await
+        ));
+        assert!(denied(
+            server
+                .handle_user_group_set_members(req("user_group.set_members"), p)
+                .await
+        ));
         assert!(denied(
             server
                 .handle_user_group_set_projections(req("user_group.set_projections"), p)

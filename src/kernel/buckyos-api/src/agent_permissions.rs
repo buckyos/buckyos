@@ -84,7 +84,9 @@ pub async fn check_agent_runtime_session(
         Ok(entries) => entries,
         Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
         Err(error) => {
-            return Err(RPCErrors::ReasonError(format!("read Agent bindings: {error}")))
+            return Err(RPCErrors::ReasonError(format!(
+                "read Agent bindings: {error}"
+            )))
         }
     };
     let mut bound = Vec::new();
@@ -95,9 +97,7 @@ pub async fn check_agent_runtime_session(
         let spec = match client.get(&agent_spec_key(owner, &agent_id)).await {
             Ok(value) => serde_json::from_str::<AgentSpec>(&value.value).ok(),
             Err(SystemConfigError::KeyNotFound(_)) => None,
-            Err(error) => {
-                return Err(RPCErrors::ReasonError(format!("read AgentSpec: {error}")))
-            }
+            Err(error) => return Err(RPCErrors::ReasonError(format!("read AgentSpec: {error}"))),
         };
         let Some(spec) = spec else { continue };
         if !spec.binding.references_runtime(instance) {
@@ -110,12 +110,17 @@ pub async fn check_agent_runtime_session(
                 .unwrap_or(false),
             Err(SystemConfigError::KeyNotFound(_)) => true,
             Err(error) => {
-                return Err(RPCErrors::ReasonError(format!("read AgentSettings: {error}")))
+                return Err(RPCErrors::ReasonError(format!(
+                    "read AgentSettings: {error}"
+                )))
             }
         };
         bound.push(valid && enabled);
     }
-    let app_type = match client.get(&user_app_spec_key(owner, instance.app_id())).await {
+    let app_type = match client
+        .get(&user_app_spec_key(owner, instance.app_id()))
+        .await
+    {
         Ok(value) => serde_json::from_str::<AppServiceSpec>(&value.value)
             .ok()
             .map(|spec| spec.app_doc.get_app_type()),

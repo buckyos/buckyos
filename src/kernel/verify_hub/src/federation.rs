@@ -6,7 +6,7 @@ use ::kRPC::{kRPC, RPCErrors};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use buckyos_api::{
-    constant_time_eq, zone_document_hostname, ExchangeFederationCodeRequest,
+    constant_time_eq, owner_canonical_zone, zone_document_hostname, ExchangeFederationCodeRequest,
     ExchangeFederationCodeResult, FederationAssertion, FederationProfile, VerifyHubClient,
     FEDERATION_PURPOSE_LOGIN,
 };
@@ -121,9 +121,7 @@ impl FederationPeer for NameFederationPeer {
         let owner = name_client::resolve_owner_document(did)
             .await
             .map_err(|error| resolve_error("resolve OwnerDocument", error))?;
-        let zone_did = owner.get_default_zone_did().ok_or_else(|| {
-            RPCErrors::ReasonError(format!("{} names no default zone", did.to_string()))
-        })?;
+        let zone_did = owner_canonical_zone(&owner);
         let encoded = name_client::resolve_did(&zone_did, Some(DidDocType::Zone))
             .await
             .map_err(|error| resolve_error("resolve ZoneDocument", error))?;

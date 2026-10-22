@@ -1,6 +1,6 @@
 # BuckyOS 混合 SSO 实施 TODO
 
-日期：2026-10-21。状态：用户类型前置已交付；§4 的用户决策已于同日全部确定。**2026-10-22 已实施并完成单 Zone DV**，实施记录见 §11，逐方法审计见附录 A；未完成项在原条目后标注“10-22 未完成”。
+日期：2026-10-21。状态：用户类型前置已交付；§4 的用户决策已于同日全部确定。**2026-10-22 已实施并完成单 Zone DV，同日在 PVE 多 VM（`src/dev_configs/ssotest.json`）完成三 Zone DID 联合 DV**，实施记录见 §11，逐方法审计见附录 A；未完成项在原条目后标注“10-22 未完成”。
 
 目标：在现有本 Zone SSO 上实现专属邀请、自助注册、DID 登录和允许时的 Guest 入口，同时贯通 Message Hub 外部客户会话、AI Workspace 分享、同 Zone 跨应用身份复用。先完成身份、授权与撤销底座，再开放新登录方式。
 
@@ -357,7 +357,7 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 ### SSO-09 / P0：DID canonical zone 联合登录
 
 - [x] 核对现有 DID / OwnerDocument / ZoneDocument 解析能力，按 D-7 冻结“本人授权的唯一 canonical zone → 可信 ZoneDocument hostname → canonical verify-hub 兑换端点”证明链；不依赖公开 verify-hub 公钥字段。`default_zone` 字段只有在可信且适用于该主体的文档中才有证明力；目标 Zone 的本地写入不算授权。（10-22：verify-hub / CP 经 name-client 解析 OwnerDocument → 默认 Zone → ZoneDocument hostname；带超时）
-- [x] 支持 Alice 由 Bob 承载 canonical zone：验证 Alice 的归属授权和来源，不要求 Alice 等于 Zone owner，也不要求她拥有物理 OOD。当前 `OwnerDocument::get_default_zone_did` 取绑定列表首项，`is_bound_to_zone` 仅判断列表包含，bound 不等于 canonical。可绑定多个 Zone，但对外认证只认可信的唯一 canonical；归属缺失、证明冲突或无法验证时不猜测。（10-22：签发只看 OwnerDocument 默认 Zone 是否为本 Zone，不要求是 Zone owner；未在多 Zone 环境验证）
+- [x] 支持 Alice 由 Bob 承载 canonical zone：验证 Alice 的归属授权和来源，不要求 Alice 等于 Zone owner，也不要求她拥有物理 OOD。当前 `OwnerDocument::get_default_zone_did` 取绑定列表首项，`is_bound_to_zone` 仅判断列表包含，bound 不等于 canonical。可绑定多个 Zone，但对外认证只认可信的唯一 canonical；归属缺失、证明冲突或无法验证时不猜测。（10-22：签发只看 OwnerDocument 的 canonical zone 是否为本 Zone，不要求是 Zone owner。三 Zone DV 验证了绑定他处 Zone 的路径：did:bns:charlie 经 `binded_zone_list` 的 did:web:charlie.me 签发、在 B 登录成功；“Alice 账号由 Bob 的 Zone 承载”这一组合未单独构造）
 - [x] jump Locator、SN 登录态和 App 的 Active DID 提示只可辅助发现/选择；进入 DID 联合路径仍按 D-7 的授权码交换独立验证上述归属链。手填 hostname 不成为 issuer/key/兑换端点的信任根；定位成功不代表联合认证成功，也不能跳过 DID+目标 Zone 的首次 consent。（10-22：jump 只决定导航；DID 登录独立走授权码交换）
 - [x] 按 §4.1 D-7 的四步实现：目标 CP pending → canonical consent 与签发 code → 目标 CP callback 调 `login_by_remote_verify_hub` → 目标 verify-hub 经 HTTPS 向 canonical 兑换。code 绑定 DID、来源 / 目标 Zone、认证用途、期限、nonce、浏览器状态及披露资料；接收方与 redirect 来源可信，防重放、串会话和开放重定向，兑换地址只由 DID 解析得出，不能由页面或调用参数指定。兑换方鉴权建议采用 PKCE（S256）式绑定：verifier 只存在目标 CP 的服务端 pending，截获 code 无法兑换，也不需要公开 verify-hub 公钥。（10-22：PKCE S256；DV 单 Zone 闭环（canonical = 目标 Zone，`dev_federation_http`）通过：devtest 经 DID 登录映射到本账号）
 - [x] DID 方式仅在入口允许且 Zone DID 开关开启时提供（D-8）；canonical 侧不满足签发条件、兑换失败或来源不可用时返回 D-4 / SSO-02 的结构化原因。（10-22：Zone 关闭 DID 登录时 CP 与 verify-hub 都拒绝）
@@ -538,7 +538,7 @@ bash test/local_user_dv.sh
 
 ## 11. 实施记录（2026-10-22）
 
-**范围与结论。** PRE-01～04、§0.4、SSO-01～09、SSO-11～13、SSO-15 已实施；SSO-10 按 S-1 后排；SSO-14 在本机单 Zone（test.buckyos.io，`start.py --all` 全新安装）完成验收，多 Zone、多 App origin、真实送达渠道未验证。改动均未提交（buckyos-base 的 kRPC 部分已由用户批准推送为 `a677df0`；WebSDK 前半部分已由用户提交为 `5a40238`，之后的 `runtime.ts` / `sdk_core.ts` / 测试改动未提交）。
+**范围与结论。** PRE-01～04、§0.4、SSO-01～09、SSO-11～13、SSO-15 已实施；SSO-10 按 S-1 后排；SSO-14 在本机单 Zone（test.buckyos.io，`start.py --all` 全新安装）与 PVE 三 Zone（见下“三 Zone 验收”）完成验收，多 App origin、移动端、真实送达渠道未验证。改动均未提交（buckyos-base 的 kRPC 部分已由用户批准推送为 `a677df0`；WebSDK 前半部分已由用户提交为 `5a40238`，之后的 `runtime.ts` / `sdk_core.ts` / 测试改动未提交）。
 
 **主要落点**
 
@@ -578,9 +578,17 @@ bash test/local_user_dv.sh
   - 真实 Zone 上 PRE-01 / 02：sudo 改本人 `type`（set / set_by_json_path）被拒，篡改 profile DID 被拒，普通资料编辑可用。
   - 回归：`test/local_user_dv.sh`、`test/user_groups_dv.sh`（更新为按拒绝原因码断言）、`test_messagehub_groups.ts`（改为从会话身份取 DID）、DV `my-network.spec.ts`、`homestation.spec.ts`、`local-user.spec.ts`（`/sso_refresh` 断言改为 `identity`）通过；`local-user.spec.ts` 创建用户一项仍因自签证书的 Service Worker 控制台报错失败（既有问题）；`app-launch.spec.ts` 的 `access_denied` 断言依赖 bob 的 r03share Agent App，全新安装后不存在，未验证。
 
+**三 Zone 验收（10-22，PVE `ssotest` 组）**
+
+- 环境：`src/dev_configs/ssotest.json`（SN + alice / bob / charlie 三台 OOD，种子见 `devenv_config.ts`），A = `alice.web3.devtests.org`（did:bns:alice，NAT，只经 SN 中转）、B = `bob.web3.devtests.org`（did:bns:bob，wan_dyn）、C = `charlie.me`（did:web:charlie.me，owner did:bns:charlie，portmap）。本机 `~/buckycli/<zone>/ood1/start_config.json` 的 owner 口令哈希是旧的共用值，已改为按账号名派生（`bucky2025`），源头是本地种子目录，非仓库文件。
+- 后端 `test/test_hybrid_sso/test_hybrid_sso_federation_dv.ts`（Node 运行，DNS 指向 SN，信任 dev CA）全部步骤通过：A→B 首次确认（consent 字段只含 DID、目标 Zone、显示名）并以 External 登录；再次访问显示已同意；A→C 独立确认；在 A 取消 → B 登录页 `access_denied`、无 Cookie；用过的回调与 code 被拒；B 为 alice 出具同意被拒（`session_ceiling_exceeded/did_mismatch`），bob 的 code 冒充 alice 在 C 登录被拒（`credential_state`），同一 code 用于 bob 自己的待登录则成功（B 作 canonical）；charlie 经绑定的 did:web:charlie.me 在 B 登录；B 上 External 访问未开放服务被拒（`session_kind_not_allowed`）；AIWS 与 Message Hub 的 did_login 入口可加入 / 发起访客 Session，未开 did_login 的入口 `entry_unavailable`；did:bns:bob 在 A 映射到已入驻账号（`user.invite.accept` 写入的 doc），停用后 `account_state` 且不降级为 External；External family 可刷新；C 关闭 DID 登录后 begin 返回 `zone_method_disabled`；停掉 A 的全部服务后，B 的新联合得到 `canonical_unavailable`，已有 External 会话与刷新照常，A 恢复后继续可用。
+- 浏览器 `src/frame/desktop/tests/dv/hybrid-sso-federation.spec.ts` 2 项通过（canonical = B，目标 = C，均直连）：DID 表单 → canonical 登录 → consent 取消回到目标登录页并显示原因；AIWS 分享入口选 DID 登录 → canonical 同意 → 回到入口自动加入并打开 workspace，目标根路径显示受限门户。
+- 修复：自托管 Zone（owner DID 就是 Zone DID，如 did:bns:alice）的 OwnerDocument 没有 `binded_zone_list`，CP 与 verify-hub 原先因此判定“无 canonical zone”，A 不能作 canonical。新增 `buckyos_api::owner_canonical_zone`（绑定列表首项，空则 DID 自身），CP `auth.did.begin` / `federation_check` 与 verify-hub 的兑换主机、`issue_federation_code` 判定统一使用；契约 §9.1、`doc/sdk/SSO.md` 已同步，单测覆盖。
+- 发现（不属本 TODO，未修）：① SN 中转 Desktop 冷加载会丢大量静态资源连接：OOD 侧 RTCP 入站流令牌桶（每隧道 32/s、突发 64，cyfs-gateway `rtcp.rs` `admit_inbound_stream_build`）回 `RATE_LIMITED`，经 SN 访问的 Zone（如 NAT 的 A）在浏览器里打不开桌面；② SN 不能中转自定义域名 Zone `charlie.me`：把设备解析成 `did:bns:ood1.charlie` 去取 zone 文档而 404，测试中 A、B 用 `/etc/hosts` 把 charlie.me 指到其 portmap 地址；③ msg-center `network_directory.rs` 与 HomeStation `directory.rs` 同样只认 `binded_zone_list`，自托管 Zone 用户（did:bns:alice）解析不到所在 Zone；④ `user.invite.accept` 是公开方法且不校验 `owner_config` 签名，拿到 invite_id 的任何人都可替目标 DID 接受并设密码，之后该 DID 的联合登录会映射到这个账号。
+
 **未完成与已知风险**
 
-- 未验证：canonical / B / C 三个独立 Zone 的 DID 联合、跨 App origin 与移动端浏览器、专属邀请重发的真实送达（系统不发送；资格 48 小时后才过期）、Bob 承载 Alice canonical zone。
+- 未验证：跨 App origin 与移动端浏览器、专属邀请重发的真实送达（系统不发送；资格 48 小时后才过期）、Alice 账号由 Bob 的 Zone 承载的组合、联合会话满 30 天须重新联合（只有单测）。
 - 未实现：SSO-10；`buckyos://` 唤起与 App / SN Locator；目标 Zone 独立的 action pending；Session 邀请的版本 / 有效期；DJ 专门用例；联合 consent 撤回入口。
 - 已知风险：kevent 订阅无资源过滤；`/sso_callback` 与专属邀请 `callback_url` 可被用来替换他人浏览器 Cookie（既有机制，DID 回调已加防护）；登录 nonce 防重放缓存在内存（重启后 8 小时窗口，已加“family 已存在即拒绝”的补救）；canonical logout 不传播（最长 30 天）；账号 / 来源撤销后旧 access 最长 15 分钟；verify-hub 单实例，迁移后需重新登录；App 运行时收到指向自身实例的受限会话即放行（App 可用性在签发时判定）。
 

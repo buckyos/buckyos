@@ -33,13 +33,10 @@ fn require_self_or_admin(
 }
 
 fn policy_guest_allowed(policy: &AppAvailabilityPolicy) -> bool {
-    policy
-        .group_rules
-        .iter()
-        .any(|rule| {
-            rule.group_id == buckyos_api::ANONYMOUS_AVAILABILITY_GROUP
-                && rule.effect == AvailabilityEffect::Allow
-        })
+    policy.group_rules.iter().any(|rule| {
+        rule.group_id == buckyos_api::ANONYMOUS_AVAILABILITY_GROUP
+            && rule.effect == AvailabilityEffect::Allow
+    })
 }
 
 fn app_web_hosts(installation: &ResolvedAppInstallation) -> Vec<String> {
@@ -586,7 +583,10 @@ impl ControlPanelServer {
         }
         let referenced_groups: Vec<&str> = group_rules
             .iter()
-            .filter_map(|rule| rule.group_id.strip_prefix(buckyos_api::USER_GROUP_REF_PREFIX))
+            .filter_map(|rule| {
+                rule.group_id
+                    .strip_prefix(buckyos_api::USER_GROUP_REF_PREFIX)
+            })
             .collect();
         if !referenced_groups.is_empty() {
             let defined = crate::user_group_mgr::load_user_group_directory()

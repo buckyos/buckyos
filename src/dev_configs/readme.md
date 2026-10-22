@@ -11,6 +11,16 @@ Groups:
 
 - `sntest`: the most commonly used environment, 2 VMs: SN (`web3-gateway` from the sibling `cyfs-gateway` repo) + `alice-ood1` (OOD behind a simulated NAT, reached through the SN relay).
 - `full`: SN + `web` + `alice-ood1` + `bob-ood1` + `charlie-ood1`.
+- `ssotest`: SN + three Zones for cross-Zone tests such as DID federation: `alice-ood1` (`alice.web3.devtests.org`, NAT, reached only through the SN relay), `bob-ood1` (`bob.web3.devtests.org`, `wan_dyn`, also reachable directly) and `charlie-ood1` (`charlie.me`, portmap with RTCP on 2981). OODs get 2 CPU / 4G / 16G and `agent_timeout: 900` (cloud-init upgrades packages before the guest agent starts; the 180 s default fails while the host is busy). Owners sign in with `bucky2025`. Tests: `test/test_hybrid_sso/test_hybrid_sso_federation_dv.ts` (backend) and `src/frame/desktop/tests/dv/hybrid-sso-federation.spec.ts` (browser); run commands are in their headers.
+
+On a PVE host select the backend first; the image is the Ubuntu cloud image and VMs bridge to `vmbr0`:
+
+```
+export BUCKYOS_VM_BACKEND=pve
+export BUCKYOS_PVE_VM_PARAMS='{"image": "/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img", "storage": "local-lvm"}'
+```
+
+The host does not use the SN for DNS: point clients at the SN (`dig @<sn ip> <host>`, Node `dns.Resolver`) or map hosts to IPs (Chromium `--host-resolver-rules`). A cold Desktop load through the SN relay currently loses many asset connections (the OOD's RTCP inbound stream limit answers `RATE_LIMITED`), and the SN does not relay `charlie.me` yet (it resolves the device as `did:bns:ood1.charlie`): `alice` and `bob` map `charlie.me` to its portmap address in `/etc/hosts`, and browser tests use the directly reachable `bob` and `charlie`.
 
 Note: the current development machine is `ood1@test.buckyos.io`, and it always acts as a WAN node without SN.
 

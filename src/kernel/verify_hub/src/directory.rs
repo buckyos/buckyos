@@ -5,7 +5,7 @@
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    exclusive_invite_key, user_did_from_doc_value, AppAvailabilityDecision,
+    exclusive_invite_key, owner_canonical_zone, user_did_from_doc_value, AppAvailabilityDecision,
     AppAvailabilityResolver, AppInstanceId, ExclusiveInvite, SsoSettings, SystemConfigError,
     UserSettings, SSO_SETTINGS_KEY,
 };
@@ -93,7 +93,7 @@ impl ZoneDirectory for SystemConfigDirectory {
         };
         let default_zone = serde_json::from_str::<OwnerDocument>(&raw)
             .ok()
-            .and_then(|doc| doc.get_default_zone_did());
+            .map(|doc| owner_canonical_zone(&doc));
         Ok(Some(UserDoc { did, default_zone }))
     }
 

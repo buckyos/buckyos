@@ -314,9 +314,8 @@ impl NameClientAppResolver {
         }
         match result.type_state.as_ref() {
             Some(name_client::TypeState::Revoked) => DocumentStatus::Revoked,
-            Some(name_client::TypeState::Missing) | Some(name_client::TypeState::Invalid { .. }) => {
-                DocumentStatus::Missing
-            }
+            Some(name_client::TypeState::Missing)
+            | Some(name_client::TypeState::Invalid { .. }) => DocumentStatus::Missing,
             Some(name_client::TypeState::Expired) => DocumentStatus::Expired,
             Some(name_client::TypeState::Active) => DocumentStatus::Active,
             // 没有权威回答 != Missing(实现规则 5):有验证通过的选择即 Active。
@@ -413,9 +412,7 @@ impl AppDidResolver for NameClientAppResolver {
 
         let warnings: Vec<String> = resolved.reasons.clone();
         let document_status = Self::map_result_status(&resolved);
-        let choice = resolved
-            .select(&name_client::Revision::current())
-            .cloned();
+        let choice = resolved.select(&name_client::Revision::current()).cloned();
 
         let document_value = if matches!(
             document_status,

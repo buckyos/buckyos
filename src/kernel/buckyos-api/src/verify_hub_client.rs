@@ -631,12 +631,21 @@ impl VerifyHubClient {
         request: ExclusiveInviteLoginRequest,
     ) -> Result<ExclusiveInviteLoginResult> {
         match self {
-            Self::InProcess(handler) => handler.handle_login_by_exclusive_invite(None, request).await,
-            Self::KRPC(client) => Self::call_typed(client, "login_by_exclusive_invite", request).await,
+            Self::InProcess(handler) => {
+                handler
+                    .handle_login_by_exclusive_invite(None, request)
+                    .await
+            }
+            Self::KRPC(client) => {
+                Self::call_typed(client, "login_by_exclusive_invite", request).await
+            }
         }
     }
 
-    pub async fn revoke_families(&self, request: RevokeFamiliesRequest) -> Result<RevokeFamiliesResult> {
+    pub async fn revoke_families(
+        &self,
+        request: RevokeFamiliesRequest,
+    ) -> Result<RevokeFamiliesResult> {
         match self {
             Self::InProcess(handler) => handler.handle_revoke_families(None, request).await,
             Self::KRPC(client) => Self::call_typed(client, "revoke_families", request).await,
@@ -671,8 +680,14 @@ impl VerifyHubClient {
         request: LoginByRemoteVerifyHubRequest,
     ) -> Result<LoginByRemoteVerifyHubResult> {
         match self {
-            Self::InProcess(handler) => handler.handle_login_by_remote_verify_hub(None, request).await,
-            Self::KRPC(client) => Self::call_typed(client, "login_by_remote_verify_hub", request).await,
+            Self::InProcess(handler) => {
+                handler
+                    .handle_login_by_remote_verify_hub(None, request)
+                    .await
+            }
+            Self::KRPC(client) => {
+                Self::call_typed(client, "login_by_remote_verify_hub", request).await
+            }
         }
     }
 
@@ -742,7 +757,9 @@ pub trait VerifyHubApiHandler: Send + Sync {
         _caller_token: Option<&str>,
         _request: ExclusiveInviteLoginRequest,
     ) -> Result<ExclusiveInviteLoginResult> {
-        Err(RPCErrors::UnknownMethod("login_by_exclusive_invite".to_string()))
+        Err(RPCErrors::UnknownMethod(
+            "login_by_exclusive_invite".to_string(),
+        ))
     }
 
     async fn handle_revoke_families(
@@ -758,14 +775,18 @@ pub trait VerifyHubApiHandler: Send + Sync {
         _caller_token: Option<&str>,
         _request: IssueFederationCodeRequest,
     ) -> Result<IssueFederationCodeResult> {
-        Err(RPCErrors::UnknownMethod("issue_federation_code".to_string()))
+        Err(RPCErrors::UnknownMethod(
+            "issue_federation_code".to_string(),
+        ))
     }
 
     async fn handle_exchange_federation_code(
         &self,
         _request: ExchangeFederationCodeRequest,
     ) -> Result<ExchangeFederationCodeResult> {
-        Err(RPCErrors::UnknownMethod("exchange_federation_code".to_string()))
+        Err(RPCErrors::UnknownMethod(
+            "exchange_federation_code".to_string(),
+        ))
     }
 
     async fn handle_login_by_remote_verify_hub(
@@ -773,7 +794,9 @@ pub trait VerifyHubApiHandler: Send + Sync {
         _caller_token: Option<&str>,
         _request: LoginByRemoteVerifyHubRequest,
     ) -> Result<LoginByRemoteVerifyHubResult> {
-        Err(RPCErrors::UnknownMethod("login_by_remote_verify_hub".to_string()))
+        Err(RPCErrors::UnknownMethod(
+            "login_by_remote_verify_hub".to_string(),
+        ))
     }
 }
 
@@ -783,9 +806,9 @@ fn parse_request<T: serde::de::DeserializeOwned>(method: &str, params: Value) ->
 }
 
 fn success_value(value: impl Serialize) -> Result<RPCResult> {
-    Ok(RPCResult::Success(
-        serde_json::to_value(value).map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
-    ))
+    Ok(RPCResult::Success(serde_json::to_value(value).map_err(
+        |e| RPCErrors::ParserResponseError(e.to_string()),
+    )?))
 }
 
 /// Adapter that exposes a VerifyHubHandler as a RPCHandler.

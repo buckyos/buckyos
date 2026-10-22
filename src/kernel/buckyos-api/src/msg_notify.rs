@@ -13,9 +13,8 @@
 //! MessageHub groups it are not part of the contract.
 
 use crate::{
-    CommitResultReq, HumanPromptControl, HumanPromptOption, HumanTaskPrompt, Task,
-    TaskDataResult, TaskOutcome, TaskPhase, TASK_ERR_ALREADY_COMPLETED,
-    TASK_ERR_REVISION_CONFLICT,
+    CommitResultReq, HumanPromptControl, HumanPromptOption, HumanTaskPrompt, Task, TaskDataResult,
+    TaskOutcome, TaskPhase, TASK_ERR_ALREADY_COMPLETED, TASK_ERR_REVISION_CONFLICT,
 };
 use ::kRPC::{RPCErrors, Result};
 use serde::{Deserialize, Serialize};
@@ -105,7 +104,9 @@ impl NotifyCategory {
 
 /// How strongly the sender wants to reach the user. Where that leads is up
 /// to the system and may change between versions.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyLevel {
     Quiet,
@@ -214,7 +215,12 @@ pub struct NotifySendReq {
 }
 
 impl NotifySendReq {
-    pub fn notice(to_user: impl Into<String>, title: impl Into<String>, message: impl Into<String>, key: impl Into<String>) -> Self {
+    pub fn notice(
+        to_user: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Self {
         Self {
             to_user: to_user.into(),
             kind: NotifyKind::Notice,
@@ -559,10 +565,16 @@ impl NotifyAnswer {
     pub fn to_task_result(&self, submitted_by: &str, submitted_at_ms: u64) -> Value {
         let mut values = BTreeMap::new();
         if let Some(option) = self.option.as_ref().filter(|o| !o.is_empty()) {
-            values.insert(NOTIFY_CHOICE_CONTROL_ID.to_string(), Value::String(option.clone()));
+            values.insert(
+                NOTIFY_CHOICE_CONTROL_ID.to_string(),
+                Value::String(option.clone()),
+            );
         }
         if let Some(text) = self.text.as_ref().filter(|t| !t.trim().is_empty()) {
-            values.insert(NOTIFY_TEXT_CONTROL_ID.to_string(), Value::String(text.clone()));
+            values.insert(
+                NOTIFY_TEXT_CONTROL_ID.to_string(),
+                Value::String(text.clone()),
+            );
         }
         serde_json::to_value(TaskDataResult::Human {
             action: Some(
@@ -633,7 +645,10 @@ pub fn machine_content<T: Serialize>(intent: &str, data: &T) -> Result<ndn_lib::
 }
 
 /// The `intent` data of a message, when it carries that intent.
-pub fn machine_data<T: serde::de::DeserializeOwned>(msg: &ndn_lib::MsgObject, intent: &str) -> Option<T> {
+pub fn machine_data<T: serde::de::DeserializeOwned>(
+    msg: &ndn_lib::MsgObject,
+    intent: &str,
+) -> Option<T> {
     let machine = msg.content.machine.as_ref()?;
     if machine.intent.as_deref() != Some(intent) {
         return None;
@@ -855,7 +870,10 @@ mod tests {
         async fn commit_result(&self, req: CommitResultReq) -> Result<Task> {
             let mut t = self.0.lock().unwrap();
             if t.phase.is_terminal() {
-                return Err(crate::task_mgr_error(TASK_ERR_ALREADY_COMPLETED, "terminal"));
+                return Err(crate::task_mgr_error(
+                    TASK_ERR_ALREADY_COMPLETED,
+                    "terminal",
+                ));
             }
             if t.revision != req.expected_revision {
                 return Err(crate::task_mgr_error(TASK_ERR_REVISION_CONFLICT, "stale"));
@@ -902,10 +920,16 @@ mod tests {
         assert_eq!(value["category"], "agent");
         assert_eq!(value["prompt"]["controls"][0]["id"], "option");
         assert_eq!(value["prompt"]["controls"][1]["kind"], "text_input");
-        assert_eq!(value["url"], "https://test.buckyos.io/messagehub?notify=nt-1");
+        assert_eq!(
+            value["url"],
+            "https://test.buckyos.io/messagehub?notify=nt-1"
+        );
         let back: NotifyMessageData = serde_json::from_value(value).unwrap();
         assert_eq!(back, data);
-        assert_eq!(NotifyCategory::from_session_id("sysnotify:agent"), Some(NotifyCategory::Agent));
+        assert_eq!(
+            NotifyCategory::from_session_id("sysnotify:agent"),
+            Some(NotifyCategory::Agent)
+        );
         assert_eq!(NotifyCategory::Todo.session_id(), "sysnotify:todo");
         assert!(NotifyStatus::Expired.is_closed());
         assert!(!NotifyStatus::Read.is_closed());
@@ -954,7 +978,10 @@ mod tests {
         };
         let result = notify_task_result(&t).unwrap();
         assert_eq!(result.option(), Some("a"));
-        assert_eq!(result.committed_by.as_deref(), Some("alice|system:control-panel"));
+        assert_eq!(
+            result.committed_by.as_deref(),
+            Some("alice|system:control-panel")
+        );
 
         // A stale snapshot loses the CAS, re-reads and still wins when the
         // task is open.
@@ -985,8 +1012,14 @@ mod tests {
         let mut canceled = task(1);
         canceled.phase = TaskPhase::Terminal;
         canceled.outcome = Some(TaskOutcome::Canceled);
-        assert_eq!(input_status_of(&canceled, Some("expired")), NotifyStatus::Expired);
-        assert_eq!(input_status_of(&canceled, Some("ask_timeout")), NotifyStatus::Canceled);
+        assert_eq!(
+            input_status_of(&canceled, Some("expired")),
+            NotifyStatus::Expired
+        );
+        assert_eq!(
+            input_status_of(&canceled, Some("ask_timeout")),
+            NotifyStatus::Canceled
+        );
     }
 
     fn view(status: NotifyStatus) -> NotifyView {

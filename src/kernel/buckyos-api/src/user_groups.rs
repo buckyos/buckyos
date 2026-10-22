@@ -255,11 +255,23 @@ mod tests {
 
     #[test]
     fn group_refs_round_trip_and_reject_root_and_bad_ids() {
-        for raw in ["type:admin", "type:user", "type:limited", "group:customer-1"] {
+        for raw in [
+            "type:admin",
+            "type:user",
+            "type:limited",
+            "group:customer-1",
+        ] {
             let parsed: UserGroupRef = raw.parse().unwrap();
             assert_eq!(parsed.to_string(), raw);
         }
-        for raw in ["type:root", "type:guest", "group:", "group:Bad", "customer", "group:1x"] {
+        for raw in [
+            "type:root",
+            "type:guest",
+            "group:",
+            "group:Bad",
+            "customer",
+            "group:1x",
+        ] {
             assert!(raw.parse::<UserGroupRef>().is_err(), "{raw}");
         }
         let rule: ContactProjectionRule =
@@ -314,7 +326,9 @@ mod tests {
     #[test]
     fn four_dimension_defaults_follow_the_user_type() {
         let limited = account("carol", UserType::Limited, &[]);
-        assert!(limited.is_active() && !limited.can_change_password() && !limited.can_edit_contacts());
+        assert!(
+            limited.is_active() && !limited.can_change_password() && !limited.can_edit_contacts()
+        );
         let mut opened = limited.clone();
         opened.allow_password_change = Some(true);
         opened.allow_contact_edit = Some(true);

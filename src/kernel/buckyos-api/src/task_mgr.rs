@@ -3341,7 +3341,11 @@ mod tests {
             .iter()
             .map(|schema| (&schema.schema_id, schema.schema_version))
             .collect();
-        assert_eq!(unique.len(), schemas.len(), "duplicate built-in schema revision");
+        assert_eq!(
+            unique.len(),
+            schemas.len(),
+            "duplicate built-in schema revision"
+        );
         for schema in &schemas {
             assert!(
                 !schema.allowed_executor_kinds.is_empty(),
@@ -3370,7 +3374,10 @@ mod tests {
         assert_eq!(latest.schema_version, DOWNLOAD_TASK_SCHEMA_NOTIFY_VERSION);
         assert_eq!(latest.system_notify(), Some(TaskSystemNotify::Progress));
         assert!(latest.user_creatable);
-        let first = downloads.iter().find(|schema| schema.schema_version == 1).unwrap();
+        let first = downloads
+            .iter()
+            .find(|schema| schema.schema_version == 1)
+            .unwrap();
         assert_eq!(first.system_notify(), None);
         assert_eq!(
             serde_json::to_value(TaskSystemNotify::Completion).unwrap(),

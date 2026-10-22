@@ -1781,8 +1781,12 @@ mod tests {
     #[test]
     fn local_profile_fields_win_over_did_document_defaults() {
         let merged = merge_profile_values(
-            Some(json!({ "did": "did:bns:alice", "avatar": "data:image/png;base64,LOCAL", "bio": " " })),
-            Some(json!({ "avatar": "https://doc/a.png", "bio": "From doc", "display_name": "Alice" })),
+            Some(
+                json!({ "did": "did:bns:alice", "avatar": "data:image/png;base64,LOCAL", "bio": " " }),
+            ),
+            Some(
+                json!({ "avatar": "https://doc/a.png", "bio": "From doc", "display_name": "Alice" }),
+            ),
         );
         assert_eq!(merged["avatar"], "data:image/png;base64,LOCAL");
         assert_eq!(merged["bio"], "From doc");
@@ -1953,8 +1957,9 @@ mod tests {
         // Never from a session of another target (an App holding the user's session).
         let mut app_session = caller("carol", UserType::User, true);
         app_session.is_control_panel_session = false;
-        let error = password_change_allowed(&app_session, "carol", &account(UserType::User, None, set))
-            .unwrap_err();
+        let error =
+            password_change_allowed(&app_session, "carol", &account(UserType::User, None, set))
+                .unwrap_err();
         assert_eq!(
             AccessDenial::from_rpc_error(&error).map(|denial| denial.reason),
             Some(DenyReason::SessionKindNotAllowed)

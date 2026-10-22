@@ -1976,7 +1976,10 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
-        assert_eq!(settings.pre_install_apps["demo.example.web.did"].desktop_shortcut, None);
+        assert_eq!(
+            settings.pre_install_apps["demo.example.web.did"].desktop_shortcut,
+            None
+        );
 
         let with_shortcut: SystemInstallSettings = serde_json::from_value(json!({
             "pre_install_apps": {
@@ -1991,7 +1994,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             with_shortcut.pre_install_apps["demo.example.web.did"].desktop_shortcut,
-            Some(PreInstallDesktopShortcut { name: "Demo".to_string() })
+            Some(PreInstallDesktopShortcut {
+                name: "Demo".to_string()
+            })
         );
 
         for invalid in [

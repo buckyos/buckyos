@@ -384,7 +384,10 @@ impl ControlPanelServer {
         body: &Value,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let bad_request = |error: String| {
-            self.desktop_json_response(StatusCode::BAD_REQUEST, json!({"ok": false, "error": error}))
+            self.desktop_json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"ok": false, "error": error}),
+            )
         };
         let Some(dir) = desktop_folder::desktop_dir(userid) else {
             return bad_request("this account has no home folder".to_string());
@@ -400,13 +403,15 @@ impl ControlPanelServer {
                     let declared = self.declared_desktop_shortcuts(&seed).await;
                     seed.extend(declared);
                 }
-                desktop_folder::list_items(&dir, &seed).await.map(|(created, items)| {
-                    json!({
-                        "path": desktop_folder::desktop_dfs_path(userid),
-                        "created": created,
-                        "items": items,
+                desktop_folder::list_items(&dir, &seed)
+                    .await
+                    .map(|(created, items)| {
+                        json!({
+                            "path": desktop_folder::desktop_dfs_path(userid),
+                            "created": created,
+                            "items": items,
+                        })
                     })
-                })
             }
             "items.write" => {
                 let Some(text) = body.get("text").and_then(|v| v.as_str()) else {
@@ -415,7 +420,10 @@ impl ControlPanelServer {
                 if !desktop_folder::is_desktop_object_name(name) {
                     return bad_request(format!("not a .lnk or .widget name: {}", name));
                 }
-                let create = body.get("create").and_then(|v| v.as_bool()).unwrap_or(false);
+                let create = body
+                    .get("create")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 match desktop_folder::write_item(&dir, name, text, create).await {
                     Err(error) if error.starts_with("exists:") => return bad_request(error),
                     other => other.map(|()| json!({"name": name})),
@@ -431,7 +439,9 @@ impl ControlPanelServer {
             }
         };
         match result {
-            Ok(data) => self.desktop_json_response(StatusCode::OK, json!({"ok": true, "data": data})),
+            Ok(data) => {
+                self.desktop_json_response(StatusCode::OK, json!({"ok": true, "data": data}))
+            }
             Err(error) => {
                 log::error!("desktop: {} for {}: {}", action, userid, error);
                 self.desktop_json_response(
@@ -449,18 +459,25 @@ impl ControlPanelServer {
     ) -> Vec<desktop_folder::DesktopSeedItem> {
         let settings = async {
             let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
-            let client = runtime.get_system_config_client().await.map_err(|e| e.to_string())?;
+            let client = runtime
+                .get_system_config_client()
+                .await
+                .map_err(|e| e.to_string())?;
             let value = client
                 .get(super::pre_install_reconciler::INSTALL_SETTINGS_KEY)
                 .await
                 .map_err(|e| e.to_string())?;
-            serde_json::from_str::<buckyos_api::SystemInstallSettings>(&value.value).map_err(|e| e.to_string())
+            serde_json::from_str::<buckyos_api::SystemInstallSettings>(&value.value)
+                .map_err(|e| e.to_string())
         }
         .await;
         match settings {
             Ok(settings) => desktop_folder::declared_shortcuts(&settings, seed),
             Err(error) => {
-                log::warn!("desktop: install_settings unavailable for desktop shortcuts: {}", error);
+                log::warn!(
+                    "desktop: install_settings unavailable for desktop shortcuts: {}",
+                    error
+                );
                 Vec::new()
             }
         }
@@ -829,6 +846,9 @@ mod tests {
         let mut root = json!({"theme": "light", "wallpaper": {"fit": "fill"}});
         json_path_set(&mut root, "wallpaper.fit", json!("tile")).unwrap();
         json_path_set(&mut root, "locale", json!("zh-CN")).unwrap();
-        assert_eq!(root, json!({"theme": "light", "locale": "zh-CN", "wallpaper": {"fit": "tile"}}));
+        assert_eq!(
+            root,
+            json!({"theme": "light", "locale": "zh-CN", "wallpaper": {"fit": "tile"}})
+        );
     }
 }
