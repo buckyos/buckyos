@@ -285,10 +285,10 @@ External 的 DID 不在本 Zone，本 Zone 也没有该用户的任何 Profile�
 | --- | --- |
 | UT-01 | `buckyos-api/src/control_panel.rs`（`UserType` 去 Guest + 集中判定方法；`UserSettings.groups` / `allow_contact_edit` 与 `is_active`、`can_change_password`、`can_edit_contacts`、`group_refs`；`UserGroupDirectory`、`ZoneUserPrincipal`、`ControlPanelClient::load_user_groups` / `resolve_user_principal`；删除 `UserContactSettings.groups`）、新文件 `user_groups.rs`（`UserGroupRef`、`ContactProjectionRule`、默认规则、`project_contacts`）、`app_availability.rs`（`match_availability_group_rule`、External 标记 claim） |
 | UT-02 | Control Panel 新文件 `user_group_mgr.rs`（`user_group.*` 七个 RPC）、`user_mgr.rs`（`user.set_account_options`、`groups` 参数改指系统用户组）、`app_servcie_mgr.rs`（可用性规则引用的组必须已定义） |
-| UT-03 | `scheduler/src/scheduler.rs`、`system_config_agent.rs`（`parse_user_settings_record`、`g, <user>, group:<id>`）、`rbac_config.rs`（`limited` 自身策略与 `owners/*/contacts`、`contact_membership` 两行）、`read_last_schedule_snapshot`、`sys_config_service` 的 `is_privileged_user_type` |
+| UT-03 | `scheduler/src/scheduler.rs`、`system_config_agent.rs`（`parse_user_settings_record`、`g, <user>, group:<id>`）、`rbac_config.rs`（`limited` 自身策略与 `owners/*/contacts`、`contact_membership` 两行）、`sys_config_service` 的 `is_privileged_user_type` |
 | UT-04 | `verify_hub/src/main.rs`（空存储密码拒绝密码登录） |
 | UT-05 | `user_mgr.rs`、`sys_auth_backend.rs`（`reject_external_principal`）、`agent_mgr.rs`、`app_installer.rs`、`task_ops.rs`、`zone_mgr.rs`、`app_servcie_mgr.rs` 改用集中判定 |
-| UT-06 | msg-center `contact_mgr.rs`（投影快照与读取合成）、`main.rs`（zone sync 构建目录、旧 `zone_user` 条目清理）、`msg_center.rs`（`ZoneAccounts`、本地收件、私信失败）、`owner_session.rs`（External）、`contact_rpc.rs`（写权限、`contact.check_membership`）；buckyos-api `msg_center_client.rs`（`Contact.projected_from`、`MailboxAddress::contacts_resource`）、`msg_contact.rs` |
+| UT-06 | msg-center `contact_mgr.rs`（投影快照与读取合成）、`main.rs`（zone sync 构建目录与投影）、`msg_center.rs`（`ZoneAccounts`、本地收件、私信失败）、`owner_session.rs`（External）、`contact_rpc.rs`（写权限、`contact.check_membership`）；buckyos-api `msg_center_client.rs`（`Contact.projected_from`、`MailboxAddress::contacts_resource`）、`msg_contact.rs` |
 | UT-07 | homestation `users.rs`、`contacts.rs` |
 | UT-08 | Desktop `src/api/user_type.ts`（集中判定）、`api/user_mgr.ts`、`control_panel_mock.ts`、Users & Agents 系统用户组页与用户详情、新建向导、My Network 投影与只读模式、隐私页；e2e `tests/e2e/pages/user-groups.spec.ts` |
 | UT-09 | websdk `account.ts`（`ZoneUserType`、`parseZoneUserType`、`isExternalPrincipal`）、`msg_center_client.ts`（`projected_from`、`isUserGroupRefTag`）及 dist |
@@ -303,21 +303,21 @@ External 的 DID 不在本 Zone，本 Zone 也没有该用户的任何 Profile�
 - 本地收件按类型：只有 Active 的 Admin、User 注册为本地收件人（Limited 没有邮箱 RBAC，见 §3.3-B）；Zone 账号不再按主机名算本地，非账号的子域 DID（Agent、telegram 别名）保持原规则。Zone 托管签名仍覆盖 Limited。
 - 合成通讯录的访问级别：原始记录是 Block 时保持 Block，否则投影条目一律 Allow。旧行为里用户把 Zone 成员手动设成 Stranger 会被保留，现在不再生效，只有拉黑能挡住。
 - §3.3-A 的补充：DV 发现 Limited 读不到自己的（只含投影的）通讯录——msg-center 原先要求整个 owner 作用域 `obj://msg-center/owners/<did>` 的权限。改为通讯录单独用 `obj://msg-center/owners/<did>/contacts`，`limited` 加 `read|write` 到该资源；msg-center 仍把 owner 绑定到调用者本人，并按 `can_edit_contacts` 拦写，所以单用户覆盖“允许改通讯录”对 Limited 也生效。会话、邮箱等其它 owner 数据仍不开放。
-- DV 发现：scheduler 的 `system/scheduler/snapshot` 存着旧 `UserItem`（自有枚举序列化为 `"User"`），换成 buckyos-api 的 `UserType` 后每轮调度都反序列化失败，RBAC 不再刷新。改为快照读不了时告警并按无快照重新调度（`read_last_schedule_snapshot`），快照只是上一轮的缓存。
+- DV 发现：在未重装的 Zone 上，scheduler 快照里的旧 `"User"` 让每轮调度失败。当时临时加过“快照读不了就重新调度”的回退，确认 DV 可以全新安装后已删除（同时删除了 msg-center 清理旧 `zone_user` 条目的代码），改用 `start.py --all`。
 - 投影条目不带 `UserContactSettings.tags`（Zone 给用户的建议标签）；读取时合成的模型里它没有落点。
-- 旧数据：DV 上没有 `type=guest` 记录；alice、bob 的 profile `system_contact.groups = ["users"]`、devtest 的 `["zone_user"]` 因字段删除在读取时被忽略，下次写 profile 时消失，无需迁移。msg-center 启动后对每个用户库清理一次旧的同步 `zone_user` 条目：带用户数据（备注、自加标签、拉黑）的保留为普通联系人，其余删除。
+- 旧数据：按 AGENTS.md 不做兼容，DV 用 `uv run start.py --all` 全新安装。旧 Zone 里有三类数据新代码读不了或不再处理：`type=guest` 的账号（scheduler 告警跳过，其余服务解析失败即拒绝）、scheduler 快照 `system/scheduler/snapshot` 里旧枚举写的 `"User"`（反序列化失败，每轮调度都报错，RBAC 不再刷新）、msg-center 早先同步写进各用户通讯录的 `zone_user` 条目（会和投影并存）。
 
 ### 6.3 验证
 
-- Rust（`buckyos/src`）：`CARGO_INCREMENTAL=0 cargo test -p buckyos-api -p verify_hub -p control_panel -p scheduler -p msg_center -p homestation -p system_config -- --test-threads=1` 全部通过：buckyos-api 256、control_panel 147、msg_center 170（1 ignored）、scheduler 74、system_config 34、verify_hub 19、homestation 18 及各集成测试，0 失败（scheduler、msg_center 在 DV 修复后又各自重跑通过）。
+- Rust（`buckyos/src`）：`CARGO_INCREMENTAL=0 cargo test -p buckyos-api -p verify_hub -p control_panel -p scheduler -p msg_center -p homestation -p system_config -- --test-threads=1` 全部通过：buckyos-api 256、control_panel 147、msg_center 170（1 ignored）、scheduler 74、system_config 34、verify_hub 19、homestation 18 及各集成测试，0 失败（删除兼容代码后 scheduler 73、msg_center 169 又重跑通过）。
 - Desktop（`src/frame/desktop`）：`pnpm check` 通过；`pnpm lint` 0 错误（9 个原有警告）；`deno test --no-check --allow-read --allow-env tests/datamodel/users-agents-mapping.test.ts` 4 通过；`pnpm exec playwright test tests/e2e/pages/user-groups.spec.ts` 7 通过（浅色、深色截图已核对）；分支另跑 users-agents、my-network、messagehub，49 个中 48 过，失败的 `messagehub.spec.ts`“wheel scrolling 375px”单独连跑 3 轮全过。
 - websdk：`pnpm test` 505 通过，`pnpm build` 重建 dist。
-- DV（test.buckyos.io，部署 system_config、verify_hub、scheduler、control_panel、msg_center、homestation、desktop）：
+- DV（test.buckyos.io）：先在旧 Zone 上增量部署验证，删掉兼容代码后用 `uv run start.py --all` 全新安装（账号 alice、bob、devtest、root），以下结果在全新 Zone 上重跑：
   - `bash test/user_groups_dv.sh`（新增）通过：RBAC 行 `g, <u>, limited` / `group:<id>` 生成且无组策略；Limited 能读自己的 settings/profile，读别人 settings、系统配置、改密码、管理组、建 Agent、列自己的会话都被拒；默认规则下 User 看不到 Limited、Limited 通讯录为空；配置 `group:customer → group:service` 后客服看到客户（`projected_from` 与 tags 带来源组）、客户看不到客服；删除投影条目被拒（`system-relation`）；Limited 写通讯录被拒（`contact-edit-not-allowed`）；给 Limited 发私信 `post_send` 返回 `recipient-has-no-inbox`；删规则后投影条目消失；移出组后 RBAC 行消失，改类型拒绝 root/guest、改为 user 后 RBAC 更新。
   - `bash test/local_user_dv.sh` 通过；`test/test_msg_center/test_my_network.ts` 通过。
   - `tests/dv/local-user.spec.ts`：“SSO callback”通过；“admin creates a real local user …”的功能断言全部通过（顺带把早已过时的 chip 断言 `user`/`active` 改为界面实际显示的 `User`/`Active`），最后的控制台检查因 9 条“SSL certificate error when fetching the script”失败，是本机自签证书下 Service Worker 脚本拉取失败，与本次改动无关。
   - `test_messagehub_sessions.ts`：第 1 步通过；第 2 步要求 devtest 名下有 jarvis Agent，这台 DV 上不存在，未能验证。
-  - DV 过程中发现并修复两处：Limited 读不到自己的通讯录、scheduler 旧快照反序列化失败（见 §6.2）。
+  - DV 过程中发现 Limited 读不到自己的通讯录并修复（见 §6.2）；旧 Zone 数据问题改为全新安装解决。
 
 ### 6.4 未完成与风险
 

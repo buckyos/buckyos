@@ -1719,29 +1719,6 @@ mod user_type_rbac_tests {
         .to_string()
     }
 
-    #[test]
-    fn an_unreadable_snapshot_is_treated_as_absent() {
-        let mut snapshot = NodeScheduler::new_empty(1);
-        snapshot.users.insert(
-            "bob".into(),
-            UserItem {
-                userid: "bob".into(),
-                user_type: ApiUserType::User,
-                groups: Vec::new(),
-                res_pool_id: None,
-            },
-        );
-        let mut input = HashMap::new();
-        input.insert(
-            "system/scheduler/snapshot".to_string(),
-            serde_json::to_string(&snapshot).unwrap(),
-        );
-        assert!(read_last_schedule_snapshot(&input).is_some());
-        let old_format = input["system/scheduler/snapshot"].replace("\"user\"", "\"User\"");
-        input.insert("system/scheduler/snapshot".to_string(), old_format);
-        assert!(read_last_schedule_snapshot(&input).is_none());
-    }
-
     #[tokio::test]
     async fn user_types_and_system_groups_become_rbac_groups() {
         let mut input = HashMap::new();
@@ -2515,25 +2492,19 @@ mod content_registry_tests {
     }
 }
 
-/// The snapshot only caches the previous round; one this build cannot read
-/// (its schema changed) is dropped and the round schedules from scratch.
-fn read_last_schedule_snapshot(input_system_config: &HashMap<String, String>) -> Option<NodeScheduler> {
-    let snapshot_str = input_system_config.get("system/scheduler/snapshot")?;
-    match serde_json::from_str::<NodeScheduler>(snapshot_str) {
-        Ok(snapshot) => Some(snapshot),
-        Err(error) => {
-            warn!("ignore unreadable system/scheduler/snapshot, scheduling from scratch: {error}");
-            None
-        }
-    }
-}
-
 pub(crate) async fn build_schedule_plan(
     input_system_config: &HashMap<String, String>,
     is_boot: bool,
 ) -> Result<SchedulePlan> {
     let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(input_system_config)?;
-    let last_schedule_snapshot = read_last_schedule_snapshot(input_system_config);
+    let last_schedule_snapshot =
+        if let Some(snapshot_str) = input_system_config.get("system/scheduler/snapshot") {
+            Some(serde_json::from_str::<NodeScheduler>(
+                snapshot_str.as_str(),
+            )?)
+        } else {
+            None
+        };
     info!(
         "build_schedule_plan: is_boot={} nodes={} specs={} instances={} last_snapshot_present={}",
         is_boot,

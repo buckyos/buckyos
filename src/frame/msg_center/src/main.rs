@@ -53,7 +53,7 @@ use ndn_lib::{MsgContent, MsgContentFormat, MsgObject};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -869,8 +869,6 @@ struct ZoneSync {
 struct AppliedZoneSync {
     tunnel: Option<(TelegramTunnelSettings, Value)>,
     contacts: Option<String>,
-    /// Owners whose store no longer holds synced Zone user copies.
-    purged_owners: HashSet<String>,
 }
 
 impl ZoneSync {
@@ -942,7 +940,7 @@ impl ZoneSync {
         if !force && applied.contacts.as_deref() == Some(signature.as_str()) {
             return Ok(());
         }
-        apply_zone_directory(&self.center, &directory, &mut applied.purged_owners).await?;
+        apply_zone_directory(&self.center, &directory).await?;
         sync_zone_agent_contacts(&self.center, &directory.seeds(), agents).await?;
         applied.contacts = Some(signature);
         Ok(())
@@ -1062,13 +1060,8 @@ async fn sync_zone_agent_contacts(
 
 /// Apply the Zone's accounts: local recipients, the system scope contacts
 /// (tunnel routing), and every user's projected address book. Users' own
-/// stores no longer receive Zone users; copies an earlier sync wrote are
-/// dropped once per owner.
-async fn apply_zone_directory(
-    center: &MessageCenter,
-    directory: &ZoneDirectory,
-    purged_owners: &mut HashSet<String>,
-) -> Result<()> {
+/// stores do not receive Zone users.
+async fn apply_zone_directory(center: &MessageCenter, directory: &ZoneDirectory) -> Result<()> {
     center.set_zone_accounts(directory.zone_accounts());
     let seeds = directory.seeds();
     let updated = center
@@ -1078,21 +1071,6 @@ async fn apply_zone_directory(
     center
         .contact_mgr
         .set_projection(directory.contact_projection(now_ms()));
-    for account in directory.accounts.iter() {
-        let owner = account.seed.as_ref().map_or(&account.did, |seed| &seed.did);
-        if purged_owners.contains(&owner.to_string()) {
-            continue;
-        }
-        let dropped = center
-            .contact_mgr
-            .drop_synced_zone_users(owner)
-            .await
-            .map_err(|error| anyhow::anyhow!("drop synced zone users of {} failed: {}", owner.to_string(), error))?;
-        if dropped > 0 {
-            info!("dropped {} synced zone user copies from {}", dropped, owner.to_string());
-        }
-        purged_owners.insert(owner.to_string());
-    }
     info!(
         "zone directory applied: accounts={}, system contacts updated={}",
         directory.accounts.len(),

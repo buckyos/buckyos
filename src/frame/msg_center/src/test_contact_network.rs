@@ -869,7 +869,7 @@ async fn default_projection_lets_admins_and_users_see_each_other_but_not_limited
         ],
         Default::default(),
     );
-    crate::apply_zone_directory(&c, &directory, &mut Default::default())
+    crate::apply_zone_directory(&c, &directory)
         .await
         .unwrap();
     assert_eq!(dids(&listed(&c, &alice).await), vec![bob.to_string()]);
@@ -905,11 +905,9 @@ async fn customer_group_is_seen_by_service_group_one_way_and_leaves_no_residue()
         (&svc, UserType::User, &["service"]),
         (&cust, UserType::Limited, &["customer"]),
     ];
-    let mut purged = Default::default();
     crate::apply_zone_directory(
         &c,
         &crate::test_zone_directory(&accounts, customer_service_groups(true)),
-        &mut purged,
     )
     .await
     .unwrap();
@@ -957,7 +955,6 @@ async fn customer_group_is_seen_by_service_group_one_way_and_leaves_no_residue()
     crate::apply_zone_directory(
         &c,
         &crate::test_zone_directory(&accounts, customer_service_groups(false)),
-        &mut purged,
     )
     .await
     .unwrap();
@@ -999,7 +996,6 @@ async fn owner_without_edit_right_sees_only_the_projection_and_cannot_write() {
     crate::apply_zone_directory(
         &c,
         &crate::test_zone_directory(&accounts, customer_service_groups(true)),
-        &mut Default::default(),
     )
     .await
     .unwrap();
@@ -1042,7 +1038,6 @@ async fn direct_message_to_an_account_without_inbox_fails_clearly() {
     crate::apply_zone_directory(
         &c,
         &crate::test_zone_directory(&accounts, customer_service_groups(true)),
-        &mut Default::default(),
     )
     .await
     .unwrap();
@@ -1071,35 +1066,6 @@ async fn direct_message_to_an_account_without_inbox_fails_clearly() {
 }
 
 #[tokio::test]
-async fn synced_zone_user_copies_are_dropped_keeping_owner_notes() {
-    let zone = "z.example";
-    let (alice, bob, carol) = (user("alice", zone), user("bob", zone), user("carol", zone));
-    let (c, _tmp) = open("projection-purge", zone, &[]).await;
-    let seed = |did: &DID| crate::contact_mgr::ZoneUserContactSeed {
-        did: did.clone(),
-        name: did.id.clone(),
-        avatar: None,
-        note: None,
-        bindings: vec![],
-        tags: vec![],
-    };
-    c.upsert_zone_user_contacts(vec![seed(&bob), seed(&carol)], Some(alice.clone()))
-        .await
-        .unwrap();
-    c.contact_mgr
-        .update_tags(bob.clone(), vec!["team".into()], vec![], buckyos_api::ContactSource::ManualCreate, Some(alice.clone()))
-        .await
-        .unwrap();
-    assert_eq!(c.contact_mgr.drop_synced_zone_users(&alice).await.unwrap(), 2);
-    assert!(contact(&c, &alice, &carol).await.is_none());
-    let kept = contact(&c, &alice, &bob).await.unwrap();
-    assert_eq!(kept.tags, vec!["team".to_string()]);
-    assert_eq!(kept.friend_state, FriendState::None);
-    assert_eq!(kept.access_level, AccessGroupLevel::Stranger);
-    assert_eq!(c.contact_mgr.drop_synced_zone_users(&alice).await.unwrap(), 0);
-}
-
-#[tokio::test]
 async fn membership_check_is_exact_includes_projection_and_is_service_only() {
     use buckyos_api::UserType;
     let zone = "z.example";
@@ -1113,7 +1079,6 @@ async fn membership_check_is_exact_includes_projection_and_is_service_only() {
     crate::apply_zone_directory(
         &c,
         &crate::test_zone_directory(&accounts, customer_service_groups(true)),
-        &mut Default::default(),
     )
     .await
     .unwrap();
@@ -1179,7 +1144,7 @@ async fn users_do_not_see_zone_accounts_through_the_system_scope() {
         &[(&alice, UserType::User, &[]), (&carol, UserType::Limited, &[])],
         Default::default(),
     );
-    crate::apply_zone_directory(&c, &directory, &mut Default::default())
+    crate::apply_zone_directory(&c, &directory)
         .await
         .unwrap();
     assert_eq!(listed_system(&c, RPCContext::default()).await.len(), 2);

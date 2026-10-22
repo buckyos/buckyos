@@ -1693,68 +1693,6 @@ impl ContactMgr {
             .await
     }
 
-    /// Zone users used to be copied into every user's own store; they now come
-    /// from the projection. Drop those copies, keeping what the owner added
-    /// (note, own tags, a block) as an ordinary record of the owner.
-    pub async fn drop_synced_zone_users(&self, owner: &DID) -> std::result::Result<usize, RPCErrors> {
-        let owner_key = Self::owner_key(Some(owner));
-        self.ensure_store_loaded(&owner_key).await?;
-        let (removed, kept, snapshot) = {
-            let mut stores = self.stores.write().await;
-            let store = stores.get_mut(&owner_key).ok_or_else(|| {
-                RPCErrors::ReasonError("contact store missing after load".to_string())
-            })?;
-            let synced: Vec<DID> = store
-                .contacts
-                .values()
-                .filter(|contact| contact.tags.iter().any(|tag| tag == CONTACT_TAG_ZONE_USER))
-                .map(|contact| contact.did.clone())
-                .collect();
-            if synced.is_empty() {
-                return Ok(0);
-            }
-            let (mut removed, mut kept) = (Vec::new(), Vec::new());
-            for did in synced {
-                let contact = store.contacts.get_mut(&did).expect("listed above");
-                contact
-                    .tags
-                    .retain(|tag| contact_tag_kind(tag) != ContactTagKind::System);
-                let owner_data = contact.note.is_some()
-                    || !contact.tags.is_empty()
-                    || contact.access_level == AccessGroupLevel::Block;
-                if owner_data {
-                    if contact.access_level != AccessGroupLevel::Block {
-                        contact.access_level = AccessGroupLevel::Stranger;
-                    }
-                    contact.temp_grants.clear();
-                    contact.friend_state = FriendState::None;
-                    contact.updated_at = Self::now_ms();
-                    kept.push(did);
-                } else {
-                    store.contacts.remove(&did);
-                    store.alias_index.retain(|_, canonical| canonical != &did);
-                    removed.push(did);
-                }
-            }
-            store.binding_index = Self::rebuild_binding_index(&store.contacts);
-            (removed, kept, store.clone())
-        };
-        self.save_owner_store(&owner_key, &snapshot).await?;
-        let count = removed.len() + kept.len();
-        // A dropped copy of a user the owner still sees by projection stays listed.
-        let (still_listed, removed): (Vec<DID>, Vec<DID>) = removed
-            .into_iter()
-            .partition(|did| self.is_projected(Some(owner), did));
-        if !removed.is_empty() {
-            Self::publish_changed(Some(owner), "remove", removed);
-        }
-        let upserted: Vec<DID> = kept.into_iter().chain(still_listed).collect();
-        if !upserted.is_empty() {
-            Self::publish_changed(Some(owner), "upsert", upserted);
-        }
-        Ok(count)
-    }
-
     pub async fn upsert_zone_agent_contacts(
         &self,
         contacts: Vec<ZoneUserContactSeed>,

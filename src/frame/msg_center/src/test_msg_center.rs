@@ -2897,7 +2897,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             ],
             Default::default(),
         );
-        crate::apply_zone_directory(&center, &directory, &mut Default::default())
+        crate::apply_zone_directory(&center, &directory)
             .await
             .unwrap();
         inbound(
@@ -2934,7 +2934,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .handle_block_contact(devtest.clone(), None, Some(lucy.clone()), ctx())
             .await
             .unwrap();
-        crate::apply_zone_directory(&center, &directory, &mut Default::default())
+        crate::apply_zone_directory(&center, &directory)
             .await
             .unwrap();
         let result = center
