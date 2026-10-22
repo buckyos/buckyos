@@ -20,7 +20,7 @@
 | Session Guest | 群 / Session 的成员角色；Limited 客户、External 都可以获得 |
 | 联系人与联系人分组 | My Network / msg-center 按 owner 分库的 contact，分组字段统一为 `tags`；叠加系统用户组投影（§5）；资源方可以引用它授权，但它不是系统用户组 |
 | Agent | 独立 AgentId DID，`principal_kind=agent`，归属某个用户 |
-| 混合 SSO 的 EA / EB 账号 | 本地账号，类型为 Limited |
+| 混合 SSO 的专属邀请 / 自助注册账号 | 本地账号，类型为 Limited |
 | 混合 SSO 的 DID 访客 | 未入驻本 Zone 时即 External |
 
 ## 2. UserType
@@ -98,7 +98,7 @@ UserType.md 早期的 friends（非系统登录用户，有 SNS 读、评论写�
 - 组定义：`system/user_groups/<id>`（`UserGroup`：`group_id`、`name`、`description`），`id` 为 `[a-z][a-z0-9_-]`，最长 32 个字符。
 - 成员关系：用户 settings 的 `groups` 字段，可多选；Admin、User、Limited 都能加入，Root 不参与。
 - RBAC：scheduler 为每个已定义的组生成 `g, <user>, group:<id>`，不生成任何 `p` 规则。`group:` 前缀避免与 `admin`、`users`、`limited` 及 `kernel`、`app` 等系统角色重名。
-- 只有管理员能把人放进组：经 Users & Agents 界面，或具备管理员权限的脚本（如企业 EA 预建账号）。公开注册（EB）不自动加入任何系统组，分享入口也不能自动把人加入组。
+- 只有管理员能把人放进组：经 Users & Agents 界面，或具备管理员权限的脚本（如企业为专属邀请预建账号）。自助注册不自动加入任何系统组，分享入口也不能自动把人加入组。
 - 管理 RPC（Control Panel，仅管理员）：`user_group.list`、`user_group.create`、`user_group.update`、`user_group.delete`、`user_group.set_members`、`user_group.set_projections`、`user_group.reset_projections`；`user.create` / `user.invite.create` 的 `groups` 参数指系统用户组。组或成员变化后 Control Panel 立即刷新 RBAC 并通知 msg-center。
 
 ### 4.3 App 可用性中的组
