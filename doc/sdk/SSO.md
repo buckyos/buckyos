@@ -173,10 +173,11 @@ iss            签发方（Zone 的 verify-hub）
 已实现的流程是后端 HTTPS 一次性授权码交换（D-7，不公布 verify-hub 公钥）：
 
 ```text
-1. 目标 Zone 页面输入 DID → CP auth.did.begin：resolve(did) → OwnerDocument → default zone → ZoneDocument.hostname，
+1. 目标 Zone 页面输入 DID → CP auth.did.begin：resolve(did) → OwnerDocument → canonical zone → ZoneDocument.hostname，
+   （canonical zone = binded_zone_list 首项；为空时是 DID 自身，即 owner DID 就是 Zone DID 的自托管 Zone）
    生成 state / nonce / PKCE verifier，跳到 https://<canonical>/sso/federate?...
 2. canonical Zone（用户已登录）显示 consent：DID、目标 Zone、公开显示名 / 头像；以 DID + 目标 Zone 记住同意。
-   只有 Active 的 Admin / User、且该 Zone 是其 OwnerDocument 默认 Zone 时才签发 code（60 秒、单次）。
+   只有 Active 的 Admin / User、且该 Zone 是其 canonical zone 时才签发 code（60 秒、单次）。
 3. 浏览器回到目标 Zone 的 /sso/did_callback，CP 调 verify-hub.login_by_remote_verify_hub。
 4. 目标 verify-hub 自行解析 canonical 主机，HTTPS 调 exchange_federation_code（PKCE 校验），核对 DID / 目标 Zone / nonce，
    映射到已入驻账号，否则签发 External 会话；联合会话最长 30 天，续期不回 canonical 复核。

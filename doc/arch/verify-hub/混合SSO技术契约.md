@@ -298,11 +298,11 @@ CREATE TABLE IF NOT EXISTS share_entries (
 
 ### 9.1 流程与方法
 
-1. 目标 Zone B：页面调用 CP `auth.did.begin {did, redirect_url}`。CP 解析 `did → OwnerDocument → default_zone_did → ZoneDocument.hostname`，生成 `state`（32 字节）、`nonce`、PKCE `code_verifier`（S256 得 `code_challenge`），写 pending（10 分钟，内存），返回 `{status:"redirect", url}`：
+1. 目标 Zone B：页面调用 CP `auth.did.begin {did, redirect_url}`。CP 解析 `did → OwnerDocument → canonical zone → ZoneDocument.hostname`（canonical zone 取 `binded_zone_list` 首项；列表为空时取 DID 自身——自托管 Zone 的 owner DID 就是 Zone DID，如 `did:bns:alice` 拥有 `alice.bns.did`，见 `buckyos_api::owner_canonical_zone`），生成 `state`（32 字节）、`nonce`、PKCE `code_verifier`（S256 得 `code_challenge`），写 pending（10 分钟，内存），返回 `{status:"redirect", url}`：
 
    `https://<canonical_host>/sso/federate?did=<did>&client_zone=<B zone DID>&redirect_uri=https://<B host>/sso/did_callback&state=..&nonce=..&code_challenge=..`
 
-2. canonical Zone A：页面 `/sso/federate`（需 A 的登录态）调用 CP `auth.federation.describe {…}`：校验 `redirect_uri` 的 host 等于 `client_zone` 的 ZoneDocument hostname、路径固定为 `/sso/did_callback`；当前账号 DID 等于 `did`；账号类型可对外联合（Admin / User）且 Active；该账号 OwnerDocument 的 default zone 是本 Zone。返回 consent 内容与是否已同意。用户确认后 `auth.federation.approve {…, remember:true}`：CP 记录 consent（`users/<id>/federation_consents` 中 `client_zone → {granted_at, profile_scope:1}`），调用 verify-hub `issue_federation_code`，返回 `{status:"redirect", url:"<redirect_uri>?code=..&state=.."}`。取消返回 `<redirect_uri>?error=access_denied&state=..`。
+2. canonical Zone A：页面 `/sso/federate`（需 A 的登录态）调用 CP `auth.federation.describe {…}`：校验 `redirect_uri` 的 host 等于 `client_zone` 的 ZoneDocument hostname、路径固定为 `/sso/did_callback`；当前账号 DID 等于 `did`；账号类型可对外联合（Admin / User）且 Active；该账号 OwnerDocument 的 canonical zone（同上规则）是本 Zone。返回 consent 内容与是否已同意。用户确认后 `auth.federation.approve {…, remember:true}`：CP 记录 consent（`users/<id>/federation_consents` 中 `client_zone → {granted_at, profile_scope:1}`），调用 verify-hub `issue_federation_code`，返回 `{status:"redirect", url:"<redirect_uri>?code=..&state=.."}`。取消返回 `<redirect_uri>?error=access_denied&state=..`。
 
 3. B：`GET /sso/did_callback?code&state` 由 CP 处理：取出 pending（一次性），调用 B 的 `verify-hub.login_by_remote_verify_hub`。
 
