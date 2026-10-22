@@ -11,7 +11,7 @@ type Failure = { kind: 'denied'; denial: AccessDenial } | { kind: 'canonical_una
  * DID login: the visitor names their DID, this Zone sends the browser to that DID's canonical Zone
  * for consent and comes back to `redirectUrl` signed in.
  */
-export function DidLoginForm({ redirectUrl, onCancel }: { redirectUrl: string; onCancel?: () => void }) {
+export function DidLoginForm({ redirectUrl, requiredDid, onCancel }: { redirectUrl: string; requiredDid?: string; onCancel?: () => void }) {
   const { t } = useI18n()
   const [did, setDid] = useState('')
   const [busy, setBusy] = useState(false)
@@ -19,7 +19,7 @@ export function DidLoginForm({ redirectUrl, onCancel }: { redirectUrl: string; o
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const value = did.trim()
+    const value = (requiredDid ?? did).trim()
     if (!value.startsWith('did:') || value.length < 8) {
       setFailure({ kind: 'invalid' })
       return
@@ -50,8 +50,8 @@ export function DidLoginForm({ redirectUrl, onCancel }: { redirectUrl: string; o
         size="small"
         label={t('sso.did.label', 'Your DID')}
         placeholder="did:bns:alice"
-        value={did}
-        disabled={busy}
+        value={requiredDid ?? did}
+        disabled={busy || !!requiredDid}
         autoComplete="username"
         onChange={(event) => setDid(event.target.value)}
         slotProps={{ htmlInput: { 'data-testid': 'sso-did-input' } }}

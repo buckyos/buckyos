@@ -345,6 +345,8 @@ def request_header_equals(name, expected_value):
 
 
 def assertions_for_case(case_name: str):
+    if case_name in {"req_service_not_ready_root", "req_service_not_ready_app"}:
+        return [control_matches({"return"}, exact_value="error 503 service_not_ready:aiworkspace")]
     if case_name == "req_agent_worklog_by_kapi_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10032")]
     if case_name == "req_app_public_no_cookie_ok":

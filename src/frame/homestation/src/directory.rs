@@ -228,7 +228,7 @@ impl Directory for NameDirectory {
         }
         let parsed = did(value)?;
         let zone = match name_client::resolve_owner_document(&parsed).await {
-            Ok(doc) => doc.get_default_zone_did().map(|z| z.to_host_name()),
+            Ok(doc) => Some(buckyos_api::owner_canonical_zone(&doc).to_host_name()),
             Err(e) => {
                 log::debug!("owner document of {value} unavailable: {e}");
                 None

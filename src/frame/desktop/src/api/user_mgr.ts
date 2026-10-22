@@ -6,8 +6,9 @@ import { isMockRuntime } from '../runtime.ts'
 async function callControlPanel<T>(
   method: string,
   params: Record<string, unknown>,
+  options: RpcCallOptions = {},
 ): Promise<{ data: T | null; error: unknown }> {
-  if (!isMockRuntime()) return callRpc<T>(method, params)
+  if (!isMockRuntime()) return callRpc<T>(method, params, options)
   const { callMockControlPanel } = await import('./control_panel_mock.ts')
   return callMockControlPanel<T>(method, params)
 }
@@ -560,7 +561,7 @@ export const createUserInvite = async (input: {
 export const fetchUserInvite = async (
   inviteId: string,
 ): Promise<{ data: UserInviteResponse | null; error: unknown }> =>
-  callRpc<UserInviteResponse>('user.invite.get', { invite_id: inviteId })
+  callControlPanel<UserInviteResponse>('user.invite.get', { invite_id: inviteId }, { sessionToken: null })
 
 export const acceptUserInvite = async (input: {
   inviteId: string
@@ -572,7 +573,7 @@ export const acceptUserInvite = async (input: {
     owner_config: input.ownerConfig,
   }
   if (input.passwordHash !== undefined) params.password_hash = input.passwordHash
-  return callRpc<UserInviteResponse>('user.invite.accept', params)
+  return callControlPanel<UserInviteResponse>('user.invite.accept', params)
 }
 
 /** Soft-delete a user (state → `deleted`). Admin-only; cannot delete root or self. */

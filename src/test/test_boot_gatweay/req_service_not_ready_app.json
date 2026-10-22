@@ -1,0 +1,12 @@
+{
+  "input": {
+    "REQ": {
+      "method": "POST",
+      "path": "/kapi/aiworkspace",
+      "host": "filebrowser.test.buckyos.io",
+      "uri": "/kapi/aiworkspace"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": ["REQ", "RESP"]
+}

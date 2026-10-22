@@ -63,6 +63,11 @@ buckyos system info                                 # BuckyOS version, build_ver
   (`apps.availability.*`) has no CLI verb and needs a user's Control Panel login.
 - Devices, network, gateway, certificates: control-panel `zone.devices.list`, `network.overview`, `gateway.overview`,
   `zone.certificates.list` are read-only and not in the CLI. `devices/<id>/info` is node-reported Info, not a setting.
+- DID account invitations (`user.invite.create|get|accept`, `/users/invite/:inviteId`) require the invited DID's
+  Control Panel `did_federation` session before acceptance. An invite link alone or a password session is insufficient;
+  the submitted OwnerDocument must match that DID and declare this Zone. These differ from exclusive invite links.
+- The local gateway's RTCP listener follows the device document's `rtcp_port` (default `2980`), rendered into
+  `etc/node_gateway_params.json` at activation and startup. Inspect the document and listening socket together.
 - Storage: no settings API; `system status` warns on disk/memory/swap of the control-panel host.
 - AI providers: `buckyos ai providers` (auth as configured/kind, health, models; never secrets), `ai routing`,
   `ai usage [--range last1d|last7d|last30d | --since <t>] [--group-by provider_instance_name,provider_model] [--bucket day]`
@@ -132,6 +137,9 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   host command for the owner, e.g. `uv run src/check.py`, `docker ps`, `ls $BUCKYOS_ROOT/logs/apps/`.
 
 #### When it fails
+- HTTP 503 `service_not_ready:<service>` from `/kapi/<service>` means the gateway has no registered route for that
+  service yet. Check `services/<service>/info`, the node's `gateway_info`, and service/scheduler logs; retry after
+  instance reporting and route publication. This is expected briefly during startup, not an HTTP method mismatch.
 - Exit codes: 2 usage; 3 auth (`AUTH_REQUIRED`, `INVALID_SESSION`, `SESSION_EXPIRED`); 4 permission
   (`PERMISSION_DENIED`, `CONFIRMATION_REQUIRED`); 5 `SERVICE_UNAVAILABLE` (`fetch failed`, retryable);
   6 operation (`RESOURCE_NOT_FOUND`, `OPERATION_FAILED`); 8 timeout.

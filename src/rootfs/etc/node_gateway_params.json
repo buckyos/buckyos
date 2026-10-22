@@ -1,5 +1,6 @@
 {
   "params": {
-    "device_did": "did:bns:unactivated.local"
+    "device_did": "did:bns:unactivated.local",
+    "rtcp_port": "2980"
   }
 }

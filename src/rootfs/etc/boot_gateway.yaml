@@ -36,7 +36,7 @@ collections:
 stacks:
   node_rtcp:
     protocol: rtcp
-    bind: "[::]:2980"
+    bind: "[::]:{{rtcp_port}}"
     device_did: "{{device_did}}"
     keep_tunnel: []
     hook_point:
@@ -177,6 +177,7 @@ servers:
               exec get_app_info_from_req;
               exec get_service_info_from_req;
               if !eq $SERVICE_ID "" then
+                match-include $SERVICE_INFO $SERVICE_ID || return --from chain "error 503 service_not_ready:${SERVICE_ID}";
                 exec permit_check || echo "access service permit check failed" && reject;
                 return --from chain $(exec forward_to_service);
               elif !eq $APP_ID "" then
@@ -283,10 +284,7 @@ servers:
               else
                 map-create krpc_hp;
                 match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_.-]+)(/.*)?" || return false;
-                match-include $SERVICE_INFO $krpc_hp[1] || return false;
-                global TARGET_SERVICE_INFO=$SERVICE_INFO[$krpc_hp[1]];
                 global SERVICE_ID=$krpc_hp[1];
-                return $krpc_hp[1];
               end
 
               match-include $SERVICE_INFO $SERVICE_ID || return false;

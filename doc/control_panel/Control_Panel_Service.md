@@ -103,6 +103,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 * **创建用户**（[user_mgr.rs](../../src/frame/control_panel/src/user_mgr.rs)）：一次事务写 `users/{uid}/settings` + `users/{uid}/doc` + `users/{uid}/key` + `users/{uid}/profile` 四路径。
 * **创建 Agent**：一次事务写 `agents/{id}/doc` + `agents/{id}/settings` + `agents/{id}/key`。
 * **创建邀请**：一次事务写 `services/control_panel/user_invites/{invite_id}`，若指向已存在用户则同时写其 `settings`（置 Pending）。
+* **接受邀请**：一次事务写用户 `settings`、`doc`、`profile` 和邀请的 accepted 状态，以邀请版本 CAS 防止重复消费。仅本邀请明确预留的 Pending 账号可更新；新账号与身份文档使用 Create，冲突时整笔事务失败。读取失败不会当作账号不存在。
 
 > ⚠️ **非原子的尾随写**：RBAC 策略（`system/rbac/policy`）是在主事务**之后**以 `append` 追加的，不在同一事务内。即“账号已建好但 RBAC 组未追加”是一个理论上可能的中间态，文档与实现需对此保持知情（后续可考虑纳入同一事务或补偿）。
 
@@ -134,7 +135,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 | `user.set_msg_tunnel` / `user.remove_msg_tunnel` | 本人/Admin | 增删消息平台账号绑定 |
 | `user.invite.create` | **Admin** | 生成邀请（可预建 Pending 用户或绑定已有 DID），返回 `invite_url`；`user_type` 为 `admin` / `user` / `limited`，`groups` 为已定义的系统用户组 id，接受邀请时写入账号 |
 | `user.invite.get` | **公开** | 凭 `invite_id` 读邀请详情（含过期、zone_did/host） |
-| `user.invite.accept` | **公开** | 凭 `invite_id` + `owner_config` 接受邀请并激活账号 |
+| `user.invite.accept` | **目标 DID 联合登录会话** | 先以 OwnerDocument 的 DID 联合登录本 Zone，再凭 `invite_id` + `owner_config` 接受邀请；会话须为 Control Panel 用户会话且 `auth_method=did_federation`，DID 须与文档及邀请的 `target_did`（若指定）一致。文档仍须声明绑定本 Zone |
 | `user.delete` | **Admin** | 软删除（置 Deleted），不可自删 |
 | `user.change_password` | 本人/Admin | 本人改密受 `allow_password_change` 限制 |
 | `user.change_state` | **Admin** | Active/Pending/Deleted 迁移 |
@@ -325,10 +326,11 @@ identifier / staging handle
 | `auth.invite.describe` / `auth.invite.login` / `auth.invite.request_resend` | 专属邀请：凭 secret 读取、免密登录、申请重发 |
 | `auth.did.begin` | DID 登录：解析 canonical zone 并生成跳转 |
 | `user.invite.get` | 凭邀请链接读邀请详情 |
-| `user.invite.accept` | 凭邀请链接接受邀请、激活账号 |
 | `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
 
 ### 6.2 后端：公开 HTTP 路由
+
+`user.invite.accept` 不在公开白名单中。External 可以用其已验证的 DID 会话调用该方法，密码、专属免密邀请、App/设备会话以及其他 DID 的会话均不能代为接受。`/users/invite/:inviteId` 页面保留完整邀请地址完成 DID 登录，再提交 OwnerDocument；后端在任何账号、口令或邀请状态写入之前验证 DID 会话。
 
 | 路由 | 方法 | 用途 |
 |---|---|---|

@@ -1820,12 +1820,15 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             );
             return String::from("load device private key failed!");
         })?;
-    save_node_gateway_params(&get_buckyos_system_etc_dir(), &node_identity.device_did).map_err(
-        |error| {
-            error!("write node_gateway_params.json failed! {}", error);
-            return String::from("write node_gateway_params.json failed!");
-        },
-    )?;
+    save_node_gateway_params(
+        &get_buckyos_system_etc_dir(),
+        &node_identity.device_did,
+        device_doc.rtcp_port,
+    )
+    .map_err(|error| {
+        error!("write node_gateway_params.json failed! {}", error);
+        String::from("write node_gateway_params.json failed!")
+    })?;
 
     //lookup zone config
     info!(

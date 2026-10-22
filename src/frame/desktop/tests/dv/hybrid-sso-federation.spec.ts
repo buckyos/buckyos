@@ -3,8 +3,8 @@
 // owner of the canonical Zone signs in to the target Zone with its DID through the canonical consent
 // page, declines once, and reaches an AI Workspace entry on the target that allows DID login. The
 // host does not use the SN for DNS, so the browser and the Node-side kRPC calls take the Zone
-// addresses from BUCKYOS_TEST_HOST_RULES ("MAP <host> <ip>, ..."). Pick Zones the browser reaches
-// directly: the SN relay rate-limits the many connections a cold SPA load opens. Defaults: canonical
+// addresses from BUCKYOS_TEST_HOST_RULES ("MAP <host> <ip>, ..."). Use the SN IP to exercise relay
+// paths, including Alice behind NAT and Charlie with a custom domain. Defaults: canonical
 // bob.web3.devtests.org (wan_dyn), target charlie.me (portmap); BUCKYOS_TEST_CANONICAL[_USER] and
 // BUCKYOS_TEST_TARGET[_USER] pick others. Run with the two VM IPs:
 //   BUCKYOS_TEST_HOST_RULES="MAP bob.web3.devtests.org <ip>, MAP charlie.me <ip>" \

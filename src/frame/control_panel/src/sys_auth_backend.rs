@@ -52,7 +52,7 @@ const ACCOUNT_SELF_METHODS: [&str; 12] = [
 ];
 
 /// Methods every verified user session reaches, External included.
-const ANY_SESSION_METHODS: [&str; 1] = ["auth.current_identity"];
+const ANY_SESSION_METHODS: [&str; 2] = ["auth.current_identity", "user.invite.accept"];
 
 /// Expected outcomes of `auth.prepare_app_launch`. kRPC errors reach the browser as plain
 /// text, so everything the desktop branches on travels as this status instead.
@@ -1093,7 +1093,6 @@ impl ControlPanelServer {
                 | "auth.invite.request_resend"
                 | "auth.did.begin"
                 | "user.invite.get"
-                | "user.invite.accept"
                 | "zone.presentation.get"
         )
     }
@@ -1564,7 +1563,7 @@ async fn verify_session_any_ceiling(
 }
 
 /// D-4 default deny for restricted sessions (SSO-04): a Limited session reaches
-/// its own-account methods, an External one only its current identity, and
+/// its own-account methods, an External one its identity and invitation acceptance, and
 /// either only as a Control Panel (Zone root) session.
 fn restricted_method_access(
     method: &str,
@@ -1654,8 +1653,12 @@ mod tests {
             deny("user.profile.get", &narrowed, false, true),
             Some(DenyReason::SessionCeilingExceeded)
         );
-        // External: only the current identity.
+        // External: current identity and authenticated invitation acceptance.
         assert_eq!(deny("auth.current_identity", &external, true, true), None);
+        assert_eq!(deny("user.invite.accept", &external, true, true), None);
+        assert!(!ControlPanelServer::is_public_rpc_method(
+            "user.invite.accept"
+        ));
         for method in [
             "user.get",
             PREPARE_APP_LAUNCH_METHOD,

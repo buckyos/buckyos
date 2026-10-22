@@ -11,7 +11,7 @@ Groups:
 
 - `sntest`: the most commonly used environment, 2 VMs: SN (`web3-gateway` from the sibling `cyfs-gateway` repo) + `alice-ood1` (OOD behind a simulated NAT, reached through the SN relay).
 - `full`: SN + `web` + `alice-ood1` + `bob-ood1` + `charlie-ood1`.
-- `ssotest`: SN + three Zones for cross-Zone tests such as DID federation: `alice-ood1` (`alice.web3.devtests.org`, NAT, reached only through the SN relay), `bob-ood1` (`bob.web3.devtests.org`, `wan_dyn`, also reachable directly) and `charlie-ood1` (`charlie.me`, portmap with RTCP on 2981). OODs get 2 CPU / 4G / 16G and `agent_timeout: 900` (cloud-init upgrades packages before the guest agent starts; the 180 s default fails while the host is busy). Owners sign in with `bucky2025`. Tests: `test/test_hybrid_sso/test_hybrid_sso_federation_dv.ts` (backend) and `src/frame/desktop/tests/dv/hybrid-sso-federation.spec.ts` (browser); run commands are in their headers.
+- `ssotest`: SN + three Zones for cross-Zone tests such as DID federation: `alice-ood1` (`alice.web3.devtests.org`, NAT, reached only through the SN relay), `bob-ood1` (`bob.web3.devtests.org`, `wan_dyn`, DNS points to its reported address) and `charlie-ood1` (`charlie.me`, portmap with RTCP on 2981, DNS points to its reported address). OODs get 2 CPU / 4G / 16G. The PVE backend defaults to a 900 s guest-agent timeout; the group needs no override. Owners sign in with `bucky2025`. Materialization rejects an old seed's `admin_password_hash` if it does not match that owner and password: generate OOD and SN together with a fresh `--env_root`. Tests: `test/test_hybrid_sso/test_hybrid_sso_federation_dv.ts` (backend) and `src/frame/desktop/tests/dv/hybrid-sso-federation.spec.ts` (browser); run commands are in their headers.
 
 On a PVE host select the backend first; the image is the Ubuntu cloud image and VMs bridge to `vmbr0`:
 
@@ -20,7 +20,7 @@ export BUCKYOS_VM_BACKEND=pve
 export BUCKYOS_PVE_VM_PARAMS='{"image": "/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img", "storage": "local-lvm"}'
 ```
 
-The host does not use the SN for DNS: point clients at the SN (`dig @<sn ip> <host>`, Node `dns.Resolver`) or map hosts to IPs (Chromium `--host-resolver-rules`). A cold Desktop load through the SN relay currently loses many asset connections (the OOD's RTCP inbound stream limit answers `RATE_LIMITED`), and the SN does not relay `charlie.me` yet (it resolves the device as `did:bns:ood1.charlie`): `alice` and `bob` map `charlie.me` to its portmap address in `/etc/hosts`, and browser tests use the directly reachable `bob` and `charlie`.
+The host does not use the SN for DNS: point clients at the SN (`dig @<sn ip> <host>`, Node `dns.Resolver`) or map hosts to IPs (Chromium `--host-resolver-rules`). To exercise relay paths, explicitly map Alice and Charlie to the SN IP; normal Bob/Charlie DNS answers exercise direct access. Trust the development CA for browser tests: certificate-error retries can greatly increase the number of TLS connections and trigger RTCP admission limits. RTCP retries temporary admission failures within the stream-open deadline.
 
 Note: the current development machine is `ood1@test.buckyos.io`, and it always acts as a WAN node without SN.
 
@@ -102,9 +102,9 @@ uv run buckyos-devtest $group_name info_vms
 - Requires SN
 
 ### ood1@charlie.me (owner did:bns:charlie)
-- Uses a custom domain and custom port mapping on 2981 (D-DNS; RTCP traffic is not forwarded, other traffic is)
+- Uses a custom domain with mapped HTTP/HTTPS ports and RTCP on 2981 (D-DNS)
 - Configures `sn: sn.devtests.org` in `zone_boot`
-- Sets `rtcp_port` to 2981 in `device_mini_config`
+- Sets `rtcp_port` to 2981 in the device document and mini document; the local gateway listens on the same port
 - ood1's netid is `portmap`
 - Requires SN
 
@@ -115,13 +115,13 @@ Just call `register_device_to_sn` / `update_device_info_to_sn` at the appropriat
 ## Zone Access Logic
 ### Access via HTTPS
 - DNS resolution: decide based on whether the domain's NS records point to SN (if it is a `*.web` second-level domain, it always goes through SN)
-- SN decides whether this zone needs HTTP traffic relay (`net_id` is `wan` → return device IP; otherwise return SN IP)
+- SN uses the explicit network type: `wan`, `wan_dyn`, and `portmap` return the reported device IP when available; NAT, unknown network types and missing addresses return the SN IP
 - If DNS returns an SN address, traffic is relayed; otherwise it is a public IP or port mapping
 
-### Access via RTCP (not implemented yet)
+### Access via RTCP
 - `resolve_did` to get `zone_boot_config`
-- When OOD `net_id` is `wan` or `portmap`, connect directly: `(rtcp://device_did/xxxx)`
-- When OOD `net_id` is not `wan` and SN exists, relay: `(rtcp://sn/device_did/xxxx)`
+- Direct candidates use the device DID and its declared `rtcp_port` (`2980` if omitted).
+- `wan_dyn` uses SN for DDNS only and omits `sn` from its boot and Zone documents. NAT and `portmap` retain an explicit SN relay candidate; the SN derives the device identity from the Zone's own DID, including `did:web` custom domains.
 
 ### Access any node in the zone via RTCP (not implemented yet)
 

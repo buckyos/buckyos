@@ -527,12 +527,19 @@ async fn zone_signs_for(center: &MessageCenter, signer: &DID, author: &DID) -> b
     let Ok(Some(device_zone)) = directory.zone_of(signer).await else {
         return false;
     };
-    let author_zone = if center.is_hosted_identity(author) {
-        local_zone_host().or_else(|| center.cyfs_dispatch.read().unwrap().target_zone.clone())
-    } else {
-        directory.zone_of(author).await.ok().flatten()
-    };
-    author_zone.is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone))
+    if center.is_hosted_identity(author) {
+        let local_zone =
+            local_zone_host().or_else(|| center.cyfs_dispatch.read().unwrap().target_zone.clone());
+        if local_zone.is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone)) {
+            return true;
+        }
+    }
+    directory
+        .zone_of(author)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|zone| zone.eq_ignore_ascii_case(&device_zone))
 }
 
 /// `center` enables the Zone-custody rule for signers other than `from`.
@@ -545,8 +552,9 @@ pub(crate) async fn verify_signed_message_with(
     let signer = decoded
         .kid_did()
         .ok_or((StatusCode::FORBIDDEN, "signer-mismatch"))?;
+    let mut custody = false;
     if signer != decoded.msg.from {
-        let custody = match center {
+        custody = match center {
             Some(center) => zone_signs_for(center, &signer, &decoded.msg.from).await,
             None => false,
         };
@@ -573,7 +581,19 @@ pub(crate) async fn verify_signed_message_with(
             .kid
             .split_once('#')
             .map(|(_, fragment)| format!("#{}", fragment));
-        match name_client::resolve_auth_key(from, fragment.as_deref()).await {
+        let key = if custody {
+            name_client::resolve_did(from, Some(name_lib::DidDocType::Device))
+                .await
+                .and_then(name_lib::parse_did_doc)
+                .and_then(|doc| {
+                    doc.get_auth_key(fragment.as_deref())
+                        .map(|(key, _)| key)
+                        .ok_or_else(|| name_lib::NSError::NotFound("Invalid kid".into()))
+                })
+        } else {
+            name_client::resolve_auth_key(from, fragment.as_deref()).await
+        };
+        match key {
             Ok(key) => key,
             Err(name_lib::NSError::NotFound(_)) => {
                 return Err((StatusCode::FORBIDDEN, "unknown-signing-key"))

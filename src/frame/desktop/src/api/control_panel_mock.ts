@@ -59,6 +59,7 @@ import type {
   AgentTemplate,
   AgentTemplateBinding,
   UserTunnelBinding,
+  UserInviteRecord,
 } from './user_mgr.ts'
 import type { ExclusiveInvite, InviteResource } from './sso.ts'
 
@@ -130,6 +131,7 @@ interface MockState {
   session?: MockSession
   /** Hybrid SSO state; a partial seed is merged over the defaults. */
   sso?: Partial<MockSso>
+  user_invites?: Record<string, UserInviteRecord>
 }
 
 type MockSession =
@@ -161,6 +163,7 @@ interface MockSso {
   invites: MockInvite[]
   /** Target Zones the signed-in account agreed to (canonical side). */
   consents: string[]
+  did_logins?: Record<string, { did: string; redirect_url: string }>
 }
 
 const RESERVED_NAMES = new Set(['root', 'system', 'admin', 'guest', '_', 'www', 'sys', 'homestation'])
@@ -1124,7 +1127,10 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
       url.searchParams.set('did', did)
       url.searchParams.set('client_zone', `did:bns:${state.zone}`)
       url.searchParams.set('redirect_uri', `${window.location.origin}/sso/did_callback`)
-      url.searchParams.set('state', `mock-state-${encodeURIComponent(redirectUrl).length}`)
+      const flowState = `mock-state-${encodeURIComponent(redirectUrl).length}`
+      sso.did_logins ??= {}
+      sso.did_logins[flowState] = { did, redirect_url: redirectUrl }
+      url.searchParams.set('state', flowState)
       url.searchParams.set('nonce', 'mock-nonce')
       url.searchParams.set('code_challenge', 'mock-challenge')
       return { status: 'redirect', url: url.toString() }
@@ -1253,6 +1259,32 @@ function handleSso(state: MockState, method: string, params: Record<string, unkn
 
 function handle(state: MockState, method: string, params: Record<string, unknown>): unknown {
   switch (method) {
+    case 'user.invite.get':
+    case 'user.invite.accept': {
+      const invite = state.user_invites?.[stringParam(params, 'invite_id')]
+      if (!invite) throw new MockRpcError('Invitation not found')
+      const expired = invite.expires_at != null && invite.expires_at < nowSecs()
+      if (method === 'user.invite.get') {
+        return { invite, expired, zone_did: `did:bns:${state.zone}`, zone_host: zoneHostOf(state) }
+      }
+      const identity = identityOf(state)
+      if (identity.kind === 'anonymous' || identity.auth_method !== 'did_federation') deny('session_kind_not_allowed', method)
+      const document = typeof params.owner_config === 'string' ? JSON.parse(params.owner_config) : params.owner_config
+      if (!document || typeof document !== 'object' || Array.isArray(document)) throw new MockRpcError('Invalid owner_config')
+      const owner = document as Record<string, unknown>
+      if (owner.id !== identity.did || (invite.target_did && invite.target_did !== identity.did)) {
+        deny('session_ceiling_exceeded', method)
+      }
+      if (expired || invite.state !== 'pending') throw new MockRpcError('Invitation is no longer pending')
+      const userId = invite.target_user_id || String(owner.name || '').trim().toLowerCase()
+      if (!userId) throw new MockRpcError('Account name is required')
+      invite.state = 'accepted'
+      invite.accepted_at = nowSecs()
+      invite.accepted_user_id = userId
+      state.zone_users[userId] = { user_type: invite.default_user_type }
+      if (!state.user_names.includes(userId)) state.user_names.push(userId)
+      return { ok: true, invite, user_id: userId, state: 'active' }
+    }
     case 'agent.check_name':
       requireCreator(state)
       return checkName(state, stringParam(params, 'name'))

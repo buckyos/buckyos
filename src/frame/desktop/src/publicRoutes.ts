@@ -15,7 +15,7 @@ export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile', '/sso'] as const
  * `/homestation/<user>/<key>`, `/homestation/~zone`) — but not `/homestation` itself, the signed-in
  * user's own app; the Message Hub guest page (`/messagehub/guest`), which sends a visitor without a
  * session to the group's entry. */
-const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+$/, /^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/, /^\/messagehub\/guest$/]
+const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+$/, /^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/, /^\/messagehub\/guest$/, /^\/users\/invite\/[^/]+$/]
 
 const normalizePath = (pathname: string) =>
   (pathname || '/').replace(/\/+$/, '') || '/'

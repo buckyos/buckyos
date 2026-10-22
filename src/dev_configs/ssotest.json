@@ -29,7 +29,9 @@
         ],
         "instance_commands": [
             "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
-            "sudo sh -c \"echo '{{sn.ip}} web3.devtests.org' >> /etc/hosts\""
+            "sudo sh -c \"echo '{{sn.ip}} web3.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"printf '[Resolve]\\nDNS=127.0.0.1 8.8.8.8 1.1.1.1\\nFallbackDNS=8.8.4.4 1.0.0.1\\nDNSStubListener=no\\n' > /etc/systemd/resolved.conf.d/dns-server.conf\"",
+            "sudo systemctl restart systemd-resolved && sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf"
           ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -42,8 +44,7 @@
         "vm_params": {
           "cpu": 2,
           "memory": "4G",
-          "disk": "16G",
-          "agent_timeout": 900
+          "disk": "16G"
         },
         "network": {
           "lan_id": "lan",
@@ -65,8 +66,7 @@
             "sudo mkdir -p /etc/systemd/resolved.conf.d",
             "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org ~charlie.me\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDNSStubListenerExtra=172.17.0.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
             "sudo systemctl restart systemd-resolved",
-            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker",
-            "sudo sh -c \"echo '{{charlie-ood1.ip}} charlie.me' >> /etc/hosts\""
+            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker"
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -79,8 +79,7 @@
         "vm_params": {
           "cpu": 2,
           "memory": "4G",
-          "disk": "16G",
-          "agent_timeout": 900
+          "disk": "16G"
         },
         "network": {
           "lan_id": "lan",
@@ -100,8 +99,7 @@
             "sudo mkdir -p /etc/systemd/resolved.conf.d",
             "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org ~charlie.me\\nFallbackDNS=8.8.8.8 1.1.1.1\\nDNSStubListenerExtra=172.17.0.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
             "sudo systemctl restart systemd-resolved",
-            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker",
-            "sudo sh -c \"echo '{{charlie-ood1.ip}} charlie.me' >> /etc/hosts\""
+            "sudo sh -c \"echo '{\\\"dns\\\": [\\\"172.17.0.1\\\"]}' > /etc/docker/daemon.json\" && sudo systemctl restart docker"
         ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -114,8 +112,7 @@
         "vm_params": {
           "cpu": 2,
           "memory": "4G",
-          "disk": "16G",
-          "agent_timeout": 900
+          "disk": "16G"
         },
         "network": {
           "lan_id": "lan",

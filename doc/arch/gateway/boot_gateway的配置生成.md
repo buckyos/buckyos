@@ -11,6 +11,7 @@ cyfs-gateway 上游已经完成 group forward 和 tunnel URL 状态查询后，B
 1. `src/rootfs/etc/boot_gateway.yaml`
    - 静态 boot 配置。
    - 定义 `node_rtcp`、`zone_gateway_http`、`node_gateway_http` 和 `node_gateway` HTTP server。
+   - `node_rtcp.bind` 使用 `node_gateway_params.json` 中的字符串参数 `rtcp_port`。激活、种子物化和 node-daemon 启动均从本机设备文档写入该端口，缺省为 `2980`；自定义端口（如 `2981`）与对端读取的设备文档一致。
    - 从 `node_gateway_info.json` 读取 `APP_INFO`、`SERVICE_INFO`、`ROUTES`（升级前为 `NODE_ROUTE_MAP`）、`TRUST_KEY`、`NODE_INFO`。
    - 对私有 App 页面执行精确 SSO cookie 校验：route entry 的 AppId/AppInstanceId/owner 必须一致，token 必须来自 Verify Hub 且为 user session App target；System/refresh/sudo/旧格式 token 均 fail closed。`/sso_callback`、`/sso_refresh`、`/sso_logout` 先按 control-panel 服务路由，不被 App 页面 cookie 闸门拦截。
 2. `nodes/<node>/gateway_info`

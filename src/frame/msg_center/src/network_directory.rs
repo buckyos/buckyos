@@ -100,11 +100,14 @@ pub(crate) fn profile_from_document(did: &DID, doc: &Value) -> DidProfile {
         _ => LookupKind::Unknown,
     };
     let zone = match kind {
-        LookupKind::User => doc
+        LookupKind::User => match doc
             .get("binded_zone_list")
             .and_then(Value::as_array)
             .and_then(|zones| zones.first())
-            .and_then(zone_host),
+        {
+            Some(zone) => zone_host(zone),
+            None => Some(host_of(did)),
+        },
         LookupKind::Zone => Some(host_of(did)),
         LookupKind::Group => doc.get("host").and_then(zone_host),
         _ => doc
@@ -139,7 +142,13 @@ impl NameServiceDirectory {
             Err(DirectoryError::Unavailable(reason)) if reason == "timeout" => {
                 return Err(DirectoryError::Unavailable(reason))
             }
-            Err(_) => resolve(None).await?,
+            Err(_) => match resolve(Some(name_lib::DidDocType::Device)).await {
+                Ok(doc) => doc,
+                Err(DirectoryError::Unavailable(reason)) if reason == "timeout" => {
+                    return Err(DirectoryError::Unavailable(reason))
+                }
+                Err(_) => resolve(None).await?,
+            },
         };
         let doc = doc
             .to_json_value()
@@ -287,5 +296,30 @@ mod tests {
         );
         assert_eq!(profile.kind, LookupKind::Device);
         assert_eq!(profile.zone.as_deref(), Some("alice.example"));
+    }
+
+    #[test]
+    fn self_hosted_owners_route_to_their_own_zone() {
+        let alice = DID::new("bns", "alice");
+        for doc in [
+            json!({"id":"did:bns:alice","@context":"https://www.buckyos.org/ns/owner"}),
+            json!({"id":"did:bns:alice","binded_zone_list":[]}),
+        ] {
+            let profile = profile_from_document(&alice, &doc);
+            assert_eq!(profile.kind, LookupKind::User);
+            assert_eq!(profile.zone, Some(host_of(&alice)));
+        }
+    }
+
+    #[test]
+    fn a_declared_zone_must_be_valid_and_takes_precedence() {
+        let alice = DID::new("bns", "alice");
+        let profile = profile_from_document(
+            &alice,
+            &json!({"binded_zone_list":["did:web:charlie.me", "did:web:other.me"]}),
+        );
+        assert_eq!(profile.zone.as_deref(), Some("charlie.me"));
+        let profile = profile_from_document(&alice, &json!({"binded_zone_list":[null]}));
+        assert_eq!(profile.zone, None);
     }
 }

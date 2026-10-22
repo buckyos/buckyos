@@ -1,5 +1,6 @@
 import { copyIdentityOutputs, makeConfigByGroupName, prepareSeedIdentity } from "./make_config.ts";
 import { getParamsFromGroupName } from "./devenv_config.ts";
+import { hashAdminPassword } from "buckyos/provision";
 
 Deno.test("release and nightly remain unactivated without a seed identity handoff", async () => {
   const root = await Deno.makeTempDir();
@@ -36,8 +37,66 @@ Deno.test("vmtest remains unactivated with an isolated environment root", async 
   try {
     await makeConfigByGroupName("vmtest", root, `${root}/ca`, `${root}/env`);
     const params = JSON.parse(await Deno.readTextFile(`${root}/etc/node_gateway_params.json`));
-    if (params.params.device_did !== "did:bns:unactivated.local") {
+    if (params.params.device_did !== "did:bns:unactivated.local" ||
+        params.params.rtcp_port !== "2980") {
       throw new Error("vmtest preseeded a device identity");
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("seed materialization validates owner passwords and preserves the device RTCP port", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    for (const group of ["alice.ood1", "bob.ood1", "charlie.ood1"]) {
+      const params = getParamsFromGroupName(group);
+      const envRoot = `${root}/env`;
+      const userDir = `${envRoot}/${params.zone_id}`;
+      const nodeDir = `${userDir}/${params.node_name}`;
+      const target = `${root}/${group}`;
+      await prepareSeedIdentity(group, envRoot);
+      const startPath = `${nodeDir}/start_config.json`;
+      const start = JSON.parse(await Deno.readTextFile(startPath));
+      const expectedHash = hashAdminPassword(params.username, "bucky2025");
+      start.admin_password_hash = hashAdminPassword("devtest", "bucky2025");
+      await Deno.writeTextFile(startPath, JSON.stringify(start));
+      let rejected = false;
+      try {
+        copyIdentityOutputs(userDir, nodeDir, target, params);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes("stale admin_password_hash") ||
+            !error.message.includes("new --env_root")) {
+          throw error;
+        }
+        rejected = true;
+      }
+      if (!rejected) throw new Error(`accepted stale owner password for ${group}`);
+      try {
+        await Deno.stat(target);
+        throw new Error("stale seed created target state");
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+      start.admin_password_hash = expectedHash;
+      await Deno.writeTextFile(startPath, JSON.stringify(start));
+      copyIdentityOutputs(userDir, nodeDir, target, params);
+      const saved = JSON.parse(await Deno.readTextFile(`${target}/etc/start_config.json`));
+      const gateway = JSON.parse(await Deno.readTextFile(`${target}/etc/node_gateway_params.json`));
+      if (saved.admin_password_hash !== expectedHash ||
+          gateway.params.rtcp_port !== String(params.rtcp_port)) {
+        throw new Error(`incorrect materialized password or RTCP port for ${group}`);
+      }
+      const claims = (jwt: string) => JSON.parse(atob(jwt.split('.')[1].replaceAll('-', '+').replaceAll('_', '/')));
+      const boot = claims(saved.boot_config_jwt);
+      const zone = claims(saved.zone_document_jwt);
+      const device = claims(saved.device_doc_jwt);
+      if (!device.ddns_sn_url) throw new Error(`missing DDNS endpoint for ${group}`);
+      if (params.netid === "wan_dyn") {
+        if (boot.sn || zone.sn) throw new Error("wan_dyn must not require an SN relay");
+      } else if (!boot.sn || !zone.sn) {
+        throw new Error(`missing relay candidate for ${group}`);
+      }
     }
   } finally {
     await Deno.remove(root, { recursive: true });

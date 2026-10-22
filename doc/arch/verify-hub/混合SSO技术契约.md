@@ -29,7 +29,7 @@ Origin / CSRF：浏览器写 Cookie 的接口只有 CP 的 `/sso_callback`、`/s
 
 - **账号 → DID 的唯一真相源是 `users/<id>/doc`**。`users/<id>/profile.did` 只是展示资料的一部分；system-config 拒绝非管理者写入与 doc 不一致的 `profile.did`（§3.5），所有服务改为读 doc（`ControlPanelClient::get_user_did`）。profile 中 `system_contact.did` 不再参与身份或收件人判定。
 - **user_id 稳定且不可复用**：删除只把 `state` 置为 `deleted`，记录保留，`user.create` 以 `KVAction::Create` 写入，同名再建失败。
-- **External 入驻**：同一 DID 之后被接受为本 Zone 账号（`user.invite.accept` 提交该 DID 的 OwnerDocument）时，DID 登录改为映射到该账号；旧 External 会话保持原 claims 直至过期，不升级。
+- **External 入驻**：同一 DID 之后被接受为本 Zone 账号时，DID 登录改为映射到该账号；旧 External 会话保持原 claims 直至过期，不升级。`user.invite.accept` 必须携带该 DID 经联合登录取得的 Control Panel 用户会话，并提交匹配的 OwnerDocument；匿名或密码会话不能接受邀请。
 - 展示资料（昵称、头像）不决定授权主体。
 
 ### 2.2 当前身份响应

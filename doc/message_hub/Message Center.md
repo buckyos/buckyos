@@ -152,7 +152,7 @@ pub struct DeliveryEnvelope {
 
 两条确定投递分支（也只有这两条）：
 
-- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**（`message_hub.rs`）：本 Zone 目标直接本地 dispatch。他 Zone 目标先用显式配置：群消息用 `cyfs_dispatch.joined_groups`（没有绑定返回 `native-route-not-configured`），个人目标用 `cyfs_dispatch.outgoing[<did>]`（必须带 Bearer `authorization`）。个人目标没有配置时自动路由（`cyfs_dispatch.rs::auto_route`）：经名字服务（`network_directory.rs`）解析目标 DID 的 Zone（用户取 `binded_zone_list` 第一项），投到约定接收点 `cyfs://<zone>/kapi/msg-center/<did>/inbox`，upstream 为 `https://<zone>`（`cyfs_dispatch.zone_origins` 可按 Zone 覆盖），不带 Bearer，发送签名的 MsgObject（§4.5）。DID 没有 Zone 或名字服务确认不存在 → `native-route-unresolved`（不重试）；名字服务暂时无回答 → `native-route-unavailable`（可重试，60 秒后）；配置的路由与投递快照不一致 → `native-route-changed`。路由在执行投递时解析，名字服务答案缓存 10 分钟。接收与缓存结果见 §4.5。
+- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**（`message_hub.rs`）：本 Zone 目标直接本地 dispatch。他 Zone 目标先用显式配置：群消息用 `cyfs_dispatch.joined_groups`（没有绑定返回 `native-route-not-configured`），个人目标用 `cyfs_dispatch.outgoing[<did>]`（必须带 Bearer `authorization`）。个人目标没有配置时自动路由（`cyfs_dispatch.rs::auto_route`）：经名字服务（`network_directory.rs`）解析目标 DID 的 Zone（用户取 `binded_zone_list` 第一项，列表为空或缺省时取用户 DID 本身（自托管 Zone 的 owner DID 即 Zone DID）），投到约定接收点 `cyfs://<zone>/kapi/msg-center/<did>/inbox`，upstream 为 `https://<zone>`（`cyfs_dispatch.zone_origins` 可按 Zone 覆盖），不带 Bearer，发送签名的 MsgObject（§4.5）。DID 没有 Zone 或名字服务确认不存在 → `native-route-unresolved`（不重试）；名字服务暂时无回答 → `native-route-unavailable`（可重试，60 秒后）；配置的路由与投递快照不一致 → `native-route-changed`。路由在执行投递时解析，名字服务答案缓存 10 分钟。接收与缓存结果见 §4.5。
 - `target_did` 是 **local shadow endpoint DID**（`did:msgtunnel:*`）→ **MessageTunnel 投递**：从 DID 内嵌的 `tunnel_instance_id` 在注册表查出 tunnel 实例，平台地址由 DID 内嵌的 account 信息与 tunnel 配置确定。
 
 任何解析失败（未注册的 tunnel 实例、无法解析的 DID、非法格式）都返回错误。**禁止 default tunnel、default chat、last-active fallback。**
@@ -457,13 +457,13 @@ Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除�
 CYFS 接收同时接受 `application/cyfs-named-object+json` 与 `application/cyfs-named-object+jwt`。JWT 形式的 MsgObject（`cyfs_dispatch.rs::verify_signed_message_with`）：
 
 - 签名者（`kid` 的 DID 部分）等于 `from`：公钥用 name-client `resolve_auth_key(from, #fragment)` 解析（`did:dev` 直接取 DID 内嵌公钥）。
-- 签名者不是 `from`：先按 **Zone 托管**规则——签名者所在 Zone（`network_directory.rs`）等于 `from` 的 Zone（`from` 是本地收件人时取本 Zone）即接受，与 HomeStation 同一规则；否则要求 `from` 的 DID Document `authentication` 列出该签名者或 `kid`（`from` 为 `did:dev` 时不适用）。都不满足返回 `signer-mismatch`。已知风险：Zone 可以替它的用户签名。用户自有密钥（`security/<user>/key`）未使用。
+- 签名者不是 `from`：先按 **Zone 托管**规则——签名者所在 Zone（`network_directory.rs`）等于 `from` 的 canonical Zone 即接受；本 Zone 也可为本地账号或收件人代签，本地映射账号不会遮蔽其 canonical Zone。托管签名公钥显式从 Device 文档取，避免未指定类型时误解析为 Zone 文档；否则要求 `from` 的 DID Document `authentication` 列出该签名者或 `kid`（`from` 为 `did:dev` 时不适用）。都不满足返回 `signer-mismatch`。已知风险：Zone 可以替它的用户签名。用户自有密钥（`security/<user>/key`）未使用。
 - 签名无效返回 `invalid-signature`，未知密钥返回 `unknown-signing-key`，均为不可重试拒绝；解析服务不可用返回可重试的 `signing-key-unavailable`。签名无效时不降级为 JSON 形式接受。
 - 验证通过后，canonical JSON 照常写入 named store，JWT 原文写入 `msg_jwt_originals`（schema v11，按 msg_id，先到者保留）。原生 dispatch 转投该消息时发送 JWT 原文；读取 JWT 原文的 RPC 尚未提供。
 
 **发送签名**：`from` 是本地收件人（本 Zone 用户或 Agent）的消息原生投递到他 Zone 时，若还没有 JWT 原文，msg-center 用 OOD 设备私钥签名（`kid = <device_did>#main_key`），JWT 写入 `msg_jwt_originals` 后发送。启动时读不到设备私钥则不签名，此时只有带 Bearer 的显式配置路由可用。
 
-**验证边界**：真实跨 Zone 投递只在测试中用两个 msg-center 实例模拟两个 Zone 验证过（`test_contact_network.rs::friend_request_and_chat_cross_two_zones`：好友请求与接受往返、好友之间普通私聊进 INBOX、重放不重复、未签名对象与他 Zone 设备代签被拒；目录用测试桩），没有在 DV 上验证（DV 只有一个 Zone）。实际部署还依赖名字服务能把对方用户 DID 与签名设备 DID 解析到 Zone，以及对方 Zone 网关公开 `/kapi/msg-center/`。
+**验证边界**：`test_contact_network.rs::friend_request_and_chat_cross_two_zones` 用两个 msg-center HTTP 实例验证好友请求与接受往返、发送者在接收 Zone 有本地映射时普通私聊仍进 INBOX、重放不重复、未签名对象与他 Zone 设备代签被拒（目录用测试桩）。2026-10-22 在 `ssotest` 三 Zone VM 实测：Bob 查询自托管 Alice 和绑定 Charlie 均得到正确 Zone，Bob 经 SN 向 Alice 原生投递成功进入 INBOX；Alice 保留 DID Bob 的本地映射账号。复现：`BUCKYOS_TEST_DNS=<sn ip> node test/test_msg_center/test_native_routes_dv.mjs`，环境参数见同目录 README。真实网络上的好友请求往返、重放和拒绝场景仍只覆盖于前述 HTTP 集成测试。
 
 当前 `cyfs_dispatch.rs::delivery_report` 已把 accepted 映射为 ok=true，把 cached 映射为
 ok=false、error_code=`cyfs-cached`、retryable=true、retry_after_ms=30000，交由既有投递重试机制处理。

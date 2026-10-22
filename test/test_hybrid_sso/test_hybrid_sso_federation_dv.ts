@@ -45,7 +45,7 @@ let seq = Date.now();
 
 const resolver = new Resolver();
 resolver.setServers([dnsServer]);
-// BUCKYOS_TEST_HOST_MAP="charlie.me=192.168.1.113,…" pins hosts the SN cannot relay yet.
+// BUCKYOS_TEST_HOST_MAP="charlie.me=192.168.1.113,…" explicitly pins a direct or relay path.
 const resolved = new Map<string, string>(
   (process.env.BUCKYOS_TEST_HOST_MAP ?? "").split(",").map((pair) => pair.trim().split("=")).filter((pair) => pair.length === 2) as [string, string][],
 );
@@ -421,7 +421,23 @@ step("mapped-account", async () => {
     const invite = await rpc(A, "control-panel", "user.invite.create", { target_did: B.ownerDid, user_id: userId, user_type: "user" }, su);
     const inviteId = String(invite.invite_id ?? (invite.invite as Json | undefined)?.invite_id);
     const owner = JSON.parse(readFileSync(`${homedir()}/buckycli/bob.bns.did/user_config.json`, "utf8")) as Json;
-    await rpc(A, "control-panel", "user.invite.accept", { invite_id: inviteId, owner_config: { ...owner, binded_zone_list: [A.zoneDid] } });
+    const params = { invite_id: inviteId, owner_config: { ...owner, binded_zone_list: [A.zoneDid] } };
+    const charlieLogin = await callback(await approve(C, await begin(A, C.ownerDid)));
+    const charlieToken = charlieLogin.cookies.buckyos_session_token;
+    assert(charlieToken, "Charlie must have a verified session for the mismatched-DID test");
+    for (const [label, token] of [["anonymous", undefined], ["another DID", charlieToken]] as const) {
+      let denied = false;
+      try {
+        await rpc(A, "control-panel", "user.invite.accept", params, token);
+      } catch {
+        denied = true;
+      }
+      assert(denied, `${label} must not accept Bob's invitation`);
+    }
+    const bobLogin = await callback(await approve(B, await begin(A, B.ownerDid)));
+    const bobToken = bobLogin.cookies.buckyos_session_token;
+    assert(bobToken, `Bob must first sign in with his DID: ${bobLogin.location}`);
+    await rpc(A, "control-panel", "user.invite.accept", params, bobToken);
   }
   const login = async () => await callback(await approve(B, await begin(A, B.ownerDid)));
   const mapped = await login();

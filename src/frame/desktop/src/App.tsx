@@ -63,6 +63,9 @@ const SsoInvitePage = lazy(() =>
 const SsoFederatePage = lazy(() =>
   import('./sso/FederatePage').then((m) => ({ default: m.FederatePage })),
 )
+const UserInvitePage = lazy(() =>
+  import('./sso/UserInvitePage').then((m) => ({ default: m.UserInvitePage })),
+)
 
 /**
  * The restricted shell at `/` is for External DIDs (no account here) and for sessions an exclusive
@@ -173,6 +176,14 @@ const router = createBrowserRouter([
     element: (
       <Suspense fallback={null}>
         <SsoInvitePage />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/users/invite/:inviteId',
+    element: (
+      <Suspense fallback={null}>
+        <UserInvitePage />
       </Suspense>
     ),
   },

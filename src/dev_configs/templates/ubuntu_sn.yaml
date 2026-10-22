@@ -8,8 +8,8 @@ packages:
 - xz-utils
 - systemd-resolved
 
-# Disable cloud-init management of /etc/hosts
-manage_etc_hosts: false
+hostname: sn
+manage_etc_hosts: localhost
 
 users:
 - name: ubuntu

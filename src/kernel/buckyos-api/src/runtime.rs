@@ -592,13 +592,7 @@ impl BuckyOSRuntime {
                     self.app_owner_id = Some(owner_config.name.clone());
                 }
                 if !self.zone_id.is_valid() {
-                    if let Some(zone_did) = owner_config.get_default_zone_did() {
-                        self.zone_id = zone_did.clone();
-                    } else {
-                        return Err(RPCErrors::ReasonError(
-                            "default_zone_did is not set".to_string(),
-                        ));
-                    }
+                    self.zone_id = crate::owner_canonical_zone(&owner_config);
                 }
 
                 self.user_config = Some(owner_config);
@@ -2824,6 +2818,49 @@ fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn appclient_config_uses_the_owner_canonical_zone() {
+        let _lock = crate::tests::test_env_lock().lock().unwrap();
+        let config_dir = std::env::temp_dir().join(format!(
+            "buckyos-owner-zone-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let previous_home =
+            crate::tests::set_env_var("BUCKYOS_DEV_HOME", &config_dir.to_string_lossy());
+        let key = serde_json::from_value(serde_json::json!({
+            "kty": "OKP", "crv": "Ed25519", "x": "qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"
+        }))
+        .unwrap();
+        let alice = DID::new("bns", "alice");
+        let mut owner = OwnerDocument::new(alice.clone(), "alice".into(), "Alice".into(), key);
+        let mut results = Vec::new();
+        for zone in [alice.clone(), DID::new("web", "charlie.me")] {
+            if zone != alice {
+                owner.set_default_zone_did(zone.clone());
+            }
+            std::fs::write(
+                config_dir.join("user_config.json"),
+                serde_json::to_vec(&owner).unwrap(),
+            )
+            .unwrap();
+            let mut runtime = BuckyOSRuntime::new("notes.example", None, BuckyOSRuntimeType::AppClient);
+            let result = runtime.fill_by_load_config().await;
+            results.push((result, runtime.zone_id, zone, runtime.user_id));
+        }
+        crate::tests::restore_env_var("BUCKYOS_DEV_HOME", previous_home);
+        std::fs::remove_dir_all(config_dir).unwrap();
+        for (result, actual_zone, expected_zone, user) in results {
+            result.unwrap();
+            assert_eq!(actual_zone, expected_zone);
+            assert_eq!(user.as_deref(), Some("alice"));
+        }
+    }
 
     fn appclient_session_token(target: &AuthTarget, token_use: TokenUse) -> String {
         let (private_pem, _) = generate_ed25519_key_pair();

@@ -313,7 +313,7 @@ pub fn save_local_device_identity_for_roots(
         paths.authentication_private_key.as_path(),
         device_private_key_pem.as_bytes(),
     )?;
-    save_node_gateway_params(etc_dir, &node_identity.device_did)?;
+    save_node_gateway_params(etc_dir, &node_identity.device_did, device_config.rtcp_port)?;
     let node_identity_path = etc_dir.join("node_identity.json");
     write_json_pretty(node_identity_path.as_path(), node_identity)?;
 
@@ -389,13 +389,19 @@ fn sync_parent_dir(_parent: &Path) -> std::result::Result<(), String> {
 pub fn save_node_gateway_params(
     etc_dir: &Path,
     device_did: &DID,
+    rtcp_port: Option<u32>,
 ) -> std::result::Result<(), String> {
+    let rtcp_port = rtcp_port.unwrap_or(crate::network_observation::DEFAULT_RTCP_PORT);
+    if !(1..=u16::MAX as u32).contains(&rtcp_port) {
+        return Err(format!("invalid device RTCP port: {}", rtcp_port));
+    }
     let params_path = etc_dir.join(NODE_GATEWAY_PARAMS_FILE_NAME);
     write_json_pretty(
         params_path.as_path(),
         &serde_json::json!({
             "params": {
-                "device_did": device_did.to_string()
+                "device_did": device_did.to_string(),
+                "rtcp_port": rtcp_port.to_string()
             }
         }),
     )

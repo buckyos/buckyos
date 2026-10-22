@@ -98,7 +98,7 @@ Zone 的每个用户都是一个发表者：服务模式下用户来自 system c
 DID → 主页（zone + 用户名）：
 
 - 本 Zone 用户：查用户表（DID 的主机名落在本 Zone 下而查不到时，最多每 5 秒重新加载一次用户表）。本 Zone 内找不到的身份没有 HomeStation（`NotFound`）。
-- 其他身份：先得到 Zone（owner document 的默认 Zone，失败时 `DID::to_host_name()`），再问该 Zone：`GET https://<zone>/home/?did=<DID>` → `{ did, user, stream, inbox }`，404 表示该 Zone 不托管这个 DID。正反结果都缓存 10 分钟；网络失败不缓存。单机模式查配置（`directory.identities.<did>.user`）。
+- 其他身份：先得到 Zone（owner document 的 `binded_zone_list` 第一项；列表为空时取 owner DID 本身，支持自托管 Zone；owner document 解析失败时使用输入 DID），经 `DID::to_host_name()` 转为主机名，再问该 Zone：`GET https://<zone>/home/?did=<DID>` → `{ did, user, stream, inbox }`，404 表示该 Zone 不托管这个 DID。正反结果都缓存 10 分钟；网络失败不缓存。单机模式查配置（`directory.identities.<did>.user`）。
 
 Zone → HTTP 源站：`https://<zone>`，可在服务 settings 的 `peers` 或单机配置的 `directory.zones` 声明；**本 Zone 映射到本机监听**（服务模式 `http://127.0.0.1:4130`），同 Zone 用户之间的读取与投递不绕公网网关。发表流 `cyfs://<zone>/home/<user>/feed`，投递入口 `cyfs://<zone>/home/<user>/inbox`，`GET /home/<user>/profile` 也返回这两个地址。
 

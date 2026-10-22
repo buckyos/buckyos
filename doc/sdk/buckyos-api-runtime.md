@@ -31,6 +31,8 @@ sys_cfg_client.set("key","value")
 - `user_id`
 - 本地配置、私钥、设备信息
 
+AppClient 开发模式加载 `user_config.json` 时，若尚无 Zone DID，则取 owner 的 `binded_zone_list` 第一项；列表为空时取 owner DID 本身，支持 owner DID 与 Zone DID 相同的自托管 Zone。
+
 但这个阶段还没有“可验证的身份”，因为:
 
 - 还没有完成 session token 的确认

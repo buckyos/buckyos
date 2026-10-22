@@ -716,6 +716,7 @@ async fn friend_request_and_chat_cross_two_zones() {
     assert_eq!(requests(&b, &bob).await.len(), 1);
 
     // Ordinary chat now crosses too and lands in the INBOX (friends).
+    a.register_local_recipients([bob.clone()]);
     let chat = MsgObject {
         from: bob.clone(),
         to: vec![alice.clone()],

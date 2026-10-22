@@ -290,7 +290,7 @@ well-known tag（`WELL_KNOWN_CONTACT_TAGS`，buckyos-api 与 websdk 各一份；
 
 `error.code`：`invalid-input`；`not-found`（名字服务确认没有）；`unreachable`（名字服务暂时无回答）。按名称输入且本地有匹配时两者都不报。`forbidden` 已在类型中定义，lookup 目前不返回，权限不足是 RPC 错误。
 
-`NetworkDirectory`（`network_directory.rs`）：用 name_client 解析 DID Document（先按 Owner 文档，失败再不指定类型；Owner 查询超时则不再追问）；找到与确认不存在的答案缓存 10 分钟，暂时无回答缓存 30 秒，单次 3 秒超时。name_client 拒绝解析的 DID（如 `did:dev` 这类密钥型 DID）按不存在处理，原生投递对它们直接 `native-route-unresolved`、不重试。DID 的 Zone：用户取 `binded_zone_list` 第一项，Zone 取自身，群取 `host`，其他取 `zone_did` / `zone`。原生投递的自动路由与 Zone 托管签名的校验也用它（Message Center.md §4.5）。
+`NetworkDirectory`（`network_directory.rs`）：用 name_client 解析 DID Document（先按 Owner 文档，再按 Device 文档，最后不指定类型；任一查询超时则不再追问）；找到与确认不存在的答案缓存 10 分钟，暂时无回答缓存 30 秒，单次 3 秒超时。name_client 拒绝解析的 DID（如 `did:dev` 这类密钥型 DID）按不存在处理，原生投递对它们直接 `native-route-unresolved`、不重试。DID 的 Zone：用户取 `binded_zone_list` 第一项，列表为空或缺省时取用户 DID 本身（自托管 Zone 的 owner DID 即 Zone DID），Zone 取自身，群取 `host`，其他取 `zone_did` / `zone`。原生投递的自动路由与 Zone 托管签名的校验也用它（Message Center.md §4.5）。
 
 ### 3.7 删除与解除屏蔽
 

@@ -1204,279 +1204,197 @@ impl RPCHandler for ControlPanelServer {
             );
         }
 
-        let result = match req.method.as_str() {
+        let result = self
+            .dispatch_rpc_call(req, ip_from, principal.as_ref())?
+            .await;
+        result
+    }
+}
+
+impl ControlPanelServer {
+    fn dispatch_rpc_call<'a>(
+        &'a self,
+        req: RPCRequest,
+        ip_from: IpAddr,
+        principal: Option<&'a RpcAuthPrincipal>,
+    ) -> Result<futures::future::BoxFuture<'a, Result<RPCResponse, RPCErrors>>, RPCErrors> {
+        Ok(match req.method.as_str() {
             // UI bootstrap
-            "ui.locale.get" => self.handle_ui_locale_get(req).await,
-            "ui.locale.set" => self.handle_ui_locale_set(req).await,
+            "ui.locale.get" => Box::pin(self.handle_ui_locale_get(req)),
+            "ui.locale.set" => Box::pin(self.handle_ui_locale_set(req)),
             // Auth
-            "auth.login" => self.handle_auth_login(req).await,
+            "auth.login" => Box::pin(self.handle_auth_login(req)),
             sys_auth_backend::PREPARE_APP_LAUNCH_METHOD => {
-                self.handle_auth_prepare_app_launch(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_auth_prepare_app_launch(req, principal))
             }
-            "auth.current_identity" => {
-                self.handle_auth_current_identity(req, principal.as_ref())
-                    .await
-            }
-            "auth.sso_config" => self.handle_auth_sso_config(req).await,
-            "auth.entry.describe" => self.handle_auth_entry_describe(req).await,
-            "auth.register" => self.handle_auth_register(req, ip_from).await,
-            "auth.invite.describe" => self.handle_auth_invite_describe(req).await,
-            "auth.invite.login" => self.handle_auth_invite_login(req).await,
-            "auth.invite.request_resend" => self.handle_auth_invite_request_resend(req).await,
+            "auth.current_identity" => Box::pin(self.handle_auth_current_identity(req, principal)),
+            "auth.sso_config" => Box::pin(self.handle_auth_sso_config(req)),
+            "auth.entry.describe" => Box::pin(self.handle_auth_entry_describe(req)),
+            "auth.register" => Box::pin(self.handle_auth_register(req, ip_from)),
+            "auth.invite.describe" => Box::pin(self.handle_auth_invite_describe(req)),
+            "auth.invite.login" => Box::pin(self.handle_auth_invite_login(req)),
+            "auth.invite.request_resend" => Box::pin(self.handle_auth_invite_request_resend(req)),
             "auth.invite.set_password" => {
-                self.handle_auth_invite_set_password(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_auth_invite_set_password(req, principal))
             }
-            "auth.did.begin" => self.handle_auth_did_begin(req).await,
+            "auth.did.begin" => Box::pin(self.handle_auth_did_begin(req)),
             "auth.federation.describe" => {
-                self.handle_auth_federation_describe(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_auth_federation_describe(req, principal))
             }
             "auth.federation.approve" => {
-                self.handle_auth_federation_approve(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_auth_federation_approve(req, principal))
             }
-            "auth.federation.deny" => {
-                self.handle_auth_federation_deny(req, principal.as_ref())
-                    .await
-            }
-            "sso.settings.get" => self.handle_sso_settings_get(req, principal.as_ref()).await,
-            "sso.settings.set" => self.handle_sso_settings_set(req, principal.as_ref()).await,
+            "auth.federation.deny" => Box::pin(self.handle_auth_federation_deny(req, principal)),
+            "sso.settings.get" => Box::pin(self.handle_sso_settings_get(req, principal)),
+            "sso.settings.set" => Box::pin(self.handle_sso_settings_set(req, principal)),
 
             // User Mgr
-            "user.list" => self.handle_user_list(req, principal.as_ref()).await,
-            "user.get" => self.handle_user_get(req, principal.as_ref()).await,
-            "user.create" => self.handle_user_create(req, principal.as_ref()).await,
-            "user.update" => self.handle_user_update(req, principal.as_ref()).await,
-            "user.update_contact" => {
-                self.handle_user_update_contact(req, principal.as_ref())
-                    .await
-            }
-            "user.profile.get" => self.handle_user_profile_get(req, principal.as_ref()).await,
-            "user.profile.set" => self.handle_user_profile_set(req, principal.as_ref()).await,
-            "user.set_msg_tunnel" => {
-                self.handle_user_set_msg_tunnel(req, principal.as_ref())
-                    .await
-            }
+            "user.list" => Box::pin(self.handle_user_list(req, principal)),
+            "user.get" => Box::pin(self.handle_user_get(req, principal)),
+            "user.create" => Box::pin(self.handle_user_create(req, principal)),
+            "user.update" => Box::pin(self.handle_user_update(req, principal)),
+            "user.update_contact" => Box::pin(self.handle_user_update_contact(req, principal)),
+            "user.profile.get" => Box::pin(self.handle_user_profile_get(req, principal)),
+            "user.profile.set" => Box::pin(self.handle_user_profile_set(req, principal)),
+            "user.set_msg_tunnel" => Box::pin(self.handle_user_set_msg_tunnel(req, principal)),
             "user.remove_msg_tunnel" => {
-                self.handle_user_remove_msg_tunnel(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_user_remove_msg_tunnel(req, principal))
             }
-            "user.invite.create" => {
-                self.handle_user_invite_create(req, principal.as_ref())
-                    .await
-            }
-            "user.invite.get" => self.handle_user_invite_get(req, principal.as_ref()).await,
-            "user.invite.accept" => {
-                self.handle_user_invite_accept(req, principal.as_ref())
-                    .await
-            }
-            "user.delete" => self.handle_user_delete(req, principal.as_ref()).await,
+            "user.invite.create" => Box::pin(self.handle_user_invite_create(req, principal)),
+            "user.invite.get" => Box::pin(self.handle_user_invite_get(req, principal)),
+            "user.invite.accept" => Box::pin(self.handle_user_invite_accept(req, principal)),
+            "user.delete" => Box::pin(self.handle_user_delete(req, principal)),
             "user.exclusive_invite.create" => {
-                self.handle_exclusive_invite_create(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_exclusive_invite_create(req, principal))
             }
             "user.exclusive_invite.list" => {
-                self.handle_exclusive_invite_list(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_exclusive_invite_list(req, principal))
             }
             "user.exclusive_invite.get" => {
-                self.handle_exclusive_invite_get(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_exclusive_invite_get(req, principal))
             }
             "user.exclusive_invite.revoke" => {
-                self.handle_exclusive_invite_revoke(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_exclusive_invite_revoke(req, principal))
             }
             "user.exclusive_invite.rotate" => {
-                self.handle_exclusive_invite_rotate(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_exclusive_invite_rotate(req, principal))
             }
             "user.exclusive_invite.retry_resource" => {
-                self.handle_exclusive_invite_retry_resource(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_exclusive_invite_retry_resource(req, principal))
             }
 
-            "user.change_password" => {
-                self.handle_user_change_password(req, principal.as_ref())
-                    .await
-            }
-            "user.change_state" => self.handle_user_change_state(req, principal.as_ref()).await,
-            "user.change_type" => self.handle_user_change_type(req, principal.as_ref()).await,
+            "user.change_password" => Box::pin(self.handle_user_change_password(req, principal)),
+            "user.change_state" => Box::pin(self.handle_user_change_state(req, principal)),
+            "user.change_type" => Box::pin(self.handle_user_change_type(req, principal)),
             "user.set_account_options" => {
-                self.handle_user_set_account_options(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_user_set_account_options(req, principal))
             }
-            "user_group.list" => self.handle_user_group_list(req, principal.as_ref()).await,
-            "user_group.create" => self.handle_user_group_create(req, principal.as_ref()).await,
-            "user_group.update" => self.handle_user_group_update(req, principal.as_ref()).await,
-            "user_group.delete" => self.handle_user_group_delete(req, principal.as_ref()).await,
+            "user_group.list" => Box::pin(self.handle_user_group_list(req, principal)),
+            "user_group.create" => Box::pin(self.handle_user_group_create(req, principal)),
+            "user_group.update" => Box::pin(self.handle_user_group_update(req, principal)),
+            "user_group.delete" => Box::pin(self.handle_user_group_delete(req, principal)),
             "user_group.set_members" => {
-                self.handle_user_group_set_members(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_user_group_set_members(req, principal))
             }
             "user_group.set_projections" => {
-                self.handle_user_group_set_projections(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_user_group_set_projections(req, principal))
             }
             "user_group.reset_projections" => {
-                self.handle_user_group_reset_projections(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_user_group_reset_projections(req, principal))
             }
 
-            "agent.check_name" => self.handle_agent_check_name(req, principal.as_ref()).await,
-            "agent.list_templates" => {
-                self.handle_agent_list_templates(req, principal.as_ref())
-                    .await
-            }
-            "agent.create" => self.handle_agent_create(req, principal.as_ref()).await,
-            "agent.create.status" => {
-                self.handle_agent_create_status(req, principal.as_ref())
-                    .await
-            }
-            "agent.create.retry" => {
-                self.handle_agent_create_retry(req, principal.as_ref())
-                    .await
-            }
-            "agent.create.cancel" => {
-                self.handle_agent_create_cancel(req, principal.as_ref())
-                    .await
-            }
-            "agent.list" => self.handle_agent_list(req, principal.as_ref()).await,
-            "agent.get" => self.handle_agent_get(req, principal.as_ref()).await,
-            "agent.update" => self.handle_agent_update(req, principal.as_ref()).await,
-            "agent.delete" => self.handle_agent_delete(req, principal.as_ref()).await,
-            "agent.profile.get" => self.handle_agent_profile_get(req, principal.as_ref()).await,
-            "agent.profile.set" => self.handle_agent_profile_set(req, principal.as_ref()).await,
-            "agent.set_msg_tunnel" => {
-                self.handle_agent_set_msg_tunnel(req, principal.as_ref())
-                    .await
-            }
+            "agent.check_name" => Box::pin(self.handle_agent_check_name(req, principal)),
+            "agent.list_templates" => Box::pin(self.handle_agent_list_templates(req, principal)),
+            "agent.create" => Box::pin(self.handle_agent_create(req, principal)),
+            "agent.create.status" => Box::pin(self.handle_agent_create_status(req, principal)),
+            "agent.create.retry" => Box::pin(self.handle_agent_create_retry(req, principal)),
+            "agent.create.cancel" => Box::pin(self.handle_agent_create_cancel(req, principal)),
+            "agent.list" => Box::pin(self.handle_agent_list(req, principal)),
+            "agent.get" => Box::pin(self.handle_agent_get(req, principal)),
+            "agent.update" => Box::pin(self.handle_agent_update(req, principal)),
+            "agent.delete" => Box::pin(self.handle_agent_delete(req, principal)),
+            "agent.profile.get" => Box::pin(self.handle_agent_profile_get(req, principal)),
+            "agent.profile.set" => Box::pin(self.handle_agent_profile_set(req, principal)),
+            "agent.set_msg_tunnel" => Box::pin(self.handle_agent_set_msg_tunnel(req, principal)),
             "agent.remove_msg_tunnel" => {
-                self.handle_agent_remove_msg_tunnel(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_agent_remove_msg_tunnel(req, principal))
             }
             // System dashboard
-            "ui.dashboard" => self.handle_dashboard(req).await,
-            "system.overview" => self.handle_system_overview(req).await,
-            "system.buckyos_info.get" => self.handle_buckyos_info_get(req).await,
-            "system.dev_mode.get" => self.handle_dev_mode_get(req).await,
-            "system.dev_mode.set" => self.handle_dev_mode_set(req, principal.as_ref()).await,
-            "system.status" => self.handle_system_status(req).await,
-            "system.metrics" => self.handle_system_metrics(req).await,
-            "network.overview" => self.handle_network_overview(req).await,
+            "ui.dashboard" => Box::pin(self.handle_dashboard(req)),
+            "system.overview" => Box::pin(self.handle_system_overview(req)),
+            "system.buckyos_info.get" => Box::pin(self.handle_buckyos_info_get(req)),
+            "system.dev_mode.get" => Box::pin(self.handle_dev_mode_get(req)),
+            "system.dev_mode.set" => Box::pin(self.handle_dev_mode_set(req, principal)),
+            "system.status" => Box::pin(self.handle_system_status(req)),
+            "system.metrics" => Box::pin(self.handle_system_metrics(req)),
+            "network.overview" => Box::pin(self.handle_network_overview(req)),
 
             //SystemLogs
             "system.logs.list" => {
-                Self::require_rpc_principal(principal.as_ref())?;
-                self.handle_system_logs_list(req).await
+                Self::require_rpc_principal(principal)?;
+                Box::pin(self.handle_system_logs_list(req))
             }
             "system.logs.query" => {
-                Self::require_rpc_principal(principal.as_ref())?;
-                self.handle_system_logs_query(req).await
+                Self::require_rpc_principal(principal)?;
+                Box::pin(self.handle_system_logs_query(req))
             }
             "system.logs.tail" => {
-                Self::require_rpc_principal(principal.as_ref())?;
-                self.handle_system_logs_tail(req).await
+                Self::require_rpc_principal(principal)?;
+                Box::pin(self.handle_system_logs_tail(req))
             }
             "system.logs.download" => {
-                Self::require_rpc_principal(principal.as_ref())?;
-                self.handle_system_logs_download(req).await
+                Self::require_rpc_principal(principal)?;
+                Box::pin(self.handle_system_logs_download(req))
             }
-            "task.retry" => self.handle_task_retry(req, principal.as_ref()).await,
-            "diagnostic.collect" => {
-                self.handle_diagnostic_collect(req, principal.as_ref())
-                    .await
-            }
-            "diagnostic.export" => self.handle_diagnostic_export(req, principal.as_ref()).await,
-            "download.create" => self.handle_download_create(req, principal.as_ref()).await,
-            "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
-            "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
+            "task.retry" => Box::pin(self.handle_task_retry(req, principal)),
+            "diagnostic.collect" => Box::pin(self.handle_diagnostic_collect(req, principal)),
+            "diagnostic.export" => Box::pin(self.handle_diagnostic_export(req, principal)),
+            "download.create" => Box::pin(self.handle_download_create(req, principal)),
+            "system.update.check" => Box::pin(self.handle_unimplemented(req, "Check updates")),
+            "system.update.apply" => Box::pin(self.handle_unimplemented(req, "Apply update")),
 
             //AppMgr
-            "apps.list" => self.handle_apps_list(req, principal.as_ref()).await,
-            "apps.details" => self.handle_app_detials(req, principal.as_ref()).await,
-            "apps.status" => self.handle_apps_status(req, principal.as_ref()).await,
-            "apps.availability.get" => {
-                self.handle_app_availability_get(req, principal.as_ref())
-                    .await
-            }
-            "apps.availability.set" => {
-                self.handle_app_availability_set(req, principal.as_ref())
-                    .await
-            }
+            "apps.list" => Box::pin(self.handle_apps_list(req, principal)),
+            "apps.details" => Box::pin(self.handle_app_detials(req, principal)),
+            "apps.status" => Box::pin(self.handle_apps_status(req, principal)),
+            "apps.availability.get" => Box::pin(self.handle_app_availability_get(req, principal)),
+            "apps.availability.set" => Box::pin(self.handle_app_availability_set(req, principal)),
             "apps.availability.check" => {
-                self.handle_app_availability_check(req, principal.as_ref())
-                    .await
+                Box::pin(self.handle_app_availability_check(req, principal))
             }
-            //"apps.version.list" => self.handle_apps_version_list(req).await,
+            //"apps.version.list" => Box::pin(self.handle_apps_version_list(req)),
             //AppInstaller
-            "apps.staging.finalize" => {
-                self.handle_apps_staging_finalize(req, principal.as_ref())
-                    .await
-            }
-            "apps.staging.status" => {
-                self.handle_apps_staging_status(req, principal.as_ref())
-                    .await
-            }
-            "apps.staging.release" => {
-                self.handle_apps_staging_release(req, principal.as_ref())
-                    .await
-            }
-            "apps.inspect" => self.handle_apps_inspect(req, principal.as_ref()).await,
-            "apps.plan.recompute" => {
-                self.handle_apps_plan_recompute(req, principal.as_ref())
-                    .await
-            }
-            "apps.submit" => self.handle_apps_submit(req, principal.as_ref()).await,
-            "apps.install.confirm" => {
-                self.handle_apps_install_confirm(req, principal.as_ref())
-                    .await
-            }
-            "apps.install.retry" => {
-                self.handle_apps_install_retry(req, principal.as_ref())
-                    .await
-            }
-            "apps.install.cancel" => {
-                self.handle_apps_install_cancel(req, principal.as_ref())
-                    .await
-            }
-            "apps.install.status" => {
-                self.handle_apps_install_status(req, principal.as_ref())
-                    .await
-            }
-            "apps.upgrade.check" => {
-                self.handle_apps_update_availability(req, principal.as_ref())
-                    .await
-            }
-            "apps.upgrade" => {
-                self.handle_apps_upgrade_batch(req, principal.as_ref())
-                    .await
-            }
-            "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
-            "apps.start" => self.handle_apps_start(req, principal.as_ref()).await,
-            "apps.stop" => self.handle_apps_stop(req, principal.as_ref()).await,
-            "apps.restart" => self.handle_apps_restart(req, principal.as_ref()).await,
-            "app.publish" => self.handle_app_publish(req, principal.as_ref()).await,
+            "apps.staging.finalize" => Box::pin(self.handle_apps_staging_finalize(req, principal)),
+            "apps.staging.status" => Box::pin(self.handle_apps_staging_status(req, principal)),
+            "apps.staging.release" => Box::pin(self.handle_apps_staging_release(req, principal)),
+            "apps.inspect" => Box::pin(self.handle_apps_inspect(req, principal)),
+            "apps.plan.recompute" => Box::pin(self.handle_apps_plan_recompute(req, principal)),
+            "apps.submit" => Box::pin(self.handle_apps_submit(req, principal)),
+            "apps.install.confirm" => Box::pin(self.handle_apps_install_confirm(req, principal)),
+            "apps.install.retry" => Box::pin(self.handle_apps_install_retry(req, principal)),
+            "apps.install.cancel" => Box::pin(self.handle_apps_install_cancel(req, principal)),
+            "apps.install.status" => Box::pin(self.handle_apps_install_status(req, principal)),
+            "apps.upgrade.check" => Box::pin(self.handle_apps_update_availability(req, principal)),
+            "apps.upgrade" => Box::pin(self.handle_apps_upgrade_batch(req, principal)),
+            "apps.uninstall" => Box::pin(self.handle_apps_uninstall(req, principal)),
+            "apps.start" => Box::pin(self.handle_apps_start(req, principal)),
+            "apps.stop" => Box::pin(self.handle_apps_stop(req, principal)),
+            "apps.restart" => Box::pin(self.handle_apps_restart(req, principal)),
+            "app.publish" => Box::pin(self.handle_app_publish(req, principal)),
 
             //ZoneMgr
-            "zone.overview" => self.handle_zone_overview(req).await,
-            "zone.devices.list" => self.handle_zone_devices_list(req).await,
-            "zone.certificates.list" => self.handle_zone_certificates_list(req).await,
-            "zone.presentation.get" => self.handle_zone_presentation_get(req).await,
-            "zone.presentation.set" => {
-                self.handle_zone_presentation_set(req, principal.as_ref())
-                    .await
-            }
-            "gateway.overview" => self.handle_gateway_overview(req).await,
-            "gateway.file.get" => self.handle_gateway_file_get(req).await,
-            "container.overview" => self.handle_container_overview(req).await,
-            "container.action" => self.handle_container_action(req).await,
+            "zone.overview" => Box::pin(self.handle_zone_overview(req)),
+            "zone.devices.list" => Box::pin(self.handle_zone_devices_list(req)),
+            "zone.certificates.list" => Box::pin(self.handle_zone_certificates_list(req)),
+            "zone.presentation.get" => Box::pin(self.handle_zone_presentation_get(req)),
+            "zone.presentation.set" => Box::pin(self.handle_zone_presentation_set(req, principal)),
+            "gateway.overview" => Box::pin(self.handle_gateway_overview(req)),
+            "gateway.file.get" => Box::pin(self.handle_gateway_file_get(req)),
+            "container.overview" => Box::pin(self.handle_container_overview(req)),
+            "container.action" => Box::pin(self.handle_container_action(req)),
 
-            _ => Err(RPCErrors::UnknownMethod(req.method)),
-        };
-        result
+            _ => return Err(RPCErrors::UnknownMethod(req.method)),
+        })
     }
 }
 
@@ -1647,4 +1565,35 @@ async fn service_main() {
 fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(service_main());
+}
+
+#[cfg(test)]
+mod rpc_stack_tests {
+    use super::*;
+
+    #[test]
+    fn public_login_and_invite_rejection_fit_small_worker_stack() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_stack_size(1024 * 1024)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::spawn(async {
+                let server = ControlPanelServer::new();
+                let ip = "127.0.0.1".parse().unwrap();
+                let login = server
+                    .handle_rpc_call(RPCRequest::new("auth.login", json!({})), ip)
+                    .await;
+                assert!(matches!(login, Err(RPCErrors::ParseRequestError(_))));
+                let accept = server
+                    .handle_rpc_call(RPCRequest::new("user.invite.accept", json!({})), ip)
+                    .await;
+                assert!(matches!(accept, Err(RPCErrors::InvalidToken(_))));
+            })
+            .await
+            .unwrap();
+        });
+    }
 }

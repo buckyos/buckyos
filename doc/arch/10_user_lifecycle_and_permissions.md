@@ -143,6 +143,10 @@ allow = enforce(authorization_target, resource, action)
 
 ### 3.1 系统职责（OS 负责）
 
+外部 DID 邀请通过 `user.invite.accept` 激活账号前，接受者必须以该 DID 联合登录本 Zone，持有 `auth_method=did_federation` 的 Control Panel 用户会话（可为 External）。会话 DID 必须匹配提交的 OwnerDocument 和邀请指定的目标 DID；文档仍须声明绑定本 Zone。匿名访问、其他 DID、普通密码会话与 App/设备会话不能借邀请链接激活账号或设置其口令。入口为 `/users/invite/:inviteId`，与专属免密邀请 `/sso/invite` 区分。
+
+接受邀请以同一事务写入账号、身份文档、资料和邀请状态，并检查邀请版本；仅可激活该邀请明确预留的 Pending 账号，不能覆盖其他账号或已存在的身份文档。
+
 #### 路径 A：引导期（`src/kernel/scheduler/src/system_config_builder.rs`）
 
 | 操作 | 说明 | 状态 |
