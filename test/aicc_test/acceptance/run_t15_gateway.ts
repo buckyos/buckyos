@@ -911,10 +911,9 @@ export function buildT15TypedParams(
                 type: "document",
                 source: {
                   kind: "url",
-                  url: "https://example.test/video.mp4",
+                  url: "https://example.test/media?id=4827",
                   mime_hint: "video/mp4",
                 },
-                title: "video.mp4",
               },
             ],
           }]

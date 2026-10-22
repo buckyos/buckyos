@@ -43,6 +43,8 @@ export function assertNoSecrets(value: unknown): void {
 export function isProviderRestricted(error: unknown): boolean {
   const message = String(error).toLowerCase();
   return message.includes("request not allowed") ||
+    message.includes("is no longer available to new users") ||
+    message.includes("request blocked for an unspecified policy reason") ||
     message.includes("accountoverdueerror") ||
     message.includes("account has an overdue balance") ||
     message.includes("modelnotopen") ||

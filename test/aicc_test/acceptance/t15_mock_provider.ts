@@ -1294,6 +1294,76 @@ export function createT15MockHandler(
         validationErrors.push(...qwenResponsesVideoErrors(parsedBody));
       }
       if (
+        selection.provider_driver === "google-gemini" &&
+        ["vision.detect", "vision.segment"].includes(selection.api_type ?? "") &&
+        typeof parsedBody === "object" && parsedBody !== null
+      ) {
+        const body = parsedBody as Record<string, unknown>;
+        const format = body.response_format as Record<string, unknown> | undefined;
+        const schema = format?.schema as Record<string, unknown> | undefined;
+        const properties = schema?.properties as Record<string, unknown> | undefined;
+        const boxes = properties?.boxes as Record<string, unknown> | undefined;
+        const item = boxes?.items as Record<string, unknown> | undefined;
+        const itemProperties = item?.properties as Record<string, unknown> | undefined;
+        const required = Array.isArray(item?.required) ? item.required : [];
+        const expectedFields = selection.api_type === "vision.detect"
+          ? ["box_2d", "label"]
+          : ["box_2d", "mask", "label"];
+        if (
+          format?.type !== "text" || format?.mime_type !== "application/json" ||
+          schema?.type !== "object" || boxes?.type !== "array" ||
+          !expectedFields.every((field) =>
+            field in (itemProperties ?? {}) && required.includes(field)
+          ) ||
+          (selection.api_type === "vision.detect" &&
+            ("mask" in (itemProperties ?? {}) || required.includes("mask")))
+        ) {
+          validationErrors.push(
+            selection.api_type === "vision.detect"
+              ? "Gemini detection requests require boxes with box_2d and label only"
+              : "Gemini segmentation requests require boxes with box_2d, mask, and label",
+          );
+        }
+      }
+      if (
+        selection.provider_driver === "google-gemini" &&
+        selection.contract_id === "gemini.batch-embed-contents.v1beta" &&
+        typeof parsedBody === "object" && parsedBody !== null
+      ) {
+        const requests = (parsedBody as Record<string, unknown>).requests;
+        if (
+          !Array.isArray(requests) || requests.length === 0 ||
+          requests.some((entry) => {
+            if (typeof entry !== "object" || entry === null) return true;
+            const request = entry as Record<string, unknown>;
+            const content = request.content as Record<string, unknown> | undefined;
+            return typeof request.model !== "string" ||
+              !request.model.startsWith("models/") ||
+              !Array.isArray(content?.parts);
+          })
+        ) {
+          validationErrors.push(
+            "Gemini batch embeddings require model-qualified EmbedContentRequest entries",
+          );
+        }
+      }
+      if (
+        selection.provider_driver === "google-gemini" &&
+        (selection.api_type ?? "").startsWith("video.") &&
+        typeof parsedBody === "object" && parsedBody !== null
+      ) {
+        const body = parsedBody as Record<string, unknown>;
+        const format = body.response_format as Record<string, unknown> | undefined;
+        if (
+          format?.duration !== undefined &&
+          (typeof format.duration !== "string" || !/^\d+(?:\.\d+)?s$/.test(format.duration))
+        ) {
+          validationErrors.push(
+            "Gemini video response_format.duration must use the official seconds string",
+          );
+        }
+      }
+      if (
         ["doubao", "doubao-agent-plan"].includes(selection.provider_driver) &&
         ["vision.ocr", "vision.caption"].includes(selection.api_type ?? "") &&
         typeof parsedBody === "object" && parsedBody !== null &&
@@ -1424,24 +1494,16 @@ export function createT15MockHandler(
             pages: [{ page_index: 0, width: 1, height: 1, blocks: [] }],
           }),
           "vision.detect": JSON.stringify({
-            detections: [{
+            boxes: [{
+              box_2d: [100, 200, 800, 900],
               label: "marker",
-              score: 1,
-              bbox: {
-                format: "xywh",
-                unit: "relative",
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-              },
             }],
           }),
           "vision.segment": JSON.stringify({
-            masks: [{
-              id: "mask-1",
-              score: 1,
-              mask: { format: "polygon", points: [[0, 0], [1, 0], [1, 1]] },
+            boxes: [{
+              box_2d: [100, 200, 800, 900],
+              mask: [[200, 100], [900, 100], [900, 800]],
+              label: "marker",
             }],
           }),
         };
