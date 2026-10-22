@@ -318,10 +318,12 @@ identifier / staging handle
 
 | 公开 RPC 方法 | 用途 |
 |---|---|
-| `auth.login` | 用户名/密码登录 |
-| `auth.refresh` | 刷新 token |
-| `auth.verify` | 校验 token |
-| `auth.logout` | 注销 |
+| `auth.login` | 用户名/密码登录（返回中带 `identity`） |
+| `auth.sso_config` | Zone 自助注册 / DID 登录开关与 jump 入口 |
+| `auth.entry.describe` | 分享入口描述（资源方允许的方式 ∩ Zone 开关） |
+| `auth.register` | 在允许自助注册的入口建 Limited 账号 |
+| `auth.invite.describe` / `auth.invite.login` / `auth.invite.request_resend` | 专属邀请：凭 secret 读取、免密登录、申请重发 |
+| `auth.did.begin` | DID 登录：解析 canonical zone 并生成跳转 |
 | `user.invite.get` | 凭邀请链接读邀请详情 |
 | `user.invite.accept` | 凭邀请链接接受邀请、激活账号 |
 | `zone.presentation.get` | 登录页等读取 Zone 名称、描述、图标（只含展示字段，不开放 `zone.overview`） |
@@ -333,9 +335,10 @@ identifier / staging handle
 | `/sso_callback` | GET | SSO 回调（内部校验 nonce 与 redirect_url） |
 | `/sso_refresh` | POST | 凭 refresh cookie 刷新会话 |
 | `/sso_logout` | POST | 注销并清会话 Cookie |
+| `/sso/did_callback` | GET | DID 登录回调：取 pending、调 verify-hub `login_by_remote_verify_hub`、写 Cookie；浏览器已登录另一主体时拒绝 |
 | `/`（静态 UI 回退） | GET | 提供登录页等前端静态资源 |
 
-> `POST /api/desktop`（桌面 UI 状态）与 `POST /kapi/control-panel`（除上述公开方法外）**均需登录**。
+> `POST /api/desktop`（桌面 UI 状态）与 `POST /kapi/control-panel`（除上述公开方法外）**均需登录**。受限会话（Limited、External）只能调用开放清单：Limited 为 `account_self` 范围内的本人方法（`auth.current_identity`、`auth.invite.set_password`、`auth.prepare_app_launch`、`ui.locale.get`、本人 `user.get|update|profile.*|change_password`、`zone.presentation.get`、`apps.list`、`apps.availability.check`、本人桌面状态），External 只有 `auth.current_identity`；其余返回 `access_denied` / `session_kind_not_allowed`。混合 SSO 的完整方法与 wire 见 [混合 SSO 技术契约](../arch/verify-hub/混合SSO技术契约.md)。
 
 ### 6.3 前端：登录可选路由
 

@@ -73,10 +73,10 @@ https://sys.<zoneHostname>/login?redirect_url=<encoded redirect>
 
 ```text
 POST /sso_refresh
--> 200 { "session_token": "...", "user_info": { user_id, show_name, user_type, ... } }
+-> 200 { "session_token": "...", "identity": { "kind": "account" | "external", ... } }
 ```
 
-- 返回**短期 session_token**（放在响应体里，供 JS 读取并用于后续请求）。
+- 返回**短期 session_token**（放在响应体里，供 JS 读取并用于后续请求）和当前身份 `identity`：`account`（本 Zone 账号，含 `user_id`、`did`、`user_type`、`restricted`、`scopes`、`password_set`）或 `external`（本 Zone 无账号的已认证 DID）。形状与 fixtures 见 [混合 SSO 技术契约](<../arch/verify-hub/混合SSO技术契约.md>) §2.2。websdk 用 `buckyos.getCurrentIdentity()` 读取，`getAccountInfo()` 只对账号会话返回值；身份变化时清空缓存，不回退旧身份。
 - 同时轮换 `buckyos_refresh_token`，并把短期 token 写入独立的 host-only `buckyos_session_token`。被替换的旧 refresh token 只有 10 秒宽限期：同一 host 的多个窗口共用这枚 cookie，同时续期时，后到的请求拿到的是同一对新 token，不会撤销会话；超出宽限期再出示旧 token 按重用处理，整条会话被撤销。
 - session 快过期时再调一次 `/sso_refresh` 续期即可，无需重新登录。
 
@@ -163,22 +163,23 @@ iss            签发方（Zone 的 verify-hub）
 
 ---
 
-## 跨 Zone SSO（去中心 IdP）
+## 跨 Zone SSO（DID 登录，去中心 IdP）
 
 当用户想登录的目标 Zone 不是自己的 Zone 时：
 
-- **Current Zone**：用户绑定/拥有的 Zone（他的 IdP）。
-- **Target Zone**：他想进去操作的 Zone。
+- **canonical zone**（PRD 中与 current zone 同义）：用户本人唯一指定的身份归属 Zone，即他的 IdP。
+- **目标 Zone**：他想进去操作的 Zone。
+
+已实现的流程是后端 HTTPS 一次性授权码交换（D-7，不公布 verify-hub 公钥）：
 
 ```text
-1. 用户在 Target Zone 输入/选择一个 DID。
-2. Target Zone resolve(user_did, owner) -> default_zone_did
-                 resolve(default_zone_did, zone) -> verify_hub 信息 + 公钥
-3. Target Zone 拉起 Current Zone 的 verify-hub 登录页。
-4. 用户在自己 Zone 完成认证（密码 / 钱包 / Passkey）。
-5. Current Zone verify-hub 签发一个"联合登录凭证"（只证明"你是谁"）。
-6. Target Zone 验证该凭证，映射到一个明确 DID / 本地账号。
-7. Target Zone 的 verify-hub 再签发**本 Zone 内可用的 session_token**。
+1. 目标 Zone 页面输入 DID → CP auth.did.begin：resolve(did) → OwnerDocument → default zone → ZoneDocument.hostname，
+   生成 state / nonce / PKCE verifier，跳到 https://<canonical>/sso/federate?...
+2. canonical Zone（用户已登录）显示 consent：DID、目标 Zone、公开显示名 / 头像；以 DID + 目标 Zone 记住同意。
+   只有 Active 的 Admin / User、且该 Zone 是其 OwnerDocument 默认 Zone 时才签发 code（60 秒、单次）。
+3. 浏览器回到目标 Zone 的 /sso/did_callback，CP 调 verify-hub.login_by_remote_verify_hub。
+4. 目标 verify-hub 自行解析 canonical 主机，HTTPS 调 exchange_federation_code（PKCE 校验），核对 DID / 目标 Zone / nonce，
+   映射到已入驻账号，否则签发 External 会话；联合会话最长 30 天，续期不回 canonical 复核。
 ```
 
 要点：
@@ -187,7 +188,22 @@ iss            签发方（Zone 的 verify-hub）
 - Current Zone 的凭证只负责"证明身份"，**不自动代表在 Target Zone 有任何权限**。
 - 和 Google SSO 本质相同（信任一个外部 IdP 完成认证），区别只在 IdP 是"用户自己的 Zone"，且发现/信任根来自 DID + ZoneConfig + verify-hub 公钥。
 
-> 跨 Zone 内部 DID 通常是明确的——系统凭证核心是 username / DID，每个可登录用户都能映射到一个确定 DID。未来若支持 Gmail 等外部账号，登录后也必须绑定到一个 DID（绑定到已有 DID，或在 Target Zone 建一个二级 DID）。
+> 跨 Zone 内部 DID 通常是明确的——系统凭证核心是 username / DID，每个可登录用户都能映射到一个确定 DID。账号 → DID 只认 `users/<id>/doc`，本人可编辑的 profile 不是身份证明。canonical 的 logout / 改密不传播到目标 Zone（已知风险，最长 30 天）。
+
+---
+
+## 外部访问者入口（混合 SSO）
+
+分享资源时，资源服务持有“入口”，入口声明允许的进入方式；CP 把它与 Zone 开关（`system/sso/settings` 的自助注册 / DID 登录，默认开启）求交后展示在 `/sso/entry?service=&entry=` 页面：
+
+- **Guest**：AI Workspace 的 `gt_` → `guest:` 资源主体，无系统会话；由资源 owner 在入口上开启。
+- **本 Zone 账号登录 / 自助注册**：自助注册建 Limited 账号（不入系统组、不设 canonical zone），之后按普通密码登录。
+- **DID 登录**：见上一节。
+- **专属邀请**：管理员预建 Limited 账号并生成 `https://<zone>/sso/invite/<id>#s=<secret>`，secret 只在 fragment；48 小时内可重复免密进入，设密码后旧链接只作入口；过期后访客申请重发，签发方收到 System Notify 后在“用户与 Agent / 专属邀请”生成新链接，经原渠道发送（系统不发短信 / 邮件）。
+
+Limited、External 及其衍生会话是**受限会话**：token 带 `restricted: true` 与 `scopes`（`account_self` / `msg_group` / `aiworkspace` / `homestation`）。`BuckyOSRuntime::verify_trusted_session_token` 默认拒绝受限会话，服务对需要开放的方法改用 `verify_session_token_opened(token, scope)`；类型升级不会让旧会话增权，降级在下一次 refresh 收窄。拒绝在 kRPC 失败响应中带 `code: "access_denied"` 与 `data: AccessDenial`（原因码与调整方），websdk 用 `accessDenialOf(error)` 读取，不解析错误文本。
+
+第三方网页不知道用户 Zone 时，用 websdk `buildJumpUrl(action, params)` 跳到 jump（默认 `https://jump.buckyos.org`，可由 `system/sso/settings.jump_base_url` 覆盖），由用户选择目标 Zone 后到达该 Zone 的同路径 action 页面，仍需在该 Zone 登录并确认操作；jump 页面见 `src/frame/jump/`。
 
 ---
 
@@ -219,7 +235,7 @@ iss            签发方（Zone 的 verify-hub）
 - **user / su_user**：最常见的登录用户，能用 App 但不能管系统。
 - **limited**：零权限底座的登录用户（企业客户、员工、未成年人等）。默认不能用任何 App，由管理员加入系统用户组（`group:<id>`）后，经 App 可用性规则和资源授权开放；不签发对外联合断言。
 - **root**：Zone owner 的账号记录，不可登录。
-- **External**：已认证、但本 Zone 没有账号记录的 DID。token 的 `principal_kind` 仍为 `user`，另带 `external: true` 标记，`sub` 是原 DID；v1 只有 verify-hub、msg-center 群路径、AI Workspace、HomeStation 接受，其它服务默认拒绝。
+- **External**：已认证、但本 Zone 没有账号记录的 DID（经 DID 登录产生）。token 的 `principal_kind` 仍为 `user`，另带 `external: true` 标记，`sub` 是原 DID；只有 verify-hub、msg-center 群路径、AI Workspace、HomeStation 接受，其它服务由受限会话闸口拒绝。
 - **匿名访问者**：不是用户类型。默认**全部拒绝**；只有明确公开的资源（App 可用性的 `guest` 伪组、AI Workspace 的 `guest:` 主体等）才允许匿名访问。
 
 让一个传统 app 提供公共服务的方式：把 app 设为 gateway 公共访问（= 授予特殊权限），或 app 自带用户管理、在自己的 app data 范围内管理读写。
@@ -265,19 +281,22 @@ sudo 由 verify-hub 提供：弹出提权对话框，要求管理员**再次输�
 - control panel `/sso_callback`（把 nonce、canonical origin/route 与 AuthTarget 一起校验后才写 cookie）、`/sso_refresh`（只接受同 origin/route 的 refresh target并轮换 token，旧 refresh 有 10 秒宽限期）、`/sso_logout`。
 - 桌面免密启动 App：control panel `auth.prepare_app_launch` + verify-hub `delegate_user_session`（仅 Control Panel 可调用）。
 - session_token 多通道传递（X-Auth / Bearer / query / kRPC token）+ trust keys 验签 + RBAC。
-- sudo 机制（提权对话框 + 短时 sudo token，受 appid 限制）。
+- sudo 机制（提权对话框 + 短时 sudo token，受 appid 限制；Limited 不签发 sudo）。
+- refresh family 持久化在 verify-hub 本地 SQLite（`data/var/verify-hub/sessions.db`），重启后可继续刷新；单实例，迁移到其它 OOD 后需重新登录。
+- 混合 SSO：当前身份三态、受限会话闸口与原因码、专属邀请、自助注册、入口描述、DID 登录（授权码交换）、jump 静态页。
 
 **协议目标 / 规划中（接入时不要假设已可用）：**
 
-- 跨 Zone 的标准 redirect / audience / scope / challenge / app-DID 校验 / 跨 Zone token 验证规则。
-- 浏览器钱包扩展 detection 与 wallet-signed assertion 的标准格式。
-- 全局 BNS resolver（当前 `ZoneDidResolver` 只是 Zone 内 resolver）、链上 owner / alias 状态。
-- 开放注册、limit user、Gmail 等外部账号绑定到 DID。
+- 浏览器钱包扩展 detection 与 wallet-signed assertion 的标准格式（首期不展示钱包入口）。
+- App access token 登录（`login_by_app_access_token`，S-1 后排）。
+- 全局 logout、canonical zone 迁移、匿名历史归并、忘记密码恢复。
+- Gmail 等外部账号绑定到 DID。
 
 ---
 
 ## 参考
 
+- `doc/arch/verify-hub/混合SSO技术契约.md` — 混合 SSO 的 wire、状态机、撤销矩阵与持久状态。
 - `doc/arch/BNS 去中心的名字系统.md` — 场景 6（联合登录）、场景 5（不依赖 CA 的强验证）、DID 解析与 IdP 发现。
 - `product/users_and_agents/UserType.md` — 用户类型、登录/SSO 产品流程、sudo、用户数据隔离。
 - `doc/control_panel/Control_Panel_Service.md` — control panel 认证契约。

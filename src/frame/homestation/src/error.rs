@@ -1,3 +1,4 @@
+use buckyos_api::{AccessDenial, DenyReason, ACCESS_DENIED_ERROR_CODE};
 use http::StatusCode;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -8,6 +9,10 @@ pub enum HsError {
     Conflict(String),
     Unavailable(String),
     Internal(String),
+    /// No valid session: missing, expired or not verifiable.
+    Unauthorized(String),
+    /// A D-4 denial: the page branches on its reason.
+    Denied(AccessDenial),
 }
 
 pub type HsResult<T> = Result<T, HsError>;
@@ -21,6 +26,8 @@ impl HsError {
             Self::Conflict(_) => "conflict",
             Self::Unavailable(_) => "unavailable",
             Self::Internal(_) => "internal",
+            Self::Unauthorized(_) => "unauthorized",
+            Self::Denied(_) => ACCESS_DENIED_ERROR_CODE,
         }
     }
 
@@ -31,7 +38,9 @@ impl HsError {
             | Self::Forbidden(m)
             | Self::Conflict(m)
             | Self::Unavailable(m)
-            | Self::Internal(m) => m,
+            | Self::Internal(m)
+            | Self::Unauthorized(m) => m,
+            Self::Denied(d) => d.reason.as_str(),
         }
     }
 
@@ -43,11 +52,26 @@ impl HsError {
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Self::Denied(d) if d.reason == DenyReason::AuthorizationUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Denied(_) => StatusCode::FORBIDDEN,
         }
     }
 
     pub fn retryable(&self) -> bool {
-        matches!(self, Self::Unavailable(_) | Self::Internal(_))
+        match self {
+            Self::Unavailable(_) | Self::Internal(_) => true,
+            Self::Denied(d) => d.reason == DenyReason::AuthorizationUnavailable,
+            _ => false,
+        }
+    }
+
+    /// The denial carried on the wire beside the message (`data` of an `access_denied` error).
+    pub fn denial(&self) -> Option<&AccessDenial> {
+        match self {
+            Self::Denied(d) => Some(d),
+            _ => None,
+        }
     }
 }
 
@@ -71,4 +95,8 @@ impl From<serde_json::Error> for HsError {
 
 pub fn bad(msg: impl Into<String>) -> HsError {
     HsError::BadRequest(msg.into())
+}
+
+pub fn denied(reason: DenyReason, method: &str) -> HsError {
+    HsError::Denied(AccessDenial::new(reason).at("homestation", method))
 }

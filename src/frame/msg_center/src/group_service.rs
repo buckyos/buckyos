@@ -2,8 +2,9 @@ use crate::group_store::{db_error, GroupTransaction};
 use crate::group_types::*;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    get_buckyos_api_runtime, DeliveryRecord, DeliveryState, DispatchResult, MailboxAddress,
-    MailboxKind, MailboxRecord, RecipientState, TokenPrincipalKind,
+    get_buckyos_api_runtime, DeliveryRecord, DeliveryState, DenyReason, DispatchResult,
+    EntryDescription, EntryMethods, EntryResource, EntryState, MailboxAddress, MailboxKind,
+    MailboxRecord, RecipientState, SessionScope, TokenPrincipalKind,
 };
 use kRPC::RPCContext;
 use name_lib::DID;
@@ -45,6 +46,8 @@ fn within(window: Option<u64>, start: u64, now: u64) -> bool {
     window.is_none_or(|w| w > 0 && now.saturating_sub(start) <= w)
 }
 const AGENT_GROUP_DISABLED: &str = "agent_group_disabled";
+/// Public (no session): the guest entry of a hosted group (contract §8.4).
+pub(crate) const METHOD_GROUP_DESCRIBE_ENTRY: &str = "group.describe_entry";
 const JOIN_METHODS: &[&str] = &[
     "group.accept_invitation",
     "group.request_join",
@@ -68,11 +71,6 @@ impl MessageCenter {
             .caller_identity(ctx)
             .await?
             .ok_or_else(|| denied("authentication-required"))?;
-        let verified = self
-            .token_verifier
-            .get()
-            .verify(ctx.token.as_deref().unwrap())
-            .await?;
         let did = match caller.user_did {
             Some(d) => d,
             None => {
@@ -85,22 +83,129 @@ impl MessageCenter {
                     .ok_or_else(|| denied("principal-did-unavailable"))?
             }
         };
-        if caller.principal_kind == TokenPrincipalKind::App && verified.appid.is_none() {
+        if caller.principal_kind == TokenPrincipalKind::App && caller.appid.is_none() {
             return Err(denied("client-identity-required"));
         }
         Ok(GroupActor {
             did,
-            client: verified.appid,
+            client: caller.appid,
             remote: false,
         })
     }
 
+    /// `group.*` kRPC; opened to restricted sessions (Session Only guests),
+    /// whom the group and Session ACLs then decide on. A restricted visitor
+    /// sees one D-4 reason for a group or Session that is missing or not
+    /// granted (`resource_grant_missing`, the group's reason as detail).
     pub(crate) async fn group_rpc(&self, method: &str, p: Value, ctx: RPCContext) -> Result<Value> {
-        if p.get("actor_did").is_some() || p.get("host_owner").is_some() {
-            return Err(invalid("actor-is-derived-from-authentication"));
+        let request = Box::pin(async move {
+            if p.get("actor_did").is_some() || p.get("host_owner").is_some() {
+                return Err(invalid("actor-is-derived-from-authentication"));
+            }
+            let caller = self.caller_identity(&ctx).await?;
+            let actor = self.group_actor(&ctx).await?;
+            self.group_rpc_authenticated(method, p, ctx, actor)
+                .await
+                .map_err(|error| match (error, caller) {
+                    (kRPC::RPCErrors::NoPermission(reason), Some(caller)) if caller.restricted() => {
+                        crate::owner_session::restricted_group_denial(&caller.user_id, reason)
+                    }
+                    (error, _) => error,
+                })
+        });
+        crate::owner_session::serve_opened(method, SessionScope::MsgGroup, request).await
+    }
+
+    /// Public description of a hosted group's guest entry: the group name and
+    /// the sign-in methods the entry allows, nothing about members or
+    /// Sessions. Missing, disabled and closed entries read the same.
+    pub(crate) async fn describe_group_entry(&self, p: &Value) -> Result<Value> {
+        let group: DID = field(p, "group_did")?;
+        let unavailable = || encoded(EntryDescription::unavailable());
+        let Some(g) = self
+            .groups
+            .load(&group)
+            .await?
+            .filter(|g| g.lifecycle == "active")
+        else {
+            return unavailable();
+        };
+        let config = g.config()?;
+        let Some(entry) = config.membership.guest_entry else {
+            return unavailable();
+        };
+        let methods = EntryMethods::from(entry.auth_methods);
+        if methods == EntryMethods::default() {
+            return unavailable();
         }
-        let actor = self.group_actor(&ctx).await?;
-        self.group_rpc_authenticated(method, p, ctx, actor).await
+        let title = config
+            .profile
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| group.to_string());
+        let owner_name = self
+            .contact_mgr
+            .get_contact(g.owner.clone(), None)
+            .await?
+            .map(|contact| contact.name)
+            .filter(|name| !name.trim().is_empty());
+        encoded(EntryDescription {
+            state: EntryState::Active,
+            resource: Some(EntryResource {
+                kind: "message_group".into(),
+                title,
+                owner_name,
+                path: format!("/messagehub/guest?group={}", group.to_string()),
+            }),
+            methods,
+            expires_at: None,
+        })
+    }
+
+    /// A visitor opens a Session through the public entry only by a sign-in
+    /// method the entry allows and the Zone has not switched off (D-8).
+    async fn require_guest_entry_method(&self, ctx: &RPCContext, group: &DID) -> Result<()> {
+        let Some(caller) = self.caller_identity(ctx).await? else {
+            return Ok(());
+        };
+        let entry = self
+            .groups
+            .load(group)
+            .await?
+            .filter(|g| g.lifecycle == "active")
+            .map(|g| g.config())
+            .transpose()?
+            .and_then(|config| config.membership.guest_entry);
+        let Some(entry) = entry else {
+            return Err(crate::owner_session::gate_denial(
+                DenyReason::EntryUnavailable,
+                &caller.user_id,
+            ));
+        };
+        let methods = EntryMethods::from(entry.auth_methods);
+        if !methods.allows_session(caller.auth_method) {
+            return Err(crate::owner_session::gate_denial(
+                DenyReason::EntryUnavailable,
+                &caller.user_id,
+            ));
+        }
+        let settings = self.token_verifier.get().sso_settings().await.map_err(|error| {
+            log::warn!("read Zone SSO settings failed: {}", error);
+            crate::owner_session::gate_denial(
+                DenyReason::AuthorizationUnavailable,
+                &caller.user_id,
+            )
+        })?;
+        if !methods.effective(&settings).0.allows_session(caller.auth_method) {
+            return Err(crate::owner_session::gate_denial(
+                DenyReason::ZoneMethodDisabled,
+                &caller.user_id,
+            ));
+        }
+        Ok(())
     }
     /// The App an Agent is built into (AppId == AgentId) speaks for that
     /// Agent when it runs as the Agent's owner.
@@ -179,9 +284,22 @@ impl MessageCenter {
         if method == "group.list_by_member" {
             let mut groups = vec![];
             let mut invitations = vec![];
+            let mut session_invitations = vec![];
             for g in self.groups.list().await? {
                 if g.lifecycle == "deleted" || g.check_client(&actor).is_err() {
                     continue;
+                }
+                // Sessions the caller is invited into as a guest (Session Only).
+                for (sid, records) in &g.participants {
+                    let invited = records
+                        .get(&actor.did.to_string())
+                        .filter(|r| r.kind == "guest" && r.state == "invited");
+                    let session = g.sessions.get(sid).filter(|s| s.lifecycle == "active");
+                    if let (Some(r), Some(session)) = (invited, session) {
+                        if g.lifecycle == "active" && !g.blocked(&actor.did) {
+                            session_invitations.push(json!({"group_did":g.group_did,"group_name":g.config()?.profile.get("name"),"session_id":sid,"session":session_key(&g.group_did,Some(sid))?,"title":session.shared_state.get("title"),"invited_by":r.actor}));
+                        }
+                    }
                 }
                 let record = g.members.get(&actor.did.to_string());
                 if g.role(&actor.did).is_some()
@@ -208,9 +326,14 @@ impl MessageCenter {
                 }
             }
             let joined = self.joined_groups(&actor.did).await?;
-            return Ok(json!({"items":groups,"invitations":invitations,"joined":joined}));
+            return Ok(
+                json!({"items":groups,"invitations":invitations,"session_invitations":session_invitations,"joined":joined}),
+            );
         }
         let group: DID = field(&p, "group_did")?;
+        if method == "group.submit_guest_request" {
+            self.require_guest_entry_method(&ctx, &group).await?;
+        }
         if method == "group.sync_joined" {
             let route = self
                 .cyfs_dispatch
@@ -249,7 +372,7 @@ impl MessageCenter {
                     .await
             }
             "group.list_messages" => {
-                return self
+                let mut page = self
                     .group_inbox(
                         &actor,
                         &group,
@@ -257,7 +380,11 @@ impl MessageCenter {
                         optional(&p, "after_seq")?.unwrap_or(0),
                         optional(&p, "limit")?.unwrap_or(100),
                     )
-                    .await
+                    .await?;
+                if optional::<bool>(&p, "with_object")?.unwrap_or(false) {
+                    self.attach_group_messages(&mut page).await?;
+                }
+                return Ok(page);
             }
             "group.changes" => {
                 return self
@@ -899,7 +1026,7 @@ impl MessageCenter {
             MailboxAddress::new(group.clone(), msg.to_session.clone()).map_err(invalid)?;
         record.sort_key = accepted_at_ms;
         tx.mailbox(&record, msg).await?;
-        if msg.kind == MsgObjKind::GroupMsg && self.is_local_recipient(&msg.from) {
+        if msg.kind == MsgObjKind::GroupMsg && self.is_personal_recipient(&msg.from).await {
             let mut sent = Self::build_mailbox_record(
                 msg.from.clone(),
                 MailboxKind::Sent,
@@ -949,7 +1076,7 @@ impl MessageCenter {
                     updated_at_ms: accepted_at_ms,
                 };
                 tx.delivery(&record).await?;
-            } else if self.is_local_recipient(&did) {
+            } else if self.is_personal_recipient(&did).await {
                 // The local sender already holds the SENT record of their own
                 // group message; projecting it again would double it up in
                 // every client and count as unread.
@@ -1195,6 +1322,11 @@ impl MessageCenter {
             ..Default::default()
         };
         tx.object(&msg, None).await?;
+        if self.lacks_personal_inbox(d).await {
+            // No personal inbox (Limited): the invitation waits in the group
+            // (`group.list_by_member`), nothing is delivered.
+            return Ok(());
+        }
         if self.is_local_recipient(d) {
             let access = self
                 .contact_mgr
@@ -2713,6 +2845,22 @@ impl MessageCenter {
             json!({"items":items,"next_after_seq":messages.last().map(|m|m.session_seq).unwrap_or(after),"limited":more}),
         )
     }
+    /// Adds each listed message object (`msg`) to a `group_inbox` page, so a
+    /// reader without a mailbox here reads the timeline from the group alone.
+    async fn attach_group_messages(&self, page: &mut Value) -> Result<()> {
+        for item in page["items"].as_array_mut().into_iter().flatten() {
+            if item["redacted"] == json!(true) {
+                continue;
+            }
+            let Some(id) = item["obj_id"].as_str().and_then(|id| ObjId::new(id).ok()) else {
+                continue;
+            };
+            if let Some((_, Some(body), _)) = self.groups.object(&id).await? {
+                item["msg"] = serde_json::from_str(&body).map_err(db_error)?;
+            }
+        }
+        Ok(())
+    }
     pub(crate) async fn group_changes(
         &self,
         a: &GroupActor,
@@ -3195,6 +3343,36 @@ impl MessageCenter {
             }
         }
         Err(missing())
+    }
+    /// An object of a hosted group Session by its context
+    /// (`<session address>/<msg_id>`): the message itself, or an object that
+    /// message references. The Session is readable and the message is in the
+    /// caller's visible history.
+    pub(crate) async fn authorize_session_object(
+        &self,
+        ctx: &RPCContext,
+        id: &ObjId,
+        context_path: &str,
+    ) -> Result<()> {
+        let (mailbox, msg) = context_path.rsplit_once('/').ok_or_else(missing)?;
+        let mailbox = MailboxAddress::try_from(mailbox.to_string()).map_err(|_| missing())?;
+        if self.groups.load(mailbox.owner()).await?.is_none() {
+            return Err(missing());
+        }
+        let actor = self.group_actor(ctx).await?;
+        if ObjId::new(msg).ok().as_ref() != Some(id) {
+            return self
+                .authorize_group_attachment(&actor, id, context_path)
+                .await;
+        }
+        self.authorize_group_message(&actor, id).await?;
+        let (group, body, _) = self.groups.object(id).await?.ok_or_else(missing)?;
+        let message: MsgObject =
+            serde_json::from_str(&body.ok_or_else(missing)?).map_err(db_error)?;
+        if group != *mailbox.owner() || message.to_session.as_deref() != mailbox.session_id() {
+            return Err(missing());
+        }
+        Ok(())
     }
     pub(crate) async fn authorize_group_attachment(
         &self,

@@ -5,8 +5,9 @@ import type {
   AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
-  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch,
+  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin,
 } from './types'
+import { parseAccessDenial, type AccessDenial } from 'buckyos'
 import type { Transport } from './transport'
 
 type Ws = { workspace_id: string }
@@ -35,6 +36,13 @@ export class AiwsClient {
   }
   wsListGrants(ws: Ws) { return this.call<Result<GrantList>>('ws.list_grants', ws) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
+  // share entries (hybrid SSO contract §8.3): links that offer sign-in methods and grant a template
+  wsCreateEntry(ws: Ws, params: { capabilities: Capability[]; methods: ShareEntry['methods']; scope_entity_id?: string; expires_at?: number }) {
+    return this.call<Result<{ entry: ShareEntry }>>('ws.create_entry', { ...ws, ...params })
+  }
+  wsListEntries(ws: Ws) { return this.call<Result<{ entries: ShareEntry[] }>>('ws.list_entries', ws) }
+  wsCloseEntry(ws: Ws, entry_id: string) { return this.call<Result<{ entry: ShareEntry }>>('ws.close_entry', { ...ws, entry_id }) }
+  wsJoinEntry(entry_id: string) { return this.call<Result<EntryJoin>>('ws.join_entry', { entry_id }) }
   wsGetUserState(ws: Ws) { return this.call<Result<{ entries: Record<string, Json>; updated_at: Record<string, string> }>>('ws.get_user_state', ws) }
   wsSetUserState(ws: Ws, entries: Record<string, Json | null>) { return this.call<Result<{ updated_at: string }>>('ws.set_user_state', { ...ws, entries }) }
   wsBeginImport() { return this.call<Result<{ upload_id: string }>>('ws.begin_import', {}) }
@@ -145,13 +153,16 @@ export class ServiceFailure extends Error {
   readonly subCode?: string
   readonly data?: Record<string, unknown>
   readonly retryable: boolean
-  constructor(error: { code: string; detail?: string; sub_code?: string; data?: Record<string, unknown>; retryable?: boolean }) {
+  /** Why access was refused (D-4), when it was: the reason and who can change it. */
+  readonly denial: AccessDenial | null
+  constructor(error: { code: string; detail?: string; sub_code?: string; data?: Record<string, unknown>; retryable?: boolean; denial?: unknown }) {
     super(`${error.code}${error.sub_code ? `/${error.sub_code}` : ''}${error.detail ? `: ${error.detail}` : ''}`)
     this.name = 'ServiceFailure'
     this.code = error.code
     this.subCode = error.sub_code
     this.data = error.data
     this.retryable = error.retryable ?? false
+    this.denial = parseAccessDenial(error.denial)
   }
 }
 

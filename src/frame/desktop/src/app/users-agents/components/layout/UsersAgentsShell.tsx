@@ -11,6 +11,7 @@ import { LocalUserDetailPage } from '../detail/LocalUserDetailPage'
 import { EntityGroupDetailPage } from '../detail/EntityGroupDetailPage'
 import { NewUserWizard } from '../shared/NewUserWizard'
 import { UserGroupsPage } from '../groups/UserGroupsPage'
+import { ExclusiveInvitesPage } from '../invites/ExclusiveInvitesPage'
 import { useCanCreateAgents, useEntity, useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
 import { useI18n } from '../../../../i18n/provider'
@@ -51,6 +52,7 @@ function SelectionRouter({ selection, onRemoved }: { selection: SidebarSelection
   if (!selection) return <EmptyPlaceholder />
   if (selection.kind === 'self') return <SelfDetailPage />
   if (selection.kind === 'user-groups') return <UserGroupsPage />
+  if (selection.kind === 'exclusive-invites') return <ExclusiveInvitesPage />
   return <DetailRouter entityId={selection.entityId} onRemoved={onRemoved} />
 }
 

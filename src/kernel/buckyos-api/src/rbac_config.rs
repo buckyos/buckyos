@@ -34,7 +34,7 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 - su_admin 系统所有权限
 - admin 除别的用户的数据之外的读权限，
 - users 自己的数据的读权限，不包含敏感数据的写权限
-- su_users 自己敏感数据的写权限
+- su_users 不带策略：本人 settings / doc 不可写，改密与类型、组、状态变更经 Control Panel 业务方法以服务身份写入
 - limited 零权限底座：只读自己的 settings、读写自己的 profile；系统用户组 group:<id> 不带策略
 - author 逻辑权限，资源的创建者
 
@@ -68,9 +68,9 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 所有可上链的资源修改都要su权限，在未上链时可本地修改，否则统一走先更新链再同步的逻辑
 
 ### user 相关
-- obj://config/users/{user}/settings 用户设置(含密码)，需要su_users修改
-- obj://config/users/{user}/doc 用户身份资料，需要su_users修改修改
-- obj://config/users/{user}/profile 用户资料，可以随时修改 （可上链），注意保存的是private profile
+- obj://config/users/{user}/settings 用户设置(含密码)，只经 Control Panel 业务方法修改
+- obj://config/users/{user}/doc 用户身份资料（账号→DID 的唯一真相源），只经 Control Panel 修改
+- obj://config/users/{user}/profile 用户资料，可以随时修改 （可上链），注意保存的是private profile；非管理者写入时 did 必须等于 doc 的 id（system-config 校验）
 - obj://config/security/{user}/key 用户密钥，local账户才有，需要su_admin修改
 
 ### app 相关
@@ -1194,45 +1194,43 @@ g, app:buckyos_filebrowser, app
     }
 
     #[tokio::test]
-    async fn sudo_users_role_can_write_own_sensitive_user_data() {
+    async fn sudo_users_role_cannot_write_own_identity_records() {
         let _guard = TEST_LOCK.lock().await;
 
+        // What scheduler generates for a User: the sudo role carries no rule on
+        // its own settings or doc; password and identity changes go through
+        // Control Panel, which writes with its service identity.
         let policy_tail = r#"
 g, bob, users
 g, su_bob, su_users
-p, su_bob, obj://config/users/bob/settings, read|write, allow
-p, su_bob, obj://config/users/bob/doc, read|write, allow
 "#;
         let config = build_current_rbac_config(Some(policy_tail));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
             .unwrap();
 
+        for key in [
+            "obj://config/users/bob/settings",
+            "obj://config/users/bob/doc",
+            "obj://config/users/alice/settings",
+        ] {
+            assert!(
+                !rbac::enforce(
+                    "bob",
+                    "system:buckycli",
+                    key,
+                    "write",
+                    Some(rbac::SudoMode::Sudo("su_bob".to_string())),
+                )
+                .await,
+                "{key}"
+            );
+        }
         assert!(
             rbac::enforce(
                 "bob",
                 "system:buckycli",
-                "obj://config/users/bob/settings",
-                "write",
-                Some(rbac::SudoMode::Sudo("su_bob".to_string())),
-            )
-            .await
-        );
-        assert!(
-            rbac::enforce(
-                "bob",
-                "system:buckycli",
-                "obj://config/users/bob/doc",
-                "write",
-                Some(rbac::SudoMode::Sudo("su_bob".to_string())),
-            )
-            .await
-        );
-        assert!(
-            !rbac::enforce(
-                "bob",
-                "system:buckycli",
-                "obj://config/users/alice/settings",
+                "obj://config/users/bob/profile",
                 "write",
                 Some(rbac::SudoMode::Sudo("su_bob".to_string())),
             )

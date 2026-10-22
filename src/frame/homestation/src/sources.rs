@@ -636,8 +636,7 @@ impl Station {
     /// Message Center friends follow each other by default (§7.6, A34, A36): add or remove
     /// the friend basis; keep follows that still have an active basis.
     pub async fn sync_friends(&self) -> HsResult<()> {
-        self.contacts.invalidate().await;
-        let contacts = self.contacts.list().await;
+        let contacts = self.contacts.current_list().await?;
         let mut friends: Vec<(String, String)> = Vec::new();
         for c in contacts.iter().filter(|c| c.friend && !c.blocked && c.did != self.cfg.owner) {
             // Friends without a HomeStation (agents, people whose zone has none) have no stream to follow.

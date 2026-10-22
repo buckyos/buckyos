@@ -19,6 +19,7 @@ import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import { SurfaceSwitcher } from './MainToolbar'
 import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
 import { PUBLIC_LINK_CAPABILITIES, PUBLIC_SUBJECT, shareLink, useShell, ZOOM_PRESETS } from './shellContext'
+import { ShareEntries } from './ShareEntries'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
 
@@ -216,7 +217,8 @@ function IdentityButton() {
 
 
 /** The share panel (§8.3): the access link, and — for a manager — the one-click public link: a `public` grant
- * (read + comment) that lets anyone with the link open it and annotate without signing in, until it is withdrawn. */
+ * (read + comment) that lets anyone with the link open it and annotate without signing in, until it is withdrawn;
+ * and entry links (hybrid SSO), which offer chosen ways in and grant chosen access. */
 function ShareButton() {
   const store = useStore()
   const shell = useShell()
@@ -270,6 +272,7 @@ function ShareButton() {
               : <button type="button" className="is-primary" data-testid="aiws-share-publish" disabled={busy || grants.loading} title={t('aiworkspace.shell.share.publishHint')} onClick={publish}><Globe size={16} aria-hidden="true" /> {t('aiworkspace.shell.share.publish')}</button>)}
             {canManage && <button type="button" data-testid="aiws-share-collab" onClick={() => { close(); shell.setSide('collab') }}>{t('aiworkspace.shell.share.grantInCollab')}</button>}
           </div>
+          {canManage && <ShareEntries client={shell.client} workspaceId={store.session.workspaceId} />}
           {!shell.identity.guest && <div className="aiws-muted">{t('aiworkspace.shell.share.exportHint')}</div>}
         </PopoverPanel>
       )}

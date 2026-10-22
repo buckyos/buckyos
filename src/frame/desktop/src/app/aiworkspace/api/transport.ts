@@ -15,9 +15,14 @@
  * guest token instead of a session — `gt_` + 26 base32 chars this browser made up once and keeps in
  * localStorage['aiworkspace.guest']. The service derives the guest principal from it, so the same
  * browser stays the same guest. `{"guest":true}` in the dev override does the same against the
- * standalone backend. */
+ * standalone backend.
+ *
+ * Hybrid SSO: a Zone session may be restricted (a Limited account or an External DID; contract §2, §3) — known from
+ * `buckyos.getCurrentIdentity()`, never from the shape of the principal. A refusal of the session itself comes back
+ * as a kRPC failure with `code: access_denied`; TransportError carries its denial. `{"restricted":true}` in the dev
+ * override stands for such a session against the standalone backend. */
 
-import { buckyos } from 'buckyos'
+import { accessDenialOf, buckyos, parseAccessDenial, ACCESS_DENIED_ERROR_CODE, type AccessDenial } from 'buckyos'
 import { isMockRuntime } from '../../../runtime'
 import { aiwsT } from '../i18n'
 
@@ -47,11 +52,19 @@ export function guestToken(): string {
 /** The request did not produce an answer from the service (network, proxy, timeout, kRPC-level error). */
 export class TransportError extends Error {
   readonly kind: 'network' | 'protocol' | 'unconfigured'
-  constructor(kind: 'network' | 'protocol' | 'unconfigured', message: string) {
+  /** The service refused the session itself (D-4), e.g. a restricted session without the `aiworkspace` scope. */
+  readonly denial: AccessDenial | null
+  constructor(kind: 'network' | 'protocol' | 'unconfigured', message: string, denial: AccessDenial | null = null) {
     super(message)
     this.name = 'TransportError'
     this.kind = kind
+    this.denial = denial
   }
+}
+
+/** A failed kRPC body (`{ error, code?, data? }`) as a TransportError. */
+function rpcFailure(body: { error: string; code?: unknown; data?: unknown }): TransportError {
+  return new TransportError('protocol', body.error, body.code === ACCESS_DENIED_ERROR_CODE ? parseAccessDenial(body.data) : null)
 }
 
 export interface Transport {
@@ -64,6 +77,9 @@ export interface Transport {
   principal(): Promise<string | null>
   /** True when the caller is a guest of a public link (no signed-in account). */
   isGuest(): Promise<boolean>
+  /** True for a restricted session (Limited account, External DID): it owns no workspace and never counts as
+   * "any signed-in user". A guest is not counted here. */
+  restricted(): Promise<boolean>
   /** The service told who the caller is (`ws.get_info.principal`): the only way a guest learns its principal. */
   learnPrincipal(principal: string): void
   /** kRPC call; resolves with `result` (business results live there), rejects with TransportError. */
@@ -74,7 +90,7 @@ export interface Transport {
   download(path: string): Promise<Blob>
 }
 
-interface DevOverride { token: string; guest: boolean; baseUrl?: string; principal?: string }
+interface DevOverride { token: string; guest: boolean; baseUrl?: string; principal?: string; restricted?: boolean }
 
 function readDevOverride(): DevOverride | null {
   try {
@@ -84,15 +100,22 @@ function readDevOverride(): DevOverride | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<DevOverride>
     if (parsed.guest === true) return { token: guestToken(), guest: true, baseUrl: parsed.baseUrl }
-    return typeof parsed.token === 'string' && parsed.token ? { token: parsed.token, guest: false, baseUrl: parsed.baseUrl, principal: parsed.principal } : null
+    return typeof parsed.token === 'string' && parsed.token
+      ? { token: parsed.token, guest: false, baseUrl: parsed.baseUrl, principal: parsed.principal, restricted: parsed.restricted === true }
+      : null
   } catch {
     return null
   }
 }
 
+/** A failed upload / download route: its body is `{ ok: false, error }`, a refusal's `error.denial` included. */
 async function httpError(response: Response): Promise<TransportError> {
   const text = await response.text().catch(() => '')
-  return new TransportError('protocol', `HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ''}`)
+  let denial: AccessDenial | null = null
+  try {
+    denial = parseAccessDenial((JSON.parse(text) as { error?: { denial?: unknown } } | null)?.error?.denial)
+  } catch { /* not JSON */ }
+  return new TransportError('protocol', `HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ''}`, denial)
 }
 
 class DevOverrideTransport implements Transport {
@@ -102,10 +125,12 @@ class DevOverrideTransport implements Transport {
   private readonly base: string
   private readonly token: string
   private readonly guest: boolean
+  private readonly limited: boolean
 
   constructor(override: DevOverride) {
     this.token = override.token
     this.guest = override.guest
+    this.limited = override.restricted === true
     this.base = (override.baseUrl ?? `/kapi/${SERVICE_NAME}`).replace(/\/+$/, '')
     this.principalHint = override.guest ? null : override.principal ?? override.token.replace(/^tok-/, '')
   }
@@ -113,6 +138,7 @@ class DevOverrideTransport implements Transport {
   get target(): string { return `${window.location.host}${this.base}` }
   async principal(): Promise<string | null> { return this.principalHint }
   async isGuest(): Promise<boolean> { return this.guest }
+  async restricted(): Promise<boolean> { return this.limited }
   learnPrincipal(principal: string) { if (this.guest) this.principalHint = principal }
 
   call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
@@ -148,6 +174,7 @@ class ZoneTransport implements Transport {
   private principalLookup: Promise<void> | null = null
   /** Decided once: a signed-in account uses the SDK's session, anyone else is a guest. */
   private guestLookup: Promise<boolean> | null = null
+  private restrictedLookup: Promise<boolean> | null = null
   private seq = 1
 
   async principal(): Promise<string | null> {
@@ -159,6 +186,13 @@ class ZoneTransport implements Transport {
   isGuest(): Promise<boolean> {
     this.guestLookup ??= this.token().then((token) => token === null)
     return this.guestLookup
+  }
+
+  restricted(): Promise<boolean> {
+    this.restrictedLookup ??= buckyos.getCurrentIdentity()
+      .then((identity) => identity.kind !== 'anonymous' && identity.restricted)
+      .catch(() => false)
+    return this.restrictedLookup
   }
 
   learnPrincipal(principal: string) { if (isGuestPrincipal(principal)) this.principalHint = principal }
@@ -189,7 +223,8 @@ class ZoneTransport implements Transport {
       // The SDK reports kRPC-level errors and network failures through the same channel; for a
       // commit both mean "no business result", which is all the callers need to know.
       const message = error instanceof Error ? error.message : String(error)
-      throw new TransportError(/fetch|network|timeout|abort/i.test(message) ? 'network' : 'protocol', message)
+      const denial = accessDenialOf(error)
+      throw new TransportError(denial || !/fetch|network|timeout|abort/i.test(message) ? 'protocol' : 'network', message, denial)
     }
   }
 
@@ -230,13 +265,13 @@ async function guestCall<T>(base: string, method: string, params: Record<string,
     throw new TransportError('network', error instanceof Error ? error.message : String(error))
   }
   if (!response.ok) throw await httpError(response)
-  let body: { result?: T; error?: string }
+  let body: { result?: T; error?: string; code?: unknown; data?: unknown }
   try {
-    body = await response.json() as { result?: T; error?: string }
+    body = await response.json() as { result?: T; error?: string; code?: unknown; data?: unknown }
   } catch {
     throw new TransportError('network', 'unparsable response')
   }
-  if (typeof body.error === 'string' && body.error) throw new TransportError('protocol', body.error)
+  if (typeof body.error === 'string' && body.error) throw rpcFailure({ ...body, error: body.error })
   return body.result as T
 }
 
@@ -280,8 +315,8 @@ export async function prompterCall<T>(method: string, params: Record<string, unk
     throw new TransportError('network', error instanceof Error ? error.message : String(error))
   }
   if (!response.ok) throw await httpError(response)
-  const body = await response.json().catch(() => null) as { result?: T; error?: string } | null
+  const body = await response.json().catch(() => null) as { result?: T; error?: string; code?: unknown; data?: unknown } | null
   if (!body) throw new TransportError('network', 'unparsable response')
-  if (typeof body.error === 'string' && body.error) throw new TransportError('protocol', body.error)
+  if (typeof body.error === 'string' && body.error) throw rpcFailure({ ...body, error: body.error })
   return body.result as T
 }

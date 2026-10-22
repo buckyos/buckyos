@@ -494,6 +494,73 @@ impl SessionTokenVerifier for Verifier {
     }
 }
 
+/// `Verifier` answering account state from what a test sets now, as the
+/// production verifier reads system-config at request time.
+struct AccountsVerifier {
+    accounts: std::sync::Mutex<HashMap<String, buckyos_api::UserSettings>>,
+    groups: buckyos_api::UserGroupDirectory,
+    unavailable: std::sync::atomic::AtomicBool,
+}
+
+impl AccountsVerifier {
+    fn new(
+        accounts: &[(&DID, buckyos_api::UserType, &[&str])],
+        groups: buckyos_api::UserGroupDirectory,
+    ) -> Self {
+        let accounts = accounts
+            .iter()
+            .map(|(did, user_type, user_groups)| {
+                let user_id = did.id.split('.').next().unwrap().to_string();
+                let settings = serde_json::from_value(json!({
+                    "user_id": user_id, "type": user_type.as_str(), "password": "",
+                    "state": "active", "res_pool_id": "default", "groups": user_groups,
+                }))
+                .unwrap();
+                (user_id, settings)
+            })
+            .collect();
+        Self {
+            accounts: std::sync::Mutex::new(accounts),
+            groups,
+            unavailable: Default::default(),
+        }
+    }
+
+    fn read_now(&self) -> Result<(), RPCErrors> {
+        if self.unavailable.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RPCErrors::ReasonError("system-config unavailable".into()));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionTokenVerifier for AccountsVerifier {
+    async fn authorize(&self, token: &str, resource: &str, action: &str) -> Result<(), RPCErrors> {
+        Verifier.authorize(token, resource, action).await
+    }
+    async fn verify(&self, t: &str) -> Result<RPCSessionToken, RPCErrors> {
+        Verifier.verify(t).await
+    }
+    async fn resolve_user_did(&self, id: &str) -> Result<DID, RPCErrors> {
+        Verifier.resolve_user_did(id).await
+    }
+    async fn zone_agent(&self, _: &DID) -> Result<Option<ZoneAgentInfo>, RPCErrors> {
+        Ok(None)
+    }
+    async fn account_settings(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<buckyos_api::UserSettings>, RPCErrors> {
+        self.read_now()?;
+        Ok(self.accounts.lock().unwrap().get(user_id).cloned())
+    }
+    async fn user_groups(&self) -> Result<buckyos_api::UserGroupDirectory, RPCErrors> {
+        self.read_now()?;
+        Ok(self.groups.clone())
+    }
+}
+
 fn token_context(sub: &str, kind: TokenPrincipalKind, holder: &str) -> RPCContext {
     let mut token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
@@ -1071,11 +1138,12 @@ async fn membership_check_is_exact_includes_projection_and_is_service_only() {
     let zone = "z.example";
     let (svc, cust) = (user("svc", zone), user("cust", zone));
     let (c, _tmp) = open("projection-membership", zone, &[]).await;
-    c.set_token_verifier(Arc::new(Verifier));
     let accounts: [(&DID, UserType, &[&str]); 2] = [
         (&svc, UserType::User, &["service"]),
         (&cust, UserType::Limited, &["customer"]),
     ];
+    let verifier = Arc::new(AccountsVerifier::new(&accounts, customer_service_groups(true)));
+    c.set_token_verifier(verifier.clone());
     crate::apply_zone_directory(
         &c,
         &crate::test_zone_directory(&accounts, customer_service_groups(true)),
@@ -1094,10 +1162,46 @@ async fn membership_check_is_exact_includes_projection_and_is_service_only() {
     assert_eq!(yes["member"], true);
     let no = check(as_workspace.clone(), &cust, "type:user").await.unwrap();
     assert_eq!(no["member"], false);
-    let other = check(as_workspace, &user("dave", zone), "group:customer").await.unwrap();
+    let other = check(as_workspace.clone(), &user("dave", zone), "group:customer").await.unwrap();
     assert_eq!(other["member"], false);
     let as_svc = token_context(&svc.to_string(), TokenPrincipalKind::User, "control-panel");
     assert!(check(as_svc, &cust, "group:customer").await.is_err());
+
+    // `contact.get_contact` (HomeStation audiences) shows the projection as
+    // the accounts are now as well.
+    let as_homestation = token_context("ood1", TokenPrincipalKind::System, "homestation");
+    let viewed = |ctx: RPCContext| c.handle_get_contact(cust.clone(), Some(svc.clone()), ctx);
+    let seen = viewed(as_homestation.clone()).await.unwrap().unwrap();
+    assert!(seen.tags.iter().any(|t| t == "group:customer"));
+    assert_eq!(seen.projected_from, vec!["group:customer".to_string()]);
+
+    // Moving the customer out of the group takes effect on the next check,
+    // although no zone sync rebuilt the projection (D-5).
+    verifier.accounts.lock().unwrap().get_mut("cust").unwrap().groups.clear();
+    let stale = viewed(as_homestation.clone()).await.unwrap().unwrap();
+    assert!(!stale.tags.iter().any(|t| t == "group:customer" || t == "zone_user"));
+    assert!(stale.projected_from.is_empty());
+    assert_eq!(c.contact_mgr.projection().by_owner.len(), 1);
+    let moved = check(as_workspace.clone(), &cust, "group:customer").await.unwrap();
+    assert_eq!(moved["member"], false);
+    // State that cannot be read now is a denial, never the last answer.
+    verifier
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = check(as_workspace.clone(), &cust, "group:customer")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        buckyos_api::AccessDenial::from_rpc_error(&error).map(|d| d.reason),
+        Some(buckyos_api::DenyReason::AuthorizationUnavailable)
+    );
+    verifier.accounts.lock().unwrap().get_mut("cust").unwrap().groups = vec!["customer".into()];
+    let unreadable = viewed(as_homestation).await.unwrap().unwrap();
+    assert!(unreadable.projected_from.is_empty());
+    assert!(!unreadable.tags.iter().any(|t| t.starts_with("group:")));
+    // Store tags are answered from the store as before.
+    let user_tag = check(as_workspace, &cust, "vip").await.unwrap();
+    assert_eq!(user_tag["member"], false);
 }
 
 #[tokio::test]

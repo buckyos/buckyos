@@ -28,7 +28,10 @@ fixtures/  project-workspace/commits.json (the shared sample as a commit sequenc
 
 ## Run
 
-Standalone (independent testing; data in an isolated folder, static test identities):
+Standalone (independent testing; data in an isolated folder, static test identities — optional per token: `class`
+(`account` | `external` | `service`), `restricted`, `did`, `groups`, `contacts`, `contacts_unavailable`, `auth_method`;
+optional top-level `sso` stands for the Zone switches; `groups` / `contacts` are read from the file again at each
+request):
 
 ```bash
 cargo build -p aiworkspace
@@ -47,9 +50,11 @@ generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the
 
 ```bash
 cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors, phase2 (two trees, wishes, freshness)
-cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files;
+cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files; tests/sso.rs: caller classes,
+                                    # group / contact subjects, share entries;
                                     # tests/replica.rs: the offline engine incl. the incremental rows a replica persists
-cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP;
+cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP; tests/sso.rs: the same
+                                    # with static Limited / External identities, entry.describe, ws.join_entry, denials;
                                     # tests/wish.rs, tests/quality.rs: wish runs through the real xllm loop and Deno
                                     # with a scripted model (needs `deno` on PATH or AIWS_DENO)
 (cd frame/aiworkspace/aiws && deno test -A)   # the program host (temp dirs, a local test server)
@@ -217,11 +222,14 @@ Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/run
 
 ```text
 <data>/workspaces/<workspace_id>/doc.sqlite     the portable document (design §4.2)
-<data>/workspaces/<workspace_id>/local.sqlite   grants, locks, runs, staged uploads — never exported
+<data>/workspaces/<workspace_id>/local.sqlite   grants, share entries, locks, runs, staged uploads — never exported
 <data>/workspaces/<workspace_id>/staging/       export packages, replica databases
 <data>/objects/{objects,chunks}/                content-addressed NamedObjects and chunks (CYFS ids)
 <data>/trash/                                   deleted / replaced Workspaces
 ```
+
+`storage_schema_version` is 3 (share entries, `grants.via_entry`); folders of an older version are refused, not migrated —
+reinstall the data of a development Zone.
 
 One writer per Workspace (a mutex around its connections); a Commit is planned on an overlay,
 checked, and written in one SQLite transaction together with its history row, which is also the
@@ -234,18 +242,78 @@ kRPC: `POST /kapi/aiworkspace` with `{ "method", "params", "sys": [seq, session_
 or the three-state commit result (`status: accepted | conflict | rejected`). The kRPC `error`
 string is used only for an invalid token, an unknown method or an unparsable request.
 
-**Guests.** A public link's visitor has no session: `sys[1]` (or the bearer of the upload / asset / export
+**Callers (hybrid SSO, contract §2–§4, §8.3).** Every request runs as a verified `Caller` with a class:
+an **account** (principal = user id; *restricted* when its session carries a ceiling — a Limited account), an
+**External** DID (principal = the DID), a **guest** or a **service** (app, agent, system, device). In service mode the
+token is checked with `verify_session_token_opened(token, aiworkspace)` — a restricted session without the
+`aiworkspace` scope is refused before anything else; the class comes from the claims (`principal_kind`, `external`,
+`restricted`, `auth_method`), never from the shape of the principal. Restricted accounts, Externals and guests own
+nothing: `ws.create`, `ws.import`, `ws.begin_import`, `ws.fork` and `ws.list_subjects` refuse them
+(`session_kind_not_allowed`); `ws.list` shows them only Workspaces granted to them (by name, group, contact or a joined
+entry — never through `public` or `*`).
+
+**Grant subjects** and whom they match:
+
+| Subject | Matches |
+| --- | --- |
+| `<user id>` / `<did>` | that account / that External (exact principal) |
+| `public` | everyone, guests included (a public link; never `manage`) |
+| `*` | unrestricted accounts only (not Limited, External, guests or services) |
+| `group:<id>` | accounts in that system user group (`users/<id>/settings.groups`) |
+| `contact:<owner_did>#<tag>` | DIDs in that owner's contact group (msg-center `contact.check_membership`, projections included); only the owner (caller DID = `<owner_did>`) may write such a grant, so nobody probes someone else's groups |
+
+Group and contact membership is settled per request, before the Workspace's writer is locked: the server lists the
+Workspace's `group:` / `contact:` subjects (every Workspace's for `ws.list`) and asks system-config (the account's
+groups; its DID from `users/<id>/doc`) and msg-center. A membership that cannot be checked refuses the request with
+`authorization_unavailable` unless the caller already holds every capability; nothing is cached. A show's notes are read
+with the presenter's memberships settled again at each `show.notes`.
+
+**Guests.** A link's visitor has no session: `sys[1]` (or the bearer of the upload / asset / export
 routes) carries a guest token instead, `gt_` + 26 base32 chars the browser made up and keeps. The caller is
-then `guest:<26 chars>` (derived from the token's SHA-256, never the token itself), reaches only the grants
-of subject `public`, and cannot own anything: `ws.list` is empty, `ws.create` / `ws.fork` / `ws.import` /
-`ws.list_subjects` are denied. `ws.get_info` returns `principal` so a guest learns who it is.
+then `guest:<26 chars>` (derived from the token's SHA-256, never the token itself), reaches the grants of subject
+`public` and the active entries open to guests (as everyone does), and cannot own anything. `ws.get_info` returns `principal` so a guest
+learns who it is.
+
+**Share entries** (`local.sqlite` `share_entries`, beside the grants): a link that offers ways in — `methods`
+`{ guest, password, self_register, did_login }` (`self_register` implies `password`) — and a capability template (never
+`manage`) on the Workspace or an entity subtree, optionally until `expires_at` (unix seconds). The id names its Workspace,
+`<workspace_id>~se_<26 chars>`, so a link resolves without a service-wide index; the visitor's page is
+`/sso/entry?service=aiworkspace&entry=<entry_id>`.
+
+- While an entry open to guests is active (not closed, not expired), every caller — guests, accounts, Externals,
+  services — gets the template on its scope, computed per request (anyone could come in anonymously anyway).
+- `ws.join_entry` gives a signed-in visitor (account or External) the template as a grant of its own (merged into
+  what it already holds there; `via_entry` records the entry), if the entry ∩ the Zone switches (`system/sso/settings`)
+  admit the session's sign-in method: `did_federation` needs `did_login`, any local method `password` /
+  `self_register`. An entry open to guests that does not admit the session still lets it in, as anyone: the join
+  succeeds with `granted: false` and writes no grant (the access ends with the entry). Joining again changes nothing;
+  nobody becomes the owner. Closing an entry does not take back joined grants (`ws.revoke` does).
+- `entry.describe` is public (no session): `buckyos_api::EntryDescription` (`state`, `resource: { kind: "workspace",
+  title, owner_name, path: "/workspace/<id>" }`, the entry's own `methods`, `expires_at`) plus `ok: true`; a missing,
+  closed or expired entry is `{ state: "unavailable" }` and nothing else. The Control Panel's `auth.entry.describe`
+  intersects the methods with the Zone switches.
+
+**Refusals (D-4).** A business failure that is a refusal carries `error.denial`, the full `AccessDenial`
+(`reason`, `adjust: { party, location? }`, `service: "aiworkspace"`, `method`). NOT_FOUND and PERMISSION_DENIED without a
+reason of their own are `resource_grant_missing`; for a restricted caller their detail is a fixed text and their
+`data` / `path` are dropped, so a missing Workspace and one not shared with it give the same answer
+(PERMISSION_DENIED only occurs where the caller already holds a grant). Explicit reasons: `session_kind_not_allowed`
+(owning, joining as guest / service), `entry_unavailable`, `zone_method_disabled`, `authorization_unavailable`. A refused
+session is a kRPC failure `{ error, code: "access_denied", data: AccessDenial }`, and so is every refusal of
+`ws.join_entry` (it serves the Zone's entry page, which reads the shared kRPC wire); its other failures are plain kRPC
+errors.
 
 | Method | Params (besides `workspace_id`) |
 | --- | --- |
 | `ws.create` | `title`, `workspace_id?` |
 | `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | |
-| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: a principal, `*` (any authenticated principal) or `public` (everyone, a public link; never `manage`) |
-| `ws.list_subjects` | principals a grant can name (static identities / zone users) |
+| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row (with `via_entry`) and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: see the table above |
+| `ws.list_subjects` | principals a grant can name (static identities / zone users and `group:` subjects) |
+| `ws.create_entry` | `capabilities[]`, `methods`, `scope_entity_id?`, `expires_at?` → `entry` (`manage` on the scope) |
+| `ws.list_entries` | → `entries` on scopes the caller manages |
+| `ws.close_entry` | `entry_id` (`workspace_id` optional, must match) → `entry` |
+| `ws.join_entry` | `entry_id` only → `workspace_id`, `entry_id`, `scope_entity_id`, `capabilities`, `joined`, `granted`, `path` |
+| `entry.describe` | `entry_id` only, no session → `EntryDescription` |
 | `ws.get_user_state` / `ws.set_user_state` | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
 | `ws.begin_import` → PUT → `ws.import` | `upload_id`, `semantics: "restore" \| "new"`, `replace?` |
 | `doc.outline` | — all readable entity envelopes in tree order |

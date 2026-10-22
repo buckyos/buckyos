@@ -2,7 +2,7 @@
 //! browser-made token) reaches nothing else, keeps its own annotations, and owns no workspace.
 
 mod common;
-use aiworkspace_store::service::require_signed_in;
+use aiworkspace_store::service::require_may_own;
 use aiworkspace_store::workspace::{Caller, PUBLIC_SUBJECT};
 use common::*;
 use serde_json::json;
@@ -21,8 +21,8 @@ fn guest_principals_come_from_the_token_only() {
         assert!(Caller::guest(bad).is_none(), "{bad}");
     }
     assert!(!alice().is_guest());
-    assert!(require_signed_in(&g).is_err());
-    assert!(require_signed_in(&alice()).is_ok());
+    assert!(require_may_own(&g).is_err());
+    assert!(require_may_own(&alice()).is_ok());
 }
 
 #[test]

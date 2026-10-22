@@ -6,8 +6,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_api::{
-    agent_profile_key, agent_settings_key, agent_spec_key, AgentId, AgentProfile, AgentSettings,
-    AgentSpec, SystemConfigClient, SystemConfigError,
+    agent_profile_key, agent_settings_key, agent_spec_key, user_did_from_doc_value, AgentId,
+    AgentProfile, AgentSettings, AgentSpec, SystemConfigClient, SystemConfigError,
 };
 use log::warn;
 use name_lib::{AgentDocument, DID};
@@ -145,6 +145,20 @@ pub async fn load_zone_agent(
     }))
 }
 
+/// An Agent belongs to the account it is stored under: the owner its spec
+/// names must be that account's DID (`users/<id>/doc`), never another one.
+pub async fn account_owns_agent(
+    source: &dyn ConfigSource,
+    owner_user_id: &str,
+    owner: &DID,
+) -> Result<bool> {
+    let key = format!("users/{owner_user_id}/doc");
+    let Some(doc) = source.get(&key).await? else {
+        return Ok(false);
+    };
+    Ok(user_did_from_doc_value(&key, &doc).ok().as_ref() == Some(owner))
+}
+
 pub async fn load_zone_agents(source: &dyn ConfigSource) -> Result<Vec<ZoneAgent>> {
     let mut agents = Vec::new();
     for user_id in source.list("users").await? {
@@ -156,9 +170,17 @@ pub async fn load_zone_agents(source: &dyn ConfigSource) -> Result<Vec<ZoneAgent
                     continue;
                 }
             };
-            if let Some(agent) = load_zone_agent(source, &user_id, &agent_id).await? {
-                agents.push(agent);
+            let Some(agent) = load_zone_agent(source, &user_id, &agent_id).await? else {
+                continue;
+            };
+            if !account_owns_agent(source, &user_id, agent.owner()).await? {
+                warn!(
+                    "skip users/{}/agents/{}: its spec names another owner",
+                    user_id, name
+                );
+                continue;
             }
+            agents.push(agent);
         }
     }
     Ok(agents)
@@ -295,6 +317,10 @@ pub mod test_support {
         profile: Value,
     ) {
         let agent_id = AgentId::from_agent_did(&agent.id).unwrap();
+        config.insert(
+            format!("users/{owner_user_id}/doc"),
+            json!({"id": agent.owner}).to_string(),
+        );
         if with_spec {
             config.insert(
                 agent_spec_key(owner_user_id, &agent_id),
@@ -335,6 +361,14 @@ mod tests {
         );
         put_agent(&mut config, "alice", &creating, false, json!({}), json!({}));
         config.insert("users/alice/settings".into(), "{}".into());
+        // A spec stored under mallory that names alice as its owner is no
+        // Agent of either.
+        let claimed = agent_document(&DID::new("web", "fake.test.buckyos.io"), &alice);
+        put_agent(&mut config, "mallory", &claimed, true, json!({}), json!({}));
+        config.insert(
+            "users/mallory/doc".into(),
+            json!({"id": "did:web:mallory.test.buckyos.io"}).to_string(),
+        );
 
         let agents = load_zone_agents(&config).await.unwrap();
         assert_eq!(agents.len(), 1);

@@ -14,6 +14,7 @@ import {
 } from '../../hooks/use-users-agents-store'
 import type { SidebarSelection } from '../../datamodel/types'
 import { UserGroupsNavItem } from '../groups/UserGroupsNavItem'
+import { ExclusiveInvitesNavItem } from '../invites/ExclusiveInvitesNavItem'
 import type { AnyEntity, LocalUserEntity, AgentEntity, SelfEntity, EntityGroupEntity } from '../../datamodel/types'
 import { useI18n } from '../../../../i18n/provider'
 import { agentStatusLabelKey } from '../shared/agentLabels'
@@ -388,6 +389,10 @@ export function MobileHomeScreen({
         <UserGroupsNavItem
           isActive={selection?.kind === 'user-groups'}
           onClick={() => onSelect({ kind: 'user-groups' })}
+        />
+        <ExclusiveInvitesNavItem
+          isActive={selection?.kind === 'exclusive-invites'}
+          onClick={() => onSelect({ kind: 'exclusive-invites' })}
         />
 
         {hostedGroups.length > 0 && (

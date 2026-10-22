@@ -24,10 +24,16 @@ impl Drop for Server {
     }
 }
 
+/// The static identities; dave's system groups vary (the service reads memberships from the file at each request).
+fn tokens(dave_groups: &[&str]) -> Value {
+    json!({ "tokens": { "tok-alice": { "principal": "alice" }, "tok-bob": { "principal": "bob" }, "tok-carol": { "principal": "carol" },
+                        "tok-dave": { "principal": "dave", "groups": dave_groups } } })
+}
+
 impl Server {
     async fn start(dir: &std::path::Path) -> Server {
         let auth = dir.join("tokens.json");
-        std::fs::write(&auth, json!({ "tokens": { "tok-alice": { "principal": "alice" }, "tok-bob": { "principal": "bob" }, "tok-carol": { "principal": "carol" } } }).to_string()).unwrap();
+        std::fs::write(&auth, tokens(&["presenters"]).to_string()).unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let child = Command::new(env!("CARGO_BIN_EXE_aiworkspace"))
             .arg("--data-dir").arg(dir.join("data")).arg("--listen").arg(format!("127.0.0.1:{port}")).arg("--auth-file").arg(&auth)
@@ -231,4 +237,24 @@ async fn read_only_shows_crashed_stages_and_forced_ends() {
     let r = srv.rpc("tok-alice", "show.end", json!({ "workspace_id": ws, "show_id": held["show_id"] })).await;
     assert_eq!(r["ok"], true, "{r}");
     assert!(srv.rpc("tok-alice", "ws.get_info", json!({ "workspace_id": ws })).await["show_lock"].is_null());
+}
+
+/// A prompter reads the notes with the presenter's grants and memberships as they are now, not as at the show's start:
+/// a presenter that left the group the Workspace was shared with takes the notes with it.
+#[tokio::test]
+async fn notes_follow_the_presenters_current_memberships() {
+    let dir = tempfile::tempdir().unwrap();
+    let srv = Server::start(dir.path()).await;
+    let (ws, _) = srv.presentation().await;
+    srv.rpc("tok-alice", "ws.grant", json!({ "workspace_id": ws, "subject": "group:presenters", "capabilities": ["read"] })).await;
+    let show = srv.rpc("tok-dave", "show.start", json!({ "workspace_id": ws, "path_id": "path-guide" })).await;
+    assert_eq!(show["locked"], json!(false), "{show}");
+    let (show_id, token) = (show["show_id"].as_str().unwrap().to_string(), show["prompter_token"].as_str().unwrap().to_string());
+    let notes = || srv.prompter("show.notes", json!({ "workspace_id": ws, "show_id": show_id }), &token);
+    assert_eq!(notes().await["ok"], json!(true));
+    std::fs::write(dir.path().join("tokens.json"), tokens(&[]).to_string()).unwrap();
+    let r = notes().await;
+    assert_eq!((code(&r), r["error"]["denial"]["reason"].as_str()), ("NOT_FOUND", Some("resource_grant_missing")), "{r}");
+    std::fs::write(dir.path().join("tokens.json"), tokens(&["presenters"]).to_string()).unwrap();
+    assert_eq!(notes().await["ok"], json!(true));
 }

@@ -16,6 +16,9 @@ const PLAYED_LIMIT = 500
 
 interface Stored { rate: number; played: string[] }
 
+/** The audio object of a note and the `context_path` it is read with. */
+export interface VoiceSource { objId: string; context?: string }
+
 function readStored(): Stored {
   try {
     const value: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null')
@@ -64,7 +67,7 @@ class VoicePlayer {
   }
 
   /** Plays the note from `fromMs` (or where it was paused), loading its audio first. */
-  async play(key: string, objId: string, fromMs?: number) {
+  async play(key: string, source: VoiceSource, fromMs?: number) {
     if (this.key !== key) {
       this.stop()
       this.key = key
@@ -74,7 +77,7 @@ class VoicePlayer {
     try {
       const access = getObjectAccess()
       if (!access) throw new Error('unavailable')
-      const url = await access.contentUrl(objId)
+      const url = await access.contentUrl(source.objId, source.context)
       if (attempt !== this.attempt) return
       const audio = this.element()
       if (audio.dataset.key !== key) {
@@ -105,19 +108,19 @@ class VoicePlayer {
     this.set({ ...this.state, playing: false, loading: false, positionMs: this.audio ? this.audio.currentTime * 1000 : this.state.positionMs })
   }
 
-  toggle(key: string, objId: string) {
+  toggle(key: string, source: VoiceSource) {
     if (this.key === key && (this.state.playing || this.state.loading)) this.pause()
-    else void this.play(key, objId)
+    else void this.play(key, source)
   }
 
   /** Moves to `ms`; a note that is not playing starts from there. */
-  seek(key: string, objId: string, ms: number) {
+  seek(key: string, source: VoiceSource, ms: number) {
     if (this.key === key && this.state.playing && this.audio) {
       this.audio.currentTime = ms / 1000
       this.set({ ...this.state, positionMs: ms })
       return
     }
-    void this.play(key, objId, ms)
+    void this.play(key, source, ms)
   }
 
   cycleRate() {

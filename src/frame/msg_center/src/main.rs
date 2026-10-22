@@ -24,6 +24,8 @@ mod test_contact_network;
 #[cfg(test)]
 mod test_group_service;
 #[cfg(test)]
+mod test_hybrid_sso;
+#[cfg(test)]
 mod test_msg_center;
 #[cfg(test)]
 mod test_notify;
@@ -37,7 +39,7 @@ use buckyos_api::{
     BuckyOSRuntimeType, DeliveryRecordWithObject, DeliveryReportResult, DeliveryState,
     project_contacts, MsgCenterClient, MsgCenterServerHandler, SystemConfigClient,
     UserContactSettings, UserGroupDirectory, UserPrivateProfile, UserSettings,
-    MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
+    contact_tag_kind, ContactTagKind, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -195,14 +197,11 @@ impl RPCHandler for MsgCenterHttpServer {
         req: RPCRequest,
         ip_from: IpAddr,
     ) -> std::result::Result<RPCResponse, RPCErrors> {
-        if req.method == METHOD_RELOAD_SETTINGS
-            || req.method == METHOD_SERVICE_RELOAD_SETTINGS
-            || req.method == METHOD_REALOAD_SETTINGS
-            || req.method == METHOD_SERVICE_REALOAD_SETTINGS
-        {
-            let result = self.handle_reload_settings().await?;
+        let center = &self.rpc_handler.0;
+        if req.method == group_service::METHOD_GROUP_DESCRIBE_ENTRY {
+            let value = center.describe_group_entry(&req.params).await?;
             return Ok(RPCResponse {
-                result: RPCResult::Success(result),
+                result: RPCResult::Success(value),
                 seq: req.seq,
                 trace_id: req.trace_id,
             });
@@ -210,20 +209,38 @@ impl RPCHandler for MsgCenterHttpServer {
         if req.token.is_none() {
             return Err(RPCErrors::NoPermission("authentication-required".into()));
         }
-        if req.method.starts_with("group.") {
+        let method = req.method.clone();
+        let request = Box::pin(async move {
             let ctx = RPCContext::from_request(&req, ip_from);
-            let value = self
-                .rpc_handler
-                .0
-                .group_rpc(&req.method, req.params.clone(), ctx)
-                .await?;
-            return Ok(RPCResponse {
-                result: RPCResult::Success(value),
-                seq: req.seq,
-                trace_id: req.trace_id,
-            });
-        }
-        self.rpc_handler.handle_rpc_call(req, ip_from).await
+            // Every method checks the session first: restricted sessions only
+            // reach the methods that open their scope (D-4).
+            center.caller_identity(&ctx).await?;
+            if req.method == METHOD_RELOAD_SETTINGS
+                || req.method == METHOD_SERVICE_RELOAD_SETTINGS
+                || req.method == METHOD_REALOAD_SETTINGS
+                || req.method == METHOD_SERVICE_REALOAD_SETTINGS
+            {
+                center.require_service_caller(&ctx).await?;
+                let result = self.handle_reload_settings().await?;
+                return Ok(RPCResponse {
+                    result: RPCResult::Success(result),
+                    seq: req.seq,
+                    trace_id: req.trace_id,
+                });
+            }
+            if req.method.starts_with("group.") {
+                let value = center
+                    .group_rpc(&req.method, req.params.clone(), ctx)
+                    .await?;
+                return Ok(RPCResponse {
+                    result: RPCResult::Success(value),
+                    seq: req.seq,
+                    trace_id: req.trace_id,
+                });
+            }
+            self.rpc_handler.handle_rpc_call(req, ip_from).await
+        });
+        owner_session::serve_method(&method, request).await
     }
 }
 
@@ -480,15 +497,9 @@ fn profile_system_contact(profile: &UserPrivateProfile) -> Option<UserContactSet
         .and_then(|value| serde_json::from_value::<UserContactSettings>(value.clone()).ok())
 }
 
-/// The DID of an account: its profile's, else its DID document's.
-fn account_did(profile: Option<&UserPrivateProfile>, doc: Option<&Value>) -> Option<DID> {
-    profile.map(|profile| profile.did.clone()).or_else(|| {
-        doc.and_then(|doc| doc.get("id").or_else(|| doc.get("did")))
-            .and_then(Value::as_str)
-            .and_then(|did| DID::from_str(did).ok())
-    })
-}
-
+/// The contact of an account. Its DID is the account's (`users/<id>/doc`);
+/// the user-writable profile only adds display data, a note, user tags and
+/// platform bindings, never another DID or a system tag.
 fn build_zone_user_seed(
     username: &str,
     settings: &UserSettings,
@@ -499,33 +510,18 @@ fn build_zone_user_seed(
         return None;
     }
 
-    let mut contact_did = did;
     let mut note = None;
     let mut tags = vec!["zone_user".to_string()];
     let mut bindings = Vec::new();
 
     if let Some(contact_cfg) = profile.as_ref().and_then(profile_system_contact) {
-        if let Some(raw_did) = contact_cfg.did.as_ref() {
-            let did = raw_did.trim();
-            if !did.is_empty() {
-                match DID::from_str(did) {
-                    Ok(parsed) => {
-                        contact_did = parsed;
-                    }
-                    Err(error) => {
-                        warn!(
-                            "invalid user contact.did, fallback to {}: did={}, error={}",
-                            contact_did.to_string(),
-                            did,
-                            error
-                        );
-                    }
-                }
-            }
-        }
-
         note = contact_cfg.note;
-        tags.extend(contact_cfg.tags);
+        tags.extend(
+            contact_cfg
+                .tags
+                .into_iter()
+                .filter(|tag| contact_tag_kind(tag) == ContactTagKind::User),
+        );
 
         for binding in contact_cfg.bindings {
             let platform = binding.platform.trim().to_string();
@@ -581,7 +577,7 @@ fn build_zone_user_seed(
         .unwrap_or_default();
     Some(ZoneUserContactSeed {
         avatar: public_profile.and_then(|profile| profile.avatar),
-        did: contact_did,
+        did,
         name: if name.is_empty() {
             username.to_string()
         } else {
@@ -660,12 +656,14 @@ impl ZoneDirectory {
             dids: self
                 .accounts
                 .iter()
-                .flat_map(|account| {
-                    [Some(account.did.to_string()), account.seed.as_ref().map(|s| s.did.to_string())]
-                })
-                .flatten()
+                .map(|account| account.did.to_string())
                 .collect(),
             names: self.names.iter().cloned().collect(),
+            user_ids: self
+                .accounts
+                .iter()
+                .map(|account| (account.did.to_string(), account.username.clone()))
+                .collect(),
         }
     }
 
@@ -746,14 +744,6 @@ impl ZoneDirectory {
     }
 }
 
-async fn load_zone_user_doc(system_config_client: &SystemConfigClient, username: &str) -> Option<Value> {
-    let value = system_config_client
-        .get(&format!("users/{}/doc", username))
-        .await
-        .ok()?;
-    serde_json::from_str(&value.value).ok()
-}
-
 async fn load_zone_directory() -> Result<ZoneDirectory> {
     let runtime = get_buckyos_api_runtime()?;
     let control_panel_client = runtime
@@ -786,16 +776,14 @@ async fn load_zone_directory() -> Result<ZoneDirectory> {
                 continue;
             }
         };
+        let did = match control_panel_client.get_user_did(username.as_str()).await {
+            Ok(did) => did,
+            Err(error) => {
+                warn!("account {} has no readable DID document; skipped: {}", username, error);
+                continue;
+            }
+        };
         let profile = load_zone_user_profile(&system_config_client, username.as_str()).await;
-        let doc = if profile.is_none() {
-            load_zone_user_doc(&system_config_client, username.as_str()).await
-        } else {
-            None
-        };
-        let Some(did) = account_did(profile.as_ref(), doc.as_ref()) else {
-            warn!("account {} has neither profile nor DID document; skipped", username);
-            continue;
-        };
         let seed = build_zone_user_seed(username.as_str(), &settings, did.clone(), profile);
         accounts.push(ZoneAccount {
             username: username.clone(),
@@ -1571,15 +1559,43 @@ mod zone_contact_tests {
     }
 
     #[test]
-    fn zone_user_contact_uses_the_profile_did() {
+    fn zone_user_contact_is_the_account_did_whatever_the_profile_says() {
+        // The user-writable profile names another account's DID twice and
+        // claims a system group; only display data and user tags count.
+        let doc_did = DID::new("web", "alice.test.buckyos.io");
+        let victim = DID::new("web", "bob.test.buckyos.io");
         let profile: UserPrivateProfile = serde_json::from_value(json!({
-            "did": "did:web:alice.test.buckyos.io",
-            "display_name": "Alice"
+            "did": victim.to_string(),
+            "display_name": "Alice",
+            "private_extra": {"system_contact": {
+                "did": victim.to_string(),
+                "note": "night shift",
+                "tags": ["vip", "group:service", "type:admin", "zone_agent", "homestation.following"]
+            }}
         }))
         .unwrap();
-        let seed = build_zone_user_seed("alice", &active_user(), profile.did.clone(), Some(profile.clone())).unwrap();
-        assert_eq!(seed.did, profile.did);
+        let seed = build_zone_user_seed("alice", &active_user(), doc_did.clone(), Some(profile.clone())).unwrap();
+        assert_eq!(seed.did, doc_did);
         assert_eq!(seed.name, "Alice");
+        assert_eq!(seed.note.as_deref(), Some("night shift"));
+        assert_eq!(seed.tags, vec!["zone_user".to_string(), "vip".to_string()]);
+
+        let directory = ZoneDirectory {
+            accounts: vec![ZoneAccount {
+                username: "alice".into(),
+                settings: active_user(),
+                did: doc_did.clone(),
+                seed: Some(seed),
+            }],
+            names: vec!["alice".into()],
+            groups: Default::default(),
+        };
+        let accounts = directory.zone_accounts();
+        assert!(accounts.recipients.contains(&doc_did.to_string()));
+        assert!(!accounts.recipients.contains(&victim.to_string()));
+        assert!(!accounts.dids.contains(&victim.to_string()));
+        assert_eq!(accounts.user_ids.get(&doc_did.to_string()).map(String::as_str), Some("alice"));
+        assert!(!accounts.user_ids.contains_key(&victim.to_string()));
     }
 
     #[test]

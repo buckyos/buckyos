@@ -10,6 +10,7 @@ import { PrivacyPage } from './pages/PrivacyPage'
 import { FilePermissionsPage } from './pages/FilePermissionsPage'
 import { DeveloperModePage } from './pages/DeveloperModePage'
 import { ZonePage } from './pages/ZonePage'
+import { SsoPage } from './pages/SsoPage'
 
 function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppContentLoaderProps }) {
   switch (page) {
@@ -25,6 +26,8 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
       return <PrivacyPage />
     case 'file-permissions':
       return <FilePermissionsPage />
+    case 'sso':
+      return <SsoPage />
     case 'developer':
       return <DeveloperModePage />
     default:

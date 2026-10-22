@@ -1,10 +1,11 @@
-use crate::{gateway_etc_dir, ControlPanelServer, RpcAuthPrincipal};
+use crate::{gateway_etc_dir, ControlPanelServer, PrincipalSession, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
-    get_buckyos_api_runtime, is_system_login_target, validate_verify_hub_token_claims,
-    zone_document_hostname, AppId, AppInstanceId, AuthTarget, BuckyOSRuntime, ControlPanelClient,
-    DelegateUserSessionResult, LoginByPasswordResponse, SystemServiceId, TokenPair,
-    TokenPrincipalKind, TokenUse, UserInfo, UserPrivateProfile, UserSettings, UserState, UserType,
+    get_buckyos_api_runtime, is_system_login_target, token_auth_method, token_session_ceiling,
+    validate_verify_hub_token_claims, zone_document_hostname, AccessDenial, AppId, AppInstanceId,
+    AuthTarget, BuckyOSRuntime, ControlPanelClient, CurrentIdentity, DelegateUserSessionResult,
+    DenyReason, LoginByPasswordResponse, SessionCeiling, SessionScope, SystemServiceId, TokenPair,
+    TokenPrincipalKind, TokenUse, UserSettings, UserState, UserType,
     CONTROL_PANEL_SERVICE_UNIQUE_ID,
 };
 use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult, StreamInfo};
@@ -13,7 +14,6 @@ use bytes::Bytes;
 use http::header::{HOST, LOCATION, SET_COOKIE};
 use http_body_util::combinators::BoxBody;
 use log::{info, warn};
-use name_lib::DID;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -30,7 +30,29 @@ struct AuthLoginResponse {
     #[serde(flatten)]
     login_result: LoginByPasswordResponse,
     sso_nonce: u64,
+    identity: CurrentIdentity,
 }
+
+/// Control Panel methods a restricted Limited session (scope `account_self`)
+/// reaches; each acts on the caller's own account only. `desktop.api` stands
+/// for the desktop state, Desktop folder and wallpaper HTTP API.
+const ACCOUNT_SELF_METHODS: [&str; 12] = [
+    "auth.invite.set_password",
+    PREPARE_APP_LAUNCH_METHOD,
+    "ui.locale.get",
+    "user.get",
+    "user.profile.get",
+    "user.profile.set",
+    "user.update",
+    "user.change_password",
+    "zone.presentation.get",
+    "apps.list",
+    "apps.availability.check",
+    "desktop.api",
+];
+
+/// Methods every verified user session reaches, External included.
+const ANY_SESSION_METHODS: [&str; 1] = ["auth.current_identity"];
 
 /// Expected outcomes of `auth.prepare_app_launch`. kRPC errors reach the browser as plain
 /// text, so everything the desktop branches on travels as this status instead.
@@ -61,10 +83,10 @@ pub(super) struct PendingSsoLogin {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ResolvedSsoAuthTarget {
-    auth_target: AuthTarget,
-    canonical_origin: String,
-    canonical_redirect_url: String,
+pub(crate) struct ResolvedSsoAuthTarget {
+    pub(crate) auth_target: AuthTarget,
+    pub(crate) canonical_origin: String,
+    pub(crate) canonical_redirect_url: String,
 }
 
 #[derive(Debug)]
@@ -145,9 +167,13 @@ impl ControlPanelServer {
             }
             None => 0,
         };
+        let identity = self
+            .current_identity_for_token(&login_result.session_token)
+            .await?;
         let response = AuthLoginResponse {
             login_result,
             sso_nonce,
+            identity,
         };
 
         Ok(RPCResponse::new(
@@ -172,14 +198,7 @@ impl ControlPanelServer {
                 "app launch requires a Control Panel user session".to_string(),
             ));
         }
-        let mut params = req.params.clone();
-        if let Some(object) = params.as_object_mut() {
-            object.remove("x_req_host");
-            object.remove("session_token");
-        }
-        let params: PrepareAppLaunchParams = serde_json::from_value(params).map_err(|error| {
-            RPCErrors::ParseRequestError(format!("invalid app launch params: {error}"))
-        })?;
+        let params: PrepareAppLaunchParams = Self::typed_params(&req)?;
         let result = self
             .prepare_app_launch(principal.username.as_str(), &source_token, &params)
             .await?;
@@ -306,7 +325,10 @@ impl ControlPanelServer {
         Ok(())
     }
 
-    fn sso_callback_url(resolved: &ResolvedSsoAuthTarget, nonce: u64) -> Result<String, RPCErrors> {
+    pub(crate) fn sso_callback_url(
+        resolved: &ResolvedSsoAuthTarget,
+        nonce: u64,
+    ) -> Result<String, RPCErrors> {
         let mut url =
             url::Url::parse(format!("{}/sso_callback", resolved.canonical_origin).as_str())
                 .map_err(|error| {
@@ -487,27 +509,26 @@ impl ControlPanelServer {
                 ) {
                     return Self::build_sso_auth_error_response(&req, &error);
                 }
-                let user_info = self
-                    .lookup_user_info_by_session_token(token_pair.session_token.as_str())
-                    .await
-                    .map_err(Self::rpc_to_server_error)?;
-                let mut response = http::Response::builder()
-                    .status(http::StatusCode::OK)
-                    .header(http::header::CONTENT_TYPE, "application/json")
-                    .header(http::header::CACHE_CONTROL, "no-store");
-                for cookie in Self::build_sso_cookie_headers(
+                // The rotated pair goes out whatever happens next: losing it would sign
+                // the browser out once the refresh grace period ends.
+                let cookies = Self::build_sso_cookie_headers(
                     &req,
                     token_pair.session_token.as_str(),
                     token_pair.refresh_token.as_str(),
-                )? {
+                )?;
+                let identity = self
+                    .current_identity_for_token(token_pair.session_token.as_str())
+                    .await;
+                let (status, body) =
+                    Self::sso_refresh_body(token_pair.session_token.as_str(), identity);
+                let mut response = http::Response::builder()
+                    .status(status)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .header(http::header::CACHE_CONTROL, "no-store");
+                for cookie in cookies {
                     response = response.header(SET_COOKIE, cookie);
                 }
-
-                let body = serde_json::to_vec(&json!({
-                    "session_token": token_pair.session_token,
-                    "user_info": user_info,
-                }))
-                .map_err(|error| {
+                let body = serde_json::to_vec(&body).map_err(|error| {
                     server_err!(
                         ServerErrorCode::InvalidData,
                         "Failed to serialize sso refresh response: {}",
@@ -523,6 +544,31 @@ impl ControlPanelServer {
                 })
             }
             Err(error) => Self::build_sso_auth_error_response(&req, &error),
+        }
+    }
+
+    /// `/sso_refresh` body: the new session and identity, or 503 when the identity
+    /// cannot be built (the error keeps its D-4 `code` / `data`).
+    fn sso_refresh_body(
+        session_token: &str,
+        identity: Result<CurrentIdentity, RPCErrors>,
+    ) -> (http::StatusCode, Value) {
+        match identity {
+            Ok(identity) => (
+                http::StatusCode::OK,
+                json!({ "session_token": session_token, "identity": identity }),
+            ),
+            Err(error) => {
+                warn!("sso_refresh rotated the session but has no identity: {error}");
+                let mut body = json!({ "error": error.to_string() });
+                if let Some(detail) = error.detail() {
+                    body["code"] = json!(detail.code);
+                    if let Some(data) = detail.data.as_ref() {
+                        body["data"] = data.clone();
+                    }
+                }
+                (http::StatusCode::SERVICE_UNAVAILABLE, body)
+            }
         }
     }
 
@@ -597,44 +643,7 @@ impl ControlPanelServer {
         }
     }
 
-    async fn lookup_user_info_by_session_token(
-        &self,
-        session_token: &str,
-    ) -> Result<UserInfo, RPCErrors> {
-        let parsed = RPCSessionToken::from_string(session_token)?;
-        let username = parsed
-            .sub
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
-        let runtime = get_buckyos_api_runtime()?;
-        let system_config_client = runtime.get_system_config_client().await?;
-        let user_info_path = format!("users/{}/settings", username);
-        let user_info = system_config_client
-            .get(user_info_path.as_str())
-            .await
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        let user_settings: UserSettings = serde_json::from_str(user_info.value.as_str())
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        if !user_settings.is_active() {
-            return Err(RPCErrors::InvalidToken(format!(
-                "user '{}' is not active",
-                username
-            )));
-        }
-        let mut user_info = user_settings.to_user_info();
-        let profile_path = format!("users/{}/profile", username);
-        if let Ok(profile_val) = system_config_client.get(&profile_path).await {
-            if let Ok(profile) = serde_json::from_str::<UserPrivateProfile>(&profile_val.value) {
-                if let Some(show_name) = profile.display_name.or(profile.name) {
-                    user_info.show_name = show_name;
-                }
-            }
-        }
-        Ok(user_info)
-    }
-
-    async fn store_new_pending_sso_login(
+    pub(crate) async fn store_new_pending_sso_login(
         &self,
         session_token: String,
         refresh_token: String,
@@ -764,7 +773,7 @@ impl ControlPanelServer {
         }
     }
 
-    fn http_query_param(
+    pub(crate) fn http_query_param(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         key: &str,
     ) -> Option<String> {
@@ -786,6 +795,20 @@ impl ControlPanelServer {
         req: &http::Request<BoxBody<Bytes, ServerError>>,
     ) -> Option<String> {
         Self::extract_http_cookie(req, GATEWAY_SSO_SESSION_COOKIE)
+    }
+
+    /// Subjects of the SSO session and refresh cookies the browser already holds,
+    /// read without verification or expiry checks: they only ever refuse a delivery.
+    pub(crate) fn sso_cookie_subjects(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> Vec<String> {
+        [GATEWAY_SSO_SESSION_COOKIE, GATEWAY_SSO_REFRESH_COOKIE]
+            .into_iter()
+            .filter_map(|name| Self::extract_http_cookie(req, name))
+            .filter_map(|token| RPCSessionToken::from_string(&token).ok()?.sub)
+            .map(|subject| subject.trim().to_string())
+            .filter(|subject| !subject.is_empty())
+            .collect()
     }
 
     fn extract_http_cookie(
@@ -834,7 +857,7 @@ impl ControlPanelServer {
         false
     }
 
-    fn request_origin(
+    pub(crate) fn request_origin(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         allow_http: bool,
         gateway_port: u16,
@@ -935,7 +958,7 @@ impl ControlPanelServer {
         )])
     }
 
-    fn build_sso_cookie_headers(
+    pub(crate) fn build_sso_cookie_headers(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         session_token: &str,
         refresh_token: &str,
@@ -974,7 +997,7 @@ impl ControlPanelServer {
         }
     }
 
-    fn validate_sso_token_pair(
+    pub(crate) fn validate_sso_token_pair(
         session_token: &str,
         refresh_token: &str,
         expected_target: &AuthTarget,
@@ -1054,7 +1077,7 @@ impl ControlPanelServer {
             })
     }
 
-    fn rpc_to_server_error(error: RPCErrors) -> ServerError {
+    pub(crate) fn rpc_to_server_error(error: RPCErrors) -> ServerError {
         server_err!(ServerErrorCode::BadRequest, "{}", error)
     }
 
@@ -1062,16 +1085,53 @@ impl ControlPanelServer {
         matches!(
             method,
             "auth.login"
-                | "auth.refresh"
-                | "auth.verify"
-                | "auth.logout"
+                | "auth.sso_config"
+                | "auth.entry.describe"
+                | "auth.register"
+                | "auth.invite.describe"
+                | "auth.invite.login"
+                | "auth.invite.request_resend"
+                | "auth.did.begin"
                 | "user.invite.get"
                 | "user.invite.accept"
                 | "zone.presentation.get"
         )
     }
 
-    fn sso_zone_host(runtime: &BuckyOSRuntime) -> Result<String, RPCErrors> {
+    /// The origin of this Zone's root as the browser reached it: the request's own
+    /// origin when its host is the Zone host (http and the gateway port only where
+    /// the runtime allows them), otherwise `https://<zone_host>`.
+    pub(crate) fn zone_root_origin(req: &RPCRequest, zone_host: &str) -> String {
+        Self::param_str(req, crate::REQ_ORIGIN_PARAM)
+            .and_then(|origin| url::Url::parse(&origin).ok())
+            .filter(|url| {
+                url.host_str()
+                    .map(|host| host.trim_end_matches('.').eq_ignore_ascii_case(zone_host))
+                    .unwrap_or(false)
+            })
+            .map(|url| url.origin().ascii_serialization())
+            .unwrap_or_else(|| format!("https://{zone_host}"))
+    }
+
+    /// A restricted session acts on its own account only.
+    pub(crate) fn require_restricted_self_target(
+        principal: &RpcAuthPrincipal,
+        req: &RPCRequest,
+    ) -> Result<(), RPCErrors> {
+        if !principal.is_restricted() {
+            return Ok(());
+        }
+        match Self::param_str(req, "user_id") {
+            Some(user_id) if user_id != principal.username => {
+                Err(AccessDenial::new(DenyReason::SessionKindNotAllowed)
+                    .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, req.method.as_str())
+                    .into_rpc_error())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn sso_zone_host(runtime: &BuckyOSRuntime) -> Result<String, RPCErrors> {
         let zone_config = runtime
             .get_zone_config()
             .ok_or_else(|| RPCErrors::ReasonError("SSO requires a Zone config".to_string()))?;
@@ -1091,7 +1151,7 @@ impl ControlPanelServer {
         Ok(zone_document_hostname(&zone_document).to_ascii_lowercase())
     }
 
-    fn resolve_sso_auth_target(
+    pub(crate) fn resolve_sso_auth_target(
         redirect_url: &str,
         zone_host: &str,
         allow_http: bool,
@@ -1348,19 +1408,46 @@ impl ControlPanelServer {
             .ok_or_else(|| RPCErrors::InvalidToken("missing session token".to_string()))?;
 
         let runtime = get_buckyos_api_runtime()?;
-        let parsed = runtime.verify_trusted_session_token(&token).await?;
+        let (parsed, ceiling) = verify_session_any_ceiling(runtime, &token).await?;
         let claims = validate_verify_hub_token_claims(&parsed, TokenUse::Session)?;
-        reject_external_principal(&parsed)?;
+        let is_external = buckyos_api::token_is_external(&parsed);
+        let is_control_panel_session = is_control_panel_user_session(&parsed)?;
+        restricted_method_access(method, &ceiling, is_external, is_control_panel_session).map_err(
+            |denial| {
+                denial
+                    .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, method)
+                    .into_rpc_error()
+            },
+        )?;
+        let session = PrincipalSession {
+            ceiling,
+            auth_method: token_auth_method(&parsed),
+            is_external,
+            is_sudo: parsed.sudo,
+        };
         let is_user_session = claims.principal_kind == TokenPrincipalKind::User;
         let is_device_session = claims.principal_kind == TokenPrincipalKind::Device;
-        let is_control_panel_session = is_control_panel_user_session(&parsed)?;
         let authenticated_app_id = claims.target.canonical_key();
         let username = parsed
             .sub
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
-        let runtime = get_buckyos_api_runtime()?;
+        if is_external {
+            // No account record: the DID is the principal. Only methods that need no
+            // account reach here, so the type is the least privileged placeholder.
+            return Ok(Some(RpcAuthPrincipal {
+                owner_user_id: username.clone(),
+                owner_did: username.clone(),
+                username,
+                authenticated_app_id,
+                user_type: UserType::Limited,
+                is_user_session,
+                is_control_panel_session,
+                agent_permission_mode: None,
+                session,
+            }));
+        }
         let system_config_client = runtime.get_system_config_client().await?;
         if is_device_session {
             let device = ControlPanelClient::from_shared(system_config_client)
@@ -1387,6 +1474,7 @@ impl ControlPanelServer {
                 is_user_session: false,
                 is_control_panel_session: false,
                 agent_permission_mode: None,
+                session,
             }));
         }
         let agent_permission_mode = if claims.principal_kind == TokenPrincipalKind::App {
@@ -1420,17 +1508,14 @@ impl ControlPanelServer {
                 username
             )));
         }
-        let profile_path = format!("users/{}/profile", username);
-        let owner_did = match system_config_client.get(&profile_path).await {
-            Ok(profile_val) => serde_json::from_str::<UserPrivateProfile>(&profile_val.value)
-                .map(|profile| profile.did.to_string())
-                .unwrap_or_else(|error| {
-                    warn!("failed to parse user profile for principal did: {}", error);
-                    DID::new("bns", &username).to_string()
-                }),
+        let owner_did = match ControlPanelClient::from_shared(system_config_client)
+            .get_user_did(&username)
+            .await
+        {
+            Ok(did) => did.to_string(),
             Err(error) => {
-                warn!("failed to load user profile for principal did: {}", error);
-                DID::new("bns", &username).to_string()
+                warn!("failed to load the DID document of {username}: {error}");
+                String::new()
             }
         };
 
@@ -1443,6 +1528,7 @@ impl ControlPanelServer {
             is_user_session,
             is_control_panel_session,
             agent_permission_mode,
+            session,
         }))
     }
 
@@ -1458,12 +1544,48 @@ impl ControlPanelServer {
     }
 }
 
-/// v1 opens no Control Panel method to External users (no account record).
-fn reject_external_principal(token: &RPCSessionToken) -> Result<(), RPCErrors> {
-    if buckyos_api::token_is_external(token) {
-        return Err(RPCErrors::NoPermission(
-            "External users have no Control Panel access".to_string(),
-        ));
+/// Verify a verify-hub session whatever its ceiling; the caller decides what a
+/// restricted one opens. The unverified ceiling only picks the scope the shared
+/// check is asked for: the signature covers the same claims, and the ceiling
+/// returned is read again from the verified token.
+async fn verify_session_any_ceiling(
+    runtime: &BuckyOSRuntime,
+    token: &str,
+) -> Result<(RPCSessionToken, SessionCeiling), RPCErrors> {
+    let claimed = token_session_ceiling(&RPCSessionToken::from_string(token)?)?;
+    let verified = match claimed.scopes.iter().next() {
+        Some(scope) if claimed.restricted => {
+            runtime.verify_session_token_opened(token, *scope).await?
+        }
+        _ => runtime.verify_trusted_session_token(token).await?,
+    };
+    let ceiling = token_session_ceiling(&verified)?;
+    Ok((verified, ceiling))
+}
+
+/// D-4 default deny for restricted sessions (SSO-04): a Limited session reaches
+/// its own-account methods, an External one only its current identity, and
+/// either only as a Control Panel (Zone root) session.
+fn restricted_method_access(
+    method: &str,
+    ceiling: &SessionCeiling,
+    is_external: bool,
+    is_control_panel_session: bool,
+) -> Result<(), AccessDenial> {
+    if !ceiling.restricted && !is_external {
+        return Ok(());
+    }
+    if !is_control_panel_session {
+        return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed));
+    }
+    if ANY_SESSION_METHODS.contains(&method) {
+        return Ok(());
+    }
+    if is_external || !ACCOUNT_SELF_METHODS.contains(&method) {
+        return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed));
+    }
+    if !ceiling.allows(SessionScope::AccountSelf) {
+        return Err(AccessDenial::new(DenyReason::SessionCeilingExceeded));
     }
     Ok(())
 }
@@ -1484,34 +1606,184 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     #[test]
-    fn external_principals_are_refused_before_any_account_lookup() {
-        let mut token = RPCSessionToken {
-            token_type: ::kRPC::RPCSessionTokenType::JWT,
-            token: None,
-            aud: None,
-            exp: Some(u64::MAX),
-            iss: Some("verify-hub".to_string()),
-            jti: Some("1".to_string()),
-            sub: Some("did:bns:bob.other.zone".to_string()),
-            appid: None,
-            sudo: false,
-            extra: HashMap::new(),
+    fn restricted_sessions_reach_only_their_opened_methods() {
+        let limited = SessionCeiling::for_user_type(UserType::Limited);
+        let external = SessionCeiling::external();
+        let deny = |method: &str, ceiling: &SessionCeiling, is_external: bool, cp: bool| {
+            restricted_method_access(method, ceiling, is_external, cp)
+                .err()
+                .map(|denial| denial.reason)
         };
-        buckyos_api::bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
-        assert!(reject_external_principal(&token).is_ok());
-        buckyos_api::bind_token_external(&mut token);
+        for method in [
+            "auth.current_identity",
+            "auth.invite.set_password",
+            PREPARE_APP_LAUNCH_METHOD,
+            "ui.locale.get",
+            "user.get",
+            "user.profile.get",
+            "user.profile.set",
+            "user.update",
+            "user.change_password",
+            "apps.list",
+            "apps.availability.check",
+            "desktop.api",
+        ] {
+            assert_eq!(deny(method, &limited, false, true), None, "{method}");
+        }
+        for method in [
+            "user.list",
+            "user.create",
+            "user.update_contact",
+            "user.exclusive_invite.create",
+            "sso.settings.get",
+            "agent.create",
+            "apps.details",
+            "system.overview",
+            "auth.federation.describe",
+            "future.method",
+        ] {
+            assert_eq!(
+                deny(method, &limited, false, true),
+                Some(DenyReason::SessionKindNotAllowed),
+                "{method}"
+            );
+        }
+        // A Limited session that lost `account_self` exceeds its ceiling.
+        let narrowed = SessionCeiling::restricted([SessionScope::MsgGroup]);
         assert_eq!(
-            buckyos_api::token_principal_kind(&token).unwrap(),
-            TokenPrincipalKind::User
+            deny("user.profile.get", &narrowed, false, true),
+            Some(DenyReason::SessionCeilingExceeded)
         );
-        assert!(matches!(
-            reject_external_principal(&token),
-            Err(RPCErrors::NoPermission(_))
-        ));
+        // External: only the current identity.
+        assert_eq!(deny("auth.current_identity", &external, true, true), None);
+        for method in [
+            "user.get",
+            PREPARE_APP_LAUNCH_METHOD,
+            "desktop.api",
+            "apps.list",
+        ] {
+            assert_eq!(
+                deny(method, &external, true, true),
+                Some(DenyReason::SessionKindNotAllowed),
+                "{method}"
+            );
+        }
+        // A restricted session that targets anything but the Zone root is refused.
+        assert_eq!(
+            deny("auth.current_identity", &limited, false, false),
+            Some(DenyReason::SessionKindNotAllowed)
+        );
+        // Unrestricted sessions keep the methods' own checks.
+        let open = SessionCeiling::unrestricted();
+        assert_eq!(deny("user.create", &open, false, false), None);
     }
+
+    #[test]
+    fn restricted_callers_cannot_name_another_account() {
+        let mut principal = RpcAuthPrincipal {
+            username: "carol".to_string(),
+            owner_user_id: "carol".to_string(),
+            authenticated_app_id: "control-panel".to_string(),
+            user_type: UserType::Limited,
+            owner_did: String::new(),
+            is_user_session: true,
+            is_control_panel_session: true,
+            agent_permission_mode: None,
+            session: PrincipalSession {
+                ceiling: SessionCeiling::for_user_type(UserType::Limited),
+                ..Default::default()
+            },
+        };
+        let other = RPCRequest::new("user.profile.get", json!({"user_id": "alice"}));
+        let own = RPCRequest::new("user.profile.get", json!({"user_id": "carol"}));
+        let implicit = RPCRequest::new("user.profile.get", json!({}));
+        let error =
+            ControlPanelServer::require_restricted_self_target(&principal, &other).unwrap_err();
+        assert_eq!(
+            AccessDenial::from_rpc_error(&error).map(|denial| denial.reason),
+            Some(DenyReason::SessionKindNotAllowed)
+        );
+        assert!(ControlPanelServer::require_restricted_self_target(&principal, &own).is_ok());
+        assert!(ControlPanelServer::require_restricted_self_target(&principal, &implicit).is_ok());
+        principal.session = PrincipalSession::default();
+        principal.user_type = UserType::Admin;
+        assert!(ControlPanelServer::require_restricted_self_target(&principal, &other).is_ok());
+    }
+
+    #[test]
+    fn refresh_keeps_its_body_shape_and_reports_a_missing_identity() {
+        let identity = CurrentIdentity::Anonymous;
+        let (status, body) = ControlPanelServer::sso_refresh_body("session", Ok(identity.clone()));
+        assert_eq!(status, http::StatusCode::OK);
+        assert_eq!(
+            body,
+            json!({"session_token": "session", "identity": identity})
+        );
+        let (status, body) = ControlPanelServer::sso_refresh_body(
+            "session",
+            Err(AccessDenial::new(DenyReason::AccountState).into_rpc_error()),
+        );
+        assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["code"], "access_denied");
+        assert_eq!(body["data"]["reason"], "account_state");
+        assert!(body.get("session_token").is_none());
+    }
+
+    #[test]
+    fn held_session_subjects_are_read_without_verification() {
+        let jwt = |sub: &str| {
+            let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+            let payload = URL_SAFE_NO_PAD.encode(json!({ "sub": sub, "exp": 1 }).to_string());
+            format!("{header}.{payload}.signature")
+        };
+        let req = request(
+            Some(&format!(
+                "buckyos_session_token={}; buckyos_refresh_token={}; other=x",
+                jwt("alice"),
+                jwt("mallory")
+            )),
+            true,
+        );
+        assert_eq!(
+            ControlPanelServer::sso_cookie_subjects(&req),
+            vec!["alice".to_string(), "mallory".to_string()]
+        );
+        let req = request(Some("buckyos_session_token=garbage"), true);
+        assert!(ControlPanelServer::sso_cookie_subjects(&req).is_empty());
+        assert!(ControlPanelServer::sso_cookie_subjects(&request(None, true)).is_empty());
+    }
+
+    #[test]
+    fn zone_root_origin_only_trusts_the_zone_host() {
+        let req = |origin: Option<&str>| {
+            let mut params = json!({});
+            if let Some(origin) = origin {
+                params[crate::REQ_ORIGIN_PARAM] = json!(origin);
+            }
+            RPCRequest::new("auth.did.begin", params)
+        };
+        assert_eq!(
+            ControlPanelServer::zone_root_origin(
+                &req(Some("http://test.buckyos.io:3180")),
+                "test.buckyos.io"
+            ),
+            "http://test.buckyos.io:3180"
+        );
+        for origin in [
+            None,
+            Some("https://evil.example"),
+            Some("https://files.test.buckyos.io"),
+        ] {
+            assert_eq!(
+                ControlPanelServer::zone_root_origin(&req(origin), "test.buckyos.io"),
+                "https://test.buckyos.io"
+            );
+        }
+    }
+
     use buckyos_api::{BuckyOSRuntimeType, ZoneConfig};
     use buckyos_kit::BuckyOSMachineConfig;
-    use name_lib::ZoneDocument;
+    use name_lib::{ZoneDocument, DID};
 
     fn sso_runtime(hostname: &str) -> BuckyOSRuntime {
         let mut runtime = BuckyOSRuntime::new(

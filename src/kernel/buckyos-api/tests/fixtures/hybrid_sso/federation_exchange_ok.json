@@ -1,0 +1,1 @@
+{"status":"ok","assertion":{"did":"did:bns:alice","client_zone":"did:bns:b","nonce":"n-1","purpose":"login","issued_at":1792540800,"profile":{"show_name":"Alice","avatar":"https://a.example/avatar.png"}}}

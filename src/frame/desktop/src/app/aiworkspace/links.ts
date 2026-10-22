@@ -27,3 +27,11 @@ export function loginUrl(): string {
   url.searchParams.set('redirect_url', window.location.href)
   return url.toString()
 }
+
+/** The Zone's entry page for a share entry (hybrid SSO contract §10): it signs the visitor in and joins the entry. */
+export function entryUrl(entryId: string): string {
+  const url = new URL('/sso/entry', window.location.origin)
+  url.searchParams.set('service', 'aiworkspace')
+  url.searchParams.set('entry', entryId)
+  return url.toString()
+}

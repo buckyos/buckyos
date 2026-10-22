@@ -1,0 +1,1 @@
+{"error":"access denied: resource_grant_missing (access_denied)","code":"access_denied","data":{"reason":"resource_grant_missing","adjust":{"party":"sharer","location":"share_panel"},"service":"aiworkspace","method":"doc.read"},"sys":[17]}

@@ -1,4 +1,4 @@
-import { Code, FolderLock, Globe, Network, Palette, Settings, Shield } from 'lucide-react'
+import { Code, FolderLock, Globe, KeyRound, Network, Palette, Settings, Shield } from 'lucide-react'
 
 export const settingsPageGroups = [
   {
@@ -60,6 +60,14 @@ export const settingsPageDefinitions = [
     icon: FolderLock,
     labelKey: 'settings.nav.filePermissions',
     label: 'File Permissions',
+  },
+  {
+    key: 'sso',
+    group: 'network-security',
+    icon: KeyRound,
+    labelKey: 'settings.nav.sso',
+    label: 'Sign-in & Sharing',
+    adminOnly: true,
   },
   {
     key: 'developer',

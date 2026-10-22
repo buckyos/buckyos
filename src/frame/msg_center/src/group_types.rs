@@ -189,6 +189,28 @@ impl Default for GroupLimits {
 pub struct GuestEntry {
     pub session_template: String,
     pub max_open_per_guest: usize,
+    /// How a visitor may sign in to use the public entry (contract §8.4);
+    /// none by default: only members and invited guests.
+    #[serde(default)]
+    pub auth_methods: GuestEntryMethods,
+}
+/// Message Hub never admits anonymous guests, so there is no `guest` method.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuestEntryMethods {
+    pub password: bool,
+    pub self_register: bool,
+    pub did_login: bool,
+}
+impl From<GuestEntryMethods> for buckyos_api::EntryMethods {
+    fn from(m: GuestEntryMethods) -> Self {
+        Self {
+            guest: false,
+            password: m.password,
+            self_register: m.self_register,
+            did_login: m.did_login,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]

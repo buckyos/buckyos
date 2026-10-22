@@ -427,6 +427,7 @@ mod tests {
             is_user_session: true,
             is_control_panel_session: true,
             agent_permission_mode: None,
+            session: crate::PrincipalSession::default(),
         };
         let params = json!({ "group_id": "customer", "name": "Customer", "rules": [] });
         let req = |method: &str| RPCRequest::new(method, params.clone());

@@ -25,4 +25,4 @@ pub mod types;
 pub mod value;
 pub mod wish;
 
-pub use error::{Code, WsError, WsResult};
+pub use error::{Code, Deny, WsError, WsResult};

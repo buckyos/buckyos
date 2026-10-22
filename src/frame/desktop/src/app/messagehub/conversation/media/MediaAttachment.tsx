@@ -54,11 +54,11 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
     if (readyObjects.has(cacheKey) && retry === 0) return
     const access = getObjectAccess()
     let cancelled = false
-    const resolve = access ? access.describe(objId) : Promise.reject(new Error('unavailable'))
+    const resolve = access ? access.describe(objId, attachment.context) : Promise.reject(new Error('unavailable'))
     void resolve.then(async (info) => {
       if (cancelled) return
       const inline = info.isFile && isInlineImageType(attachmentMediaType(info, attachment.label))
-      const contentUrl = inline && access ? await access.contentUrl(objId).catch(() => undefined) : undefined
+      const contentUrl = inline && access ? await access.contentUrl(objId, attachment.context).catch(() => undefined) : undefined
       if (cancelled) return
       const ready: ReadyObjectState = { phase: 'ready', info, contentUrl }
       if (!inline || contentUrl) rememberReadyObject(cacheKey, ready)
@@ -67,7 +67,7 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
       if (!cancelled) setState({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
     })
     return () => { cancelled = true }
-  }, [objId, attachment.label, cacheKey, retry])
+  }, [objId, attachment.label, attachment.context, cacheKey, retry])
 
   const label = attachment.label
   const readyKind = state.phase === 'ready' ? readyObjectKind(state, label) : undefined
@@ -236,7 +236,7 @@ function DownloadButton({ attachment, name, compact = false }: { attachment: Mes
     const access = getObjectAccess()
     if (!access || !attachment.objId || state === 'loading') return
     setState('loading')
-    access.contentUrl(attachment.objId).then(url => {
+    access.contentUrl(attachment.objId, attachment.context).then(url => {
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = name.split('/').pop() || name

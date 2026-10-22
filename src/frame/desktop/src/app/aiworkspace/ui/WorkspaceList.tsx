@@ -11,13 +11,15 @@ import { useLoad } from '../state/hooks'
 import { useAiwsText } from '../useAiwsText'
 import { ExportForm, ImportForm, NewDialog, type NewTab } from './shell/dialogs'
 
-interface Props { client: AiwsClient; onOpen: (workspaceId: string) => void; opening: string | null }
+/** `restricted`: a Limited account or an External DID — it lists what was shared with it and creates, imports or
+ * forks nothing (the service refuses those; hybrid SSO PRE-03). */
+interface Props { client: AiwsClient; onOpen: (workspaceId: string) => void; opening: string | null; restricted?: boolean }
 
 type CardAction = 'fork' | 'delete'
 const ACTION_BUSY: Record<CardAction, string> = { fork: 'aiworkspace.core.list.forking', delete: 'aiworkspace.core.list.deleting' }
 const ACTION_FAILED: Record<CardAction, string> = { fork: 'aiworkspace.core.list.forkFailed', delete: 'aiworkspace.core.list.deleteFailed' }
 
-export function WorkspaceList({ client, onOpen, opening }: Props) {
+export function WorkspaceList({ client, onOpen, opening, restricted = false }: Props) {
   const { t } = useAiwsText()
   const load = useCallback(async () => unwrap(await client.wsList()).workspaces, [client])
   const list = useLoad<WorkspaceSummary[]>(load)
@@ -45,8 +47,8 @@ export function WorkspaceList({ client, onOpen, opening }: Props) {
         <b className="aiws-title">{t('aiworkspace.core.list.title')}</b>
         <span className="aiws-muted" data-testid="aiws-transport">{client.transport.mode === 'dev-override' ? t('aiworkspace.core.list.transportDev', { principal: client.transport.principalHint ?? '' }) : t('aiworkspace.core.list.transportZone')}</span>
         <span className="aiws-grow" />
-        <button type="button" className="is-primary" data-testid="aiws-new" onClick={() => setCreating('workspace')}><Plus size={16} /> {t('aiworkspace.core.list.new')}</button>
-        <button type="button" data-testid="aiws-new-template" onClick={() => setCreating('template')}>{t('aiworkspace.core.list.newFromTemplate')}</button>
+        {!restricted && <button type="button" className="is-primary" data-testid="aiws-new" onClick={() => setCreating('workspace')}><Plus size={16} /> {t('aiworkspace.core.list.new')}</button>}
+        {!restricted && <button type="button" data-testid="aiws-new-template" onClick={() => setCreating('template')}>{t('aiworkspace.core.list.newFromTemplate')}</button>}
         <button type="button" aria-label={t('aiworkspace.common.refresh')} title={t('aiworkspace.common.refresh')} onClick={list.reload}><RefreshCw size={16} /></button>
       </header>
       {message && <div className={message.kind === 'error' ? 'aiws-error' : 'aiws-warning'} role={message.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-list-message">{message.text}</div>}
@@ -56,17 +58,18 @@ export function WorkspaceList({ client, onOpen, opening }: Props) {
       <div className="aiws-cards">
         {list.data?.length === 0 && <div className="aiws-muted">{t('aiworkspace.core.list.empty')}</div>}
         {list.data?.map((workspace) => (
-          <WorkspaceCard key={workspace.workspace_id} client={client} workspace={workspace} busy={busy !== null} opening={opening === workspace.workspace_id} onOpen={() => onOpen(workspace.workspace_id)} act={act} />
+          <WorkspaceCard key={workspace.workspace_id} client={client} workspace={workspace} busy={busy !== null} opening={opening === workspace.workspace_id} onOpen={() => onOpen(workspace.workspace_id)} act={act} restricted={restricted} />
         ))}
       </div>
-      <ImportForm client={client} onDone={(text) => { setMessage({ kind: 'info', text }); list.reload() }} />
+      {!restricted && <ImportForm client={client} onDone={(text) => { setMessage({ kind: 'info', text }); list.reload() }} />}
       {creating && <NewDialog client={client} store={null} initialTab={creating} onClose={() => setCreating(null)} onOpenWorkspace={onOpen} />}
     </div>
   )
 }
 
-function WorkspaceCard({ client, workspace, busy, opening, onOpen, act }: {
+function WorkspaceCard({ client, workspace, busy, opening, onOpen, act, restricted }: {
   client: AiwsClient
+  restricted: boolean
   workspace: WorkspaceSummary
   busy: boolean
   opening: boolean
@@ -83,7 +86,7 @@ function WorkspaceCard({ client, workspace, busy, opening, onOpen, act }: {
       <div className="aiws-muted">{t('aiworkspace.core.list.headSeq', { id: workspace.workspace_id, seq: workspace.head_seq })}</div>
       <div className="aiws-inline-form">
         <button type="button" className="is-primary" data-testid="aiws-open" disabled={opening} onClick={onOpen}>{opening ? t('aiworkspace.core.list.opening') : t('aiworkspace.core.list.open')}</button>
-        {can('manage') && <button type="button" data-testid="aiws-fork" disabled={busy} onClick={() => { void act('fork', async () => { const forked = unwrap(await client.wsFork(ws)); return t('aiworkspace.core.list.forked', { id: forked.workspace_id }) }) }}>{t('aiworkspace.core.list.fork')}</button>}
+        {can('manage') && !restricted && <button type="button" data-testid="aiws-fork" disabled={busy} onClick={() => { void act('fork', async () => { const forked = unwrap(await client.wsFork(ws)); return t('aiworkspace.core.list.forked', { id: forked.workspace_id }) }) }}>{t('aiworkspace.core.list.fork')}</button>}
         {can('manage') && (confirmDelete ? (
           <>
             <button type="button" className="is-danger" data-testid="aiws-delete-confirm" disabled={busy} onClick={() => { void act('delete', async () => { unwrap(await client.wsDelete(ws)); setConfirmDelete(false) }) }}>{t('aiworkspace.core.list.confirmDelete')}</button>

@@ -50,13 +50,14 @@ fn main() {
             eprintln!("error: --auth-file is required in standalone mode");
             std::process::exit(2);
         });
-        let tokens: StaticTokens = std::fs::read(auth_file)
+        let mut tokens: StaticTokens = std::fs::read(auth_file)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_else(|| {
                 eprintln!("error: cannot read --auth-file {auth_file}");
                 std::process::exit(2);
             });
+        tokens.source = Some(std::path::PathBuf::from(auth_file));
         let listen = matches.get_one::<String>("listen").cloned().unwrap_or_else(|| "127.0.0.1:4120".to_string());
         let fixtures = matches.get_flag("fixture-sources");
         let mut wish = WishConfig::default();

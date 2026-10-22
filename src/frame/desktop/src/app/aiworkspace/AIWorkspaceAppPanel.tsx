@@ -11,7 +11,7 @@ import './aiworkspace.css'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { AppContentLoaderProps } from '../types'
 import { AiwsClient, ServiceFailure } from './api/client'
-import { describeError, OnlineWorkspaceSession, type WorkspaceSession } from './api/session'
+import { denialOf, describeDenial, describeError, OnlineWorkspaceSession, type WorkspaceSession } from './api/session'
 import { isGuestPrincipal, resolveTransport, TransportError } from './api/transport'
 import { loadCore } from './api/wasm'
 import { loginUrl } from './links'
@@ -54,6 +54,9 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<PrepareReport | null>(null)
   const [leave, setLeave] = useState<{ summary: LeaveSummary; reason: string; resolve: (go: boolean) => void } | null>(null)
+  /** A restricted session (Limited account, External DID): it owns nothing (hybrid SSO, from the current identity). */
+  const [restricted, setRestricted] = useState(false)
+  useEffect(() => { if (client) void client.transport.restricted().then(setRestricted) }, [client])
   /** A normal start looks for the most recent workspace first: the list is not flashed before it reopens. */
   const [checkingRecent, setCheckingRecent] = useState(() => availability.ok && !tab)
   /** The previous session letting go of its replica (database closed, holder lock released). */
@@ -106,11 +109,15 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       if (how.target) tabRef.current?.consumeTarget()
     } catch (failure) {
       if (seq !== openSeq.current) return
+      const guest = await client.transport.isGuest()
       // a guest's link is not public: signing in is the only way on (a signed-in visitor sees the error below)
-      if (how.link && isGone(failure) && await client.transport.isGuest()) { window.location.replace(loginUrl()); return }
+      if (how.link && isGone(failure) && guest) { window.location.replace(loginUrl()); return }
       if (how.auto && isGone(failure)) void forgetRecent(client.transport, workspaceId)
-      setError(how.link ? (isGone(failure) ? t('aiworkspace.core.app.openLinkGone') : t('aiworkspace.core.app.openLinkFailed', { error: describeError(failure) }))
-        : how.auto ? t('aiworkspace.core.app.restoreFailed', { error: describeError(failure) }) : t('aiworkspace.core.app.openFailed', { error: describeError(failure) }))
+      // a signed-in caller is told the category of a refusal (D-4) instead of being sent to sign in again
+      const denial = denialOf(failure)
+      const reason = denial ? describeDenial(denial, guest || await client.transport.restricted()) : null
+      setError(how.link ? (reason ? t('aiworkspace.core.app.openDenied', { reason }) : isGone(failure) ? t('aiworkspace.core.app.openLinkGone') : t('aiworkspace.core.app.openLinkFailed', { error: describeError(failure) }))
+        : how.auto ? t('aiworkspace.core.app.restoreFailed', { error: reason ?? describeError(failure) }) : t('aiworkspace.core.app.openFailed', { error: reason ?? describeError(failure) }))
     } finally {
       if (seq === openSeq.current) setOpening(null)
     }
@@ -267,11 +274,11 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { ta
       {store
         ? <WorkspaceView key={store.session.workspaceId + store.session.sessionId} store={store} client={client} offline={actions} target={target}
             onClose={closeWorkspace} onOpenWorkspace={switchTo} onLogout={logout} onLogin={login} onHome={goHome}
-            identity={{ principal: store.session.principal, dev: client.transport.mode === 'dev-override', guest: isGuestPrincipal(store.session.principal) }}
+            identity={{ principal: store.session.principal, dev: client.transport.mode === 'dev-override', guest: isGuestPrincipal(store.session.principal), restricted }}
             devTools={import.meta.env.DEV || client.transport.mode === 'dev-override'} />
         : (opening || checkingRecent) && !error
           ? <div className="aiws-opening" role="status" data-testid="aiws-opening">{t('aiworkspace.core.app.opening')}</div>
-          : <WorkspaceList client={client} onOpen={pick} opening={opening} />}
+          : <WorkspaceList client={client} onOpen={pick} opening={opening} restricted={restricted} />}
       {leave && (
         <LeaveDialog summary={leave.summary} reason={leave.reason}
           onStay={() => { leave.resolve(false); setLeave(null) }}

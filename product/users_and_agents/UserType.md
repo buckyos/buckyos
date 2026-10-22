@@ -63,13 +63,15 @@ Root 就是 Zone owner 的账号记录（`users/root`），不可登录，不可
 
 零权限底座。Limited 用户默认没有任何业务与资源权限，RBAC 组 `limited` 只有自身策略：读自己的 `users/<id>/settings`、读写自己的 `users/<id>/profile`，以及自己的通讯录（`obj://msg-center/owners/*/contacts`，msg-center 再把 owner 绑定到调用者本人，并按“能否改通讯录”拦写操作），不含会话、邮箱等其它 owner 数据。管理员把它加入系统用户组后，经 App 可用性、资源授权和通讯录投影获得能力。企业客户（Limited + customer 组）、企业员工、未成年人、临时 Desktop 账号都用 Limited 加不同的组表达。
 
+Limited 的会话是受限会话（token 带 `restricted: true` 与 `scopes`，混合 SSO 2026-10-22 起）：系统服务默认拒绝，只有显式开放的方法可用——本人 settings / profile / 通讯录 / 改密 / 桌面状态（`account_self`）、msg-center 群路径、AI Workspace、HomeStation。类型升级不会让已签发的会话增权，要获得新权限须重新登录。Limited 不签发 sudo。
+
 已知限制（v1 接受）：系统用户组不带系统 RBAC 策略，Limited 加入组后仍不能使用个人邮箱（`obj://msg-center/inbox/*`）、自己的任务、上传等系统能力，也不注册个人消息投递，只经群会话参与消息。需要完整 Desktop 能力的人应使用 User 类型。以后如果要让组带系统权限，再引入“权限目录”。
 
 ## 3. External 与匿名访问者
 
 ### 3.1 External
 
-- 只能经 DID 联合登录产生。verify-hub 签发的本 Zone token 以原 DID 为主体（`sub`），`principal_kind` 仍为 `user`，另带 `external: true` 标记（`TOKEN_EXTERNAL_CLAIM`）。不认识该标记的服务按普通用户查账号记录，查不到即拒绝，不会落入“非 User 主体放行”的分支。
+- 只能经 DID 联合登录产生。verify-hub 签发的本 Zone token 以原 DID 为主体（`sub`），`principal_kind` 仍为 `user`，另带 `external: true` 标记（`TOKEN_EXTERNAL_CLAIM`）与受限会话上限（不含 `account_self`），联合会话最长 30 天。不认识该标记的服务按普通用户查账号记录，查不到即拒绝，不会落入“非 User 主体放行”的分支。
 - 本 Zone 不保存 External 的 Profile，只允许保存 verify-hub 会话记录、按 DID 的封禁记录和审计记录；名字与头像从该 DID 的公开文档解析。
 - 服务端用共享的主体解析（`ControlPanelClient::resolve_user_principal`）得到“有账号记录的用户”或“External DID”。
 - v1 只有 verify-hub（续期、登出）、msg-center 群路径（以 DID 作为 `GroupActor`）、AI Workspace、HomeStation 接受 External；Control Panel 等其余服务一律拒绝。External 没有账号记录，scheduler 不为它生成任何组，系统 RBAC 天然全拒。
@@ -125,7 +127,7 @@ AI Workspace、HomeStation 等资源方可以把“owner 的某个联系人分�
 
 - 引导期：Root + Admin。
 - `user.create`（管理员）：支持 User、Limited，可同时指定系统用户组与改密码 / 改通讯录覆盖；Admin 只能经改类型提升。
-- `user.invite.create`：类型为 Admin、User 或 Limited，`groups` 指系统用户组。
+- `user.invite.create`：类型为 User 或 Limited（混合 SSO P-2，2026-10-21），Admin 经 `user.change_type` 提升；`groups` 指系统用户组。
 - `user.change_type`：只在 Admin、User、Limited 之间转换。类型或组变更后，旧会话不自动获得新权限。
 - External 不创建账号记录。
 

@@ -732,6 +732,12 @@
 .aiws-share-panel .aiws-dialog-actions { flex-wrap: wrap; }
 .aiws-share-public { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: 6px; background: var(--aiws-selected-bg); border: 1px solid var(--aiws-selected-border); }
 .aiws-share-public svg { flex: none; margin-top: 2px; color: var(--cp-accent); }
+.aiws-share-entries { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--cp-border); }
+.aiws-share-entry { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--cp-border); }
+.aiws-share-entry-methods { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.aiws-share-entry-form { display: flex; flex-direction: column; gap: 4px; }
+.aiws-share-entry-form label { display: flex; align-items: center; gap: 6px; }
+.aiws-share-entry-form button { align-self: flex-start; }
 .aiws-identity-panel { width: 280px; }
 .aiws-guest-name { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .aiws-guest-name input { flex: 1; min-width: 0; }

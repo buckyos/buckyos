@@ -24,9 +24,11 @@ rand = { workspace = true }
 # rocksdb = "*"
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
+name-client = { workspace = true }
 kRPC ={ workspace = true }
 buckyos-api = { path = "../buckyos-api" }
 buckyos-http-server = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+rusqlite = { workspace = true }

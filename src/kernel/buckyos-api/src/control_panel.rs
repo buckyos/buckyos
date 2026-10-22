@@ -217,6 +217,25 @@ pub struct UserSettings {
     /// System user group ids (`system/user_groups/<id>`); only admins change them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "PasswordState::is_set")]
+    pub password_state: PasswordState,
+}
+
+/// Whether the account has a password. `Unset` accounts (exclusive invites
+/// before the first password) keep an empty `password` and never pass a
+/// password check; the state is explicit, not a placeholder password.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordState {
+    #[default]
+    Set,
+    Unset,
+}
+
+impl PasswordState {
+    pub fn is_set(&self) -> bool {
+        matches!(self, Self::Set)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -446,6 +465,18 @@ impl ControlPanelClient {
         Ok(user_doc)
     }
 
+    /// The account's DID: the id of its OwnerDocument (`users/<id>/doc`), the
+    /// only binding the account holder cannot rewrite; never `profile.did`.
+    pub async fn get_user_did(&self, user_id: &str) -> Result<DID> {
+        let key = format!("users/{user_id}/doc");
+        let value = self
+            .system_config_client
+            .get(&key)
+            .await
+            .map_err(|error| system_config_read_error(&key, error))?;
+        user_did_from_doc_value(&key, &value.value)
+    }
+
     pub async fn get_user_list(&self) -> Result<Vec<String>> {
         let user_list = self.system_config_client.list("users").await;
         if user_list.is_err() {
@@ -591,6 +622,18 @@ impl ControlPanelClient {
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(service_info)
     }
+}
+
+/// DID of a stored `users/<id>/doc` (an OwnerDocument JSON, `id` or `did`).
+pub fn user_did_from_doc_value(key: &str, raw: &str) -> Result<DID> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| RPCErrors::ReasonError(format!("invalid `{key}`: {error}")))?;
+    let did = value
+        .get("id")
+        .or_else(|| value.get("did"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| RPCErrors::ReasonError(format!("`{key}` has no id")))?;
+    DID::from_str(did).map_err(|error| RPCErrors::ReasonError(format!("`{key}` id: {error}")))
 }
 
 pub fn generate_control_panel_service_doc() -> AppDoc {

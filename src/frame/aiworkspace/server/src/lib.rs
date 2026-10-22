@@ -6,10 +6,13 @@ pub mod auth;
 pub mod show;
 pub mod wish;
 
-use aiworkspace_core::{Code, WsError, WsResult};
-use aiworkspace_store::workspace::{CommitOpts, Workspace};
-use aiworkspace_store::{Caller, Service};
-use auth::Authenticator;
+use aiworkspace_core::{Code, Deny, WsError, WsResult};
+use aiworkspace_store::entries::{parse_entry_methods, split_entry_id, EntryState, ENTRY_DID_LOGIN, ENTRY_GUEST, ENTRY_PASSWORD, ENTRY_SELF_REGISTER};
+use aiworkspace_store::service::require_may_own;
+use aiworkspace_store::workspace::{CommitOpts, Workspace, CONTACT_PREFIX};
+use aiworkspace_store::{Caller, CallerClass, Service};
+use auth::{AuthError, Authenticator};
+use buckyos_api::{AccessDenial, AuthMethod, DenyReason, EntryDescription, EntryMethods, EntryResource, SsoSettings, ACCESS_DENIED_ERROR_CODE};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -144,6 +147,99 @@ fn rpc_error(seq: u64, message: &str) -> Response {
     Json(json!({ "error": message, "sys": [seq] })).into_response()
 }
 
+/// A session this service refuses (D-4): the kRPC failure with `code: access_denied` and the denial as `data`.
+fn rpc_denial(seq: u64, denial: &AccessDenial) -> Response {
+    Json(json!({ "error": format!("access denied: {}", denial.reason.as_str()), "code": ACCESS_DENIED_ERROR_CODE, "data": denial, "sys": [seq] }))
+        .into_response()
+}
+
+fn deny_reason(d: Deny) -> DenyReason {
+    match d {
+        Deny::SessionKindNotAllowed => DenyReason::SessionKindNotAllowed,
+        Deny::ResourceGrantMissing => DenyReason::ResourceGrantMissing,
+        Deny::EntryUnavailable => DenyReason::EntryUnavailable,
+        Deny::ZoneMethodDisabled => DenyReason::ZoneMethodDisabled,
+        Deny::AuthorizationUnavailable => DenyReason::AuthorizationUnavailable,
+    }
+}
+
+fn class_name(caller: &Caller) -> &'static str {
+    match caller.class {
+        CallerClass::Account { restricted: false, .. } => "account",
+        CallerClass::Account { restricted: true, .. } => "limited",
+        CallerClass::External { .. } => "external",
+        CallerClass::Guest => "guest",
+        CallerClass::Service => "service",
+    }
+}
+
+/// Give a business failure (`{ code, ..., denial?: { reason } }`) its D-4 form: `denial` becomes the full
+/// `AccessDenial` (reason, who adjusts it, where). NOT_FOUND and PERMISSION_DENIED without a reason of their own are
+/// `resource_grant_missing`; for a restricted caller their detail and extras are dropped, so a missing Workspace and
+/// one not shared with it give the same answer (PERMISSION_DENIED only arises where it already holds a grant).
+fn decorate_error(error: &mut Value, caller: Option<&Caller>, method: &str) {
+    let code = error["code"].as_str().and_then(|c| Code::ALL.iter().copied().find(|x| x.as_str() == c));
+    let explicit = error["denial"]["reason"].as_str().and_then(Deny::parse);
+    let reason = match (explicit, code) {
+        (Some(d), _) => d,
+        (None, Some(Code::NotFound | Code::PermissionDenied)) if error.get("sub_code").is_none() => Deny::ResourceGrantMissing,
+        _ => return,
+    };
+    let denial = AccessDenial::new(deny_reason(reason)).at("aiworkspace", method);
+    if let Some(c) = caller {
+        log::info!("denied {method} to {} ({}): {}", c.principal, class_name(c), denial.reason.as_str());
+    }
+    error["denial"] = serde_json::to_value(&denial).unwrap_or(Value::Null);
+    if reason == Deny::ResourceGrantMissing && caller.is_some_and(Caller::is_restricted) {
+        if let Some(o) = error.as_object_mut() {
+            o.remove("data");
+            o.remove("path");
+            o.insert("detail".into(), json!("not found, or not shared with you"));
+        }
+    }
+}
+
+/// The failures a result carries inside (`error` of `{ ok: false }` / a rejected commit, `results[].error`).
+fn decorate_result(v: &mut Value, caller: Option<&Caller>, method: &str) {
+    if v.get("error").is_some_and(Value::is_object) {
+        decorate_error(&mut v["error"], caller, method);
+    }
+    if let Some(items) = v.get_mut("results").and_then(Value::as_array_mut) {
+        for item in items {
+            if item.get("error").is_some_and(Value::is_object) {
+                decorate_error(&mut item["error"], caller, method);
+            }
+        }
+    }
+}
+
+fn failure_json(e: &WsError, caller: Option<&Caller>, method: &str) -> Value {
+    let mut v = e.to_json();
+    decorate_error(&mut v, caller, method);
+    v
+}
+
+/// Settle the `group:` / `contact:` memberships the request can depend on, before any Workspace is locked: those
+/// of the Workspace named in `params` (every Workspace for `ws.list`).
+pub(crate) async fn prepare_caller(state: &Arc<AppState>, caller: &mut Caller, method: &str, workspace_id: Option<&str>) {
+    if !matches!(caller.class, CallerClass::Account { .. } | CallerClass::External { .. }) {
+        return;
+    }
+    let st = state.clone();
+    let id = workspace_id.map(str::to_string);
+    let list = method == "ws.list";
+    let subjects = blocking(move || match (list, id) {
+        (true, _) => st.svc.dynamic_subjects(),
+        (false, Some(id)) => st.with_ws(&id, |ws| ws.dynamic_subjects()),
+        (false, None) => Ok(Vec::new()),
+    })
+    .await
+    .unwrap_or_default();
+    if !subjects.is_empty() {
+        state.auth.resolve_subjects(caller, &subjects).await;
+    }
+}
+
 async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Response {
     let req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -152,40 +248,83 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
     let seq = req["sys"][0].as_u64().unwrap_or(0);
     let Some(method) = req["method"].as_str().map(str::to_string) else { return rpc_error(seq, "method required") };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
+    // public: the entry page describes a link before anyone signs in
+    if method == "entry.describe" {
+        return match describe_entry(&state, &params).await {
+            Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
+            Err(e) => Json(json!({ "result": { "ok": false, "error": failure_json(&e, None, &method) }, "sys": [seq] })).into_response(),
+        };
+    }
     // a prompter link carries the show's token instead of a session (third phase §11.1)
     let prompter = if method.starts_with("show.") { show::prompter_token(&params) } else { None };
-    let caller = match (prompter.is_some(), req["sys"][1].as_str().filter(|t| !t.trim().is_empty())) {
+    let mut caller = match (prompter.is_some(), req["sys"][1].as_str().filter(|t| !t.trim().is_empty())) {
         (true, _) => None,
         (false, None) => return rpc_error(seq, "session token required"),
         (false, Some(token)) => match Caller::guest(token) {
-            // a public link's visitor: a guest token instead of a session (reaches `public` grants only)
+            // a link's visitor: a guest token instead of a session (reaches `public` grants and guest entries only)
             Some(guest) => Some(guest),
             None => match state.auth.authenticate(token).await {
                 Ok(c) => Some(c),
-                Err(e) => return rpc_error(seq, &e),
+                Err(AuthError::Invalid(e)) => return rpc_error(seq, &e),
+                Err(AuthError::Denied(d)) => {
+                    log::info!("refused {method}: {}", d.reason.as_str());
+                    return rpc_denial(seq, &d.at("aiworkspace", method.clone()));
+                }
             },
         },
     };
-    let result = if let Some(token) = prompter {
+    if let Some(c) = caller.as_mut() {
+        // the Workspace the request is about: named, or the one an entry id names
+        let workspace_id = params
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .or_else(|| params.get("entry_id").and_then(Value::as_str).and_then(split_entry_id).map(|(ws, _)| ws));
+        prepare_caller(&state, c, &method, workspace_id).await;
+    }
+    // naming a contact group in a grant is for its owner: the store compares the group's owner with the caller's DID
+    let mut ready: WsResult<()> = Ok(());
+    if method == "ws.grant" && params.get("subject").and_then(Value::as_str).is_some_and(|s| s.starts_with(CONTACT_PREFIX)) {
+        if let Some(c) = caller.as_mut() {
+            ready = state.auth.load_did(c).await.map_err(|_| {
+                WsError::refused(Code::PermissionDenied, Deny::AuthorizationUnavailable, "the caller's DID could not be read; retry later")
+            });
+        }
+    }
+    let result = if let Err(e) = ready {
+        Err(e)
+    } else if let Some(token) = prompter {
         show::handle(&state, &method, &params, show::Auth::Token(token)).await
     } else if method.starts_with("show.") {
-        show::handle(&state, &method, &params, show::Auth::Session(caller.expect("authenticated above"))).await
+        show::handle(&state, &method, &params, show::Auth::Session(caller.clone().expect("authenticated above"))).await
     } else if method == "doc.wait_changes" {
-        wait_changes(&state, &params, &caller.expect("authenticated above")).await
+        wait_changes(&state, &params, caller.as_ref().expect("authenticated above")).await
+    } else if method == "ws.join_entry" {
+        join_entry(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else {
-        let caller = caller.expect("authenticated above");
+        let c = caller.clone().expect("authenticated above");
         let st = state.clone();
         let m = method.clone();
-        match tokio::task::spawn_blocking(move || dispatch(&st, &m, &params, &caller)).await {
+        match tokio::task::spawn_blocking(move || dispatch(&st, &m, &params, &c)).await {
             Ok(r) => r,
             Err(e) => Err(WsError::io(format!("handler panicked: {e}"))),
         }
     };
     match result {
-        Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
+        Ok(mut v) => {
+            decorate_result(&mut v, caller.as_ref(), &method);
+            Json(json!({ "result": v, "sys": [seq] })).into_response()
+        }
         Err(e) if e.detail == UNKNOWN_METHOD => rpc_error(seq, &format!("unknown method {method}")),
-        // business failures are results, not kRPC errors: clients branch on `error.code`
-        Err(e) => Json(json!({ "result": { "ok": false, "error": e.to_json() }, "sys": [seq] })).into_response(),
+        // the entry page (a sign-in flow, not the app) reads the shared kRPC wire: a refusal is `access_denied`
+        Err(e) if method == "ws.join_entry" => {
+            let error = failure_json(&e, caller.as_ref(), &method);
+            match serde_json::from_value::<AccessDenial>(error["denial"].clone()) {
+                Ok(denial) => rpc_denial(seq, &denial),
+                Err(_) => rpc_error(seq, &e.to_string()),
+            }
+        }
+        // business failures are results, not kRPC errors: clients branch on `error.code` (and `error.denial.reason`)
+        Err(e) => Json(json!({ "result": { "ok": false, "error": failure_json(&e, caller.as_ref(), &method) }, "sys": [seq] })).into_response(),
     }
 }
 
@@ -227,14 +366,14 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
         "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null)))?,
         "ws.list_subjects" => {
-            // zone-level: any authenticated principal may ask (the list itself is as public as the zone makes it)
-            aiworkspace_store::service::require_signed_in(caller)?;
+            // zone-level: any account that may own Workspaces may ask (the list itself is as public as the zone makes it)
+            require_may_own(caller)?;
             let subjects = tokio::runtime::Handle::current().block_on(state.auth.subjects());
             json!({ "ok": true, "subjects": subjects })
         }
         "ws.fork" => svc.fork(caller, ws_id()?)?,
         "ws.begin_import" => {
-            aiworkspace_store::service::require_signed_in(caller)?;
+            require_may_own(caller)?;
             begin_upload(state, "import", None, caller)?
         }
         "ws.import" => {
@@ -242,6 +381,20 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             let r = svc.import(caller, &upload, s(p, "semantics")?, p.get("replace").and_then(Value::as_bool).unwrap_or(false));
             let _ = std::fs::remove_file(&upload);
             r?
+        }
+        "ws.create_entry" => state.with_ws(ws_id()?, |ws| {
+            let caps = strings(p, "capabilities")?;
+            let methods = parse_entry_methods(p.get("methods").unwrap_or(&Value::Null))?;
+            let expires_at = match p.get("expires_at") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_i64().ok_or_else(|| WsError::invalid_op("expires_at must be unix seconds"))?),
+            };
+            ws.create_entry(caller, p.get("scope_entity_id").and_then(Value::as_str), &caps, methods, expires_at)
+        })?,
+        "ws.list_entries" => state.with_ws(ws_id()?, |ws| ws.list_entries(caller))?,
+        "ws.close_entry" => {
+            let (ws, local) = entry_of(p)?;
+            state.with_ws(ws, |w| w.close_entry(caller, local))?
         }
         "doc.outline" => state.with_ws(ws_id()?, |ws| ws.outline(caller))?,
         "doc.resolve" => state.with_ws(ws_id()?, |ws| ws.resolve(caller, p.get("reference"), p.get("path").and_then(Value::as_str)))?,
@@ -348,6 +501,91 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
     }))
 }
 
+/// `entry_id` of `params` as (Workspace, entry within it); a `workspace_id` given beside it must name the same one.
+fn entry_of(p: &Value) -> WsResult<(&str, &str)> {
+    let not_found = || WsError::not_found("entry not found");
+    let (ws, local) = split_entry_id(s(p, "entry_id")?).ok_or_else(not_found)?;
+    match p.get("workspace_id").and_then(Value::as_str) {
+        Some(w) if w != ws => Err(not_found()),
+        _ => Ok((ws, local)),
+    }
+}
+
+fn entry_methods(bits: u8) -> EntryMethods {
+    EntryMethods {
+        guest: bits & ENTRY_GUEST != 0,
+        password: bits & ENTRY_PASSWORD != 0,
+        self_register: bits & ENTRY_SELF_REGISTER != 0,
+        did_login: bits & ENTRY_DID_LOGIN != 0,
+    }
+}
+
+/// `entry.describe { entry_id }` (public, no session): what the entry page may show before anyone signs in —
+/// the Workspace's title, its owner and the entry's own methods (the Control Panel intersects them with the Zone
+/// switches). A missing, closed or expired entry is `state: unavailable` and nothing else.
+async fn describe_entry(state: &Arc<AppState>, p: &Value) -> WsResult<Value> {
+    let entry_id = s(p, "entry_id")?.to_string();
+    let st = state.clone();
+    let description = blocking(move || {
+        let Some((ws_id, local)) = split_entry_id(&entry_id) else { return Ok(EntryDescription::unavailable()) };
+        let found = st.with_ws(ws_id, |ws| {
+            if ws.purpose().is_some() {
+                return Ok(None);
+            }
+            Ok(ws.entry(local)?.filter(|e| e.state == EntryState::Active).map(|e| (e, ws.title(), ws.owner().ok().flatten())))
+        });
+        Ok(match found {
+            Ok(Some((entry, title, owner))) => EntryDescription {
+                state: buckyos_api::EntryState::Active,
+                resource: Some(EntryResource { kind: "workspace".into(), title, owner_name: owner, path: format!("/workspace/{ws_id}") }),
+                methods: entry_methods(entry.methods),
+                expires_at: entry.expires_at.map(|e| e.max(0) as u64),
+            },
+            _ => EntryDescription::unavailable(),
+        })
+    })
+    .await?;
+    let mut v = serde_json::to_value(&description).map_err(|e| WsError::io(e.to_string()))?;
+    v["ok"] = json!(true);
+    Ok(v)
+}
+
+/// Whether an entry offering `bits` admits a session that signed in by `method`: the entry's methods ∩ the Zone
+/// switches. Refused because the Zone closed the method → `zone_method_disabled`, else `entry_unavailable`.
+fn entry_admits(bits: u8, settings: &SsoSettings, method: Option<AuthMethod>) -> WsResult<()> {
+    let offered = entry_methods(bits);
+    let (effective, _) = offered.effective(settings);
+    if effective.allows_session(method) {
+        Ok(())
+    } else if offered.allows_session(method) {
+        Err(WsError::refused(Code::PermissionDenied, Deny::ZoneMethodDisabled, "the Zone turned this way of signing in off"))
+    } else {
+        Err(WsError::refused(Code::PermissionDenied, Deny::EntryUnavailable, "the entry does not accept this way of signing in"))
+    }
+}
+
+/// `ws.join_entry { entry_id }`: a signed-in visitor takes the entry's template as its own grant.
+async fn join_entry(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
+    let unavailable = || WsError::refused(Code::NotFound, Deny::EntryUnavailable, "the entry is closed, expired or does not exist");
+    let entry_id = s(p, "entry_id")?.to_string();
+    let (ws_id, local) = split_entry_id(&entry_id).map(|(w, l)| (w.to_string(), l.to_string())).ok_or_else(unavailable)?;
+    let settings = state.auth.sso_settings().await.map_err(|_| {
+        WsError::refused(Code::PermissionDenied, Deny::AuthorizationUnavailable, "the Zone's sign-in settings could not be read; retry later")
+    })?;
+    let method = match caller.class {
+        CallerClass::External { .. } => Some(AuthMethod::DidFederation),
+        _ => caller.auth_method.as_deref().and_then(AuthMethod::parse),
+    };
+    let (st, c) = (state.clone(), caller.clone());
+    let joined = blocking(move || st.with_ws(&ws_id, |ws| ws.join_entry(&c, &local, |bits| entry_admits(bits, &settings, method)))).await;
+    let mut v = joined.map_err(|e| if e.code == Code::NotFound && e.denial.is_none() { unavailable() } else { e })?;
+    if let Some(ws) = v["workspace_id"].as_str() {
+        v["path"] = json!(format!("/workspace/{ws}"));
+    }
+    log::info!("{} ({}) joined {}", caller.principal, class_name(caller), v["entry_id"]);
+    Ok(v)
+}
+
 /// Whether a run is a wish run (those are served by `wish::*`).
 fn is_wish_run(state: &Arc<AppState>, ws_id: &str, run_id: &str) -> bool {
     state.with_ws(ws_id, |ws| Ok(ws.run_program(run_id))).ok().flatten().is_some_and(|p| wish::is_wish(&p))
@@ -417,7 +655,8 @@ fn take_upload(state: &Arc<AppState>, upload_id: &str, kind: &str, caller: &Call
     }
 }
 
-async fn bearer(state: &AppState, headers: &HeaderMap) -> Result<Caller, Response> {
+/// The caller of an HTTP route, its memberships settled for `workspace_id` (when the route names one).
+async fn bearer(state: &Arc<AppState>, headers: &HeaderMap, route: &str, workspace_id: Option<&str>) -> Result<Caller, Response> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -426,10 +665,18 @@ async fn bearer(state: &AppState, headers: &HeaderMap) -> Result<Caller, Respons
     if let Some(guest) = Caller::guest(token) {
         return Ok(guest);
     }
-    state.auth.authenticate(token).await.map_err(|e| (StatusCode::UNAUTHORIZED, e).into_response())
+    let mut caller = state.auth.authenticate(token).await.map_err(|e| match e {
+        AuthError::Invalid(e) => (StatusCode::UNAUTHORIZED, e).into_response(),
+        AuthError::Denied(d) => {
+            let d = d.at("aiworkspace", route);
+            (StatusCode::FORBIDDEN, Json(json!({ "ok": false, "error": { "code": ACCESS_DENIED_ERROR_CODE, "retryable": false, "detail": format!("access denied: {}", d.reason.as_str()), "denial": d } }))).into_response()
+        }
+    })?;
+    prepare_caller(state, &mut caller, route, workspace_id).await;
+    Ok(caller)
 }
 
-fn http_error(e: WsError) -> Response {
+fn http_error(e: WsError, caller: Option<&Caller>, route: &str) -> Response {
     let status = match e.code {
         Code::NotFound | Code::TargetDeleted => StatusCode::NOT_FOUND,
         Code::PermissionDenied => StatusCode::FORBIDDEN,
@@ -438,12 +685,12 @@ fn http_error(e: WsError) -> Response {
         Code::DependencyUnavailable => StatusCode::GONE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    (status, Json(json!({ "ok": false, "error": e.to_json() }))).into_response()
+    (status, Json(json!({ "ok": false, "error": failure_json(&e, caller, route) }))).into_response()
 }
 
 /// `PUT /kapi/aiworkspace/upload/<upload_id>`: asset bytes or an import package, streamed to staging.
 async fn upload(State(state): State<Arc<AppState>>, Path(upload_id): Path<String>, headers: HeaderMap, body: Body) -> Response {
-    let caller = match bearer(&state, &headers).await {
+    let caller = match bearer(&state, &headers, "upload", None).await {
         Ok(c) => c,
         Err(r) => return r,
     };
@@ -453,7 +700,7 @@ async fn upload(State(state): State<Arc<AppState>>, Path(upload_id): Path<String
             Some(u) if u.principal == caller.principal && u.received.is_none() => {
                 (u.path.clone(), if u.kind == "asset" { state.limits.max_asset_bytes } else { state.limits.max_package_bytes })
             }
-            _ => return http_error(WsError::not_found("upload not found")),
+            _ => return http_error(WsError::not_found("upload not found"), Some(&caller), "upload"),
         }
     };
     let result: Result<u64, WsError> = async {
@@ -483,7 +730,7 @@ async fn upload(State(state): State<Arc<AppState>>, Path(upload_id): Path<String
         Err(e) => {
             let _ = tokio::fs::remove_file(&path).await;
             state.uploads.lock().unwrap().remove(&upload_id);
-            http_error(e)
+            http_error(e, Some(&caller), "upload")
         }
     }
 }
@@ -495,12 +742,13 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> WsResult<T> + Send + 's
 /// `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>`: verified asset
 /// bytes, authorized through an entity that references the asset.
 async fn asset(State(state): State<Arc<AppState>>, Path((workspace_id, object_id)): Path<(String, String)>, headers: HeaderMap) -> Response {
-    let caller = match bearer(&state, &headers).await {
+    let caller = match bearer(&state, &headers, "asset", Some(&workspace_id)).await {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let st = state.clone();
+    let (st, c) = (state.clone(), caller.clone());
     let result = blocking(move || {
+        let caller = c;
         st.with_ws(&workspace_id, |ws| {
             if !ws.can_read_asset(&caller, &object_id)? {
                 return Err(WsError::not_found("asset not found"));
@@ -519,45 +767,47 @@ async fn asset(State(state): State<Arc<AppState>>, Path((workspace_id, object_id
             ([(header::CONTENT_TYPE, ctype), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
               (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string())], data).into_response()
         }
-        Err(e) => http_error(e),
+        Err(e) => http_error(e, Some(&caller), "asset"),
     }
 }
 
-async fn serve_file(path: WsResult<PathBuf>, ctype: &'static str) -> Response {
+async fn serve_file(path: WsResult<PathBuf>, ctype: &'static str, caller: &Caller, route: &str) -> Response {
     match path {
         Ok(p) => match tokio::fs::read(&p).await {
             Ok(data) => ([(header::CONTENT_TYPE, ctype)], data).into_response(),
-            Err(e) => http_error(WsError::io(e.to_string())),
+            Err(e) => http_error(WsError::io(e.to_string()), Some(caller), route),
         },
-        Err(e) => http_error(e),
+        Err(e) => http_error(e, Some(caller), route),
     }
 }
 
 /// `GET /kapi/aiworkspace/export/<workspace_id>/<export_id>`
 async fn download_export(State(state): State<Arc<AppState>>, Path((workspace_id, export_id)): Path<(String, String)>, headers: HeaderMap) -> Response {
-    let caller = match bearer(&state, &headers).await {
+    let caller = match bearer(&state, &headers, "export", Some(&workspace_id)).await {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let st = state.clone();
+    let (st, c) = (state.clone(), caller.clone());
     let path = blocking(move || {
+        let caller = c;
         st.with_ws(&workspace_id, |ws| {
             ws.require_ws(&caller, aiworkspace_core::access::Cap::Export)?;
             ws.export_path(&export_id).ok_or_else(|| WsError::not_found("export not found"))
         })
     })
     .await;
-    serve_file(path, "application/zip").await
+    serve_file(path, "application/zip", &caller, "export").await
 }
 
 /// `GET /kapi/aiworkspace/replica/<workspace_id>/<replica_id>`: the database built by `replica.bootstrap`.
 async fn download_replica(State(state): State<Arc<AppState>>, Path((workspace_id, replica_id)): Path<(String, String)>, headers: HeaderMap) -> Response {
-    let caller = match bearer(&state, &headers).await {
+    let caller = match bearer(&state, &headers, "replica", Some(&workspace_id)).await {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let st = state.clone();
+    let (st, c) = (state.clone(), caller.clone());
     let path = blocking(move || {
+        let caller = c;
         st.with_ws(&workspace_id, |ws| {
             let a = ws.require_ws_any(&caller)?;
             if !a.ws_caps.has(aiworkspace_core::access::Cap::Read) || !aiworkspace_core::id::is_prefixed_id("rp_", &replica_id) {
@@ -568,7 +818,7 @@ async fn download_replica(State(state): State<Arc<AppState>>, Path((workspace_id
         })
     })
     .await;
-    serve_file(path, "application/vnd.sqlite3").await
+    serve_file(path, "application/vnd.sqlite3", &caller, "replica").await
 }
 
 pub async fn serve(state: Arc<AppState>, listen: &str) -> std::io::Result<()> {

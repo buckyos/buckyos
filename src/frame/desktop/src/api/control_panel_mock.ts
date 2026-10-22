@@ -12,8 +12,30 @@
  * Scripted outcomes: an Agent name starting with `fail-runtime` / `fail-start`
  * fails that creation step once; a bot token containing `FAIL` fails the
  * tunnel step once.
+ *
+ * Hybrid SSO (`auth.*`, `sso.settings.*`, `user.exclusive_invite.*`): `session`
+ * says whom the browser speaks for (the account, an External DID or nobody);
+ * `sso` holds the Zone switches, share entries, exclusive invite accounts and
+ * invites (with their secret, mock only). A DID containing `offline` has an
+ * unreachable home Zone; a group DID containing `offline` leaves the invite's
+ * Session invitation pending.
  */
 
+import {
+  DEFAULT_JUMP_BASE_URL,
+  RPCError,
+  type AccessDenial,
+  type AuthMethod,
+  type CurrentIdentity,
+  type DenyAdjust,
+  type DenyReason,
+  type EntryDescriptor,
+  type EntryMethod,
+  type EntryMethods,
+  type EntryResource,
+  type EntryService,
+  type SessionScope,
+} from 'buckyos'
 import {
   ASSIGNABLE_USER_TYPES,
   USER_GROUP_ID_PATTERN,
@@ -38,6 +60,7 @@ import type {
   AgentTemplateBinding,
   UserTunnelBinding,
 } from './user_mgr.ts'
+import type { ExclusiveInvite, InviteResource } from './sso.ts'
 
 export const MOCK_CONTROL_PANEL_STORAGE_KEY = 'buckyos.mock.control-panel.v1'
 
@@ -103,6 +126,41 @@ interface MockState {
   user_groups: MockUserGroup[]
   /** Unset until rules are saved; the defaults apply meanwhile. */
   projections?: { rules: ContactProjectionRule[]; updated_by: string; updated_at: number } | null
+  /** Whom the browser session speaks for; unset means the account above. */
+  session?: MockSession
+  /** Hybrid SSO state; a partial seed is merged over the defaults. */
+  sso?: Partial<MockSso>
+}
+
+type MockSession =
+  | { kind: 'account'; auth_method?: AuthMethod }
+  | { kind: 'external'; did: string; show_name: string }
+  | { kind: 'anonymous' }
+
+/** Limited accounts made by exclusive invites or self-registration. */
+interface MockSsoAccount {
+  show_name: string
+  password_set: boolean
+  state: 'active' | 'disabled'
+}
+
+interface MockEntry {
+  service: EntryService
+  entry_id: string
+  state: 'active' | 'unavailable'
+  resource?: EntryResource
+  methods: EntryMethods
+}
+
+type MockInvite = ExclusiveInvite & { secret: string }
+
+interface MockSso {
+  settings: { self_register_enabled: boolean; did_login_enabled: boolean; jump_base_url?: string }
+  entries: MockEntry[]
+  accounts: Record<string, MockSsoAccount>
+  invites: MockInvite[]
+  /** Target Zones the signed-in account agreed to (canonical side). */
+  consents: string[]
 }
 
 const RESERVED_NAMES = new Set(['root', 'system', 'admin', 'guest', '_', 'www', 'sys', 'homestation'])
@@ -687,6 +745,512 @@ function cancelCreate(state: MockState, params: Record<string, unknown>) {
   return { ok: true }
 }
 
+// ── Hybrid SSO ──
+
+const nowSecs = () => Math.floor(Date.now() / 1000)
+const INVITE_TTL_SECS = 48 * 3600
+const RESEND_INTERVAL_SECS = 10 * 60
+const ALL_SCOPES: SessionScope[] = ['account_self', 'msg_group', 'aiworkspace', 'homestation']
+const EXTERNAL_SCOPES: SessionScope[] = ['msg_group', 'aiworkspace', 'homestation']
+const USER_ID_PATTERN = /^[a-z0-9_.-]{1,64}$/
+
+const DENY_ADJUST: Record<DenyReason, DenyAdjust> = {
+  session_kind_not_allowed: { party: 'product' },
+  session_ceiling_exceeded: { party: 'self', location: 'reauth' },
+  resource_grant_missing: { party: 'sharer', location: 'share_panel' },
+  entry_unavailable: { party: 'sharer', location: 'share_panel' },
+  zone_method_disabled: { party: 'admin', location: 'cp:sso_settings' },
+  account_state: { party: 'admin', location: 'cp:users' },
+  credential_state: { party: 'self', location: 'credential' },
+  source_revoked: { party: 'admin', location: 'cp:exclusive_invites' },
+  authorization_unavailable: { party: 'none' },
+}
+
+function denialFor(reason: DenyReason, detail?: string, method?: string): AccessDenial {
+  return { reason, adjust: DENY_ADJUST[reason], service: 'control-panel', ...(method ? { method } : {}), ...(detail ? { detail } : {}) }
+}
+
+/** A thrown denial, as the kRPC client surfaces a `code: access_denied` failure. */
+function deny(reason: DenyReason, method: string, detail?: string): never {
+  throw new RPCError(`access denied: ${reason}`, 'access_denied', denialFor(reason, detail, method))
+}
+
+function randomToken(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function mockInvite(input: {
+  invite_id: string
+  user_id: string
+  secret: string
+  issued_at: number
+  credential_state?: ExclusiveInvite['credential']['state']
+  resource?: InviteResource
+  return_path: string
+  target_hint: string
+}): MockInvite {
+  return {
+    invite_id: input.invite_id,
+    user_id: input.user_id,
+    issuer: { kind: 'user', user_id: 'alice' },
+    channel: { kind: 'email', target_hint: input.target_hint },
+    ...(input.resource ? { resource: input.resource } : {}),
+    resource_state: input.resource ? 'done' : 'none',
+    return_path: input.return_path,
+    state: 'active',
+    credential: {
+      version: 1,
+      issued_at: input.issued_at,
+      expires_at: input.issued_at + INVITE_TTL_SECS,
+      state: input.credential_state ?? 'active',
+    },
+    created_at: input.issued_at,
+    updated_at: input.issued_at,
+    secret: input.secret,
+  }
+}
+
+function defaultSso(): MockSso {
+  const now = nowSecs()
+  const allMethods = { guest: true, password: true, self_register: true, did_login: true }
+  return {
+    settings: { self_register_enabled: true, did_login_enabled: true },
+    entries: [
+      {
+        service: 'aiworkspace',
+        entry_id: 'se-dj',
+        state: 'active',
+        resource: { kind: 'workspace', title: 'DJ Radio', owner_name: 'DJ', path: '/workspace/ws-dj' },
+        methods: allMethods,
+      },
+      {
+        service: 'msg-center',
+        entry_id: 'did:bns:support.alice',
+        state: 'active',
+        resource: { kind: 'group', title: 'Acme Support', owner_name: 'Acme', path: '/messagehub/guest?group=did%3Abns%3Asupport.alice' },
+        methods: { ...allMethods, guest: false },
+      },
+      { service: 'aiworkspace', entry_id: 'se-closed', state: 'unavailable', methods: { guest: false, password: false, self_register: false, did_login: false } },
+    ],
+    accounts: {
+      'acme-c1': { show_name: 'Acme Customer', password_set: false, state: 'active' },
+      'acme-c2': { show_name: 'Bolt Customer', password_set: false, state: 'active' },
+      'acme-c3': { show_name: 'Cove Customer', password_set: true, state: 'active' },
+    },
+    invites: [
+      mockInvite({
+        invite_id: 'ei-active',
+        user_id: 'acme-c1',
+        secret: 'mock-secret-active',
+        issued_at: now - 3600,
+        resource: { kind: 'group_session', group_did: 'did:bns:support.alice', session_id: 't-123', title: 'Ticket #123' },
+        return_path: '/?invite=ei-active',
+        target_hint: 'a***@acme.com',
+      }),
+      mockInvite({ invite_id: 'ei-expired', user_id: 'acme-c2', secret: 'mock-secret-expired', issued_at: now - 3 * 86_400, return_path: '/', target_hint: 'b***@bolt.io' }),
+      mockInvite({
+        invite_id: 'ei-password',
+        user_id: 'acme-c3',
+        secret: 'mock-secret-password',
+        issued_at: now - 86_400,
+        credential_state: 'consumed_by_password',
+        return_path: '/?invite=ei-password',
+        target_hint: '138****5678',
+      }),
+    ],
+    consents: [],
+  }
+}
+
+function ssoOf(state: MockState): MockSso {
+  const sso = { ...defaultSso(), ...state.sso }
+  state.sso = sso
+  return sso
+}
+
+function sessionOf(state: MockState): MockSession {
+  return state.session ?? { kind: 'account' }
+}
+
+function zoneHostOf(state: MockState) {
+  return `${state.zone}.web3.buckyos.ai`
+}
+
+function identityOf(state: MockState): CurrentIdentity {
+  const session = sessionOf(state)
+  if (session.kind === 'anonymous') return { kind: 'anonymous' }
+  if (session.kind === 'external') {
+    return {
+      kind: 'external',
+      did: session.did,
+      show_name: session.show_name,
+      zone_host: zoneHostOf(state),
+      auth_method: 'did_federation',
+      restricted: true,
+      scopes: EXTERNAL_SCOPES,
+    }
+  }
+  const { account } = state
+  const restricted = isLimited(account)
+  return {
+    kind: 'account',
+    user_id: account.user_id,
+    did: account.did,
+    user_type: parseUserType(account.user_type) ?? 'user',
+    show_name: account.user_name,
+    zone_host: zoneHostOf(state),
+    auth_method: session.auth_method ?? 'password',
+    restricted,
+    ...(restricted ? { scopes: ALL_SCOPES } : {}),
+    password_set: ssoOf(state).accounts[account.user_id]?.password_set ?? true,
+  }
+}
+
+function signInAs(state: MockState, userId: string, userType: string, showName: string, authMethod: AuthMethod) {
+  if (state.account.user_id !== userId) {
+    state.account = { user_id: userId, user_name: showName, user_type: userType, did: `did:bns:${userId}` }
+  }
+  state.session = { kind: 'account', auth_method: authMethod }
+}
+
+function requireSignedIn(state: MockState, method: string) {
+  if (sessionOf(state).kind === 'anonymous') throw new MockRpcError(`${method}: no session`)
+}
+
+/** Admin methods: a non-restricted administrator account. */
+function requireSsoAdmin(state: MockState, method: string) {
+  requireSignedIn(state, method)
+  if (sessionOf(state).kind !== 'account' || isLimited(state.account)) deny('session_kind_not_allowed', method)
+  requireAdmin(state)
+}
+
+function effectiveEntry(state: MockState, service: string, entryId: string): EntryDescriptor {
+  const sso = ssoOf(state)
+  const entry = sso.entries.find((item) => item.service === service && item.entry_id === entryId)
+  const ref = { service: service as EntryService, entry_id: entryId }
+  if (!entry || entry.state !== 'active') {
+    return { entry: ref, state: 'unavailable', methods: { guest: false, password: false, self_register: false, did_login: false } }
+  }
+  const methods = { ...entry.methods }
+  const zoneDisabled: EntryMethod[] = []
+  if (methods.self_register && !sso.settings.self_register_enabled) {
+    methods.self_register = false
+    zoneDisabled.push('self_register')
+  }
+  if (methods.did_login && !sso.settings.did_login_enabled) {
+    methods.did_login = false
+    zoneDisabled.push('did_login')
+  }
+  if (methods.self_register) methods.password = true
+  return { entry: ref, state: 'active', ...(entry.resource ? { resource: { ...entry.resource } } : {}), methods, ...(zoneDisabled.length ? { zone_disabled: zoneDisabled } : {}) }
+}
+
+function userTaken(state: MockState, userId: string) {
+  return RESERVED_NAMES.has(userId) || Boolean(state.zone_users[userId]) || Boolean(ssoOf(state).accounts[userId])
+}
+
+/** The login decision for an invite link (contract §5.3), or the account it signs in. */
+function inviteDecision(state: MockState, inviteId: string, secret: string): { invite: MockInvite; account: MockSsoAccount } | AccessDenial {
+  const sso = ssoOf(state)
+  const invite = sso.invites.find((item) => item.invite_id === inviteId)
+  if (!invite || invite.state === 'revoked') return denialFor('source_revoked', 'revoked')
+  const account = sso.accounts[invite.user_id]
+  if (!account || account.state !== 'active') return denialFor('account_state', 'account_inactive')
+  if (account.password_set || invite.credential.state === 'consumed_by_password') return denialFor('credential_state', 'password_required')
+  if (invite.secret !== secret || invite.credential.state !== 'active') return denialFor('credential_state', 'link_replaced')
+  if (nowSecs() > invite.credential.expires_at) return denialFor('credential_state', 'expired')
+  return { invite, account }
+}
+
+function publicInvite(invite: MockInvite): ExclusiveInvite {
+  const { secret: _secret, ...rest } = invite
+  void _secret
+  return { ...rest, credential: { ...rest.credential } }
+}
+
+function inviteLink(invite: MockInvite) {
+  return `${window.location.origin}/sso/invite/${invite.invite_id}#s=${invite.secret}`
+}
+
+function findInvite(state: MockState, params: Record<string, unknown>) {
+  const inviteId = stringParam(params, 'invite_id')
+  const invite = ssoOf(state).invites.find((item) => item.invite_id === inviteId)
+  if (!invite) throw new MockRpcError(`invite '${inviteId}' not found`)
+  return invite
+}
+
+function inviteResourceParam(raw: unknown): InviteResource | undefined {
+  if (raw === undefined || raw === null) return undefined
+  const value = raw as Record<string, unknown>
+  const title = typeof value.title === 'string' ? value.title.trim() : ''
+  if (value.kind === 'group_session') {
+    return { kind: 'group_session', group_did: stringParam(value, 'group_did'), session_id: stringParam(value, 'session_id'), title }
+  }
+  if (value.kind === 'workspace') return { kind: 'workspace', workspace_id: stringParam(value, 'workspace_id'), title }
+  throw new MockRpcError('unknown invite resource kind')
+}
+
+function defaultReturnPath(resource: InviteResource | undefined) {
+  if (resource?.kind === 'group_session') {
+    return `/messagehub/guest?group=${encodeURIComponent(resource.group_did)}&session=${encodeURIComponent(resource.session_id)}`
+  }
+  if (resource?.kind === 'workspace') return `/workspace/${encodeURIComponent(resource.workspace_id)}`
+  return '/'
+}
+
+function federationChecks(state: MockState, method: string, params: Record<string, unknown>) {
+  requireSignedIn(state, method)
+  if (sessionOf(state).kind !== 'account' || isLimited(state.account)) deny('session_kind_not_allowed', method)
+  if (stringParam(params, 'did') !== state.account.did) deny('session_ceiling_exceeded', method)
+  const redirectUri = stringParam(params, 'redirect_uri')
+  let clientHost: string
+  try {
+    const url = new URL(redirectUri)
+    if (url.pathname !== '/sso/did_callback') throw new Error('path')
+    clientHost = url.host
+  } catch {
+    throw new MockRpcError('invalid redirect_uri')
+  }
+  return { clientZone: stringParam(params, 'client_zone'), clientHost, redirectUri, flowState: stringParam(params, 'state') }
+}
+
+function handleSso(state: MockState, method: string, params: Record<string, unknown>): unknown {
+  const sso = ssoOf(state)
+  const now = nowSecs()
+  switch (method) {
+    case 'auth.sso_config':
+      return {
+        self_register_enabled: sso.settings.self_register_enabled,
+        did_login_enabled: sso.settings.did_login_enabled,
+        jump_base_url: sso.settings.jump_base_url || DEFAULT_JUMP_BASE_URL,
+      }
+    case 'auth.current_identity':
+      requireSignedIn(state, method)
+      return identityOf(state)
+    case 'auth.entry.describe':
+      return effectiveEntry(state, stringParam(params, 'service'), stringParam(params, 'entry_id'))
+    case 'auth.register': {
+      const service = stringParam(params, 'service')
+      const entryId = stringParam(params, 'entry_id')
+      const entry = effectiveEntry(state, service, entryId)
+      if (entry.state !== 'active') return { status: 'denied', denial: denialFor('entry_unavailable', undefined, method) }
+      if (!entry.methods.self_register) {
+        const closed = entry.zone_disabled?.includes('self_register')
+        return { status: 'denied', denial: denialFor(closed ? 'zone_method_disabled' : 'entry_unavailable', undefined, method) }
+      }
+      const userId = stringParam(params, 'user_id')
+      if (!USER_ID_PATTERN.test(userId)) throw new MockRpcError('user_id contains invalid characters')
+      stringParam(params, 'password_hash')
+      if (userTaken(state, userId)) return { status: 'name_taken' }
+      const showName = typeof params.show_name === 'string' && params.show_name.trim() ? params.show_name.trim() : userId
+      sso.accounts[userId] = { show_name: showName, password_set: true, state: 'active' }
+      return { status: 'created', user_id: userId }
+    }
+    case 'auth.login': {
+      const username = stringParam(params, 'username')
+      stringParam(params, 'password')
+      const ssoAccount = sso.accounts[username]
+      const zoneAccount = state.zone_users[username]
+      if (!ssoAccount && !zoneAccount) throw new MockRpcError(`user not found: ${username}`)
+      if (ssoAccount?.state === 'disabled') deny('account_state', method)
+      if (ssoAccount && !ssoAccount.password_set) deny('credential_state', method, 'password_unset')
+      signInAs(state, username, ssoAccount ? 'limited' : zoneAccount.user_type, ssoAccount?.show_name ?? (state.account.user_id === username ? state.account.user_name : username), 'password')
+      return {
+        session_token: `mock-session-${username}`,
+        refresh_token: 'mock-refresh',
+        sso_nonce: 0,
+        user_info: { user_id: state.account.user_id, user_name: state.account.user_name, user_type: state.account.user_type },
+        identity: identityOf(state),
+      }
+    }
+    case 'auth.invite.describe': {
+      const decision = inviteDecision(state, stringParam(params, 'invite_id'), stringParam(params, 'secret'))
+      if ('reason' in decision) {
+        // A valid link of an account that now has a password: its address stays an entry to password sign-in.
+        const invite = sso.invites.find((item) => item.invite_id === params.invite_id)
+        const passwordEntry = decision.detail === 'password_required' && invite?.secret === params.secret
+        return { status: 'denied', denial: decision, ...(passwordEntry && invite ? { user_id: invite.user_id, return_path: invite.return_path } : {}) }
+      }
+      const { invite, account } = decision
+      return {
+        status: 'active',
+        user_id: invite.user_id,
+        show_name: account.show_name,
+        ...(invite.resource?.title ? { resource_title: invite.resource.title } : {}),
+        return_path: invite.return_path,
+      }
+    }
+    case 'auth.invite.login': {
+      const decision = inviteDecision(state, stringParam(params, 'invite_id'), stringParam(params, 'secret'))
+      if ('reason' in decision) return { status: 'denied', denial: decision }
+      signInAs(state, decision.invite.user_id, 'limited', decision.account.show_name, 'exclusive_invite')
+      return { status: 'ready', callback_url: decision.invite.return_path }
+    }
+    case 'auth.invite.request_resend': {
+      const invite = sso.invites.find((item) => item.invite_id === params.invite_id)
+      const account = invite ? sso.accounts[invite.user_id] : undefined
+      const expired = invite?.credential.state === 'active' && now > invite.credential.expires_at
+      if (!invite || invite.state !== 'active' || !account || account.password_set || !expired) return { status: 'not_applicable' }
+      if (invite.resend && now - invite.resend.requested_at < RESEND_INTERVAL_SECS) return { status: 'rate_limited' }
+      invite.resend = { requested_at: now, count: (invite.resend?.count ?? 0) + 1 }
+      invite.updated_at = now
+      return { status: 'submitted' }
+    }
+    case 'auth.invite.set_password': {
+      requireSignedIn(state, method)
+      stringParam(params, 'new_password_hash')
+      const account = sessionOf(state).kind === 'account' ? sso.accounts[state.account.user_id] : undefined
+      if (!account) deny('session_kind_not_allowed', method)
+      if (account.password_set) deny('credential_state', method, 'password_required')
+      account.password_set = true
+      for (const invite of sso.invites) {
+        if (invite.user_id === state.account.user_id && invite.credential.state === 'active') {
+          invite.credential.state = 'consumed_by_password'
+          invite.updated_at = now
+        }
+      }
+      return { status: 'ok' }
+    }
+    case 'auth.did.begin': {
+      const did = stringParam(params, 'did')
+      const redirectUrl = stringParam(params, 'redirect_url')
+      if (!sso.settings.did_login_enabled) return { status: 'denied', denial: denialFor('zone_method_disabled', undefined, method) }
+      if (!did.startsWith('did:')) throw new MockRpcError('invalid did')
+      if (did.includes('offline')) return { status: 'canonical_unavailable' }
+      const canonicalHost = `${did.split(':').pop()}.web3.buckyos.ai`
+      const url = new URL(`https://${canonicalHost}/sso/federate`)
+      url.searchParams.set('did', did)
+      url.searchParams.set('client_zone', `did:bns:${state.zone}`)
+      url.searchParams.set('redirect_uri', `${window.location.origin}/sso/did_callback`)
+      url.searchParams.set('state', `mock-state-${encodeURIComponent(redirectUrl).length}`)
+      url.searchParams.set('nonce', 'mock-nonce')
+      url.searchParams.set('code_challenge', 'mock-challenge')
+      return { status: 'redirect', url: url.toString() }
+    }
+    case 'auth.federation.describe': {
+      const { clientZone, clientHost } = federationChecks(state, method, params)
+      return {
+        status: 'consent',
+        client_zone: clientZone,
+        client_host: clientHost,
+        profile: { show_name: state.account.user_name, avatar: state.account.profile?.avatar ?? null },
+        already_granted: sso.consents.includes(clientZone),
+      }
+    }
+    case 'auth.federation.approve': {
+      const { clientZone, redirectUri, flowState } = federationChecks(state, method, params)
+      if (params.remember === true && !sso.consents.includes(clientZone)) sso.consents.push(clientZone)
+      const url = new URL(redirectUri)
+      url.searchParams.set('code', 'fc-mock')
+      url.searchParams.set('state', flowState)
+      return { status: 'redirect', url: url.toString() }
+    }
+    case 'auth.federation.deny': {
+      const { redirectUri, flowState } = federationChecks(state, method, params)
+      const url = new URL(redirectUri)
+      url.searchParams.set('error', 'access_denied')
+      url.searchParams.set('state', flowState)
+      return { status: 'redirect', url: url.toString() }
+    }
+    case 'sso.settings.get':
+      requireSsoAdmin(state, method)
+      return { ...sso.settings }
+    case 'sso.settings.set': {
+      requireSsoAdmin(state, method)
+      if (typeof params.self_register_enabled !== 'boolean' || typeof params.did_login_enabled !== 'boolean') {
+        throw new MockRpcError('self_register_enabled and did_login_enabled must be booleans')
+      }
+      const jump = typeof params.jump_base_url === 'string' ? params.jump_base_url.trim() : ''
+      if (jump && !/^https:\/\/[^/?#]+\/?$/.test(jump)) throw new MockRpcError('jump_base_url must be an https origin')
+      sso.settings = {
+        self_register_enabled: params.self_register_enabled,
+        did_login_enabled: params.did_login_enabled,
+        ...(jump ? { jump_base_url: jump } : {}),
+      }
+      return { ...sso.settings }
+    }
+    case 'user.exclusive_invite.create': {
+      requireSsoAdmin(state, method)
+      const channel = params.channel as Record<string, unknown> | undefined
+      if (!channel || typeof channel.kind !== 'string' || !channel.kind.trim()) throw new MockRpcError('channel.kind is required')
+      const resource = inviteResourceParam(params.resource)
+      const newUser = params.new_user as Record<string, unknown> | undefined
+      let userId: string
+      if (newUser && params.user_id === undefined) {
+        userId = stringParam(newUser, 'user_id')
+        if (!USER_ID_PATTERN.test(userId)) throw new MockRpcError('user_id contains invalid characters')
+        if (userTaken(state, userId)) throw new MockRpcError(`user '${userId}' already exists`)
+        const showName = typeof newUser.show_name === 'string' && newUser.show_name.trim() ? newUser.show_name.trim() : userId
+        sso.accounts[userId] = { show_name: showName, password_set: false, state: 'active' }
+      } else if (!newUser && typeof params.user_id === 'string') {
+        userId = params.user_id
+        const limited = sso.accounts[userId] || parseUserType(state.zone_users[userId]?.user_type) === 'limited'
+        if (!limited) throw new MockRpcError(`'${userId}' is not a Limited account`)
+      } else {
+        throw new MockRpcError('give either user_id or new_user')
+      }
+      const invite: MockInvite = {
+        ...mockInvite({
+          invite_id: `ei-${randomToken().slice(0, 10)}`,
+          user_id: userId,
+          secret: randomToken(),
+          issued_at: now,
+          resource,
+          return_path: typeof params.return_path === 'string' && params.return_path.startsWith('/') ? params.return_path : defaultReturnPath(resource),
+          target_hint: typeof channel.target_hint === 'string' ? channel.target_hint : '',
+        }),
+        issuer: { kind: 'user', user_id: state.account.user_id },
+        channel: { kind: channel.kind.trim(), target_hint: typeof channel.target_hint === 'string' ? channel.target_hint : '' },
+        resource_state: resource ? (resource.kind === 'group_session' && resource.group_did.includes('offline') ? 'pending' : 'done') : 'none',
+      }
+      sso.invites.push(invite)
+      return { invite: publicInvite(invite), link: inviteLink(invite) }
+    }
+    case 'user.exclusive_invite.list': {
+      requireSsoAdmin(state, method)
+      const userId = typeof params.user_id === 'string' ? params.user_id : null
+      return {
+        invites: sso.invites
+          .filter((invite) => !userId || invite.user_id === userId)
+          .sort((left, right) => right.created_at - left.created_at)
+          .map(publicInvite),
+      }
+    }
+    case 'user.exclusive_invite.get':
+      requireSsoAdmin(state, method)
+      return { invite: publicInvite(findInvite(state, params)) }
+    case 'user.exclusive_invite.revoke': {
+      requireSsoAdmin(state, method)
+      const invite = findInvite(state, params)
+      invite.state = 'revoked'
+      invite.updated_at = now
+      return { invite: publicInvite(invite) }
+    }
+    case 'user.exclusive_invite.rotate': {
+      requireSsoAdmin(state, method)
+      const invite = findInvite(state, params)
+      if (invite.state === 'revoked') deny('source_revoked', method, 'revoked')
+      if (sso.accounts[invite.user_id]?.password_set) deny('credential_state', method, 'password_required')
+      invite.secret = randomToken()
+      invite.credential = { version: invite.credential.version + 1, issued_at: now, expires_at: now + INVITE_TTL_SECS, state: 'active' }
+      invite.resend = null
+      invite.updated_at = now
+      return { invite: publicInvite(invite), link: inviteLink(invite) }
+    }
+    case 'user.exclusive_invite.retry_resource': {
+      requireSsoAdmin(state, method)
+      const invite = findInvite(state, params)
+      if (invite.resource_state === 'pending') invite.resource_state = 'done'
+      invite.updated_at = now
+      return { invite: publicInvite(invite) }
+    }
+    default:
+      throw new MockRpcError(`Unknown method: ${method}`)
+  }
+}
+
 function handle(state: MockState, method: string, params: Record<string, unknown>): unknown {
   switch (method) {
     case 'agent.check_name':
@@ -791,6 +1355,7 @@ function handle(state: MockState, method: string, params: Record<string, unknown
     }
     default:
       if (method.startsWith('user_group.')) return handleUserGroup(state, method, params)
+      if (method.startsWith('auth.') || method.startsWith('sso.') || method.startsWith('user.exclusive_invite.')) return handleSso(state, method, params)
       throw new MockRpcError(`Unknown method: ${method}`)
   }
 }
@@ -819,9 +1384,23 @@ export function mockContactEditAllowed(): boolean {
   return effectiveOptions({ ...facts, user_type: state.account.user_type }).allow_contact_edit
 }
 
+/** The signed-in account; null when the session is an External DID or there is none. */
 export function mockCurrentAccount() {
-  const { account } = loadState()
+  const state = loadState()
+  if (sessionOf(state).kind !== 'account') return null
+  const { account } = state
   return { user_id: account.user_id, user_name: account.user_name, user_type: account.user_type }
+}
+
+export function mockCurrentIdentity(): CurrentIdentity {
+  return identityOf(loadState())
+}
+
+/** `/sso_logout` of the mock: the browser speaks for nobody until the next sign-in. */
+export function mockEndSession() {
+  const state = loadState()
+  state.session = { kind: 'anonymous' }
+  saveState(state)
 }
 
 /** For the MessageHub mock: whether a control-panel Agent may join groups (null when it is not one). */

@@ -5,9 +5,9 @@ use crate::export::{load_workspace, open_package, LoadSpec};
 use crate::objects::FsObjectStore;
 use crate::urlsource::SourceRegistry;
 use crate::workspace::{random_id, system_clock, Caller, Clock, FailPoint, Workspace};
-use aiworkspace_core::access::{Access, Cap};
+use aiworkspace_core::access::Cap;
 use aiworkspace_core::id::is_prefixed_id;
-use aiworkspace_core::{Code, WsError, WsResult};
+use aiworkspace_core::{Code, Deny, WsError, WsResult};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -108,7 +108,7 @@ impl Service {
 
     /// `ws.create`: built under a temporary name, renamed into place when complete.
     pub fn create_workspace(&self, caller: &Caller, title: &str, workspace_id: Option<&str>) -> WsResult<Value> {
-        require_signed_in(caller)?;
+        require_may_own(caller)?;
         let id = match workspace_id {
             Some(id) if is_prefixed_id("ws_", id) => id.to_string(),
             Some(_) => return Err(WsError::invalid_op("workspace_id must be ws_ + 26 base32 chars")),
@@ -128,25 +128,44 @@ impl Service {
         Ok(info)
     }
 
-    /// `ws.list`: Workspaces on which the caller holds any grant with `read`.
+    fn workspace_ids(&self) -> WsResult<Vec<String>> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(self.data_dir.join("workspaces")).map_err(io)? {
+            let name = entry.map_err(io)?.file_name().to_string_lossy().to_string();
+            if is_prefixed_id("ws_", &name) {
+                out.push(name);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `group:` / `contact:` subjects granted anywhere in this deployment (what `ws.list` may depend on).
+    pub fn dynamic_subjects(&self) -> WsResult<Vec<String>> {
+        let mut out = std::collections::BTreeSet::new();
+        for name in self.workspace_ids()? {
+            let Ok(handle) = self.workspace(&name) else { continue };
+            out.extend(handle.lock().unwrap().dynamic_subjects()?);
+        }
+        Ok(out.into_iter().collect())
+    }
+
+    /// `ws.list`: Workspaces on which the caller holds any grant with `read`. A guest reaches public Workspaces by
+    /// their links only, never by enumeration; other restricted callers list what was granted to them (no `public`,
+    /// no `*`).
     pub fn list_workspaces(&self, caller: &Caller) -> WsResult<Value> {
         let mut out = Vec::new();
-        // a guest reaches public Workspaces by their links only, never by enumeration
         if caller.is_guest() {
             return Ok(json!({ "ok": true, "workspaces": out }));
         }
-        for entry in std::fs::read_dir(self.data_dir.join("workspaces")).map_err(io)? {
-            let name = entry.map_err(io)?.file_name().to_string_lossy().to_string();
-            if !is_prefixed_id("ws_", &name) {
-                continue;
-            }
+        for name in self.workspace_ids()? {
             let Ok(handle) = self.workspace(&name) else { continue };
             let ws = handle.lock().unwrap();
             // a show clone belongs to its stage only (third phase §8.3)
             if ws.purpose().is_some() {
                 continue;
             }
-            let access: Access = ws.access(&caller.principal)?;
+            // a membership that cannot be checked leaves the Workspace out of the list (opening it says why)
+            let Ok(access) = ws.listing_access(caller) else { continue };
             let reads = access.ws_caps.has(Cap::Read) || access.scoped.values().any(|c| c.has(Cap::Read));
             if reads {
                 out.push(json!({ "workspace_id": name, "title": ws.title(), "head_seq": ws.head_seq, "epoch": ws.epoch,
@@ -179,7 +198,7 @@ impl Service {
     /// package's id; replacing an existing Workspace needs `replace: true` *and*
     /// `manage` on the existing one — nothing inside the package grants anything).
     pub fn import(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool) -> WsResult<Value> {
-        require_signed_in(caller)?;
+        require_may_own(caller)?;
         let pkg = open_package(package, &self.objects)?;
         let m = &pkg.manifest;
         let snapshot = m["snapshot"].as_str().ok_or_else(|| WsError::invalid_schema("manifest.snapshot missing"))?;
@@ -203,7 +222,7 @@ impl Service {
                     // judged on the existing folder only; indistinguishable from "cannot create" when denied
                     let denied = || WsError::denied("restore is not permitted");
                     let handle = self.workspace(&source_id).map_err(|_| denied())?;
-                    let allowed = handle.lock().unwrap().access(&caller.principal)?.ws_caps.has(Cap::Manage);
+                    let allowed = handle.lock().unwrap().access(caller)?.ws_caps.has(Cap::Manage);
                     if !allowed || !replace {
                         return Err(denied());
                     }
@@ -235,12 +254,13 @@ impl Service {
                            "semantics": semantics, "replaced": existing, "missing": m["missing"], "external_sources": m["external_sources"] });
         drop(ws);
         if existing {
-            // restoring content does not change who may access it: grants move over, runs and uploads do not
+            // restoring content does not change who may access it: grants and entries move over, runs and uploads do not
             let old_local = self.ws_dir(&id).join("local.sqlite");
             self.close(&id);
             let conn = rusqlite::Connection::open(tmp.join("local.sqlite")).map_err(crate::docdb::db_err)?;
             conn.execute("ATTACH DATABASE ?1 AS old", [old_local.to_string_lossy().as_ref()]).map_err(crate::docdb::db_err)?;
             conn.execute_batch("DELETE FROM grants; INSERT INTO grants SELECT * FROM old.grants; \
+                                INSERT INTO share_entries SELECT * FROM old.share_entries; \
                                 INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta; DETACH DATABASE old;")
                 .map_err(crate::docdb::db_err)?;
             drop(conn);
@@ -254,7 +274,7 @@ impl Service {
     /// Workspace. No grants, runs, uploads or personal entities are copied;
     /// rich texts start new lineages.
     pub fn fork(&self, caller: &Caller, source_id: &str) -> WsResult<Value> {
-        require_signed_in(caller)?;
+        require_may_own(caller)?;
         let (cp, title) = {
             let handle = self.workspace(source_id)?;
             let ws = handle.lock().unwrap();
@@ -286,10 +306,11 @@ impl Service {
     }
 }
 
-/// Workspaces are created, imported and forked by signed-in principals only: a guest owns nothing.
-pub fn require_signed_in(caller: &Caller) -> WsResult<()> {
-    if caller.is_guest() {
-        return Err(WsError::denied("a guest cannot own a workspace"));
+/// Workspaces are created, imported and forked — and the Zone's principals listed — by unrestricted accounts and
+/// services only: a guest, an External DID or a restricted (Limited) account owns nothing (PRE-03).
+pub fn require_may_own(caller: &Caller) -> WsResult<()> {
+    if !caller.may_own() {
+        return Err(WsError::refused(Code::PermissionDenied, Deny::SessionKindNotAllowed, "this kind of account cannot own workspaces"));
     }
     Ok(())
 }

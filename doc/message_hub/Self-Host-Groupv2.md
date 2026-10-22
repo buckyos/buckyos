@@ -462,6 +462,13 @@ pub struct MembershipConfig {
 pub struct GuestEntryConfig {
     pub session_template: String,                  // 新建 Session 使用的模板，必须 allow_guests 且不是 Inherit
     pub max_open_per_guest: u32,                   // 同一 Guest 同时处于 Active 的请求 Session 上限
+    pub auth_methods: GuestEntryAuthMethods,       // 访客可经哪些方式认证后提交请求（混合 SSO，缺省全关）
+}
+
+pub struct GuestEntryAuthMethods {                 // Message Hub 不接受匿名 Guest
+    pub password: bool,                            // 本 Zone 已有本地账号
+    pub self_register: bool,                       // 在入口页自助注册的 Limited 账号
+    pub did_login: bool,                           // DID 登录（External 或已入驻账号）
 }
 
 pub struct SessionTemplate {
@@ -803,7 +810,7 @@ pub enum AllowedClients {
 客服等场景通常由客户主动发起。群在配置中开启 `membership.guest_entry` 后，接受以下流程：
 
 1. Guest d 选择一个随机的请求 ID，以 `{ request_id }` 提交到 `guest_requests`（§11.1；RPC 为 `group.submit_guest_request { group_did, request_id }`）。外部平台用户由 tunnel 的 transport 身份代为提交，并附 `attestation`（例如用户在平台上主动给业务账号发了消息）。
-2. host 检查：群开启了 `guest_entry`；d 没有被封禁；d 当前处于 Active 的请求 Session 数不超过 `max_open_per_guest`；频率限制。
+2. host 检查：群开启了 `guest_entry`；调用者会话的认证方式在 `guest_entry.auth_methods` 内且未被 Zone 的 `system/sso/settings` 关闭（否则 `entry_unavailable` / `zone_method_disabled`）；d 没有被封禁；d 当前处于 Active 的请求 Session 数不超过 `max_open_per_guest`；频率限制。公开方法 `group.describe_entry { group_did }` 返回群名与入口允许的方式，供分享入口页展示（Control Panel `auth.entry.describe` 再与 Zone 开关求交）。
 3. 如果模板绑定了 `join` Hook，host 执行它，由应用决定是否受理。
 4. host 用 `guest_entry.session_template` 新建一个 Session（`session_id` 由 host 生成），把 d 以 Guest 身份加入（Session 记录保存第 1 步的请求 ID），发布 `session.created` 与 `session.member_added`，并返回 Session 地址。
 5. 应用可以随后用正常接口把具体客服加入 Session，或在模板中用 `Roles` 让某个角色的成员自动成为参与者。

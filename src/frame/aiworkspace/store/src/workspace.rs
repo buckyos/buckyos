@@ -12,11 +12,11 @@ use aiworkspace_core::id::{check_id, check_idempotency_key, is_prefixed_id, pref
 use aiworkspace_core::model::*;
 use aiworkspace_core::plan::{plan_commit, CommitFailure, CommitRequest, Limits, PlanEnv, PlannedOp, Touched};
 use aiworkspace_core::value::format_utc_ms;
-use aiworkspace_core::{richtext, Code, WsError, WsResult};
+use aiworkspace_core::{richtext, Code, Deny, WsError, WsResult};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,23 +26,63 @@ pub const LOCK_IDLE_MS: i64 = 600_000;
 pub const COMPACT_UPDATES: i64 = 200;
 pub const COMPACT_BYTES: i64 = 1024 * 1024;
 
+/// What kind of caller the service verified (hybrid SSO contract §2.1, PRE-03). Grant matching and the right to
+/// own Workspaces follow the class, never the shape of the principal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallerClass {
+    /// A local account of the Zone; the principal is its user id. `restricted`: a Limited account or a session
+    /// with a ceiling. `did` and `groups` are filled by the service when a grant on the Workspace needs them.
+    Account { restricted: bool, did: Option<String>, groups: Vec<String> },
+    /// An authenticated DID without an account in this Zone; the principal is the DID.
+    External { did: String },
+    /// A link's visitor without a session (`guest:` principal).
+    Guest,
+    /// App, agent, system and device principals.
+    Service,
+}
+
 /// The identity the service runtime verified. Nothing a client writes into a
 /// request body is ever used as identity.
 #[derive(Debug, Clone)]
 pub struct Caller {
     pub principal: String,
     pub app_id: Option<String>,
+    pub class: CallerClass,
+    /// How the session was established (`password`, `exclusive_invite`, `did_federation`, `assertion`).
+    pub auth_method: Option<String>,
+    /// `contact:<owner_did>#<tag>` subjects the service confirmed the caller belongs to.
+    pub contacts: BTreeSet<String>,
+    /// `group:` / `contact:` subjects whose membership could not be checked: a decision depending on one is
+    /// refused with `authorization_unavailable`, never taken from a stale answer.
+    pub unconfirmed: BTreeSet<String>,
 }
 
 /// Grant subject that applies to everyone, signed in or not (a public link).
 pub const PUBLIC_SUBJECT: &str = "public";
-/// Grant subject that applies to every authenticated principal.
+/// Grant subject that applies to every unrestricted account of the Zone.
 pub const ANY_AUTHENTICATED_SUBJECT: &str = "*";
 pub const GUEST_PREFIX: &str = "guest:";
+/// `group:<id>`: the members of a system user group.
+pub const GROUP_PREFIX: &str = "group:";
+/// `contact:<owner_did>#<tag>`: the DIDs in an owner's contact group (projections included).
+pub const CONTACT_PREFIX: &str = "contact:";
 
 impl Caller {
+    fn with_class(principal: &str, class: CallerClass) -> Caller {
+        Caller { principal: principal.to_string(), app_id: None, class, auth_method: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new() }
+    }
+    /// An unrestricted account (Admin / User).
     pub fn user(principal: &str) -> Caller {
-        Caller { principal: principal.to_string(), app_id: None }
+        Self::account(principal, false)
+    }
+    pub fn account(principal: &str, restricted: bool) -> Caller {
+        Self::with_class(principal, CallerClass::Account { restricted, did: None, groups: Vec::new() })
+    }
+    pub fn external(did: &str) -> Caller {
+        Self::with_class(did, CallerClass::External { did: did.to_string() })
+    }
+    pub fn service(principal: &str) -> Caller {
+        Self::with_class(principal, CallerClass::Service)
     }
     /// An unauthenticated visitor: the principal is derived from a bearer token the browser made up
     /// (`gt_` + 26 base32 chars) and keeps, so the same browser stays the same guest (its own
@@ -53,15 +93,90 @@ impl Caller {
         }
         let digest = sha256_hex(token.as_bytes());
         let bytes: Vec<u8> = (0..17).map(|i| u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap()).collect();
-        Some(Caller { principal: prefixed_id(GUEST_PREFIX, bytes.as_slice().try_into().unwrap()), app_id: None })
+        Some(Self::with_class(&prefixed_id(GUEST_PREFIX, bytes.as_slice().try_into().unwrap()), CallerClass::Guest))
     }
     pub fn is_guest(&self) -> bool {
-        is_guest_principal(&self.principal)
+        self.class == CallerClass::Guest
+    }
+    /// Limited accounts, External DIDs and guests: they never match `*`, own nothing, and a missing
+    /// Workspace looks like one that was not shared with them.
+    pub fn is_restricted(&self) -> bool {
+        match &self.class {
+            CallerClass::Account { restricted, .. } => *restricted,
+            CallerClass::External { .. } | CallerClass::Guest => true,
+            CallerClass::Service => false,
+        }
+    }
+    /// Creates, imports and forks Workspaces and lists the Zone's principals: unrestricted accounts and services.
+    pub fn may_own(&self) -> bool {
+        matches!(self.class, CallerClass::Account { restricted: false, .. } | CallerClass::Service)
+    }
+    /// The same caller before the service settled its group and contact memberships (they are settled again).
+    pub fn without_memberships(&self) -> Caller {
+        let mut c = self.clone();
+        c.contacts.clear();
+        c.unconfirmed.clear();
+        if let CallerClass::Account { groups, .. } = &mut c.class {
+            groups.clear();
+        }
+        c
+    }
+    /// The DID contact grants are checked against, once known.
+    pub fn did(&self) -> Option<&str> {
+        match &self.class {
+            CallerClass::Account { did, .. } => did.as_deref(),
+            CallerClass::External { did } => Some(did),
+            _ => None,
+        }
+    }
+    /// Whether a grant naming `subject` applies: the exact principal, `public` (when `public` counts), `*` for
+    /// unrestricted accounts only, the caller's system groups, confirmed contact groups.
+    pub fn matches(&self, subject: &str, public: bool) -> bool {
+        if subject == self.principal {
+            return true;
+        }
+        if subject == PUBLIC_SUBJECT {
+            return public;
+        }
+        if let CallerClass::Account { restricted, groups, .. } = &self.class {
+            if subject == ANY_AUTHENTICATED_SUBJECT {
+                return !restricted;
+            }
+            if let Some(group) = subject.strip_prefix(GROUP_PREFIX) {
+                return groups.iter().any(|g| g == group);
+            }
+        }
+        subject.starts_with(CONTACT_PREFIX) && self.contacts.contains(subject)
     }
 }
 
 pub fn is_guest_principal(principal: &str) -> bool {
     principal.starts_with(GUEST_PREFIX)
+}
+
+/// A grant subject: a principal, `public`, `*`, `group:<id>` or `contact:<owner_did>#<tag>`. A contact group can only
+/// be named by its owner (`granter` is the caller's DID): nobody probes someone else's private groups through grants.
+fn check_subject(subject: &str, granter: Option<&str>) -> WsResult<()> {
+    let bad = |what: &str| Err(WsError::invalid_op(format!("invalid subject: {what}")));
+    if subject.is_empty() || subject.len() > 256 || subject.chars().any(char::is_whitespace) {
+        return bad("1–256 characters without spaces");
+    }
+    if let Some(group) = subject.strip_prefix(GROUP_PREFIX) {
+        if group.is_empty() {
+            return bad("group:<id>");
+        }
+    }
+    if let Some(contact) = subject.strip_prefix(CONTACT_PREFIX) {
+        match contact.split_once('#') {
+            Some((owner, tag)) if owner.starts_with("did:") && !tag.is_empty() => {
+                if granter != Some(owner) {
+                    return bad("a contact group grant names one of the caller's own groups (contact:<your did>#<tag>)");
+                }
+            }
+            _ => return bad("contact:<owner_did>#<tag>"),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,33 +374,75 @@ impl Workspace {
 
     // ---- grants ----
 
-    /// Effective grants of a principal: its own rows, `public` (everyone, a public link) and, unless it is a
-    /// guest, `*` (any authenticated principal).
-    pub fn access(&self, principal: &str) -> WsResult<Access> {
-        let mut st = self
-            .local
-            .prepare_cached("SELECT scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = ?2 OR subject = ?3")
-            .map_err(db_err)?;
-        let authenticated = if is_guest_principal(principal) { PUBLIC_SUBJECT } else { ANY_AUTHENTICATED_SUBJECT };
-        let rows: Vec<(String, u16)> = st
-            .query_map(params![principal, PUBLIC_SUBJECT, authenticated], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(db_err)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(db_err)?;
-        let mut access = Access { principal: principal.to_string(), ws_caps: CapSet::NONE, scoped: BTreeMap::new() };
-        for (scope, caps) in rows {
+    /// Effective grants of a caller: every grant row whose subject applies to it (see [`Caller::matches`]) and the
+    /// templates of the active entries open to guests — for every caller, since anyone may come in through them
+    /// anonymously (computed now, so closing one takes effect at the next request).
+    pub fn access(&self, caller: &Caller) -> WsResult<Access> {
+        self.access_with(caller, true)
+    }
+
+    fn access_with(&self, caller: &Caller, public: bool) -> WsResult<Access> {
+        let mut access = Access { principal: caller.principal.clone(), ws_caps: CapSet::NONE, scoped: BTreeMap::new() };
+        let mut add = |scope: String, caps: u16| {
             if scope.is_empty() {
                 access.ws_caps = access.ws_caps.union(CapSet(caps));
             } else {
                 let e = access.scoped.entry(scope).or_insert(CapSet::NONE);
                 *e = e.union(CapSet(caps));
             }
+        };
+        let mut undecided = false;
+        for (subject, scope, caps, _) in self.grant_rows()? {
+            if caller.matches(&subject, public) {
+                add(scope, caps);
+            } else if caller.unconfirmed.contains(&subject) {
+                undecided = true;
+            }
+        }
+        if public {
+            for (scope, caps) in self.guest_entry_grants()? {
+                add(scope, caps);
+            }
+        }
+        // an unconfirmed membership could only add something to a caller that does not already hold everything
+        if undecided && access.ws_caps != CapSet::ALL {
+            return Err(WsError::refused(Code::PermissionDenied, Deny::AuthorizationUnavailable, "a group or contact membership could not be checked; retry later"));
         }
         Ok(access)
     }
 
+    /// What `ws.list` counts: a restricted caller lists only Workspaces granted to it (by name, group, contact or a
+    /// joined entry), never those it merely could open through a public link.
+    pub fn listing_access(&self, caller: &Caller) -> WsResult<Access> {
+        self.access_with(caller, !caller.is_restricted())
+    }
+
+    fn grant_rows(&self) -> WsResult<Vec<(String, String, u16, Option<String>)>> {
+        let mut st = self.local.prepare_cached("SELECT subject, scope_entity_id, capabilities, via_entry FROM grants ORDER BY subject, scope_entity_id").map_err(db_err)?;
+        let rows = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    /// Grant subjects whose membership the service settles per request: `group:` and `contact:`.
+    pub fn dynamic_subjects(&self) -> WsResult<Vec<String>> {
+        let mut st = self
+            .local
+            .prepare_cached("SELECT DISTINCT subject FROM grants WHERE subject LIKE 'group:%' OR subject LIKE 'contact:%' ORDER BY subject")
+            .map_err(db_err)?;
+        let rows = st.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
+    pub fn owner(&self) -> WsResult<Option<String>> {
+        self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)
+    }
+
     pub fn require_ws(&self, caller: &Caller, cap: Cap) -> WsResult<Access> {
-        let access = self.access(&caller.principal)?;
+        let access = self.access(caller)?;
         if access.is_empty() {
             // no grant at all: the Workspace does not exist for this principal
             return Err(WsError::not_found("workspace not found"));
@@ -298,9 +455,7 @@ impl Workspace {
 
     pub fn grant(&mut self, caller: &Caller, subject: &str, scope: Option<&str>, caps: &[String]) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
-        if subject.is_empty() || subject.len() > 256 {
-            return Err(WsError::invalid_op("invalid subject"));
-        }
+        check_subject(subject, caller.did())?;
         let caps = CapSet::parse(caps)?;
         if subject == PUBLIC_SUBJECT && caps.has(Cap::Manage) {
             return Err(WsError::invalid_op("a public link cannot carry the manage capability"));
@@ -313,7 +468,7 @@ impl Workspace {
         }
         self.local
             .execute(
-                "INSERT OR REPLACE INTO grants (subject, scope_entity_id, capabilities) VALUES (?1, ?2, ?3)",
+                "INSERT OR REPLACE INTO grants (subject, scope_entity_id, capabilities, via_entry) VALUES (?1, ?2, ?3, NULL)",
                 params![subject, scope.unwrap_or(""), caps.0],
             )
             .map_err(db_err)?;
@@ -322,9 +477,7 @@ impl Workspace {
 
     pub fn revoke(&mut self, caller: &Caller, subject: &str, scope: Option<&str>) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
-        let owner: Option<String> =
-            self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)?;
-        if owner.as_deref() == Some(subject) && scope.is_none() {
+        if self.owner()?.as_deref() == Some(subject) && scope.is_none() {
             return Err(WsError::invalid_op("the owner's workspace grant cannot be revoked"));
         }
         let n = self
@@ -335,30 +488,22 @@ impl Workspace {
     }
 
     /// `ws.list_grants`: the whole list for a manager; anyone else only sees the rows that apply to
-    /// them (their own subject, `public` and `*`), never the complete name list (phase two §6.3).
+    /// them (their own subject, `public`, and `*`, groups and contacts where they match), never the complete name
+    /// list (phase two §6.3). A row a join wrote names its entry (`via_entry`).
     pub fn list_grants(&self, caller: &Caller) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         let manage = access.ws_caps.has(Cap::Manage);
-        let sql = if manage {
-            "SELECT subject, scope_entity_id, capabilities FROM grants ORDER BY subject, scope_entity_id"
-        } else {
-            "SELECT subject, scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = ?2 OR subject = ?3 ORDER BY subject, scope_entity_id"
-        };
-        let mut st = self.local.prepare(sql).map_err(db_err)?;
-        let authenticated = if caller.is_guest() { PUBLIC_SUBJECT } else { ANY_AUTHENTICATED_SUBJECT };
-        let params: Vec<&dyn rusqlite::ToSql> = if manage { vec![] } else { vec![&caller.principal, &PUBLIC_SUBJECT, &authenticated] };
-        let owner: Option<String> =
-            self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)?;
-        let rows: Vec<Value> = st
-            .query_map(params.as_slice(), |r| {
-                let scope: String = r.get(1)?;
-                Ok(json!({ "subject": r.get::<_, String>(0)?, "scope_entity_id": if scope.is_empty() { Value::Null } else { json!(scope) },
-                           "capabilities": CapSet(r.get::<_, u16>(2)?).names() }))
+        let rows: Vec<Value> = self
+            .grant_rows()?
+            .into_iter()
+            .filter(|(subject, ..)| manage || caller.matches(subject, true))
+            .map(|(subject, scope, caps, via)| {
+                json!({ "subject": subject, "scope_entity_id": if scope.is_empty() { Value::Null } else { json!(scope) },
+                        "capabilities": CapSet(caps).names(), "via_entry": via.map(|v| self.entry_public_id(&v)) })
             })
-            .map_err(db_err)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(db_err)?;
-        Ok(json!({ "ok": true, "grants": rows, "complete": manage, "owner": if manage { owner } else { None }, "principal": caller.principal }))
+            .collect();
+        let owner = if manage { self.owner()? } else { None };
+        Ok(json!({ "ok": true, "grants": rows, "complete": manage, "owner": owner, "principal": caller.principal }))
     }
 
     // ---- user work state (phase two §4.4): per subject, per Workspace, in local.sqlite ----
@@ -424,7 +569,7 @@ impl Workspace {
 
     /// Any grant at all (workspace-level or scoped) is enough to know the Workspace exists.
     pub fn require_ws_any(&self, caller: &Caller) -> WsResult<Access> {
-        let access = self.access(&caller.principal)?;
+        let access = self.access(caller)?;
         if access.is_empty() {
             return Err(WsError::not_found("workspace not found"));
         }
@@ -507,7 +652,7 @@ impl Workspace {
             v["replayed"] = json!(true);
             return Ok(v);
         }
-        let access = self.access(&caller.principal).map_err(reject)?;
+        let access = self.access(caller).map_err(reject)?;
         if access.is_empty() {
             return Err(reject(WsError::not_found("workspace not found")));
         }

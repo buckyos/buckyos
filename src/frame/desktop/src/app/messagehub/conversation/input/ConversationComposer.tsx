@@ -112,6 +112,8 @@ interface ConversationComposerProps {
   /** Members offered while typing `@` and by the @ button (group sessions only). */
   mentionCandidates?: MentionCandidate[]
   canMentionAll?: boolean
+  /** false: text only, no files, folders, pasted or dropped files or voice notes (Session Only guests, v1). */
+  allowFiles?: boolean
 }
 
 
@@ -119,7 +121,7 @@ const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false },
+  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true },
   ref,
 ) {
   const { t } = useI18n()
@@ -546,9 +548,10 @@ const ConversationComposerInner = forwardRef<
   }
 
   const addTransferData = useCallback(async (dataTransfer: DataTransfer) => {
+    if (!allowFiles) return
     const transferFiles = await extractTransferFiles(dataTransfer)
     appendAttachmentInputs(transferFiles)
-  }, [appendAttachmentInputs])
+  }, [appendAttachmentInputs, allowFiles])
 
   useImperativeHandle(ref, () => ({
     addTransferData,
@@ -563,7 +566,8 @@ const ConversationComposerInner = forwardRef<
       (item) => item.kind === 'file',
     )
 
-    if (!hasFileItems) {
+    // Without files the browser pastes the text as usual.
+    if (!hasFileItems || !allowFiles) {
       return
     }
 
@@ -587,7 +591,7 @@ const ConversationComposerInner = forwardRef<
   const hasDraft = relation?.kind === 'edit' ? Boolean(inputValue.trim()) : hasAttachments || Boolean(inputValue.trim())
   // An empty input offers a voice note in place of the send button (Telegram);
   // a recording keeps it until the note is sent or discarded.
-  const showVoice = canRecord && showInput && (recording || (!hasDraft && relation?.kind !== 'edit'))
+  const showVoice = allowFiles && canRecord && showInput && (recording || (!hasDraft && relation?.kind !== 'edit'))
   const showMentions = mentionCandidates.length > 0 || canMentionAll
   const answerBusy = directSend !== null || pendingSends > 0
   const stopButton = answer ? (
@@ -738,18 +742,20 @@ const ConversationComposerInner = forwardRef<
           className="relative flex min-w-0 items-end gap-0.5 rounded-[22px] border px-0.5 transition-[border-color,box-shadow] focus-within:border-[color:color-mix(in_srgb,var(--cp-accent)_55%,var(--cp-border))] focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--cp-accent)_14%,transparent)]"
           style={{ background: 'var(--cp-message-canvas)', borderColor: 'var(--cp-border)' }}
         >
-          <button
-            className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"
-            style={{ color: 'var(--cp-muted)' }}
-            onClick={() => { if (canPickFolder) setPickerOpen((previous) => !previous); else fileInputRef.current?.click() }}
-            type="button"
-            aria-label={t('messagehub.addAttachment', 'Add attachment')}
-            aria-haspopup={canPickFolder ? 'menu' : undefined}
-            aria-expanded={canPickFolder ? pickerOpen : undefined}
-            title={t('messagehub.addAttachment', 'Add attachment')}
-          >
-            <Paperclip size={18} />
-          </button>
+          {allowFiles ? (
+            <button
+              className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"
+              style={{ color: 'var(--cp-muted)' }}
+              onClick={() => { if (canPickFolder) setPickerOpen((previous) => !previous); else fileInputRef.current?.click() }}
+              type="button"
+              aria-label={t('messagehub.addAttachment', 'Add attachment')}
+              aria-haspopup={canPickFolder ? 'menu' : undefined}
+              aria-expanded={canPickFolder ? pickerOpen : undefined}
+              title={t('messagehub.addAttachment', 'Add attachment')}
+            >
+              <Paperclip size={18} />
+            </button>
+          ) : null}
           {showMentions ? (
             <button
               className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"

@@ -30,6 +30,8 @@ interface MockGroupSession {
   lifecycle: 'active' | 'archived' | 'deleted'
   revision: string
   receipts: 'hidden' | 'count' | 'readers'
+  /** `SessionRules.allow_guests`. */
+  allowGuests: boolean
   /** Explicit participants beyond inherited members: group members added by hand and guests. */
   participants: Record<string, 'member' | 'guest' | 'invited_guest' | 'removed'>
 }
@@ -103,7 +105,7 @@ function seedSnapshot(now: number): Snapshot {
       [getMockEntityDid('agent-writer')]: { role: 'member', state: 'invited', inviteId: 'invite-writer', expiresAt: now + INVITE_TTL_MS },
       [erin]: { role: 'member', state: 'pending_admin_approval', invitedBy: bob },
     }, sessions: {
-      'design-review': { sessionId: 'design-review', title: 'Design review', description: '', announcement: 'Review every Thursday.', lifecycle: 'active', revision: 'rev-design-1', receipts: 'readers', participants: { 'did:buckyos:person:frank': 'guest' } },
+      'design-review': { sessionId: 'design-review', title: 'Design review', description: '', announcement: 'Review every Thursday.', lifecycle: 'active', revision: 'rev-design-1', receipts: 'readers', allowGuests: true, participants: { 'did:buckyos:person:frank': 'guest' } },
     }, inviteLinks: {}, pendingTransfer: { memberDid: MOCK_SELF_DID, transferId: 'transfer-team', expiresAt: now + INVITE_TTL_MS } },
     [MOCK_HIKING_GROUP]: { did: MOCK_HIKING_GROUP, name: 'Weekend Hiking', description: '', ownerDid: bob, lifecycle: 'active', createdAt: now - 86400000, revision: 'rev-hiking-1', members: {
       [bob]: { role: 'owner', state: 'active' }, [alice]: { role: 'member', state: 'active' },
@@ -113,7 +115,7 @@ function seedSnapshot(now: number): Snapshot {
       [carol]: { role: 'owner', state: 'active' }, [dave]: { role: 'member', state: 'active' },
       [MOCK_AGENT_OWNER]: { role: 'member', state: 'invited', inviteId: 'invite-book-agent', expiresAt: now + INVITE_TTL_MS, invitedBy: carol },
     }, sessions: {
-      reading: { sessionId: 'reading', title: 'Reading list', description: '', announcement: '', lifecycle: 'active', revision: 'rev-reading-1', receipts: 'count', participants: { [MOCK_SELF_DID]: 'invited_guest' } },
+      reading: { sessionId: 'reading', title: 'Reading list', description: '', announcement: '', lifecycle: 'active', revision: 'rev-reading-1', receipts: 'count', allowGuests: true, participants: { [MOCK_SELF_DID]: 'invited_guest' } },
     }, inviteLinks: { 'book-club-token': { requireApproval: false, revoked: false } } },
   }
   const notice = (id: string, from: string, sessionId: string, at: number, groupDid: string, action: string, data: Record<string, unknown>): MessageObject => ({
@@ -777,8 +779,8 @@ export class MessageHubMockStore implements MessageHubStore {
   }
 
   private groupSessions(group: MockGroup): GroupSessionInfo[] {
-    const named = Object.values(group.sessions).filter(session => session.lifecycle !== 'deleted').map(session => ({ key: groupSessionKey(group.did, session.sessionId), sessionId: session.sessionId, title: session.title, description: session.description, announcement: session.announcement, sharedRevision: session.revision, lifecycle: session.lifecycle, revision: session.revision, hasGuests: Object.values(session.participants).includes('guest'), receipts: session.receipts }))
-    return [{ key: group.did, sessionId: null, title: '', description: '', announcement: '', sharedRevision: group.revision, lifecycle: group.lifecycle, revision: group.revision, hasGuests: false, receipts: group.did === MOCK_PRODUCT_TEAM ? 'readers' : 'hidden' }, ...named]
+    const named = Object.values(group.sessions).filter(session => session.lifecycle !== 'deleted').map(session => ({ key: groupSessionKey(group.did, session.sessionId), sessionId: session.sessionId, title: session.title, description: session.description, announcement: session.announcement, sharedRevision: session.revision, lifecycle: session.lifecycle, revision: session.revision, hasGuests: Object.values(session.participants).includes('guest'), allowGuests: session.allowGuests === true, receipts: session.receipts }))
+    return [{ key: group.did, sessionId: null, title: '', description: '', announcement: '', sharedRevision: group.revision, lifecycle: group.lifecycle, revision: group.revision, hasGuests: false, allowGuests: false, receipts: group.did === MOCK_PRODUCT_TEAM ? 'readers' : 'hidden' }, ...named]
   }
   private groupInfo(group: MockGroup, viewerDid: string): GroupInfo {
     const me = group.members[viewerDid]

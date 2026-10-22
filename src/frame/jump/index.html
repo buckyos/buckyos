@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<title>BuckyOS Jump</title>
+<link rel="stylesheet" href="/jump.css">
+</head>
+<body>
+<main id="app">
+  <h1>前往你的 Zone</h1>
+  <p data-role="unknown" hidden>不支持的操作。</p>
+  <form hidden>
+    <label>Zone 主机名
+      <input name="zone" autocomplete="off" spellcheck="false" placeholder="alice.example.com" required>
+    </label>
+    <p data-role="candidate" hidden>来源页面建议：<button type="button"></button>（不会自动使用）</p>
+    <label><input type="checkbox" name="remember"> 在此浏览器记住这个 Zone</label>
+    <label><input type="checkbox" name="auto"> 以后不再询问，直接前往</label>
+    <p data-role="error" hidden>请输入不含协议、端口和路径的主机名。</p>
+    <button type="submit">前往</button>
+    <button type="button" data-role="clear" hidden>清除已保存的 Zone</button>
+  </form>
+  <p class="note">选择 Zone 只决定去哪里，不代表已登录。到达后仍需在该 Zone 登录并确认操作。</p>
+</main>
+<script type="module" src="/jump-page.js"></script>
+</body>
+</html>

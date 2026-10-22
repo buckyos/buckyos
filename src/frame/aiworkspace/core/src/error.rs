@@ -113,6 +113,41 @@ impl Code {
     }
 }
 
+/// Why access was refused (hybrid SSO D-4). The wire names are those of buckyos-api `DenyReason`; the service adds
+/// who can adjust the outcome. Only access failures carry one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deny {
+    /// This kind of caller never gets the method (a product boundary): creation for restricted callers.
+    SessionKindNotAllowed,
+    /// No grant reaches the resource, or it does not exist (the two look the same).
+    ResourceGrantMissing,
+    /// The share entry is missing, closed, expired or does not offer the caller's sign-in method.
+    EntryUnavailable,
+    /// The Zone switched off the sign-in method the entry would accept.
+    ZoneMethodDisabled,
+    /// A membership the decision depends on could not be checked.
+    AuthorizationUnavailable,
+}
+
+impl Deny {
+    pub const ALL: &'static [Deny] =
+        &[Deny::SessionKindNotAllowed, Deny::ResourceGrantMissing, Deny::EntryUnavailable, Deny::ZoneMethodDisabled, Deny::AuthorizationUnavailable];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Deny::SessionKindNotAllowed => "session_kind_not_allowed",
+            Deny::ResourceGrantMissing => "resource_grant_missing",
+            Deny::EntryUnavailable => "entry_unavailable",
+            Deny::ZoneMethodDisabled => "zone_method_disabled",
+            Deny::AuthorizationUnavailable => "authorization_unavailable",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Deny> {
+        Deny::ALL.iter().copied().find(|d| d.as_str() == s)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WsError {
     pub code: Code,
@@ -123,16 +158,21 @@ pub struct WsError {
     pub path: Option<String>,
     /// Structured, authorization-safe extras (referrer lists, counts, ...).
     pub data: Option<Value>,
+    pub denial: Option<Deny>,
 }
 
 pub type WsResult<T> = Result<T, WsError>;
 
 impl WsError {
     pub fn new(code: Code, detail: impl Into<String>) -> Self {
-        WsError { code, sub: None, detail: detail.into(), path: None, data: None }
+        WsError { code, sub: None, detail: detail.into(), path: None, data: None, denial: None }
     }
     pub fn sub(code: Code, sub: &'static str, detail: impl Into<String>) -> Self {
-        WsError { code, sub: Some(sub), detail: detail.into(), path: None, data: None }
+        WsError { code, sub: Some(sub), detail: detail.into(), path: None, data: None, denial: None }
+    }
+    /// An access refusal with its D-4 reason.
+    pub fn refused(code: Code, reason: Deny, detail: impl Into<String>) -> Self {
+        WsError { denial: Some(reason), ..Self::new(code, detail) }
     }
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
@@ -164,7 +204,7 @@ impl WsError {
         Self::new(Code::StorageIoError, detail)
     }
 
-    /// `{ code, retryable, detail, sub_code?, path?, ... }`
+    /// `{ code, retryable, detail, sub_code?, path?, data?, denial?: { reason } }`
     pub fn to_json(&self) -> Value {
         let mut v = json!({
             "code": self.code.as_str(),
@@ -180,6 +220,9 @@ impl WsError {
         }
         if let Some(d) = &self.data {
             m.insert("data".into(), d.clone());
+        }
+        if let Some(d) = self.denial {
+            m.insert("denial".into(), json!({ "reason": d.as_str() }));
         }
         v
     }

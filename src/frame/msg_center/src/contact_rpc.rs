@@ -5,7 +5,8 @@
 
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    contact_tag_app, contact_tag_kind, normalize_contact_tag, AccessGroupLevel,
+    contact_tag_app, contact_tag_kind, normalize_contact_tag, project_contacts, AccessDenial, Contact,
+    AccessGroupLevel, DenyReason, UserGroupRef, CONTACT_TAG_ZONE_USER, MSG_CENTER_SERVICE_NAME,
     ContactCancelFriendRequestReq, ContactCheckMembershipReq, ContactCheckMembershipResult,
     ContactDidReq, ContactListFriendRequestsReq, ContactLookupReq, ContactRemoveFriendReq,
     ContactRespondFriendRequestReq, ContactSendFriendRequestReq, ContactSource, ContactTagKind,
@@ -17,10 +18,12 @@ use buckyos_api::{
     METHOD_CONTACT_UNBLOCK_CONTACT, METHOD_CONTACT_UPDATE_TAGS,
 };
 use kRPC::{RPCContext, RPCErrors};
+use log::warn;
 use name_lib::DID;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 type Result<T> = std::result::Result<T, RPCErrors>;
 
@@ -206,7 +209,9 @@ impl MessageCenter {
 
     /// Is exactly `req.did` (no alias or merge resolution: the caller proved
     /// that DID) in `req.owner`'s group `req.tag`, projected Zone users
-    /// included? A blocked contact is in no group.
+    /// included? A blocked contact is in no group. Projected groups
+    /// (`zone_user`, `type:*`, `group:*` of a Zone account) are answered from
+    /// the accounts as they are now, never from the last zone sync (D-5).
     pub(crate) async fn check_contact_membership(
         &self,
         req: &ContactCheckMembershipReq,
@@ -218,11 +223,83 @@ impl MessageCenter {
             .get_contact(req.did.clone(), Some(req.owner.clone()))
             .await?
             .filter(|contact| self.contact_visible(Some(&req.owner), contact));
+        if contact
+            .as_ref()
+            .is_some_and(|contact| contact.access_level == AccessGroupLevel::Block)
+        {
+            return Ok(ContactCheckMembershipResult { member: false });
+        }
+        let group = tag.parse::<UserGroupRef>().ok();
+        if group.is_some()
+            || (tag == CONTACT_TAG_ZONE_USER && self.zone_account_user_id(&req.owner).is_some())
+        {
+            let via = self.projection_now(&req.owner, &req.did).await.map_err(|error| {
+                warn!("contact membership cannot be checked now: {}", error);
+                AccessDenial::new(DenyReason::AuthorizationUnavailable)
+                    .at(MSG_CENTER_SERVICE_NAME, METHOD_CONTACT_CHECK_MEMBERSHIP)
+                    .into_rpc_error()
+            })?;
+            let member = via.is_some_and(|via| group.map_or(true, |group| via.contains(&group)));
+            return Ok(ContactCheckMembershipResult { member });
+        }
         Ok(ContactCheckMembershipResult {
-            member: contact.is_some_and(|contact| {
-                contact.access_level != AccessGroupLevel::Block
-                    && contact.tags.iter().any(|t| *t == tag)
-            }),
+            member: contact.is_some_and(|contact| contact.tags.iter().any(|t| *t == tag)),
         })
+    }
+
+    /// The groups through which Zone account `owner` sees Zone account `did`
+    /// by the projection rules, from the accounts and rules read now; `None`
+    /// when it does not see it (or either is no account).
+    async fn projection_now(
+        &self,
+        owner: &DID,
+        did: &DID,
+    ) -> Result<Option<BTreeSet<UserGroupRef>>> {
+        let (Some(owner), Some(user)) = (
+            self.zone_account_user_id(owner),
+            self.zone_account_user_id(did),
+        ) else {
+            return Ok(None);
+        };
+        let verifier = self.token_verifier.get();
+        let (Some(mut viewer), Some(mut account)) = (
+            verifier.account_settings(&owner).await?,
+            verifier.account_settings(&user).await?,
+        ) else {
+            return Ok(None);
+        };
+        let groups = verifier.user_groups().await?;
+        viewer.user_id = owner;
+        account.user_id = user.clone();
+        Ok(project_contacts(
+            &groups.projection_rules(),
+            &groups.defined_group_ids(),
+            &viewer,
+            [&account],
+        )
+        .remove(&user))
+    }
+
+    /// A projected contact with its projection data as the accounts are now:
+    /// group tags and `projected_from` are read as authorization data (e.g.
+    /// HomeStation audiences), so a stale or unreadable projection is dropped
+    /// rather than presented. Display fields stay as projected.
+    pub(crate) async fn with_current_projection(&self, owner: &DID, mut contact: Contact) -> Contact {
+        if contact.projected_from.is_empty() {
+            return contact;
+        }
+        let sources: Vec<String> = match self.projection_now(owner, &contact.did).await {
+            Ok(via) => via.into_iter().flatten().map(|group| group.to_string()).collect(),
+            Err(error) => {
+                warn!("contact projection cannot be read now: {}", error);
+                Vec::new()
+            }
+        };
+        contact.tags.retain(|tag| {
+            let projected = *tag == CONTACT_TAG_ZONE_USER || tag.parse::<UserGroupRef>().is_ok();
+            !projected || sources.contains(tag) || (*tag == CONTACT_TAG_ZONE_USER && !sources.is_empty())
+        });
+        contact.projected_from = sources;
+        contact
     }
 }

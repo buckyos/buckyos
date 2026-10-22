@@ -13,6 +13,8 @@ export interface ServiceError {
   detail?: string
   sub_code?: string
   data?: Record<string, unknown>
+  /** An access refusal's D-4 denial (`AccessDenial` of the WebSDK), validated by ServiceFailure. */
+  denial?: unknown
 }
 
 /** `{ ok: true, ... } | { ok: false, error }` — every non-commit method. */
@@ -696,7 +698,26 @@ export interface RunView {
 
 export interface ExportResult { export_id: string; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
 
-export interface Grant { subject: string; scope_entity_id: string | null; capabilities: Capability[] }
+/** `via_entry`: the share entry whose join wrote the row. Subjects: a principal (user id, External DID), `public`,
+ * `*` (unrestricted accounts), `group:<id>`, `contact:<owner_did>#<tag>`. */
+export interface Grant { subject: string; scope_entity_id: string | null; capabilities: Capability[]; via_entry?: string | null }
+
+/** A share entry (hybrid SSO contract §8.3): its id names the workspace (`<workspace_id>~se_…`); times are unix seconds. */
+export interface ShareEntry {
+  entry_id: string
+  workspace_id: string
+  scope_entity_id: string | null
+  capabilities: Capability[]
+  methods: { guest: boolean; password: boolean; self_register: boolean; did_login: boolean }
+  state: 'active' | 'closed' | 'expired'
+  expires_at: number | null
+  created_by: string
+  created_at: number
+}
+
+/** `ws.join_entry`: what the caller now holds through the entry — a grant of its own (`granted`), or, for an entry open
+ * to guests that does not admit its sign-in method, the entry's access as anyone has it (no grant, ends with the entry). */
+export interface EntryJoin { workspace_id: string; entry_id: string; scope_entity_id: string | null; capabilities: Capability[]; joined: boolean; granted: boolean; path: string }
 /** `complete`: the caller is a manager and saw every row; otherwise only the rows that apply to them. */
 export interface GrantList { grants: Grant[]; complete: boolean; owner: string | null; principal: string }
 

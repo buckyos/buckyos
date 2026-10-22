@@ -46,7 +46,7 @@ impl Station {
     /// Methods of the user's own HomeStation; `Host::handle_rpc` routes each caller to their
     /// own station, other users' homes are read through `portal.*`.
     pub async fn handle_rpc(&self, caller: &Caller, method: &str, params: Value) -> HsResult<Value> {
-        if caller.did.as_deref().is_some_and(|did| did != self.cfg.owner) {
+        if caller.did != self.cfg.owner {
             return Err(HsError::Forbidden("only the HomeStation's user may call this method".into()));
         }
         let eval_scope = match caller.app_id.as_deref() {
@@ -378,7 +378,7 @@ impl Station {
                 )?)
             })
             .await?;
-        let ctx = self.view_ctx(Reader::Owner).await;
+        let ctx = self.view_ctx(Reader::Owner).await?;
         let identities: Vec<Value> = ctx.names.keys().map(|did| crate::projection::identity_view(&ctx, did)).collect();
         let followers = self.active_followers().await?;
         let following: Vec<Value> = self
@@ -443,7 +443,7 @@ impl Station {
 
     /// Entry view (state, audience, kind) and card of one of my entries as `reader` sees it.
     pub async fn entry_card(&self, reader: &Reader, entry: &str) -> HsResult<Option<(Value, Option<Value>)>> {
-        let ctx = self.view_ctx(reader.clone()).await;
+        let ctx = self.view_ctx(reader.clone()).await?;
         let found = self.entry_card_with(&ctx, entry).await?;
         Ok(found.filter(|(view, _)| ctx.is_owner() || view["head"]["state"] != "withdrawn"))
     }
@@ -509,7 +509,7 @@ impl Station {
         let profile_feed = kind.is_none();
         let kind = kind.or_else(|| Some("feed".into()));
         let page = self.read_display(&reader, kind, cursor, limit, false).await?;
-        let ctx = self.view_ctx(reader.clone()).await;
+        let ctx = self.view_ctx(reader.clone()).await?;
         let is_owner = reader == Reader::Owner;
         let mut entries = Vec::new();
         let mut cards = Vec::new();

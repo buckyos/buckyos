@@ -63,8 +63,13 @@ async function expectReject(label: string, operation: () => Promise<unknown>, ex
     await operation();
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    // A structured denial (kRPC `code: access_denied`) is matched on its reason, not its text.
+    const denialReason = (error as { data?: { reason?: unknown } }).data?.reason;
     const codes = expected === undefined ? [] : [expected].flat();
-    assert(codes.length === 0 || codes.some((code) => reason.includes(code)), `${label}: expected "${codes.join(" | ")}", got "${reason}"`);
+    assert(
+      codes.length === 0 || codes.some((code) => (typeof denialReason === "string" ? denialReason === code : reason.includes(code))),
+      `${label}: expected "${codes.join(" | ")}", got "${reason}"`,
+    );
     console.log(`  ✓ ${label}: ${reason}`);
     return;
   }
@@ -160,7 +165,8 @@ try {
   await expectReject("change own password", () =>
     cp("user.change_password", { new_password_hash: hashPassword(carol, `${password}-2`) }, carolToken));
   await expectReject("manage groups", () => cp("user_group.list", {}, carolToken));
-  await expectReject("create an Agent", () => cp("agent.create", { name: `utagent${stamp}` }, carolToken), "limited");
+  // Restricted sessions are refused at the Control Panel gate before any Agent rule.
+  await expectReject("create an Agent", () => cp("agent.create", { name: `utagent${stamp}` }, carolToken), "session_kind_not_allowed");
   await expectReject("list own sessions (no mailbox)", () =>
     call("msg-center", "msg.list_sessions", { owner: carolDid }, carolToken));
 

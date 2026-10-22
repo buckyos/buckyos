@@ -1,7 +1,7 @@
 # Session Only Member 设计
 
 - 版本：草案，2026-10-04；修订为标准 BuckyOS guest 身份、App access token 登录和统一授权模型。
-- 状态：**设计结论，尚未实现**。本文确定认证与授权边界；协议细节和上线前置见 §10、§12。
+- 状态：**部分实现（2026-10-22，随混合 SSO）**。已实现：受限会话闸口（Limited / External 默认拒绝、msg-center 群路径按 `msg_group` 开放）、Session Guest 的 Limited 与 External 访客经专属邀请或 DID 登录进入、无个人邮箱的群消息发送与带 `context_path` 的附件读取、Message Hub 访客页 `/messagehub/guest`、群公开入口的认证方式。未实现：§5 的 `login_by_app_access_token`（混合 SSO S-1 后排）、Session 邀请的独立版本与过期。实现契约见 [混合 SSO 技术契约](<../arch/verify-hub/混合SSO技术契约.md>)；本文的 guest user 对应 Limited（专属邀请 / 自助注册账号）或 External（DID 登录）。
 - 核心流程：**App 页面取得外部用户的 access token，调用 verify-hub 的 `login_by_app_access_token`，换取标准 BuckyOS guest session token。** 后续调用沿用系统认证、RBAC 和资源授权。
 - 实施原则：**先完整设计并验证权限模型，再开放 guest 登录。** 可以逐项开放业务能力，不能先签发全系统认可的 token，再逐个服务补权限检查。
 - 相关文档：

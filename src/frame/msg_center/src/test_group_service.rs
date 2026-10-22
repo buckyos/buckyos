@@ -175,6 +175,9 @@ impl SessionTokenVerifier for Verifier {
     async fn zone_agent(&self, d: &DID) -> Result<Option<ZoneAgentInfo>> {
         Ok(self.agents.get(d).cloned())
     }
+    async fn sso_settings(&self) -> Result<buckyos_api::SsoSettings> {
+        Ok(Default::default())
+    }
 }
 /// `agent()` may join groups; `private_agent()` only when `private_allow_group`.
 fn verifier(private_allow_group: bool) -> Arc<Verifier> {
@@ -1007,7 +1010,7 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
 #[tokio::test]
 async fn guest_requests_are_atomic_idempotent_and_do_not_leak_other_sessions() {
     let (c, _tmp, _) = center().await;
-    create(&c, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1}},"session_templates":{"tickets":{"membership":{"roles":["owner","admin"]},"rules":{"allow_guests":true}}}})).await;
+    create(&c, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1,"auth_methods":{"password":true}}},"session_templates":{"tickets":{"membership":{"roles":["owner","admin"]},"rules":{"allow_guests":true}}}})).await;
     let p = json!({"request_id":"request1"});
     let one = call(&c, &guest(), "group.submit_guest_request", p.clone())
         .await
@@ -1268,7 +1271,7 @@ async fn attachments_require_the_exact_message_context_and_remote_client_policy(
 #[tokio::test]
 async fn deleted_guest_sessions_keep_minimal_notifications_and_existing_local_copies() {
     let (host, _htmp, _) = center().await;
-    create(&host, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1}},"session_templates":{"tickets":{"membership":{"roles":["owner"]},"rules":{"allow_guests":true}}}})).await;
+    create(&host, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1,"auth_methods":{"password":true}}},"session_templates":{"tickets":{"membership":{"roles":["owner"]},"rules":{"allow_guests":true}}}})).await;
     let session = call(
         &host,
         &guest(),

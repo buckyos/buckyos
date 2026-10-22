@@ -17,6 +17,7 @@ import { myNetworkEn, myNetworkZh } from './my-network'
 import { loadingTipsEn, loadingTipsZh } from './loading-tips'
 import { sharesEn, sharesZh } from './shares'
 import { appLaunchEn, appLaunchZh } from './app-launch'
+import { ssoEn, ssoZh } from './sso'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -1719,8 +1720,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...appLaunchEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...appLaunchZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn, ...presentationEn, ...settingsEn, ...trayEn, ...filePermissionsEn, ...networkEn, ...myNetworkEn, ...sharesEn, ...appLaunchEn, ...ssoEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh, ...presentationZh, ...settingsZh, ...trayZh, ...filePermissionsZh, ...networkZh, ...myNetworkZh, ...sharesZh, ...appLaunchZh, ...ssoZh },
   ja,
   ko,
   fr,

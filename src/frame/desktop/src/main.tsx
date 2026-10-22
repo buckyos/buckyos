@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
+import { ANONYMOUS_IDENTITY, buckyos, RuntimeType, type CurrentIdentity } from 'buckyos'
 import 'swiper/css'
 import 'swiper/css/pagination'
 import 'react-grid-layout/css/styles.css'
@@ -13,24 +13,12 @@ import { isPortalRoot } from './app/homestation/links'
 import { registerDesktopServiceWorker } from './serviceWorker'
 import { setPresentationViewer } from './presentation/zone'
 import { redirectToDesktopLogin } from './auth/loginRedirect'
+import { setBootIdentity } from './sso/identity'
 
-interface AccountInfo {
-  session_token?: unknown
-  user_id?: unknown
-}
-
-function accountSessionToken(accountInfo: AccountInfo | null): string {
-  return typeof accountInfo?.session_token === 'string'
-    ? accountInfo.session_token.trim()
-    : ''
-}
-
-async function ensureDesktopSession(accountInfo: AccountInfo | null): Promise<boolean> {
-  if (accountSessionToken(accountInfo)) {
-    return true
-  }
-  const refreshedToken = await getActiveSessionToken()
-  return typeof refreshedToken === 'string' && refreshedToken.trim().length > 0
+function viewerKey(identity: CurrentIdentity): string | null {
+  if (identity.kind === 'account') return identity.user_id
+  if (identity.kind === 'external') return identity.did
+  return null
 }
 
 async function bootstrap() {
@@ -39,6 +27,13 @@ async function bootstrap() {
     return
   }
 
+  // Login-optional internal pages (see publicRoutes.ts) skip the sign-in
+  // gate so they remain reachable in a logged-out state; so does `/` on the
+  // zone's short hosts, which opens the default HomeStation feed. A signed-in
+  // viewer is still recognised there. The identity (account, External DID or
+  // nobody) comes from the session refresh, never from a cached account.
+  const optional = isPublicRoute(window.location.pathname) || isPortalRoot()
+  let identity: CurrentIdentity
   if (!isMockRuntime()) {
     console.log('[bootstrap] initBuckyOS starting...')
     // Behind the Vite zone proxy (VITE_ZONE_PROXY) the dev origin *is* the
@@ -56,24 +51,24 @@ async function bootstrap() {
       await buckyos.initBuckyOS('control-panel')
     }
     console.log('[bootstrap] initBuckyOS done')
-    // Login-optional internal pages (see publicRoutes.ts) skip the account
-    // gate so they remain reachable in a logged-out state; so does `/` on the
-    // zone's short hosts, which opens the default HomeStation feed. A signed-in
-    // viewer is still recognised there.
-    const optional = isPublicRoute(window.location.pathname) || isPortalRoot()
-    const accountInfo = optional
-      ? await (buckyos.getAccountInfo() as Promise<AccountInfo | null>).catch(() => null)
-      : await buckyos.getAccountInfo() as AccountInfo | null
-    console.log('[bootstrap] accountInfo:', accountInfo)
-    if (!optional && (accountInfo == null || !(await ensureDesktopSession(accountInfo)))) {
-      console.log('[bootstrap] accountInfo has no active session, redirect to login')
-      redirectToDesktopLogin()
-      return
+    identity = optional
+      ? await buckyos.getCurrentIdentity().catch(() => ANONYMOUS_IDENTITY)
+      : await buckyos.getCurrentIdentity()
+    console.log('[bootstrap] identity:', identity.kind)
+    if (identity.kind !== 'anonymous') {
+      setPresentationViewer(viewerKey(identity))
     }
-    if (!optional || accountSessionToken(accountInfo)) {
-      setPresentationViewer(typeof accountInfo?.user_id === 'string' ? accountInfo.user_id : null)
-    }
+  } else {
+    // The mock runtime's session lives in its in-browser control panel.
+    const { mockCurrentIdentity } = await import('./api/control_panel_mock.ts')
+    identity = mockCurrentIdentity()
   }
+  if (!optional && identity.kind === 'anonymous') {
+    console.log('[bootstrap] no active session, redirect to login')
+    redirectToDesktopLogin()
+    return
+  }
+  setBootIdentity(identity)
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

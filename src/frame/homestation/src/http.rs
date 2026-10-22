@@ -6,7 +6,7 @@
 use crate::audience::Reader;
 use crate::auth::{reader_from_request, Caller};
 use crate::delivery::HEADER_AUDIENCE;
-use crate::error::HsError;
+use crate::error::{denied, HsError};
 use crate::host::{Host, Viewer};
 use crate::protocol::{normalize_obj_id, obj_type_of, OBJ_TYPE_FILE, ZONE_FEED};
 use crate::Station;
@@ -62,6 +62,16 @@ fn rpc_error(seq: u64, message: &str) -> Response {
     Json(json!({ "error": message, "sys": [seq] })).into_response()
 }
 
+/// A failed call; a denial also carries its code and reason (contract §4.1).
+fn rpc_failure(seq: u64, e: &HsError) -> Response {
+    let mut body = json!({ "error": e.to_string(), "sys": [seq] });
+    if let Some(denial) = e.denial() {
+        body["code"] = json!(e.code());
+        body["data"] = json!(denial);
+    }
+    Json(body).into_response()
+}
+
 async fn krpc(State(state): State<AppState>, body: Bytes) -> Response {
     let req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -76,20 +86,24 @@ async fn krpc(State(state): State<AppState>, body: Bytes) -> Response {
         Some(token) => match state.host.auth.authenticate(token).await {
             Ok(c) => Some(c),
             // A stale session must not hide public pages: portal reads fall back to anonymous.
-            Err(_) if portal => None,
-            Err(e) => return rpc_error(seq, &format!("unauthorized: {e}")),
+            Err(HsError::Unauthorized(_)) if portal => None,
+            Err(e) => return rpc_failure(seq, &e),
         },
         None if portal => None,
         None => return rpc_error(seq, "session token required"),
     };
     match state.host.handle_rpc(caller.as_ref(), &method, params).await {
         Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
-        Err(e) => rpc_error(seq, &e.to_string()),
+        Err(e) => rpc_failure(seq, &e),
     }
 }
 
 fn error_response(e: HsError) -> Response {
-    (e.status(), Json(json!({ "error": e.code(), "message": e.message() }))).into_response()
+    let mut body = json!({ "error": e.code(), "message": e.message() });
+    if let Some(denial) = e.denial() {
+        body["data"] = json!(denial);
+    }
+    (e.status(), Json(body)).into_response()
 }
 
 async fn caller_from_bearer(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> Result<Caller, Response> {
@@ -100,7 +114,7 @@ async fn caller_from_bearer(state: &AppState, headers: &HeaderMap, query: &HashM
         .map(str::to_string)
         .or_else(|| query.get("access").cloned())
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session token required").into_response())?;
-    state.host.auth.authenticate(&token).await.map_err(|e| (StatusCode::UNAUTHORIZED, e).into_response())
+    state.host.auth.authenticate(&token).await.map_err(error_response)
 }
 
 fn not_found(what: &str) -> Response {
@@ -123,6 +137,9 @@ async fn upload(State(state): State<AppState>, headers: HeaderMap, Query(query):
         Ok(c) => c,
         Err(r) => return r,
     };
+    if caller.restricted {
+        return error_response(denied(buckyos_api::DenyReason::SessionKindNotAllowed, "upload"));
+    }
     let station = match state.host.station_for_caller(&caller).await {
         Ok(Some(station)) => station,
         Ok(None) => return (StatusCode::FORBIDDEN, "this account has no HomeStation here").into_response(),
@@ -157,7 +174,7 @@ async fn reader(state: &AppState, station: &Station, headers: &HeaderMap, query:
         query.get("access").map(String::as_str),
     )
     .await
-    .map_err(|e| (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized", "message": e }))).into_response())
+    .map_err(error_response)
 }
 
 /// Reader of the zone feed: no owner there, each listed entry is judged by its own station.
@@ -172,7 +189,7 @@ async fn viewer(state: &AppState, headers: &HeaderMap, query: &HashMap<String, S
         query.get("access").map(String::as_str),
     )
     .await
-    .map_err(|e| (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized", "message": e }))).into_response())?;
+    .map_err(error_response)?;
     Ok(Viewer::from_reader(&reader, ""))
 }
 

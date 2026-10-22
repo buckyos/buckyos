@@ -1,0 +1,9 @@
+body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; color: #1f2328; background: #fff; }
+main { max-width: 480px; margin: 48px auto; }
+h1 { font-size: 1.4rem; }
+label { display: block; margin: 12px 0; }
+input[name=zone] { display: block; width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; font-size: 1rem; }
+button { margin: 8px 8px 0 0; padding: 8px 16px; }
+.note { color: #59636e; font-size: 0.9rem; margin-top: 24px; }
+[data-role=error] { color: #cf222e; }
+@media (prefers-color-scheme: dark) { body { color: #e6edf3; background: #0d1117; } .note { color: #9198a1; } }

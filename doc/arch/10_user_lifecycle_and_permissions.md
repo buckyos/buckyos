@@ -99,6 +99,8 @@
 
 匿名访问者与 External（已认证但无账号记录的 DID）都没有账号记录，scheduler 不为它们生成任何组，系统 RBAC 一律拒绝。
 
+User 的 `su_<user>` 只有 `g, su_<user>, su_users` 一行，不再带本人 `settings` / `doc` 的写规则：改密、首设密码、类型 / 组 / 状态变更都经 Control Panel 业务方法，由 CP 校验后以服务身份写入。账号 → DID 只认 `users/<id>/doc`；system-config 拒绝非管理者写入与 doc 不一致的 `profile.did`。Limited 与 External 的会话另受受限会话闸口约束（[混合 SSO 技术契约](verify-hub/混合SSO技术契约.md) §3）。
+
 > 系统/服务侧角色（与“用户”正交，仅供理解全貌）：`kernel`（`/config/*` 全权，且**绕过用户维度检查**）、`ood`（调度器写策略用）、`service`（系统服务）、`app`（App 服务，按 `{app}` 隔离）。详见 §6.3 与 [`07_identity_and_rbac.md`](07_identity_and_rbac.md)。
 
 ### 2.3 双主体 enforce：用户权限与 App 权限是“与”关系
@@ -297,8 +299,9 @@ Control Panel 的 RPC、Desktop HTTP 写入口与 NFS `share.*` 写入口也校�
 3. **🟠 用户级生命周期事件 `onUserDelete`（及可选 `onUserCreate`）**：与现有 `onAppInstall` 对称，作为 App 清理/预热该用户数据的标准触发点（§3.2、§4.3 依赖它）。
 4. **🟠 删除语义明确化**：定义软删除（可恢复，保留数据）与硬删除（清孤儿 key + 级联数据）的边界与触发方式。
 5. ✅ **`limited` 落地**（2026-10-21）：`limited` 只有自身 settings / profile 策略，经系统用户组获得 App 可用性与资源授权；`Guest` 类型已删除，匿名访问不是用户类型。
-6. **🟡 sudo / 提权引擎**：把 `Login机制设计.md` / `rbac.md` 的 `su_*` 设计从“手写策略约定”落到运行期（解析 + 短 TTL + super_* 组）。
-7. **🟡 运行期用户 DID 密钥**：消除运行期创建用户“doc 无公钥”与引导期 `OwnerConfig` 的不对称。
+6. ✅ **身份字段写保护与受限会话**（2026-10-22，混合 SSO PRE-01 / 02、SSO-04）：su_users 不能改本人 settings / doc，profile DID 受保护，Limited / External 会话默认拒绝、逐方法开放；Limited 不签发 sudo。
+7. **🟡 sudo / 提权引擎**：把 `Login机制设计.md` / `rbac.md` 的 `su_*` 设计从“手写策略约定”落到运行期（解析 + 短 TTL + super_* 组）。
+8. **🟡 运行期用户 DID 密钥**：消除运行期创建用户“doc 无公钥”与引导期 `OwnerConfig` 的不对称。
 
 ---
 

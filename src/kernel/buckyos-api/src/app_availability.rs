@@ -883,6 +883,7 @@ mod tests {
             allow_password_change: None,
             allow_contact_edit: None,
             groups: Vec::new(),
+            password_state: crate::PasswordState::Set,
         };
         let decide = |settings: Option<&UserSettings>| match_availability_group_rule(&rules, settings);
         assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Deny, "limited".into())));

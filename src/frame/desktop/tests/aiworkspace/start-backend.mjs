@@ -23,7 +23,16 @@ if (!existsSync(binary)) throw new Error(`aiworkspace binary not found: ${binary
 
 const root = mkdtempSync(join(tmpdir(), 'aiws-e2e-'))
 const auth = join(root, 'tokens.json')
-writeFileSync(auth, JSON.stringify({ tokens: { 'tok-alice': { principal: 'alice' }, 'tok-bob': { principal: 'bob' } } }))
+// a Limited account (restricted session) and an External DID stand for the hybrid SSO visitors (entries.spec.ts)
+writeFileSync(auth, JSON.stringify({
+  tokens: {
+    'tok-alice': { principal: 'alice', auth_method: 'password' },
+    'tok-bob': { principal: 'bob', auth_method: 'password' },
+    'tok-lim': { principal: 'acme-c1', restricted: true, auth_method: 'password' },
+    'tok-ext': { principal: 'did:bns:carol', class: 'external', auth_method: 'did_federation' },
+  },
+  sso: { self_register_enabled: true, did_login_enabled: false },
+}))
 // wish runs talk to a scripted OpenAI-compatible model (许愿格 §16.1: controlled model returns)
 const llmPort = await new Promise((resolvePort) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolvePort(p)) }) })
 const llm = startMockLlm(llmPort)

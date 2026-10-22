@@ -5,6 +5,7 @@
  * replica (design §6): reads come from the Replica Worker's working view, `commit` becomes
  * "saved on this device → queued → sent". Nothing above this file talks to the client directly. */
 
+import type { AccessDenial, AdjustLocation, DenyReason } from 'buckyos'
 import { AiwsClient, ServiceFailure, unwrap } from './client'
 import { randomId } from './ids'
 import { TransportError } from './transport'
@@ -616,6 +617,44 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
 
   whenClosed() { return Promise.resolve() }
+}
+
+/** The D-4 denial behind a failure (a business refusal or a refused session), its cause included. */
+export function denialOf(error: unknown): AccessDenial | null {
+  const cause = error instanceof Error && error.cause ? error.cause : null
+  for (const e of [error, cause]) {
+    if ((e instanceof ServiceFailure || e instanceof TransportError) && e.denial) return e.denial
+  }
+  return null
+}
+
+/** What a denial means to the person who met it (contract §4.2): the category for everyone; who can change it and
+ * where only for a caller who is not a visitor (a visitor — guest, Limited account, External DID — is told whom to
+ * contact, never where the setting lives). */
+export function describeDenial(denial: AccessDenial, visitor: boolean): string {
+  const text = aiwsT(DENIAL_TEXT[denial.reason])
+  const where = denial.adjust.location ? ADJUST_TEXT[denial.adjust.location] : undefined
+  return visitor || !where ? text : aiwsT('aiworkspace.core.denial.withAdjust', { text, where: aiwsT(where) })
+}
+
+const DENIAL_TEXT: Readonly<Record<DenyReason, string>> = {
+  session_kind_not_allowed: 'aiworkspace.core.denial.sessionKindNotAllowed',
+  session_ceiling_exceeded: 'aiworkspace.core.denial.sessionCeilingExceeded',
+  resource_grant_missing: 'aiworkspace.core.denial.resourceGrantMissing',
+  entry_unavailable: 'aiworkspace.core.denial.entryUnavailable',
+  zone_method_disabled: 'aiworkspace.core.denial.zoneMethodDisabled',
+  account_state: 'aiworkspace.core.denial.accountState',
+  credential_state: 'aiworkspace.core.denial.credentialState',
+  source_revoked: 'aiworkspace.core.denial.sourceRevoked',
+  authorization_unavailable: 'aiworkspace.core.denial.authorizationUnavailable',
+}
+
+/** Where a manager changes the outcome (`reauth` / `credential` are the visitor's own steps). */
+const ADJUST_TEXT: Readonly<Partial<Record<AdjustLocation, string>>> = {
+  share_panel: 'aiworkspace.core.denial.adjustSharePanel',
+  'cp:sso_settings': 'aiworkspace.core.denial.adjustSsoSettings',
+  'cp:users': 'aiworkspace.core.denial.adjustUsers',
+  'cp:exclusive_invites': 'aiworkspace.core.denial.adjustExclusiveInvites',
 }
 
 export function describeError(error: unknown): string {

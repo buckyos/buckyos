@@ -178,12 +178,15 @@ notepads 已明确标注了传播延迟：`new_doc/ref/notepads/rbac.md`。
 - runtime 会在接近过期时尝试 renew：`renew_token_from_verify_hub()` 内对 `exp - 30` 做判断并触发 `login_by_jwt`（`src/kernel/buckyos-api/src/runtime.rs`）。
 
 ### 3) “刷新 token 后，旧 token 立刻不能用了”
-- verify-hub 的 refresh 使用 rolling nonce 并更新 `TOKEN_CACHE`（`src/kernel/verify_hub/src/main.rs`）。
-- 如果网络重试/响应丢失导致客户端没拿到新 token，会出现“持有旧 nonce 无法继续刷新”的现象。
+- verify-hub 的 refresh family 存在本地 SQLite（`data/var/verify-hub/sessions.db`，`src/kernel/verify_hub/src/family_store.rs`），每次 refresh 轮换 jti；被替换的旧 refresh 只在 10 秒宽限期内返回当前那对 token，之后再出示视为重用并撤销整条 family。
+- refresh 与宽限分支都会先复核账号状态、类型（会话上限只收窄不放宽）、来源（专属邀请未撤销）、联合会话的 30 天绝对期限和受限子会话的父 family。
 
 ### 4) “verify-hub 重启后，部分会话异常”
-- verify-hub 的 `TOKEN_CACHE` 是内存态静态 HashMap（`src/kernel/verify_hub/src/main.rs`），没有持久化/回收策略。
-- 服务重启意味着 cache 丢失：一些依赖 cache 语义的刷新/一次性校验会表现为失败或行为变化。
+- family 持久化后重启不影响 refresh；内存里只剩登录 nonce / 断言防重放缓存，重启后丢失。
+- verify-hub 单实例，`sessions.db` 不在 OOD 之间同步、也不进备份：调度到另一节点或恢复旧数据时删除该文件，所有会话重新登录。
+
+### 5) “受限账号调用某个服务被拒”
+- Limited、External 及其衍生会话的 token 带 `restricted: true` 与 `scopes`。`BuckyOSRuntime::verify_trusted_session_token` / `enforce` 默认拒绝受限会话（`access_denied` + `session_kind_not_allowed`），只有显式调用 `verify_session_token_opened` / `enforce_opened` 的方法开放；system-config 在自身入口单独实现同样的闸口。各服务开放清单见 [混合 SSO 技术契约](verify-hub/混合SSO技术契约.md) §3 与实施 TODO 的 SSO-04 审计表。
 
 ## 与类似系统的差异点（再强调一次）
 

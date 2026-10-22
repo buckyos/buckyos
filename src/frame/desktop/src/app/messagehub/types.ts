@@ -235,6 +235,8 @@ export interface GroupSessionInfo {
   /** Session record revision (`group.archive_session` / `group.update_session` expect it). */
   revision: string
   hasGuests: boolean
+  /** The session's rules let it invite guests (`SessionRules.allow_guests`). */
+  allowGuests: boolean
   receipts: 'hidden' | 'count' | 'readers'
 }
 

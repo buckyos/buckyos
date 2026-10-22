@@ -16,11 +16,16 @@ mod desktop_folder;
 mod desktop_wallpaper;
 mod diagnostic_mgr;
 mod download_mgr;
+mod exclusive_invite;
+mod federation;
 mod image_data_url;
 mod ndn_download;
 mod pikg;
 mod pre_install_reconciler;
 mod redaction;
+mod sso_entry;
+mod sso_identity;
+mod sso_settings;
 mod sys_auth_backend;
 mod sys_log_mgr;
 mod task_ops;
@@ -87,6 +92,9 @@ const GATEWAY_CONFIG_FILES: [&str; 6] = [
 ];
 const ZONE_CONFIG_FILES: [&str; 2] = ["start_config.json", "node_identity.json"];
 const CONTROL_PANEL_LOCALE_KEY: &str = "services/control_panel/settings/locale";
+/// Request facts the HTTP layer adds to kRPC params; callers cannot set them.
+const REQ_HOST_PARAM: &str = "x_req_host";
+const REQ_ORIGIN_PARAM: &str = "x_req_origin";
 
 pub(crate) fn gateway_etc_dir() -> PathBuf {
     get_buckyos_system_etc_dir()
@@ -110,9 +118,25 @@ struct RpcAuthPrincipal {
     is_user_session: bool,
     is_control_panel_session: bool,
     agent_permission_mode: Option<buckyos_api::AgentPermissionMode>,
+    session: PrincipalSession,
+}
+
+/// What the verified session says beyond the account: its ceiling (restricted
+/// Limited / External sessions), how it was established, and whether it is a
+/// short sudo session.
+#[derive(Clone, Debug, Default)]
+struct PrincipalSession {
+    ceiling: buckyos_api::SessionCeiling,
+    auth_method: Option<buckyos_api::AuthMethod>,
+    is_external: bool,
+    is_sudo: bool,
 }
 
 impl RpcAuthPrincipal {
+    fn is_restricted(&self) -> bool {
+        self.session.ceiling.restricted || self.session.is_external
+    }
+
     fn require_agent_permission(&self, method: &str) -> Result<(), RPCErrors> {
         if self.agent_permission_mode == Some(buckyos_api::AgentPermissionMode::ReadOnly)
             && !matches!(
@@ -185,6 +209,7 @@ mod agent_permission_tests {
             is_user_session: false,
             is_control_panel_session: false,
             agent_permission_mode: mode,
+            session: PrincipalSession::default(),
         }
     }
 
@@ -242,6 +267,100 @@ mod agent_permission_tests {
             assert!(caller.require_agent_permission("apps.submit").is_ok());
             assert!(caller.require_agent_permission("desktop.state.set").is_ok());
         }
+    }
+}
+
+#[cfg(test)]
+mod rpc_wire_tests {
+    use super::*;
+    use buckyos_api::{AccessDenial, DenyReason};
+
+    #[test]
+    fn structured_denials_keep_their_code_on_the_wire() {
+        let error = AccessDenial::new(DenyReason::SessionKindNotAllowed)
+            .at("control-panel", "user.list")
+            .into_rpc_error();
+        let (response, detail) =
+            ControlPanelServer::failed_rpc_response(error, 7, Some("trace".to_string()));
+        let wire = response.to_wire_value(detail.as_ref()).unwrap();
+        assert_eq!(wire["code"], "access_denied");
+        assert_eq!(wire["data"]["reason"], "session_kind_not_allowed");
+        assert_eq!(wire["data"]["adjust"]["party"], "product");
+        assert_eq!(wire["data"]["method"], "user.list");
+        assert_eq!(wire["sys"], json!([7, "trace"]));
+        let parsed = RPCErrorDetail::from_response_value(&wire).unwrap();
+        assert_eq!(
+            AccessDenial::from_rpc_error(&RPCErrors::Detailed(parsed))
+                .unwrap()
+                .reason,
+            DenyReason::SessionKindNotAllowed
+        );
+
+        let (plain, detail) = ControlPanelServer::failed_rpc_response(
+            RPCErrors::ReasonError("boom".to_string()),
+            8,
+            None,
+        );
+        let wire = plain.to_wire_value(detail.as_ref()).unwrap();
+        assert!(wire.get("code").is_none() && wire["error"].is_string());
+    }
+
+    #[test]
+    fn client_address_comes_from_the_gateways_last_forwarded_hop() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let headers = |xff: Option<&str>, real_ip: Option<&str>| {
+            let mut headers = http::HeaderMap::new();
+            if let Some(xff) = xff {
+                headers.insert("x-forwarded-for", xff.parse().unwrap());
+            }
+            if let Some(real_ip) = real_ip {
+                headers.insert("x-real-ip", real_ip.parse().unwrap());
+            }
+            headers
+        };
+        assert_eq!(
+            ControlPanelServer::forwarded_client_ip(
+                &headers(Some("10.9.9.9, 203.0.113.7"), Some("198.51.100.1")),
+                loopback
+            ),
+            "203.0.113.7".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            ControlPanelServer::forwarded_client_ip(&headers(None, Some("198.51.100.1")), loopback),
+            loopback
+        );
+        assert_eq!(
+            ControlPanelServer::forwarded_client_ip(&headers(Some("garbage"), None), loopback),
+            loopback
+        );
+        let direct: IpAddr = "192.168.1.20".parse().unwrap();
+        assert_eq!(
+            ControlPanelServer::forwarded_client_ip(&headers(Some("203.0.113.7"), None), direct),
+            direct
+        );
+    }
+
+    #[test]
+    fn typed_params_drop_transport_fields_and_refuse_others() {
+        #[derive(serde::Deserialize, Debug)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            invite_id: String,
+        }
+        let req = RPCRequest::new(
+            "auth.invite.request_resend",
+            json!({"invite_id": "ei-1", "x_req_host": "a", "x_req_origin": "https://a", "session_token": "t"}),
+        );
+        let params: Params = ControlPanelServer::typed_params(&req).unwrap();
+        assert_eq!(params.invite_id, "ei-1");
+        let req = RPCRequest::new(
+            "auth.invite.request_resend",
+            json!({"invite_id": "ei-1", "user_id": "admin"}),
+        );
+        assert!(matches!(
+            ControlPanelServer::typed_params::<Params>(&req),
+            Err(RPCErrors::ParseRequestError(_))
+        ));
     }
 }
 
@@ -350,6 +469,9 @@ struct ControlPanelServer {
     running_download_tasks: Arc<Mutex<HashSet<String>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
+    pending_did_logins: Arc<Mutex<HashMap<String, federation::PendingDidLogin>>>,
+    external_profiles: Arc<std::sync::Mutex<HashMap<String, buckyos_api::FederationProfile>>>,
+    registration_limiter: Arc<std::sync::Mutex<sso_entry::RegistrationLimiter>>,
     docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
     docker_overview_refresh_lock: Arc<Mutex<()>>,
     app_installer: app_installer::AppInstaller,
@@ -385,6 +507,11 @@ impl ControlPanelServer {
             running_download_tasks: Arc::new(Mutex::new(HashSet::new())),
             metrics_snapshot,
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
+            pending_did_logins: Arc::new(Mutex::new(HashMap::new())),
+            external_profiles: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            registration_limiter: Arc::new(std::sync::Mutex::new(
+                sso_entry::RegistrationLimiter::default(),
+            )),
             docker_overview_cache: Arc::new(Mutex::new(None)),
             docker_overview_refresh_lock: Arc::new(Mutex::new(())),
             app_installer: app_installer::AppInstaller::new(),
@@ -623,6 +750,50 @@ impl ControlPanelServer {
         Self::param_str(req, key).ok_or(RPCErrors::ParseRequestError(format!("Missing {}", key)))
     }
 
+    /// Params as a typed request, without the fields the transport adds; a
+    /// struct with `deny_unknown_fields` refuses anything else the caller sends.
+    fn typed_params<T: serde::de::DeserializeOwned>(req: &RPCRequest) -> Result<T, RPCErrors> {
+        let mut params = req.params.clone();
+        if let Some(object) = params.as_object_mut() {
+            object.remove(REQ_HOST_PARAM);
+            object.remove(REQ_ORIGIN_PARAM);
+            object.remove("session_token");
+        }
+        serde_json::from_value(params).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("invalid {} params: {error}", req.method))
+        })
+    }
+
+    /// The browser's address: the peer itself, or behind the node gateway (a loopback
+    /// peer) the hop the gateway appended last to `X-Forwarded-For`. `X-Real-IP` is
+    /// not used: the gateway keeps one a client sent. Loopback means "unknown".
+    fn forwarded_client_ip(headers: &http::HeaderMap, peer: IpAddr) -> IpAddr {
+        if !peer.is_loopback() {
+            return peer;
+        }
+        headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .last()
+            .and_then(|value| value.rsplit(',').next())
+            .and_then(|hop| hop.trim().parse::<IpAddr>().ok())
+            .unwrap_or(peer)
+    }
+
+    /// A failed call as the browser receives it: a structured error (D-4) keeps its
+    /// `code` / `data` next to the text.
+    fn failed_rpc_response(
+        error: RPCErrors,
+        seq: u64,
+        trace_id: Option<String>,
+    ) -> (RPCResponse, Option<RPCErrorDetail>) {
+        let detail = error.detail().cloned();
+        let mut response = RPCResponse::new(RPCResult::Failed(error.to_string()), seq);
+        response.trace_id = trace_id;
+        (response, detail)
+    }
+
     fn require_rpc_principal(
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<&RpcAuthPrincipal, RPCErrors> {
@@ -852,6 +1023,9 @@ impl ControlPanelServer {
         }
 
         let req_host = Self::request_host_from_http_request(&req);
+        let req_origin = get_buckyos_api_runtime().ok().and_then(|runtime| {
+            Self::request_origin(&req, !runtime.force_https, runtime.node_gateway_port).ok()
+        });
         let client_ip = match info.src_addr.as_ref() {
             Some(addr) => match addr.parse::<SocketAddr>() {
                 Ok(socket_addr) => socket_addr.ip(),
@@ -883,6 +1057,7 @@ impl ControlPanelServer {
                     })?);
             }
         };
+        let client_ip = Self::forwarded_client_ip(req.headers(), client_ip);
 
         let body_bytes = match req.collect().await {
             Ok(data) => data.to_bytes(),
@@ -939,25 +1114,36 @@ impl ControlPanelServer {
             }
         };
 
-        if let Some(req_host) = req_host {
-            if let Some(params) = rpc_request.params.as_object_mut() {
-                params.insert("x_req_host".to_string(), Value::String(req_host));
+        if let Some(params) = rpc_request.params.as_object_mut() {
+            if let Some(req_host) = req_host {
+                params.insert(REQ_HOST_PARAM.to_string(), Value::String(req_host));
+            }
+            match req_origin {
+                Some(origin) => {
+                    params.insert(REQ_ORIGIN_PARAM.to_string(), Value::String(origin));
+                }
+                None => {
+                    params.remove(REQ_ORIGIN_PARAM);
+                }
             }
         }
 
         let req_seq = rpc_request.seq;
         let req_trace_id = rpc_request.trace_id.clone();
         let carries_credentials = rpc_request.method.starts_with("auth.");
-        let response = match self.handle_rpc_call(rpc_request, client_ip).await {
-            Ok(response) => response,
-            Err(error) => {
-                let mut err_resp = RPCResponse::new(RPCResult::Failed(error.to_string()), req_seq);
-                err_resp.trace_id = req_trace_id;
-                err_resp
-            }
+        let (response, detail) = match self.handle_rpc_call(rpc_request, client_ip).await {
+            Ok(response) => (response, None),
+            Err(error) => Self::failed_rpc_response(error, req_seq, req_trace_id),
         };
+        let wire = response.to_wire_value(detail.as_ref()).map_err(|error| {
+            server_err!(
+                ServerErrorCode::EncodeError,
+                "Failed to encode rpc response: {}",
+                error
+            )
+        })?;
 
-        let body_json = serde_json::to_vec(&response).map_err(|error| {
+        let body_json = serde_json::to_vec(&wire).map_err(|error| {
             server_err!(
                 ServerErrorCode::EncodeError,
                 "Failed to encode rpc response: {}",
@@ -986,7 +1172,7 @@ impl RPCHandler for ControlPanelServer {
     async fn handle_rpc_call(
         &self,
         mut req: RPCRequest,
-        _ip_from: IpAddr,
+        ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
         if req.token.is_none() {
             req.token = Self::extract_rpc_session_token(&req);
@@ -1004,11 +1190,14 @@ impl RPCHandler for ControlPanelServer {
         };
         if let Some(principal) = principal.as_ref() {
             principal.require_agent_permission(&req.method)?;
+            Self::require_restricted_self_target(principal, &req)?;
             log::debug!(
-                "control-panel rpc auth: method={}, user={}, type={:?}",
+                "control-panel rpc auth: method={}, user={}, type={:?}, restricted={}, auth_method={:?}",
                 req.method,
                 principal.username,
-                principal.user_type
+                principal.user_type,
+                principal.is_restricted(),
+                principal.session.auth_method
             );
         }
 
@@ -1022,6 +1211,35 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_auth_prepare_app_launch(req, principal.as_ref())
                     .await
             }
+            "auth.current_identity" => {
+                self.handle_auth_current_identity(req, principal.as_ref())
+                    .await
+            }
+            "auth.sso_config" => self.handle_auth_sso_config(req).await,
+            "auth.entry.describe" => self.handle_auth_entry_describe(req).await,
+            "auth.register" => self.handle_auth_register(req, ip_from).await,
+            "auth.invite.describe" => self.handle_auth_invite_describe(req).await,
+            "auth.invite.login" => self.handle_auth_invite_login(req).await,
+            "auth.invite.request_resend" => self.handle_auth_invite_request_resend(req).await,
+            "auth.invite.set_password" => {
+                self.handle_auth_invite_set_password(req, principal.as_ref())
+                    .await
+            }
+            "auth.did.begin" => self.handle_auth_did_begin(req).await,
+            "auth.federation.describe" => {
+                self.handle_auth_federation_describe(req, principal.as_ref())
+                    .await
+            }
+            "auth.federation.approve" => {
+                self.handle_auth_federation_approve(req, principal.as_ref())
+                    .await
+            }
+            "auth.federation.deny" => {
+                self.handle_auth_federation_deny(req, principal.as_ref())
+                    .await
+            }
+            "sso.settings.get" => self.handle_sso_settings_get(req, principal.as_ref()).await,
+            "sso.settings.set" => self.handle_sso_settings_set(req, principal.as_ref()).await,
 
             // User Mgr
             "user.list" => self.handle_user_list(req, principal.as_ref()).await,
@@ -1052,6 +1270,30 @@ impl RPCHandler for ControlPanelServer {
                     .await
             }
             "user.delete" => self.handle_user_delete(req, principal.as_ref()).await,
+            "user.exclusive_invite.create" => {
+                self.handle_exclusive_invite_create(req, principal.as_ref())
+                    .await
+            }
+            "user.exclusive_invite.list" => {
+                self.handle_exclusive_invite_list(req, principal.as_ref())
+                    .await
+            }
+            "user.exclusive_invite.get" => {
+                self.handle_exclusive_invite_get(req, principal.as_ref())
+                    .await
+            }
+            "user.exclusive_invite.revoke" => {
+                self.handle_exclusive_invite_revoke(req, principal.as_ref())
+                    .await
+            }
+            "user.exclusive_invite.rotate" => {
+                self.handle_exclusive_invite_rotate(req, principal.as_ref())
+                    .await
+            }
+            "user.exclusive_invite.retry_resource" => {
+                self.handle_exclusive_invite_retry_resource(req, principal.as_ref())
+                    .await
+            }
 
             "user.change_password" => {
                 self.handle_user_change_password(req, principal.as_ref())
@@ -1248,6 +1490,9 @@ impl HttpServer for ControlPanelServer {
         if method == Method::GET && path == "/sso_callback" {
             return self.serve_sso_callback(req, info).await;
         }
+        if method == Method::GET && path == federation::DID_CALLBACK_PATH {
+            return self.serve_did_callback(req).await;
+        }
         if method == Method::POST && path == "/sso_refresh" {
             return self.serve_sso_refresh(req, info).await;
         }
@@ -1349,6 +1594,10 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     let _ = runner.add_http_server("/sso_callback".to_string(), control_panel_server.clone());
     let _ = runner.add_http_server("/sso_refresh".to_string(), control_panel_server.clone());
     let _ = runner.add_http_server("/sso_logout".to_string(), control_panel_server.clone());
+    let _ = runner.add_http_server(
+        federation::DID_CALLBACK_PATH.to_string(),
+        control_panel_server.clone(),
+    );
     // Control-panel desktop API endpoints.
     let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
 

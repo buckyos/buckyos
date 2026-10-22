@@ -168,6 +168,7 @@ export type SidebarSelection =
   | { kind: 'entity'; entityId: string }
   | { kind: 'self' }
   | { kind: 'user-groups' }
+  | { kind: 'exclusive-invites' }
 
 // ── Store snapshot ──
 

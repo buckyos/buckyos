@@ -50,6 +50,15 @@ buckyos system info                                 # BuckyOS version, build_ver
   Desktop "Users and Agents". Don't write those keys with raw system-config: the RPCs also refresh RBAC and reload
   msg-center. A group carries no RBAC policy (`g, <u>, group:<id>` only): a Limited user in a group still has no
   mailbox, tasks or uploads; app access comes from `apps.availability` group rules (`group:<id>`).
+- External access (hybrid SSO, contract `doc/arch/verify-hub/混合SSO技术契约.md`): Zone switches `self_register_enabled` /
+  `did_login_enabled` / `jump_base_url` in `system/sso/settings` via admin RPC `sso.settings.get|set` (Desktop Settings ›
+  Sign-in & Sharing). Exclusive invites (a Limited account + password-free link, 48 h): admin RPCs
+  `user.exclusive_invite.create|list|get|revoke|rotate|retry_resource` (Desktop Users and Agents › Exclusive invites);
+  the link with its secret is returned only once by `create`/`rotate` — never log it or put it in a task/message. A
+  customer's resend request arrives to the issuer as a System Notify; send the rotated link through the original
+  channel yourself (the system sends no email/SMS). Limited and External sessions are restricted: a service that has
+  not opened a method answers kRPC `code: "access_denied"` with `data.reason` (`session_kind_not_allowed` = product
+  boundary, not a setting); branch on `data.reason`, never on the error text.
 - Apps: `buckyos app list|get|status|start|stop|restart|install|upgrade|uninstall|cancel`. Availability
   (`apps.availability.*`) has no CLI verb and needs a user's Control Panel login.
 - Devices, network, gateway, certificates: control-panel `zone.devices.list`, `network.overview`, `gateway.overview`,

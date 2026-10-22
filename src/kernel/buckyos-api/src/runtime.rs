@@ -672,6 +672,7 @@ impl BuckyOSRuntime {
             | RPCErrors::UserNotFound(_)
             | RPCErrors::KeyNotExist(_)
             | RPCErrors::UnknownMethod(_)
+            | RPCErrors::Detailed(_)
             | RPCErrors::S2sPermanentError(_) => RuntimeErrorClass::NonRetryable,
             RPCErrors::TokenExpired(_)
             | RPCErrors::ServiceNotValid(_)
@@ -1533,7 +1534,53 @@ impl BuckyOSRuntime {
         Ok(())
     }
 
+    /// Verify an ordinary session token. Restricted sessions (Limited,
+    /// External, sessions derived from them) are refused here unless the token
+    /// targets this App runtime itself: a service opens a method to them with
+    /// [`Self::verify_session_token_opened`] instead.
     pub async fn verify_trusted_session_token(&self, token_str: &str) -> Result<RPCSessionToken> {
+        let token = self.verify_session_signature(token_str).await?;
+        let ceiling = crate::token_session_ceiling(&token)?;
+        if ceiling.restricted && !self.targets_this_app(&token)? {
+            return Err(crate::AccessDenial::new(crate::DenyReason::SessionKindNotAllowed)
+                .at(self.app_id.clone(), "*")
+                .into_rpc_error());
+        }
+        Ok(token)
+    }
+
+    /// Verify a session token for a method opened to restricted sessions of
+    /// `scope`; unrestricted sessions pass as with
+    /// [`Self::verify_trusted_session_token`].
+    pub async fn verify_session_token_opened(
+        &self,
+        token_str: &str,
+        scope: crate::SessionScope,
+    ) -> Result<RPCSessionToken> {
+        let token = self.verify_session_signature(token_str).await?;
+        let ceiling = crate::token_session_ceiling(&token)?;
+        if !ceiling.allows(scope) {
+            return Err(crate::AccessDenial::new(crate::DenyReason::SessionCeilingExceeded)
+                .at(self.app_id.clone(), scope.as_str())
+                .into_rpc_error());
+        }
+        Ok(token)
+    }
+
+    /// A restricted session reaches an App runtime when it targets exactly
+    /// this App instance: App availability was decided when it was issued.
+    fn targets_this_app(&self, token: &RPCSessionToken) -> Result<bool> {
+        if self.runtime_type != BuckyOSRuntimeType::AppService {
+            return Ok(false);
+        }
+        let claims = validate_verify_hub_token_claims(token, TokenUse::Session)?;
+        Ok(match (&claims.target, self.get_app_instance_id()) {
+            (AuthTarget::App { app_instance_id }, Ok(own)) => *app_instance_id == own,
+            _ => false,
+        })
+    }
+
+    async fn verify_session_signature(&self, token_str: &str) -> Result<RPCSessionToken> {
         let mut rpc_token = RPCSessionToken::from_string(token_str).map_err(|error| {
             RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
         })?;
@@ -1604,6 +1651,30 @@ impl BuckyOSRuntime {
             "Invalid params, session_token is none".to_string(),
         ))?;
         let token = self.verify_trusted_session_token(token_str).await?;
+        self.enforce_verified(&token, action, resource_path).await
+    }
+
+    /// RBAC for a method opened to restricted sessions of `scope`.
+    pub async fn enforce_opened(
+        &self,
+        req: &RPCRequest,
+        action: &str,
+        resource_path: &str,
+        scope: crate::SessionScope,
+    ) -> Result<(String, String)> {
+        let token_str = req.token.as_deref().ok_or(RPCErrors::ParseRequestError(
+            "Invalid params, session_token is none".to_string(),
+        ))?;
+        let token = self.verify_session_token_opened(token_str, scope).await?;
+        self.enforce_verified(&token, action, resource_path).await
+    }
+
+    async fn enforce_verified(
+        &self,
+        token: &RPCSessionToken,
+        action: &str,
+        resource_path: &str,
+    ) -> Result<(String, String)> {
         let userid = token
             .sub
             .as_deref()

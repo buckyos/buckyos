@@ -38,7 +38,8 @@ pub enum Auth {
 
 struct Show {
     workspace_id: String,
-    principal: String,
+    /// Who started it, as verified then; notes are read with its grants and memberships as they are at each request.
+    presenter: Caller,
     path_id: String,
     clone_id: Option<String>,
     locked: bool,
@@ -93,7 +94,7 @@ fn check(show: &Show, workspace_id: &str, auth: &Auth, method: &str) -> WsResult
         return Err(ended());
     }
     match auth {
-        Auth::Session(c) if c.principal == show.principal => Ok(()),
+        Auth::Session(c) if c.principal == show.presenter.principal => Ok(()),
         Auth::Token(t) if *t == show.token && matches!(method, "show.command" | "show.watch" | "show.notes") => Ok(()),
         Auth::Token(_) => Err(ended()),
         Auth::Session(_) => Err(WsError::denied("only the presenter controls the show")),
@@ -222,7 +223,7 @@ async fn start(state: &Arc<AppState>, p: &Value, caller: Caller) -> WsResult<Val
         show_id,
         Show {
             workspace_id: ws_id,
-            principal: caller.principal,
+            presenter: caller,
             path_id,
             clone_id,
             locked: writer,
@@ -278,12 +279,14 @@ async fn watch_show(state: &Arc<AppState>, p: &Value, auth: Auth) -> WsResult<Va
 async fn notes(state: &Arc<AppState>, p: &Value, auth: Auth) -> WsResult<Value> {
     let ws_id = s(p, "workspace_id")?.to_string();
     let show_id = s(p, "show_id")?;
-    let (presenter, path_id) = {
+    let (mut presenter, path_id) = {
         let map = state.shows.map.lock().unwrap();
         let show = map.get(show_id).ok_or_else(ended)?;
         check(show, &ws_id, &auth, "show.notes")?;
-        (Caller::user(&show.principal), show.path_id.clone())
+        (show.presenter.without_memberships(), show.path_id.clone())
     };
+    // the presenter's group and contact memberships are settled now, not taken from the show's start
+    crate::prepare_caller(state, &mut presenter, "show.notes", Some(&ws_id)).await;
     let st = state.clone();
     blocking(move || {
         st.with_ws(&ws_id, |ws| {
@@ -321,7 +324,7 @@ async fn end(state: &Arc<AppState>, p: &Value, auth: Auth) -> WsResult<Value> {
         if show.workspace_id != ws_id {
             return Err(ended());
         }
-        show.principal.clone()
+        show.presenter.principal.clone()
     };
     if presenter != caller.principal {
         let (st, c, w) = (state.clone(), caller.clone(), ws_id.clone());

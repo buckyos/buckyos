@@ -19,7 +19,7 @@ impl SledStore {
     const INTERNAL_META_PREFIX: &'static str = "__meta/";
     const REVISION_PREFIX: &'static str = "__meta/revision/";
 
-    fn from_db(db: Db) -> Self {
+    pub(crate) fn from_db(db: Db) -> Self {
         SledStore { db: Arc::new(db) }
     }
 

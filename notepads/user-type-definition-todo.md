@@ -71,7 +71,7 @@ External 的 DID 不在本 Zone，本 Zone 也没有该用户的任何 Profile�
 | 类型 | 创建入口 | 能否登录 | RBAC 组 | sudo 组 | App 可用性组 | 其它行为 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `Root` | 只在引导期创建；运行期不能创建、提升或变更 | verify-hub 拒绝 | 映射为 `admin` | `su_admin` | 无 | `require_admin` 视同 Admin |
-| `Admin` | 引导期；`user.invite.create`；`user.change_type` | 能 | `admin` | `su_admin` | `admins` | 管理用户、App、Zone、任务 |
+| `Admin` | 引导期；`user.change_type` | 能 | `admin` | `su_admin` | `admins` | 管理用户、App、Zone、任务 |
 | `User` | `user.create`（只支持这一种）；邀请；改类型 | 能 | `users` | `su_users` | `users` | 只能读写自己名下的数据 |
 | `Limited` | 只能经邀请或改类型产生 | 能 | `limited`，**没有任何策略** | 无 | `limited` | 默认不能自改密码；不能创建 Agent |
 | `Guest` | 只能经邀请或改类型产生 | verify-hub 拒绝（`user_is_active` 排除） | **回退为 `users`** | `su_users` | `guest` | Desktop 把它显示为 Limited |
@@ -211,7 +211,7 @@ External 的 DID 不在本 Zone，本 Zone 也没有该用户的任何 Profile�
 - 决定：
   - 引导期：Root + Admin，不变。
   - `user.create`（管理员）：支持 User、Limited，可同时指定系统用户组；Admin 仍经改类型提升。满足 Users & Agents PRD 的本地 Limited 创建流程。
-  - `user.invite.create`：只允许 User、Limited（是否允许直接邀请 Admin 保持现状），`groups` 按 T-3 指系统用户组。
+  - `user.invite.create`：只允许 User、Limited（混合 SSO P-2 已定并实施：不能直接邀请 Admin，经 `user.change_type` 提升），`groups` 按 T-3 指系统用户组。
   - External 不创建账号记录。若要让某个 External 成为本 Zone 成员，走现有邀请入驻流程，完成后即不再是 External。
   - `user.change_type`：只在 Admin、User、Limited 之间转换。类型或组变更后，旧会话不自动获得新权限。
   - Desktop 新建向导增加 Limited 与系统用户组选项；改类型界面只列可转换目标。

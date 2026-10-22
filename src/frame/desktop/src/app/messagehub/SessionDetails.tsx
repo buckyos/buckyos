@@ -14,6 +14,9 @@ import { friendlyDidName } from './api/projection'
 import { GROUP_MEMBER_KINDS, groupErrorText, groupSessionId, participating, sortSessionParticipants } from './groupModel'
 import type { Entity, GroupInfo, GroupSessionInfo, MessageHubContext, Session, SessionAccess } from './types'
 import { MemberAvatar } from './HubAvatar'
+import { useCurrentIdentity } from '../../sso/identity'
+import { ExclusiveInviteForm } from './ExclusiveInviteDialog'
+import { useGuestText } from './guest/text'
 
 export function SessionDetails({ session, entity, context, access, showActions, onShowActions, onClose, onManage, onWrite }: { session: Session; entity: Entity; context: MessageHubContext; access: SessionAccess; showActions: boolean; onShowActions: (value: boolean) => Promise<void>; onClose: () => void; onManage: () => void; onWrite: (enabled: boolean) => void }) {
   const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
@@ -105,7 +108,8 @@ function ShowActionsToggle({ value, onChange }: { value: boolean; onChange: (val
 
 /** Archive / delete, membership and guest invitations of a named Group Session (`group.*_session`). */
 function GroupSessionSection({ session, entity, context, group, groupSession, onManaged }: { session: Session; entity: Entity; context: MessageHubContext; group: GroupInfo; groupSession: GroupSessionInfo; onManaged: () => void }) {
-  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs()
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog(), dialogs = useNetworkDialogs(), text = useGuestText()
+  const { identity } = useCurrentIdentity()
   const [pending, setPending] = useState(false), [error, setError] = useState('')
   const run = async (operation: () => Promise<unknown>) => {
     if (pending) return
@@ -138,12 +142,23 @@ function GroupSessionSection({ session, entity, context, group, groupSession, on
     })
   }
   const can = group.can
+  // Exclusive invites are Control Panel admin work; the session must take guests and the admin invite them.
+  const zoneAdmin = identity?.kind === 'account' && !identity.restricted && (identity.user_type === 'admin' || identity.user_type === 'root')
+  const inviteExternal = async () => {
+    const sessionId = groupSession.sessionId
+    if (sessionId === null) return
+    const trigger = document.activeElement
+    const refresh = () => { void store.ensureGroupSessionMembers(context, entity.id, session.id, true) }
+    await dialog.open<void>({ title: text('invite.open'), size: 'md', dismissible: false, renderBody: controls => <ExclusiveInviteForm target={{ groupDid: entity.id, sessionId, title }} onCreated={refresh} onClose={() => controls.close()} /> })
+    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus()
+  }
   if (!group.myRole && !groupSession) return null
   return <DetailSection title={t('messagehub.group.session.title')}>
     <p className="text-[13px] text-[color:var(--cp-muted)]">{t(`messagehub.group.session.lifecycle.${groupSession.lifecycle}`, groupSession.lifecycle)}{groupSession.hasGuests ? ` · ${t('messagehub.group.hasGuests')}` : ''}</p>
     <div className="flex flex-wrap gap-2" data-testid="group-session-actions">
       {can.manageSession && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void pick('members')}>{t('messagehub.group.session.addMembers')}</button>}
       {can.inviteGuest && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void pick('guest')}>{t('messagehub.group.session.inviteGuest')}</button>}
+      {can.inviteGuest && groupSession.allowGuests && zoneAdmin && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void inviteExternal()} data-testid="invite-external">{text('invite.open')}</button>}
       {can.manageSession && groupSession.lifecycle === 'active' && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void manage('archive')}>{t('messagehub.group.session.archive')}</button>}
       {can.manageSession && <button type="button" className={`${hubButtonClass} text-[color:var(--cp-danger)]`} disabled={pending} onClick={() => void manage('delete')}>{t('messagehub.group.session.delete')}</button>}
       {group.myRole !== 'owner' && <button type="button" className={`${hubButtonClass} text-[color:var(--cp-danger)]`} disabled={pending} onClick={() => void leave()}>{t('messagehub.group.session.leave')}</button>}

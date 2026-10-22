@@ -1,11 +1,13 @@
+use crate::agent_mgr::{AgentKv, ZoneKv};
 use crate::image_data_url::{validate_image_data_url, MAX_AVATAR_PX};
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{kRPC, RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
-    get_buckyos_api_runtime, ProfileLink, SchedulerClient, SystemConfigClient, SystemConfigError,
-    UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
-    UserTunnelBinding, UserType, SCHEDULER_SERVICE_SERVICE_PORT,
+    get_buckyos_api_runtime, AccessDenial, DenyReason, PasswordState, ProfileLink, SchedulerClient,
+    SystemConfigClient, SystemConfigError, UserContactSettings, UserPrivateProfile, UserProfile,
+    UserSettings, UserState, UserTunnelBinding, UserType, CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_SERVICE_PORT,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use jsonwebtoken::jwk::Jwk;
@@ -88,7 +90,19 @@ pub(crate) fn require_admin(principal: &RpcAuthPrincipal) -> Result<(), RPCError
     }
 }
 
-fn validate_username(name: &str) -> Result<(), RPCErrors> {
+/// Admin methods that write with the Control Panel service identity: only from
+/// the administrator's Control Panel session, never from an App holding it.
+pub(crate) fn require_control_panel_admin(principal: &RpcAuthPrincipal) -> Result<(), RPCErrors> {
+    require_admin(principal)?;
+    if !principal.is_control_panel_session {
+        return Err(RPCErrors::NoPermission(
+            "this admin method needs a Control Panel session".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_username(name: &str) -> Result<(), RPCErrors> {
     if name.is_empty() || name.len() > 64 {
         return Err(RPCErrors::ParseRequestError(
             "user_id must be 1-64 characters".to_string(),
@@ -113,7 +127,7 @@ fn validate_username(name: &str) -> Result<(), RPCErrors> {
     Ok(())
 }
 
-fn validate_password_hash(password_hash: &str) -> Result<(), RPCErrors> {
+pub(crate) fn validate_password_hash(password_hash: &str) -> Result<(), RPCErrors> {
     let decoded = STANDARD.decode(password_hash).map_err(|_| {
         RPCErrors::ParseRequestError(
             "password_hash must be a base64-encoded SHA-256 digest".to_string(),
@@ -164,6 +178,71 @@ pub(crate) async fn parse_system_groups(req: &RPCRequest) -> Result<Vec<String>,
         }
     }
     Ok(groups)
+}
+
+/// P-2: an invitation brings in a User or Limited account; Admin comes from
+/// `user.change_type`.
+fn invite_user_type(raw: Option<&str>) -> Result<UserType, RPCErrors> {
+    let user_type = raw
+        .map(parse_user_type)
+        .transpose()?
+        .unwrap_or(UserType::User);
+    if !matches!(user_type, UserType::User | UserType::Limited) {
+        return Err(RPCErrors::ParseRequestError(
+            "user.invite.create invites User or Limited accounts; promote to Admin with user.change_type".to_string(),
+        ));
+    }
+    Ok(user_type)
+}
+
+/// PRE-04: who may replace an account's password with `user.change_password`,
+/// always from a Control Panel session (an App-target session never changes a
+/// password). The account itself when its override (or type default) allows it
+/// and it already has a password (the first one goes through
+/// `auth.invite.set_password`): a User or Admin re-proves the password with a
+/// sudo session, as the system-config rule it replaces required; a Limited
+/// account cannot sudo and relies on its override. An administrator changes
+/// another account's password with a sudo session.
+fn password_change_allowed(
+    principal: &RpcAuthPrincipal,
+    target: &str,
+    settings: &UserSettings,
+) -> Result<(), RPCErrors> {
+    if principal.session.is_external || !principal.is_control_panel_session {
+        return Err(AccessDenial::new(DenyReason::SessionKindNotAllowed)
+            .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, "user.change_password")
+            .into_rpc_error());
+    }
+    if principal.username == target {
+        if !settings.password_state.is_set() {
+            return Err(AccessDenial::new(DenyReason::CredentialState)
+                .at(CONTROL_PANEL_SERVICE_UNIQUE_ID, "user.change_password")
+                .with_detail("password_unset")
+                .into_rpc_error());
+        }
+        if !settings.can_change_password() {
+            return Err(RPCErrors::NoPermission(
+                "This account is not allowed to change its password".to_string(),
+            ));
+        }
+        if !principal.is_restricted() && !principal.session.is_sudo {
+            return Err(RPCErrors::NoPermission(
+                "changing your password needs a sudo session".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    if !principal.user_type.is_privileged() || principal.is_restricted() {
+        return Err(RPCErrors::NoPermission(
+            "Only admin or the user themselves can perform this operation".to_string(),
+        ));
+    }
+    if !principal.session.is_sudo {
+        return Err(RPCErrors::NoPermission(
+            "changing another account's password needs a sudo session".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn settings_options_value(settings: &UserSettings) -> Value {
@@ -405,10 +484,14 @@ fn owner_is_bound_to_zone(owner_config: &OwnerDocument, zone_did: &DID) -> bool 
         .unwrap_or(false)
 }
 
+/// A Zone-hosted OwnerDocument (`<user>.<zone>`) and its private key. Only
+/// accounts this Zone is the canonical zone of name it as the default zone;
+/// exclusive-invite and self-registered accounts never do (D-2).
 fn generated_owner_config(
     user_id: &str,
     show_name: &str,
     zone_did: &DID,
+    canonical_here: bool,
 ) -> Result<(OwnerDocument, String), RPCErrors> {
     let (private_key, public_key) = generate_ed25519_key_pair();
     let public_key: Jwk = serde_json::from_value(public_key)
@@ -423,8 +506,67 @@ fn generated_owner_config(
         show_name.to_string(),
         public_key,
     );
-    owner_config.set_default_zone_did(zone_did.clone());
+    if canonical_here {
+        owner_config.set_default_zone_did(zone_did.clone());
+    }
     Ok((owner_config, private_key))
+}
+
+fn to_json<T: Serialize>(value: &T) -> Result<String, RPCErrors> {
+    serde_json::to_string(value)
+        .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))
+}
+
+/// The records of a new local account (settings, OwnerDocument, key, profile),
+/// all `Create` so a concurrent account of the same name fails the transaction.
+/// Returns them with the account DID.
+pub(crate) fn new_account_actions(
+    settings: &UserSettings,
+    show_name: &str,
+    zone_did: &DID,
+    canonical_here: bool,
+) -> Result<(HashMap<String, KVAction>, DID), RPCErrors> {
+    let user_id = settings.user_id.as_str();
+    let (owner_config, private_key) =
+        generated_owner_config(user_id, show_name, zone_did, canonical_here)?;
+    let user_did = owner_config.id.clone();
+    let settings_json = to_json(settings)?;
+    let doc_json = to_json(&owner_config)?;
+    let mut profile = profile_from_owner_config(&owner_config);
+    set_profile_system_contact(
+        &mut profile,
+        &default_contact_settings(Some(user_did.to_string())),
+    )?;
+    let profile_json = to_json(&profile)?;
+    let actions = HashMap::from([
+        (
+            format!("users/{user_id}/settings"),
+            KVAction::Create(settings_json),
+        ),
+        (format!("users/{user_id}/doc"), KVAction::Create(doc_json)),
+        (
+            format!("security/{user_id}/key"),
+            KVAction::Create(private_key),
+        ),
+        (
+            format!("users/{user_id}/profile"),
+            KVAction::Create(profile_json),
+        ),
+    ]);
+    Ok((actions, user_did))
+}
+
+/// After a committed account: RBAC places it in its type group and msg-center
+/// learns it. The RBAC result is returned; a failed msg-center reload only warns.
+pub(crate) async fn after_account_created(user_id: &str, reason: &str) -> Result<(), RPCErrors> {
+    let refresh_result = refresh_rbac_by_scheduler(reason).await;
+    if let Err(error) = &refresh_result {
+        warn!("User '{user_id}' was committed but scheduler RBAC refresh failed: {error}");
+    }
+    if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+        warn!("msg-center reload after creating {user_id} failed: {error}");
+    }
+    refresh_result
 }
 
 async fn load_user_settings(
@@ -687,10 +829,6 @@ impl ControlPanelServer {
         let client = system_config_client_for_caller(&req).await?;
         let runtime = get_buckyos_api_runtime()?;
         crate::agent_mgr::ensure_name_available(&runtime.zone_id, &user_id).await?;
-        let (owner_config, private_key) =
-            generated_owner_config(&user_id, &show_name, &runtime.zone_id)?;
-        let user_did = owner_config.id.to_string();
-        let settings_path = format!("users/{}/settings", user_id);
 
         // Build UserSettings
         let new_settings = UserSettings {
@@ -703,43 +841,15 @@ impl ControlPanelServer {
             allow_password_change,
             allow_contact_edit,
             groups,
+            password_state: buckyos_api::PasswordState::Set,
         };
-        let settings_json = serde_json::to_string(&new_settings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-
-        let doc_json = serde_json::to_string(&owner_config)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        let mut profile = profile_from_owner_config(&owner_config);
-        let contact = default_contact_settings(Some(user_did));
-        set_profile_system_contact(&mut profile, &contact)?;
-        let profile_json = serde_json::to_string(&profile)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-
-        // Execute as transaction
-        let doc_path = format!("users/{}/doc", user_id);
-        let key_path = format!("security/{}/key", user_id);
-        let profile_path = format!("users/{}/profile", user_id);
-        let mut tx = HashMap::new();
-        tx.insert(settings_path, KVAction::Create(settings_json));
-        tx.insert(doc_path, KVAction::Create(doc_json));
-        tx.insert(key_path, KVAction::Create(private_key));
-        tx.insert(profile_path, KVAction::Create(profile_json));
-
+        let (tx, _) = new_account_actions(&new_settings, &show_name, &runtime.zone_id, true)?;
         client
             .exec_tx(tx, None)
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to create user: {}", e)))?;
 
-        let refresh_result = refresh_rbac_by_scheduler("user.create").await;
-        if let Err(error) = &refresh_result {
-            warn!(
-                "User '{}' was committed but scheduler RBAC refresh failed: {}",
-                user_id, error
-            );
-        }
-        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
-            warn!("msg-center reload after creating {user_id} failed: {error}");
-        }
+        let refresh_result = after_account_created(&user_id, "user.create").await;
 
         info!("User '{}' created by '{}'", user_id, principal.username);
 
@@ -1087,15 +1197,7 @@ impl ControlPanelServer {
         }
         let target_did = Self::param_str(&req, "target_did");
         let show_name = Self::param_str(&req, "show_name");
-        let default_user_type = Self::param_str(&req, "user_type")
-            .map(|s| parse_user_type(&s))
-            .transpose()?
-            .unwrap_or(UserType::User);
-        if matches!(default_user_type, UserType::Root) {
-            return Err(RPCErrors::ReasonError(
-                "Cannot invite root users".to_string(),
-            ));
-        }
+        let default_user_type = invite_user_type(Self::param_str(&req, "user_type").as_deref())?;
         let now = buckyos_get_unix_timestamp();
         let expires_at = Self::param_u64(&req, "expires_at")
             .or_else(|| Self::param_u64(&req, "ttl_secs").map(|ttl| now.saturating_add(ttl)));
@@ -1152,6 +1254,7 @@ impl ControlPanelServer {
                 allow_password_change: None,
                 allow_contact_edit: None,
                 groups: groups.clone(),
+                password_state: buckyos_api::PasswordState::Unset,
             };
             let settings_json = serde_json::to_string(&pending_settings)
                 .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
@@ -1320,9 +1423,15 @@ impl ControlPanelServer {
                 allow_password_change: None,
                 allow_contact_edit: None,
                 groups: invite.groups.clone(),
+                password_state: buckyos_api::PasswordState::Unset,
             },
         };
         settings.state = UserState::Active;
+        settings.password_state = if settings.password.is_empty() {
+            buckyos_api::PasswordState::Unset
+        } else {
+            buckyos_api::PasswordState::Set
+        };
 
         let settings_json = serde_json::to_string(&settings)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
@@ -1437,37 +1546,42 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let target = resolve_target_user_id(&req, principal);
-        require_self_or_admin(principal, &target)?;
-
         let new_password_hash = Self::require_param_str(&req, "new_password_hash")?;
-        if new_password_hash.is_empty() {
-            return Err(RPCErrors::ParseRequestError(
-                "new_password_hash cannot be empty".to_string(),
-            ));
-        }
+        validate_password_hash(&new_password_hash)?;
 
-        let client = system_config_client_for_caller(&req).await?;
-
+        // Checked here, written with the service identity: accounts have no
+        // system-config write right on their own settings.
+        let kv = ZoneKv::connect().await?;
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client
+        let (raw, version) = kv
             .get(&settings_path)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
-        let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
+            .await?
+            .ok_or_else(|| RPCErrors::ReasonError(format!("User '{}' not found", target)))?;
+        let mut settings: UserSettings = serde_json::from_str(&raw)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
-        if principal.username == target && !settings.can_change_password() {
-            return Err(RPCErrors::ReasonError(
-                "This account is not allowed to change its password".to_string(),
-            ));
-        }
+        password_change_allowed(principal, &target, &settings)?;
 
+        let first_password = !settings.password_state.is_set();
         settings.password = new_password_hash;
-        let updated_json = serde_json::to_string(&settings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        client
-            .set(&settings_path, &updated_json)
+        settings.password_state = PasswordState::Set;
+        let mut tx =
+            HashMap::from([(settings_path.clone(), KVAction::Update(to_json(&settings)?))]);
+        if first_password {
+            tx.extend(
+                crate::exclusive_invite::consume_invite_actions(
+                    &kv,
+                    &target,
+                    buckyos_get_unix_timestamp(),
+                )
+                .await?,
+            );
+        }
+        kv.exec_tx(tx, Some((settings_path, version)))
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to change password: {}", e)))?;
+        if first_password {
+            crate::exclusive_invite::revoke_invite_families(&target, None).await;
+        }
 
         info!(
             "Password changed for user '{}' by '{}'",
@@ -1739,6 +1853,7 @@ mod tests {
             allow_password_change: None,
             allow_contact_edit: None,
             groups: vec!["customer".to_string()],
+            password_state: buckyos_api::PasswordState::Set,
         };
         let value = settings_options_value(&settings);
         assert_eq!(value["groups"], json!(["customer"]));
@@ -1748,6 +1863,137 @@ mod tests {
         settings.allow_contact_edit = Some(true);
         assert_eq!(settings_options_value(&settings)["can_edit_contacts"], true);
         assert!(default_contact_settings(None).tags.is_empty());
+    }
+
+    #[test]
+    fn invitations_bring_in_user_or_limited_accounts_only() {
+        assert_eq!(invite_user_type(None).unwrap(), UserType::User);
+        assert_eq!(
+            invite_user_type(Some("limited")).unwrap(),
+            UserType::Limited
+        );
+        for raw in ["admin", "Admin", "root"] {
+            assert!(
+                matches!(
+                    invite_user_type(Some(raw)),
+                    Err(RPCErrors::ParseRequestError(_))
+                ),
+                "{raw}"
+            );
+        }
+    }
+
+    fn caller(user: &str, user_type: UserType, sudo: bool) -> RpcAuthPrincipal {
+        RpcAuthPrincipal {
+            username: user.to_string(),
+            owner_user_id: user.to_string(),
+            authenticated_app_id: "control-panel".to_string(),
+            user_type,
+            owner_did: String::new(),
+            is_user_session: true,
+            is_control_panel_session: true,
+            agent_permission_mode: None,
+            session: crate::PrincipalSession {
+                ceiling: buckyos_api::SessionCeiling::for_user_type(user_type),
+                is_sudo: sudo,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn account(user_type: UserType, allow: Option<bool>, state: PasswordState) -> UserSettings {
+        UserSettings {
+            user_id: "carol".to_string(),
+            user_type,
+            password: "x".to_string(),
+            state: UserState::Active,
+            res_pool_id: "default".to_string(),
+            is_local: true,
+            allow_password_change: allow,
+            allow_contact_edit: None,
+            groups: Vec::new(),
+            password_state: state,
+        }
+    }
+
+    #[test]
+    fn password_change_needs_a_control_panel_session_the_override_and_sudo() {
+        let set = PasswordState::Set;
+        let carol = |user_type| caller("carol", user_type, false);
+        // Limited: refused by default, allowed by the override, without sudo.
+        assert!(matches!(
+            password_change_allowed(
+                &carol(UserType::Limited),
+                "carol",
+                &account(UserType::Limited, None, set)
+            ),
+            Err(RPCErrors::NoPermission(_))
+        ));
+        assert!(password_change_allowed(
+            &carol(UserType::Limited),
+            "carol",
+            &account(UserType::Limited, Some(true), set)
+        )
+        .is_ok());
+        // A User re-proves the password with sudo.
+        assert!(matches!(
+            password_change_allowed(
+                &carol(UserType::User),
+                "carol",
+                &account(UserType::User, None, set)
+            ),
+            Err(RPCErrors::NoPermission(_))
+        ));
+        assert!(password_change_allowed(
+            &caller("carol", UserType::User, true),
+            "carol",
+            &account(UserType::User, None, set)
+        )
+        .is_ok());
+        // Never from a session of another target (an App holding the user's session).
+        let mut app_session = caller("carol", UserType::User, true);
+        app_session.is_control_panel_session = false;
+        let error = password_change_allowed(&app_session, "carol", &account(UserType::User, None, set))
+            .unwrap_err();
+        assert_eq!(
+            AccessDenial::from_rpc_error(&error).map(|denial| denial.reason),
+            Some(DenyReason::SessionKindNotAllowed)
+        );
+        assert!(matches!(
+            password_change_allowed(
+                &carol(UserType::User),
+                "carol",
+                &account(UserType::User, Some(false), set)
+            ),
+            Err(RPCErrors::NoPermission(_))
+        ));
+        // The first password is not a change.
+        let error = password_change_allowed(
+            &carol(UserType::Limited),
+            "carol",
+            &account(UserType::Limited, Some(true), PasswordState::Unset),
+        )
+        .unwrap_err();
+        assert_eq!(
+            AccessDenial::from_rpc_error(&error).map(|denial| denial.reason),
+            Some(DenyReason::CredentialState)
+        );
+        // Another account: an admin with a sudo session only.
+        let target = account(UserType::Limited, None, set);
+        assert!(password_change_allowed(
+            &caller("devtest", UserType::Admin, true),
+            "carol",
+            &target
+        )
+        .is_ok());
+        assert!(matches!(
+            password_change_allowed(&caller("devtest", UserType::Admin, false), "carol", &target),
+            Err(RPCErrors::NoPermission(_))
+        ));
+        assert!(matches!(
+            password_change_allowed(&caller("bob", UserType::User, true), "carol", &target),
+            Err(RPCErrors::NoPermission(_))
+        ));
     }
 
     #[test]

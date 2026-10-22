@@ -4,6 +4,7 @@
  * confirmation are all keyed by `(viewerDid, ownerDid, sessionId)`.
  */
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
+import { resetObjectCaches } from '../conversation/history/objectAccess'
 
 interface LocalRecord {
   drafts: Record<string, string>
@@ -24,10 +25,12 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 /**
- * Drops every viewer's unsent drafts on this device. Called on logout so a
- * shared browser does not keep the previous user's drafts in plain storage.
+ * Drops every viewer's unsent drafts on this device and the attachments
+ * resolved in this page (their Blob URLs revoked). Called on logout so a
+ * shared browser does not keep the previous user's data.
  */
 export function clearMessageHubLocalState(timeoutMs = 1_500): Promise<void> {
+  resetObjectCaches()
   if (typeof indexedDB === 'undefined') return Promise.resolve()
   return new Promise(resolve => {
     const timer = setTimeout(resolve, timeoutMs)

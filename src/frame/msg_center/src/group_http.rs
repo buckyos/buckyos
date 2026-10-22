@@ -1,6 +1,6 @@
 use crate::group_types::*;
 use crate::msg_center::MessageCenter;
-use buckyos_api::MailboxAddress;
+use buckyos_api::{AccessDenial, MailboxAddress, SessionScope, ACCESS_DENIED_ERROR_CODE};
 use buckyos_http_server::ServerError;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
@@ -38,6 +38,9 @@ fn reply(status: StatusCode, value: Value) -> Response<Body> {
         .unwrap()
 }
 fn error_details(e: kRPC::RPCErrors) -> (StatusCode, String, bool) {
+    if let Some(denial) = AccessDenial::from_rpc_error(&e) {
+        return (StatusCode::FORBIDDEN, denial.reason.as_str().to_string(), false);
+    }
     match e {
         kRPC::RPCErrors::NoPermission(r) => (
             if r == "not-found" {
@@ -53,8 +56,14 @@ fn error_details(e: kRPC::RPCErrors) -> (StatusCode, String, bool) {
     }
 }
 fn error(e: kRPC::RPCErrors) -> Response<Body> {
+    let denial = AccessDenial::from_rpc_error(&e);
     let (status, reason, retryable) = error_details(e);
-    reply(status, json!({"error":reason,"retryable":retryable}))
+    let mut body = json!({"error":reason,"retryable":retryable});
+    if let Some(denial) = denial {
+        body["code"] = json!(ACCESS_DENIED_ERROR_CODE);
+        body["data"] = json!(denial);
+    }
+    reply(status, body)
 }
 fn request_error(e: kRPC::RPCErrors, req: &Request<Body>, target: &str) -> Response<Body> {
     if req.method() == Method::PUT && req.uri().path().ends_with("/inbox") {
@@ -106,6 +115,10 @@ async fn principal(
         from_ip: Some("127.0.0.1".parse().unwrap()),
         ..Default::default()
     };
+    let caller = center
+        .caller_identity(&ctx)
+        .await?
+        .ok_or_else(|| denied("unauthenticated"))?;
     let mut actor = center.group_actor(&ctx).await?;
     let original = req
         .headers()
@@ -119,14 +132,24 @@ async fn principal(
     if original.method == "msgtunnel" {
         return Err(denied("shadow-endpoint-local-only"));
     }
-    actor.remote = true;
-    actor.client = None;
+    // An account of this Zone keeps its real client: a restricted session
+    // must not pass `allowed_clients` as an unverified remote.
+    if !(caller.restricted() && !caller.external) {
+        actor.remote = true;
+        actor.client = None;
+    }
     Ok((actor, ctx))
 }
+/// Group HTTP routes; opened to restricted sessions, whom the group and
+/// Session ACLs then decide on.
 pub(crate) async fn serve(
     center: &MessageCenter,
     req: &mut Request<Body>,
 ) -> Option<Response<Body>> {
+    let request = Box::pin(serve_group(center, req));
+    crate::owner_session::serve_opened("group_http", SessionScope::MsgGroup, request).await
+}
+async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<Response<Body>> {
     let path = req.uri().path().to_owned();
     let parts: Vec<_> = path.trim_start_matches('/').split('/').collect();
     let group = DID::from_str(parts.first().copied().unwrap_or("")).ok()?;
@@ -311,6 +334,10 @@ pub(crate) async fn serve(
                 if msg.to_session != sid || msg.to != [group.clone()] || msg.from != actor.did {
                     return Err(denied("sender-or-session-mismatch"));
                 }
+                MessageCenter::refuse_guest_attachments(
+                    center.caller_identity(&ctx).await?.as_ref(),
+                    &msg,
+                )?;
                 let dispatch = center.accept_group_message(&actor, msg, jwt).await?;
                 let target = group_target(expected, &path)?;
                 let mut result = if dispatch.ok {

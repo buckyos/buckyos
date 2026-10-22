@@ -9,13 +9,18 @@
 
 use crate::msg_center::MessageCenter;
 use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry};
-use crate::zone_agent::{find_zone_agent_spec, load_agent_settings, AgentLocationHints};
+use crate::zone_agent::{
+    account_owns_agent, find_zone_agent_spec, load_agent_settings, AgentLocationHints,
+};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, validate_verify_hub_token_claims, AgentSpec, MailboxAddress,
-    MailboxKind, MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState, SessionLifecycle,
-    SessionListLifecycleFilter, SessionListOrder, SessionMessagePage, SessionSummary,
-    SessionSummaryPage, TokenPrincipalKind, TokenUse, UiSessionStateEntry, UserPrivateProfile,
+    get_buckyos_api_runtime, token_auth_method, token_session_ceiling,
+    validate_verify_hub_token_claims, AccessDenial, AgentSpec, AuthMethod, DenyReason,
+    MailboxAddress, MailboxKind, MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState,
+    SessionCeiling, SessionLifecycle, SessionListLifecycleFilter, SessionListOrder,
+    SessionMessagePage, SessionScope, SessionSummary, SessionSummaryPage, SsoSettings,
+    SystemConfigError, TokenPrincipalKind, TokenUse, UiSessionStateEntry, UserGroupDirectory,
+    UserSettings, MSG_CENTER_SERVICE_NAME, SSO_SETTINGS_KEY,
 };
 use kRPC::{RPCContext, RPCErrors, RPCSessionToken};
 use log::warn;
@@ -50,7 +55,31 @@ pub trait SessionTokenVerifier: Send + Sync {
         Ok(())
     }
 
+    /// RBAC of a method opened to restricted sessions of `scope`.
+    async fn authorize_opened(
+        &self,
+        token: &str,
+        resource: &str,
+        action: &str,
+        _scope: SessionScope,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.authorize(token, resource, action).await
+    }
+
+    /// Verify an ordinary session token: restricted sessions are refused.
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors>;
+
+    /// Verify a session token for a method opened to restricted sessions of
+    /// `scope`.
+    async fn verify_opened(
+        &self,
+        token: &str,
+        _scope: SessionScope,
+    ) -> std::result::Result<RPCSessionToken, RPCErrors> {
+        self.verify(token).await
+    }
+
+    /// The account's DID: the id of its `users/<id>/doc`, never the profile.
     async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors>;
     /// `None` when `did` is not an Agent of this zone with an installed spec.
     async fn zone_agent(&self, did: &DID) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors>;
@@ -62,6 +91,48 @@ pub trait SessionTokenVerifier: Send + Sync {
     /// Owner of a zone-hosted agent (`AgentDocument.owner`).
     async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
         Ok(self.zone_agent(did).await?.map(|agent| agent.owner))
+    }
+
+    /// The Zone SSO switches as they are now (`system/sso/settings`).
+    async fn sso_settings(&self) -> std::result::Result<SsoSettings, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        match client.get(SSO_SETTINGS_KEY).await {
+            Ok(value) => serde_json::from_str(&value.value).map_err(|error| {
+                RPCErrors::ReasonError(format!("invalid `{SSO_SETTINGS_KEY}`: {error}"))
+            }),
+            Err(SystemConfigError::KeyNotFound(_)) => Ok(SsoSettings::default()),
+            Err(error) => Err(RPCErrors::ReasonError(error.to_string())),
+        }
+    }
+
+    /// An account's settings (type, groups, state) as they are now; `None`
+    /// when there is no such account.
+    async fn account_settings(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<Option<UserSettings>, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        let key = format!("users/{user_id}/settings");
+        match client.get(&key).await {
+            Ok(value) => serde_json::from_str(&value.value)
+                .map(Some)
+                .map_err(|error| RPCErrors::ReasonError(format!("invalid `{key}`: {error}"))),
+            Err(SystemConfigError::KeyNotFound(_)) => Ok(None),
+            Err(error) => Err(RPCErrors::ReasonError(error.to_string())),
+        }
+    }
+
+    /// The user groups and contact projection rules as they are now.
+    async fn user_groups(&self) -> std::result::Result<UserGroupDirectory, RPCErrors> {
+        get_buckyos_api_runtime()?
+            .get_control_panel_client()
+            .await?
+            .load_user_groups()
+            .await
     }
 }
 
@@ -77,6 +148,8 @@ pub struct RuntimeSessionTokenVerifier {
 }
 
 impl RuntimeSessionTokenVerifier {
+    /// The Agent spec of `did` and its owner account. An Agent counts only
+    /// when the spec's owner is the DID of the account it is stored under.
     async fn zone_agent_spec(
         &self,
         did: &DID,
@@ -84,31 +157,68 @@ impl RuntimeSessionTokenVerifier {
         let client = get_buckyos_api_runtime()?
             .get_system_config_client()
             .await?;
-        find_zone_agent_spec(client.as_ref(), did, Some(&self.agent_locations))
+        let Some((owner_user_id, spec)) =
+            find_zone_agent_spec(client.as_ref(), did, Some(&self.agent_locations))
+                .await
+                .map_err(|error| permission_denied(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        if !account_owns_agent(client.as_ref(), &owner_user_id, &spec.agent_doc.owner)
             .await
-            .map_err(|error| permission_denied(error.to_string()))
+            .map_err(|error| permission_denied(error.to_string()))?
+        {
+            warn!(
+                "agent {} names an owner other than account {}; ignored",
+                did.to_string(),
+                owner_user_id
+            );
+            return Ok(None);
+        }
+        Ok(Some((owner_user_id, spec)))
     }
 }
 
 #[async_trait]
 impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
+    async fn authorize_opened(
+        &self,
+        token: &str,
+        resource: &str,
+        action: &str,
+        scope: SessionScope,
+    ) -> std::result::Result<(), RPCErrors> {
+        let mut req = kRPC::RPCRequest::new("msg.authorize", Value::Null);
+        req.token = Some(token.to_string());
+        get_buckyos_api_runtime()?
+            .enforce_opened(&req, action, resource, scope)
+            .await?;
+        Ok(())
+    }
+
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors> {
         get_buckyos_api_runtime()?
             .verify_trusted_session_token(token)
             .await
     }
 
-    async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors> {
-        let client = get_buckyos_api_runtime()?
-            .get_system_config_client()
-            .await?;
-        let value = client
-            .get(&format!("users/{}/profile", user_id))
+    async fn verify_opened(
+        &self,
+        token: &str,
+        scope: SessionScope,
+    ) -> std::result::Result<RPCSessionToken, RPCErrors> {
+        get_buckyos_api_runtime()?
+            .verify_session_token_opened(token, scope)
             .await
-            .map_err(|error| permission_denied(error.to_string()))?;
-        let profile: UserPrivateProfile = serde_json::from_str(&value.value)
-            .map_err(|error| permission_denied(format!("invalid user profile: {}", error)))?;
-        Ok(profile.did)
+    }
+
+    async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors> {
+        get_buckyos_api_runtime()?
+            .get_control_panel_client()
+            .await?
+            .get_user_did(user_id)
+            .await
+            .map_err(|error| permission_denied(error.to_string()))
     }
 
     async fn zone_agent(&self, did: &DID) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors> {
@@ -161,6 +271,100 @@ pub(crate) async fn serve_with_request_identity<F: std::future::Future>(request:
         .await
 }
 
+tokio::task_local! {
+    static REQUEST_GATE: RequestGate;
+}
+
+/// The method a request serves and the scope it opens to restricted sessions
+/// (D-4). Without an opened scope a restricted session is refused.
+#[derive(Clone, Debug)]
+struct RequestGate {
+    method: String,
+    scope: Option<SessionScope>,
+}
+
+fn request_gate() -> RequestGate {
+    REQUEST_GATE.try_with(Clone::clone).unwrap_or(RequestGate {
+        method: "*".to_string(),
+        scope: None,
+    })
+}
+
+/// Methods that act on the caller's own address book (`account_self`).
+const OWN_CONTACT_METHODS: &[&str] = &[
+    "contact.get_contact",
+    "contact.list_contacts",
+    "contact.update_contact",
+    "contact.block_contact",
+    "contact.import_contacts",
+    "contact.merge_contacts",
+    buckyos_api::METHOD_CONTACT_LOOKUP,
+    buckyos_api::METHOD_CONTACT_UPDATE_TAGS,
+    buckyos_api::METHOD_CONTACT_REMOVE_CONTACT,
+    buckyos_api::METHOD_CONTACT_UNBLOCK_CONTACT,
+];
+
+/// The scope a kRPC method opens to restricted sessions: group and Session
+/// paths (`msg.post_send` only into a hosted group), the caller's own address
+/// book; nothing else.
+fn method_scope(method: &str) -> Option<SessionScope> {
+    if method.starts_with("group.") || method == "msg.post_send" {
+        Some(SessionScope::MsgGroup)
+    } else if OWN_CONTACT_METHODS.contains(&method) {
+        Some(SessionScope::AccountSelf)
+    } else {
+        None
+    }
+}
+
+/// Serve the kRPC `method` with the scope it opens to restricted sessions.
+pub(crate) async fn serve_method<F: std::future::Future>(method: &str, request: F) -> F::Output {
+    let gate = RequestGate {
+        method: method.to_string(),
+        scope: method_scope(method),
+    };
+    REQUEST_GATE.scope(gate, request).await
+}
+
+/// Serve a route (group HTTP, object read) opened to restricted sessions of
+/// `scope`.
+pub(crate) async fn serve_opened<F: std::future::Future>(
+    method: &str,
+    scope: SessionScope,
+    request: F,
+) -> F::Output {
+    let gate = RequestGate {
+        method: method.to_string(),
+        scope: Some(scope),
+    };
+    REQUEST_GATE.scope(gate, request).await
+}
+
+/// A D-4 denial of the method being served; logged without the token.
+pub(crate) fn gate_denial(reason: DenyReason, subject: &str) -> RPCErrors {
+    let method = request_gate().method;
+    warn!(
+        "msg-center denied {} on {}: {}",
+        subject,
+        method,
+        reason.as_str()
+    );
+    AccessDenial::new(reason)
+        .at(MSG_CENTER_SERVICE_NAME, method)
+        .into_rpc_error()
+}
+
+/// A group ACL refusal of a restricted visitor: missing and not granted read
+/// the same (`resource_grant_missing`); the group's own reason is only logged,
+/// it would tell an existing group from a missing one.
+pub(crate) fn restricted_group_denial(subject: &str, reason: String) -> RPCErrors {
+    let method = request_gate().method;
+    warn!("msg-center denied {} on {}: {}", subject, method, reason);
+    AccessDenial::new(DenyReason::ResourceGrantMissing)
+        .at(MSG_CENTER_SERVICE_NAME, method)
+        .into_rpc_error()
+}
+
 fn recall<T>(read: impl FnOnce(&RequestIdentityFacts) -> Option<T>) -> Option<T> {
     REQUEST_IDENTITY
         .try_with(|memo| {
@@ -199,11 +403,40 @@ impl SessionTokenVerifier for RequestScopedVerifier {
         self.0.authorize(token, resource, action).await
     }
 
+    async fn authorize_opened(
+        &self,
+        token: &str,
+        resource: &str,
+        action: &str,
+        scope: SessionScope,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.0.authorize_opened(token, resource, action, scope).await
+    }
+
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors> {
         if let Some(verified) = recall(|facts| facts.verified_tokens.get(token).cloned()) {
             return Ok(verified);
         }
         let verified = self.0.verify(token).await?;
+        remember(|facts| {
+            facts
+                .verified_tokens
+                .insert(token.to_string(), verified.clone());
+        });
+        Ok(verified)
+    }
+
+    /// A remembered token was verified in this request; `caller_identity`
+    /// checks its ceiling against the opened scope on every use.
+    async fn verify_opened(
+        &self,
+        token: &str,
+        scope: SessionScope,
+    ) -> std::result::Result<RPCSessionToken, RPCErrors> {
+        if let Some(verified) = recall(|facts| facts.verified_tokens.get(token).cloned()) {
+            return Ok(verified);
+        }
+        let verified = self.0.verify_opened(token, scope).await?;
         remember(|facts| {
             facts
                 .verified_tokens
@@ -266,6 +499,21 @@ impl SessionTokenVerifier for RequestScopedVerifier {
         });
         Ok(owner)
     }
+
+    async fn sso_settings(&self) -> std::result::Result<SsoSettings, RPCErrors> {
+        self.0.sso_settings().await
+    }
+
+    async fn account_settings(
+        &self,
+        user_id: &str,
+    ) -> std::result::Result<Option<UserSettings>, RPCErrors> {
+        self.0.account_settings(user_id).await
+    }
+
+    async fn user_groups(&self) -> std::result::Result<UserGroupDirectory, RPCErrors> {
+        self.0.user_groups().await
+    }
 }
 
 /// Holder so `MessageCenter` can stay `Clone + Debug` while carrying a
@@ -310,6 +558,17 @@ pub struct CallerIdentity {
     /// A user token for a DID without an account record in this Zone: it
     /// only acts in group sessions.
     pub external: bool,
+    /// The session's approved upper bound (restricted: Limited, External).
+    pub ceiling: SessionCeiling,
+    pub auth_method: Option<AuthMethod>,
+    /// The client the session was issued to (token `appid`).
+    pub appid: Option<String>,
+}
+
+impl CallerIdentity {
+    pub fn restricted(&self) -> bool {
+        self.ceiling.restricted
+    }
 }
 
 /// A call made inside this process: no session token and no peer address.
@@ -399,15 +658,19 @@ impl MessageCenter {
         else {
             return Err(permission_denied("session token required"));
         };
-        let verified = self
-            .token_verifier
-            .get()
-            .verify(token)
-            .await
-            .map_err(|error| {
+        let gate = request_gate();
+        let verifier = self.token_verifier.get();
+        let verified = match gate.scope {
+            Some(scope) => verifier.verify_opened(token, scope).await,
+            None => verifier.verify(token).await,
+        }
+        .map_err(|error| match AccessDenial::from_rpc_error(&error) {
+            Some(denial) => gate_denial(denial.reason, "session"),
+            None => {
                 warn!("msg-center rejected session token: {}", error);
                 permission_denied(format!("invalid session token: {}", error))
-            })?;
+            }
+        })?;
         let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)
             .map_err(|error| permission_denied(format!("invalid session claims: {}", error)))?;
         let user_id = verified
@@ -415,6 +678,15 @@ impl MessageCenter {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| permission_denied("session token has no subject"))?;
+        let ceiling = token_session_ceiling(&verified)
+            .map_err(|error| permission_denied(format!("invalid session ceiling: {}", error)))?;
+        if ceiling.restricted {
+            match gate.scope {
+                Some(scope) if ceiling.allows(scope) => {}
+                Some(_) => return Err(gate_denial(DenyReason::SessionCeilingExceeded, &user_id)),
+                None => return Err(gate_denial(DenyReason::SessionKindNotAllowed, &user_id)),
+            }
+        }
         let external = claims.principal_kind == TokenPrincipalKind::User
             && buckyos_api::token_is_external(&verified);
         let user_did = if external {
@@ -441,7 +713,30 @@ impl MessageCenter {
             principal_kind: claims.principal_kind,
             user_did,
             external,
+            ceiling,
+            auth_method: token_auth_method(&verified),
+            appid: verified.appid.clone(),
         }))
+    }
+
+    /// Internal maintenance (`reload_settings`) is for the Zone's services
+    /// and devices only.
+    pub(crate) async fn require_service_caller(
+        &self,
+        ctx: &RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
+        match self.caller_identity(ctx).await? {
+            None => Ok(()),
+            Some(caller)
+                if matches!(
+                    caller.principal_kind,
+                    TokenPrincipalKind::System | TokenPrincipalKind::Device
+                ) =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(permission_denied("service-only")),
+        }
     }
 
     /// A zone user may observe a mailbox owner other than themselves only when
@@ -470,6 +765,10 @@ impl MessageCenter {
         match self.caller_identity(ctx).await? {
             None => Ok(()),
             Some(caller) if caller.external => Err(external_denied()),
+            Some(caller) if caller.restricted() => Err(gate_denial(
+                DenyReason::SessionKindNotAllowed,
+                &caller.user_id,
+            )),
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
                     if caller.user_did.as_ref() == Some(owner)
@@ -501,6 +800,10 @@ impl MessageCenter {
         match self.caller_identity(ctx).await? {
             None => Ok(()),
             Some(caller) if caller.external => Err(external_denied()),
+            Some(caller) if caller.restricted() => Err(gate_denial(
+                DenyReason::SessionKindNotAllowed,
+                &caller.user_id,
+            )),
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
                     if caller.user_did.as_ref() == Some(owner) {
@@ -524,13 +827,19 @@ impl MessageCenter {
         resource: &str,
         action: &str,
     ) -> std::result::Result<(), RPCErrors> {
-        if self.caller_identity(ctx).await?.is_none() {
+        let Some(caller) = self.caller_identity(ctx).await? else {
             return Ok(());
+        };
+        let token = ctx.token.as_deref().unwrap();
+        let verifier = self.token_verifier.get();
+        match request_gate().scope.filter(|_| caller.restricted()) {
+            Some(scope) => {
+                verifier
+                    .authorize_opened(token, resource, action, scope)
+                    .await
+            }
+            None => verifier.authorize(token, resource, action).await,
         }
-        self.token_verifier
-            .get()
-            .authorize(ctx.token.as_deref().unwrap(), resource, action)
-            .await
     }
 
     pub(crate) async fn authorize_owner_read(
@@ -579,6 +888,48 @@ impl MessageCenter {
                 .map(|address| address.contacts_resource())
                 .map_err(RPCErrors::ParseRequestError)
         };
+        if let Some(caller) = self
+            .caller_identity(ctx)
+            .await?
+            .filter(CallerIdentity::restricted)
+        {
+            // A restricted session reaches its own address book only.
+            let Some(owner) = owner else {
+                return Err(gate_denial(
+                    DenyReason::SessionKindNotAllowed,
+                    &caller.user_id,
+                ));
+            };
+            if caller.external || caller.user_did.as_ref() != Some(owner) {
+                return Err(gate_denial(
+                    DenyReason::ResourceGrantMissing,
+                    &caller.user_id,
+                ));
+            }
+            self.authorize_resource(
+                ctx,
+                &contacts_resource(owner)?,
+                if write { "write" } else { "read" },
+            )
+            .await?;
+            // The edit right as the account is now, not as the last zone sync
+            // saw it (a new Limited account is not in that snapshot yet).
+            if write {
+                let settings = self
+                    .token_verifier
+                    .get()
+                    .account_settings(&caller.user_id)
+                    .await
+                    .map_err(|error| {
+                        warn!("read account {} failed: {}", caller.user_id, error);
+                        gate_denial(DenyReason::AuthorizationUnavailable, &caller.user_id)
+                    })?;
+                if !settings.is_some_and(|settings| settings.can_edit_contacts()) {
+                    return Err(permission_denied("contact-edit-not-allowed"));
+                }
+            }
+            return Ok(());
+        }
         match owner {
             Some(owner) if write => {
                 self.authorize_owner_write_identity(ctx, owner).await?;

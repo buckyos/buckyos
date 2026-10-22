@@ -36,48 +36,53 @@ impl UserSource for StaticUsers {
     }
 }
 
-/// `users/<id>/profile` (DID, display name) and `users/<id>/settings` (type, state). Only
-/// active accounts other than the Zone owner record (Root) have a HomeStation; records of an
-/// unknown type are skipped.
+/// `users/<id>/doc` (the DID), `users/<id>/profile` (display name) and `users/<id>/settings`
+/// (type, state). Only active accounts other than the Zone owner record (Root) have a
+/// HomeStation; records of an unknown type are skipped.
 pub struct SystemConfigUsers;
 
 #[async_trait]
 impl UserSource for SystemConfigUsers {
     async fn load(&self) -> Result<Vec<ZoneUser>, String> {
-        use serde_json::Value;
         let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| e.to_string())?;
-        let client = runtime.get_system_config_client().await.map_err(|e| e.to_string())?;
-        let ids = client.list("users").await.map_err(|e| e.to_string())?;
-        let mut users = Vec::new();
-        for id in ids {
-            if !crate::protocol::valid_user_segment(&id) {
-                continue;
-            }
-            let Ok(profile) = client.get(&format!("users/{id}/profile")).await else { continue };
-            let Ok(profile) = serde_json::from_str::<Value>(&profile.value) else { continue };
-            let Some(did) = profile.get("did").or_else(|| profile.get("id")).and_then(Value::as_str) else { continue };
-            let Some(settings) = client
-                .get(&format!("users/{id}/settings"))
-                .await
-                .ok()
-                .and_then(|v| serde_json::from_str::<buckyos_api::UserSettings>(&v.value).ok())
-            else {
-                continue;
-            };
-            if !settings.is_active() {
-                continue;
-            }
-            let name = ["display_name", "displayName", "name"]
-                .iter()
-                .find_map(|k| profile.get(*k).and_then(Value::as_str))
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or(&id)
-                .to_string();
-            let zone_feed_writer = matches!(settings.user_type, buckyos_api::UserType::Admin | buckyos_api::UserType::User);
-            users.push(ZoneUser { user: id.clone(), did: did.to_string(), name, zone_feed_writer });
-        }
-        Ok(users)
+        load_users(runtime.get_system_config_client().await.map_err(|e| e.to_string())?).await
     }
+}
+
+/// The zone's users in system config. The DID is the one `users/<id>/doc` binds, never the
+/// editable profile's.
+pub async fn load_users(client: std::sync::Arc<buckyos_api::SystemConfigClient>) -> Result<Vec<ZoneUser>, String> {
+    use serde_json::Value;
+    let accounts = buckyos_api::ControlPanelClient::from_shared(client.clone());
+    let ids = client.list("users").await.map_err(|e| e.to_string())?;
+    let mut users = Vec::new();
+    for id in ids {
+        if !crate::protocol::valid_user_segment(&id) {
+            continue;
+        }
+        let Ok(did) = accounts.get_user_did(&id).await else { continue };
+        let Some(settings) = client
+            .get(&format!("users/{id}/settings"))
+            .await
+            .ok()
+            .and_then(|v| serde_json::from_str::<buckyos_api::UserSettings>(&v.value).ok())
+        else {
+            continue;
+        };
+        if !settings.is_active() {
+            continue;
+        }
+        let profile = client.get(&format!("users/{id}/profile")).await.ok().and_then(|v| serde_json::from_str::<Value>(&v.value).ok()).unwrap_or(Value::Null);
+        let name = ["display_name", "displayName", "name"]
+            .iter()
+            .find_map(|k| profile.get(*k).and_then(Value::as_str))
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or(&id)
+            .to_string();
+        let zone_feed_writer = matches!(settings.user_type, buckyos_api::UserType::Admin | buckyos_api::UserType::User);
+        users.push(ZoneUser { user: id.clone(), did: did.to_string(), name, zone_feed_writer });
+    }
+    Ok(users)
 }
 
 /// Cached view of the zone's users. A lookup miss reloads, at most every few seconds, so a

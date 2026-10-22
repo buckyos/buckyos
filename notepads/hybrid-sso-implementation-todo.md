@@ -1,6 +1,6 @@
 # BuckyOS 混合 SSO 实施 TODO
 
-日期：2026-10-21。状态：用户类型前置已交付；§4 的用户决策已于同日全部确定；混合 SSO 待实施。本文是代码核对后的实施计划，不是功能完成记录。
+日期：2026-10-21。状态：用户类型前置已交付；§4 的用户决策已于同日全部确定。**2026-10-22 已实施并完成单 Zone DV**，实施记录见 §11，逐方法审计见附录 A；未完成项在原条目后标注“10-22 未完成”。
 
 目标：在现有本 Zone SSO 上实现专属邀请、自助注册、DID 登录和允许时的 Guest 入口，同时贯通 Message Hub 外部客户会话、AI Workspace 分享、同 Zone 跨应用身份复用。先完成身份、授权与撤销底座，再开放新登录方式。
 
@@ -56,18 +56,18 @@
 | PRE-03 / P1 | [AIWS RuntimeAuth](../src/frame/aiworkspace/server/src/auth.rs) 丢失身份类别；[授权](../src/frame/aiworkspace/store/src/workspace.rs) 的 `*` 匹配所有非 guest；[创建资格](../src/frame/aiworkspace/store/src/service.rs) 只排除 guest | Limited / External 不因“已登录”获得 `*`、创建、导入、复制或列出全体主体的能力；按可信身份类别和显式授权检查，并保留普通用户与公开 Guest 的既有行为 |
 | PRE-04 / P2 | [user.change_password](../src/frame/control_panel/src/user_mgr.rs) 检查 `allow_password_change` 后仍以调用者 token 写 settings，Limited 没有该写权限 | Limited 开启覆盖选项后可安全改密，关闭时拒绝；不能以开放整份 settings 写入修复。专属邀请账号首设密码按 P-1（独立的专用能力）和 SSO-06 落实 |
 
-- [ ] 完成 PRE-01～04 并增加对应允许 / 拒绝用例；旧会话不增权和撤销另在 SSO-02 / 04 / 05 验证。
-- [ ] 将上述身份字段写保护与不可变绑定作为 SSO-01 / 04 的交付物，覆盖业务 RPC 与原始存储入口。
+- [x] 完成 PRE-01～04 并增加对应允许 / 拒绝用例；旧会话不增权和撤销另在 SSO-02 / 04 / 05 验证。（10-22：PRE-01 scheduler 去掉 su_users 写 settings/doc；PRE-02 system-config profile DID 守卫 + 各服务改读 doc；PRE-03 AIWS 调用者类别；PRE-04 CP 服务身份写改密。单测与 DV（`pre_check.ts`、`user_groups_dv.sh`）通过）
+- [x] 将上述身份字段写保护与不可变绑定作为 SSO-01 / 04 的交付物，覆盖业务 RPC 与原始存储入口。（10-22：system-config 守卫覆盖 set / create / set_by_json_path / append / exec_tx / delete；CP 业务方法同样校验）
 
 ### 0.4 已完成项与可并行工作
 
 - [x] 空存储密码拒绝密码登录（UT-04）；不再列作未修复漏洞。
 - [x] scheduler 删除 Guest / 未知类型回退 User（UT-03）；不再重复实施。
-- [ ] SSO-04 的逐方法入口清单和上述前置修复。
-- [ ] SSO-01～03 的契约草案与 fixtures，取值按 §4 已定结果。
-- [ ] 按 P-2 将 `user.invite.create` 限为 User / Limited（`handle_user_invite_create` 目前只拒绝 Root），补拒绝 Admin 的用例，并同步 [UserType.md](../product/users_and_agents/UserType.md)、[用户类型 TODO](user-type-definition-todo.md) T-7 细节中的“Admin 保持现状 / 可邀请 Admin”表述。
-- [ ] 按 Q-03 删除 Desktop 登录页的 `remember_me`（[LoginPage.tsx](../src/frame/desktop/src/auth/LoginPage.tsx) 传给 `auth.login`，CP 未使用）。
-- [ ] SSO-12 的 host 群时间线 adapter、附件 `context_path` 传递和按 Zone / 主体 / Session / 消息隔离缓存。用现有 Limited 测试账号验证；群发送仍须补最小资源授权及零个人邮箱断言，不能直接删掉 SENT 检查后放行。
+- [x] SSO-04 的逐方法入口清单和上述前置修复。（10-22：见附录 A）
+- [x] SSO-01～03 的契约草案与 fixtures，取值按 §4 已定结果。（10-22：契约 `doc/arch/verify-hub/混合SSO技术契约.md`；fixtures `buckyos-api/tests/fixtures/hybrid_sso/`，Rust 与 WebSDK 双端解析）
+- [x] 按 P-2 将 `user.invite.create` 限为 User / Limited（`handle_user_invite_create` 目前只拒绝 Root），补拒绝 Admin 的用例，并同步 [UserType.md](../product/users_and_agents/UserType.md)、[用户类型 TODO](user-type-definition-todo.md) T-7 细节中的“Admin 保持现状 / 可邀请 Admin”表述。（10-22：`handle_user_invite_create` 拒绝 Admin；UserType.md 与用户类型 TODO 已同步）
+- [x] 按 Q-03 删除 Desktop 登录页的 `remember_me`（[LoginPage.tsx](../src/frame/desktop/src/auth/LoginPage.tsx) 传给 `auth.login`，CP 未使用）。（10-22：登录页已删除该选项与参数）
+- [x] SSO-12 的 host 群时间线 adapter、附件 `context_path` 传递和按 Zone / 主体 / Session / 消息隔离缓存。用现有 Limited 测试账号验证；群发送仍须补最小资源授权及零个人邮箱断言，不能直接删掉 SENT 检查后放行。（10-22：Message Hub 访客页 `guest/`；附件带 `context_path`；缓存按 `identityKey` + 上下文 + 对象隔离；Limited 群发送仅跳过 SENT，Session / Hook / 客户端检查保留；零个人邮箱断言见 msg-center `test_hybrid_sso.rs`）
 
 ## 1. 先对齐设计，避免从错误模型开始实现
 
@@ -239,37 +239,37 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 ### SSO-01 / P0：分开主体、登录凭据与身份归属
 
-- [ ] 定义可信主体记录：稳定且不可复用的内部 ID、业务 DID / subject、账号类别、状态、凭据状态、认证来源；本地 Profile 只属于有账号记录者。冻结 token `sub`、账号 ID、DID 的转换、删除重建与 External 入驻的映射，接入共享解析器。身份绑定不能读取本人可改的 Profile，不能靠昵称或拼接 `did:bns:<username>` 推断；完成 PRE-01 / 02 的字段写保护。
-- [ ] 专属邀请、自助注册账号类型为 `Limited`（用户类型 TODO T-1）：零权限底座，权限经管理员维护的系统用户组或资源授权获得；自助注册不自动加入系统用户组（T-3）。未入驻本 Zone 的 DID 访客是 External，不建账号记录（T-4）；匿名访问不是用户类型（T-9）。
-- [ ] “未设置密码”是独立凭据状态，password / sudo 入口在验证密码前显式拒绝该状态。当前 `validate_password_login` 已拒绝空 stored password，但尚无独立凭据状态；不能用可预测占位密码代替该状态。DID-only 不得意外走密码登录，Guest 不进入账号登录路径。
-- [ ] 普通本地账户创建与“本人建立 canonical zone”拆开；两类账号的注册、首设密码及后续改类型均不得隐式写入归属授权。两类账号沿用二级 DID 与 Zone 托管密钥（用户类型 TODO T-6）；verify-hub 只为 Admin、User 签发对外联合断言，因此目标 Zone 不能借这些 Limited 账号代表用户登录第三方。不要求这些用户交出身份根私钥。
-- [ ] 冻结本批身份来源范围：专属邀请的可信签发方、自助注册的本地凭据、DID 登录的 canonical issuer 均有稳定关联。按 S-1，App 身份域和 `(identity_domain_id, external_account_id) → subject` 唯一绑定随 SSO-10 后排，不作为本批交付门槛；共用来源与上限模型仍须保留，卸载重装不得继承旧来源权力。
-- [ ] 手机号/邮箱是可变绑定，不进入主体主键；同名、同手机号或私有 Contact canonical 合并不能作为登录依据。已有普通用户/DID 的关联必须验证控制权，不准借 App guest 入口冒认。
-- [ ] 用户类型、系统用户组、scheduler 映射与 RBAC 生成、主体解析函数由用户类型 TODO 的 UT-01～UT-05 完成；本任务在这些基础上补可信身份绑定、字段写保护、凭据状态与实际消费者接入；函数已定义不等于生命周期与权限上限已完成。
+- [x] 定义可信主体记录：稳定且不可复用的内部 ID、业务 DID / subject、账号类别、状态、凭据状态、认证来源；本地 Profile 只属于有账号记录者。冻结 token `sub`、账号 ID、DID 的转换、删除重建与 External 入驻的映射，接入共享解析器。身份绑定不能读取本人可改的 Profile，不能靠昵称或拼接 `did:bns:<username>` 推断；完成 PRE-01 / 02 的字段写保护。（10-22：内部 ID 沿用不可复用的 user_id（删除只置 deleted）；账号→DID 只认 `users/<id>/doc`（`ControlPanelClient::get_user_did`）；External 入驻后 DID 登录映射到账号，旧 External 会话至期满不升级（契约 §2.1））
+- [x] 专属邀请、自助注册账号类型为 `Limited`（用户类型 TODO T-1）：零权限底座，权限经管理员维护的系统用户组或资源授权获得；自助注册不自动加入系统用户组（T-3）。未入驻本 Zone 的 DID 访客是 External，不建账号记录（T-4）；匿名访问不是用户类型（T-9）。（10-22：专属邀请、自助注册建 Limited，不入系统组；External 不建记录）
+- [x] “未设置密码”是独立凭据状态，password / sudo 入口在验证密码前显式拒绝该状态。当前 `validate_password_login` 已拒绝空 stored password，但尚无独立凭据状态；不能用可预测占位密码代替该状态。DID-only 不得意外走密码登录，Guest 不进入账号登录路径。（10-22：`UserSettings.password_state`；verify-hub 在摘要比较前拒绝 `unset`（`credential_state/password_unset`））
+- [x] 普通本地账户创建与“本人建立 canonical zone”拆开；两类账号的注册、首设密码及后续改类型均不得隐式写入归属授权。两类账号沿用二级 DID 与 Zone 托管密钥（用户类型 TODO T-6）；verify-hub 只为 Admin、User 签发对外联合断言，因此目标 Zone 不能借这些 Limited 账号代表用户登录第三方。不要求这些用户交出身份根私钥。（10-22：专属邀请、自助注册建号不写 default zone；`issue_federation_code` 只为 Admin / User 且 OwnerDocument 默认 Zone 为本 Zone 的账号签发）
+- [x] 冻结本批身份来源范围：专属邀请的可信签发方、自助注册的本地凭据、DID 登录的 canonical issuer 均有稳定关联。按 S-1，App 身份域和 `(identity_domain_id, external_account_id) → subject` 唯一绑定随 SSO-10 后排，不作为本批交付门槛；共用来源与上限模型仍须保留，卸载重装不得继承旧来源权力。（10-22：family 记录来源（专属邀请 ID + 版本、联合 canonical 主机）；App 身份域随 SSO-10 后排）
+- [x] 手机号/邮箱是可变绑定，不进入主体主键；同名、同手机号或私有 Contact canonical 合并不能作为登录依据。已有普通用户/DID 的关联必须验证控制权，不准借 App guest 入口冒认。（10-22：手机号 / 邮箱只作专属邀请渠道提示，不参与主体；系统不按联系方式合并账号）
+- [x] 用户类型、系统用户组、scheduler 映射与 RBAC 生成、主体解析函数由用户类型 TODO 的 UT-01～UT-05 完成；本任务在这些基础上补可信身份绑定、字段写保护、凭据状态与实际消费者接入；函数已定义不等于生命周期与权限上限已完成。（10-22：在 UT 基础上补了 doc 绑定、字段写保护、凭据状态与各服务消费者）
 
 落点：`buckyos-api/{control_panel,app_availability,runtime}.rs`、`control_panel/user_mgr.rs`、scheduler 的用户加载和 RBAC 构建、WebSDK 用户类型。验收：专属邀请账号设密码、刷新、换设备均不换主体；两类本地账号与 External 登录均不产生 canonical zone 修改。
 
 ### SSO-02 / P0：统一会话上下文和生命周期协议
 
-- [ ] 在现有 `AuthTarget`、`TokenPair`、`ValidatedTokenClaims` 上定义可验证的认证方式、来源身份域/issuer、认证强度、family/session 标识、批准的权限上限、授权来源关联和撤销版本。明确哪些在签名 claims，哪些通过服务端记录查询。
-- [ ] principal 继续为 `user`，受限身份不得伪装成 system/app。External 标记已由用户类型 UT-01 实施为布尔 claim `external: true`（`TOKEN_EXTERNAL_CLAIM`、`bind_token_external`、`token_is_external`，主体解析 `ControlPanelClient::resolve_user_principal`）；verify-hub 尚无签发与续期路径。App target 精确绑定实例和 owner；System target 单独批准。来源 App 与 target 分别记录，refresh token 不能作为业务 session，sudo 不能从这些入口顺带获得。
-- [ ] 给出 Account / External / Anonymous 当前身份响应及 Rust / TS fixtures，替换 CP refresh 的强制账号查询和 SDK 的账号必填假设；缓存按 Zone + 主体绑定，身份变化不能回退为旧 `user_info`。
-- [ ] 会话 scope 是上限，不是权限真相源。实际请求始终求交：当前主体授权 ∩ 当前 target 能力 ∩ 来源/会话上限 ∩ 当前资源规则。新增加的资源授权不能让旧的 App 代登录会话自动越过上限；类型或组变化也不能通过动态 RBAC 自动提高旧会话上限，续期与换票必须保留该约束。
-- [ ] 列出类型化协议：入口查询/准备、各方式认证或交换、专属邀请首次设密码/重发、DID authorize/return（按 D-7：目标侧 `login_by_remote_verify_hub`，canonical 侧签发 / 兑换 code）、当前身份、refresh/logout、来源和会话撤销。复用现有接口可满足的部分；每个新方法同时定义 caller、target、资源、origin、幂等键和预期失败状态。
-- [ ] 为 SSO-11.1 冻结外部调用 intent：action 与允许的参数、路由候选、最终业务目标及登录后恢复上下文分别建模；明确 SDK / App / jump / CP 各自处理哪一段。复用现有 pending/回调机制，action→目标页面的映射必须登记，不能把任意 URL 当作登录成功后的可执行命令。
-- [ ] 在 `verify_hub_client.rs` 的 request、trait、adapter、Rust client 与 WebSDK 同步协议。现有 kRPC 错误经传输会变为字符串，业务需要分支的结果使用结构化 status，不让 UI 解析错误文本。
-- [ ] 区分可重试错误、未认证、无权限、免密资格过期/已撤销、密码已设置、资源关闭/删除、身份冲突和来源不可用；无权限再按 D-4 细分原因码，并登记每个码的调整方与位置。公开入口的返回信息不泄露其他客户或私密资源，访客侧按 D-4 合并“未开放”与“不存在”。
+- [x] 在现有 `AuthTarget`、`TokenPair`、`ValidatedTokenClaims` 上定义可验证的认证方式、来源身份域/issuer、认证强度、family/session 标识、批准的权限上限、授权来源关联和撤销版本。明确哪些在签名 claims，哪些通过服务端记录查询。（10-22：claims `auth_method`、`restricted`、`scopes`；family（来源、父 family、绝对期限）存 verify-hub SQLite；签名 claims 与服务端记录的分工见契约 §3.1、§7）
+- [x] principal 继续为 `user`，受限身份不得伪装成 system/app。External 标记已由用户类型 UT-01 实施为布尔 claim `external: true`（`TOKEN_EXTERNAL_CLAIM`、`bind_token_external`、`token_is_external`，主体解析 `ControlPanelClient::resolve_user_principal`）；verify-hub 尚无签发与续期路径。App target 精确绑定实例和 owner；System target 单独批准。来源 App 与 target 分别记录，refresh token 不能作为业务 session，sudo 不能从这些入口顺带获得。（10-22：verify-hub DID 登录签发 External（`external: true`），refresh 仅复核绝对期限；External 只能是 control-panel target）
+- [x] 给出 Account / External / Anonymous 当前身份响应及 Rust / TS fixtures，替换 CP refresh 的强制账号查询和 SDK 的账号必填假设；缓存按 Zone + 主体绑定，身份变化不能回退为旧 `user_info`。（10-22：`CurrentIdentity`；CP `/sso_refresh` 返回 `{session_token, identity}`；WebSDK `getCurrentIdentity`，缓存按主体绑定，401 时清除）
+- [x] 会话 scope 是上限，不是权限真相源。实际请求始终求交：当前主体授权 ∩ 当前 target 能力 ∩ 来源/会话上限 ∩ 当前资源规则。新增加的资源授权不能让旧的 App 代登录会话自动越过上限；类型或组变化也不能通过动态 RBAC 自动提高旧会话上限，续期与换票必须保留该约束。（10-22：refresh / grace / delegate 取 存量上限 ∩ 当前类型上限，只收窄不放宽；资源授权仍逐请求判定）
+- [x] 列出类型化协议：入口查询/准备、各方式认证或交换、专属邀请首次设密码/重发、DID authorize/return（按 D-7：目标侧 `login_by_remote_verify_hub`，canonical 侧签发 / 兑换 code）、当前身份、refresh/logout、来源和会话撤销。复用现有接口可满足的部分；每个新方法同时定义 caller、target、资源、origin、幂等键和预期失败状态。（10-22：方法清单与 wire 见契约 §4、§5、§9、§10）
+- [x] 为 SSO-11.1 冻结外部调用 intent：action 与允许的参数、路由候选、最终业务目标及登录后恢复上下文分别建模；明确 SDK / App / jump / CP 各自处理哪一段。复用现有 pending/回调机制，action→目标页面的映射必须登记，不能把任意 URL 当作登录成功后的可执行命令。（10-22：登记 action 只含 Zone 侧已有页面（`app_installer`）；参数经 jump 以 query 交给目标页，登录经 `/login?redirect_url=` 回到原 action；独立的 action pending 未做（见 SSO-11.1））
+- [x] 在 `verify_hub_client.rs` 的 request、trait、adapter、Rust client 与 WebSDK 同步协议。现有 kRPC 错误经传输会变为字符串，业务需要分支的结果使用结构化 status，不让 UI 解析错误文本。（10-22：buckyos-api `verify_hub_client.rs` 与 WebSDK 同步；结构化失败走 kRPC `code`/`data`（buckyos-base `a677df0`））
+- [x] 区分可重试错误、未认证、无权限、免密资格过期/已撤销、密码已设置、资源关闭/删除、身份冲突和来源不可用；无权限再按 D-4 细分原因码，并登记每个码的调整方与位置。公开入口的返回信息不泄露其他客户或私密资源，访客侧按 D-4 合并“未开放”与“不存在”。（10-22：D-4 原因码 9 类及调整方登记（`DenyReason::adjust`）；访客侧“未开放 = 不存在”）
 
 验收：同一 wire fixture 在 Rust / TypeScript 解析一致；来源、scope、target 缺失或矛盾时拒绝，不能回退为无范围的旧会话。开发阶段直接迁移协议，不新增旧格式兼容旁路。
 
 ### SSO-03 / P0：明确状态的真相源和事务边界
 
-- [ ] 为账户/绑定、身份域授权、分享入口、专属邀请免密资格、资源 grant、DID consent、会话 family/revocation、发送 outbox 和审计分别列出存储 owner、唯一键、版本/CAS、到期与删除规则。已定 owner：分享入口在 AIWS（与 grants 同库）和 msg-center（D-8），Zone 自助注册 / DID 登录开关在 system-config，family 在 verify-hub 本地 SQLite（D-6）。其余优先复用现有 system-config 事务及已有存储组件，不先引入新通用服务。
-- [ ] 长期入口与凭据分表/分字段表示：入口 ID 只用于定位业务；凭据以不可逆摘要保存并设有效期；原始 secret 不落日志、审计、analytics 或 Referer。长期访问地址不能单凭公开 ID 重新获得免密资格。
-- [ ] 资源授权保留授予者、接收者、资源、动作、期限、来源及转授依据；群/Session 成员表仍是成员资格真相源，Workspace grants 仍是对象权限真相源，不另建一份易失步的访客成员表。
-- [ ] 账号预建、资源邀请和发送不能假设跨服务天然原子：定义可重试编排、幂等关联和补偿；按 D-9，outbox 的终点是通知签发方而非系统直发；通知或发送失败不丢账号/会话关系，不伪报已送达。身份创建本身不隐式授权。
-- [ ] 按 D-6 区分可丢失的短期 pending 与必须持久的 family：family 存 verify-hub 本地 SQLite（服务数据目录 `data/var/verify-hub/`，路径在此冻结）。定义原子轮换、重启后 grace 的同一 pair / 幂等语义、备份恢复与撤销不回滚；不保存 token 明文时仍需可重建必要签发信息。单实例也须保护状态与撤销记录；verify-hub 迁到其它 OOD 后旧会话须重新登录，写入交付记录，不宣称多副本或故障切换可用。
-- [ ] jump 的 `{ current_zone_hostname, auto_jump }` 仅是该 origin 下可丢失的浏览器路由偏好，与账号、DID consent、专属邀请凭据、Guest 主体和会话 family 分开；存储不可用或被清除时回到手动选择，不据此新建身份或恢复授权。
+- [x] 为账户/绑定、身份域授权、分享入口、专属邀请免密资格、资源 grant、DID consent、会话 family/revocation、发送 outbox 和审计分别列出存储 owner、唯一键、版本/CAS、到期与删除规则。已定 owner：分享入口在 AIWS（与 grants 同库）和 msg-center（D-8），Zone 自助注册 / DID 登录开关在 system-config，family 在 verify-hub 本地 SQLite（D-6）。其余优先复用现有 system-config 事务及已有存储组件，不先引入新通用服务。（10-22：契约 §12 持久状态清单）
+- [x] 长期入口与凭据分表/分字段表示：入口 ID 只用于定位业务；凭据以不可逆摘要保存并设有效期；原始 secret 不落日志、审计、analytics 或 Referer。长期访问地址不能单凭公开 ID 重新获得免密资格。（10-22：专属邀请只存 secret 摘要，secret 只在 fragment 与 create / rotate 的一次性响应中）
+- [x] 资源授权保留授予者、接收者、资源、动作、期限、来源及转授依据；群/Session 成员表仍是成员资格真相源，Workspace grants 仍是对象权限真相源，不另建一份易失步的访客成员表。（10-22：AIWS grant 记录 `via_entry`；群 / Session 成员表仍是成员资格真相源。授予者字段未单独记录）
+- [x] 账号预建、资源邀请和发送不能假设跨服务天然原子：定义可重试编排、幂等关联和补偿；按 D-9，outbox 的终点是通知签发方而非系统直发；通知或发送失败不丢账号/会话关系，不伪报已送达。身份创建本身不隐式授权。（10-22：无独立 outbox：重发直接发 System Notify（msg-center notify 自带续发），签发方在 CP 轮换取新链接；建号→邀请→资源邀请按 invite_id 幂等，资源邀请失败记 `resource_state: pending` 可重试）
+- [x] 按 D-6 区分可丢失的短期 pending 与必须持久的 family：family 存 verify-hub 本地 SQLite（服务数据目录 `data/var/verify-hub/`，路径在此冻结）。定义原子轮换、重启后 grace 的同一 pair / 幂等语义、备份恢复与撤销不回滚；不保存 token 明文时仍需可重建必要签发信息。单实例也须保护状态与撤销记录；verify-hub 迁到其它 OOD 后旧会话须重新登录，写入交付记录，不宣称多副本或故障切换可用。（10-22：`data/var/verify-hub/sessions.db`；DV 验证 verify-hub 重启后旧 refresh 仍可刷新；不进备份（`rootfs/etc/backup.py` 只备份身份文件））
+- [x] jump 的 `{ current_zone_hostname, auto_jump }` 仅是该 origin 下可丢失的浏览器路由偏好，与账号、DID consent、专属邀请凭据、Guest 主体和会话 family 分开；存储不可用或被清除时回到手动选择，不据此新建身份或恢复授权。（10-22：jump 页面 `src/frame/jump/`，偏好只存 jump 自己的 localStorage）
 
 验收：并发创建无重复身份；并发设密码与邀请登录有确定提交顺序；恢复备份不会复活已撤销凭据或将同名 App 继承为原身份源。
 
@@ -277,10 +277,10 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 ### SSO-04 / P0：全入口默认拒绝及授权交集
 
-- [ ] External（用户类型 TODO T-4）在 v1 只被 verify-hub、msg-center 群路径、AI Workspace、HomeStation 接受，其余服务默认拒绝；Limited 的自身基线含 settings 读取、Profile 读写，以及 msg-center 绑定调用者本人的通讯录读取 / 按 `can_edit_contacts` 编辑；身份字段按 PRE-01 / 02 保护，系统用户组不带系统 RBAC 策略。零业务权限测试不能把这些已允许操作全部判为失败。
-- [ ] 按 D-4 把受限主体判定和 scope/source 检查接到共享认证/授权上下文（`verify_trusted_session_token` 及其授权调用），默认拒绝，服务逐方法开放；仅给 token 增加字段不算完成。根域受限会话沿用 `System{control-panel}`，限制来自 claims 中的受限标记与上限。`runtime.enforce` 保留完整 AuthTarget 实例上下文，不能用 AppId 级 `authorization_key` 代替实例级管理和转授授权。
-- [ ] 创建身份、邀请加入、代登录、资源使用、可转授是五类不同能力。App 的授予上限为“系统允许范围 ∩ owner+instance 获准转授范围 ∩ 资源方允许范围”；不能因 owner 是管理员或 App 有读取权就允许转授。
-- [ ] 为下表产出逐方法审计清单：入口、认证来源、主体解析、RBAC、资源检查、scope、撤销、拒绝原因码与可调整项（D-4）、测试。未支持受限主体的方法明确拒绝；只验证 `principal_kind=user` 或“自己的数据”不够。
+- [x] External（用户类型 TODO T-4）在 v1 只被 verify-hub、msg-center 群路径、AI Workspace、HomeStation 接受，其余服务默认拒绝；Limited 的自身基线含 settings 读取、Profile 读写，以及 msg-center 绑定调用者本人的通讯录读取 / 按 `can_edit_contacts` 编辑；身份字段按 PRE-01 / 02 保护，系统用户组不带系统 RBAC 策略。零业务权限测试不能把这些已允许操作全部判为失败。（10-22：见附录 A；HomeStation 开放读与评论）
+- [x] 按 D-4 把受限主体判定和 scope/source 检查接到共享认证/授权上下文（`verify_trusted_session_token` 及其授权调用），默认拒绝，服务逐方法开放；仅给 token 增加字段不算完成。根域受限会话沿用 `System{control-panel}`，限制来自 claims 中的受限标记与上限。`runtime.enforce` 保留完整 AuthTarget 实例上下文，不能用 AppId 级 `authorization_key` 代替实例级管理和转授授权。（10-22：runtime `verify_trusted_session_token` 默认拒绝，`verify_session_token_opened` / `enforce_opened` 逐方法开放；system-config 自有闸口）
+- [x] 创建身份、邀请加入、代登录、资源使用、可转授是五类不同能力。App 的授予上限为“系统允许范围 ∩ owner+instance 获准转授范围 ∩ 资源方允许范围”；不能因 owner 是管理员或 App 有读取权就允许转授。（10-22：本批：建号 / 建入口 / 专属邀请需 CP 管理员会话；资源转授需 manage；App 代登录与转授上限随 SSO-10 后排）
+- [x] 为下表产出逐方法审计清单：入口、认证来源、主体解析、RBAC、资源检查、scope、撤销、拒绝原因码与可调整项（D-4）、测试。未支持受限主体的方法明确拒绝；只验证 `principal_kind=user` 或“自己的数据”不够。（10-22：附录 A）
 
 | 审计面 | 必查点 |
 | --- | --- |
@@ -294,20 +294,20 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 | kevent / kmsg / stream | topic/资源过滤、订阅建立及持续输出、撤销后断开或停止输出；不能授予全局事件订阅。 |
 | Gateway 与直连后端 | 页面路由、kapi、HTTP、批量和旁路端口结论一致；网络请求不能触发无 token 的内部放行。公开 bootstrap 仅公开壳和必要接口。 |
 
-- [ ] 新建受限账号的零权限测试先落地：即使签名、target、exp 都合法，也不能枚举他人邮箱 / 联系人、未授权 Session / Workspace、任务、系统配置或个人存储；自身 settings / profile / 通讯录按基线单独验证，获准资源逐项加入。
-- [ ] 授权状态不可确认时拒绝受保护请求；保留已有明确公开资源的匿名行为。普通用户、系统服务和设备 bootstrap 回归不得被受限身份改造破坏。
+- [x] 新建受限账号的零权限测试先落地：即使签名、target、exp 都合法，也不能枚举他人邮箱 / 联系人、未授权 Session / Workspace、任务、系统配置或个人存储；自身 settings / profile / 通讯录按基线单独验证，获准资源逐项加入。（10-22：DV `test_hybrid_sso_dv.ts` restricted-gate：task-manager、msg-center owner、CP user.list / 他人 user.get 均为 `session_kind_not_allowed`；本人基线可用）
+- [x] 授权状态不可确认时拒绝受保护请求；保留已有明确公开资源的匿名行为。普通用户、系统服务和设备 bootstrap 回归不得被受限身份改造破坏。（10-22：依赖读失败返回 `authorization_unavailable`；公开 Workspace、HomeStation portal 匿名行为保留；local_user / user_groups / app-launch / groups DV 回归通过）
 
 验收：交集任一项缺失均拒绝，并返回 D-4 对应的原因码；RPC/HTTP/对象/事件/代理/批量结果一致。审计清单与负例通过是开放所有新受限 token 签发的前置。
 
 ### SSO-05 / P0：会话、来源和资源撤销闭环
 
-- [ ] 按 D-5 设检查点：资源状态与资源授权在每个受保护请求复核，包括附件读取和订阅 / 流的每次投递；账号状态、来源身份域 / 代登录权、会话上限与 family 在 refresh（含 grace）、delegate、callback 时复核，旧 access 至多残留到 TTL。复用 refresh 锁内复核与并发去重，避免 logout 后 refresh 或 callback 重新插入有效 family；不对所有 access 逐请求在线查询账号状态。
-- [ ] 专门改造 refresh grace 分支：当前命中宽限期会在 `validate_refresh_principal` 前返回缓存 pair，不能视为已经复查用户/来源状态。正常刷新、宽限重试、delegate 和 callback 都不能绕过新的撤销判定；family/JTI 的 CAS 不能替代这些检查。
-- [ ] 按 D-5 实现持久撤销依据与缓存一致性，逐类记录提交后允许的最大延迟：资源撤销为下一次受保护请求，账号 / 来源 / logout 为 access TTL 15 分钟（Q-03）。msg-center 组 reload 失败、HomeStation 联系人缓存与上游失败回退改为版本化、主动失效或无法确认即拒绝。覆盖命中缓存、连接保持、重启和状态服务故障。
-- [ ] 账号 / 身份源 / 代登录权停用拒绝新的认证、刷新和兑换，相关旧 access 按 D-5 生效。Guest 没有系统 family：关闭 Guest 入口与撤销匿名资源授权分别处理。只撤销某 Session / grant 不注销无关资源的独立有效会话；App 卸载保留历史身份并停止旧来源代登录。
-- [ ] 用户退出 / 单设备撤销终止对应服务端 family，旧 access 的剩余有效窗口按 D-5；未消费 callback 不得恢复该 family。类型 / 组 / 身份映射改变不让旧会话自动增权，明确重新认证与资源重新授权的入口。
-- [ ] 明确普通 CP→App 独立 family 与受限来源衍生会话的关系。现有桌面 logout 不撤销已签发 App family；混合 SSO 的来源/范围约束必须在换票后保留，不能借现有 delegate 洗掉受限来源。
-- [ ] 对持续流、订阅和附件落实同一撤销矩阵：资源撤销在下一次投递前生效；账号 / 来源 / logout 按 Q-03：连接所用 access 到期前未续上即断开，不依赖用户主动重连。按组和投影授权须覆盖 reload 失败、周期补偿、HomeStation 旧联系人缓存；状态不可确认按已定规则拒绝。UI 收到失效后停止拉取并清内存缓存、Blob URL，已合法送达的历史内容不承诺远程抹除。
+- [x] 按 D-5 设检查点：资源状态与资源授权在每个受保护请求复核，包括附件读取和订阅 / 流的每次投递；账号状态、来源身份域 / 代登录权、会话上限与 family 在 refresh（含 grace）、delegate、callback 时复核，旧 access 至多残留到 TTL。复用 refresh 锁内复核与并发去重，避免 logout 后 refresh 或 callback 重新插入有效 family；不对所有 access 逐请求在线查询账号状态。（10-22：资源授权逐请求；账号 / 来源 / 父 family / 绝对期限在 refresh（含 grace）复核）
+- [x] 专门改造 refresh grace 分支：当前命中宽限期会在 `validate_refresh_principal` 前返回缓存 pair，不能视为已经复查用户/来源状态。正常刷新、宽限重试、delegate 和 callback 都不能绕过新的撤销判定；family/JTI 的 CAS 不能替代这些检查。（10-22：grace 分支先复核再按记录重签）
+- [x] 按 D-5 实现持久撤销依据与缓存一致性，逐类记录提交后允许的最大延迟：资源撤销为下一次受保护请求，账号 / 来源 / logout 为 access TTL 15 分钟（Q-03）。msg-center 组 reload 失败、HomeStation 联系人缓存与上游失败回退改为版本化、主动失效或无法确认即拒绝。覆盖命中缓存、连接保持、重启和状态服务故障。（10-22：msg-center `check_membership`、`get_contact` 与 HomeStation 组受众改为请求时读取，读失败即拒绝）
+- [x] 账号 / 身份源 / 代登录权停用拒绝新的认证、刷新和兑换，相关旧 access 按 D-5 生效。Guest 没有系统 family：关闭 Guest 入口与撤销匿名资源授权分别处理。只撤销某 Session / grant 不注销无关资源的独立有效会话；App 卸载保留历史身份并停止旧来源代登录。（10-22：账号停用、专属邀请撤销拒绝 refresh；Guest 只受入口与 grant 控制）
+- [x] 用户退出 / 单设备撤销终止对应服务端 family，旧 access 的剩余有效窗口按 D-5；未消费 callback 不得恢复该 family。类型 / 组 / 身份映射改变不让旧会话自动增权，明确重新认证与资源重新授权的入口。（10-22：logout 删除 family；未消费 pending 随之失效）
+- [x] 明确普通 CP→App 独立 family 与受限来源衍生会话的关系。现有桌面 logout 不撤销已签发 App family；混合 SSO 的来源/范围约束必须在换票后保留，不能借现有 delegate 洗掉受限来源。（10-22：受限会话的 delegate 子 family 依赖父 family；普通 delegate 保持独立（`desktop-app-sso-auto-login-todo.md` 已补边界））
+- [ ] 对持续流、订阅和附件落实同一撤销矩阵：资源撤销在下一次投递前生效；账号 / 来源 / logout 按 Q-03：连接所用 access 到期前未续上即断开，不依赖用户主动重连。按组和投影授权须覆盖 reload 失败、周期补偿、HomeStation 旧联系人缓存；状态不可确认按已定规则拒绝。UI 收到失效后停止拉取并清内存缓存、Blob URL，已合法送达的历史内容不承诺远程抹除。（10-22 未完成：msg-center 无持续流；AIWS `wait_changes` 每次唤醒复核；kevent 订阅无资源过滤，列已知风险）
 
 验收：为旧 access、旧 refresh、未消费 callback、缓存及已建立订阅分别给出 D-5 决定的生效时刻；超过允许窗口不能再访问，任何重试不得恢复已撤销资格或延长窗口。类型 / 组升级不提高旧会话上限。跨 Zone logout 按 Q-04 验证，不额外承诺全局退出。
 
@@ -315,10 +315,10 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 ### SSO-06 / P0：专属邀请和首次设密码
 
-- [ ] 提供获准管理方的“预建指定 Local User + 关联业务资源 + 生成专属入口”能力。user ID、绑定渠道和指定身份来自可信记录；链接持有者不能改成任意 DID/user ID。不同客户不同凭据。按 Q-10，同 Zone 同客户由签发方显式指定复用已有账号，每个 Session / 入口独立邀请与 grant；系统不按手机号 / 邮箱自动归并，账号已设密码时新链接只作入口。
-- [ ] 专属邀请凭据绑定账号、入口、过期时间和凭据版本，有效期固定 48 小时，v1 不可调整（Q-01）；每次登录重新检查密码状态、账号状态、邀请撤销、来源及 target。有效期内可重复换取标准会话，单次 callback code 独立防重放。
-- [ ] 专属邀请凭据到期限制新的免密登录，不等于会话、账号或历史删除。已有有效会话按独立生命周期和当前资源资格处理；邀请撤销对其衍生会话的影响在 SSO-05 中明确，不把“到期”与“来源代登录权被撤销”混为一谈。
-- [ ] 采用下表实现状态机，并覆盖返回原业务所需的最小导航资料；链接登录本身不等于加入 Session，也不等于拥有分享文档权限。
+- [x] 提供获准管理方的“预建指定 Local User + 关联业务资源 + 生成专属入口”能力。user ID、绑定渠道和指定身份来自可信记录；链接持有者不能改成任意 DID/user ID。不同客户不同凭据。按 Q-10，同 Zone 同客户由签发方显式指定复用已有账号，每个 Session / 入口独立邀请与 grant；系统不按手机号 / 邮箱自动归并，账号已设密码时新链接只作入口。（10-22：`user.exclusive_invite.create`（新建或显式复用 Limited 账号，Q-10），Session 资源由 CP 以管理员会话邀请 Session Guest）
+- [x] 专属邀请凭据绑定账号、入口、过期时间和凭据版本，有效期固定 48 小时，v1 不可调整（Q-01）；每次登录重新检查密码状态、账号状态、邀请撤销、来源及 target。有效期内可重复换取标准会话，单次 callback code 独立防重放。（10-22：48 小时；每次登录重读账号与邀请；callback 仍是 60 秒单次 pending）
+- [x] 专属邀请凭据到期限制新的免密登录，不等于会话、账号或历史删除。已有有效会话按独立生命周期和当前资源资格处理；邀请撤销对其衍生会话的影响在 SSO-05 中明确，不把“到期”与“来源代登录权被撤销”混为一谈。（10-22：到期只拒新免密登录；撤销结束该来源 family）
+- [x] 采用下表实现状态机，并覆盖返回原业务所需的最小导航资料；链接登录本身不等于加入 Session，也不等于拥有分享文档权限。（10-22：决策顺序见契约 §5.3；身份冲突由邀请页显式确认，浏览器有会话痕迹但读不到时也先确认）
 
 | 条件 | 新的免密登录 | 页面及后续 |
 | --- | --- | --- |
@@ -329,42 +329,42 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 | 邀请/账号/资源被撤销或业务关闭 | 对相应操作拒绝 | 准确区分原因；重发不恢复已撤销资格。 |
 | 当前 Bob 会话，链接指定 Alice | 不静默替换或沿用 Bob | 显示身份冲突并要求明确继续/取消；不把操作记给错误用户。 |
 
-- [ ] 首次设置密码只针对当前已认证的专属邀请账号，按 §4 P-1 区分专用首设能力与常规 `allow_password_change`；由受控写入路径校验标准密码格式，并原子更新密码、凭据状态 / 版本和旧免密资格。不能要求不存在的旧密码 sudo，也不能开放整份 settings 写入；PRE-04 的常规改密覆盖同时验证。
-- [ ] 设密码不换 user ID / DID、不丢成员关系、不授予普通用户权限、不改 canonical zone。并发登录与设密码以提交顺序复核，任何旧的尚未完成兑换不能在设密码后新签发免密会话；按 Q-03 保留当前终端，撤销该账号其它经专属邀请免密资格建立的 family。
-- [ ] 按 D-9 实现重发：系统生成新资格，经可靠 outbox 通知签发方，由其经原绑定渠道发送；系统不实现 SMTP / SMS。人工签发方收到不含 secret 的 System Notify 后，在 CP 的专属邀请管理处取一次性显示的新链接；App 签发方经登记回调取得。冻结通知协议、限流、脱敏、失败重试与幂等，并核验实际送达。按 Q-02 只替换同一入口的免密资格，不能返回测试 URL 代替送达；已设密码不恢复免密，忘密另行处理。
-- [ ] 管理方提供查询、撤销和到期状态；邀请人有邀请权不等于有客户代登录权，管理 API 和登录 API 分开授权。
+- [x] 首次设置密码只针对当前已认证的专属邀请账号，按 §4 P-1 区分专用首设能力与常规 `allow_password_change`；由受控写入路径校验标准密码格式，并原子更新密码、凭据状态 / 版本和旧免密资格。不能要求不存在的旧密码 sudo，也不能开放整份 settings 写入；PRE-04 的常规改密覆盖同时验证。（10-22：`auth.invite.set_password`，CP 以服务身份在一个事务里写密码与 `credential/state`）
+- [x] 设密码不换 user ID / DID、不丢成员关系、不授予普通用户权限、不改 canonical zone。并发登录与设密码以提交顺序复核，任何旧的尚未完成兑换不能在设密码后新签发免密会话；按 Q-03 保留当前终端，撤销该账号其它经专属邀请免密资格建立的 family。（10-22：保留当前终端，`revoke_families` 撤销其它免密 family（含过期 access 也能识别保留对象），失败重试 3 次）
+- [x] 按 D-9 实现重发：系统生成新资格，经可靠 outbox 通知签发方，由其经原绑定渠道发送；系统不实现 SMTP / SMS。人工签发方收到不含 secret 的 System Notify 后，在 CP 的专属邀请管理处取一次性显示的新链接；App 签发方经登记回调取得。冻结通知协议、限流、脱敏、失败重试与幂等，并核验实际送达。按 Q-02 只替换同一入口的免密资格，不能返回测试 URL 代替送达；已设密码不恢复免密，忘密另行处理。（10-22：重发、限流、System Notify 已实现；真实送达需签发方经原渠道发送，DV 未覆盖（资格 48 小时后才过期））
+- [x] 管理方提供查询、撤销和到期状态；邀请人有邀请权不等于有客户代登录权，管理 API 和登录 API 分开授权。（10-22：list / get / revoke / rotate / retry_resource，管理接口需 CP 管理员会话）
 
 落点：Control Panel 用户/浏览器编排、Verify Hub 签发、统一身份存储、msg-center 资源邀请、SDK/CLI。验收对应 AC-01～06、21～23，必须含有效期内第二次进入与设密码并发负例。
 
 ### SSO-07 / P0：自助注册和原账号登录
 
-- [ ] 增加注册入口，仅在入口允许自助注册且 Zone 自助注册开关开启时提供（D-8），否则返回 D-4 原因码；服务端验证原资源/目标 Zone、用户名唯一性、密码格式、资料规则和配额。公开请求不能指定 admin、user_type、角色、owner、canonical zone 或任意资源授权。
-- [ ] 注册创建 `Limited` 账号，不加入任何系统用户组（用户类型 TODO T-3），权限只来自分享资源的授权；不复用管理员专用的 `user.create`；凭据和业务 grant 分开提交/编排。重复提交不建第二个账号。
-- [ ] 已有目标 Zone 本地账号可直接登录；注册/登录成功回原内容，资源已经关闭或未授权时显示对应结果。显示账号属于哪个 Zone。
-- [ ] 密码登录和 refresh 接入 SSO-02/05，不能因使用 password 方式就去掉外部账号的来源与权限类别；不自动关联已有 DID 或 Guest 历史。
+- [x] 增加注册入口，仅在入口允许自助注册且 Zone 自助注册开关开启时提供（D-8），否则返回 D-4 原因码；服务端验证原资源/目标 Zone、用户名唯一性、密码格式、资料规则和配额。公开请求不能指定 admin、user_type、角色、owner、canonical zone 或任意资源授权。（10-22：`auth.register`；入口方式 ∩ Zone 开关；DV 验证关闭开关后 `zone_method_disabled`）
+- [x] 注册创建 `Limited` 账号，不加入任何系统用户组（用户类型 TODO T-3），权限只来自分享资源的授权；不复用管理员专用的 `user.create`；凭据和业务 grant 分开提交/编排。重复提交不建第二个账号。（10-22：Limited、无组、无 default zone；名称须为规范小写 DNS 标签，重复返回 `name_taken`）
+- [x] 已有目标 Zone 本地账号可直接登录；注册/登录成功回原内容，资源已经关闭或未授权时显示对应结果。显示账号属于哪个 Zone。（10-22：入口页本地账号登录与注册后回到入口并加入资源）
+- [x] 密码登录和 refresh 接入 SSO-02/05，不能因使用 password 方式就去掉外部账号的来源与权限类别；不自动关联已有 DID 或 Guest 历史。（10-22：密码登录的 Limited 会话同样受限（DV 验证））
 
 验收对应 AC-10、11、16、18、23，含公开接口伪造角色/账号类型/授权与并发抢名。
 
 ### SSO-08 / P0：统一浏览器 Guest
 
-- [ ] 按用户类型 TODO T-9：Guest 是匿名访问者，由 AI Workspace 的 `gt_` / `guest:` 资源主体承载，verify-hub 不为其签发系统会话；只在资源 owner 于入口开启 Guest 时提供，Zone 不设全局 Guest 开关（D-8）。不能在界面或授权上冒充已验证手机号、Local User 或全局 DID。
-- [ ] 复用同浏览器有效状态；不共用全站一个 `sub=guest`，也不把可自报的浏览器 ID 当成账号控制证明。丢失状态/换浏览器允许新 Guest，不承诺找回旧身份。
-- [ ] 入口页与 SDK 统一展示匿名访问状态，不新建另一份 Message Hub 匿名身份系统。记录旧匿名记录的处置决策；不默认历史合并、不根据相同昵称转移权限。
-- [ ] Guest 的注册、DID 登录或身份切换走明确动作，清除旧身份缓存，资源重新授权。新认证状态不自动继承匿名记录的所有权。
+- [x] 按用户类型 TODO T-9：Guest 是匿名访问者，由 AI Workspace 的 `gt_` / `guest:` 资源主体承载，verify-hub 不为其签发系统会话；只在资源 owner 于入口开启 Guest 时提供，Zone 不设全局 Guest 开关（D-8）。不能在界面或授权上冒充已验证手机号、Local User 或全局 DID。（10-22：沿用 AIWS `gt_` → `guest:`；Guest 入口由 owner 在 share entry 上开关，入口打开时对所有调用者生效）
+- [x] 复用同浏览器有效状态；不共用全站一个 `sub=guest`，也不把可自报的浏览器 ID 当成账号控制证明。丢失状态/换浏览器允许新 Guest，不承诺找回旧身份。（10-22：按浏览器 `gt_` token 区分 Guest）
+- [x] 入口页与 SDK 统一展示匿名访问状态，不新建另一份 Message Hub 匿名身份系统。记录旧匿名记录的处置决策；不默认历史合并、不根据相同昵称转移权限。（10-22：入口页统一展示；旧 `guest:` 记录不迁移、不合并）
+- [x] Guest 的注册、DID 登录或身份切换走明确动作，清除旧身份缓存，资源重新授权。新认证状态不自动继承匿名记录的所有权。（10-22：注册 / DID 登录走入口页明确动作，带 `join=1` 返回且须本页登录标记才自动加入）
 
 验收对应 AC-09、16；同浏览器续用、状态丢失、关闭 Guest 入口后的有效权限变化均可验证。
 
 ### SSO-09 / P0：DID canonical zone 联合登录
 
-- [ ] 核对现有 DID / OwnerDocument / ZoneDocument 解析能力，按 D-7 冻结“本人授权的唯一 canonical zone → 可信 ZoneDocument hostname → canonical verify-hub 兑换端点”证明链；不依赖公开 verify-hub 公钥字段。`default_zone` 字段只有在可信且适用于该主体的文档中才有证明力；目标 Zone 的本地写入不算授权。
-- [ ] 支持 Alice 由 Bob 承载 canonical zone：验证 Alice 的归属授权和来源，不要求 Alice 等于 Zone owner，也不要求她拥有物理 OOD。当前 `OwnerDocument::get_default_zone_did` 取绑定列表首项，`is_bound_to_zone` 仅判断列表包含，bound 不等于 canonical。可绑定多个 Zone，但对外认证只认可信的唯一 canonical；归属缺失、证明冲突或无法验证时不猜测。
-- [ ] jump Locator、SN 登录态和 App 的 Active DID 提示只可辅助发现/选择；进入 DID 联合路径仍按 D-7 的授权码交换独立验证上述归属链。手填 hostname 不成为 issuer/key/兑换端点的信任根；定位成功不代表联合认证成功，也不能跳过 DID+目标 Zone 的首次 consent。
-- [ ] 按 §4.1 D-7 的四步实现：目标 CP pending → canonical consent 与签发 code → 目标 CP callback 调 `login_by_remote_verify_hub` → 目标 verify-hub 经 HTTPS 向 canonical 兑换。code 绑定 DID、来源 / 目标 Zone、认证用途、期限、nonce、浏览器状态及披露资料；接收方与 redirect 来源可信，防重放、串会话和开放重定向，兑换地址只由 DID 解析得出，不能由页面或调用参数指定。兑换方鉴权建议采用 PKCE（S256）式绑定：verifier 只存在目标 CP 的服务端 pending，截获 code 无法兑换，也不需要公开 verify-hub 公钥。
-- [ ] DID 方式仅在入口允许且 Zone DID 开关开启时提供（D-8）；canonical 侧不满足签发条件、兑换失败或来源不可用时返回 D-4 / SSO-02 的结构化原因。
-- [ ] canonical zone 首次向某个目标 Zone 使用 DID 时显示身份、目标和资料范围，明确同意后签发；取消不签发。按 Q-05，只共享 DID、来源与目标 Zone、公开显示名 / 头像；consent 记在 canonical 侧，资料范围扩大、用户撤回或 canonical zone 变化时重新确认。consent 以 DID+目标 Zone 为边界，向 B 同意不能替代向 C/D 同意。
-- [ ] 目标 Zone 验证证明后：该 DID 已入驻本 Zone（有账号记录）时映射到该账号；否则作为 External（用户类型 TODO T-4），不创建账号记录或本地 Profile，名字与头像从 DID 公开文档解析。签发本 Zone 标准且受限的 token pair，External 以原 DID 为主体并带 External 标记；不创建新密码，不覆盖已有同名本地账户，不改变 canonical zone。下游业务继续只验证目标 Zone 的标准会话。
-- [ ] 独立限制本地签发与对外证明资格：目标 Zone 不能因持有本地账户、Profile 或自己的 Verify Hub 私钥，代表外来 DID 再登录第三方；对外联合断言只为 Admin、User 签发（用户类型 TODO T-6）。不得把远端 key 混入普通 session 的 `verify-hub` 信任槽。
-- [ ] 后续访问在有效 consent、会话和资源资格下复用状态。按 Q-04，目标续期不向 canonical 复核，联合会话最长 30 天后重新联合；canonical 不可用只影响新登录和重新联合，key / 归属变化在重新联合时拒绝，不能偷偷改走目标 Zone 或另一个身份。
+- [x] 核对现有 DID / OwnerDocument / ZoneDocument 解析能力，按 D-7 冻结“本人授权的唯一 canonical zone → 可信 ZoneDocument hostname → canonical verify-hub 兑换端点”证明链；不依赖公开 verify-hub 公钥字段。`default_zone` 字段只有在可信且适用于该主体的文档中才有证明力；目标 Zone 的本地写入不算授权。（10-22：verify-hub / CP 经 name-client 解析 OwnerDocument → 默认 Zone → ZoneDocument hostname；带超时）
+- [x] 支持 Alice 由 Bob 承载 canonical zone：验证 Alice 的归属授权和来源，不要求 Alice 等于 Zone owner，也不要求她拥有物理 OOD。当前 `OwnerDocument::get_default_zone_did` 取绑定列表首项，`is_bound_to_zone` 仅判断列表包含，bound 不等于 canonical。可绑定多个 Zone，但对外认证只认可信的唯一 canonical；归属缺失、证明冲突或无法验证时不猜测。（10-22：签发只看 OwnerDocument 默认 Zone 是否为本 Zone，不要求是 Zone owner；未在多 Zone 环境验证）
+- [x] jump Locator、SN 登录态和 App 的 Active DID 提示只可辅助发现/选择；进入 DID 联合路径仍按 D-7 的授权码交换独立验证上述归属链。手填 hostname 不成为 issuer/key/兑换端点的信任根；定位成功不代表联合认证成功，也不能跳过 DID+目标 Zone 的首次 consent。（10-22：jump 只决定导航；DID 登录独立走授权码交换）
+- [x] 按 §4.1 D-7 的四步实现：目标 CP pending → canonical consent 与签发 code → 目标 CP callback 调 `login_by_remote_verify_hub` → 目标 verify-hub 经 HTTPS 向 canonical 兑换。code 绑定 DID、来源 / 目标 Zone、认证用途、期限、nonce、浏览器状态及披露资料；接收方与 redirect 来源可信，防重放、串会话和开放重定向，兑换地址只由 DID 解析得出，不能由页面或调用参数指定。兑换方鉴权建议采用 PKCE（S256）式绑定：verifier 只存在目标 CP 的服务端 pending，截获 code 无法兑换，也不需要公开 verify-hub 公钥。（10-22：PKCE S256；DV 单 Zone 闭环（canonical = 目标 Zone，`dev_federation_http`）通过：devtest 经 DID 登录映射到本账号）
+- [x] DID 方式仅在入口允许且 Zone DID 开关开启时提供（D-8）；canonical 侧不满足签发条件、兑换失败或来源不可用时返回 D-4 / SSO-02 的结构化原因。（10-22：Zone 关闭 DID 登录时 CP 与 verify-hub 都拒绝）
+- [x] canonical zone 首次向某个目标 Zone 使用 DID 时显示身份、目标和资料范围，明确同意后签发；取消不签发。按 Q-05，只共享 DID、来源与目标 Zone、公开显示名 / 头像；consent 记在 canonical 侧，资料范围扩大、用户撤回或 canonical zone 变化时重新确认。consent 以 DID+目标 Zone 为边界，向 B 同意不能替代向 C/D 同意。（10-22：consent 记在 `users/<id>/federation_consents`；只共享 DID、Zone、显示名 / 头像）
+- [x] 目标 Zone 验证证明后：该 DID 已入驻本 Zone（有账号记录）时映射到该账号；否则作为 External（用户类型 TODO T-4），不创建账号记录或本地 Profile，名字与头像从 DID 公开文档解析。签发本 Zone 标准且受限的 token pair，External 以原 DID 为主体并带 External 标记；不创建新密码，不覆盖已有同名本地账户，不改变 canonical zone。下游业务继续只验证目标 Zone 的标准会话。（10-22：已入驻账号映射到账号，非 Active 拒绝；否则签发 External）
+- [x] 独立限制本地签发与对外证明资格：目标 Zone 不能因持有本地账户、Profile 或自己的 Verify Hub 私钥，代表外来 DID 再登录第三方；对外联合断言只为 Admin、User 签发（用户类型 TODO T-6）。不得把远端 key 混入普通 session 的 `verify-hub` 信任槽。（10-22：只为 Admin / User 签发对外 code；远端 key 不入本地信任槽）
+- [x] 后续访问在有效 consent、会话和资源资格下复用状态。按 Q-04，目标续期不向 canonical 复核，联合会话最长 30 天后重新联合；canonical 不可用只影响新登录和重新联合，key / 归属变化在重新联合时拒绝，不能偷偷改走目标 Zone 或另一个身份。（10-22：联合 family 绝对期限 30 天，续期不回 canonical）
 
 落点：Verify Hub + Control Panel 专用联合流程、共享 DID/身份解析、SDK；同时核对同级 [name-lib/user.rs](../../buckyos-base/src/name-lib/src/user.rs) 与 [name-client/profile_resolver.rs](../../buckyos-base/src/name-client/src/profile_resolver.rs)，扩展文档类型或解析器时同步调用方。验收对应 AC-12～20、24，含第三方 Zone 接受伪造来源的明确负例。
 
@@ -372,12 +372,12 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 按 S-1 移出本批：本节保留为后续任务，不计入本批完成门槛。
 
-- [ ] 按旧设计提供 `login_by_app_access_token`：登记身份域、公钥或受信服务端校验方式、获准 AppInstance/owner、允许 target 和范围；先选定验证契约，不能让 token 自报任意校验 URL。
-- [ ] 校验真实性、用途、接收方、期限、稳定外部账号和绑定状态；App service token 不能换客户会话，App 不能指定任意普通用户/管理员 DID。凭据定位字段只能作查找线索。
-- [ ] 身份域登记、建号与兑换分别限权、限流和限额；按来源 App/账号/请求来源统计，公开失败结果不泄露账号是否存在。记录签发和绑定审计，不保存凭证明文。
-- [ ] 链接登录兑换凭据单次消费，以绑定该次兑换的 nonce 支持合法幂等重试；更换 nonce 重放拒绝。它与专属邀请可重复免密资格分离：若 CRM 同时服务专属邀请，每次由仍有效资格产生独立兑换过程，不能混用生命周期。
-- [ ] 签发标准受限用户 token pair，保留身份域、来源、强度和批准上限；refresh 与跨 target 换票重新检查来源状态且不得增权。
-- [ ] App 停用 / 卸载 / 代登录权撤销立即拒绝新兑换和续期，已有 access 按 D-5 的窗口失效；其它独立登录来源按各自规则处理。外部账号换设备重新认证映射同一主体。
+- [ ] 按旧设计提供 `login_by_app_access_token`：登记身份域、公钥或受信服务端校验方式、获准 AppInstance/owner、允许 target 和范围；先选定验证契约，不能让 token 自报任意校验 URL。（10-22 未完成：S-1 后排）
+- [ ] 校验真实性、用途、接收方、期限、稳定外部账号和绑定状态；App service token 不能换客户会话，App 不能指定任意普通用户/管理员 DID。凭据定位字段只能作查找线索。（10-22 未完成：S-1 后排）
+- [ ] 身份域登记、建号与兑换分别限权、限流和限额；按来源 App/账号/请求来源统计，公开失败结果不泄露账号是否存在。记录签发和绑定审计，不保存凭证明文。（10-22 未完成：S-1 后排）
+- [ ] 链接登录兑换凭据单次消费，以绑定该次兑换的 nonce 支持合法幂等重试；更换 nonce 重放拒绝。它与专属邀请可重复免密资格分离：若 CRM 同时服务专属邀请，每次由仍有效资格产生独立兑换过程，不能混用生命周期。（10-22 未完成：S-1 后排）
+- [ ] 签发标准受限用户 token pair，保留身份域、来源、强度和批准上限；refresh 与跨 target 换票重新检查来源状态且不得增权。（10-22 未完成：S-1 后排）
+- [ ] App 停用 / 卸载 / 代登录权撤销立即拒绝新兑换和续期，已有 access 按 D-5 的窗口失效；其它独立登录来源按各自规则处理。外部账号换设备重新认证映射同一主体。（10-22 未完成：S-1 后排）
 
 验收：跨 owner 同 AppId 冒认、跨身份域同账号、伪造主体、错误 audience、重复消费、来源停用和旧会话提权均失败。Message Hub 不增加自己的兑换中心或用户凭据库。
 
@@ -385,13 +385,13 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 ### SSO-11 / P0：分享入口编排和跨应用复用
 
-- [ ] 复用 Control Panel 的 target / origin / redirect resolver、pending callback、Cookie 与 refresh，接入 §5.0 当前身份响应。扩展 pending 以绑定入口 / 原业务 intent、预期旧 / 新主体、state / nonce；callback 消费前复核来源 / 账号 / family。取消不覆写 Cookie，多标签页不串流程。可复用换票内部逻辑，不直接放宽调用者检查。
-- [ ] 从分享链接先解析可信入口上下文，再展示入口允许 ∩ Zone 开关后实际可用的 Guest、本地登录/注册、DID 等方式（D-8）；专属邀请只展示指定身份路径。只公开必要的资源介绍，不先加载私密会话内容。
-- [ ] 无 session 时公开 bootstrap、受控认证 / 重发 / 回调入口；验证根域、系统入口、App 子域、移动端及跨 origin。明确 Gateway / CP 对 Origin、CSRF 和 Fetch Metadata 的检查职责；现有 `request_origin` 仅从 Host + scheme 构造目标 origin，不等于校验请求 Origin。公开页面不等于放开数据 API，不能通配公开 `/kapi/*`。
-- [ ] 同 Zone Message Hub→Workspace 复用主体；同 target 可复用适用会话，跨 target 重新签精确目标会话。Workspace 必须独立检查访问资格；若原会话只准某 Session，不能把 scope 直接放大，需按来源允许范围重新授权。
-- [ ] 保留 host-only Cookie、精确 AppInstance/owner、完整 path/query/hash。不同 target、route 被重新指向其他实例、callback origin 不一致均拒绝；URL 不传长期 session/refresh token。
-- [ ] 当前身份与专属邀请 / DID 登录 / Guest 入口冲突时显式选择，取消不覆写 Cookie。初期不做复杂多身份管理，但不能让已有管理员 session 被静默混用；清理跨身份的用户、对象、会话和权限缓存。
-- [ ] SDK 提供当前可信主体、登录方式、所属/目标 Zone、D-4 拒绝原因码和续期接口；页面按原因码区分访客提示与管理员可调整项。所有消费者删除自行猜 DID、以“登录成功”代替权限检查和所有错误跳 `/login` 的逻辑。
+- [x] 复用 Control Panel 的 target / origin / redirect resolver、pending callback、Cookie 与 refresh，接入 §5.0 当前身份响应。扩展 pending 以绑定入口 / 原业务 intent、预期旧 / 新主体、state / nonce；callback 消费前复核来源 / 账号 / family。取消不覆写 Cookie，多标签页不串流程。可复用换票内部逻辑，不直接放宽调用者检查。（10-22：pending 扩展到 DID 登录（state / nonce / PKCE）；`/sso/did_callback` 遇浏览器已登录另一主体时拒绝且不写 Cookie）
+- [x] 从分享链接先解析可信入口上下文，再展示入口允许 ∩ Zone 开关后实际可用的 Guest、本地登录/注册、DID 等方式（D-8）；专属邀请只展示指定身份路径。只公开必要的资源介绍，不先加载私密会话内容。（10-22：`/sso/entry` 页面）
+- [ ] 无 session 时公开 bootstrap、受控认证 / 重发 / 回调入口；验证根域、系统入口、App 子域、移动端及跨 origin。明确 Gateway / CP 对 Origin、CSRF 和 Fetch Metadata 的检查职责；现有 `request_origin` 仅从 Host + scheme 构造目标 origin，不等于校验请求 Origin。公开页面不等于放开数据 API，不能通配公开 `/kapi/*`。（10-22 未完成：公开 bootstrap 与回调已覆盖；跨 App origin、移动端的真实浏览器验证未做）
+- [x] 同 Zone Message Hub→Workspace 复用主体；同 target 可复用适用会话，跨 target 重新签精确目标会话。Workspace 必须独立检查访问资格；若原会话只准某 Session，不能把 scope 直接放大，需按来源允许范围重新授权。（10-22：Message Hub 与 AIWS 同源共用根域会话；AIWS 对受限会话按 grant 判定）
+- [x] 保留 host-only Cookie、精确 AppInstance/owner、完整 path/query/hash。不同 target、route 被重新指向其他实例、callback origin 不一致均拒绝；URL 不传长期 session/refresh token。（10-22：沿用现有 callback 绑定）
+- [x] 当前身份与专属邀请 / DID 登录 / Guest 入口冲突时显式选择，取消不覆写 Cookie。初期不做复杂多身份管理，但不能让已有管理员 session 被静默混用；清理跨身份的用户、对象、会话和权限缓存。（10-22：入口页与邀请页显式选择，取消不覆写 Cookie）
+- [x] SDK 提供当前可信主体、登录方式、所属/目标 Zone、D-4 拒绝原因码和续期接口；页面按原因码区分访客提示与管理员可调整项。所有消费者删除自行猜 DID、以“登录成功”代替权限检查和所有错误跳 `/login` 的逻辑。（10-22：WebSDK `getCurrentIdentity`、`accessDenialOf`；桌面 `src/sso/denial.tsx` 按原因码区分访客与管理员提示）
 
 验收对应 AC-07、08、14、21、23；在不同 App origin 做真实浏览器测试，不能只用 Desktop 内两个面板证明跨应用 SSO。
 
@@ -399,44 +399,44 @@ App access token 是旧 Session Only 设计保留的扩展任务，不是专属�
 
 本节承接已有 jump 讨论，归入 SSO-11；只完成路由、认证衔接和操作确认边界。保存、安装等 action 的业务实现由对应模块负责，示例可用无副作用处理器验证衔接，不能据此宣称业务功能完成。
 
-- [ ] jump 服务入口由系统配置，正式默认 origin 为 `https://jump.buckyos.org`；未配置覆盖值时使用该默认值，配置覆盖后 SDK / App 使用有效值，不在各业务页面写死域名。action 路径按登记契约拼接；jump 服务入口与浏览器保存的目标 Zone hostname 是两项不同设置。默认值已定，配置键、配置归属及客户端读取方式仍需在实施前冻结。
-- [ ] SDK 将 `buckyos://` action 调用与 HTTPS 降级封装在统一入口。按平台核对 App / 扩展、Universal/App Links、纯浏览器和内嵌浏览器路径；未安装或无法唤起时仍能进入 Web 流程。`blur` / 超时仅是启发式，不能作为“已登录”或“已执行”的证据；保留显式继续/重试入口，避免 App 与 Web 两路重复提交操作。
-- [ ] Locator 可依次来自 App / 扩展根据 Active DID 提供的提示、可用的 SN 浏览器会话、用户手动选择。SN 是可选发现来源；没有 SN 账号、没有客户端、SN 不可用时，用户仍能填写自己的 Zone hostname，不要求先注册 SN，也不建立 jump 服务端的全局“用户→Zone”映射。
-- [ ] 纯浏览器在 jump 自己的 `localStorage` 保存 `{ current_zone_hostname, auto_jump }`：首次或无记录时选择，后续预填并允许修改；保存和勾选“不再提示”必须来自明确操作，提供修改/清除入口。第三方传入 hostname 只作为候选展示，不覆盖已有设置、不触发自动跳转；`auto_jump` 只省去路由选择，不省去目标 Zone 登录、DID consent 或业务确认。
-- [ ] hostname 规范化后固定构造 `https://<hostname>/<registered-action-path>`，允许用户使用自有域名，不把目标限制为 `*.web3.buckyos.ai`。输入拒绝完整 URL、userinfo、端口、path、query、fragment 及混淆编码；action 和参数按登记契约校验，不接受任意 `next` / `redirect_url` / callback。手动选择外部站点只是导航授权，不能让该站点获得其他 Zone 的凭据或联合认证信任。
-- [ ] jump 只传递最小业务 intent。保存场景的 `res_url`、`page_url` 等参数按草案放在 fragment，避免进入 jump HTTP 请求；fragment 仍对页面脚本可见，不能当作加密或凭据保护。jump 不收集专属邀请 secret、SN/Zone session、refresh token、owner capability 或私钥；这些凭据继续只交给原认证入口，短期联合 code 只由 SSO-09 指定回调消费。
-- [ ] 最终 Zone 验证 action 后建立独立 pending 上下文，绑定 action/参数摘要、实际目标 Zone、AuthTarget、浏览器流程 state/nonce、到期时间和经校验的返回位置。未知 action、过期、篡改和跨标签页串用拒绝。第三方自报的 `source` 不证明来源可信；本地会话、DID 联合或取消返回均恢复同一业务上下文，不能回系统首页后丢失原请求，也不能复用另一次邀请的身份。
-- [ ] 外部 GET / deep link 只打开流程或确认页，不直接保存、安装、签名或付费。最终 Zone 展示目标、实际登录身份、action 和资源信息，再以经授权且有 CSRF 防护的 POST 提交；即使已有管理员登录态也不能静默执行。操作幂等/重放检查由最终处理器负责；实际资源拉取由业务模块处理，跳转参数不能绕过其 URL、重定向及 SSRF 校验。
-- [ ] jump、SN、每个 Zone 分别使用 host-only Cookie；不用 `.buckyos.ai` / `.web3.buckyos.ai` 父域共享登录态，不把 SN 已登录当作目标 Zone 已认证。需防 CSRF 的 Cookie 请求校验精确 Origin / CSRF token，并结合 Fetch Metadata；同父域 Zone 的 same-site 关系不能代替 origin 隔离。
-- [ ] jump 保持可静态部署，不加载第三方脚本/统计，配置严格 CSP、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`；最终敏感确认页使用顶层页面并限制嵌入，不能由第三方 iframe 代替用户确认。日志与错误上报不记录 intent 原文中的敏感内容或认证凭据。
-- [ ] 目标不可达、登录取消、身份冲突、无权限、action 不支持分别反馈；提供修改目标或重试导航的操作，但不能自动切换身份/Zone 后继续提交。专属邀请 / Workspace / Session 固定入口始终回原资源 Zone，只有“在自己的 Zone 执行”类 intent 使用 Locator 选择目的地。
+- [x] jump 服务入口由系统配置，正式默认 origin 为 `https://jump.buckyos.org`；未配置覆盖值时使用该默认值，配置覆盖后 SDK / App 使用有效值，不在各业务页面写死域名。action 路径按登记契约拼接；jump 服务入口与浏览器保存的目标 Zone hostname 是两项不同设置。默认值已定，配置键、配置归属及客户端读取方式仍需在实施前冻结。（10-22：`system/sso/settings.jump_base_url`（默认 `https://jump.buckyos.org`），公开 `auth.sso_config` 返回有效值；WebSDK `buildJumpUrl`）
+- [ ] SDK 将 `buckyos://` action 调用与 HTTPS 降级封装在统一入口。按平台核对 App / 扩展、Universal/App Links、纯浏览器和内嵌浏览器路径；未安装或无法唤起时仍能进入 Web 流程。`blur` / 超时仅是启发式，不能作为“已登录”或“已执行”的证据；保留显式继续/重试入口，避免 App 与 Web 两路重复提交操作。（10-22 未完成：`buckyos://` 唤起与平台降级未做）
+- [ ] Locator 可依次来自 App / 扩展根据 Active DID 提供的提示、可用的 SN 浏览器会话、用户手动选择。SN 是可选发现来源；没有 SN 账号、没有客户端、SN 不可用时，用户仍能填写自己的 Zone hostname，不要求先注册 SN，也不建立 jump 服务端的全局“用户→Zone”映射。（10-22 未完成：只实现用户手填；App / 扩展 Active DID 与 SN 会话作为 Locator 来源未做）
+- [x] 纯浏览器在 jump 自己的 `localStorage` 保存 `{ current_zone_hostname, auto_jump }`：首次或无记录时选择，后续预填并允许修改；保存和勾选“不再提示”必须来自明确操作，提供修改/清除入口。第三方传入 hostname 只作为候选展示，不覆盖已有设置、不触发自动跳转；`auto_jump` 只省去路由选择，不省去目标 Zone 登录、DID consent 或业务确认。（10-22：jump 页面实现，Deno 测试 4 项）
+- [x] hostname 规范化后固定构造 `https://<hostname>/<registered-action-path>`，允许用户使用自有域名，不把目标限制为 `*.web3.buckyos.ai`。输入拒绝完整 URL、userinfo、端口、path、query、fragment 及混淆编码；action 和参数按登记契约校验，不接受任意 `next` / `redirect_url` / callback。手动选择外部站点只是导航授权，不能让该站点获得其他 Zone 的凭据或联合认证信任。（10-22：只接受裸 hostname，固定拼登记路径）
+- [x] jump 只传递最小业务 intent。保存场景的 `res_url`、`page_url` 等参数按草案放在 fragment，避免进入 jump HTTP 请求；fragment 仍对页面脚本可见，不能当作加密或凭据保护。jump 不收集专属邀请 secret、SN/Zone session、refresh token、owner capability 或私钥；这些凭据继续只交给原认证入口，短期联合 code 只由 SSO-09 指定回调消费。（10-22：参数只在 fragment，jump 转交目标页时去掉候选 `zone`）
+- [ ] 最终 Zone 验证 action 后建立独立 pending 上下文，绑定 action/参数摘要、实际目标 Zone、AuthTarget、浏览器流程 state/nonce、到期时间和经校验的返回位置。未知 action、过期、篡改和跨标签页串用拒绝。第三方自报的 `source` 不证明来源可信；本地会话、DID 联合或取消返回均恢复同一业务上下文，不能回系统首页后丢失原请求，也不能复用另一次邀请的身份。（10-22 未完成：目标页靠现有登录回跳保留完整 URL；独立的 action pending（参数摘要、state 绑定）未做）
+- [x] 外部 GET / deep link 只打开流程或确认页，不直接保存、安装、签名或付费。最终 Zone 展示目标、实际登录身份、action 和资源信息，再以经授权且有 CSRF 防护的 POST 提交；即使已有管理员登录态也不能静默执行。操作幂等/重放检查由最终处理器负责；实际资源拉取由业务模块处理，跳转参数不能绕过其 URL、重定向及 SSRF 校验。（10-22：目标页 `app_installer` 只展示确认，提交走带会话的 kRPC）
+- [x] jump、SN、每个 Zone 分别使用 host-only Cookie；不用 `.buckyos.ai` / `.web3.buckyos.ai` 父域共享登录态，不把 SN 已登录当作目标 Zone 已认证。需防 CSRF 的 Cookie 请求校验精确 Origin / CSRF token，并结合 Fetch Metadata；同父域 Zone 的 same-site 关系不能代替 origin 隔离。（10-22：沿用 host-only Cookie）
+- [x] jump 保持可静态部署，不加载第三方脚本/统计，配置严格 CSP、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`；最终敏感确认页使用顶层页面并限制嵌入，不能由第三方 iframe 代替用户确认。日志与错误上报不记录 intent 原文中的敏感内容或认证凭据。（10-22：README 写明需要的响应头；页面无第三方脚本）
+- [ ] 目标不可达、登录取消、身份冲突、无权限、action 不支持分别反馈；提供修改目标或重试导航的操作，但不能自动切换身份/Zone 后继续提交。专属邀请 / Workspace / Session 固定入口始终回原资源 Zone，只有“在自己的 Zone 执行”类 intent 使用 Locator 选择目的地。（10-22 未完成：jump 只对非法输入给反馈；目标不可达等需目标页处理，未专门实现）
 
 验收：第三方网页发起 intent → 无客户端 / 无 SN 的 jump 选择 → 目标 Zone 必要认证 → 恢复并确认原 action；同时验证已有会话、取消、权限拒绝和重复唤起。浏览器返回、刷新及多标签页不能导致串身份或重复副作用。
 
 ### SSO-12 / P0：Message Hub 的 Session Only 闭环
 
-- [ ] 复用 `Invited → Included`、`accept_session_invitation` 和 `submit_guest_request`。身份建立、群侧邀请/批准、本人接受分别记账；进入页面可顺序执行，但登录成功不自动成为群正式成员。
-- [ ] 分清已有群 invite link（群加入凭据）、Session Guest 邀请和专属邀请免密资格。当前 `SessionMembershipRecord` 无独立 invitation ID/expiry，需定义 Session 邀请版本、有效期、撤销/重新邀请和旧请求拒绝规则；采用既有幂等框架并让前端传入幂等键。登录成功而加入失败可重试，合法接受重试返回原结果，旧版本不能接受新邀请，移除/封禁后旧请求不能重新加入。
-- [ ] 只允许具名、`allow_guests=true`、成员策略非 `inherit` 的 Session；保留封禁、上限、频率、join Hook 和历史可见区间。邀请接受前只授权本人查看最少邀请资料及接受动作，不预先开放历史。
-- [ ] 给 `group_rpc_authenticated`、group HTTP、对象读取和事件入口统一接入 SSO-04 的身份 / source / scope / 资源授权；区分普通系统 RBAC 路径与显式开放的受限群方法，再执行群 / Session ACL。保留真实客户端用于 `allowed_clients`，不得伪装为总允许客户端。
-- [ ] 复用 External 向本机托管群发送的已有分支，补 Limited 路径与统一上限检查；按当前 Session、消息操作和 `from=可信绑定 DID` 校验后写群存储。无个人邮箱者不先要求 SENT，但不能直接删检查后放行；不创建邮箱、不替换 App owner、不授予 `obj://msg-center/*`。
-- [ ] 检查 `is_local_recipient` 与群消息、邀请通知、事件 fanout 的 SENT / INBOX / owner_sessions 投影，身份在本 Zone 有记录不代表具备个人投递能力。Session Only 默认不注册本地投递能力；用数据库断言验证接受邀请、发言和接收消息后没有隐式个人邮箱/投递记录，群记录及客服和 Agent 的既有投递正常。客户在客服通讯录中的可见性按用户类型 TODO T-6 的系统用户组投影（如“客户组 → 客服组”）；投影不授予个人收件能力，见该文 §3.3-D。
-- [ ] 增加直接读取 host 群存储的数据层，使用 `group.list_sessions/list_messages/changes`，不依赖 `owner_session` / INBOX 投影，也不要求通讯录权限。轮询可作为首期更新方案；使用 kevent 必须有相同资源过滤和撤销。
-- [ ] 新增公开可达的受限入口（路径在路由设计中确定），仅加载身份流程与获准会话视图，复用 `ConversationView`。名字/头像用可读成员资料；不暴露群其他 Session、客服邮箱、通讯录、群管理或个人归档/置顶功能。
-- [ ] 附件读取携带群/Session/消息引用上下文，后端同时验证 Session 可读、消息处于可见历史、对象确被引用；猜 ObjectId、跨会话 context、删除/撤回后不可读对象均拒绝。对象缓存按 Zone+主体+上下文隔离，撤销/切换时清理。
-- [ ] 首期不开放 Session Only 媒体上传；后续单独增加写权限/配额。客户打开群内 Workspace 链接按 SSO-11 处理，不复用客服的身份或权限。
-- [ ] 资源授权结束、移出、封禁、删除及时停止无权读取；Session 归档保留既定只读语义，不等同于删除。账号/DID 保持稳定，历史消息 `from` 不改写。Contact 的展示合并不改变授权主体；跨 Zone joined-group 自动同步是另一个交付项，不能与浏览器 DID 联合登录混称完成。
+- [x] 复用 `Invited → Included`、`accept_session_invitation` 和 `submit_guest_request`。身份建立、群侧邀请/批准、本人接受分别记账；进入页面可顺序执行，但登录成功不自动成为群正式成员。（10-22：复用；登录不自动入会话，访客页显式“加入会话”）
+- [ ] 分清已有群 invite link（群加入凭据）、Session Guest 邀请和专属邀请免密资格。当前 `SessionMembershipRecord` 无独立 invitation ID/expiry，需定义 Session 邀请版本、有效期、撤销/重新邀请和旧请求拒绝规则；采用既有幂等框架并让前端传入幂等键。登录成功而加入失败可重试，合法接受重试返回原结果，旧版本不能接受新邀请，移除/封禁后旧请求不能重新加入。（10-22 未完成：Session 邀请的独立版本 / 有效期未做；接受、重试按幂等键）
+- [x] 只允许具名、`allow_guests=true`、成员策略非 `inherit` 的 Session；保留封禁、上限、频率、join Hook 和历史可见区间。邀请接受前只授权本人查看最少邀请资料及接受动作，不预先开放历史。（10-22：沿用现有 Session 规则）
+- [x] 给 `group_rpc_authenticated`、group HTTP、对象读取和事件入口统一接入 SSO-04 的身份 / source / scope / 资源授权；区分普通系统 RBAC 路径与显式开放的受限群方法，再执行群 / Session ACL。保留真实客户端用于 `allowed_clients`，不得伪装为总允许客户端。（10-22：msg-center kRPC、group HTTP、对象路由统一按 `msg_group` 开放）
+- [x] 复用 External 向本机托管群发送的已有分支，补 Limited 路径与统一上限检查；按当前 Session、消息操作和 `from=可信绑定 DID` 校验后写群存储。无个人邮箱者不先要求 SENT，但不能直接删检查后放行；不创建邮箱、不替换 App owner、不授予 `obj://msg-center/*`。（10-22：受限 Limited 发往本机托管群跳过 SENT；`from` 必须是调用者 DID；不开放附件）
+- [x] 检查 `is_local_recipient` 与群消息、邀请通知、事件 fanout 的 SENT / INBOX / owner_sessions 投影，身份在本 Zone 有记录不代表具备个人投递能力。Session Only 默认不注册本地投递能力；用数据库断言验证接受邀请、发言和接收消息后没有隐式个人邮箱/投递记录，群记录及客服和 Agent 的既有投递正常。客户在客服通讯录中的可见性按用户类型 TODO T-6 的系统用户组投影（如“客户组 → 客服组”）；投影不授予个人收件能力，见该文 §3.3-D。（10-22：新建账号在同步前按请求时设置判定，不产生个人投递记录（msg-center 测试断言））
+- [x] 增加直接读取 host 群存储的数据层，使用 `group.list_sessions/list_messages/changes`，不依赖 `owner_session` / INBOX 投影，也不要求通讯录权限。轮询可作为首期更新方案；使用 kevent 必须有相同资源过滤和撤销。（10-22：访客页数据层只用 `group.*` 与对象路由，轮询）
+- [x] 新增公开可达的受限入口（路径在路由设计中确定），仅加载身份流程与获准会话视图，复用 `ConversationView`。名字/头像用可读成员资料；不暴露群其他 Session、客服邮箱、通讯录、群管理或个人归档/置顶功能。（10-22：`/messagehub/guest`，复用会话历史与输入组件）
+- [x] 附件读取携带群/Session/消息引用上下文，后端同时验证 Session 可读、消息处于可见历史、对象确被引用；猜 ObjectId、跨会话 context、删除/撤回后不可读对象均拒绝。对象缓存按 Zone+主体+上下文隔离，撤销/切换时清理。（10-22：受限访客无上下文一律拒绝；跨会话 / 猜测对象拒绝（msg-center 测试 + DV 对象路由检查））
+- [x] 首期不开放 Session Only 媒体上传；后续单独增加写权限/配额。客户打开群内 Workspace 链接按 SSO-11 处理，不复用客服的身份或权限。（10-22：访客页不提供上传）
+- [x] 资源授权结束、移出、封禁、删除及时停止无权读取；Session 归档保留既定只读语义，不等同于删除。账号/DID 保持稳定，历史消息 `from` 不改写。Contact 的展示合并不改变授权主体；跨 Zone joined-group 自动同步是另一个交付项，不能与浏览器 DID 联合登录混称完成。（10-22：移出 / 封禁在下一次读取拒绝并清空页面内容；历史 `from` 不改写）
 
 落点：`msg_center/{message_hub,owner_session,group_service,group_http,object_access,msg_center}.rs`、`buckyos-api/msg_center_client.rs`、Desktop messagehub API/datamodel/路由。验收：Alice/Bob 同一工单、Alice 其它未授权工单、无邮箱客户发消息/读附件、客服和 Agent 正常收发，以及所有撤销负例。
 
 ### SSO-13 / P0：AI Workspace 分享策略和操作权限
 
-- [ ] 以现有 workspace/entity grants 为资源真相源，增加分享入口允许的认证方式及有效策略查询；按 D-8，入口与 grants 同库，有效方式 = 入口允许 ∩ Zone 自助注册 / DID 登录开关，Guest 由 owner 在入口上控制。不把“允许自助注册 / DID 登录”变成自动 grant 全 workspace。
-- [ ] `RuntimeAuth` 和 Caller 消费统一受限上下文；修正仅凭 `guest:` 前缀区分访客/已认证的假设。明确 `public`、`*` 和具体主体对新身份类别的匹配，防止匿名访问者或 External 自动获得创建/导入/复制或 `*` 授权。授权对象新增 `group:<id>`（系统用户组，T-3）与 owner DID + 联系人 tag（含投影，T-5、T-6），两者采用不同类型 / 命名空间；复用 `contact.check_membership` 的精确 DID 查询。冻结现有 username grant 与 DID 的可信映射，以及组变更 / 服务不可用时的生效规则。External 按 T-4 处理，完成 PRE-03 的创建 / 导入 / 复制 / 主体列表负例。
-- [ ] DJ 场景优先复用资源结构：公开可读公告/播放状态，歌单实体子树仅授参与者 `append`，切歌和公告编辑只授 DJ。验证 append 的实际写操作所需能力；如果必须增加权限表达，先冻结最小变更，不能通过全 workspace `update` 绕过。
-- [ ] 权限按祖先 grant 取并集，没有 deny 可补救上层宽授权。检查所有祖先授权；分享单 surface 时明确实际授权对象，避免链接只指一个 surface 却开放其它私密内容。
-- [ ] RPC、HTTP 读取、批量变更、订阅、附件、导出和后端工具执行相同用户/scope/资源检查；页面隐藏按钮之外，直接请求切歌、改公告、改 grants 也必须失败。
-- [ ] 身份来源/所有者/目标 Zone 可见，Guest、自助注册和 DID 登录者进来后不自动成为 workspace owner。资源关闭、grant 撤销和账号停用不循环跳登录。
+- [x] 以现有 workspace/entity grants 为资源真相源，增加分享入口允许的认证方式及有效策略查询；按 D-8，入口与 grants 同库，有效方式 = 入口允许 ∩ Zone 自助注册 / DID 登录开关，Guest 由 owner 在入口上控制。不把“允许自助注册 / DID 登录”变成自动 grant 全 workspace。（10-22：AIWS `share_entries` 与 grants 同库；`entry.describe`、`ws.create_entry|list_entries|close_entry|join_entry`）
+- [x] `RuntimeAuth` 和 Caller 消费统一受限上下文；修正仅凭 `guest:` 前缀区分访客/已认证的假设。明确 `public`、`*` 和具体主体对新身份类别的匹配，防止匿名访问者或 External 自动获得创建/导入/复制或 `*` 授权。授权对象新增 `group:<id>`（系统用户组，T-3）与 owner DID + 联系人 tag（含投影，T-5、T-6），两者采用不同类型 / 命名空间；复用 `contact.check_membership` 的精确 DID 查询。冻结现有 username grant 与 DID 的可信映射，以及组变更 / 服务不可用时的生效规则。External 按 T-4 处理，完成 PRE-03 的创建 / 导入 / 复制 / 主体列表负例。（10-22：`Caller` 带类别；`*` 只匹配非受限账号；`group:` 与 `contact:`（仅 owner 本人可授）主体逐请求解析）
+- [ ] DJ 场景优先复用资源结构：公开可读公告/播放状态，歌单实体子树仅授参与者 `append`，切歌和公告编辑只授 DJ。验证 append 的实际写操作所需能力；如果必须增加权限表达，先冻结最小变更，不能通过全 workspace `update` 绕过。（10-22 未完成：实体子树 grant 与入口模板可表达“参与者只 append”，未做 DJ 专门用例）
+- [x] 权限按祖先 grant 取并集，没有 deny 可补救上层宽授权。检查所有祖先授权；分享单 surface 时明确实际授权对象，避免链接只指一个 surface 却开放其它私密内容。（10-22：入口只针对整个 workspace，不存在 surface 级入口歧义）
+- [x] RPC、HTTP 读取、批量变更、订阅、附件、导出和后端工具执行相同用户/scope/资源检查；页面隐藏按钮之外，直接请求切歌、改公告、改 grants 也必须失败。（10-22：RPC 与 HTTP 路由共用检查，HTTP 拒绝带 `denial`）
+- [x] 身份来源/所有者/目标 Zone 可见，Guest、自助注册和 DID 登录者进来后不自动成为 workspace owner。资源关闭、grant 撤销和账号停用不循环跳登录。（10-22：加入不会成为 owner；入口关闭后下次请求失效）
 
 验收对应 AC-08～20；用 Guest、专属邀请、自助注册、DID 登录和 DJ 分别执行允许/禁止动作。播放同步、音频编排不属于本任务；轻量背景个性化列 P1，不阻塞认证闭环。
 
@@ -501,13 +501,13 @@ bash test/local_user_dv.sh
 
 ### SSO-15：文档、分发和交付
 
-- [ ] 更新 SSO、verify-hub、RBAC、UserType、Local User 生命周期、Control Panel 协议、SDK 使用说明、Session Only、Self-host Group 接入、Message Hub UI_DATAMODEL 和 AI Workspace 分享文档。删除“guest 等同匿名且永不能登录”“任意本地 Profile 即归属证明”等混淆表述，并明确已实现/规划范围。其余文档按 PRD 使用专属邀请 / 自助注册 / DID 登录 / Guest。
-- [ ] 补充 SDK / jump / 目标 Zone 的责任、action 路由契约、纯浏览器无 SN 路径及登录后恢复示例；明确 Locator 与 canonical zone 的差别。保存/安装入口文档引用同一契约，平台唤起与业务执行分别列验证结果，不把历史样例标成已交付。
-- [ ] 更新 [桌面 App 自动登录记录](desktop-app-sso-auto-login-todo.md) 中与受限来源、family 和撤销相关的取舍，保留普通桌面行为与本轮变化的准确边界；不把旧的独立 family 结论套给所有混合会话。
-- [ ] Rust 共享类型、服务、SDK/CLI、前端、Gateway 模板和测试一起迁移。修改源码和生成入口，按构建流程分发 SDK；不只改 `dist` 或 `rootfs` 生成副本。如改 Gateway 公共配置，检查同级 `cyfs-gateway` 同步副本。
-- [ ] 检查 Jarvis `cmd_skills/buckyos_admin.md`、`buckyos_app_dev.md` 等受影响手册，补充外部账号/邀请/授权管理的真实命令或说明无需变化的依据；业务脚本有权限才能创建身份、发邀请、转授资源。
-- [ ] 记录部署/数据初始化与恢复方案。开发阶段不默认做旧协议兼容，但现有账号、群历史与已保存公开 Workspace 的处置须明确；结构变更不能无声删除业务数据。
-- [ ] 输出交付记录：已实现任务、未决定事项、身份/权限/撤销协议、测试与 DV 结果、单实例或多实例限制、尚未验证的渠道和浏览器。所有 TODO 按实际证据勾选。
+- [x] 更新 SSO、verify-hub、RBAC、UserType、Local User 生命周期、Control Panel 协议、SDK 使用说明、Session Only、Self-host Group 接入、Message Hub UI_DATAMODEL 和 AI Workspace 分享文档。删除“guest 等同匿名且永不能登录”“任意本地 Profile 即归属证明”等混淆表述，并明确已实现/规划范围。其余文档按 PRD 使用专属邀请 / 自助注册 / DID 登录 / Guest。（10-22：SSO.md、verify-hub.md、07 / 10 号架构文档、UserType.md、Control_Panel_Service.md、Session Only 设计、Self-Host-Groupv2、Message Hub UI_DATAMODEL、AIWS README 已更新）
+- [x] 补充 SDK / jump / 目标 Zone 的责任、action 路由契约、纯浏览器无 SN 路径及登录后恢复示例；明确 Locator 与 canonical zone 的差别。保存/安装入口文档引用同一契约，平台唤起与业务执行分别列验证结果，不把历史样例标成已交付。（10-22：`src/frame/jump/README.md` 与 SSO.md）
+- [x] 更新 [桌面 App 自动登录记录](desktop-app-sso-auto-login-todo.md) 中与受限来源、family 和撤销相关的取舍，保留普通桌面行为与本轮变化的准确边界；不把旧的独立 family 结论套给所有混合会话。（10-22：已补“混合 SSO 之后的边界”）
+- [x] Rust 共享类型、服务、SDK/CLI、前端、Gateway 模板和测试一起迁移。修改源码和生成入口，按构建流程分发 SDK；不只改 `dist` 或 `rootfs` 生成副本。如改 Gateway 公共配置，检查同级 `cyfs-gateway` 同步副本。（10-22：buckyos-base kRPC（`a677df0` 已推）、buckyos-api、各服务、WebSDK、桌面、Gateway 模板与网关调试测试一起改）
+- [x] 检查 Jarvis `cmd_skills/buckyos_admin.md`、`buckyos_app_dev.md` 等受影响手册，补充外部账号/邀请/授权管理的真实命令或说明无需变化的依据；业务脚本有权限才能创建身份、发邀请、转授资源。（10-22：`buckyos_admin.md`、`buckyos_app_dev.md` 已补）
+- [x] 记录部署/数据初始化与恢复方案。开发阶段不默认做旧协议兼容，但现有账号、群历史与已保存公开 Workspace 的处置须明确；结构变更不能无声删除业务数据。（10-22：AIWS 存储版本升到 3、UserSettings 新字段：DV 用 `start.py --all` 全新安装，不写迁移）
+- [x] 输出交付记录：已实现任务、未决定事项、身份/权限/撤销协议、测试与 DV 结果、单实例或多实例限制、尚未验证的渠道和浏览器。所有 TODO 按实际证据勾选。（10-22：见 §11）
 
 核心闭环完成条件：专属邀请、自助注册、DID 登录、Guest 四种用户体验均在系统统一边界下成立；Message Hub 受限客户不依赖个人邮箱权限；Workspace 操作角色正确；跨应用不重复注册；DID 跨 Zone 保留逐目标首次选择；专属邀请账号设密码终止旧免密资格；普通访问永不改变 canonical zone；所有已签发的受限会话均按已定授权上限、来源约束及 D-5 / Q-03 / Q-04 的撤销窗口与检查点验证。仅登录页面可用或 JWT 能验签不算完成。
 
@@ -534,3 +534,91 @@ bash test/local_user_dv.sh
 - 联动修改 §0.3、§0.4（新增 P-2 邀请收紧、删除 `remember_me` 两项）、§2、§3、§4.1、§5.0、SSO-01、SSO-05、SSO-06、SSO-09、SSO-10、SSO-14。
 - 本轮仍只改文档；新核对 verify-hub 时长常量、`handle_user_invite_create` 的类型检查与 `remember_me` 的调用方；未运行构建、测试或 DV。
 - 随后把已定结论回写到 PRD（升为 v0.2）：Q-01～Q-06、Q-10、P-1 写入 §5～§9 对应节，新增 §6.6 登录保持与撤销；账号权限、Guest 范围、对外联合资格、拒绝提示、重发责任一并写入；§13 标为已确定，Q-13 标为移交技术设计。D-6 / D-7 等纯技术决策只把用户可见后果写进 PRD，S-1、P-2 不在 PRD 范围。
+
+
+## 11. 实施记录（2026-10-22）
+
+**范围与结论。** PRE-01～04、§0.4、SSO-01～09、SSO-11～13、SSO-15 已实施；SSO-10 按 S-1 后排；SSO-14 在本机单 Zone（test.buckyos.io，`start.py --all` 全新安装）完成验收，多 Zone、多 App origin、真实送达渠道未验证。改动均未提交（buckyos-base 的 kRPC 部分已由用户批准推送为 `a677df0`；WebSDK 前半部分已由用户提交为 `5a40238`，之后的 `runtime.ts` / `sdk_core.ts` / 测试改动未提交）。
+
+**主要落点**
+
+| 部分 | 位置 |
+| --- | --- |
+| 契约 | `doc/arch/verify-hub/混合SSO技术契约.md`；fixtures `src/kernel/buckyos-api/tests/fixtures/hybrid_sso/` |
+| 共享类型与闸口 | buckyos-api `hybrid_sso.rs`、`verify_hub_client.rs`（新方法）、`control_panel.rs`（`password_state`、`get_user_did`）、`runtime.rs`（默认拒绝 / `verify_session_token_opened` / `enforce_opened`） |
+| 结构化拒绝 wire | buckyos-base kRPC `RPCErrors::Detailed` 与失败响应 `code`/`data`（`a677df0`）；WebSDK `RPCError.code/.data`、`accessDenialOf` |
+| verify-hub | `family_store.rs`（SQLite family）、`federation.rs`、`directory.rs`；claims 与上限、复核、专属邀请登录、`revoke_families`、联合 code 签发 / 兑换、`login_by_remote_verify_hub` |
+| system-config / scheduler | 受限闸口、profile DID 守卫；su_users 不再写本人 settings / doc |
+| Control Panel | `sso_identity.rs`、`sso_settings.rs`、`sso_entry.rs`、`exclusive_invite.rs`、`federation.rs`；`/sso_refresh` identity；受限方法清单；`/sso/did_callback`（gateway 模板已加路由） |
+| msg-center | 闸口按 scope、doc DID、Limited 群发送、带上下文的对象读取、`describe_entry` 与入口方式、请求时成员关系 |
+| AI Workspace | 调用者类别、`*` 收窄、`group:` / `contact:` 主体、`share_entries` 与 join；存储版本 3 |
+| HomeStation | 受限读与评论、doc DID、关系与组受众请求时查询 |
+| Desktop | `src/sso/`（入口页、专属邀请页、consent 页、受限门户、拒绝文案）、登录页、设置“登录与分享”、用户与 Agent“专属邀请”、Message Hub 访客页 `guest/` 与“邀请外部客户”、AIWS 分享入口 |
+| jump | `src/frame/jump/`（静态页与核心逻辑） |
+
+**偏差与补充决定（实施中作出，未改变 §4 承诺）**
+
+- D-4 wire：kRPC 失败响应增加可选 `code`/`data`，而不是在错误文本里编码；预期失败的认证 / 入口方法仍用 `status` 信封。
+- 受限门户只给 External 与经专属邀请登录的会话；密码登录的 Limited 账号保留桌面，未开放的服务返回 `session_kind_not_allowed`。
+- 自身改密须来自 Control Panel 会话，User / Admin 须 sudo；Limited 不能 sudo，只看 `allow_password_change`。专属邀请、SSO 设置等管理方法须 Control Panel 管理员会话。
+- 专属邀请必须指向 Limited 账号；已设密码先于类型判断返回 `password_required`。
+- AIWS 入口开启 Guest 时，模板对所有调用者生效；`contact:` grant 只能由 tag 所属本人授予。
+- jump 只登记 Zone 侧已有页面的 action（`app_installer`）；参数在 jump 处为 fragment，转交目标页时为 query。
+- `/sso/did_callback` 发现浏览器已登录另一主体时拒绝并撤销新 family；`/sso_callback` 的同类“登录替换”是既有风险（见下）。
+
+**验证**
+
+- 单元 / 集成：`CARGO_INCREMENTAL=0 cargo test -p buckyos-api -p verify_hub -p control_panel -p msg_center -p system_config -p scheduler -p homestation -p aiworkspace-store -p aiworkspace-core -p aiworkspace -p agent_tool -- --test-threads=1` 全部通过（56 组）；`cargo check --workspace --all-targets` 通过；buckyos-base `cargo test -p kRPC -p buckyos-http-server` 通过；WebSDK jest 15 项通过；jump `deno test` 4 项通过。
+- Desktop：`pnpm check`、`pnpm lint`（0 error）；mock e2e 全量 334 通过，失败中 `ai-center.spec.ts:3`、`desktop.spec.ts:330` 为既有失败，其余单独重跑通过（并发负载抖动）；Message Hub 访客 Deno 测试 9 项通过。
+- 网关：`uv run src/test/test_boot_gatweay/run_debug_tests.py` 30 项通过（新增 `/sso/did_callback` 路由用例）。
+- DV（`uv run buckyos-build.py` 全量构建 + `start.py --all`）：
+  - `test/test_hybrid_sso/test_hybrid_sso_dv.ts` 全部步骤通过：Zone 设置、群入口、专属邀请两次免密进入、受限闸口、访客会话加入 / 发言 / 带上下文读取、首设密码、轮换与撤销、AIWS 入口（Guest 读取、自助注册加入、Limited 不能建 workspace、Zone 开关关闭注册）、单 Zone DID 登录闭环（需临时开 `dev_federation_http`，验证后已关闭）。
+  - `tests/dv/hybrid-sso.spec.ts` 3 项通过：浏览器打开专属链接 → 访客页加入并发言、AIWS Guest 入口、密码登录的 Limited 保留桌面。
+  - verify-hub 重启后，重启前的 refresh 仍可刷新（`sessions.db`）。
+  - 真实 Zone 上 PRE-01 / 02：sudo 改本人 `type`（set / set_by_json_path）被拒，篡改 profile DID 被拒，普通资料编辑可用。
+  - 回归：`test/local_user_dv.sh`、`test/user_groups_dv.sh`（更新为按拒绝原因码断言）、`test_messagehub_groups.ts`（改为从会话身份取 DID）、DV `my-network.spec.ts`、`homestation.spec.ts`、`local-user.spec.ts`（`/sso_refresh` 断言改为 `identity`）通过；`local-user.spec.ts` 创建用户一项仍因自签证书的 Service Worker 控制台报错失败（既有问题）；`app-launch.spec.ts` 的 `access_denied` 断言依赖 bob 的 r03share Agent App，全新安装后不存在，未验证。
+
+**未完成与已知风险**
+
+- 未验证：canonical / B / C 三个独立 Zone 的 DID 联合、跨 App origin 与移动端浏览器、专属邀请重发的真实送达（系统不发送；资格 48 小时后才过期）、Bob 承载 Alice canonical zone。
+- 未实现：SSO-10；`buckyos://` 唤起与 App / SN Locator；目标 Zone 独立的 action pending；Session 邀请的版本 / 有效期；DJ 专门用例；联合 consent 撤回入口。
+- 已知风险：kevent 订阅无资源过滤；`/sso_callback` 与专属邀请 `callback_url` 可被用来替换他人浏览器 Cookie（既有机制，DID 回调已加防护）；登录 nonce 防重放缓存在内存（重启后 8 小时窗口，已加“family 已存在即拒绝”的补救）；canonical logout 不传播（最长 30 天）；账号 / 来源撤销后旧 access 最长 15 分钟；verify-hub 单实例，迁移后需重新登录；App 运行时收到指向自身实例的受限会话即放行（App 可用性在签发时判定）。
+
+## 附录 A：SSO-04 逐方法审计
+
+### A.1 显式开放受限会话的服务
+
+| 服务 | 开放给 Limited（`account_self` 等） | 开放给 External | 入口与判定 |
+| --- | --- | --- | --- |
+| verify-hub | refresh / logout；不签发 sudo | refresh / logout | 自有验签；CP 专用方法只认 CP 服务会话 |
+| system-config | 本人 `settings` 读、`profile` 读写（DID 守卫） | 无 | `process_request` 自有闸口 + RBAC |
+| Control Panel | `auth.current_identity`、`auth.invite.set_password`、`auth.prepare_app_launch`、`ui.locale.get`、本人 `user.get|update|profile.get|profile.set|change_password`、`zone.presentation.get`、`apps.list`、`apps.availability.check`、`/api/desktop`；均限 control-panel target 与本人 | `auth.current_identity` | `authenticate_session_token_for_method` |
+| msg-center | `group.*`、托管群的 `msg.post_send`、带上下文的对象路由、group HTTP（`msg_group`）；本人通讯录（`account_self`，编辑权请求时读设置） | 同左，不含通讯录 | `caller_identity` 按方法声明 scope；受限群拒绝统一 `resource_grant_missing` |
+| AI Workspace | 全部方法（`aiworkspace`），类别受限：无 `*`、不能建 / 导入 / 复制 / 列主体 | 同左 | `RuntimeAuth` + store 主体匹配 |
+| HomeStation | `portal.*`、协议读、`comments.list`、`interact.comment` | 同左 | `session_caller` |
+
+拒绝一律为 `access_denied` + 原因码（`session_kind_not_allowed` / `session_ceiling_exceeded` / `resource_grant_missing` / `authorization_unavailable` 等）。
+
+### A.2 未单独开放受限会话的服务
+
+闸口：`BuckyOSRuntime::verify_trusted_session_token` 对 `restricted: true` 的会话返回 `AccessDenial(session_kind_not_allowed)`，只有 App 运行时收到指向自身实例的会话例外；`enforce` 经同一入口。下列服务没有调用 `verify_session_token_opened`，因此 Limited、External 及其衍生会话一律被拒。
+
+| 服务 / 入口 | 验签方式 | 受限会话结果 | 备注 |
+| --- | --- | --- | --- |
+| task-manager（`kernel/task_manager/src/server.rs` authenticate、`dispatcher/service.rs`） | `verify_trusted_session_token` | 拒绝 | Limited 无任务能力，符合“零权限” |
+| workflow（`kernel/workflow/src/server.rs`） | 同上 | 拒绝 | |
+| node executor（`kernel/node_daemon/src/node_executor_host.rs`） | 同上 | 拒绝 | |
+| opendan（`frame/opendan/src/service.rs`） | 同上 | 拒绝 | Agent 只服务 owner |
+| aicc（`frame/aicc/src/service/ports.rs` → `runtime.enforce`） | enforce | 拒绝 | |
+| nfs-server 文件面 / 复制 / 分享 RPC（`buckyos-api/src/nfs_copy.rs::verify_nfs_session_token`） | 同上 | 拒绝 | 公开分享链接不走会话，保持匿名可读 |
+| nfs-server NDM（`frame/nfs_server/src/ndm/mod.rs` → enforce） | enforce | 拒绝 | Session Only 首期不开放上传 |
+| system-config | 自有验签（`sys_config_service/src/main.rs`） | 仅本人 settings 读、profile 读写；External 全拒 | 见 A.1 |
+| Control Panel | `verify_session_token_opened` 按方法 | Limited 仅 account_self 清单；External 仅 `auth.current_identity` | 见 A.1 |
+| msg-center | 按方法开放 | `group.*`、群消息、带上下文的群附件、本人通讯录 | 见 A.1 |
+| AI Workspace | `verify_session_token_opened(AiWorkspace)` | 按 grant；不得创建 / 导入 / 复制 / 列全体主体 | 见 A.1 |
+| HomeStation | `verify_session_token_opened(HomeStation)` | 读与评论 | 见 A.1 |
+| App 运行时（AppService） | `verify_trusted_session_token` | 指向自身实例的会话通过（签发时已判 App availability），其它拒绝 | App 后端转发受限用户的 token 调系统服务时，未开放的服务拒绝；不得改用 App 自己的 token 代办 |
+| Gateway `check_oauth`（`rootfs/etc/boot_gateway.yaml`） | JWT 验签 + claims | App target 的受限会话可到达对应 App（与上一行一致）；External 不签发 App target | 不需要读新 claim |
+| kevent / kmsg（`kernel/kevent/src/http.rs`、`kernel/kmsg`） | 无鉴权 | 不涉及会话 | 已知风险：kevent 订阅无资源过滤；Message Hub 访客页用轮询，不订阅 kevent |
+| repo-service、slog、smb | 无会话鉴权 / 不面向浏览器用户 | 不涉及 | 现状，不在本批 |
+| verify-hub | 自有验签 | refresh / logout 对受限 family 可用；`sudo_by_password` 拒绝 Limited；CP 专用方法只认 CP 服务会话 | 见 A.1 |

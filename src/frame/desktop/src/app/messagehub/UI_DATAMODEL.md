@@ -1785,6 +1785,21 @@ P1（记录语义、提交结果、会话生命周期、请求准入、授权边
 
 ---
 
+### 9.5 访客页（Session Only，`/messagehub/guest`）
+
+受限会话（专属邀请或自助注册的 Limited 账号、DID 登录的 External）不读 owner 收件箱、联系人或通知，访客页（`guest/`）只走 host 群存储：
+
+| 用途 | KRPC / HTTP |
+|---|---|
+| 群名、入口方式 | `group.get_doc`；Control Panel `auth.entry.describe {service:"msg-center", entry_id:<group_did>}`（已叠加 Zone 开关） |
+| 待接受的邀请 | `group.list_by_member` 的 `session_invitations` |
+| 加入 / 发起咨询 | `group.accept_session_invitation {group_did, session_id, idempotency_key}`；`group.submit_guest_request {group_did, request_id}` |
+| 会话、成员、消息 | `group.list_sessions`、`group.list_session_members`、`group.list_messages`、`group.update_read_marker` |
+| 消息与附件对象 | `GET /kapi/msg-center/objects/<id>?context_path=<session MailboxAddress>/<msg_id>`；无上下文时受限会话被拒 |
+| 发送 | `msg.post_send {msg:{from:<caller DID>, to:[group], kind:"group_msg", to_session}, idempotency_key}`（首期不带附件） |
+
+拒绝一律按 `access_denied` 的 `reason` 分支；未开放与不存在对访客相同（`resource_grant_missing`）。对象缓存按 `identityKey` + 上下文 + 对象 id 隔离，身份变化时清空并回收 Blob URL。
+
 ## 10. 与原型现状的差异清单
 
 本文档相对 `MessageHub_Current_UI_Model_Data.md` 记录的实现现状，需要在集成阶段落地的改动：

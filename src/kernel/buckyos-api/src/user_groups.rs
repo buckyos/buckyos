@@ -249,6 +249,7 @@ mod tests {
             allow_password_change: None,
             allow_contact_edit: None,
             groups: groups.iter().map(|group| group.to_string()).collect(),
+            password_state: crate::PasswordState::Set,
         }
     }
 

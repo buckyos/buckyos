@@ -35,8 +35,6 @@ const adminUser = Deno.env.get("BUCKYOS_TEST_ADMIN_USER")?.trim() || "devtest";
 const adminPassword = Deno.env.get("BUCKYOS_TEST_ADMIN_PASSWORD")?.trim() || "bucky2025";
 const memberUser = Deno.env.get("BUCKYOS_TEST_MEMBER_USER")?.trim() || "bob";
 const memberPassword = Deno.env.get("BUCKYOS_TEST_MEMBER_PASSWORD")?.trim() || "bucky2025";
-const adminDid = `did:bns:${adminUser}`;
-const memberDid = `did:bns:${memberUser}`;
 let lastNonce = Date.now();
 
 function nextNonce(): number {
@@ -101,6 +99,14 @@ async function waitFor<T>(label: string, probe: () => Promise<T | undefined>, at
 
 const adminToken = await login(adminUser, adminPassword);
 const memberToken = await login(memberUser, memberPassword);
+/** The account DID the Zone binds (users/<id>/doc), as the session reports it. */
+async function sessionDid(token: string): Promise<string> {
+  const identity = asRecord(await call("control-panel", "auth.current_identity", {}, token), "auth.current_identity");
+  assert(typeof identity.did === "string" && identity.did, "current identity has a DID");
+  return identity.did;
+}
+const adminDid = await sessionDid(adminToken);
+const memberDid = await sessionDid(memberToken);
 const asAdmin = (method: string, params: JsonRecord) => call("msg-center", method, params, adminToken);
 const asMember = (method: string, params: JsonRecord) => call("msg-center", method, params, memberToken);
 const groups: Array<{ did: string; token: string }> = [];

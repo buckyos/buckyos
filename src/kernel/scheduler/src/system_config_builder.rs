@@ -256,6 +256,7 @@ impl SystemConfigBuilder {
             allow_password_change: None,
             allow_contact_edit: None,
             groups: Vec::new(),
+            password_state: buckyos_api::PasswordState::Set,
         };
         self.insert_json("users/root/settings", &root_settings)?;
 
@@ -270,6 +271,7 @@ impl SystemConfigBuilder {
             allow_password_change: None,
             allow_contact_edit: None,
             groups: Vec::new(),
+            password_state: buckyos_api::PasswordState::Set,
         };
         self.insert_json(&admin_key, &admin_settings)?;
         self.insert_json_if_absent(ZONE_OWNER_USER_ID_KEY, &config.user_name)?;

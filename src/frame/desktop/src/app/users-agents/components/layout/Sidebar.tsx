@@ -5,6 +5,7 @@ import { Bot, Search, UserPlus } from 'lucide-react'
 import { Chip, IconButton, Tooltip } from '@mui/material'
 import { EntityCard } from '../cards/EntityCard'
 import { UserGroupsNavItem } from '../groups/UserGroupsNavItem'
+import { ExclusiveInvitesNavItem } from '../invites/ExclusiveInvitesNavItem'
 import { SearchFilterBar } from '../shared/SearchFilterBar'
 import { entityFilterOptions, filterInternalEntities, getInternalEntities, type InternalEntityFilter } from '../shared/entityFilters'
 import {
@@ -128,6 +129,10 @@ export function Sidebar({ selection, onSelect, onAddUser, onAddAgent, canCreateA
         <UserGroupsNavItem
           isActive={selection?.kind === 'user-groups'}
           onClick={() => onSelect({ kind: 'user-groups' })}
+        />
+        <ExclusiveInvitesNavItem
+          isActive={selection?.kind === 'exclusive-invites'}
+          onClick={() => onSelect({ kind: 'exclusive-invites' })}
         />
       </div>
     </div>

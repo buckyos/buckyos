@@ -88,7 +88,8 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
       ? [{ id: 'login', testId: 'aiws-menu-login', label: t('aiworkspace.shell.loginBuckyos'), hint: t('aiworkspace.shell.menu.guestHint'), run: shell.login } satisfies MenuItem]
       : [
         { id: 'new-canvas', label: t('aiworkspace.shell.menu.newCanvas'), disabled: !caps.includes('structure'), reason: t('aiworkspace.shell.noStructurePermission'), run: () => shell.openDialog({ kind: 'new', tab: 'canvas' }) },
-        { id: 'new', label: t('aiworkspace.shell.menu.new'), hint: t('aiworkspace.shell.menu.newHint'), run: () => shell.openDialog({ kind: 'new', tab: caps.includes('structure') ? 'canvas' : 'workspace' }) },
+        // a restricted session (Limited account, External DID) creates no workspace
+        ...(shell.identity.restricted ? [] : [{ id: 'new', label: t('aiworkspace.shell.menu.new'), hint: t('aiworkspace.shell.menu.newHint'), run: () => shell.openDialog({ kind: 'new', tab: caps.includes('structure') ? 'canvas' : 'workspace' }) }]),
         { id: 'open-workspace', label: t('aiworkspace.shell.menu.openWorkspace'), hint: t('aiworkspace.shell.menu.openWorkspaceHint'), run: shell.close },
       ] satisfies MenuItem[]),
     shell.home

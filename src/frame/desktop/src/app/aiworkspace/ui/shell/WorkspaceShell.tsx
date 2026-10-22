@@ -62,7 +62,7 @@ export interface ShellProps {
   onClose: () => void
   onOpenWorkspace: (workspaceId: string) => void
   offline: OfflineActions
-  identity: { principal: string | null; dev: boolean; guest: boolean }
+  identity: { principal: string | null; dev: boolean; guest: boolean; restricted: boolean }
   onLogout: () => void
   onLogin: () => void
   onHome: (() => void) | null

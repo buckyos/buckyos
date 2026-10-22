@@ -136,6 +136,8 @@ Cache-Control: no-store
 - 每次启动都签一条新 family 并覆盖目标 host 的 Cookie，不探测该 host 上是否已有会话。被覆盖的旧 family 和过期未兑换的 pending 一样，留在 verify-hub 内存里，直到 refresh 过期（7 天）由 gc 清理。
 - refresh 宽限期（B 节）内，出示上一枚 refresh 的请求能拿到当前 token。被窃取的旧 refresh 只在合法轮换后的几秒内有用。
 
+**混合 SSO 之后的边界（2026-10-22）**：上面“委托 family 与来源无关”只对普通（非受限）会话成立。受限会话（Limited、External 及其衍生）的委托子 family 继承来源的 `auth_method`、会话上限与来源记录，按 verify-hub 中的父 family 存活与否决定能否 refresh；来源会话 logout 或被撤销后，子 family 在下一次 refresh 失效（旧 access 至多 15 分钟）。External 会话 v1 不能委托到 App。family 已从内存改为 verify-hub 本地 SQLite，上文“留在 verify-hub 内存里”改读为“留在 sessions.db 里，直到 refresh 过期由 gc 清理”。见 [混合 SSO 技术契约](../doc/arch/verify-hub/混合SSO技术契约.md) §6、§7。
+
 ## 实施任务
 
 ### A Verify Hub 和共享协议

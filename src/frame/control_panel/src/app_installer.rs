@@ -3584,6 +3584,7 @@ impl ControlPanelServer {
             is_user_session: false,
             is_control_panel_session: true,
             agent_permission_mode: None,
+            session: crate::PrincipalSession::default(),
         };
         let mut options = serde_json::json!({
             "policy": "SYSTEM_INTERNAL",
@@ -4389,6 +4390,7 @@ mod submit_action_tests {
             is_user_session: false,
             is_control_panel_session: false,
             agent_permission_mode: None,
+            session: crate::PrincipalSession::default(),
         }
     }
 

@@ -196,7 +196,7 @@ fn observed_removals(conn: &Connection, view: &str, target: &str) -> HsResult<Ha
 impl Station {
     /// `listComments` (§15): current version and earlier ones of the entry; views by maintainer.
     pub async fn comment_list(&self, obj_id: &str, view: &str, comment_type: &str) -> HsResult<Value> {
-        let ctx = self.view_ctx(crate::audience::Reader::Owner).await;
+        let ctx = self.view_ctx(crate::audience::Reader::Owner).await?;
         let obj_id = normalize_obj_id(obj_id);
         let view = view.to_string();
         let filter = CommentType::parse(comment_type).ok_or_else(|| HsError::BadRequest("unknown comment type".into()))?;

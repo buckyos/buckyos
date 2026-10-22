@@ -219,7 +219,7 @@ async fn commit_record(
 // names
 // ---------------------------------------------------------------------------
 
-fn is_dns_label(value: &str) -> bool {
+pub(crate) fn is_dns_label(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63
         && !value.starts_with('-')
@@ -1844,6 +1844,7 @@ fn internal_principal(owner: &str) -> RpcAuthPrincipal {
         is_user_session: false,
         is_control_panel_session: true,
         agent_permission_mode: None,
+        session: crate::PrincipalSession::default(),
     }
 }
 

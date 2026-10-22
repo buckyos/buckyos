@@ -7,8 +7,8 @@ import {
   type PreviewSessionItemInput,
   type ResolvedPreviewSource,
 } from '../../../../components/preview/types'
-import { getMessageStableId, type MessageObject, type RefItem } from '../../protocol/msgobj'
-import { effectiveContent } from '../history/relations'
+import { getMessageStableId, messageObjId, type MessageObject, type RefItem } from '../../protocol/msgobj'
+import { effectiveContent, messageRelations } from '../history/relations'
 import type { ConversationMessageReader } from '../history/types'
 import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
 
@@ -19,6 +19,8 @@ export interface MessageObjectSourceValue {
   uri?: string
   name?: string
   reference: string
+  /** `context_path` the object is read with (`ObjectAccess`). */
+  context?: string
 }
 
 export type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
@@ -29,6 +31,8 @@ export interface MessageAttachment {
   label: string
   objId?: string
   uri?: string
+  /** `context_path` the object is read with (`ObjectAccess`). */
+  context?: string
 }
 
 export function isHttpUri(uri: string | undefined): boolean {
@@ -77,19 +81,34 @@ export function isInlineImageType(mediaType: string | undefined): boolean {
   return !!mediaType && detectRuntimeProfile().imageMediaTypes.includes(stripMediaTypeParams(mediaType))
 }
 
+/**
+ * msg-center `context_path` of the objects a message of a hosted group session
+ * shows (`ui_group_session` names the session's MailboxAddress): the session
+ * plus the message that carries the refs, which is the latest edit once one
+ * replaced the content. Other messages are read without one.
+ */
+export function objectContextOf(message: MessageObject): string | undefined {
+  const session = message.ui_group_session
+  if (typeof session !== 'string' || !session) return undefined
+  const edited = messageRelations(message)?.edited
+  const holder = edited ? edited.edits.findLast(edit => edit.at === edited.at)?.id : messageObjId(message)
+  return holder ? `${session}/${holder}` : undefined
+}
+
 export function messageAttachments(message: MessageObject, indexHint: number): MessageAttachment[] {
   if (message.ui_unavailable === true) return []
   const messageId = getMessageStableId(message, indexHint)
   const hasAccess = getObjectAccess() !== null
+  const context = objectContextOf(message)
   const out: MessageAttachment[] = []
   ;(effectiveContent(message).refs ?? []).forEach((ref, refIndex) => {
-    const attachment = attachmentOfRef(ref, `${messageId}#${refIndex}`, hasAccess)
+    const attachment = attachmentOfRef(ref, `${messageId}#${refIndex}`, context, hasAccess)
     if (attachment) out.push(attachment)
   })
   return out
 }
 
-export function attachmentOfRef(ref: RefItem, id: string, hasAccess = getObjectAccess() !== null): MessageAttachment | null {
+export function attachmentOfRef(ref: RefItem, id: string, context?: string, hasAccess = getObjectAccess() !== null): MessageAttachment | null {
   const target = ref.target
   if (target.type !== 'data_obj') return null
   const hint = target.uri_hint?.trim()
@@ -101,8 +120,8 @@ export function attachmentOfRef(ref: RefItem, id: string, hasAccess = getObjectA
   }
   if (!hasAccess) return null
   const label = ref.label ?? target.obj_id
-  const value: MessageObjectSourceValue = { objId: target.obj_id, name: label, reference: target.obj_id }
-  return { id, label, objId: target.obj_id, source: { kind: MESSAGEHUB_OBJECT_SOURCE, value } }
+  const value: MessageObjectSourceValue = { objId: target.obj_id, name: label, reference: target.obj_id, ...(context ? { context } : {}) }
+  return { id, label, objId: target.obj_id, source: { kind: MESSAGEHUB_OBJECT_SOURCE, value }, ...(context ? { context } : {}) }
 }
 
 function valueOf(source: ContentRef): MessageObjectSourceValue {
@@ -137,11 +156,11 @@ async function resolveMessageObject(source: ContentRef): Promise<ResolvedPreview
   if (!value.objId) throw new PreviewError('INVALID_SOURCE', 'Invalid attachment reference')
   const access = getObjectAccess()
   if (!access) throw new PreviewError('NOT_FOUND', 'Attachments are not available here')
-  const info = await access.describe(value.objId).catch((error: unknown) => {
+  const info = await access.describe(value.objId, value.context).catch((error: unknown) => {
     throw accessError(error)
   })
   if (!info.isFile) throw new PreviewError('UNSUPPORTED', 'This attachment is not a file')
-  const url = await access.contentUrl(value.objId).catch((error: unknown) => {
+  const url = await access.contentUrl(value.objId, value.context).catch((error: unknown) => {
     throw accessError(error)
   })
   const name = info.name ?? value.name
@@ -177,7 +196,7 @@ async function kindOf(attachment: MessageAttachment): Promise<AttachmentKind | n
   if (!access) return null
   let timer = 0
   const timeout = new Promise<null>(resolve => { timer = window.setTimeout(() => resolve(null), DESCRIBE_TIMEOUT_MS) })
-  const described = access.describe(attachment.objId).then(info => (info.isFile ? attachmentKindOf(info.mimeType, info.name ?? attachment.label) : null), () => null)
+  const described = access.describe(attachment.objId, attachment.context).then(info => (info.isFile ? attachmentKindOf(info.mimeType, info.name ?? attachment.label) : null), () => null)
   const kind = await Promise.race([described, timeout])
   window.clearTimeout(timer)
   return kind

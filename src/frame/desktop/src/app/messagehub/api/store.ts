@@ -9,17 +9,17 @@
  * - viewer → owner isolation: caches, drafts, readers and late responses are
  *   keyed by `(viewerDid, ownerDid, sessionId)`; observers never write.
  */
-import { buckyos } from 'buckyos'
+import { buckyos, identityKey } from 'buckyos'
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
-import { registerObjectAccess, rememberLocalObject } from '../conversation/history/objectAccess'
+import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
   acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
-  type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
+  type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, groupSessionId } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
@@ -30,7 +30,7 @@ import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetai
 import type { ConnectionChoice, ManageAction, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { canStage, pendingBubble, pendingBubbleId } from '../store/outgoing'
 import { LocalStateStore } from './local'
-import { apiObjectAccess } from './objects'
+import { apiObjectAccess, setObjectViewer } from './objects'
 import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
 import { emptyHistory, itemToMessage, messageId as messageIdOf, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
 import { uploadAttachments } from './upload'
@@ -169,6 +169,8 @@ async function hashKey(input: string): Promise<string> {
 
 export class MessageHubApiStore implements MessageHubStore {
   readonly isMock = false
+  /** `identityKey` of the subject this store was loaded for; every cache below belongs to it. */
+  private identity = ''
   private selfDid = ''
   private selfUsername = ''
   private owners = new Map<string, OwnerData>()
@@ -216,10 +218,14 @@ export class MessageHubApiStore implements MessageHubStore {
 
   private async load() {
     await this.local.load()
+    const identity = await buckyos.getCurrentIdentity()
     const selfDid = await fetchOwnerDid()
     if (!selfDid) throw new MessageHubApiError('not logged in', 'permission_denied')
+    // A session the SDK has no identity for yet is not followed (nothing to compare with).
+    this.identity = identity.kind === 'anonymous' ? '' : identityKey(identity)
     this.selfDid = selfDid
     this.selfUsername = await fetchAccountUsername().catch(() => '')
+    setObjectViewer(this.identity || selfDid)
     registerObjectAccess(apiObjectAccess)
     await this.ensureOwner(this.defaultContext())
     this.notify()
@@ -227,6 +233,22 @@ export class MessageHubApiStore implements MessageHubStore {
 
   defaultContext(): MessageHubContext {
     return { viewerDid: this.selfDid, ownerDid: this.selfDid, mode: 'self' }
+  }
+
+  /**
+   * The browser session may change subject behind this page (a sign-in or
+   * sign-out in another tab rewrites the shared Cookie and identity). The
+   * store and every cache belong to the subject it was loaded for, so a
+   * different one drops the attachments and reloads instead of showing the
+   * previous subject's data.
+   */
+  private async checkIdentity() {
+    if (!this.identity) return
+    const current = identityKey(await buckyos.getCurrentIdentity())
+    if (current === this.identity) return
+    this.identity = ''
+    resetObjectCaches()
+    window.location.reload()
   }
 
   private owner(ownerDid: string): OwnerData {
@@ -389,7 +411,10 @@ export class MessageHubApiStore implements MessageHubStore {
     const peopleTimer = setInterval(() => { void this.refreshPeople(context) }, CONTACT_POLL_MS)
     const refreshPeople = () => { void this.refreshPeople(context) }
     const reconnect = () => { void this.refreshSummaries(context) }
+    const checkIdentity = () => { void this.checkIdentity().catch(() => undefined) }
+    const identityTimer = setInterval(checkIdentity, SUMMARY_POLL_MS)
     window.addEventListener('online', reconnect)
+    window.addEventListener('storage', checkIdentity)
     const stopProfileListener = onOwnProfileChanged(refreshPeople)
     const stopAgentsListener = onAgentsChanged(refreshPeople)
     const tailTimer = activeSessionId ? setInterval(() => { void this.reconcileTail(context, activeSessionId) }, SUMMARY_POLL_MS) : null
@@ -410,6 +435,8 @@ export class MessageHubApiStore implements MessageHubStore {
     return () => {
       stopped = true
       window.removeEventListener('online', reconnect)
+      window.removeEventListener('storage', checkIdentity)
+      clearInterval(identityTimer)
       clearInterval(summaryTimer)
       clearInterval(peopleTimer)
       stopProfileListener()
@@ -526,6 +553,23 @@ export class MessageHubApiStore implements MessageHubStore {
     return this.projected(context).names[did]
   }
 
+  /**
+   * Timeline messages of a `msg.list_session` page. Those of a hosted group
+   * session name it (`ui_group_session`), so their attachments are read with a
+   * `context_path`; a group joined on a remote host keeps no local copy to
+   * check one against.
+   */
+  private pageMessages(context: MessageHubContext, sessionId: string, items: readonly SessionMessageItem[]): MessageObject[] {
+    const groupDid = this.groupOfSession(context, sessionId)
+    const hosted = groupDid !== undefined && this.owner(context.ownerDid).groups[groupDid]?.hosted === true
+    const unavailable = translate('messagehub.messageUnavailable', 'Message unavailable')
+    return items.map(item => {
+      const message = itemToMessage(item, context.ownerDid, sessionId, this.senderName(context, item.from), unavailable)
+      if (hosted) message.ui_group_session = sessionId
+      return message
+    })
+  }
+
   private async loadLatest(context: MessageHubContext, sessionId: string) {
     const data = this.owner(context.ownerDid)
     const key = viewerSessionKey(context, sessionId)
@@ -537,7 +581,7 @@ export class MessageHubApiStore implements MessageHubStore {
     try {
       const page = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: HISTORY_PAGE_SIZE, descending: true, with_object: true })
       if (data.epoch !== epoch) { data.historyStatus.set(sessionId, 'idle'); this.notify(); return }
-      const messages = (page.items ?? []).map(item => itemToMessage(item, context.ownerDid, sessionId, this.senderName(context, item.from), translate('messagehub.messageUnavailable', 'Message unavailable')))
+      const messages = this.pageMessages(context, sessionId, page.items ?? [])
       const previous = data.histories.get(key) ?? emptyHistory
       const next = upsertMessages(previous, messages, { loaded: true, hasOlder: page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined, oldestCursor: page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined ? { sortKey: page.next_cursor_sort_key, recordId: page.next_cursor_record_id } : previous.oldestCursor, error: undefined })
       data.histories.set(key, next)
@@ -560,7 +604,7 @@ export class MessageHubApiStore implements MessageHubStore {
     try {
       const page = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: 32, descending: true, with_object: true })
       if (data.epoch !== epoch) return
-      const messages = (page.items ?? []).map(item => itemToMessage(item, context.ownerDid, sessionId, this.senderName(context, item.from), translate('messagehub.messageUnavailable', 'Message unavailable')))
+      const messages = this.pageMessages(context, sessionId, page.items ?? [])
       const current = data.histories.get(key) ?? history
       const next = upsertMessages(current, messages)
       if (next !== current) { data.histories.set(key, next); this.notify(); void this.refreshReceipts(context, sessionId) }
@@ -603,7 +647,7 @@ export class MessageHubApiStore implements MessageHubStore {
     try {
       const page = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: HISTORY_PAGE_SIZE, descending: true, with_object: true, cursor_sort_key: history.oldestCursor.sortKey, cursor_record_id: history.oldestCursor.recordId })
       if (data.epoch !== epoch) { data.historyStatus.set(sessionId, 'ready'); this.notify(); return false }
-      const messages = (page.items ?? []).map(item => itemToMessage(item, context.ownerDid, sessionId, this.senderName(context, item.from), translate('messagehub.messageUnavailable', 'Message unavailable')))
+      const messages = this.pageMessages(context, sessionId, page.items ?? [])
       const current = data.histories.get(key) ?? history
       const more = page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined
       data.histories.set(key, upsertMessages(current, messages, { hasOlder: more, oldestCursor: more ? { sortKey: page.next_cursor_sort_key!, recordId: page.next_cursor_record_id! } : current.oldestCursor }))
@@ -1216,7 +1260,7 @@ export class MessageHubApiStore implements MessageHubStore {
         const receipts = session.rules?.receipts ?? defaultRules?.receipts
         return {
           key: session.session, sessionId: session.session_id, title: typeof shared.title === 'string' ? shared.title : '', description: typeof shared.description === 'string' ? shared.description : '', announcement: typeof shared.announcement === 'string' ? shared.announcement : '',
-          sharedRevision: typeof shared.revision === 'string' ? shared.revision : '', lifecycle: session.lifecycle, revision: session.revision, hasGuests: session.has_guests === true,
+          sharedRevision: typeof shared.revision === 'string' ? shared.revision : '', lifecycle: session.lifecycle, revision: session.revision, hasGuests: session.has_guests === true, allowGuests: session.rules?.allow_guests === true,
           receipts: receipts === 'count' || receipts === 'readers' ? receipts : 'hidden',
         }
       })

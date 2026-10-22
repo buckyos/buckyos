@@ -161,8 +161,9 @@ pub fn add_candidate(conn: &Connection, obj_id: &str, publisher: &str, path: &Va
 }
 
 impl Station {
+    /// The sender's relation now (admission, preferred paths); unconfirmable means refused.
     pub async fn relation(&self, did: &str) -> HsResult<Relation> {
-        let contact = self.contacts.get(did).await;
+        let contact = self.contacts.current(did).await?;
         let collectors = self.collector_dids().await;
         let did_s = did.to_string();
         let (source_id, follower) = self

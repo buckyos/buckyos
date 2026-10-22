@@ -1,4 +1,4 @@
-import { localObject, type ObjectInfo } from '../history/objectAccess'
+import { localObject, onObjectCachesReset, type ObjectInfo } from '../history/objectAccess'
 import { attachmentKindOf, attachmentMediaType, isInlineImageType, type AttachmentKind, type MessageAttachment } from './source'
 
 export interface ReadyObjectState { phase: 'ready'; info: ObjectInfo; contentUrl?: string }
@@ -8,6 +8,7 @@ export interface ReadyObjectState { phase: 'ready'; info: ObjectInfo; contentUrl
 // through the loading state and resizing the rows around it.
 export const readyObjects = new Map<string, ReadyObjectState>()
 const READY_OBJECTS_LIMIT = 256
+onObjectCachesReset(() => readyObjects.clear())
 
 export function rememberReadyObject(key: string, state: ReadyObjectState) {
   readyObjects.delete(key)
@@ -15,7 +16,7 @@ export function rememberReadyObject(key: string, state: ReadyObjectState) {
   if (readyObjects.size > READY_OBJECTS_LIMIT) readyObjects.delete(readyObjects.keys().next().value!)
 }
 
-export const objectCacheKey = (attachment: MessageAttachment) => `${attachment.objId ?? ''}\n${attachment.label}`
+export const objectCacheKey = (attachment: MessageAttachment) => `${attachment.context ?? ''}\n${attachment.objId ?? ''}\n${attachment.label}`
 
 export function knownReadyObject(attachment: MessageAttachment): ReadyObjectState | undefined {
   const key = objectCacheKey(attachment)

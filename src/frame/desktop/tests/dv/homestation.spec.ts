@@ -8,7 +8,7 @@ async function loginThroughUi(page: Page): Promise<void> {
   await expect(page.getByLabel('Username')).toBeVisible()
   await page.getByLabel('Username').fill(adminUser)
   await page.getByLabel('Password').fill(adminPassword)
-  await page.getByRole('button', { name: 'Sign In' }).click()
+  await page.getByRole('button', { name: 'Sign In', exact: true }).click()
   await expect(page.getByRole('button', { name: 'BuckyOS' })).toBeVisible()
 }
 

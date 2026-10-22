@@ -19,8 +19,10 @@ use tokio::sync::Mutex;
 
 use ::kRPC::*;
 use buckyos_api::{
-    build_current_rbac_config, validate_verify_hub_token_claims, SystemServiceId, TokenUse,
-    ZoneConfig, BUCKYOS_DEV_CONFIG_KEY, SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
+    build_current_rbac_config, token_is_external, token_session_ceiling, user_did_from_doc_value,
+    validate_verify_hub_token_claims, AccessDenial, DenyReason, SessionScope, SystemServiceId,
+    TokenPrincipalKind, TokenUse, ZoneConfig, BUCKYOS_DEV_CONFIG_KEY,
+    SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
 };
 use buckyos_http_server::*;
 use buckyos_http_server::{
@@ -40,6 +42,7 @@ use crate::zone_did_resolver::ZoneDidResolver;
 
 const SYS_CONFIG_URI_PERFIX: &str = "obj://config/";
 const NODE_DAEMON_SERVICE_ID: &str = "node-daemon";
+const SYSTEM_CONFIG_SERVICE_NAME: &str = "system-config";
 
 // A brand-new zone needs the boot scheduler to populate System Config before
 // Verify Hub can start. The mode closes permanently when bootstrap explicitly
@@ -234,6 +237,184 @@ fn require_sudo_for_protected_write(
     Ok(())
 }
 
+/// Restricted sessions (contract §3.3) reach only the `account_self` keys: their own
+/// settings and profile to read, their own profile to write; RBAC still applies.
+/// External sessions have no account here and reach nothing.
+fn authorize_restricted_session(
+    method: &str,
+    params: &Value,
+    token: &RPCSessionToken,
+) -> Result<()> {
+    let ceiling = token_session_ceiling(token)?;
+    if !ceiling.restricted {
+        return Ok(());
+    }
+    let denied = |reason| {
+        AccessDenial::new(reason)
+            .at(SYSTEM_CONFIG_SERVICE_NAME, method)
+            .into_rpc_error()
+    };
+    let user_id = token.sub.as_deref().unwrap_or_default();
+    if token_is_external(token) || user_id.is_empty() {
+        return Err(denied(DenyReason::SessionKindNotAllowed));
+    }
+    let key = match request_key(params) {
+        Some(key) => Some(get_full_res_path(key)?.1),
+        None => None,
+    };
+    let own = |name: &str| key.as_deref() == Some(format!("users/{user_id}/{name}").as_str());
+    let opened = match method {
+        "sys_config_get" => own("settings") || own("profile"),
+        "sys_config_set" | "sys_config_set_by_json_path" => own("profile"),
+        _ => false,
+    };
+    if !opened {
+        return Err(denied(DenyReason::SessionKindNotAllowed));
+    }
+    if !ceiling.allows(SessionScope::AccountSelf) {
+        return Err(denied(DenyReason::SessionCeilingExceeded));
+    }
+    Ok(())
+}
+
+/// `users/<id>/profile` → `<id>`.
+fn profile_owner(real_key_path: &str) -> Option<&str> {
+    let user_id = real_key_path
+        .strip_prefix("users/")?
+        .strip_suffix("/profile")?;
+    (!user_id.is_empty() && !user_id.contains('/')).then_some(user_id)
+}
+
+/// The value `action` leaves at a key now holding `current` (`None`: removed), computed
+/// as the store does.
+fn preview_kv_action(key: &str, current: Option<&str>, action: &KVAction) -> Result<Option<String>> {
+    let existing = || current.ok_or_else(|| RPCErrors::KeyNotExist(key.to_string()));
+    Ok(match action {
+        KVAction::Create(value) | KVAction::Update(value) => Some(value.clone()),
+        KVAction::Append(value) => Some(format!("{}{}", existing()?, value)),
+        KVAction::SetByJsonPath(paths) => {
+            let mut value: Value = serde_json::from_str(existing()?)
+                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+            for (path, sub_value) in paths.iter() {
+                set_json_by_path(&mut value, path, sub_value.as_ref());
+            }
+            Some(value.to_string())
+        }
+        KVAction::Remove => None,
+    })
+}
+
+/// Every DID field of the profile (`did`, or its alias `id`) names `bound`.
+fn profile_keeps_did(profile: &str, bound: &DID) -> bool {
+    let Ok(Value::Object(profile)) = serde_json::from_str::<Value>(profile) else {
+        return false;
+    };
+    let dids: Vec<&Value> = ["did", "id"]
+        .iter()
+        .filter_map(|field| profile.get(*field))
+        .collect();
+    !dids.is_empty()
+        && dids.iter().all(|did| {
+            did.as_str()
+                .and_then(|did| DID::from_str(did).ok())
+                .as_ref()
+                == Some(bound)
+        })
+}
+
+async fn user_is_privileged(store: &dyn KVStoreProvider, user_name: &str) -> Result<bool> {
+    let user_settings = store
+        .get(format!("users/{}/settings", user_name))
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    if let Some(user_settings) = user_settings.as_ref() {
+        let user_settings_json: Value = serde_json::from_str(user_settings).map_err(|err| {
+            RPCErrors::ReasonError(format!("parse user settings failed: {}", err))
+        })?;
+        if user_settings_json
+            .get("type")
+            .and_then(|value| value.as_str())
+            .is_some_and(is_privileged_user_type)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(store
+        .get("system/rbac/policy".to_string())
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
+        .is_some_and(|policy| user_has_privileged_role_in_policy(&policy, user_name)))
+}
+
+/// Identity managers (contract §3.5): kernel, system and frame services, devices, root and
+/// admins. Only the node's own bootstrap assertion arrives without a verify-hub session.
+async fn writer_manages_identities(
+    store: &dyn KVStoreProvider,
+    token: &RPCSessionToken,
+    userid: &str,
+) -> Result<bool> {
+    let Ok(claims) = validate_verify_hub_token_claims(token, TokenUse::Session) else {
+        return Ok(true);
+    };
+    match claims.principal_kind {
+        TokenPrincipalKind::System | TokenPrincipalKind::Device => Ok(true),
+        TokenPrincipalKind::App | TokenPrincipalKind::Agent => Ok(false),
+        TokenPrincipalKind::User => {
+            if token_session_ceiling(token)?.restricted {
+                return Ok(false);
+            }
+            user_is_privileged(store, userid).await
+        }
+    }
+}
+
+/// PRE-02: whoever does not manage identities must leave a profile carrying the DID that
+/// `users/<id>/doc` binds, the only trusted account→DID binding, and cannot remove it.
+async fn guard_profile_write(
+    store: &dyn KVStoreProvider,
+    token: &RPCSessionToken,
+    userid: &str,
+    real_key_path: &str,
+    action: &KVAction,
+) -> Result<()> {
+    let Some(owner) = profile_owner(real_key_path) else {
+        return Ok(());
+    };
+    if writer_manages_identities(store, token, userid).await? {
+        return Ok(());
+    }
+    let current = store
+        .get(real_key_path.to_string())
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    let Some(profile) = preview_kv_action(real_key_path, current.as_deref(), action)? else {
+        return Err(RPCErrors::NoPermission(format!(
+            "only an identity manager may remove {}",
+            real_key_path
+        )));
+    };
+    let doc_key = format!("users/{}/doc", owner);
+    let bound = store
+        .get(doc_key.clone())
+        .await
+        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
+        .and_then(|doc| user_did_from_doc_value(&doc_key, &doc).ok())
+        .ok_or_else(|| RPCErrors::NoPermission(format!("{} binds no DID", doc_key)))?;
+    if !profile_keeps_did(&profile, &bound) {
+        warn!(
+            "profile write denied: userid={} key={} must keep did {}",
+            userid,
+            real_key_path,
+            bound.to_string()
+        );
+        return Err(RPCErrors::NoPermission(format!(
+            "{} must keep the DID of {}",
+            real_key_path, doc_key
+        )));
+    }
+    Ok(())
+}
+
 fn bootstrap_request_allowed_after_boot(
     method: &str,
     params: &Value,
@@ -395,6 +576,14 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
         appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
+    guard_profile_write(
+        &*store,
+        session_token,
+        userid,
+        &real_key_path,
+        &KVAction::Update(new_value.to_string()),
+    )
+    .await?;
     info!("Set key:[{}], value_len={}", key, new_value.len());
     store
         .set(real_key_path, String::from(new_value))
@@ -464,6 +653,14 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
         appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
+    guard_profile_write(
+        &*store,
+        session_token,
+        userid,
+        &real_key_path,
+        &KVAction::Create(new_value.to_string()),
+    )
+    .await?;
     info!("Create key:[{}], value_len={}", key, new_value.len());
     store
         .create(&real_key_path, new_value)
@@ -528,6 +725,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
         appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
+    guard_profile_write(&*store, session_token, userid, &real_key_path, &KVAction::Remove).await?;
     info!("Delete key:[{}]", key);
     store
         .delete(&real_key_path)
@@ -596,6 +794,14 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
         appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
+    guard_profile_write(
+        &*store,
+        session_token,
+        userid,
+        &real_key_path,
+        &KVAction::Append(append_value.to_string()),
+    )
+    .await?;
     let result = store
         .get(real_key_path.clone())
         .await
@@ -675,6 +881,17 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
         appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
+    guard_profile_write(
+        &*store,
+        session_token,
+        userid,
+        &real_key_path,
+        &KVAction::SetByJsonPath(HashMap::from([(
+            json_path.to_string(),
+            Some(new_value.clone()),
+        )])),
+    )
+    .await?;
     store
         .set_by_path(real_key_path, String::from(json_path), &new_value)
         .await
@@ -820,6 +1037,9 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
     let real_main_key = parse_tx_main_key(&params)?;
 
     let store = SYS_STORE.lock().await;
+    for (key, action) in tx_actions.iter() {
+        guard_profile_write(&*store, session_token, userid, key, action).await?;
+    }
     store
         .exec_tx(tx_actions, real_main_key)
         .await
@@ -1072,6 +1292,7 @@ impl SystemConfigServer {
             let rpc_session_token = verify_trusted_jwt(session_token.as_str()).await?;
             if validate_verify_hub_token_claims(&rpc_session_token, TokenUse::Session).is_ok() {
                 BOOTSTRAP_CONFIG_MODE.store(false, Ordering::Release);
+                authorize_restricted_session(method.as_str(), &param, &rpc_session_token)?;
                 require_sudo_for_protected_write(method.as_str(), &param, &rpc_session_token)?;
             } else {
                 authorize_bootstrap_request(method.as_str(), &param, &rpc_session_token).await?;
@@ -1141,6 +1362,8 @@ impl RPCHandler for SystemConfigServer {
 
         match result {
             Ok(value) => Ok(RPCResponse::new(RPCResult::Success(value), req.seq)),
+            // A detailed failure (a D-4 denial) keeps its code on the wire.
+            Err(err @ RPCErrors::Detailed(_)) => Err(err),
             Err(err) => Ok(RPCResponse::new(
                 RPCResult::Failed(err.to_string()),
                 req.seq,
@@ -1221,36 +1444,7 @@ fn user_has_privileged_role_in_policy(policy: &str, user_name: &str) -> bool {
 
 async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerDocument> {
     let store = SYS_STORE.lock().await;
-    let mut is_privileged = false;
-
-    let user_settings = store
-        .get(format!("users/{}/settings", user_name))
-        .await
-        .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-
-    if let Some(user_settings) = user_settings.as_ref() {
-        let user_settings_json: Value = serde_json::from_str(user_settings).map_err(|err| {
-            RPCErrors::ReasonError(format!("parse user settings failed: {}", err))
-        })?;
-        let user_type = user_settings_json
-            .get("type")
-            .and_then(|value| value.as_str());
-        if let Some(user_type) = user_type {
-            is_privileged = is_privileged_user_type(user_type);
-        }
-    }
-
-    if !is_privileged {
-        if let Some(policy) = store
-            .get("system/rbac/policy".to_string())
-            .await
-            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
-        {
-            is_privileged = user_has_privileged_role_in_policy(&policy, user_name);
-        }
-    }
-
-    if !is_privileged {
+    if !user_is_privileged(&*store, user_name).await? {
         return Err(RPCErrors::NoPermission(format!(
             "user {} is not granted admin/root privilege",
             user_name
@@ -1482,8 +1676,9 @@ mod test {
 
     use super::*;
     use buckyos_api::{
-        bind_token_principal_kind, bind_token_target, AuthTarget, SystemServiceId,
-        TokenPrincipalKind, VERIFY_HUB_TOKEN_ISSUER,
+        bind_token_ceiling, bind_token_external, bind_token_principal_kind, bind_token_target,
+        AuthTarget, SessionCeiling, SystemServiceId, TokenPrincipalKind, UserType,
+        VERIFY_HUB_TOKEN_ISSUER,
     };
 
     fn test_session_token(sub: Option<&str>, appid: Option<&str>) -> RPCSessionToken {
@@ -1670,6 +1865,221 @@ mod test {
         assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_err());
         assertion.extra.clear();
         assert!(validate_system_config_bootstrap_assertion(&assertion, "ood2").is_err());
+    }
+
+    fn restricted_token(sub: &str, ceiling: &SessionCeiling) -> RPCSessionToken {
+        let mut token = test_session_token(Some(sub), Some("control-panel"));
+        bind_token_ceiling(&mut token, ceiling);
+        token
+    }
+
+    fn denial_reason(result: Result<()>) -> DenyReason {
+        let error = result.expect_err("request should be denied");
+        AccessDenial::from_rpc_error(&error)
+            .expect("denial carries its reason")
+            .reason
+    }
+
+    #[test]
+    fn restricted_sessions_reach_only_their_own_account_self_keys() {
+        let limited = restricted_token("carol", &SessionCeiling::for_user_type(UserType::Limited));
+        let key = |key: &str| json!({ "key": key, "value": "{}", "json_path": "/name" });
+        for (method, target) in [
+            ("sys_config_get", "users/carol/settings"),
+            ("sys_config_get", "users/carol/profile"),
+            ("sys_config_get", "obj://config/users/carol/profile"),
+            ("sys_config_set", "users/carol/profile"),
+            ("sys_config_set_by_json_path", "users/carol/profile"),
+        ] {
+            assert!(
+                authorize_restricted_session(method, &key(target), &limited).is_ok(),
+                "{method} {target}"
+            );
+        }
+        for (method, target) in [
+            ("sys_config_get", "users/carol/doc"),
+            ("sys_config_get", "users/alice/profile"),
+            ("sys_config_get", "users/carol/../alice/profile"),
+            ("sys_config_get", "system/rbac/policy"),
+            ("sys_config_set", "users/carol/settings"),
+            ("sys_config_set", "users/carol/doc"),
+            ("sys_config_create", "users/carol/profile"),
+            ("sys_config_append", "users/carol/profile"),
+            ("sys_config_delete", "users/carol/profile"),
+            ("sys_config_list", "users/carol"),
+            ("dump_configs_for_scheduler", "users"),
+            ("sys_refresh_trust_keys", "users/carol/profile"),
+        ] {
+            assert_eq!(
+                denial_reason(authorize_restricted_session(method, &key(target), &limited)),
+                DenyReason::SessionKindNotAllowed,
+                "{method} {target}"
+            );
+        }
+        let tx = json!({ "actions": { "users/carol/profile": { "action": "update", "value": "{}" } } });
+        assert_eq!(
+            denial_reason(authorize_restricted_session("sys_config_exec_tx", &tx, &limited)),
+            DenyReason::SessionKindNotAllowed
+        );
+
+        let narrowed = restricted_token("carol", &SessionCeiling::restricted([SessionScope::MsgGroup]));
+        assert_eq!(
+            denial_reason(authorize_restricted_session(
+                "sys_config_get",
+                &key("users/carol/settings"),
+                &narrowed
+            )),
+            DenyReason::SessionCeilingExceeded
+        );
+
+        let mut external = restricted_token("did:bns:alice", &SessionCeiling::external());
+        bind_token_external(&mut external);
+        for (method, target) in [
+            ("sys_config_get", "users/did:bns:alice/settings"),
+            ("sys_config_get", "users/did:bns:alice/profile"),
+            ("sys_config_set", "users/did:bns:alice/profile"),
+            ("sys_config_list", "users"),
+        ] {
+            assert_eq!(
+                denial_reason(authorize_restricted_session(method, &key(target), &external)),
+                DenyReason::SessionKindNotAllowed,
+                "{method} {target}"
+            );
+        }
+
+        let user = test_session_token(Some("bob"), Some("control-panel"));
+        assert!(authorize_restricted_session("sys_config_list", &key("users"), &user).is_ok());
+        assert!(authorize_restricted_session("sys_config_exec_tx", &tx, &user).is_ok());
+    }
+
+    fn principal_token(sub: &str, kind: TokenPrincipalKind) -> RPCSessionToken {
+        let mut token = test_session_token(Some(sub), Some("control-panel"));
+        bind_token_principal_kind(&mut token, kind);
+        token
+    }
+
+    async fn identity_store() -> SledStore {
+        let store = SledStore::from_db(sled::Config::new().temporary(true).open().unwrap());
+        for (key, value) in [
+            ("users/bob/doc", json!({ "id": "did:bns:bob", "name": "bob" })),
+            ("users/bob/profile", json!({ "did": "did:bns:bob", "name": "Bob" })),
+            ("users/bob/settings", json!({ "user_id": "bob", "type": "user" })),
+            ("users/carol/doc", json!({ "id": "did:bns:carol" })),
+            ("users/carol/profile", json!({ "did": "did:bns:carol" })),
+            ("users/carol/settings", json!({ "user_id": "carol", "type": "limited" })),
+            ("users/alice/settings", json!({ "user_id": "alice", "type": "admin" })),
+            ("users/eve/profile", json!({ "did": "did:bns:eve" })),
+        ] {
+            store.set(key.to_string(), value.to_string()).await.unwrap();
+        }
+        store
+            .set(
+                "system/rbac/policy".to_string(),
+                "g, dave, admin\ng, su_dave, su_admin".to_string(),
+            )
+            .await
+            .unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn profile_writes_keep_the_did_bound_by_the_account_doc() {
+        let store = identity_store().await;
+        let store: &dyn KVStoreProvider = &store;
+        let bob = principal_token("bob", TokenPrincipalKind::User);
+        let mut sudo_bob = bob.clone();
+        sudo_bob.sudo = true;
+        let profile = |did: &str| json!({ "did": did, "name": "x" }).to_string();
+        let path = |path: &str, value: Value| {
+            KVAction::SetByJsonPath(HashMap::from([(path.to_string(), Some(value))]))
+        };
+        let guard = |token: &RPCSessionToken, user: &str, key: &str, action: KVAction| {
+            let token = token.clone();
+            let user = user.to_string();
+            let key = key.to_string();
+            async move { guard_profile_write(store, &token, &user, &key, &action).await }
+        };
+
+        for action in [
+            KVAction::Update(profile("did:bns:bob")),
+            KVAction::Create(profile("did:bns:bob")),
+            KVAction::Update(json!({ "id": "did:bns:bob" }).to_string()),
+            path("/name", json!("Bobby")),
+            path("/did", json!("did:bns:bob")),
+        ] {
+            assert!(guard(&bob, "bob", "users/bob/profile", action).await.is_ok());
+        }
+        for token in [&bob, &sudo_bob] {
+            for action in [
+                KVAction::Update(profile("did:bns:alice")),
+                KVAction::Create(profile("did:bns:alice")),
+                KVAction::Update(json!({ "name": "no did" }).to_string()),
+                KVAction::Update(json!({ "did": "did:bns:bob", "id": "did:bns:alice" }).to_string()),
+                KVAction::Update("not json".to_string()),
+                path("/did", json!("did:bns:alice")),
+                path("/id", json!("did:bns:alice")),
+                path("", json!({ "did": "did:bns:alice" })),
+                KVAction::Append("{}".to_string()),
+                KVAction::Remove,
+            ] {
+                let result = guard(token, "bob", "users/bob/profile", action).await;
+                assert!(matches!(result, Err(RPCErrors::NoPermission(_))), "{result:?}");
+            }
+        }
+        // A profile whose account binds no DID cannot be written by its owner at all.
+        assert!(matches!(
+            guard(&principal_token("eve", TokenPrincipalKind::User), "eve", "users/eve/profile", KVAction::Update(profile("did:bns:eve"))).await,
+            Err(RPCErrors::NoPermission(_))
+        ));
+        // Other keys are not guarded here.
+        assert!(guard(&bob, "bob", "users/bob/apps/notes/settings", KVAction::Remove).await.is_ok());
+
+        let limited = restricted_token("carol", &SessionCeiling::for_user_type(UserType::Limited));
+        assert!(guard(&limited, "carol", "users/carol/profile", path("/name", json!("C"))).await.is_ok());
+        assert!(matches!(
+            guard(&limited, "carol", "users/carol/profile", KVAction::Update(profile("did:bns:bob"))).await,
+            Err(RPCErrors::NoPermission(_))
+        ));
+        let mut app = principal_token("bob", TokenPrincipalKind::App);
+        bind_token_target(
+            &mut app,
+            &AuthTarget::App { app_instance_id: "notes@bob".parse().unwrap() },
+            TokenUse::Session,
+        )
+        .unwrap();
+        let agent = principal_token("did:web:agent.example.com", TokenPrincipalKind::Agent);
+        for token in [&app, &agent] {
+            assert!(matches!(
+                guard(token, "bob", "users/bob/profile", KVAction::Update(profile("did:bns:carol"))).await,
+                Err(RPCErrors::NoPermission(_))
+            ));
+        }
+
+        // Identity managers: admins (by account type or RBAC role), services, devices and
+        // the node's bootstrap assertion.
+        let mut bootstrap = test_session_token(Some("kernel"), Some(NODE_DAEMON_SERVICE_ID));
+        bootstrap.iss = Some("ood1".to_string());
+        bootstrap.extra.clear();
+        for (token, user) in [
+            (principal_token("alice", TokenPrincipalKind::User), "alice"),
+            (principal_token("dave", TokenPrincipalKind::User), "dave"),
+            (principal_token("kernel", TokenPrincipalKind::System), "kernel"),
+            (principal_token("ood1", TokenPrincipalKind::Device), "ood1"),
+            (bootstrap, "kernel"),
+        ] {
+            for action in [KVAction::Update(profile("did:bns:carol")), KVAction::Remove] {
+                assert!(guard(&token, user, "users/bob/profile", action).await.is_ok(), "{user}");
+            }
+        }
+    }
+
+    #[test]
+    fn profile_owner_matches_only_profile_keys() {
+        assert_eq!(profile_owner("users/bob/profile"), Some("bob"));
+        assert_eq!(profile_owner("users/bob/doc"), None);
+        assert_eq!(profile_owner("users/bob/apps/x/profile"), None);
+        assert_eq!(profile_owner("users//profile"), None);
+        assert_eq!(profile_owner("system/profile"), None);
     }
 
     #[test]

@@ -46,7 +46,7 @@ impl Net {
 
     async fn rpc(&self, name: &str, method: &str, params: Value) -> Value {
         let station = self.st(name);
-        let caller = homestation::auth::Caller { principal: name.into(), did: Some(did(name)), app_id: Some("control-panel".into()) };
+        let caller = homestation::auth::Caller { principal: name.into(), did: did(name), app_id: Some("control-panel".into()), restricted: false };
         match station.handle_rpc(&caller, method, params).await {
             Ok(v) => v,
             Err(e) => panic!("{name} {method}: {e}"),

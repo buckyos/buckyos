@@ -5213,7 +5213,8 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
         RPCErrors::ReasonError(_)
         | RPCErrors::ParseRequestError(_)
         | RPCErrors::ParserResponseError(_)
-        | RPCErrors::KeyNotExist(_) => ProviderFailure::Unknown,
+        | RPCErrors::KeyNotExist(_)
+        | RPCErrors::Detailed(_) => ProviderFailure::Unknown,
     };
     LLMComputeError::provider(failure, format!("{context}: {err}"))
 }

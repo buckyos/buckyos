@@ -1,0 +1,1 @@
+{"kind":"account","user_id":"acme-c1","did":"did:bns:acme-c1.test","user_type":"limited","show_name":"Alice","zone_host":"test.buckyos.io","auth_method":"exclusive_invite","restricted":true,"scopes":["account_self","msg_group","aiworkspace","homestation"],"password_set":false}

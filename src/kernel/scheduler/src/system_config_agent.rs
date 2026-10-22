@@ -1510,22 +1510,7 @@ async fn update_rbac(
             ApiUserType::User => {
                 info!("add users rbac policy for user {}", user_id);
                 push_policy_line(&mut rbac_policy, format!("g, {}, users", user_id));
-                let sudo_user_id = format!("su_{}", user_id);
-                push_policy_line(&mut rbac_policy, format!("g, {}, su_users", sudo_user_id));
-                push_policy_line(
-                    &mut rbac_policy,
-                    format!(
-                        "p, {}, obj://config/users/{}/settings, read|write,allow",
-                        sudo_user_id, user_id
-                    ),
-                );
-                push_policy_line(
-                    &mut rbac_policy,
-                    format!(
-                        "p, {}, obj://config/users/{}/doc, read|write,allow",
-                        sudo_user_id, user_id
-                    ),
-                );
+                push_policy_line(&mut rbac_policy, format!("g, su_{}, su_users", user_id));
             }
             ApiUserType::Limited => {
                 info!("add limited rbac policy for user {}", user_id);
@@ -1752,6 +1737,7 @@ mod user_type_rbac_tests {
             "g, bob, users",
             "g, carol, limited",
             "g, carol, group:customer",
+            "g, su_bob, su_users",
         ] {
             assert!(policy.lines().any(|l| l == line), "{line}");
         }
@@ -1759,6 +1745,28 @@ mod user_type_rbac_tests {
         assert!(!policy.contains("dave"));
         assert!(!policy.lines().any(|l| l.starts_with("g, root,")));
         assert!(!policy.lines().any(|l| l.starts_with("p,") && l.contains("group:")));
+        assert!(!policy.lines().any(|l| l.starts_with("p, su_")));
+
+        // PRE-01: a User's sudo session cannot rewrite its own settings or doc.
+        let config = buckyos_api::build_current_rbac_config(Some(policy));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let sudo = || Some(rbac::SudoMode::Sudo("su_bob".to_string()));
+        for key in ["settings", "doc"] {
+            let resource = format!("obj://config/users/bob/{key}");
+            assert!(!rbac::enforce("bob", "system:control-panel", &resource, "write", sudo()).await, "{key}");
+        }
+        assert!(
+            rbac::enforce(
+                "bob",
+                "system:control-panel",
+                "obj://config/users/bob/profile",
+                "write",
+                sudo()
+            )
+            .await
+        );
     }
 }
 

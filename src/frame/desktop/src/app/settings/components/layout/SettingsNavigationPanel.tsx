@@ -1,6 +1,7 @@
 import { Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useI18n } from '../../../../i18n/provider'
+import { useViewerIsAdmin } from '../../hooks/use-viewer-is-admin'
 import {
   settingsPageDefinitions,
   type SettingsPage,
@@ -18,10 +19,14 @@ export function SettingsNavigationPanel({
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const normalizedQuery = query.trim().toLowerCase()
+  const isAdmin = useViewerIsAdmin()
 
   const visibleItems = useMemo(
     () =>
       settingsPageDefinitions.filter((item) => {
+        if ('adminOnly' in item && item.adminOnly && !isAdmin) {
+          return false
+        }
         if (!normalizedQuery) {
           return true
         }
@@ -29,7 +34,7 @@ export function SettingsNavigationPanel({
         const label = t(item.labelKey, item.label).toLowerCase()
         return label.includes(normalizedQuery)
       }),
-    [normalizedQuery, t],
+    [isAdmin, normalizedQuery, t],
   )
 
   return (

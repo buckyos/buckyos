@@ -1,0 +1,1 @@
+{"kind":"external","did":"did:bns:alice","show_name":"Alice","zone_host":"b.example","auth_method":"did_federation","restricted":true,"scopes":["msg_group","aiworkspace","homestation"]}

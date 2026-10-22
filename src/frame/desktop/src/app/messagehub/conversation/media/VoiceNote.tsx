@@ -3,7 +3,7 @@ import { AlertCircle, Loader2, Pause, Play } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import type { VoiceNote } from '../../protocol/msgobj'
 import { formatVoiceDuration, resampleWaveform, voiceBarCount } from './voice'
-import { useVoicePlayback, useVoicePlayed, useVoiceRate, voicePlayer } from './voicePlayer'
+import { useVoicePlayback, useVoicePlayed, useVoiceRate, voicePlayer, type VoiceSource } from './voicePlayer'
 
 const SEEK_STEP_MS = 5000
 
@@ -12,7 +12,7 @@ const SEEK_STEP_MS = 5000
  * fills as it plays (click or drag to seek) and the time below it. A received
  * note shows a dot until it was first played on this device.
  */
-export function VoiceNoteView({ id, objId, voice, isSelf }: { id: string; objId: string; voice: VoiceNote; isSelf: boolean }) {
+export function VoiceNoteView({ id, source, voice, isSelf }: { id: string; source: VoiceSource; voice: VoiceNote; isSelf: boolean }) {
   const { t } = useI18n()
   const playback = useVoicePlayback(id)
   const played = useVoicePlayed(id)
@@ -28,13 +28,13 @@ export function VoiceNoteView({ id, objId, voice, isSelf }: { id: string; objId:
   const seekAt = (clientX: number) => {
     const rect = waveRef.current?.getBoundingClientRect()
     if (!rect || rect.width <= 0) return
-    voicePlayer.seek(id, objId, Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) * duration)
+    voicePlayer.seek(id, source, Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) * duration)
   }
 
   const playLabel = playback.error ? `${t('messagehub.voice.unavailable')} · ${t('messagehub.retry')}` : t(playback.playing ? 'messagehub.voice.pause' : 'messagehub.voice.play')
   return (
     <div className="mh-voice" data-self={isSelf || undefined} data-testid="voice-note" data-state={playback.playing ? 'playing' : playback.loading ? 'loading' : active ? 'paused' : 'idle'} data-no-details>
-      <button type="button" className="mh-voice-play" onClick={() => voicePlayer.toggle(id, objId)} aria-label={playLabel} title={playLabel} data-testid="voice-play">
+      <button type="button" className="mh-voice-play" onClick={() => voicePlayer.toggle(id, source)} aria-label={playLabel} title={playLabel} data-testid="voice-play">
         {playback.error ? <AlertCircle size={20} /> : playback.loading ? <Loader2 size={20} className="animate-spin" /> : playback.playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="translate-x-px" />}
       </button>
       <div className="flex min-w-0 flex-col gap-1">
@@ -63,7 +63,7 @@ export function VoiceNoteView({ id, objId, voice, isSelf }: { id: string; objId:
             const target = event.key === 'Home' ? 0 : event.key === 'End' ? duration - 1 : step ? playback.positionMs + step : null
             if (target === null) return
             event.preventDefault()
-            voicePlayer.seek(id, objId, Math.min(duration - 1, Math.max(0, target)))
+            voicePlayer.seek(id, source, Math.min(duration - 1, Math.max(0, target)))
           }}
         >
           {bars.map((level, index) => (

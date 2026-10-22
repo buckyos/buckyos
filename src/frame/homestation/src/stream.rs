@@ -3,7 +3,7 @@
 //! profile; single items for the zone feed (§4.6). Items are signed Heads; list responses
 //! themselves are not signed.
 
-use crate::audience::{allows, Reader, ReaderRelations};
+use crate::audience::{allows, AudienceSpec, Reader, ReaderRelations};
 use crate::error::{HsError, HsResult};
 use crate::objects::{get_object, StoredObject};
 use crate::protocol::*;
@@ -204,20 +204,36 @@ fn attach(conn: &Connection, objects: &mut BTreeMap<String, String>, obj_id: &st
 }
 
 impl Station {
-    pub async fn reader_relations(&self, reader: &Reader) -> ReaderRelations {
-        let Reader::Did(did) = reader else { return ReaderRelations::default() };
-        let contact = self.contacts.get(did).await;
+    /// What the publisher knows about the reader now; an unconfirmable relation refuses the read.
+    /// Group membership is asked of Message Center for each group my entries are shared with,
+    /// never taken from the contact's tags (projected groups there are the last zone sync's).
+    pub async fn reader_relations(&self, reader: &Reader) -> HsResult<ReaderRelations> {
+        let Reader::Did(did) = reader else { return Ok(ReaderRelations::default()) };
+        let contact = self.contacts.current(did).await?;
         let did_s = did.clone();
-        let follower = self
+        let (follower, audiences) = self
             .db
-            .call(move |c| Ok(c.query_row("SELECT 1 FROM followers WHERE did=?1 AND state='active'", [did_s], |_| Ok(())).optional()?.is_some()))
-            .await
-            .unwrap_or(false);
-        ReaderRelations {
-            follower,
-            friend: contact.as_ref().is_some_and(|c| c.friend && !c.blocked),
-            groups: contact.map(|c| c.tags).unwrap_or_default(),
+            .call(move |c| {
+                let follower = c.query_row("SELECT 1 FROM followers WHERE did=?1 AND state='active'", [did_s], |_| Ok(())).optional()?.is_some();
+                let mut stmt = c.prepare("SELECT DISTINCT audience FROM published")?;
+                let audiences = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                Ok((follower, audiences))
+            })
+            .await?;
+        let shared_groups: std::collections::BTreeSet<String> = audiences
+            .iter()
+            .filter_map(|a| match serde_json::from_str(a) {
+                Ok(AudienceSpec::Group { group_id }) => Some(group_id),
+                _ => None,
+            })
+            .collect();
+        let mut groups = Vec::new();
+        for group in shared_groups {
+            if buckyos_api::normalize_contact_tag(&group).as_deref() == Some(group.as_str()) && self.contacts.member_now(did, &group).await? {
+                groups.push(group);
+            }
         }
+        Ok(ReaderRelations { follower, friend: contact.as_ref().is_some_and(|c| c.friend && !c.blocked), groups })
     }
 
     /// Display read: current entries the reader may see, newest declared `iat` first.
@@ -229,7 +245,7 @@ impl Station {
         limit: usize,
         with_objects: bool,
     ) -> HsResult<DisplayPage> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let limit = limit.clamp(1, 100);
@@ -291,7 +307,7 @@ impl Station {
     /// Change read: Heads changed after `since` (new entries, versions, withdrawals, newly
     /// visible entries). Omissions never mean withdrawal (A68).
     pub async fn read_changes(&self, reader: &Reader, since: i64, limit: usize, with_objects: bool) -> HsResult<ChangesPage> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let limit = limit.clamp(1, 500) as i64;
@@ -356,7 +372,7 @@ impl Station {
     /// `GET /home/<ns>/@/<key>`: the current Head of an entry, same answer for "never existed"
     /// and "not visible to you" (E11, A32).
     pub async fn read_entry_head(&self, reader: &Reader, entry: &str) -> HsResult<Option<(String, bool)>> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let entry = entry.to_string();
         self.db
@@ -372,7 +388,7 @@ impl Station {
     }
 
     pub async fn read_object(&self, reader: &Reader, obj_id: &str) -> HsResult<Option<StoredObject>> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let obj_id = normalize_obj_id(obj_id);
@@ -389,7 +405,7 @@ impl Station {
     }
 
     pub async fn object_readable(&self, reader: &Reader, obj_id: &str) -> HsResult<bool> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let obj_id = normalize_obj_id(obj_id);
@@ -407,7 +423,7 @@ impl Station {
     /// the collector view (§15.2). Readable by whoever may read the target.
     pub async fn read_comment_view(&self, reader: &Reader, target: &str, comment_type: Option<String>) -> HsResult<Option<CommentViewPage>> {
         let target = normalize_obj_id(target);
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let owner = self.cfg.owner.clone();
@@ -558,7 +574,7 @@ impl Station {
     /// One listed entry of the zone feed as `reader` may see it: active, visible, with the
     /// current version and its parts attached when asked (§4.6).
     pub async fn zone_item(&self, reader: &Reader, entry: &str, with_objects: bool) -> HsResult<Option<(StreamItem, BTreeMap<String, String>)>> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let entry = entry.to_string();
@@ -603,7 +619,7 @@ impl Station {
     /// The current Head of a listed entry for a change of the zone feed; withdrawn Heads are
     /// included so followers learn of the withdrawal.
     pub async fn zone_change(&self, reader: &Reader, entry: &str, cursor: i64, kind: &str, with_objects: bool) -> HsResult<Option<(StreamChangeItem, BTreeMap<String, String>)>> {
-        let rel = self.reader_relations(reader).await;
+        let rel = self.reader_relations(reader).await?;
         let reader = reader.clone();
         let collector = self.cfg.collector;
         let (entry, kind) = (entry.to_string(), kind.to_string());

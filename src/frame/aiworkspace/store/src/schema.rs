@@ -1,6 +1,7 @@
-//! Storage DDL (design doc §4.2, §2.11, §7). `storage_schema_version = 1`.
+//! Storage DDL (design doc §4.2, §2.11, §7). Version 3 added share entries and `grants.via_entry` (hybrid SSO);
+//! older stores are refused, not migrated.
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 2;
+pub const STORAGE_SCHEMA_VERSION: u32 = 3;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"
@@ -172,7 +173,19 @@ CREATE TABLE grants (
   subject         TEXT NOT NULL,
   scope_entity_id TEXT NOT NULL DEFAULT '',
   capabilities    INTEGER NOT NULL,
+  via_entry       TEXT,
   PRIMARY KEY (subject, scope_entity_id)
+) WITHOUT ROWID;
+
+CREATE TABLE share_entries (
+  entry_id        TEXT PRIMARY KEY,
+  scope_entity_id TEXT NOT NULL DEFAULT '',
+  capabilities    INTEGER NOT NULL,
+  methods         INTEGER NOT NULL,
+  state           TEXT NOT NULL,
+  expires_at      INTEGER,
+  created_by      TEXT NOT NULL,
+  created_at      INTEGER NOT NULL
 ) WITHOUT ROWID;
 
 CREATE TABLE locks (

@@ -40,3 +40,10 @@ sudo 的执行权限一样会受到 AppID 的限制。也就是说，其实对�
 所以说，一般都是在类似于 Control Panel 这种系统 UI 中，即它的 AppID 本来就具有大权限的情况下，给 sudo 才有意义。
 
 
+
+## 会话持久化与混合 SSO 方法
+
+- refresh family 存在本地 SQLite `data/var/verify-hub/sessions.db`（不存 token 明文，宽限答复按记录重签）；单实例，迁移或恢复后全部重新登录。
+- 每对用户 token 带 `auth_method`（password / exclusive_invite / did_federation / assertion）与会话上限（`restricted` + `scopes`）；refresh、delegate 只收窄不放宽。
+- 新方法：`login_by_exclusive_invite`、`revoke_families`、`issue_federation_code`、`login_by_remote_verify_hub`（这四个只接受 Control Panel 服务会话）与公开的 `exchange_federation_code`。wire 与流程见 [混合 SSO 技术契约](混合SSO技术契约.md) §5、§7、§9。
+- Limited 账号不签发 sudo；`password_state=unset` 的账号在比较摘要前即拒绝密码登录。

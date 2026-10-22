@@ -34,10 +34,10 @@ impl ViewCtx {
 
 impl Station {
     pub async fn identity_names(&self) -> HashMap<String, String> {
-        self.view_ctx(Reader::Owner).await.names.into_iter().map(|(k, v)| (k, v.0)).collect()
+        self.view_ctx(Reader::Owner).await.map(|ctx| ctx.names.into_iter().map(|(k, v)| (k, v.0)).collect()).unwrap_or_default()
     }
 
-    pub async fn view_ctx(&self, reader: Reader) -> ViewCtx {
+    pub async fn view_ctx(&self, reader: Reader) -> HsResult<ViewCtx> {
         let settings = self.settings().await.unwrap_or_default();
         let owner_name = if settings.profile.name.is_empty() { self.cfg.owner_name.clone() } else { settings.profile.name.clone() };
         let mut names: HashMap<String, (String, String)> = HashMap::new();
@@ -64,8 +64,8 @@ impl Station {
             names.entry(collector.did.clone()).or_insert((collector.name.clone(), "site".into()));
         }
         names.insert(self.cfg.owner.clone(), (owner_name.clone(), "self".into()));
-        let rel = self.reader_relations(&reader).await;
-        ViewCtx { owner: self.cfg.owner.clone(), owner_name, names, avatars, reader, rel, settings, collector: self.cfg.collector }
+        let rel = self.reader_relations(&reader).await?;
+        Ok(ViewCtx { owner: self.cfg.owner.clone(), owner_name, names, avatars, reader, rel, settings, collector: self.cfg.collector })
     }
 }
 
@@ -380,7 +380,7 @@ pub fn card_view(conn: &Connection, ctx: &ViewCtx, obj_id: &str, reading: Option
 
 impl Station {
     pub async fn card(&self, obj_id: &str, reader: Reader) -> HsResult<Option<Value>> {
-        let ctx = self.view_ctx(reader).await;
+        let ctx = self.view_ctx(reader).await?;
         let reading = if ctx.is_owner() { self.reading_entry(&normalize_obj_id(obj_id)).await? } else { None };
         let id = obj_id.to_string();
         self.db.call(move |c| card_view(c, &ctx, &id, reading)).await

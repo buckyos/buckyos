@@ -11,6 +11,8 @@ import { DesktopRoute } from './desktop/DesktopRoute'
 import { isPortalRoot } from './app/homestation/links'
 import { useDocumentBrand } from './presentation/documentHead'
 import { useZonePresentation } from './presentation/zone'
+import { getBootIdentity } from './sso/identity'
+import type { CurrentIdentity } from 'buckyos'
 
 // Standalone routes are code-split like the app panels: a visitor of `/`
 // should not download MessageHub / HomeStation / TaskCenter / the installer
@@ -31,6 +33,9 @@ const portalRoute = (
 const MessageHubRoute = lazy(() =>
   import('./app/messagehub/MessageHubRoute').then((m) => ({ default: m.MessageHubRoute })),
 )
+const MessageHubGuestRoute = lazy(() =>
+  import('./app/messagehub/guest/GuestRoute').then((m) => ({ default: m.MessageHubGuestRoute })),
+)
 const AIWorkspaceRoute = lazy(() =>
   import('./app/aiworkspace/AIWorkspaceRoute').then((m) => ({ default: m.AIWorkspaceRoute })),
 )
@@ -46,12 +51,45 @@ const UserProfileRoute = lazy(() =>
 const AppInstallerRoute = lazy(() =>
   import('./sysdlg').then((m) => ({ default: m.AppInstallerRoute })),
 )
+const RestrictedHome = lazy(() =>
+  import('./sso/RestrictedHome').then((m) => ({ default: m.RestrictedHome })),
+)
+const SsoEntryPage = lazy(() =>
+  import('./sso/EntryPage').then((m) => ({ default: m.EntryPage })),
+)
+const SsoInvitePage = lazy(() =>
+  import('./sso/InvitePage').then((m) => ({ default: m.InvitePage })),
+)
+const SsoFederatePage = lazy(() =>
+  import('./sso/FederatePage').then((m) => ({ default: m.FederatePage })),
+)
+
+/**
+ * The restricted shell at `/` is for External DIDs (no account here) and for sessions an exclusive
+ * invite link opened. A Limited account signed in with its password keeps the Desktop: its own
+ * settings, profile, address book and allowed Apps stay reachable, and what its session may not
+ * use answers with a `session_kind_not_allowed` denial.
+ */
+function usesRestrictedShell(identity: CurrentIdentity): boolean {
+  return identity.kind === 'external'
+    || (identity.kind === 'account' && identity.restricted && identity.auth_method === 'exclusive_invite')
+}
+
+function RootRoute() {
+  return usesRestrictedShell(getBootIdentity()) ? (
+    <Suspense fallback={null}>
+      <RestrictedHome />
+    </Suspense>
+  ) : (
+    <DesktopRoute />
+  )
+}
 
 const router = createBrowserRouter([
   {
     path: '/',
     // `www.<zone>/` and `homestation.<zone>/` open the zone's default HomeStation feed.
-    element: isPortalRoot() ? portalRoute : <DesktopRoute />,
+    element: isPortalRoot() ? portalRoute : <RootRoute />,
   },
   {
     path: '/login',
@@ -77,6 +115,15 @@ const router = createBrowserRouter([
     element: (
       <Suspense fallback={null}>
         <MessageHubRoute />
+      </Suspense>
+    ),
+  },
+  {
+    // a Session Only visitor's group Sessions (SSO-12): login optional, signs in through the group's entry
+    path: '/messagehub/guest',
+    element: (
+      <Suspense fallback={null}>
+        <MessageHubGuestRoute />
       </Suspense>
     ),
   },
@@ -110,6 +157,30 @@ const router = createBrowserRouter([
     element: (
       <Suspense fallback={null}>
         <UserProfileRoute />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/sso/entry',
+    element: (
+      <Suspense fallback={null}>
+        <SsoEntryPage />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/sso/invite/:inviteId',
+    element: (
+      <Suspense fallback={null}>
+        <SsoInvitePage />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/sso/federate',
+    element: (
+      <Suspense fallback={null}>
+        <SsoFederatePage />
       </Suspense>
     ),
   },

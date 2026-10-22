@@ -6,7 +6,7 @@
 use crate::audience::Reader;
 use crate::auth::Caller;
 use crate::directory::Directory;
-use crate::error::{bad, HsError, HsResult};
+use crate::error::{bad, denied, HsError, HsResult};
 use crate::protocol::{normalize_obj_id, valid_user_segment, EntryNamespace, HomeRef, ZONE_FEED};
 use crate::publish::{get_entry, get_head, EntryKind};
 use crate::stream::{ChangesPage, DisplayPage};
@@ -46,6 +46,11 @@ impl HostConfig {
         }
     }
 }
+
+/// What a restricted session (Limited, External; contract §3.2 `homestation`) may call on
+/// its own station besides `portal.*`: reading and commenting. Publishing and managing a
+/// home stay closed.
+pub const RESTRICTED_STATION_METHODS: &[&str] = &["comments.list", "interact.comment"];
 
 /// Builds the station of one user (database under `users/<user>/`, contacts of that user).
 pub type StationBuilder = Box<dyn Fn(&ZoneUser) -> HsResult<Arc<Station>> + Send + Sync>;
@@ -213,15 +218,9 @@ impl Host {
         }
     }
 
-    /// The caller's own station: session DID first, the session subject (username) otherwise.
+    /// The caller's own station: the one of the session DID.
     pub async fn station_for_caller(&self, caller: &Caller) -> HsResult<Option<Arc<Station>>> {
-        if let Some(did) = &caller.did {
-            return self.station_for_did(did).await;
-        }
-        match self.users.by_user(&caller.principal).await {
-            Some(user) => self.station(&user.user).await,
-            None => Ok(None),
-        }
+        self.station_for_did(&caller.did).await
     }
 
     /// Open (or return) the station of a known user.
@@ -386,12 +385,7 @@ impl Host {
 
     async fn viewer_of(&self, caller: Option<&Caller>) -> (Viewer, Option<ZoneUser>) {
         let Some(caller) = caller else { return (Viewer::Anonymous, None) };
-        let user = match &caller.did {
-            Some(did) => self.users.by_did(did).await,
-            None => self.users.by_user(&caller.principal).await,
-        };
-        let viewer = caller.did.clone().or_else(|| user.as_ref().map(|u| u.did.clone())).map(Viewer::Did).unwrap_or(Viewer::Anonymous);
-        (viewer, user)
+        (Viewer::Did(caller.did.clone()), self.users.by_did(&caller.did).await)
     }
 
     /// kRPC entry: `portal.*` for anyone (session optional), everything else on the caller's
@@ -401,6 +395,9 @@ impl Host {
             return self.portal_rpc(caller, portal, params).await;
         }
         let caller = caller.ok_or_else(|| HsError::Forbidden("unauthorized: session token required".into()))?;
+        if caller.restricted && !RESTRICTED_STATION_METHODS.contains(&method) {
+            return Err(denied(buckyos_api::DenyReason::SessionKindNotAllowed, method));
+        }
         let station = self
             .station_for_caller(caller)
             .await?

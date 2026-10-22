@@ -464,15 +464,23 @@ impl Station {
     }
 
     /// Who may currently read an entry with this audience and is known to us (Push targets).
+    /// Without Message Center no relation-based push goes out; readers still pull with a
+    /// fresh check.
     pub async fn audience_recipients(&self, audience: &AudienceSpec) -> Vec<String> {
-        let contacts = self.contacts.list().await;
+        let contacts = self.contacts.current_list().await.unwrap_or_default();
         let followers = self.active_followers().await.unwrap_or_default();
         let friends: Vec<String> = contacts.iter().filter(|c| c.friend && !c.blocked).map(|c| c.did.clone()).collect();
         let mut out: Vec<String> = match audience {
             AudienceSpec::Public | AudienceSpec::Followers => followers.into_iter().chain(friends).collect(),
             AudienceSpec::Friends => friends,
             AudienceSpec::Group { group_id } => {
-                contacts.iter().filter(|c| !c.blocked && c.tags.iter().any(|g| g == group_id)).map(|c| c.did.clone()).collect()
+                let mut members = Vec::new();
+                for c in contacts.iter().filter(|c| !c.blocked && c.tags.iter().any(|g| g == group_id)) {
+                    if self.contacts.member_now(&c.did, group_id).await.unwrap_or(false) {
+                        members.push(c.did.clone());
+                    }
+                }
+                members
             }
             AudienceSpec::Dids { dids } => dids.clone(),
         };
