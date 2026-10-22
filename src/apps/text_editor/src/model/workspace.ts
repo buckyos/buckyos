@@ -26,7 +26,7 @@ export class Workspace {
   layout: 'single' | 'columns-2' | 'rows-2' = 'single'
   session?: TransferableSessionContext
   items: SessionItem[] = []
-  sidebar = true; sidebarWidth = 235; outlineRatio = 50
+  sidebar = !matchMedia('(max-width: 719px)').matches; sidebarWidth = 235; outlineRatio = 50
   settings: Settings = { ...defaultSettings }
   locale = navigator.language; theme: 'dark' | 'light' = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   message = ''; choice?: Choice; recoveries: RecoveryRecord[] = []; abandoned: BufferRecord[] = []; recent: TransferableContentRef[] = []
@@ -79,7 +79,7 @@ export class Workspace {
             } catch (e) { this.notify(String(e)) }
           }
         }
-        this.activeGroup = saved.activeGroup; this.session = saved.session; this.sidebar = saved.sidebar; this.sidebarWidth = saved.sidebarWidth; this.outlineRatio = saved.outlineRatio
+        this.activeGroup = saved.activeGroup; this.session = saved.session; this.sidebar = saved.sidebar && !matchMedia('(max-width: 719px)').matches; this.sidebarWidth = saved.sidebarWidth; this.outlineRatio = saved.outlineRatio
         if (this.session) await this.refreshItems()
       }
     }

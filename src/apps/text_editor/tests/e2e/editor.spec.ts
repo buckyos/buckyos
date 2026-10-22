@@ -5,6 +5,38 @@ const replace = async (page: Page, text: string) => { const editor = page.locato
 const state = async (page: Page) => (await page.request.get('http://127.0.0.1:3260/test/state')).json()
 const action = async (page: Page, name: string) => { await page.getByRole('button', { name: 'Actions', exact: true }).first().click(); await page.getByRole('menuitem', { name, exact: true }).click() }
 test.beforeEach(async ({ request }) => { await request.post('http://127.0.0.1:3260/test/reset') })
+test('a narrow direct launch keeps welcome actions usable after restoring an open sidebar', async ({ page }) => {
+  await page.setViewportSize({ width: 540, height: 348 })
+  await page.goto('/')
+  const welcome = page.locator('.welcome-actions')
+  const newFile = welcome.getByRole('button', { name: 'New file' })
+  const openFile = welcome.getByRole('button', { name: 'Open file' })
+  await expect(page.locator('aside')).toHaveCount(0)
+  await newFile.click({ trial: true })
+  await openFile.click({ trial: true })
+  const files = page.locator('footer').getByRole('button', { name: 'Files', exact: true })
+  await files.click()
+  await expect(page.locator('aside')).toBeVisible()
+  await expect.poll(() => page.evaluate(async () => {
+    const w = (window as any).editorWorkspace
+    return (await w?.local.get('workspace'))?.sidebar
+  })).toBe(true)
+  await page.reload()
+  await page.waitForFunction(() => (window as any).editorWorkspace)
+  await expect(page.locator('aside')).toHaveCount(0)
+  await newFile.click({ trial: true })
+  await openFile.click({ trial: true })
+  const before = await state(page)
+  await newFile.click()
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'true')
+  await page.getByRole('button', { name: 'Close tab untitled.txt', exact: true }).click()
+  await expect(page.locator('.cm-content')).toHaveCount(0)
+  await newFile.click({ trial: true })
+  await openFile.click({ trial: true })
+  expect(await state(page)).toEqual(before)
+  await files.click()
+  await expect(page.locator('aside')).toBeVisible()
+})
 test('open, outline, save, and split views share edits and undo', async ({ page }) => {
   await open(page)
   await expect(page.getByRole('navigation', { name: 'Outline' }).getByRole('button', { name: 'Hello' })).toBeVisible()
