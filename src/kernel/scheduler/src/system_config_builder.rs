@@ -254,6 +254,8 @@ impl SystemConfigBuilder {
             res_pool_id: "default".to_string(),
             is_local: true,
             allow_password_change: None,
+            allow_contact_edit: None,
+            groups: Vec::new(),
         };
         self.insert_json("users/root/settings", &root_settings)?;
 
@@ -266,6 +268,8 @@ impl SystemConfigBuilder {
             res_pool_id: "default".to_string(),
             is_local: true,
             allow_password_change: None,
+            allow_contact_edit: None,
+            groups: Vec::new(),
         };
         self.insert_json(&admin_key, &admin_settings)?;
         self.insert_json_if_absent(ZONE_OWNER_USER_ID_KEY, &config.user_name)?;
@@ -755,7 +759,6 @@ fn build_zone_user_contact_settings(config: &StartConfigSummary) -> Option<UserC
     Some(UserContactSettings {
         did: Some(config.owner_document.id.to_string()),
         note: None,
-        groups: vec!["users".to_string()],
         tags: vec!["zone_user".to_string()],
         bindings: vec![UserTunnelBinding {
             platform: "telegram".to_string(),

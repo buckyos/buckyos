@@ -101,7 +101,7 @@ function contact(did: string, now: number, patch: Partial<Contact> & { ageDays: 
 
 function contacts(now: number): Contact[] {
   return [
-    contact('did:bns:bob', now, { ageDays: 300, source: 'shared', is_verified: true, access_level: 'allow', friend_state: 'friend', tags: ['zone_user'] }),
+    contact('did:bns:bob', now, { ageDays: 300, source: 'shared', is_verified: true, access_level: 'allow', friend_state: 'friend', tags: ['zone_user', 'type:user'], projected_from: ['type:user'] }),
     contact('did:bns:carol', now, { ageDays: 280, source: 'shared', is_verified: true, access_level: 'allow', friend_state: 'friend', tags: ['zone_user'] }),
     contact('did:bns:assistant.alice', now, { ageDays: 90, source: 'shared', is_verified: true, access_level: 'allow', friend_state: 'friend', tags: ['zone_agent'] }),
     contact('did:bns:eve', now, {

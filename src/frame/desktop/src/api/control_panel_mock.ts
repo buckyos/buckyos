@@ -1,8 +1,10 @@
 /* ── In-browser control panel for the mock runtime ──
  *
  * Answers the Agent (`agent.*`), own-profile (`user.get`, `user.profile.set`,
- * `user.*_msg_tunnel`) and Zone display (`zone.presentation.*`) calls with the
- * shapes of the Agent init contract §3 and control_panel. State lives in
+ * `user.*_msg_tunnel`), account management (`user.list`, `user.change_type`,
+ * `user.set_account_options`), system user group (`user_group.*`) and Zone
+ * display (`zone.presentation.*`) calls with the shapes of the Agent init
+ * contract §3 and control_panel. State lives in
  * localStorage under MOCK_CONTROL_PANEL_STORAGE_KEY and is re-read on every
  * call, so e2e tests can seed or change it (a partial object is merged over
  * the defaults).
@@ -12,6 +14,17 @@
  * tunnel step once.
  */
 
+import {
+  ASSIGNABLE_USER_TYPES,
+  USER_GROUP_ID_PATTERN,
+  defaultCanChangePassword,
+  defaultCanEditContacts,
+  defaultContactProjectionRules,
+  isPrivilegedUserType,
+  parseUserGroupRef,
+  parseUserType,
+  type ContactProjectionRule,
+} from './user_type.ts'
 import type {
   AgentCreateRequest,
   AgentCreateStep,
@@ -35,6 +48,23 @@ interface MockAccount {
   did: string
   /** Fields saved through `user.profile.set` (display_name, avatar, bio, …). */
   profile?: Record<string, string>
+}
+
+/** Per-account facts of the Zone's users; `null` overrides mean the type default. */
+interface MockZoneUser {
+  user_type: string
+  allow_password_change?: boolean | null
+  allow_contact_edit?: boolean | null
+}
+
+interface MockUserGroup {
+  group_id: string
+  name: string
+  description?: string
+  updated_by: string
+  created_at: number
+  updated_at: number
+  members: string[]
 }
 
 type MockZonePresentation = Partial<Record<'display_name' | 'description' | 'icon', string>>
@@ -68,6 +98,11 @@ interface MockState {
   agents: MockAgent[]
   step_ms: number
   zone_presentation?: MockZonePresentation
+  /** Keyed by user_id; every name in `user_names` has one. */
+  zone_users: Record<string, MockZoneUser>
+  user_groups: MockUserGroup[]
+  /** Unset until rules are saved; the defaults apply meanwhile. */
+  projections?: { rules: ContactProjectionRule[]; updated_by: string; updated_at: number } | null
 }
 
 const RESERVED_NAMES = new Set(['root', 'system', 'admin', 'guest', '_', 'www', 'sys', 'homestation'])
@@ -141,6 +176,14 @@ function defaultState(): MockState {
       },
     ],
     step_ms: 700,
+    zone_users: {
+      alice: { user_type: 'admin' },
+      bob: { user_type: 'user' },
+      carol: { user_type: 'user' },
+      dave: { user_type: 'limited' },
+    },
+    user_groups: [],
+    projections: null,
   }
 }
 
@@ -180,15 +223,19 @@ function stringParam(params: Record<string, unknown>, key: string): string {
 }
 
 function isLimited(account: MockAccount) {
-  return account.user_type === 'limited' || account.user_type === 'guest'
+  return parseUserType(account.user_type) === 'limited'
 }
 
 function isAdmin(account: MockAccount) {
-  return account.user_type === 'admin' || account.user_type === 'root'
+  return isPrivilegedUserType(account.user_type)
 }
 
 function requireCreator(state: MockState) {
   if (isLimited(state.account)) throw new MockRpcError('limited_user: limited users cannot create agents')
+}
+
+function requireAdmin(state: MockState) {
+  if (!isAdmin(state.account)) throw new MockRpcError('Admin privileges required')
 }
 
 function liveAgents(state: MockState) {
@@ -337,10 +384,28 @@ function toEntry(state: MockState, agent: MockAgent): AgentEntry {
   }
 }
 
+function zoneUser(state: MockState, userId: string): MockZoneUser {
+  const user = state.zone_users[userId]
+  if (!user) throw new MockRpcError(`User '${userId}' not found`)
+  return user
+}
+
+function groupsOf(state: MockState, userId: string) {
+  return state.user_groups.filter((group) => group.members.includes(userId)).map((group) => group.group_id).sort()
+}
+
+function effectiveOptions(user: MockZoneUser) {
+  return {
+    allow_password_change: user.allow_password_change ?? defaultCanChangePassword(user.user_type),
+    allow_contact_edit: user.allow_contact_edit ?? defaultCanEditContacts(user.user_type),
+  }
+}
+
 function userDetail(state: MockState) {
   const { account } = state
   const contact = { did: account.did, bindings: state.user_bindings.map((binding) => ({ ...binding })) }
   const profile = { did: account.did, display_name: account.user_name, ...account.profile }
+  const facts = state.zone_users[account.user_id] ?? { user_type: account.user_type }
   return {
     user_id: account.user_id,
     show_name: profile.display_name,
@@ -348,11 +413,154 @@ function userDetail(state: MockState) {
     state: 'active',
     res_pool_id: 'default',
     is_local: false,
+    groups: groupsOf(state, account.user_id),
+    ...effectiveOptions({ ...facts, user_type: account.user_type }),
     profile,
     local_profile: {
       ...profile,
       private_extra: { system_contact: contact },
     },
+  }
+}
+
+function userList(state: MockState) {
+  const users = state.user_names
+    .filter((userId) => state.zone_users[userId])
+    .map((userId) => {
+      const user = zoneUser(state, userId)
+      const effective = effectiveOptions(user)
+      return {
+        user_id: userId,
+        show_name: userId === state.account.user_id ? state.account.user_name : userId,
+        user_type: user.user_type,
+        state: 'active',
+        is_local: false,
+        groups: groupsOf(state, userId),
+        allow_password_change: user.allow_password_change ?? null,
+        allow_contact_edit: user.allow_contact_edit ?? null,
+        can_change_password: effective.allow_password_change,
+        can_edit_contacts: effective.allow_contact_edit,
+      }
+    })
+  return { total: users.length, users }
+}
+
+function optionParam(params: Record<string, unknown>, key: string): boolean | null | undefined {
+  if (!(key in params)) return undefined
+  const value = params[key]
+  if (value === null || typeof value === 'boolean') return value
+  throw new MockRpcError(`${key} must be a boolean or null`)
+}
+
+function stringListParam(params: Record<string, unknown>, key: string): string[] {
+  const value = params[key]
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new MockRpcError(`${key} must be a list of strings`)
+  return value as string[]
+}
+
+function projections(state: MockState) {
+  if (!state.projections) return { rules: defaultContactProjectionRules(), is_default: true, updated_by: '', updated_at: 0 }
+  return { rules: state.projections.rules.map((rule) => ({ ...rule })), is_default: false, updated_by: state.projections.updated_by, updated_at: state.projections.updated_at }
+}
+
+function groupView(group: MockUserGroup) {
+  return { ...group, members: [...group.members].sort() }
+}
+
+function findGroup(state: MockState, params: Record<string, unknown>) {
+  const groupId = stringParam(params, 'group_id')
+  const group = state.user_groups.find((item) => item.group_id === groupId)
+  if (!group) throw new MockRpcError(`user group '${groupId}' not found`)
+  return group
+}
+
+function validRules(state: MockState, raw: unknown): ContactProjectionRule[] {
+  if (!Array.isArray(raw)) throw new MockRpcError('rules must be a list')
+  const seen = new Set<string>()
+  return raw.map((item) => {
+    const rule = item as Partial<ContactProjectionRule>
+    for (const ref of [rule.source, rule.target]) {
+      const parsed = typeof ref === 'string' ? parseUserGroupRef(ref) : null
+      if (!parsed) throw new MockRpcError(`invalid user group reference \`${String(ref)}\``)
+      if (parsed.kind === 'group' && !state.user_groups.some((group) => group.group_id === parsed.groupId)) {
+        throw new MockRpcError(`projection rule refers to undefined group \`${ref}\``)
+      }
+    }
+    const key = `${rule.source}->${rule.target}`
+    if (seen.has(key)) throw new MockRpcError(`duplicate projection rule ${rule.source} -> ${rule.target}`)
+    seen.add(key)
+    return { source: rule.source as string, target: rule.target as string }
+  })
+}
+
+function handleUserGroup(state: MockState, method: string, params: Record<string, unknown>): unknown {
+  requireAdmin(state)
+  const now = Math.floor(Date.now() / 1000)
+  switch (method) {
+    case 'user_group.list':
+      return { groups: state.user_groups.map(groupView), projections: projections(state) }
+    case 'user_group.create': {
+      const groupId = stringParam(params, 'group_id')
+      if (!USER_GROUP_ID_PATTERN.test(groupId)) throw new MockRpcError(`invalid user group id \`${groupId}\``)
+      if (state.user_groups.some((group) => group.group_id === groupId)) throw new MockRpcError(`user group '${groupId}' already exists`)
+      const group: MockUserGroup = {
+        group_id: groupId,
+        name: stringParam(params, 'name'),
+        ...(typeof params.description === 'string' && params.description.trim() ? { description: params.description.trim() } : {}),
+        updated_by: state.account.user_id,
+        created_at: now,
+        updated_at: now,
+        members: [],
+      }
+      state.user_groups.push(group)
+      return { ok: true, group: groupView(group) }
+    }
+    case 'user_group.update': {
+      const group = findGroup(state, params)
+      if (typeof params.name === 'string') group.name = stringParam(params, 'name')
+      if (typeof params.description === 'string') {
+        if (params.description.trim()) group.description = params.description.trim()
+        else delete group.description
+      }
+      group.updated_by = state.account.user_id
+      group.updated_at = now
+      return { ok: true, group: groupView(group) }
+    }
+    case 'user_group.delete': {
+      const group = findGroup(state, params)
+      const ref = `group:${group.group_id}`
+      state.user_groups = state.user_groups.filter((item) => item !== group)
+      let removedRules = 0
+      if (state.projections) {
+        const kept = state.projections.rules.filter((rule) => rule.source !== ref && rule.target !== ref)
+        removedRules = state.projections.rules.length - kept.length
+        state.projections = { ...state.projections, rules: kept }
+      }
+      return { ok: true, group_id: group.group_id, removed_members: group.members.length, removed_rules: removedRules }
+    }
+    case 'user_group.set_members': {
+      const group = findGroup(state, params)
+      const add = stringListParam(params, 'add')
+      const remove = stringListParam(params, 'remove')
+      for (const userId of add) {
+        if (zoneUser(state, userId).user_type === 'root') throw new MockRpcError('the owner record cannot join user groups')
+      }
+      const members = new Set(group.members)
+      for (const userId of add) members.add(userId)
+      for (const userId of remove) members.delete(userId)
+      group.members = [...members].sort()
+      group.updated_at = now
+      return { ok: true, group_id: group.group_id, members: [...group.members] }
+    }
+    case 'user_group.set_projections':
+      state.projections = { rules: validRules(state, params.rules), updated_by: state.account.user_id, updated_at: now }
+      return { ok: true, projections: projections(state) }
+    case 'user_group.reset_projections':
+      state.projections = null
+      return { ok: true, projections: projections(state) }
+    default:
+      throw new MockRpcError(`Unknown method: ${method}`)
   }
 }
 
@@ -520,6 +728,29 @@ function handle(state: MockState, method: string, params: Record<string, unknown
     }
     case 'user.get':
       return userDetail(state)
+    case 'user.list':
+      return userList(state)
+    case 'user.change_type': {
+      requireAdmin(state)
+      const userId = stringParam(params, 'user_id')
+      const user = zoneUser(state, userId)
+      const target = parseUserType(params.user_type)
+      if (!target || !(ASSIGNABLE_USER_TYPES as readonly string[]).includes(target)) throw new MockRpcError(`Invalid user_type: ${String(params.user_type)}`)
+      if (user.user_type === 'root') throw new MockRpcError('Cannot change root user type')
+      user.user_type = target
+      if (userId === state.account.user_id) state.account.user_type = target
+      return { ok: true, user_id: userId, user_type: target }
+    }
+    case 'user.set_account_options': {
+      requireAdmin(state)
+      const userId = stringParam(params, 'user_id')
+      const user = zoneUser(state, userId)
+      const password = optionParam(params, 'allow_password_change')
+      const contacts = optionParam(params, 'allow_contact_edit')
+      if (password !== undefined) user.allow_password_change = password
+      if (contacts !== undefined) user.allow_contact_edit = contacts
+      return { ok: true, user_id: userId, ...effectiveOptions(user) }
+    }
     case 'user.profile.set': {
       const profile = { ...state.account.profile }
       applyTextPatch(profile, params, PROFILE_TEXT_FIELDS)
@@ -530,7 +761,7 @@ function handle(state: MockState, method: string, params: Record<string, unknown
     case 'zone.presentation.get':
       return zonePresentation(state)
     case 'zone.presentation.set': {
-      if (state.account.user_type !== 'admin' && state.account.user_type !== 'root') {
+      if (!isAdmin(state.account)) {
         throw new MockRpcError('only Zone administrators can change the Zone display settings')
       }
       const settings: Record<string, string> = { ...state.zone_presentation }
@@ -559,6 +790,7 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       return { ok: true, user_id: state.account.user_id, platform, remaining_bindings: state.user_bindings.length, contact: userDetail(state).local_profile.private_extra.system_contact }
     }
     default:
+      if (method.startsWith('user_group.')) return handleUserGroup(state, method, params)
       throw new MockRpcError(`Unknown method: ${method}`)
   }
 }
@@ -578,6 +810,13 @@ export async function callMockControlPanel<T>(
     saveState(state)
     return { data: null, error }
   }
+}
+
+/** For the network mock: whether the signed-in mock account may edit its address book. */
+export function mockContactEditAllowed(): boolean {
+  const state = loadState()
+  const facts = state.zone_users[state.account.user_id] ?? { user_type: state.account.user_type }
+  return effectiveOptions({ ...facts, user_type: state.account.user_type }).allow_contact_edit
 }
 
 export function mockCurrentAccount() {

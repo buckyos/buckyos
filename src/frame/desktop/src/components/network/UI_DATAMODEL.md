@@ -37,6 +37,7 @@ interface RelationFacts {
   tags: string[]
   pendingRequestId?: string       // Contact 记录不带，由 friendRequests 补（withPendingRequest）
   messageRequest?: boolean
+  projected?: boolean             // Contact.projected_from 非空：系统用户组投影条目，不可删除
 }
 
 /** 我所在的群：group.list_by_member + 自己的成员记录 + 发言权限。 */
@@ -97,6 +98,8 @@ type RequestItem =
 | 已发请求 | `cancel_request`，`allow_messages`，`block`，`remove_contact` |
 | 好友 | `unfriend`，`block`，`remove_contact` |
 
+投影条目（`projected`）不给 `remove_contact`；当前账号不能改通讯录时 `RelationActions` 不给任何写动作。
+
 | 动作 | 确认强度 | 调用 |
 | --- | --- | --- |
 | 移出分组 `remove_from_collection` | light：一句话，焦点在确认按钮，说明“仍保留在联系人中” | `contact.update_tags{remove:[tag]}` |
@@ -134,6 +137,9 @@ type RequestItem =
 | `peer-blocked` / `friend-request-cooldown` / `cannot-befriend-self` / `peer-not-befriendable` / `message-too-long` | `contact.send_friend_request`（已是好友不是错误：返回 `friend_state: 'friend'`、无 `request`） |
 | `request-not-pending` / `request-expired` | `contact.respond_friend_request` / `contact.cancel_friend_request` |
 | `system-relation` | `contact.remove_friend` / `contact.remove_contact` 拒绝系统建立的关系 |
+| `projected-contact-read-only` | 删除 / 合并 / 改名系统投影条目 |
+| `contact-edit-not-allowed` | 无改通讯录权限的账号发起的任何通讯录写操作 |
+| `recipient-has-no-inbox` | 给没有个人收件箱的本 Zone 账号（Limited）发私信；`contact.lookup` 对这类账号返回 Unreachable / `no-personal-inbox`，提示“请在群会话中联系” |
 | `tag-not-writable` / `invalid-tag` | `contact.update_tags` |
 | `owner-not-hosted` / `contact_mgr_owner-required` | 好友 RPC / 所有 `contact.*` |
 | `invite-required` / `join-not-allowed` / `invalid-invite-link` / `invite-expired` / `member-already-participating` / `capability-denied` / `owner-must-transfer-first` / `member-list-hidden` / `blocked` / `rate-limited` | `group.*` |

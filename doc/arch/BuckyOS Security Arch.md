@@ -13,7 +13,7 @@ BuckyOS 的 Security 设计首先服务于一个核心产品假设：**帮助普
 因此，本设计不是单纯讨论“密钥放在哪里”，而是围绕以下问题构建完整安全模型：
 
 1. 用户如何持有最高权限，而不让最高权限密钥进入 Zone 内部设备。
-2. Zone 内部如何区分 Root、Administrator、Normal User、Guest / Local User。
+2. Zone 内部如何区分 Root、Administrator、Normal User、Limited User，以及没有账号记录的 External 与匿名访问者。
 3. 内核组件、系统服务和普通 App 如何分层隔离。
 4. 一个请求到达系统服务时，如何基于 **UserID + AppID + Resource Path + Action** 做统一鉴权。
 5. 分布式节点之间、客户端设备与 Zone 之间、Zone 与公网之间如何建立可信连接。
@@ -95,7 +95,9 @@ BuckyOS 的权限模型同时存在两条维度：**用户身份维度** 和 **�
 | L0 | Root / Owner | Zone 的起点，通常由用户钱包中的 Root Key 控制 | 更新 DID / BNS / 链上核心配置；执行最高权限操作；恢复或迁移 Zone |
 | L1 | Administrator | Root 用户的日常管理态 | 安装 App；管理用户；调整系统配置；执行常规管理任务 |
 | L2 | Normal User | 标准成人用户，可基于 Global DID 入驻 Zone | 使用已安装 App；管理自己的数据；参与跨 Zone 交互 |
-| L3 | Restricted / Local / Guest User | Zone 内创建的本地或受限账号，无全局 DID | 临时访问；企业员工账号；可由 Zone 管理者随时禁用 |
+| L3 | Limited User | UserType 为 `limited` 的账号：零权限底座，经管理员维护的系统用户组获得 App 与资源授权；本地创建时使用二级 DID，Zone 不为它签发对外联合断言 | 企业客户、企业员工、未成年人、临时 Desktop；可由 Zone 管理者随时禁用 |
+
+L1–L3 对应账号记录上的 UserType（Admin、User、Limited），L0 对应不可登录的 `root` 账号记录（Zone owner）。已认证但本 Zone 没有账号记录的 DID 是 External，匿名请求是匿名访问者，两者都不在这张表里，权限只来自资源方授权。权威定义见 [UserType.md](../../product/users_and_agents/UserType.md)。
 
 设计上，一个标准用户可以同时拥有：
 
@@ -609,7 +611,6 @@ SystemConfig 高安全区域可能保存 VerifyHub 私钥、TLS 私钥等敏感�
 
 Local User 的根身份属于 Zone。它适用于：
 
-- Guest 账号。
 - 临时使用账号。
 - 企业员工账号。
 - 不希望用户带走身份的组织场景。

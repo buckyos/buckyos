@@ -7,7 +7,8 @@
  * an Agent changes, and every 30 seconds.
  */
 
-import { fetchCurrentAccount, isLimitedUserType } from '../../api/account'
+import { fetchCurrentAccount } from '../../api/account'
+import { userTypeCanCreateAgents } from '../../api/user_type'
 import { fetchAgentList, type AgentEntry } from '../../api/user_mgr'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import { isMockRuntime } from '../../runtime'
@@ -76,7 +77,7 @@ class AgentGuideController {
   private async load(): Promise<AgentGuideState | null> {
     if (!this.guideShown()) return this.state
     const account = await fetchCurrentAccount().catch(() => null)
-    if (!account || isLimitedUserType(account.user_type)) return this.state
+    if (!account || !userTypeCanCreateAgents(account.user_type)) return this.state
     const { data } = await fetchAgentList()
     // A failed read keeps the last known entry rather than flipping it back to the guide.
     if (!data) return this.state

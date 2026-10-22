@@ -7,7 +7,7 @@ use buckyos_api::{
     AppManagementOrigin, AppScheduledInstanceStatus, AvailabilityEffect, AvailabilityMatch,
     DeploymentHealth, InstallRecord, InstallRecordState, ReadinessState, ResolvedAppInstallation,
     ServiceInstanceReportInfo, ServiceInstanceState, StaticWebDeploymentEvidence,
-    SystemConfigClient, SystemConfigError, UserType, APP_AVAILABILITY_SCHEMA_VERSION,
+    SystemConfigClient, SystemConfigError, APP_AVAILABILITY_SCHEMA_VERSION,
     APP_INSTALL_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID, APP_UPDATE_TASK_SCHEMA_ID,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 fn principal_is_admin(principal: &RpcAuthPrincipal) -> bool {
-    matches!(principal.user_type, UserType::Admin | UserType::Root)
+    principal.user_type.is_privileged()
 }
 
 fn require_self_or_admin(
@@ -36,7 +36,10 @@ fn policy_guest_allowed(policy: &AppAvailabilityPolicy) -> bool {
     policy
         .group_rules
         .iter()
-        .any(|rule| rule.group_id == "guest" && rule.effect == AvailabilityEffect::Allow)
+        .any(|rule| {
+            rule.group_id == buckyos_api::ANONYMOUS_AVAILABILITY_GROUP
+                && rule.effect == AvailabilityEffect::Allow
+        })
 }
 
 fn app_web_hosts(installation: &ResolvedAppInstallation) -> Vec<String> {
@@ -580,6 +583,23 @@ impl ControlPanelServer {
             return Err(RPCErrors::NoPermission(
                 "only the app owner can modify availability".to_string(),
             ));
+        }
+        let referenced_groups: Vec<&str> = group_rules
+            .iter()
+            .filter_map(|rule| rule.group_id.strip_prefix(buckyos_api::USER_GROUP_REF_PREFIX))
+            .collect();
+        if !referenced_groups.is_empty() {
+            let defined = crate::user_group_mgr::load_user_group_directory()
+                .await?
+                .defined_group_ids();
+            if let Some(missing) = referenced_groups
+                .iter()
+                .find(|group_id| !defined.contains(**group_id))
+            {
+                return Err(RPCErrors::ParseRequestError(format!(
+                    "user group '{missing}' does not exist"
+                )));
+            }
         }
         for rule in &user_rules {
             resolver.get_user_settings(&rule.user_id).await?;

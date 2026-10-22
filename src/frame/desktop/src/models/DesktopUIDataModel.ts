@@ -23,7 +23,8 @@
  *   - 正式环境                                              → initByReal
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import { fetchCurrentAccount, isLimitedUserType } from '../api/account'
+import { fetchCurrentAccount } from '../api/account'
+import { userTypeCanCreateAgents } from '../api/user_type'
 import { fetchAppList } from '../api/app_mgr'
 import { deleteDesktopItem, listDesktopFolder, writeDesktopItem, type DesktopFolderListing, type DesktopSeedItem } from '../api/desktop_items'
 import { translateNow } from '../i18n/translate'
@@ -185,7 +186,7 @@ function minimizedWindow(w: WindowRecord, minimizedOrder: number | null): Window
 
 async function agentGuideAllowedForAccount(): Promise<boolean> {
   const account = await fetchCurrentAccount().catch(() => null)
-  return Boolean(account && !isLimitedUserType(account.user_type))
+  return Boolean(account && userTypeCanCreateAgents(account.user_type))
 }
 
 export interface ContextMenuState {

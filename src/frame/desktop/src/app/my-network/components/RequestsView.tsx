@@ -12,6 +12,7 @@ import { networkErrorText } from '../../../components/network/relation'
 import type { RequestItem } from '../../../components/network/types'
 import { openMessageHub } from '../datamodel/links'
 import { dangerOutlinedSx } from '../../../components/network/buttonStyles'
+import { useContactEditPermission } from '../../../components/network/permissions'
 
 type Run = (key: string, action: () => Promise<unknown>) => Promise<void>
 
@@ -41,14 +42,21 @@ function RequestCard({ avatar, title, meta, body, actions, testId, kind }: { ava
   )
 }
 
+/** Request answers that change the address book; hidden for accounts that may not edit it. */
+const CONTACT_WRITES = new Set(['accept', 'ignore', 'reject', 'block', 'add_friend', 'allow', 'cancel'])
+
 function Item({ item, run, busy }: { item: RequestItem; run: Run; busy: string | null }) {
   const { t, locale } = useI18n()
   const dialogs = useNetworkDialogs()
+  const canEditContacts = useContactEditPermission()
   const disabled = busy !== null
+  const contactWrite = item.type === 'friend_request' || item.type === 'message_request'
   const action = (key: string, label: string, icon: ReactNode, task: () => Promise<unknown>, variant: 'contained' | 'outlined' | 'text' = 'outlined', danger = false) => (
-    <Button key={key} size="small" variant={variant} sx={danger ? dangerOutlinedSx : undefined} startIcon={icon} disabled={disabled} onClick={() => void run(`${item.key}:${key}`, task)} data-action={key}>
-      {label}
-    </Button>
+    contactWrite && !canEditContacts && CONTACT_WRITES.has(key) ? null : (
+      <Button key={key} size="small" variant={variant} sx={danger ? dangerOutlinedSx : undefined} startIcon={icon} disabled={disabled} onClick={() => void run(`${item.key}:${key}`, task)} data-action={key}>
+        {label}
+      </Button>
+    )
   )
   const confirmBlock = async (name: string) => {
     const confirmed = await dialogs.confirm({

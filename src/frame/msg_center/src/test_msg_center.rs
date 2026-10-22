@@ -2890,18 +2890,14 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let (center, _tmp) = new_center("zone-user-sync").await;
         let devtest = DID::new("bns", "devtest");
         let lucy = DID::new("web", "lucy.test.buckyos.io");
-        let contacts: Vec<_> = [devtest.clone(), lucy.clone()]
-            .into_iter()
-            .map(|did| crate::contact_mgr::ZoneUserContactSeed {
-                avatar: None,
-                name: did.id.clone(),
-                did,
-                note: None,
-                bindings: vec![],
-                tags: vec![],
-            })
-            .collect();
-        crate::sync_zone_user_contacts(&center, contacts.clone())
+        let directory = crate::test_zone_directory(
+            &[
+                (&devtest, buckyos_api::UserType::Admin, &[]),
+                (&lucy, buckyos_api::UserType::User, &[]),
+            ],
+            Default::default(),
+        );
+        crate::apply_zone_directory(&center, &directory, &mut Default::default())
             .await
             .unwrap();
         inbound(
@@ -2938,7 +2934,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .handle_block_contact(devtest.clone(), None, Some(lucy.clone()), ctx())
             .await
             .unwrap();
-        crate::sync_zone_user_contacts(&center, contacts)
+        crate::apply_zone_directory(&center, &directory, &mut Default::default())
             .await
             .unwrap();
         let result = center

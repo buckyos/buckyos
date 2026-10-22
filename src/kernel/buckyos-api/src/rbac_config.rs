@@ -35,7 +35,7 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 - admin 除别的用户的数据之外的读权限，
 - users 自己的数据的读权限，不包含敏感数据的写权限
 - su_users 自己敏感数据的写权限
-- limit_users 暂不实现
+- limited 零权限底座：只读自己的 settings、读写自己的 profile；系统用户组 group:<id> 不带策略
 - author 逻辑权限，资源的创建者
 
 
@@ -168,6 +168,15 @@ p, users,obj://config/services/{service}/info,read,allow
 p, users,obj://config/services/{service}/instances/{node},write,allow
 p, users,obj://task/{users},read,allow
 
+# Limited accounts carry no business or resource permission; they only read
+# their own settings and read/write their own profile. System user groups
+# (`group:<id>`) add no policy.
+p, limited,obj://config/users/{limited}/settings,read,allow
+p, limited,obj://config/users/{limited}/profile,read|write,allow
+# Its own address book only (msg-center binds the owner to the caller and
+# checks the account may edit it); no sessions, mailboxes or other owner data.
+p, limited,obj://msg-center/owners/*/contacts,read|write,allow
+
 p, users,obj://msg-center/objects,read,allow
 p, admin,obj://msg-center/objects,read,allow
 p, users,obj://msg-center/inbox/*,read|write,allow
@@ -186,6 +195,10 @@ p, users,obj://msg-center/notify,read|write,allow
 p, admin,obj://msg-center/notify,read|write,allow
 p, app,obj://msg-center/notify,read|write,allow
 p, frame,obj://msg-center/notify,read|write,allow
+# Resource services ask whether a DID is in an owner's contact group
+# (contact.check_membership, projection included).
+p, system:aiworkspace,obj://msg-center/contact_membership,read,allow
+p, system:homestation,obj://msg-center/contact_membership,read,allow
 p, system:opendan,obj://msg-center/*,all,allow
 p, system:msg-center,obj://msg-center/*,all,allow
 p, agent_runtime,obj://msg-center/*,all,allow
@@ -555,6 +568,52 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn limited_accounts_only_reach_their_own_settings_and_profile() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some(
+            "g, carol, limited\ng, carol, group:customer\ng, bob, users\ng, ood1, ood",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let app = "system:control-panel";
+        let own_settings = "obj://config/users/carol/settings";
+        let own_profile = "obj://config/users/carol/profile";
+        assert!(rbac::enforce("carol", app, own_settings, "read", None).await);
+        assert!(!rbac::enforce("carol", app, own_settings, "write", None).await);
+        assert!(rbac::enforce("carol", app, own_profile, "read", None).await);
+        assert!(rbac::enforce("carol", app, own_profile, "write", None).await);
+        for (resource, action) in [
+            ("obj://config/users/bob/settings", "read"),
+            ("obj://config/users/bob/profile", "read"),
+            ("obj://config/users/carol/doc", "read"),
+            ("obj://config/users/carol/apps/notes/settings", "read"),
+            ("obj://config/system/user_groups/customer", "read"),
+            ("obj://config/boot/config", "read"),
+            ("obj://msg-center/inbox/did:bns:carol", "read"),
+            ("obj://task/carol", "read"),
+            ("obj://ndm/uploads", "write"),
+        ] {
+            assert!(
+                !rbac::enforce("carol", app, resource, action, None).await,
+                "{resource} {action}"
+            );
+        }
+        assert!(rbac::enforce("bob", app, "obj://config/users/bob/settings", "read", None).await);
+
+        let owner = crate::MailboxAddress::new(
+            name_lib::DID::from_str("did:web:carol.example.com").unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(rbac::enforce("carol", app, &owner.contacts_resource(), "read", None).await);
+        assert!(rbac::enforce("carol", app, &owner.contacts_resource(), "write", None).await);
+        assert!(!rbac::enforce("carol", app, &owner.owner_resource(), "read", None).await);
+        assert!(rbac::enforce("bob", app, &owner.contacts_resource(), "write", None).await);
+        assert!(rbac::enforce("ood1", "system:homestation", &owner.contacts_resource(), "read", None).await);
     }
 
     #[test]

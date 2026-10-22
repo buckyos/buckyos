@@ -6,6 +6,7 @@ import type { LocalUserEntity } from '../../datamodel/types'
 import { HeaderSection } from '../sections/HeaderSection'
 import { SocialAccountsSection } from '../sections/SocialAccountsSection'
 import { InfoFieldsSection } from '../sections/InfoFieldsSection'
+import { AccountAdminSection } from '../sections/AccountAdminSection'
 import { MetricCard } from '../../../../components/AppPanelPrimitives'
 import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 import { useI18n } from '../../../../i18n/provider'
@@ -19,6 +20,7 @@ const roleColor = {
   admin: 'primary' as const,
   user: 'default' as const,
   limited: 'secondary' as const,
+  unknown: 'warning' as const,
 }
 
 const statusColor = {
@@ -45,7 +47,7 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
         kind="local-user"
         avatarUrl={user.avatarUrl}
         did={user.did}
-        subtitle={`${user.source === 'primary-did' ? t('usersAgents.localUser.primaryDid') : t('usersAgents.localUser.localAccount')} · ${user.defaultGroup}`}
+        subtitle={user.source === 'primary-did' ? t('usersAgents.localUser.primaryDid') : t('usersAgents.localUser.localAccount')}
         isOnline={user.isOnline}
         badges={
           <>
@@ -125,6 +127,8 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
           </div>
         </div>
       )}
+
+      <AccountAdminSection user={user} />
 
       <InfoFieldsSection title={t('usersAgents.section.profile')} fields={user.profile} editable={false} />
 

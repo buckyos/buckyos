@@ -22,7 +22,7 @@ use buckyos_api::{
     AppServiceSpec, AvailabilityEffect, KernelServiceSpec, NodeConfig,
     SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
     UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
-    APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT, NFS_SERVER_SERVICE_NAME,
+    validate_user_group_id, USER_GROUPS_CONFIG_PREFIX, USER_GROUP_REF_PREFIX, APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT, NFS_SERVER_SERVICE_NAME,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -33,12 +33,20 @@ const FIXED_SERVICE_WEIGHT: u32 = 100;
 const DEFAULT_REQUIRED_CPU_MHZ: u32 = 50;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
 
-fn map_api_user_type(user_type: &ApiUserType) -> UserType {
-    match user_type {
-        ApiUserType::Admin | ApiUserType::Root => UserType::Admin,
-        ApiUserType::Limited => UserType::Limited,
-        _ => UserType::User,
+/// Account records with an unknown `type` join no group: they are skipped
+/// with a warning instead of falling back to an ordinary user.
+fn parse_user_settings_record(key: &str, value: &str) -> Result<Option<UserSettings>> {
+    let raw: Value = serde_json::from_str(value)?;
+    let raw_type = raw.get("type").and_then(Value::as_str).unwrap_or_default();
+    if ApiUserType::parse(raw_type).is_none() {
+        warn!("skip account record {key}: unknown user type `{raw_type}`");
+        return Ok(None);
     }
+    let settings: UserSettings = serde_json::from_value(raw).map_err(|e| {
+        error!("UserSettings serde_json::from_str failed: {:?}", e);
+        e
+    })?;
+    Ok(Some(settings))
 }
 
 fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) -> NodeItem {
@@ -193,18 +201,17 @@ pub fn create_scheduler_by_system_config(
                 let parts: Vec<&str> = key.split('/').collect();
                 if parts.len() == 3 {
                     let user_id = parts[1];
-                    let user_settings: UserSettings = serde_json::from_str(value.as_str())
-                        .map_err(|e| {
-                            error!("UserSettings serde_json::from_str failed: {:?}", e);
-                            e
-                        })?;
+                    let Some(user_settings) = parse_user_settings_record(key, value)? else {
+                        continue;
+                    };
                     if !matches!(user_settings.state, UserState::Active) {
                         continue;
                     }
                     let user_item = UserItem {
                         userid: user_id.to_string(),
                         res_pool_id: None,
-                        user_type: map_api_user_type(&user_settings.user_type),
+                        user_type: user_settings.user_type,
+                        groups: user_settings.groups.clone(),
                     };
                     scheduler_ctx.add_user(user_item);
                     if user_id == "root" {
@@ -1482,17 +1489,25 @@ async fn update_rbac(
         agent_specs.push(agent_spec);
     }
 
-    for (user_id, user_item) in scheduler_ctx.users.iter() {
+    let defined_user_groups: HashSet<&str> = input_config
+        .keys()
+        .filter_map(|key| key.strip_prefix(&format!("{USER_GROUPS_CONFIG_PREFIX}/")))
+        .filter(|group_id| validate_user_group_id(group_id).is_ok())
+        .collect();
+    let mut user_ids = scheduler_ctx.users.keys().collect::<Vec<_>>();
+    user_ids.sort();
+    for user_id in user_ids {
+        let user_item = &scheduler_ctx.users[user_id];
         if user_id == "root" {
             continue;
         }
         match user_item.user_type {
-            crate::scheduler::UserType::Admin => {
+            ApiUserType::Admin => {
                 info!("add admin rbac policy for user {}", user_id);
                 push_policy_line(&mut rbac_policy, format!("g, {}, admin", user_id));
                 push_policy_line(&mut rbac_policy, format!("g, su_{}, su_admin", user_id));
             }
-            crate::scheduler::UserType::User => {
+            ApiUserType::User => {
                 info!("add users rbac policy for user {}", user_id);
                 push_policy_line(&mut rbac_policy, format!("g, {}, users", user_id));
                 let sudo_user_id = format!("su_{}", user_id);
@@ -1512,12 +1527,25 @@ async fn update_rbac(
                     ),
                 );
             }
-            crate::scheduler::UserType::Limited => {
+            ApiUserType::Limited => {
                 info!("add limited rbac policy for user {}", user_id);
                 push_policy_line(&mut rbac_policy, format!("g, {}, limited", user_id));
             }
-            _ => {
+            ApiUserType::Root => {
                 continue;
+            }
+        }
+        let mut groups = user_item.groups.iter().collect::<Vec<_>>();
+        groups.sort();
+        groups.dedup();
+        for group_id in groups {
+            if defined_user_groups.contains(group_id.as_str()) {
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!("g, {}, {}{}", user_id, USER_GROUP_REF_PREFIX, group_id),
+                );
+            } else {
+                warn!("user {} refers to undefined user group `{}`", user_id, group_id);
             }
         }
     }
@@ -1676,6 +1704,88 @@ fn rbac_literal(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod user_type_rbac_tests {
+    use super::*;
+
+    fn settings(user_id: &str, user_type: &str, groups: &[&str]) -> String {
+        json!({
+            "user_id": user_id,
+            "type": user_type,
+            "password": "",
+            "state": "active",
+            "res_pool_id": "default",
+            "groups": groups,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn an_unreadable_snapshot_is_treated_as_absent() {
+        let mut snapshot = NodeScheduler::new_empty(1);
+        snapshot.users.insert(
+            "bob".into(),
+            UserItem {
+                userid: "bob".into(),
+                user_type: ApiUserType::User,
+                groups: Vec::new(),
+                res_pool_id: None,
+            },
+        );
+        let mut input = HashMap::new();
+        input.insert(
+            "system/scheduler/snapshot".to_string(),
+            serde_json::to_string(&snapshot).unwrap(),
+        );
+        assert!(read_last_schedule_snapshot(&input).is_some());
+        let old_format = input["system/scheduler/snapshot"].replace("\"user\"", "\"User\"");
+        input.insert("system/scheduler/snapshot".to_string(), old_format);
+        assert!(read_last_schedule_snapshot(&input).is_none());
+    }
+
+    #[tokio::test]
+    async fn user_types_and_system_groups_become_rbac_groups() {
+        let mut input = HashMap::new();
+        for (user_id, user_type, groups) in [
+            ("root", "root", vec![]),
+            ("alice", "admin", vec!["staff"]),
+            ("bob", "user", vec![]),
+            ("carol", "limited", vec!["customer", "ghost"]),
+            ("dave", "guest", vec!["customer"]),
+        ] {
+            input.insert(
+                format!("users/{user_id}/settings"),
+                settings(user_id, user_type, &groups),
+            );
+        }
+        for group_id in ["customer", "staff"] {
+            input.insert(
+                format!("{USER_GROUPS_CONFIG_PREFIX}/{group_id}"),
+                json!({"group_id": group_id, "name": group_id, "updated_by": "alice", "created_at": 1, "updated_at": 1}).to_string(),
+            );
+        }
+        let (scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+        assert!(!scheduler.users.contains_key("dave"));
+        let actions = update_rbac(&input, &scheduler).await.unwrap();
+        let Some(KVAction::Update(policy)) = actions.get("system/rbac/policy") else {
+            panic!("RBAC policy should be generated");
+        };
+        for line in [
+            "g, alice, admin",
+            "g, alice, group:staff",
+            "g, bob, users",
+            "g, carol, limited",
+            "g, carol, group:customer",
+        ] {
+            assert!(policy.lines().any(|l| l == line), "{line}");
+        }
+        assert!(!policy.contains("ghost"));
+        assert!(!policy.contains("dave"));
+        assert!(!policy.lines().any(|l| l.starts_with("g, root,")));
+        assert!(!policy.lines().any(|l| l.starts_with("p,") && l.contains("group:")));
+    }
+}
+
+#[cfg(test)]
 mod agent_rbac_tests {
     use super::*;
     use buckyos_api::{agent_spec_key, AgentId, AgentServiceBinding, AGENT_SPEC_SCHEMA_VERSION};
@@ -1763,7 +1873,8 @@ mod agent_rbac_tests {
             "bob".into(),
             UserItem {
                 userid: "bob".into(),
-                user_type: UserType::User,
+                user_type: ApiUserType::User,
+                groups: Vec::new(),
                 res_pool_id: None,
             },
         );
@@ -2404,19 +2515,25 @@ mod content_registry_tests {
     }
 }
 
+/// The snapshot only caches the previous round; one this build cannot read
+/// (its schema changed) is dropped and the round schedules from scratch.
+fn read_last_schedule_snapshot(input_system_config: &HashMap<String, String>) -> Option<NodeScheduler> {
+    let snapshot_str = input_system_config.get("system/scheduler/snapshot")?;
+    match serde_json::from_str::<NodeScheduler>(snapshot_str) {
+        Ok(snapshot) => Some(snapshot),
+        Err(error) => {
+            warn!("ignore unreadable system/scheduler/snapshot, scheduling from scratch: {error}");
+            None
+        }
+    }
+}
+
 pub(crate) async fn build_schedule_plan(
     input_system_config: &HashMap<String, String>,
     is_boot: bool,
 ) -> Result<SchedulePlan> {
     let (mut scheduler_ctx, device_list) = create_scheduler_by_system_config(input_system_config)?;
-    let last_schedule_snapshot =
-        if let Some(snapshot_str) = input_system_config.get("system/scheduler/snapshot") {
-            Some(serde_json::from_str::<NodeScheduler>(
-                snapshot_str.as_str(),
-            )?)
-        } else {
-            None
-        };
+    let last_schedule_snapshot = read_last_schedule_snapshot(input_system_config);
     info!(
         "build_schedule_plan: is_boot={} nodes={} specs={} instances={} last_snapshot_present={}",
         is_boot,

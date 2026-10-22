@@ -16,7 +16,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-const DEFAULT_USERS_GROUP: &str = "users";
 const USER_INVITE_PREFIX: &str = "services/control_panel/user_invites";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 
@@ -45,10 +44,6 @@ struct UserInviteRecord {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn is_admin_or_root(user_type: &UserType) -> bool {
-    matches!(user_type, UserType::Admin | UserType::Root)
-}
-
 /// Resolve the target user_id from the request; defaults to the caller.
 fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
     ControlPanelServer::param_str(req, "user_id").unwrap_or_else(|| principal.username.clone())
@@ -74,7 +69,7 @@ fn require_self_or_admin(
     principal: &RpcAuthPrincipal,
     target_user_id: &str,
 ) -> Result<(), RPCErrors> {
-    if is_admin_or_root(&principal.user_type) || principal.username == target_user_id {
+    if principal.user_type.is_privileged() || principal.username == target_user_id {
         Ok(())
     } else {
         Err(RPCErrors::ReasonError(
@@ -83,8 +78,8 @@ fn require_self_or_admin(
     }
 }
 
-fn require_admin(principal: &RpcAuthPrincipal) -> Result<(), RPCErrors> {
-    if is_admin_or_root(&principal.user_type) {
+pub(crate) fn require_admin(principal: &RpcAuthPrincipal) -> Result<(), RPCErrors> {
+    if principal.user_type.is_privileged() {
         Ok(())
     } else {
         Err(RPCErrors::ReasonError(
@@ -132,17 +127,53 @@ fn validate_password_hash(password_hash: &str) -> Result<(), RPCErrors> {
     Ok(())
 }
 
+/// Only the assignable account types (admin, user, limited) are accepted.
 fn parse_user_type(s: &str) -> Result<UserType, RPCErrors> {
-    match s.to_lowercase().as_str() {
-        "admin" => Ok(UserType::Admin),
-        "user" => Ok(UserType::User),
-        "limited" => Ok(UserType::Limited),
-        "guest" => Ok(UserType::Guest),
-        _ => Err(RPCErrors::ParseRequestError(format!(
-            "Invalid user_type: {}",
-            s
-        ))),
+    UserType::parse(s.trim().to_lowercase().as_str())
+        .filter(|user_type| user_type.is_assignable())
+        .ok_or_else(|| {
+            RPCErrors::ParseRequestError(format!(
+                "Invalid user_type: {} (expected admin, user or limited)",
+                s
+            ))
+        })
+}
+
+/// `groups` names system user groups; each must be defined.
+pub(crate) async fn parse_system_groups(req: &RPCRequest) -> Result<Vec<String>, RPCErrors> {
+    let Some(value) = req.params.get("groups") else {
+        return Ok(Vec::new());
+    };
+    let mut groups: Vec<String> = serde_json::from_value(value.clone()).map_err(|e| {
+        RPCErrors::ParseRequestError(format!("groups must be a list of group ids: {}", e))
+    })?;
+    groups.sort();
+    groups.dedup();
+    if groups.is_empty() {
+        return Ok(groups);
     }
+    let defined = crate::user_group_mgr::load_user_group_directory()
+        .await?
+        .defined_group_ids();
+    for group in &groups {
+        if !defined.contains(group) {
+            return Err(RPCErrors::ParseRequestError(format!(
+                "user group '{}' does not exist",
+                group
+            )));
+        }
+    }
+    Ok(groups)
+}
+
+fn settings_options_value(settings: &UserSettings) -> Value {
+    json!({
+        "groups": settings.groups,
+        "allow_password_change": settings.allow_password_change,
+        "allow_contact_edit": settings.allow_contact_edit,
+        "can_change_password": settings.can_change_password(),
+        "can_edit_contacts": settings.can_edit_contacts(),
+    })
 }
 
 fn parse_user_state(s: &str) -> Result<UserState, RPCErrors> {
@@ -153,20 +184,7 @@ fn parse_user_state(s: &str) -> Result<UserState, RPCErrors> {
 fn default_contact_settings(did: Option<String>) -> UserContactSettings {
     UserContactSettings {
         did,
-        note: None,
-        groups: vec![DEFAULT_USERS_GROUP.to_string()],
-        tags: Vec::new(),
-        bindings: Vec::new(),
-    }
-}
-
-fn ensure_default_users_group(contact: &mut UserContactSettings) {
-    if !contact
-        .groups
-        .iter()
-        .any(|group| group == DEFAULT_USERS_GROUP)
-    {
-        contact.groups.push(DEFAULT_USERS_GROUP.to_string());
+        ..Default::default()
     }
 }
 
@@ -552,9 +570,11 @@ impl ControlPanelServer {
                                 }
                             }
                             v["is_local"] = Value::Bool(settings.is_local);
-                            v["allow_password_change"] =
-                                serde_json::to_value(settings.allow_password_change)
-                                    .unwrap_or(Value::Null);
+                            if let (Value::Object(target), Value::Object(options)) =
+                                (&mut v, settings_options_value(&settings))
+                            {
+                                target.extend(options);
+                            }
                             users.push(v);
                         }
                     }
@@ -599,11 +619,13 @@ impl ControlPanelServer {
         // Build response – hide password; profile fields live in users/{user}/profile.
         let mut result = json!({
             "user_id": settings.user_id,
-            "user_type": settings.user_type.clone(),
+            "user_type": settings.user_type,
             "state": settings.state.clone(),
             "res_pool_id": settings.res_pool_id,
             "is_local": settings.is_local,
-            "allow_password_change": settings.allow_password_change.unwrap_or(!matches!(settings.user_type, UserType::Limited)),
+            "groups": settings.groups,
+            "allow_password_change": settings.can_change_password(),
+            "allow_contact_edit": settings.can_edit_contacts(),
         });
 
         let local_profile = load_user_profile(&client, &target).await?;
@@ -652,14 +674,15 @@ impl ControlPanelServer {
             .map(|s| parse_user_type(&s))
             .transpose()?
             .unwrap_or(UserType::User);
-        let allow_password_change =
-            Some(Self::param_bool(&req, "allow_password_change").unwrap_or(true));
+        let allow_password_change = Self::param_bool(&req, "allow_password_change");
+        let allow_contact_edit = Self::param_bool(&req, "allow_contact_edit");
 
-        if !matches!(user_type, UserType::User) {
+        if !matches!(user_type, UserType::User | UserType::Limited) {
             return Err(RPCErrors::ParseRequestError(
-                "user.create only supports the ordinary User type".to_string(),
+                "user.create supports the User and Limited types; promote to Admin with user.change_type".to_string(),
             ));
         }
+        let groups = parse_system_groups(&req).await?;
 
         let client = system_config_client_for_caller(&req).await?;
         let runtime = get_buckyos_api_runtime()?;
@@ -672,12 +695,14 @@ impl ControlPanelServer {
         // Build UserSettings
         let new_settings = UserSettings {
             user_id: user_id.clone(),
-            user_type: user_type.clone(),
+            user_type,
             password: password_hash,
             state: UserState::Active,
             res_pool_id: "default".to_string(),
             is_local: true,
             allow_password_change,
+            allow_contact_edit,
+            groups,
         };
         let settings_json = serde_json::to_string(&new_settings)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
@@ -685,8 +710,7 @@ impl ControlPanelServer {
         let doc_json = serde_json::to_string(&owner_config)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
         let mut profile = profile_from_owner_config(&owner_config);
-        let mut contact = default_contact_settings(Some(user_did));
-        ensure_default_users_group(&mut contact);
+        let contact = default_contact_settings(Some(user_did));
         set_profile_system_contact(&mut profile, &contact)?;
         let profile_json = serde_json::to_string(&profile)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
@@ -712,6 +736,9 @@ impl ControlPanelServer {
                 "User '{}' was committed but scheduler RBAC refresh failed: {}",
                 user_id, error
             );
+        }
+        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+            warn!("msg-center reload after creating {user_id} failed: {error}");
         }
 
         info!("User '{}' created by '{}'", user_id, principal.username);
@@ -790,10 +817,10 @@ impl ControlPanelServer {
         if let Some(note) = Self::param_str(&req, "note") {
             contact.note = Some(note);
         }
-        if let Some(groups) = req.params.get("groups") {
-            if let Ok(g) = serde_json::from_value::<Vec<String>>(groups.clone()) {
-                contact.groups = g;
-            }
+        if req.params.get("groups").is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "groups was removed from contact settings; system user groups are managed by user_group.set_members".to_string(),
+            ));
         }
         if let Some(tags) = req.params.get("tags") {
             if let Ok(t) = serde_json::from_value::<Vec<String>>(tags.clone()) {
@@ -805,8 +832,6 @@ impl ControlPanelServer {
                 contact.bindings = b;
             }
         }
-        ensure_default_users_group(&mut contact);
-
         set_profile_system_contact(&mut profile, &contact)?;
         save_user_profile(&client, &target, &profile).await?;
 
@@ -977,7 +1002,6 @@ impl ControlPanelServer {
         } else {
             contact.bindings.push(binding);
         }
-        ensure_default_users_group(&mut contact);
         set_profile_system_contact(&mut profile, &contact)?;
         save_user_profile(&client, &target, &profile).await?;
         if let Err(error) = crate::agent_mgr::reload_msg_center().await {
@@ -1023,7 +1047,6 @@ impl ControlPanelServer {
                 platform, target
             )));
         }
-        ensure_default_users_group(&mut contact);
         set_profile_system_contact(&mut profile, &contact)?;
         save_user_profile(&client, &target, &profile).await?;
 
@@ -1076,14 +1099,7 @@ impl ControlPanelServer {
         let now = buckyos_get_unix_timestamp();
         let expires_at = Self::param_u64(&req, "expires_at")
             .or_else(|| Self::param_u64(&req, "ttl_secs").map(|ttl| now.saturating_add(ttl)));
-        let mut groups: Vec<String> = req
-            .params
-            .get("groups")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        if !groups.iter().any(|group| group == DEFAULT_USERS_GROUP) {
-            groups.push(DEFAULT_USERS_GROUP.to_string());
-        }
+        let groups = parse_system_groups(&req).await?;
         if req.params.get("app_ids").is_some() {
             return Err(RPCErrors::ParseRequestError(
                 "app_ids was removed; App access is managed by apps.availability.set".to_string(),
@@ -1099,7 +1115,7 @@ impl ControlPanelServer {
             target_user_id: target_user_id.clone(),
             target_did: target_did.clone(),
             show_name: show_name.clone(),
-            default_user_type: default_user_type.clone(),
+            default_user_type,
             groups: groups.clone(),
             accepted_at: None,
             accepted_user_id: None,
@@ -1128,12 +1144,14 @@ impl ControlPanelServer {
             }
             let pending_settings = UserSettings {
                 user_id: user_id.clone(),
-                user_type: default_user_type.clone(),
+                user_type: default_user_type,
                 password: String::new(),
                 state: UserState::Pending,
                 res_pool_id: "default".to_string(),
                 is_local: false,
                 allow_password_change: None,
+                allow_contact_edit: None,
+                groups: groups.clone(),
             };
             let settings_json = serde_json::to_string(&pending_settings)
                 .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
@@ -1153,14 +1171,7 @@ impl ControlPanelServer {
                 None,
                 HashMap::new(),
             ));
-            let mut contact = UserContactSettings {
-                did: target_did.clone(),
-                note: None,
-                groups: groups.clone(),
-                tags: Vec::new(),
-                bindings: Vec::new(),
-            };
-            ensure_default_users_group(&mut contact);
+            let contact = default_contact_settings(target_did.clone());
             set_profile_system_contact(&mut profile, &contact)?;
             let profile_json = serde_json::to_string(&profile)
                 .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
@@ -1269,13 +1280,7 @@ impl ControlPanelServer {
             .unwrap_or_else(|| owner_config.name.trim().to_lowercase());
         validate_username(&user_id)?;
         let password_hash = Self::param_str(&req, "password_hash").unwrap_or_default();
-        let mut contact = default_contact_settings(Some(owner_config.id.to_string()));
-        for group in invite.groups.iter() {
-            if !contact.groups.iter().any(|existing| existing == group) {
-                contact.groups.push(group.clone());
-            }
-        }
-        ensure_default_users_group(&mut contact);
+        let contact = default_contact_settings(Some(owner_config.id.to_string()));
         let mut profile = profile_from_owner_config(&owner_config);
         let show_name = invite
             .show_name
@@ -1296,7 +1301,8 @@ impl ControlPanelServer {
                         user_id
                     )));
                 }
-                settings.user_type = invite.default_user_type.clone();
+                settings.user_type = invite.default_user_type;
+                settings.groups = invite.groups.clone();
                 if !password_hash.is_empty() {
                     settings.password = password_hash.clone();
                 }
@@ -1306,12 +1312,14 @@ impl ControlPanelServer {
             }
             Err(_) => UserSettings {
                 user_id: user_id.clone(),
-                user_type: invite.default_user_type.clone(),
+                user_type: invite.default_user_type,
                 password: password_hash.clone(),
                 state: UserState::Active,
                 res_pool_id: "default".to_string(),
                 is_local: false,
                 allow_password_change: None,
+                allow_contact_edit: None,
+                groups: invite.groups.clone(),
             },
         };
         settings.state = UserState::Active;
@@ -1348,6 +1356,9 @@ impl ControlPanelServer {
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to update invite: {}", e)))?;
 
         refresh_rbac_by_scheduler("user.invite_accept").await?;
+        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+            warn!("msg-center reload after invite accept of {user_id} failed: {error}");
+        }
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -1444,11 +1455,7 @@ impl ControlPanelServer {
             .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
-        if principal.username == target
-            && !settings
-                .allow_password_change
-                .unwrap_or(!matches!(settings.user_type, UserType::Limited))
-        {
+        if principal.username == target && !settings.can_change_password() {
             return Err(RPCErrors::ReasonError(
                 "This account is not allowed to change its password".to_string(),
             ));
@@ -1542,10 +1549,6 @@ impl ControlPanelServer {
         let type_str = Self::require_param_str(&req, "user_type")?;
         let new_type = parse_user_type(&type_str)?;
 
-        if matches!(new_type, UserType::Root) {
-            return Err(RPCErrors::ReasonError("Cannot promote to root".to_string()));
-        }
-
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
@@ -1571,6 +1574,9 @@ impl ControlPanelServer {
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to change type: {}", e)))?;
 
         refresh_rbac_by_scheduler("user.change_type").await?;
+        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+            warn!("msg-center reload after changing the type of {target} failed: {error}");
+        }
 
         info!(
             "User '{}' type changed to '{}' by '{}'",
@@ -1581,7 +1587,72 @@ impl ControlPanelServer {
             RPCResult::Success(json!({
                 "ok": true,
                 "user_id": target,
-                "user_type": type_str,
+                "user_type": new_type,
+            })),
+            req.seq,
+        ))
+    }
+
+    // ── user.set_account_options ───────────────────────────────────────
+    // Per-user overrides of the UserType defaults; `null` returns to the default.
+
+    pub(crate) async fn handle_user_set_account_options(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        require_admin(principal)?;
+        let target = Self::require_param_str(&req, "user_id")?;
+        let option = |key: &str| -> Result<Option<Option<bool>>, RPCErrors> {
+            match req.params.get(key) {
+                None => Ok(None),
+                Some(Value::Null) => Ok(Some(None)),
+                Some(Value::Bool(value)) => Ok(Some(Some(*value))),
+                Some(_) => Err(RPCErrors::ParseRequestError(format!(
+                    "{key} must be a boolean or null"
+                ))),
+            }
+        };
+        let allow_password_change = option("allow_password_change")?;
+        let allow_contact_edit = option("allow_contact_edit")?;
+
+        let client = system_config_client_for_caller(&req).await?;
+        let settings_path = format!("users/{}/settings", target);
+        let mut settings = load_user_settings(&client, &target).await?;
+        if matches!(settings.user_type, UserType::Root) {
+            return Err(RPCErrors::ReasonError(
+                "Cannot change root account options".to_string(),
+            ));
+        }
+        if let Some(value) = allow_password_change {
+            settings.allow_password_change = value;
+        }
+        if let Some(value) = allow_contact_edit {
+            settings.allow_contact_edit = value;
+        }
+        let updated_json = serde_json::to_string(&settings)
+            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
+        client
+            .set(&settings_path, &updated_json)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to save options: {}", e)))?;
+        if allow_contact_edit.is_some() {
+            if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+                warn!("msg-center reload after options of {target} failed: {error}");
+            }
+        }
+        info!(
+            "User '{}' account options changed by '{}'",
+            target, principal.username
+        );
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "ok": true,
+                "user_id": target,
+                "allow_password_change": settings.can_change_password(),
+                "allow_contact_edit": settings.can_edit_contacts(),
             })),
             req.seq,
         ))
@@ -1644,6 +1715,39 @@ mod tests {
         assert!(apply_profile_text_patch(&mut profile, &req).is_err());
         let req = RPCRequest::new("user.profile.set", json!({ "bio": 1 }));
         assert!(apply_profile_text_patch(&mut profile, &req).is_err());
+    }
+
+    #[test]
+    fn only_assignable_user_types_are_accepted() {
+        assert_eq!(parse_user_type("Admin").unwrap(), UserType::Admin);
+        assert_eq!(parse_user_type("user").unwrap(), UserType::User);
+        assert_eq!(parse_user_type(" limited ").unwrap(), UserType::Limited);
+        for raw in ["root", "guest", "external", ""] {
+            assert!(parse_user_type(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn account_options_report_overrides_and_effective_values() {
+        let mut settings = UserSettings {
+            user_id: "carol".to_string(),
+            user_type: UserType::Limited,
+            password: String::new(),
+            state: UserState::Active,
+            res_pool_id: "default".to_string(),
+            is_local: true,
+            allow_password_change: None,
+            allow_contact_edit: None,
+            groups: vec!["customer".to_string()],
+        };
+        let value = settings_options_value(&settings);
+        assert_eq!(value["groups"], json!(["customer"]));
+        assert_eq!(value["allow_contact_edit"], Value::Null);
+        assert_eq!(value["can_edit_contacts"], false);
+        assert_eq!(value["can_change_password"], false);
+        settings.allow_contact_edit = Some(true);
+        assert_eq!(settings_options_value(&settings)["can_edit_contacts"], true);
+        assert!(default_contact_settings(None).tags.is_empty());
     }
 
     #[test]

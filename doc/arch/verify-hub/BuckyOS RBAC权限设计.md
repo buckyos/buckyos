@@ -97,12 +97,21 @@ g, demo-app, app
 g, $userid, admin|users|limited
 ```
 
-用户类型来自 `UserSettings.user_type`：
+用户类型来自 `UserSettings.user_type`（权威定义见 [UserType.md](../../../product/users_and_agents/UserType.md)）：
 
-- `Root` 在 scheduler 视角映射为 `admin`，但 `root` 主体本身由基础策略处理，不应当作普通用户生成。
+- `Root` 不生成组关系，`root` 主体由基础策略处理。
 - `Admin` 加入 `admin`。
-- `User` 加入 `user`。
-- `Limited` 加入 `limited`。
+- `User` 加入 `users`。
+- `Limited` 加入 `limited`。`limited` 只有自身策略：`p, limited, obj://config/users/{limited}/settings, read`、`.../profile, read|write`，以及 `p, limited, obj://msg-center/owners/*/contacts, read|write`（自己的通讯录；msg-center 把 owner 绑定到调用者，并按“能否改通讯录”拦写）。
+- 其它 `type` 值不进入任何组，scheduler 告警并跳过。
+
+用户所在的系统用户组（`UserSettings.groups`，定义在 `system/user_groups/<id>`）生成：
+
+```rbac
+g, $userid, group:$group_id
+```
+
+系统用户组不带任何 `p` 规则，只作为 App 可用性、资源授权和通讯录投影引用的身份标签。
 
 如果该用户支持 sudo，还应生成 sudo 主体关系：
 
@@ -274,9 +283,10 @@ RBAC 主体大体分为几类：
 | 系统服务 | `system` | repo-service、msg-center、aicc 等系统服务，通常只写自己的服务配置和服务数据 |
 | 用户应用 | `app` | 普通 App/Agent，必须被 AppID 限制在自己的 app scope 内 |
 | OOD/Node | `ood`、`node` | 设备和节点主体，用于节点状态上报、节点配置读取等 |
-| 登录用户 | `admin`、`user`、`limited` | 可登录用户的日常权限 |
+| 登录用户 | `admin`、`users`、`limited` | 可登录用户的日常权限；`limited` 只有自身资料权限 |
+| 系统用户组 | `group:<id>` | 管理员维护的标签，不带系统策略 |
 | sudo 用户 | `su_admin`、`su_user` | 仅表达 sudo 后新增的敏感权限 |
-| 外部访问者 | `guest`、`friend/contact` | 外部或匿名访问，默认只允许显式 public resource |
+| 外部访问者 | 无 | External（无账号记录的已认证 DID）与匿名访问者不进入任何 RBAC 组，权限只来自资源方授权 |
 
 ## 核心资源隔离
 

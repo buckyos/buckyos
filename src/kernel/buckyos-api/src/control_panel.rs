@@ -1,6 +1,10 @@
 use crate::app_mgr::*;
 use crate::system_config::*;
-use crate::{AppDoc, AppInstanceId, AppType, SelectorType};
+use crate::{
+    default_contact_projection_rules, user_group_config_key, validate_user_group_id, AppDoc,
+    AppInstanceId, AppType, ContactProjectionConfig, ContactProjectionRule, SelectorType,
+    UserGroup, CONTACT_PROJECTIONS_CONFIG_KEY, USER_GROUPS_CONFIG_PREFIX,
+};
 use ::kRPC::*;
 use log::warn;
 use name_lib::{DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, DID};
@@ -76,14 +80,91 @@ impl From<UserState> for String {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+/// The mutually exclusive RBAC group of an account record
+/// (product/users_and_agents/UserType.md). `Root` marks the Zone owner record
+/// and never logs in; anonymous visitors and External users have no record.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum UserType {
     Admin,
     User,
     Root,
     Limited,
-    Guest,
+}
+
+impl UserType {
+    /// Types an admin may create, invite or change an account to.
+    pub const ASSIGNABLE: [UserType; 3] = [UserType::Admin, UserType::User, UserType::Limited];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::User => "user",
+            Self::Root => "root",
+            Self::Limited => "limited",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "admin" => Some(Self::Admin),
+            "user" => Some(Self::User),
+            "root" => Some(Self::Root),
+            "limited" => Some(Self::Limited),
+            _ => None,
+        }
+    }
+
+    pub fn is_privileged(self) -> bool {
+        matches!(self, Self::Admin | Self::Root)
+    }
+
+    /// The RBAC role group scheduler puts the account in; Root has none.
+    pub fn rbac_group(self) -> Option<&'static str> {
+        match self {
+            Self::Admin => Some("admin"),
+            Self::User => Some("users"),
+            Self::Limited => Some("limited"),
+            Self::Root => None,
+        }
+    }
+
+    pub fn can_login(self) -> bool {
+        !matches!(self, Self::Root)
+    }
+
+    pub fn is_assignable(self) -> bool {
+        !matches!(self, Self::Root)
+    }
+
+    pub fn can_create_agent(self) -> bool {
+        !matches!(self, Self::Limited)
+    }
+
+    /// Admin and User accounts own a personal msg-center inbox and are local
+    /// recipients; Limited accounts take part through group sessions only.
+    pub fn can_receive_direct_messages(self) -> bool {
+        matches!(self, Self::Admin | Self::User)
+    }
+
+    /// Only Admin and User accounts may be vouched for to other Zones.
+    pub fn can_federate_out(self) -> bool {
+        matches!(self, Self::Admin | Self::User)
+    }
+
+    pub fn default_can_change_password(self) -> bool {
+        !matches!(self, Self::Limited)
+    }
+
+    pub fn default_can_edit_contacts(self) -> bool {
+        !matches!(self, Self::Limited)
+    }
+}
+
+impl std::fmt::Display for UserType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -109,8 +190,8 @@ pub struct UserContactSettings {
     pub did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<String>,
+    /// Contact tags the Zone suggests for this user. Authorization groups are
+    /// system user groups (`UserSettings.groups`), not contact settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -131,6 +212,11 @@ pub struct UserSettings {
     pub is_local: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_password_change: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_contact_edit: Option<bool>,
+    /// System user group ids (`system/user_groups/<id>`); only admins change them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -139,6 +225,8 @@ pub struct UserInfo {
     pub user_id: String,
     pub state: UserState,
     pub user_type: UserType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 impl UserSettings {
@@ -147,8 +235,68 @@ impl UserSettings {
             show_name: self.user_id.clone(),
             user_id: self.user_id.clone(),
             state: self.state.clone(),
-            user_type: self.user_type.clone(),
+            user_type: self.user_type,
+            groups: self.groups.clone(),
         }
+    }
+
+    /// An active account other than the Zone owner record.
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, UserState::Active) && self.user_type.can_login()
+    }
+
+    pub fn can_change_password(&self) -> bool {
+        self.allow_password_change
+            .unwrap_or_else(|| self.user_type.default_can_change_password())
+    }
+
+    pub fn can_edit_contacts(&self) -> bool {
+        self.allow_contact_edit
+            .unwrap_or_else(|| self.user_type.default_can_edit_contacts())
+    }
+
+    /// The UserType group and the system user groups the account belongs to.
+    pub fn group_refs(&self) -> Vec<crate::UserGroupRef> {
+        if !self.user_type.is_assignable() {
+            return Vec::new();
+        }
+        let mut refs = vec![crate::UserGroupRef::Type(self.user_type)];
+        for group_id in &self.groups {
+            let group = crate::UserGroupRef::Group(group_id.clone());
+            if !refs.contains(&group) {
+                refs.push(group);
+            }
+        }
+        refs
+    }
+}
+
+/// Whom a user session speaks for (T-4 of the user type definition).
+#[derive(Clone, Debug)]
+pub enum ZoneUserPrincipal {
+    Account(UserSettings),
+    /// Authenticated, but this Zone keeps no account record for the DID.
+    External(DID),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UserGroupDirectory {
+    pub groups: Vec<UserGroup>,
+    /// `None` until an admin saved rules; [`Self::projection_rules`] then
+    /// returns the defaults.
+    pub projections: Option<ContactProjectionConfig>,
+}
+
+impl UserGroupDirectory {
+    pub fn defined_group_ids(&self) -> std::collections::HashSet<String> {
+        self.groups.iter().map(|group| group.group_id.clone()).collect()
+    }
+
+    pub fn projection_rules(&self) -> Vec<ContactProjectionRule> {
+        self.projections
+            .as_ref()
+            .map(|config| config.rules.clone())
+            .unwrap_or_else(default_contact_projection_rules)
     }
 }
 
@@ -316,6 +464,90 @@ impl ControlPanelClient {
         let user_info: UserSettings = serde_json::from_str(&user_info.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(user_info)
+    }
+
+    /// Load every user group definition and the contact projection rules
+    /// (defaults while none were saved).
+    pub async fn load_user_groups(&self) -> Result<UserGroupDirectory> {
+        let mut groups = Vec::new();
+        let ids = match self.system_config_client.list(USER_GROUPS_CONFIG_PREFIX).await {
+            Ok(ids) => ids,
+            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+            Err(error) => return Err(system_config_read_error(USER_GROUPS_CONFIG_PREFIX, error)),
+        };
+        for group_id in ids {
+            if validate_user_group_id(&group_id).is_err() {
+                continue;
+            }
+            let key = user_group_config_key(&group_id);
+            let value = self
+                .system_config_client
+                .get(&key)
+                .await
+                .map_err(|error| system_config_read_error(&key, error))?;
+            let group: UserGroup = serde_json::from_str(&value.value).map_err(|error| {
+                RPCErrors::ReasonError(format!("invalid user group `{key}`: {error}"))
+            })?;
+            groups.push(group);
+        }
+        groups.sort_by(|left, right| left.group_id.cmp(&right.group_id));
+        let projections = match self
+            .system_config_client
+            .get(CONTACT_PROJECTIONS_CONFIG_KEY)
+            .await
+        {
+            Ok(value) => Some(
+                serde_json::from_str::<ContactProjectionConfig>(&value.value).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "invalid `{CONTACT_PROJECTIONS_CONFIG_KEY}`: {error}"
+                    ))
+                })?,
+            ),
+            Err(SystemConfigError::KeyNotFound(_)) => None,
+            Err(error) => {
+                return Err(system_config_read_error(CONTACT_PROJECTIONS_CONFIG_KEY, error))
+            }
+        };
+        Ok(UserGroupDirectory {
+            groups,
+            projections,
+        })
+    }
+
+    /// Resolve whom an ordinary user session token speaks for: an account
+    /// record of this Zone, or an External DID (no record).
+    pub async fn resolve_user_principal(
+        &self,
+        token: &RPCSessionToken,
+    ) -> Result<ZoneUserPrincipal> {
+        let subject = token
+            .sub
+            .as_deref()
+            .ok_or_else(|| RPCErrors::InvalidToken("missing sub".to_string()))?;
+        match crate::token_principal_kind(token)? {
+            crate::TokenPrincipalKind::User if crate::token_is_external(token) => {
+                let did = DID::from_str(subject).map_err(|error| {
+                    RPCErrors::InvalidToken(format!("External subject is not a DID: {error}"))
+                })?;
+                Ok(ZoneUserPrincipal::External(did))
+            }
+            crate::TokenPrincipalKind::User => {
+                let key = format!("users/{subject}/settings");
+                let value = self
+                    .system_config_client
+                    .get(&key)
+                    .await
+                    .map_err(|error| system_config_read_error(&key, error))?;
+                let settings: UserSettings = serde_json::from_str(&value.value).map_err(|error| {
+                    RPCErrors::InvalidToken(format!("unusable account record `{key}`: {error}"))
+                })?;
+                Ok(ZoneUserPrincipal::Account(settings))
+            }
+            kind => Err(RPCErrors::InvalidToken(format!(
+                "principal kind `{}` is not a user",
+                kind.as_str()
+            ))),
+        }
     }
 
     pub async fn update_service_instance_info(

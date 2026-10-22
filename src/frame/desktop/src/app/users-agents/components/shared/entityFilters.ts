@@ -61,7 +61,7 @@ function getEntitySearchText(entity: AnyEntity) {
       entity.source,
       entity.status,
       entity.credentialStatus,
-      entity.defaultGroup,
+      ...entity.groups,
       ...entity.availableApps,
       ...Object.values(entity.profile),
       ...Object.values(entity.settings),

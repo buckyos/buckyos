@@ -5,11 +5,13 @@
 
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    contact_tag_app, contact_tag_kind, normalize_contact_tag, ContactCancelFriendRequestReq,
+    contact_tag_app, contact_tag_kind, normalize_contact_tag, AccessGroupLevel,
+    ContactCancelFriendRequestReq, ContactCheckMembershipReq, ContactCheckMembershipResult,
     ContactDidReq, ContactListFriendRequestsReq, ContactLookupReq, ContactRemoveFriendReq,
     ContactRespondFriendRequestReq, ContactSendFriendRequestReq, ContactSource, ContactTagKind,
-    ContactUpdateTagsReq, TokenPrincipalKind, CONTACT_TAGS_RBAC_RESOURCE_PREFIX,
-    METHOD_CONTACT_CANCEL_FRIEND_REQUEST, METHOD_CONTACT_LIST_FRIEND_REQUESTS,
+    ContactUpdateTagsReq, TokenPrincipalKind, CONTACT_MEMBERSHIP_RBAC_RESOURCE,
+    CONTACT_TAGS_RBAC_RESOURCE_PREFIX, METHOD_CONTACT_CANCEL_FRIEND_REQUEST,
+    METHOD_CONTACT_CHECK_MEMBERSHIP, METHOD_CONTACT_LIST_FRIEND_REQUESTS,
     METHOD_CONTACT_LOOKUP, METHOD_CONTACT_REMOVE_CONTACT, METHOD_CONTACT_REMOVE_FRIEND,
     METHOD_CONTACT_RESPOND_FRIEND_REQUEST, METHOD_CONTACT_SEND_FRIEND_REQUEST,
     METHOD_CONTACT_UNBLOCK_CONTACT, METHOD_CONTACT_UPDATE_TAGS,
@@ -187,7 +189,40 @@ impl MessageCenter {
                     .await?;
                 encode(self.list_friend_requests(&owner, &req).await?)
             }
+            METHOD_CONTACT_CHECK_MEMBERSHIP => {
+                let req: ContactCheckMembershipReq = parse(params)?;
+                if let Some(caller) = self.caller_identity(&ctx).await? {
+                    if caller.principal_kind == TokenPrincipalKind::User {
+                        return Err(denied("service-only"));
+                    }
+                    self.authorize_resource(&ctx, CONTACT_MEMBERSHIP_RBAC_RESOURCE, "read")
+                        .await?;
+                }
+                encode(self.check_contact_membership(&req).await?)
+            }
             _ => Err(RPCErrors::UnknownMethod(method.to_string())),
         }
+    }
+
+    /// Is exactly `req.did` (no alias or merge resolution: the caller proved
+    /// that DID) in `req.owner`'s group `req.tag`, projected Zone users
+    /// included? A blocked contact is in no group.
+    pub(crate) async fn check_contact_membership(
+        &self,
+        req: &ContactCheckMembershipReq,
+    ) -> Result<ContactCheckMembershipResult> {
+        let tag = normalize_contact_tag(&req.tag)
+            .ok_or_else(|| RPCErrors::ParseRequestError("invalid-tag".into()))?;
+        let contact = self
+            .contact_mgr
+            .get_contact(req.did.clone(), Some(req.owner.clone()))
+            .await?
+            .filter(|contact| self.contact_visible(Some(&req.owner), contact));
+        Ok(ContactCheckMembershipResult {
+            member: contact.is_some_and(|contact| {
+                contact.access_level != AccessGroupLevel::Block
+                    && contact.tags.iter().any(|t| *t == tag)
+            }),
+        })
     }
 }

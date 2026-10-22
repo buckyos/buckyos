@@ -8,6 +8,7 @@ import {
   contactTagKind,
   type ContactTagKind,
 } from 'buckyos'
+import { parseUserGroupRef } from '../../api/user_type'
 import { z } from 'zod'
 import type {
   AccessGroupLevel,
@@ -48,6 +49,8 @@ export interface RelationFacts {
   pendingRequestId?: string
   /** Ordinary messages of this sender wait in REQUEST_BOX. */
   messageRequest?: boolean
+  /** A system projection entry: it cannot be deleted (tags, a note and blocking still go to the owner's own record). */
+  projected?: boolean
 }
 
 export function relationOfCandidate(candidate: LookupCandidate): RelationFacts {
@@ -72,6 +75,7 @@ export function relationOfContact(contact: Contact, now = Date.now()): RelationF
     accessLevel: contact.access_level,
     temporaryExpiresAtMs: grant > now ? grant : undefined,
     tags: contact.tags ?? [],
+    projected: (contact.projected_from?.length ?? 0) > 0,
   }
 }
 
@@ -121,9 +125,15 @@ export function isWellKnownTag(tag: string) {
   return WELL_KNOWN_CONTACT_TAGS.some(item => item.key === tag)
 }
 
-/** Well-known tags have a Desktop display name; a user tag's name is its text. */
-export function tagLabel(t: Translate, tag: string): string {
+/**
+ * Well-known tags have a Desktop display name; a projection source (`type:<type>`, `group:<id>`) shows
+ * the account type or the group's name (its id when the name is not known); a user tag's name is its text.
+ */
+export function tagLabel(t: Translate, tag: string, groupNames?: ReadonlyMap<string, string>): string {
   if (isWellKnownTag(tag)) return t(`network.tag.${tag}`, tag)
+  const ref = parseUserGroupRef(tag)
+  if (ref?.kind === 'type') return t(`network.tag.type.${ref.userType}`)
+  if (ref?.kind === 'group') return groupNames?.get(ref.groupId) ?? ref.groupId
   return tag
 }
 
@@ -146,6 +156,9 @@ const KNOWN_ERRORS = new Set([
   'unreachable',
   'forbidden',
   'system-relation',
+  'projected-contact-read-only',
+  'contact-edit-not-allowed',
+  'recipient-has-no-inbox',
   'tag-not-writable',
   'invalid-tag',
   'peer-blocked',
@@ -270,9 +283,10 @@ export type RelationActionId =
 export function availableActions(facts: RelationFacts, options: { collectionTag?: string; kind?: LookupKind } = {}, now = Date.now()): RelationActionId[] {
   const actions: RelationActionId[] = []
   if (options.collectionTag && contactTagKind(options.collectionTag) === 'user' && facts.tags.includes(options.collectionTag)) actions.push('remove_from_collection')
+  const removable = facts.isContact && !facts.projected
   if (facts.accessLevel === 'block') {
     actions.push('unblock')
-    if (facts.isContact) actions.push('remove_contact')
+    if (removable) actions.push('remove_contact')
     return actions
   }
   if (facts.friendState === 'none' && options.kind !== 'msgtunnel' && options.kind !== 'group') actions.push('add_friend')
@@ -281,7 +295,7 @@ export function availableActions(facts: RelationFacts, options: { collectionTag?
   if (facts.friendState !== 'friend' && !messagesAllowed(facts, now)) actions.push('allow_messages')
   if (facts.friendState === 'friend') actions.push('unfriend')
   actions.push('block')
-  if (facts.isContact) actions.push('remove_contact')
+  if (removable) actions.push('remove_contact')
   return actions
 }
 

@@ -1,6 +1,6 @@
 use crate::{
     AppId, AppInstanceId, AppServiceSpec, AuthTarget, SystemConfigClient,
-    SystemConfigError, SystemServiceId, UserSettings, UserState, UserType,
+    SystemConfigError, SystemServiceId, UserSettings, UserType,
 };
 use ::kRPC::{RPCErrors, RPCSessionToken};
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,10 @@ pub const TOKEN_PRINCIPAL_KIND_DEVICE: &str = "device";
 pub const TOKEN_PRINCIPAL_KIND_APP: &str = "app";
 pub const TOKEN_PRINCIPAL_KIND_SYSTEM: &str = "system";
 pub const TOKEN_PRINCIPAL_KIND_AGENT: &str = "agent";
+/// Marks a `user` token whose subject is a DID without an account record in
+/// this Zone (External). The principal kind stays `user`, so a service that
+/// does not know External looks the account up, finds none and refuses.
+pub const TOKEN_EXTERNAL_CLAIM: &str = "external";
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -218,6 +222,17 @@ pub fn token_principal_kind(token: &RPCSessionToken) -> Result<TokenPrincipalKin
     }
 }
 
+pub fn bind_token_external(token: &mut RPCSessionToken) {
+    bind_token_principal_kind(token, TokenPrincipalKind::User);
+    token
+        .extra
+        .insert(TOKEN_EXTERNAL_CLAIM.to_string(), serde_json::Value::Bool(true));
+}
+
+pub fn token_is_external(token: &RPCSessionToken) -> bool {
+    token.extra.get(TOKEN_EXTERNAL_CLAIM).and_then(serde_json::Value::as_bool) == Some(true)
+}
+
 pub fn bind_token_target(
     token: &mut RPCSessionToken,
     target: &AuthTarget,
@@ -404,19 +419,22 @@ pub fn app_availability_audit_key(app_instance_id: &AppInstanceId, revision: u64
     format!("{APP_AVAILABILITY_AUDIT_PREFIX}/{app_instance_id}/{revision}")
 }
 
-pub fn system_group_for_user_type(user_type: &UserType) -> Option<&'static str> {
+/// App availability group of a UserType. `guest` is reserved for anonymous
+/// requests (no account record) and `group:<id>` names a system user group.
+pub fn system_group_for_user_type(user_type: UserType) -> Option<&'static str> {
     match user_type {
         UserType::Admin => Some("admins"),
         UserType::User => Some("users"),
         UserType::Limited => Some("limited"),
-        UserType::Guest => Some("guest"),
         UserType::Root => None,
     }
 }
 
+pub const ANONYMOUS_AVAILABILITY_GROUP: &str = "guest";
+const USER_TYPE_AVAILABILITY_GROUPS: [&str; 3] = ["admins", "users", "limited"];
+
 pub fn user_is_active(settings: &UserSettings) -> bool {
-    matches!(settings.state, UserState::Active)
-        && !matches!(settings.user_type, UserType::Root | UserType::Guest)
+    settings.is_active()
 }
 
 pub fn evaluate_app_availability(
@@ -491,26 +509,17 @@ pub fn evaluate_app_availability(
         }
     }
 
-    let group_id = if is_guest {
-        Some("guest")
-    } else {
-        target_user.and_then(|settings| system_group_for_user_type(&settings.user_type))
-    };
-    if let Some(group_id) = group_id {
-        if let Some(rule) = policy
-            .group_rules
-            .iter()
-            .find(|rule| rule.group_id == group_id)
-        {
-            return match rule.effect {
-                AvailabilityEffect::Allow => allowed(
-                    AvailabilityMatchType::Group,
-                    Some(group_id.to_string()),
-                    "group_allow",
-                ),
-                AvailabilityEffect::Deny => denied("group_deny"),
-            };
-        }
+    if let Some((effect, group_id)) =
+        match_availability_group_rule(&policy.group_rules, target_user.filter(|_| !is_guest))
+    {
+        return match effect {
+            AvailabilityEffect::Allow => allowed(
+                AvailabilityMatchType::Group,
+                Some(group_id),
+                "group_allow",
+            ),
+            AvailabilityEffect::Deny => denied("group_deny"),
+        };
     }
     match policy.default_effect {
         AvailabilityEffect::Allow => allowed(
@@ -522,14 +531,54 @@ pub fn evaluate_app_availability(
     }
 }
 
+/// The group rule that decides for a user (`None` = anonymous request). System
+/// user group rules come before the UserType group rule, and among the system
+/// groups of one user an allow wins.
+pub fn match_availability_group_rule(
+    group_rules: &[AppAvailabilityGroupRule],
+    target_user: Option<&UserSettings>,
+) -> Option<(AvailabilityEffect, String)> {
+    let Some(settings) = target_user else {
+        return group_rules
+            .iter()
+            .find(|rule| rule.group_id == ANONYMOUS_AVAILABILITY_GROUP)
+            .map(|rule| (rule.effect, rule.group_id.clone()));
+    };
+    let system_rules: Vec<&AppAvailabilityGroupRule> = group_rules
+        .iter()
+        .filter(|rule| {
+            rule.group_id
+                .strip_prefix(crate::USER_GROUP_REF_PREFIX)
+                .is_some_and(|group_id| settings.groups.iter().any(|g| g == group_id))
+        })
+        .collect();
+    if let Some(rule) = system_rules
+        .iter()
+        .find(|rule| rule.effect == AvailabilityEffect::Allow)
+        .or_else(|| system_rules.first())
+    {
+        return Some((rule.effect, rule.group_id.clone()));
+    }
+    let type_group = system_group_for_user_type(settings.user_type)?;
+    group_rules
+        .iter()
+        .find(|rule| rule.group_id == type_group)
+        .map(|rule| (rule.effect, rule.group_id.clone()))
+}
+
 pub fn validate_availability_rules(
     group_rules: &[AppAvailabilityGroupRule],
     user_rules: &[AppAvailabilityUserRule],
 ) -> Result<(), RPCErrors> {
-    const GROUPS: [&str; 4] = ["admins", "users", "limited", "guest"];
     let mut seen_groups = HashSet::new();
     for rule in group_rules {
-        if !GROUPS.contains(&rule.group_id.as_str()) || !seen_groups.insert(&rule.group_id) {
+        let known = USER_TYPE_AVAILABILITY_GROUPS.contains(&rule.group_id.as_str())
+            || rule.group_id == ANONYMOUS_AVAILABILITY_GROUP
+            || rule
+                .group_id
+                .strip_prefix(crate::USER_GROUP_REF_PREFIX)
+                .is_some_and(|group_id| crate::validate_user_group_id(group_id).is_ok());
+        if !known || !seen_groups.insert(&rule.group_id) {
             return Err(RPCErrors::ParseRequestError(format!(
                 "invalid or duplicate availability group `{}`",
                 rule.group_id
@@ -758,6 +807,7 @@ async fn list_children_or_empty(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::UserState;
 
     fn token() -> RPCSessionToken {
         RPCSessionToken {
@@ -807,6 +857,43 @@ mod tests {
             &[],
         )
         .is_err());
+    }
+
+    #[test]
+    fn system_group_rules_open_apps_to_limited_accounts() {
+        let rule = |group_id: &str, effect| AppAvailabilityGroupRule {
+            group_id: group_id.into(),
+            effect,
+        };
+        let rules = vec![
+            rule("limited", AvailabilityEffect::Deny),
+            rule("group:customer", AvailabilityEffect::Allow),
+            rule("group:minors", AvailabilityEffect::Deny),
+            rule("guest", AvailabilityEffect::Allow),
+        ];
+        assert!(validate_availability_rules(&rules, &[]).is_ok());
+        assert!(validate_availability_rules(&[rule("group:Bad", AvailabilityEffect::Allow)], &[]).is_err());
+        let mut carol = UserSettings {
+            user_id: "carol".into(),
+            user_type: UserType::Limited,
+            password: String::new(),
+            state: UserState::Active,
+            res_pool_id: "default".into(),
+            is_local: true,
+            allow_password_change: None,
+            allow_contact_edit: None,
+            groups: Vec::new(),
+        };
+        let decide = |settings: Option<&UserSettings>| match_availability_group_rule(&rules, settings);
+        assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Deny, "limited".into())));
+        carol.groups = vec!["customer".into(), "minors".into()];
+        assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Allow, "group:customer".into())));
+        carol.groups = vec!["minors".into()];
+        assert_eq!(decide(Some(&carol)), Some((AvailabilityEffect::Deny, "group:minors".into())));
+        carol.user_type = UserType::User;
+        carol.groups.clear();
+        assert_eq!(decide(Some(&carol)), None);
+        assert_eq!(decide(None), Some((AvailabilityEffect::Allow, "guest".into())));
     }
 
     #[test]

@@ -14,6 +14,7 @@ import { RelationActions } from '../../../components/network/RelationActions'
 import { RelationBadge } from '../../../components/network/RelationBadge'
 import { NOT_RELATED, networkErrorText, relationOfCandidate, relationOfContact, tagKind, tagLabel, timeMs, userTags, withPendingRequest, type RelationActionId, type RelationFacts } from '../../../components/network/relation'
 import { TagEditor } from '../../../components/network/TagEditor'
+import { isProjectedContact, useContactEditPermission, useUserGroupNames } from '../../../components/network/permissions'
 import type { Contact, LookupCandidate } from '../../../components/network/types'
 import { kindOfContact } from '../datamodel/collections'
 import { homePageUrl, openHomeStation, openMessageHub } from '../datamodel/links'
@@ -36,7 +37,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function CollectionsCard({ contact, suggestions }: { contact: Contact; suggestions: string[] }) {
+function CollectionsCard({ contact, suggestions, editable, groupNames }: { contact: Contact; suggestions: string[]; editable: boolean; groupNames: ReadonlyMap<string, string> }) {
   const { t } = useI18n()
   const dialogs = useNetworkDialogs()
   const [error, setError] = useState<string | null>(null)
@@ -71,12 +72,18 @@ function CollectionsCard({ contact, suggestions }: { contact: Contact; suggestio
   return (
     <Card title={t('myNetwork.detail.collections')} testId="contact-collections">
       <div className="space-y-3">
-        <TagEditor value={own} onChange={next => void change(next)} suggestions={suggestions} disabled={busy} label={t('myNetwork.collection.section.user')} />
+        {editable ? (
+          <TagEditor value={own} onChange={next => void change(next)} suggestions={suggestions} disabled={busy} label={t('myNetwork.collection.section.user')} />
+        ) : own.length ? (
+          <div className="flex flex-wrap items-center gap-1.5" data-testid="contact-user-tags">
+            {own.map(tag => <Pill key={tag} tone="var(--cp-accent)">{tag}</Pill>)}
+          </div>
+        ) : null}
         {views.length ? (
           <div className="space-y-1.5">
             <div className="text-[12px] font-medium text-[color:var(--cp-muted)]">{t('myNetwork.detail.views')}</div>
             <div className="flex flex-wrap items-center gap-1.5">
-              {views.map(tag => <Pill key={tag} tone="var(--cp-muted)">{tagLabel(t, tag)}</Pill>)}
+              {views.map(tag => <Pill key={tag} tone="var(--cp-muted)">{tagLabel(t, tag, groupNames)}</Pill>)}
               {views.some(tag => tag.startsWith('homestation.')) ? (
                 <Button variant="text" size="small" startIcon={<ExternalLink size={13} />} onClick={openHomeStation}>{t('myNetwork.collection.manageInHomeStation')}</Button>
               ) : null}
@@ -127,6 +134,8 @@ export function ContactDetailPage({ did, collectionTag, onRemoved }: { did: stri
   const contacts = useNetworkResource('contacts')
   const friendRequests = useNetworkResource('friendRequests')
   const lookup = useLookup(did, { debounceMs: 0 })
+  const canEditContacts = useContactEditPermission()
+  const groupNames = useUserGroupNames()
   const contact = contacts.data?.find(item => item.did === did)
   const candidate = lookup.result?.candidates.find(item => item.did === did)
 
@@ -156,10 +165,26 @@ export function ContactDetailPage({ did, collectionTag, onRemoved }: { did: stri
 
       <Card title={t('myNetwork.detail.relationship')} testId="contact-relationship">
         {!contact ? <p className="mb-3 text-[13px] text-[color:var(--cp-muted)]">{t('myNetwork.detail.notContact')}</p> : null}
-        <RelationActions person={person} relation={relation} collectionTag={collectionTag} onDone={done} />
+        {isProjectedContact(contact) ? (
+          <p className="mb-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="contact-projected">
+            {t('myNetwork.detail.projected', undefined, { groups: (contact?.projected_from ?? []).map(tag => tagLabel(t, tag, groupNames)).join(', ') })}
+          </p>
+        ) : null}
+        {canEditContacts ? (
+          <RelationActions person={person} relation={relation} collectionTag={collectionTag} onDone={done} />
+        ) : (
+          <p className="text-[13px] text-[color:var(--cp-muted)]" data-testid="contact-read-only">{t('myNetwork.readOnly.detail')}</p>
+        )}
       </Card>
 
-      {contact ? <CollectionsCard contact={contact} suggestions={suggestions} /> : null}
+      {contact ? (
+        <CollectionsCard
+          contact={contact}
+          suggestions={suggestions}
+          editable={canEditContacts}
+          groupNames={groupNames}
+        />
+      ) : null}
 
       <Card title={t('myNetwork.detail.reachability')}>
         <Fact label="DID"><span className="break-all font-mono text-[12px]">{did}</span></Fact>

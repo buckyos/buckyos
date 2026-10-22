@@ -1,4 +1,5 @@
 import { callRpc, type RpcCallOptions } from './rpc.ts'
+import type { AssignableUserType, ContactProjectionRule, UserType } from './user_type.ts'
 import { isMockRuntime } from '../runtime.ts'
 
 /** Agent and own-profile calls; the mock runtime answers them from an in-browser control panel. */
@@ -15,8 +16,7 @@ async function callControlPanel<T>(
 // Types
 // ---------------------------------------------------------------------------
 
-/** Possible user types. Mirrors `UserType` in `buckyos-api/src/control_panel.rs`. */
-export type UserType = 'admin' | 'user' | 'root' | 'limited' | 'guest'
+export type { AssignableUserType, ContactProjectionRule, UserType }
 
 /**
  * User state as serialized by the backend. Active/Deleted are plain strings;
@@ -49,7 +49,6 @@ export interface UserTunnelBinding {
 export interface UserContactSettings {
   did?: string | null
   note?: string | null
-  groups?: string[]
   tags?: string[]
   bindings?: UserTunnelBinding[]
 }
@@ -99,7 +98,14 @@ export interface UserInfo {
   user_type: UserType | string
   state: UserStateString
   is_local?: boolean
-  allow_password_change?: boolean
+  /** Raw per-account override; null/absent means the type default. */
+  allow_password_change?: boolean | null
+  allow_contact_edit?: boolean | null
+  /** Effective values. */
+  can_change_password?: boolean
+  can_edit_contacts?: boolean
+  /** System user group ids. */
+  groups?: string[]
 }
 
 export interface UsersListResponse {
@@ -117,7 +123,12 @@ export interface UserDetail {
   is_local?: boolean
   profile?: UserProfile | Record<string, unknown> | null
   local_profile?: UserPrivateProfile | null
+  /** Effective: the account may change its own password. */
   allow_password_change?: boolean
+  /** Effective: the account may edit its own address book. */
+  allow_contact_edit?: boolean
+  /** System user group ids. */
+  groups?: string[]
   /** Optional DID document loaded from `users/{uid}/doc`. */
   did_document?: Record<string, unknown>
 }
@@ -332,7 +343,7 @@ export interface AgentCreateResponse {
 export const fetchUserList = async (): Promise<{
   data: UsersListResponse | null
   error: unknown
-}> => callRpc<UsersListResponse>('user.list', {})
+}> => callControlPanel<UsersListResponse>('user.list', {})
 
 /** Get a single user's detail. Defaults to the caller when `user_id` omitted. */
 export const fetchUserDetail = async (
@@ -343,13 +354,15 @@ export const fetchUserDetail = async (
   return callControlPanel<UserDetail>('user.get', params)
 }
 
-/** Create a new user. Admin-only. */
+/** Create a new user (User or Limited). Admin-only. */
 export const createUser = async (input: {
   userId: string
   passwordHash: string
   showName?: string
-  userType?: Exclude<UserType, 'root'>
+  userType?: Exclude<AssignableUserType, 'admin'>
+  groups?: string[]
   allowPasswordChange?: boolean
+  allowContactEdit?: boolean
 }, options: RpcCallOptions = {}): Promise<{
   data: UserCreateResponse | null
   error: unknown
@@ -360,8 +373,12 @@ export const createUser = async (input: {
   }
   if (input.showName !== undefined) params.show_name = input.showName
   if (input.userType !== undefined) params.user_type = input.userType
+  if (input.groups !== undefined) params.groups = input.groups
   if (input.allowPasswordChange !== undefined) {
     params.allow_password_change = input.allowPasswordChange
+  }
+  if (input.allowContactEdit !== undefined) {
+    params.allow_contact_edit = input.allowContactEdit
   }
   return callRpc<UserCreateResponse>('user.create', params, options)
 }
@@ -386,7 +403,6 @@ export const updateUserContact = async (input: {
   userId?: string
   did?: string
   note?: string
-  groups?: string[]
   tags?: string[]
   bindings?: UserTunnelBinding[]
 }): Promise<{
@@ -397,7 +413,6 @@ export const updateUserContact = async (input: {
   if (input.userId) params.user_id = input.userId
   if (input.did !== undefined) params.did = input.did
   if (input.note !== undefined) params.note = input.note
-  if (input.groups !== undefined) params.groups = input.groups
   if (input.tags !== undefined) params.tags = input.tags
   if (input.bindings !== undefined) params.bindings = input.bindings
   return callRpc<SimpleOkResponse & { contact?: UserContactSettings }>(
@@ -524,9 +539,10 @@ export const createUserInvite = async (input: {
   userId?: string
   targetDid?: string
   showName?: string
-  userType?: Exclude<UserType, 'root'>
+  userType?: AssignableUserType
   expiresAt?: number
   ttlSecs?: number
+  /** System user group ids. */
   groups?: string[]
 }): Promise<{ data: UserInviteResponse | null; error: unknown }> => {
   const params: Record<string, unknown> = {}
@@ -587,15 +603,120 @@ export const changeUserState = async (input: {
     state: input.state,
   })
 
-/** Change a user's type. Admin-only; cannot promote to root or change root's type. */
+/** Change a user's type between Admin, User and Limited. Admin-only; the owner record cannot change. */
 export const changeUserType = async (input: {
   userId: string
-  userType: Exclude<UserType, 'root'>
+  userType: AssignableUserType
 }): Promise<{ data: SimpleOkResponse | null; error: unknown }> =>
-  callRpc<SimpleOkResponse>('user.change_type', {
+  callControlPanel<SimpleOkResponse>('user.change_type', {
     user_id: input.userId,
     user_type: input.userType,
   })
+
+export interface UserAccountOptionsResponse extends SimpleOkResponse {
+  user_id: string
+  allow_password_change: boolean
+  allow_contact_edit: boolean
+}
+
+/** Per-account overrides; `null` restores the account type's default. Admin-only. */
+export const setUserAccountOptions = async (input: {
+  userId: string
+  allowPasswordChange?: boolean | null
+  allowContactEdit?: boolean | null
+}): Promise<{ data: UserAccountOptionsResponse | null; error: unknown }> => {
+  const params: Record<string, unknown> = { user_id: input.userId }
+  if (input.allowPasswordChange !== undefined) params.allow_password_change = input.allowPasswordChange
+  if (input.allowContactEdit !== undefined) params.allow_contact_edit = input.allowContactEdit
+  return callControlPanel<UserAccountOptionsResponse>('user.set_account_options', params)
+}
+
+// ---------------------------------------------------------------------------
+// System user groups and contact projection (admin-only)
+// ---------------------------------------------------------------------------
+
+export interface UserGroup {
+  group_id: string
+  name: string
+  description?: string | null
+  updated_by: string
+  created_at: number
+  updated_at: number
+}
+
+export interface UserGroupListItem extends UserGroup {
+  members: string[]
+}
+
+export interface ContactProjections {
+  rules: ContactProjectionRule[]
+  /** No rules were saved; the Zone uses the default rules. */
+  is_default: boolean
+  updated_by?: string
+  updated_at?: number
+}
+
+export interface UserGroupListResponse {
+  groups: UserGroupListItem[]
+  projections: ContactProjections
+}
+
+export const fetchUserGroups = async (): Promise<{ data: UserGroupListResponse | null; error: unknown }> =>
+  callControlPanel<UserGroupListResponse>('user_group.list', {})
+
+export const createUserGroup = async (input: {
+  groupId: string
+  name: string
+  description?: string
+}): Promise<{ data: { ok: boolean; group: UserGroup } | null; error: unknown }> => {
+  const params: Record<string, unknown> = { group_id: input.groupId, name: input.name }
+  if (input.description !== undefined) params.description = input.description
+  return callControlPanel<{ ok: boolean; group: UserGroup }>('user_group.create', params)
+}
+
+export const updateUserGroup = async (input: {
+  groupId: string
+  name?: string
+  description?: string
+}): Promise<{ data: { ok: boolean; group: UserGroup } | null; error: unknown }> => {
+  const params: Record<string, unknown> = { group_id: input.groupId }
+  if (input.name !== undefined) params.name = input.name
+  if (input.description !== undefined) params.description = input.description
+  return callControlPanel<{ ok: boolean; group: UserGroup }>('user_group.update', params)
+}
+
+export interface UserGroupDeleteResponse {
+  ok: boolean
+  group_id: string
+  removed_members: number
+  removed_rules: number
+}
+
+export const deleteUserGroup = async (
+  groupId: string,
+): Promise<{ data: UserGroupDeleteResponse | null; error: unknown }> =>
+  callControlPanel<UserGroupDeleteResponse>('user_group.delete', { group_id: groupId })
+
+export const setUserGroupMembers = async (input: {
+  groupId: string
+  add?: string[]
+  remove?: string[]
+}): Promise<{ data: { ok: boolean; group_id: string; members: string[] } | null; error: unknown }> => {
+  const params: Record<string, unknown> = { group_id: input.groupId }
+  if (input.add !== undefined) params.add = input.add
+  if (input.remove !== undefined) params.remove = input.remove
+  return callControlPanel<{ ok: boolean; group_id: string; members: string[] }>('user_group.set_members', params)
+}
+
+export const setContactProjections = async (
+  rules: ContactProjectionRule[],
+): Promise<{ data: { ok: boolean; projections: ContactProjections } | null; error: unknown }> =>
+  callControlPanel<{ ok: boolean; projections: ContactProjections }>('user_group.set_projections', { rules })
+
+export const resetContactProjections = async (): Promise<{
+  data: { ok: boolean; projections: ContactProjections } | null
+  error: unknown
+}> => callControlPanel<{ ok: boolean; projections: ContactProjections }>('user_group.reset_projections', {})
 
 // ---------------------------------------------------------------------------
 // Agent management RPC

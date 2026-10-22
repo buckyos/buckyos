@@ -14,6 +14,7 @@ import { StateMessage } from './Person'
 import { personName, type PersonRef } from './personPresentation'
 import { availableActions, networkErrorText, type RelationActionId, type RelationFacts } from './relation'
 import { dangerOutlinedSx } from './buttonStyles'
+import { useContactEditPermission } from './permissions'
 
 const ICONS: Record<RelationActionId, ReactNode> = {
   add_friend: <UserPlus size={14} />,
@@ -45,7 +46,10 @@ export function RelationActions({ person, relation, collectionTag, exclude = [],
   const [pending, setPending] = useState<RelationActionId | null>(null)
   const [error, setError] = useState<string | null>(null)
   const name = personName(person)
-  const actions = availableActions(relation, { collectionTag, kind: person.kind }).filter(action => !exclude.includes(action))
+  const canEditContacts = useContactEditPermission()
+  const actions = canEditContacts
+    ? availableActions(relation, { collectionTag, kind: person.kind }).filter(action => !exclude.includes(action))
+    : []
 
   const confirmFor = async (action: RelationActionId): Promise<{ option: boolean } | null> => {
     switch (action) {

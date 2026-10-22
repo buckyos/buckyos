@@ -35,8 +35,9 @@ use anyhow::{Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
     BuckyOSRuntimeType, DeliveryRecordWithObject, DeliveryReportResult, DeliveryState,
-    MsgCenterClient, MsgCenterServerHandler, SystemConfigClient, UserContactSettings,
-    UserPrivateProfile, UserSettings, UserState, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
+    project_contacts, MsgCenterClient, MsgCenterServerHandler, SystemConfigClient,
+    UserContactSettings, UserGroupDirectory, UserPrivateProfile, UserSettings,
+    MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -52,12 +53,13 @@ use ndn_lib::{MsgContent, MsgContentFormat, MsgObject};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::contact_mgr::ZoneUserContactSeed;
+use crate::contact_mgr::{ContactProjection, ProjectedContact, ZoneUserContactSeed};
+use crate::msg_center::ZoneAccounts;
 use crate::message_hub::MessageHubExecutor;
 use crate::msg_center::MessageCenter;
 use crate::msg_tunnel::{DeliveryExecutor, DeliveryExecutorMgr, ExecutorInstanceState};
@@ -478,19 +480,26 @@ fn profile_system_contact(profile: &UserPrivateProfile) -> Option<UserContactSet
         .and_then(|value| serde_json::from_value::<UserContactSettings>(value.clone()).ok())
 }
 
+/// The DID of an account: its profile's, else its DID document's.
+fn account_did(profile: Option<&UserPrivateProfile>, doc: Option<&Value>) -> Option<DID> {
+    profile.map(|profile| profile.did.clone()).or_else(|| {
+        doc.and_then(|doc| doc.get("id").or_else(|| doc.get("did")))
+            .and_then(Value::as_str)
+            .and_then(|did| DID::from_str(did).ok())
+    })
+}
+
 fn build_zone_user_seed(
     username: &str,
-    settings: UserSettings,
+    settings: &UserSettings,
+    did: DID,
     profile: Option<UserPrivateProfile>,
 ) -> Option<ZoneUserContactSeed> {
-    if !matches!(settings.state, UserState::Active) {
+    if !settings.is_active() {
         return None;
     }
 
-    let mut contact_did = profile
-        .as_ref()
-        .map(|profile| profile.did.clone())
-        .unwrap_or_else(|| DID::new("bns", username));
+    let mut contact_did = did;
     let mut note = None;
     let mut tags = vec!["zone_user".to_string()];
     let mut bindings = Vec::new();
@@ -610,21 +619,160 @@ async fn load_zone_user_profile(
     }
 }
 
-async fn load_zone_user_contact_seeds() -> Result<Vec<ZoneUserContactSeed>> {
+/// One account record of the Zone as the zone sync reads it.
+#[derive(Debug, Clone)]
+struct ZoneAccount {
+    username: String,
+    settings: UserSettings,
+    did: DID,
+    /// Present for active accounts.
+    seed: Option<ZoneUserContactSeed>,
+}
+
+/// The Zone's account records and user groups (product/users_and_agents/UserType.md).
+#[derive(Debug, Clone, Default)]
+struct ZoneDirectory {
+    accounts: Vec<ZoneAccount>,
+    /// Every account name, including records that cannot be read.
+    names: Vec<String>,
+    groups: UserGroupDirectory,
+}
+
+impl ZoneDirectory {
+    fn seeds(&self) -> Vec<ZoneUserContactSeed> {
+        self.accounts
+            .iter()
+            .filter_map(|account| account.seed.clone())
+            .collect()
+    }
+
+    /// Who is a local recipient: active Admin and User accounts.
+    fn zone_accounts(&self) -> ZoneAccounts {
+        ZoneAccounts {
+            recipients: self
+                .accounts
+                .iter()
+                .filter(|account| {
+                    account.seed.is_some() && account.settings.user_type.can_receive_direct_messages()
+                })
+                .filter_map(|account| account.seed.as_ref().map(|seed| seed.did.to_string()))
+                .collect(),
+            dids: self
+                .accounts
+                .iter()
+                .flat_map(|account| {
+                    [Some(account.did.to_string()), account.seed.as_ref().map(|s| s.did.to_string())]
+                })
+                .flatten()
+                .collect(),
+            names: self.names.iter().cloned().collect(),
+        }
+    }
+
+    /// Every active account's view of the others through the projection rules.
+    fn contact_projection(&self, built_at_ms: u64) -> ContactProjection {
+        let rules = self.groups.projection_rules();
+        let defined = self.groups.defined_group_ids();
+        let active: Vec<(&ZoneAccount, &ZoneUserContactSeed, UserSettings)> = self
+            .accounts
+            .iter()
+            .filter_map(|account| {
+                let seed = account.seed.as_ref()?;
+                let mut settings = account.settings.clone();
+                settings.user_id = account.username.clone();
+                Some((account, seed, settings))
+            })
+            .collect();
+        let mut projection = ContactProjection {
+            built_at_ms,
+            ..Default::default()
+        };
+        for (_, viewer_seed, viewer) in &active {
+            let viewer_did = viewer_seed.did.to_string();
+            if !viewer.can_edit_contacts() {
+                projection.read_only_owners.insert(viewer_did.clone());
+            }
+            let visible = project_contacts(
+                &rules,
+                &defined,
+                viewer,
+                active.iter().map(|(_, _, settings)| settings),
+            );
+            let entries: HashMap<DID, ProjectedContact> = active
+                .iter()
+                .filter_map(|(account, seed, _)| {
+                    let sources = visible.get(&account.username)?;
+                    Some((
+                        seed.did.clone(),
+                        ProjectedContact {
+                            seed: (*seed).clone(),
+                            sources: sources.iter().map(ToString::to_string).collect(),
+                        },
+                    ))
+                })
+                .filter(|(did, _)| did.to_string() != viewer_did)
+                .collect();
+            if !entries.is_empty() {
+                projection.by_owner.insert(viewer_did, entries);
+            }
+        }
+        projection
+    }
+
+    /// What a sync would change besides the contact seeds.
+    fn signature(&self) -> String {
+        let mut parts: Vec<String> = self
+            .accounts
+            .iter()
+            .map(|account| {
+                format!(
+                    "{}|{}|{}|{}|{:?}|{:?}",
+                    account.username,
+                    account.did.to_string(),
+                    account.settings.user_type,
+                    String::from(account.settings.state.clone()),
+                    account.settings.groups,
+                    account.settings.allow_contact_edit
+                )
+            })
+            .collect();
+        parts.extend(self.names.iter().map(|name| format!("name|{name}")));
+        parts.sort();
+        parts.push(serde_json::to_string(&self.groups.projection_rules()).unwrap_or_default());
+        let mut groups: Vec<&String> = self.groups.groups.iter().map(|g| &g.group_id).collect();
+        groups.sort();
+        parts.push(format!("{groups:?}"));
+        parts.join("\n")
+    }
+}
+
+async fn load_zone_user_doc(system_config_client: &SystemConfigClient, username: &str) -> Option<Value> {
+    let value = system_config_client
+        .get(&format!("users/{}/doc", username))
+        .await
+        .ok()?;
+    serde_json::from_str(&value.value).ok()
+}
+
+async fn load_zone_directory() -> Result<ZoneDirectory> {
     let runtime = get_buckyos_api_runtime()?;
     let control_panel_client = runtime
         .get_control_panel_client()
         .await
         .map_err(|error| anyhow::anyhow!("get control panel client failed: {}", error))?;
 
-    let users = control_panel_client
+    let names = control_panel_client
         .get_user_list()
         .await
         .map_err(|error| anyhow::anyhow!("list users failed: {}", error))?;
-    let mut contacts = Vec::new();
+    let groups = control_panel_client
+        .load_user_groups()
+        .await
+        .map_err(|error| anyhow::anyhow!("load user groups failed: {}", error))?;
     let system_config_client = runtime.get_system_config_client().await?;
+    let mut accounts = Vec::new();
 
-    for username in users {
+    for username in names.iter() {
         let settings = match control_panel_client
             .get_user_settings_by_username(username.as_str())
             .await
@@ -639,13 +787,29 @@ async fn load_zone_user_contact_seeds() -> Result<Vec<ZoneUserContactSeed>> {
             }
         };
         let profile = load_zone_user_profile(&system_config_client, username.as_str()).await;
-
-        if let Some(seed) = build_zone_user_seed(username.as_str(), settings, profile) {
-            contacts.push(seed);
-        }
+        let doc = if profile.is_none() {
+            load_zone_user_doc(&system_config_client, username.as_str()).await
+        } else {
+            None
+        };
+        let Some(did) = account_did(profile.as_ref(), doc.as_ref()) else {
+            warn!("account {} has neither profile nor DID document; skipped", username);
+            continue;
+        };
+        let seed = build_zone_user_seed(username.as_str(), &settings, did.clone(), profile);
+        accounts.push(ZoneAccount {
+            username: username.clone(),
+            settings,
+            did,
+            seed,
+        });
     }
 
-    Ok(contacts)
+    Ok(ZoneDirectory {
+        accounts,
+        names,
+        groups,
+    })
 }
 
 async fn load_msg_center_settings() -> Result<Value> {
@@ -705,6 +869,8 @@ struct ZoneSync {
 struct AppliedZoneSync {
     tunnel: Option<(TelegramTunnelSettings, Value)>,
     contacts: Option<String>,
+    /// Owners whose store no longer holds synced Zone user copies.
+    purged_owners: HashSet<String>,
 }
 
 impl ZoneSync {
@@ -767,13 +933,17 @@ impl ZoneSync {
         agents: &[ZoneAgent],
         force: bool,
     ) -> Result<()> {
-        let users = load_zone_user_contact_seeds().await?;
-        let signature = zone_contact_seed_signature(&users, agents);
+        let directory = load_zone_directory().await?;
+        let signature = format!(
+            "{}\n{}",
+            zone_contact_seed_signature(&directory.seeds(), agents),
+            directory.signature()
+        );
         if !force && applied.contacts.as_deref() == Some(signature.as_str()) {
             return Ok(());
         }
-        sync_zone_agent_contacts(&self.center, &users, agents).await?;
-        sync_zone_user_contacts(&self.center, users).await?;
+        apply_zone_directory(&self.center, &directory, &mut applied.purged_owners).await?;
+        sync_zone_agent_contacts(&self.center, &directory.seeds(), agents).await?;
         applied.contacts = Some(signature);
         Ok(())
     }
@@ -890,42 +1060,44 @@ async fn sync_zone_agent_contacts(
     Ok(())
 }
 
-async fn sync_zone_user_contacts(
+/// Apply the Zone's accounts: local recipients, the system scope contacts
+/// (tunnel routing), and every user's projected address book. Users' own
+/// stores no longer receive Zone users; copies an earlier sync wrote are
+/// dropped once per owner.
+async fn apply_zone_directory(
     center: &MessageCenter,
-    contacts: Vec<ZoneUserContactSeed>,
+    directory: &ZoneDirectory,
+    purged_owners: &mut HashSet<String>,
 ) -> Result<()> {
-    let mut owner_scopes: Vec<Option<DID>> = vec![None];
-    for owner in contacts.iter().map(|contact| contact.did.clone()) {
-        if !owner_scopes.contains(&Some(owner.clone())) {
-            owner_scopes.push(Some(owner));
+    center.set_zone_accounts(directory.zone_accounts());
+    let seeds = directory.seeds();
+    let updated = center
+        .upsert_zone_user_contacts(seeds, None)
+        .await
+        .map_err(|error| anyhow::anyhow!("zone user sync failed for owner_scope=__system__: {}", error))?;
+    center
+        .contact_mgr
+        .set_projection(directory.contact_projection(now_ms()));
+    for account in directory.accounts.iter() {
+        let owner = account.seed.as_ref().map_or(&account.did, |seed| &seed.did);
+        if purged_owners.contains(&owner.to_string()) {
+            continue;
         }
-    }
-
-    for owner in owner_scopes {
-        let updated = center
-            .upsert_zone_user_contacts(contacts.clone(), owner.clone())
+        let dropped = center
+            .contact_mgr
+            .drop_synced_zone_users(owner)
             .await
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "zone user sync failed for owner_scope={}: {}",
-                    owner
-                        .as_ref()
-                        .map(|did| did.to_string())
-                        .unwrap_or_else(|| "__system__".to_string()),
-                    error
-                )
-            })?;
-
-        info!(
-            "zone user sync applied: owner_scope={}, contacts={}",
-            owner
-                .as_ref()
-                .map(|did| did.to_string())
-                .unwrap_or_else(|| "__system__".to_string()),
-            updated
-        );
+            .map_err(|error| anyhow::anyhow!("drop synced zone users of {} failed: {}", owner.to_string(), error))?;
+        if dropped > 0 {
+            info!("dropped {} synced zone user copies from {}", dropped, owner.to_string());
+        }
+        purged_owners.insert(owner.to_string());
     }
-
+    info!(
+        "zone directory applied: accounts={}, system contacts updated={}",
+        directory.accounts.len(),
+        updated
+    );
     Ok(())
 }
 
@@ -1346,6 +1518,37 @@ async fn main() {
     }
 }
 
+/// A Zone directory of active accounts named by DID host label.
+#[cfg(test)]
+pub(crate) fn test_zone_directory(
+    accounts: &[(&DID, buckyos_api::UserType, &[&str])],
+    groups: UserGroupDirectory,
+) -> ZoneDirectory {
+    let accounts: Vec<ZoneAccount> = accounts
+        .iter()
+        .map(|(did, user_type, user_groups)| {
+            let username = did.id.split('.').next().unwrap().to_string();
+            let settings: UserSettings = serde_json::from_value(serde_json::json!({
+                "user_id": username, "type": user_type.as_str(), "password": "", "state": "active",
+                "res_pool_id": "default", "groups": user_groups,
+            }))
+            .unwrap();
+            let seed = build_zone_user_seed(&username, &settings, (*did).clone(), None);
+            ZoneAccount {
+                username,
+                settings,
+                did: (*did).clone(),
+                seed,
+            }
+        })
+        .collect();
+    ZoneDirectory {
+        names: accounts.iter().map(|a| a.username.clone()).collect(),
+        accounts,
+        groups,
+    }
+}
+
 #[cfg(test)]
 mod zone_contact_tests {
     use super::*;
@@ -1396,7 +1599,7 @@ mod zone_contact_tests {
             "display_name": "Alice"
         }))
         .unwrap();
-        let seed = build_zone_user_seed("alice", active_user(), Some(profile.clone())).unwrap();
+        let seed = build_zone_user_seed("alice", &active_user(), profile.did.clone(), Some(profile.clone())).unwrap();
         assert_eq!(seed.did, profile.did);
         assert_eq!(seed.name, "Alice");
     }
@@ -1409,14 +1612,14 @@ mod zone_contact_tests {
             "avatar": "data:image/png;base64,AAAA"
         }))
         .unwrap();
-        let seed = build_zone_user_seed("alice", active_user(), Some(profile.clone())).unwrap();
+        let seed = build_zone_user_seed("alice", &active_user(), profile.did.clone(), Some(profile.clone())).unwrap();
         assert_eq!(seed.avatar.as_deref(), Some("data:image/png;base64,AAAA"));
 
         profile.privacy = serde_json::from_value(json!({
             "fields": {"avatar": {"visibility": "private"}}
         }))
         .unwrap();
-        let seed = build_zone_user_seed("alice", active_user(), Some(profile)).unwrap();
+        let seed = build_zone_user_seed("alice", &active_user(), profile.did.clone(), Some(profile)).unwrap();
         assert_eq!(seed.avatar, None);
         assert_eq!(seed.name, "Alice");
     }
@@ -1428,7 +1631,7 @@ mod zone_contact_tests {
             "display_name": "Alice"
         }))
         .unwrap();
-        let mut seed = build_zone_user_seed("alice", active_user(), Some(profile)).unwrap();
+        let mut seed = build_zone_user_seed("alice", &active_user(), profile.did.clone(), Some(profile)).unwrap();
         let original = zone_contact_seed_signature(&[seed.clone()], &[]);
         seed.avatar = Some("data:image/png;base64,AAAA".to_string());
         let with_avatar = zone_contact_seed_signature(&[seed.clone()], &[]);
@@ -1458,7 +1661,7 @@ mod zone_contact_tests {
             ]}}
         }))
         .unwrap();
-        let seed = build_zone_user_seed("alice", active_user(), Some(profile)).unwrap();
+        let seed = build_zone_user_seed("alice", &active_user(), profile.did.clone(), Some(profile)).unwrap();
         let accounts: Vec<_> = seed
             .bindings
             .iter()

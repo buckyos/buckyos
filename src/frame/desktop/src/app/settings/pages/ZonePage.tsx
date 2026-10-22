@@ -2,6 +2,7 @@ import { Button, TextField } from '@mui/material'
 import { Globe, RotateCcw, Save } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { fetchCurrentAccount } from '../../../api/account'
+import { isPrivilegedUserType } from '../../../api/user_type'
 import {
   fetchZonePresentation,
   setZonePresentation,
@@ -65,7 +66,7 @@ export function ZonePage() {
     let cancelled = false
     void Promise.all([fetchZonePresentation(), fetchCurrentAccount().catch(() => null)]).then(([result, account]) => {
       if (cancelled) return
-      setCanEdit(account?.user_type === 'admin' || account?.user_type === 'root')
+      setCanEdit(isPrivilegedUserType(account?.user_type))
       if (!result.data) {
         setStatus({ kind: 'load_failed' })
         return

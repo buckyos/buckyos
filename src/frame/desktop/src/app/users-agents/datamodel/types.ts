@@ -5,6 +5,7 @@ import type {
   AgentStatus,
   AgentTemplateBinding,
 } from '../../../api/user_mgr.ts'
+import type { AssignableUserType, ContactProjectionRule } from '../../../api/user_type.ts'
 
 /* ── Users & Agents – UI datamodel type definitions ── */
 
@@ -87,7 +88,8 @@ export interface AgentEntity extends EntityBase {
 // ── Local space user ──
 
 export type ZoneUserSource = 'primary-did' | 'local-account'
-export type ZoneUserType = 'admin' | 'user' | 'limited'
+/** The account type as listed (the owner record is not listed); `unknown` is a type this Desktop does not know. */
+export type ZoneUserType = AssignableUserType | 'unknown'
 export type ZoneUserStatus = 'active' | 'pending-invitation' | 'suspended'
 export type CredentialStatus = 'invite-pending' | 'password-set' | 'passkey-ready'
 
@@ -105,13 +107,20 @@ export interface LocalUserEntity extends EntityBase {
   source: ZoneUserSource
   status: ZoneUserStatus
   credentialStatus: CredentialStatus
+  /** The account may change its password now (allowed and active). */
   canChangePassword: boolean
+  /** Effective permissions and the per-account overrides behind them (null = type default). */
+  passwordChangeAllowed: boolean
+  passwordChangeOverride: boolean | null
+  contactEditAllowed: boolean
+  contactEditOverride: boolean | null
+  /** System user group ids. */
+  groups: string[]
   storageUsed: string
   storageQuota: string
   lastActive: string
   isOnline: boolean
   availableApps: string[]
-  defaultGroup: string
   profile: Record<string, string>
   settings: Record<string, string>
   invitation?: ZoneInvitation
@@ -129,6 +138,22 @@ export interface EntityGroupEntity extends EntityBase {
   canMessage: boolean
 }
 
+// ── System user groups (admin only) ──
+
+export interface SystemUserGroup {
+  id: string
+  name: string
+  description?: string
+  members: string[]
+}
+
+export interface UserGroupsInfo {
+  groups: SystemUserGroup[]
+  projectionRules: ContactProjectionRule[]
+  /** No rules were saved; the Zone uses the defaults. */
+  projectionsAreDefault: boolean
+}
+
 // ── Union type ──
 
 export type AnyEntity =
@@ -142,6 +167,7 @@ export type AnyEntity =
 export type SidebarSelection =
   | { kind: 'entity'; entityId: string }
   | { kind: 'self' }
+  | { kind: 'user-groups' }
 
 // ── Store snapshot ──
 
@@ -150,8 +176,12 @@ export interface UsersAgentsSnapshot {
   agents: AgentEntity[]
   localUsers: LocalUserEntity[]
   entityGroups: EntityGroupEntity[]
-  /** Limited users (and guests) cannot create Agents. */
+  /** Limited accounts cannot create Agents. */
   canCreateAgents: boolean
+  /** The signed-in account manages users, groups and projection rules. */
+  viewerIsAdmin: boolean
+  /** Null when the viewer is not an admin or the groups could not be read. */
+  userGroups: UserGroupsInfo | null
 }
 
 // ── New user wizard ──
@@ -170,6 +200,8 @@ export const newZoneUserInputSchema = z
     displayName: z.string().trim().min(1, 'usersAgents.newUser.error.displayNameRequired').max(64),
     password: z.string().min(8, 'usersAgents.newUser.error.passwordLength').max(128),
     confirmPassword: z.string().max(128),
+    userType: z.enum(['user', 'limited']),
+    groups: z.array(z.string()),
   })
   .superRefine((value, ctx) => {
     if (['root', 'system', 'admin', 'guest'].includes(value.username.trim().toLowerCase())) {

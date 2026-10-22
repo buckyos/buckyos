@@ -2090,16 +2090,15 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<&RpcAuthPrincipal, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        match principal.user_type {
-            UserType::Root | UserType::Admin | UserType::User => Ok(principal),
-            UserType::Limited | UserType::Guest => {
-                Err(reason("limited_user", "limited users cannot create Agents"))
-            }
+        if principal.user_type.can_create_agent() {
+            Ok(principal)
+        } else {
+            Err(reason("limited_user", "limited users cannot create Agents"))
         }
     }
 
     fn principal_admin(principal: &RpcAuthPrincipal) -> bool {
-        matches!(principal.user_type, UserType::Admin | UserType::Root)
+        principal.user_type.is_privileged()
     }
 
     fn param_agent_id(req: &RPCRequest) -> Result<AgentId, RPCErrors> {

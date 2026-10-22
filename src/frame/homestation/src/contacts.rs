@@ -15,7 +15,8 @@ pub struct ContactInfo {
     pub friend: bool,
     #[serde(default)]
     pub blocked: bool,
-    /// User tags (the owner's own groupings), used as audience and mute groups.
+    /// The owner's groupings, used as audience and mute groups: its own user tags and
+    /// the source groups (`type:<user type>`, `group:<id>`) of projected Zone users.
     #[serde(default)]
     pub tags: Vec<String>,
     /// Carries the `homestation.following` tag.
@@ -60,6 +61,25 @@ impl Contacts for StaticContacts {
     }
 }
 
+/// A Message Center contact as HomeStation uses it. Groups are the owner's user tags plus
+/// the source groups a projected Zone user comes from.
+pub fn contact_info(contact: buckyos_api::Contact) -> ContactInfo {
+    use buckyos_api::{contact_tag_kind, AccessGroupLevel, ContactTagKind, FriendState, CONTACT_TAG_HOMESTATION_FOLLOWING};
+    ContactInfo {
+        did: contact.did.to_string(),
+        name: contact.name,
+        friend: contact.friend_state == FriendState::Friend,
+        blocked: contact.access_level == AccessGroupLevel::Block,
+        following: contact.tags.iter().any(|t| t == CONTACT_TAG_HOMESTATION_FOLLOWING),
+        tags: contact
+            .tags
+            .into_iter()
+            .filter(|t| contact_tag_kind(t) == ContactTagKind::User || contact.projected_from.contains(t))
+            .collect(),
+        avatar: contact.avatar,
+    }
+}
+
 pub struct MsgCenterContacts {
     pub owner: String,
 }
@@ -67,10 +87,7 @@ pub struct MsgCenterContacts {
 #[async_trait]
 impl Contacts for MsgCenterContacts {
     async fn list(&self) -> Result<Vec<ContactInfo>, String> {
-        use buckyos_api::{
-            contact_tag_kind, get_buckyos_api_runtime, AccessGroupLevel, ContactQuery, ContactTagKind,
-            FriendState, CONTACT_TAG_HOMESTATION_FOLLOWING,
-        };
+        use buckyos_api::{get_buckyos_api_runtime, ContactQuery};
         let runtime = get_buckyos_api_runtime().map_err(|e| e.to_string())?;
         let client = runtime.get_msg_center_client().await.map_err(|e| e.to_string())?;
         let owner = name_lib::DID::from_str(&self.owner).map_err(|e| e.to_string())?;
@@ -80,17 +97,7 @@ impl Contacts for MsgCenterContacts {
             let query = ContactQuery { limit: Some(200), offset: Some(offset), ..Default::default() };
             let page = client.list_contacts(query, Some(owner.clone())).await.map_err(|e| e.to_string())?;
             let len = page.len();
-            for contact in page {
-                contacts.push(ContactInfo {
-                    did: contact.did.to_string(),
-                    name: contact.name,
-                    friend: contact.friend_state == FriendState::Friend,
-                    blocked: contact.access_level == AccessGroupLevel::Block,
-                    following: contact.tags.iter().any(|t| t == CONTACT_TAG_HOMESTATION_FOLLOWING),
-                    tags: contact.tags.into_iter().filter(|t| contact_tag_kind(t) == ContactTagKind::User).collect(),
-                    avatar: contact.avatar,
-                });
-            }
+            contacts.extend(page.into_iter().map(contact_info));
             if len < 200 {
                 break;
             }
@@ -161,5 +168,27 @@ impl CachedContacts {
 
     pub async fn get(&self, did: &str) -> Option<ContactInfo> {
         self.list().await.into_iter().find(|c| c.did == did)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projected_source_groups_count_as_audience_groups() {
+        let contact: buckyos_api::Contact = serde_json::from_value(serde_json::json!({
+            "did": "did:web:cust.z.example", "name": "Cust", "source": "shared", "is_verified": true,
+            "access_level": "allow", "friend_state": "friend",
+            "tags": ["zone_user", "group:customer", "vip", "homestation.following"],
+            "projected_from": ["group:customer"], "created_at": 1, "updated_at": 1
+        }))
+        .unwrap();
+        let info = contact_info(contact);
+        assert_eq!(info.tags, vec!["group:customer".to_string(), "vip".to_string()]);
+        assert!(info.friend && info.following && !info.blocked);
+        let spec = crate::audience::AudienceSpec::Group { group_id: "group:customer".into() };
+        let relations = crate::audience::ReaderRelations { follower: false, friend: info.friend, groups: info.tags };
+        assert!(crate::audience::allows(&spec, &crate::audience::Reader::Did(info.did), &relations));
     }
 }

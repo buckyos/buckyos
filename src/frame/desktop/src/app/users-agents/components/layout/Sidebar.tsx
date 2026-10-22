@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { Bot, Search, UserPlus } from 'lucide-react'
 import { Chip, IconButton, Tooltip } from '@mui/material'
 import { EntityCard } from '../cards/EntityCard'
+import { UserGroupsNavItem } from '../groups/UserGroupsNavItem'
 import { SearchFilterBar } from '../shared/SearchFilterBar'
 import { entityFilterOptions, filterInternalEntities, getInternalEntities, type InternalEntityFilter } from '../shared/entityFilters'
 import {
@@ -123,6 +124,11 @@ export function Sidebar({ selection, onSelect, onAddUser, onAddAgent, canCreateA
             />
           ))}
         </div>
+
+        <UserGroupsNavItem
+          isActive={selection?.kind === 'user-groups'}
+          onClick={() => onSelect({ kind: 'user-groups' })}
+        />
       </div>
     </div>
   )

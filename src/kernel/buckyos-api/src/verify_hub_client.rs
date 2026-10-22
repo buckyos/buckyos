@@ -884,6 +884,7 @@ mod tests {
                     user_id: "mock_id".to_string(),
                     user_type: UserType::Admin,
                     state: UserState::Active,
+                    groups: Vec::new(),
                 },
                 session_token: "session-1".to_string(),
                 refresh_token: "refresh-1".to_string(),

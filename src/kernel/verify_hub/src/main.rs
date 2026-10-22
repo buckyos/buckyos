@@ -1141,6 +1141,11 @@ async fn validate_password_login(
         .get_user_settings_by_username(username)
         .await?;
 
+    if user_settings.password.is_empty() {
+        warn!("{} has no stored password and cannot log in by password", username);
+        return Err(RPCErrors::InvalidPassword);
+    }
+
     let password_hash_input = STANDARD
         .decode(password)
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
@@ -1971,15 +1976,21 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             res_pool_id: "default".to_string(),
             is_local: true,
             allow_password_change: Some(true),
+            allow_contact_edit: None,
+            groups: Vec::new(),
         };
 
         assert!(require_active_user_settings(&settings(UserState::Active)).is_ok());
-        let mut guest = settings(UserState::Active);
-        guest.user_type = UserType::Guest;
+        let mut limited = settings(UserState::Active);
+        limited.user_type = UserType::Limited;
+        assert!(require_active_user_settings(&limited).is_ok());
+        let mut root = settings(UserState::Active);
+        root.user_type = UserType::Root;
         assert!(matches!(
-            require_active_user_settings(&guest),
+            require_active_user_settings(&root),
             Err(RPCErrors::NoPermission(_))
         ));
+
         for state in [
             UserState::Pending,
             UserState::Suspended("test".to_string()),

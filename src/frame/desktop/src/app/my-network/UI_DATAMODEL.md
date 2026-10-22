@@ -53,7 +53,16 @@ interface CollectionSections { user: CollectionSummary[]; app: CollectionSummary
 | --- | --- | --- | --- |
 | 我的分组（用户 tag） | “Project Alpha Team” | tag 文本 | 添加成员（PeoplePicker，已在组内的显示原因）、移出（light 确认）、重命名（逐个成员改 tag）、删除分组（explicit 确认，人仍在联系人中）、批量加入/移出 |
 | 来自应用（应用 tag） | `homestation.following` | “我关注的人” / People I follow（i18n） | 只读；“在 HomeStation 中管理”打开 HomeStation |
-| 系统 | `zone_user`、`zone_agent` | “本 Zone 用户”“我的 Agent” | 只读 |
+| 系统 | `zone_user`、`zone_agent`；投影来源组 `type:admin|user|limited`、`group:<id>` | “本 Zone 用户”“我的 Agent”；投影来源组显示组名（`user_group.list`，非管理员取不到时显示组 id 或类型名） | 只读 |
+
+### 3.1 系统投影条目与只读通讯录
+
+通讯录 = 原始通讯录 + 管理员配置的系统用户组投影（`product/users_and_agents/UserType.md` §5），由 msg-center 读取时合成：
+
+- `Contact.projected_from` 非空即投影条目，列表行带“Zone”标记，详情页说明来自哪些来源组；tags 含 `zone_user` 与来源组引用，按来源组出现在“系统”段。
+- 投影条目不提供“删除联系人”（后端 `projected-contact-read-only`），仍可加用户 tag、拉黑（落在原始记录）。
+- 当前账号不能改通讯录时（`user.get` 的 `allow_contact_edit = false`，`useContactEditPermission()`；Limited 默认如此），列表只有投影条目，隐藏加好友、新建分组、多选、tag 编辑、关系操作与请求里的写操作，显示只读提示；后端对写操作返回 `contact-edit-not-allowed`。该权限与组名在页面内只读一次，管理员修改后要刷新页面。
+- 联系人数据只取当前用户的合成通讯录，不再合并 `__system__` 作用域。
 
 - 新建分组 = 输入名称（`userTagSchema` + 不与已有分组重名）→ PeoplePicker 选至少一人 → 给每人 `update_tags{add}`。tag 没有成员就不存在，所以不提供空分组；分组描述不另存（M0 决定）。
 - 联系人详情的“分组”卡片用 `TagEditor` 直接增删用户 tag（删除走 light 确认），其余 tag 以只读标签列在“同时出现在”。
@@ -94,5 +103,5 @@ type PeopleSort = 'name' | 'recent'      // recent = created_at 倒序
 
 ## 8. 验证入口
 
-- mock e2e：`tests/e2e/pages/my-network.spec.ts`（加好友本 Zone / 他 Zone / 等待送达 / 不可达，好友请求与消息请求，群邀请与入群审批，入群成功 / 待审批 / 需邀请 / 他 Zone，用户分组增删与新建，“我关注的人”只读，四种删除语义与系统关系拒绝，加载失败重试与空态，375px 移动端）。
+- mock e2e：`tests/e2e/pages/user-groups.spec.ts`（投影条目只读、无改通讯录权限时只剩投影）；`tests/e2e/pages/my-network.spec.ts`（加好友本 Zone / 他 Zone / 等待送达 / 不可达，好友请求与消息请求，群邀请与入群审批，入群成功 / 待审批 / 需邀请 / 他 Zone，用户分组增删与新建，“我关注的人”只读，四种删除语义与系统关系拒绝，加载失败重试与空态，375px 移动端）。
 - 场景参数：`?networkScenario=empty|error|slow`。

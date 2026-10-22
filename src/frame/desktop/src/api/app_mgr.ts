@@ -86,8 +86,13 @@ export interface AppDetailsResponse {
 
 export type AvailabilityEffect = 'allow' | 'deny'
 
+/**
+ * `admins` / `users` / `limited` are the account-type groups, `guest` the anonymous pseudo-group
+ * (requests without an account), `group:<id>` a system user group. System group rules come before
+ * the account-type rule; among a user's system groups an allow wins.
+ */
 export interface AvailabilityGroupRule {
-  group_id: 'admins' | 'users' | 'limited' | 'guest'
+  group_id: 'admins' | 'users' | 'limited' | 'guest' | `group:${string}`
   effect: AvailabilityEffect
 }
 

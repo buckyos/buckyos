@@ -7,7 +7,7 @@ use crate::{
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
     get_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntime, SystemConfigClient,
-    SystemConfigError, UserType, ZonePresentationConfig, ZonePresentationFields,
+    SystemConfigError, ZonePresentationConfig, ZonePresentationFields,
     ZONE_PRESENTATION_KEY,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
@@ -100,7 +100,7 @@ impl ControlPanelServer {
                     .to_string(),
             ));
         }
-        if !matches!(principal.user_type, UserType::Admin | UserType::Root) {
+        if !principal.user_type.is_privileged() {
             return Err(RPCErrors::NoPermission(
                 "only Zone administrators can change the Zone display settings".to_string(),
             ));

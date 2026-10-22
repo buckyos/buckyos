@@ -216,10 +216,11 @@ iss            签发方（Zone 的 verify-hub）
 不同用户类型决定了 App 能拿到什么权限（完整定义见 `product/users_and_agents/UserType.md`）：
 
 - **admin / su_admin**：可登录用户中权限最大；敏感操作需 sudo。
-- **users / su_user**：最常见的登录用户，能用 app 但不能管系统。
-- **limit user（规划中）**：受限登录用户（如不允许改密码、未成年）。
-- **friends**：非系统登录用户，在某些 app 内有登录态，通常有 SNS 读 + 评论类写权限。
-- **guest（匿名）**：默认**全部拒绝**；只有 zone 明确列入白名单的 public resource 才允许匿名访问。
+- **user / su_user**：最常见的登录用户，能用 App 但不能管系统。
+- **limited**：零权限底座的登录用户（企业客户、员工、未成年人等）。默认不能用任何 App，由管理员加入系统用户组（`group:<id>`）后，经 App 可用性规则和资源授权开放；不签发对外联合断言。
+- **root**：Zone owner 的账号记录，不可登录。
+- **External**：已认证、但本 Zone 没有账号记录的 DID。token 的 `principal_kind` 仍为 `user`，另带 `external: true` 标记，`sub` 是原 DID；v1 只有 verify-hub、msg-center 群路径、AI Workspace、HomeStation 接受，其它服务默认拒绝。
+- **匿名访问者**：不是用户类型。默认**全部拒绝**；只有明确公开的资源（App 可用性的 `guest` 伪组、AI Workspace 的 `guest:` 主体等）才允许匿名访问。
 
 让一个传统 app 提供公共服务的方式：把 app 设为 gateway 公共访问（= 授予特殊权限），或 app 自带用户管理、在自己的 app data 范围内管理读写。
 

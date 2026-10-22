@@ -1198,11 +1198,9 @@ async fn load_device_doc(device_name: &str) -> Result<DeviceDocument> {
     return Ok(device_doc);
 }
 
+/// Both the account `type` and the RBAC role group of an Admin are `admin`.
 fn is_privileged_user_type(user_type: &str) -> bool {
-    matches!(
-        user_type.trim().to_ascii_lowercase().as_str(),
-        "admin" | "root"
-    )
+    buckyos_api::UserType::parse(user_type.trim()).is_some_and(buckyos_api::UserType::is_privileged)
 }
 
 fn user_has_privileged_role_in_policy(policy: &str, user_name: &str) -> bool {

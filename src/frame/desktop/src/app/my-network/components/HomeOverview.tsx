@@ -9,6 +9,7 @@ import { ListSkeleton, PersonRow, StateMessage } from '../../../components/netwo
 import { RelationBadge } from '../../../components/network/RelationBadge'
 import { actionableCount, networkErrorText, relationOfContact, tagLabel } from '../../../components/network/relation'
 import { kindOfContact, recentlyAdded } from '../datamodel/collections'
+import { useContactEditPermission, useUserGroupNames } from '../../../components/network/permissions'
 import type { CollectionSections, MyNetworkView } from '../datamodel/types'
 
 function Metric({ label, value, onClick, testId }: { label: string; value: ReactNode; onClick: () => void; testId: string }) {
@@ -34,6 +35,8 @@ export function HomeOverview({
   onJoinGroup: () => void
 }) {
   const { t } = useI18n()
+  const canEditContacts = useContactEditPermission()
+  const groupNames = useUserGroupNames()
   const contacts = useNetworkResource('contacts')
   const groups = useNetworkResource('groups')
   const requests = useRequests()
@@ -49,7 +52,7 @@ export function HomeOverview({
           <h2 className="font-display text-xl font-semibold text-[color:var(--cp-text)]">{t('myNetwork.home.title')}</h2>
           <p className="mt-1 text-sm leading-6 text-[color:var(--cp-muted)]">{t('myNetwork.home.body')}</p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button variant="contained" startIcon={<UserPlus size={15} />} onClick={onAddFriend}>{t('myNetwork.addFriend')}</Button>
+            {canEditContacts ? <Button variant="contained" startIcon={<UserPlus size={15} />} onClick={onAddFriend}>{t('myNetwork.addFriend')}</Button> : null}
             <Button variant="outlined" startIcon={<Users2 size={15} />} onClick={onJoinGroup}>{t('myNetwork.joinGroup')}</Button>
           </div>
         </section>
@@ -94,7 +97,7 @@ export function HomeOverview({
                 onClick={() => onNavigate({ kind: 'collection', tag: item.tag })}
                 className="min-h-8 rounded-full border border-[color:var(--cp-border)] px-3 text-[13px] text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_12%,var(--cp-surface))]"
               >
-                {tagLabel(t, item.tag)} <span className="tabular-nums text-[color:var(--cp-muted)]">{item.count}</span>
+                {tagLabel(t, item.tag, groupNames)} <span className="tabular-nums text-[color:var(--cp-muted)]">{item.count}</span>
               </button>
             ))}
           </div>

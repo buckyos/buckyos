@@ -12,8 +12,8 @@ pub struct ZoneUser {
     pub did: String,
     #[serde(default)]
     pub name: String,
-    /// Regular users (admin / root / user) may list their posts in the zone feed (§4.6);
-    /// the service setting `zone_feed_writers` overrides this.
+    /// Admin and User accounts may list their posts in the zone feed (§4.6); Limited
+    /// accounts may not. The service setting `zone_feed_writers` overrides this.
     #[serde(default = "yes")]
     pub zone_feed_writer: bool,
 }
@@ -36,7 +36,9 @@ impl UserSource for StaticUsers {
     }
 }
 
-/// `users/<id>/profile` (DID, display name) and `users/<id>/settings` (type, state).
+/// `users/<id>/profile` (DID, display name) and `users/<id>/settings` (type, state). Only
+/// active accounts other than the Zone owner record (Root) have a HomeStation; records of an
+/// unknown type are skipped.
 pub struct SystemConfigUsers;
 
 #[async_trait]
@@ -54,19 +56,25 @@ impl UserSource for SystemConfigUsers {
             let Ok(profile) = client.get(&format!("users/{id}/profile")).await else { continue };
             let Ok(profile) = serde_json::from_str::<Value>(&profile.value) else { continue };
             let Some(did) = profile.get("did").or_else(|| profile.get("id")).and_then(Value::as_str) else { continue };
-            let settings = client.get(&format!("users/{id}/settings")).await.ok().and_then(|v| serde_json::from_str::<Value>(&v.value).ok());
-            let state = settings.as_ref().and_then(|s| s.get("state")).and_then(Value::as_str).unwrap_or("active");
-            if state != "active" {
+            let Some(settings) = client
+                .get(&format!("users/{id}/settings"))
+                .await
+                .ok()
+                .and_then(|v| serde_json::from_str::<buckyos_api::UserSettings>(&v.value).ok())
+            else {
+                continue;
+            };
+            if !settings.is_active() {
                 continue;
             }
-            let kind = settings.as_ref().and_then(|s| s.get("type")).and_then(Value::as_str).unwrap_or("user");
             let name = ["display_name", "displayName", "name"]
                 .iter()
                 .find_map(|k| profile.get(*k).and_then(Value::as_str))
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or(&id)
                 .to_string();
-            users.push(ZoneUser { user: id.clone(), did: did.to_string(), name, zone_feed_writer: matches!(kind, "admin" | "root" | "user") });
+            let zone_feed_writer = matches!(settings.user_type, buckyos_api::UserType::Admin | buckyos_api::UserType::User);
+            users.push(ZoneUser { user: id.clone(), did: did.to_string(), name, zone_feed_writer });
         }
         Ok(users)
     }

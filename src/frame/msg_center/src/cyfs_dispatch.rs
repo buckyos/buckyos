@@ -527,7 +527,7 @@ async fn zone_signs_for(center: &MessageCenter, signer: &DID, author: &DID) -> b
     let Ok(Some(device_zone)) = directory.zone_of(signer).await else {
         return false;
     };
-    let author_zone = if center.is_local_recipient(author) {
+    let author_zone = if center.is_hosted_identity(author) {
         local_zone_host().or_else(|| center.cyfs_dispatch.read().unwrap().target_zone.clone())
     } else {
         directory.zone_of(author).await.ok().flatten()

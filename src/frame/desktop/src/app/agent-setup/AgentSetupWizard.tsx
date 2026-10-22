@@ -5,7 +5,8 @@ import { Alert, Button, CircularProgress, useMediaQuery } from '@mui/material'
 import { Check, ChevronLeft, ChevronRight, UserRoundPlus } from 'lucide-react'
 import clsx from 'clsx'
 import { useI18n } from '../../i18n/provider'
-import { fetchCurrentAccount, isLimitedUserType, type CurrentAccount } from '../../api/account'
+import { fetchCurrentAccount, type CurrentAccount } from '../../api/account'
+import { userTypeCanCreateAgents } from '../../api/user_type'
 import { createAgent } from '../../api/user_mgr'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
@@ -169,7 +170,7 @@ export function AgentSetupWizard({
       </WizardFrame>
     )
   }
-  if (isLimitedUserType(account.account.user_type)) {
+  if (!userTypeCanCreateAgents(account.account.user_type)) {
     return (
       <WizardFrame>
         <Alert severity="info" data-testid="agent-setup-limited">{t('agentSetup.error.limited')}</Alert>

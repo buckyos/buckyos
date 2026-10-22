@@ -616,7 +616,7 @@ impl ControlPanelServer {
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let user_settings: UserSettings = serde_json::from_str(user_info.value.as_str())
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        if !matches!(user_settings.state, UserState::Active) {
+        if !user_settings.is_active() {
             return Err(RPCErrors::InvalidToken(format!(
                 "user '{}' is not active",
                 username
@@ -1350,6 +1350,7 @@ impl ControlPanelServer {
         let runtime = get_buckyos_api_runtime()?;
         let parsed = runtime.verify_trusted_session_token(&token).await?;
         let claims = validate_verify_hub_token_claims(&parsed, TokenUse::Session)?;
+        reject_external_principal(&parsed)?;
         let is_user_session = claims.principal_kind == TokenPrincipalKind::User;
         let is_device_session = claims.principal_kind == TokenPrincipalKind::Device;
         let is_control_panel_session = is_control_panel_user_session(&parsed)?;
@@ -1457,6 +1458,16 @@ impl ControlPanelServer {
     }
 }
 
+/// v1 opens no Control Panel method to External users (no account record).
+fn reject_external_principal(token: &RPCSessionToken) -> Result<(), RPCErrors> {
+    if buckyos_api::token_is_external(token) {
+        return Err(RPCErrors::NoPermission(
+            "External users have no Control Panel access".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn is_control_panel_user_session(token: &RPCSessionToken) -> Result<bool, RPCErrors> {
     let claims = validate_verify_hub_token_claims(token, TokenUse::Session)?;
     Ok(claims.principal_kind == TokenPrincipalKind::User
@@ -1471,6 +1482,33 @@ fn is_control_panel_user_session(token: &RPCSessionToken) -> Result<bool, RPCErr
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    #[test]
+    fn external_principals_are_refused_before_any_account_lookup() {
+        let mut token = RPCSessionToken {
+            token_type: ::kRPC::RPCSessionTokenType::JWT,
+            token: None,
+            aud: None,
+            exp: Some(u64::MAX),
+            iss: Some("verify-hub".to_string()),
+            jti: Some("1".to_string()),
+            sub: Some("did:bns:bob.other.zone".to_string()),
+            appid: None,
+            sudo: false,
+            extra: HashMap::new(),
+        };
+        buckyos_api::bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+        assert!(reject_external_principal(&token).is_ok());
+        buckyos_api::bind_token_external(&mut token);
+        assert_eq!(
+            buckyos_api::token_principal_kind(&token).unwrap(),
+            TokenPrincipalKind::User
+        );
+        assert!(matches!(
+            reject_external_principal(&token),
+            Err(RPCErrors::NoPermission(_))
+        ));
+    }
     use buckyos_api::{BuckyOSRuntimeType, ZoneConfig};
     use buckyos_kit::BuckyOSMachineConfig;
     use name_lib::ZoneDocument;

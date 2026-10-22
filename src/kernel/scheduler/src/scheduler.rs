@@ -22,7 +22,7 @@ NodeScheduler — 纯函数式、平台无关的服务调度器
     - `NodeType`: OOD | Server | Desktop | Mobile | Sensor | IoTController
     - `NodeState`: New → Prepare → Ready → Abnormal | Unavailable | Removing → Deleted
     - 包含 CPU/Memory/GPU 资源、labels（用于亲和性匹配）、network_zone
-- `UserItem`      — 用户信息（userid, user_type: Admin/User/Limited, 可选 res_pool_id）
+- `UserItem`      — 用户信息（userid, user_type: Root/Admin/User/Limited, 系统用户组 groups, 可选 res_pool_id）
 - `ReplicaInstance` — ServiceSpec 在某个 Node 上的运行实例
     - `InstanceState`: Prepare | Running | Suspended | Deleted
     - 包含 last_update_time 用于存活检测（INSTANCE_ALIVE_TIME = 90s）
@@ -272,28 +272,13 @@ impl From<ServiceState> for ServiceSpecState {
     }
 }
 
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub enum UserType {
-    Admin,
-    User,
-    Limited,
-}
-
-impl From<String> for UserType {
-    fn from(s: String) -> Self {
-        match s.as_str() {
-            "admin" => UserType::Admin,
-            "user" => UserType::User,
-            "limited" => UserType::Limited,
-            _ => UserType::User,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct UserItem {
     pub userid: String,
-    pub user_type: UserType,
+    pub user_type: buckyos_api::UserType,
+    /// System user group ids the account belongs to.
+    #[serde(default)]
+    pub groups: Vec<String>,
     pub res_pool_id: Option<String>, //资源池id，为None时表示未指定资源池
 }
 

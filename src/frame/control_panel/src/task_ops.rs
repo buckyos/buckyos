@@ -1,4 +1,4 @@
-use crate::{ControlPanelServer, RpcAuthPrincipal, UserType};
+use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse};
 use buckyos_api::{
     get_buckyos_api_runtime, TaskOutcome, TaskPhase, APP_INSTALL_TASK_SCHEMA_ID,
@@ -41,7 +41,7 @@ impl ControlPanelServer {
     }
 
     pub(crate) fn is_privileged(principal: &RpcAuthPrincipal) -> bool {
-        matches!(principal.user_type, UserType::Admin | UserType::Root)
+        principal.user_type.is_privileged()
     }
 
     fn is_retryable_task_schema(schema_id: &str) -> bool {

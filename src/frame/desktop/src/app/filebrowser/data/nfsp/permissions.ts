@@ -11,6 +11,7 @@ import { ensureSession, nfspClient } from './client'
 import { nfspToUiError } from './errors'
 import { notifyDfsPath } from './invalidation'
 import { cyfsToDfsPath, unixToIso } from './mapping'
+import { parseUserType } from '../../../../api/user_type'
 
 const dfs = (canonical: string) => cyfsToDfsPath(canonical) ?? canonical
 const parentOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
@@ -70,7 +71,7 @@ export function registerNfspPermissionSource() {
     async listUsers(): Promise<PrincipalOption[]> {
       const { data } = await fetchUserList()
       return (data?.users ?? [])
-        .filter((u) => u.user_type !== 'root' && !String(u.state).startsWith('deleted'))
+        .filter((u) => parseUserType(u.user_type) !== 'root' && !String(u.state).startsWith('deleted'))
         .map((u) => ({ principal: `user:${u.user_id}`, label: u.show_name || u.user_id, detail: u.user_id }))
     },
   })

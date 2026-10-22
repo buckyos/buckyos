@@ -5,17 +5,21 @@ import { useForm } from 'react-hook-form'
 import {
   Alert,
   Button,
+  Checkbox,
   CircularProgress,
+  FormControlLabel,
   IconButton,
   TextField,
 } from '@mui/material'
 import { ChevronLeft, ChevronRight, RefreshCw, UserPlus, X } from 'lucide-react'
 import { createUser, type UserCreateResponse } from '../../../../api/user_mgr'
+import { CREATABLE_USER_TYPES, defaultCanChangePassword } from '../../../../api/user_type'
 import { useSudoByPassword } from '../../../../components/sudo'
 import type { NewZoneUserInput } from '../../datamodel/types'
 import { newZoneUserInputSchema } from '../../datamodel/types'
-import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
+import { useUserGroups, useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 import { useI18n } from '../../../../i18n/provider'
+import { systemGroupName } from './userGroupLabels'
 
 interface NewUserWizardProps {
   onClose: () => void
@@ -29,6 +33,8 @@ const defaultValues: NewZoneUserInput = {
   displayName: '',
   password: '',
   confirmPassword: '',
+  userType: 'user',
+  groups: [],
 }
 
 const stepLabelKeys = ['usersAgents.newUser.step.account', 'usersAgents.newUser.step.review']
@@ -86,6 +92,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
   const [createResult, setCreateResult] = useState<UserCreateResponse | null>(null)
   const submissionRef = useRef(false)
   const store = useUsersAgentsStore()
+  const userGroups = useUserGroups()
   const requestSudo = useSudoByPassword()
   const form = useForm<NewZoneUserInput>({
     resolver: zodResolver(newZoneUserInputSchema),
@@ -148,8 +155,8 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
           userId,
           showName: data.displayName.trim(),
           passwordHash,
-          userType: 'user',
-          allowPasswordChange: true,
+          userType: data.userType,
+          ...(data.groups.length > 0 ? { groups: data.groups } : {}),
         },
         { sessionToken: grant.sessionToken },
       )
@@ -164,7 +171,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               rbac_refreshed: false,
               warning: t('usersAgents.newUser.responseLost'),
               user_id: userId,
-              user_type: 'user',
+              user_type: data.userType,
               state: 'active',
             }
             if (await finishAfterReload(userId, recoveredResult)) return
@@ -207,7 +214,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       rbac_refreshed: false,
       warning: t('usersAgents.newUser.responseLost'),
       user_id: committedUserId,
-      user_type: 'user',
+      user_type: values.userType,
       state: 'active',
     }
     try {
@@ -321,6 +328,46 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               helperText={form.formState.errors.confirmPassword?.message ? t(form.formState.errors.confirmPassword.message) : undefined}
               {...form.register('confirmPassword')}
             />
+            <TextField
+              select
+              label={t('usersAgents.newUser.userType')}
+              size="small"
+              fullWidth
+              SelectProps={{ native: true }}
+              helperText={t(`usersAgents.newUser.typeHint.${values.userType}`)}
+              {...form.register('userType')}
+            >
+              {CREATABLE_USER_TYPES.map((type) => (
+                <option key={type} value={type}>{t(`usersAgents.role.${type}`)}</option>
+              ))}
+            </TextField>
+            {userGroups && userGroups.groups.length > 0 ? (
+              <fieldset data-testid="new-user-groups">
+                <legend className="mb-1 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>
+                  {t('usersAgents.newUser.groups')}
+                </legend>
+                <div className="flex flex-wrap gap-x-3">
+                  {userGroups.groups.map((group) => (
+                    <FormControlLabel
+                      key={group.id}
+                      label={group.name}
+                      control={(
+                        <Checkbox
+                          size="small"
+                          checked={values.groups.includes(group.id)}
+                          onChange={(event) => {
+                            const next = event.target.checked
+                              ? [...values.groups, group.id]
+                              : values.groups.filter((item) => item !== group.id)
+                            form.setValue('groups', next)
+                          }}
+                        />
+                      )}
+                    />
+                  ))}
+                </div>
+              </fieldset>
+            ) : null}
           </div>
         )}
 
@@ -336,9 +383,18 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               {[
                 [t('usersAgents.newUser.username'), values.username.trim().toLowerCase() || '-'],
                 [t('usersAgents.newUser.displayName'), values.displayName.trim() || '-'],
-                [t('usersAgents.newUser.userType'), t('usersAgents.role.user')],
+                [t('usersAgents.newUser.userType'), t(`usersAgents.role.${values.userType}`)],
+                [
+                  t('usersAgents.newUser.groups'),
+                  values.groups.length > 0
+                    ? values.groups.map((groupId) => systemGroupName(groupId, userGroups?.groups)).join(', ')
+                    : t('usersAgents.newUser.groupsNone'),
+                ],
                 [t('usersAgents.newUser.state'), t('usersAgents.userStatus.active')],
-                [t('usersAgents.newUser.passwordChanges'), t('usersAgents.newUser.allowed')],
+                [
+                  t('usersAgents.newUser.passwordChanges'),
+                  defaultCanChangePassword(values.userType) ? t('usersAgents.newUser.allowed') : t('usersAgents.newUser.notAllowed'),
+                ],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-baseline gap-3 py-1">
                   <span className="w-36 shrink-0 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>

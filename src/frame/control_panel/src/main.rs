@@ -25,6 +25,7 @@ mod sys_auth_backend;
 mod sys_log_mgr;
 mod task_ops;
 mod ui_session_mgr;
+mod user_group_mgr;
 mod user_mgr;
 mod zone_mgr;
 
@@ -122,6 +123,7 @@ impl RpcAuthPrincipal {
                     | "user.get"
                     | "user.profile.get"
                     | "user.invite.get"
+                    | "user_group.list"
                     | "agent.check_name"
                     | "agent.list_templates"
                     | "agent.create.status"
@@ -1057,6 +1059,26 @@ impl RPCHandler for ControlPanelServer {
             }
             "user.change_state" => self.handle_user_change_state(req, principal.as_ref()).await,
             "user.change_type" => self.handle_user_change_type(req, principal.as_ref()).await,
+            "user.set_account_options" => {
+                self.handle_user_set_account_options(req, principal.as_ref())
+                    .await
+            }
+            "user_group.list" => self.handle_user_group_list(req, principal.as_ref()).await,
+            "user_group.create" => self.handle_user_group_create(req, principal.as_ref()).await,
+            "user_group.update" => self.handle_user_group_update(req, principal.as_ref()).await,
+            "user_group.delete" => self.handle_user_group_delete(req, principal.as_ref()).await,
+            "user_group.set_members" => {
+                self.handle_user_group_set_members(req, principal.as_ref())
+                    .await
+            }
+            "user_group.set_projections" => {
+                self.handle_user_group_set_projections(req, principal.as_ref())
+                    .await
+            }
+            "user_group.reset_projections" => {
+                self.handle_user_group_reset_projections(req, principal.as_ref())
+                    .await
+            }
 
             "agent.check_name" => self.handle_agent_check_name(req, principal.as_ref()).await,
             "agent.list_templates" => {

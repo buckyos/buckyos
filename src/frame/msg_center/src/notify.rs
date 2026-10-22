@@ -491,6 +491,9 @@ impl MessageCenter {
                 caller.system = true;
                 caller.app_id = Some(canonical);
             }
+            TokenPrincipalKind::User if buckyos_api::token_is_external(&verified) => {
+                return Err(denied("External users have no System Notify access"));
+            }
             TokenPrincipalKind::App | TokenPrincipalKind::User => {
                 let user_did = self
                     .token_verifier

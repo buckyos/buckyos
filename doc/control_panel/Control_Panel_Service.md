@@ -38,10 +38,10 @@ Control Panel Service 是 Zone 内的**核心资源管理服务**，其本质是
 
 ### 2.1 User（用户）
 
-* 身份与账号信息，核心结构 `UserSettings`（`user_type` / `state` / 密码哈希 / `is_local` / 是否允许改密 等），来自 `buckyos-api`。
-* 关联结构：`UserPrivateProfile`（用户私有展示资料，保存在独立 profile 路径）、`UserContactSettings`（DID / groups / tags / 消息平台绑定，保存在 profile 的私有扩展中）、`UserTunnelBinding`（消息平台账号绑定）。
+* 身份与账号信息，核心结构 `UserSettings`（`user_type` / `state` / 密码哈希 / `is_local` / 是否允许改密 / 是否允许改通讯录 / 系统用户组 `groups` 等），来自 `buckyos-api`。
+* 关联结构：`UserPrivateProfile`（用户私有展示资料，保存在独立 profile 路径）、`UserContactSettings`（DID / tags / 消息平台绑定，保存在 profile 的私有扩展中）、`UserTunnelBinding`（消息平台账号绑定）、`UserGroup` 与 `ContactProjectionConfig`（`system/user_groups/` 下的系统用户组与通讯录投影规则）。
 * 状态机 `UserState`：`Active`（正常，可签发/使用 session）/ `Pending`（已邀请未激活）/ `Deleted`（软删除，记录保留但禁止登录）。
-* 角色 `UserType`：`Root`（Zone 拥有者，不可删除/不可降级）/ `Admin`（管理员）/ `User`（普通）/ `Limited`（受限，改密受 `allow_password_change` 控制）/ `Guest`。
+* 角色 `UserType`：`Root`（Zone owner 账号记录，不可登录、不可删除/不可变更）/ `Admin`（管理员）/ `User`（普通）/ `Limited`（零权限底座，经系统用户组获得 App 与资源授权）。各类型的四个维度、系统用户组与通讯录投影的权威定义见 [UserType.md](../../product/users_and_agents/UserType.md)，代码中的集中判定在 `UserType` / `UserSettings` 方法上（`is_privileged`、`can_create_agent`、`can_change_password`、`can_edit_contacts` 等）。
 * `system_config` 路径：
 
   | 路径 | 内容 |
@@ -125,20 +125,26 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 | 方法 | 权限 | 说明 |
 |---|---|---|
-| `user.list` | 已登录 | 列出用户（可选 `include_deleted`）；每项附带公开 profile 投影中的 `did` 与 `avatar`（遵守 `to_public_profile()` 可见性） |
-| `user.get` | 本人/Admin | 取单用户详情；profile 私有扩展中的 `contact` / `did_document` 仅本人或 Admin 可见 |
-| `user.create` | **Admin** | 事务创建 settings+doc+key，追加 RBAC 组；不允许创建 Root |
+| `user.list` | 已登录 | 列出用户（可选 `include_deleted`）；每项附带公开 profile 投影中的 `did` 与 `avatar`（遵守 `to_public_profile()` 可见性），以及 `groups`、`allow_password_change` / `allow_contact_edit`（覆盖值，可为 null）和生效值 `can_change_password` / `can_edit_contacts` |
+| `user.get` | 本人/Admin | 取单用户详情（含 `groups`，`allow_password_change` / `allow_contact_edit` 为生效值）；profile 私有扩展中的 `contact` / `did_document` 仅本人或 Admin 可见 |
+| `user.create` | **Admin** | 事务创建 settings+doc+key+profile；`user_type` 只接受 `user` / `limited`（Admin 经 `user.change_type` 提升）；可选 `groups`（已定义的系统用户组 id）、`allow_password_change`、`allow_contact_edit`；随后刷新 RBAC 并通知 msg-center |
 | `user.update` | 本人/Admin | 改 profile 中的显示名等 |
-| `user.update_contact` | 本人/Admin | 改 profile 私有扩展中的 DID/groups/tags/消息平台绑定 |
+| `user.update_contact` | 本人/Admin | 改 profile 私有扩展中的 DID/tags/消息平台绑定；传 `groups` 会被拒绝（系统用户组由 `user_group.set_members` 管理） |
 | `user.profile.get` / `user.profile.set` | 本人/Admin | `users/{uid}/profile` 中的私有 profile（DID profile 只读，响应中两源合并：本地显式字段优先，DID 文档 `profile`/`meta` 只补本地为空的字段）。`set` 的文本字段三态：省略=不改、`null` 或空串=清除（回落到 DID 文档值）、字符串=设置；`avatar` 只接受 ≤192px、≤512KB 的 base64 PNG/JPEG/WebP data URL。保存后通知 msg-center 重新同步 Zone 联系人 |
 | `user.set_msg_tunnel` / `user.remove_msg_tunnel` | 本人/Admin | 增删消息平台账号绑定 |
-| `user.invite.create` | **Admin** | 生成邀请（可预建 Pending 用户或绑定已有 DID），返回 `invite_url` |
+| `user.invite.create` | **Admin** | 生成邀请（可预建 Pending 用户或绑定已有 DID），返回 `invite_url`；`user_type` 为 `admin` / `user` / `limited`，`groups` 为已定义的系统用户组 id，接受邀请时写入账号 |
 | `user.invite.get` | **公开** | 凭 `invite_id` 读邀请详情（含过期、zone_did/host） |
 | `user.invite.accept` | **公开** | 凭 `invite_id` + `owner_config` 接受邀请并激活账号 |
 | `user.delete` | **Admin** | 软删除（置 Deleted），不可自删 |
 | `user.change_password` | 本人/Admin | 本人改密受 `allow_password_change` 限制 |
 | `user.change_state` | **Admin** | Active/Pending/Deleted 迁移 |
-| `user.change_type` | **Admin** | 改角色；不能提升到 Root，不能改 Root |
+| `user.change_type` | **Admin** | 只在 `admin` / `user` / `limited` 之间转换，不能改 Root；随后刷新 RBAC 并通知 msg-center（通讯录投影依赖类型），旧会话不自动获得新权限 |
+| `user.set_account_options` | **Admin** | `{ user_id, allow_password_change?, allow_contact_edit? }`，`null` 恢复类型默认；返回生效值 |
+| `user_group.list` | **Admin** | `{ groups: [UserGroup + members], projections: { rules, is_default, updated_by, updated_at } }` |
+| `user_group.create` / `user_group.update` | **Admin** | `{ group_id, name, description? }`；`group_id` 为 `[a-z][a-z0-9_-]{0,31}`，写 `system/user_groups/<id>` |
+| `user_group.delete` | **Admin** | 删除组定义，同时从成员的 `UserSettings.groups` 和投影规则中移除；刷新 RBAC 并通知 msg-center |
+| `user_group.set_members` | **Admin** | `{ group_id, add?, remove? }`；Root 不能加入；刷新 RBAC 并通知 msg-center |
+| `user_group.set_projections` / `user_group.reset_projections` | **Admin** | 保存单向“来源组 → 目标组”规则（`type:admin|user|limited` 或 `group:<id>`）到 `system/user_groups/_projections`；reset 删除该 key，恢复默认（Admin、User 互见） |
 
 ### 4.2 设备管理 (Device)
 
@@ -177,7 +183,7 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 | `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；每项包含 `app_id/app_did/app_instance_id/runtime_type/owner_user_id/availability_match/web_hosts`，以及展示字段 `name`（AppDoc 包名）、`show_name`、`presentation`（`title/summary/description` 的语言→文本映射，无则 null）、`app_icon_url`（`presentation.links.app_icon_url`；`presentation.icons` 的 ObjId 尚无浏览器可加载路由，不返回） |
 | `apps.details` / `app.details` | typed details | 接受统一 selector（`selector/app_instance_id/app_did/identifier`），按可见 Owner 范围唯一选择；0 个返回 NotFound，多个返回 `AMBIGUOUS_APP_TARGET` 与脱敏候选 |
 | `apps.status` / `app.status` | `AppInstallationStatusSnapshot` | 聚合 install record、desired spec、active task、scheduled/runtime instance、目标/上次成功/回滚 deployment、typed deployment error 与 Static Web gateway generation evidence |
-| `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略与审计；scheduler 单独把 policy 投影为 Gateway access mode，不回写 AppSpec |
+| `apps.availability.get/set/check` | policy / decision | 个人 App 的用户类型组（`admins`/`users`/`limited`）、系统用户组（`group:<id>`，必须已定义）、精确用户与匿名（`guest` 伪组）规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略与审计；scheduler 单独把 policy 投影为 Gateway access mode，不回写 AppSpec |
 | `apps.staging.finalize/status/release` | `PikgStagingMetadata` | `finalize` 接受 FileObject 的 `source_obj_id` 或本机 incoming 文件的 `local_file_id`（二选一），以及必填 `pikg_digest/size` 和 `purpose=inspect|install`；完整落盘并校验后返回 handle、digest、size、TTL；handle 绑定 principal、App、Zone 与租约，不包含路径或 digest |
 | `apps.inspect` | `InstallInspection` | 对 Catalog 或 staged PIKG 做无安装副作用的首次安装/升级预检；`action=upgrade` 时生成升级 inspection |
 | `apps.plan.recompute` | `InstallInspection` | 接受旧 plan、同一 source 以及新的 target/InstallParams，权威重算 plan 与 fingerprint；source/scope 变化返回 `PLAN_STALE` |
@@ -205,7 +211,7 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 * `auth.refresh` / `auth.verify` / `auth.logout`：刷新 / 校验 / 注销。
 * `auth.prepare_app_launch`：桌面免密打开 App。参数只有 `app_instance_id` 和 `redirect_url`（最终 App URL），不接受 `username`、`target` 等自报身份的字段。要求普通（非 sudo）Control Panel 用户会话，不在公开白名单内；通用认证对本方法返回 `InvalidToken` 时（缺 token、验签或有效期失败、用户 inactive、读 user settings 失败）映射为 `source_session_inactive` 结果。`redirect_url` 按与 SSO 相同的 Gateway route 规则解析，必须是与 `app_instance_id` 完全一致的 App target，否则返回 `invalid_target`（读 gateway info 失败等仍是 RPC error）。随后以本服务的服务会话调用 verify-hub `delegate_user_session`（verify-hub 只接受 Control Panel 服务会话调用），并把原始桌面 token 作为来源证明；`source_inactive` / `access_denied` 映射为 `source_session_inactive` / `access_denied`。返回的 token pair 必须是同一用户、目标实例的普通 User session/refresh 且未过期，才和密码登录一样存进 60 秒一次性 pending，响应 `{ "status": "ready", "callback_url": "<app origin>/sso_callback?nonce=…&redirect_url=…" }`，不含 token。所有 `auth.*` 响应带 `Cache-Control: no-store`。结果状态、桌面处理和已知取舍见 [SSO.md](../sdk/SSO.md)“从桌面打开 App”。
 * HTTP 侧：`/sso_callback` 只有在 pending/callback/实际 request 的 origin、redirect 和 Gateway route target 全部一致，且 token pair 的 target/use 合法后才写两枚 host-only cookie（响应 `Cache-Control: no-store`）；失败会尽力吊销 pending refresh。nonce、token 和含 nonce 的 URL 不写入日志。`/sso_refresh` 在调用 Verify Hub 前后都校验当前 origin/route 和 target，任何失败都清 cookie；`/sso_logout` 尽力吊销后始终清 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散。
-* **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），从 `sub` 解出 username，加载 `users/{username}/settings` 校验状态为 `Active`，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
+* **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），token 带 `external: true` 标记（本 Zone 无账号记录的 DID）时直接拒绝，v1 不向 External 开放任何 Control Panel 方法；其余从 `sub` 解出 username，加载 `users/{username}/settings` 校验为 Active 且非 Root，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
 
 **(b) 桌面 UI Session 状态层**（`ui_session_mgr`）—— 持久化每个用户的桌面会话（外观/窗口布局/图标布局/小组件布局）：
 

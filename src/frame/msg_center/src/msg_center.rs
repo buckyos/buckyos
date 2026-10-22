@@ -50,6 +50,19 @@ const IDEMPOTENCY_GLOBAL_MAX_ROWS: u64 = 100_000;
 const IDEMPOTENCY_GLOBAL_TARGET_ROWS: u64 = 80_000;
 const IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS: u64 = 10_000;
 
+/// The account records of this Zone as the last zone sync saw them
+/// (product/users_and_agents/UserType.md).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ZoneAccounts {
+    /// Active accounts with a personal inbox (Admin, User): the local
+    /// recipients among the Zone's users.
+    pub(crate) recipients: HashSet<String>,
+    /// Every account record's DID, whatever its type or state.
+    pub(crate) dids: HashSet<String>,
+    /// Every account name: `<name>.<zone host>` is an account DID as well.
+    pub(crate) names: HashSet<String>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct MessageCenterState {
     messages: HashMap<String, MsgObject>,
@@ -78,6 +91,8 @@ pub struct MessageCenter {
     /// DIDs hosted by this zone (zone users / agents / hosted groups): the
     /// message hub delivers to them natively via local dispatch.
     local_recipients: Arc<RwLock<HashSet<String>>>,
+    /// Account records of the Zone: which users are local recipients.
+    zone_accounts: Arc<RwLock<ZoneAccounts>>,
     /// Transport DID of the MessageHub executor. Unset means shareable-DID
     /// targets cannot be planned (post_send fails them with a clear reason
     /// instead of parking records in a queue nobody consumes).
@@ -132,6 +147,7 @@ impl MessageCenter {
             tunnel_registry: Arc::new(RwLock::new(HashMap::new())),
             edit_capabilities: Arc::new(RwLock::new(HashMap::new())),
             local_recipients: Arc::new(RwLock::new(hosted)),
+            zone_accounts: Arc::new(RwLock::new(ZoneAccounts::default())),
             message_hub_did: Arc::new(OnceLock::new()),
             cyfs_dispatch: Arc::new(RwLock::new(Default::default())),
             token_verifier: Arc::new(TokenVerifierSlot::default()),
@@ -222,26 +238,57 @@ impl MessageCenter {
         }
     }
 
-    /// Registered explicitly (Zone users and Agents from the Zone sync, hosted
-    /// groups); the agreed native receive path serves only these.
+    /// Registered explicitly (Agents from the Zone sync, hosted groups, the
+    /// Zone's users with a personal inbox); the agreed native receive path
+    /// serves only these.
     pub(crate) fn is_registered_recipient(&self, did: &DID) -> bool {
-        self.local_recipients
-            .read()
-            .unwrap()
-            .contains(&did.to_string())
+        let did = did.to_string();
+        self.local_recipients.read().unwrap().contains(&did)
+            || self.zone_accounts.read().unwrap().recipients.contains(&did)
     }
 
-    /// Is this DID hosted by this zone? True for explicitly registered
-    /// recipients and for DIDs under the zone host (`<agent>.<zone>`,
-    /// `telegram.<zone>` aliases, the zone DID itself).
-    pub fn is_local_recipient(&self, did: &DID) -> bool {
-        if self
-            .local_recipients
-            .read()
-            .unwrap()
-            .contains(&did.to_string())
-        {
+    /// Replace what the Zone's account records say (zone sync).
+    pub(crate) fn set_zone_accounts(&self, accounts: ZoneAccounts) {
+        *self.zone_accounts.write().unwrap() = accounts;
+    }
+
+    /// An account record of this Zone, by DID or as `<name>.<zone host>`.
+    pub(crate) fn is_zone_account(&self, did: &DID) -> bool {
+        let accounts = self.zone_accounts.read().unwrap();
+        if accounts.dids.contains(&did.to_string()) {
             return true;
+        }
+        let Ok(runtime) = get_buckyos_api_runtime() else {
+            return false;
+        };
+        let zone_host = runtime.zone_id.to_host_name();
+        did.to_host_name()
+            .strip_suffix(&format!(".{zone_host}"))
+            .is_some_and(|name| accounts.names.contains(name))
+    }
+
+    /// An account of this Zone that cannot receive direct messages: it takes
+    /// part through group sessions only.
+    pub(crate) fn is_account_without_inbox(&self, did: &DID) -> bool {
+        !self.is_registered_recipient(did) && self.is_zone_account(did)
+    }
+
+    /// An identity this Zone holds custody of: a local recipient or any of its
+    /// accounts (a Limited account has no inbox but is still signed for).
+    pub(crate) fn is_hosted_identity(&self, did: &DID) -> bool {
+        self.is_local_recipient(did) || self.is_zone_account(did)
+    }
+
+    /// Is this DID hosted by this zone? True for registered recipients, the
+    /// zone DID and other DIDs under the zone host (`<agent>.<zone>`,
+    /// `telegram.<zone>` aliases). An account of the Zone is local only with a
+    /// personal inbox (Admin, User), never by its host name.
+    pub fn is_local_recipient(&self, did: &DID) -> bool {
+        if self.is_registered_recipient(did) {
+            return true;
+        }
+        if self.is_zone_account(did) {
+            return false;
         }
         let Ok(runtime) = get_buckyos_api_runtime() else {
             return false;
@@ -258,13 +305,41 @@ impl MessageCenter {
         target_host == zone_host || target_host.ends_with(&format!(".{}", zone_host))
     }
 
+    fn is_zone_user_contact(contact: &Contact) -> bool {
+        contact
+            .tags
+            .iter()
+            .any(|tag| tag == buckyos_api::CONTACT_TAG_ZONE_USER)
+    }
+
+    /// A user (not a service) reading the system scope.
+    async fn user_reads_system_scope(
+        &self,
+        ctx: &RPCContext,
+        owner: Option<&DID>,
+    ) -> std::result::Result<bool, RPCErrors> {
+        if owner.is_some() {
+            return Ok(false);
+        }
+        Ok(self.caller_identity(ctx).await?.is_some_and(|caller| {
+            caller.principal_kind == buckyos_api::TokenPrincipalKind::User
+        }))
+    }
+
+    /// What the owner's address book shows of a contact: an owner that may
+    /// not change its address book sees only the projected Zone users.
+    pub(crate) fn contact_visible(&self, owner: Option<&DID>, contact: &Contact) -> bool {
+        owner.map_or(true, |owner| self.contact_mgr.owner_can_edit(owner))
+            || !contact.projected_from.is_empty()
+    }
+
+    /// Write Zone user contacts into one store (system scope, an Agent's
+    /// store). Users' own address books get Zone users by projection instead.
     pub async fn upsert_zone_user_contacts(
         &self,
         contacts: Vec<ZoneUserContactSeed>,
         owner: Option<DID>,
     ) -> std::result::Result<usize, RPCErrors> {
-        // Zone users are native local recipients of the message hub.
-        self.register_local_recipients(contacts.iter().map(|seed| seed.did.clone()));
         self.contact_mgr
             .upsert_zone_user_contacts(contacts, owner)
             .await
@@ -1141,6 +1216,12 @@ impl MessageCenter {
             });
         }
 
+        if self.is_account_without_inbox(&target_did) {
+            return Err(format!(
+                "recipient-has-no-inbox: {} has no personal inbox in this Zone; message it in a group session",
+                target_did.to_string()
+            ));
+        }
         // Shareable DID → MessageHub native delivery.
         let hub_did = self.message_hub_did().ok_or_else(|| {
             format!(
@@ -2691,8 +2772,16 @@ impl MsgCenterHandler for MessageCenter {
             Self::derive_session_id(&MailboxKind::Sent, &msg),
         )
         .map_err(RPCErrors::ParseRequestError)?;
-        self.authorize_mailbox(&ctx, &mailbox, MailboxKind::Sent, "write")
-            .await?;
+        // An External user has no mailbox here: it may only post into a group
+        // hosted by this Zone, as a member of it.
+        let external = self
+            .caller_identity(&ctx)
+            .await?
+            .is_some_and(|caller| caller.external);
+        if !(external && Self::is_group_message(&msg)) {
+            self.authorize_mailbox(&ctx, &mailbox, MailboxKind::Sent, "write")
+                .await?;
+        }
         // Friend messages carry state msg-center keeps for the owner; only
         // the `contact.*` friend RPCs build them.
         if crate::friend_service::is_friend_message(&msg) {
@@ -2708,6 +2797,11 @@ impl MsgCenterHandler for MessageCenter {
             }
             if msg.to.len() == 1 && self.groups.load(&msg.to[0]).await?.is_some() {
                 return self.post_hosted_group(&actor, msg).await;
+            }
+            if external {
+                return Err(crate::group_types::denied(
+                    "external-users-post-to-hosted-groups-only",
+                ));
             }
         }
         self.post_send_internal(msg, idempotency_key).await
@@ -3481,7 +3575,15 @@ impl MsgCenterHandler for MessageCenter {
     ) -> std::result::Result<Option<Contact>, RPCErrors> {
         self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), false)
             .await?;
-        self.contact_mgr.get_contact(did, contact_mgr_owner).await
+        let user_reads_system = self.user_reads_system_scope(&ctx, contact_mgr_owner.as_ref()).await?;
+        let contact = self
+            .contact_mgr
+            .get_contact(did, contact_mgr_owner.clone())
+            .await?;
+        Ok(contact.filter(|contact| {
+            self.contact_visible(contact_mgr_owner.as_ref(), contact)
+                && !(user_reads_system && Self::is_zone_user_contact(contact))
+        }))
     }
 
     async fn handle_list_contacts(
@@ -3492,9 +3594,33 @@ impl MsgCenterHandler for MessageCenter {
     ) -> std::result::Result<Vec<Contact>, RPCErrors> {
         self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), false)
             .await?;
-        self.contact_mgr
-            .list_contacts(query, contact_mgr_owner)
-            .await
+        if !self.user_reads_system_scope(&ctx, contact_mgr_owner.as_ref()).await? {
+            return self
+                .contact_mgr
+                .list_contacts(query, contact_mgr_owner)
+                .await;
+        }
+        // The system scope holds every Zone account for routing; a user sees
+        // the Zone's users through its own projected address book only.
+        let offset = query.offset.unwrap_or(0) as usize;
+        let limit = query.limit.unwrap_or(100).clamp(1, 1000);
+        let all = self
+            .contact_mgr
+            .list_contacts(
+                ContactQuery {
+                    offset: None,
+                    limit: Some(usize::MAX),
+                    ..query
+                },
+                None,
+            )
+            .await?;
+        Ok(all
+            .into_iter()
+            .filter(|contact| !Self::is_zone_user_contact(contact))
+            .skip(offset)
+            .take(limit)
+            .collect())
     }
 
     async fn handle_get_group_subscribers(

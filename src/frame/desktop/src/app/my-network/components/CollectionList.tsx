@@ -14,6 +14,7 @@ import { filterPeople, kindOfContact, peopleOfView } from '../datamodel/collecti
 import { openHomeStation } from '../datamodel/links'
 import type { MyNetworkView, PeopleFilter, PeopleSort } from '../datamodel/types'
 import { useCollectionActions } from './collectionActions'
+import { isProjectedContact, useContactEditPermission, useUserGroupNames } from '../../../components/network/permissions'
 import { dangerTextSx } from '../../../components/network/buttonStyles'
 
 const FILTERS: PeopleFilter[] = ['all', 'friends', 'others', 'blocked']
@@ -46,12 +47,14 @@ export function CollectionList({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const canEditContacts = useContactEditPermission()
+  const groupNames = useUserGroupNames()
   const tag = view.kind === 'collection' ? view.tag : null
   const kind = tag ? tagKind(tag) : null
-  const editable = kind === 'user'
+  const editable = kind === 'user' && canEditContacts
   const members = useMemo(() => peopleOfView(contacts.data ?? [], view), [contacts.data, view])
   const visible = useMemo(() => filterPeople(members, query, filter, sort), [members, query, filter, sort])
-  const title = tag ? tagLabel(t, tag) : t(`myNetwork.view.${view.kind}`)
+  const title = tag ? tagLabel(t, tag, groupNames) : t(`myNetwork.view.${view.kind}`)
   const selection = checked.filter(did => members.some(contact => contact.did === did))
 
   const guarded = async (run: () => Promise<void>) => {
@@ -92,15 +95,18 @@ export function CollectionList({
           <h2 className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]" data-testid="my-network-list-title">{title}</h2>
           <span className="shrink-0 text-[11px] tabular-nums text-[color:var(--cp-muted)]">{t('myNetwork.list.count', undefined, { count: members.length })}</span>
         </div>
+        {!canEditContacts ? (
+          <p className="text-[11px] leading-4 text-[color:var(--cp-muted)]" data-testid="my-network-read-only">{t('myNetwork.readOnly.list')}</p>
+        ) : null}
         {tag ? (
           <div className="flex flex-wrap items-center gap-1.5">
             <Pill tone={editable ? 'var(--cp-accent)' : 'var(--cp-muted)'}>{t(editable ? 'myNetwork.collection.static' : 'myNetwork.collection.view')}</Pill>
             {kind === 'app' ? <span className="text-[11px] text-[color:var(--cp-muted)]">{t('myNetwork.collection.appReadOnly')}</span> : null}
             {kind === 'system' ? <span className="text-[11px] text-[color:var(--cp-muted)]">{t('myNetwork.collection.systemReadOnly')}</span> : null}
           </div>
-        ) : (
+        ) : canEditContacts ? (
           <p className="text-[11px] leading-4 text-[color:var(--cp-muted)]">{t(`myNetwork.view.${view.kind}.hint`)}</p>
-        )}
+        ) : null}
         {editable ? (
           <div className="flex flex-wrap gap-1 pt-1">
             <Button size="small" variant="outlined" startIcon={<UserPlus size={13} />} disabled={busy} onClick={() => void addMembers()} data-testid="collection-add-members">{t('myNetwork.collection.add')}</Button>
@@ -180,7 +186,7 @@ export function CollectionList({
             selected={contact.did === selectedDid}
             onClick={() => onSelect(contact.did)}
             secondary={secondaryOf(contact)}
-            leading={(
+            leading={canEditContacts ? (
               <Checkbox
                 size="small"
                 checked={checked.includes(contact.did)}
@@ -188,8 +194,13 @@ export function CollectionList({
                 inputProps={{ 'aria-label': t('myNetwork.list.select', undefined, { name: contact.name || contact.did }) }}
                 sx={{ p: 0.5 }}
               />
+            ) : undefined}
+            trailing={(
+              <span className="flex shrink-0 items-center gap-1">
+                {isProjectedContact(contact) ? <Pill tone="var(--cp-muted)" testId="person-projected">{t('myNetwork.projected.badge')}</Pill> : null}
+                <RelationBadge relation={withPendingRequest(relationOfContact(contact), contact.did, friendRequests.data)} compact />
+              </span>
             )}
-            trailing={<RelationBadge relation={withPendingRequest(relationOfContact(contact), contact.did, friendRequests.data)} compact />}
           />
         ))}
       </div>

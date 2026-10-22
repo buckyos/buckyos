@@ -307,6 +307,9 @@ pub struct CallerIdentity {
     pub user_did: Option<DID>,
     /// RBAC app subject of the token (`system:<service>` / `app:<app>`).
     pub authorization_key: String,
+    /// A user token for a DID without an account record in this Zone: it
+    /// only acts in group sessions.
+    pub external: bool,
 }
 
 /// A call made inside this process: no session token and no peer address.
@@ -322,6 +325,11 @@ pub(crate) fn is_in_process_call(ctx: &RPCContext) -> bool {
 
 fn permission_denied(reason: impl Into<String>) -> RPCErrors {
     RPCErrors::NoPermission(reason.into())
+}
+
+/// External users (no account record here) only take part in group sessions.
+fn external_denied() -> RPCErrors {
+    permission_denied("external-users-use-group-sessions-only")
 }
 
 fn is_activity_kind(kind: MsgObjKind) -> bool {
@@ -407,7 +415,14 @@ impl MessageCenter {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| permission_denied("session token has no subject"))?;
-        let user_did = if claims.principal_kind == TokenPrincipalKind::User {
+        let external = claims.principal_kind == TokenPrincipalKind::User
+            && buckyos_api::token_is_external(&verified);
+        let user_did = if external {
+            // No account record here: the token subject is the DID itself.
+            Some(DID::from_str(&user_id).map_err(|error| {
+                permission_denied(format!("External subject is not a DID: {}", error))
+            })?)
+        } else if claims.principal_kind == TokenPrincipalKind::User {
             Some(
                 self.token_verifier
                     .get()
@@ -425,6 +440,7 @@ impl MessageCenter {
             authorization_key: claims.target.authorization_key(),
             principal_kind: claims.principal_kind,
             user_did,
+            external,
         }))
     }
 
@@ -453,6 +469,7 @@ impl MessageCenter {
     ) -> std::result::Result<(), RPCErrors> {
         match self.caller_identity(ctx).await? {
             None => Ok(()),
+            Some(caller) if caller.external => Err(external_denied()),
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
                     if caller.user_did.as_ref() == Some(owner)
@@ -483,6 +500,7 @@ impl MessageCenter {
     ) -> std::result::Result<(), RPCErrors> {
         match self.caller_identity(ctx).await? {
             None => Ok(()),
+            Some(caller) if caller.external => Err(external_denied()),
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
                     if caller.user_did.as_ref() == Some(owner) {
@@ -556,11 +574,34 @@ impl MessageCenter {
         owner: Option<&DID>,
         write: bool,
     ) -> std::result::Result<(), RPCErrors> {
+        let contacts_resource = |owner: &DID| {
+            MailboxAddress::new(owner.clone(), None)
+                .map(|address| address.contacts_resource())
+                .map_err(RPCErrors::ParseRequestError)
+        };
         match owner {
-            Some(owner) if write => self.authorize_owner_write(ctx, owner).await,
-            Some(owner) => self.authorize_owner_read(ctx, owner).await,
-            None if write => match self.caller_identity(ctx).await? {
-                Some(caller) if caller.principal_kind == TokenPrincipalKind::User => {
+            Some(owner) if write => {
+                self.authorize_owner_write_identity(ctx, owner).await?;
+                self.authorize_resource(ctx, &contacts_resource(owner)?, "write")
+                    .await?;
+                // A user without the right to edit its address book sees and
+                // keeps the projection only (UserType.md, dimension 3).
+                let caller = self.caller_identity(ctx).await?;
+                if caller.is_some_and(|caller| caller.principal_kind == TokenPrincipalKind::User)
+                    && !self.contact_mgr.owner_can_edit(owner)
+                {
+                    return Err(permission_denied("contact-edit-not-allowed"));
+                }
+                Ok(())
+            }
+            Some(owner) => {
+                self.authorize_owner_read_identity(ctx, owner).await?;
+                self.authorize_resource(ctx, &contacts_resource(owner)?, "read")
+                    .await
+            }
+            None => match self.caller_identity(ctx).await? {
+                Some(caller) if caller.external => Err(external_denied()),
+                Some(caller) if write && caller.principal_kind == TokenPrincipalKind::User => {
                     Err(permission_denied(format!(
                         "user {} may not change system contacts",
                         caller.user_id
@@ -568,7 +609,6 @@ impl MessageCenter {
                 }
                 _ => Ok(()),
             },
-            None => Ok(()),
         }
     }
 

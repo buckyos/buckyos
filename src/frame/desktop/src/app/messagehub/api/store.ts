@@ -294,18 +294,14 @@ export class MessageHubApiStore implements MessageHubStore {
     return data.loading
   }
 
-  /** The owner's contacts (over the Zone-wide ones) and the owner's Agents. */
+  /** The owner's address book (msg-center merges in the Zone's projection) and the owner's Agents. */
   private async fetchPeople(ownerDid: string) {
-    const [ownerContacts, systemContacts, agents] = await Promise.all([
+    const [contacts, agents] = await Promise.all([
       listContacts(ownerDid).catch(() => [] as Contact[]),
-      ownerDid === this.selfDid ? listContacts(undefined).catch(() => [] as Contact[]) : Promise.resolve([] as Contact[]),
       ownerDid === this.selfDid ? fetchAgentList().then(result => result.data?.agents ?? []).catch(() => []) : Promise.resolve([]),
     ])
-    const merged = new Map<string, Contact>()
-    for (const contact of systemContacts) merged.set(contact.did, contact)
-    for (const contact of ownerContacts) merged.set(contact.did, contact)
     return {
-      contacts: [...merged.values()],
+      contacts,
       agentDids: agents.map(agent => agent.agent_did).filter(did => typeof did === 'string' && did.startsWith('did:')),
     }
   }

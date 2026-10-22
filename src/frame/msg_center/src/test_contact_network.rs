@@ -811,3 +811,389 @@ async fn friend_state_cannot_be_bypassed() {
         .any(|r| r.request_id == pending.request_id && r.state == buckyos_api::FriendRequestState::Ignored));
     assert_eq!(friend_state(&c, &alice, &bob).await, FriendState::None);
 }
+
+// ---------------------------------------------------------------------------
+// Contact projection, address book edit rights and personal inboxes
+// (product/users_and_agents/UserType.md).
+// ---------------------------------------------------------------------------
+
+fn customer_service_groups(rules: bool) -> buckyos_api::UserGroupDirectory {
+    let group = |id: &str| buckyos_api::UserGroup {
+        group_id: id.into(),
+        name: id.into(),
+        description: None,
+        updated_by: "alice".into(),
+        created_at: 1,
+        updated_at: 1,
+    };
+    let mut rules_list = buckyos_api::default_contact_projection_rules();
+    if rules {
+        rules_list.push(buckyos_api::ContactProjectionRule::new(
+            "group:customer".parse().unwrap(),
+            "group:service".parse().unwrap(),
+        ));
+    }
+    buckyos_api::UserGroupDirectory {
+        groups: vec![group("customer"), group("service")],
+        projections: Some(buckyos_api::ContactProjectionConfig {
+            rules: rules_list,
+            updated_by: "alice".into(),
+            updated_at: 1,
+        }),
+    }
+}
+
+async fn listed(c: &MessageCenter, owner: &DID) -> Vec<Contact> {
+    c.handle_list_contacts(ContactQuery::default(), Some(owner.clone()), RPCContext::default())
+        .await
+        .unwrap()
+}
+
+fn dids(contacts: &[Contact]) -> Vec<String> {
+    let mut dids: Vec<String> = contacts.iter().map(|c| c.did.to_string()).collect();
+    dids.sort();
+    dids
+}
+
+#[tokio::test]
+async fn default_projection_lets_admins_and_users_see_each_other_but_not_limited() {
+    use buckyos_api::UserType;
+    let zone = "z.example";
+    let (alice, bob, carol) = (user("alice", zone), user("bob", zone), user("carol", zone));
+    let (c, _tmp) = open("projection-default", zone, &[]).await;
+    let directory = crate::test_zone_directory(
+        &[
+            (&alice, UserType::Admin, &[]),
+            (&bob, UserType::User, &[]),
+            (&carol, UserType::Limited, &[]),
+        ],
+        Default::default(),
+    );
+    crate::apply_zone_directory(&c, &directory, &mut Default::default())
+        .await
+        .unwrap();
+    assert_eq!(dids(&listed(&c, &alice).await), vec![bob.to_string()]);
+    assert_eq!(dids(&listed(&c, &bob).await), vec![alice.to_string()]);
+    assert!(listed(&c, &carol).await.is_empty());
+    let projected = contact(&c, &alice, &bob).await.unwrap();
+    assert_eq!(projected.projected_from, vec!["type:user".to_string()]);
+    assert!(projected.tags.iter().any(|t| t == "type:user"));
+    assert_eq!(projected.friend_state, FriendState::Friend);
+    assert_eq!(projected.access_level, AccessGroupLevel::Allow);
+    // Nothing lands in the owners' own stores.
+    let raw = c
+        .contact_mgr
+        .projection()
+        .by_owner
+        .get(&alice.to_string())
+        .map(|entries| entries.len());
+    assert_eq!(raw, Some(1));
+    c.contact_mgr.set_projection(Default::default());
+    assert!(listed(&c, &alice).await.is_empty());
+    // Only accounts with a personal inbox are local recipients.
+    assert!(c.is_local_recipient(&alice) && c.is_local_recipient(&bob));
+    assert!(!c.is_local_recipient(&carol));
+}
+
+#[tokio::test]
+async fn customer_group_is_seen_by_service_group_one_way_and_leaves_no_residue() {
+    use buckyos_api::UserType;
+    let zone = "z.example";
+    let (svc, cust) = (user("svc", zone), user("cust", zone));
+    let (c, _tmp) = open("projection-groups", zone, &[]).await;
+    let accounts: [(&DID, UserType, &[&str]); 2] = [
+        (&svc, UserType::User, &["service"]),
+        (&cust, UserType::Limited, &["customer"]),
+    ];
+    let mut purged = Default::default();
+    crate::apply_zone_directory(
+        &c,
+        &crate::test_zone_directory(&accounts, customer_service_groups(true)),
+        &mut purged,
+    )
+    .await
+    .unwrap();
+    let seen = listed(&c, &svc).await;
+    assert_eq!(dids(&seen), vec![cust.to_string()]);
+    assert_eq!(seen[0].projected_from, vec!["group:customer".to_string()]);
+    assert!(listed(&c, &cust).await.is_empty());
+
+    // Read only: no removal, no rename, no merge; a note is the owner's own.
+    for method in ["contact.remove_contact"] {
+        let error = rpc(&c, method, json!({"did":cust,"contact_mgr_owner":svc}))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RPCErrors::NoPermission(_)), "{error}");
+    }
+    let rename = c
+        .handle_update_contact(
+            cust.clone(),
+            buckyos_api::ContactPatch {
+                name: Some("Renamed".into()),
+                ..Default::default()
+            },
+            Some(svc.clone()),
+            RPCContext::default(),
+        )
+        .await;
+    assert!(matches!(rename, Err(RPCErrors::NoPermission(_))));
+    let noted = c
+        .handle_update_contact(
+            cust.clone(),
+            buckyos_api::ContactPatch {
+                note: Some("VIP".into()),
+                ..Default::default()
+            },
+            Some(svc.clone()),
+            RPCContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(noted.note.as_deref(), Some("VIP"));
+    assert_eq!(noted.projected_from, vec!["group:customer".to_string()]);
+
+    // Removing the rule removes the projected entry; the owner's note record
+    // stays as an ordinary contact without the Zone's tags.
+    crate::apply_zone_directory(
+        &c,
+        &crate::test_zone_directory(&accounts, customer_service_groups(false)),
+        &mut purged,
+    )
+    .await
+    .unwrap();
+    let after = listed(&c, &svc).await;
+    assert_eq!(dids(&after), vec![cust.to_string()]);
+    assert!(after[0].projected_from.is_empty());
+    assert!(!after[0].tags.iter().any(|t| t.starts_with("group:")));
+    rpc(&c, "contact.remove_contact", json!({"did":cust,"contact_mgr_owner":svc}))
+        .await
+        .unwrap();
+    assert!(listed(&c, &svc).await.is_empty());
+}
+
+#[tokio::test]
+async fn owner_without_edit_right_sees_only_the_projection_and_cannot_write() {
+    use buckyos_api::UserType;
+    let zone = "z.example";
+    let (svc, cust) = (user("svc", zone), user("cust", zone));
+    let stranger = DID::new("web", "nora.other.example");
+    let (c, _tmp) = open("projection-read-only", zone, &[]).await;
+    c.set_token_verifier(Arc::new(Verifier));
+    // A Limited service agent: no address book edits by default.
+    let accounts: [(&DID, UserType, &[&str]); 2] = [
+        (&svc, UserType::Limited, &["service"]),
+        (&cust, UserType::Limited, &["customer"]),
+    ];
+    // The record existed before (e.g. a message from a stranger).
+    c.contact_mgr
+        .update_contact(
+            stranger.clone(),
+            buckyos_api::ContactPatch {
+                access_level: Some(AccessGroupLevel::Stranger),
+                ..Default::default()
+            },
+            Some(svc.clone()),
+        )
+        .await
+        .unwrap();
+    crate::apply_zone_directory(
+        &c,
+        &crate::test_zone_directory(&accounts, customer_service_groups(true)),
+        &mut Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(dids(&listed(&c, &svc).await), vec![cust.to_string()]);
+    let as_svc = token_context(&svc.to_string(), TokenPrincipalKind::User, "control-panel");
+    let hidden = c
+        .handle_get_contact(stranger.clone(), Some(svc.clone()), as_svc.clone())
+        .await
+        .unwrap();
+    assert!(hidden.is_none());
+    let writes = [
+        ("contact.update_tags", json!({"did":cust,"add":["vip"],"contact_mgr_owner":svc})),
+        ("contact.remove_contact", json!({"did":stranger,"contact_mgr_owner":svc})),
+        ("contact.send_friend_request", json!({"did":stranger,"contact_mgr_owner":svc})),
+    ];
+    for (method, params) in writes {
+        let error = c
+            .contact_ext_rpc(method, params, as_svc.clone())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("contact-edit-not-allowed"), "{method}: {error}");
+    }
+    let blocked = c
+        .handle_block_contact(cust.clone(), None, Some(svc.clone()), as_svc.clone())
+        .await
+        .unwrap_err();
+    assert!(blocked.to_string().contains("contact-edit-not-allowed"));
+}
+
+#[tokio::test]
+async fn direct_message_to_an_account_without_inbox_fails_clearly() {
+    use buckyos_api::UserType;
+    let zone = "z.example";
+    let (svc, cust) = (user("svc", zone), user("cust", zone));
+    let (c, _tmp) = open("projection-no-inbox", zone, &[]).await;
+    let accounts: [(&DID, UserType, &[&str]); 2] = [
+        (&svc, UserType::User, &["service"]),
+        (&cust, UserType::Limited, &["customer"]),
+    ];
+    crate::apply_zone_directory(
+        &c,
+        &crate::test_zone_directory(&accounts, customer_service_groups(true)),
+        &mut Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(c.is_account_without_inbox(&cust));
+    assert!(!c.is_local_recipient(&cust));
+    let msg = MsgObject {
+        from: svc.clone(),
+        to: vec![cust.clone()],
+        kind: MsgObjKind::Chat,
+        content: MsgContent {
+            content: "hello".into(),
+            ..Default::default()
+        },
+        created_at_ms: 1,
+        ..Default::default()
+    };
+    let result = c
+        .handle_post_send(msg, None, RPCContext::default())
+        .await
+        .unwrap();
+    assert!(!result.ok);
+    assert!(result
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.starts_with("recipient-has-no-inbox")));
+}
+
+#[tokio::test]
+async fn synced_zone_user_copies_are_dropped_keeping_owner_notes() {
+    let zone = "z.example";
+    let (alice, bob, carol) = (user("alice", zone), user("bob", zone), user("carol", zone));
+    let (c, _tmp) = open("projection-purge", zone, &[]).await;
+    let seed = |did: &DID| crate::contact_mgr::ZoneUserContactSeed {
+        did: did.clone(),
+        name: did.id.clone(),
+        avatar: None,
+        note: None,
+        bindings: vec![],
+        tags: vec![],
+    };
+    c.upsert_zone_user_contacts(vec![seed(&bob), seed(&carol)], Some(alice.clone()))
+        .await
+        .unwrap();
+    c.contact_mgr
+        .update_tags(bob.clone(), vec!["team".into()], vec![], buckyos_api::ContactSource::ManualCreate, Some(alice.clone()))
+        .await
+        .unwrap();
+    assert_eq!(c.contact_mgr.drop_synced_zone_users(&alice).await.unwrap(), 2);
+    assert!(contact(&c, &alice, &carol).await.is_none());
+    let kept = contact(&c, &alice, &bob).await.unwrap();
+    assert_eq!(kept.tags, vec!["team".to_string()]);
+    assert_eq!(kept.friend_state, FriendState::None);
+    assert_eq!(kept.access_level, AccessGroupLevel::Stranger);
+    assert_eq!(c.contact_mgr.drop_synced_zone_users(&alice).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn membership_check_is_exact_includes_projection_and_is_service_only() {
+    use buckyos_api::UserType;
+    let zone = "z.example";
+    let (svc, cust) = (user("svc", zone), user("cust", zone));
+    let (c, _tmp) = open("projection-membership", zone, &[]).await;
+    c.set_token_verifier(Arc::new(Verifier));
+    let accounts: [(&DID, UserType, &[&str]); 2] = [
+        (&svc, UserType::User, &["service"]),
+        (&cust, UserType::Limited, &["customer"]),
+    ];
+    crate::apply_zone_directory(
+        &c,
+        &crate::test_zone_directory(&accounts, customer_service_groups(true)),
+        &mut Default::default(),
+    )
+    .await
+    .unwrap();
+    let check = |ctx: RPCContext, did: &DID, tag: &str| {
+        c.contact_ext_rpc(
+            "contact.check_membership",
+            json!({"owner":svc,"did":did,"tag":tag}),
+            ctx,
+        )
+    };
+    let as_workspace = token_context("ood1", TokenPrincipalKind::System, "aiworkspace");
+    let yes = check(as_workspace.clone(), &cust, "group:customer").await.unwrap();
+    assert_eq!(yes["member"], true);
+    let no = check(as_workspace.clone(), &cust, "type:user").await.unwrap();
+    assert_eq!(no["member"], false);
+    let other = check(as_workspace, &user("dave", zone), "group:customer").await.unwrap();
+    assert_eq!(other["member"], false);
+    let as_svc = token_context(&svc.to_string(), TokenPrincipalKind::User, "control-panel");
+    assert!(check(as_svc, &cust, "group:customer").await.is_err());
+}
+
+#[tokio::test]
+async fn external_users_reach_group_paths_only() {
+    let zone = "z.example";
+    let remote = DID::new("web", "bob.other.example");
+    let (c, _tmp) = open("projection-external", zone, &[]).await;
+    c.set_token_verifier(Arc::new(Verifier));
+    let mut ctx = token_context(&remote.to_string(), TokenPrincipalKind::User, "control-panel");
+    {
+        let mut token = RPCSessionToken::from_string(ctx.token.as_deref().unwrap()).unwrap();
+        buckyos_api::bind_token_external(&mut token);
+        let key = EncodingKey::from_ed_pem(ZONE_A_KEY.as_bytes()).unwrap();
+        ctx.token = Some(token.generate_jwt(None, &key).unwrap());
+    }
+    let groups = c
+        .group_rpc("group.list_by_member", json!({}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(groups.is_object());
+    let inbox = MailboxAddress::new(remote.clone(), None).unwrap();
+    let personal = c
+        .handle_peek_box(inbox, MailboxKind::Inbox, None, None, None, ctx.clone())
+        .await;
+    assert!(matches!(personal, Err(RPCErrors::NoPermission(_))));
+    let contacts = c
+        .handle_list_contacts(ContactQuery::default(), Some(remote.clone()), ctx.clone())
+        .await;
+    assert!(matches!(contacts, Err(RPCErrors::NoPermission(_))));
+    let system = c
+        .handle_list_contacts(ContactQuery::default(), None, ctx)
+        .await;
+    assert!(matches!(system, Err(RPCErrors::NoPermission(_))));
+}
+
+#[tokio::test]
+async fn users_do_not_see_zone_accounts_through_the_system_scope() {
+    use buckyos_api::UserType;
+    let zone = "z.example";
+    let (alice, carol) = (user("alice", zone), user("carol", zone));
+    let (c, _tmp) = open("projection-system-scope", zone, &[]).await;
+    c.set_token_verifier(Arc::new(Verifier));
+    let directory = crate::test_zone_directory(
+        &[(&alice, UserType::User, &[]), (&carol, UserType::Limited, &[])],
+        Default::default(),
+    );
+    crate::apply_zone_directory(&c, &directory, &mut Default::default())
+        .await
+        .unwrap();
+    assert_eq!(listed_system(&c, RPCContext::default()).await.len(), 2);
+    let as_alice = token_context(&alice.to_string(), TokenPrincipalKind::User, "control-panel");
+    assert!(listed_system(&c, as_alice.clone()).await.is_empty());
+    let hidden = c
+        .handle_get_contact(carol.clone(), None, as_alice)
+        .await
+        .unwrap();
+    assert!(hidden.is_none());
+}
+
+async fn listed_system(c: &MessageCenter, ctx: RPCContext) -> Vec<Contact> {
+    c.handle_list_contacts(ContactQuery::default(), None, ctx)
+        .await
+        .unwrap()
+}

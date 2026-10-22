@@ -171,6 +171,13 @@ impl MessageCenter {
     }
 
     fn cheap_reachability(&self, did: &DID) -> Reachability {
+        if self.is_account_without_inbox(did) {
+            return Reachability {
+                state: ReachabilityState::Unreachable,
+                zone: None,
+                reason: Some("no-personal-inbox".into()),
+            };
+        }
         let state = if did.method == "msgtunnel" {
             ReachabilityState::Tunnel
         } else if self.is_local_recipient(did) {
@@ -393,6 +400,7 @@ impl MessageCenter {
                 Some(owner.clone()),
             )
             .await?
+            .filter(|contact| self.contact_visible(Some(owner), contact))
         {
             let mut candidate = self.contact_candidate(owner, &contact).await?;
             if candidate.reachability.state == ReachabilityState::Unknown {

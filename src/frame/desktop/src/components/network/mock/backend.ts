@@ -4,7 +4,8 @@
  * every read (retry succeeds) and four times the latency.
  */
 
-import type { Contact, FriendRequest, FriendRequestResult, LookupCandidate, LookupKind, LookupResult } from 'buckyos'
+import { contactTagKind, type Contact, type FriendRequest, type FriendRequestResult, type LookupCandidate, type LookupKind, type LookupResult } from 'buckyos'
+import { mockContactEditAllowed } from '../../../api/control_panel_mock'
 import type { GroupInvitationItem, GroupRef, JoinOutcome, JoinRequestItem, NetworkBackend, NetworkChange } from '../types'
 import { createMockWorld, MOCK_OWNER_DID, MOCK_ZONE, type MockGroup, type MockWorld } from './data'
 import { networkMockHosts, onNetworkMockHosts, type NetworkMockGroup } from './hosts'
@@ -23,8 +24,9 @@ class MockError extends Error {
   }
 }
 
+const isProjected = (contact: Contact | undefined) => (contact?.projected_from?.length ?? 0) > 0
 const isSystemRelation = (contact: Contact | undefined) => Boolean(contact?.tags?.some(tag => tag === 'zone_user' || tag === 'zone_agent'))
-const isUserTag = (tag: string) => tag !== 'zone_user' && tag !== 'zone_agent' && !/^[a-z][a-z0-9_-]*\.[a-z0-9_.-]+$/.test(tag)
+const isUserTag = (tag: string) => contactTagKind(tag) === 'user'
 
 export function createMockNetworkBackend(): NetworkBackend {
   const options = scenario()
@@ -279,7 +281,12 @@ export function createMockNetworkBackend(): NetworkBackend {
       await delay(0.7)
       return structuredClone(lookup(input, opts?.kinds, opts?.limit))
     },
-    listContacts: () => read('contacts', () => { syncHosts(); return [...world.contacts.values()] }),
+    // Without the right to edit the address book only the system projection is left.
+    listContacts: () => read('contacts', () => {
+      syncHosts()
+      const all = [...world.contacts.values()]
+      return mockContactEditAllowed() ? all : all.filter(isProjected)
+    }),
     saveContact: (did, name) => write(() => ensureContact(did, name), 'contacts'),
     updateTags: (did, change) => write(() => {
       const bad = [...(change.add ?? []), ...(change.remove ?? [])].find(tag => !isUserTag(tag))
@@ -295,6 +302,7 @@ export function createMockNetworkBackend(): NetworkBackend {
     removeContact: (did) => write(() => {
       const contact = world.contacts.get(did)
       if (!contact) throw new MockError('not-found')
+      if (isProjected(contact)) throw new MockError('projected-contact-read-only')
       if (isSystemRelation(contact)) throw new MockError('system-relation')
       world.contacts.delete(did)
     }, 'contacts'),

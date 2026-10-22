@@ -1,11 +1,14 @@
-import { fetchCurrentAccount, isLimitedUserType } from '../../../api/account.ts'
+import { fetchCurrentAccount } from '../../../api/account.ts'
+import { userTypeCanCreateAgents } from '../../../api/user_type.ts'
 import { fetchAppList } from '../../../api/app_mgr.ts'
 import {
   fetchAgentList,
   fetchUserDetail,
+  fetchUserGroups,
   fetchUserList,
 } from '../../../api/user_mgr.ts'
-import type { UserContactSettings, UserDetail } from '../../../api/user_mgr.ts'
+import type { UserContactSettings, UserDetail, UserInfo } from '../../../api/user_mgr.ts'
+import { isPrivilegedUserType } from '../../../api/user_type.ts'
 import { buckyos } from 'buckyos'
 import { usableImageUrl } from '../../../presentation/model.ts'
 import {
@@ -13,13 +16,17 @@ import {
   mockSelf,
 } from '../mock/seed'
 import type {
+  LocalUserEntity,
+  UserGroupsInfo,
   UsersAgentsSnapshot,
 } from './types'
 import {
   appListTargetUserIds,
   toAgentEntity,
+  toLocalUserEntity,
   toSelfEntity,
   toSocialAccounts,
+  toUserGroupsInfo,
   toVisibleLocalUserEntities,
 } from './transforms'
 
@@ -61,6 +68,13 @@ async function forEachWithConcurrency<T>(
   await Promise.all(runners)
 }
 
+/** Groups and projection rules are for admins only; anyone else (or a failed read) gets null. */
+async function loadUserGroups(viewerIsAdmin: boolean): Promise<UserGroupsInfo | null> {
+  if (!viewerIsAdmin) return null
+  const { data } = await fetchUserGroups()
+  return data ? toUserGroupsInfo(data) : null
+}
+
 export async function fetchUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
   const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
   const selfUserId = accountInfo?.user_id
@@ -73,10 +87,13 @@ export async function fetchUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
     fetchUserDetail(selfUserId ? { userId: selfUserId } : {}),
     fetchAgentList(),
   ])
+  const viewerType = accountInfo?.user_type || String(selfResult.data?.user_type ?? '')
+  const viewerIsAdmin = isPrivilegedUserType(viewerType)
+  const userGroups = await loadUserGroups(viewerIsAdmin)
 
   const targetUserIds = appListTargetUserIds(
     selfUserId,
-    accountInfo?.user_type,
+    viewerType,
     usersResult.data?.users ?? [],
   )
   const appsByUser = new Map<string, NonNullable<Awaited<ReturnType<typeof fetchAppList>>['data']>['apps']>()
@@ -103,24 +120,47 @@ export async function fetchUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
   const localUsers = usersResult.data
     ? toVisibleLocalUserEntities(usersResult.data.users, appsByUser, self.id, now)
     : []
-  const userType = accountInfo?.user_type || String(selfDetail?.user_type ?? '')
+  const userType = viewerType || String(selfDetail?.user_type ?? '')
 
   return {
     self,
     agents: (agentsResult.data?.agents ?? []).map(toAgentEntity),
     localUsers,
     entityGroups: [],
-    canCreateAgents: Boolean(userType) && !isLimitedUserType(userType),
+    canCreateAgents: Boolean(userType) && userTypeCanCreateAgents(userType),
+    viewerIsAdmin,
+    userGroups,
+  }
+}
+
+/** The mock keeps its seed people and takes the account facts (type, groups, permissions) from the mock control panel. */
+function withAccountFacts(user: LocalUserEntity, listed: UserInfo | undefined, now: string): LocalUserEntity {
+  if (!listed) return user
+  const facts = toLocalUserEntity(listed, [], now)
+  return {
+    ...user,
+    role: facts.role,
+    groups: facts.groups,
+    passwordChangeAllowed: facts.passwordChangeAllowed,
+    passwordChangeOverride: facts.passwordChangeOverride,
+    contactEditAllowed: facts.contactEditAllowed,
+    contactEditOverride: facts.contactEditOverride,
+    canChangePassword: facts.passwordChangeAllowed && user.status === 'active',
   }
 }
 
 /** The mock runtime keeps its seed people and reads Agents and its own identities from the mock control panel. */
 export async function fetchMockUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
-  const [account, selfResult, agentsResult] = await Promise.all([
+  const [account, selfResult, agentsResult, usersResult] = await Promise.all([
     fetchCurrentAccount(),
     fetchUserDetail(),
     fetchAgentList(),
+    fetchUserList(),
   ])
+  const viewerIsAdmin = isPrivilegedUserType(account?.user_type)
+  const userGroups = await loadUserGroups(viewerIsAdmin)
+  const listed = new Map((usersResult.data?.users ?? []).map((user) => [user.user_id, user]))
+  const now = new Date().toISOString()
   const base = createMockUsersAgentsSnapshot()
   const contact = (selfResult.data?.local_profile?.private_extra?.system_contact ?? {}) as UserContactSettings
   const profile = (selfResult.data?.profile ?? {}) as Record<string, unknown>
@@ -135,7 +175,12 @@ export async function fetchMockUsersAgentsSnapshot(): Promise<UsersAgentsSnapsho
       ...(typeof profile.bio === 'string' ? { bio: profile.bio } : {}),
     },
     agents: (agentsResult.data?.agents ?? []).map(toAgentEntity),
-    canCreateAgents: !isLimitedUserType(account?.user_type),
+    localUsers: base.localUsers
+      .filter((user) => user.id !== (account?.user_id ?? base.self.id))
+      .map((user) => withAccountFacts(user, listed.get(user.id), now)),
+    canCreateAgents: userTypeCanCreateAgents(account?.user_type),
+    viewerIsAdmin,
+    userGroups,
   }
 }
 
@@ -158,6 +203,8 @@ export function createEmptyUsersAgentsSnapshot(): UsersAgentsSnapshot {
     localUsers: [],
     entityGroups: [],
     canCreateAgents: false,
+    viewerIsAdmin: false,
+    userGroups: null,
   }
 }
 
@@ -168,5 +215,7 @@ export function createMockUsersAgentsSnapshot(): UsersAgentsSnapshot {
     localUsers: structuredClone(mockLocalUsers),
     entityGroups: [],
     canCreateAgents: true,
+    viewerIsAdmin: true,
+    userGroups: null,
   }
 }

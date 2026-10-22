@@ -2133,10 +2133,7 @@ impl ControlPanelServer {
     }
 
     fn principal_is_admin(principal: &RpcAuthPrincipal) -> bool {
-        matches!(
-            principal.user_type,
-            crate::UserType::Admin | crate::UserType::Root
-        )
+        principal.user_type.is_privileged()
     }
 
     fn require_install_scope(

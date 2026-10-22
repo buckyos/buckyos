@@ -11,6 +11,7 @@ import { draftDisplayName, type AgentSetupDraft, type ClassifiedAgentError } fro
 import { OptionCard, Section, StatusPill } from './ui'
 import { ObjectAvatar } from '../../presentation/ObjectIcon'
 import type { ObjectPresentation } from '../../presentation/model'
+import { parseUserType } from '../../api/user_type'
 
 const NICKNAME_MAX = 64
 const BIO_MAX = 500
@@ -205,9 +206,9 @@ export function AccountPage({
 }
 
 function userTypeLabelKey(userType: string) {
-  const normalized = userType.toLowerCase()
-  if (normalized === 'root') return 'agentSetup.userType.root'
-  if (normalized === 'admin') return 'agentSetup.userType.admin'
+  const type = parseUserType(userType)
+  if (type === 'root') return 'agentSetup.userType.root'
+  if (type === 'admin') return 'agentSetup.userType.admin'
   return 'agentSetup.userType.user'
 }
 

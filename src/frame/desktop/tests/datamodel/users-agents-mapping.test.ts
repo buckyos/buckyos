@@ -1,6 +1,14 @@
 import type { UserInfo } from '../../src/api/user_mgr.ts'
 import {
+  changeTypeTargets,
+  defaultContactProjectionRules,
+  parseUserGroupRef,
+  userTypeCanCreateAgents,
+} from '../../src/api/user_type.ts'
+import {
   appListTargetUserIds,
+  toLocalUserEntity,
+  toUserGroupsInfo,
   toVisibleLocalUserEntities,
 } from '../../src/app/users-agents/datamodel/transforms.ts'
 
@@ -77,4 +85,48 @@ Deno.test('ordinary users only query their own app list', () => {
     ['alice', 'devtest', 'bob'],
     'admin app-list scope',
   )
+})
+
+Deno.test('account types map one to one; guest is no longer a type', () => {
+  const now = '2026-10-21T00:00:00Z'
+  const entity = (user_type: string, extra: Partial<UserInfo> = {}) =>
+    toLocalUserEntity({ user_id: 'u', show_name: 'U', user_type, state: 'active', ...extra }, [], now)
+
+  assertEquals(entity('admin').role, 'admin', 'admin')
+  assertEquals(entity('limited').role, 'limited', 'limited')
+  assertEquals(entity('guest').role, 'unknown', 'guest is unknown')
+  assertEquals(entity('limited').passwordChangeAllowed, false, 'limited password default')
+  assertEquals(entity('limited').contactEditAllowed, false, 'limited contact default')
+  const opened = entity('limited', {
+    allow_contact_edit: true,
+    can_edit_contacts: true,
+    groups: ['customer', 'customer', 'beta'],
+  })
+  assertEquals(opened.contactEditAllowed, true, 'override opens contacts')
+  assertEquals(opened.contactEditOverride, true, 'override kept')
+  assertEquals(opened.passwordChangeOverride, null, 'no password override')
+  assertEquals(opened.groups, ['beta', 'customer'], 'groups sorted, unique')
+
+  assertEquals(changeTypeTargets('user'), ['admin', 'limited'], 'user targets')
+  assertEquals(changeTypeTargets('root'), [], 'root cannot change')
+  assertEquals(userTypeCanCreateAgents('limited'), false, 'limited cannot create agents')
+  assertEquals(userTypeCanCreateAgents('user'), true, 'user can create agents')
+})
+
+Deno.test('group references and the default projection rules', () => {
+  assertEquals(parseUserGroupRef('group:customer'), { kind: 'group', groupId: 'customer' }, 'system group')
+  assertEquals(parseUserGroupRef('type:limited'), { kind: 'type', userType: 'limited' }, 'type group')
+  assertEquals(parseUserGroupRef('type:root'), null, 'root is no group')
+  assertEquals(parseUserGroupRef('group:Bad'), null, 'bad id')
+  assertEquals(defaultContactProjectionRules().length, 4, 'admins and users see each other')
+  const info = toUserGroupsInfo({
+    groups: [
+      { group_id: 'service', name: 'Service', updated_by: 'alice', created_at: 1, updated_at: 1, members: ['bob'] },
+      { group_id: 'customer', name: '', updated_by: 'alice', created_at: 1, updated_at: 1, members: ['dave', 'carol'] },
+    ],
+    projections: { rules: [{ source: 'group:customer', target: 'group:service' }], is_default: false },
+  })
+  assertEquals(info.groups.map((group) => group.name), ['customer', 'Service'], 'names fall back to ids')
+  assertEquals(info.groups[0].members, ['carol', 'dave'], 'members sorted')
+  assertEquals(info.projectionsAreDefault, false, 'custom rules')
 })

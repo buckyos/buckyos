@@ -4,11 +4,18 @@ import type {
   AgentInstallState,
   UserContactSettings,
   UserDetail,
+  UserGroupListResponse,
   UserInfo,
   UserStateString,
   UserTunnelBinding,
   UserType,
 } from '../../../api/user_mgr.ts'
+import {
+  defaultCanChangePassword,
+  defaultCanEditContacts,
+  isPrivilegedUserType,
+  parseUserType,
+} from '../../../api/user_type.ts'
 import { agentDisplayName, JARVIS_GUIDE_ENTRY, usableImageUrl } from '../../agent-setup/model.ts'
 import type {
   AgentEntity,
@@ -17,6 +24,7 @@ import type {
   SelfEntity,
   SocialAccount,
   SocialAccountStatus,
+  UserGroupsInfo,
   ZoneUserSource,
   ZoneUserStatus,
   ZoneUserType,
@@ -31,7 +39,7 @@ export function appListTargetUserIds(
 ): string[] {
   const targetUserIds = new Set<string>()
   if (selfUserId) targetUserIds.add(selfUserId)
-  if (callerUserType === 'root' || callerUserType === 'admin') {
+  if (isPrivilegedUserType(callerUserType)) {
     for (const user of users) {
       if (user.user_id) targetUserIds.add(user.user_id)
     }
@@ -138,10 +146,28 @@ function userStateBase(state: UserStateString | undefined): string {
 }
 
 function zoneUserType(type: UserType | string | undefined): ZoneUserType {
-  const normalized = String(type ?? 'user').toLowerCase()
-  if (normalized === 'admin' || normalized === 'root') return 'admin'
-  if (normalized === 'limited' || normalized === 'guest') return 'limited'
-  return 'user'
+  const parsed = parseUserType(type)
+  return parsed && parsed !== 'root' ? parsed : 'unknown'
+}
+
+function optionalBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+/** `user_group.list`; group display names fall back to their ids. */
+export function toUserGroupsInfo(response: UserGroupListResponse): UserGroupsInfo {
+  return {
+    groups: response.groups
+      .map((group) => ({
+        id: group.group_id,
+        name: group.name?.trim() || group.group_id,
+        ...(group.description?.trim() ? { description: group.description.trim() } : {}),
+        members: [...new Set(group.members ?? [])].sort(),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    projectionRules: response.projections?.rules ?? [],
+    projectionsAreDefault: response.projections?.is_default ?? true,
+  }
 }
 
 function zoneUserSource(isLocal: boolean | undefined): ZoneUserSource {
@@ -193,6 +219,7 @@ export function toSelfEntity(
     info: profileMap(profile, fallback.info),
     settings: {
       userType: String(detail.user_type),
+      ...(detail.groups?.length ? { groups: detail.groups.join(', ') } : {}),
       state: userStateBase(detail.state),
       resPool: detail.res_pool_id,
       passwordPolicy: detail.allow_password_change ? 'Change allowed' : 'Change restricted',
@@ -211,6 +238,10 @@ export function toLocalUserEntity(
   const status = zoneUserStatus(user.state)
   const role = zoneUserType(user.user_type)
   const availableApps = apps.map((app) => app.show_name || app.app_id)
+  const passwordChangeOverride = optionalBoolean(user.allow_password_change)
+  const contactEditOverride = optionalBoolean(user.allow_contact_edit)
+  const passwordChangeAllowed = user.can_change_password ?? passwordChangeOverride ?? defaultCanChangePassword(user.user_type)
+  const contactEditAllowed = user.can_edit_contacts ?? contactEditOverride ?? defaultCanEditContacts(user.user_type)
 
   return {
     id: user.user_id,
@@ -227,13 +258,17 @@ export function toLocalUserEntity(
       : source === 'primary-did'
         ? 'passkey-ready'
         : 'password-set',
-    canChangePassword: (user.allow_password_change ?? role !== 'limited') && status === 'active',
+    canChangePassword: passwordChangeAllowed && status === 'active',
+    passwordChangeAllowed,
+    passwordChangeOverride,
+    contactEditAllowed,
+    contactEditOverride,
+    groups: [...new Set(user.groups ?? [])].sort(),
     storageUsed: 'Unknown',
     storageQuota: 'Unknown',
     lastActive: now,
     isOnline: status === 'active',
     availableApps,
-    defaultGroup: 'zone-members',
     profile: {
       displayName: user.show_name || user.user_id,
       userId: user.user_id,
@@ -261,7 +296,7 @@ export function toVisibleLocalUserEntities(
     const userId = user.user_id.trim()
     if (
       !userId ||
-      String(user.user_type).toLowerCase() === 'root' ||
+      parseUserType(user.user_type) === 'root' ||
       seenUserIds.has(userId)
     ) {
       continue

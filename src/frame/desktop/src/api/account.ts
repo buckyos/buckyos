@@ -5,6 +5,7 @@ import { fetchUserDetail } from './user_mgr.ts'
 export interface CurrentAccount {
   user_id: string
   user_name: string
+  /** Account type as the backend reports it; judge it with the helpers in `user_type.ts`. */
   user_type: string
 }
 
@@ -22,10 +23,4 @@ export async function fetchCurrentAccount(): Promise<CurrentAccount | null> {
     userType = String(data?.user_type ?? '')
   }
   return { user_id: info.user_id, user_name: info.user_name || info.user_id, user_type: userType }
-}
-
-/** Limited users (and guests) cannot create Agents. */
-export function isLimitedUserType(userType: string | undefined | null): boolean {
-  const normalized = String(userType ?? '').toLowerCase()
-  return normalized === 'limited' || normalized === 'guest'
 }

@@ -38,6 +38,14 @@ export function useCanCreateAgents() {
   return useUsersAgentsSnapshot().canCreateAgents
 }
 
+export function useViewerIsAdmin() {
+  return useUsersAgentsSnapshot().viewerIsAdmin
+}
+
+export function useUserGroups() {
+  return useUsersAgentsSnapshot().userGroups
+}
+
 export function useEntity(id: string): AnyEntity | undefined {
   const snap = useUsersAgentsSnapshot()
   if (snap.self.id === id) return snap.self

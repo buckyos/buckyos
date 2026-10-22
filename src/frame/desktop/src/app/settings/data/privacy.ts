@@ -10,6 +10,7 @@
 
 import { buckyos } from 'buckyos'
 import { fetchCurrentAccount } from '../../../api/account'
+import { isPrivilegedUserType, parseUserGroupRef } from '../../../api/user_type'
 import {
   fetchAppAvailability,
   fetchAppDetails,
@@ -53,6 +54,8 @@ export interface AppAccessEntry {
   detail: Section<{
     audience: AppAudience
     sharedUsers: string[]
+    /** System user group ids the app is open to. */
+    sharedGroups: string[]
     permissions: { scope: string; actions: string[]; required: boolean }[]
     mounts: AppMount[]
   }> | null
@@ -133,13 +136,17 @@ function appName(app: AppSummary): LocalizedText {
   return backendAppText(app, false).title ?? app.app_id
 }
 
-export function audienceOf(policy: AppAvailabilityPolicy): { audience: AppAudience; sharedUsers: string[] } {
-  const allowed = new Set(policy.group_rules.filter((rule) => rule.effect === 'allow').map((rule) => rule.group_id))
+export function audienceOf(policy: AppAvailabilityPolicy): { audience: AppAudience; sharedUsers: string[]; sharedGroups: string[] } {
+  const allowedRules = policy.group_rules.filter((rule) => rule.effect === 'allow')
+  const allowed = new Set<string>(allowedRules.map((rule) => rule.group_id))
   const sharedUsers = policy.user_rules.filter((rule) => rule.effect === 'allow').map((rule) => rule.user_id)
-  if (allowed.has('guest')) return { audience: 'public', sharedUsers }
-  if (allowed.has('users') || allowed.has('limited')) return { audience: 'users', sharedUsers }
-  if (allowed.has('admins')) return { audience: 'admins', sharedUsers }
-  return { audience: sharedUsers.length > 0 ? 'selected' : 'owner', sharedUsers }
+  const sharedGroups = allowedRules
+    .map((rule) => parseUserGroupRef(rule.group_id))
+    .flatMap((ref) => (ref?.kind === 'group' ? [ref.groupId] : []))
+  if (allowed.has('guest')) return { audience: 'public', sharedUsers, sharedGroups }
+  if (allowed.has('users') || allowed.has('limited')) return { audience: 'users', sharedUsers, sharedGroups }
+  if (allowed.has('admins')) return { audience: 'admins', sharedUsers, sharedGroups }
+  return { audience: sharedUsers.length > 0 || sharedGroups.length > 0 ? 'selected' : 'owner', sharedUsers, sharedGroups }
 }
 
 /** `spec.spec_config.{data,local_cache,external}_mount_point` of an `AppServiceSpec`. */
@@ -199,11 +206,11 @@ async function loadApps(userId: string, isAdmin: boolean, zoneHost: string) {
             required(fetchAppDetails(app.app_instance_id)),
             required(fetchAppAvailability(app.app_instance_id)),
           ])
-          const { audience, sharedUsers } = audienceOf(policy)
+          const { audience, sharedUsers, sharedGroups } = audienceOf(policy)
           if (audience === 'public') {
             publicApps.push({ appInstanceId: app.app_instance_id, name: entry.name, urls: appUrls(app, zoneHost) })
           }
-          return { audience, sharedUsers, permissions: permissionsOf(details.spec), mounts: mountsOf(details.spec) }
+          return { audience, sharedUsers, sharedGroups, permissions: permissionsOf(details.spec), mounts: mountsOf(details.spec) }
         })
       }
       entries.push(entry)
@@ -288,7 +295,7 @@ export async function loadPrivacyOverview(): Promise<PrivacyOverview> {
   const account = await fetchCurrentAccount()
   if (!account) throw new Error('not signed in')
   const userId = account.user_id
-  const isAdmin = account.user_type === 'admin' || account.user_type === 'root'
+  const isAdmin = isPrivilegedUserType(account.user_type)
   const zoneHost = currentZoneHost()
 
   const [apps, agents, homestation, workspaces, messaging] = await Promise.all([
@@ -331,6 +338,7 @@ function mockPrivacyOverview(): PrivacyOverview {
         data: {
           audience: 'public',
           sharedUsers: [],
+          sharedGroups: [],
           permissions: [{ scope: 'fs.library', actions: ['read'], required: false }],
           mounts: [{ path: '/srv/library', target: 'srv/library', access: 'read_only', kind: 'data' }],
         },
@@ -348,6 +356,7 @@ function mockPrivacyOverview(): PrivacyOverview {
         data: {
           audience: 'selected',
           sharedUsers: ['bob'],
+          sharedGroups: [],
           permissions: [
             { scope: 'kapi/aicc', actions: [], required: true },
             { scope: 'wan', actions: [], required: false },

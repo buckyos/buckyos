@@ -41,6 +41,15 @@ buckyos system info                                 # BuckyOS version, build_ver
 - Agents: `buckyos agent list`, `agent get|profile-get <agent_id>` (raw host name like `xiaobai.test.buckyos.io`, not
   the `did:web:` DID), `agent profile-set <agent_id> --display-name <n> [--bio <t>]` (given fields only, `''` clears;
   returns `before` and `profile`, which is your revert). Users, agent create/delete/settings: Desktop "Users and Agents".
+- Users (definition: `product/users_and_agents/UserType.md`): account types are `admin`, `user`, `limited` (zero
+  permissions until an admin puts it in a system user group) and `root` (Zone owner record, never logs in). System user
+  groups (`system/user_groups/<id>`, membership in `users/<u>/settings` `groups`) and contact projection rules
+  (`system/user_groups/_projections`; absent = Admin and User see each other) change only through admin control-panel
+  RPCs: `user_group.list|create|update|delete|set_members|set_projections|reset_projections`, `user.change_type`,
+  `user.set_account_options` (`allow_password_change` / `allow_contact_edit`, `null` = type default); no CLI verb, use
+  Desktop "Users and Agents". Don't write those keys with raw system-config: the RPCs also refresh RBAC and reload
+  msg-center. A group carries no RBAC policy (`g, <u>, group:<id>` only): a Limited user in a group still has no
+  mailbox, tasks or uploads; app access comes from `apps.availability` group rules (`group:<id>`).
 - Apps: `buckyos app list|get|status|start|stop|restart|install|upgrade|uninstall|cancel`. Availability
   (`apps.availability.*`) has no CLI verb and needs a user's Control Panel login.
 - Devices, network, gateway, certificates: control-panel `zone.devices.list`, `network.overview`, `gateway.overview`,
@@ -159,4 +168,4 @@ SDK types: `/opt/buckyos/libexec/buckyos-tool/dist/*.d.ts` (`node.d.ts`, `task_m
 and run it with `deno run --config /opt/buckyos/libexec/buckyos-tool/cli/deno.json` (maps `buckyos` to the mounted SDK),
 using `BUCKYOS_TOOL_ENDPOINT` and the session token; this recipe is untested. Leave the mounted Tool files unchanged.
 
-Checked against: BuckyOS 0.7.0 (build261017.main.1b6e277fadd9.dirty), Tool/SDK 0.7.131 (`system info`, `log services`, `agent`, `ai` verbs from websdk source, run on the host as device and as devtest), test.buckyos.io; agent-identity results read from policy and code, not run in a container, 2026-10-17.
+Checked against: BuckyOS 0.7.0 (build261017.main.1b6e277fadd9.dirty), Tool/SDK 0.7.131 (`system info`, `log services`, `agent`, `ai` verbs from websdk source, run on the host as device and as devtest), test.buckyos.io; agent-identity results read from policy and code, not run in a container, 2026-10-17. User types, system user groups and projection RPCs: read from source and unit tests, not run on a Zone, 2026-10-21.

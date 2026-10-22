@@ -329,11 +329,16 @@ test.describe('My Network', () => {
     await expect(person(win, 'Judy.telegram').getByTestId('relation-blocked')).toBeVisible()
     await expect(win.getByTestId('relation-actions').getByRole('button', { name: 'Unblock' })).toBeVisible()
 
-    await win.getByRole('button', { name: 'Bob', exact: true }).click()
+    await win.getByRole('button', { name: 'Carol', exact: true }).click()
     await win.getByTestId('relation-actions').getByRole('button', { name: 'Delete contact' }).click()
-    await win.getByRole('dialog', { name: 'Delete Bob from contacts?' }).getByTestId('network-confirm-submit').click()
+    await win.getByRole('dialog', { name: 'Delete Carol from contacts?' }).getByTestId('network-confirm-submit').click()
     await expect(win.getByTestId('relation-actions-error')).toContainText('set up by the system')
-    await expect(win.getByRole('button', { name: 'Bob', exact: true })).toBeVisible()
+    await expect(win.getByRole('button', { name: 'Carol', exact: true })).toBeVisible()
+
+    // A projection entry offers no delete at all.
+    await win.getByRole('button', { name: 'Bob', exact: true }).click()
+    await expect(win.getByTestId('contact-projected')).toBeVisible()
+    await expect(win.getByTestId('relation-actions').getByRole('button', { name: 'Delete contact' })).toHaveCount(0)
     expect(errors).toEqual([])
   })
 

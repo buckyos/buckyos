@@ -887,7 +887,10 @@ function describeSendError(message: string, t: (key: string, fallback?: string, 
   const [prefix, ...rest] = message.split(':')
   const detail = rest.join(':').trim()
   switch (prefix.trim()) {
-    case 'rejected': return t('messagehub.sendRejected', undefined, { reason: detail || 'unknown' })
+    case 'rejected':
+      // A Limited account has no personal inbox: point to group sessions instead.
+      if (detail.startsWith('recipient-has-no-inbox')) return t('messagehub.sendNoInbox')
+      return t('messagehub.sendRejected', undefined, { reason: detail || 'unknown' })
     case 'result_unknown': return t('messagehub.sendResultUnknown')
     case 'attachment_upload_unavailable': return t('messagehub.attachmentUploadUnavailable')
     case 'attachment_upload_failed': return t('messagehub.attachmentUploadFailed')

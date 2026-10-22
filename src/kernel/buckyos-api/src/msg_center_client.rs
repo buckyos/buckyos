@@ -598,6 +598,12 @@ impl MailboxAddress {
         )
     }
 
+    /// The owner's address book: Limited accounts reach this, not the rest of
+    /// the owner scope.
+    pub fn contacts_resource(&self) -> String {
+        format!("{}/contacts", self.owner_resource())
+    }
+
     fn encode_resource_address(value: &str) -> String {
         let mut result = String::new();
         for byte in value.as_bytes() {
@@ -1259,6 +1265,11 @@ pub struct Contact {
     pub friend_state: FriendState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Source groups (`type:<user type>` / `group:<id>`) that project this Zone
+    /// user into the owner's address book. Non-empty means the entry is read
+    /// only: the owner can add a note or block it, not edit or remove it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projected_from: Vec<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -3641,6 +3652,19 @@ impl MsgCenterClient {
     ) -> std::result::Result<FriendRequestPage, RPCErrors> {
         self.contact_ext_call(METHOD_CONTACT_LIST_FRIEND_REQUESTS, &req, "FriendRequestPage")
             .await
+    }
+
+    /// Service-only (needs `read` on [`CONTACT_MEMBERSHIP_RBAC_RESOURCE`]).
+    pub async fn contact_check_membership(
+        &self,
+        req: ContactCheckMembershipReq,
+    ) -> std::result::Result<ContactCheckMembershipResult, RPCErrors> {
+        self.contact_ext_call(
+            METHOD_CONTACT_CHECK_MEMBERSHIP,
+            &req,
+            "ContactCheckMembershipResult",
+        )
+        .await
     }
 
     async fn notify_call<Req: Serialize, Resp: DeserializeOwned>(

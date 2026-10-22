@@ -55,7 +55,7 @@ function mountTarget(mount: AppMount): string {
   return target ? (target.startsWith('/') ? target : `/${target}`) : mount.path
 }
 
-function audienceBadge(audience: AppAudience, sharedUsers: string[], t: Translate) {
+function audienceBadge(audience: AppAudience, sharedUsers: string[], sharedGroups: string[], t: Translate) {
   switch (audience) {
     case 'public':
       return <StatusBadge status="warn" label={t('settings.privacy.audience.public', 'Anyone, without signing in')} />
@@ -64,7 +64,9 @@ function audienceBadge(audience: AppAudience, sharedUsers: string[], t: Translat
     case 'admins':
       return <StatusBadge status="info" label={t('settings.privacy.audience.admins', 'Administrators')} />
     case 'selected':
-      return <StatusBadge status="info" label={t('settings.privacy.audience.selected', 'You and {{count}} users', { count: sharedUsers.length })} />
+      return sharedGroups.length > 0
+        ? <StatusBadge status="info" label={t('settings.privacy.audience.selectedGroups', 'You, {{count}} users and {{groups}} groups', { count: sharedUsers.length, groups: sharedGroups.length })} />
+        : <StatusBadge status="info" label={t('settings.privacy.audience.selected', 'You and {{count}} users', { count: sharedUsers.length })} />
     default:
       return <StatusBadge status="pass" label={t('settings.privacy.audience.owner', 'Only the owner')} />
   }
@@ -299,7 +301,7 @@ function AppRow({ app, userId }: { app: AppAccessEntry; userId: string }) {
           )}
           <span className="truncate text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{pickLocalized(app.name, locale) ?? app.appInstanceId}</span>
         </div>
-        {detail?.ok ? audienceBadge(detail.data.audience, detail.data.sharedUsers, t) : null}
+        {detail?.ok ? audienceBadge(detail.data.audience, detail.data.sharedUsers, detail.data.sharedGroups, t) : null}
       </div>
       {app.ownerUserId !== userId ? (
         <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('settings.privacy.ownedBy', 'Installed by {{owner}}', { owner: app.ownerUserId })}</p>

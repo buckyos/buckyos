@@ -34,12 +34,14 @@
 | 字段 | 含义 |
 |---|---|
 | `user_id` | 用户唯一名（小写，`[a-z0-9_-.]`，1–64 字符） |
-| `user_type` | `Root` / `Admin` / `User` / `Limited` / `Guest`（见 §2） |
+| `user_type` | `Root` / `Admin` / `User` / `Limited`（见 §2；权威定义见 [UserType.md](../../product/users_and_agents/UserType.md)） |
 | `password` | 口令哈希（**客户端计算后上传，服务端从不接触明文**） |
 | `state` | `Active` / `Suspended` / `Deleted` / `Banned`（见 §1.3） |
 | `res_pool_id` | 资源池，默认 `"default"` |
 | `is_local` | 是否为本地持有用户私钥的账号 |
-| `allow_password_change` | 是否允许用户自行改密（可选） |
+| `allow_password_change` | 是否允许用户自行改密（可选，缺省按类型：Limited 否，其它是） |
+| `allow_contact_edit` | 是否允许用户修改自己的通讯录（可选，缺省按类型：Limited 否，其它是） |
+| `groups` | 所在系统用户组 id 列表，只有管理员经 `user_group.set_members` 修改 |
 
 ### 1.2 用户相关的 system-config key 命名空间
 
@@ -53,6 +55,8 @@
 | `system/app_registry` | scheduler | AppId/AppInstanceId 的持久 AppName、AppHostName、AppIndex 分配真相 |
 | `services/control_panel/app_availability/policies/<app_instance_id>` | control_panel | 个人 App 的 App–User 可用性策略（revision/CAS） |
 | `services/control_panel/app_availability/audit/<app_instance_id>/<revision>` | control_panel | 可用性策略变更审计 |
+| `system/user_groups/<id>` | control_panel（管理员） | 系统用户组定义（`UserGroup`），不带 RBAC 策略 |
+| `system/user_groups/_projections` | control_panel（管理员） | 通讯录投影规则（`ContactProjectionConfig`）；不存在时使用默认规则（Admin、User 互见） |
 | `system/rbac/policy` | **scheduler（`ood` 身份）** | 动态策略尾部：按用户/节点/服务生成的分组行 |
 | API runtime 内置 RBAC 配置 | API runtime / scheduler 二进制 | Casbin model + 稳定角色权限；运行时与 `system/rbac/policy` 合成生效策略 |
 
@@ -74,11 +78,13 @@
 
 | `user_type` | 落地 RBAC role | 生成位置 |
 |---|---|---|
-| `Root` | （不通过 `g` 分配，按**精确主体名 `root`** 匹配；对应 Owner Root Key） | 引导账户 `system_config_builder.rs`；调度桥接把 `Root`→`Admin` role |
-| `Admin` | `admin` | `system_config_agent.rs`（`update_rbac`）；创建 admin 时 `user_mgr.rs` 也会追加 `g,<id>,admin` |
+| `Root` | （不生成 `g` 行；按**精确主体名 `root`** 匹配，对应 Owner Root Key；`root` 账号记录不可登录） | 引导账户 `system_config_builder.rs` |
+| `Admin` | `admin` | `system_config_agent.rs`（`update_rbac`）；引导期 `system_config_builder.rs` 也会追加 `g,<id>,admin` |
 | `User` | `users` | `system_config_agent.rs` |
 | `Limited` | `limited` | `system_config_agent.rs` |
-| `Guest` | （无映射） | — |
+| 系统用户组 | 每个已定义的组生成 `g, <user_id>, group:<group_id>`，**不生成任何 `p` 规则** | `system_config_agent.rs` |
+
+`type` 不是以上四个值的账号记录（例如旧的 `guest`）不进入任何组，scheduler 告警并跳过。
 
 ### 2.2 各角色的权限（部署态 `boot.template.toml` 基础策略）
 
@@ -89,8 +95,9 @@
 | **root / Owner** | `/config/*` | `/config/*` | 最高权威；可写 `boot/config`。由 Owner 私钥（钱包）直接签名，“持有 Root Key 即天然 sudo” |
 | **admin** | `boot/*`、`system/rbac/policy`（只读）、`system/scheduler/*`（只读） | `agents/*`、`users/*`、`services/*` | 能管理**所有用户**与服务，但**不能改 RBAC 策略本身**（防越权提权）；这是“日常管理模式”而非 Owner |
 | **user** | `boot/*`、`agents/*/doc`、自己的 `users/{user}/*`、`services/*/info` | 自己的 `users/{user}/apps/*/*`、`users/{user}/agents/*/*` | 完全限定在**自己名下**（`{user}` 绑定），不能看/改别人 |
-| **limited** | — | — | ⚠️ 角色行会生成，但**策略里没有任何 `p, limited, ...` 规则** → 当前等于零权限（全 deny） |
-| **guest** | — | — | ❌ `Guest` 类型在 `update_rbac` 里无映射 → 不生成分组行 → 无任何权限 |
+| **limited** | 自己的 `users/{limited}/settings`、`users/{limited}/profile`、自己的通讯录（`obj://msg-center/owners/*/contacts`） | 自己的 `users/{limited}/profile`；通讯录写入还要 msg-center 判定允许改通讯录 | 零权限底座：除自身资料外没有任何业务或资源权限（个人邮箱、任务、上传都没有）；加入系统用户组也不增加 RBAC 权限 |
+
+匿名访问者与 External（已认证但无账号记录的 DID）都没有账号记录，scheduler 不为它们生成任何组，系统 RBAC 一律拒绝。
 
 > 系统/服务侧角色（与“用户”正交，仅供理解全貌）：`kernel`（`/config/*` 全权，且**绕过用户维度检查**）、`ood`（调度器写策略用）、`service`（系统服务）、`app`（App 服务，按 `{app}` 隔离）。详见 §6.3 与 [`07_identity_and_rbac.md`](07_identity_and_rbac.md)。
 
@@ -119,8 +126,8 @@ allow = enforce(authorization_target, resource, action)
 
 ### 2.5 已知“类型”相关差距（写入标准，待对齐）
 
-- ⚠️ `Root` / `Guest` 在调度桥接 `map_api_user_type` 中会塌缩：`Root→Admin role`、`Guest→User-或-无`。API 层的 `Root`/`Guest` 与 RBAC 层并非一一对应。真正的 root 是 **Owner Key**（精确名 `root`），不是某个 user_type。
-- ⚠️ `limited` 角色无策略规则、`guest` 无映射 → **L3「受限/访客」用户在 [`BuckyOS Security Arch.md`](../BuckyOS%20Security%20Arch.md) 中有设计，但当前未实现**。
+- 真正的 root 是 **Owner Key**（精确名 `root`），`Root` 账号记录只标记 Zone owner，不生成 RBAC 组、不可登录。
+- 系统用户组不带系统 RBAC 策略（[UserType.md](../../product/users_and_agents/UserType.md) 的已知限制）：Limited 加入组后仍不能使用个人邮箱、任务、上传，需要完整 Desktop 能力的人应使用 User 类型。
 - ❌ **sudo / super_user / super_admin**：在 `verify-hub/rbac.md`、`Login机制设计.md` 中有完整设计（`su_<user>` 主体、用户私钥自签、极短 TTL），但**代码中没有运行期提权引擎**——`su_*` 目前只是手写策略约定（测试夹具里出现），无解析、无 TTL、无 super_* 组自动创建。当前唯一“天然高权”路径是 Owner 用 Root Key 直接签名。
 
 ---
@@ -154,7 +161,8 @@ allow = enforce(authorization_target, resource, action)
 | 权限校验 | 仅 Admin/Root 可创建（`require_admin`） | ✅ |
 | 用户名校验 | 1–64 字符、字符集限制、拒绝保留名 `root\|system\|admin\|guest` | ✅ |
 | 要求 `password_hash` | 服务端不生成、不接触明文口令 | ✅ |
-| 拒绝创建 `Root` | 运行期不能造 Root | ✅ |
+| 用户类型 | 只接受 `User`、`Limited`；`Admin` 经 `user.change_type` 提升，运行期不能造 `Root` | ✅ |
+| 系统用户组 | 可选 `groups`（必须是已定义的系统用户组 id），写入 `UserSettings.groups` | ✅ |
 | 事务写 `users/<id>/settings` + `users/<id>/doc` | `state=Active`，`res_pool_id=default`；doc 为最小 `{id,name,full_name}` | ✅ |
 | RBAC 分组 | 用 service token 追加当前用户类型对应的角色分组（`Admin -> admin`，`User -> users`，`Limited -> limited`）；失败仅告警不致命，scheduler `update_rbac` 会在下一轮重建 | ⚠️ |
 | DID 密钥对 | **运行期不生成密钥对**（与引导期 `OwnerConfig` 不对称，doc 无公钥字段） | ⚠️ |
@@ -173,7 +181,7 @@ system_builtin
 + Limited 通过系统组或精确用户规则明确允许的其他 user_installed
 ```
 
-结果以 `<app_id>@<owner_user_id>` 为稳定主键；同名不同 Owner 的实例不会合并。系统组只来自可信 `UserType`（`admins` / `users` / `limited`），禁止使用用户可编辑的 Profile/contact groups。用户类型变化会在下一次列表查询、登录或 refresh 时立即参与重新判定。
+结果以 `<app_id>@<owner_user_id>` 为稳定主键；同名不同 Owner 的实例不会合并。组规则只引用可信的 `UserType` 组（`admins` / `users` / `limited`）与管理员维护的系统用户组（`group:<id>`），禁止使用用户可编辑的联系人分组 / tags。用户类型变化会在下一次列表查询、登录或 refresh 时立即参与重新判定。
 
 ### 3.2 App 应遵循的标准职责
 
@@ -237,7 +245,7 @@ system_builtin
 
 ### 5.1 App–User 可用性不是 App 内部 ACL
 
-App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；无精确规则时 deny 组优先于 allow 组；没有显式匹配时 `Admin` / `User` 默认允许，`Limited` / Guest 默认拒绝。系统 App 与 Zone App 对所有有效登录用户隐式允许。
+App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；组规则中系统用户组（`group:<id>`）优先于用户类型组，用户所在的多个系统用户组之间 allow 优先；没有显式匹配时 `Admin` / `User` 默认允许，`Limited` 默认拒绝；匿名请求只看 `guest` 伪组规则。系统 App 与 Zone App 对所有有效登录用户隐式允许。
 
 session token 带显式 `target_kind` 与 `token_use`。App target 同时绑定 `appid + app_instance_id + app_owner_user_id`；System target 绑定 `SystemServiceId` 且禁止 App instance/owner claims。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。
 
@@ -288,7 +296,7 @@ Control Panel 的 RPC、Desktop HTTP 写入口与 NFS `share.*` 写入口也校�
 2. **🔴 删除时清理 RBAC**：`update_rbac` 应过滤 `state==Deleted` 用户，停止为其重生成分组行；删除路径应主动移除 `g,<id>,<role>`。
 3. **🟠 用户级生命周期事件 `onUserDelete`（及可选 `onUserCreate`）**：与现有 `onAppInstall` 对称，作为 App 清理/预热该用户数据的标准触发点（§3.2、§4.3 依赖它）。
 4. **🟠 删除语义明确化**：定义软删除（可恢复，保留数据）与硬删除（清孤儿 key + 级联数据）的边界与触发方式。
-5. **🟡 `limited` / `guest` 落地**：为 `limited` 写最小策略规则，为 `guest` 建立映射，兑现 [`BuckyOS Security Arch.md`](../BuckyOS%20Security%20Arch.md) 的 L3 受限/访客用户设计。
+5. ✅ **`limited` 落地**（2026-10-21）：`limited` 只有自身 settings / profile 策略，经系统用户组获得 App 可用性与资源授权；`Guest` 类型已删除，匿名访问不是用户类型。
 6. **🟡 sudo / 提权引擎**：把 `Login机制设计.md` / `rbac.md` 的 `su_*` 设计从“手写策略约定”落到运行期（解析 + 短 TTL + super_* 组）。
 7. **🟡 运行期用户 DID 密钥**：消除运行期创建用户“doc 无公钥”与引导期 `OwnerConfig` 的不对称。
 

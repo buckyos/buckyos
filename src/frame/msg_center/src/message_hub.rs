@@ -228,7 +228,7 @@ impl DeliveryExecutor for MessageHubExecutor {
                 .get_msg_jwt(&envelope.msg_id)
                 .await
                 .map_err(|error| anyhow!("load message jwt failed: {}", error))?;
-            if jwt.is_none() && self.center.is_local_recipient(&msg.from) {
+            if jwt.is_none() && self.center.is_hosted_identity(&msg.from) {
                 if let Some(signer) = self.center.zone_signer.get() {
                     let signed = msg
                         .to_jwt(&signer.key, &signer.kid)
