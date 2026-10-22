@@ -10,13 +10,29 @@ import { AddProviderPage } from './AddProviderPage'
 import { ModelsPage } from './ModelsPage'
 import { RoutingPage } from './RoutingPage'
 import { PlaygroundPage } from './PlaygroundPage'
+import { QuotaPage } from './QuotaPage'
+import { VisibilityPage } from './VisibilityPage'
+import type { QuotaRuleDraft } from './datamodel/quota'
 
-function PageRouter({ page, navigate }: { page: AICenterPage; navigate: (p: AICenterPage) => void }) {
+interface QuotaIntent {
+  intent: Partial<QuotaRuleDraft> | null
+  setIntent: (intent: Partial<QuotaRuleDraft> | null) => void
+}
+
+function PageRouter({ page, navigate, quota }: { page: AICenterPage; navigate: (p: AICenterPage) => void; quota: QuotaIntent }) {
+  const setQuota = (draft: Partial<QuotaRuleDraft>) => {
+    quota.setIntent(draft)
+    navigate('quota')
+  }
   switch (page) {
     case 'home':
-      return <HomePage navigate={navigate} />
+      return <HomePage navigate={navigate} onSetQuota={setQuota} />
     case 'usage':
       return <UsagePage />
+    case 'quota':
+      return <QuotaPage intent={quota.intent} onIntentConsumed={() => quota.setIntent(null)} />
+    case 'visibility':
+      return <VisibilityPage />
     case 'providers':
       return <ProvidersPage navigate={navigate} />
     case 'providers/add':
@@ -28,12 +44,13 @@ function PageRouter({ page, navigate }: { page: AICenterPage; navigate: (p: AICe
     case 'routing':
       return <RoutingPage />
     default:
-      return <HomePage navigate={navigate} />
+      return <HomePage navigate={navigate} onSetQuota={setQuota} />
   }
 }
 
 export function AICenterAppPanel() {
   const [store] = useState(() => createAICCMgr())
+  const [quotaIntent, setQuotaIntent] = useState<Partial<QuotaRuleDraft> | null>(null)
 
   useEffect(() => {
     void store.refresh()
@@ -43,7 +60,7 @@ export function AICenterAppPanel() {
     <AICCStoreContext.Provider value={store}>
       <AICenterShell>
         {(page, navigate) => <>
-          <PageRouter page={page} navigate={navigate} />
+          <PageRouter page={page} navigate={navigate} quota={{ intent: quotaIntent, setIntent: setQuotaIntent }} />
           <div hidden={page !== 'playground'}><PlaygroundPage active={page === 'playground'} /></div>
         </>}
       </AICenterShell>

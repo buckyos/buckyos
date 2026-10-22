@@ -61,7 +61,8 @@ impl Workspace {
 
     /// Create a run record (`queued`). The same caller sending the same key gets the same run; the same
     /// key with other parameters is refused.
-    pub fn wish_run_create(&mut self, caller: &Caller, program: &str, params: &Value, idem_key: &str) -> WsResult<(String, bool)> {
+    /// `aicc` (whose AICC the run uses, fixed at acceptance) is stored with a new run only.
+    pub fn wish_run_create(&mut self, caller: &Caller, program: &str, params: &Value, idem_key: &str, aicc: &Value) -> WsResult<(String, bool)> {
         self.require_ws_any(caller)?;
         check_idempotency_key(idem_key)?;
         let digest = sha256_hex(canonical_json(params)?.as_bytes());
@@ -82,7 +83,7 @@ impl Workspace {
         self.local
             .execute(
                 "INSERT INTO runs (run_id, program, principal, idem_key, state, params_json, result_json, created_at, updated_at) VALUES (?1,?2,?3,?4,'queued',?5,?6,?7,?7)",
-                params![run_id, program, caller.principal, idem_key, params.to_string(), json!({ "progress": { "phase": "queued" } }).to_string(), now],
+                params![run_id, program, caller.principal, idem_key, params.to_string(), json!({ "progress": { "phase": "queued" }, "aicc": aicc }).to_string(), now],
             )
             .map_err(db_err)?;
         Ok((run_id, false))

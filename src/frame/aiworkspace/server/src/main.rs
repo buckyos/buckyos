@@ -140,7 +140,7 @@ async fn buckyos_service_main(fixtures: bool) {
     });
     let listen = format!("127.0.0.1:{}", AIWORKSPACE_SERVICE_PORT);
     log::info!("aiworkspace buckyos mode: data in {}", data_dir.display());
-    // models are reached through AICC with this service's own session
+    // models are reached through AICC with this service's session, on behalf of the user each run is charged to
     let wish = WishConfig::from_settings(&settings.wish, serde_json::json!({ "type": "buckyos" }));
     run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish).await;
 }

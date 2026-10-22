@@ -753,7 +753,7 @@ function cancelCreate(state: MockState, params: Record<string, unknown>) {
 const nowSecs = () => Math.floor(Date.now() / 1000)
 const INVITE_TTL_SECS = 48 * 3600
 const RESEND_INTERVAL_SECS = 10 * 60
-const ALL_SCOPES: SessionScope[] = ['account_self', 'msg_group', 'aiworkspace', 'homestation']
+const ALL_SCOPES: SessionScope[] = ['account_self', 'msg_group', 'aiworkspace', 'homestation', 'aicc']
 const EXTERNAL_SCOPES: SessionScope[] = ['msg_group', 'aiworkspace', 'homestation']
 const USER_ID_PATTERN = /^[a-z0-9_.-]{1,64}$/
 

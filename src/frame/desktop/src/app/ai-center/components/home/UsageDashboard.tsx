@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet } from 'lucide-react'
+import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, Gauge, HelpCircle, Route, Wallet } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
@@ -9,6 +9,7 @@ import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageSummary, UsageTimeRange } from '../../../../api/aicc_mgr'
+import type { QuotaRuleDraft } from '../../datamodel/quota'
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -205,7 +206,7 @@ function sameFilterText(left: FilterText, right: FilterText): boolean {
   return left.provider === right.provider && left.model === right.model && left.app === right.app
 }
 
-export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
+export function UsageDashboard({ mode = 'home', onSetQuota }: { mode?: 'home' | 'usage'; onSetQuota?: (draft: Partial<QuotaRuleDraft>) => void }) {
   const { t, locale } = useI18n()
   const store = useAICCStore()
   const status = useAIStatus()
@@ -461,6 +462,11 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
     },
   ]
   const activeHomeBreakdown = homeBreakdowns.find((item) => item.key === homeBreakdownKey) ?? homeBreakdowns[0]
+  const setQuotaFor = (key: HomeBreakdownKey, label: string) => {
+    if (key === 'provider') onSetQuota?.({ resource: { type: 'provider', provider_instance_name: label } })
+    if (key === 'model') onSetQuota?.({ resource: { type: 'model', exact_model: label } })
+    if (key === 'appAgent') onSetQuota?.({ object: { type: 'user_app', user_id: '', app_id: label } })
+  }
   const selectHomeBreakdown = (key: HomeBreakdownKey, label: string) => {
     if (key === 'provider') applyBreakdownFilter('provider', label)
     if (key === 'model') applyBreakdownFilter('model', label)
@@ -650,6 +656,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                 total={summary.total_tokens}
                 activeLabel={item.activeLabel}
                 onSelect={item.key === 'apiType' ? undefined : (label) => selectHomeBreakdown(item.key, label)}
+                onSetQuota={item.key === 'apiType' || !onSetQuota ? undefined : (label) => setQuotaFor(item.key, label)}
                 viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
                 showLessLabel={t('aiCenter.home.showLess', 'Show less')}
                 filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
@@ -664,6 +671,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               total={summary.total_tokens}
               activeLabel={activeHomeBreakdown.activeLabel}
               onSelect={activeHomeBreakdown.key === 'apiType' ? undefined : (label) => selectHomeBreakdown(activeHomeBreakdown.key, label)}
+              onSetQuota={activeHomeBreakdown.key === 'apiType' || !onSetQuota ? undefined : (label) => setQuotaFor(activeHomeBreakdown.key, label)}
               viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
               showLessLabel={t('aiCenter.home.showLess', 'Show less')}
               filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
@@ -1731,6 +1739,7 @@ function Breakdown({
   total,
   activeLabel,
   onSelect,
+  onSetQuota,
   viewAllLabel,
   showLessLabel,
   filterLabel,
@@ -1741,11 +1750,13 @@ function Breakdown({
   total: number
   activeLabel?: string
   onSelect?: (label: string) => void
+  onSetQuota?: (label: string) => void
   viewAllLabel: string
   showLessLabel: string
   filterLabel: string
   emptyLabel: string
 }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const hiddenCount = Math.max(0, rows.length - 4)
   const visibleRows = expanded ? rows : rows.slice(0, 4)
@@ -1762,15 +1773,31 @@ function Breakdown({
       </div>
       <div className={`flex flex-col gap-1 ${expanded ? 'max-h-80 overflow-y-auto pr-1' : ''}`}>
         {visibleRows.map(([label, value]) => (
-          <MeterRow
-            key={label}
-            label={label}
-            value={value}
-            max={total}
-            active={activeLabel === label}
-            actionLabel={filterLabel}
-            onClick={onSelect ? () => onSelect(label) : undefined}
-          />
+          <div key={label} className="flex min-w-0 items-center gap-1">
+            <div className="min-w-0 flex-1">
+              <MeterRow
+                label={label}
+                value={value}
+                max={total}
+                active={activeLabel === label}
+                actionLabel={filterLabel}
+                onClick={onSelect ? () => onSelect(label) : undefined}
+              />
+            </div>
+            {onSetQuota && (
+              <button
+                type="button"
+                data-testid="usage-set-quota"
+                onClick={() => onSetQuota(label)}
+                title={`${t('aiCenter.quota.setQuota', 'Set quota')}: ${label}`}
+                aria-label={`${t('aiCenter.quota.setQuota', 'Set quota')}: ${label}`}
+                className="shrink-0 rounded-md p-2 outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-accent)]"
+                style={{ color: 'var(--cp-muted)' }}
+              >
+                <Gauge size={14} />
+              </button>
+            )}
+          </div>
         ))}
         {rows.length === 0 && (
           <div className="rounded-md px-2 py-6 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>

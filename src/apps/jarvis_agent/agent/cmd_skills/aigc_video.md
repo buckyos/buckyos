@@ -42,6 +42,7 @@ This run took 35 s on the server, cost 0.20 USD and gave 4.000 s, 1280x720, 24 f
 - A timeout, a killed shell or a dropped connection is not a server failure. `resume_aicc_task t-… out/shot1.mp4` waits (default 900 s, `--timeout S`) and downloads; `--no-wait` just reports (`still_running`, exit 4). Nothing is submitted again.
 - `--idempotency-key K`: the same command with the same K within 24 h returns the same task (checked: the re-run got the same `t-…`). This also covers the default omni route, which (per the AICC source) answers in one long request and prints its task id only at the end; a long omni call itself is untested. The same K also returns an earlier failure; use a new K (e.g. `shot3-v2`) for a real retry.
 - AICC stops polling a provider job after 30 minutes.
+- `=> resource_not_permitted` / `quota_*` (`detail.error_code`): the model is not open to your owner or the owner's AI quota does not cover the call — report it, do not retry at once.
 
 #### Multi-shot film (storyboard → assets → shots → assembly)
 - Keep `storyboard.json` in the working directory and update it after every step: per shot `id`, prompt, keyframe path/obj_id, narration text and file, duration, `idempotency_key`, `task_id`, `status` (planned/running/done/failed), output path, cost (`resume_aicc_task <task_id>` shows it); plus the budget. When something fails, redo that shot alone with a new key and keep the finished ones.

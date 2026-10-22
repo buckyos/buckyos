@@ -23,7 +23,7 @@ use libopendan::state::krpc::{KrpcTransport, StateTransport};
 use libopendan::state::{connect, AgentStateClient, ConnectOptions, StateLocator};
 use libopendan::{OpenDanError, SessionDir, SessionTemplate};
 use llm_context::deps::{LlmClient, LlmInferenceRequest};
-use llm_context::error::{LLMComputeError, ProviderFailure};
+use llm_context::error::{LLMComputeError, ProviderFailure, RefusalKind};
 use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, ObjId};
 use opendan::loader::{Loader, LoaderEnv, SpecRef};
@@ -41,6 +41,8 @@ struct Llm {
     calls: AtomicUsize,
     /// Calls that fail before the script answers.
     failures: AtomicUsize,
+    /// What the failing calls are: a provider error, or this policy refusal.
+    refusal: std::sync::Mutex<Option<RefusalKind>>,
     script: Box<dyn Fn(&LlmInferenceRequest, usize) -> String + Send + Sync>,
 }
 
@@ -49,6 +51,7 @@ impl Llm {
         Arc::new(Self {
             calls: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
+            refusal: std::sync::Mutex::new(None),
             script: Box::new(f),
         })
     }
@@ -59,8 +62,9 @@ impl LlmClient for Llm {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         if self.failures.load(Ordering::SeqCst) > 0 {
             self.failures.fetch_sub(1, Ordering::SeqCst);
+            let refusal = *self.refusal.lock().unwrap();
             return Err(LLMComputeError::Provider {
-                failure: ProviderFailure::Unknown,
+                failure: refusal.map(ProviderFailure::Refused).unwrap_or(ProviderFailure::Unknown),
                 message: "provider refused the request".into(),
             });
         }
@@ -967,6 +971,28 @@ async fn a_failed_turn_is_reported_to_the_speaker() {
     w.mail.deliver(&session, chat(BOB, "again"));
     until("reply", || w.mail.sent().len() == 2).await;
     assert_eq!(w.mail.sent().remove(1).1.content.content, "fine now");
+    loader.shutdown().await;
+}
+
+/// AI Center Quota PRD §9.6: a Turn refused under the owner's AI quota tells
+/// the owner where to look in a direct chat, and fails without retrying.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quota_refusal_tells_the_owner_where_to_look() {
+    let w = World::new();
+    std::fs::write(
+        w.root.join("i18n/en.toml"),
+        "[outbound]\nturn_failed = \"(something went wrong)\"\nai_quota_limited = \"(limited)\"\nai_quota_limited_owner = \"(your quota)\"\n",
+    )
+    .unwrap();
+    let llm = Llm::new(|_, _| "fine now".to_string());
+    *llm.refusal.lock().unwrap() = Some(RefusalKind::QuotaExhausted);
+    llm.failures.store(1, Ordering::SeqCst);
+    let loader = w.start(llm.clone()).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "hello"));
+    until("refusal notice", || w.mail.sent().len() == 1).await;
+    assert_eq!(w.mail.sent().remove(0).1.content.content, "(your quota)");
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 0, "a refusal is not retried");
     loader.shutdown().await;
 }
 

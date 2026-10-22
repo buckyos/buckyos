@@ -166,6 +166,14 @@ pub struct OutboundTexts {
     pub delivery_failure_notice: Option<String>,
     /// Sent when a Turn answering a message failed.
     pub turn_failed: Option<String>,
+    /// Sent instead of `turn_failed` when the AI service refused the Turn
+    /// under the owner's AI quota or resource policy, where others read it:
+    /// no rule or balance (AI Center Quota PRD §9.6).
+    pub ai_quota_limited: Option<String>,
+    /// The same refusal told to the owner in a direct chat: where to look.
+    pub ai_quota_limited_owner: Option<String>,
+    /// The owner's model is not open to them (`resource_not_permitted`).
+    pub ai_resource_not_permitted_owner: Option<String>,
     /// Sent when the reply could not be converted into a message.
     pub convert_failed: Option<String>,
     /// The placeholder of a Turn that takes long. Without it no placeholder
@@ -197,6 +205,9 @@ impl OutboundTexts {
         Self {
             delivery_failure_notice: get("delivery_failure_notice"),
             turn_failed: get("turn_failed"),
+            ai_quota_limited: get("ai_quota_limited"),
+            ai_quota_limited_owner: get("ai_quota_limited_owner"),
+            ai_resource_not_permitted_owner: get("ai_resource_not_permitted_owner"),
             convert_failed: get("convert_failed"),
             accepted: get("accepted"),
             stopped: get("stopped"),
@@ -251,8 +262,37 @@ impl OutboundSink for MsgCenterSink {
             // Failures of Turns nobody asked for (timers, task events) have
             // nobody to be reported to.
             TurnStatus::Failed | TurnStatus::BudgetExhausted => {
+                let refusal = reply
+                    .error
+                    .as_ref()
+                    .filter(|error| {
+                        error.get("kind").and_then(Value::as_str)
+                            == Some(libopendan::runner::AI_QUOTA_ERROR_KIND)
+                    })
+                    .map(|error| error.get("refusal").and_then(Value::as_str).unwrap_or_default());
+                // Only the owner's messages reach a session, but a group reads
+                // the reply too: it learns only that the Agent is limited.
+                let owner_only = base.kind != MsgObjKind::GroupMsg;
+                let candidates = match refusal {
+                    None => vec![&self.texts.turn_failed],
+                    Some("resource_not_permitted") if owner_only => vec![
+                        &self.texts.ai_resource_not_permitted_owner,
+                        &self.texts.ai_quota_limited,
+                        &self.texts.turn_failed,
+                    ],
+                    Some(_) if owner_only => vec![
+                        &self.texts.ai_quota_limited_owner,
+                        &self.texts.ai_quota_limited,
+                        &self.texts.turn_failed,
+                    ],
+                    Some(_) => vec![&self.texts.ai_quota_limited, &self.texts.turn_failed],
+                };
+                let text = candidates
+                    .into_iter()
+                    .find(|text| text.is_some())
+                    .unwrap_or(&self.texts.turn_failed);
                 return Ok((reply.answers_a_message() || reply.has_placeholder)
-                    .then(|| self.notice(base, &self.texts.turn_failed))
+                    .then(|| self.notice(base, text))
                     .flatten());
             }
         }

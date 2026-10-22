@@ -46,7 +46,7 @@ pub use deps::{
     OutputValidator, PolicyEngine, Tokenizer, ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent,
     WorklogSink, MAX_INJECTIONS_PER_BOUNDARY,
 };
-pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
+pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure, RefusalKind};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
 pub use msg_parser::{
     ai_message_to_msg_object_with_base_validated_async, attachment_kind, attachment_mime,

@@ -106,6 +106,8 @@ pub(crate) struct ResolvedProviderCall {
     pub resource_access_context: Option<ResourceAccessContext>,
     pub pricing: ResolvedPricing,
     pub reported_cost_currency: Option<String>,
+    /// Model metadata output cap: the quota budget when the call sets none.
+    pub model_max_output_tokens: Option<u64>,
     pub revisions: LoweringRevisions,
 }
 
@@ -588,6 +590,7 @@ impl<'a> CallResolver<'a> {
             resource_requirements: resources,
             resource_access_context: None,
             pricing,
+            model_max_output_tokens,
             reported_cost_currency: target
                 .provider_rules_id
                 .as_deref()

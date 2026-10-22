@@ -7,6 +7,10 @@ import useSWR from 'swr'
 import { useI18n } from '../../i18n/provider'
 import { useAICCStore } from './hooks/use-aicc-store'
 import { WeightFactorControl } from './components/routing/WeightFactorControl'
+import { UnexposedModelsNotice } from './components/models/UnexposedModelsNotice'
+import { StatusChip } from './components/quota/QuotaWidgets'
+import { useMyQuotaRules } from './hooks/use-quota-api'
+import { modelQuotaStatus, type QuotaRuleView } from './datamodel/quota'
 import {
   defaultModelFilters, filterModelCatalog, modelCard, modelFiltersSchema, vendorNames,
   type ModelCardView, type ModelFilters,
@@ -37,6 +41,7 @@ export function ModelsPage() {
     [t('aiCenter.models.local'), allModels.filter((model) => model.local).length],
   ] as const
   const showModel = (vendor: string, model: string) => setSelected({ vendor, model })
+  const quotaRules = useMyQuotaRules()
 
   return (
     <div className="flex min-w-0 flex-col gap-5" style={{ color: 'var(--cp-text)' }}>
@@ -50,6 +55,7 @@ export function ModelsPage() {
           <RefreshCw size={17} className={isValidating ? 'animate-spin' : ''} />
         </button>
       </header>
+      <UnexposedModelsNotice />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {stats.map(([label, count]) => (
@@ -100,7 +106,7 @@ export function ModelsPage() {
           <p className="font-medium">{t(allModels.length ? 'aiCenter.models.noMatches' : 'aiCenter.models.empty')}</p>
           <p className="mt-2 text-sm" style={muted}>{t(allModels.length ? 'aiCenter.models.noMatchesHint' : 'aiCenter.models.emptyHint')}</p>
         </div>}
-        {vendors.map((vendor) => <VendorSection key={vendor.id} vendor={vendor} showModel={showModel} />)}
+        {vendors.map((vendor) => <VendorSection key={vendor.id} vendor={vendor} showModel={showModel} quotaRules={quotaRules} />)}
       </>}
       <Dialog open={!!selectedModel} onClose={() => setSelected(null)} maxWidth="md" fullWidth aria-labelledby="model-detail-title"
         slotProps={{ paper: { sx: { bgcolor: 'var(--cp-surface)', color: 'var(--cp-text)', borderRadius: 3, margin: 2, width: 'calc(100% - 32px)' } } }}>
@@ -110,9 +116,10 @@ export function ModelsPage() {
   )
 }
 
-function VendorSection({ vendor, showModel }: {
+function VendorSection({ vendor, showModel, quotaRules }: {
   vendor: ReturnType<typeof filterModelCatalog>[number]
   showModel: (vendor: string, model: string) => void
+  quotaRules: QuotaRuleView[]
 }) {
   const { t } = useI18n()
   const sectionId = useId()
@@ -170,15 +177,16 @@ function VendorSection({ vendor, showModel }: {
         </> : <p className="py-2 text-xs" style={muted}>{t('aiCenter.models.emptySpec')}</p>}
       </div>}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-        {vendor.models.map((model) => <ModelCard key={model.id} model={model} onClick={() => showModel(vendor.id, model.id)} />)}
+        {vendor.models.map((model) => <ModelCard key={model.id} model={model} quotaRules={quotaRules} onClick={() => showModel(vendor.id, model.id)} />)}
       </div>
     </div>
   </section>
 }
 
-function ModelCard({ model, onClick }: { model: ModelCardView; onClick: () => void }) {
+function ModelCard({ model, quotaRules, onClick }: { model: ModelCardView; quotaRules: QuotaRuleView[]; onClick: () => void }) {
   const { t } = useI18n()
   const context = model.metadata.capabilities?.max_context_tokens
+  const quotaStatus = modelQuotaStatus(quotaRules, model.providers.flatMap((provider) => provider.exact_models))
   return <button type="button" onClick={onClick} data-testid="model-card" data-model={model.id} data-available={model.available} data-local={model.local}
     className="flex min-w-0 flex-col gap-3 rounded-xl p-4 text-left transition-shadow hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
     style={{ ...surface, borderColor: model.available ? 'color-mix(in srgb, var(--cp-success) 45%, var(--cp-border))' : 'var(--cp-border)' }}>
@@ -199,6 +207,7 @@ function ModelCard({ model, onClick }: { model: ModelCardView; onClick: () => vo
         <span className="h-2 w-2 rounded-full" style={{ background: 'currentColor' }} />
         {model.available ? t('aiCenter.models.providerCount', undefined, { count: model.providers.length }) : t('aiCenter.models.unavailable')}
       </span>
+      {quotaStatus && <StatusChip status={quotaStatus} />}
     </div>
   </button>
 }

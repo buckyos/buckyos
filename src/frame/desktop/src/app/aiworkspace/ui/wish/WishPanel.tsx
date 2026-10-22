@@ -5,7 +5,7 @@
  * the data-source detail and by the wish Block after activation. */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { describeError, type ReadOk } from '../../api/session'
+import { describeError, runErrorText, type ReadOk } from '../../api/session'
 import { SHOWS_ID, SYSTEM_IDS, type Json, type WishInput, type WishPayloadRead, type WishRunView } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdit, useEntity, useFreshness, useLoad, useOutlineVersion, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
@@ -48,6 +48,17 @@ function scopeText(input: WishInput, title: (id: string) => string, t: (key: str
 function staleInputs(t: (key: string, vars?: Record<string, string | number>) => string, names: string[]): string {
   const joined = names.join(' / ')
   return joined ? t('aiworkspace.wish.staleInputs', { inputs: joined }) : t('aiworkspace.wish.staleInputsUnnamed')
+}
+
+/** Whose AI resources the current run uses, or — before one — whose the next run will use (AI Center Quota PRD §9.5). */
+function AiccLine({ run }: { run: WishRunView | null | undefined }) {
+  const { t } = useAiwsText()
+  const store = useStore()
+  const aicc = run?.aicc
+  const text = aicc
+    ? t(aicc.mode === 'current_user' ? 'aiworkspace.wish.aicc.runStarter' : 'aiworkspace.wish.aicc.runOwner', { user: aicc.user_id })
+    : t(store.session.info().wish_aicc_mode === 'current_user' ? 'aiworkspace.wish.aicc.modeStarter' : 'aiworkspace.wish.aicc.modeOwner')
+  return <div className="aiws-muted" data-testid="aiws-wish-aicc" data-mode={aicc?.mode ?? store.session.info().wish_aicc_mode ?? 'workspace_owner'}>{text}</div>
 }
 
 function Progress({ run, onCancel }: { run: WishRunView; onCancel: () => void }) {
@@ -298,11 +309,12 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
         {payload.program && payload.executor === 'xllm' && <button type="button" data-testid="aiws-wish-rerun" disabled={!canEdit || running || Boolean(busy)} title={t('aiworkspace.wish.rerunHint')} onClick={() => { void rerun() }}>{t('aiworkspace.wish.rerun')}</button>}
         {programFailed && <button type="button" data-testid="aiws-wish-repair" disabled={!canEdit || running || Boolean(busy)} onClick={() => { void repair() }}>{t('aiworkspace.wish.repair')}</button>}
       </div>
+      <AiccLine run={run} />
       {run && isActive(run) && <Progress run={run} onCancel={() => { void cancel() }} />}
       {(message || flowError) && (
         <div className={message?.kind === 'info' ? 'aiws-warning' : 'aiws-error'} role={message?.kind === 'info' ? 'status' : 'alert'} data-testid="aiws-wish-message">{message?.text ?? flowError}</div>
       )}
-      {run && !isActive(run) && run.state === 'failed' && !message && !flowError && <div className="aiws-error" data-testid="aiws-wish-message">{t('aiworkspace.wish.runFailed', { detail: run.error?.detail ?? run.state })}</div>}
+      {run && !isActive(run) && run.state === 'failed' && !message && !flowError && <div className="aiws-error" data-testid="aiws-wish-message">{t('aiworkspace.wish.runFailed', { detail: runErrorText(run.error) ?? run.state })}</div>}
       {editEntry && editEntry.state !== 'committed' && <div className={`aiws-state aiws-state-${editEntry.state}`} data-testid="aiws-wish-apply-state">{editEntry.detail ? t('aiworkspace.wish.stateWithDetail', { state: EDIT_STATE_LABEL[editEntry.state], detail: editEntry.detail }) : EDIT_STATE_LABEL[editEntry.state]}</div>}
       {run && isWaiting(run) && <WishCandidate run={run} canApply={canEdit} onMessage={(kind, text) => setMessage({ kind, text })} />}
       {lastRun && (

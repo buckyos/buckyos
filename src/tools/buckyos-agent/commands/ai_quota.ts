@@ -2,13 +2,7 @@
 // Doc: aicc_agent_cli_tools.md §7.2
 // 纯元数据查询；详细注释见 ai_provider.ts。
 
-import {
-  ArgError,
-  bailArgError,
-  COMMON_OPTIONS_HELP,
-  parseArgvOrExit,
-  requireString,
-} from "../lib/cli.ts";
+import { COMMON_OPTIONS_HELP, parseArgvOrExit, requireString } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
 import {
   bailAiccError,
@@ -24,48 +18,20 @@ const METHOD = "quota.query";
 
 export const HELP = `Usage: ai_quota [options]
 
+Token quota rules that limit your AI calls (yours and your Apps' / Agents'), each
+with its current window or total account: limit or grant, settled, reserved,
+available, reset_at_ms (null for a total account).
+
 Options:
-  --capability <llm|embedding|decision|rerank|image|vision|audio|video|agent>
-  --method <aicc_method>
+  --app <app_id>   Only the rules that apply to calls of this App / Agent
 ${COMMON_OPTIONS_HELP}`;
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
 
-  const params: {
-    capability?:
-      | "llm"
-      | "embedding"
-      | "decision"
-      | "rerank"
-      | "image"
-      | "vision"
-      | "audio"
-      | "video"
-      | "agent";
-    method?: string;
-  } = {};
-  const cap = requireString(parsed.flags, "capability");
-  if (cap !== undefined) {
-    if (
-      ![
-        "llm",
-        "embedding",
-        "decision",
-        "rerank",
-        "image",
-        "vision",
-        "audio",
-        "video",
-        "agent",
-      ].includes(cap)
-    ) {
-      bailArgError(TOOL, new ArgError(`invalid capability: ${cap}`));
-    }
-    params.capability = cap as typeof params.capability;
-  }
-  const method = requireString(parsed.flags, "method");
-  if (method !== undefined) params.method = method;
+  const params: { app_id?: string } = {};
+  const app = requireString(parsed.flags, "app");
+  if (app !== undefined) params.app_id = app;
 
   let runtime;
   try {

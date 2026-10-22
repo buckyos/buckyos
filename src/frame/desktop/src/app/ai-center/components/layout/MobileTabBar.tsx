@@ -1,15 +1,5 @@
-import { BarChart3, Home, Plug, HardDrive, GitFork, FlaskConical } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
-import type { AICenterPage } from './Sidebar'
-
-const tabs = [
-  { key: 'home' as const, icon: Home, labelKey: 'aiCenter.nav.home', label: 'Home' },
-  { key: 'providers' as const, icon: Plug, labelKey: 'aiCenter.nav.providers', label: 'Providers' },
-  { key: 'models' as const, icon: HardDrive, labelKey: 'aiCenter.nav.models', label: 'Models' },
-  { key: 'routing' as const, icon: GitFork, labelKey: 'aiCenter.nav.routing', label: 'Routing' },
-  { key: 'playground' as const, icon: FlaskConical, labelKey: 'aiCenter.playground.title', label: 'Playground' },
-  { key: 'usage' as const, icon: BarChart3, labelKey: 'aiCenter.nav.usage', label: 'Usage' },
-]
+import { useNavItems, type AICenterPage } from './nav'
 
 interface MobileTabBarProps {
   currentPage: AICenterPage
@@ -18,6 +8,7 @@ interface MobileTabBarProps {
 
 export function MobileTabBar({ currentPage, onNavigate }: MobileTabBarProps) {
   const { t } = useI18n()
+  const tabs = useNavItems()
   const activePage = currentPage === 'providers/add' ? 'providers' : currentPage
 
   return (

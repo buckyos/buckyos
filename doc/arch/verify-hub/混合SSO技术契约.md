@@ -39,7 +39,7 @@ CP 的 `/sso_refresh` 与 `auth.current_identity` 返回 `identity`（Rust：`bu
 ```json
 {"kind":"account","user_id":"acme-c1","did":"did:bns:acme-c1.test","user_type":"limited",
  "show_name":"Alice","zone_host":"test.buckyos.io","auth_method":"exclusive_invite",
- "restricted":true,"scopes":["account_self","msg_group","aiworkspace","homestation"],
+ "restricted":true,"scopes":["account_self","msg_group","aiworkspace","homestation","aicc"],
  "password_set":false}
 {"kind":"external","did":"did:bns:alice","show_name":"Alice","zone_host":"b.example",
  "auth_method":"did_federation","restricted":true,"scopes":["msg_group","aiworkspace","homestation"]}
@@ -70,11 +70,12 @@ CP 的 `/sso_refresh` 与 `auth.current_identity` 返回 `identity`（Rust：`bu
 | `msg_group` | msg-center 群与 Session 路径（Session Guest）、群消息发送、带引用上下文的附件读取 |
 | `aiworkspace` | AI Workspace（受 grant 约束，不含创建 / 导入 / 复制 / 列全体主体） |
 | `homestation` | HomeStation 读与评论 |
+| `aicc` | AICC 推理、模型与 Provider 列表、本人额度查询；能用的资源由可见性策略决定（AI Center Token 额度 PRD §3.4） |
 
 | 主体 | `restricted` | `scopes` |
 | --- | --- | --- |
 | Admin / User（任何认证方式） | false | — |
-| Limited（任何认证方式） | true | 全部四项 |
+| Limited（任何认证方式） | true | 全部五项 |
 | External | true | `msg_group`、`aiworkspace`、`homestation` |
 | 受限会话的 delegate 子会话 | 继承父会话 | 继承父会话 |
 

@@ -5,7 +5,7 @@
 
 import { useCallback, useState } from 'react'
 import { describeError } from '../../api/session'
-import type { Capability, Grant, GrantList, Subject } from '../../api/types'
+import type { Capability, Grant, GrantList, Subject, WishAiccMode } from '../../api/types'
 import { useLoad, useOutlineVersion, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { entityLabel } from './dataOps'
@@ -103,6 +103,37 @@ export function PermissionsPanel() {
       )}
       {message && <div className="aiws-warning" role="status" data-testid="aiws-permissions-message">{message}</div>}
       {(subjects.data ?? []).length === 0 && complete && <div className="aiws-muted">{t('aiworkspace.data.perm.noSubjects')}</div>}
+      <WishAiccSetting online={online} />
+    </div>
+  )
+}
+
+/** Whose AICC the wish blocks use (AI Center Quota PRD §3.3): a manager chooses, everyone sees it. */
+function WishAiccSetting({ online }: { online: boolean }) {
+  const { t } = useAiwsText()
+  const store = useStore()
+  const [mode, setMode] = useState<WishAiccMode>(store.session.info().wish_aicc_mode ?? 'workspace_owner')
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const canManage = store.session.info().capabilities.includes('manage')
+  const change = (next: WishAiccMode) => {
+    setBusy(true)
+    setFailure(null)
+    store.session.setWishAiccMode(next)
+      .then(setMode)
+      .catch((error: unknown) => setFailure(t('aiworkspace.data.perm.wishAiccFailed', { error: describeError(error) })))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <div className="aiws-inline-form" data-testid="aiws-wish-aicc-setting">
+      <label>{t('aiworkspace.data.perm.wishAicc')}
+        <select value={mode} disabled={!canManage || !online || busy} data-testid="aiws-wish-aicc-mode" onChange={(event) => change(event.target.value as WishAiccMode)}>
+          <option value="workspace_owner">{t('aiworkspace.data.perm.wishAiccOwner')}</option>
+          <option value="current_user">{t('aiworkspace.data.perm.wishAiccStarter')}</option>
+        </select>
+      </label>
+      <div className="aiws-muted">{t('aiworkspace.data.perm.wishAiccHint')}</div>
+      {failure && <div className="aiws-error" role="alert">{failure}</div>}
     </div>
   )
 }

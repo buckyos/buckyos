@@ -2,14 +2,17 @@ import { Check } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { LongField } from '../../shared/LongField'
 import type { ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
+import { ProviderAccessSection } from './ProviderAccessSection'
 
 interface StepReviewProps {
   draft: WizardDraft
   validation: ValidationResult | null
   onToggleAutoSync: (value: boolean) => void
+  openTo?: string[]
+  onOpenToChange?: (subjects: string[]) => void
 }
 
-export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewProps) {
+export function StepReview({ draft, validation, onToggleAutoSync, openTo = [], onOpenToChange }: StepReviewProps) {
   const { t } = useI18n()
   const providerName = draft.display_name || draft.provider_instance_name || '-'
 
@@ -94,6 +97,7 @@ export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewPr
           </div>
         </div>
       </div>
+      {onOpenToChange && <ProviderAccessSection selected={openTo} onChange={onOpenToChange} />}
     </div>
   )
 }

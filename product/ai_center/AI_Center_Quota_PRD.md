@@ -2,7 +2,7 @@
 
 - 产品名称：AI Center / AICC
 - 文档类型：PRD（产品需求文档）
-- 状态：v1.0 定稿，定义下一阶段能力，不代表已实现
+- 状态：v1.0 定稿；2026-10-22 已按本文实现（§17），真实 Zone 尚未验收
 - 日期：2026-10-22
 - 适用范围：Zone 内经 AICC 发起的 AI 调用；桌面端与移动端
 - 关联文档：[AI Center PRD](AI_Center_PRD.md)、[AICC 用量统计需求](../../doc/aicc/aicc_usage_log_db_requirements.md)、[用户类型与系统用户组](../users_and_agents/UserType.md)
@@ -14,6 +14,7 @@
 | 2026-10-21 | 草案 | 用户 / App 周期额度、用户自限、许愿格 AICC 归属、用户组资源可见性、总量额度与管理员充值 |
 | 2026-10-22 | v1.0 | 补术语；可见性策略主体纳入 UserType 组，新增“整个 Provider（跟随清单）”允许项和开箱默认策略；明确 Agent、Limited、External、匿名访问者的 AICC 身份；错误类别；页面清单与消费方提示；当前实现差距；非功能要求、交付拆分、已知风险 |
 | 2026-10-22 | v1.0 定稿 | 评审确认 §16 各项取值，写入正文：默认策略含 `type:user`、默认输出预算来源、待核对期限、管理操作不要求 sudo、80% 阈值固定、准入延迟指标 |
+| 2026-10-22 | 实现 | M1–M6 实现，记录见 §17，技术说明见 [AICC Token 额度与资源可见性：实现说明](../../doc/aicc/aicc_token_quota.md) |
 
 ## 1. 背景与目标
 
@@ -467,7 +468,7 @@ Model 采用 AICC 精确模型标识 `provider_model_id[:variant]@provider_insta
 
 AIWorkspace 到 AICC 的调用链需要传递并验证代执行授权与运行归属。AICC 的用户用量聚合及 tenant 隔离必须与额度归属一致，操作人单独记录；不能仅在前端更换展示名，或将客户端提交的归属用户直接作为可信身份。
 
-当前实现可复用但不能直接等同于本期能力的基础：
+实现前可复用但不能直接等同于本期能力的基础（2026-10-22 已按本文替换，以下保留作背景；当前实现见 §17）：
 
 - [Usage 共享类型](../../src/kernel/buckyos-api/src/aicc_usage_log.rs) 已包含用户、App、Provider、模型和 token 字段；现有事件时间与成功调用记录需要补足本期的准入归属、失败消耗及执行尝试语义。
 - [现有 Usage 查询授权](../../src/frame/aicc/src/service/management.rs) 限制在调用者自己的 tenant 内；管理员跨用户查询及 App 总额管理需要明确增加管理授权，不能只靠前端传入其他用户的筛选参数。
@@ -581,3 +582,24 @@ M1 是 M2、M3 的前提；M4、M5、M6 在 M3 的协议稳定后并行。
 | 管理操作是否要求 sudo | 要求 Admin 类型，不要求 sudo，与用户组管理一致 | §3.2 |
 | “接近上限”阈值 | 固定 80%，本期不可配置 | §9.2 |
 | 准入延迟指标 | 单 OOD p95 不超过 20 ms | §13 |
+
+## 17. 实现记录（2026-10-22）
+
+技术说明：[AICC Token 额度与资源可见性：实现说明](../../doc/aicc/aicc_token_quota.md)。
+
+| 交付 | 主要落点 |
+| --- | --- |
+| M1 调用身份与归属 | `buckyos-api` 的 `aicc_quota.rs`（共享类型、`on_behalf_of`）；AICC `service/identity.rs`；RBAC：`limited` 可读 AICC 服务信息、`system:aiworkspace` 可代表用户；受限会话新增 `aicc` scope |
+| M2 资源可见性 | AICC `visibility.rs`、`visibility.*` kRPC、模型 / Provider 列表与路由 / 推理过滤；默认策略首次迁移写入 |
+| M3 额度账本与准入 | AICC `quota/mod.rs`、`storage/quota.rs`、`service/quota.rs`、执行引擎每次上游尝试的预占与结算、核对任务；旧 `services/aicc/quota/...` 记录与“状态未知即放行”已删除 |
+| M4 界面 | Desktop AI Center › 额度、可见性，首页提示，Usage 统计行“设置额度”，Add Provider 开放范围，Models / Playground 标记与拒绝说明；中英文、深浅色、移动端 |
+| M5 许愿格归属 | AIWorkspace `ws.set_wish_aicc`、run 受理时固定归属、AICC 调用带 `on_behalf_of`、`AI_*` 子码；Desktop 权限面板设置与许愿格归属显示 |
+| M6 调用方 | websdk 客户端与 `buckyos ai quota`、`buckyos-agent ai_quota`、xllm / llm_context 拒绝类别、OpenDAN Turn 失败提示与任务码；cmd_skills `xllm`、`aigc_image`、`aigc_audio`、`aigc_video`、`buckyos_admin` |
+
+未完成与已知限制：
+
+- 未在真实 Zone 部署验收；准入延迟（§13 p95 ≤ 20 ms）未测量。
+- 额度拒绝不主动通知 Agent owner，只在会话中按 §9.6 回复；邮件 / 推送不在本期。
+- 失败尝试的消耗记入额度账本，Usage 表仍只记录成功完成的调用。
+- 用户目录除 Agent owner 外不缓存，每次准入读取 system-config。
+

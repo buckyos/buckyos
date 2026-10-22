@@ -241,7 +241,6 @@ pub(crate) enum PolicyError {
         attempted_by: PolicyScope,
     },
     InvalidPolicy(String),
-    QuotaSourceUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useI18n } from '../../../../i18n/provider'
 import { record, resourceUrl, type JsonObject } from '../../datamodel/playground'
 import { panelStyle } from './styles'
+import { QuotaRefusalNote } from '../quota/QuotaWidgets'
 
 export function JsonDetails({ label, value, open = false }: { label: string; value: unknown; open?: boolean }) {
   const { t } = useI18n()
@@ -70,7 +71,7 @@ export function PlaygroundResult({ request, response, task, elapsed, error }: { 
         {Boolean(task?.phase) && <p>{String(task?.phase)} {task?.message ? `· ${String(task.message)}` : ''}</p>}
       </div>
       {resultError != null && <div role="alert" className="rounded-xl p-3 text-sm break-all" style={{ ...panelStyle, color: 'var(--cp-danger)' }}>
-        <strong>{t('aiCenter.playground.error')}</strong><pre className="whitespace-pre-wrap">{typeof resultError === 'string' ? resultError : JSON.stringify(resultError, null, 2)}</pre>
+        <strong>{t('aiCenter.playground.error')}</strong><QuotaRefusalNote error={resultError} /><pre className="whitespace-pre-wrap">{typeof resultError === 'string' ? resultError : JSON.stringify(resultError, null, 2)}</pre>
       </div>}
       {textBlocks.map((block, index) => (typeof block.text === 'string' || typeof block.summary === 'string') && <div key={index} className="rounded-xl p-4" style={panelStyle}><div className="text-xs mb-2" style={{ color: 'var(--cp-muted)' }}>{String(block.type)}</div><p className="text-sm whitespace-pre-wrap break-words">{String(block.text ?? block.summary)}</p></div>)}
       {typeof response?.text === 'string' && <p className="rounded-xl p-4 text-sm whitespace-pre-wrap break-words" style={panelStyle}>{response.text}</p>}

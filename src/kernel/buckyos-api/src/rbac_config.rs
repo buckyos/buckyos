@@ -176,6 +176,9 @@ p, limited,obj://config/users/{limited}/profile,read|write,allow
 # Its own address book only (msg-center binds the owner to the caller and
 # checks the account may edit it); no sessions, mailboxes or other owner data.
 p, limited,obj://msg-center/owners/*/contacts,read|write,allow
+# AICC calls (restricted sessions open the `aicc` scope); the Provider /
+# Model allow lists of the account's groups decide what it may use.
+p, limited,obj://config/services/aicc/info,read,allow
 
 p, users,obj://msg-center/objects,read,allow
 p, admin,obj://msg-center/objects,read,allow
@@ -198,6 +201,8 @@ p, frame,obj://msg-center/notify,read|write,allow
 # Resource services ask whether a DID is in an owner's contact group
 # (contact.check_membership, projection included).
 p, system:aiworkspace,obj://msg-center/contact_membership,read,allow
+# Wish runs call AICC on behalf of the workspace owner or the triggering user.
+p, system:aiworkspace,obj://aicc/on_behalf_of,write,allow
 p, system:homestation,obj://msg-center/contact_membership,read,allow
 p, system:opendan,obj://msg-center/*,all,allow
 p, system:msg-center,obj://msg-center/*,all,allow
@@ -807,6 +812,71 @@ g, su_alice, su_admin
                 "bob",
                 "system:buckycli",
                 "obj://config/users/alice/profile",
+                "write",
+                None,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn limited_accounts_reach_aicc_and_only_aiworkspace_delegates() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let policy_tail = r#"
+g, lin, limited
+g, bob, users
+g, ood1, ood
+"#;
+        let config = build_current_rbac_config(Some(policy_tail));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        assert!(
+            rbac::enforce(
+                "lin",
+                "system:control-panel",
+                "obj://config/services/aicc/info",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "lin",
+                "system:control-panel",
+                "obj://config/services/aicc/settings",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "ood1",
+                "system:aiworkspace",
+                "obj://aicc/on_behalf_of",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "ood1",
+                "system:homestation",
+                "obj://aicc/on_behalf_of",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "bob",
+                "system:control-panel",
+                "obj://aicc/on_behalf_of",
                 "write",
                 None,
             )

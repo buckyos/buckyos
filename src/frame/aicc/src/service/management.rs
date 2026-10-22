@@ -18,7 +18,7 @@ macro_rules! typed_inference_handler {
             Self: 'async_trait,
         {
             Box::pin(async move {
-                let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+                let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
                 self.invoke_typed(&caller, AiccCall::$variant(request))
                     .await
             })
@@ -33,7 +33,7 @@ impl AiccHandler for AiccService {
         task_id: &str,
         ctx: RPCContext,
     ) -> Result<CancelResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
         let execution = self
             .execution
             .as_ref()
@@ -53,7 +53,7 @@ impl AiccHandler for AiccService {
         request: RouteResolveRequest,
         ctx: RPCContext,
     ) -> Result<RouteResolveResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
         let inference = self.inference.as_ref().ok_or_else(|| {
             inference_error(
                 AiccErrorCode::InternalError,
@@ -355,13 +355,29 @@ impl AiccHandler for AiccService {
         })
     }
 
-    async fn handle_query_quota(
+    async fn handle_quota_rpc(
         &self,
-        request: QuotaQueryRequest,
+        method: &str,
+        params: Value,
         ctx: RPCContext,
-    ) -> Result<QuotaQueryResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
-        self.quota.query_quota(&caller, request).await
+    ) -> Result<Value, RPCErrors> {
+        let caller = match method {
+            buckyos_api::quota_methods::QUERY => {
+                self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?
+            }
+            buckyos_api::quota_methods::ACCOUNT_RECHARGE
+            | buckyos_api::quota_methods::RECHARGE_GET
+            | buckyos_api::quota_methods::VISIBILITY_GET
+            | buckyos_api::quota_methods::VISIBILITY_UPDATE
+            | buckyos_api::quota_methods::VISIBILITY_PREVIEW => {
+                self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?
+            }
+            _ => self.authorize(&ctx, "read", RESOURCE_INFO).await?,
+        };
+        let snapshot = self.runtime.capture().await?;
+        self.quota
+            .handle(&caller, method, params, &admin_inventory(&snapshot))
+            .await
     }
 
     async fn handle_query_usage(
@@ -370,14 +386,32 @@ impl AiccHandler for AiccService {
         ctx: RPCContext,
     ) -> Result<QueryUsageResponse, RPCErrors> {
         let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
-        if request.filters.tenant_ids.is_empty() {
-            request.filters.tenant_ids.push(caller.tenant_id);
-        } else if request.filters.tenant_ids != [caller.tenant_id.clone()] {
+        let manages = caller.is_admin();
+        if request.zone_wide {
+            if !manages {
+                return Err(RPCErrors::NoPermission(
+                    "only an administrator may query usage of the whole Zone".to_string(),
+                ));
+            }
+        } else if request.filters.tenant_ids.is_empty() {
+            request.filters.tenant_ids.push(caller.tenant_id.clone());
+        } else if !manages && request.filters.tenant_ids != [caller.tenant_id.clone()] {
             return Err(RPCErrors::NoPermission(
                 "usage query cannot cross tenant boundary".to_string(),
             ));
         }
-        self.usage.query_usage(request).await
+        let response = self.usage.query_usage(request).await?;
+        if manages {
+            return Ok(response);
+        }
+        let snapshot = self.runtime.capture().await?;
+        let access = self.access(&caller, &snapshot).await?;
+        if !access.is_restricted() {
+            return Ok(response);
+        }
+        let mut value = serde_json::to_value(response).map_err(to_rpc_error)?;
+        redact_hidden(&mut value, &access, &admin_inventory(&snapshot));
+        serde_json::from_value(value).map_err(to_rpc_error)
     }
 
     async fn handle_query_trace(
@@ -386,7 +420,19 @@ impl AiccHandler for AiccService {
         ctx: RPCContext,
     ) -> Result<QueryRouteTraceResponse, RPCErrors> {
         let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
-        self.usage.query_trace(&caller.tenant_id, request).await
+        let mut response = self.usage.query_trace(&caller.tenant_id, request).await?;
+        if caller.is_admin() {
+            return Ok(response);
+        }
+        let snapshot = self.runtime.capture().await?;
+        let access = self.access(&caller, &snapshot).await?;
+        if access.is_restricted() {
+            let inventory = admin_inventory(&snapshot);
+            for trace in &mut response.traces {
+                redact_hidden(trace, &access, &inventory);
+            }
+        }
+        Ok(response)
     }
 
     async fn handle_provider_catalog(
@@ -456,13 +502,53 @@ impl AiccHandler for AiccService {
 
     async fn handle_list_providers(
         &self,
-        _request: ProviderListRequest,
+        request: ProviderListRequest,
         ctx: RPCContext,
     ) -> Result<ProviderListResponse, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
         let snapshot = self.runtime.capture().await?;
+        let manages = caller.is_admin() || matches!(caller.principal, CallerPrincipal::System { .. });
+        if request.view == Some(buckyos_api::AiccListView::Manage) {
+            if !manages {
+                return Err(RPCErrors::NoPermission(
+                    "the management view requires an administrator".to_string(),
+                ));
+            }
+            return Ok(ProviderListResponse {
+                providers: snapshot.providers,
+                settings_revision: snapshot.settings_revision,
+                inventory_revision: snapshot.inventory_revision,
+            });
+        }
+        let access = self.access(&caller, &snapshot).await?;
+        let inventory = admin_inventory(&snapshot);
+        let providers = snapshot
+            .providers
+            .into_iter()
+            .filter(|provider| access.allows_provider(&provider.provider_instance_name))
+            .map(|mut provider| {
+                if access.is_restricted() {
+                    provider.inventory.model_count = inventory
+                        .providers
+                        .get(&provider.provider_instance_name)
+                        .map(|models| {
+                            models
+                                .iter()
+                                .filter(|model| access.allows_model(model))
+                                .count() as u64
+                        })
+                        .unwrap_or(0);
+                }
+                if !manages {
+                    provider.inventory.unmatched_models.clear();
+                    provider.inventory.unavailable_presets.clear();
+                    provider.inventory.unpriced_models.clear();
+                }
+                provider
+            })
+            .collect();
         Ok(ProviderListResponse {
-            providers: snapshot.providers,
+            providers,
             settings_revision: snapshot.settings_revision,
             inventory_revision: snapshot.inventory_revision,
         })
@@ -473,8 +559,15 @@ impl AiccHandler for AiccService {
         request: ProviderHealthRequest,
         ctx: RPCContext,
     ) -> Result<ProviderHealthResponse, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         let snapshot = self.runtime.capture().await?;
+        if !self
+            .access(&caller, &snapshot)
+            .await?
+            .allows_model(&request.exact_model)
+        {
+            return Err(RPCErrors::ReasonError("exact model was not found".to_string()));
+        }
         let health = snapshot
             .provider_health
             .get(&request.exact_model)
@@ -625,11 +718,24 @@ impl AiccHandler for AiccService {
 
     async fn handle_list_models(
         &self,
-        _request: ListModelsRequest,
+        request: ListModelsRequest,
         ctx: RPCContext,
     ) -> Result<Value, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
-        Ok(self.runtime.capture().await?.models)
+        let caller = self.authorize_opened(&ctx, "read", RESOURCE_INFO).await?;
+        let snapshot = self.runtime.capture().await?;
+        let access = self.access(&caller, &snapshot).await?;
+        let mut models = snapshot.models;
+        if request.view == Some(buckyos_api::AiccListView::Manage) {
+            if !(caller.is_admin() || matches!(caller.principal, CallerPrincipal::System { .. })) {
+                return Err(RPCErrors::NoPermission(
+                    "the management view requires an administrator".to_string(),
+                ));
+            }
+            mark_model_access(&mut models, &access);
+        } else if access.is_restricted() {
+            filter_models_value(&mut models, &access);
+        }
+        Ok(models)
     }
 
     async fn handle_driver_metadata_update_get(
@@ -679,5 +785,74 @@ impl AiccHandler for AiccService {
             ));
         }
         Ok(response)
+    }
+}
+
+/// Each model of a management `models.list` says whether the caller may use it.
+fn mark_model_access(models: &mut Value, access: &crate::visibility::Access) {
+    for model in models
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let accessible = model
+            .get("exact_model")
+            .and_then(Value::as_str)
+            .is_some_and(|exact_model| access.allows_model(exact_model));
+        if let Some(model) = model.as_object_mut() {
+            model.insert("accessible".to_string(), Value::Bool(accessible));
+        }
+    }
+}
+
+/// Keep only what the caller may use: exact models, their catalog Provider
+/// entries and logical items pointing at them (§3.4, filtered server-side).
+fn filter_models_value(models: &mut Value, access: &crate::visibility::Access) {
+    let allowed = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|exact_model| access.allows_model(exact_model))
+    };
+    if let Some(list) = models.get_mut("models").and_then(Value::as_array_mut) {
+        list.retain(|model| model.get("exact_model").is_some_and(allowed));
+    }
+    if let Some(directory) = models.get_mut("directory").and_then(Value::as_object_mut) {
+        for items in directory.values_mut().filter_map(Value::as_array_mut) {
+            items.retain(|item| {
+                item.get("target")
+                    .and_then(Value::as_str)
+                    .is_none_or(|target| !target.contains('@') || access.allows_model(target))
+            });
+        }
+    }
+    for vendor in models
+        .pointer_mut("/catalog/vendors")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        for model in vendor
+            .get_mut("models")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(providers) = model.get_mut("providers").and_then(Value::as_array_mut) {
+                for provider in providers.iter_mut() {
+                    if let Some(exact_models) =
+                        provider.get_mut("exact_models").and_then(Value::as_array_mut)
+                    {
+                        exact_models.retain(allowed);
+                    }
+                }
+                providers.retain(|provider| {
+                    provider
+                        .get("exact_models")
+                        .and_then(Value::as_array)
+                        .is_some_and(|models| !models.is_empty())
+                });
+            }
+        }
     }
 }

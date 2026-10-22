@@ -2,7 +2,9 @@ use crate::aicc_usage_log::{
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
 };
 use crate::{
-    AppDoc, AppType, DecisionAnswer, DecisionQuestion, DecisionRequirements, SelectorType,
+    quota_methods, AiccListView, AiccOnBehalfOf, AppDoc, AppType, DecisionAnswer,
+    DecisionQuestion, DecisionRequirements, QuotaQueryRequest, QuotaQueryResponse, SelectorType,
+    AICC_ON_BEHALF_OF_PARAM,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -129,7 +131,7 @@ pub mod ai_methods {
                 | MODELS_LIST
                 | DRIVER_METADATA_UPDATE_GET
                 | DRIVER_METADATA_UPDATE_SET
-        )
+        ) || crate::quota_methods::is_quota_method(method)
     }
 }
 
@@ -725,25 +727,23 @@ mod canonical_contract_tests {
     }
 
     #[test]
-    fn quota_and_policy_money_are_currency_explicit_and_strict() {
-        let money = Money::new(12.5, "USD");
-        let quota = QuotaView {
-            state: QuotaState::Normal,
-            remaining_request_units: Some(1_000),
-            remaining_cost: Some(money.clone()),
-            reset_at: Some("2026-04-26T00:00:00Z".to_string()),
+    fn quota_refusals_travel_as_detailed_errors_with_their_code() {
+        let mut error = AiccError::new(AiccErrorCode::QuotaExhausted, "token quota is exhausted");
+        error.details = Some(json!({"required_tokens": 10}));
+        let wire = error.to_krpc_error();
+        let RPCErrors::Detailed(detail) = &wire else {
+            panic!("quota refusals are detailed errors");
         };
-        let value = serde_json::to_value(&quota).unwrap();
-        assert_eq!(
-            value["remaining_cost"],
-            json!({
-                "amount": 12.5,
-                "currency": "USD"
-            })
-        );
-        assert!(value.get("remaining_cost_usd").is_none());
-        assert_eq!(serde_json::from_value::<QuotaView>(value).unwrap(), quota);
+        assert_eq!(detail.code, "quota_exhausted");
+        assert_eq!(AiccError::from_krpc_error(&wire), Some(error));
+        let other = AiccError::new(AiccErrorCode::ProviderError, "upstream failed");
+        assert!(matches!(other.to_krpc_error(), RPCErrors::ReasonError(_)));
+        assert_eq!(AiccError::from_krpc_error(&other.to_krpc_error()), Some(other));
+    }
 
+    #[test]
+    fn policy_money_is_currency_explicit_and_strict() {
+        let money = Money::new(12.5, "USD");
         let policy = AiccPolicyConfig {
             max_estimated_cost: Some(LockedValue::locked(money.clone())),
             ..Default::default()
@@ -775,11 +775,6 @@ mod canonical_contract_tests {
             "amount": 1.0,
             "currency": "USD",
             "unit": "dollar"
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<QuotaView>(json!({
-            "state": "normal",
-            "remaining_cost_usd": 12.5
         }))
         .is_err());
     }
@@ -1404,9 +1399,32 @@ pub enum AiccErrorCode {
     SettingsRevisionConflict,
     Cancelled,
     InternalError,
+    /// An enabled token quota rule has nothing left (§7.4).
+    QuotaExhausted,
+    /// Every rule has tokens left, but fewer than this call reserves.
+    QuotaBudgetExceeded,
+    /// A configured rule could not be read or reserved; never treated as unlimited.
+    QuotaUnavailable,
+    /// The Provider / Model is outside the caller's visibility, or no
+    /// permitted candidate is left; hidden identities are not disclosed.
+    ResourceNotPermitted,
+    /// The AICC user of a delegated run cannot be determined.
+    AttributionUnavailable,
 }
 
 impl AiccErrorCode {
+    /// Token quota and resource policy refusals (AI Center Quota PRD §7.4).
+    pub fn is_policy_refusal(self) -> bool {
+        matches!(
+            self,
+            Self::QuotaExhausted
+                | Self::QuotaBudgetExceeded
+                | Self::QuotaUnavailable
+                | Self::ResourceNotPermitted
+                | Self::AttributionUnavailable
+        )
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InvalidRequest => "invalid_request",
@@ -1428,6 +1446,11 @@ impl AiccErrorCode {
             Self::SettingsRevisionConflict => "settings_revision_conflict",
             Self::Cancelled => "cancelled",
             Self::InternalError => "internal_error",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::QuotaBudgetExceeded => "quota_budget_exceeded",
+            Self::QuotaUnavailable => "quota_unavailable",
+            Self::ResourceNotPermitted => "resource_not_permitted",
+            Self::AttributionUnavailable => "attribution_unavailable",
         }
     }
 }
@@ -1480,6 +1503,15 @@ impl AiccError {
     }
 
     pub fn to_krpc_error(&self) -> RPCErrors {
+        if self.code.is_policy_refusal() {
+            // The wire carries the code and the whole error as data, so every
+            // client branches on `code` (PRD §7.4) instead of parsing text.
+            return RPCErrors::Detailed(RPCErrorDetail {
+                code: self.code.as_str().to_string(),
+                message: self.message.clone(),
+                data: serde_json::to_value(self).ok(),
+            });
+        }
         let body = serde_json::to_string(self).unwrap_or_else(|_| {
             format!(
                 "{{\"code\":\"internal_error\",\"message\":{:?}}}",
@@ -1491,7 +1523,9 @@ impl AiccError {
             | AiccErrorCode::InvalidMethod
             | AiccErrorCode::SchemaValidationFailed
             | AiccErrorCode::InvalidModelName => RPCErrors::ParseRequestError(body),
-            AiccErrorCode::PolicyDenied => RPCErrors::NoPermission(body),
+            AiccErrorCode::PolicyDenied
+            | AiccErrorCode::ResourceNotPermitted
+            | AiccErrorCode::AttributionUnavailable => RPCErrors::NoPermission(body),
             _ => RPCErrors::ReasonError(body),
         }
     }
@@ -1507,6 +1541,12 @@ impl AiccError {
     }
 
     pub fn from_krpc_error(error: &RPCErrors) -> Option<Self> {
+        if let RPCErrors::Detailed(detail) = error {
+            return detail
+                .data
+                .clone()
+                .and_then(|data| serde_json::from_value(data).ok());
+        }
         let body = match error {
             RPCErrors::ParseRequestError(body)
             | RPCErrors::ReasonError(body)
@@ -4260,13 +4300,16 @@ pub struct RoutingUpdateResponse {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ListModelsRequest {}
+pub struct ListModelsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<AiccListView>,
+}
 
 impl_request_json!(ListModelsRequest);
 
 impl ListModelsRequest {
     pub fn new() -> Self {
-        Self {}
+        Self { view: None }
     }
 }
 
@@ -4723,23 +4766,6 @@ impl_request_json!(QueryUsageRequest);
 
 impl_request_json!(QueryRouteTraceRequest);
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaQueryRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability: Option<Capability>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-}
-
-impl_request_json!(QuotaQueryRequest);
-
-impl QuotaQueryRequest {
-    pub fn new(capability: Option<Capability>, method: Option<String>) -> Self {
-        Self { capability, method }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaState {
@@ -4749,35 +4775,20 @@ pub enum QuotaState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct QuotaView {
-    pub state: QuotaState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remaining_request_units: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remaining_cost: Option<Money>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QuotaQueryResponse {
-    pub quota: QuotaView,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderListRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<AiccListView>,
 }
 
 impl_request_json!(ProviderListRequest);
 
 impl ProviderListRequest {
     pub fn new(method: Option<String>) -> Self {
-        Self { method }
+        Self { method, view: None }
     }
 }
 
@@ -5215,9 +5226,33 @@ impl CancelResponse {
     }
 }
 
+/// kRPC transport of [`AiccClient`]; a delegated client adds the
+/// `on_behalf_of` parameter to every call.
+pub struct AiccKrpcClient {
+    client: Box<kRPC>,
+    on_behalf_of: Option<Value>,
+}
+
+impl AiccKrpcClient {
+    pub async fn call(
+        &self,
+        method: &str,
+        mut params: Value,
+    ) -> std::result::Result<Value, RPCErrors> {
+        if let (Some(on_behalf_of), Value::Object(map)) = (&self.on_behalf_of, &mut params) {
+            map.insert(AICC_ON_BEHALF_OF_PARAM.to_string(), on_behalf_of.clone());
+        }
+        self.client.call(method, params).await
+    }
+
+    pub async fn set_context(&self, context: RPCContext) {
+        self.client.set_context(context).await;
+    }
+}
+
 pub enum AiccClient {
     InProcess(Box<dyn AiccHandler>),
-    KRPC(Box<kRPC>),
+    KRPC(Box<AiccKrpcClient>),
 }
 
 macro_rules! client_typed_method {
@@ -5298,7 +5333,56 @@ impl AiccClient {
     }
 
     pub fn new_krpc(krpc_client: Box<kRPC>) -> Self {
-        Self::KRPC(krpc_client)
+        Self::KRPC(Box::new(AiccKrpcClient {
+            client: krpc_client,
+            on_behalf_of: None,
+        }))
+    }
+
+    /// Calls made through this client are charged to `on_behalf_of.user_id`.
+    /// AICC accepts it only from a system service granted
+    /// [`AICC_ON_BEHALF_OF_RESOURCE`]; the business App is that service.
+    pub fn with_on_behalf_of(self, on_behalf_of: &AiccOnBehalfOf) -> Self {
+        match self {
+            Self::KRPC(mut client) => {
+                client.on_behalf_of = serde_json::to_value(on_behalf_of).ok();
+                Self::KRPC(client)
+            }
+            in_process => in_process,
+        }
+    }
+
+    /// One `quota.*` / `visibility.*` method (see [`quota_methods`]).
+    pub async fn quota_call<Req, Resp>(
+        &self,
+        method: &str,
+        request: &Req,
+    ) -> std::result::Result<Resp, RPCErrors>
+    where
+        Req: Serialize,
+        Resp: serde::de::DeserializeOwned,
+    {
+        let params = serde_json::to_value(request).map_err(|error| {
+            RPCErrors::ReasonError(format!("Failed to serialize {method} request: {error}"))
+        })?;
+        let result = match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_quota_rpc(method, params, RPCContext::default())
+                    .await?
+            }
+            Self::KRPC(client) => client.call(method, params).await?,
+        };
+        serde_json::from_value(result).map_err(|error| {
+            RPCErrors::ParserResponseError(format!("Failed to parse {method} response: {error}"))
+        })
+    }
+
+    pub async fn query_quota(
+        &self,
+        request: QuotaQueryRequest,
+    ) -> std::result::Result<QuotaQueryResponse, RPCErrors> {
+        self.quota_call(quota_methods::QUERY, &request).await
     }
 
     pub async fn set_context(&self, context: RPCContext) {
@@ -5759,13 +5843,6 @@ impl AiccClient {
         ai_methods::EVENTS_LIST,
         EventsListRequest,
         EventsListResponse
-    );
-    client_typed_method!(
-        query_quota,
-        handle_query_quota,
-        ai_methods::QUOTA_QUERY,
-        QuotaQueryRequest,
-        QuotaQueryResponse
     );
     client_typed_method!(
         query_usage,
@@ -6267,14 +6344,15 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
-    async fn handle_query_quota(
+    /// Every `quota.*` and `visibility.*` method; the typed requests and
+    /// responses are in `aicc_quota`.
+    async fn handle_quota_rpc(
         &self,
-        _request: QuotaQueryRequest,
+        method: &str,
+        _params: Value,
         _ctx: RPCContext,
-    ) -> std::result::Result<QuotaQueryResponse, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(
-            ai_methods::QUOTA_QUERY.to_string(),
-        ))
+    ) -> std::result::Result<Value, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(method.to_string()))
     }
 
     async fn handle_query_usage(
@@ -6428,6 +6506,52 @@ impl<T: AiccHandler> AiccServerHandler<T> {
 #[async_trait]
 impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
     async fn handle_rpc_call(
+        &self,
+        mut req: RPCRequest,
+        ip_from: IpAddr,
+    ) -> std::result::Result<RPCResponse, RPCErrors> {
+        let on_behalf_of = take_on_behalf_of(&mut req.params)?;
+        AICC_REQUEST_ON_BEHALF_OF
+            .scope(on_behalf_of, self.dispatch(req, ip_from))
+            .await
+    }
+}
+
+tokio::task_local! {
+    static AICC_REQUEST_ON_BEHALF_OF: Option<AiccOnBehalfOf>;
+}
+
+/// The `on_behalf_of` parameter of the AICC request being served; AICC
+/// decides whether the caller may send it.
+pub fn current_aicc_on_behalf_of() -> Option<AiccOnBehalfOf> {
+    AICC_REQUEST_ON_BEHALF_OF
+        .try_with(Clone::clone)
+        .ok()
+        .flatten()
+}
+
+/// Run `future` as a request carrying `on_behalf_of` (in-process callers, tests).
+pub async fn with_aicc_on_behalf_of<F: std::future::Future>(
+    on_behalf_of: Option<AiccOnBehalfOf>,
+    future: F,
+) -> F::Output {
+    AICC_REQUEST_ON_BEHALF_OF.scope(on_behalf_of, future).await
+}
+
+fn take_on_behalf_of(params: &mut Value) -> std::result::Result<Option<AiccOnBehalfOf>, RPCErrors> {
+    let Some(value) = params
+        .as_object_mut()
+        .and_then(|params| params.remove(AICC_ON_BEHALF_OF_PARAM))
+    else {
+        return Ok(None);
+    };
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|error| RPCErrors::ParseRequestError(format!("invalid on_behalf_of: {error}")))
+}
+
+impl<T: AiccHandler> AiccServerHandler<T> {
+    async fn dispatch(
         &self,
         req: RPCRequest,
         ip_from: IpAddr,
@@ -6649,11 +6773,9 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
                     .handle_list_events(EventsListRequest::from_json(req.params)?, ctx)
                     .await?
             )),
-            ai_methods::QUOTA_QUERY => RPCResult::Success(json!(
-                self.0
-                    .handle_query_quota(QuotaQueryRequest::from_json(req.params)?, ctx)
-                    .await?
-            )),
+            method if quota_methods::is_quota_method(method) => {
+                RPCResult::Success(self.0.handle_quota_rpc(method, req.params, ctx).await?)
+            }
             ai_methods::USAGE_QUERY => RPCResult::Success(json!(
                 self.0
                     .handle_query_usage(QueryUsageRequest::from_json(req.params)?, ctx)

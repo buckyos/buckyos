@@ -1,16 +1,7 @@
-import { BarChart3, Home, Plug, HardDrive, GitFork, FlaskConical } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
+import { useNavItems, type AICenterPage } from './nav'
 
-const navItems = [
-  { key: 'home', icon: Home, labelKey: 'aiCenter.nav.home', label: 'Home' },
-  { key: 'providers', icon: Plug, labelKey: 'aiCenter.nav.providers', label: 'Providers' },
-  { key: 'models', icon: HardDrive, labelKey: 'aiCenter.nav.models', label: 'Models' },
-  { key: 'routing', icon: GitFork, labelKey: 'aiCenter.nav.routing', label: 'Routing' },
-  { key: 'playground', icon: FlaskConical, labelKey: 'aiCenter.playground.title', label: 'Playground' },
-  { key: 'usage', icon: BarChart3, labelKey: 'aiCenter.nav.usage', label: 'Usage' },
-] as const
-
-export type AICenterPage = (typeof navItems)[number]['key'] | 'providers/add'
+export type { AICenterPage }
 
 interface SidebarProps {
   currentPage: AICenterPage
@@ -19,6 +10,7 @@ interface SidebarProps {
 
 export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const { t } = useI18n()
+  const items = useNavItems()
 
   const activePage = currentPage === 'providers/add' ? 'providers' : currentPage
 
@@ -33,7 +25,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       >
         {t('aiCenter.title', 'AI Center')}
       </div>
-      {navItems.map((item) => {
+      {items.map((item) => {
         const active = activePage === item.key
         return (
           <button

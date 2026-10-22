@@ -9,6 +9,7 @@ pub(crate) struct RuntimeInferencePort {
     resource_store: Arc<dyn ResourceStore>,
     url_fetcher: Arc<dyn UrlResourceFetcher>,
     model_health: Arc<ModelHealthRegistry>,
+    governance: Arc<QuotaService>,
 }
 
 fn named_object_url_provider(settings: &AiccSettings) -> Arc<dyn NamedObjectUrlProvider> {
@@ -43,6 +44,7 @@ impl RuntimeInferencePort {
         resource_store: Arc<dyn ResourceStore>,
         url_fetcher: Arc<dyn UrlResourceFetcher>,
         model_health: Arc<ModelHealthRegistry>,
+        governance: Arc<QuotaService>,
     ) -> Self {
         Self {
             runtime,
@@ -53,7 +55,18 @@ impl RuntimeInferencePort {
             resource_store,
             url_fetcher,
             model_health,
+            governance,
         }
+    }
+
+    async fn access(
+        &self,
+        caller: &AuthorizedCaller,
+        snapshot: &crate::runtime::RuntimeSnapshot,
+    ) -> Result<crate::visibility::Access, RPCErrors> {
+        self.governance
+            .access(caller, &crate::visibility::Inventory::from_runtime(snapshot))
+            .await
     }
 
     async fn route(
@@ -76,20 +89,30 @@ impl RuntimeInferencePort {
             .transpose()
             .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?;
         let models = route_models.as_ref().unwrap_or(snapshot.models.as_ref());
+        let access = self.access(caller, snapshot.as_ref()).await?;
         let provider_names = if input.model.contains('@') {
+            if !access.allows_model(&input.model) {
+                return Err(not_permitted());
+            }
             vec![crate::model::ExactModelName::parse(&input.model)
                 .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?
                 .provider_instance_name()
                 .to_owned()]
         } else {
-            models
+            let reachable = models
                 .reachable_models(&input.model, input.api_type)
                 .map_err(|error| {
                     inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
-                })?
+                })?;
+            let permitted = reachable
                 .into_iter()
+                .filter(|model| access.allows_model(&model.exact_model.to_string()))
                 .map(|model| model.identity.provider_instance_name)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            if permitted.is_empty() {
+                return Err(not_permitted());
+            }
+            permitted
         };
         let quota = self
             .quota
@@ -107,6 +130,7 @@ impl RuntimeInferencePort {
             self.model_health.as_ref(),
             input.estimated_input_tokens,
             input.estimated_output_tokens,
+            &access,
         )
         .await;
         let session_overlay = input
@@ -153,9 +177,23 @@ impl RuntimeInferencePort {
                     inference_error(AiccErrorCode::InternalError, error.to_string())
                 })?;
         }
-        let decision = Router::new(models, &policy, &runtime_states)
+        let mut decision = Router::new(models, &policy, &runtime_states)
             .route(&request)
-            .map_err(|error| inference_error(AiccErrorCode::NoCandidateModel, error.to_string()))?;
+            .map_err(|error| {
+                if access.is_restricted() {
+                    inference_error(
+                        AiccErrorCode::NoCandidateModel,
+                        "no permitted model is available for this request",
+                    )
+                } else {
+                    inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
+                }
+            })?;
+        if access.is_restricted() {
+            decision
+                .trace
+                .retain_models(&|model| access.allows_model(model));
+        }
         if let Some(session_id) = input.session_id.as_deref() {
             self.storage
                 .remember_session_exact_model(
@@ -586,12 +624,14 @@ impl InferencePort for RuntimeInferencePort {
                 })
                 .collect()
         };
+        let access = self.access(caller, snapshot.as_ref()).await?;
         let runtime_states = candidate_runtime_states(
             snapshot.as_ref(),
             caller,
             self.model_health.as_ref(),
             None,
             None,
+            &access,
         )
         .await;
         let provider_names = snapshot
@@ -658,14 +698,25 @@ impl InferencePort for RuntimeInferencePort {
             );
             routing_request.requirements = request.requirements.clone().unwrap_or_default();
             match Router::new(models, &policy, &runtime_states).route(&routing_request) {
-                Ok(decision) => {
+                Ok(mut decision) => {
                     entry.available = true;
                     entry.selected_exact_model = Some(decision.selected.exact_model.clone());
                     if request.explain {
+                        if access.is_restricted() {
+                            decision
+                                .trace
+                                .retain_models(&|model| access.allows_model(model));
+                        }
                         entry.trace = Some(public_route_trace_json(&decision)?);
                     }
                 }
-                Err(error) => entry.error = Some(error.to_string()),
+                Err(error) => {
+                    entry.error = Some(if access.is_restricted() {
+                        "no permitted model is available".to_string()
+                    } else {
+                        error.to_string()
+                    })
+                }
             }
             entries.push(entry);
         }
@@ -722,6 +773,13 @@ impl InferencePort for RuntimeInferencePort {
         )
         .await?;
         let mut failover = Vec::new();
+        let mut primary_denial = None;
+        if let Err(error) = self.governance.precheck(caller, &primary).await {
+            if !routed.runtime_failover || routed.decision.fallback_candidates.is_empty() {
+                return Err(error.to_krpc_error());
+            }
+            primary_denial = Some(error);
+        }
         for candidate in &routed.decision.fallback_candidates {
             let mut fallback_decision = routed.decision.clone();
             fallback_decision.selected = candidate.clone();
@@ -740,7 +798,14 @@ impl InferencePort for RuntimeInferencePort {
                     )
                     .await
                 {
-                    Ok(()) => failover.push(call),
+                    Ok(()) => {
+                        if primary_denial.is_some()
+                            && self.governance.precheck(caller, &call).await.is_err()
+                        {
+                            continue;
+                        }
+                        failover.push(call)
+                    }
                     Err(error) => log::warn!(
                         "fallback_resource_materialization_failed: exact_model={} error={}",
                         candidate.exact_model,
@@ -749,12 +814,28 @@ impl InferencePort for RuntimeInferencePort {
                 }
             }
         }
+        if let Some(denial) = primary_denial {
+            if failover.is_empty() {
+                return Err(denial.to_krpc_error());
+            }
+            primary = failover.remove(0);
+            if let Some(position) = routed
+                .decision
+                .fallback_candidates
+                .iter()
+                .position(|candidate| candidate.exact_model == primary.exact_model)
+            {
+                let promoted = routed.decision.fallback_candidates.remove(position);
+                routed.decision.selected = promoted;
+            }
+        }
         let receipt = self
             .execution
             .execute(crate::execution::ExecutionRequest {
                 tenant_id: caller.tenant_id.clone(),
                 user_id: caller.user_id.clone(),
                 caller_app_id: caller.app_id.clone(),
+                attribution: Some(caller.attribution()),
                 trace_id: Some(routed.trace_id.clone()),
                 request_model: request_model.clone(),
                 idempotency_key,
@@ -841,12 +922,20 @@ pub(super) fn inference_error(code: AiccErrorCode, message: impl Into<String>) -
     AiccError::new(code, message).to_krpc_error()
 }
 
+fn not_permitted() -> RPCErrors {
+    inference_error(
+        AiccErrorCode::ResourceNotPermitted,
+        "no permitted model is available for this request",
+    )
+}
+
 async fn candidate_runtime_states(
     snapshot: &crate::runtime::RuntimeSnapshot,
     caller: &AuthorizedCaller,
     model_health: &ModelHealthRegistry,
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
+    access: &crate::visibility::Access,
 ) -> BTreeMap<String, CandidateRuntimeState> {
     let mut credentials = BTreeMap::new();
     let mut health_states = BTreeMap::new();
@@ -880,7 +969,9 @@ async fn candidate_runtime_states(
                 .provider_metadata
                 .get(&model.provider_instance_name)
                 .is_none_or(|metadata| metadata.routable);
-            let enabled = settings.is_some_and(|provider| provider.enabled) && metadata_routable;
+            let enabled = settings.is_some_and(|provider| provider.enabled)
+                && metadata_routable
+                && access.allows_model(&model.exact_model);
             let observed =
                 model_health.snapshot(&model.exact_model, &model.provider_instance_name, now_ms());
             let health = if observed.circuit_open {
@@ -1282,15 +1373,6 @@ pub(crate) trait UsageQueryPort: Send + Sync {
         tenant_id: &str,
         request: QueryRouteTraceRequest,
     ) -> Result<QueryRouteTraceResponse, RPCErrors>;
-}
-
-#[async_trait]
-pub(crate) trait QuotaQueryPort: Send + Sync {
-    async fn query_quota(
-        &self,
-        caller: &AuthorizedCaller,
-        request: QuotaQueryRequest,
-    ) -> Result<QuotaQueryResponse, RPCErrors>;
 }
 
 #[async_trait]

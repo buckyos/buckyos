@@ -296,10 +296,10 @@ fn restart_reports_interrupted_and_reconciles_applying() {
         let h = svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         let params = json!({ "wish_id": "w1", "stage": "analyze" });
-        let (r1, _) = ws.wish_run_create(&alice, "wish.xllm@1", &params, "k1").unwrap();
+        let (r1, _) = ws.wish_run_create(&alice, "wish.xllm@1", &params, "k1", &json!(null)).unwrap();
         ws.wish_run_set(&r1, Some("running"), None, None, None, None).unwrap();
         // the process died after submitting a commit that never happened
-        let (r2, _) = ws.wish_run_create(&alice, "wish.xllm@1", &params, "k2").unwrap();
+        let (r2, _) = ws.wish_run_create(&alice, "wish.xllm@1", &params, "k2", &json!(null)).unwrap();
         ws.wish_run_set(&r2, Some("applying"), None, None, None, Some(&json!({ "applying": { "plan_digest": "d", "idempotency_key": "run/none/d" } }))).unwrap();
         (id, r1, r2)
     };
@@ -310,5 +310,83 @@ fn restart_reports_interrupted_and_reconciles_applying() {
     assert_eq!(r["error"]["code"], "INTERRUPTED");
     let r = srv.rpc("proc.get", json!({ "run_id": applying })).await;
     assert_eq!(r["state"], "waiting_confirmation", "{r}");
+    });
+}
+
+fn llm_context_of(dir: &std::path::Path, run_id: &str) -> Value {
+    fn find(dir: &std::path::Path, run_id: &str) -> Option<std::path::PathBuf> {
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == run_id) && p.join("work/.llm_context").is_file() {
+                    return Some(p.join("work/.llm_context"));
+                }
+                if let Some(f) = find(&p, run_id) {
+                    return Some(f);
+                }
+            }
+        }
+        None
+    }
+    let f = find(dir, run_id).expect("the stage wrote its .llm_context");
+    serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap()
+}
+
+#[test]
+fn wish_runs_use_the_owners_or_the_starters_aicc() {
+    run_test(|| async move {
+    let m = scripted();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let mut srv = Srv::start_with(dir, m.clone(), json!({
+        "tok-alice": { "principal": "alice" },
+        "tok-bob": { "principal": "bob" },
+        "tok-eve": { "principal": "did:web:eve.example.com", "class": "external" },
+    })).await;
+    setup(&mut srv).await;
+    for who in ["bob", "did:web:eve.example.com"] {
+        srv.rpc("ws.grant", json!({ "subject": who, "capabilities": ["read", "comment", "update"] })).await;
+    }
+    assert_eq!(srv.rpc("ws.get_info", json!({})).await["wish_aicc_mode"], "workspace_owner");
+
+    // default: a collaborator's run uses the owner's AICC; the operator stays the collaborator
+    let start = srv.call_as("tok-bob", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "b1",
+        "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc() } })).await["result"].clone();
+    let run_id = start["run_id"].as_str().unwrap().to_string();
+    assert_eq!(start["aicc"], json!({ "mode": "workspace_owner", "user_id": "alice", "operator_id": "bob" }));
+    let done = srv.wait_as("tok-bob", &run_id).await;
+    assert_eq!(done["state"], "waiting_confirmation", "{done}");
+    let ctx = llm_context_of(&root, &run_id);
+    assert_eq!(ctx["provider"]["on_behalf_of"]["user_id"], "alice");
+    assert_eq!(ctx["provider"]["on_behalf_of"]["operator_id"], "bob");
+    assert_eq!(ctx["provider"]["on_behalf_of"]["run_ref"]["run_id"], json!(run_id));
+
+    // only a manager switches the mode
+    let denied = srv.call_as("tok-bob", "ws.set_wish_aicc", json!({ "mode": "current_user" })).await;
+    assert_eq!(denied["result"]["error"]["code"], "PERMISSION_DENIED", "{denied}");
+    srv.rpc("ws.set_wish_aicc", json!({ "mode": "current_user" })).await;
+    let start = srv.call_as("tok-bob", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "b2",
+        "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc() } })).await["result"].clone();
+    assert_eq!(start["aicc"]["user_id"], "bob");
+    srv.wait_as("tok-bob", start["run_id"].as_str().unwrap()).await;
+
+    // an External user has no AI resources here and is not moved to the owner's
+    let refused = srv.call_as("tok-eve", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "e1",
+        "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc() } })).await;
+    assert_eq!(refused["result"]["error"]["sub_code"], "AI_ATTRIBUTION_UNAVAILABLE", "{refused}");
+
+    // a quota refusal fails the run with its sub-code; a collaborator never sees the owner's rules
+    srv.rpc("ws.set_wish_aicc", json!({ "mode": "workspace_owner" })).await;
+    *m.refuse.lock().unwrap() = Some(llm_context::RefusalKind::QuotaExhausted);
+    let start = srv.call_as("tok-bob", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "b3",
+        "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc() } })).await["result"].clone();
+    let failed = srv.wait_as("tok-bob", start["run_id"].as_str().unwrap()).await;
+    assert_eq!(failed["state"], "failed", "{failed}");
+    assert_eq!(failed["error"]["sub_code"], "AI_QUOTA_EXHAUSTED");
+    assert!(failed["error"]["detail"].as_str().unwrap().contains("workspace owner"), "{failed}");
+    assert!(failed["error"]["data"]["xllm"]["error"]["message"].is_null());
+    let own = srv.run("wish.xllm@1", json!({ "wish_id": "wish-q3", "stage": "analyze", "location": loc() })).await;
+    assert_eq!(own["error"]["sub_code"], "AI_QUOTA_EXHAUSTED");
+    assert!(own["error"]["detail"].as_str().unwrap().contains("Your AI token quota"), "{own}");
     });
 }

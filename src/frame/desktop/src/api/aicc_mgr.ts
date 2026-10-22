@@ -1147,7 +1147,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
 
 }
 
-async function prepareSessionToken(requireSession: boolean): Promise<string | null> {
+export async function prepareSessionToken(requireSession: boolean): Promise<string | null> {
   const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
   let sessionToken = typeof accountInfo?.session_token === 'string'
     ? accountInfo.session_token.trim()

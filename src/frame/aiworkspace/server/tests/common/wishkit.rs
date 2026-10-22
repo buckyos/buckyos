@@ -32,6 +32,8 @@ pub struct ScriptedModel {
     pub delay_ms: AtomicU64,
     /// Output limit of the last stage request (not `llm.map`).
     pub max_tokens: Mutex<Option<u32>>,
+    /// Every call is refused by the AI service with this reason.
+    pub refuse: Mutex<Option<llm_context::RefusalKind>>,
 }
 
 pub fn call(name: &str, args: Value) -> AiResponse {
@@ -48,6 +50,9 @@ pub fn text(t: &str) -> AiResponse {
 impl LlmClient for ScriptedModel {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(kind) = *self.refuse.lock().unwrap() {
+            return Err(LLMComputeError::provider(llm_context::ProviderFailure::Refused(kind), "refused by the AI service"));
+        }
         let delay = self.delay_ms.load(Ordering::SeqCst);
         if delay > 0 {
             tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -92,8 +97,13 @@ pub fn find_deno() -> String {
 
 impl Srv {
     pub async fn start(dir: tempfile::TempDir, model: Arc<ScriptedModel>) -> Srv {
+        Self::start_with(dir, model, json!({ "tok-alice": { "principal": "alice" } })).await
+    }
+
+    /// `tokens`: `{ token: { principal, class? } }`; `rpc` calls as `tok-alice`.
+    pub async fn start_with(dir: tempfile::TempDir, model: Arc<ScriptedModel>, tokens: Value) -> Srv {
         let svc = Service::open(&dir.path().join("data")).unwrap();
-        let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": { "tok-alice": { "principal": "alice" } } })).unwrap();
+        let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": tokens })).unwrap();
         let mut cfg = WishConfig::default();
         cfg.llm_override = Some(model.clone());
         cfg.deno = find_deno();
@@ -114,6 +124,26 @@ impl Srv {
         let v: Value = self.http.post(&self.base).json(&json!({ "method": method, "params": params, "sys": [SEQ.fetch_add(1, Ordering::SeqCst), "tok-alice"] })).send().await.unwrap().json().await.unwrap();
         assert!(v.get("error").is_none(), "{method}: {v}");
         v["result"].clone()
+    }
+
+    /// The raw response of `method` called with `token` (errors included).
+    pub async fn call_as(&self, token: &str, method: &str, mut params: Value) -> Value {
+        static SEQ: AtomicU64 = AtomicU64::new(1_000_000);
+        if !self.ws.is_empty() && params.get("workspace_id").is_none() {
+            params["workspace_id"] = json!(self.ws);
+        }
+        self.http.post(&self.base).json(&json!({ "method": method, "params": params, "sys": [SEQ.fetch_add(1, Ordering::SeqCst), token] })).send().await.unwrap().json().await.unwrap()
+    }
+
+    pub async fn wait_as(&self, token: &str, run_id: &str) -> Value {
+        for _ in 0..600 {
+            let r = self.call_as(token, "proc.get", json!({ "run_id": run_id })).await["result"].clone();
+            if !matches!(r["state"].as_str(), Some("queued" | "snapshotting" | "running" | "validating")) {
+                return r;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("run {run_id} did not settle");
     }
 
     pub async fn commit(&self, ops: Value) -> Value {
@@ -169,7 +199,7 @@ pub fn handle(map: &str, needle: &str) -> String {
 
 /// Scripts by default answer the stage with a plain sentence.
 pub fn model() -> Arc<ScriptedModel> {
-    Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0), max_tokens: Mutex::new(None) })
+    Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0), max_tokens: Mutex::new(None), refuse: Mutex::new(None) })
 }
 
 /// The tool results so far contain `needle`.

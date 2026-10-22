@@ -181,6 +181,8 @@ pub struct StageState {
     pub analysis: Mutex<Option<aiworkspace_store::wish::analysis::Validated>>,
     pub feedback: Option<String>,
     pub token: String,
+    /// Whose AICC the run uses (fixed at acceptance; `None` without a BuckyOS AICC).
+    pub aicc: Option<buckyos_api::AiccOnBehalfOf>,
     prompts: Vec<String>,
     tool_calls: AtomicU32,
     program_runs: AtomicU32,
@@ -256,6 +258,7 @@ pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
         "simulated": run["program"] == json!(PROGRAM_MOCK),
         "created_at": run["created_at"], "updated_at": run["updated_at"],
         "warnings": run["warnings"], "error": run["detail"]["error"], "usage": run["detail"]["usage"],
+        "aicc": run["detail"]["aicc"],
         "parent_run_id": run["params"]["parent_run_id"], "feedback": run["params"]["feedback"],
     });
     let mut progress = run["detail"]["progress"].clone();
@@ -278,6 +281,64 @@ pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
         v["program_log"] = run["detail"]["program_log"].clone();
     }
     v
+}
+
+/// Whose AICC a new run uses (AI Center Quota PRD §3.3), fixed when the run is accepted:
+/// the workspace owner's by default, or the starting user's. Nobody falls back to the other.
+pub fn run_attribution(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller) -> WsResult<Value> {
+    use aiworkspace_store::workspace::{CallerClass, WISH_AICC_CURRENT_USER, WISH_AICC_WORKSPACE_OWNER};
+    let mode = ws.wish_aicc_mode()?;
+    let user_id = if mode == WISH_AICC_CURRENT_USER {
+        if !matches!(caller.class, CallerClass::Account { .. }) {
+            return Err(WsError::sub(Code::PermissionDenied, "AI_ATTRIBUTION_UNAVAILABLE", "You have no AI resources in this Zone: this workspace runs wish blocks with the AI resources of the user who starts them")
+                .with_data(json!({ "aicc": { "mode": WISH_AICC_CURRENT_USER } })));
+        }
+        caller.principal.clone()
+    } else {
+        ws.owner()?.ok_or_else(|| WsError::sub(Code::DependencyUnavailable, "AI_ATTRIBUTION_UNAVAILABLE", "The workspace has no owner whose AI resources the wish block could use"))?
+    };
+    let mode = if mode == WISH_AICC_CURRENT_USER { WISH_AICC_CURRENT_USER } else { WISH_AICC_WORKSPACE_OWNER };
+    Ok(json!({ "mode": mode, "user_id": user_id, "operator_id": caller.principal }))
+}
+
+/// `on_behalf_of` of the AICC calls of a run, from its stored attribution.
+pub fn on_behalf_of(run: &Value, ws_id: &str) -> Option<buckyos_api::AiccOnBehalfOf> {
+    let aicc = &run["detail"]["aicc"];
+    let mode = serde_json::from_value::<buckyos_api::AiccAttributionMode>(aicc["mode"].clone()).ok()?;
+    Some(buckyos_api::AiccOnBehalfOf {
+        user_id: aicc["user_id"].as_str()?.to_string(),
+        operator_id: aicc["operator_id"].as_str().map(str::to_string),
+        mode,
+        run_ref: Some(buckyos_api::AiccRunRef {
+            workspace_id: Some(ws_id.to_string()),
+            entity_id: run["params"]["wish_id"].as_str().map(str::to_string),
+            run_id: run["run_id"].as_str().map(str::to_string),
+        }),
+    })
+}
+
+/// Sub-code of a wish run refused under the AI quota or resource policy (§7.4).
+pub fn refusal_sub_code(kind: &str) -> Option<&'static str> {
+    match kind {
+        "quota_exhausted" => Some("AI_QUOTA_EXHAUSTED"),
+        "quota_budget_exceeded" => Some("AI_QUOTA_BUDGET_EXCEEDED"),
+        "resource_not_permitted" => Some("AI_RESOURCE_NOT_PERMITTED"),
+        "attribution_unavailable" => Some("AI_ATTRIBUTION_UNAVAILABLE"),
+        _ => None,
+    }
+}
+
+/// The refusal as the run's operator may see it: never the quota rules of another user.
+pub fn refusal_error(sub: &'static str, aicc: &Value) -> WsError {
+    let own = aicc["user_id"] == aicc["operator_id"];
+    let detail = match (sub, own) {
+        ("AI_RESOURCE_NOT_PERMITTED", true) => "The model this wish block uses is not permitted to you; ask an administrator or change the wish configuration",
+        ("AI_RESOURCE_NOT_PERMITTED", false) => "The model this wish block uses is not available with the AI resources of the workspace owner",
+        ("AI_ATTRIBUTION_UNAVAILABLE", _) => "The user whose AI resources this run uses cannot be determined",
+        (_, true) => "Your AI token quota does not cover this run; see AI Center › Quota",
+        (_, false) => "This wish block is temporarily limited by the AI quota of the workspace owner",
+    };
+    WsError::sub(Code::DependencyUnavailable, sub, detail).with_data(json!({ "aicc": aicc }))
 }
 
 fn s<'a>(p: &'a Value, k: &str) -> WsResult<&'a str> {
@@ -314,7 +375,8 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
                 return Err(WsError::invalid_op("parent_run_id belongs to another wish"));
             }
         }
-        ws.wish_run_create(caller, program, params, idem)
+        let aicc = run_attribution(ws, caller)?;
+        ws.wish_run_create(caller, program, params, idem, &aicc)
     })?;
     if !replayed {
         let active = state.wish.register(&run_id);

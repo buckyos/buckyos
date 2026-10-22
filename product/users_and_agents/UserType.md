@@ -61,9 +61,9 @@ Root 就是 Zone owner 的账号记录（`users/root`），不可登录，不可
 
 ### 2.5 Limited
 
-零权限底座。Limited 用户默认没有任何业务与资源权限，RBAC 组 `limited` 只有自身策略：读自己的 `users/<id>/settings`、读写自己的 `users/<id>/profile`，以及自己的通讯录（`obj://msg-center/owners/*/contacts`，msg-center 再把 owner 绑定到调用者本人，并按“能否改通讯录”拦写操作），不含会话、邮箱等其它 owner 数据。管理员把它加入系统用户组后，经 App 可用性、资源授权和通讯录投影获得能力。企业客户（Limited + customer 组）、企业员工、未成年人、临时 Desktop 账号都用 Limited 加不同的组表达。
+零权限底座。Limited 用户默认没有任何业务与资源权限，RBAC 组 `limited` 只有自身策略：读自己的 `users/<id>/settings`、读写自己的 `users/<id>/profile`，以及自己的通讯录（`obj://msg-center/owners/*/contacts`，msg-center 再把 owner 绑定到调用者本人，并按“能否改通讯录”拦写操作），不含会话、邮箱等其它 owner 数据；另可调用 AICC（`obj://config/services/aicc/info` 读），但能用哪些 Provider / 模型完全由其所在系统用户组的可见性允许项决定，`type:limited` 默认没有允许项（[AI Center Token 额度 PRD](../ai_center/AI_Center_Quota_PRD.md) §3.4）。管理员把它加入系统用户组后，经 App 可用性、资源授权和通讯录投影获得能力。企业客户（Limited + customer 组）、企业员工、未成年人、临时 Desktop 账号都用 Limited 加不同的组表达。
 
-Limited 的会话是受限会话（token 带 `restricted: true` 与 `scopes`，混合 SSO 2026-10-22 起）：系统服务默认拒绝，只有显式开放的方法可用——本人 settings / profile / 通讯录 / 改密 / 桌面状态（`account_self`）、msg-center 群路径、AI Workspace、HomeStation。类型升级不会让已签发的会话增权，要获得新权限须重新登录。Limited 不签发 sudo。
+Limited 的会话是受限会话（token 带 `restricted: true` 与 `scopes`，混合 SSO 2026-10-22 起）：系统服务默认拒绝，只有显式开放的方法可用——本人 settings / profile / 通讯录 / 改密 / 桌面状态（`account_self`）、msg-center 群路径、AI Workspace、HomeStation，以及 AICC 的推理、模型与 Provider 列表、本人额度查询（`aicc`；External 的受限会话不含此 scope）。类型升级不会让已签发的会话增权，要获得新权限须重新登录。Limited 不签发 sudo。
 
 已知限制（v1 接受）：系统用户组不带系统 RBAC 策略，Limited 加入组后仍不能使用个人邮箱（`obj://msg-center/inbox/*`）、自己的任务、上传等系统能力，也不注册个人消息投递，只经群会话参与消息。需要完整 Desktop 能力的人应使用 User 类型。以后如果要让组带系统权限，再引入“权限目录”。
 

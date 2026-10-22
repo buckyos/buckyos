@@ -28,6 +28,26 @@ pub enum ProviderFailure {
     /// text or a bare HTTP 400. The waist turns it into
     /// `Outcome::ContextLimitReached { which: ProviderRefused }`.
     ContextLimit,
+    /// The AI service refused the call under the quota or resource policy of
+    /// the user it is charged to, reported by a structured service code
+    /// (AICC `quota_exhausted` etc.). Re-running cannot help until the quota
+    /// recovers, an administrator recharges it or the policy changes; the
+    /// layer above must not retry the same call by itself.
+    Refused(RefusalKind),
+}
+
+/// Why the AI service refused a call (AI Center Quota PRD §7.4).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalKind {
+    /// A token quota rule has nothing left.
+    QuotaExhausted,
+    /// Tokens are left, but fewer than the call reserves.
+    QuotaBudgetExceeded,
+    /// The requested Provider / model is not permitted to the user.
+    ResourceNotPermitted,
+    /// The user whose AI resources a delegated run uses cannot be determined.
+    AttributionUnavailable,
 }
 
 /// Which persistence checkpoint failed.

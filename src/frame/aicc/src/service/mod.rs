@@ -1,5 +1,6 @@
 mod cloud_update;
 mod events;
+mod identity;
 mod inference;
 mod management;
 mod model_defaults;
@@ -10,17 +11,18 @@ mod settings_runtime;
 
 use events::AiccEventLog;
 use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
+pub(crate) use identity::{RuntimeAuthorizer, SystemConfigUserDirectory, UserDirectory};
 pub(crate) use inference::{
-    DriverMetadataPort, ProviderValidator, QuotaQueryPort, RuntimeInferencePort, UsageQueryPort,
+    DriverMetadataPort, ProviderValidator, RuntimeInferencePort, UsageQueryPort,
 };
 use ports::{
-    CloudUpdateDriverMetadataPort, RuntimeAuthorizer, RuntimeServiceAdapter, StorageQueryPort,
+    CloudUpdateDriverMetadataPort, RuntimeServiceAdapter, StorageQueryPort,
     SystemConfigSettingsStore, TaskManagerExecutionPort,
 };
 pub(crate) use provider_execution::RuntimeProviderExecutionPort;
 #[cfg(test)]
-use quota::{combine_quota, provider_quota, QuotaTruthRecord};
-pub(crate) use quota::{RoutingQuotaQueryPort, SystemConfigQuotaTruthPort};
+use quota::provider_quota;
+pub(crate) use quota::{ProviderQuotaTruthPort, QuotaPort, QuotaService};
 use settings_runtime::provider_auth_config;
 pub(crate) use settings_runtime::{RuntimeProviderValidator, ServiceRuntimeFactory};
 
@@ -53,14 +55,14 @@ use buckyos_api::{
     ProviderRefreshModelsResponse, ProviderReloadResult, ProviderUpdateRequest,
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
-    QuotaQueryRequest, QuotaQueryResponse, QuotaState, RequestControlResult,
+    QuotaState, RequestControlResult,
     RequestDelegatedControlReq, RerankRequest, RerankResponse, ResourceRef, RouteFallbackAttempt,
     RouteResolveRequest, RouteResolveResponse, RouteTrace, RoutingGetRequest, RoutingGetResponse,
     RoutingPreviewEntry, RoutingPreviewRequest, RoutingPreviewResponse, RoutingUpdateRequest,
     RoutingUpdateResponse, RunnerWriteEnvelope, ServiceReloadSettingsRequest,
     ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskControlAction,
     TaskExecutor, TaskManagerClient, TextToImageHelperRequest, TextToImageInvokeRequest,
-    TextToImageInvokeResponse, UsageQueryOutputMode, UsageQueryTimeRange, VideoExtendRequest,
+    TextToImageInvokeResponse, VideoExtendRequest,
     VideoExtendResponse, VideoImageToVideoRequest, VideoImageToVideoResponse,
     VideoTextToVideoRequest, VideoTextToVideoResponse, VideoToVideoRequest, VideoToVideoResponse,
     VideoUpscaleRequest, VideoUpscaleResponse, VisionCaptionRequest, VisionCaptionResponse,
@@ -511,12 +513,18 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         storage.clone(),
         model_health.clone(),
     ));
-    let execution = Arc::new(ExecutionEngine::new(
-        storage.clone(),
-        Arc::new(TaskManagerExecutionPort::new()),
-        provider_execution.clone(),
-        storage.clone(),
-    ));
+    let directory: Arc<dyn UserDirectory> = Arc::new(SystemConfigUserDirectory::default());
+    let quota_service = Arc::new(QuotaService::new(storage.clone(), directory.clone()));
+    quota_service.spawn_reconciler();
+    let execution = Arc::new(
+        ExecutionEngine::new(
+            storage.clone(),
+            Arc::new(TaskManagerExecutionPort::new()),
+            provider_execution.clone(),
+            storage.clone(),
+        )
+        .with_admission(quota_service.clone()),
+    );
     let recovery = execution.clone();
     tokio::spawn(async move {
         if let Err(error) = recovery.recover().await {
@@ -524,20 +532,21 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         }
     });
     let quota_factory = Arc::new(QuotaSourceFactory::new(Arc::new(
-        SystemConfigQuotaTruthPort::new(storage.clone(), runtime.clone()),
+        ProviderQuotaTruthPort::new(runtime.clone()),
     )));
     let inference = Arc::new(RuntimeInferencePort::new(
         runtime.clone(),
         codecs,
-        quota_factory.clone(),
+        quota_factory,
         execution.clone(),
         storage.clone(),
         resource_store,
         url_fetcher,
         model_health,
+        quota_service.clone(),
     ));
     let service = AiccService::new(
-        Arc::new(RuntimeAuthorizer),
+        Arc::new(RuntimeAuthorizer::new(directory)),
         Arc::new(SystemConfigSettingsStore::new(system_config_url.clone())),
         service_runtime,
         Arc::new(RuntimeProviderValidator::new(
@@ -545,7 +554,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             storage.clone(),
         )),
         Arc::new(StorageQueryPort::new(storage)),
-        Arc::new(RoutingQuotaQueryPort::new(quota_factory)),
+        quota_service,
         Arc::new(CloudUpdateDriverMetadataPort::new(
             system_config_url,
             cloud_update.clone(),
@@ -559,12 +568,33 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     serve_service(service, runtime, cloud_update, provider_events).await
 }
 
+/// A verified caller and whom its calls are charged to (PRD §3).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AuthorizedCaller {
+    /// The quota user; usage and tenant isolation follow it.
     pub tenant_id: String,
     pub user_id: String,
+    /// Trusted business App (AppId, AgentId or `system:<service>`).
     pub app_id: Option<String>,
     pub token: String,
+    pub principal: CallerPrincipal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CallerPrincipal {
+    /// An account of this Zone: directly, through an App or Agent, or
+    /// delegated by a system service. Visibility follows its groups.
+    Account {
+        user_type: buckyos_api::UserType,
+        groups: Vec<String>,
+        operator_id: Option<String>,
+        /// Raw session target (`app:<instance>` / `system:<service>`).
+        caller: String,
+        mode: buckyos_api::AiccAttributionMode,
+        run_ref: Option<buckyos_api::AiccRunRef>,
+    },
+    /// A system service or device acting for itself.
+    System { caller: String },
 }
 
 #[async_trait]
@@ -575,6 +605,17 @@ pub(crate) trait ServiceAuthorizer: Send + Sync {
         action: &'static str,
         resource: &'static str,
     ) -> Result<AuthorizedCaller, RPCErrors>;
+
+    /// Like `authorize`, also for restricted sessions holding the `aicc`
+    /// scope (Limited accounts): inference, model lists and own quota.
+    async fn authorize_opened(
+        &self,
+        context: &RPCContext,
+        action: &'static str,
+        resource: &'static str,
+    ) -> Result<AuthorizedCaller, RPCErrors> {
+        self.authorize(context, action, resource).await
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -674,7 +715,7 @@ pub(crate) struct AiccService {
     runtime: Arc<dyn ServiceRuntime>,
     validator: Arc<dyn ProviderValidator>,
     usage: Arc<dyn UsageQueryPort>,
-    quota: Arc<dyn QuotaQueryPort>,
+    quota: Arc<dyn QuotaPort>,
     metadata: Arc<dyn DriverMetadataPort>,
     execution: Option<Arc<ExecutionEngine>>,
     inference: Option<Arc<dyn InferencePort>>,
@@ -690,7 +731,7 @@ impl AiccService {
         runtime: Arc<dyn ServiceRuntime>,
         validator: Arc<dyn ProviderValidator>,
         usage: Arc<dyn UsageQueryPort>,
-        quota: Arc<dyn QuotaQueryPort>,
+        quota: Arc<dyn QuotaPort>,
         metadata: Arc<dyn DriverMetadataPort>,
     ) -> Self {
         Self {
@@ -739,7 +780,7 @@ impl AiccService {
         context: RPCContext,
     ) -> Result<crate::protocol::ArtifactUrlReader, AiccError> {
         let caller = self
-            .authorize(&context, "read", RESOURCE_INFO)
+            .authorize_opened(&context, "read", RESOURCE_INFO)
             .await
             .map_err(|_| {
                 AiccError::new(AiccErrorCode::PolicyDenied, "artifact access is denied")
@@ -762,6 +803,25 @@ impl AiccService {
         resource: &'static str,
     ) -> Result<AuthorizedCaller, RPCErrors> {
         self.authorizer.authorize(context, action, resource).await
+    }
+
+    async fn authorize_opened(
+        &self,
+        context: &RPCContext,
+        action: &'static str,
+        resource: &'static str,
+    ) -> Result<AuthorizedCaller, RPCErrors> {
+        self.authorizer
+            .authorize_opened(context, action, resource)
+            .await
+    }
+
+    async fn access(
+        &self,
+        caller: &AuthorizedCaller,
+        snapshot: &RuntimeAdminSnapshot,
+    ) -> Result<crate::visibility::Access, RPCErrors> {
+        self.quota.access(caller, &admin_inventory(snapshot)).await
     }
 
     async fn invoke_typed<R>(
@@ -842,6 +902,52 @@ impl AiccService {
             ));
         }
         Ok(snapshot)
+    }
+}
+
+fn admin_inventory(snapshot: &RuntimeAdminSnapshot) -> crate::visibility::Inventory {
+    crate::visibility::Inventory::from_views(
+        snapshot
+            .providers
+            .iter()
+            .map(|provider| (provider.provider_instance_name.clone(), provider.enabled)),
+        &snapshot.models,
+    )
+}
+
+const RESTRICTED_RESOURCE: &str = "restricted";
+
+/// Replace exact models and Provider instances the viewer may not see
+/// (§3.4: Usage, Trace and errors must not disclose hidden resources) and
+/// drop list items describing them.
+fn redact_hidden(
+    value: &mut Value,
+    access: &crate::visibility::Access,
+    inventory: &crate::visibility::Inventory,
+) {
+    let hidden = |text: &str| {
+        (text.contains('@') && inventory.contains_model(text) && !access.allows_model(text))
+            || (inventory.providers.contains_key(text) && !access.allows_provider(text))
+    };
+    match value {
+        Value::String(text) if hidden(text) => *text = RESTRICTED_RESOURCE.to_string(),
+        Value::Array(items) => {
+            items.retain(|item| {
+                !item
+                    .get("exact_model")
+                    .and_then(Value::as_str)
+                    .is_some_and(|model| hidden(model))
+            });
+            for item in items {
+                redact_hidden(item, access, inventory);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                redact_hidden(item, access, inventory);
+            }
+        }
+        _ => {}
     }
 }
 

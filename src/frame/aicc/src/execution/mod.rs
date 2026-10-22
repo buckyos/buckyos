@@ -10,8 +10,8 @@ use crate::protocol::{
 use crate::resource::ResourceAccessContext;
 use async_trait::async_trait;
 use buckyos_api::{
-    AiArtifact, AiCost, AiUsage, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest,
-    AiccError, AiccErrorCode, ApiType, Capability,
+    AiArtifact, AiCost, AiUsage, AiccAttribution, AiccComputeProgress, AiccComputeTaskData,
+    AiccComputeTaskRequest, AiccError, AiccErrorCode, ApiType, Capability,
 };
 use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -231,6 +231,9 @@ pub(crate) struct PinnedProviderTask {
     pub resume: Option<NativeTaskResumeDescriptor>,
     pub pricing: Option<PinnedPricingSnapshot>,
     pub reported_cost_currency: Option<String>,
+    /// Token quota reservation of the attempt this binding was started by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_attempt_id: Option<String>,
 }
 
 impl PinnedProviderTask {
@@ -263,6 +266,7 @@ impl PinnedProviderTask {
             resume: None,
             pricing: PinnedPricingSnapshot::from_call(call)?,
             reported_cost_currency: call.reported_cost_currency.clone(),
+            quota_attempt_id: None,
         })
     }
 }
@@ -783,6 +787,8 @@ pub(crate) struct ExecutionRecord {
     pub trace_id: Option<String>,
     pub user_id: String,
     pub caller_app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<AiccAttribution>,
     pub request_model: String,
     pub body_fingerprint: String,
     pub task_id: String,
@@ -905,12 +911,41 @@ pub(crate) struct UsageCompletion {
     pub provider_model: String,
     pub usage: AiUsage,
     pub finance_snapshot: Option<AiCost>,
+    pub operator_id: Option<String>,
+    pub attribution: Option<AiccAttribution>,
     pub completed_at_ms: i64,
 }
 
 #[async_trait]
 pub(crate) trait UsageCompletionPort: Send + Sync {
     async fn write_once(&self, completion: UsageCompletion) -> Result<(), AiccError>;
+}
+
+/// How an upstream attempt ended, for its token quota reservation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AttemptSettlement {
+    /// The Provider reported this usage.
+    Usage(AiUsage, ApiType),
+    /// The Provider never accepted the attempt.
+    Released,
+    /// The attempt may have consumed tokens that were not reported.
+    Unknown,
+}
+
+/// Token quota admission of each upstream attempt (PRD §7.1–§7.2).
+#[async_trait]
+pub(crate) trait AdmissionPort: Send + Sync {
+    /// Reserve the attempt's budget on every applicable rule, or refuse with
+    /// a quota error. `Ok(None)` when the call is outside token quota.
+    async fn admit(
+        &self,
+        record: &ExecutionRecord,
+        call: &ResolvedProviderCall,
+        attempt_id: &str,
+    ) -> Result<Option<String>, AiccError>;
+
+    /// Settle a reservation; repeating it changes nothing.
+    async fn settle(&self, attempt_id: &str, settlement: AttemptSettlement);
 }
 
 #[derive(Debug)]
@@ -993,6 +1028,7 @@ pub(crate) struct ExecutionRequest {
     pub tenant_id: String,
     pub user_id: String,
     pub caller_app_id: Option<String>,
+    pub attribution: Option<AiccAttribution>,
     pub trace_id: Option<String>,
     pub request_model: String,
     pub idempotency_key: String,
@@ -1036,11 +1072,18 @@ struct ActiveExecution {
     cancel: CancelHandle,
 }
 
+enum AttemptFailure {
+    /// Token quota refused the attempt before any upstream call.
+    Admission(AiccError),
+    Provider(ProviderStartFailure),
+}
+
 pub(crate) struct ExecutionEngine {
     store: Arc<dyn ExecutionStore>,
     tasks: Arc<dyn TaskManagerPort>,
     providers: Arc<dyn ProviderExecutionPort>,
     usage: Arc<dyn UsageCompletionPort>,
+    admission: Option<Arc<dyn AdmissionPort>>,
     active: Mutex<BTreeMap<String, ActiveExecution>>,
 }
 
@@ -1056,7 +1099,31 @@ impl ExecutionEngine {
             tasks,
             providers,
             usage,
+            admission: None,
             active: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn with_admission(mut self, admission: Arc<dyn AdmissionPort>) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
+    async fn admit(
+        &self,
+        record: &ExecutionRecord,
+        call: &ResolvedProviderCall,
+        attempt_id: &str,
+    ) -> Result<Option<String>, AiccError> {
+        match &self.admission {
+            Some(admission) => admission.admit(record, call, attempt_id).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn settle(&self, attempt_id: Option<&str>, settlement: AttemptSettlement) {
+        if let (Some(admission), Some(attempt_id)) = (&self.admission, attempt_id) {
+            admission.settle(attempt_id, settlement).await;
         }
     }
 
@@ -1131,6 +1198,7 @@ impl ExecutionEngine {
             trace_id: request.trace_id,
             user_id: request.user_id,
             caller_app_id: request.caller_app_id,
+            attribution: request.attribution,
             request_model: request.request_model,
             body_fingerprint: fingerprint,
             task_id: task.task_id,
@@ -1200,12 +1268,31 @@ impl ExecutionEngine {
             let mut same_model_attempt = 0;
             let execution = loop {
                 same_model_attempt += 1;
-                match self
+                let attempt_id = format!("{}:{index}:{same_model_attempt}", record.task_id);
+                let quota_attempt = match self.admit(&record, call, &attempt_id).await {
+                    Ok(quota_attempt) => quota_attempt,
+                    Err(error) => break Err(AttemptFailure::Admission(error)),
+                };
+                let started = self
                     .providers
                     .start(request.runtime_generation, call, cancellation.clone())
-                    .await
-                {
-                    Ok(execution) => break Ok(execution),
+                    .await;
+                if let Err(failure) = &started {
+                    self.settle(
+                        quota_attempt.as_deref(),
+                        if failure.provider_accepted {
+                            AttemptSettlement::Unknown
+                        } else {
+                            AttemptSettlement::Released
+                        },
+                    )
+                    .await;
+                }
+                match started {
+                    Ok(execution) => {
+                        binding.quota_attempt_id = quota_attempt;
+                        break Ok(execution);
+                    }
                     Err(failure)
                         if failure.retry_same_model
                             && same_model_attempt < MAX_SAME_MODEL_ATTEMPTS =>
@@ -1228,7 +1315,7 @@ impl ExecutionEngine {
                             .min(MAX_SAME_MODEL_RETRY_DELAY);
                         tokio::time::sleep(delay).await;
                     }
-                    Err(failure) => break Err(failure),
+                    Err(failure) => break Err(AttemptFailure::Provider(failure)),
                 }
             };
             match execution {
@@ -1239,6 +1326,16 @@ impl ExecutionEngine {
                             .set_running(&record.task_id, ExecutionState::Running, binding.clone())
                             .await?
                         {
+                            self.settle(
+                                binding.quota_attempt_id.as_deref(),
+                                match &output.usage {
+                                    Some(usage) => {
+                                        AttemptSettlement::Usage(usage.clone(), binding.api_type)
+                                    }
+                                    None => AttemptSettlement::Unknown,
+                                },
+                            )
+                            .await;
                             self.remove_active(&record.task_id);
                             return self.current_receipt(&record.task_id).await;
                         }
@@ -1252,6 +1349,11 @@ impl ExecutionEngine {
                             .set_running(&record.task_id, ExecutionState::Running, binding.clone())
                             .await?
                         {
+                            self.settle(
+                                binding.quota_attempt_id.as_deref(),
+                                AttemptSettlement::Unknown,
+                            )
+                            .await;
                             self.remove_active(&record.task_id);
                             return self.current_receipt(&record.task_id).await;
                         }
@@ -1290,6 +1392,11 @@ impl ExecutionEngine {
                             if binding.cancel_supported {
                                 let _ = self.providers.cancel_native(&binding).await;
                             }
+                            self.settle(
+                                binding.quota_attempt_id.as_deref(),
+                                AttemptSettlement::Unknown,
+                            )
+                            .await;
                             self.remove_active(&record.task_id);
                             return self.current_receipt(&record.task_id).await;
                         }
@@ -1310,7 +1417,25 @@ impl ExecutionEngine {
                         return Ok(receipt);
                     }
                 },
-                Err(failure) => {
+                Err(AttemptFailure::Admission(error)) => {
+                    if request.runtime_failover && index + 1 < calls.len() {
+                        self.tasks
+                            .report_state(
+                                &record.task_id,
+                                ExecutionState::Submitted,
+                                json_state(
+                                    "quota_failover",
+                                    Some(Value::String(call.exact_model.clone())),
+                                    record.trace_id.as_deref(),
+                                ),
+                            )
+                            .await?;
+                        last_error = Some(error);
+                        continue;
+                    }
+                    return self.finish_failure(&record.task_id, error).await;
+                }
+                Err(AttemptFailure::Provider(failure)) => {
                     let can_failover =
                         failure.retryable && request.runtime_failover && index + 1 < calls.len();
                     let mut error: AiccError = failure.error.into();
@@ -1424,6 +1549,8 @@ impl ExecutionEngine {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
         loop {
             if tokio::time::Instant::now() >= deadline {
+                self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                    .await;
                 return self
                     .finish_failure(
                         task_id,
@@ -1454,6 +1581,8 @@ impl ExecutionEngine {
             )
             .await;
             let Ok(polled) = polled else {
+                self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                    .await;
                 return self
                     .finish_failure(
                         task_id,
@@ -1468,6 +1597,8 @@ impl ExecutionEngine {
             match polled {
                 Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
                     if state.is_terminal() {
+                        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                            .await;
                         let error = aicc_error(
                             AiccErrorCode::ProviderError,
                             "terminal Provider task state did not include a final result",
@@ -1498,9 +1629,13 @@ impl ExecutionEngine {
                         .await;
                 }
                 Ok(NativeTaskPoll::Failed(error)) => {
+                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        .await;
                     return self.finish_failure(task_id, error.into()).await;
                 }
                 Err(error) => {
+                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        .await;
                     return self.finish_failure(task_id, error.into_aicc_error()).await;
                 }
             }
@@ -1568,6 +1703,14 @@ impl ExecutionEngine {
             if !self.store.try_cancel(task_id).await? {
                 return Ok(false);
             }
+            self.settle(
+                record
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.quota_attempt_id.as_deref()),
+                AttemptSettlement::Unknown,
+            )
+            .await;
             self.log_llm_terminal(task_id, false).await;
             active.cancel.cancel();
             if let Some(binding) = record
@@ -1611,6 +1754,8 @@ impl ExecutionEngine {
         if !accepted || !self.store.try_cancel(task_id).await? {
             return Ok(false);
         }
+        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+            .await;
         self.log_llm_terminal(task_id, false).await;
         self.tasks
             .cancel_task(
@@ -1640,6 +1785,8 @@ impl ExecutionEngine {
         loop {
             let event = tokio::select! {
                 _ = cancellation.cancelled() => {
+                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        .await;
                     self.remove_active(task_id);
                     return self.current_receipt(task_id).await;
                 }
@@ -1670,9 +1817,15 @@ impl ExecutionEngine {
                 Ok(ProtocolEvent::Final(output)) => {
                     return self.finish_success(task_id, scope, binding, output).await;
                 }
-                Err(error) => return self.finish_failure(task_id, error.into()).await,
+                Err(error) => {
+                    self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+                        .await;
+                    return self.finish_failure(task_id, error.into()).await;
+                }
             }
         }
+        self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
+            .await;
         self.finish_failure(
             task_id,
             aicc_error(
@@ -1691,6 +1844,14 @@ impl ExecutionEngine {
         binding: PinnedProviderTask,
         output: ProtocolOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
+        self.settle(
+            binding.quota_attempt_id.as_deref(),
+            match &output.usage {
+                Some(usage) => AttemptSettlement::Usage(usage.clone(), binding.api_type),
+                None => AttemptSettlement::Unknown,
+            },
+        )
+        .await;
         if let Err(error) = output.validate_canonical_type(binding.api_type) {
             return self.finish_failure(task_id, error.into()).await;
         }
@@ -1723,6 +1884,11 @@ impl ExecutionEngine {
                 false,
             )
         })?;
+        let operator_id = record
+            .attribution
+            .as_ref()
+            .and_then(|attribution| attribution.operator_id.clone())
+            .filter(|operator| operator != &record.user_id);
         if let Err(error) = self
             .usage
             .write_once(UsageCompletion {
@@ -1740,6 +1906,8 @@ impl ExecutionEngine {
                 provider_model: binding.exact_model,
                 usage: output.usage.clone(),
                 finance_snapshot,
+                operator_id,
+                attribution: record.attribution,
                 completed_at_ms,
             })
             .await
@@ -2369,6 +2537,7 @@ mod tests {
         let request = LlmChatInvokeRequest::new(format!("model@{instance}"), Vec::new());
         ResolvedProviderCall {
             reported_cost_currency: None,
+            model_max_output_tokens: None,
             exact_model: format!("model@{instance}"),
             provider_model_id: "model".into(),
             provider_instance_name: instance.into(),
@@ -2832,6 +3001,7 @@ mod tests {
             tenant_id: "tenant-1".into(),
             user_id: "user-1".into(),
             caller_app_id: Some("app-1".into()),
+            attribution: None,
             trace_id: Some("trace-1".into()),
             request_model: "smart-chat".into(),
             idempotency_key: "idem-1".into(),
@@ -3654,6 +3824,124 @@ mod tests {
         );
     }
 
+    #[derive(Default)]
+    struct FakeAdmission {
+        deny: Mutex<Vec<String>>,
+        admitted: Mutex<Vec<String>>,
+        settled: Mutex<Vec<(String, AttemptSettlement)>>,
+    }
+
+    #[async_trait]
+    impl AdmissionPort for FakeAdmission {
+        async fn admit(
+            &self,
+            _record: &ExecutionRecord,
+            call: &ResolvedProviderCall,
+            attempt_id: &str,
+        ) -> Result<Option<String>, AiccError> {
+            if self.deny.lock().unwrap().contains(&call.exact_model) {
+                return Err(AiccError::new(
+                    AiccErrorCode::QuotaExhausted,
+                    "token quota is exhausted",
+                ));
+            }
+            self.admitted.lock().unwrap().push(attempt_id.to_string());
+            Ok(Some(attempt_id.to_string()))
+        }
+
+        async fn settle(&self, attempt_id: &str, settlement: AttemptSettlement) {
+            self.settled
+                .lock()
+                .unwrap()
+                .push((attempt_id.to_string(), settlement));
+        }
+    }
+
+    fn engine_with_admission(
+        providers: Arc<FakeProviders>,
+        admission: Arc<FakeAdmission>,
+    ) -> ExecutionEngine {
+        let (engine, _, _, _) = make_engine(providers);
+        engine.with_admission(admission)
+    }
+
+    #[tokio::test]
+    async fn each_attempt_is_reserved_before_start_and_settled_with_its_usage() {
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().extend([
+            StartPlan::Failure(ProviderStartFailure::before_accept(
+                ProtocolError::new(ProtocolErrorKind::Transport, "unavailable"),
+                true,
+            )),
+            StartPlan::Success(ProviderExecution::Immediate(output("ok"))),
+        ]);
+        let admission = Arc::new(FakeAdmission::default());
+        let engine = engine_with_admission(providers.clone(), admission.clone());
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Succeeded);
+        let task = receipt.task_id;
+        assert_eq!(
+            admission.admitted.lock().unwrap().as_slice(),
+            [format!("{task}:0:1"), format!("{task}:0:2")]
+        );
+        let settled = admission.settled.lock().unwrap();
+        assert_eq!(settled[0], (format!("{task}:0:1"), AttemptSettlement::Released));
+        assert!(matches!(
+            &settled[1],
+            (id, AttemptSettlement::Usage(usage, ApiType::Llm)) if id == &format!("{task}:0:2") && usage.total_tokens == Some(3)
+        ));
+    }
+
+    #[tokio::test]
+    async fn quota_denial_fails_over_only_when_routing_allows_it() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output("backup"))));
+        let admission = Arc::new(FakeAdmission::default());
+        admission.deny.lock().unwrap().push("model@primary".into());
+        let engine = engine_with_admission(providers.clone(), admission.clone());
+        let mut req = request(call("primary"));
+        req.failover.push(call("backup"));
+        req.runtime_failover = true;
+        assert_eq!(
+            engine.execute(req).await.unwrap().state,
+            ExecutionState::Succeeded
+        );
+        assert_eq!(providers.starts.lock().unwrap().as_slice(), ["model@backup"]);
+
+        let providers = Arc::new(FakeProviders::default());
+        let engine = engine_with_admission(providers.clone(), admission);
+        let mut req = request(call("primary"));
+        req.idempotency_key = "idem-locked".into();
+        req.failover.push(call("backup"));
+        let receipt = engine.execute(req).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        assert_eq!(receipt.error.unwrap().code, AiccErrorCode::QuotaExhausted);
+        assert!(providers.starts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn accepted_failures_keep_the_reservation_for_reconciliation() {
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().push_back(StartPlan::Failure(
+            ProviderStartFailure::after_accept(ProtocolError::new(
+                ProtocolErrorKind::InvalidRequest,
+                "rejected after submit",
+            )),
+        ));
+        let admission = Arc::new(FakeAdmission::default());
+        let engine = engine_with_admission(providers, admission.clone());
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        assert_eq!(
+            admission.settled.lock().unwrap()[0].1,
+            AttemptSettlement::Unknown
+        );
+    }
+
     #[tokio::test]
     async fn unavailable_model_skips_same_model_retry_and_fails_over() {
         let providers = Arc::new(FakeProviders::default());
@@ -3921,6 +4209,7 @@ mod tests {
             trace_id: orphan_request.trace_id.clone(),
             user_id: orphan_request.user_id.clone(),
             caller_app_id: orphan_request.caller_app_id.clone(),
+            attribution: None,
             request_model: orphan_request.request_model.clone(),
             body_fingerprint: canonical_body_fingerprint(&orphan_request.canonical_body).unwrap(),
             task_id: "orphan-task".into(),

@@ -557,15 +557,14 @@ ai_provider health <exact_model>
 
 ### 7.2 `ai_quota`
 
-Quota 查询。
+Token 额度查询：列出约束调用者的额度规则（管理员对调用者及其 App / Agent 的规则、共享 App 规则、本人 App 自限），每条带当前周期窗口或总量账户的已结算、预占、可用与 `reset_at_ms`（总量账户为 `null`）。协议见 [aicc_token_quota.md](aicc_token_quota.md)。
 
 ```bash
 ai_quota
-ai_quota --capability image
-ai_quota --method images.generate
+ai_quota --app aiworkspace
 ```
 
-映射到 `quota.query`。
+映射到 `quota.query`（`{ app_id? }`）。各 AIGC 命令遇到额度或资源策略拒绝时，结果的 `detail.error_code` 为 `quota_exhausted` / `quota_budget_exceeded` / `quota_unavailable` / `resource_not_permitted` / `attribution_unavailable`，`detail.details` 为 AICC 的拒绝详情。
 
 ### 7.3 `materialize_resource`
 

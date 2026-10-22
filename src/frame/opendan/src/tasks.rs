@@ -382,10 +382,16 @@ impl TurnTaskSink for TurnTasks {
             }
             TurnStatus::Stopped => self.tasks.canceled(task_id).await,
             TurnStatus::Failed | TurnStatus::BudgetExhausted => {
-                let code = if end.status == TurnStatus::Failed {
-                    "turn_failed"
-                } else {
-                    "budget_exhausted"
+                let quota = end
+                    .error
+                    .as_ref()
+                    .and_then(|e| e.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some(libopendan::runner::AI_QUOTA_ERROR_KIND);
+                let code = match end.status {
+                    TurnStatus::Failed if quota => libopendan::runner::AI_QUOTA_ERROR_KIND,
+                    TurnStatus::Failed => "turn_failed",
+                    _ => "budget_exhausted",
                 };
                 let message = end
                     .error

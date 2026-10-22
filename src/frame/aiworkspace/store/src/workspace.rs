@@ -20,6 +20,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Wish blocks use the workspace owner's AICC (default).
+pub const WISH_AICC_WORKSPACE_OWNER: &str = "workspace_owner";
+/// Wish blocks use the AICC of the user who starts the run.
+pub const WISH_AICC_CURRENT_USER: &str = "current_user";
+
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 pub const LOCK_LEASE_MS: i64 = 60_000;
 pub const LOCK_IDLE_MS: i64 = 600_000;
@@ -441,6 +446,23 @@ impl Workspace {
         self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)
     }
 
+    /// Whose AICC the wish blocks use (AI Center Quota PRD §3.3): `workspace_owner` (default) or
+    /// `current_user`.
+    pub fn wish_aicc_mode(&self) -> WsResult<String> {
+        let mode: Option<String> = self.local.query_row("SELECT value FROM local_meta WHERE key = 'wish_aicc_mode'", [], |r| r.get(0)).optional().map_err(db_err)?;
+        Ok(mode.unwrap_or_else(|| WISH_AICC_WORKSPACE_OWNER.to_string()))
+    }
+
+    /// `ws.set_wish_aicc`: the owner or a manager chooses; only runs accepted afterwards follow it.
+    pub fn set_wish_aicc_mode(&mut self, caller: &Caller, mode: &str) -> WsResult<Value> {
+        self.require_ws(caller, Cap::Manage)?;
+        if mode != WISH_AICC_WORKSPACE_OWNER && mode != WISH_AICC_CURRENT_USER {
+            return Err(WsError::invalid_op("mode must be workspace_owner or current_user"));
+        }
+        self.local.execute("INSERT OR REPLACE INTO local_meta (key, value) VALUES ('wish_aicc_mode', ?1)", [mode]).map_err(db_err)?;
+        Ok(json!({ "ok": true, "wish_aicc_mode": mode }))
+    }
+
     pub fn require_ws(&self, caller: &Caller, cap: Cap) -> WsResult<Access> {
         let access = self.access(caller)?;
         if access.is_empty() {
@@ -564,7 +586,8 @@ impl Workspace {
                    "head_seq": self.head_seq, "head_commit_id": self.head_commit_id, "format_version": FORMAT_VERSION,
                    "protocol_version": PROTOCOL_VERSION, "capabilities": access.ws_caps.names(), "principal": caller.principal,
                    "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
-                   "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose() }))
+                   "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
+                   "wish_aicc_mode": self.wish_aicc_mode()? }))
     }
 
     /// Any grant at all (workspace-level or scoped) is enough to know the Workspace exists.

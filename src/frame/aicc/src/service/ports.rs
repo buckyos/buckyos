@@ -4,34 +4,6 @@ pub(crate) struct SystemConfigSettingsStore {
     service_url: String,
 }
 
-pub(crate) struct RuntimeAuthorizer;
-
-#[async_trait]
-impl ServiceAuthorizer for RuntimeAuthorizer {
-    async fn authorize(
-        &self,
-        context: &RPCContext,
-        action: &'static str,
-        resource: &'static str,
-    ) -> Result<AuthorizedCaller, RPCErrors> {
-        let token = context
-            .token
-            .clone()
-            .ok_or_else(|| RPCErrors::InvalidToken("session token is required".to_string()))?;
-        let mut request = RPCRequest::new("aicc.authorize", Value::Null);
-        request.token = Some(token.clone());
-        let (user_id, target) = get_buckyos_api_runtime()?
-            .enforce(&request, action, resource)
-            .await?;
-        Ok(AuthorizedCaller {
-            tenant_id: user_id.clone(),
-            user_id,
-            app_id: Some(target),
-            token,
-        })
-    }
-}
-
 impl SystemConfigSettingsStore {
     pub(crate) fn new(service_url: impl Into<String>) -> Self {
         Self {

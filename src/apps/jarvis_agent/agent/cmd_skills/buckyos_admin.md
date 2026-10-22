@@ -71,8 +71,13 @@ buckyos system info                                 # BuckyOS version, build_ver
 - Storage: no settings API; `system status` warns on disk/memory/swap of the control-panel host.
 - AI providers: `buckyos ai providers` (auth as configured/kind, health, models; never secrets), `ai routing`,
   `ai usage [--range last1d|last7d|last30d | --since <t>] [--group-by provider_instance_name,provider_model] [--bucket day]`
-  (your own calls only); per-model health and prices: `ai_provider health <exact_model>|models` (agent container).
-  Adding/editing providers or routing: no CLI verb, the owner uses Control Panel AI settings.
+  (your own calls only; an admin's Desktop Usage page can show the whole Zone); per-model health and prices:
+  `ai_provider health <exact_model>|models` (agent container). `ai quota [--app <app_id>]` lists the token quota
+  rules that limit you (admin rules on you and your Apps / Agents, shared App rules, your own limits) with
+  settled / reserved / available and `reset_at_ms` (`null`: a total account, only an admin recharge refills it).
+  Which Providers / models each user group may use, quota rules and recharges are set in Desktop › AI Center
+  (Quota, Visibility); no CLI write verb. Adding/editing providers or routing: no CLI verb, the owner uses Control
+  Panel AI settings.
 - Developer mode, Zone display, desktop appearance: Desktop UI (`system/buckyos_dev_config` needs a sudo token the CLI lacks).
 - Node Executor (Agents running commands/files on a node, `doc/arch/node_exector.md`): the setting is the `executor`
   field of `nodes/<node>/settings` (`enabled`, `allowed_devices` = exact device DIDs from `devices/<id>/info`,

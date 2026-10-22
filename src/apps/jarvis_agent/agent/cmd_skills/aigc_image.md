@@ -10,7 +10,7 @@ requires: aios agent container with the buckyos-agent commands on PATH (gen_imag
 
 #### Before you start
 - `command -v gen_image resume_aicc_task` — the second one is newer; when it is missing, re-running a command with the same `--idempotency-key` is the way back to an interrupted task (see When it fails).
-- No provider check is needed before a call: run the command and read its result. To see which models serve a method: `ai_provider models --api-type image.txt2img` (exact model, logical names, list price). `ai_provider list` shows providers and their health; `ai_quota` reports `state: unknown` unless quotas are configured.
+- No provider check is needed before a call: run the command and read its result. To see which models serve a method: `ai_provider models --api-type image.txt2img` (exact model, logical names, list price). `ai_provider list` shows providers and their health and lists only the models your owner may use. `ai_quota` lists the token quota rules that limit you; image, audio and video methods are not under token quota.
 - Work in the session's working directory (the shell starts there) and write results under it, e.g. `out/…`.
 
 #### Find the real commands
@@ -44,6 +44,7 @@ Give the edit instruction as one quoted argument. Then list `out/lamp.png` in th
 - Two task layers: `shell` may return early with "still running … continues as task <id>" — a shell task; keep waiting as its hint says (`wait_task`, or `agent-session task wait <id> --wait-ms …`) rather than starting the command again. The AICC task id (`t-…`) is in `detail.task_id`, in timeout errors and in the `__BUCKYOS_AGENT_PROGRESS__` stderr lines.
 - Exit 4 / `wait_timeout` or a shell that ended early is not a failure: the AICC task keeps running. `resume_aicc_task <task_id> out/x.png` waits and downloads without paying again. If you passed `--idempotency-key K`, re-running the same command with the same K also re-attaches to the same task within 24 h (it also returns a failed task again — use a new key to really retry).
 - A retry after a real failure is a new billable call; change something first and say so in the report.
+- `=> resource_not_permitted` (exit 2, `detail.error_code`): the model is not open to your owner — pick one `ai_provider models` lists or tell the user; `=> quota_exhausted` / `quota_budget_exceeded`: the owner's AI quota does not cover the call (`detail.details` names the rule and `reset_at_ms`, `null` = only an admin recharge helps) — stop and report it, do not retry at once.
 
 #### Check the result
 - `identify out/x.png` (format, WxH, non-zero size); `compare -metric RMSE in.png out.png null:` shows whether an edit changed anything.

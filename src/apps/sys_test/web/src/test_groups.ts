@@ -312,11 +312,11 @@ export const TEST_GROUPS: TestGroup[] = [
       {
         name: 'AiccClient.queryQuota',
         run: async ({ sdk }) => {
-          const { quota } = await sdk.getAiccClient().queryQuota({})
-          if (typeof quota.state !== 'string' || quota.state.length === 0) {
-            throw new Error('quota.query returned an invalid state')
+          const quota = await sdk.getAiccClient().queryQuota({})
+          if (typeof quota.user_id !== 'string' || !Array.isArray(quota.rules)) {
+            throw new Error('quota.query returned no user or rule list')
           }
-          return { quota }
+          return { user_id: quota.user_id, rules: quota.rules.length }
         },
       },
       {

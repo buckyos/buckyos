@@ -5,8 +5,8 @@
 use super::{StageState, WishConfig};
 use agent_tool::xllm::{DefaultLlmClientFactory, LlmClientFactory, ProviderConfig, ProviderKind, SecretRef};
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
-use buckyos_api::{AiMessage, AiRole};
-use llm_context::{InferenceAbortToken, LlmClient, LlmInferenceRequest};
+use buckyos_api::{AiMessage, AiRole, AiccOnBehalfOf};
+use llm_context::{InferenceAbortToken, LLMComputeError, LlmClient, LlmInferenceRequest, ProviderFailure};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub fn provider_config(v: &Value) -> ProviderConfig {
 
 /// `.llm_context` of one stage: everything explicit — provider, model, loop, budgets, run records,
 /// and exactly the tools this stage offers.
-pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Path, tools: &[&str], shell: bool) -> Value {
+pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Path, tools: &[&str], shell: bool, on_behalf_of: Option<&AiccOnBehalfOf>) -> Value {
     let mut list: Vec<Value> = Vec::new();
     if shell {
         list.push(json!({ "groupname": "bash" }));
@@ -46,6 +46,9 @@ pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Pa
         if let Some(v) = cfg.provider.get(k) {
             provider[k] = v.clone();
         }
+    }
+    if let Some(o) = on_behalf_of.filter(|_| provider["type"] == json!("buckyos")) {
+        provider["on_behalf_of"] = json!(o);
     }
     let mut v = json!({
         "provider": provider,
@@ -69,11 +72,15 @@ pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Pa
     v
 }
 
-pub async fn client(cfg: &WishConfig) -> Result<Arc<dyn LlmClient>, String> {
+pub async fn client(cfg: &WishConfig, on_behalf_of: Option<&AiccOnBehalfOf>) -> Result<Arc<dyn LlmClient>, String> {
     if let Some(c) = &cfg.llm_override {
         return Ok(c.clone());
     }
-    DefaultLlmClientFactory.create(&provider_config(&cfg.provider)).await.map_err(|e| e.to_string())
+    let mut provider = provider_config(&cfg.provider);
+    if provider.effective_kind() == ProviderKind::Buckyos {
+        provider.on_behalf_of = on_behalf_of.cloned();
+    }
+    DefaultLlmClientFactory.create(&provider).await.map_err(|e| e.to_string())
 }
 
 // ---- schema subset: type / enum / properties / required / items
@@ -146,7 +153,13 @@ pub fn extract_json(text: &str) -> Option<Value> {
     None
 }
 
-async fn ask(llm: &Arc<dyn LlmClient>, model: &str, system: &str, user: String) -> Result<String, String> {
+/// A model call of `llm.map`: refused under the AI quota (the sub-code) or failed (the text).
+enum AskError {
+    Refused(&'static str),
+    Failed(String),
+}
+
+async fn ask(llm: &Arc<dyn LlmClient>, model: &str, system: &str, user: String) -> Result<String, AskError> {
     let req = LlmInferenceRequest {
         trace_id: None,
         messages: vec![AiMessage::text(AiRole::System, system), AiMessage::text(AiRole::User, user)],
@@ -162,7 +175,12 @@ async fn ask(llm: &Arc<dyn LlmClient>, model: &str, system: &str, user: String) 
         allow_tool_calls: false,
         abort: InferenceAbortToken::noop(),
     };
-    let r = llm.infer(req).await.map_err(|e| format!("model call failed: {e:?}"))?;
+    let r = llm.infer(req).await.map_err(|e| match &e {
+        LLMComputeError::Provider { failure: ProviderFailure::Refused(kind), .. } => {
+            AskError::Refused(super::refusal_sub_code(agent_tool::xllm::refusal_kind_name(*kind)).unwrap_or("AI_QUOTA_EXHAUSTED"))
+        }
+        _ => AskError::Failed(format!("model call failed: {e:?}")),
+    })?;
     Ok(r.message.text_content())
 }
 
@@ -198,9 +216,14 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
             None => todo.push(i),
         }
     }
-    let llm = match client(cfg).await {
+    let llm = match client(cfg, state.aicc.as_ref()).await {
         Ok(c) => c,
         Err(e) => return json!({ "error": e }),
+    };
+    let refused = |sub: &'static str| {
+        let aicc = state.aicc.as_ref().map(|a| json!({ "mode": a.mode, "user_id": a.user_id, "operator_id": a.operator_id })).unwrap_or(Value::Null);
+        let e = super::refusal_error(sub, &aicc);
+        json!({ "error": e.detail, "code": sub })
     };
     let batch = body["batch"].as_u64().unwrap_or(20).clamp(1, 50) as usize;
     let mut calls = 0;
@@ -215,6 +238,10 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
         );
         calls += 1;
         let answer = ask(&llm, &model, MAP_SYSTEM, user).await;
+        if let Err(AskError::Refused(sub)) = &answer {
+            state.note_map(calls, cached);
+            return refused(sub);
+        }
         let parsed = answer.as_ref().ok().and_then(|t| extract_json(t)).and_then(|v| v.as_array().cloned()).filter(|a| a.len() == chunk.len());
         for (j, i) in chunk.iter().enumerate() {
             let v = parsed.as_ref().map(|a| a[j].clone());
@@ -232,6 +259,10 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
         calls += 1;
         let user = format!("Instruction: {instruction}\nThe output must conform to the JSON schema: {schema_text}\nInput item: {}\n\nOutput only the JSON result for this item.", items[i]);
         let answer = ask(&llm, &model, MAP_SYSTEM, user).await;
+        if let Err(AskError::Refused(sub)) = &answer {
+            state.note_map(calls, cached);
+            return refused(sub);
+        }
         results[i] = Some(match answer.as_ref().ok().and_then(|t| extract_json(t).or_else(|| (schema["type"] == json!("string")).then(|| json!(t.trim())))) {
             Some(v) => match validate(&schema, &v) {
                 Ok(()) => {
@@ -240,7 +271,10 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
                 }
                 Err(e) => json!({ "error": format!("invalid answer: {e}") }),
             },
-            None => json!({ "error": answer.err().unwrap_or_else(|| "no JSON in the answer".into()) }),
+            None => json!({ "error": match answer {
+                Err(AskError::Failed(e)) => e,
+                _ => "no JSON in the answer".into(),
+            } }),
         });
     }
     state.note_map(calls, cached);

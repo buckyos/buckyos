@@ -55,14 +55,19 @@ pub enum SessionScope {
     AiWorkspace,
     #[serde(rename = "homestation")]
     HomeStation,
+    /// AICC inference, the caller's model list and own quota; what a Limited
+    /// account may use still comes from the visibility policy of its groups.
+    #[serde(rename = "aicc")]
+    Aicc,
 }
 
 impl SessionScope {
-    pub const ALL: [SessionScope; 4] = [
+    pub const ALL: [SessionScope; 5] = [
         SessionScope::AccountSelf,
         SessionScope::MsgGroup,
         SessionScope::AiWorkspace,
         SessionScope::HomeStation,
+        SessionScope::Aicc,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -71,6 +76,7 @@ impl SessionScope {
             Self::MsgGroup => "msg_group",
             Self::AiWorkspace => "aiworkspace",
             Self::HomeStation => "homestation",
+            Self::Aicc => "aicc",
         }
     }
 

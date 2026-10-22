@@ -17,6 +17,7 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 kRPC = { workspace = true }
 log = { workspace = true }
+name-lib = { workspace = true }
 named_store = { workspace = true }
 ndn-lib = { workspace = true }
 ndn-toolkit = { workspace = true }

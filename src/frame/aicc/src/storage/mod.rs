@@ -20,8 +20,11 @@ use sqlx::{Any, AnyPool, Executor, QueryBuilder, Row};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 
+mod quota;
+pub(crate) use quota::{AdmitOutcome, AttemptAdmission, QuotaWriteError, SettleOutcome};
+
 const SERVICE_NAME: &str = "aicc";
-const STORAGE_SCHEMA_VERSION: i64 = 2;
+const STORAGE_SCHEMA_VERSION: i64 = 3;
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
@@ -36,7 +39,15 @@ const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_k
 /// A table that a newer `SCHEMA` no longer declares is left behind unused rather
 /// than dropped — it holds nothing a Provider round trip cannot rebuild, and
 /// leaving it costs nothing.
-const MIGRATIONS: &[(i64, &str)] = &[(2, ROUTE_TRACE_FILTER_COLUMNS)];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (2, ROUTE_TRACE_FILTER_COLUMNS),
+    (3, USAGE_ATTRIBUTION_COLUMNS),
+];
+
+const USAGE_ATTRIBUTION_COLUMNS: &str = r#"
+ALTER TABLE aicc_usage_event ADD COLUMN operator_id TEXT;
+ALTER TABLE aicc_usage_event ADD COLUMN attribution_json TEXT;
+"#;
 
 const ROUTE_TRACE_FILTER_COLUMNS: &str = r#"
 ALTER TABLE aicc_route_trace_event ADD COLUMN fallback_applied INTEGER NOT NULL DEFAULT 0;
@@ -296,6 +307,8 @@ pub(crate) struct ProviderCompletion {
     pub provider_model: String,
     pub usage: Option<AiUsage>,
     pub finance_snapshot: Option<Value>,
+    pub operator_id: Option<String>,
+    pub attribution: Option<buckyos_api::AiccAttribution>,
     pub created_at_ms: i64,
 }
 
@@ -399,6 +412,7 @@ impl AiccStorage {
         // here and the one it replaced stays behind. It runs first so the
         // versioned steps still see every table they expect.
         self.apply_script(SCHEMA).await?;
+        self.apply_script(quota::QUOTA_SCHEMA).await?;
         for (target, schema) in MIGRATIONS {
             if *target <= version {
                 continue;
@@ -427,7 +441,7 @@ impl AiccStorage {
                 "incomplete AICC storage migration at version {version}"
             )));
         }
-        Ok(())
+        self.seed_default_visibility().await
     }
 
     /// Runs a semicolon-separated DDL script inside a single transaction.
@@ -978,6 +992,8 @@ impl AiccStorage {
             request_units: usage.request_units,
             usage_json: usage,
             finance_snapshot_json: completion.finance_snapshot,
+            operator_id: completion.operator_id,
+            attribution: completion.attribution,
             created_at_ms: completion.created_at_ms,
         };
         self.write_usage(&event).await
@@ -1013,8 +1029,9 @@ impl AiccStorage {
         let sql = self.sql("INSERT INTO aicc_usage_event
           (event_id,tenant_id,user_id,caller_app_id,task_id,trace_id,idempotency_key,method,capability,
            request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
-           request_units,usage_json,finance_snapshot_json,finance_amount,finance_currency,finance_valid,created_at_ms)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+           request_units,usage_json,finance_snapshot_json,finance_amount,finance_currency,finance_valid,
+           operator_id,attribution_json,created_at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
         let result = sqlx::query(&sql)
             .bind(&e.event_id)
             .bind(&e.tenant_id)
@@ -1042,6 +1059,8 @@ impl AiccStorage {
             .bind(finance.as_ref().map(|(amount, _)| *amount))
             .bind(finance.as_ref().map(|(_, currency)| currency.as_str()))
             .bind(i64::from(finance.is_some()))
+            .bind(&e.operator_id)
+            .bind(e.attribution.as_ref().map(serde_json::to_string).transpose()?)
             .bind(e.created_at_ms)
             .execute(&self.pool)
             .await?;
@@ -1617,6 +1636,8 @@ impl UsageCompletionPort for AiccStorage {
                         "usage finance snapshot could not be serialized",
                     )
                 })?,
+            operator_id: completion.operator_id,
+            attribution: completion.attribution,
             created_at_ms: completion.completed_at_ms,
         })
         .await
@@ -1718,6 +1739,11 @@ fn usage_from_row(row: AnyRow) -> StorageResult<AiccUsageEvent> {
         request_units: opt_from_i64(row.try_get("request_units")?)?,
         usage_json: serde_json::from_str(&usage)?,
         finance_snapshot_json: finance.map(|v| serde_json::from_str(&v)).transpose()?,
+        operator_id: row.try_get("operator_id")?,
+        attribution: row
+            .try_get::<Option<String>, _>("attribution_json")?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
         created_at_ms: row.try_get("created_at_ms")?,
     })
 }
@@ -2297,10 +2323,12 @@ mod tests {
         // and the merged table does not exist. No versioned step can run here,
         // so the merged table can only appear because the table set is applied
         // on every open.
-        sqlx::query("UPDATE aicc_schema_meta SET schema_version=2 WHERE schema_key='aicc'")
-            .execute(&storage.pool)
-            .await
-            .unwrap();
+        sqlx::query(&format!(
+            "UPDATE aicc_schema_meta SET schema_version={STORAGE_SCHEMA_VERSION} WHERE schema_key='aicc'"
+        ))
+        .execute(&storage.pool)
+        .await
+        .unwrap();
         sqlx::query("DROP TABLE aicc_provider_artifact")
             .execute(&storage.pool)
             .await
@@ -2878,6 +2906,8 @@ mod tests {
                 ..AiUsage::default()
             }),
             finance_snapshot: Some(json!({"amount": 0.25, "currency": "USD"})),
+            operator_id: None,
+            attribution: None,
             created_at_ms: at,
         }
     }
@@ -2909,6 +2939,8 @@ mod tests {
             request_units,
             usage_json: usage,
             finance_snapshot_json: finance,
+            operator_id: None,
+            attribution: None,
             created_at_ms: 10_000,
         }
     }
@@ -2925,6 +2957,7 @@ mod tests {
             trace_id: Some(format!("trace-{task_id}")),
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
+            attribution: None,
             request_model: "llm.chat".into(),
             body_fingerprint: format!("fingerprint-{task_id}"),
             task_id: task_id.into(),
@@ -2943,6 +2976,7 @@ mod tests {
         let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
             reported_cost_currency: None,
+            quota_attempt_id: None,
             runtime_generation: 7,
             origin_provider: "openai".into(),
             exact_model: "gpt-5:reasoning@openai-primary".into(),
@@ -3165,6 +3199,8 @@ mod tests {
                 amount: 0.25,
                 currency: "EUR".into(),
             }),
+            operator_id: None,
+            attribution: None,
             completed_at_ms: 10_000,
         };
         db.write_once(completion.clone()).await.unwrap();
@@ -3231,6 +3267,7 @@ mod tests {
             output_mode: UsageQueryOutputMode::SummaryAndEvents,
             limit: Some(1),
             cursor: None,
+            zone_wide: false,
         };
         let first = db.query_usage(&request, 20_000).await.unwrap();
         assert_eq!(first.total.total_requests, 3);
@@ -3376,6 +3413,7 @@ mod tests {
             output_mode: UsageQueryOutputMode::Events,
             limit: None,
             cursor: None,
+            zone_wide: false,
         };
         let response = db.query_usage(&request, 12_000).await.unwrap();
         assert_eq!(response.total.total_requests, 1);
@@ -3427,6 +3465,7 @@ mod tests {
                         output_mode: UsageQueryOutputMode::Events,
                         limit: None,
                         cursor: None,
+                        zone_wide: false,
                     },
                     20_000,
                 )

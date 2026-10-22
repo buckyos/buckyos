@@ -166,6 +166,10 @@ impl StructuredReply {
     }
 }
 
+/// `error.kind` of a Turn the AI service refused under the AI quota or
+/// resource policy of the Agent's owner.
+pub const AI_QUOTA_ERROR_KIND: &str = "ai_quota";
+
 fn is_retryable_error(e: &LLMComputeError) -> bool {
     match e {
         LLMComputeError::Timeout | LLMComputeError::Cancelled => true,
@@ -637,11 +641,24 @@ pub(super) async fn handle_context_outcome(
             next.usage = Some(usage);
             next.kind = FinishKind::Error;
             let retry = is_retryable_error(&error);
-            next.error = Some(json!({
-                "kind": format!("{:?}", error.source()).to_lowercase(),
-                "message": error.to_string(),
-                "recoverable": retry,
-            }));
+            next.error = Some(match &error {
+                // AI Center Quota PRD §9.6: the session learns only that the
+                // Agent is limited; the rules and balances stay with its owner.
+                LLMComputeError::Provider {
+                    failure: ProviderFailure::Refused(refusal),
+                    ..
+                } => json!({
+                    "kind": AI_QUOTA_ERROR_KIND,
+                    "refusal": refusal,
+                    "message": "the AI service refused the call under the quota or resource policy of the Agent's owner",
+                    "recoverable": false,
+                }),
+                _ => json!({
+                    "kind": format!("{:?}", error.source()).to_lowercase(),
+                    "message": error.to_string(),
+                    "recoverable": retry,
+                }),
+            });
             if retry {
                 // Retryable: the run is kept and the Turn stays open.
                 status = RunStatus::Paused;

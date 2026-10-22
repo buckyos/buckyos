@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::aicc_client::{ai_methods, AiUsage, Money};
+use crate::aicc_quota::AiccAttribution;
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
@@ -80,6 +81,12 @@ pub struct AiccUsageEvent {
     pub usage_json: AiUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finance_snapshot_json: Option<Value>,
+    /// Authenticated user who triggered the call when it differs from the
+    /// quota user (`user_id`), e.g. a collaborator running an owner-mode wish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<AiccAttribution>,
     pub created_at_ms: i64,
 }
 
@@ -296,6 +303,13 @@ pub struct QueryUsageRequest {
     pub limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Admins only: every user of the Zone instead of the caller alone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub zone_wide: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl QueryUsageRequest {
@@ -308,6 +322,7 @@ impl QueryUsageRequest {
             output_mode: UsageQueryOutputMode::default(),
             limit: None,
             cursor: None,
+            zone_wide: false,
         }
     }
 }
@@ -410,6 +425,8 @@ mod tests {
                 ..AiUsage::default()
             },
             finance_snapshot_json: None,
+            operator_id: None,
+            attribution: None,
             created_at_ms: 1_750_000_000_000,
         }
     }

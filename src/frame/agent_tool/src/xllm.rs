@@ -64,8 +64,9 @@ use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
     AiContent, AiMessage, AiMethodStatus, AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage,
-    AiccClient, AiccExecutionMode, BuckyOSRuntimeType, HelperModelRequirement,
-    LlmChatHelperRequest, LlmChatInvokeRequest, LlmResponseFormat, ModelDisable, ResourceRef,
+    AiccClient, AiccError, AiccErrorCode, AiccExecutionMode, AiccOnBehalfOf, BuckyOSRuntimeType,
+    HelperModelRequirement, LlmChatHelperRequest, LlmChatInvokeRequest, LlmResponseFormat,
+    ModelDisable, ResourceRef,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -76,7 +77,7 @@ use llm_context::deps::{
     InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, ToolCallCtx, ToolDispatchError,
     ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
 };
-use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
+use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure, RefusalKind};
 use llm_context::observation::Observation;
 use llm_context::outcome::{BudgetKind, ContextOutput, LLMContextOutcome, ResumeFill};
 use llm_context::request::{
@@ -504,6 +505,9 @@ pub struct ProviderConfig {
     /// openai：附加 HTTP 头。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// buckyos：系统服务代用户调用 AICC 时的额度归属（AICC 只接受获授权的系统服务）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<AiccOnBehalfOf>,
 }
 
 impl ProviderConfig {
@@ -1316,6 +1320,7 @@ fn parse_provider(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ProviderCo
             "api_key",
             "api_key_env",
             "headers",
+            "on_behalf_of",
         ],
     )?;
     let kind = match ctx.get_str(field, m, "type")? {
@@ -1365,12 +1370,19 @@ fn parse_provider(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ProviderCo
             headers.insert(key.to_string(), val);
         }
     }
+    let on_behalf_of = match m.get("on_behalf_of") {
+        Some(v) => Some(serde_yaml::from_value::<AiccOnBehalfOf>(v.clone()).map_err(|e| {
+            ctx.err(&join_field(field, "on_behalf_of"), format!("invalid on_behalf_of: {e}"))
+        })?),
+        None => None,
+    };
     Ok(ProviderConfig {
         kind,
         session_token,
         base_url,
         api_key,
         headers,
+        on_behalf_of,
     })
 }
 
@@ -4832,7 +4844,10 @@ impl LlmClientFactory for DefaultLlmClientFactory {
                     Some(r) => Some(r.resolve()?),
                     None => None,
                 };
-                Ok(Arc::new(AiccLlmClient::with_session_token(token)))
+                Ok(Arc::new(
+                    AiccLlmClient::with_session_token(token)
+                        .with_on_behalf_of(provider.on_behalf_of.clone()),
+                ))
             }
             ProviderKind::Openai => {
                 let api_key = match &provider.api_key {
@@ -4995,19 +5010,29 @@ async fn bootstrap_appclient_session(
 /// AICC → `LlmClient` 适配（buckyos Provider）。
 pub struct AiccLlmClient {
     session_token: Option<String>,
+    on_behalf_of: Option<AiccOnBehalfOf>,
 }
 
 impl AiccLlmClient {
     pub fn new() -> Self {
         Self {
             session_token: None,
+            on_behalf_of: None,
         }
     }
 
     pub fn with_session_token(token: Option<String>) -> Self {
         Self {
             session_token: token,
+            on_behalf_of: None,
         }
+    }
+
+    /// Charge the calls to `on_behalf_of.user_id` (a system service running
+    /// a user's work, e.g. AIWorkspace wish runs).
+    pub fn with_on_behalf_of(mut self, on_behalf_of: Option<AiccOnBehalfOf>) -> Self {
+        self.on_behalf_of = on_behalf_of;
+        self
     }
 }
 
@@ -5063,6 +5088,10 @@ impl LlmClient for AiccLlmClient {
             .get_aicc_client()
             .await
             .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
+        let client = match &self.on_behalf_of {
+            Some(on_behalf_of) => client.with_on_behalf_of(on_behalf_of),
+            None => client,
+        };
         Self::infer_with_client(&client, req).await
     }
 }
@@ -5179,7 +5208,11 @@ impl AiccLlmClient {
                 })
             }
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
-                ProviderFailure::Unknown,
+                response
+                    .error
+                    .as_ref()
+                    .and_then(|error| aicc_refusal(error.code))
+                    .unwrap_or(ProviderFailure::Unknown),
                 format!(
                     "aicc {method} failed{}: task_id={}, event_ref={}",
                     response.error.as_ref().map(|e| format!(" ({e})")).unwrap_or_default(),
@@ -5198,8 +5231,40 @@ impl AiccLlmClient {
     }
 }
 
-/// kRPC 错误 → Provider 失败类别。
+/// `RunErrorRecord.kind` of a refusal (stable names for hosts).
+pub fn refusal_kind_name(kind: RefusalKind) -> &'static str {
+    match kind {
+        RefusalKind::QuotaExhausted => "quota_exhausted",
+        RefusalKind::QuotaBudgetExceeded => "quota_budget_exceeded",
+        RefusalKind::ResourceNotPermitted => "resource_not_permitted",
+        RefusalKind::AttributionUnavailable => "attribution_unavailable",
+    }
+}
+
+/// AICC 额度与资源策略的拒绝（AI Center Quota PRD §7.4）；暂不可用的额度状态可以稍后重试。
+fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
+    match code {
+        AiccErrorCode::QuotaExhausted => Some(ProviderFailure::Refused(RefusalKind::QuotaExhausted)),
+        AiccErrorCode::QuotaBudgetExceeded => {
+            Some(ProviderFailure::Refused(RefusalKind::QuotaBudgetExceeded))
+        }
+        AiccErrorCode::ResourceNotPermitted => {
+            Some(ProviderFailure::Refused(RefusalKind::ResourceNotPermitted))
+        }
+        AiccErrorCode::AttributionUnavailable => {
+            Some(ProviderFailure::Refused(RefusalKind::AttributionUnavailable))
+        }
+        AiccErrorCode::QuotaUnavailable => Some(ProviderFailure::Transient),
+        _ => None,
+    }
+}
+
+/// kRPC 错误 → Provider 失败类别（AICC 的结构化错误码优先）。
 pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError {
+    if let Some(failure) = AiccError::from_krpc_error(&err).and_then(|error| aicc_refusal(error.code))
+    {
+        return LLMComputeError::provider(failure, format!("{context}: {err}"));
+    }
     let failure = match &err {
         RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
         RPCErrors::InvalidToken(_)
@@ -8498,6 +8563,21 @@ impl XllmRun {
                 }
                 ProviderFailure::Unknown => (false, "provider_error", None),
                 ProviderFailure::ContextLimit => (false, "context_capacity", None),
+                ProviderFailure::Refused(kind) => (
+                    false,
+                    refusal_kind_name(*kind),
+                    Some(match kind {
+                        RefusalKind::QuotaExhausted | RefusalKind::QuotaBudgetExceeded => {
+                            "the AI token quota does not cover this call; wait for it to reset, lower the output budget, or ask an administrator; do not retry right away".into()
+                        }
+                        RefusalKind::ResourceNotPermitted => {
+                            "the model is not permitted to this user; choose a permitted model or ask an administrator".into()
+                        }
+                        RefusalKind::AttributionUnavailable => {
+                            "the user whose AI resources this run uses cannot be determined".into()
+                        }
+                    }),
+                ),
             },
             LLMComputeError::Checkpoint { .. } => (
                 true,

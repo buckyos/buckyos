@@ -3,7 +3,7 @@
 
 import type {
   AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
-  QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
+  QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin,
 } from './types'
@@ -35,6 +35,7 @@ export class AiwsClient {
     return this.call<Result<object>>('ws.revoke', { ...ws, subject, ...(scope_entity_id ? { scope_entity_id } : {}) })
   }
   wsListGrants(ws: Ws) { return this.call<Result<GrantList>>('ws.list_grants', ws) }
+  wsSetWishAicc(ws: Ws, mode: WishAiccMode) { return this.call<Result<{ wish_aicc_mode: WishAiccMode }>>('ws.set_wish_aicc', { ...ws, mode }) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
   // share entries (hybrid SSO contract §8.3): links that offer sign-in methods and grant a template
   wsCreateEntry(ws: Ws, params: { capabilities: Capability[]; methods: ShareEntry['methods']; scope_entity_id?: string; expires_at?: number }) {

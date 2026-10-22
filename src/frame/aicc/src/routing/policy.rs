@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     AiccLogicalNodeOverlay, AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile,
     AiccSchedulerProfileConfig, AiccSessionLogicalProfile, ApiType, Capability, LockedValue, Money,
-    QuotaQueryRequest, QuotaQueryResponse, QuotaState, QuotaView, RoutePolicy, RoutePolicyProfile,
+    QuotaState, RoutePolicy, RoutePolicyProfile,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -675,28 +675,6 @@ impl QuotaSourceFactory {
             providers,
         })
     }
-
-    pub(crate) async fn query_quota(
-        &self,
-        caller: &CallerIdentity,
-        request: QuotaQueryRequest,
-    ) -> Result<QuotaQueryResponse, PolicyError> {
-        validate_lookup_scope(caller, request.method.as_deref())
-            .map_err(|_| PolicyError::QuotaSourceUnavailable)?;
-        let snapshot = self
-            .truth
-            .query(&QuotaLookup {
-                caller: caller.clone(),
-                capability: request.capability,
-                method: request.method,
-                provider_instance_name: None,
-            })
-            .await
-            .ok()
-            .filter(valid_snapshot)
-            .unwrap_or_else(QuotaSnapshot::unknown);
-        quota_response(snapshot)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -778,7 +756,6 @@ impl fmt::Display for PolicyError {
                 "policy field {field} was locked by {locked_by} and cannot be changed by {attempted_by}"
             ),
             Self::InvalidPolicy(message) => write!(f, "invalid routing policy: {message}"),
-            Self::QuotaSourceUnavailable => f.write_str("quota truth source unavailable"),
         }
     }
 }
@@ -935,23 +912,6 @@ impl<Q: QuotaSource> PolicyEngine<Q> {
             reasons,
         }
     }
-
-    pub(crate) fn query_quota(
-        &self,
-        caller: &CallerIdentity,
-        request: QuotaQueryRequest,
-    ) -> Result<QuotaQueryResponse, PolicyError> {
-        let snapshot = self
-            .quota_source
-            .query(&QuotaLookup {
-                caller: caller.clone(),
-                capability: request.capability,
-                method: request.method,
-                provider_instance_name: None,
-            })
-            .map_err(|_| PolicyError::QuotaSourceUnavailable)?;
-        quota_response(snapshot)
-    }
 }
 
 fn validate_lookup_scope(
@@ -977,22 +937,6 @@ fn valid_snapshot(snapshot: &QuotaSnapshot) -> bool {
             .remaining_cost
             .as_ref()
             .is_some_and(|value| !valid_money(value))
-}
-
-fn quota_response(snapshot: QuotaSnapshot) -> Result<QuotaQueryResponse, PolicyError> {
-    let snapshot = if valid_snapshot(&snapshot) {
-        snapshot
-    } else {
-        QuotaSnapshot::unknown()
-    };
-    Ok(QuotaQueryResponse {
-        quota: QuotaView {
-            state: snapshot.state.expect("validated quota state"),
-            remaining_request_units: snapshot.remaining_request_units,
-            remaining_cost: snapshot.remaining_cost,
-            reset_at: snapshot.reset_at,
-        },
-    })
 }
 
 fn reject(reasons: &mut Vec<PolicyReason>, code: PolicyReasonCode, summary: &'static str) {
@@ -1481,15 +1425,24 @@ mod tests {
             }),
             seen: Arc::new(Mutex::new(Vec::new())),
         });
-        let factory = QuotaSourceFactory::new(port);
-        let response = factory
-            .query_quota(
+        let source = QuotaSourceFactory::new(port)
+            .prepare_route(
                 &caller(),
-                QuotaQueryRequest::new(Some(Capability::Llm), None),
+                Capability::Llm,
+                "chat.completions.create",
+                ["openai_primary"],
             )
             .await
             .unwrap();
-        assert_eq!(response.quota.state, QuotaState::Unknown);
+        let snapshot = source
+            .query(&QuotaLookup {
+                caller: caller(),
+                capability: Some(Capability::Llm),
+                method: Some("chat.completions.create".into()),
+                provider_instance_name: Some("openai_primary".into()),
+            })
+            .unwrap();
+        assert_eq!(snapshot.state, Some(QuotaState::Unknown));
     }
 
     #[test]
@@ -1615,23 +1568,26 @@ mod tests {
         let source = FakeQuota::available();
         let seen = source.seen.clone();
         let engine = engine(&patch, source);
-        let response = engine
-            .query_quota(
-                &caller(),
-                QuotaQueryRequest::new(
-                    Some(Capability::Llm),
-                    Some("chat.completions.create".into()),
-                ),
-            )
-            .unwrap();
-        assert_eq!(response.quota.state, QuotaState::Normal);
+        let caller = caller();
+        let scope = CredentialScope::Tenant {
+            tenant_id: "tenant-a".into(),
+        };
+        let cloud = trust(ProviderType::CloudApi);
+        let decision = evaluate(
+            &engine,
+            &caller,
+            Some(&cloud),
+            &scope,
+            ProviderPrivacy::PublicCloud,
+        );
+        assert!(decision.allowed);
         assert!(seen
             .lock()
             .unwrap()
             .last()
             .unwrap()
             .provider_instance_name
-            .is_none());
+            .is_some());
     }
 
     #[tokio::test]
@@ -1682,38 +1638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_factory_exposes_service_quota_query_and_preserves_unknown() {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let factory = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
-            result: FakeQuota::available().result,
-            seen: seen.clone(),
-        }));
-        let response = factory
-            .query_quota(
-                &caller(),
-                QuotaQueryRequest::new(
-                    Some(Capability::Llm),
-                    Some("chat.completions.create".into()),
-                ),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.quota.state, QuotaState::Normal);
-        assert!(seen
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .provider_instance_name
-            .is_none());
-        assert!(factory
-            .query_quota(
-                &caller(),
-                QuotaQueryRequest::new(Some(Capability::Llm), None),
-            )
-            .await
-            .is_ok());
-
+    async fn production_factory_preserves_unknown_upstream_quota() {
         let failing = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
             result: Err(QuotaSourceError),
             seen: Arc::new(Mutex::new(Vec::new())),

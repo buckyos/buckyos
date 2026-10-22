@@ -365,6 +365,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "ws.list_grants" => state.with_ws(ws_id()?, |ws| ws.list_grants(caller))?,
         "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
         "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null)))?,
+        "ws.set_wish_aicc" => state.with_ws(ws_id()?, |ws| ws.set_wish_aicc_mode(caller, s(p, "mode")?))?,
         "ws.list_subjects" => {
             // zone-level: any account that may own Workspaces may ask (the list itself is as public as the zone makes it)
             require_may_own(caller)?;

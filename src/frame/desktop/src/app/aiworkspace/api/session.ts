@@ -16,7 +16,7 @@ import {
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
-  type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo,
+  type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode,
 } from './types'
 
 export type SessionStatus =
@@ -130,6 +130,8 @@ export interface WorkspaceSession {
   grant(subject: string, capabilities: Capability[], scopeEntityId?: string): Promise<void>
   revoke(subject: string, scopeEntityId?: string): Promise<void>
   listSubjects(): Promise<Subject[]>
+  /** Whose AICC the wish blocks use (AI Center Quota PRD §3.3); a manager's setting, online only. */
+  setWishAiccMode(mode: WishAiccMode): Promise<WishAiccMode>
 
   commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome>
   /** Resend a submission whose result is still unknown: same key, same content. */
@@ -450,6 +452,13 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async listSubjects() {
     try { return unwrap(await this.client.wsListSubjects(this.ws)).subjects } catch (error) { return this.fail(error) }
   }
+  async setWishAiccMode(mode: WishAiccMode) {
+    try {
+      const applied = unwrap(await this.client.wsSetWishAicc(this.ws, mode)).wish_aicc_mode
+      this.wsInfo = { ...this.wsInfo, wish_aicc_mode: applied }
+      return applied
+    } catch (error) { return this.fail(error) }
+  }
 
   // ---- writes (design §2.6)
 
@@ -657,8 +666,28 @@ const ADJUST_TEXT: Readonly<Partial<Record<AdjustLocation, string>>> = {
   'cp:exclusive_invites': 'aiworkspace.core.denial.adjustExclusiveInvites',
 }
 
+/** A wish run refused under the AI quota or resource policy (§7.4), by its sub-code: the run's own payer
+ * learns it is their quota; anyone else only that the block is limited. `undefined` for other failures. */
+export function aiRefusalText(subCode: string | undefined, data: Record<string, unknown> | undefined): string | undefined {
+  const aicc = (data?.aicc ?? {}) as { user_id?: string; operator_id?: string; mode?: string }
+  const own = aicc.user_id !== undefined && aicc.user_id === aicc.operator_id
+  switch (subCode) {
+    case 'AI_QUOTA_EXHAUSTED': return aiwsT(own ? 'aiworkspace.wish.aicc.quotaOwn' : 'aiworkspace.wish.aicc.quotaOther')
+    case 'AI_QUOTA_BUDGET_EXCEEDED': return aiwsT(own ? 'aiworkspace.wish.aicc.budgetOwn' : 'aiworkspace.wish.aicc.quotaOther')
+    case 'AI_RESOURCE_NOT_PERMITTED': return aiwsT(own ? 'aiworkspace.wish.aicc.notPermittedOwn' : 'aiworkspace.wish.aicc.notPermittedOther')
+    case 'AI_ATTRIBUTION_UNAVAILABLE': return aiwsT(aicc.mode === 'current_user' ? 'aiworkspace.wish.aicc.noOwnResources' : 'aiworkspace.wish.aicc.noAttribution')
+    default: return undefined
+  }
+}
+
+/** The failure of a run as shown to its viewer. */
+export function runErrorText(error: (ServiceError & { data?: unknown }) | null | undefined): string | undefined {
+  if (!error) return undefined
+  return aiRefusalText(error.sub_code, error.data as Record<string, unknown> | undefined) ?? error.detail
+}
+
 export function describeError(error: unknown): string {
-  if (error instanceof ServiceFailure) return error.message
+  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? error.message
   if (error instanceof TransportError) return aiwsT(browserOffline() ? 'aiworkspace.core.session.cannotConnectOffline' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
   return error instanceof Error ? error.message : String(error)
 }

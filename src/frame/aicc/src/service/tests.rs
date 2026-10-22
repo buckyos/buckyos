@@ -1,5 +1,5 @@
 use super::*;
-use buckyos_api::{QuotaState, QuotaView, UsageQueryTimeRange};
+use buckyos_api::{QuotaState, UsageQueryTimeRange};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 struct FakeAuthorizer {
@@ -25,6 +25,14 @@ impl ServiceAuthorizer for FakeAuthorizer {
             user_id: "alice".to_string(),
             app_id: Some("app:test@alice".to_string()),
             token: "caller-token".to_string(),
+            principal: CallerPrincipal::Account {
+                user_type: buckyos_api::UserType::User,
+                groups: Vec::new(),
+                operator_id: Some("alice".to_string()),
+                caller: "app:test@alice".to_string(),
+                mode: buckyos_api::AiccAttributionMode::Direct,
+                run_ref: None,
+            },
         })
     }
 }
@@ -251,20 +259,23 @@ impl UsageQueryPort for FakeUsage {
 struct FakeQuota;
 
 #[async_trait]
-impl QuotaQueryPort for FakeQuota {
-    async fn query_quota(
+impl QuotaPort for FakeQuota {
+    async fn access(
         &self,
         _caller: &AuthorizedCaller,
-        _request: QuotaQueryRequest,
-    ) -> Result<QuotaQueryResponse, RPCErrors> {
-        Ok(QuotaQueryResponse {
-            quota: QuotaView {
-                state: QuotaState::Normal,
-                remaining_request_units: Some(10),
-                remaining_cost: None,
-                reset_at: None,
-            },
-        })
+        _inventory: &crate::visibility::Inventory,
+    ) -> Result<crate::visibility::Access, RPCErrors> {
+        Ok(crate::visibility::Access::Unrestricted)
+    }
+
+    async fn handle(
+        &self,
+        caller: &AuthorizedCaller,
+        method: &str,
+        _params: Value,
+        _inventory: &crate::visibility::Inventory,
+    ) -> Result<Value, RPCErrors> {
+        Ok(json!({"method": method, "user_id": caller.user_id}))
     }
 }
 
@@ -1742,99 +1753,6 @@ fn materialized_output_rejects_known_payload_leaks_outside_resource_refs() {
         .contains("retained an inline artifact payload"));
 }
 
-fn quota_record() -> QuotaTruthRecord {
-    QuotaTruthRecord {
-        period_start_ms: 1,
-        period_end_ms: 10_000,
-        max_request_units: Some(100),
-        max_cost: Some(buckyos_api::Money::new(10.0, "USD")),
-        reset_at: "2026-09-05T00:00:00Z".to_string(),
-    }
-}
-
-#[test]
-fn quota_combines_budget_usage_and_provider_minimum() {
-    let usage = buckyos_api::UsageAggregate {
-        consumed_request_units: 91,
-        finance_totals: vec![buckyos_api::Money::new(9.2, "USD")],
-        ..Default::default()
-    };
-    let provider = ProviderQuotaObservation {
-        state: ProviderQuotaObservationState::Normal,
-        remaining_request_units: Some(8),
-        remaining_cost: Some(buckyos_api::AiCost {
-            amount: 0.5,
-            currency: "USD".to_string(),
-        }),
-        reset_at_ms: None,
-        observed_at_ms: 1,
-        source: "provider-api".to_string(),
-    };
-    let quota = combine_quota(quota_record(), &usage, Some(&provider)).unwrap();
-    assert_eq!(quota.state, Some(QuotaState::NearLimit));
-    assert_eq!(quota.remaining_request_units, Some(8));
-    assert_eq!(
-        quota.remaining_cost,
-        Some(buckyos_api::Money::new(0.5, "USD"))
-    );
-}
-
-#[test]
-fn quota_rejects_invalid_local_finance_but_ignores_provider_failure() {
-    let incomplete = buckyos_api::UsageAggregate {
-        finance_complete: false,
-        ..Default::default()
-    };
-    assert!(combine_quota(quota_record(), &incomplete, None).is_err());
-
-    let mixed = buckyos_api::UsageAggregate {
-        finance_totals: vec![
-            buckyos_api::Money::new(1.0, "EUR"),
-            buckyos_api::Money::new(2.0, "USD"),
-        ],
-        ..Default::default()
-    };
-    assert!(combine_quota(quota_record(), &mixed, None).is_err());
-
-    let mismatched = buckyos_api::UsageAggregate {
-        finance_totals: vec![buckyos_api::Money::new(1.0, "EUR")],
-        ..Default::default()
-    };
-    assert!(combine_quota(quota_record(), &mismatched, None).is_err());
-
-    let empty = combine_quota(
-        quota_record(),
-        &buckyos_api::UsageAggregate::default(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        empty.remaining_cost,
-        Some(buckyos_api::Money::new(10.0, "USD"))
-    );
-
-    let failed = ProviderQuotaObservation {
-        state: ProviderQuotaObservationState::QueryFailed,
-        remaining_request_units: None,
-        remaining_cost: None,
-        reset_at_ms: None,
-        observed_at_ms: 1,
-        source: "provider-api".to_string(),
-    };
-    let quota = combine_quota(
-        quota_record(),
-        &buckyos_api::UsageAggregate::default(),
-        Some(&failed),
-    )
-    .unwrap();
-    assert_eq!(quota.state, Some(QuotaState::Normal));
-    assert_eq!(quota.remaining_request_units, Some(100));
-    assert_eq!(
-        quota.remaining_cost,
-        Some(buckyos_api::Money::new(10.0, "USD"))
-    );
-}
-
 #[test]
 fn unavailable_provider_quota_is_unknown_and_exhausted_is_preserved() {
     let unsupported = ProviderQuotaObservation {
@@ -1863,26 +1781,6 @@ fn unavailable_provider_quota_is_unknown_and_exhausted_is_preserved() {
         provider_quota(Some(&exhausted)).state,
         Some(QuotaState::Exhausted)
     );
-}
-
-#[test]
-fn exhausted_provider_overrides_normal_budget() {
-    let exhausted = ProviderQuotaObservation {
-        state: ProviderQuotaObservationState::Exhausted,
-        remaining_request_units: Some(0),
-        remaining_cost: None,
-        reset_at_ms: None,
-        observed_at_ms: 1,
-        source: "provider-api".to_string(),
-    };
-    let quota = combine_quota(
-        quota_record(),
-        &buckyos_api::UsageAggregate::default(),
-        Some(&exhausted),
-    )
-    .unwrap();
-    assert_eq!(quota.state, Some(QuotaState::Exhausted));
-    assert_eq!(quota.remaining_request_units, Some(0));
 }
 
 #[tokio::test]

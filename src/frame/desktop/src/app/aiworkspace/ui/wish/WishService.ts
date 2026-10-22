@@ -9,7 +9,7 @@
  *
  * Nothing here runs because of change events: every run is started by the user. */
 
-import { describeError } from '../../api/session'
+import { describeError, runErrorText } from '../../api/session'
 import type {
   AssetContent, CellPayload, DerivedInput, EntityEnvelope, Json, KeyedContent, QueryPage, RecordContent, RichTextContent, TableSourceContent,
   WishChoices, WishPayload, WishPayloadRead, WishRunView, WishStage,
@@ -246,7 +246,7 @@ export class WishService {
         if (!run.preview.ready) throw new Error(aiwsT('aiworkspace.wish.error.analysisNotWritten', { problems: aiwsText().clauses(run.preview.summary.problems) }))
         await this.applyRun(run, run.preview.plan_digest, aiwsT('aiworkspace.wish.edit.analyze'))
       } else if (run.state === 'failed') {
-        throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.analysisFailed'))
+        throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.analysisFailed'))
       }
       return this.runs.get(wishId) ?? run
     })
@@ -311,7 +311,7 @@ export class WishService {
       if (options.parentRunId) extra.parent_run_id = options.parentRunId
       if (options.feedback) extra.feedback = options.feedback
       const run = await this.start(wishId, 'wish.xllm@1', 'execute', extra, options.cellId)
-      if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.executeFailed'))
+      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.executeFailed'))
       return run
     })
   }
@@ -319,7 +319,7 @@ export class WishService {
   async rerunProgram(wishId: string, cellId?: string): Promise<WishRunView> {
     return this.guard(wishId, 'rerunning', async () => {
       const run = await this.start(wishId, 'wish.xllm@1', 'rerun_program', {}, cellId)
-      if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.rerunFailed'))
+      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.rerunFailed'))
       return run
     })
   }
@@ -327,7 +327,7 @@ export class WishService {
   async repairProgram(wishId: string, failedRunId: string, cellId?: string): Promise<WishRunView> {
     return this.guard(wishId, 'repairing', async () => {
       const run = await this.start(wishId, 'wish.xllm@1', 'repair_program', { parent_run_id: failedRunId }, cellId)
-      if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.repairFailed'))
+      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.repairFailed'))
       return run
     })
   }
@@ -406,7 +406,7 @@ export class WishService {
     const result = await this.executorFor(wish).execute({ prompt: payload.prompt, context_prompt: payload.analysis.context_prompt, run_id: `mock-${Date.now().toString(36)}`, inputs: snapshots, executor_config: payload.executor_config ?? {} })
     const provided = { results: result.results, read_set: readSet, summary: result.summary, warnings: result.warnings, assumptions: result.assumptions }
     const run = await this.start(wishId, 'wish.mock@1', 'execute', { provided: provided as unknown as Json }, cellId)
-    if (run.state === 'failed') throw new Error(run.error?.detail ?? aiwsT('aiworkspace.wish.error.mockFailed'))
+    if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.mockFailed'))
     return run
   }
 

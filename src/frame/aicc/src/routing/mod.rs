@@ -180,6 +180,29 @@ pub(crate) struct RoutingTrace {
     pub user_summary: UserFacingRouteSummary,
 }
 
+impl RoutingTrace {
+    /// Drop every exact model the viewer may not see (PRD §3.4: traces must
+    /// not disclose hidden candidates). Logical paths are kept.
+    pub(crate) fn retain_models(&mut self, allowed: &dyn Fn(&str) -> bool) {
+        let keep = |name: &str| !name.contains('@') || allowed(name);
+        self.filtered_candidates
+            .retain(|candidate| keep(&candidate.exact_model));
+        self.ranked_candidates
+            .retain(|candidate| keep(&candidate.exact_model));
+        self.fallback_chain
+            .retain(|step| keep(&step.from) && keep(&step.to));
+        self.logical_item_sources
+            .retain(|source| keep(&source.exact_model));
+        self.logical_admission
+            .retain(|admission| keep(&admission.exact_model));
+        for expansion in &mut self.logical_expansion {
+            expansion.items.retain(|item| keep(&item.target));
+        }
+        self.candidate_count_before_filter =
+            self.candidate_count_after_filter + self.filtered_candidates.len();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct FilteredCandidateTrace {
     pub exact_model: String,

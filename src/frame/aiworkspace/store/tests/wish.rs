@@ -356,7 +356,7 @@ fn derived_columns_are_owned_and_do_not_stale_themselves() {
         { "key": "analysis", "value": analysis, "expect": { "rev": 0 } },
         { "key": "inputs", "value": [{ "entity_id": "orders", "name": "sales" }], "expect": { "rev": 0 } }] }]));
     let run = |ws: &mut Workspace, run: &str, choices: Value| -> aiworkspace_store::wish::plan::Plan {
-        let run = &ws.wish_run_create(&alice(), PROGRAM_XLLM, &json!({ "wish_id": "wish-q3", "stage": "execute", "k": run }), run).unwrap().0.clone();
+        let run = &ws.wish_run_create(&alice(), PROGRAM_XLLM, &json!({ "wish_id": "wish-q3", "stage": "execute", "k": run }), run, &json!(null)).unwrap().0.clone();
         let work = tempfile::tempdir().unwrap();
         let st = stage(ws, StageKind::Execute, run, work.path());
         let rows = std::fs::read_to_string(work.path().join(run).join("context/entities/orders/rows.jsonl")).unwrap();
@@ -449,7 +449,7 @@ fn build_candidate(c: &Collector, st: &Stage, run: &str) -> Value {
 fn new_run(ws: &mut Workspace, stage: &str) -> String {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let key = format!("t-run-{}", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
-    ws.wish_run_create(&alice(), PROGRAM_XLLM, &json!({ "wish_id": "wish-q3", "stage": stage, "k": key }), &key).unwrap().0
+    ws.wish_run_create(&alice(), PROGRAM_XLLM, &json!({ "wish_id": "wish-q3", "stage": stage, "k": key }), &key, &json!(null)).unwrap().0
 }
 
 /// Preview kept, then applied through the run (one ordinary, idempotent commit).

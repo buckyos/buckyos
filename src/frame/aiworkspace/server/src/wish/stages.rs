@@ -146,6 +146,7 @@ async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id
         analysis: Mutex::new(None),
         feedback,
         token: token.clone(),
+        aicc: super::on_behalf_of(&run, ws_id),
         prompts,
         tool_calls: Default::default(),
         program_runs: Default::default(),
@@ -225,7 +226,7 @@ async fn run_xllm(st: &Arc<StageState>, run_dir: &Path, system: String, user: St
     let cfg = &rt.config;
     let names: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
     let ctx_file = st.workdir.join(".llm_context");
-    let llm_ctx = llm::llm_context(cfg, model, iterations, &run_dir.join("xllm"), &names, shell);
+    let llm_ctx = llm::llm_context(cfg, model, iterations, &run_dir.join("xllm"), &names, shell, st.aicc.as_ref());
     write(&ctx_file, &serde_json::to_string_pretty(&llm_ctx).unwrap_or_default())?;
     let mut deps = XllmDeps::default().with_observer(Arc::new(Observer { active: st.active.clone() })).with_lock_dir(run_dir.join("locks"));
     for t in tools(st, kinds) {
@@ -262,12 +263,19 @@ async fn run_xllm(st: &Arc<StageState>, run_dir: &Path, system: String, user: St
     *st.active.interrupter.lock().unwrap() = None;
     let rec = outcome.record();
     let usage = json!({ "main": rec.usage.main, "llm_requests": rec.usage.llm_requests });
-    Ok(json!({
+    let x = json!({
         "xllm_run_id": rec.run_id, "status": rec.status.as_str(), "model": rec.config.model,
-        "error": rec.last_error.as_ref().map(|e| json!({ "phase": format!("{:?}", e.phase), "message": e.message })),
+        "error": rec.last_error.as_ref().map(|e| json!({ "phase": format!("{:?}", e.phase), "kind": e.kind, "message": e.message })),
         "limit_reason": rec.limit_reason, "answer": rec.result.as_ref().map(|r| r.raw.chars().take(2000).collect::<String>()),
         "usage": usage,
-    }))
+    });
+    if let Some(sub) = rec.last_error.as_ref().and_then(|e| super::refusal_sub_code(&e.kind)) {
+        let aicc = st.aicc.as_ref().map(|a| json!({ "mode": a.mode, "user_id": a.user_id, "operator_id": a.operator_id })).unwrap_or(Value::Null);
+        let mut x = x;
+        x["error"]["message"] = Value::Null;
+        return Err(super::refusal_error(sub, &aicc).with_data(json!({ "aicc": aicc, "xllm": x })));
+    }
+    Ok(x)
 }
 
 fn section(title: &str, body: &str) -> String {

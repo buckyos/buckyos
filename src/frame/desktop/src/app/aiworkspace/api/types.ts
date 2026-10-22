@@ -39,7 +39,13 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   purpose?: string | null
   /** Who the service takes the caller for (a guest of a public link only learns its principal here). */
   principal?: string
+  /** Whose AICC the wish blocks use (AI Center Quota PRD §3.3). */
+  wish_aicc_mode?: WishAiccMode
 }
+
+export type WishAiccMode = 'workspace_owner' | 'current_user'
+/** Whose AICC a run uses, fixed when it was accepted: `user_id` pays, `operator_id` started it. */
+export interface WishRunAicc { mode: WishAiccMode; user_id: string; operator_id?: string }
 
 export interface ShowLockInfo { show_id: string; presenter: string; started_at: string }
 
@@ -429,6 +435,7 @@ export interface WishRunView {
   parent_run_id?: string | null
   feedback?: string | null
   program_log?: string | null
+  aicc?: WishRunAicc | null
 }
 export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'new'>; confirm_structure?: boolean }
 

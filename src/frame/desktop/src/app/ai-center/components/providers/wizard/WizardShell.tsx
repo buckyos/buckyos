@@ -11,6 +11,8 @@ import { StepConnection } from './StepConnection'
 import { StepModels } from './StepModels'
 import { StepValidation } from './StepValidation'
 import { StepReview } from './StepReview'
+import { openProviderTo } from '../../../../../api/aicc_quota'
+import { useQuotaApi } from '../../../hooks/use-quota-api'
 import { isConnectionValid, wizardDraftSchema } from './connectionValidation'
 
 const INITIAL_DRAFT: WizardDraft = {
@@ -58,6 +60,8 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [keyboardInset, setKeyboardInset] = useState(0)
+  const [openTo, setOpenTo] = useState<string[]>([])
+  const quotaApi = useQuotaApi()
   const selectedProfile = catalog?.providers.find((item) => item.provider_profile_id === draft.provider_profile_id)
 
   const selectsInventoryModels = (selectedProfile?.selectable_inventory_models?.length ?? 0) > 0
@@ -91,7 +95,12 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       setCreateError(null)
       try {
         await new Promise((r) => setTimeout(r, 300))
-        await store.addProvider(draft)
+        const created = await store.addProvider(draft)
+        if (openTo.length > 0) {
+          await openProviderTo(quotaApi, created.config.provider_instance_name, openTo).catch((error: unknown) => {
+            console.error('aicc.visibility.open_provider failed', error)
+          })
+        }
         onCreated()
       } catch (error) {
         const message = error instanceof Error ? error.message : ''
@@ -285,6 +294,8 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             draft={draft}
             validation={validation}
             onToggleAutoSync={(v) => updateDraft({ auto_sync_models: v })}
+            openTo={openTo}
+            onOpenToChange={setOpenTo}
           />
         )}
         {createError && (

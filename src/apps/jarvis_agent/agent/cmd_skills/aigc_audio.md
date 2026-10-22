@@ -44,6 +44,7 @@ List `out/welcome.wav` in the final report's artifacts.
 - Provider rejection: exit 2 `=> failed` with `{"code":"provider_error",…,"provider_code":"400"}` — drop or change the offending option rather than repeating the call.
 - Two task layers: the `shell` call may return early with "still running … continues as task <id>" — that id is a shell task; keep waiting the way the hint says (`wait_task` with that id, or `agent-session task wait <id> --wait-ms …`) instead of starting the command again. The AICC generation has its own id (`t-…`), printed in the command's `__BUCKYOS_AGENT_PROGRESS__` stderr lines, in `detail.task_id` of the result and in a timeout error.
 - Exit 4 or a shell that returned early means still running, not failed: `resume_aicc_task <task_id> out/x` finishes it without a second charge. With `--idempotency-key K`, the same command and K re-attach within 24 h (and return an earlier failure again — use a new key for a real retry).
+- `=> resource_not_permitted` / `quota_exhausted` / `quota_budget_exceeded` (`detail.error_code`): the model is not open to your owner or the owner's AI quota does not cover the call — report it, do not retry at once; `ai_quota` shows the rules.
 - Costs: `ai_provider models --api-type audio.tts` shows list prices; `resume_aicc_task <task_id>` shows what a finished task cost (the TTS sentence above: 0.001 USD).
 
 #### Check the result

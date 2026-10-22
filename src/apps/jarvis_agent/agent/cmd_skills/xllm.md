@@ -99,6 +99,10 @@ extraction or JSON check failed (raw reply saved).
   a new run for the same job would duplicate the work.
 - Exit 4 (Ctrl-C/SIGINT): resumable. The interrupted tool call is not replayed, but the model may run it
   again; mind commands that are not idempotent.
+- Last error kind `quota_exhausted` / `quota_budget_exceeded` / `resource_not_permitted` (exit 1,
+  `status --run <id>`): AICC refused the call under the AI quota or model permissions of the user it is
+  charged to. Retrying does not help until the quota resets or the user changes the model; report it
+  (`buckyos ai quota` shows the rules and `reset_at_ms`). A lower `--max-tokens` can fit `quota_budget_exceeded`.
 - Exit 1 runs are final: `--resume` on them shows the saved record (with limit flags: exit 1 `is terminal`).
 - Exit 5/6: `agent_tool xllm result --run <id> --result-format raw [--output f]`.
 - `--resume` with a new question, or on a run another process is executing: exit 2.
