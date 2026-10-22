@@ -1812,7 +1812,7 @@ AI Center
 ## Phase 3：高级版
 - 多 Key / 多账号策略
 - 并行多模型与高级路由
-- 配额 / 限额控制
+- 配额 / 限额控制（见 [AI Center Token Quota 与资源可见性 PRD](AI_Center_Quota_PRD.md)）
 - 更强审计与权限体系
 
 ---
