@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "autoprefixer": "^10.4.27",
-    "buckyos": "latest",
+    "buckyos": "^0.7.137",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
     "postcss": "^8.5.8",

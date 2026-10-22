@@ -718,6 +718,73 @@ export class MessageHubApiStore implements MessageHubStore {
     }
   }
 
+  async markAllRead(context: MessageHubContext): Promise<void> {
+    this.requireOwn(context)
+    const data = this.owner(context.ownerDid)
+    const epoch = data.epoch
+    const readSummaries = async () => {
+      const summaries: SessionSummary[] = []
+      let cursor: OwnerData['nextCursor']
+      do {
+        const page = await listSessions({ owner: context.ownerDid, limit: SESSION_PAGE_SIZE, with_object: true, lifecycle: 'all', order_by: 'activity', cursor_updated_at_ms: cursor?.value, cursor_session_id: cursor?.sessionId })
+        if (data.epoch !== epoch) throw new Error('context_changed')
+        summaries.push(...page.items ?? [])
+        cursor = page.next_cursor_updated_at_ms !== undefined && page.next_cursor_session_id !== undefined ? { value: page.next_cursor_updated_at_ms, sessionId: page.next_cursor_session_id } : undefined
+      } while (cursor)
+      return summaries
+    }
+    const summaries = await readSummaries()
+    const failures: unknown[] = []
+    const unread = new Map<string, SessionMessageItem[]>()
+    for (const summary of summaries.filter(item => item.unread_count > 0)) {
+      try {
+        let cursor: SessionHistory['oldestCursor']
+        const boundary = summary.last_record?.record
+        const targets: SessionMessageItem[] = []
+        unread.set(summary.session_id, targets)
+        do {
+          const page = await listSessionMessages({ owner: context.ownerDid, session_id: summary.session_id, limit: HISTORY_PAGE_SIZE, descending: true, with_object: false, cursor_sort_key: cursor?.sortKey, cursor_record_id: cursor?.recordId })
+          if (data.epoch !== epoch) throw new Error('context_changed')
+          targets.push(...(page.items ?? []).filter(item => item.direction === 'in' && item.recipient_state === 'UNREAD' && (!boundary || item.sort_key < boundary.sort_key || (item.sort_key === boundary.sort_key && item.record_id <= boundary.record_id))))
+          cursor = page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined ? { sortKey: page.next_cursor_sort_key, recordId: page.next_cursor_record_id } : undefined
+        } while (cursor)
+      } catch (error) {
+        if (data.epoch !== epoch) throw error
+        failures.push(error)
+      }
+    }
+    for (const [sessionId, targets] of unread) {
+      for (let offset = 0; offset < targets.length; offset += 8) {
+        const results = await Promise.allSettled(targets.slice(offset, offset + 8).map(item => updateRecordState(item.record_id, 'READ')))
+        if (data.epoch !== epoch) throw new Error('context_changed')
+        const records = new Map<string, Awaited<ReturnType<typeof updateRecordState>>>()
+        for (const result of results) {
+          if (result.status === 'fulfilled') records.set(result.value.record_id, result.value)
+          else failures.push(result.reason)
+        }
+        const key = viewerSessionKey(context, sessionId)
+        const history = data.histories.get(key)
+        if (history && records.size > 0) {
+          const updated = history.messages.flatMap(message => {
+            const meta = recordMeta(message)
+            const record = meta && records.get(meta.recordId)
+            return record ? [{ ...message, ui_record: { ...meta, recipientState: record.state } }] : []
+          })
+          data.histories.set(key, upsertMessages(history, updated))
+          this.bump(data)
+        }
+      }
+    }
+    try {
+      this.mergeSummaries(data, await readSummaries())
+      data.nextCursor = undefined
+      this.bump(data)
+    } catch (error) {
+      failures.push(error)
+    }
+    if (failures.length > 0) throw failures[0]
+  }
+
   /** The group DID of a local group session, or undefined for any other session. */
   private groupOfSession(context: MessageHubContext, sessionId: string): string | undefined {
     const session = this.projected(context).sessions.find(item => item.id === sessionId)

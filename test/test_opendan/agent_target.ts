@@ -9,7 +9,7 @@
  * - otherwise the user's first ready agent.
  *
  * OPENDAN_URL overrides where its Loader is reached (default: the agent's app
- * host through the zone gateway, `https://<app_host_name>.<zone>/kapi/opendan`;
+ * host through the zone gateway, `https://<app_host_name>.<zone>/kapi/<agent_id>`;
  * `debug_jarvis.sh` prints the local service port instead).
  *
  * Run on its own it prints the selected agent (and creates it when asked):
@@ -107,7 +107,7 @@ export async function resolveAgent(cp: ControlPanelCall, owner: string, zoneHost
   if (state(entry) !== "ready") throw new Error(`agent ${entry.agent_id} is ${state(entry)}, not ready`);
   const host = (entry.runtime as JsonRecord | null)?.app_host_name;
   const opendanUrl = Deno.env.get("OPENDAN_URL")?.trim() ||
-    (host ? `https://${host}.${zoneHost}/kapi/opendan` : "");
+    (host ? `https://${host}.${zoneHost}/kapi/${entry.agent_id}` : "");
   if (!opendanUrl) throw new Error(`agent ${entry.agent_id} has no runtime app; set OPENDAN_URL`);
   return {
     agentId: String(entry.agent_id),

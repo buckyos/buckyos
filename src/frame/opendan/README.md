@@ -105,13 +105,13 @@ cd src && uv run start.py --skip-update
 
 ## kRPC 接口
 
-同一服务也挂载在 `/kapi/<agent_id>`（AgentSpec 的完整 AgentId，包含域名中的点），供 Desktop 经 zone 网关的 `service_info[agent_id]` 同源访问。两条路径使用相同的 owner/root 鉴权；客户端通过 `agent.list` 的 DID → AgentId 映射定位，不把会话 token 发送到消息提供的任意 URL。
+WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网关按应用域名转发；本地调试也使用这条路径。`/kapi/opendan` 用于直连 Loader，同一服务也挂载在 `/kapi/<agent_id>`（AgentSpec 的完整 AgentId，包含域名中的点），供 Desktop 经 zone 网关的 `service_info[agent_id]` 同源访问。所有路径使用相同的 owner/root 鉴权；客户端通过 `agent.list` 的 DID → AgentId 映射定位，不把会话 token 发送到消息提供的任意 URL。zone 网关把 `/kapi/<name>` 解释为服务名，不能用 `/kapi/opendan` 访问没有同名系统服务的 Agent 应用。
 
-`GET /kapi/opendan` 不需要 token，返回 `{"app_id": "<托管本页面的 app>" | null}`：WebUI 用它向 zone 换取 session token（token 是签给这个 app 的）；`--dev` 形态返回 `null`。
+`GET /api/opendan` 不需要 RPC token，返回 `{"app_id": "<托管本页面的 app>" | null}`：WebUI 用它向 zone 换取 session token（token 是签给这个 app 的）；`--dev` 形态返回 `null`。经 zone 网关访问仍需本应用的 SSO cookie。
 
 经 zone 网关访问时，网关只放行带 zone 登录（本主机的 SSO cookie）的请求，其余一律 302 到 zone 登录页；脚本发起的调用跟不过去（跨源），表现为 `Failed to fetch`。续期失败（例如 verify-hub 重启后不再认得 refresh token）时 zone 会清掉 cookie，登录就此失效。WebUI 在调用出现传输错误时用 `GET`（`redirect: manual`）探一次：被网关重定向即显示“登录已失效”，“重新登录”重新加载页面，由网关带到登录页。
 
-路径 `/kapi/opendan`，标准 kRPC（`POST`，`{"method","params","sys":[seq, session_token]}`）。调用方身份 `who` 来自 session token（verify-hub 签发）：Agent 的 owner（经任何 app）与 zone root 可访问；`--dev` 形态不校验。错误的 `error` 字段里带 JSON 文本 `{"kind","message",…}`（kRPC 会加前缀 `Failed due to reason: `，从第一个 `{` 起解析）（`kind` 取值同 `OpenDanError::to_json`，如 `not_found`、`invalid_argument`、`input_full`、`queue_missing`）。
+以上路径均使用标准 kRPC（`POST`，`{"method","params","sys":[seq, session_token]}`）。调用方身份 `who` 来自 session token（verify-hub 签发）：Agent 的 owner（经任何 app）与 zone root 可访问；`--dev` 形态不校验。错误的 `error` 字段里带 JSON 文本 `{"kind","message",…}`（kRPC 会加前缀 `Failed due to reason: `，从第一个 `{` 起解析）（`kind` 取值同 `OpenDanError::to_json`，如 `not_found`、`invalid_argument`、`input_full`、`queue_missing`）。
 
 ### Agent State（与 `AgentStateClient` 一一对应）
 

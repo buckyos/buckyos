@@ -42,6 +42,7 @@ use crate::home::Home;
 use crate::ui::UiModule;
 
 pub const SERVICE_PATH: &str = "/kapi/opendan";
+pub const WEB_API_PATH: &str = "/api/opendan";
 
 /// Who may call the service.
 #[derive(Debug, Clone)]

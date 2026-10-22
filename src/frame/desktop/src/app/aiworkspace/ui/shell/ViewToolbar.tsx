@@ -6,20 +6,18 @@
  * presentation path. On a phone (§16) it is the only toolbar and starts with the canvas switcher (icon, name, the
  * workspace's canvases). */
 
-import { useCallback, useEffect, useState } from 'react'
-import { Globe, Link2, LogIn, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
-import { describeError } from '../../api/session'
-import type { GrantList, Json } from '../../api/types'
+import { useEffect, useState } from 'react'
+import { Link2, LogIn, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
+import type { Json } from '../../api/types'
 import { pathsOf } from '../../presentation/model'
 import { guestLabel, readGuestName, writeGuestName } from '../../state/guest'
-import { useLoad, useOutlineVersion, useStore } from '../../state/hooks'
+import { useOutlineVersion, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import { SurfaceSwitcher } from './MainToolbar'
 import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
-import { PUBLIC_LINK_CAPABILITIES, PUBLIC_SUBJECT, shareLink, useShell, ZOOM_PRESETS } from './shellContext'
-import { ShareEntries } from './ShareEntries'
+import { useShell, ZOOM_PRESETS } from './shellContext'
 import { ObjectImage } from '../../../../presentation/ObjectIcon'
 import { useCurrentUser } from '../../../../presentation/currentUser'
 
@@ -216,66 +214,12 @@ function IdentityButton() {
 }
 
 
-/** The share panel (§8.3): the access link, and — for a manager — the one-click public link: a `public` grant
- * (read + comment) that lets anyone with the link open it and annotate without signing in, until it is withdrawn;
- * and entry links (hybrid SSO), which offer chosen ways in and grant chosen access. */
 function ShareButton() {
-  const store = useStore()
   const shell = useShell()
   const { t } = useAiwsText()
-  const { open, setOpen, close, bindAnchor, bindTrigger } = usePopover()
-  const [copied, setCopied] = useState<'copied' | 'manual' | null>(null)
-  const [tick, setTick] = useState(0)
-  const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState<string | null>(null)
-  const link = shareLink(store.session.workspaceId, shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null)
-  const where = shell.topMode === 'canvas' && shell.activeSurface ? t('aiworkspace.shell.share.whereCanvas', { name: shell.activeSurface.title ?? shell.activeSurface.name ?? '' }) : t('aiworkspace.shell.share.whereWorkspace')
-  const canManage = store.session.info().capabilities.includes('manage')
-  // the grants say whether the link is public; read when the panel opens, again after each change
-  const loadGrants = useCallback(() => (open ? store.session.listGrants() : Promise.resolve(null as GrantList | null)), [store, open])
-  const grants = useLoad(loadGrants, tick)
-  const isPublic = (grants.data?.grants ?? []).some((g) => g.subject === PUBLIC_SUBJECT && !g.scope_entity_id)
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(link); setCopied('copied') } catch { setCopied('manual') }
-  }
-  /** `failedKey`: the text key of the failure, with the error as `{{error}}`. */
-  const change = (failedKey: string, work: () => Promise<void>) => {
-    setBusy(true)
-    setFailure(null)
-    work().then(copy).catch((error: unknown) => setFailure(t(failedKey, { error: describeError(error) }))).finally(() => { setBusy(false); setTick((n) => n + 1) })
-  }
-  const publish = () => change('aiworkspace.shell.share.publishFailed', () => store.session.grant(PUBLIC_SUBJECT, [...PUBLIC_LINK_CAPABILITIES]))
-  const unpublish = () => change('aiworkspace.shell.share.unpublishFailed', () => store.session.revoke(PUBLIC_SUBJECT))
   return (
-    <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className={`aiws-tool${shell.size === 'narrow' || shell.phone ? '' : ' aiws-tool-text'} is-primary`} aria-label={t('aiworkspace.shell.share.label')} title={t('aiworkspace.shell.share.copyTitle')} data-testid="aiws-share" onClick={() => { setOpen(true); void copy() }}>
-        <Link2 size={18} />{shell.size !== 'narrow' && !shell.phone && <span>{t('aiworkspace.shell.share.button')}</span>}
-      </button>
-      {open && (
-        <PopoverPanel align="end" label={t('aiworkspace.shell.share.label')} testId="aiws-share-panel" className="aiws-share-panel">
-          <div className="aiws-panel-title">{copied === 'copied' ? (isPublic ? t('aiworkspace.shell.share.copiedPublic') : t('aiworkspace.shell.share.copied')) : t('aiworkspace.shell.share.link')}</div>
-          <input readOnly aria-label={t('aiworkspace.shell.share.link')} value={link} data-testid="aiws-share-link" onFocus={(event) => event.target.select()} />
-          {copied === 'manual' && <div className="aiws-muted">{t('aiworkspace.shell.share.copyManually')}</div>}
-          {grants.data && (isPublic ? (
-            <div className="aiws-share-public" data-testid="aiws-share-public-state" data-public="true">
-              <Globe size={16} aria-hidden="true" />
-              <span>{t('aiworkspace.shell.share.publicOn', { where })}</span>
-            </div>
-          ) : (
-            <div className="aiws-muted" data-testid="aiws-share-public-state" data-public="false">{t('aiworkspace.shell.share.privateNote', { where })}</div>
-          ))}
-          {grants.error && <div className="aiws-error" role="alert">{grants.error}</div>}
-          {failure && <div className="aiws-error" role="alert" data-testid="aiws-share-error">{failure}</div>}
-          <div className="aiws-dialog-actions">
-            {canManage && (isPublic
-              ? <button type="button" data-testid="aiws-share-unpublish" disabled={busy || grants.loading} onClick={unpublish}>{t('aiworkspace.shell.share.unpublish')}</button>
-              : <button type="button" className="is-primary" data-testid="aiws-share-publish" disabled={busy || grants.loading} title={t('aiworkspace.shell.share.publishHint')} onClick={publish}><Globe size={16} aria-hidden="true" /> {t('aiworkspace.shell.share.publish')}</button>)}
-            {canManage && <button type="button" data-testid="aiws-share-collab" onClick={() => { close(); shell.setSide('collab') }}>{t('aiworkspace.shell.share.grantInCollab')}</button>}
-          </div>
-          {canManage && <ShareEntries client={shell.client} workspaceId={store.session.workspaceId} />}
-          {!shell.identity.guest && <div className="aiws-muted">{t('aiworkspace.shell.share.exportHint')}</div>}
-        </PopoverPanel>
-      )}
-    </span>
+    <button type="button" className={`aiws-tool${shell.size === 'narrow' || shell.phone ? '' : ' aiws-tool-text'} is-primary`} aria-label={t('aiworkspace.shell.share.label')} title={t('aiworkspace.shell.share.label')} aria-haspopup="dialog" data-testid="aiws-share" onClick={() => shell.openDialog({ kind: 'share' })}>
+      <Link2 size={18} />{shell.size !== 'narrow' && !shell.phone && <span>{t('aiworkspace.shell.share.button')}</span>}
+    </button>
   )
 }

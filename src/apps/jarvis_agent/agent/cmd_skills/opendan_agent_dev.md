@@ -98,6 +98,7 @@ Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/
 
 #### When it fails
 - `unknown method skills.list|install` from `buckyos skill`: that Agent's container predates the skills kRPC; it needs a newer aios image and a recreated container.
+- WebUI `503 service_not_ready:opendan`: check that the app uses `/api/opendan` on its own host. The zone gateway reserves `/kapi/<name>` for named services; cross-app callers use `/kapi/<agent_id>` with the full AgentId. See `src/frame/opendan/README.md` for endpoint and login details.
 - Session creation errors name the missing behavior or cmd_skill, or `> 8` / duplicate manual names.
 - Template install refused: `app_type` not `agent`, App DID/AppId mismatch, or no `www` endpoint.
 - Your edits to template files in your own AgentRoot survive template updates as local changes; to share them, put them into the template package.

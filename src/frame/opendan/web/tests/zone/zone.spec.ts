@@ -6,15 +6,46 @@ const password = process.env.OPENDAN_ZONE_PASSWORD ?? 'bucky2025'
 const signIn = async (page: Page) => {
   await page.locator('input[type="text"]').fill(user)
   await page.locator('input[type="password"]').fill(password)
-  await page.getByRole('button', { name: 'Sign In' }).click()
+  await page.getByRole('button', { name: 'Sign In', exact: true }).click()
 }
+
+test('a fresh Agent opens its home and Loader through the app API', async ({ page }) => {
+  const errors: string[] = []
+  const failures: string[] = []
+  const apiMethods: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('response', (response) => {
+    if (response.status() === 503) failures.push(response.url())
+    if (new URL(response.url()).pathname !== '/api/opendan') return
+    apiMethods.push(response.request().method())
+    if (response.status() !== 200) failures.push(`${response.status()} ${response.url()}`)
+  })
+  const metadata = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/opendan' && response.request().method() === 'GET',
+  )
+  await page.goto('/?lang=en')
+  await expect(page).toHaveURL(/\/login\?/)
+  await signIn(page)
+  const { app_id: appId } = await (await metadata).json() as { app_id: string }
+  expect(appId).toBeTruthy()
+  await expect(page.getByTestId('data-source')).toHaveText('data: krpc')
+  await expect(page.getByTestId('agent-did')).toContainText(appId)
+  await page.getByRole('link', { name: 'Advanced' }).click()
+  await page.getByRole('link', { name: 'Loader', exact: true }).click()
+  await expect(page.getByTestId('loader-info')).toContainText(appId)
+  await expect(page.getByTestId('loader-modules')).toContainText('agent_state_service')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(apiMethods).toEqual(expect.arrayContaining(['GET', 'POST']))
+  expect(failures).toEqual([])
+  expect(errors).toEqual([])
+})
 
 test('the WebUI behind the zone gateway reads the Loader with the zone login', async ({ page }) => {
   const errors: string[] = []
   const denied: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
   page.on('response', async (r) => {
-    if (!r.url().endsWith('/kapi/opendan')) return
+    if (!r.url().endsWith('/api/opendan')) return
     const body = await r.text().catch(() => '')
     if (body.includes('No permission')) denied.push(`${r.request().postDataJSON()?.method}: ${body.slice(0, 160)}`)
   })

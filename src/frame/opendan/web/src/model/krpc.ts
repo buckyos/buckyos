@@ -2,7 +2,7 @@ import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
 import { OpenDanError, type LoginState, type OpenDanDataModel } from './datamodel'
 import type { AgentProfile, LoaderStatus, PerceptionCursor } from './types'
 
-const SERVICE_URL = '/kapi/opendan'
+const SERVICE_URL = '/api/opendan'
 
 // In a zone the gateway admits this page's requests only with the zone login
 // (the SSO cookies of this host) and answers the others with a redirect to the

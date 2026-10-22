@@ -727,17 +727,47 @@
 .aiws-side .aiws-grants { font-size: 12px; width: 100%; }
 .aiws-side .aiws-grants td, .aiws-side .aiws-grants th { word-break: keep-all; }
 .aiws-status .aiws-state-committed { background: none; color: var(--cp-muted); }
-.aiws-share-panel { width: 320px; display: flex; flex-direction: column; gap: 6px; }
-.aiws-share-panel input { width: 100%; box-sizing: border-box; }
-.aiws-share-panel .aiws-dialog-actions { flex-wrap: wrap; }
-.aiws-share-public { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: 6px; background: var(--aiws-selected-bg); border: 1px solid var(--aiws-selected-border); }
-.aiws-share-public svg { flex: none; margin-top: 2px; color: var(--cp-accent); }
-.aiws-share-entries { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--cp-border); }
-.aiws-share-entry { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--cp-border); }
-.aiws-share-entry-methods { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.aiws-share-entry-form { display: flex; flex-direction: column; gap: 4px; }
-.aiws-share-entry-form label { display: flex; align-items: center; gap: 6px; }
-.aiws-share-entry-form button { align-self: flex-start; }
+.aiws-share-dialog-layout { display: flex; flex-direction: column; min-height: 0; outline: none; }
+.aiws-share-dialog-head { display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px 18px; }
+.aiws-share-heading { flex: 1; min-width: 0; }
+.aiws-share-heading h2 { margin: 0 0 4px; font-size: 20px; font-weight: 650; line-height: 1.4; }
+.aiws-share-heading p { margin: 0; overflow-wrap: anywhere; }
+.aiws-share-tabs { display: flex; gap: 20px; padding: 0 24px; border-bottom: 1px solid var(--cp-border); }
+.aiws-root .aiws-share-tabs button { display: flex; align-items: center; gap: 7px; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 2px; background: transparent; color: var(--cp-muted); }
+.aiws-root .aiws-share-tabs button[aria-selected='true'] { color: var(--cp-accent); border-bottom-color: var(--cp-accent); font-weight: 600; }
+.aiws-share-dialog-body { padding: 22px 24px; overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+.aiws-share-link-content, .aiws-share-entries { display: flex; flex-direction: column; gap: 20px; }
+.aiws-share-section { display: flex; flex-direction: column; gap: 10px; }
+.aiws-share-dialog h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.aiws-share-link-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.aiws-root .aiws-share-link-row input { flex: 1 1 200px; min-width: 0; width: 0; box-sizing: border-box; height: 38px; padding: 7px 10px; }
+.aiws-root .aiws-share-dialog button:not(.aiws-tool):not([role='tab']) { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; line-height: 1.4; }
+.aiws-share-link-row button { flex-shrink: 0; }
+.aiws-share-access { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid var(--cp-border); border-radius: 10px; background: var(--cp-surface-2); }
+.aiws-share-access.is-public { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+.aiws-share-access-title { display: flex; align-items: center; gap: 8px; }
+.aiws-share-access-title svg { flex: none; color: var(--cp-muted); }
+.aiws-share-access.is-public .aiws-share-access-title svg { color: var(--cp-accent); }
+.aiws-share-access p { margin: 0; }
+.aiws-share-collab { align-self: flex-start; }
+.aiws-share-dialog-foot { flex-shrink: 0; border-top: 1px solid var(--cp-border); padding: 14px 24px; font-size: 12px; }
+.aiws-share-entry-form { display: flex; flex-direction: column; gap: 14px; }
+.aiws-share-entry-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.aiws-share-entry-options legend { padding: 0 0 10px; font-weight: 600; }
+.aiws-share-entry-option { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--cp-border); border-radius: 8px; cursor: pointer; }
+.aiws-share-entry-option:has(:checked) { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+.aiws-share-entry-option input[type='checkbox'] { flex: 0 0 16px; width: 16px; height: 16px; margin: 0; }
+.aiws-share-entry-option span { min-width: 0; overflow-wrap: anywhere; }
+.aiws-share-entry-create-row { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.aiws-share-entry-create-row label { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.aiws-root .aiws-share-entry-create-row select { min-height: 36px; padding: 6px 10px; }
+.aiws-share-entry-list { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--cp-border); }
+.aiws-share-entry-list > .aiws-panel-title { margin: 0; }
+.aiws-share-entry { display: flex; flex-direction: column; gap: 12px; padding: 12px; border-radius: 8px; border: 1px solid var(--cp-border); }
+.aiws-share-entry-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.aiws-share-entry-header > button { flex-shrink: 0; }
+.aiws-share-entry-methods { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.aiws-share-entry-methods .aiws-chip { white-space: normal; overflow-wrap: anywhere; }
 .aiws-identity-panel { width: 280px; }
 .aiws-guest-name { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .aiws-guest-name input { flex: 1; min-width: 0; }
@@ -820,6 +850,12 @@
 /* dialogs */
 .aiws-modal-backdrop { position: absolute; inset: 0; z-index: 70; display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px 16px; background: rgb(0 0 0 / 0.22); box-sizing: border-box; overflow: auto; }
 .aiws-modal-backdrop > .aiws-dialog { position: relative; top: auto; left: auto; transform: none; width: min(640px, 100%); min-width: 0; max-width: none; max-height: calc(100% - 16px); overflow: auto; box-sizing: border-box; border-radius: 12px; padding: 12px 16px; }
+.aiws-modal-backdrop:has(> .aiws-share-dialog) { align-items: center; padding: 16px; }
+.aiws-modal-backdrop > .aiws-share-dialog { width: min(600px, 100%); max-height: 100%; padding: 0; gap: 0; overflow: hidden; border-radius: 16px; }
+.aiws-workspace[data-size='narrow'] .aiws-share-dialog-head { padding: 18px 16px 14px; }
+.aiws-workspace[data-size='narrow'] .aiws-share-tabs { padding-inline: 16px; gap: 16px; }
+.aiws-workspace[data-size='narrow'] .aiws-share-dialog-body { padding: 18px 16px; }
+.aiws-workspace[data-size='narrow'] .aiws-share-dialog-foot { padding: 12px 16px; }
 .aiws-floating-dialog { position: absolute; z-index: 65; top: 64px; right: 16px; left: auto; transform: none; width: min(420px, calc(100% - 32px)); min-width: 0; max-height: calc(100% - 80px); overflow: auto; }
 .aiws-dialog-head { display: flex; align-items: center; gap: 8px; }
 .aiws-dialog-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-top: 6px; }

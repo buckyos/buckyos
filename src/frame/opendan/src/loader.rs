@@ -28,7 +28,7 @@ use crate::config::AgentConfig;
 use crate::home::Home;
 use crate::records::{self, AgentRecords};
 use crate::rootfs::{self, RootIdentity};
-use crate::service::{Access, LoaderInfo, ModuleStatus, StateService, SERVICE_PATH};
+use crate::service::{Access, LoaderInfo, ModuleStatus, StateService, SERVICE_PATH, WEB_API_PATH};
 use crate::tasks::{owner_of, CancelBridge, TaskService, TurnTasks};
 use crate::ui::{MailService, MsgCenterSink, OutboundTexts, UiModule};
 
@@ -405,9 +405,11 @@ impl Loader {
                         },
                     ),
                 });
-                runner
-                    .add_http_server(SERVICE_PATH.to_string(), service.clone())
-                    .map_err(|e| anyhow!("mount {SERVICE_PATH}: {e:?}"))?;
+                for path in [SERVICE_PATH, WEB_API_PATH] {
+                    runner
+                        .add_http_server(path.to_string(), service.clone())
+                        .map_err(|e| anyhow!("mount {path}: {e:?}"))?;
+                }
                 let agent_path = format!("/kapi/{}", agent.agent_id());
                 if agent_path != SERVICE_PATH {
                     runner.add_http_server(agent_path.clone(), service)

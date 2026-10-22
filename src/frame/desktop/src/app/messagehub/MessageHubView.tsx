@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { ChevronRight, House, ImagePlay, LogIn, MessageSquare, MessageSquarePlus, PanelLeftClose, SquarePen, Users } from 'lucide-react'
+import { CheckCheck, ChevronRight, House, ImagePlay, LogIn, MessageSquare, MessageSquarePlus, PanelLeftClose, SquarePen, Users } from 'lucide-react'
 import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
@@ -162,10 +162,16 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? (canOpenPeer(initialEntityId) ? initialEntityId : null) : findRequestedSession()?.entityId ?? store.entities(context)[0]?.id ?? null)
   const getDefaultSessionId = (entityId: string | null) => entityId ? store.defaultSession(context, entityId)?.id ?? null : null
   const contextEpoch = useRef(0)
+  const contextActive = useRef(true)
   const ownerDid = context.ownerDid
-  useEffect(() => () => { contextEpoch.current++; store.clearTransient(ownerDid) }, [ownerDid, store])
+  useEffect(() => {
+    const epoch = contextEpoch
+    contextActive.current = true
+    return () => { contextActive.current = false; epoch.current++; store.clearTransient(ownerDid) }
+  }, [ownerDid, store])
   const [archived, setArchived] = useState(() => findRequestedSession(resolvedInitialEntityId)?.lifecycle === 'archived')
   const [writeConfirmations, setWriteConfirmations] = useState<Record<string, string>>({})
+  const [markingAllRead, setMarkingAllRead] = useState(false)
 
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(resolvedInitialEntityId)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
@@ -440,7 +446,23 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     { key: 'group', label: newGroupLabel, icon: <Users size={16} />, onSelect: () => openCreateGroup(), disabled: !canManage, testId: 'new-group' },
     { key: 'join', label: t('messagehub.group.joinGroup'), icon: <LogIn size={16} />, onSelect: () => { void openJoinGroup() }, disabled: !canManage, testId: 'join-group' },
   ]
+  const markAllRead = async () => {
+    if (!canManage || markingAllRead) return
+    setMarkingAllRead(true)
+    try {
+      await store.markAllRead(context)
+    } catch {
+      if (contextActive.current) void dialog.open({
+        title: t('messagehub.header.markAllRead'), size: 'sm',
+        renderBody: () => <p role="alert" className="text-sm">{t('messagehub.header.markAllReadFailed')}</p>,
+        renderActions: controls => <button type="button" className={hubButtonClass} onClick={() => controls.close()}>{t('messagehub.close')}</button>,
+      })
+    } finally {
+      if (contextActive.current) setMarkingAllRead(false)
+    }
+  }
   const moreItems: HeaderMenuItem[] = [
+    ...(canManage ? [{ key: 'mark-all-read', label: t(markingAllRead ? 'messagehub.header.markingAllRead' : 'messagehub.header.markAllRead'), icon: <CheckCheck size={16} />, onSelect: () => { void markAllRead() }, disabled: markingAllRead || !networkOnline || (!store.hasMoreEntities(context) && !store.sessions(context).some(session => session.unreadCount > 0)), testId: 'mark-all-read' }] : []),
     ...(onHome ? [{ key: 'home', label: t('messagehub.home', 'Back to desktop'), icon: <House size={16} />, onSelect: onHome, testId: 'messagehub-home' }] : []),
     ...(mediaHost ? [{ key: 'media', label: t('messagehub.media.settings', 'Media settings'), icon: <ImagePlay size={16} />, onSelect: () => mediaHost.openSettings(), testId: 'media-settings' }] : []),
     ...(isDesktop ? [{ key: 'collapse', label: t('messagehub.collapseEntityList', 'Collapse entity list'), icon: <PanelLeftClose size={16} />, onSelect: handleCollapseEntityList, testId: 'collapse-entity-list' }] : []),

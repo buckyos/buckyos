@@ -92,6 +92,7 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 | 创建输入 | `createSessionSchema`: entityId、trim 后最多 64 字符 title、显式连接选择；当前只创建 chat |
 | 编辑输入 | `sharedStateSchema`（title / description 64 / 500 字符）、`memberStateSchema`（nickname 64 字符）、`presentationSchema`（title / pinned / muted） |
 | 操作状态 | 初始化 loading / error / retry；创建、编辑、管理和发送具有 pending / error，成功提交后才发布 store 结果 |
+| 批量已读 | 自己的“更多”菜单提供“全部标为已读”，覆盖归档、静音及未加载会话；真实 store 分页收集未读记录后持久化为 READ，再刷新摘要，失败时提示重试；Agent 观察模式不可用 |
 | Action 过滤 | `SessionPreferences.showActions` 默认 true；开关位于会话详情的“偏好设置”；只能在 projection 过滤，不删除原始消息，不改业务状态 |
 
 `lastActiveAt` 的唯一语义是最后有效消息活动时间：

@@ -26,6 +26,7 @@ export const SOURCES_SIDE_TABS: SideTab[] = ['collab', 'edits']
 
 export type DialogRequest =
   | { kind: 'new'; tab: 'canvas' | 'workspace' | 'template' }
+  | { kind: 'share' }
   | { kind: 'export' }
   | { kind: 'import' }
   | { kind: 'help' }

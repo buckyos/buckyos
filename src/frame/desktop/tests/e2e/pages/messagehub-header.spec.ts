@@ -71,7 +71,8 @@ test('+ holds the new entries and ⋮ the rest; Escape closes a menu back to its
   await expect(page.getByTestId('hub-create-menu')).toBeFocused()
   await page.getByTestId('hub-more-menu').click()
   const more = page.getByRole('menu', { name: 'More' })
-  await expect(more.getByRole('menuitem')).toHaveText(['Back to desktop', 'Media settings', 'Collapse list'])
+  await expect(more.getByRole('menuitem')).toHaveText(['Mark all as read', 'Back to desktop', 'Media settings', 'Collapse list'])
+  await page.screenshot({ path: 'test-results/messagehub-mark-all-read-menu.png', clip: { x: 0, y: 0, width: 420, height: 300 } })
   await more.getByRole('menuitem', { name: 'Collapse list' }).click()
   await expect(page.getByTestId('entity-list-header')).toHaveCount(0)
   await page.getByRole('button', { name: 'Expand list' }).click()
@@ -79,6 +80,81 @@ test('+ holds the new entries and ⋮ the rest; Escape closes a menu back to its
   await page.getByTestId('hub-create-menu').click()
   await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
   await expect(page.getByRole('dialog')).toBeVisible()
+})
+
+test('mark all as read clears every badge and persists, including muted and archived chats; new messages become unread', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openHub(page)
+  await page.getByRole('button', { name: /^CodeAssistant/ }).click()
+  const before = await page.evaluate(async ({ context, agent, alice }) => {
+    const store = window.__messageHubMock
+    await store.manage(context, 'session-coder-ask', 'archive')
+    for (const session of store.sessions(context, alice)) await store.updatePreferences(context, session.id, { muted: true })
+    return {
+      sessions: store.sessions(context).map(session => ({ id: session.id, lifecycle: session.lifecycle, unreadCount: session.unreadCount })).sort((a, b) => a.id.localeCompare(b.id)),
+      coderUnread: store.entities(context).find(entity => entity.id === agent)!.unreadCount,
+      mutedUnread: store.entities(context).find(entity => entity.id === alice)!.unreadCount,
+      observed: store.sessions({ ...context, ownerDid: agent, mode: 'observe' }).map(session => session.unreadCount),
+    }
+  }, { context: OWN, agent: CODER, alice: ALICE })
+  expect(before.mutedUnread).toBeGreaterThan(0)
+  const cleared = before.sessions.map(session => ({ ...session, unreadCount: 0 }))
+  const sessions = () => page.evaluate(context => window.__messageHubMock.sessions(context).map(session => ({ id: session.id, lifecycle: session.lifecycle, unreadCount: session.unreadCount })).sort((a, b) => a.id.localeCompare(b.id)), OWN)
+  const coder = page.getByRole('button', { name: /^CodeAssistant/ })
+  await expect(coder.getByText(String(before.coderUnread), { exact: true })).toBeVisible()
+  await expect(page.getByTestId('hub-unread-total')).toBeVisible()
+  await expect(page.getByTestId('other-sessions-unread')).toBeVisible()
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  await expect(page.getByTestId('archived-unread')).toHaveText('1')
+  const currentSession = page.locator('[data-session-id="session-coder-1"]')
+  await expect(currentSession.getByText('3', { exact: true })).toBeVisible()
+
+  await page.getByTestId('hub-more-menu').click()
+  await page.getByTestId('mark-all-read').click()
+  await expect(page.getByTestId('hub-unread-total')).toHaveCount(0)
+  await expect(page.getByTestId('other-sessions-unread')).toHaveCount(0)
+  await expect(page.getByTestId('archived-unread')).toHaveCount(0)
+  await expect(coder.getByText(/^\d+$/)).toHaveCount(0)
+  await expect(currentSession.getByText(/^\d+$/)).toHaveCount(0)
+  await expect.poll(sessions).toEqual(cleared)
+  expect(await page.evaluate(({ context, agent }) => window.__messageHubMock.sessions({ ...context, ownerDid: agent, mode: 'observe' }).map(session => session.unreadCount), { context: OWN, agent: CODER })).toEqual(before.observed)
+  await page.getByTestId('hub-more-menu').click()
+  await expect(page.getByTestId('mark-all-read')).toBeDisabled()
+
+  await page.reload()
+  await expect(page.getByTestId('hub-identity-name')).toBeVisible()
+  await expect(page.getByTestId('hub-unread-total')).toHaveCount(0)
+  await expect.poll(sessions).toEqual(cleared)
+  await page.evaluate(() => window.__messageHubMock.simulateIncoming('session-coder-2', { content: { format: 'text/plain', content: 'New message after clearing unread' } }))
+  await expect(page.getByTestId('hub-unread-total')).toHaveText('1')
+  await expect(coder.getByText('1', { exact: true })).toBeVisible()
+  await page.getByTestId('hub-more-menu').click()
+  await expect(page.getByTestId('mark-all-read')).toBeEnabled()
+})
+
+test('mark all as read prevents duplicate requests and keeps unread counts after a failed attempt', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openHub(page)
+  await expect(page.getByRole('button', { name: 'Sessions', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  const before = await unreadTotal(page)
+  await page.evaluate(() => window.__messageHubMock.configure({ failNext: 'mock_failure', delayMs: 1200 }))
+  await page.getByTestId('hub-more-menu').click()
+  await page.getByTestId('mark-all-read').click()
+  await page.locator('[data-session-id="session-coder-2"] button').first().click()
+  await page.getByTestId('hub-more-menu').click()
+  await expect(page.getByTestId('mark-all-read')).toBeDisabled()
+  await page.keyboard.press('Escape')
+  const error = page.getByRole('dialog')
+  await expect(error).toContainText('Some messages could not be marked as read. Please try again.')
+  await expect(page.getByTestId('hub-unread-total')).toHaveText(String(before))
+  expect(await unreadTotal(page)).toBe(before)
+  await error.getByRole('button', { name: 'Close', exact: true }).click()
+  await page.evaluate(() => window.__messageHubMock.configure({ delayMs: 0 }))
+  await page.getByTestId('hub-more-menu').click()
+  await expect(page.getByTestId('mark-all-read')).toBeEnabled()
+  await page.getByTestId('mark-all-read').click()
+  await expect(page.getByTestId('hub-unread-total')).toHaveCount(0)
 })
 
 test('edit mode pins and mutes the selected chats; chats without a session cannot be picked', async ({ page }) => {
@@ -136,6 +212,13 @@ test('an observer sees the observed owner and can neither edit nor create', asyn
   await expect(page.getByTestId('entity-list-edit')).toBeDisabled()
   await expect(page.getByTestId('hub-create-menu')).toBeDisabled()
   await expect(page.getByTestId('hub-more-menu')).toBeEnabled()
+  await page.getByTestId('hub-more-menu').click()
+  await expect(page.getByTestId('mark-all-read')).toHaveCount(0)
+  const unread = await page.getByTestId('hub-unread-total').innerText()
+  expect(await page.evaluate(async ({ context, agent }) => {
+    try { await window.__messageHubMock.markAllRead({ ...context, ownerDid: agent, mode: 'observe' }); return false } catch { return true }
+  }, { context: OWN, agent: CODER })).toBe(true)
+  await expect(page.getByTestId('hub-unread-total')).toHaveText(unread)
 })
 
 for (const theme of ['light', 'dark'] as const) {

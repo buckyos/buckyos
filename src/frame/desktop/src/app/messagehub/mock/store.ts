@@ -259,6 +259,15 @@ export class MessageHubMockStore implements MessageHubStore {
   hasOlder() { return false }
   async loadOlder() { return false }
   async markRead() {}
+  async markAllRead(context: MessageHubContext) {
+    this.requireOwn(context)
+    await this.mutate(next => {
+      this.requireOwn(context)
+      for (const session of Object.values(next.sessions)) {
+        if (session.ownerDid === context.ownerDid) session.unreadCount = 0
+      }
+    })
+  }
   async locateMessage() { return false }
   access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess {
     const access = sessionAccess(context, session, confirmed)

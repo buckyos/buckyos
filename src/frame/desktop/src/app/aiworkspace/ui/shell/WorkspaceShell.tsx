@@ -23,6 +23,7 @@ import { StartShowDialog } from '../../presentation/StartShowDialog'
 import { StageView, type ShowSession } from '../../presentation/StageView'
 import { ExportDialog, HelpDialog, ImportDialog, MockDialog, NewDialog } from './dialogs'
 import { MainToolbar } from './MainToolbar'
+import { ShareDialog } from './ShareDialog'
 import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type DialogRequest, type GuideState, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
 import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
@@ -319,6 +320,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
                 }} />
             )}
             {dialog?.kind === 'new' && <NewDialog client={client} store={store} initialTab={dialog.tab} onClose={() => setDialog(null)} onCreatedSurface={(id) => { selectSurface(id); setTopMode('canvas') }} onOpenWorkspace={onOpenWorkspace} />}
+            {dialog?.kind === 'share' && <ShareDialog onClose={() => setDialog(null)} />}
             {dialog?.kind === 'export' && <ExportDialog client={client} workspace={{ workspace_id: workspaceInfo.workspace_id, title: workspaceInfo.title }} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'import' && <ImportDialog client={client} onClose={() => setDialog(null)} onOpenWorkspace={onOpenWorkspace} />}
             {dialog?.kind === 'help' && <HelpDialog onClose={() => setDialog(null)} />}

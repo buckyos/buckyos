@@ -54,6 +54,7 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
   }, [client, workspaceId])
   const listed = useLoad(load, tick)
   const run = (failedKey: string, work: () => Promise<string | null>) => {
+    if (busy) return
     setBusy(true)
     setMessage(null)
     work()
@@ -77,46 +78,55 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
   const presetLabel = (caps: string[]) => ENTRY_PRESETS.find((p) => p.caps.length === caps.length && p.caps.every((c) => caps.includes(c)))?.label ?? caps.join(', ')
   return (
     <div className="aiws-share-entries" data-testid="aiws-share-entries">
-      <div className="aiws-panel-title">{t('aiworkspace.shell.share.entries')}</div>
       <div className="aiws-muted">{t('aiworkspace.shell.share.entriesHint')}</div>
-      {listed.error && <div className="aiws-error" role="alert">{listed.error}</div>}
-      {listed.data?.entries.length === 0 && <div className="aiws-muted" data-testid="aiws-share-entry-none">{t('aiworkspace.shell.share.entryNone')}</div>}
-      {listed.data?.entries.map((entry) => {
-        const off = listed.data?.disabled[entry.entry_id] ?? []
-        return (
-          <div key={entry.entry_id} className="aiws-share-entry" data-testid="aiws-share-entry" data-entry-id={entry.entry_id}>
-            <div className="aiws-share-entry-methods">
-              {METHODS.filter((m) => entry.methods[m.key]).map((m) => (
-                <span key={m.key} className={`aiws-chip${off.includes(m.key) ? ' aiws-chip-warn' : ''}`} data-testid={`aiws-share-entry-method-${m.key}`} data-zone-disabled={off.includes(m.key) ? 'true' : undefined}>
-                  {t(m.label)}{off.includes(m.key) && <> · {t('aiworkspace.shell.share.zoneDisabled')}</>}
-                </span>
-              ))}
-              <span className="aiws-muted">{presetLabel(entry.capabilities)}</span>
-            </div>
-            <input readOnly aria-label={t('aiworkspace.shell.share.entryLink')} value={entryUrl(entry.entry_id)} data-testid="aiws-share-entry-link" onFocus={(event) => event.target.select()} />
-            <div className="aiws-inline-form">
-              <button type="button" data-testid="aiws-share-entry-copy" onClick={() => copyEntry(entry)}>{t('aiworkspace.shell.share.entryCopy')}</button>
-              <button type="button" data-testid="aiws-share-entry-close" disabled={busy} onClick={() => close(entry)}>{t('aiworkspace.shell.share.entryClose')}</button>
-            </div>
-          </div>
-        )
-      })}
-      <form className="aiws-share-entry-form" data-testid="aiws-share-entry-form" onSubmit={(event) => { event.preventDefault(); if (offered) create() }}>
-        <div className="aiws-muted">{t('aiworkspace.shell.share.entryMethods')}</div>
-        {METHODS.map((m) => (
-          <label key={m.key}>
-            <input type="checkbox" checked={methods[m.key]} data-testid={`aiws-share-entry-${m.key}`} onChange={(event) => setMethods({ ...methods, [m.key]: event.target.checked })} /> {t(m.label)}
-          </label>
-        ))}
-        <label>{t('aiworkspace.shell.share.entryAccess')}{' '}
-          <select value={preset} data-testid="aiws-share-entry-preset" onChange={(event) => setPreset(event.target.value)}>
-            {ENTRY_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-          </select>
-        </label>
+      <form className="aiws-share-entry-form" data-testid="aiws-share-entry-form" onSubmit={(event) => { event.preventDefault(); if (!busy && offered) create() }}>
+        <fieldset className="aiws-share-entry-options" disabled={busy}>
+          <legend>{t('aiworkspace.shell.share.entryMethods')}</legend>
+          {METHODS.map((m) => (
+            <label key={m.key} className="aiws-share-entry-option">
+              <input type="checkbox" checked={methods[m.key]} data-testid={`aiws-share-entry-${m.key}`} onChange={(event) => setMethods({ ...methods, [m.key]: event.target.checked })} />
+              <span>{t(m.label)}</span>
+            </label>
+          ))}
+        </fieldset>
         {!offered && <div className="aiws-muted">{t('aiworkspace.shell.share.entryMethodRequired')}</div>}
-        <button type="submit" className="is-primary" data-testid="aiws-share-entry-create" disabled={busy || !offered}>{t('aiworkspace.shell.share.entryCreate')}</button>
+        <div className="aiws-share-entry-create-row">
+          <label>{t('aiworkspace.shell.share.entryAccess')}
+            <select value={preset} disabled={busy} data-testid="aiws-share-entry-preset" onChange={(event) => setPreset(event.target.value)}>
+              {ENTRY_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </label>
+          <button type="submit" className="is-primary" data-testid="aiws-share-entry-create" disabled={busy || !offered}>{t('aiworkspace.shell.share.entryCreate')}</button>
+        </div>
       </form>
       {message && <div className={message.kind === 'error' ? 'aiws-error' : 'aiws-muted'} role={message.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-share-entry-message">{message.text}</div>}
+      <div className="aiws-share-entry-list">
+        <div className="aiws-panel-title">{t('aiworkspace.shell.share.entryExisting')}</div>
+        {listed.error && <div className="aiws-error" role="alert">{listed.error}</div>}
+        {listed.data?.entries.length === 0 && <div className="aiws-muted" data-testid="aiws-share-entry-none">{t('aiworkspace.shell.share.entryNone')}</div>}
+        {listed.data?.entries.map((entry) => {
+          const off = listed.data?.disabled[entry.entry_id] ?? []
+          return (
+            <div key={entry.entry_id} className="aiws-share-entry" data-testid="aiws-share-entry" data-entry-id={entry.entry_id}>
+              <div className="aiws-share-entry-header">
+                <div className="aiws-share-entry-methods">
+                  {METHODS.filter((m) => entry.methods[m.key]).map((m) => (
+                    <span key={m.key} className={`aiws-chip${off.includes(m.key) ? ' aiws-chip-warn' : ''}`} data-testid={`aiws-share-entry-method-${m.key}`} data-zone-disabled={off.includes(m.key) ? 'true' : undefined}>
+                      {t(m.label)}{off.includes(m.key) && <> · {t('aiworkspace.shell.share.zoneDisabled')}</>}
+                    </span>
+                  ))}
+                  <span className="aiws-muted">{presetLabel(entry.capabilities)}</span>
+                </div>
+                <button type="button" data-testid="aiws-share-entry-close" disabled={busy} onClick={() => close(entry)}>{t('aiworkspace.shell.share.entryClose')}</button>
+              </div>
+              <div className="aiws-share-link-row">
+                <input readOnly aria-label={t('aiworkspace.shell.share.entryLink')} value={entryUrl(entry.entry_id)} data-testid="aiws-share-entry-link" onFocus={(event) => event.target.select()} />
+                <button type="button" data-testid="aiws-share-entry-copy" onClick={() => copyEntry(entry)}>{t('aiworkspace.shell.share.entryCopy')}</button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

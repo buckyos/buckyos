@@ -14,6 +14,7 @@ test('UI-SSO1 entry links: create with chosen ways in, Zone-closed ways marked, 
   const ws = await api.demo(ALICE, 'quarterly', `sso1 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-share').click()
+  await page.getByTestId('aiws-share-tab-entries').click()
   const entries = page.getByTestId('aiws-share-entries')
   await expect(entries.getByTestId('aiws-share-entry-none')).toBeVisible()
   // no way in, no entry
@@ -47,6 +48,7 @@ test('UI-SSO1 entry links: create with chosen ways in, Zone-closed ways marked, 
   }, { key: MOCK_CP_KEY, id: entry.entry_id, methods: entry.methods })
   await page.keyboard.press('Escape')
   await page.getByTestId('aiws-share').click()
+  await page.getByTestId('aiws-share-tab-entries').click()
   const row = page.getByTestId('aiws-share-entry')
   await expect(row.getByTestId('aiws-share-entry-method-did_login')).toHaveAttribute('data-zone-disabled', 'true')
   await expect(row.getByTestId('aiws-share-entry-method-did_login')).toContainText('已被 Zone 设置关闭')

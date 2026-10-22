@@ -143,8 +143,10 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
 
 #### When it fails
 - HTTP 503 `service_not_ready:<service>` from `/kapi/<service>` means the gateway has no registered route for that
-  service yet. Check `services/<service>/info`, the node's `gateway_info`, and service/scheduler logs; retry after
-  instance reporting and route publication. This is expected briefly during startup, not an HTTP method mismatch.
+  service. Verify the requested service name, `services/<service>/info`, the node's `gateway_info`, and service/scheduler
+  logs. For an Agent, the gateway service name is its full AgentId: use `/kapi/<agent_id>`; its own WebUI uses
+  `/api/opendan` on the app host. `/kapi/opendan` is only for direct Loader access and has no global gateway route.
+  For a valid service name during startup, retry after instance reporting and route publication.
 - Exit codes: 2 usage; 3 auth (`AUTH_REQUIRED`, `INVALID_SESSION`, `SESSION_EXPIRED`); 4 permission
   (`PERMISSION_DENIED`, `CONFIRMATION_REQUIRED`); 5 `SERVICE_UNAVAILABLE` (`fetch failed`, retryable);
   6 operation (`RESOURCE_NOT_FOUND`, `OPERATION_FAILED`); 8 timeout.

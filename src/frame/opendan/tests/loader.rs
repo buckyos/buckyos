@@ -28,7 +28,7 @@ use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, ObjId};
 use opendan::loader::{Loader, LoaderEnv, SpecRef};
 use opendan::records::{self, AgentRecords, LocalRecords};
-use opendan::service::{Access, SERVICE_PATH};
+use opendan::service::{Access, SERVICE_PATH, WEB_API_PATH};
 use opendan::tasks::{NewTask, TaskService, TaskView};
 use opendan::ui::MailService;
 use serde_json::{json, Value};
@@ -611,6 +611,53 @@ async fn rpc(port: u16, method: &str, params: Value) -> libopendan::Result<Value
     KrpcTransport::new(&format!("http://127.0.0.1:{port}{SERVICE_PATH}"), None)
         .call(method, params)
         .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_api_routes_metadata_and_rpc_with_the_same_access_policy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    for app_id in [None, Some("jarvis.alice")] {
+        let w = World::new();
+        let port = free_port();
+        let mut env = w.env(Llm::new(|_, _| "unused".into()), port).await;
+        std::fs::write(w.root.join("index.html"), "<html>WebUI</html>").unwrap();
+        env.web_dir = Some(w.root.clone());
+        if let Some(app_id) = app_id {
+            env.access = Access::Zone {
+                owner: "bob".into(),
+                app_id: app_id.into(),
+                trust_loopback: false,
+                zone_host: Some("test.buckyos.io".into()),
+            };
+        }
+        let loader = Loader::start(env).await.unwrap();
+        until("service answers", || {
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+        }).await;
+        let agent_path = format!("/kapi/{}", loader.agent.agent_id());
+        for path in [WEB_API_PATH, SERVICE_PATH, agent_path.as_str()] {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            stream.write_all(format!(
+                "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            ).as_bytes()).await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut response))
+                .await.unwrap().unwrap();
+            let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+            assert!(headers.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(headers.contains("application/json"), "{headers}");
+            assert_eq!(serde_json::from_str::<Value>(body).unwrap(), json!({ "app_id": app_id }));
+            let result = KrpcTransport::new(&format!("http://127.0.0.1:{port}{path}"), None)
+                .call("loader.status", json!({})).await;
+            if app_id.is_some() {
+                assert!(result.unwrap_err().to_string().contains("a session token is required"));
+            } else {
+                assert_eq!(result.unwrap()["agent_did"], AGENT);
+            }
+        }
+        loader.shutdown().await;
+    }
 }
 
 /// M1 / E4: what a caller without the AgentRoot gets over real kRPC is what

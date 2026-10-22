@@ -11,7 +11,7 @@ export default defineConfig(() => {
     server: {
       host: '0.0.0.0',
       port: 5184,
-      proxy: target ? { '/kapi/opendan': { target, changeOrigin: true } } : undefined,
+      proxy: target ? { '/api/opendan': { target, changeOrigin: true } } : undefined,
     },
   }
 })
