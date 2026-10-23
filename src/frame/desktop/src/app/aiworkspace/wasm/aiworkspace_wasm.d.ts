@@ -21,6 +21,10 @@ export class Replica {
     confirmed_rows(): string;
     discard(key: string): boolean;
     /**
+     * The history was replaced: live submissions become conflicts to resend (D07).
+     */
+    epoch_mismatch(detail: string): void;
+    /**
      * `doc.freshness` on the working view: `{ entity_ids }` → `{ items }` (same shape as the backend).
      */
     freshness(params_json: string): string;
@@ -168,6 +172,7 @@ export interface InitOutput {
     readonly replica_confirmed_rows: (a: number, b: number) => void;
     readonly replica_confirmed_seq: (a: number) => number;
     readonly replica_discard: (a: number, b: number, c: number) => number;
+    readonly replica_epoch_mismatch: (a: number, b: number, c: number) => void;
     readonly replica_freshness: (a: number, b: number, c: number, d: number) => void;
     readonly replica_lineage_id: (a: number, b: number, c: number, d: number) => void;
     readonly replica_list_annotations: (a: number, b: number, c: number, d: number) => void;

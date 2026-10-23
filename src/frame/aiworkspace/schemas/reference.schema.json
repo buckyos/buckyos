@@ -1,0 +1,129 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "buckyos.ai-workspace/reference/1.0",
+ "title": "Reference object (内核架构改进 D10, D03)",
+ "description": "The one shape other Workspaces, Apps and Agents keep: where (zone, workspace, entity, selector) and which version. Names, paths and URLs are projections of it (D21). `mode: live` follows the head; `mode: fixed` names a version — `{ epoch, seq }` (same Zone; readable only while a checkpoint or clone retains it, else VERSION_NOT_RETAINED) or `{ content_root, path? }` (content-addressed; valid across Zones). Internal references omit zone and workspace_id. Strong or weak is decided by where the reference lives (inside a Workspace by the reference kind catalogue; across Workspaces always weak, §5.2). Checked by core/tests/schemas.rs; normalized by core/src/value.rs canonical_reference.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "entity_id",
+  "mode"
+ ],
+ "properties": {
+  "zone": {
+   "type": "string",
+   "description": "Zone DID or host; only across Zones."
+  },
+  "workspace_id": {
+   "type": "string",
+   "description": "Only across Workspaces."
+  },
+  "entity_id": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+  },
+  "selector": {
+   "type": "object",
+   "required": [
+    "kind"
+   ],
+   "properties": {
+    "kind": {
+     "type": "string"
+    }
+   },
+   "description": "A selector of the frozen catalogue (README, Selectors); absent = the whole entity."
+  },
+  "mode": {
+   "enum": [
+    "live",
+    "fixed"
+   ]
+  },
+  "version": {
+   "oneOf": [
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "epoch",
+      "seq"
+     ],
+     "properties": {
+      "epoch": {
+       "type": "string"
+      },
+      "seq": {
+       "type": "integer",
+       "minimum": 0
+      }
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "content_root"
+     ],
+     "properties": {
+      "content_root": {
+       "type": "string",
+       "description": "A ContentRoot or entity content object id."
+      },
+      "path": {
+       "type": "string",
+       "description": "A path inside the content root (a Folder member, a Surface)."
+      }
+     }
+    }
+   ]
+  }
+ },
+ "allOf": [
+  {
+   "if": {
+    "properties": {
+     "mode": {
+      "const": "fixed"
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "version"
+    ]
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "mode": {
+      "const": "live"
+     }
+    }
+   },
+   "then": {
+    "not": {
+     "required": [
+      "version"
+     ]
+    }
+   }
+  }
+ ],
+ "legacy": {
+  "description": "Vocabularies canonical_reference maps onto this shape.",
+  "persisted reference": {
+   "live_head": "live",
+   "published_channel": "live (a published link follows the head, D26)",
+   "fixed_revision { object_id }": "fixed { content_root }",
+   "fixed_revision { source_revision }": "refused: a URL query entry's own version (§6.1)"
+  },
+  "wish input": {
+   "follow": "live",
+   "fixed { object_id }": "fixed { content_root }",
+   "fixed { rev | hash }": "refused: a read-set precondition, not a reference"
+  },
+  "URL source": "`{ kind: url_query, source_url, query }` is not a reference: an unmaterialized query entry (D12, T4-3)"
+ }
+}

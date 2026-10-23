@@ -210,6 +210,11 @@ impl Replica {
         self.inner.discard(key).is_some()
     }
 
+    /// The history was replaced: live submissions become conflicts to resend (D07).
+    pub fn epoch_mismatch(&mut self, detail: &str) {
+        self.inner.epoch_mismatch(detail)
+    }
+
     pub fn pending(&self) -> String {
         self.inner.pending_json().to_string()
     }

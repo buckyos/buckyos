@@ -1,11 +1,11 @@
 /* Wire types of the aiworkspace service (see src/frame/aiworkspace/README.md and the detailed design §2–§5).
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
-export const PROTOCOL_VERSION = '0.5'
+export const PROTOCOL_VERSION = '1.0'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
-export type Capability = 'read' | 'append' | 'update' | 'delete' | 'structure' | 'comment' | 'export' | 'manage'
+export type Capability = 'read' | 'append' | 'update' | 'delete' | 'structure' | 'comment' | 'export' | 'manage' | 'run'
 
 export interface ServiceError {
   code: string
@@ -41,7 +41,37 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   principal?: string
   /** Whose AICC the wish blocks use (AI Center Quota PRD §3.3). */
   wish_aicc_mode?: WishAiccMode
+  /** Where wish runs execute by default and whether the transitional in-service executor may be chosen (内核架构改进 D14). */
+  wish_execution?: { default: WishExecutionMode; service: boolean }
+  /** The owner's hosted execution configuration (D22): an Agent runs tasks for collaborators with `run`. */
+  hosted_exec?: HostedExecConfig
+  /** The Workspace's own origin for publication links (D21), `null` when the deployment has no host. */
+  public_base?: string | null
+  /** Bytes this Workspace's Sources fetched (D24). */
+  traffic?: number
 }
+
+/** Where a sourced entity's content comes from (内核架构改进 D12); such an entity is read-only for people and Blocks. */
+export interface EntitySource {
+  kind: 'url' | 'workspace'
+  mode: 'live' | 'fixed'
+  url?: string | null
+  workspace_id?: string | null
+  entity_id?: string | null
+  zone?: string | null
+  refresh?: { interval_s: number } | null
+  auth_mode?: 'none' | 'hosted'
+}
+
+/** A published data entity (D26): its link is the URL projection of the reference. */
+export interface Publication { entity_id: string; name: string; path: string; url?: string; reference: Reference; published_at: string; published_by: string; referrers: number; current?: boolean }
+export interface Referrer { referrer: { zone?: string | null; workspace_id?: string; entity_id?: string | null; principal?: string | null }; registered_at: string }
+
+/** The owner's hosted execution configuration (`ws.set_hosted_exec`, D22). */
+export interface HostedExecConfig { enabled: boolean; agent_id?: string; allowed_wishes?: string[]; triggerers?: string[]; limits?: Record<string, Json>; digest?: string }
+
+/** Where a wish run executes (内核架构改进 §9, D14): the service (transitional), this browser, or the owner's Agent. */
+export type WishExecutionMode = 'service' | 'local' | 'hosted'
 
 export type WishAiccMode = 'workspace_owner' | 'current_user'
 /** Whose AICC a run uses, fixed when it was accepted: `user_id` pays, `operator_id` started it. */
@@ -155,6 +185,8 @@ export interface EntityEnvelope {
   def_id?: string | null
   /** Wishes / definitions / annotations / assets (outline only). */
   executor?: string | null
+  /** Set on a sourced entity (D12). */
+  source?: EntitySource | null
   output_mode?: string | null
   def_kind?: string | null
   target_id?: string | null
@@ -436,7 +468,28 @@ export interface WishRunView {
   feedback?: string | null
   program_log?: string | null
   aicc?: WishRunAicc | null
+  /** The execution context the run bound (§9.6). */
+  context?: Record<string, Json> | null
+  /** Hosted runs: how the Agent was reached (`unavailable` carries the claim token for whoever hands it on). */
+  dispatch?: { status: string; claim_token?: string; detail?: string } | null
+  execution?: { mode: WishExecutionMode; attempt: number; lease_until?: string | null; executor?: Json }
+  /** Once, to the browser that started a local run: what claims it. */
+  claim_token?: string
 }
+
+/** What `proc.claim` opens for an executor outside the service (T3-4): a model stage, or the program to re-run. */
+export interface WishStageBrief {
+  kind: 'model' | 'program'
+  stage: WishStage
+  system?: string
+  user?: string
+  tools?: { name: string; description: string; parameters: Json }[]
+  model?: string
+  iterations?: number
+  source?: string | null
+}
+export interface WishClaim { run_id: string; attempt: number; run_token: string; lease_until: string; lease_ms: number; stage?: WishStageBrief }
+export interface WishToolAnswer { status: 'ok' | 'error'; text?: string; map?: Json }
 export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'new'>; confirm_structure?: boolean }
 
 export interface BlockDefPayload {
@@ -683,6 +736,8 @@ export interface CommitEvent {
   accepted_at?: string
   touched?: Touched[]
   ops?: (Operation & { entity_id?: string; update?: string; server_update?: string; source_id?: string })[]
+  /** The row delta replicas apply as it is (内核架构改进 D20); present whenever `ops` is. */
+  rows?: Record<string, unknown>
 }
 
 export interface ChangesPage { epoch: string; head_seq: number; changes: CommitEvent[]; more: boolean }

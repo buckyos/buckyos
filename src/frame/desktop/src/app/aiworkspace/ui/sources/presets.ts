@@ -7,7 +7,7 @@ export const PRESETS: { id: string; label: string; caps: Capability[] }[] = [
   { id: 'reader', get label() { return aiwsT('aiworkspace.data.perm.reader') }, caps: ['read'] },
   { id: 'commenter', get label() { return aiwsT('aiworkspace.data.perm.commenter') }, caps: ['read', 'comment'] },
   { id: 'editor', get label() { return aiwsT('aiworkspace.data.perm.editor') }, caps: ['read', 'append', 'update', 'delete', 'structure', 'comment'] },
-  { id: 'manager', get label() { return aiwsT('aiworkspace.data.perm.manager') }, caps: ['read', 'append', 'update', 'delete', 'structure', 'comment', 'export', 'manage'] },
+  { id: 'manager', get label() { return aiwsT('aiworkspace.data.perm.manager') }, caps: ['read', 'append', 'update', 'delete', 'structure', 'comment', 'export', 'manage', 'run'] },
 ]
 
 export function presetOf(caps: Capability[]): string {

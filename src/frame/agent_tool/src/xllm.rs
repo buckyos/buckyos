@@ -1783,6 +1783,12 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
             for (k, v) in &p.headers {
                 merged.provider.headers.insert(k.clone(), v.clone());
             }
+            if p.on_behalf_of.is_some() {
+                merged.provider.on_behalf_of = p.on_behalf_of.clone();
+                merged
+                    .sources
+                    .insert("provider.on_behalf_of".into(), src.clone());
+            }
         }
         macro_rules! scalar {
             ($field:ident, $name:expr) => {
@@ -11916,6 +11922,37 @@ there]]></write_file>
             .get("max_tool_iterations")
             .unwrap()
             .ends_with(".llm_context"));
+    }
+
+    #[test]
+    fn provider_on_behalf_of_survives_the_merge() {
+        let env = Env::new();
+        env.write(
+            "project/src/.llm_context",
+            r#"{"provider":{"type":"buckyos","on_behalf_of":{"user_id":"alice","operator_id":"bob","mode":"workspace_owner","run_ref":{"workspace_id":"ws1","run_id":"run1"}}}}"#,
+        );
+        let merged = merge_config_layers(&load_config_layers(&env.workdir).unwrap()).unwrap();
+        let o = merged.provider.on_behalf_of.as_ref().expect("on_behalf_of merged");
+        assert_eq!(o.user_id, "alice");
+        assert_eq!(o.operator_id.as_deref(), Some("bob"));
+        assert_eq!(o.mode, buckyos_api::AiccAttributionMode::WorkspaceOwner);
+        assert_eq!(o.run_ref.as_ref().unwrap().run_id.as_deref(), Some("run1"));
+        assert!(merged.sources["provider.on_behalf_of"]
+            .replace('\\', "/")
+            .ends_with("src/.llm_context"));
+
+        // a child layer switching the provider type drops the delegation with the other fields
+        env.write(
+            "project/.llm_context",
+            r#"{"provider":{"type":"buckyos","on_behalf_of":{"user_id":"alice","mode":"current_user"}}}"#,
+        );
+        env.write(
+            "project/src/.llm_context",
+            "provider:\n  type: openai\n  api_key_env: K\n",
+        );
+        let merged = merge_config_layers(&load_config_layers(&env.workdir).unwrap()).unwrap();
+        assert_eq!(merged.provider.kind, Some(ProviderKind::Openai));
+        assert!(merged.provider.on_behalf_of.is_none());
     }
 
     #[test]

@@ -5,7 +5,7 @@ import type {
   AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
-  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin,
+  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
 } from './types'
 import { parseAccessDenial, type AccessDenial } from 'buckyos'
 import type { Transport } from './transport'
@@ -36,7 +36,13 @@ export class AiwsClient {
   }
   wsListGrants(ws: Ws) { return this.call<Result<GrantList>>('ws.list_grants', ws) }
   wsSetWishAicc(ws: Ws, mode: WishAiccMode) { return this.call<Result<{ wish_aicc_mode: WishAiccMode }>>('ws.set_wish_aicc', { ...ws, mode }) }
+  wsSetHostedExec(ws: Ws, config: HostedExecConfig) { return this.call<Result<{ hosted_exec: HostedExecConfig }>>('ws.set_hosted_exec', { ...ws, config: config as unknown as Json }) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
+  // ---- publication by path (内核架构改进 D26)
+  wsPublish(ws: Ws, entity_id: string, name?: string) { return this.call<Result<Publication>>('ws.publish', { ...ws, entity_id, ...(name ? { name } : {}) }) }
+  wsUnpublish(ws: Ws, entity_id: string) { return this.call<Result<{ removed: number }>>('ws.unpublish', { ...ws, entity_id }) }
+  wsListPublications(ws: Ws) { return this.call<Result<{ publications: Publication[] }>>('ws.list_publications', ws) }
+  wsListReferrers(ws: Ws, entity_id: string) { return this.call<Result<{ referrers: Referrer[] }>>('ws.list_referrers', { ...ws, entity_id }) }
   // share entries (hybrid SSO contract §8.3): links that offer sign-in methods and grant a template
   wsCreateEntry(ws: Ws, params: { capabilities: Capability[]; methods: ShareEntry['methods']; scope_entity_id?: string; expires_at?: number }) {
     return this.call<Result<{ entry: ShareEntry }>>('ws.create_entry', { ...ws, ...params })
@@ -44,8 +50,9 @@ export class AiwsClient {
   wsListEntries(ws: Ws) { return this.call<Result<{ entries: ShareEntry[] }>>('ws.list_entries', ws) }
   wsCloseEntry(ws: Ws, entry_id: string) { return this.call<Result<{ entry: ShareEntry }>>('ws.close_entry', { ...ws, entry_id }) }
   wsJoinEntry(entry_id: string) { return this.call<Result<EntryJoin>>('ws.join_entry', { entry_id }) }
-  wsGetUserState(ws: Ws) { return this.call<Result<{ entries: Record<string, Json>; updated_at: Record<string, string> }>>('ws.get_user_state', ws) }
-  wsSetUserState(ws: Ws, entries: Record<string, Json | null>) { return this.call<Result<{ updated_at: string }>>('ws.set_user_state', { ...ws, entries }) }
+  wsGetUserState(ws: Ws) { return this.call<Result<{ entries: Record<string, Json>; updated_at: Record<string, string>; revisions: Record<string, number> }>>('ws.get_user_state', ws) }
+  /** `expect: { key: revision }` makes a write conditional (D13): a moved revision is a REVISION_CONFLICT. */
+  wsSetUserState(ws: Ws, entries: Record<string, Json | null>, expect?: Record<string, number>) { return this.call<Result<{ updated_at: string; revisions: Record<string, number> }>>('ws.set_user_state', { ...ws, entries, ...(expect ? { expect } : {}) }) }
   wsBeginImport() { return this.call<Result<{ upload_id: string }>>('ws.begin_import', {}) }
   wsImport(upload_id: string, semantics: 'restore' | 'new', replace: boolean) {
     return this.call<Result<{ workspace_id: string; epoch: string; content_root?: string }>>('ws.import', { upload_id, semantics, ...(replace ? { replace: true } : {}) })
@@ -138,6 +145,14 @@ export class AiwsClient {
     return this.call<Result<WishRunView>>('proc.apply', { ...ws, run_id, plan_digest, session_id })
   }
   wishList(ws: Ws, wish_id: string, limit: number) { return this.call<Result<{ runs: WishRunView[] }>>('proc.list', { ...ws, wish_id, limit }) }
+
+  // ---- the executor protocol of a run outside the service (内核架构改进 T3-2, T3-4)
+  procClaim(ws: Ws, run_id: string, claim_token: string, executor: Json) { return this.call<Result<WishClaim>>('proc.claim', { ...ws, run_id, claim_token, executor }) }
+  procHeartbeat(ws: Ws, run_id: string, attempt: number, progress?: Json) { return this.call<Result<{ lease_until: string }>>('proc.heartbeat', { ...ws, run_id, attempt, ...(progress ? { progress } : {}) }) }
+  procReport(ws: Ws, run_id: string, attempt: number, body: Record<string, Json>) { return this.call<Result<WishRunView>>('proc.report', { ...ws, run_id, attempt, ...body }) }
+  procTool(ws: Ws, run_id: string, attempt: number, name: string, args: Json) { return this.call<Result<WishToolAnswer>>('proc.tool', { ...ws, run_id, attempt, name, args }) }
+  procProgram(ws: Ws, run_id: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) { return this.call<Result<WishToolAnswer>>('proc.program', { ...ws, run_id, attempt, ...body }) }
+  procFiles(ws: Ws, run_id: string, attempt: number) { return this.call<Result<{ files: Record<string, { text?: string; base64?: string; skipped?: string }> }>>('proc.files', { ...ws, run_id, attempt }) }
 
   // ---- write locks
   lockAcquire(ws: Ws, entity_ids: string[], session_id: string) {

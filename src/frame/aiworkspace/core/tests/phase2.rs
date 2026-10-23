@@ -43,6 +43,261 @@ fn cell(id: &str, parent: &str, source: Option<&str>, view: &str, placement: Val
 }
 
 #[test]
+fn every_selector_of_the_frozen_catalogue_resolves_to_a_version_cell() {
+    use aiworkspace_core::plan::resolve_cell;
+    let mut ws = MemWorkspace::new();
+    let mut ops = surface("s1", "free");
+    ops.push(table("t1", DATA_ID));
+    ops.push(json!({ "op": "table.insert_records", "source_id": "t1", "records": [
+        { "record_id": "r1", "values": { "title": "a", "n": 1 } }, { "record_id": "r2", "values": { "title": "b", "n": 2 } }] }));
+    let mut view = cell("blk", "s1", Some("t1"), "table", json!({ "x": 0, "y": 0, "w": 100, "h": 100 }));
+    view["payload"]["filter"] = json!({ "op": "cmp", "field_id": "n", "operator": "gt", "value": 1 });
+    ops.push(view);
+    ws.ok(Value::Array(ops));
+    let resolve = |ws: &MemWorkspace, id: &str, sel: Value| resolve_cell(&ws.store, &json!({ "entity_id": id, "selector": sel }));
+    let cells: Vec<(&str, Value)> = vec![
+        ("t1", json!({ "kind": "entity" })),
+        ("blk", json!({ "kind": "doc_key", "key": "filter" })),
+        ("t1", json!({ "kind": "table_members" })),
+        ("t1", json!({ "kind": "table_field", "field_id": "n" })),
+        ("t1", json!({ "kind": "table_field_type", "field_id": "n" })),
+        ("t1", json!({ "kind": "table_field_values", "field_id": "n" })),
+        ("t1", json!({ "kind": "table_record", "record_id": "r1" })),
+        ("t1", json!({ "kind": "table_cell", "record_id": "r1", "field_id": "n" })),
+        ("s1-content", json!({ "kind": "tree_children" })),
+        ("blk", json!({ "kind": "tree_edge" })),
+        ("t1", json!({ "kind": "table_view", "cell_id": "blk" })),
+        ("t1", json!({ "kind": "table_query", "fields": ["n"] })),
+        ("t1", json!({ "kind": "table_query" })),
+    ];
+    let before: Vec<Value> = cells.iter().map(|(id, sel)| resolve(&ws, id, sel.clone()).unwrap_or_else(|e| panic!("{sel}: {e}"))).collect();
+    // a new row changes membership, the view and every query; the view's own keys stay
+    ws.ok(json!([{ "op": "table.insert_records", "source_id": "t1", "records": [{ "record_id": "r3", "values": { "title": "c", "n": 3 } }] }]));
+    let after: Vec<Value> = cells.iter().map(|(id, sel)| resolve(&ws, id, sel.clone()).unwrap()).collect();
+    let changed: Vec<&str> = cells.iter().zip(before.iter().zip(after.iter())).filter(|(_, (b, a))| b != a).map(|((_, s), _)| s["kind"].as_str().unwrap()).collect();
+    assert_eq!(changed, ["entity", "table_members", "table_field_values", "table_view", "table_query", "table_query"]);
+    // a value of `n` changes the column, its cell, the view and the queries that read `n`
+    let rev = ws.store.records[&("t1".to_string(), "r1".to_string())].value_rev("n");
+    ws.ok(json!([{ "op": "table.set_values", "source_id": "t1", "values": [{ "record_id": "r1", "field_id": "n", "value": 9, "expect": { "rev": rev } }] }]));
+    let again: Vec<Value> = cells.iter().map(|(id, sel)| resolve(&ws, id, sel.clone()).unwrap()).collect();
+    let changed: Vec<&str> = cells.iter().zip(after.iter().zip(again.iter())).filter(|(_, (b, a))| b != a).map(|((_, s), _)| s["kind"].as_str().unwrap()).collect();
+    assert_eq!(changed, ["entity", "table_field_values", "table_record", "table_cell", "table_view", "table_query", "table_query"]);
+    // the view's configuration is part of the view token only
+    let frev = ws.store.entities["blk"].key_rev("filter");
+    ws.ok(json!([{ "op": "entity.unset_keys", "entity_id": "blk", "keys": [{ "key": "filter", "expect": { "rev": frev } }] }]));
+    let third: Vec<Value> = cells.iter().map(|(id, sel)| resolve(&ws, id, sel.clone()).unwrap()).collect();
+    let changed: Vec<&str> = cells.iter().zip(again.iter().zip(third.iter())).filter(|(_, (b, a))| b != a).map(|((_, s), _)| s["kind"].as_str().unwrap()).collect();
+    assert_eq!(changed, ["doc_key", "table_view"]);
+    // a view of another table, a missing field and an unknown kind are refused
+    assert!(resolve(&ws, "blk", json!({ "kind": "table_view", "cell_id": "blk" })).is_err());
+    assert_eq!(resolve(&ws, "t1", json!({ "kind": "table_query", "fields": ["nope"] })).unwrap_err().code, aiworkspace_core::Code::NotFound);
+    assert_eq!(resolve(&ws, "t1", json!({ "kind": "folder_member", "name": "x" })).unwrap_err().code, aiworkspace_core::Code::InvalidOperation, "a table has no members");
+    assert_eq!(resolve(&ws, "t1", json!({ "kind": "no_such" })).unwrap_err().code, aiworkspace_core::Code::MissingExtension);
+}
+
+#[test]
+fn own_data_follows_its_block_and_shared_data_never_does() {
+    use aiworkspace_core::testkit::MemWorkspace as W;
+    let folder = |id: &str| json!({ "op": "entity.create", "entity_id": format!("{id}-content"), "type_id": TYPE_CONTAINER, "parent_id": CANVAS_CONTENT_ID, "order_key": "a",
+        "payload": { "kind": "folder", "system": "surface_content", "surface_id": id, "title": id } });
+    let surf = |id: &str| json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": id, "name": id,
+        "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": id, "content_folder_id": format!("{id}-content") } });
+    let mut ws = W::new();
+    ws.ok(json!([folder("s1"), surf("s1"), folder("s2"), surf("s2"), table("shared", DATA_ID)]));
+    // a Block created with its data on the canvas owns it; a Block over data-tree data only binds it
+    ws.ok(json!([table("own", "s1-content"), cell("b-own", "s1", Some("own"), "table", json!({ "x": 0, "y": 0, "w": 10, "h": 10 })),
+                 cell("b-shared", "s1", Some("shared"), "table", json!({ "x": 20, "y": 0, "w": 10, "h": 10 }))]));
+    let kinds = |ws: &W, src: &str| -> Vec<String> { let mut k: Vec<String> = ws.store.refs.iter().filter(|r| r.src_entity_id == src).map(|r| r.kind.clone()).collect(); k.sort(); k };
+    assert_eq!(kinds(&ws, "b-own"), ["bind", "owns"]);
+    assert_eq!(kinds(&ws, "b-shared"), ["bind"]);
+    // a Block declaring shared data never owns what it was created with
+    ws.ok(json!([table("declared", "s1-content"), { "op": "entity.create", "entity_id": "b-declared", "type_id": TYPE_CELL, "parent_id": "s1", "order_key": "e",
+        "placement": { "x": 40, "y": 0, "w": 10, "h": 10 }, "payload": { "view": { "type": "table" }, "source_ref": { "entity_id": "declared" }, "data_ownership": "shared" } }]));
+    assert_eq!(kinds(&ws, "b-declared"), ["bind"]);
+    // deleting the shared Block leaves the data; deleting the own Block cascades to its data (in the log)
+    let rev = |ws: &W, id: &str| ws.store.entities[id].life_rev;
+    ws.ok(json!([{ "op": "entity.delete", "entity_id": "b-shared", "expect": { "rev": rev(&ws, "b-shared") } }]));
+    assert!(ws.store.entities["shared"].alive());
+    let seq = ws.ok(json!([{ "op": "entity.delete", "entity_id": "b-own", "expect": { "rev": rev(&ws, "b-own") } }]));
+    assert!(!ws.store.entities["own"].alive(), "own data goes with its Block");
+    assert_eq!(ws.history[(seq - 1) as usize][0].op["cascade"][0]["entity_id"], "own");
+    // undo brings both back
+    ws.undo(seq).map_err(|f| f.to_json()).unwrap();
+    assert!(ws.store.entities["own"].alive() && ws.store.entities["b-own"].alive());
+    // a cross-canvas copy binds the same own data: it survives the first Block and goes with the last one
+    ws.ok(json!([cell("b-own-2", "s2", Some("own"), "table", json!({ "x": 0, "y": 0, "w": 10, "h": 10 }))]));
+    assert_eq!(kinds(&ws, "b-own-2"), ["bind"]);
+    ws.ok(json!([{ "op": "entity.delete", "entity_id": "b-own", "expect": { "rev": rev(&ws, "b-own") } }]));
+    assert!(ws.store.entities["own"].alive(), "still shown elsewhere");
+    ws.ok(json!([{ "op": "entity.delete", "entity_id": "b-own-2", "expect": { "rev": rev(&ws, "b-own-2") } }]));
+    assert!(!ws.store.entities["own"].alive(), "the last Block takes the data with it");
+    // data.pin turns own data into shared data
+    ws.ok(json!([table("pinned", "s1-content"), cell("b-pinned", "s1", Some("pinned"), "table", json!({ "x": 0, "y": 50, "w": 10, "h": 10 }))]));
+    assert_eq!(kinds(&ws, "b-pinned"), ["bind", "owns"]);
+    let seq = ws.ok(json!([{ "op": "data.pin", "entity_id": "pinned" }]));
+    assert_eq!(kinds(&ws, "b-pinned"), ["bind"]);
+    ws.undo(seq).map_err(|f| f.to_json()).unwrap();
+    assert_eq!(kinds(&ws, "b-pinned"), ["bind", "owns"], "undo restores the ownership");
+    ws.ok(json!([{ "op": "data.pin", "entity_id": "pinned" }]));
+    ws.ok(json!([{ "op": "entity.delete", "entity_id": "b-pinned", "expect": { "rev": rev(&ws, "b-pinned") } }]));
+    assert!(ws.store.entities["pinned"].alive(), "pinned data never follows a Block");
+}
+
+#[test]
+fn entity_clone_copies_data_and_a_same_canvas_copy_owns_its_clone() {
+    use aiworkspace_core::plan::resolve_cell;
+    let mut ws = MemWorkspace::new();
+    let mut ops = surface("s1", "free");
+    ops.push(table("t", "s1-content"));
+    ops.push(json!({ "op": "table.insert_records", "source_id": "t", "records": [{ "record_id": "r1", "values": { "title": "a", "n": 1 } }, { "record_id": "r2", "values": { "title": "b", "n": 2 } }] }));
+    ops.push(cell("b1", "s1", Some("t"), "table", json!({ "x": 0, "y": 0, "w": 10, "h": 10 })));
+    ws.ok(Value::Array(ops));
+    // the same-canvas copy: clone the data and bind the copy to the clone, in one Commit
+    let seq = ws.ok(json!([
+        { "op": "entity.clone", "entity_id": "t", "new_entity_id": "t2", "parent_id": "s1-content", "order_key": "c", "name": "t copy" },
+        cell("b2", "s1", Some("t2"), "table", json!({ "x": 30, "y": 0, "w": 10, "h": 10 }))
+    ]));
+    let t2 = &ws.store.entities["t2"];
+    assert_eq!((t2.type_id.as_str(), t2.name.as_deref()), (TYPE_TABLE, Some("t copy")));
+    assert_eq!(ws.store.fields.keys().filter(|(s, _)| s == "t2").count(), 2);
+    assert_eq!(ws.store.records.keys().filter(|(s, _)| s == "t2").count(), 2);
+    assert_eq!(ws.store.records[&("t2".to_string(), "r2".to_string())].values["n"], 2);
+    assert!(ws.store.refs.iter().any(|r| r.src_entity_id == "b2" && r.kind == "owns" && r.dst_entity_id == "t2"));
+    assert_eq!(resolve_cell(&ws.store, &json!({ "entity_id": "t2", "selector": { "kind": "table_members" } })).unwrap(), json!(seq));
+    // the clone is independent: a value in the original does not touch the copy
+    let rev = ws.store.records[&("t".to_string(), "r1".to_string())].value_rev("n");
+    ws.ok(json!([{ "op": "table.set_values", "source_id": "t", "values": [{ "record_id": "r1", "field_id": "n", "value": 9, "expect": { "rev": rev } }] }]));
+    assert_eq!(ws.store.records[&("t2".to_string(), "r1".to_string())].values["n"], 1);
+    // undo removes the clone with its Block
+    ws.undo(seq).map_err(|f| f.to_json()).unwrap();
+    assert!(!ws.store.entities["t2"].alive() && !ws.store.entities["b2"].alive());
+    // Blocks are not cloned this way
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.clone", "entity_id": "b1", "new_entity_id": "b3", "parent_id": "s1", "order_key": "z" }]))), "INVALID_OPERATION");
+}
+
+#[test]
+fn an_inline_link_never_blocks_deleting_its_target() {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!([table("t", DATA_ID), record("rec", DATA_ID, "x"),
+        { "op": "entity.create", "entity_id": "doc", "type_id": TYPE_RICHTEXT, "parent_id": DATA_ID, "order_key": "d",
+          "payload": { "content": { "type": "doc", "content": [
+            { "type": "paragraph", "attrs": { "block_id": "p1" }, "content": [{ "type": "text", "text": "see " }, { "type": "object_link", "attrs": { "ref": { "entity_id": "rec" }, "label": "the record" } }] }] } } }]));
+    let link = ws.store.refs.iter().find(|r| r.src_entity_id == "doc").unwrap();
+    assert_eq!((link.kind.as_str(), link.mode(), link.integrity()), ("object_link", "live", "weak"));
+    let rev = ws.store.entities["rec"].life_rev;
+    ws.ok(json!([{ "op": "entity.delete", "entity_id": "rec", "expect": { "rev": rev } }]));
+    assert!(!ws.store.entities["rec"].alive(), "a linked record can be deleted; the link is dead");
+}
+
+#[test]
+fn opaque_entities_and_formulas_are_kept_verbatim_and_schema_checks_run_only_at_admission() {
+    use aiworkspace_core::access::Access;
+    use aiworkspace_core::plan::{plan_commit, PlanEnv};
+    use aiworkspace_core::testkit::MemWorkspace as W;
+    let mut ws = W::new();
+    ws.ok(json!([table("t", DATA_ID)]));
+    // a formula sits in a typed cell, is read back as given, and counts as empty for uniqueness
+    let seq = ws.ok(json!([{ "op": "table.insert_records", "source_id": "t", "records": [
+        { "record_id": "r1", "values": { "title": "a", "n": { "$formula": { "lang": "aiws", "version": "1", "expr": "1 + 1" } } } },
+        { "record_id": "r2", "values": { "title": "b", "n": { "$formula": { "lang": "aiws", "version": "1", "expr": "1 + 1" } } } }] }]));
+    assert_eq!(ws.store.records[&("t".to_string(), "r1".to_string())].values["n"]["$formula"]["expr"], "1 + 1");
+    assert_eq!(code(&ws.fail(json!([{ "op": "table.set_values", "source_id": "t", "values": [{ "record_id": "r1", "field_id": "n", "value": { "$formula": { "lang": "aiws", "version": "1" } }, "expect": { "rev": seq } }] }]))), "INVALID_SCHEMA");
+    // admission refuses a Viewport out of its Schema; the same operation replays (schema_checks off) as an opaque row
+    let bad = json!([{ "op": "entity.create", "entity_id": "vp", "type_id": TYPE_VIEWPORT, "parent_id": SHOWS_ID, "order_key": "a",
+        "payload": { "surface_ref": { "entity_id": "nope" }, "center": { "x": 0, "y": 0 }, "zoom": 99 } }]);
+    assert_eq!(code(&ws.fail(bad.clone())), "INVALID_SCHEMA");
+    let mut env = ws.env("alice", "human", None, true);
+    env.schema_checks = false;
+    env.replay = true;
+    env.import = true;
+    let req = W::request(bad);
+    let access = Access::full("alice");
+    let plan = plan_commit(&ws.store, &req, &env, &access).map_err(|f| f.to_json()).unwrap();
+    assert!(plan.overlay.entities["vp"].alive());
+    // a newer Schema version of a known type and a declared Schema id are stored as opaque objects (internal callers)
+    let env = ws.env("alice", "import", None, true);
+    let req = W::request(json!([{ "op": "entity.create", "entity_id": "scene", "type_id": "example.scene", "schema_version": 3, "schema_id": "example.scene@3",
+        "parent_id": DATA_ID, "order_key": "s", "payload": { "instances": "tbl", "anything": [1, 2] } }]));
+    ws.commit_with(&Access::full("alice"), &env, &req).map_err(|f| f.to_json()).unwrap();
+    let scene = &ws.store.entities["scene"];
+    assert_eq!((scene.schema_version, scene.schema_id.as_deref(), scene.opaque()), (3, Some("example.scene@3"), true));
+    assert_eq!(aiworkspace_core::read::envelope(&ws.store, &Access::full("alice"), scene).unwrap()["schema_id"], "example.scene@3");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "scene2", "type_id": "example.scene", "parent_id": DATA_ID, "order_key": "s2", "payload": {} }]))), "MISSING_EXTENSION");
+}
+
+#[test]
+fn a_resource_directory_is_a_value_container_isomorphic_with_a_dir_object() {
+    use aiworkspace_core::canonical::{chunk_id, dir_object, file_object, DirMember};
+    use aiworkspace_core::materialize::{dir_object_of, ObjectSink};
+    use aiworkspace_core::plan::resolve_cell;
+    use aiworkspace_core::types::dir_payload_from_dir_object;
+    struct Sink(Vec<(String, String)>);
+    impl ObjectSink for Sink {
+        fn put_object(&mut self, t: &str, text: &str) -> aiworkspace_core::WsResult<String> {
+            let (id, _) = aiworkspace_core::canonical::named_object(t, &serde_json::from_str(text).unwrap())?;
+            self.0.push((t.to_string(), id.clone()));
+            Ok(id)
+        }
+        fn put_file(&mut self, bytes: &[u8]) -> aiworkspace_core::WsResult<String> {
+            Ok(file_object(bytes.len() as u64, &chunk_id(bytes))?.0)
+        }
+    }
+    let mut ws = MemWorkspace::new();
+    let (fid, _) = file_object(5, &chunk_id(b"hello")).unwrap();
+    ws.store.assets.insert(fid.clone(), AssetInfo { object_id: fid.clone(), media_type: "text/plain".into(), size: 5 });
+    // members by name: a file (media type and size from the object) and a child directory
+    let seq = ws.ok(json!([
+        { "op": "entity.create", "entity_id": "sub", "type_id": TYPE_DIR, "parent_id": DATA_ID, "order_key": "a", "name": "sub", "payload": { "members": {} } },
+        { "op": "entity.create", "entity_id": "d", "type_id": TYPE_DIR, "parent_id": DATA_ID, "order_key": "b", "name": "d",
+          "payload": { "members": { "hello.txt": { "kind": "file", "object_id": fid }, "sub": { "kind": "dir", "entity_id": "sub" } }, "meta": { "note": "x" } } }]));
+    let d = &ws.store.entities["d"];
+    assert_eq!(d.payload["members"]["hello.txt"]["size"], 5);
+    assert_eq!((d.key_rev("m:hello.txt"), d.key_rev("m:sub")), (seq, seq));
+    let kinds: Vec<(String, String)> = ws.store.refs.iter().filter(|r| r.src_entity_id == "d").map(|r| (r.kind.clone(), r.dst_entity_id.clone() + &r.dst_object_id)).collect();
+    assert!(kinds.contains(&("asset".to_string(), fid.clone())) && kinds.contains(&("member".to_string(), "sub".to_string())), "{kinds:?}");
+    // the member selector is a version cell; a bad name, a cycle and a missing child are refused
+    assert_eq!(resolve_cell(&ws.store, &json!({ "entity_id": "d", "selector": { "kind": "folder_member", "name": "sub" } })).unwrap(), json!(seq));
+    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "a/b", "member": { "kind": "file", "object_id": fid }, "expect": { "rev": 0 } }]))), "INVALID_SCHEMA");
+    assert_eq!(sub(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "sub", "name": "up", "member": { "kind": "dir", "entity_id": "d" }, "expect": { "rev": 0 } }]))), "TREE_CYCLE");
+    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "ghost", "member": { "kind": "dir", "entity_id": "nope" }, "expect": { "rev": 0 } }]))), "REFERENCE_BROKEN");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "d", "keys": [{ "key": "members", "value": {}, "expect": { "rev": seq } }] }]))), "INVALID_OPERATION");
+    // the child directory is kept alive by the member reference
+    let rev = ws.store.entities["sub"].life_rev;
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.delete", "entity_id": "sub", "expect": { "rev": rev } }]))), "REFERENCE_BROKEN");
+    // materialization: the same members give the same cydir id, computed as cyfs-ndn does
+    let mut sink = Sink(Vec::new());
+    let (id1, total) = dir_object_of(&ws.store, &ws.store.entities["d"], &mut sink, 0).unwrap();
+    let (sub_id, _) = dir_object(&[]).unwrap();
+    let (expect, _) = dir_object(&[DirMember { name: "hello.txt".into(), object_id: fid.clone(), size: 5, is_file: true }, DirMember { name: "sub".into(), object_id: sub_id.clone(), size: 0, is_file: false }]).unwrap();
+    assert_eq!((id1.as_str(), total), (expect.as_str(), 5));
+    assert!(sink.0.iter().all(|(t, _)| t == "cydir") && sink.0.len() == 2);
+    let (id2, _) = dir_object_of(&ws.store, &ws.store.entities["d"], &mut Sink(Vec::new()), 0).unwrap();
+    assert_eq!(id1, id2);
+    // a DirObject imports back as a directory payload (children first)
+    let mut dirs = std::collections::BTreeMap::new();
+    dirs.insert(sub_id.clone(), "sub".to_string());
+    let payload = dir_payload_from_dir_object(&json!({ "create_time": 0, "last_update_time": 0, "total_size": 5, "file_count": 1, "file_size": 5,
+        "body": { "hello.txt": { "obj_type": "cyfile", "body": { "content": chunk_id(b"hello"), "create_time": 0, "last_update_time": 0, "size": 5 } }, "sub": sub_id } }), &dirs).unwrap();
+    assert_eq!(payload["members"]["hello.txt"]["object_id"], fid);
+    assert_eq!(payload["members"]["sub"]["entity_id"], "sub");
+    // a value container: removing and re-adding a name are two cells; replace swaps the map; undo restores
+    let seq2 = ws.ok(json!([{ "op": "dir.remove_member", "entity_id": "d", "name": "hello.txt", "expect": { "rev": seq } }]));
+    assert!(resolve_cell(&ws.store, &json!({ "entity_id": "d", "selector": { "kind": "folder_member", "name": "hello.txt" } })).is_err());
+    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "hello.txt", "member": { "kind": "file", "object_id": fid }, "expect": { "rev": 0 } }]))), "REVISION_CONFLICT");
+    ws.undo(seq2).map_err(|f| f.to_json()).unwrap();
+    assert_eq!(ws.store.entities["d"].payload["members"]["hello.txt"]["object_id"], fid);
+    let rev = ws.store.entities["d"].content_rev;
+    let seq3 = ws.ok(json!([{ "op": "dir.replace", "entity_id": "d", "members": { "only.txt": { "kind": "file", "object_id": fid } }, "expect": { "rev": rev } }]));
+    assert_eq!(ws.store.entities["d"].payload["members"].as_object().unwrap().len(), 1);
+    assert!(!ws.store.refs.iter().any(|r| r.src_entity_id == "d" && r.kind == "member"), "the child member reference went with the map");
+    ws.undo(seq3).map_err(|f| f.to_json()).unwrap();
+    assert_eq!(ws.store.entities["d"].payload["members"]["sub"]["entity_id"], "sub");
+    // the limit
+    let many: serde_json::Map<String, Value> = (0..aiworkspace_core::types::MAX_DIR_MEMBERS + 1).map(|i| (format!("f{i}"), json!({ "kind": "file", "object_id": fid }))).collect();
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "big", "type_id": TYPE_DIR, "parent_id": DATA_ID, "order_key": "z", "payload": { "members": many } }]))), "LIMIT_EXCEEDED");
+}
+
+#[test]
 fn two_trees_and_system_nodes() {
     let mut ws = MemWorkspace::new();
     // the system nodes exist from the start and are untouchable

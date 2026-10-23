@@ -28,6 +28,12 @@ function connectorProjection(payload: Record<string, unknown>): ConnectorProject
 /** Outline fields derived from a payload (what the backend's `outline_extras` adds). */
 function extras(typeId: string, payload: Record<string, unknown>): Partial<EntityEnvelope> {
   const out: Partial<EntityEnvelope> = { title: (payload.title as string | undefined) ?? null }
+  // a sourced entity (内核架构改进 D12): where it comes from; its content is read-only here
+  const source = payload.source as Record<string, unknown> | undefined
+  out.source = source && typeof source === 'object'
+    ? { kind: source.kind as 'url' | 'workspace', mode: (source.mode as 'live' | 'fixed' | undefined) ?? 'live', url: (source.url as string | undefined) ?? null, workspace_id: (source.workspace_id as string | undefined) ?? null,
+        entity_id: (source.entity_id as string | undefined) ?? null, zone: (source.zone as string | undefined) ?? null, refresh: (source.refresh as { interval_s: number } | undefined) ?? null, auth_mode: (source.auth_mode as 'none' | 'hosted' | undefined) ?? 'none' }
+    : null
   if (typeId === 'buckyos.container') {
     out.kind = payload.kind as string
     out.layout = (payload.layout as EntityEnvelope['layout']) ?? { mode: 'flow' }
@@ -309,14 +315,14 @@ export class OutlineModel {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation',
+              if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation',
                 'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
             if (touchedExtras) {
               // the ops carry only the changed keys: rebuild extras from the known envelope plus the change
               const known: Record<string, unknown> = {
-                title: current.title, kind: current.kind, layout: current.layout, system: current.system, surface_id: current.surface_id, content_folder_id: current.content_folder_id,
+                title: current.title, source: current.source ?? undefined, kind: current.kind, layout: current.layout, system: current.system, surface_id: current.surface_id, content_folder_id: current.content_folder_id,
                 icon: current.icon ?? undefined, locked: current.locked ?? undefined,
                 view: current.view_type ? { type: current.view_type, version: current.view_version ?? undefined } : undefined,
                 source_ref: current.source_id ? { entity_id: current.source_id } : undefined,

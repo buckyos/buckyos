@@ -32,7 +32,7 @@ fn block_sel(block_id: &str) -> Value {
 }
 
 fn ref_set(entity_id: &str, v: &Validated) -> BTreeSet<RefEdge> {
-    v.refs.iter().map(|r| richtext_ref_edge(entity_id, &r.block_id, &r.reference)).collect()
+    v.refs.iter().map(|r| richtext_ref_edge(entity_id, &r.block_id, r.kind, &r.reference)).collect()
 }
 
 /// References that appear with this change must point at readable, live
@@ -52,9 +52,13 @@ fn check_new_refs(p: &Planner, old: &Validated, new: &Validated) -> WsResult<()>
 /// carries the CRDT snapshot so replicas obtain the very same lineage.
 pub fn create(p: &mut Planner, row: &mut EntityRow, payload: JsonMap) -> WsResult<Value> {
     for k in payload.keys() {
-        if !matches!(k.as_str(), "content" | "lineage_id" | "snapshot") {
+        if !matches!(k.as_str(), "content" | "lineage_id" | "snapshot" | "source") {
             return Err(WsError::invalid_schema(format!("richtext: unknown key {k}")));
         }
+    }
+    if let Some(s) = payload.get("source") {
+        crate::types::check_source(s)?;
+        row.payload.insert("source".into(), s.clone());
     }
     let id = row.entity_id.clone();
     let (doc, lineage_id) = match (payload.get("content"), payload.get("snapshot")) {
@@ -107,6 +111,7 @@ fn state(p: &mut Planner, entity_id: &str, cap: Cap) -> WsResult<(EntityRow, Ric
         return Err(WsError::new(Code::UnsupportedVersion, format!("rich text {entity_id} cannot be edited ({d})")));
     }
     p.require(entity_id, cap)?;
+    crate::types::require_source_writable(p, &e)?;
     p.need_lock(&e);
     let st = p.ov.richtext(entity_id)?.ok_or_else(|| WsError::io(format!("rich text state of {entity_id} is missing")))?;
     Ok((e, st))

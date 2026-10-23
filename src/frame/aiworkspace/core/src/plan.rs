@@ -53,6 +53,9 @@ pub struct PlanEnv {
     /// Loading a package: reference targets may be created later in the same
     /// batch (checked once at the end) and listed-missing assets are tolerated.
     pub import: bool,
+    /// Admission runs the business Schema validators (D01); replay of an accepted Commit only checks the
+    /// primitives' shape (`false`).
+    pub schema_checks: bool,
     /// Re-applying an already accepted operation (a replica advancing its
     /// confirmed layer): CRDT bytes the backend produced are imported as they
     /// are instead of being re-generated.
@@ -545,8 +548,73 @@ pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
                 None => return Err(WsError::deleted(format!("block {b} not found"))),
             }
         }
+        // one member of a resource directory (D01): its own version cell; a removed member is gone
+        "folder_member" => {
+            let name = get_str(s, "name")?;
+            if e.type_id != TYPE_DIR {
+                return Err(WsError::invalid_op(format!("{entity_id} is not a directory")));
+            }
+            if e.payload.get("members").and_then(|m| m.get(name)).is_none() {
+                return Err(WsError::deleted(format!("member {name} is not in {entity_id}")));
+            }
+            json!(e.key_rev(&format!("m:{name}")))
+        }
+        // a saved table view (`entity_id` = the table, `cell_id` = the view Block): the view's configuration
+        // keys plus the table's membership and every live field's type and values — the coarse token a wish
+        // input declares (D04); the read set still records the fine cells
+        "table_view" => {
+            let cell_id = get_str(s, "cell_id")?;
+            let c = ctx.entity(cell_id)?.filter(|c| c.alive()).ok_or_else(|| WsError::deleted(format!("view {cell_id} not found")))?;
+            if c.type_id != TYPE_CELL
+                || c.payload.get("view").and_then(|v| v["type"].as_str()) != Some("table")
+                || c.payload.get("source_ref").and_then(crate::value::reference_entity_id) != Some(entity_id)
+            {
+                return Err(WsError::invalid_op(format!("{cell_id} is not a table view of {entity_id}")));
+            }
+            let mut parts: Vec<String> = ["filter", "sorts", "group", "fields", "manual_order", "source_ref"].iter().map(|k| format!("{k}={}", c.key_rev(k))).collect();
+            table_token(ctx, &e, None, &mut parts)?;
+            token(&parts)
+        }
+        // a table query (`filter? / sorts? / fields?`): the table's membership plus the type and values of the
+        // fields it projects (every live field without `fields`)
+        "table_query" => {
+            let fields: Option<Vec<String>> = s.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
+            let mut parts = Vec::new();
+            table_token(ctx, &e, fields.as_deref(), &mut parts)?;
+            token(&parts)
+        }
         _ => return Err(WsError::new(Code::MissingExtension, format!("unknown selector kind {kind}"))),
     })
+}
+
+fn token(parts: &[String]) -> Value {
+    json!(sha256_hex(parts.join("\n").as_bytes())[..32].to_string())
+}
+
+/// The version parts of a table's rows as a selector sees them: membership, then each field's type and values.
+fn table_token(ctx: &dyn ReadCtx, table: &EntityRow, fields: Option<&[String]>, parts: &mut Vec<String>) -> WsResult<()> {
+    if table.type_id != TYPE_TABLE {
+        return Err(WsError::invalid_op(format!("{} is not a table", table.entity_id)));
+    }
+    parts.push(format!("members={}", table.key_rev(MEMBERS_KEY)));
+    let live: Vec<FieldRow> = match fields {
+        Some(ids) => {
+            let mut rows = Vec::new();
+            for f in ids {
+                match ctx.field(&table.entity_id, f)? {
+                    Some(row) if row.alive() => rows.push(row),
+                    Some(_) => return Err(WsError::deleted(format!("field {f} is deleted"))),
+                    None => return Err(WsError::not_found(format!("field {f} not found"))),
+                }
+            }
+            rows
+        }
+        None => crate::filter::live_fields(ctx, &table.entity_id)?,
+    };
+    for f in live {
+        parts.push(format!("{}={}/{}", f.field_id, f.type_rev, f.values_rev));
+    }
+    Ok(())
 }
 
 fn check_preconditions(p: &mut Planner, pre: &[Value]) -> WsResult<()> {
@@ -574,6 +642,10 @@ fn check_preconditions(p: &mut Planner, pre: &[Value]) -> WsResult<()> {
     Ok(())
 }
 
+/// Version of the planner's normalization (内核架构改进 D20): accepted Commits are applied from their
+/// recorded row delta, so a replica never needs this to match; `ws.get_info` reports it for diagnostics.
+pub const PLANNER_VERSION: u32 = 1;
+
 /// The operation catalogue: `(name, class, undo, capability)` — part of the
 /// protocol (design doc §2.5.3). `schemas/operations.json` mirrors it.
 pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
@@ -587,6 +659,11 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("entity.set_derived", "merge", "compensable", "update"),
     ("tree.move", "merge", "compensable", "structure"),
     ("tree.place", "merge", "compensable", "structure"),
+    ("entity.clone", "create", "compensable", "structure"),
+    ("data.pin", "merge", "compensable", "structure"),
+    ("dir.set_member", "overwrite", "compensable", "update"),
+    ("dir.remove_member", "overwrite", "compensable", "update"),
+    ("dir.replace", "overwrite", "compensable", "update"),
     ("table.insert_records", "append", "compensable", "append"),
     ("table.delete_records", "structural", "compensable", "delete"),
     ("table.set_values", "overwrite", "compensable", "update"),
@@ -608,11 +685,307 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("table.restore_records", "internal", "compensable", "delete"),
     ("table.restore_field", "internal", "compensable", "structure"),
     ("table.restore_migration", "internal", "compensable", "structure"),
+    ("data.restore_owns", "internal", "compensable", "structure"),
+    ("entity.purge", "internal", "none", "manage"),
 ];
 
 /// Operations only the undo path / import may submit.
 fn is_internal_op(name: &str) -> bool {
-    matches!(name, "table.restore_records" | "table.restore_field" | "table.restore_migration")
+    matches!(name, "table.restore_records" | "table.restore_field" | "table.restore_migration" | "data.restore_owns" | "entity.purge")
+}
+
+/// Marker a purged entity keeps in its (otherwise emptied) payload.
+pub const PURGED_KEY: &str = "#purged";
+
+/// `entity.purge { entity_id }` (internal, the maintenance channel D19): a deleted entity gives up its
+/// content and references for good — its resources become reclaimable at once and it can never be
+/// restored (`RESOURCE_RECLAIMED`). Not compensable.
+fn entity_purge(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id"])?;
+    let id = get_str(op, "entity_id")?;
+    let mut e = p.entity_opt(id)?.ok_or_else(|| WsError::not_found(format!("entity {id} not found")))?;
+    if e.alive() {
+        return Err(WsError::invalid_op(format!("entity {id} is not deleted")));
+    }
+    let seq = p.seq();
+    let old = crate::types::entity_refs(&e)?;
+    p.ov.set_refs(&old, &BTreeSet::new());
+    for r in p.ov.refs_from(id)? {
+        p.ov.del_ref(r);
+    }
+    e.payload = Map::new();
+    e.payload.insert(PURGED_KEY.into(), json!(seq));
+    e.key_revs = BTreeMap::new();
+    e.derived = None;
+    e.content_rev = seq;
+    p.ov.put_entity(e);
+    p.touch(id, None, "purged");
+    Ok((op.clone(), None))
+}
+
+/// Own data (内核架构改进 D05): a Block created in this Commit together with the data it shows, under the
+/// canvas content folder, owns that data — unless the Block declares `data_ownership: "shared"`. The
+/// `owns` edge is added beside `bind`; data of the data tree (inserted in data mode) is never owned.
+fn add_owns_edges(p: &mut Planner) -> WsResult<()> {
+    let seq = p.seq();
+    let created: Vec<EntityRow> = p.ov.entities.values().filter(|e| e.created_seq == seq && e.alive() && e.type_id == TYPE_CELL).cloned().collect();
+    for cell in created {
+        if cell.payload.get("data_ownership").and_then(Value::as_str) == Some("shared") {
+            continue;
+        }
+        let Some(target) = cell.payload.get("source_ref").filter(|r| crate::value::reference_is_local(r)).and_then(crate::value::reference_entity_id).map(str::to_string) else { continue };
+        let Some(data) = p.ov.entity(&target)? else { continue };
+        if data.created_seq != seq || !data.alive() || !under_canvas_content(&p.ov, &target)? {
+            continue;
+        }
+        p.ov.add_ref(RefEdge::local(&cell.entity_id, "", "owns", &target));
+    }
+    Ok(())
+}
+
+fn under_canvas_content(ctx: &dyn ReadCtx, id: &str) -> WsResult<bool> {
+    let mut cur = id.to_string();
+    for _ in 0..4096 {
+        match ctx.edge(&cur)? {
+            Some(e) if e.parent_id == CANVAS_CONTENT_ID => return Ok(true),
+            Some(e) => cur = e.parent_id,
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
+}
+
+/// Own data nobody shows any more goes with the last Block that showed it (D05): the data the
+/// `doomed` entities bind that was ever owned (an `owns` edge from any Block, deleted ones included —
+/// the index keeps them) and keeps no `bind` from an alive entity outside `doomed`.
+fn orphaned_own_data(p: &Planner, doomed: &BTreeSet<String>) -> WsResult<Vec<String>> {
+    let mut out = Vec::new();
+    for src in doomed {
+        for r in p.ov.refs_from(src)? {
+            if !matches!(r.kind.as_str(), "bind" | "owns") || !r.dst_workspace_id.is_empty() || r.dst_entity_id.is_empty() || out.contains(&r.dst_entity_id) || doomed.contains(&r.dst_entity_id) {
+                continue;
+            }
+            let Some(data) = p.ov.entity(&r.dst_entity_id)? else { continue };
+            if !data.alive() {
+                continue;
+            }
+            let (mut owned, mut shown) = (false, false);
+            for b in p.ov.refs_to(&r.dst_entity_id)? {
+                if b.kind == "owns" {
+                    owned = true;
+                } else if b.kind == "bind" && !doomed.contains(&b.src_entity_id) && p.ov.entity(&b.src_entity_id)?.is_some_and(|s| s.alive()) {
+                    shown = true;
+                }
+            }
+            if owned && !shown {
+                out.push(r.dst_entity_id.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `data.pin { entity_id }`: the data stops being any Block's own (its `owns` edges go); it is shared
+/// data of the data tree from now on and never follows a Block's deletion.
+fn data_pin(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let e = p.entity_alive(id)?;
+    p.require(id, Cap::Structure)?;
+    if !p.check_rev_opt(op.get("expect"), e.meta_rev, None, id, None, || None)? {
+        return Ok((op.clone(), None));
+    }
+    let owners: Vec<String> = p.ov.refs_to(id)?.into_iter().filter(|r| r.kind == "owns").map(|r| r.src_entity_id).collect();
+    for o in &owners {
+        p.ov.del_ref(RefEdge::local(o, "", "owns", id));
+    }
+    p.touch(id, None, "pinned");
+    let inverse = json!({ "op": "data.restore_owns", "entity_id": id, "owners": owners });
+    Ok((op.clone(), Some(vec![inverse])))
+}
+
+fn data_restore_owns(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "owners"])?;
+    let id = get_str(op, "entity_id")?;
+    p.entity_alive(id)?;
+    let owners: Vec<String> = op.get("owners").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    for o in &owners {
+        if p.ov.entity(o)?.is_some_and(|s| s.alive()) {
+            p.ov.add_ref(RefEdge::local(o, "", "owns", id));
+        }
+    }
+    p.touch(id, None, "pinned");
+    Ok((op.clone(), Some(vec![json!({ "op": "data.pin", "entity_id": id })])))
+}
+
+fn member_sel(name: &str) -> Option<Value> {
+    Some(json!({ "kind": "folder_member", "name": name }))
+}
+
+/// The directory an operation writes: alive, a `buckyos.dir`, `update` on it, locked by this session when
+/// its policy asks for it. Returns the row and its member map.
+fn dir_target(p: &mut Planner, id: &str) -> WsResult<(EntityRow, Map<String, Value>)> {
+    let e = p.entity_alive(id)?;
+    if e.type_id != TYPE_DIR {
+        return Err(WsError::invalid_op(format!("{id} is not a directory")));
+    }
+    if let Some(d) = e.degraded() {
+        return Err(WsError::new(Code::UnsupportedVersion, format!("directory {id} cannot be edited ({d})")));
+    }
+    p.require(id, Cap::Update)?;
+    crate::types::require_source_writable(p, &e)?;
+    p.need_lock(&e);
+    let members = e.payload.get("members").and_then(Value::as_object).cloned().unwrap_or_default();
+    Ok((e, members))
+}
+
+/// Write the member map back: validation, references, revisions, touch.
+fn dir_write(p: &mut Planner, before: &EntityRow, mut e: EntityRow, members: Map<String, Value>, changed: &[String]) -> WsResult<()> {
+    let seq = p.seq();
+    e.payload.insert("members".into(), Value::Object(members));
+    crate::types::validate_dir(p, &mut e)?;
+    for name in changed {
+        e.key_revs.insert(format!("m:{name}"), seq);
+        p.touch(&e.entity_id, member_sel(name), "value");
+    }
+    e.key_revs.insert("members".into(), seq);
+    e.content_rev = seq;
+    let old = crate::types::entity_refs(before)?;
+    let new = crate::types::entity_refs(&e)?;
+    p.ov.set_refs(&old, &new);
+    p.ov.put_entity(e);
+    Ok(())
+}
+
+/// `dir.set_member { entity_id, name, member, expect }`: add or replace one member; `expect` is the member's
+/// cell (`{ rev: 0 }` for a new name).
+fn dir_set_member(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "name", "member", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let name = get_str(op, "name")?;
+    crate::types::check_member_name(name)?;
+    let (before, mut members) = dir_target(p, id)?;
+    let old = members.get(name).cloned();
+    if !p.check_rev(op.get("expect"), before.key_rev(&format!("m:{name}")), None, id, member_sel(name), || old.clone())? {
+        return Ok((op.clone(), None));
+    }
+    let member = op.get("member").cloned().filter(Value::is_object).ok_or_else(|| WsError::invalid_schema("member must be an object").at("/member"))?;
+    members.insert(name.to_string(), member);
+    let seq = p.seq();
+    dir_write(p, &before, before.clone(), members, &[name.to_string()])?;
+    let inverse = match old {
+        Some(m) => json!({ "op": "dir.set_member", "entity_id": id, "name": name, "member": m, "expect": { "rev": seq } }),
+        None => json!({ "op": "dir.remove_member", "entity_id": id, "name": name, "expect": { "rev": seq } }),
+    };
+    Ok((op.clone(), Some(vec![inverse])))
+}
+
+/// `dir.remove_member { entity_id, name, expect }`.
+fn dir_remove_member(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "name", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let name = get_str(op, "name")?;
+    let (before, mut members) = dir_target(p, id)?;
+    let Some(old) = members.remove(name) else { return Err(WsError::not_found(format!("member {name} is not in {id}"))) };
+    if !p.check_rev(op.get("expect"), before.key_rev(&format!("m:{name}")), None, id, member_sel(name), || Some(old.clone()))? {
+        return Ok((op.clone(), None));
+    }
+    let seq = p.seq();
+    dir_write(p, &before, before.clone(), members, &[name.to_string()])?;
+    let inverse = json!({ "op": "dir.set_member", "entity_id": id, "name": name, "member": old, "expect": { "rev": seq } });
+    Ok((op.clone(), Some(vec![inverse])))
+}
+
+/// `dir.replace { entity_id, members, expect }`: the whole map at once (a switch to another DirObject);
+/// `expect` is the directory's `content_rev`.
+fn dir_replace(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "members", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let (before, old) = dir_target(p, id)?;
+    if !p.check_rev(op.get("expect"), before.content_rev, None, id, None, || Some(Value::Object(old.clone())))? {
+        return Ok((op.clone(), None));
+    }
+    let members = op.get("members").and_then(Value::as_object).cloned().ok_or_else(|| WsError::invalid_schema("members must be an object").at("/members"))?;
+    let mut changed: Vec<String> = old.keys().chain(members.keys()).cloned().collect();
+    changed.sort();
+    changed.dedup();
+    let seq = p.seq();
+    dir_write(p, &before, before.clone(), members, &changed)?;
+    let inverse = json!({ "op": "dir.replace", "entity_id": id, "members": Value::Object(old), "expect": { "rev": seq } });
+    Ok((op.clone(), Some(vec![inverse])))
+}
+
+/// `entity.clone { entity_id, new_entity_id, parent_id, order_key, name?, placement? }`: a deep copy of a
+/// data entity (payload, table fields and live records, rich text content as a new lineage) — the one
+/// place copy semantics live (D05): the Desktop and Agents clone own data through it. Record bodies and
+/// children are not copied; generation records are not carried over.
+fn entity_clone(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "new_entity_id", "parent_id", "order_key", "name", "placement"])?;
+    let id = get_str(op, "entity_id")?;
+    let new_id = get_str(op, "new_entity_id")?;
+    let src = p.entity_alive(id)?;
+    if !p.access.can_read(&p.ov, &src)? {
+        return Err(WsError::not_found(format!("entity {id} not found")));
+    }
+    if is_system_id(id) || src.type_id == TYPE_CONTAINER || src.type_id == TYPE_CELL {
+        return Err(WsError::invalid_op("entity.clone copies data entities; Blocks and containers are copied by creating them"));
+    }
+    let mut payload = src.payload.clone();
+    let payload = match src.type_id.as_str() {
+        TYPE_RECORD => crate::types::record_nested(&payload),
+        TYPE_RICHTEXT => {
+            let rt = p.ov.richtext(id)?.ok_or_else(|| WsError::invalid_op("rich text state missing"))?;
+            json!({ "content": rt.meta.ast })
+        }
+        TYPE_TABLE => {
+            payload.remove("source_ref");
+            let fields: Vec<Value> = p.ov.fields(id)?.into_iter().filter(|f| f.alive()).map(|f| {
+                let mut v = f.def.to_value();
+                v["order_key"] = json!(f.order_key);
+                v
+            }).collect();
+            payload.insert("fields".into(), Value::Array(fields));
+            Value::Object(payload)
+        }
+        TYPE_WISH => {
+            for k in ["last_run", "analysis", "program"] {
+                payload.remove(k);
+            }
+            Value::Object(payload)
+        }
+        TYPE_ANNOTATION => {
+            payload.remove("author");
+            Value::Object(payload)
+        }
+        _ => Value::Object(payload),
+    };
+    let mut create = json!({ "op": "entity.create", "entity_id": new_id, "type_id": src.type_id, "schema_version": src.schema_version,
+                             "parent_id": op["parent_id"], "order_key": op["order_key"], "payload": payload });
+    for k in ["name", "placement"] {
+        if let Some(v) = op.get(k) {
+            create[k] = v.clone();
+        }
+    }
+    let (_, inverse) = entity_create(p, &create)?;
+    if src.type_id == TYPE_TABLE {
+        let mut records = Vec::new();
+        p.ov.scan_records(id, &mut |r| {
+            if r.alive() {
+                let mut rec = json!({ "record_id": r.record_id, "values": r.values });
+                if !r.meta.is_empty() {
+                    rec["meta"] = Value::Object(r.meta.clone());
+                }
+                records.push(rec);
+            }
+            Ok(true)
+        })?;
+        if !records.is_empty() {
+            crate::plan_table::dispatch(p, "table.insert_records", &json!({ "op": "table.insert_records", "source_id": new_id, "records": records }))?;
+        }
+    }
+    let mut norm = op.clone();
+    norm["cloned_from_rev"] = json!(src.content_rev);
+    Ok((norm, inverse))
 }
 
 /// Plan a whole Commit. On success the returned overlay is the candidate state.
@@ -671,6 +1044,7 @@ pub fn plan_commit<'a>(
     if !p.conflicts.is_empty() {
         return Err(CommitFailure::Conflict(p.conflicts));
     }
+    add_owns_edges(&mut p).map_err(|e| reject(e, None))?;
     if env.import {
         check_deferred_refs(&p).map_err(|e| reject(e, None))?;
     }
@@ -705,6 +1079,13 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "entity.set_derived" => entity_set_derived(p, op),
         "tree.move" => tree_move(p, op),
         "tree.place" => tree_place(p, op),
+        "entity.clone" => entity_clone(p, op),
+        "entity.purge" => entity_purge(p, op),
+        "data.pin" => data_pin(p, op),
+        "data.restore_owns" => data_restore_owns(p, op),
+        "dir.set_member" => dir_set_member(p, op),
+        "dir.remove_member" => dir_remove_member(p, op),
+        "dir.replace" => dir_replace(p, op),
         n if n.starts_with("table.") => crate::plan_table::dispatch(p, n, op),
         n if n.starts_with("richtext.") => crate::plan_richtext::dispatch(p, n, op),
         _ => Err(WsError::invalid_op(format!("unknown operation {name:?}"))),
@@ -838,11 +1219,16 @@ fn connector_placement(op: &Value, connector: Option<&JsonMap>, internal: bool) 
 }
 
 fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
-    only_keys(op, &["entity_id", "type_id", "schema_version", "name", "parent_id", "order_key", "placement", "payload", "scope"])?;
+    only_keys(op, &["entity_id", "type_id", "schema_version", "schema_id", "name", "parent_id", "order_key", "placement", "payload", "scope"])?;
     let id = get_str(op, "entity_id")?;
     check_id("entity_id", id)?;
     let type_id = get_str(op, "type_id")?;
     let schema_version = op.get("schema_version").and_then(Value::as_u64).unwrap_or(1) as u32;
+    let schema_id = match op.get("schema_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.is_empty() && s.len() <= 128 => Some(s.clone()),
+        Some(_) => return Err(WsError::invalid_schema("schema_id must be a short string").at("/schema_id")),
+    };
     let parent_id = get_str(op, "parent_id")?;
     let order_key = get_str(op, "order_key")?;
     check_order_key(order_key)?;
@@ -862,7 +1248,7 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         Some("personal") if type_id == TYPE_ANNOTATION => format!("user:{}", p.env.principal),
         Some(_) => return Err(WsError::invalid_op("scope must be shared, or personal for annotations")),
     };
-    let known = is_known_type(type_id) && schema_version == 1;
+    let known = supports_schema_version(type_id, schema_version);
     if !known && !p.env.internal {
         let code = if is_known_type(type_id) { Code::UnsupportedVersion } else { Code::MissingExtension };
         return Err(WsError::new(code, format!("cannot create {type_id} v{schema_version}")));
@@ -899,6 +1285,7 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         entity_id: id.to_string(),
         type_id: type_id.to_string(),
         schema_version,
+        schema_id,
         scope,
         name,
         write_policy: POLICY_OPEN.to_string(),
@@ -948,6 +1335,10 @@ fn alive_descendants(p: &Planner, id: &str, out: &mut Vec<EntityRow>) -> WsResul
 fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["entity_id", "subtree", "expect"])?;
     let id = get_str(op, "entity_id")?;
+    // deleted earlier in this very Commit (a cascade, or the undo of a cascade): the intent is met
+    if p.entity_opt(id)?.is_some_and(|e| e.deleted_seq == Some(p.seq())) {
+        return Ok((op.clone(), Some(vec![])));
+    }
     let e = p.entity_alive(id)?;
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be deleted")));
@@ -1022,7 +1413,31 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
         p.touch(&d.entity_id, None, "deleted");
         p.ov.put_entity(d);
     }
-    Ok((op.clone(), Some(inverse)))
+    // own data nobody else shows goes with its Block (D05); the expansion is written into the
+    // normalized operation so the log never has to decide it again (D20)
+    let mut norm = op.clone();
+    let orphans = orphaned_own_data(p, &doomed_ids)?;
+    if !orphans.is_empty() {
+        let mut cascade = Vec::new();
+        for data_id in orphans {
+            let Some(data) = p.ov.entity(&data_id)?.filter(|d| d.alive()) else { continue };
+            let mut kids = Vec::new();
+            alive_descendants(p, &data_id, &mut kids)?;
+            let mut sub = json!({ "op": "entity.delete", "entity_id": data_id, "expect": { "rev": data.life_rev } });
+            if !kids.is_empty() {
+                sub["subtree"] = json!({ "delete": kids.iter().map(|k| k.entity_id.clone()).collect::<Vec<_>>() });
+            }
+            let (done, inv) = entity_delete(p, &sub)?;
+            if let Some(inv) = inv {
+                inverse.extend(inv);
+                cascade.push(done);
+            }
+        }
+        if !cascade.is_empty() {
+            norm["cascade"] = Value::Array(cascade);
+        }
+    }
+    Ok((norm, Some(inverse)))
 }
 
 fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
@@ -1033,6 +1448,9 @@ fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
         .ok_or_else(|| WsError::not_found(format!("entity {id} not found")))?;
     if e.alive() {
         return Err(WsError::invalid_op(format!("entity {id} is not deleted")));
+    }
+    if e.payload.contains_key(PURGED_KEY) {
+        return Err(WsError::new(Code::ResourceReclaimed, format!("entity {id} was purged: its content is gone for good")));
     }
     // the author brings back its own annotation or note Block (undoing their deletion) with `comment`
     let by_comment = p.by_comment(&e, id, Cap::Delete, true)?;
@@ -1129,8 +1547,12 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         let code = if d == "MISSING_EXTENSION" { Code::MissingExtension } else { Code::UnsupportedVersion };
         return Err(WsError::new(code, format!("content of {id} cannot be edited ({d})")));
     }
-    if e.type_id == TYPE_RICHTEXT {
+    if e.type_id == TYPE_RICHTEXT && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str) != Some("source")) {
         return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
+    }
+    // a sourced entity keeps its content for its refresh; its Source and presentation keys stay editable
+    if crate::types::has_source(&e) && get_array(op, "keys")?.iter().any(|k| k.get("key").and_then(Value::as_str).is_some_and(|k| !crate::types::SOURCE_FREE_KEYS.contains(&k))) {
+        crate::types::require_source_writable(p, &e)?;
     }
     let mut by_comment = false;
     if e.type_id == TYPE_ANNOTATION {

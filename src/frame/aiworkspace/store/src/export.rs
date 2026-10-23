@@ -130,8 +130,15 @@ impl Workspace {
         self.objects.put_verified(&snapshot_id, &text)?;
         self.doc
             .execute(
-                "INSERT OR REPLACE INTO snapshots (snapshot_id, content_root, seq, kind, retained, created_at, created_by) VALUES (?1,?2,?3,?4,1,?5,?6)",
+                "INSERT OR REPLACE INTO snapshots (snapshot_id, content_root, seq, kind, created_at, created_by) VALUES (?1,?2,?3,?4,?5,?6)",
                 params![snapshot_id, m.content_root, self.head_seq, kind, now, by],
+            )
+            .map_err(db_err)?;
+        // every snapshot is a retention root of its content root (D06): `ws.release_retention` ends it
+        self.doc
+            .execute(
+                "INSERT OR REPLACE INTO retentions (kind, ref, holder, expires_at, created_at) VALUES ('snapshot', ?1, ?2, NULL, ?3)",
+                params![snapshot_id, by, now],
             )
             .map_err(db_err)?;
         Ok(Checkpoint { snapshot_id, content_root: m.content_root, seq: self.head_seq, excluded: m.excluded, unresolved: m.unresolved, objects: m.objects })
@@ -165,6 +172,7 @@ impl Workspace {
             return Err(WsError::denied("a personal backup needs workspace-level read"));
         }
         let notes = notes.unwrap_or(personal);
+        self.check_quota(0, false)?;
         let cp = self.materialize_notes(&access, "export", &caller.principal, notes)?;
         let (mut objects, chunks, missing_assets) = closure(&self.objects, &cp.content_root, self_contained)?;
         objects.insert(cp.snapshot_id.clone());
@@ -254,6 +262,9 @@ impl Workspace {
         zip.start_file("manifest.json", opts).map_err(zerr)?;
         zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes()).map_err(io)?;
         zip.finish().map_err(zerr)?.sync_all().map_err(io)?;
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as i64;
+        self.add_retention("export", &export_id, &caller.principal, None)?;
+        self.add_usage("exports", size)?;
         Ok(json!({ "ok": true, "export_id": export_id, "path": path.to_string_lossy(), "manifest": manifest }))
     }
 
@@ -272,6 +283,7 @@ impl Workspace {
         if !access.ws_caps.has(Cap::Update) && !access.ws_caps.has(Cap::Structure) {
             return Err(WsError::denied("update or structure capability required"));
         }
+        self.check_quota(data.len() as u64, false)?;
         let chunk = self.objects.put_chunk(data)?;
         let (object_id, text) = canonical::file_object(data.len() as u64, &chunk)?;
         self.objects.put_verified(&object_id, &text)?;
@@ -283,6 +295,8 @@ impl Workspace {
                 params![object_id, media_type, data.len() as i64, caller.principal, expires],
             )
             .map_err(db_err)?;
+        self.add_retention("staged", &object_id, &caller.principal, Some(&expires))?;
+        self.add_usage("staged", data.len() as i64)?;
         Ok(json!({ "ok": true, "object_id": object_id, "media_type": media_type, "size": data.len(), "expires_at": expires }))
     }
 
@@ -561,7 +575,7 @@ pub fn load_workspace(
         }
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": ws.workspace_id, "epoch": ws.epoch,
                           "idempotency_key": key, "origin": "import", "operations": ops });
-        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None });
+        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false });
         if r["status"] != json!("accepted") {
             return Err(WsError::invalid_schema("package content was rejected").with_data(r));
         }

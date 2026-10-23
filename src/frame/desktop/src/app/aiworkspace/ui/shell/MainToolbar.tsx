@@ -15,6 +15,7 @@ import { SURFACE_ICONS, SurfaceIcon } from '../canvas/icons'
 import { accepted, renameBase, renameSurface, setSurfaceBackground, setSurfaceIcon, SurfaceDeleteDialog, surfaceWriteReason, useSurfaceConfig, type RenameBase } from '../canvas/surfaceManage'
 import { buildMainMenu, type CanvasCommands } from './MainMenu'
 import { MenuButton, PopoverPanel, usePopover } from './popover'
+import { duplicateSurfaceOps } from '../canvas/surfaceOps'
 import { useCanvasMode, useShell } from './shellContext'
 
 /** The versions a rename will expect, read when editing starts; a failure surfaces when the rename awaits it. */
@@ -260,6 +261,8 @@ export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
                     items={[
                       { id: `rename-${surface.entity_id}`, label: t('aiworkspace.common.rename'), disabled: !surface.capabilities.includes('structure'), reason: t('aiworkspace.shell.switcher.noRenamePermission'),
                         run: () => setRenaming({ id: surface.entity_id, base: readBase(store, surface), value: surface.title ?? surface.name ?? '' }) },
+                      { id: `surface-duplicate-${surface.entity_id}`, testId: `aiws-surface-duplicate-${surface.entity_id}`, label: t('aiworkspace.shell.switcher.duplicate'), disabled: !canStructure, reason: t('aiworkspace.shell.switcher.noRenamePermission'),
+                        run: () => { void duplicateSurfaceOps(store, surface.entity_id).then((made) => store.submit({ editId: `surface:${made.surfaceId}`, label: t('aiworkspace.shell.switcher.duplicate'), operations: made.ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { shell.selectSurface(made.surfaceId); shell.setTopMode('canvas') } })).catch((error: unknown) => store.notify('error', describeError(error))) } },
                       { id: `surface-delete-${surface.entity_id}`, testId: `aiws-surface-delete-${surface.entity_id}`, label: t('aiworkspace.shell.switcher.delete'), danger: true, disabled: !surface.capabilities.includes('delete'), reason: t('aiworkspace.shell.switcher.noDeletePermission'), run: () => setDeleting(surface) },
                     ]}>
                     <Ellipsis size={14} />

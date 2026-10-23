@@ -192,7 +192,8 @@ async fn start(state: &Arc<AppState>, p: &Value, caller: Caller) -> WsResult<Val
             if read["type_id"] != json!(TYPE_SHOW_PATH) {
                 return Err(WsError::invalid_op(format!("{path} is not a presentation path")));
             }
-            Ok(access.ws_caps.any_write())
+            // any write right, a subtree's included, locks the Workspace for the show (D17)
+            Ok(access.ws_caps.any_write() || access.scoped.values().any(|c| c.any_write()))
         })
     })
     .await?;

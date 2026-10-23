@@ -73,7 +73,7 @@ async fn a_guest_token_reaches_public_grants_only() {
     assert!(put.status().is_success());
     let staged = srv.rpc("tok-alice", "asset.finish_upload", json!({ "workspace_id": id, "upload_id": begin["upload_id"] })).await;
     let object_id = staged["object_id"].as_str().unwrap().to_string();
-    let r = srv.rpc("tok-alice", "doc.commit", json!({ "protocol_version": "0.5", "workspace_id": id, "epoch": ws["epoch"], "idempotency_key": "a/1", "session_id": "s",
+    let r = srv.rpc("tok-alice", "doc.commit", json!({ "protocol_version": "1.0", "workspace_id": id, "epoch": ws["epoch"], "idempotency_key": "a/1", "session_id": "s",
         "operations": [{ "op": "entity.create", "entity_id": "pic", "type_id": "buckyos.asset-ref", "parent_id": "data", "order_key": "m", "payload": { "object_id": object_id, "media_type": "text/plain", "size": 4 } }] })).await;
     assert_eq!(r["status"], "accepted", "{r}");
 
@@ -97,7 +97,7 @@ async fn a_guest_token_reaches_public_grants_only() {
     let asset = srv.http.get(format!("{}/asset/{}/{}", srv.base, id, object_id)).bearer_auth(GUEST).send().await.unwrap();
     assert_eq!(asset.status(), 200);
     assert_eq!(asset.text().await.unwrap(), "abcd");
-    let r = srv.rpc(GUEST, "doc.commit", json!({ "protocol_version": "0.5", "workspace_id": id, "epoch": ws["epoch"], "idempotency_key": "g/1", "session_id": "g",
+    let r = srv.rpc(GUEST, "doc.commit", json!({ "protocol_version": "1.0", "workspace_id": id, "epoch": ws["epoch"], "idempotency_key": "g/1", "session_id": "g",
         "operations": [{ "op": "entity.create", "entity_id": "note", "type_id": "buckyos.annotation", "parent_id": "data", "order_key": "n", "payload": { "target": { "entity_id": "pic" }, "kind": "note", "body": "赞", "author_name": "路人" } }] })).await;
     assert_eq!(r["status"], "accepted", "{r}");
     let note = srv.rpc(GUEST, "doc.read", json!({ "workspace_id": id, "entity_id": "note" })).await;

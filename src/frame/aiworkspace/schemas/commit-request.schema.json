@@ -1,6 +1,6 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/commit-request/0.3",
+ "$id": "buckyos.ai-workspace/commit-request/1.0",
  "title": "Commit request (doc.commit / doc.prepare)",
  "type": "object",
  "additionalProperties": false,
@@ -13,7 +13,7 @@
  ],
  "properties": {
   "protocol_version": {
-   "const": "0.5"
+   "const": "1.0"
   },
   "workspace_id": {
    "type": "string",
@@ -463,6 +463,38 @@
      }
     }
    }
+  },
+  "formula_value": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "$formula"
+   ],
+   "properties": {
+    "$formula": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "lang",
+      "version",
+      "expr"
+     ],
+     "properties": {
+      "lang": {
+       "const": "aiws"
+      },
+      "version": {
+       "type": "string",
+       "maxLength": 16
+      },
+      "expr": {
+       "type": "string",
+       "maxLength": 4096
+      }
+     }
+    }
+   },
+   "description": "A formula in place of a value of the field's type (内核架构改进 D18): saved as given, evaluated by readers (the Desktop) and never by the backend; results to be read by others are materialized by an ordinary Commit with a derived record. Sorting, filtering and `unique` treat it as empty."
   }
  }
 }

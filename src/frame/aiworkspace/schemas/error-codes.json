@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.5",
+ "protocol_version": "1.0",
  "description": "Stable error codes. Clients branch on `code` (and `sub_code`), never on text. `status` is how a Commit reports it. A refusal also carries `denial` (the hybrid SSO AccessDenial: `reason`, `adjust`, `service`, `method`). Checked against the code by core/tests/schemas.rs.",
  "codes": [
   {
@@ -119,7 +119,7 @@
    "code": "BASE_TOO_OLD",
    "retryable": false,
    "status": "rejected",
-   "meaning": "The change stream or collaboration history no longer covers the caller's base; prepare the replica again."
+   "meaning": "The caller's base is below the Workspace's history floor `base_seq` (`ws.get_info`): the change stream or collaboration history no longer covers it; prepare the replica again. The floor is 0 until history is truncated (D06)."
   },
   {
    "code": "EPOCH_MISMATCH",
@@ -168,6 +168,48 @@
    "retryable": true,
    "status": "rejected",
    "meaning": "The Workspace is being presented: document writes are closed until the show ends (data: presenter, started_at)."
+  },
+  {
+   "code": "QUOTA_EXCEEDED",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "The Workspace is over its quota; nothing was saved. `data { needed_bytes, reclaimable_bytes }`: when `reclaimable_bytes` covers the need, release space through the maintenance methods and retry (D19)."
+  },
+  {
+   "code": "QUOTA_LIMIT",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The Workspace is at its quota and nothing can be released: the limit must be raised (D19). `data { needed_bytes, reclaimable_bytes }`."
+  },
+  {
+   "code": "VERSION_NOT_RETAINED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The fixed version `{ epoch, seq }` names a point of this history that nothing retains any more (no checkpoint, clone or content root) (D03)."
+  },
+  {
+   "code": "RESOURCE_RECLAIMED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "A resource only this history referenced was reclaimed after its retention period: the undo or version restore cannot be done (D06)."
+  },
+  {
+   "code": "EXECUTION_CONTEXT_MISSING",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The run names no execution context (trigger, execution identity, location, attribution) (§9.6)."
+  },
+  {
+   "code": "DELEGATION_STALE",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The task configuration changed since the delegation was confirmed; someone with edit rights must confirm it again (D16, D22)."
+  },
+  {
+   "code": "RUN_REVOKED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The run's authorization was revoked, or an older execution attempt reports after a newer one took over (§9.5)."
   }
  ]
 }

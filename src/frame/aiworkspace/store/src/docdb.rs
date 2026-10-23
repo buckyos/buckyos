@@ -30,7 +30,7 @@ fn json_of<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> WsResult<T
 }
 
 const ENTITY_COLS: &str = "entity_id, type_id, schema_version, scope, name, write_policy, payload_json, key_revs_json, \
-                           created_seq, meta_rev, content_rev, life_rev, deleted_seq, derived_json";
+                           created_seq, meta_rev, content_rev, life_rev, deleted_seq, derived_json, schema_id";
 
 type RawEntity = (EntityRow, String, String, Option<String>);
 
@@ -40,6 +40,7 @@ fn entity_row(r: &Row) -> rusqlite::Result<RawEntity> {
             entity_id: r.get(0)?,
             type_id: r.get(1)?,
             schema_version: r.get(2)?,
+            schema_id: r.get(14)?,
             scope: r.get(3)?,
             name: r.get(4)?,
             write_policy: r.get(5)?,
@@ -339,13 +340,13 @@ pub fn apply_changes(tx: &Connection, c: &Changes, seq: u64) -> WsResult<WriteSt
     {
         let mut st = tx
             .prepare_cached(&format!(
-                "INSERT OR REPLACE INTO entities ({ENTITY_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"
+                "INSERT OR REPLACE INTO entities ({ENTITY_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
             ))
             .map_err(db_err)?;
         for e in c.entities.values() {
             st.execute(params![
                 e.entity_id, e.type_id, e.schema_version, e.scope, e.name, e.write_policy, text(&e.payload), text(&e.key_revs),
-                e.created_seq, e.meta_rev, e.content_rev, e.life_rev, e.deleted_seq, e.derived.as_ref().map(text)
+                e.created_seq, e.meta_rev, e.content_rev, e.life_rev, e.deleted_seq, e.derived.as_ref().map(text), e.schema_id
             ])
             .map_err(db_err)?;
             stats.entities += 1;
@@ -420,8 +421,8 @@ pub fn apply_changes(tx: &Connection, c: &Changes, seq: u64) -> WsResult<WriteSt
     }
     for r in &c.ref_add {
         tx.execute(
-            &format!("INSERT OR IGNORE INTO refs ({REF_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7)"),
-            params![r.src_entity_id, r.src_selector, r.kind, r.dst_workspace_id, r.dst_entity_id, r.dst_object_id, r.dst_query_json],
+            &format!("INSERT OR IGNORE INTO refs ({REF_COLS}, mode, integrity) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"),
+            params![r.src_entity_id, r.src_selector, r.kind, r.dst_workspace_id, r.dst_entity_id, r.dst_object_id, r.dst_query_json, r.mode(), r.integrity()],
         )
         .map_err(db_err)?;
         stats.refs += 1;
@@ -432,6 +433,32 @@ pub fn apply_changes(tx: &Connection, c: &Changes, seq: u64) -> WsResult<WriteSt
             params![a.object_id, a.media_type, a.size, seq],
         )
         .map_err(db_err)?;
+    }
+    // history-only assets (D06): an object keeps `ended_seq` NULL while an alive entity references it;
+    // the Commit that ends its last live reference stamps it, and the retention period runs from there
+    let mut candidates: std::collections::BTreeSet<String> = c.ref_add.iter().chain(c.ref_del.iter()).filter(|r| !r.dst_object_id.is_empty()).map(|r| r.dst_object_id.clone()).collect();
+    candidates.extend(c.assets.keys().cloned());
+    for id in c.entities.keys() {
+        let mut st = tx.prepare_cached("SELECT dst_object_id FROM refs WHERE src_entity_id = ?1 AND dst_object_id <> ''").map_err(db_err)?;
+        for o in st.query_map([id], |r| r.get::<_, String>(0)).map_err(db_err)? {
+            candidates.insert(o.map_err(db_err)?);
+        }
+    }
+    for object_id in candidates {
+        let live: bool = tx
+            .query_row(
+                "SELECT 1 FROM refs r JOIN entities e ON e.entity_id = r.src_entity_id WHERE r.dst_object_id = ?1 AND e.deleted_seq IS NULL LIMIT 1",
+                [&object_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or(false);
+        if live {
+            tx.execute("UPDATE assets SET ended_seq = NULL WHERE object_id = ?1", [&object_id]).map_err(db_err)?;
+        } else {
+            tx.execute("UPDATE assets SET ended_seq = ?2 WHERE object_id = ?1 AND ended_seq IS NULL", params![object_id, seq]).map_err(db_err)?;
+        }
     }
     Ok(stats)
 }

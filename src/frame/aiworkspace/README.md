@@ -85,9 +85,8 @@ carry `config`, its page settings (`background`, `page_size`; an object of at mo
 `doc.read`, not projected; draw.io 导入 TODO §2.5). `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
 `[0, 360)`, absent = 0); stacking order is `order_key`. A Cell or a group may carry `locked: true`: a shared flag
 the client honours (no moves, resizing or deletion from the canvas) and the core only checks for being boolean.
-`FORMAT_VERSION` is 0.3 since these two keys (older kernels would refuse them on replay or import); stores and
-packages of format 0.2 are refused like any other version. `PROTOCOL_VERSION` is 0.4 since named connector anchors
-(0.3: connectors, below). Free
+(These two keys raised the format to 0.3 at the time; named connector anchors raised the protocol to 0.4; both are
+1.0 now, see “Format version” below.) Free
 notes are annotations without `target`. A Cell's `view.type` is any renderer id (format checked here, support
 decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
 Block definition entity (blocks its deletion).
@@ -107,7 +106,7 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `0.4` (since the presentation entities below; protocol `0.5`); stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration).
+Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage and retention ledgers, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed.
 
 ## Presentation (第三期规划 §4–§6, §8, §11)
 
@@ -118,6 +117,7 @@ paths and Viewports and nothing else; neither type is allowed anywhere else (`pl
 | --- | --- |
 | `buckyos.viewport` | `title?`, `surface_ref: { entity_id }` (a free-layout Surface, judged when written), `center: { x, y }`, `zoom` in [0.05, 4], `notes?` (≤ 16 KiB), `caption?` (≤ 2000 chars). The visible area is `stage / zoom` around `center`, `stage` being the size of the path that shows it. |
 | `buckyos.show-path` | `title?`, `purpose: presentation \| guide`, `stage: { w, h }` (16–16384), `background?` (`#rgb`/`#rrggbb`/`#rrggbbaa`), `steps: [{ id, target: { kind: frame \| viewport, entity_id }, title?, enabled?, transition?: auto \| fly \| fade \| cut, hide?: [cell ids] }]` (≤ 500, ids unique). |
+| `buckyos.dir` | A **resource directory** (内核架构改进 D01, D25; not the data tree's `container(kind=folder)`): `members: { <name>: { kind: file, object_id, media_type, size } \| { kind: dir, entity_id } }` (≤ 10 000 names; a name is a version cell `m:<name>`, so renaming is remove + add), `meta?` (≤ 64 KiB). File members name uploaded objects (media type and size come from the content); child directories must be alive and must not contain this one (`member` references keep them alive). Members change only through `dir.set_member` / `dir.remove_member` / `dir.replace`. It materializes to the cyfs-ndn DirObject (`cydir`) with its time fields fixed to 0, so equal members give the same id (`content.dir_object`), and a DirObject imports as a directory (`types::dir_payload_from_dir_object`). v1 takes no external URL members. |
 | Cell `presentation` | `{ live? }` on any Block but a line (operable on stage, §10.2); `{ background?, notes?, caption? }` on a Frame only. `null` removes it. |
 
 - Step targets are judged when a step is added or retargeted (alive, readable, a Frame Cell on a free Surface or a
@@ -220,6 +220,17 @@ waiting — the preview of the plan for `choices` (`{ results: { <name>: keep | 
   and direct results on a new snapshot; `repair_program` changes only the program.
 - **Rerun program**: no model; `llm.map` calls only for items not in the cache.
 
+**Execution modes (内核架构改进 M3).** `proc.start { params: { …, execution: { mode: service | local | hosted } } }`
+(`wish.default_execution` when absent). Every run records its execution context (`detail.context`: trigger, executor,
+location, AI and compute attribution, the bound task digest, the declared outputs, expiry) or is refused with
+`EXECUTION_CONTEXT_MISSING`. `local`: the starter's browser is the executor — the `proc.start` answer carries a one-time
+`claim_token`; it claims, heartbeats and reports. `hosted`: the Owner's Agent (`ws.set_hosted_exec`) is given a Goal with the run
+reference and claim token (`goals.create` + `goals.activate` on its OpenDAN service) and does the same through
+`buckyos aiws run …`; without a Zone runtime the dispatch is recorded `unavailable` and the run waits to be claimed.
+`service`: the transitional in-service executor (xllm + Deno), selectable while `wish.allow_service_execution` is true (T3-9).
+Applying checks the delegation: a changed wish configuration is `DELEGATION_STALE`, a candidate of a superseded attempt
+or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared (`OUTPUT_NOT_DECLARED`).
+
 Configuration: in service mode `AiWorkspaceSettings.wish` (models `llm.plan / llm.code / llm.chat` through
 AICC, iterations, `max_output_tokens` (every stage sends it; Claude requires one), timeouts, program memory,
 `llm.map` item limit, `deno`). The service exchanges its startup assertion at verify-hub before it listens:
@@ -238,12 +249,37 @@ Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/run
 <data>/trash/                                   deleted / replaced Workspaces
 ```
 
-`storage_schema_version` is 3 (share entries, `grants.via_entry`); folders of an older version are refused, not migrated —
+**Retention, quota and the collector (内核架构改进 D06, D19).** Every object or chunk is kept while a root reaches it:
+an asset an alive entity references (`assets.ended_seq IS NULL`), a history-only asset inside its retention period
+(`history_retention_days`, 30 by default; `ws.purge_deleted` ends it at once), generated entity versions, snapshots
+with a `retentions` row (checkpoints, exports, show clones), unexpired staged uploads, and every Workspace in
+`trash/` for 30 days. The collector (`Service::gc`, hourly, `diag.gc`) marks from those roots through the objects'
+own references and sweeps the rest once it is an hour old (an upload about to be referenced is never swept). The
+`usage` ledger (`ws.get_info.usage`: `content`, `assets`, `exports`, `clones`, `staged`) moves with every
+transaction; with a quota (`quota_bytes`) a Commit, an upload, an export or a show clone that would pass it is
+refused with `QUOTA_EXCEEDED` (retryable: the maintenance methods can release enough) or `QUOTA_LIMIT`, with
+`data { needed_bytes, reclaimable_bytes, quota_bytes, used_bytes, owner }`. The maintenance methods above are
+accepted over quota. An undo or version restore that needs a reclaimed resource answers `RESOURCE_RECLAIMED`.
+
+**Shows (D17).** A clone judges access by the grants of the Workspace it was cloned from as they are now
+(revoking there ends the audience's access here); any write right, a subtree's included, locks the Workspace
+for the show; a Workspace runs at most 4 clones at once and each counts on its quota (`clones`).
+
+`storage_schema_version` is 4 (FORMAT 1.0: `commit_deltas`, `retentions`, `usage`, `user_state.revision`, `refs.mode` / `integrity`, `entities.schema_id`, `grants.task_digest` / `outputs_json`); folders of an older version are refused, not migrated —
 reinstall the data of a development Zone.
 
 One writer per Workspace (a mutex around its connections); a Commit is planned on an overlay,
 checked, and written in one SQLite transaction together with its history row, which is also the
 idempotency record and the change stream.
+
+**The log is pure-application (内核架构改进 D20).** Beside the normalized operations (`commit_ops`, for audit
+and undo) every Commit records the rows it wrote (`commit_deltas.rows_json`: entities, edges, fields, records,
+rich text states and update bytes, references added and deleted, assets). `doc.get_changes` hands them out as
+`rows` (restricted to what the caller may read) and a replica applies them as they are — it never re-plans an
+accepted Commit, so the planner can change freely (`ws.get_info.planner_version` is diagnostic only). The fixed
+vector `fixtures/vectors/apply-log.json` (`core/tests/apply_log.rs`) proves a recorded history still applies to
+its digest without any planner. Local, not-yet-accepted submissions are still planned on the replica for its
+provisional view.
 
 ## Protocol
 
@@ -313,45 +349,164 @@ session is a kRPC failure `{ error, code: "access_denied", data: AccessDenial }`
 `ws.join_entry` (it serves the Zone's entry page, which reads the shared kRPC wire); its other failures are plain kRPC
 errors.
 
-| Method | Params (besides `workspace_id`) |
-| --- | --- |
-| `ws.create` | `title`, `workspace_id?` |
-| `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | |
-| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row (with `via_entry`) and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: see the table above |
-| `ws.list_subjects` | principals a grant can name (static identities / zone users and `group:` subjects) |
-| `ws.create_entry` | `capabilities[]`, `methods`, `scope_entity_id?`, `expires_at?` → `entry` (`manage` on the scope) |
-| `ws.list_entries` | → `entries` on scopes the caller manages |
-| `ws.close_entry` | `entry_id` (`workspace_id` optional, must match) → `entry` |
-| `ws.join_entry` | `entry_id` only → `workspace_id`, `entry_id`, `scope_entity_id`, `capabilities`, `joined`, `granted`, `path` |
-| `entry.describe` | `entry_id` only, no session → `EntryDescription` |
-| `ws.get_user_state` / `ws.set_user_state` | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
-| `ws.begin_import` → PUT → `ws.import` | `upload_id`, `semantics: "restore" \| "new"`, `replace?` |
-| `doc.outline` | — all readable entity envelopes in tree order |
-| `doc.resolve` | `reference` or `path` |
-| `doc.read` | `entity_id`, `selector?` — or `targets: [{ entity_id, selector? }]` |
-| `doc.list_children` | `entity_id`, `include_deleted?` |
-| `doc.list_annotations` | `target_ids?`, `parent_id?` — annotations anchored to those entities and/or placed under that parent, each with its resolved `anchor` |
-| `doc.query` | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `limit`, `cursor?`, `consistency?`, `source_revision?` |
-| `doc.freshness` | `entity_ids[]` — dependency-based freshness of results and wishes (computed in core) |
-| `doc.relations` | `entity_id` — outgoing / incoming references, Blocks showing it, produced results; unreadable referrers only as `hidden_incoming` |
-| `doc.list_versions` | `entity_id` — addressable versions (generated results, checkpoints) with their commits |
-| `doc.restore_version` | `entity_id`, `content_rev` — the operations restoring that version (submitted as an ordinary Commit) |
-| `doc.source_capabilities` | `source_id` (URL query tables) |
-| `doc.get_collab_state` | `entity_id` |
-| `doc.prepare` / `doc.commit` | the Commit request (design §2.6) |
-| `doc.get_submission` | `epoch`, `idempotency_key` |
-| `doc.undo` | `epoch`, `commit_id`, `idempotency_key`, `mode?`, `plan_digest?`, `session_id?` |
-| `doc.get_changes` | `epoch`, `after_seq`, `limit?`, `filter: { detail: "touched" }?` |
-| `doc.wait_changes` | `epoch?`, `after_seq`, `timeout_ms?` (long poll) |
-| `doc.checkpoint`, `doc.export` | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?` |
-| `asset.begin_upload` → PUT → `asset.finish_upload` | `size`, `upload_id` |
-| `asset.import_object` | `workspace_id`, `obj_id` (ready NDM FileObject) → workspace `object_id`, `source_obj_id`, `size`, `media_type` |
-| `replica.bootstrap` | — then `GET /replica/<workspace_id>/<replica_id>` |
-| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
-| `proc.list` | `wish_id?`, `limit?` — wish runs, newest first |
-| `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
-| `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | see “Non-public shows” |
-| `diag.list_unretained`, `diag.verify_refs` | |
+### Sources (内核架构改进 D12, D24, D26)
+
+A data entity (table, rich text, record, asset, directory) may carry a `source` key in its payload:
+`{ kind: url | workspace, url?, zone?, workspace_id?, entity_id?, mode: live | fixed, version?: { content_root }, query?, refresh?: { interval_s }, auth_mode: none | hosted, name? }`
+(checked by `check_source` in [core/src/types.rs](core/src/types.rs); credentials never belong in it). Such an entity is **read-only** for
+people and Blocks: every content write (`table.*` data operations, `richtext.*`, `dir.*`, `entity.set_keys` beyond `source` / `title` /
+`description`) is refused with `INVALID_OPERATION/SOURCE_READ_ONLY`; only a refresh writes it, as one Commit of origin `source` with the
+run id: `proc.start { program: "source.refresh@1", params: { entity_id } }` (`update` on the entity) — the service fetches (another Workspace of this service as `public`; otherwise one credential-less HTTP GET; `auth_mode: hosted` Sources wait for an Agent), diffs and commits; `proc.get` ends `succeeded` (`result`: the commit, `bytes`, `content_root` of a fixed Source) or `failed` (the last valid content stays). A `refresh.interval_s` Source is refreshed on the service's timer as the owner; fetched bytes count against `traffic_quota_bytes` (`ws.get_info.traffic`). The outline envelope shows `source` (kind, mode, origin,
+schedule). Publishing (`ws.publish`) is the other side: the `public` subject reads the entity, and its link
+`https://aiws-<workspace_id>.<zonehost>/<workspace_name>/<name>` (or `GET /kapi/aiworkspace/pub/<workspace_id>/<name>`) answers the
+publication — JSON (`format: buckyos.ai-workspace/pub/1.0`, `reference`, `content`; `?fixed=1` adds `content_root`; `?fixed=<root>` reads
+that pinned version) or, for a browser or crawler (`Accept: text/html`), a static HTML page with the title and the table or text.
+`POST …/referrers` registers a consumer of another Zone; same-service consumers are registered by their refresh. On the Workspace's own host
+`/` and `/<workspace_name>` open the Desktop page on the Zone host, `/<workspace_name>/<surface_name>` opens that Surface.
+
+### Validator classes (D01, D04)
+
+Every built-in type is checked by a Rust validator in [core/src/types.rs](core/src/types.rs) (tables and rich text also in
+[core/src/plan_table.rs](core/src/plan_table.rs) and [core/src/plan_richtext.rs](core/src/plan_richtext.rs)). The checks fall into
+three classes: **primitive** — the shape of a storage primitive itself (tree node, keyed object, Table, RichText, AssetRef);
+**reference** — a target exists, is readable and is of the admitted kind; **schema** — a business rule of the built-in type
+(value ranges, counts, which Surface a thing may sit on). Only primitive and reference checks are part of replay semantics; schema
+checks run at admission only. This is the contract M1 (T1-1) implements by splitting `init_entity` / `validate_update` into a
+primitive entry and a built-in-schema entry; today every class still runs on both paths. The doc comment of each validator starts
+with `Validator class:`.
+
+| Type | Validator | Class | Checks |
+| --- | --- | --- | --- |
+| table-source | `init_entity` (`TYPE_TABLE` branch) | primitive | field ids unique (`ID_CONFLICT`), field names unique (`NAME_CONFLICT`), order keys, `FieldDef` shape |
+| table-source | `validate_table_meta` | primitive | `title_field_id` names a live text field; `data_mode` never changes; `embedded` carries no `source_ref` |
+| table-source | `check_query_reference` | schema | `url_query` source: absolute URL without credentials, `query` object without cursor, version `live_head` / `fixed_revision{source_revision}` |
+| table-source | `plan_table.rs` `check_unique` | primitive | `unique` is a kernel-enforced cross-record constraint (`UNIQUE_VIOLATION`) |
+| table-source | `plan_table.rs` `required` / `nullable` checks (insert, set/unset, add/update/migrate field) | primitive | required values present, nulls only where allowed, tightening re-scans the live records (`SCHEMA_CONFLICT`) |
+| table-source | `plan_table.rs` `check_body` | primitive | a record body is a live rich text under this table and the body of no other record |
+| table-source | `plan_table.rs` `delete_field` / `migrate_field` | primitive | the title field cannot be deleted and stays a text field |
+| richtext | `plan_richtext::create` / `apply_update` | primitive | document conforms to `buckyos.richtext.basic.v1`, block ids unique, CRDT update applies to a known base |
+| richtext | `entity_refs` (`richtext_ref_edge`) | reference | `object_embed` / `object_link` targets are indexed as references; existence judged by the planner's `check_ref_target` |
+| asset | `validate_asset` | primitive | `object_id` is a `type:hex` object id; `media_type` / `size` come from the verified content, never the client; `image { width, height }` |
+| asset | `validate_asset` (object lookup) | reference | the object was uploaded and verified (`DEPENDENCY_UNAVAILABLE`); import tolerates a listed but missing object |
+| container | `validate_container` (kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group`; `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` |
+| container | `validate_container` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
+| container | `validate_container` (`icon`, `config`, `locked`, `surface_id`, `system`) | schema | preset icon id and ≤ 64 KiB page config only on a Surface; `locked` only on a group; `system` only on a folder |
+| record | `record_schema` / `validate_record` (values) | schema | `schema.properties` declare the keys; every `p:` value normalizes under its property type; required properties present |
+| record | `validate_record` (`object_ref` values) | reference | an `object_ref` property points at an existing entity of the declared target types |
+| cell | `validate_cell` (`view`, keys) | schema | known keys, `view.type` is a renderer id, `view.version`, title ≤ 256, `options` / `config` objects, config ≤ 64 KiB, `bindings` ≤ 32 identifiers |
+| cell | `validate_cell` (`source_ref`, `bindings`, `def_ref`) | reference | the bound data source exists and has the view's data type; bindings point at data types; `def_ref` is a block definition (judged when written; dangling configuration stays editable) |
+| cell | `validate_cell` (table view configuration) | schema | `fields` / `filter` / `sorts` / `group` / `manual_order` only on table views, named fields live, ≤ 4 sorts, group field type |
+| cell | `validate_cell` (`config.snapshot`) | primitive | an embedded snapshot is an AssetRef (checked by `validate_asset`) |
+| cell (connector) | `validate_connector` (shapes) | schema | `flip`, `route`, ≤ 64 `controls`, `label.t` in [0, 1]; `start` / `end` are `{ entity_id, anchor { kind: named, id } }` |
+| cell (connector) | `validate_connector` (endpoints) | reference | a bound endpoint is a readable Block or group on the connector's Surface, never itself or another line |
+| cell (connector) | `validate_connector` (Surface rule) | schema | created and bound only on a free-layout Surface; a self loop needs two anchors and a non-straight route |
+| cell (frame / any Block) | `check_presentation` / `check_notes` | schema | `presentation.live` boolean; `background` / `notes` / `caption` only on frames; notes ≤ 16 KiB, caption ≤ 2000 chars; none on a connector |
+| viewport | `validate_viewport` (fields) | schema | `center { x, y }` finite, `zoom` in [0.05, 4], title, notes, caption |
+| viewport | `validate_viewport` (`surface_ref`) | reference | the Surface exists (judged when written) |
+| viewport | `validate_viewport` (free layout) | schema | the Surface is a free-layout Surface |
+| show-path | `validate_show_path` (fields) | schema | `purpose`, `stage { w, h }` in [16, 16384], `background` color, ≤ 500 steps, step keys, ≤ 200 `hide` ids, unique step ids |
+| show-path | `validate_show_path` (step targets) | reference | a new or retargeted step points at an existing Frame or Viewport; untouched dangling steps stay |
+| show-path | `validate_show_path` (Frame rule) | schema | a Frame target is on a free-layout Surface |
+| annotation | `validate_annotation` (fields) | schema | `kind` note / highlight, body ≤ 4000, `style` object, author fixed by the backend, only the author re-anchors |
+| annotation | `validate_annotation` (`target`, `anchor::check`) | reference | the target exists; range / quote anchors resolve on it (strict only outside import) |
+| wish | `validate_wish` (fields) | schema | prompt ≤ 20 000 chars, `executor`, `output_mode`, `output { container_id, surface_id, name, type }`, ≤ 200 inputs with unique names, size limits of `analysis` / `last_run` / `executor_config`, `knowledge` / `refinements` / `analysis` shapes (`wish.rs`) |
+| wish | `check_input` (selector shape) | schema | a wish input is `entity`, `table_view { cell_id }` or `table_query { filter?, sorts?, fields? }`; `version { mode: follow \| fixed }` |
+| wish | `check_input` (targets), `validate_wish` (`program`) | reference | the input entity exists and a `table_view` cell is a table view of it; the program source object was uploaded |
+| block-def | `validate_block_def` | schema | `def_id` renderer id, `version`, `kind` declarative / html with the matching body, `accepts` known data types, `default_size`, ≤ 512 KiB |
+| any (derived record) | `check_derived` | schema | the dependency record `{ wish_id, run_id, executor, inputs[], … }` of a generated result |
+| any (keyed object) | `check_keys` / `opt_text` / `check_locked` | schema | helper checks used by the validators above: known keys, bounded strings, `locked` boolean |
+| any (references) | `entity_refs`, `plan.rs` `check_ref_target` | reference | every indexed reference target is a live, readable entity of the admitted types (`REFERENCE_BROKEN`) |
+
+### Known limitations (13.2)
+
+- A Commit that contains `richtext.apply_update` has no inverse: `doc.undo` answers `NOT_UNDOABLE` ([store/src/workspace.rs](store/src/workspace.rs) `undo`). Likewise a `table.migrate_field` whose inverse would exceed 64 MiB (`Limits.max_inverse_bytes`, [core/src/plan.rs](core/src/plan.rs)) is not compensable.
+- Import tolerates missing resources: under `import` an AssetRef whose object is not in the package is kept with its listed `media_type` / `size` and reads back as `missing` ([core/src/types.rs](core/src/types.rs) `validate_asset`); dangling view configuration, connector endpoints and step targets are kept verbatim. The referential integrity of an imported package is therefore weaker than that of an online Commit (§6.3: unclosed dependencies are listed, not refused).
+- A read-only show has no fixed baseline: a presenter without any Workspace-level write capability (`ws_caps.any_write()` false, [server/src/show.rs](server/src/show.rs)) takes neither the show lock nor a clone and reads the live content; only writers get a frozen baseline (clone for live shows, lock otherwise).
+- `proc.start` is idempotent per `(principal, idempotency_key)` and compares a digest of `params`: the same key with other parameters is `IDEMPOTENCY_MISMATCH`, never a silent replay ([store/src/wish/runs.rs](store/src/wish/runs.rs), [store/src/proc.rs](store/src/proc.rs)).
+
+**Selectors (D04, frozen).** The read-set vocabulary — what a precondition, a wish input, a dependency record or a
+reference may name inside an entity; `core/src/plan.rs` `resolve_cell` turns each into the version cell (a `rev`) or
+content token (a hash) it stands for. New kinds are protocol changes.
+
+| Kind | Names | Resolves to |
+| --- | --- | --- |
+| `entity` (default) | the whole entity | `content_rev` |
+| `doc_key` `{ key }` | one top-level payload key | the key's rev |
+| `table_members` | the set of live records | the members rev (any insert / delete) |
+| `table_field` `{ field_id }` | a field's definition | `def_rev` |
+| `table_field_type` `{ field_id }` | a field's type | `type_rev` |
+| `table_field_values` `{ field_id }` | every value of a column | `values_rev` |
+| `table_record` `{ record_id }` | one record | the record's rev |
+| `table_cell` `{ record_id, field_id }` | one cell | the cell's value rev |
+| `table_view` `{ cell_id }` | a saved table view of this table (the Block's filter, sorts, group, fields, manual order and binding) | a hash over the view's keys, the members rev and every live field's type and values (the coarse token a wish input declares; the read set still records the fine cells) |
+| `table_query` `{ filter?, sorts?, fields? }` | the rows a query projects | a hash over the members rev and the type and values of the projected fields (all live fields without `fields`) |
+| `tree_children` | the live direct children of a node | a hash of their ids (a new member makes a folder input stale) |
+| `tree_edge` | where the node sits (parent, order, placement) | `struct_rev` of its edge |
+| `richtext_block` `{ block_id }` | one block of a rich text | the block's content hash |
+| `folder_member` `{ name }` | one member of a resource directory (`buckyos.dir`, D01, D25) | the member's own rev (`m:<name>`); a removed member is `TARGET_DELETED` |
+
+**Method levels (D11).** `stable` methods are the contract other Apps, Agents and SDKs may depend on: they change
+only with `protocol_version`, and each has a contract test against a recorded request / response shape
+(`server/tests/contract.rs`, `fixtures/protocol/stable-methods.json`; `AIWS_REGEN=1` re-records). `internal` methods serve the
+Desktop and diagnostics and change with it. `experimental` methods are not frozen yet: `proc.*` become stable when M3
+lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
+
+| Method | Level | Params (besides `workspace_id`) |
+| --- | --- | --- |
+| `ws.create` | stable | `title`, `workspace_id?` |
+| `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | stable | |
+| `ws.grant` / `ws.revoke` / `ws.list_grants` | stable | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row (with `via_entry`) and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: see the table above |
+| `ws.list_subjects` | stable | principals a grant can name (static identities / zone users and `group:` subjects) |
+| `ws.create_entry` | stable | `capabilities[]`, `methods`, `scope_entity_id?`, `expires_at?` → `entry` (`manage` on the scope) |
+| `ws.list_entries` | stable | → `entries` on scopes the caller manages |
+| `ws.close_entry` | stable | `entry_id` (`workspace_id` optional, must match) → `entry` |
+| `ws.join_entry` | stable | `entry_id` only → `workspace_id`, `entry_id`, `scope_entity_id`, `capabilities`, `joined`, `granted`, `path` |
+| `entry.describe` | stable | `entry_id` only, no session → `EntryDescription` |
+| `ws.get_user_state` / `ws.set_user_state` | stable | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
+| `ws.set_wish_aicc` | stable | `mode: workspace_owner \| current_user` — whose AI resources wish runs started here use (`manage`; AI Center Quota PRD §3.3) |
+| `ws.begin_import` → PUT → `ws.import` | stable | `upload_id`, `semantics: "restore" \| "new"`, `replace?` |
+| `ws.release_retention` | stable | maintenance (`manage`, D19): `kind`, `ref` — end a retention root (`snapshot`, `export`, `clone`, `staged`) |
+| `ws.delete_checkpoint` | stable | maintenance (`manage`): `snapshot_id` — the snapshot and its retention go; the collector reclaims what nothing else holds |
+| `ws.purge_deleted` | stable | maintenance (`manage`): `entity_ids?` (default: every deleted entity) — content and references are given up for good (`entity.purge`), resources are reclaimable at once, undo and version restore answer `RESOURCE_RECLAIMED`, Block state is cleared |
+| `ws.clear_staged` | stable | maintenance (`manage`): staged uploads nobody referenced go, expired or not |
+| `doc.outline` | internal | — all readable entity envelopes in tree order |
+| `doc.resolve` | stable | `reference` or `path` |
+| `doc.read` | stable | `entity_id`, `selector?` — or `targets: [{ entity_id, selector? }]` |
+| `doc.list_children` | experimental | `entity_id`, `include_deleted?` |
+| `doc.list_annotations` | experimental | `target_ids?`, `parent_id?` — annotations anchored to those entities and/or placed under that parent, each with its resolved `anchor` |
+| `doc.query` | stable | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `limit`, `cursor?`, `consistency?`, `source_revision?` |
+| `doc.freshness` | experimental | `entity_ids[]` — dependency-based freshness of results and wishes (computed in core) |
+| `doc.relations` | experimental | `entity_id` — outgoing / incoming references, Blocks showing it, produced results; unreadable referrers only as `hidden_incoming` |
+| `doc.list_versions` | experimental | `entity_id` — addressable versions (generated results, checkpoints) with their commits |
+| `doc.restore_version` | experimental | `entity_id`, `content_rev` — the operations restoring that version (submitted as an ordinary Commit) |
+| `doc.source_capabilities` | internal | `source_id` (URL query tables) |
+| `doc.get_collab_state` | internal | `entity_id` |
+| `doc.prepare` / `doc.commit` | stable | the Commit request (design §2.6) |
+| `doc.get_submission` | stable | `epoch`, `idempotency_key` |
+| `doc.undo` | stable | `epoch`, `commit_id`, `idempotency_key`, `mode?`, `plan_digest?`, `session_id?` |
+| `doc.get_changes` | stable | `epoch`, `after_seq`, `limit?`, `filter: { detail: "touched" }?` — each change carries `touched`, and (unless `touched` only) `ops` and the row delta `rows` (D20); `after_seq` below `base_seq` is `BASE_TOO_OLD` |
+| `doc.wait_changes` | stable | `epoch?`, `after_seq`, `timeout_ms?` (long poll) |
+| `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?` |
+| `asset.begin_upload` → PUT → `asset.finish_upload` | stable | `size`, `upload_id` |
+| `asset.import_object` | stable | `workspace_id`, `obj_id` (ready NDM FileObject) → workspace `object_id`, `source_obj_id`, `size`, `media_type` |
+| `replica.bootstrap` | internal | — then `GET /replica/<workspace_id>/<replica_id>` |
+| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | experimental | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
+| `proc.list` | experimental | `wish_id?`, `limit?` — wish runs, newest first |
+| `proc.claim` | experimental | `run_id`, `claim_token`, `executor?` — an executor takes the run (M3): the next attempt, a `run_token` (bearer for `proc.heartbeat` / `proc.report` / reads of this Workspace) and a lease (90 s) |
+| `proc.heartbeat` | experimental | `run_id`, `attempt`, `progress?` — renews the lease; a lapsed lease makes the run `interrupted` (D15) |
+| `proc.report` | experimental | `run_id`, `attempt`, then `progress?`, or `error`, or `finished: true` (the stage host collected the candidate: T3-4), or the candidate itself: `results[]` + `read_set?` + `summary?` + `warnings?` + `assumptions?` (execute runs; the Mock executor's shape), or `analysis` (analyze runs). The service validates and plans it; a superseded attempt or a cancelled run gets `RUN_REVOKED` |
+| `proc.tool` | experimental | `run_id`, `attempt`, `name`, `args` — one stage tool call of the run's executor (the claim of a `wish.xllm@1` run opens the stage and answers `stage: { kind: model, system, user, tools, model, iterations }` or `{ kind: program, source }`): `ws_*`, `submit_analysis`, `put_result`, `check_results`, `finish`, and `llm_map` for a program's `aiws.llm.map`. Answers `{ status: ok \| error, text }` — `error` is for the model to correct |
+| `proc.program` | experimental | `run_id`, `attempt`, `source`, `results?` (what the program host wrote to `output/.aiws/results.json`), `log?`, `files?` (`{ "output/<path>": text \| { base64 } }`) — the executor ran the program; judged like the service's own `run_program` |
+| `proc.files` | experimental | `run_id`, `attempt` — the stage directory (`context/`, `request.json`, `catalog/`, `lib/`) as `{ path: { text } \| { base64 } }` for the executor's program host |
+| `ws.set_hosted_exec` | experimental | `config: { enabled, agent_id, allowed_wishes?, triggerers?, limits? }` (`manage`, D22) — the Owner's hosted execution; `ws.get_info.hosted_exec` returns it with its `digest` |
+| `ws.publish` | experimental | `entity_id`, `name?` (`manage`, D26) — the `public` subject may read the entity; the name (default: the entity's, slugified; a new name keeps the old as an alias) is the last segment of the link. Returns `name`, `path` (`/<workspace_name>/<name>`), `url` (on `https://aiws-<workspace_id>.<zonehost>` when the deployment knows its host) and the reference object |
+| `ws.unpublish` | experimental | `entity_id` (`manage`) — every name and the public grant go; referrers keep their records and read `unavailable` |
+| `ws.list_publications` | experimental | the names, entities, `url` and referrer counts (what the caller may read) |
+| `ws.list_referrers` | experimental | `entity_id` (read) — who registered as reading it (`{ zone?, workspace_id, entity_id?, principal? }`, weak: never blocks an unpublish) |
+| `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
+| `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
+| `diag.list_unretained`, `diag.verify_refs` | internal | |
+| `diag.gc` | internal | `dry_run?` (default true) — the service-wide collector (an owning account) |
 
 HTTP routes (same port, `Authorization: Bearer <session token>`):
 
@@ -364,8 +519,8 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 | `GET /kapi/aiworkspace/schemas/richtext.basic.v1.json` | rich text schema definition (no auth) |
 | `POST /kapi/aiworkspace/wish-host/<token>/llm_map` | `aiws.llm.map` of a running wish program; the token is the run's (no session) |
 
-Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|set_keys|unset_keys|set_write_policy|set_derived`,
-`tree.move|place`, `table.insert_records|delete_records|set_values|unset_values|set_body|add_field|update_field|delete_field|add_option|update_option|delete_option|migrate_field`,
+Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|set_keys|unset_keys|set_write_policy|set_derived|clone`,
+`data.pin`, `tree.move|place`, `dir.set_member|remove_member|replace`, `table.insert_records|delete_records|set_values|unset_values|set_body|add_field|update_field|delete_field|add_option|update_option|delete_option|migrate_field`,
 `richtext.apply_update|insert_blocks|replace_block|delete_blocks|move_block`. Parameters are exactly those of the design §3;
 `core/tests/planner.rs` and `store/tests/*.rs` are executable examples of every one of them.
 

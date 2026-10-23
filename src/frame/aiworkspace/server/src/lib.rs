@@ -4,6 +4,7 @@
 
 pub mod auth;
 pub mod show;
+pub mod source;
 pub mod wish;
 
 use aiworkspace_core::{Code, Deny, WsError, WsResult};
@@ -35,11 +36,20 @@ pub struct Limits {
     pub max_wait_ms: u64,
     pub max_asset_bytes: u64,
     pub max_package_bytes: u64,
+    /// Logical bytes one Workspace may occupy (D19); `None` = no quota.
+    pub workspace_quota_bytes: Option<u64>,
+    /// Retention of history-only resources (D06), in milliseconds.
+    pub history_retention_ms: i64,
+    /// Bytes a Workspace's Sources may fetch (D24); `None` = unlimited.
+    pub traffic_quota_bytes: Option<u64>,
+    /// The Workspace's own origin (D21): `https://aiws-{workspace_id}.<zonehost>`; `None` = links are paths only.
+    pub public_base: Option<String>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_package_bytes: 2 << 30 }
+        Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_package_bytes: 2 << 30,
+                 workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None }
     }
 }
 
@@ -79,6 +89,9 @@ pub struct AppState {
 impl AppState {
     /// `wake` receives hints for an external event channel (kevent in system mode).
     pub fn new(mut svc: Service, auth: Arc<dyn Authenticator>, limits: Limits, wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: wish::WishConfig) -> Arc<AppState> {
+        svc.quota = limits.workspace_quota_bytes;
+        svc.history_retention_ms = limits.history_retention_ms;
+        svc.traffic_quota = limits.traffic_quota_bytes;
         let heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>> = Arc::default();
         let hook_heads = heads.clone();
         svc.on_open = Some(Box::new(move |ws: &mut Workspace| {
@@ -152,10 +165,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let weak = Arc::downgrade(&state);
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut ticks: u64 = 0;
         loop {
             timer.tick().await;
             let Some(state) = weak.upgrade() else { break };
             sweep_uploads(&state);
+            ticks += 1;
+            if ticks % 5 == 0 {
+                // Sources on a schedule (D24)
+                let st = state.clone();
+                let _ = tokio::task::spawn_blocking(move || source::tick(&st)).await;
+            }
+            if ticks % 60 == 0 {
+                // the collector runs hourly (D06)
+                let st = state.clone();
+                let _ = tokio::task::spawn_blocking(move || match st.svc.gc(false) {
+                    Ok(r) => log::info!("gc: {r}"),
+                    Err(e) => log::warn!("gc failed: {e}"),
+                })
+                .await;
+            }
         }
     });
     let krpc_limit = state.limits.max_commit_bytes + 64 * 1024;
@@ -170,6 +199,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(&format!("{HTTP_PATH}/schemas/richtext.basic.v1.json"), get(schema))
         .route(&format!("{HTTP_PATH}/healthz"), get(|| async { "ok" }))
         .route(&format!("{HTTP_PATH}/wish-host/{{token}}/llm_map"), post(wish_llm_map))
+        // publications (D26): by path on the service, and on the Workspace's own host (D21)
+        .route(&format!("{HTTP_PATH}/pub/{{workspace_id}}/{{name}}"), get(source::pub_get))
+        .route(&format!("{HTTP_PATH}/pub/{{workspace_id}}/{{name}}/referrers"), post(source::pub_referrer))
+        .route("/", get(source::host_root))
+        .route("/{workspace_name}", get(source::host_workspace_page))
+        .route("/{workspace_name}/{name}", get(source::host_path))
         .with_state(state)
 }
 
@@ -297,6 +332,14 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
     let mut caller = match (prompter.is_some(), req["sys"][1].as_str().filter(|t| !t.trim().is_empty())) {
         (true, _) => None,
         (false, None) => return rpc_error(seq, "session token required"),
+        (false, Some(token)) if token.starts_with("rt_") => {
+            // a run token (M3): the run's execution identity, for that run only
+            let ws_id = params.get("workspace_id").and_then(Value::as_str).map(str::to_string);
+            match run_token_caller(&state, ws_id.as_deref(), token, &method) {
+                Ok(c) => Some(c),
+                Err(e) => return rpc_error(seq, &e),
+            }
+        }
         (false, Some(token)) => match Caller::guest(token) {
             // a link's visitor: a guest token instead of a session (reaches `public` grants and guest entries only)
             Some(guest) => Some(guest),
@@ -333,6 +376,12 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
         show::handle(&state, &method, &params, show::Auth::Token(token)).await
     } else if method.starts_with("show.") {
         show::handle(&state, &method, &params, show::Auth::Session(caller.clone().expect("authenticated above"))).await
+    } else if method == "proc.tool" {
+        let ws = params.get("workspace_id").and_then(Value::as_str).map(str::to_string);
+        match ws {
+            Some(ws) => wish::exec::tool(&state, caller.as_ref().expect("authenticated above"), &ws, &params).await,
+            None => Err(WsError::invalid_op("workspace_id required")),
+        }
     } else if method == "doc.wait_changes" {
         wait_changes(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else if method == "ws.join_entry" {
@@ -387,6 +436,91 @@ fn okv(mut v: Value) -> Value {
     v
 }
 
+/// Every kRPC method and its level (内核架构改进 D11): `stable` methods change only with the protocol
+/// version and each has a contract test (`server/tests/contract.rs`, `fixtures/protocol/`); `internal`
+/// methods serve the Desktop and diagnostics and may change with it; `experimental` methods are not
+/// frozen yet (`proc.*` become stable with M3). The README method table mirrors this list.
+pub const METHOD_LEVELS: &[(&str, &str)] = &[
+    ("ws.create", "stable"),
+    ("ws.list", "stable"),
+    ("ws.get_info", "stable"),
+    ("ws.delete", "stable"),
+    ("ws.fork", "stable"),
+    ("ws.grant", "stable"),
+    ("ws.revoke", "stable"),
+    ("ws.list_grants", "stable"),
+    ("ws.list_subjects", "stable"),
+    ("ws.create_entry", "stable"),
+    ("ws.list_entries", "stable"),
+    ("ws.close_entry", "stable"),
+    ("ws.join_entry", "stable"),
+    ("entry.describe", "stable"),
+    ("ws.get_user_state", "stable"),
+    ("ws.set_user_state", "stable"),
+    ("ws.set_wish_aicc", "stable"),
+    ("ws.begin_import", "stable"),
+    ("ws.import", "stable"),
+    ("ws.release_retention", "stable"),
+    ("ws.delete_checkpoint", "stable"),
+    ("ws.purge_deleted", "stable"),
+    ("ws.clear_staged", "stable"),
+    ("doc.resolve", "stable"),
+    ("doc.read", "stable"),
+    ("doc.query", "stable"),
+    ("doc.prepare", "stable"),
+    ("doc.commit", "stable"),
+    ("doc.get_submission", "stable"),
+    ("doc.undo", "stable"),
+    ("doc.get_changes", "stable"),
+    ("doc.wait_changes", "stable"),
+    ("asset.begin_upload", "stable"),
+    ("asset.finish_upload", "stable"),
+    ("asset.import_object", "stable"),
+    ("lock.acquire", "stable"),
+    ("lock.renew", "stable"),
+    ("lock.release", "stable"),
+    ("lock.break", "stable"),
+    ("lock.list", "stable"),
+    ("doc.outline", "internal"),
+    ("doc.source_capabilities", "internal"),
+    ("doc.get_collab_state", "internal"),
+    ("replica.bootstrap", "internal"),
+    ("show.start", "internal"),
+    ("show.heartbeat", "internal"),
+    ("show.publish", "internal"),
+    ("show.command", "internal"),
+    ("show.watch", "internal"),
+    ("show.notes", "internal"),
+    ("show.end", "internal"),
+    ("diag.list_unretained", "internal"),
+    ("diag.verify_refs", "internal"),
+    ("diag.gc", "internal"),
+    ("doc.list_children", "experimental"),
+    ("doc.list_annotations", "experimental"),
+    ("doc.freshness", "experimental"),
+    ("doc.relations", "experimental"),
+    ("doc.list_versions", "experimental"),
+    ("doc.restore_version", "experimental"),
+    ("doc.checkpoint", "experimental"),
+    ("doc.export", "experimental"),
+    ("proc.start", "experimental"),
+    ("proc.get", "experimental"),
+    ("proc.apply", "experimental"),
+    ("proc.cancel", "experimental"),
+    ("proc.list", "experimental"),
+    ("proc.claim", "experimental"),
+    ("proc.heartbeat", "experimental"),
+    ("proc.report", "experimental"),
+    ("proc.tool", "experimental"),
+    ("proc.program", "experimental"),
+    ("proc.files", "experimental"),
+    ("ws.set_hosted_exec", "experimental"),
+    ("ws.publish", "experimental"),
+    ("ws.unpublish", "experimental"),
+    ("ws.list_publications", "experimental"),
+    ("ws.list_referrers", "experimental"),
+];
+
 /// Synchronous method dispatch. Every method authorizes against the grants of
 /// the trusted `caller`.
 fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> WsResult<Value> {
@@ -395,15 +529,22 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
     Ok(okv(match method {
         "ws.create" => svc.create_workspace(caller, p.get("title").and_then(Value::as_str).unwrap_or(""), p.get("workspace_id").and_then(Value::as_str))?,
         "ws.list" => svc.list_workspaces(caller)?,
-        "ws.get_info" => state.with_ws(ws_id()?, |ws| ws.info(caller))?,
+        "ws.get_info" => {
+            let mut v = state.with_ws(ws_id()?, |ws| ws.info(caller))?;
+            v["wish_execution"] = json!({ "default": state.wish.config.default_execution, "service": state.wish.config.allow_service_execution });
+            v["public_base"] = json!(source::public_base(state, ws_id()?));
+            v["traffic"] = json!(state.with_ws(ws_id()?, |ws| ws.traffic())?);
+            v
+        }
         "ws.delete" => svc.delete_workspace(caller, ws_id()?)?,
         "ws.grant" => state.with_ws(ws_id()?, |ws| {
-            ws.grant(caller, s(p, "subject")?, p.get("scope_entity_id").and_then(Value::as_str), &strings(p, "capabilities")?)
+            ws.grant_with(caller, s(p, "subject")?, p.get("scope_entity_id").and_then(Value::as_str), &strings(p, "capabilities")?,
+                          p.get("task_digest").and_then(Value::as_str), p.get("outputs").filter(|o| !o.is_null()))
         })?,
         "ws.revoke" => state.with_ws(ws_id()?, |ws| ws.revoke(caller, s(p, "subject")?, p.get("scope_entity_id").and_then(Value::as_str)))?,
         "ws.list_grants" => state.with_ws(ws_id()?, |ws| ws.list_grants(caller))?,
         "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
-        "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null)))?,
+        "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null), p.get("expect")))?,
         "ws.set_wish_aicc" => state.with_ws(ws_id()?, |ws| ws.set_wish_aicc_mode(caller, s(p, "mode")?))?,
         "ws.list_subjects" => {
             // zone-level: any account that may own Workspaces may ask (the list itself is as public as the zone makes it)
@@ -522,6 +663,29 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             r.as_object_mut().unwrap().remove("path");
             Ok(r)
         })?,
+        "proc.start" if s(p, "program")? == aiworkspace_store::source::SOURCE_PROGRAM => {
+            source::start(state, caller, ws_id()?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)?
+        }
+        "ws.publish" => {
+            let id = ws_id()?;
+            let mut v = state.with_ws(id, |ws| ws.publish_entity(caller, s(p, "entity_id")?, p.get("name").and_then(Value::as_str)))?;
+            if let Some(base) = source::public_base(state, id) {
+                v["url"] = json!(format!("{base}{}", v["path"].as_str().unwrap_or("")));
+            }
+            v
+        }
+        "ws.unpublish" => state.with_ws(ws_id()?, |ws| ws.unpublish(caller, s(p, "entity_id")?))?,
+        "ws.list_publications" => {
+            let id = ws_id()?;
+            let mut v = state.with_ws(id, |ws| ws.list_publications(caller))?;
+            if let Some(base) = source::public_base(state, id) {
+                for item in v["publications"].as_array_mut().into_iter().flatten() {
+                    item["url"] = json!(format!("{base}{}", item["path"].as_str().unwrap_or("")));
+                }
+            }
+            v
+        }
+        "ws.list_referrers" => state.with_ws(ws_id()?, |ws| ws.list_referrers(caller, s(p, "entity_id")?))?,
         "proc.start" if wish::is_wish(s(p, "program")?) => {
             wish::start(state, caller, ws_id()?, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)?
         }
@@ -535,6 +699,12 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "proc.cancel" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::cancel(state, caller, ws_id()?, s(p, "run_id")?)?,
         "proc.cancel" => state.with_ws(ws_id()?, |ws| ws.proc_cancel(caller, s(p, "run_id")?))?,
         "proc.list" => wish::list(state, caller, ws_id()?, p)?,
+        "proc.claim" => wish::exec::claim(state, caller, ws_id()?, p)?,
+        "proc.heartbeat" => wish::exec::heartbeat(state, caller, ws_id()?, p)?,
+        "proc.report" => wish::exec::report(state, caller, ws_id()?, p)?,
+        "proc.program" => wish::exec::program(state, caller, ws_id()?, p)?,
+        "proc.files" => wish::exec::files(state, caller, ws_id()?, p)?,
+        "ws.set_hosted_exec" => state.with_ws(ws_id()?, |ws| ws.set_hosted_exec(caller, p.get("config").unwrap_or(&Value::Null)))?,
         "lock.acquire" => state.with_ws(ws_id()?, |ws| ws.lock_acquire(caller, &strings(p, "entity_ids")?, s(p, "session_id")?))?,
         "lock.renew" => state.with_ws(ws_id()?, |ws| ws.lock_renew(caller, &strings(p, "lock_ids")?))?,
         "lock.release" => state.with_ws(ws_id()?, |ws| ws.lock_release(caller, &strings(p, "lock_ids")?))?,
@@ -543,6 +713,24 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             let ids = p.get("entity_ids").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
             ws.lock_list(caller, ids.as_deref())
         })?,
+        // the maintenance channel (D19): `manage`, accepted over quota
+        "ws.release_retention" => state.with_ws(ws_id()?, |ws| {
+            ws.require_ws(caller, aiworkspace_core::access::Cap::Manage)?;
+            Ok(json!({ "ok": true, "released": ws.release_retention(s(p, "kind")?, s(p, "ref")?)? }))
+        })?,
+        "ws.delete_checkpoint" => state.with_ws(ws_id()?, |ws| ws.delete_checkpoint(caller, s(p, "snapshot_id")?))?,
+        "ws.purge_deleted" => state.with_ws(ws_id()?, |ws| {
+            let ids = match p.get("entity_ids") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(strings(p, "entity_ids")?),
+            };
+            ws.purge_deleted(caller, ids.as_deref(), p.get("session_id").and_then(Value::as_str))
+        })?,
+        "ws.clear_staged" => state.with_ws(ws_id()?, |ws| ws.clear_staged(caller))?,
+        "diag.gc" => {
+            require_may_own(caller)?;
+            svc.gc(p.get("dry_run").and_then(Value::as_bool).unwrap_or(true))?
+        }
         "diag.list_unretained" => state.with_ws(ws_id()?, |ws| ws.list_unretained(caller))?,
         "diag.verify_refs" => state.with_ws(ws_id()?, |ws| {
             ws.require_ws(caller, aiworkspace_core::access::Cap::Manage)?;
@@ -550,6 +738,19 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         })?,
         _ => return Err(WsError::invalid_op(UNKNOWN_METHOD)),
     }))
+}
+
+/// Methods a run token may call: the run's own lifecycle and reads of the Workspace it runs in.
+const RUN_TOKEN_METHODS: &[&str] = &["proc.get", "proc.heartbeat", "proc.report", "proc.tool", "proc.program", "proc.files", "proc.list", "ws.get_info", "doc.read", "doc.query", "doc.resolve", "doc.outline", "doc.list_children", "asset.begin_upload", "asset.finish_upload"];
+
+fn run_token_caller(state: &Arc<AppState>, ws_id: Option<&str>, token: &str, method: &str) -> Result<Caller, String> {
+    if !RUN_TOKEN_METHODS.contains(&method) {
+        return Err(format!("a run token cannot call {method}"));
+    }
+    let ws_id = ws_id.ok_or_else(|| "workspace_id required".to_string())?;
+    let found = state.with_ws(ws_id, |ws| ws.wish_run_by_token(token)).map_err(|e| e.to_string())?;
+    let (run, _) = found.ok_or_else(|| "invalid run token".to_string())?;
+    Ok(Caller::run_token(run["principal"].as_str().unwrap_or(""), run["run_id"].as_str().unwrap_or("")))
 }
 
 /// `entry_id` of `params` as (Workspace, entry within it); a `workspace_id` given beside it must name the same one.

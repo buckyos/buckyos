@@ -1,0 +1,506 @@
+{
+  "deltas": [
+    {
+      "assets": [],
+      "entities": [
+        {
+          "content_rev": 1,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "s1",
+          "key_revs_json": "{\"content_folder_id\":1,\"kind\":1,\"layout\":1,\"title\":1}",
+          "life_rev": 1,
+          "meta_rev": 1,
+          "name": "s1",
+          "payload_json": "{\"content_folder_id\":\"s1-content\",\"kind\":\"surface\",\"layout\":{\"mode\":\"free\"},\"title\":\"s1\"}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.container",
+          "write_policy": "open"
+        },
+        {
+          "content_rev": 1,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "s1-content",
+          "key_revs_json": "{\"kind\":1,\"layout\":1,\"surface_id\":1,\"system\":1,\"title\":1}",
+          "life_rev": 1,
+          "meta_rev": 1,
+          "name": null,
+          "payload_json": "{\"kind\":\"folder\",\"layout\":{\"mode\":\"flow\"},\"surface_id\":\"s1\",\"system\":\"surface_content\",\"title\":\"s1\"}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.container",
+          "write_policy": "open"
+        },
+        {
+          "content_rev": 1,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "t",
+          "key_revs_json": "{\"#members\":1}",
+          "life_rev": 1,
+          "meta_rev": 1,
+          "name": "t",
+          "payload_json": "{}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.table-source",
+          "write_policy": "open"
+        }
+      ],
+      "refs": [],
+      "refs_deleted": [],
+      "richtext_states": [],
+      "richtext_updates": [],
+      "table_fields": [
+        {
+          "def_json": "{\"field_id\":\"n\",\"name\":\"数\",\"type\":\"number\"}",
+          "def_rev": 1,
+          "deleted_seq": null,
+          "field_id": "n",
+          "order_key": "r",
+          "source_id": "t",
+          "type_rev": 1,
+          "values_rev": 1
+        },
+        {
+          "def_json": "{\"field_id\":\"title\",\"name\":\"标题\",\"type\":\"text\"}",
+          "def_rev": 1,
+          "deleted_seq": null,
+          "field_id": "title",
+          "order_key": "i",
+          "source_id": "t",
+          "type_rev": 1,
+          "values_rev": 1
+        }
+      ],
+      "table_records": [
+        {
+          "body_entity_id": null,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "meta_json": "{}",
+          "record_id": "r1",
+          "rev": 1,
+          "revs_json": "{\"n\":1,\"title\":1}",
+          "source_id": "t",
+          "values_json": "{\"n\":1,\"title\":\"a\"}"
+        },
+        {
+          "body_entity_id": null,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "meta_json": "{}",
+          "record_id": "r2",
+          "rev": 1,
+          "revs_json": "{\"n\":1,\"title\":1}",
+          "source_id": "t",
+          "values_json": "{\"n\":2,\"title\":\"b\"}"
+        }
+      ],
+      "tree_edges": [
+        {
+          "child_id": "s1",
+          "order_key": "a",
+          "parent_id": "surfaces",
+          "placement_json": null,
+          "struct_rev": 1
+        },
+        {
+          "child_id": "s1-content",
+          "order_key": "a",
+          "parent_id": "canvas-content",
+          "placement_json": null,
+          "struct_rev": 1
+        },
+        {
+          "child_id": "t",
+          "order_key": "b",
+          "parent_id": "data",
+          "placement_json": null,
+          "struct_rev": 1
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "entities": [
+        {
+          "content_rev": 2,
+          "created_seq": 2,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "b1",
+          "key_revs_json": "{\"source_ref\":2,\"view\":2}",
+          "life_rev": 2,
+          "meta_rev": 2,
+          "name": null,
+          "payload_json": "{\"source_ref\":{\"entity_id\":\"own\",\"version\":{\"mode\":\"live_head\"}},\"view\":{\"type\":\"table\"}}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.cell",
+          "write_policy": "open"
+        },
+        {
+          "content_rev": 2,
+          "created_seq": 2,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "doc",
+          "key_revs_json": "{}",
+          "life_rev": 2,
+          "meta_rev": 2,
+          "name": "doc",
+          "payload_json": "{}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.richtext",
+          "write_policy": "open"
+        },
+        {
+          "content_rev": 2,
+          "created_seq": 2,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "own",
+          "key_revs_json": "{\"#members\":0}",
+          "life_rev": 2,
+          "meta_rev": 2,
+          "name": "own",
+          "payload_json": "{}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.table-source",
+          "write_policy": "open"
+        }
+      ],
+      "refs": [
+        {
+          "dst_entity_id": "own",
+          "dst_object_id": "",
+          "dst_query_json": "",
+          "dst_workspace_id": "",
+          "kind": "bind",
+          "src_entity_id": "b1",
+          "src_selector": ""
+        },
+        {
+          "dst_entity_id": "own",
+          "dst_object_id": "",
+          "dst_query_json": "",
+          "dst_workspace_id": "",
+          "kind": "owns",
+          "src_entity_id": "b1",
+          "src_selector": ""
+        }
+      ],
+      "refs_deleted": [],
+      "richtext_states": [
+        {
+          "ast_json": "{\"content\":[{\"attrs\":{\"block_id\":\"p1\"},\"content\":[{\"text\":\"第一段\",\"type\":\"text\"}],\"type\":\"paragraph\"}],\"type\":\"doc\"}",
+          "block_index_json": "{\"p1\":{\"parent\":\"\",\"node_type\":\"paragraph\",\"hash\":\"a704be0ca8e4b6fc280952316f9c9249\",\"struct_rev\":2}}",
+          "encoding": "pm-loro-1",
+          "engine": "loro",
+          "engine_version": "1.17.1",
+          "entity_id": "doc",
+          "lineage_id": "ln2-doc",
+          "snapshot": "bG9ybwAAAAAAAAAAAAAAALePRHUAAwEBAABMT1JPAAAMAAwBEAEHAAAAAAAAAAEBAAAAAAAFAQAAAQAfBgQBAAAIBAABAAQEAAAABgQAAAAKBAABAA4EAAIAECoIbm9kZU5hbWUKYXR0cmlidXRlcwhjaGlsZHJlbghibG9ja19pZANkb2MAJAEECgYABAIJAAIBBAIMAQAEAg0DAAIEAQMABBILAQUEEgEBAwAuBQNkb2MJAAkBBwEJAAUJcGFyYWdyYXBoCQAFAnAxCQEHAQkCCeesrOS4gOautQACAGZyAQcWAAIAdnYBBxgAAL0AxQADAJFMcWkBAAAABQAAAAwAAAAAAAAAAAcAAAAAAAIAdna4ogmQ3gAAAFcBAABMT1JPAAQiTRhgQIIYAQAA8kMAAgEAA2RvYwEAAAAJBAADAAAAAAMBAQcEAgMKYXR0cmlidXRlcwcBBwoBCGNoaWxkcmVuBwEHDgIIbm9kZU5hbWUECXBhcmFncmFwaAABBwAAAgDxFQUABwAECQQABQAAAAAEAQEHBgEBCGJsb2NrX2lkBAJwMQABBykAZgAAAAYADToAVAIAAAABlQAhAQc5AARWALgBAwIBAAIBBgIBADMAUwcAAAABZABGBwEHEE0AAzEAEhAxABQCSAD1BggAAAACBQEBBw4CCeesrOS4gOautZAAIQMEZgAREgYA6wYAAAAFAIADZG9jAAEAFAEZAhQBFwQUAQIwAARwAPAHAAEAAgAAAAAMAF0AhQC4AOkAIwEHAAAAAADAE6PWAQAAAAUAAAANAAAHAAAAAAAAAAEAAAABBQCAA2RvY19amsAwAQAAAAAAAA==",
+          "snapshot_seq": 0
+        }
+      ],
+      "richtext_updates": [],
+      "table_fields": [
+        {
+          "def_json": "{\"field_id\":\"title\",\"name\":\"标题\",\"type\":\"text\"}",
+          "def_rev": 2,
+          "deleted_seq": null,
+          "field_id": "title",
+          "order_key": "i",
+          "source_id": "own",
+          "type_rev": 2,
+          "values_rev": 0
+        }
+      ],
+      "table_records": [],
+      "tree_edges": [
+        {
+          "child_id": "b1",
+          "order_key": "a",
+          "parent_id": "s1",
+          "placement_json": "{\"h\":10,\"w\":10,\"x\":0,\"y\":0}",
+          "struct_rev": 2
+        },
+        {
+          "child_id": "doc",
+          "order_key": "c",
+          "parent_id": "data",
+          "placement_json": null,
+          "struct_rev": 2
+        },
+        {
+          "child_id": "own",
+          "order_key": "a",
+          "parent_id": "s1-content",
+          "placement_json": null,
+          "struct_rev": 2
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "entities": [
+        {
+          "content_rev": 3,
+          "created_seq": 2,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "doc",
+          "key_revs_json": "{}",
+          "life_rev": 2,
+          "meta_rev": 2,
+          "name": "doc",
+          "payload_json": "{}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.richtext",
+          "write_policy": "open"
+        },
+        {
+          "content_rev": 3,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "t",
+          "key_revs_json": "{\"#members\":1}",
+          "life_rev": 1,
+          "meta_rev": 1,
+          "name": "t",
+          "payload_json": "{}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.table-source",
+          "write_policy": "open"
+        }
+      ],
+      "refs": [],
+      "refs_deleted": [],
+      "richtext_states": [
+        {
+          "ast_json": "{\"content\":[{\"attrs\":{\"block_id\":\"p1\"},\"content\":[{\"text\":\"第一段\",\"type\":\"text\"}],\"type\":\"paragraph\"},{\"attrs\":{\"block_id\":\"p2\"},\"content\":[{\"text\":\"第二段\",\"type\":\"text\"}],\"type\":\"paragraph\"}],\"type\":\"doc\"}",
+          "block_index_json": "{\"p1\":{\"parent\":\"\",\"node_type\":\"paragraph\",\"hash\":\"a704be0ca8e4b6fc280952316f9c9249\",\"struct_rev\":2},\"p2\":{\"parent\":\"\",\"node_type\":\"paragraph\",\"hash\":\"6652895d1082272f156eca0a08afeb98\",\"struct_rev\":3}}",
+          "encoding": "pm-loro-1",
+          "engine": "loro",
+          "engine_version": "1.17.1",
+          "entity_id": "doc",
+          "lineage_id": "ln2-doc",
+          "snapshot_seq": 0
+        }
+      ],
+      "richtext_updates": [
+        {
+          "entity_id": "doc",
+          "update_bytes": "bG9ybwAAAAAAAAAAAAAAABj0C00ABKYBDAkMCQERAQcAAAAAAAAAAAEBAAAAAAAFAQAAAQAaBQQAAQAEBAAAABgEAAAAHAQAAQAgBAACACImCG5vZGVOYW1lCmF0dHJpYnV0ZXMIYmxvY2tfaWQIY2hpbGRyZW4AHgEECA0AAgACAQQCCAMCAQYCAwUABAwLAQUEDAEBAwAlBwEJAAUJcGFyYWdyYXBoCQAFAnAyCQEHAQkCCeesrOS6jOautQ=="
+        }
+      ],
+      "table_fields": [
+        {
+          "def_json": "{\"field_id\":\"k\",\"name\":\"键\",\"type\":\"select\",\"options\":[{\"option_id\":\"o1\",\"label\":\"一\"}]}",
+          "def_rev": 3,
+          "deleted_seq": null,
+          "field_id": "k",
+          "order_key": "w",
+          "source_id": "t",
+          "type_rev": 3,
+          "values_rev": 0
+        },
+        {
+          "def_json": "{\"field_id\":\"n\",\"name\":\"数\",\"type\":\"number\"}",
+          "def_rev": 1,
+          "deleted_seq": null,
+          "field_id": "n",
+          "order_key": "r",
+          "source_id": "t",
+          "type_rev": 1,
+          "values_rev": 3
+        }
+      ],
+      "table_records": [
+        {
+          "body_entity_id": null,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "meta_json": "{}",
+          "record_id": "r1",
+          "rev": 3,
+          "revs_json": "{\"n\":3,\"title\":1}",
+          "source_id": "t",
+          "values_json": "{\"n\":10,\"title\":\"a\"}"
+        }
+      ],
+      "tree_edges": []
+    },
+    {
+      "assets": [],
+      "entities": [
+        {
+          "content_rev": 4,
+          "created_seq": 1,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "t",
+          "key_revs_json": "{\"#members\":4}",
+          "life_rev": 1,
+          "meta_rev": 4,
+          "name": "renamed",
+          "payload_json": "{}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.table-source",
+          "write_policy": "open"
+        }
+      ],
+      "refs": [],
+      "refs_deleted": [],
+      "richtext_states": [],
+      "richtext_updates": [],
+      "table_fields": [
+        {
+          "def_json": "{\"field_id\":\"n\",\"name\":\"数\",\"type\":\"number\"}",
+          "def_rev": 1,
+          "deleted_seq": null,
+          "field_id": "n",
+          "order_key": "r",
+          "source_id": "t",
+          "type_rev": 1,
+          "values_rev": 4
+        },
+        {
+          "def_json": "{\"field_id\":\"title\",\"name\":\"标题\",\"type\":\"text\"}",
+          "def_rev": 1,
+          "deleted_seq": null,
+          "field_id": "title",
+          "order_key": "i",
+          "source_id": "t",
+          "type_rev": 1,
+          "values_rev": 4
+        }
+      ],
+      "table_records": [
+        {
+          "body_entity_id": null,
+          "created_seq": 1,
+          "deleted_seq": 4,
+          "meta_json": "{}",
+          "record_id": "r2",
+          "rev": 4,
+          "revs_json": "{\"n\":1,\"title\":1}",
+          "source_id": "t",
+          "values_json": "{\"n\":2,\"title\":\"b\"}"
+        }
+      ],
+      "tree_edges": [
+        {
+          "child_id": "b1",
+          "order_key": "a",
+          "parent_id": "s1",
+          "placement_json": "{\"h\":10,\"w\":10,\"x\":5,\"y\":5}",
+          "struct_rev": 4
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "entities": [],
+      "refs": [],
+      "refs_deleted": [
+        {
+          "dst_entity_id": "own",
+          "dst_object_id": "",
+          "dst_query_json": "",
+          "dst_workspace_id": "",
+          "kind": "owns",
+          "src_entity_id": "b1",
+          "src_selector": ""
+        }
+      ],
+      "richtext_states": [],
+      "richtext_updates": [],
+      "table_fields": [],
+      "table_records": [],
+      "tree_edges": []
+    },
+    {
+      "assets": [],
+      "entities": [
+        {
+          "content_rev": 2,
+          "created_seq": 2,
+          "deleted_seq": 6,
+          "derived_json": null,
+          "entity_id": "b1",
+          "key_revs_json": "{\"source_ref\":2,\"view\":2}",
+          "life_rev": 6,
+          "meta_rev": 2,
+          "name": null,
+          "payload_json": "{\"source_ref\":{\"entity_id\":\"own\",\"version\":{\"mode\":\"live_head\"}},\"view\":{\"type\":\"table\"}}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.cell",
+          "write_policy": "open"
+        }
+      ],
+      "refs": [],
+      "refs_deleted": [],
+      "richtext_states": [],
+      "richtext_updates": [],
+      "table_fields": [],
+      "table_records": [],
+      "tree_edges": []
+    },
+    {
+      "assets": [],
+      "entities": [
+        {
+          "content_rev": 2,
+          "created_seq": 2,
+          "deleted_seq": null,
+          "derived_json": null,
+          "entity_id": "b1",
+          "key_revs_json": "{\"source_ref\":2,\"view\":2}",
+          "life_rev": 7,
+          "meta_rev": 2,
+          "name": null,
+          "payload_json": "{\"source_ref\":{\"entity_id\":\"own\",\"version\":{\"mode\":\"live_head\"}},\"view\":{\"type\":\"table\"}}",
+          "schema_id": null,
+          "schema_version": 1,
+          "scope": "shared",
+          "type_id": "buckyos.cell",
+          "write_policy": "open"
+        }
+      ],
+      "refs": [],
+      "refs_deleted": [],
+      "richtext_states": [],
+      "richtext_updates": [],
+      "table_fields": [],
+      "table_records": [],
+      "tree_edges": []
+    }
+  ],
+  "description": "Row deltas of core/tests/apply_log.rs's scripted history and the digest of the state they produce (D20). Applied without a planner; regenerate with AIWS_REGEN=1.",
+  "digest": "1a1d02e84b073ff135c800a6c8f1a7024ae362b91decd5ceb61bbcacc7f7ea32"
+}

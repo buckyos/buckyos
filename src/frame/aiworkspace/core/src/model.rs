@@ -26,6 +26,10 @@ pub const TYPE_BLOCK_DEF: &str = "buckyos.block-def";
 pub const TYPE_VIEWPORT: &str = "buckyos.viewport";
 /// A presentation path: Frames and Viewports in order, with a stage size (third phase §6).
 pub const TYPE_SHOW_PATH: &str = "buckyos.show-path";
+/// A resource directory (内核架构改进 D01, D25): members by name — uploaded files (AssetRefs) or child
+/// directories — isomorphic with the cyfs-ndn DirObject it materializes to. A value-type container: a
+/// member name is a version cell, renaming is remove + add. Not the data tree's `container(kind=folder)`.
+pub const TYPE_DIR: &str = "buckyos.dir";
 pub const ROOT_ID: &str = "root";
 /// System nodes of the two trees (phase two §4): the data tree root, the Surface collection and the
 /// canvas content area (a system folder under `data` holding one folder per Surface).
@@ -39,11 +43,18 @@ pub const POLICY_OPEN: &str = "open";
 pub const POLICY_LOCK: &str = "lock_required";
 /// Reserved key of `key_revs` holding `source.members_rev`.
 pub const MEMBERS_KEY: &str = "#members";
-pub const FORMAT_VERSION: &str = "0.4";
-pub const PROTOCOL_VERSION: &str = "0.5";
+pub const FORMAT_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "1.0";
 
 pub fn is_known_type(t: &str) -> bool {
-    matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH)
+    matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH | TYPE_DIR)
+}
+
+/// The business Schema versions this build understands of a built-in type (内核架构改进 D01). An entity of
+/// a known type with another version, or of an unknown type, is an *opaque object*: stored, read and
+/// replayed verbatim, never judged by a business validator, and closed to content operations.
+pub fn supports_schema_version(t: &str, v: u32) -> bool {
+    is_known_type(t) && v == 1
 }
 
 /// Presentation entities: they live only in the `shows` system folder.
@@ -53,7 +64,7 @@ pub fn is_show_type(t: &str) -> bool {
 
 /// Types that live in the data tree (everything that is neither a container nor a Block).
 pub fn is_data_type(t: &str) -> bool {
-    matches!(t, TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF)
+    matches!(t, TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_DIR)
 }
 
 /// Fixed entities every Workspace has; they cannot be created, deleted, moved or renamed by operations.
@@ -66,6 +77,10 @@ pub struct EntityRow {
     pub entity_id: String,
     pub type_id: String,
     pub schema_version: u32,
+    /// The business Schema this entity follows when it is not the built-in one of `type_id`
+    /// (D01: a declared Schema's identifier, `<name>@<version>`); `None` for built-in types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_id: Option<String>,
     pub scope: String,
     pub name: Option<String>,
     pub write_policy: String,
@@ -89,15 +104,19 @@ impl EntityRow {
     pub fn key_rev(&self, key: &str) -> u64 {
         self.key_revs.get(key).copied().unwrap_or(0)
     }
-    /// Content operations are refused on unknown types / newer schema versions (V20).
+    /// An opaque object (D01): unknown type or a Schema version this build does not know. Its payload is
+    /// kept and read verbatim; content operations are refused with the returned code (V20).
     pub fn degraded(&self) -> Option<&'static str> {
         if !is_known_type(&self.type_id) {
             Some("MISSING_EXTENSION")
-        } else if self.schema_version != 1 {
+        } else if !supports_schema_version(&self.type_id, self.schema_version) {
             Some("UNSUPPORTED_VERSION")
         } else {
             None
         }
+    }
+    pub fn opaque(&self) -> bool {
+        self.degraded().is_some()
     }
     pub fn owner(&self) -> Option<&str> {
         self.scope.strip_prefix("user:")
@@ -178,14 +197,46 @@ impl RefEdge {
             dst_query_json: String::new(),
         }
     }
-    /// Reference kinds that block deletion of their target. `input` (wish inputs), `derived`
-    /// (generation dependencies), `connector_endpoint` (a line's bound end), `show_target` (a step of a
-    /// presentation path) and `show_surface` (a Viewport's Surface) do not: the target may go, the result
-    /// then reads "引用不可用", the line keeps its stored end position and the step becomes a dangling item.
+    /// The frozen reference catalogue (内核架构改进 D05, §5.2): every kind names its version selection
+    /// (`live` follows the target, `fixed` names a content) and its integrity (`strong` keeps the target
+    /// alive, `weak` may dangle). `REF_KINDS` is what `schemas/references.json` and the README mirror.
+    pub const KINDS: &'static [(&'static str, &'static str, &'static str, &'static str)] = REF_KINDS;
+
+    pub fn mode(&self) -> &'static str {
+        REF_KINDS.iter().find(|(k, ..)| *k == self.kind).map(|(_, m, ..)| *m).unwrap_or("live")
+    }
+
+    pub fn integrity(&self) -> &'static str {
+        REF_KINDS.iter().find(|(k, ..)| *k == self.kind).map(|(_, _, i, _)| *i).unwrap_or("weak")
+    }
+
+    /// Only a strong reference keeps its target alive. The target of a weak one may go: a wish input then
+    /// reads "引用不可用", a line keeps its stored end position, a step becomes a dangling item, a link is dead.
     pub fn blocks_delete(&self) -> bool {
-        matches!(self.kind.as_str(), "bind" | "embed" | "value" | "body" | "def")
+        self.integrity() == "strong"
     }
 }
+
+/// `(kind, mode, integrity, meaning)` of every reference kind. New kinds are protocol changes.
+pub const REF_KINDS: &[(&str, &str, &str, &str)] = &[
+    ("bind", "live", "strong", "a Block shows this data (source_ref, bindings)"),
+    ("owns", "live", "strong", "the data was created with this Block on a canvas: it follows the Block when the last bind goes (D05)"),
+    ("embed", "live", "strong", "a rich text block embeds this entity (object_embed)"),
+    ("value", "live", "strong", "a table cell or record property holds an object_ref to this entity"),
+    ("body", "live", "strong", "a table record's body rich text"),
+    ("def", "live", "strong", "a Block uses this Block definition"),
+    ("asset", "fixed", "strong", "an AssetRef or a directory member names this content object"),
+    ("member", "live", "strong", "a resource directory holds this child directory"),
+    ("object_link", "live", "weak", "an inline link in a rich text (dead when the target goes)"),
+    ("input", "live", "weak", "a wish reads this entity"),
+    ("derived", "fixed", "weak", "a result was generated from this version of the entity"),
+    ("produced", "live", "weak", "a wish produced this result"),
+    ("anchor", "live", "weak", "an annotation is anchored on this entity"),
+    ("connector_endpoint", "live", "weak", "a connector's bound end"),
+    ("show_target", "live", "weak", "a step of a presentation path"),
+    ("show_surface", "live", "weak", "a Viewport's Surface"),
+    ("source", "live", "weak", "a data entity is materialized from this Source (D12)"),
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssetInfo {
@@ -508,6 +559,7 @@ fn system_container(id: &str, kind: &str, name: Option<&str>, title: Option<&str
         entity_id: id.into(),
         type_id: TYPE_CONTAINER.into(),
         schema_version: 1,
+        schema_id: None,
         scope: SCOPE_SHARED.into(),
         name: name.map(str::to_string),
         write_policy: POLICY_OPEN.into(),

@@ -18,7 +18,7 @@ export function entityLabel(entity: EntityEnvelope): string {
   return entity.title ?? entity.name ?? entity.entity_id
 }
 
-export type NewDataKind = 'folder' | 'table' | 'richtext' | 'record' | 'wish' | 'note'
+export type NewDataKind = 'folder' | 'table' | 'richtext' | 'record' | 'wish' | 'note' | 'link'
 
 export function importedAssetOps(store: WorkspaceStore, parentId: string, items: ImportedAsset[], canvas?: { parentId: string; free: boolean; x: number; y: number }): Operation[] {
   const operations: Operation[] = []
@@ -60,6 +60,7 @@ export function newDataOps(store: WorkspaceStore, parentId: string, kind: NewDat
       { key: 'amount', name: aiwsT('aiworkspace.data.default.amount'), type: 'decimal', scale: 2 },
     ] }, props: { name: title } })]
     case 'note': return [create(randomId('n'), 'buckyos.annotation', { kind: 'note', body: title || aiwsT('aiworkspace.data.stickyNote'), style: { color: '#fff2cc' } })]
+    case 'link': return [] // inserted through insertLinkedSource (sourceLinks.ts): the link decides the type
     case 'wish': {
       const ops: Operation[] = []
       if (!store.outline.get(MOCK_WISH_DEF_ID)) ops.push(mockWishDefOp(store.core.order_key_between(store.outline.childrenOf('data').filter((e) => !SYSTEM_IDS.has(e.entity_id)).at(-1)?.order_key ?? undefined, undefined)) as Operation)

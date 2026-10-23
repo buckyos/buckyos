@@ -52,6 +52,42 @@ fn operation_catalogue_matches_dispatch() {
 }
 
 #[test]
+fn reference_schema_and_the_three_version_vocabularies() {
+    use aiworkspace_core::value::{canonical_reference, reference_from_canonical};
+    let file = load("reference.schema.json");
+    assert_eq!(file["required"], json!(["entity_id", "mode"]));
+    assert_eq!(file["properties"]["mode"]["enum"], json!(["live", "fixed"]));
+    let obj = "mix256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let root = aiworkspace_core::canonical::named_object("jobj", &json!({ "a": 1 })).unwrap().0;
+    // the frozen shape round-trips
+    let live = canonical_reference(&json!({ "workspace_id": "ws1", "entity_id": "orders", "mode": "live" })).unwrap();
+    assert_eq!(live, json!({ "workspace_id": "ws1", "entity_id": "orders", "mode": "live" }));
+    let fixed = canonical_reference(&json!({ "entity_id": "orders", "mode": "fixed", "version": { "epoch": "ep1", "seq": 7 } })).unwrap();
+    assert_eq!(fixed["version"], json!({ "epoch": "ep1", "seq": 7 }));
+    let rooted = canonical_reference(&json!({ "entity_id": "orders", "mode": "fixed", "version": { "content_root": root, "path": "a/b" } })).unwrap();
+    assert_eq!(rooted["version"]["path"], "a/b");
+    assert!(canonical_reference(&json!({ "entity_id": "orders", "mode": "live", "version": { "epoch": "e", "seq": 1 } })).is_err());
+    assert!(canonical_reference(&json!({ "entity_id": "orders", "mode": "fixed" })).is_err());
+    assert!(canonical_reference(&json!({ "entity_id": "orders", "mode": "fixed", "version": { "content_root": "nope" } })).is_err());
+    // 1. persisted references: live_head / fixed_revision / published_channel
+    assert_eq!(canonical_reference(&json!({ "entity_id": "t", "version": { "mode": "live_head" } })).unwrap()["mode"], "live");
+    assert_eq!(canonical_reference(&json!({ "entity_id": "t" })).unwrap()["mode"], "live");
+    let f = canonical_reference(&json!({ "entity_id": "t", "version": { "mode": "fixed_revision", "object_id": root } })).unwrap();
+    assert_eq!((f["mode"].as_str(), f["version"]["content_root"].as_str()), (Some("fixed"), Some(root.as_str())));
+    assert_eq!(canonical_reference(&json!({ "entity_id": "t", "version": { "mode": "published_channel", "channel": "main" } })).unwrap()["mode"], "live");
+    assert!(canonical_reference(&json!({ "entity_id": "t", "version": { "mode": "fixed_revision", "source_revision": "r9" } })).is_err());
+    // 2. wish inputs: follow / fixed
+    let w = canonical_reference(&json!({ "entity_id": "sales", "name": "sales", "label": "Orders", "selector": { "kind": "table_query", "fields": ["m"] }, "version": { "mode": "follow", "rev": 3 } })).unwrap();
+    assert_eq!((w["mode"].as_str(), w["selector"]["kind"].as_str()), (Some("live"), Some("table_query")));
+    assert_eq!(canonical_reference(&json!({ "entity_id": "sales", "version": { "mode": "fixed", "object_id": obj } })).unwrap()["version"]["content_root"], obj);
+    assert!(canonical_reference(&json!({ "entity_id": "sales", "version": { "mode": "fixed", "rev": 3 } })).is_err());
+    // 3. back to the persisted form: live / content root; { epoch, seq } is not retained yet
+    assert_eq!(reference_from_canonical(&live).unwrap()["version"], json!({ "mode": "live_head" }));
+    assert_eq!(reference_from_canonical(&rooted).unwrap()["version"]["mode"], "fixed_revision");
+    assert_eq!(reference_from_canonical(&fixed).unwrap_err().code, Code::VersionNotRetained);
+}
+
+#[test]
 fn richtext_schema_file_is_wellformed() {
     let s = aiworkspace_core::richtext::schema();
     assert_eq!(s["id"], "buckyos.richtext.basic.v1");

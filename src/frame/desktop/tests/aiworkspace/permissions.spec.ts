@@ -83,4 +83,13 @@ test('AI Center Quota §3.3: a manager chooses whose AI resources wish blocks us
   const refused = await api.rpc(BOB, 'ws.set_wish_aicc', { workspace_id: ws.workspace_id, mode: 'workspace_owner' })
   expect(refused.ok).toBe(false)
   expect(refused.error.code).toBe('PERMISSION_DENIED')
+  // hosted execution (内核架构改进 D22, T3-7): the owner names the Agent and the wishes; a reader cannot change it
+  await page.getByTestId('aiws-hosted-enabled').check()
+  await page.getByTestId('aiws-hosted-agent').fill('jarvis.test.buckyos.io')
+  await page.getByTestId('aiws-hosted-wish-wish-analysis').check()
+  await page.getByTestId('aiws-hosted-save').click()
+  await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).hosted_exec).toMatchObject({ enabled: true, agent_id: 'jarvis.test.buckyos.io', allowed_wishes: ['wish-analysis'] })
+  await expect(bobPage.getByTestId('aiws-hosted-save')).toBeDisabled()
+  const hostedRefused = await api.rpc(BOB, 'ws.set_hosted_exec', { workspace_id: ws.workspace_id, config: { enabled: false } })
+  expect(hostedRefused.error.code).toBe('PERMISSION_DENIED')
 })

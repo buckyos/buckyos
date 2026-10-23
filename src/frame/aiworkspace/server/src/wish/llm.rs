@@ -5,6 +5,7 @@
 use super::{StageState, WishConfig};
 use agent_tool::xllm::{DefaultLlmClientFactory, LlmClientFactory, ProviderConfig, ProviderKind, SecretRef};
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
+use aiworkspace_core::{Code, WsError, WsResult};
 use buckyos_api::{AiMessage, AiRole, AiccOnBehalfOf};
 use llm_context::{InferenceAbortToken, LLMComputeError, LlmClient, LlmInferenceRequest, ProviderFailure};
 use serde_json::{json, Value};
@@ -72,15 +73,27 @@ pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Pa
     v
 }
 
-pub async fn client(cfg: &WishConfig, on_behalf_of: Option<&AiccOnBehalfOf>) -> Result<Arc<dyn LlmClient>, String> {
-    if let Some(c) = &cfg.llm_override {
-        return Ok(c.clone());
+/// Whose AI resources a run's model calls are charged to (内核架构改进 §12.2): the service calls a
+/// BuckyOS AICC only for a user, never with its own resources, so a run without an attribution is
+/// refused; another provider has its own credentials and no delegation.
+pub fn attribution<'a>(cfg: &WishConfig, on_behalf_of: Option<&'a AiccOnBehalfOf>) -> WsResult<Option<&'a AiccOnBehalfOf>> {
+    if provider_config(&cfg.provider).effective_kind() != ProviderKind::Buckyos {
+        return Ok(None);
     }
+    match on_behalf_of {
+        Some(o) => Ok(Some(o)),
+        None => Err(WsError::sub(Code::DependencyUnavailable, "AI_ATTRIBUTION_UNAVAILABLE", "This run names no user whose AI resources it may use; the service does not call AICC with its own")),
+    }
+}
+
+pub async fn client(cfg: &WishConfig, on_behalf_of: Option<&AiccOnBehalfOf>) -> WsResult<Arc<dyn LlmClient>> {
     let mut provider = provider_config(&cfg.provider);
-    if provider.effective_kind() == ProviderKind::Buckyos {
-        provider.on_behalf_of = on_behalf_of.cloned();
-    }
-    DefaultLlmClientFactory.create(&provider).await.map_err(|e| e.to_string())
+    provider.on_behalf_of = attribution(cfg, on_behalf_of)?.cloned();
+    let factory: &dyn LlmClientFactory = match &cfg.llm_override {
+        Some(f) => f.as_ref(),
+        None => &DefaultLlmClientFactory,
+    };
+    factory.create(&provider).await.map_err(|e| WsError::new(Code::DependencyUnavailable, e.to_string()))
 }
 
 // ---- schema subset: type / enum / properties / required / items
@@ -218,7 +231,7 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
     }
     let llm = match client(cfg, state.aicc.as_ref()).await {
         Ok(c) => c,
-        Err(e) => return json!({ "error": e }),
+        Err(e) => return json!({ "error": e.detail, "code": e.sub }),
     };
     let refused = |sub: &'static str| {
         let aicc = state.aicc.as_ref().map(|a| json!({ "mode": a.mode, "user_id": a.user_id, "operator_id": a.operator_id })).unwrap_or(Value::Null);
@@ -284,6 +297,20 @@ pub async fn llm_map(state: &Arc<StageState>, body: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_buckyos_provider_needs_an_attribution() {
+        let cfg = WishConfig::default();
+        let e = attribution(&cfg, None).unwrap_err();
+        assert_eq!((e.code, e.sub), (Code::DependencyUnavailable, Some("AI_ATTRIBUTION_UNAVAILABLE")));
+        let o = AiccOnBehalfOf { user_id: "alice".into(), operator_id: None, mode: buckyos_api::AiccAttributionMode::WorkspaceOwner, run_ref: None };
+        assert_eq!(attribution(&cfg, Some(&o)).unwrap().map(|o| o.user_id.as_str()), Some("alice"));
+        let mut openai = WishConfig::default();
+        openai.provider = json!({ "type": "openai", "api_key_env": "K" });
+        assert!(attribution(&openai, None).unwrap().is_none());
+        assert!(attribution(&openai, Some(&o)).unwrap().is_none());
+        assert!(llm_context(&openai, "m", 1, std::path::Path::new("/r"), &[], false, None)["provider"].get("on_behalf_of").is_none());
+    }
 
     #[test]
     fn schema_subset_and_json_extraction() {

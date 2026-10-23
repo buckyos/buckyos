@@ -35,6 +35,25 @@ fn v01_object_ids_match_ndn_lib() {
         assert_eq!(ftext, ntext);
         assert_eq!(fid, nid.to_string());
     }
+    // a directory of members hashes exactly as ndn-lib's DirObject::gen_obj_id (内核架构改进 D25)
+    let (fid, _) = file_object(5, &chunk_id(b"hello")).unwrap();
+    let (sub, _) = dir_object(&[]).unwrap();
+    let (ours, our_text) = dir_object(&[
+        DirMember { name: "hello.txt".into(), object_id: fid.clone(), size: 5, is_file: true },
+        DirMember { name: "sub".into(), object_id: sub.clone(), size: 0, is_file: false },
+    ])
+    .unwrap();
+    let mut d = ndn_lib::DirObject::new(None);
+    d.content_obj.create_time = 0;
+    d.content_obj.last_update_time = 0;
+    d.total_size = 5;
+    d.file_count = 1;
+    d.file_size = 5;
+    d.object_map.body.insert("hello.txt".into(), ndn_lib::SimpleMapItem::ObjId(ndn_lib::ObjId::new(&fid).unwrap()));
+    d.object_map.body.insert("sub".into(), ndn_lib::SimpleMapItem::ObjId(ndn_lib::ObjId::new(&sub).unwrap()));
+    let (nid, ntext) = d.gen_obj_id().unwrap();
+    assert_eq!(our_text, ntext);
+    assert_eq!(ours, nid.to_string());
 }
 
 /// The fixture replays through the service interface and the reference index

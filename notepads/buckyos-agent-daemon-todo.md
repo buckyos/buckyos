@@ -13,13 +13,14 @@
 已确定的要求：
 
 1. **复用 Node Executor。** 复用 Command Stream、登录鉴权、profile、操作账本、查询、取消与文件传输，不建立第二套远程执行协议。
-2. **不依赖 BuckyOSApp 或目标机网关。** WSS 客户端与平台后端随 daemon 交付，macOS/Windows 另带用户会话 helper 与权限引导；目标机不要求 Device DID、DeviceDocument、cyfs-gateway 或完整节点身份。已有 macOS/Windows 完整节点也能获得同一套桌面后端。
+2. **不依赖 BuckyOSApp 或目标机网关。** WSS 客户端与平台后端随 daemon 交付，macOS/Windows 按所选启动方式提供权限引导及必要的用户会话 helper；目标机不要求 Device DID、DeviceDocument、cyfs-gateway 或完整节点身份。已有 macOS/Windows 完整节点也能获得同一套桌面后端。
 3. **辅助功能优先，按平台交付。** 当前由 macOS AX、Windows UI Automation 提供结构化观察和语义操作，截图、坐标输入按需补充；普通表单、菜单、文本操作不要求每一步截图。Linux 当前只交付命令与文件能力，不实现 GUI；Android Accessibility 留待后续。
 4. **URL 启动即接入。** 用户在 BuckyOS 添加设备并生成可设有效期的接入 URL，用启动脚本加 URL 参数运行 daemon；目标机不再做一次账号登录或设备配对。脚本负责取得对应平台产物并以前台进程运行，不要求 Python、Homebrew、xdotool 或开发工具。平台必需的首次授权仍需用户完成。
 5. **能力按实际环境报告。** 没有桌面会话、控件不支持辅助功能、授权缺失、锁屏、后台受限等情况要明确返回；不能把命令执行可用等同于桌面可用。
 6. **保持 Agent 当前运行位置。** Agent 通过设备工具访问目标机；完整 OpenDAN Session 迁移到 remote_node 不作为交付前置条件。
 7. **可见性跟随进程与授权连接。** daemon 就绪并保持有效连接时，获准 Agent 能发现该 node_executor；退出后从可用执行端列表消失。管理页保留设备配置和离线状态。默认不安装自启动项，不在用户退出后自动拉起进程。
 8. **URL 到期使在线实例下线。** 有效期约束整个接入生命周期；到期停止接收新命令并关闭接入，心跳、重连或会话续租不能延长它。用户已明确选择此语义。
+9. **Mac mini 长期无人值守是典型场景。** 后续 macOS 交付需支持用户完成首次安装和必要授权后，不接显示器、键盘和鼠标长期运行。增加显式可选的常驻安装与远程恢复方案，保留默认前台启动语义；研究结论、权限边界和真机门槛见 §7.1.1。
 
 本次不实现 Thunk 调度、Owner 恢复脚本、跨 Zone 控制、通用多租户沙箱、自动解锁或权限绕过。与这些方向的复用保持在既有类型边界内。
 
@@ -45,7 +46,7 @@ Windows 提供等价 PowerShell 脚本。后续 Android TV 方案拟用独立轻
 | --- | --- | --- |
 | Linux x86_64 | [主 CI](../.github/workflows/build-all.yml)，构建目标为 musl | 独立 daemon、WSS 接入、命令/文件与操作恢复；当前不支持 GUI |
 | Linux aarch64 | 同上，构建目标为 GNU | 与 x86_64 相同的命令/文件、接入和恢复验收；当前不支持 GUI |
-| macOS x86_64 / aarch64 | 主 CI 两种架构 | 独立 daemon、AX、按需截图/输入、随包安装的用户会话 helper |
+| macOS x86_64 / aarch64 | 主 CI 两种架构 | 独立 daemon、AX、按需截图/输入；按启动上下文直接运行 UI 后端或使用随包 helper |
 | Windows x86_64 | 主 CI 当前启用的 Windows 架构 | 独立 daemon、PowerShell/文件、UIA、按需截图/输入 |
 | Android arm64 | [BuckyOSApp Android CI](../../BuckyOSApp/.github/workflows/build-android.yml) 已有 APK 构建、签名和上传入口；不是 Node Executor 的现有支持 | 后续规划，主要面向 Android TV，暂不实现；不计入当前交付门槛 |
 | Windows ARM64 | [Windows 子 workflow](../.github/workflows/build-windows.yml) 接受该 target，主 CI 未启用 | 扩展目标：补 CI 和原生机器验收后才能标为支持 |
@@ -93,19 +94,19 @@ flowchart LR
 | 部署 | 默认身份与生命周期 | 桌面后端 |
 | --- | --- | --- |
 | 已有完整 BuckyOS Node | 保持当前 node_daemon 的系统服务/用户进程模型 | macOS/Windows 节点分发用户会话 helper；Linux 本期不分发 GUI 后端 |
-| 独立 macOS/Windows daemon | 脚本以前台当前用户进程启动；退出即结束接入，登录自启动是后续显式可选项 | 同用户上下文，helper 随主进程启动和退出 |
+| 独立 macOS/Windows daemon | 默认脚本前台启动，也可按需由用户登录项或系统服务启动；能力取决于实际用户/session | 在交互用户会话中可直接运行 UI 后端；跨系统/用户会话时再使用 helper |
 | Linux daemon | 同样支持前台启动；常驻 user/system service 是显式可选模式，仍受 URL 有效期约束 | 只提供获准的命令与文件能力；UI 报告 unsupported，不依赖桌面会话 |
 | Android（后续，暂不实现） | 应用沙箱身份，用户在 APK 中以 URL 启动/停止；系统终止服务则下线 | AccessibilityService / 截图会话，经 JNI 或窄接口接核心 |
 
-可复用同一二进制的不同启动模式，但不能把后台系统服务与交互桌面的上下文混为一谈。helper 是随包内部组件，不要求 BuckyOSApp、托盘或常驻可见窗口。权限引导可以由 daemon 自带的最小界面或系统设置入口完成。
+`buckyos-agent-daemon` 是独立进程，启动方法由部署场景选择，不受完整 Node 的 node_daemon 启动方式限制。默认前台脚本只是使用入口，不限制其他启动方法。直接运行在目标用户桌面会话时，UI 后端可与网络/执行核心同进程，通过专用事件循环组织；helper 仅在跨会话或需要进程隔离时使用。helper 随包交付，不要求 BuckyOSApp、托盘或常驻可见窗口。权限引导可以由 daemon 自带的最小界面或系统设置入口完成。
 
 - [x] 明确执行身份模型：`current_user` 与 `switch_user`，由实际宿主能力决定，不能由远程请求任意切换。
 - [x] Unix 当前用户模式校验真实 uid/gid/组身份并以原身份执行，不调用仅 root 可用的 setgroups；系统模式保留现有显式降权与核验。
 - [ ] Windows 当前用户模式绑定 SID 与 session；不能因为进程位于 Windows 就无条件公布全部 worker/UI 能力。
 - [ ] 将平台能力从硬编码 euid/cfg 判断改为实际可执行后端报告；Linux 不公布 UI 操作能力，未来 Android 也只能公布已实现的受限能力。
 - [ ] macOS/Windows UI 后端建立专用事件循环/线程或进程，不让 AX、COM 的阻塞调用卡住 Tokio 网络与撤权处理。
-- [ ] Unix IPC 验证 peer credentials，Windows named pipe 验证 SID/session 并设置 ACL；helper 只接受本机受信宿主的受约束请求。
-- [ ] helper 仅接收所需的用户/session/操作授权上下文，不获得接入 URL 凭据、Owner 私钥或任意远程 shell 凭据。
+- [ ] 采用 helper 时，Unix IPC 验证 peer credentials，Windows named pipe 验证 SID/session 并设置 ACL；helper 只接受本机受信宿主的受约束请求。
+- [ ] 采用 helper 时，仅传入所需的用户/session/操作授权上下文，不传入接入 URL 凭据、Owner 私钥或任意远程 shell 凭据。
 
 ### 4.2 与现有 Node 共存
 
@@ -114,6 +115,24 @@ flowchart LR
 - [x] 完整 Node 的 RTCP 接入与轻量 WSS 接入共用执行核心，网络准入由各自宿主负责；不要求轻量目标机安装或发现网关。
 - [x] 同一 executor_id 默认只允许一个活动实例；同机不同执行端分别绑定当前 OS 用户和数据根，桌面输入仍受目标 session 的串行约束。
 - [ ] 显式迁移到完整 Node 时另行定义目标标识、RBAC 和账本交接；不把两种入口自动合并或隐式清空 `store_id`。
+
+### 4.3 独立进程按需启动（2026-10-23 补充）
+
+以下是 macOS 后续实现的启动方案，不表示已经完成平台支持；既有 Linux 前台与用户服务交付状态保持不变。
+
+| 使用场景 | 启动方式 | 执行能力与生命周期 |
+| --- | --- | --- |
+| 临时控制已登录的 Mac 桌面 | 在目标用户桌面会话中直接运行脚本/可执行程序 | 同一进程可承载命令、文件与已授权 UI 后端；进程退出即下线 |
+| 无物理显示器，保留用户桌面会话，按需长期运行 | 在该 GUI 会话中启动，或显式安装用户 LaunchAgent | 满足会话与权限条件后可提供 GUI；不以是否连接物理显示器作为能力判据，仍需验收显示环境与截图行为 |
+| 无图形登录会话的命令/文件执行端 | SSH 会话启动，或显式配置 LaunchDaemon 与执行用户 | 无需 GUI 会话；不默认公布桌面能力，生命周期由启动方式及接入有效期共同决定 |
+| 系统服务保持在线，另接已登录用户桌面 | 系统宿主加用户会话 helper | 仅此类跨会话部署需要分离宿主和桌面后端；无可用用户会话时保留命令/文件能力 |
+
+- [ ] 启动时检查实际 OS 用户、GUI session 和平台授权，决定可用后端；不能仅凭同一 uid、root、进程名称或后台运行状态推断可以操作桌面。
+- [ ] 用户会话内直接启动与 LaunchAgent 复用同一 UI 后端；不把“系统服务 + helper”设为独立版 GUI 的必选架构。
+- [ ] 各启动方法共用 URL、executor_id、账本与在线目录语义；URL 到期/撤销均停止接单并下线。显式服务模式的停止与重启策略不能绕过到期、撤销或用户停止。
+- [ ] 将首次授权、桌面会话建立与启动后能力检测分开：可选择已有会话启动 daemon，但启动方式本身不授予 TCC 权限，也不自动建立或解锁桌面会话。
+
+长期放置的 Mac mini 另按 §7.1.1 验收网络恢复、重启、断电和权限失效；一次启动成功不能替代无人值守验收。
 
 ## 5. URL 接入、在线目录与授权
 
@@ -201,6 +220,7 @@ UI 请求复用 Command Stream 的操作生命周期。下面是逻辑工具名�
 - [ ] capability 分开表达“实现支持”和“当前就绪”；按 session 报告 accessibility、capture、input、后台操作、命令和文件能力。网络在线与 GUI 就绪分别表达，连接状态遵守 §5.3。
 - [ ] 至少区分 `permission_required`、`no_gui_session`、`session_locked`、`session_changed`、`backend_unavailable`、`unsupported`、`stale_element`、`target_not_found`、`outcome_unknown`；名称为拟议值，实施时统一类型。
 - [ ] 缺授权时只返回状态与本地启用步骤；由用户主动的本地设置流程请求权限，避免远端轮询不断触发系统弹窗。
+- [ ] 无公开无弹窗查询 API 的权限允许报告 `permission_unknown`，记录最后一次实际操作结果与时间；遇到受保护的确认流程可报告 `human_required`。不能把未知当已授权，也不能把所有授权失败都判成必须物理键鼠。
 - [ ] 输入按目标桌面/session 串行化，并在每次派发前重查身份、授权与 session；默认不在多用户桌面之间自动选择或漂移。
 - [ ] 对注入的按键/鼠标按下状态建立本地跟踪；异常、取消或连接终止时尽力释放本次操作持有的状态，避免留下卡键，不干扰用户自行按下的输入。
 - [ ] 复用 op_id/call_id 与账本去重，将 helper 派发与结果关联。发生断线/崩溃/超时后先 query 或重读状态，不能自动重复点击、提交或输入。
@@ -220,15 +240,73 @@ UI 请求复用 Command Stream 的操作生命周期。下面是逻辑工具名�
 
 - [ ] 实现 AX 应用/窗口发现、属性读取、动作枚举、`AXUIElementPerformAction`、可写属性设置和按应用注册的 AXObserver。
 - [ ] 支持异步权限检查与最小授权引导；区分 Accessibility 与 Screen Recording。只使用 AX 的主路径不要求先完成截图权限。
-- [ ] helper 使用稳定安装位置与签名身份；需要 bundle 元数据时随 daemon 打包最小后台 bundle，不引入完整 BuckyOSApp。
-- [ ] 独立模式由当前用户脚本启动，helper 跟随 daemon 生命周期，不默认注册 LaunchAgent。完整节点将 helper 安装到 `/Library/LaunchAgents`，按目标已登录用户加载 `gui/<uid>`；独立版的登录自启动仅作为显式可选模式。
+- [ ] 实际调用 AX/截图/输入 API 的 daemon 或 helper 使用稳定安装位置与签名身份；需要 bundle 元数据时打包最小后台 bundle，不引入完整 BuckyOSApp。
+- [ ] 独立模式按 §4.3 支持按需选择启动上下文：GUI 会话中直接启动或显式 LaunchAgent 可由 daemon 自身承载 UI 后端，纯命令模式可使用 LaunchDaemon。完整节点需要跨会话时再将 helper 安装到 `/Library/LaunchAgents`，按目标已登录用户加载 `gui/<uid>`；默认脚本不自动注册启动项。
 - [ ] 使用独立 launchd label，如 `com.buckyos.agent-daemon.ui`；现有安装脚本会删除旧 `buckyos.service` LaunchAgent，不能复用该 label。
 - [ ] 系统进程到用户 helper 通过经过身份检查的本地 IPC；不把 setuid 或设置 HOME 视为进入 Aqua 会话。
 - [ ] 截图使用目标 OS 支持的 ScreenCaptureKit 接口；输入补充使用 CGEvent。实现 Retina/多屏映射、中文/组合键与动作后状态核验。
 - [ ] 为不支持 AX、AX 消息超时、元素消失提供明确结果；超时不意味着动作一定没发生。
 - [ ] 真机验证首次授权、拒绝后恢复、撤权、升级后授权状态、注销/登录、用户切换与锁屏；不承诺普通安装可静默批准 TCC 或操作登录/解锁界面。
+- [ ] 分别验收用户桌面直接启动、GUI LaunchAgent、无 GUI 的命令服务，以及无物理显示器但有桌面会话的运行方式；不将完整节点的 root LaunchDaemon 测试当作独立用户进程验证。
 
 AX 支持读取控件属性、执行动作与状态通知；信任检查针对调用进程，提示授权是异步过程。上述实现依照 [Apple AX 接口](https://developer.apple.com/documentation/applicationservices/axuielement_h)、[授权检查](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions) 与 [Daemon/Agent 上下文说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/DesigningDaemons.html)。
+
+#### 7.1.1 Headless Mac mini：长期无人值守调研（2026-10-23）
+
+用户目标是完成首次安装和必要授权后，将 Mac mini 像路由器一样放在角落。以下是官方资料调研与拟议实现要求，尚未在 Mac 真机验证；本次研究环境为 Linux，当前 daemon 运行入口也仍限制为 Linux。首轮实验建议聚焦 Apple Silicon，记录具体机型及 macOS build；不据此取消 Intel 的既有平台目标。
+
+产品验收区分三个结果：日常任务无人值守、异常后由用户远程恢复、重启或断电后自动恢复 GUI。三者分别记录，不能只用一个“headless 支持”复选框表示。
+
+**资料支持的边界**
+
+| 问题 | 已查明事实及对本项目的影响 |
+| --- | --- |
+| 没有物理显示器能否操作桌面 | Apple Silicon + macOS Sonoma 14 及以后，Apple 的高性能屏幕共享支持虚拟显示器。这证明存在官方无物理屏幕路径，但不能推导我们的 daemon 已有创建虚拟显示器的公开 API，或远控断开后显示器仍存在；必须独立验收。[Apple 屏幕共享](https://support.apple.com/en-euro/guide/mac-help/mchl1883115d/mac) |
+| 自己已授权，能否批准新软件 | 没有找到覆盖当前所有 macOS、权限类型和输入路径的保证。TeamViewer 明确其自身权限不能经 TeamViewer 连接远程授予；Jump 的 Catalina 指南则明确可经预先开启的 Apple Remote Desktop 给 Jump 批准录屏。前者不能直接泛化所有 A→B，后者也不能推广到新版所有权限。[TeamViewer](https://www.teamviewer.com/en/global/support/knowledge-base/teamviewer-remote/remote-control/remote-control-a-mac/)、[Jump 的历史案例](https://support.jumpdesktop.com/hc/en-us/articles/360034961971-Mac-Upgrading-to-Catalina-and-Fluid-Remote-Desktop-Protocol) |
+| 录屏能否长期保持可用 | Apple 为 VNC 类应用提供 `com.apple.developer.persistent-content-capture`，需向 Apple 申请并获准后使用；不能自行添加 entitlement 就视为有效，也不能假设通用 Agent 一定获批。Jump 当前指南将 Remote Desktop 列为 macOS 14 及以后无人值守所需权限，Splashtop 也建议授予该权限以避免提醒；这不是免除首次用户授权。[Apple entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.persistent-content-capture)、[Jump 当前指南](https://docs.jumpdesktop.com/connect/macos-permissions/)、[Splashtop](https://support-splashtopbusiness.splashtop.com/hc/en-us/articles/29381364146459-How-to-allow-remote-access-on-macOS) |
+| `doctor` 能否静默判断全部权限 | Apple DTS 在 2026-08 的答复中表示没有专门返回 Remote Desktop 权限状态的 API。具体调用行为仍按目标 SDK/OS 验证；不能用普通录屏检查结果冒充这一权限状态，也不能后台反复调用会弹框的捕获请求。[Apple DTS](https://developer.apple.com/forums/thread/841530) |
+| FileVault 开启后重启是否必须到现场 | Apple 官方支持 Apple Silicon + macOS 26 及以后，在预先开启 Remote Login、网络可用时，重启后通过 SSH 解锁 FileVault。该说明不等于自动 GUI 登录，也不能省略断电冷启动测试。设计推论：解锁前不能依赖这台 Mac 上尚未运行的 daemon 或 VPN 建立救援连接，需要预先可达的独立网络路径。[Apple FileVault](https://support.apple.com/guide/deployment/intro-to-filevault-dep82064ec40/web) |
+| 能否开机自动进入桌面 | FileVault 开启时不能配置自动登录；自动登录也不消除注销、锁屏等场景的认证。保留 FileVault 并远程解锁，与关闭 FileVault 后使用专用账户自动登录，是不同部署选择；安装脚本不擅自改变这些设置。[Apple 自动登录](https://support.apple.com/102316) |
+| 断电回来能否自己开机 | 需区分“断电后恢复”与“正常关机后重新供电”。Apple 文档支持 macOS 26.5 及以后、2024 年及以后的 Mac mini 配置供电即开机；其他机型按实际电源选项和实测记录，不能套用同一承诺。[Apple 供电启动](https://support.apple.com/125517) |
+| 能否靠 MDM 批准全部权限 | 普通 PPPC 的 ScreenCapture 不能直接 Allow；最新开发者文档还说明 Accessibility 的 profile 授权在 26.2 弃用、27.0 移除。27 的声明式隐私默认值需要用户同意，macOS 仅支持 AppKit app，且有受监督部署条件。MDM 是按版本选择的可选预配置，不能作为普通 daemon 的通用授权 API。[PPPC Services](https://developer.apple.com/documentation/devicemanagement/privacypreferencespolicycontrol/services-data.dictionary)、[AppSettings](https://developer.apple.com/documentation/devicemanagement/appsettings)、[用户同意流程](https://support.apple.com/en-ca/guide/deployment/dep1b0132508/web)、[部署条件](https://support.apple.com/en-ca/guide/deployment/depd65c456fa/web) |
+
+上述资料未证明“任意已授权远控都能批准新软件”，也未证明“所有隐私授权都必须物理键鼠”。输入密码、授予 Accessibility、Screen Recording、Remote Desktop、Full Disk Access 是不同验证项。
+
+这里的 Remote Desktop 隐私权限与系统“共享”中的 Screen Sharing/Remote Management 服务开关不同；Full Disk Access 也不作为普通 AX/截图的默认前提。Jump 的 2026-10-05 更新还修复了 macOS 26/27 上授权提示被其他弹框打断、导致注销后无人值守失败的问题，说明安装向导结束后仍应验证实际授权结果。[Jump 更新记录](https://docs.jumpdesktop.com/whats-new/changelog/jump-desktop/)
+
+**拟议部署与恢复方案**
+
+- [ ] 提供显式常驻安装模式：固定位置、稳定签名的最小后台 bundle，附本地首次配置界面；不依赖 BuckyOSApp。正式常驻进程和实际 API 调用主体完成授权后，再移除显示器与键鼠；不能用在 Terminal 中运行成功代替 LaunchAgent 验证。
+- [ ] 单用户桌面常驻可直接采用 LaunchAgent 内的 daemon。若要求注销或尚未登录时仍能远程诊断，则采用系统宿主加 GUI 会话工作进程：宿主维持 WSS 与受 profile 限制的命令/文件，用户进程提供 AX/截图/输入。同一设备只由一个宿主持有接入连接和账本，GUI 工作进程不另占同一 URL；这是该部署选项的分工，不要求所有独立 daemon 都拆进程。
+- [ ] 常驻模式区分暂时断网、进程崩溃、认证失效与用户停止。网络故障采用有上限的退避间隔持续恢复，成功后重置连续失败计数；崩溃恢复遵循显式服务策略。URL 到期、撤销、用户 stop 则进入停止状态，不能被 launchd 反复拉起接单。长期部署可由用户选择无到期 URL，但仍可撤销，不自动续期有限 URL。
+- [ ] 凭据保存选择受限文件或适用的 Keychain 项，验证系统启动后、用户登录前及锁屏后的可读性；不将秘密写入 plist 参数。恢复沿用原账本和 `store_id`；失联操作先查询原状态，进程重启后仅将没有持久化最终结果的操作标为 `Unknown`，不自动重放。
+- [ ] 首次配置提供可选的 Apple 原生 Screen Sharing/Remote Management 与 Remote Login 救援入口，并实际验证可达性。macOS 12.1 及以后不能指望事后仅靠 `kickstart` 开启屏幕共享；Apple 支持预先在设置中配置或由 MDM 开启 Remote Management。救援入口需独立于失效的 GUI 后端，FileVault 解锁前的网络路径还需独立于整台 Mac 的用户态服务；不把救援通道变成 URL 到期后 Agent 继续执行的后门。[Apple 启用说明](https://support.apple.com/en-au/guide/remote-desktop/apd8b1c65bd/mac)、[MDM 命令](https://support.apple.com/en-us/102024)
+- [ ] 按平台版本分别检查 Accessibility、CGEvent 输入、捕获和文件访问；网络在线不代表桌面就绪。会话/权限变化动态上报，GUI 失效时保留已授权的命令和诊断。FileVault 解锁前 daemon 不能报告自身状态，管理端只能显示离线及最后状态，不能凭失联推断原因。
+- [ ] 将 Persistent Content Capture 的资格评估与 Apple 申请列为发布前任务；首次授权、可能的再确认、撤权和升级后状态分别验证。未获批时明确普通捕获路径的实际限制，不宣传“授权一次永久有效”。
+- [ ] 电源与显示环境做首次自检：睡眠策略、断电恢复、显示器枚举、分辨率及捕获回读。先测试无任何显示设备的运行，再按实测评估持续存在的虚拟显示器或 HDMI 显示模拟器；显示模拟器只解决显示环境，不授予隐私权限。
+- [ ] 同签名身份升级/回滚保留稳定 bundle 与安装位置，并重测权限；改变签名身份或执行主体的升级在发布前发现重新授权风险，保留已有远程恢复入口。
+
+若产品进一步要求安全确认界面和系统远控失效时也能远程操作，可另评估独立 IP-KVM：HDMI 捕获与 USB HID 从外部提供屏幕/键鼠，目标机看到的是显示器及 USB 输入设备。它是额外硬件方案，不属于纯软件 daemon 的默认依赖；Mac 预启动画面、USB 识别、供电控制及需要实体按键的恢复流程仍需分别验证。[PiKVM 设备呈现说明](https://docs.pikvm.org/id/)
+
+**优先实验与完成门槛**
+
+先做签名最小探针（AX 读取/动作、CGEvent、一次截图和权限诊断），再扩展完整 GUI 工具面。用同一产物覆盖手动启动与计划采用的常驻方式；记录 OS build、机型、调用进程身份、签名、权限前后状态和实际结果。下列均为待执行实验。
+
+| 实验 | 判定要求 |
+| --- | --- |
+| 首次配置后移除所有显示器/键鼠 | AX 编辑、按钮动作、坐标输入和截图各有真实回读；结束原生远控连接后继续执行，不能靠测试人员一直保持远控会话 |
+| A 已授权，安装新软件 B | 分别用 daemon 的 AX、CGEvent、预配置的 Apple 原生远控操作 B 的 Accessibility、Screen Recording、Remote Desktop、Full Disk Access；记录是否能聚焦、输入密码、改变授权并实际使用。对照本地键鼠结果，区分自身首次授权循环与 A→B 的限制 |
+| 普通锁屏、注销、快速切换用户 | 命令/GUI 各自状态准确；不将 ARD 特有的锁屏功能当作普通系统锁屏；恢复后重新观察目标 |
+| 重启与断电冷启动，FileVault 开/关 | 分别记录系统服务上线、磁盘解锁、GUI 登录和 UI 就绪时间；保留 FileVault 时实测 SSH 解锁及后续桌面恢复，不把正常重启的结果当作冷启动结果 |
+| 断网 24 小时、Zone 重启、daemon 崩溃 | 有效 URL 的常驻实例在条件恢复后自动上线；无重复实例、无旧动作重放；用户 stop、到期及撤销不会被恢复策略覆盖 |
+| 撤销 GUI 权限、杀死 GUI 工作进程 | 受影响能力及时降级，仍能通过命令/诊断和预先配置的救援路径定位问题；逐项记录可远程修复还是必须现场处理 |
+| 同身份升级、回滚、改变签名/路径 | 记录授权保留或失效、接入恢复和账本一致性；不把开发时 ad-hoc 签名的结果当正式产物结论 |
+| 持续运行与重新确认 | 覆盖目标系统的捕获再确认周期，首轮安排至少 35 天观察；记录系统弹框、会话失效和恢复方式，不仅靠修改时钟模拟通过 |
+| 救援路径 | daemon 完全停止时，原生远控/SSH 仍按设计可达；FileVault 预启动另验网络。硬件救援仅在选择该方案时加入测试 |
+
+- [ ] 首先完成“已有授权 A 为新 B 授权”和“冷启动恢复”两组实验，结果决定软件方案能承诺的维护范围。
+- [ ] 将结果按“自动恢复 / 需要用户远程操作 / 需要现场操作 / 未验证”写入机型与版本矩阵；全自动 GUI 恢复是独立验收项，不能只凭 WSS 上线判定。
+- [ ] macOS 移植补齐进程身份检测、平台数据目录和计入休眠的租约计时，不只删除 Linux 平台判断。当前 [运行入口与重连](../src/kernel/buckyos_agent_daemon/src/daemon.rs)、[本地状态](../src/kernel/buckyos_agent_daemon/src/local.rs)、[租约计时](../src/kernel/buckyos_agent_daemon/src/access.rs) 仍有 Linux 前提；现有 Linux 交付和测试记录保持原状。
 
 ### 7.2 Windows：UI Automation 为主
 
@@ -299,9 +377,9 @@ Android 适配依据 [AccessibilityService](https://developer.android.com/refere
 - [x] 独立用户模式使用平台标准应用数据/配置/日志目录；完整节点沿用 `$BUCKYOS_ROOT`。通过显式 roots 注入，不能让独立实例误读 `/opt/buckyos` 身份。
 - [x] 区分接入凭据、授权快照、操作账本、临时截图与用户文件；设置目录权限和保留期。独立版不生成 Device 私钥，默认不持久保存 URL 秘密；按稳定 executor_id 隔离账本，升级与同目标重启保持 `store_id`。
 - [x] Linux 用户服务升级停止原实例、取消受管任务、校验并替换产物、重启；启动失败回滚，账本和未知结果语义保留，不能将未知动作当作未执行重发。
-- [ ] macOS/Windows 更新补齐 helper 停止、签名产物替换、重新探测能力与回滚。
+- [ ] macOS/Windows 更新补齐签名产物替换、重新探测能力与回滚；采用 helper 时同步停止和更新 helper。
 - [x] Linux 卸载停止相应实例并删除显式安装的用户 unit 与凭据，保留账本和业务文件。退出、撤销 URL、删除设备记录、卸载和清除本地账本分别定义，不要求退出时执行 unpair。
-- [ ] macOS/Windows 卸载删除显式安装的启动项与 helper，保留用户业务文件。
+- [ ] macOS/Windows 卸载删除显式安装的启动项及实际使用的 helper，保留用户业务文件。
 - [ ] 不手改系统权限数据库；卸载/重装后的 OS 授权状态由系统决定，并由 doctor 如实反映。
 
 ### 9.3 仓库联动落点
@@ -361,6 +439,7 @@ P2 的 macOS/Windows 适配可在 P0 共享接口稳定后并行；P3 的平台�
 | 环境 | 最小场景 |
 | --- | --- |
 | macOS Intel / Apple Silicon | 没有 BuckyOSApp 的首次安装；AX 文本编辑/按钮操作；拒绝与撤回授权；Retina 截图；升级后恢复 |
+| Headless Mac mini，按机型与系统 build 记录 | §7.1.1 全部适用实验；单列无显示器运行、A→B 授权、FileVault/冷启动、长期断网恢复和独立救援；未验证项不标支持 |
 | Windows x86_64 | PowerShell 脚本前台启动/退出；普通权限文本编辑器/浏览器；UIA 与自绘回退；高权限窗口受限；DPI；可选计划任务与注销重登 |
 | Linux x86_64 musl / aarch64 GNU，无桌面环境 | 命令执行、文件读写/编辑、查询与取消；重启/断线恢复、到期下线；UI 返回 unsupported；没有 GUI 库或 helper 依赖 |
 | Android arm64 / Android TV（后续，暂不实现） | 另行立项后验收 APK URL 接入、启停、语义操作和权限边界，不计入当前验收 |

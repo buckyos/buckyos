@@ -32,8 +32,8 @@ llm_context = { path = "../../llm_context" }
 named_store = { workspace = true }
 ndn-lib = { workspace = true }
 reqwest = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-base64 = { workspace = true }
 loro = "1.16"

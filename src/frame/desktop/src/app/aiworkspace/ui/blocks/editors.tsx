@@ -4,7 +4,7 @@
  * the Editor's tools — a lock control in that toolbar, with only a lost lock left as an alert in the Block
  * (标准对象的交互改进 §4.4). */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { Lock, LockKeyhole, LockOpen } from 'lucide-react'
 import { ServiceFailure } from '../../api/client'
 import { describeError, type ReadOk } from '../../api/session'
@@ -20,6 +20,7 @@ import { ValueEditor } from '../ValueEditor'
 import { UNSET, formatValue, type Input } from '../values'
 import { consumeIntent, useEditorToolbar, useIntent } from './editorToolbar'
 import { replaceAsset } from './ops'
+import { clearDraft, readDraft, recoverDraft, saveDraft, submitDraft } from '../../state/drafts'
 import type { ToolbarItem } from './registry'
 
 
@@ -80,9 +81,16 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
   const inNearToolbar = useEditorToolbar('lock', lockItems)
   if (!entity || !required) return <>{children}</>
   const lostAlert = lost && !held ? <span className="aiws-error" role="alert" data-testid="aiws-lock-lost">{t('aiworkspace.blocks.lock.lost', { reason: lost })}</span> : null
+  // entering the editor takes the lock (内核架构改进 D02, T5-2): the first pointer on the content asks for it when
+  // nobody holds it; the lock bar's own controls keep their explicit meaning
+  const enter = (event: PointerEvent<HTMLDivElement>) => {
+    if (held || holder || !canWrite || (event.target as HTMLElement).closest('.aiws-lock-bar')) return
+    void acquire()
+  }
   return (
     <div
       className="aiws-lock-scope"
+      onPointerDownCapture={enter}
       onFocus={() => { if (releaseTimer.current !== null) { window.clearTimeout(releaseTimer.current); releaseTimer.current = null } }}
       onBlur={(event) => {
         if (!held || event.currentTarget.contains(event.relatedTarget as Node | null)) return
@@ -314,6 +322,12 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
   const entry = useEdit(editId)
   const [text, setText] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
+  // a draft of this note from this or another device (D13): an accepted submission is cleared, an unsent one is offered
+  useEffect(() => {
+    let live = true
+    void recoverDraft(store, entityId, 'body').then((outcome) => { if (live && (outcome === 'resend' || outcome === 'draft')) setText(readDraft(store, entityId, 'body')?.text ?? null) })
+    return () => { live = false }
+  }, [store, entityId])
   // characters typed on the canvas while the note was only selected arrive as an intent
   const intent = useIntent(intentKey ?? '')
   const [intentSeen, setIntentSeen] = useState(0)
@@ -330,8 +344,8 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
     setText(payload.body + typed)
   } else if (typed && editable) setText((text ?? payload.body) + typed)
   const save = () => {
-    if (text === null || text === payload.body) { setText(null); return }
-    void store.submit({
+    if (text === null || text === payload.body) { setText(null); clearDraft(store, entityId, 'body'); return }
+    void submitDraft(store, entityId, 'body', text, {
       editId, label: t('aiworkspace.blocks.note.text'), mine: text, hasMine: true,
       operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: [{ key: 'body', value: text, expect: { rev: note.data?.content.key_revs.body ?? 0 } }] }],
     })
@@ -342,7 +356,7 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false, i
   return (
     <div className="aiws-note" data-testid={`aiws-note-${entityId}`} data-size={size} style={{ background: typeof payload.style?.color === 'string' ? payload.style.color : undefined }}>
       {text !== null ? (
-        <textarea aria-label={t('aiworkspace.blocks.note.text')} autoFocus value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} onBlur={save}
+        <textarea aria-label={t('aiworkspace.blocks.note.text')} autoFocus value={text} maxLength={4000} onChange={(event) => { setText(event.target.value); saveDraft(store, entityId, 'body', event.target.value) }} onBlur={save}
           onFocus={(event) => { const end = event.target.value.length; event.target.setSelectionRange(end, end) }}
           onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); save() } }} />
       ) : (

@@ -1,6 +1,6 @@
 # OpenDAN 并发刷新令牌导致 Agent 无回复：修复 TODO
 
-状态：**代码修复已实施，验证结果见第 5 节；发布与真实 Zone 恢复验收待执行**。2026-10-22（America/Los_Angeles）完成本地实现。本次未部署 demo.buckyos.io，也未恢复线上实例。
+状态：**代码修复已实施，验证结果见第 5 节；补丁发布与发布后验收待执行**。2026-10-22（America/Los_Angeles）完成本地实现；10-23 已重建 demo 上的小白实例并验证回信，见第 6 节。线上仍为旧版本，不能将服务恢复视为补丁已上线。
 
 ## 1. 故障与证据
 
@@ -157,3 +157,15 @@ cargo build -p buckyos-api -p verify_hub -p node_daemon -p agent_tool -p libopen
 ### 尚未执行的发布验收
 
 本机 `uv run check.py` 显示已激活、核心进程与端口可用，但运行的已安装服务不是本次改动产物；因此不能据此声称修复已在 Zone 生效。本次不替换宿主服务、不构建/发布 aios 镜像、不重建 demo 实例。部署时记录 verify-hub/node-daemon 二进制和运行镜像的实际版本、提交与摘要，按第 3 节逐项验证同一积压消息及后续两轮续期。模型/天气工具的真实调用、跨服务消息投递和生产恢复尚未验收。
+
+## 6. 线上服务恢复记录（2026-10-23）
+
+用户授权线上修复后，确认宿主服务在 18:27 UTC 重启，但小白容器仍是 10-19 启动的进程。宿主二进制内嵌版本和容器镜像仍为 `def4c959`，认证失效继续阻塞消息处理。
+
+- 先保存实例、挂载、App 状态和 Session 快照到服务器 `/opt/buckyos/local/diagnostics/xiaobai2-recovery-20261023/`。
+- 执行 `/opt/buckyos/bin/buckyos --yes --timeout 30s app restart xiaobai2.demo.buckyos.io@waterflier --strategy recreate --no-wait`；任务 `t-f200e402b40c47818428d5bf5d9a5b35` 最终 `Succeeded`。
+- 新容器 `d3c633acaa69` 于 18:43:19 UTC（洛杉矶 11:43:19）登录成功；重建前后持久挂载完全一致，保留 AgentRootFS、instance volume 和 storage。
+- 昨日及当日 18:40:29 UTC 发送的两条“SF 今天天气如何”均从 `UNREAD` 变为 `READ`，合并进入 turn 7。AICC 任务 `t-9b635b03f6ea4574928dfeeb7e2c9b34` 成功；最终回复 `cymsg:6aa1ccdde77949d512415e6e920c1a997b2763c8e6b1a9254e6c362af24f6548` 于 18:43:26.832 UTC 投递成功。
+- 验证后 `turns_completed=7`、`last_error=null`、`live_run=null`，最后运行 `20261023-184319-305727`。本地恢复记录：[recovery-result.json](../../diagnostics/xiaobai-weather-20261023/recovery-result.json)。
+
+本次仅恢复了实例认证及真实消息回复；未升级共享宿主服务或 aios 镜像，未验证后续两轮自然续期，也未独立核验模型所答天气内容。旧版无受支持的单 Agent worker image 配置，镜像选择来自全局 `devenv.json.aios`；没有为本次恢复改变其他实例的运行版本。第 3 节补丁发布验收仍待执行，旧版刷新竞态仍有复发风险。

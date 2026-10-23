@@ -105,6 +105,7 @@ fn env(seq: u64, principal: &str, origin: &str, run_id: Option<String>, now: &st
         now: now.to_string(),
         internal: replay,
         import: replay,
+        schema_checks: !replay,
         replay,
         peer_id,
         limits: limits.clone(),
@@ -272,19 +273,14 @@ impl Replica {
             if seq != self.confirmed_seq + 1 {
                 return Err(WsError::new(Code::BaseUnknown, format!("change stream gap: have {}, got {seq}", self.confirmed_seq)));
             }
-            if let Some(ops) = ev.get("ops").and_then(Value::as_array).filter(|o| !o.is_empty()) {
-                let req = CommitRequest::parse(&json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id,
-                    "epoch": self.epoch, "idempotency_key": "remote", "origin": ev.get("origin").cloned().unwrap_or(json!("human")),
-                    "run_id": ev.get("run_id").cloned().unwrap_or(Value::Null), "operations": ops }))?;
-                let author = ev["author"].as_str().unwrap_or("");
-                let e = env(seq, author, &req.origin, req.run_id.clone(), ev["accepted_at"].as_str().unwrap_or(""), true, self.peer_id, &self.limits);
-                let access = Access::full(author);
-                let changes = match plan_commit(&self.confirmed, &req, &e, &access) {
-                    Ok(plan) => plan.overlay.into_changes(),
-                    Err(f) => return Err(WsError::io(format!("replica cannot apply accepted commit {seq}")).with_data(f.to_json())),
-                };
+            // an accepted Commit is applied from its recorded row delta, never re-planned (内核架构改进 D20):
+            // what the backend wrote is what the replica writes, whatever planner either side runs
+            if let Some(rows) = ev.get("rows").filter(|r| r.is_object()) {
+                let changes = rows_to_changes(&self.confirmed, rows)?;
                 self.dirty.note(&changes);
                 self.confirmed.apply(changes);
+            } else if ev.get("ops").and_then(Value::as_array).is_some_and(|o| !o.is_empty()) {
+                return Err(WsError::new(Code::BaseUnknown, format!("change {seq} carries operations but no row delta; this replica applies deltas only (D20)")));
             }
             self.confirmed_seq = seq;
             if let Some(key) = ev.get("idempotency_key").and_then(Value::as_str) {
@@ -326,6 +322,19 @@ impl Replica {
             self.rebuild();
         }
         Ok(())
+    }
+
+    /// The Workspace history was replaced (`EPOCH_MISMATCH`, D07): every still-undecided submission keeps
+    /// its intent but leaves the working view as a `conflict` the user resolves by resending onto the new
+    /// history — never replayed as it was (its `expect` versions are void).
+    pub fn epoch_mismatch(&mut self, detail: &str) {
+        for p in &mut self.pending {
+            if p.live() {
+                p.state = "conflict".into();
+                p.result = Some(json!({ "status": "rejected", "code": Code::EpochMismatch.as_str(), "retryable": false, "detail": detail }));
+            }
+        }
+        self.rebuild();
     }
 
     /// Remove a submission the user discarded (or undid before it was sent).
@@ -423,6 +432,7 @@ pub fn load_rows(tables: &Value) -> WsResult<MemStore> {
             entity_id: text(&r, "entity_id")?,
             type_id: text(&r, "type_id")?,
             schema_version: num(&r, "schema_version") as u32,
+            schema_id: col(&r, "schema_id").as_str().map(str::to_string),
             scope: text(&r, "scope")?,
             name: col(&r, "name").as_str().map(str::to_string),
             write_policy: text(&r, "write_policy")?,
@@ -511,9 +521,111 @@ fn jtext(v: &impl serde::Serialize) -> Value {
     Value::String(serde_json::to_string(v).expect("row"))
 }
 
+/// The pure-application delta of one Commit (D20): the rows it wrote, in the shape of [`dump_rows`], plus
+/// `refs_deleted` and the rich text update bytes in application order. A rich text created in the Commit
+/// carries its snapshot; an existing one carries its new ast / block index and is advanced by `richtext_updates`.
+pub fn changes_to_rows(c: &Changes) -> WsResult<Value> {
+    let mut rich = Vec::new();
+    for (id, st) in &c.richtexts {
+        let mut row = richtext_row(id, st)?;
+        if !c.rt_created.contains(id) {
+            row.as_object_mut().unwrap().remove("snapshot");
+        }
+        rich.push(row);
+    }
+    Ok(json!({
+        "entities": c.entities.values().map(entity_row).collect::<Vec<_>>(),
+        "tree_edges": c.edges.values().map(edge_row).collect::<Vec<_>>(),
+        "table_fields": c.fields.values().map(field_row).collect::<Vec<_>>(),
+        "table_records": c.records.values().map(record_row).collect::<Vec<_>>(),
+        "richtext_states": rich,
+        "richtext_updates": c.rt_updates.iter().map(|(id, bytes)| json!({ "entity_id": id, "update_bytes": B64.encode(bytes) })).collect::<Vec<_>>(),
+        "refs": c.ref_add.iter().map(ref_row).collect::<Vec<_>>(),
+        "refs_deleted": c.ref_del.iter().map(ref_row).collect::<Vec<_>>(),
+        "assets": c.assets.values().map(asset_row).collect::<Vec<_>>(),
+    }))
+}
+
+/// A recorded delta as the `Changes` to apply over `base`: rows are upserts by their primary key; a rich
+/// text without a snapshot continues the document `base` holds, with the delta's update bytes.
+pub fn rows_to_changes(base: &MemStore, rows: &Value) -> WsResult<Changes> {
+    let mut plain = rows.clone();
+    let rich_rows = plain.as_object_mut().and_then(|o| o.remove("richtext_states")).unwrap_or(Value::Null);
+    let loaded = load_rows(&plain)?;
+    let mut richtexts = BTreeMap::new();
+    let mut rt_created = BTreeSet::new();
+    let mut rt_updates = Vec::new();
+    for u in rows.get("richtext_updates").and_then(Value::as_array).into_iter().flatten() {
+        rt_updates.push((text(u, "entity_id")?, bytes(u, "update_bytes")?));
+    }
+    for r in rich_rows.as_array().into_iter().flatten() {
+        let id = text(r, "entity_id")?;
+        let doc = match col(r, "snapshot") {
+            Value::Null => {
+                let current = base.richtexts.get(&id).ok_or_else(|| WsError::new(Code::BaseUnknown, format!("delta continues rich text {id} this replica does not hold")))?;
+                let doc = richtext::fork(&current.doc);
+                for (uid, u) in &rt_updates {
+                    if *uid == id {
+                        richtext::import_update(&doc, u)?;
+                    }
+                }
+                doc
+            }
+            _ => {
+                rt_created.insert(id.clone());
+                richtext::load_doc(&bytes(r, "snapshot")?, std::iter::empty())?
+            }
+        };
+        let meta = RichTextMeta {
+            entity_id: id.clone(),
+            lineage_id: text(r, "lineage_id")?,
+            engine: text(r, "engine")?,
+            engine_version: text(r, "engine_version")?,
+            encoding: text(r, "encoding")?,
+            ast: parsed(r, "ast_json")?,
+            block_index: parsed(r, "block_index_json")?,
+        };
+        richtexts.insert(id, RichTextState { meta, doc });
+    }
+    let mut ref_del = BTreeSet::new();
+    for r in rows.get("refs_deleted").and_then(Value::as_array).into_iter().flatten() {
+        ref_del.insert(RefEdge {
+            src_entity_id: text(r, "src_entity_id")?,
+            src_selector: text(r, "src_selector")?,
+            kind: text(r, "kind")?,
+            dst_workspace_id: text(r, "dst_workspace_id")?,
+            dst_entity_id: text(r, "dst_entity_id")?,
+            dst_object_id: text(r, "dst_object_id")?,
+            dst_query_json: text(r, "dst_query_json")?,
+        });
+    }
+    Ok(Changes {
+        entities: loaded.entities,
+        edges: loaded.edges,
+        fields: loaded.fields,
+        records: loaded.records,
+        richtexts,
+        rt_updates,
+        rt_created,
+        ref_add: loaded.refs,
+        ref_del,
+        assets: loaded.assets,
+    })
+}
+
+/// A digest of a store's state that does not depend on how its rich texts encode their history: every row
+/// as [`dump_rows`] gives it, rich text snapshots left out (their ast and block index stand for them).
+pub fn state_digest(m: &MemStore) -> WsResult<String> {
+    let mut rows = dump_rows(m)?;
+    for r in rows["richtext_states"].as_array_mut().into_iter().flatten() {
+        r.as_object_mut().unwrap().remove("snapshot");
+    }
+    Ok(crate::canonical::sha256_hex(crate::canonical::canonical_json(&rows)?.as_bytes()))
+}
+
 fn entity_row(e: &EntityRow) -> Value {
     json!({
-        "entity_id": e.entity_id, "type_id": e.type_id, "schema_version": e.schema_version, "scope": e.scope, "name": e.name,
+        "entity_id": e.entity_id, "type_id": e.type_id, "schema_version": e.schema_version, "schema_id": e.schema_id, "scope": e.scope, "name": e.name,
         "write_policy": e.write_policy, "payload_json": jtext(&e.payload), "key_revs_json": jtext(&e.key_revs),
         "derived_json": e.derived.as_ref().map(jtext), "created_seq": e.created_seq, "meta_rev": e.meta_rev, "content_rev": e.content_rev, "life_rev": e.life_rev, "deleted_seq": e.deleted_seq
     })

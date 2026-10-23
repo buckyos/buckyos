@@ -6,6 +6,7 @@
 
 use crate::docdb::db_err;
 use crate::workspace::{random_id, Caller, CommitOpts, Workspace};
+use aiworkspace_core::canonical::{canonical_json, sha256_hex};
 use aiworkspace_core::id::check_idempotency_key;
 use aiworkspace_core::model::*;
 use aiworkspace_core::read::readable_entity;
@@ -21,7 +22,7 @@ fn para(id: &str, text: &str) -> Value {
 }
 
 impl Workspace {
-    fn run_json(&self, run_id: &str) -> WsResult<Value> {
+    pub(crate) fn run_json(&self, run_id: &str) -> WsResult<Value> {
         self.local
             .query_row(
                 "SELECT run_id, program, principal, state, params_json, inputs_json, candidate_json, warnings_json, result_json, created_at, updated_at \
@@ -42,7 +43,7 @@ impl Workspace {
             .ok_or_else(|| WsError::not_found("run not found"))
     }
 
-    fn set_run(&self, run_id: &str, state: &str, result: Option<&Value>) -> WsResult<()> {
+    pub(crate) fn set_run(&self, run_id: &str, state: &str, result: Option<&Value>) -> WsResult<()> {
         self.local
             .execute(
                 "UPDATE runs SET state = ?2, result_json = COALESCE(?3, result_json), updated_at = ?4 WHERE run_id = ?1",
@@ -54,17 +55,22 @@ impl Workspace {
 
     /// `proc.start`: fix the inputs in one consistent read and store the candidate.
     pub fn proc_start(&mut self, caller: &Caller, program: &str, params: &Value, idem_key: &str) -> WsResult<Value> {
-        self.require_ws_any(caller)?;
+        self.require_run(caller)?;
         check_idempotency_key(idem_key)?;
         if program != MOCK_PROGRAM {
             return Err(WsError::new(Code::MissingExtension, format!("unknown program {program}")));
         }
-        let existing: Option<String> = self
+        let digest = sha256_hex(canonical_json(params)?.as_bytes());
+        let existing: Option<(String, String)> = self
             .local
-            .query_row("SELECT run_id FROM runs WHERE principal = ?1 AND idem_key = ?2", params![caller.principal, idem_key], |r| r.get(0))
+            .query_row("SELECT run_id, params_json FROM runs WHERE principal = ?1 AND idem_key = ?2", params![caller.principal, idem_key], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()
             .map_err(db_err)?;
-        if let Some(run_id) = existing {
+        if let Some((run_id, stored)) = existing {
+            let same = serde_json::from_str::<Value>(&stored).ok().and_then(|v| canonical_json(&v).ok()).map(|c| sha256_hex(c.as_bytes())) == Some(digest);
+            if !same {
+                return Err(WsError::new(Code::IdempotencyMismatch, "the same idempotency key was used for another request"));
+            }
             let mut v = self.run_json(&run_id)?;
             v["ok"] = json!(true);
             v["replayed"] = json!(true);
@@ -100,9 +106,9 @@ impl Workspace {
 
     /// `proc.get`: run state plus what applying the candidate would do right now.
     pub fn proc_get(&mut self, caller: &Caller, run_id: &str) -> WsResult<Value> {
-        self.require_ws_any(caller)?;
+        let access = self.require_ws_any(caller)?;
         let mut run = self.run_json(run_id)?;
-        if run["principal"] != json!(caller.principal) {
+        if run["principal"] != json!(caller.principal) && !access.ws_caps.may_run() {
             return Err(WsError::not_found("run not found"));
         }
         if run["state"] == json!("waiting_confirmation") && run["candidate"].is_object() {
@@ -115,9 +121,9 @@ impl Workspace {
     /// `proc.apply`: the candidate becomes one Commit, submitted as the caller
     /// (its session must hold any required write locks).
     pub fn proc_apply(&mut self, caller: &Caller, run_id: &str, session_id: Option<&str>) -> WsResult<Value> {
-        self.require_ws_any(caller)?;
+        let access = self.require_ws_any(caller)?;
         let run = self.run_json(run_id)?;
-        if run["principal"] != json!(caller.principal) {
+        if run["principal"] != json!(caller.principal) && !access.ws_caps.may_run() {
             return Err(WsError::not_found("run not found"));
         }
         match run["state"].as_str() {
@@ -135,7 +141,8 @@ impl Workspace {
             candidate["session_id"] = json!(s);
         }
         self.set_run(run_id, "applying", None)?;
-        let result = self.commit(&candidate, caller, &CommitOpts::default());
+        let opts = CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), ..CommitOpts::default() };
+        let result = self.commit(&candidate, caller, &opts);
         let state = if result["status"] == json!("accepted") { "succeeded" } else { "failed" };
         self.set_run(run_id, state, Some(&result))?;
         let mut v = self.run_json(run_id)?;
@@ -145,9 +152,9 @@ impl Workspace {
 
     /// `proc.cancel`. A run that already applied reports that truthfully.
     pub fn proc_cancel(&mut self, caller: &Caller, run_id: &str) -> WsResult<Value> {
-        self.require_ws_any(caller)?;
+        let access = self.require_ws_any(caller)?;
         let run = self.run_json(run_id)?;
-        if run["principal"] != json!(caller.principal) {
+        if run["principal"] != json!(caller.principal) && !access.ws_caps.may_run() {
             return Err(WsError::not_found("run not found"));
         }
         if run["state"] == json!("succeeded") {

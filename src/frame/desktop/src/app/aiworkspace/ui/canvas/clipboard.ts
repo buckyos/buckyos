@@ -1,7 +1,9 @@
 /* Canvas object clipboard (UI improvement §6.4). First version: Blocks and groups within one Workspace.
  *
- *   copy → paste   new Block / group identities, the layout and view configuration copied, data Blocks keep
- *                  referencing the same data ("copy the view, share the data"); one commit, one undo step
+ *   copy → paste   new Block / group identities, the layout and view configuration copied; a Block's own data
+ *                  (created with it on the canvas, not declared shared) is cloned through `entity.clone` when
+ *                  pasted on the same canvas and shared when pasted elsewhere (内核架构改进 D05); shared data
+ *                  of the data tree is always shared; one commit, one undo step
  *   cut  → paste   cut only marks the objects; paste moves them in one commit, identities and data
  *                  references unchanged; a refused paste leaves them where they were
  *   connectors     (连接线实现方案 §8.1) a copied line keeps only the bindings to objects copied with it, rebound to
@@ -147,6 +149,20 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
   const allocate = (item: ClipItem) => { fresh.set(item.id, randomId(item.isGroup ? 'g' : 'c')); item.children.forEach(allocate) }
   clip.items.forEach(allocate)
   const lines: Operation[] = []
+  // own data of a Block copied onto the same canvas is cloned (D05); the planner then makes the copy own its clone
+  const sameCanvas = clip.workspaceId === store.session.workspaceId && clip.surfaceId === target.surfaceId
+  const cloned = new Map<string, string>()
+  const ownData = (payload: Record<string, Json>): string | null => {
+    if (!sameCanvas || payload.data_ownership === 'shared') return null
+    const id = (payload.source_ref as { entity_id?: string } | undefined)?.entity_id
+    const source = id ? store.outline.get(id) : undefined
+    if (!source || source.deleted || !source.parent_id || !store.outline.ancestors(source.entity_id).includes('canvas-content')) return null
+    if (cloned.has(source.entity_id)) return cloned.get(source.entity_id) ?? null
+    const copy = randomId('d')
+    operations.push({ op: 'entity.clone', entity_id: source.entity_id, new_entity_id: copy, parent_id: source.parent_id, order_key: store.core.order_key_between(store.outline.childrenOf(source.parent_id).at(-1)?.order_key, undefined), ...(source.name ? { name: `${source.name} ${clip.pastes + 2}` } : {}) })
+    cloned.set(source.entity_id, copy)
+    return copy
+  }
   /** `origin`: the parent's world position after the paste (lines are placed from their world ends). */
   const create = (item: ClipItem, parentId: string, orderKey: string, placement: Placement | null, origin: Point) => {
     const id = fresh.get(item.id) ?? randomId('c')
@@ -163,7 +179,9 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
       lines.push({ op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: parentId, order_key: orderKey, placement: { x: rect.x - origin.x, y: rect.y - origin.y, w: rect.w, h: rect.h }, payload })
       return id
     }
-    operations.push({ op: 'entity.create', entity_id: id, type_id: item.isGroup ? 'buckyos.container' : 'buckyos.cell', parent_id: parentId, order_key: orderKey, ...(placement ? { placement } : {}), payload: item.payload })
+    const own = item.isGroup ? null : ownData(item.payload)
+    const payload = own ? { ...item.payload, source_ref: { ...(item.payload.source_ref as Record<string, Json>), entity_id: own } } : item.payload
+    operations.push({ op: 'entity.create', entity_id: id, type_id: item.isGroup ? 'buckyos.container' : 'buckyos.cell', parent_id: parentId, order_key: orderKey, ...(placement ? { placement } : {}), payload })
     const here = placement ? { x: origin.x + placement.x, y: origin.y + placement.y } : origin
     let childKey: string | undefined
     for (const child of item.children) {

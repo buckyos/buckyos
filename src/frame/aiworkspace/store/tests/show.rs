@@ -39,7 +39,7 @@ fn a_locked_workspace_refuses_every_write_until_the_lease_ends() {
         assert_eq!(r["errors"][0]["data"]["show_id"], "sh_a");
     }
     // the user's own work state is not a document write
-    ws.set_user_state(&bob(), &json!({ "mode": "canvas" })).unwrap();
+    ws.set_user_state(&bob(), &json!({ "mode": "canvas" }), None).unwrap();
     assert_eq!(ws.info(&bob()).unwrap()["show_lock"]["presenter"], "alice");
     // a second show cannot take the same Workspace
     drop(ws);
@@ -72,7 +72,7 @@ fn a_clone_is_a_private_full_copy_that_shares_objects() {
         let h = env.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         ws.grant(&alice(), "bob", None, &["read".into()]).unwrap();
-        ws.set_user_state(&alice(), &json!({ "mode": "canvas" })).unwrap();
+        ws.set_user_state(&alice(), &json!({ "mode": "canvas" }), None).unwrap();
         (ws.head_seq, ws.epoch.clone())
     };
     lock(&env, &id, "sh_x");

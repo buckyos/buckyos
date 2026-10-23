@@ -305,14 +305,19 @@ export class ProgramHost {
          */
         async map(items, instruction, schema = { type: 'string' }, opts = {}) {
           if (!Array.isArray(items)) throw new Error('llm.map(items, instruction, schema): items must be an array')
-          if (!host.hostUrl) throw new Error('llm.map is only available inside a wish run (AIWS_HOST is not set)')
-          const res = await fetch(`${host.hostUrl}/llm_map`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-aiws-token': host.token ?? '' },
-            body: JSON.stringify({ items, instruction, schema, batch: opts.batch ?? 20 }),
-          })
-          const body = await res.json().catch(() => ({ error: `llm.map: HTTP ${res.status}` }))
-          if (!res.ok || body.error) throw new Error(body.error ?? `llm.map failed: HTTP ${res.status}`)
+          const req = { items, instruction, schema, batch: opts.batch ?? 20 }
+          // an executor outside the service (the browser's Worker) answers through its own channel
+          const bridge = globalThis.__aiwsLlmMap
+          if (!bridge && !host.hostUrl) throw new Error('llm.map is only available inside a wish run (AIWS_HOST is not set)')
+          const body = bridge ? await bridge(req) : await (async () => {
+            const res = await fetch(`${host.hostUrl}/llm_map`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-aiws-token': host.token ?? '' },
+              body: JSON.stringify(req),
+            })
+            return res.json().catch(() => ({ error: `llm.map: HTTP ${res.status}` }))
+          })()
+          if (body.error) throw new Error(body.error)
           host.llmStats.calls += body.calls ?? 0
           host.llmStats.items += items.length
           host.llmStats.cached += body.cached ?? 0

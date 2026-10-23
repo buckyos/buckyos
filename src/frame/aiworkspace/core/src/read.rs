@@ -34,6 +34,9 @@ pub fn envelope(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<V
     m.insert("entity_id".into(), json!(e.entity_id));
     m.insert("type_id".into(), json!(e.type_id));
     m.insert("schema_version".into(), json!(e.schema_version));
+    if let Some(s) = &e.schema_id {
+        m.insert("schema_id".into(), json!(s));
+    }
     m.insert("scope".into(), json!(if e.owner().is_some() { "personal" } else { "shared" }));
     m.insert("name".into(), json!(e.name));
     m.insert("write_policy".into(), json!(e.write_policy));
@@ -244,6 +247,12 @@ pub fn list_annotations(ctx: &dyn ReadCtx, access: &Access, targets: &[String], 
 /// and definition, a wish's executor).
 pub fn outline_extras(env: &mut Value, e: &EntityRow) {
     env["title"] = e.payload.get("title").cloned().unwrap_or(Value::Null);
+    // a sourced entity (D12): where it comes from and whether it follows or is pinned; content is read-only
+    if let Some(s) = e.payload.get("source").filter(|s| s.is_object()) {
+        env["source"] = json!({ "kind": s["kind"], "mode": s.get("mode").cloned().unwrap_or(json!("live")), "url": s.get("url").cloned().unwrap_or(Value::Null),
+                                "workspace_id": s.get("workspace_id").cloned().unwrap_or(Value::Null), "entity_id": s.get("entity_id").cloned().unwrap_or(Value::Null),
+                                "zone": s.get("zone").cloned().unwrap_or(Value::Null), "refresh": s.get("refresh").cloned().unwrap_or(Value::Null), "auth_mode": s.get("auth_mode").cloned().unwrap_or(json!("none")) });
+    }
     match e.type_id.as_str() {
         TYPE_CONTAINER => {
             env["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);

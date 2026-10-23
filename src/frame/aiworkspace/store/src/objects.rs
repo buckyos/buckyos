@@ -75,6 +75,25 @@ impl FsObjectStore {
         self.object_path(id).map(|p| p.exists()).unwrap_or(false)
     }
 
+    /// Remove an object or chunk file (the garbage collector's sweep); a missing file is fine.
+    pub fn remove(&self, id: &str) -> WsResult<u64> {
+        let path = if canonical::is_obj_id(id) { self.object_path(id)? } else { self.chunk_path(id)? };
+        match fs::metadata(&path) {
+            Ok(m) => {
+                fs::remove_file(&path).map_err(io)?;
+                Ok(m.len())
+            }
+            Err(_) => Ok(0),
+        }
+    }
+
+    /// Seconds since the file of `id` was written (wall clock: the file system's time, not the service's).
+    pub fn age_secs(&self, id: &str) -> Option<i64> {
+        let path = if canonical::is_obj_id(id) { self.object_path(id).ok()? } else { self.chunk_path(id).ok()? };
+        let modified = fs::metadata(path).ok()?.modified().ok()?;
+        Some(std::time::SystemTime::now().duration_since(modified).map(|d| d.as_secs() as i64).unwrap_or(0))
+    }
+
     /// Store canonical text under `id`, refusing content that does not hash to it.
     pub fn put_verified(&self, id: &str, text: &str) -> WsResult<()> {
         canonical::verify_named_object(id, text)?;
@@ -190,8 +209,9 @@ impl ObjectSink for StoreSink<'_> {
         let path = self.store.object_path(&id)?;
         if !path.exists() {
             write_atomic(&path, canonical_text.as_bytes())?;
+            // only what this sink wrote anew: a rolled-back transaction removes exactly these
+            self.written.push(id.clone());
         }
-        self.written.push(id.clone());
         Ok(id)
     }
     fn put_file(&mut self, bytes: &[u8]) -> WsResult<ObjId> {

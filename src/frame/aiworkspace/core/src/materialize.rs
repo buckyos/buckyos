@@ -54,6 +54,44 @@ fn file_ref(sink: &mut dyn ObjectSink, lines: &[Value]) -> WsResult<Value> {
     Ok(v)
 }
 
+/// The DirObject (`cydir`) of a directory entity, child directories materialized first (D25): returns its
+/// id and the bytes under it. The object text goes to the sink.
+pub fn dir_object_of(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSink, depth: usize) -> WsResult<(ObjId, u64)> {
+    if depth > 64 {
+        return Err(WsError::limit("directory nesting exceeds 64"));
+    }
+    let mut members = Vec::new();
+    for (name, m) in e.payload.get("members").and_then(Value::as_object).into_iter().flatten() {
+        match m["kind"].as_str() {
+            Some("file") => members.push(crate::canonical::DirMember { name: name.clone(), object_id: m["object_id"].as_str().unwrap_or("").to_string(), size: m["size"].as_u64().unwrap_or(0), is_file: true }),
+            Some("dir") => {
+                let child_id = m["entity_id"].as_str().unwrap_or("");
+                let Some(child) = ctx.entity(child_id)?.filter(|c| c.alive() && c.type_id == TYPE_DIR) else {
+                    return Err(WsError::new(crate::error::Code::ReferenceBroken, format!("child directory {child_id} of {} is missing", e.entity_id)));
+                };
+                let (id, size) = dir_object_of(ctx, &child, sink, depth + 1)?;
+                members.push(crate::canonical::DirMember { name: name.clone(), object_id: id, size, is_file: false });
+            }
+            _ => {}
+        }
+    }
+    let total: u64 = members.iter().map(|m| m.size).sum();
+    let (id, text) = crate::canonical::dir_object(&members)?;
+    let stored = sink.put_object(crate::canonical::OBJ_TYPE_DIR, &text)?;
+    debug_assert_eq!(id, stored);
+    Ok((stored, total))
+}
+
+/// The content of a directory entity: its DirObject id (its fixed version, D25) beside the member map.
+fn dir_content(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSink) -> WsResult<Value> {
+    let (id, _) = dir_object_of(ctx, e, sink, 0)?;
+    let mut v = json!({ "dir_object": id, "members": e.payload.get("members").cloned().unwrap_or_else(|| json!({})) });
+    if let Some(meta) = e.payload.get("meta") {
+        v["meta"] = meta.clone();
+    }
+    Ok(v)
+}
+
 /// The hashed `content` of one entity (design doc §3.x "物化").
 pub fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSink) -> WsResult<Value> {
     if e.degraded().is_some() {
@@ -98,6 +136,7 @@ pub fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSin
             };
             json!({ "editor_schema": richtext::EDITOR_SCHEMA, "doc": doc })
         }
+        TYPE_DIR => dir_content(ctx, e, sink)?,
         _ => Value::Object(e.payload.clone()),
     })
 }
@@ -130,7 +169,11 @@ pub fn portable_derived(ctx: &dyn ReadCtx, e: &EntityRow, d: &Value) -> WsResult
 
 pub fn content_object(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSink) -> WsResult<ObjId> {
     let content = entity_content(ctx, e, sink)?;
-    put_json(sink, &json!({ "ws_type": e.type_id, "schema_version": e.schema_version, "content": content }))
+    let mut obj = json!({ "ws_type": e.type_id, "schema_version": e.schema_version, "content": content });
+    if let Some(s) = &e.schema_id {
+        obj["schema_id"] = json!(s);
+    }
+    put_json(sink, &obj)
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +262,9 @@ pub fn materialize_with(
         line.insert("entity_id".into(), json!(e.entity_id));
         line.insert("type_id".into(), json!(e.type_id));
         line.insert("schema_version".into(), json!(e.schema_version));
+        if let Some(s) = &e.schema_id {
+            line.insert("schema_id".into(), json!(s));
+        }
         if let Some(n) = &e.name {
             line.insert("name".into(), json!(n));
         }
@@ -365,7 +411,7 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
         }
         let schema_version = entry["schema_version"].as_u64().unwrap_or(0) as u32;
         types.insert(type_id.to_string(), schema_version);
-        let known = is_known_type(type_id) && schema_version == 1;
+        let known = crate::model::supports_schema_version(type_id, schema_version);
         let mut content = object["content"].as_object().cloned().unwrap_or_default();
         let mut payload = content.clone();
         if known {
@@ -406,7 +452,7 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
         }
         let mut op = json!({ "op": "entity.create", "entity_id": id, "type_id": type_id, "schema_version": schema_version,
                              "parent_id": entry["parent_id"], "order_key": entry["order_key"], "payload": payload });
-        for k in ["name", "placement"] {
+        for k in ["name", "placement", "schema_id"] {
             if let Some(v) = entry.get(k) {
                 op[k] = v.clone();
             }
@@ -472,7 +518,7 @@ pub fn rebuild_refs(ctx: &dyn ReadCtx, entity_ids: &[String]) -> WsResult<BTreeS
                 if let Some(rt) = ctx.richtext(id)? {
                     let v = richtext::validate_ast(&rt.meta.ast, &richtext::Limits::default())?;
                     for r in v.refs {
-                        out.insert(types::richtext_ref_edge(id, &r.block_id, &r.reference));
+                        out.insert(types::richtext_ref_edge(id, &r.block_id, r.kind, &r.reference));
                     }
                 }
             }

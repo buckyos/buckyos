@@ -22,6 +22,7 @@ import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
 import { useOverlayMounted } from './shell/popover'
 import { TablePager, type PagerQuery } from './tablePager'
 import { ValueEditor } from './ValueEditor'
+import { asFormula, formulaResult } from './formula'
 import { FIELD_TYPE_LABEL, UNSET, formatValue, operatorsFor, SORTABLE, type Input } from './values'
 
 const ROW_HEIGHT = 34
@@ -273,6 +274,7 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
                           key={field.field_id}
                           pager={pager}
                           sourceId={sourceId}
+                          fields={fields}
                           field={field}
                           row={row}
                           rowIndex={item.index}
@@ -445,6 +447,8 @@ interface TableCellProps {
   editable: boolean
   /** The table is itself a wish result: per-cell provenance would mark every cell. */
   resultTable: boolean
+  /** All fields of the source: a formula refers to them by name (D18). */
+  fields: FieldDef[]
   annotation?: AnnotationMark
   onAnnotate?: (anchor: CapturedAnchor) => void
   onActivateAnnotation?: (entityId: string | null) => void
@@ -476,7 +480,7 @@ function toneOf(id: string): string {
   return String(h % 8)
 }
 
-function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate, width, editable, resultTable, annotation, onAnnotate, onActivateAnnotation }: TableCellProps) {
+function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate, width, editable, resultTable, fields, annotation, onAnnotate, onActivateAnnotation }: TableCellProps) {
   const { t } = useAiwsText()
   const store = useStore()
   const editId = cellEditId(sourceId, row.record_id, field.field_id)
@@ -508,7 +512,17 @@ function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate
   }
 
   const current = pending ? (entry.mine === null ? undefined : entry.mine as Json) : value
-  const shown = pending ? (entry.mine === null ? '' : formatValue(field, entry.mine)) : formatValue(field, value)
+  // a formula (D18) is shown evaluated over this row; the kernel keeps the formula itself
+  const formula = !pending ? asFormula(value) : null
+  const formulaValue = formula ? formulaResult(formula, row.values, fields) : null
+  const shown = pending ? (entry.mine === null ? '' : formatValue(field, entry.mine)) : formula ? (formulaValue === null ? `= ${formula.$formula.expr}` : String(formulaValue)) : formatValue(field, value)
+  const materialize = () => {
+    if (!formula || formulaValue === null || !editable) return
+    void store.submit({
+      editId, label: t('aiworkspace.data.cell.materializeLabel', { field: field.name, record: row.record_id }), mine: formulaValue, hasMine: true,
+      operations: [{ op: 'table.set_values', source_id: sourceId, values: [{ record_id: row.record_id, field_id: field.field_id, value: formulaValue, expect: { rev: row.revs[field.field_id] ?? 0 } }], derived: { program: 'formula', formula: formula.$formula.expr } }],
+    }).then((outcome) => { if (outcome.status === 'accepted') pager.patchLocal(row.record_id, field.field_id, formulaValue, outcome.seq) })
+  }
   const startEdit = (text?: string) => {
     if (!editable || editing) return
     setEditing({ baseRev: row.revs[field.field_id] ?? 0, ...(text !== undefined ? { text } : {}) })
@@ -564,6 +578,9 @@ function TableCell({ pager, sourceId, field, row, rowIndex, colIndex, onNavigate
         <button ref={valueRef as RefObject<HTMLButtonElement>} type="button" className="aiws-cell-value" disabled={!editable} onClick={() => startEdit()} onKeyDown={onCellKey} title={editable ? shown || undefined : undefined} {...cellAttrs}>
           <CellDisplay field={field} value={current} shown={shown} />
         </button>
+      )}
+      {!editing && formula && (
+        <button type="button" className="aiws-chip" data-testid="aiws-cell-materialize" title={t('aiworkspace.data.cell.formulaTitle', { formula: formula.$formula.expr })} disabled={!editable || formulaValue === null} onClick={materialize}>{t('aiworkspace.data.cell.materialize')}</button>
       )}
       {!editing && meta?.derived && !resultTable && (
         <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={meta.derived.program?.startsWith('mock.') ? t('aiworkspace.data.cell.derivedBySimulated', { program: meta.derived.program }) : t('aiworkspace.data.cell.derivedBy', { program: meta.derived.program ?? t('aiworkspace.data.cell.processingProgram') })}>

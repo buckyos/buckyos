@@ -26,6 +26,7 @@ process.env.AIWS_E2E_BACKEND_PORT ??= freePort()
 process.env.AIWS_E2E_NDM_PORT ??= freePort()
 process.env.AIWS_E2E_WEB_PORT ??= freePort()
 process.env.AIWS_E2E_PREVIEW_PORT ??= freePort()
+process.env.AIWS_E2E_LLM_PORT ??= freePort()
 const backend = `http://127.0.0.1:${process.env.AIWS_E2E_BACKEND_PORT}`
 const ndmBackend = `http://127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`
 const preview = `http://127.0.0.1:${process.env.AIWS_E2E_PREVIEW_PORT}`

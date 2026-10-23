@@ -17,7 +17,7 @@ import {
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
-  type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode,
+  type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
 } from './types'
 
 export type SessionStatus =
@@ -38,6 +38,9 @@ export interface CommitOptions {
   runId?: string
   /** Label of the edit in the save-state list. */
   label?: string
+  /** The key this submission uses (内核架构改进 D13 draft protocol): a form Block records it with its draft before
+   * sending, so a recovery can ask `doc.get_submission` whether the commit happened. */
+  idempotencyKey?: string
   /** Replica session: stored with the pending row so the edit can be shown again after a restart. */
   meta?: PendingMeta
 }
@@ -135,10 +138,19 @@ export interface WorkspaceSession {
   listSubjects(): Promise<Subject[]>
   /** Whose AICC the wish blocks use (AI Center Quota PRD §3.3); a manager's setting, online only. */
   setWishAiccMode(mode: WishAiccMode): Promise<WishAiccMode>
+  /** The owner's hosted execution configuration (D22, T3-7); `manage`, online only. */
+  setHostedExec(config: HostedExecConfig): Promise<HostedExecConfig>
+  /** Publication by path (D26): `manage`; the link is in `url` when the deployment has a host. */
+  publish(entityId: string, name?: string): Promise<Publication>
+  unpublish(entityId: string): Promise<void>
+  listPublications(): Promise<Publication[]>
+  listReferrers(entityId: string): Promise<Referrer[]>
 
   commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome>
   /** Resend a submission whose result is still unknown: same key, same content. */
   retryUnknown(idempotencyKey: string): Promise<CommitOutcome>
+  /** Whether a submission with this key was accepted (`doc.get_submission`, D08/D13). */
+  submissionStatus(epoch: string, idempotencyKey: string): Promise<{ status: 'accepted' | 'not_found'; result?: CommitResult }>
   prepare(operations: Operation[]): Promise<PrepareResult>
   undoCommit(commitId: string, options?: { mode?: 'all_or_nothing' | 'partial'; planDigest?: string }): Promise<CommitOutcome>
 
@@ -162,6 +174,13 @@ export interface WorkspaceSession {
   wishGet(runId: string, choices?: WishChoices): Promise<WishRunView>
   wishApply(runId: string, planDigest: string): Promise<WishRunView>
   wishList(wishId: string, limit?: number): Promise<WishRunView[]>
+  /** The executor protocol (内核架构改进 T3-4): this browser as the executor of a local run. */
+  procClaim(runId: string, claimToken: string): Promise<WishClaim>
+  procHeartbeat(runId: string, attempt: number, progress?: Json): Promise<void>
+  procReport(runId: string, attempt: number, body: Record<string, Json>): Promise<WishRunView>
+  procTool(runId: string, attempt: number, name: string, args: Json): Promise<WishToolAnswer>
+  procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }): Promise<WishToolAnswer>
+  procFiles(runId: string, attempt: number): Promise<Record<string, { text?: string; base64?: string; skipped?: string }>>
 
   close(): void
   /** Resolves once a closed session released what it held exclusively (replica database, holder lock). */
@@ -463,6 +482,17 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       return applied
     } catch (error) { return this.fail(error) }
   }
+  async setHostedExec(config: HostedExecConfig) {
+    try {
+      const applied = unwrap(await this.client.wsSetHostedExec(this.ws, config)).hosted_exec
+      this.wsInfo = { ...this.wsInfo, hosted_exec: applied }
+      return applied
+    } catch (error) { return this.fail(error) }
+  }
+  async publish(entityId: string, name?: string) { try { return unwrap(await this.client.wsPublish(this.ws, entityId, name)) } catch (error) { return this.fail(error) } }
+  async unpublish(entityId: string) { try { unwrap(await this.client.wsUnpublish(this.ws, entityId)) } catch (error) { return this.fail(error) } }
+  async listPublications() { try { return unwrap(await this.client.wsListPublications(this.ws)).publications } catch (error) { return this.fail(error) } }
+  async listReferrers(entityId: string) { try { return unwrap(await this.client.wsListReferrers(this.ws, entityId)).referrers } catch (error) { return this.fail(error) } }
 
   // ---- writes (design §2.6)
 
@@ -493,7 +523,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
 
   commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome> {
-    const key = this.nextKey()
+    const key = options?.idempotencyKey ?? this.nextKey()
     const refused = this.refused(key)
     if (refused) return Promise.resolve(refused)
     if (this.readOnlyNow()) {
@@ -646,6 +676,13 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     return run
   }
   async wishList(wishId: string, limit = 10) { return unwrap(await this.client.wishList(this.ws, wishId, limit)).runs }
+  async submissionStatus(epoch: string, idempotencyKey: string) { try { return unwrap(await this.client.getSubmission(this.ws, epoch, idempotencyKey)) } catch (error) { return this.fail(error) } }
+  async procClaim(runId: string, claimToken: string) { return unwrap(await this.client.procClaim(this.ws, runId, claimToken, { kind: 'browser', session_id: this.sessionId })) }
+  async procHeartbeat(runId: string, attempt: number, progress?: Json) { unwrap(await this.client.procHeartbeat(this.ws, runId, attempt, progress)) }
+  async procReport(runId: string, attempt: number, body: Record<string, Json>) { return unwrap(await this.client.procReport(this.ws, runId, attempt, body)) }
+  async procTool(runId: string, attempt: number, name: string, args: Json) { return unwrap(await this.client.procTool(this.ws, runId, attempt, name, args)) }
+  async procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) { return unwrap(await this.client.procProgram(this.ws, runId, attempt, body)) }
+  async procFiles(runId: string, attempt: number) { return unwrap(await this.client.procFiles(this.ws, runId, attempt)).files }
 
   close() {
     this.closed = true
@@ -710,14 +747,39 @@ export function aiRefusalText(subCode: string | undefined, data: Record<string, 
   }
 }
 
+/** The reserved codes of 内核架构改进 D09 as the user reads them; `undefined` for every other code (its detail is shown). */
+export function errorCodeText(code: string | undefined, data: Record<string, unknown> | undefined): string | undefined {
+  const bytes = (k: string) => Number(data?.[k] ?? 0)
+  switch (code) {
+    case 'QUOTA_EXCEEDED': return aiwsT(bytes('reclaimable_bytes') >= bytes('needed_bytes') ? 'aiworkspace.core.error.quotaExceededReclaimable' : 'aiworkspace.core.error.quotaExceeded', { needed: formatBytes(bytes('needed_bytes')), reclaimable: formatBytes(bytes('reclaimable_bytes')) })
+    case 'QUOTA_LIMIT': return aiwsT('aiworkspace.core.error.quotaLimit')
+    case 'VERSION_NOT_RETAINED': return aiwsT('aiworkspace.core.error.versionNotRetained')
+    case 'RESOURCE_RECLAIMED': return aiwsT('aiworkspace.core.error.resourceReclaimed')
+    case 'EXECUTION_CONTEXT_MISSING': return aiwsT('aiworkspace.core.error.executionContextMissing')
+    case 'DELEGATION_STALE': return aiwsT('aiworkspace.core.error.delegationStale')
+    case 'RUN_REVOKED': return aiwsT('aiworkspace.core.error.runRevoked')
+    default: return undefined
+  }
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB']
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
+  return `${i === 0 ? v : v.toFixed(1)} ${units[i]}`
+}
+
 /** The failure of a run as shown to its viewer. */
 export function runErrorText(error: (ServiceError & { data?: unknown }) | null | undefined): string | undefined {
   if (!error) return undefined
-  return aiRefusalText(error.sub_code, error.data as Record<string, unknown> | undefined) ?? error.detail
+  const data = error.data as Record<string, unknown> | undefined
+  return aiRefusalText(error.sub_code, data) ?? errorCodeText(error.code, data) ?? error.detail
 }
 
 export function describeError(error: unknown): string {
-  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? error.message
+  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? errorCodeText(error.code, error.data) ?? error.message
   if (error instanceof TransportError) return aiwsT(browserOffline() ? 'aiworkspace.core.session.cannotConnectOffline' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
   return error instanceof Error ? error.message : String(error)
 }

@@ -33,6 +33,7 @@ impl MemWorkspace {
             now: "2026-10-04T08:00:00.000Z".into(),
             internal,
             import: false,
+            schema_checks: true,
             replay: false,
             peer_id: 1,
             limits: self.limits.clone(),

@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.5",
+ "protocol_version": "1.0",
  "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs.",
  "operations": [
   {
@@ -73,6 +73,41 @@
    "note": "Order/placement within the same parent. expect optional. `placement: null` clears a Block's placement; it is refused for a connector."
   },
   {
+   "op": "entity.clone",
+   "class": "create",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "A deep copy of a data entity as a new entity (payload, table fields and live records, rich text content as a new lineage; no children, record bodies or generation record). The one place copy semantics live (D05): same-canvas copies clone own data through it, cross-canvas copies bind the same data. `entity_id`, `new_entity_id`, `parent_id`, `order_key`, `name?`, `placement?`."
+  },
+  {
+   "op": "data.pin",
+   "class": "merge",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "The data stops being any Block's own (its `owns` edges go) and never follows a Block's deletion again (D05). expect optional."
+  },
+  {
+   "op": "dir.set_member",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Add or replace one member of a resource directory (`buckyos.dir`, D01/D25): `name`, `member: { kind: file, object_id } | { kind: dir, entity_id }`; `expect` is the member's own cell (`{ rev: 0 }` for a new name). A file member names an uploaded object (media type and size come from it); a child directory must be alive and must not contain this one."
+  },
+  {
+   "op": "dir.remove_member",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Remove one member; `expect` is the member's cell."
+  },
+  {
+   "op": "dir.replace",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Replace the whole member map (a switch to another DirObject); `expect` is the directory's content_rev."
+  },
+  {
    "op": "table.insert_records",
    "class": "append",
    "undo": "compensable",
@@ -133,7 +168,7 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Bumps def_rev only."
+   "note": "Bumps def_rev only. expect required (structural)."
   },
   {
    "op": "table.update_option",
@@ -211,6 +246,20 @@
    "undo": "compensable",
    "capability": "structure",
    "note": "Undo of migrate_field. Not accepted from callers."
+  },
+  {
+   "op": "data.restore_owns",
+   "class": "internal",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Undo path of data.pin."
+  },
+  {
+   "op": "entity.purge",
+   "class": "internal",
+   "undo": "none",
+   "capability": "manage",
+   "note": "Maintenance channel (D19, ws.purge_deleted): a deleted entity gives up content and references for good; its resources are reclaimable at once and entity.restore answers RESOURCE_RECLAIMED."
   }
  ]
 }

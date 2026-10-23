@@ -9,6 +9,7 @@ pub mod reads;
 pub mod schema;
 pub mod service;
 pub mod show;
+pub mod source;
 pub mod urlsource;
 pub mod wish;
 pub mod workspace;
