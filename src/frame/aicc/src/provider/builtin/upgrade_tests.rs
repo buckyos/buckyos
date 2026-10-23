@@ -1143,7 +1143,7 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
-        ("claude", 12),
+        ("claude", 14),
         ("deepseek", 3),
         ("doubao", 12),
         ("doubao-agent-plan", 0),
@@ -1219,12 +1219,57 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 327);
+    assert_eq!(pricing_count, 329);
 }
 
 #[test]
 fn corrected_provider_prices_match_official_billing_dimensions() {
     let catalog = catalog();
+
+    let claude = catalog.provider_rules("claude").unwrap();
+    let haiku = claude
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("claude-haiku-5-5"))
+        .unwrap();
+    let tiers = haiku.pricing.tiers.as_ref().unwrap();
+    assert_eq!(tiers.dimension, crate::catalog::TierDimension::InputTokens);
+    assert_eq!(tiers.mode, crate::catalog::TierMode::Volume);
+    assert_eq!(tiers.steps[0].up_to, Some(100_001));
+    assert_eq!(tiers.steps[0].input_token, Some(1e-7));
+    assert_eq!(tiers.steps[0].output_token, Some(5e-7));
+    assert_eq!(tiers.steps[0].cache_input_token, Some(1e-8));
+    assert_eq!(tiers.steps[0].cache_write_input_token, Some(1.25e-7));
+    assert_eq!(tiers.steps[0].cache_write_1h_input_token, Some(2e-7));
+    assert_eq!(tiers.steps[1].up_to, None);
+    assert_eq!(tiers.steps[1].input_token, Some(5e-7));
+    assert_eq!(tiers.steps[1].output_token, Some(2.5e-6));
+    assert_eq!(tiers.steps[1].cache_input_token, Some(5e-8));
+    assert_eq!(tiers.steps[1].cache_write_input_token, Some(6.25e-7));
+    assert_eq!(tiers.steps[1].cache_write_1h_input_token, Some(1e-6));
+    let pricing = crate::execution::PinnedPricingSnapshot::from_pricing(
+        &haiku.pricing,
+        None,
+        std::time::SystemTime::now(),
+    )
+    .unwrap()
+    .unwrap();
+    let low = pricing
+        .completion_cost(&buckyos_api::AiUsage {
+            input_tokens: Some(100_000),
+            output_tokens: Some(1_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!((low.amount - 0.0105).abs() < 1e-12);
+    let high = pricing
+        .completion_cost(&buckyos_api::AiUsage {
+            input_tokens: Some(200_000),
+            output_tokens: Some(1_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!((high.amount - 0.1025).abs() < 1e-12);
 
     let agent_plan = catalog.provider_rules("doubao-agent-plan").unwrap();
     assert!(agent_plan.model_pricing.is_empty());

@@ -584,8 +584,8 @@ test("Judge request uses the canonical nested JSON schema response format", asyn
         type: "object",
         properties: {
           pass: { type: "boolean" },
-          score: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string", maxLength: 240 },
+          score: { type: "number", description: "Must be between 0 and 1." },
+          reason: { type: "string", pattern: ".+", description: "Must be 240 characters or fewer." },
         },
         required: ["pass", "score", "reason"],
         additionalProperties: false,
@@ -3979,6 +3979,61 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.equal(audit.requests.length, 1);
   assert.equal(audit.requests[0].headers["x-api-key"], "[REDACTED]");
   assert.deepEqual(audit.requests[0].validation_errors, []);
+  await select();
+  const validNamedSchema = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 16,
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: {
+              minimum: { $ref: "#/$defs/maximum" },
+            },
+            required: ["minimum"],
+            additionalProperties: false,
+            $defs: {
+              maximum: { type: "number" },
+            },
+          },
+        },
+      },
+    }),
+  });
+  assert.equal(validNamedSchema.status, 200);
+  await select();
+  const invalidSchema = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 16,
+      output_config: { format: { type: "json_schema", schema: { type: "number", minimum: 0 } } },
+    }),
+  });
+  assert.equal(invalidSchema.status, 400);
+  assert.match(await invalidSchema.text(), /minimum is not supported/);
+  await select();
+  const invalidDocument = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: "claude-test",
+      messages: [{ role: "user", content: [{
+        type: "document",
+        source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" },
+      }] }],
+      max_tokens: 16,
+    }),
+  });
+  assert.equal(invalidDocument.status, 400);
+  assert.match(await invalidDocument.text(), /document media_type is invalid/);
   await select();
   const invalid = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
