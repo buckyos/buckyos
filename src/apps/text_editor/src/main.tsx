@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import { buckyos } from 'buckyos'
 import { NfspClient } from 'buckyos/nfsp'
-import { AppFrameClient, type FrameInit } from 'buckyos/app-frame'
+import { AppFrameClient, embedderOrigin, originInZone, type FrameInit } from 'buckyos/app-frame'
 import { type OpenRequest } from 'buckyos/content'
 import { App, handleBack } from './ui/App.tsx'
 import { Workspace, dirty } from './model/workspace.ts'
@@ -19,24 +19,19 @@ let workspace: Workspace | undefined
 let initial: FrameInit | undefined
 const pending: OpenRequest[] = []
 const t = (key: string) => translate(navigator.language, key)
-// The shell that embeds us is the only window we talk to over the App Frame protocol. Its origin is
-// not fixed: the desktop is served from `sys.<zone>` on some deployments and from the zone root on
-// others, so when we are embedded we take the embedder's origin from the referrer, as long as it is
-// inside our own zone. Otherwise (standalone tab, or no referrer) fall back to `sys.<zone>`.
-const zoneHost = location.hostname.split('.').slice(1).join('.')
-const portSuffix = location.port ? `:${location.port}` : ''
-function resolveShellOrigin(): string {
-  if (import.meta.env.DEV) return import.meta.env.VITE_SHELL_ORIGIN || location.origin
-  if (window.parent !== window && document.referrer) {
-    try {
-      const referrer = new URL(document.referrer)
-      if (referrer.protocol === location.protocol && (referrer.hostname === zoneHost || referrer.hostname.endsWith(`.${zoneHost}`))) return referrer.origin
-    } catch {}
+// The system entry is the Zone root (the SDK knows the Zone host). The shell that embeds us is the only window we
+// talk to over the App Frame protocol; it is whichever window inside our Zone actually frames us.
+function origins(test: boolean): { shell: string; system: string } {
+  if (import.meta.env.DEV || test) {
+    const shell = import.meta.env.VITE_SHELL_ORIGIN || location.origin
+    return { shell, system: import.meta.env.VITE_SYSTEM_ORIGIN || shell }
   }
-  return `${location.protocol}//sys.${zoneHost}${portSuffix}`
+  const zone = buckyos.getZoneHostName() ?? location.hostname
+  const system = `${location.protocol}//${zone}`
+  return { shell: embedderOrigin(origin => originInZone(origin, zone)) ?? system, system }
 }
-const shellOrigin = resolveShellOrigin()
-const frame = new AppFrameClient({ shellOrigin,
+let frame: AppFrameClient
+const connectFrame = (shellOrigin: string, systemOrigin: string) => new AppFrameClient({ shellOrigin, systemOrigin, appId: APP_ID,
   onInit: init => { initial = init; if (workspace) { applyFrame(init); if (init.launch) workspace.run(open(init.launch)) } },
   onOpen: async request => { if (!workspace) pending.push(request); else await open(request); return { accepted: true } },
   onTheme: theme => { if (workspace) { workspace.theme = theme.mode; workspace.emit() } },
@@ -92,6 +87,8 @@ async function start(): Promise<void> {
   // refreshing a valid session, and a "Sign in" click at that moment forces a needless full SSO round trip.
   root.render(<div className="welcome"><h1>{t('title')}</h1><p className="muted">{t('connecting')}</p></div>)
   if (!test) await buckyos.initBuckyOS(APP_ID)
+  const { shell, system } = origins(test)
+  frame ??= connectFrame(shell, system)
   const account = test ? { user_id: 'test-user', session_token: 'test-token' } : await buckyos.getAccountInfo()
   if (!account?.user_id) { if (window.parent !== window) await buckyos.login(); else renderLogin(); return }
   const client = new NfspClient({ baseUrl: location.origin, uploadChunkSize: 4 * 1024 * 1024, sessionToken: () => sessionToken(test) })
@@ -101,11 +98,9 @@ async function start(): Promise<void> {
   const config = test ? { get: async (key: string) => ({ value: localStorage.getItem(key) ?? '{}' }), set: async (key: string, value: string) => { localStorage.setItem(key, value) } } : buckyos.getSystemConfigClient()
   workspace = new Workspace(store, new BufferStore(data, store, local), new RecoveryStore(data, store), local, new SettingsStore(config, account.user_id))
   workspace.onLogin = relogin
+  workspace.systemOrigin = system
+  workspace.onOpenWith = ({ request, hints }) => frame.openContent(request, 'chooser', { hints })
   root.render(<App workspace={workspace} />)
-  workspace.onExternalOpen = (source, target) => {
-    if (frame.init) frame.openContent({ source, session: workspace?.session }, target)
-    else window.open(`${shellOrigin}/?open=${encodeURIComponent(source.kind === 'cyfs-path' ? source.path : `obj://${source.objectId}`)}&intent=${target}`, '_blank', 'noopener')
-  }
   workspace.subscribe(() => {
     const title = `${workspace!.active?.name ?? t('title')} — Text Editor`
     const changed = [...workspace!.documents.values()].some(dirty)

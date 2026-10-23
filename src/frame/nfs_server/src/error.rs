@@ -144,6 +144,10 @@ impl From<std::io::Error> for NfsError {
             std::io::ErrorKind::PermissionDenied => {
                 NfsError::new(ErrorCode::PermissionDenied, format!("io: {}", e))
             }
+            // A path that goes through a regular file: a client can name that, unlike an internal failure.
+            std::io::ErrorKind::NotADirectory => {
+                NfsError::new(ErrorCode::NotAContainer, format!("io: {}", e))
+            }
             _ => internal(format!("io: {}", e)),
         }
     }

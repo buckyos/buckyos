@@ -57,10 +57,10 @@ function fixture() {
   return { doc, services, events, fail: () => { failArchive = true } }
 }
 test('save detects a disk conflict without writing', async () => {
-  const f = fixture(); await assert.rejects(saveDocument(f.doc, f.services), /external-modified/); assert.deepEqual(f.events, ['flush'])
+  const f = fixture(); await assert.rejects(saveDocument(f.doc, f.services), /external-modified/); assert.deepEqual(f.events, [])
 })
 test('overwrite archives disk and copy before modifying original, including collisions', async () => {
-  const f = fixture(); await saveDocument(f.doc, f.services, { overwrite: true, conflictCopy: true }); assert.deepEqual(f.events, ['flush', 'archive:theirs', 'write-copy', 'write-copy', 'annotate', 'write-original'])
+  const f = fixture(); await saveDocument(f.doc, f.services, { overwrite: true, conflictCopy: true }); assert.deepEqual(f.events, ['archive:theirs', 'write-copy', 'write-copy', 'annotate', 'write-original'])
 })
 test('archival failure prevents overwrite and discard', async () => {
   const f = fixture(); f.fail(); await assert.rejects(saveDocument(f.doc, f.services, { overwrite: true }), /archive-failed/); assert.ok(!f.events.includes('write-original'))

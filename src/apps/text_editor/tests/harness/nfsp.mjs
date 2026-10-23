@@ -3,7 +3,27 @@ import { randomUUID } from 'node:crypto'
 let clock = 0
 let files = new Map()
 const uploads = new Map(), leases = new Map(), sessions = new Set(), streams = new Set()
-let failure = '', leasedPath = ''
+let failure = '', leasedPath = '', dropCommits = 0
+const replies = new Map()
+// A stand-in for the system Preview page (`/embed/preview`): speaks buckyos.preview-embed by hand, from another origin.
+const EMBED = `<!doctype html><title>Preview embed harness</title><div id="view" data-testid="fake-preview"></div><button id="openwith">Open with…</button><script>
+const params = new URLSearchParams(location.hash.slice(1)); const nonce = params.get('bpe'); const parentOrigin = params.get('po')
+const post = (type, payload) => parent.postMessage({ protocol: 'buckyos.preview-embed', version: 1, type, payload }, parentOrigin)
+let init; const hello = setInterval(() => post('embed.hello', { nonce }), 250); post('embed.hello', { nonce })
+addEventListener('message', async e => {
+  const m = e.data; if (e.source !== parent || e.origin !== parentOrigin || m?.protocol !== 'buckyos.preview-embed') return
+  const view = document.querySelector('#view')
+  if (m.type === 'embed.update' && m.payload.theme) view.dataset.theme = m.payload.theme
+  if (m.type !== 'embed.init' || m.payload.nonce !== nonce) return
+  clearInterval(hello); init = m.payload; view.dataset.theme = init.theme; view.dataset.kind = init.source.kind
+  if (init.source.kind === 'blob') { view.textContent = init.source.name + ':' + await init.source.blob.text(); return post('embed.state', { status: 'ready', title: init.source.name }) }
+  const path = init.source.path.replace(/^cyfs:\\/\\//, ''); view.dataset.path = path
+  const state = await (await fetch('/test/state')).json()
+  if (!(path in state)) { view.textContent = 'missing ' + path; post('embed.state', { status: 'error', error: { kind: 'not-found', code: 'NOT_FOUND' } }) }
+  else { view.textContent = 'preview ' + path; post('embed.state', { status: 'ready', title: path.split('/').pop() }) }
+})
+document.querySelector('#openwith').onclick = () => post('embed.openWith', { request: { source: init.source }, hints: { name: init.source.path.split('/').pop(), size: 3 } })
+</script>`
 const normalize = path => path?.replace(/^cyfs:\/\//, '').replace(/\/$/, '') || '/'
 const ref = path => ({ type: 'live', node_id: path })
 const info = path => {
@@ -11,7 +31,7 @@ const info = path => {
   return { kind: f.dir ? 'dir' : 'file', state: 'live', ref: ref(path), node_id: path, name: path.split('/').pop(), size: f.bytes?.length ?? 0, etag: String(f.version), capabilities: { list: !!f.dir, read: !f.dir, accepts_content: true, accepts_references: false, remove_semantics: 'destroy', ordered: false } }
 }
 function put(path, bytes, dir = false) { files.set(path, { dir, bytes: Buffer.from(bytes), version: ++clock }); for (const stream of streams) stream.write(`event: container_changed\ndata: {}\n\n`) }
-function reset() { files = new Map(); uploads.clear(); leases.clear(); failure = ''; leasedPath = ''; for (const path of ['/', '/home', '/home/test-user', '/home/test-user/notes']) put(path, '', true); put('/home/test-user/notes/demo.md', '# Hello\n\nOriginal\n'); put('/home/test-user/notes/other.txt', 'Other file\n'); put('/home/test-user/notes/page.html', '<h1>Heading</h1>\n'); put('/home/test-user/notes/binary.bin', Buffer.from([0, 1, 2])); }
+function reset() { files = new Map(); uploads.clear(); leases.clear(); replies.clear(); failure = ''; leasedPath = ''; dropCommits = 0; for (const path of ['/', '/home', '/home/test-user', '/home/test-user/notes']) put(path, '', true); put('/home/test-user/notes/demo.md', '# Hello\n\nOriginal\n'); put('/home/test-user/notes/other.txt', 'Other file\n'); put('/home/test-user/notes/page.html', '<h1>Heading</h1>\n'); put('/home/test-user/notes/binary.bin', Buffer.from([0, 1, 2])); }
 reset()
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost'); const path = decodeURIComponent(url.pathname)
@@ -23,6 +43,9 @@ const server = http.createServer(async (req, res) => {
   if (path === '/test/delete') { files.delete(JSON.parse(data).path); return send({}) }
   if (path === '/test/fail') { failure = JSON.parse(data).path; return send({}) }
   if (path === '/test/lease') { leasedPath = JSON.parse(data).path; return send({}) }
+  // The next `count` commit_file answers are lost after the commit was applied (the client sees a network error).
+  if (path === '/test/drop-commits') { dropCommits = JSON.parse(data).count; return send({}) }
+  if (path === '/embed/preview') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(EMBED) }
   try {
     if (path.startsWith('/nfs/v1/read/')) {
       const target = path.slice('/nfs/v1/read/'.length); const node = info(target)
@@ -38,11 +61,18 @@ const server = http.createServer(async (req, res) => {
     const method = path.split('/').pop(); const body = data.length ? JSON.parse(data) : {}; const a = body.args ?? {}
     if (method === 'hello') { const session = randomUUID(); sessions.add(session); return send({ ok: true, result: { version: 'nfsp/0', session, features: [], limits: {}, realms: [] } }) }
     if (!sessions.has(body.session)) throw { code: 'PERMISSION_DENIED', message: 'invalid session' }
+    const replay = body.seq !== undefined && replies.get(`${body.session}:${body.seq}`)
+    if (replay) { if (method === 'commit_file' && dropCommits > 0) { dropCommits--; return req.socket.destroy() } return send(replay) }
     const locate = at => normalize(at?.uri ?? at?.path ?? at?.ref?.node_id)
     let result = {}
     if (method === 'resolve' || method === 'stat') result = info(locate(body.at))
     if (method === 'list') { const parent = locate(body.at); result = { container: info(parent), entries: [...files].filter(([p]) => p !== parent && p.slice(0, p.lastIndexOf('/')) === parent).map(([p]) => ({ name: p.split('/').pop(), binding: 'native', target: { ref: ref(p), kind: files.get(p).dir ? 'dir' : 'file', attrs: { size: files.get(p).bytes.length } } })), watch_token: parent } }
-    if (method === 'mkdir') { const target = a.name ? `${normalize(a.parent_ref?.node_id ?? locate(body.at))}/${a.name}` : locate(body.at); if (!files.has(target)) put(target, '', true); result = { ref: ref(target), existed: true } }
+    if (method === 'mkdir' && a.name) { const target = `${normalize(a.parent_ref?.node_id ?? locate(body.at))}/${a.name}`; if (!files.has(target)) put(target, '', true); result = { ref: ref(target), existed: true } }
+    if (method === 'mkdir' && !a.name) {
+      const target = locate(body.at); let existed = true; let at = ''
+      for (const part of target.split('/').filter(Boolean)) { at += '/' + part; const f = files.get(at); if (f && !f.dir) throw { code: 'NAMESPACE_CONFLICT', message: `a non-directory exists at '${at}'` }; if (!f) { put(at, '', true); existed = false } }
+      result = { ref: ref(target), existed }
+    }
     if (method === 'delete') { const target = `${locate(body.at)}/${a.name}`; for (const p of files.keys()) if (p === target || a.recursive && p.startsWith(target + '/')) files.delete(p) }
     if (method === 'open_write') {
       const target = a.ref ? normalize(a.ref.node_id) : `${normalize(a.parent_ref.node_id)}/${a.name}`
@@ -58,6 +88,8 @@ const server = http.createServer(async (req, res) => {
       if (files.get(upload.path)?.version !== upload.base) throw { code: 'TARGET_MISMATCH', details: { reason: 'bypass_modified' } }
       put(upload.path, upload.bytes); leases.delete(upload.path); uploads.delete(a.fb_handle); result = { ref: ref(upload.path), obj: { size: upload.bytes.length } }
     }
+    if (body.seq !== undefined) replies.set(`${body.session}:${body.seq}`, { ok: true, result })
+    if (method === 'commit_file' && dropCommits > 0) { dropCommits--; return req.socket.destroy() }
     send({ ok: true, result })
   } catch (error) { res.statusCode = error.code === 'NOT_FOUND' ? 404 : error.code === 'LEASE_CONFLICT' ? 423 : 409; send({ ok: false, error }) }
 })

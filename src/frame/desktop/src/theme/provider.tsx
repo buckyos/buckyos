@@ -19,16 +19,18 @@ const storageKey = 'buckyos.prototype.theme.v1'
 
 const ThemeModeContext = createContext<ThemeModeContextValue | null>(null)
 
-export function PrototypeThemeProvider({ children }: PropsWithChildren) {
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+/** `mode` fixes the theme for an embedded page (the embedding App decides it); it is not stored. */
+export function PrototypeThemeProvider({ children, mode }: PropsWithChildren<{ mode?: ThemeMode }>) {
+  const [storedMode, setThemeMode] = useState<ThemeMode>(() => {
     const saved = window.localStorage.getItem(storageKey)
     return saved === 'dark' || saved === 'light' ? saved : 'light'
   })
+  const themeMode = mode ?? storedMode
 
   useEffect(() => {
-    window.localStorage.setItem(storageKey, themeMode)
+    if (!mode) window.localStorage.setItem(storageKey, themeMode)
     document.documentElement.dataset.theme = themeMode
-  }, [themeMode])
+  }, [themeMode, mode])
 
   const theme = useMemo(() => {
     const primaryMain = themeMode === 'light' ? '#5f67e8' : '#95a3ff'

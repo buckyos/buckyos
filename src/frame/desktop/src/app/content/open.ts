@@ -1,5 +1,5 @@
 import { buckyos } from 'buckyos'
-import { ContentRegistryClient, contentDescriptor, isTransferableRef, isTransferableSession, resolveContentHandlers, emptyDefaults, type OpenRequest, type HandlerPlan } from 'buckyos/content'
+import { ContentRegistryClient, contentDescriptor, handlerOfApp, isTransferableRef, isTransferableSession, resolveContentHandlers, emptyDefaults, type OpenRequest, type HandlerPlan } from 'buckyos/content'
 import type { AppFrameHost } from 'buckyos/app-frame'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import { openPreview } from '../preview/launch'
@@ -38,9 +38,10 @@ export function handlerLabel(plan: HandlerPlan): string {
   const app = desktopUIStore.getSnapshot().apps.find(a => (a.appInstanceId ?? a.id) === plan.appInstanceId)
   return app ? appTitleNow(app) : plan.appInstanceId.split('@')[0]
 }
-export async function openContent(request: PreviewOpenRequest, options: { handlerKey?: string; newWindow?: boolean; name?: string; mime?: string; size?: number } = {}): Promise<string | null> {
+/** `exclude`: an App that asked the system to open this content elsewhere; none of its handlers is chosen for it. */
+export async function openContent(request: PreviewOpenRequest, options: { handlerKey?: string; newWindow?: boolean; name?: string; mime?: string; size?: number; exclude?: string } = {}): Promise<string | null> {
   if (!isTransferableRef(request.source) || request.session && !isTransferableSession(request.session)) return openPreview(request)
-  const candidates = await contentHandlers(request, options)
+  const candidates = (await contentHandlers(request, options)).filter(plan => !options.exclude || !handlerOfApp(plan, options.exclude))
   if (options.handlerKey && !candidates.some(p => p.handlerKey === options.handlerKey)) desktopUIStore.setSnackbar('The selected app is unavailable. Using the default app.')
   const selected = candidates.find(p => p.handlerKey === options.handlerKey) ?? candidates[0]
   if (!selected || selected.binding.entry.type === 'builtin') return openPreview({ ...request, newWindow: options.newWindow ?? request.newWindow })

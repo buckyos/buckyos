@@ -1072,7 +1072,8 @@ export class DesktopUIStore {
   /** Update the shell-visible metadata of a window (title, launch request). */
   updateWindow(windowId: string, patch: Partial<Pick<WindowRecord, 'title' | 'launch' | 'instanceKey'>>) {
     const { windows } = this.snapshot.runtime
-    if (!windows.some((w) => w.id === windowId)) return
+    const current = windows.find((w) => w.id === windowId)
+    if (!current || (Object.keys(patch) as Array<keyof typeof patch>).every((key) => current[key] === patch[key])) return
     this.update({
       runtime: {
         windows: windows.map((w) => (w.id === windowId ? { ...w, ...patch } : w)),

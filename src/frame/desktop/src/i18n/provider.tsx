@@ -33,8 +33,9 @@ function interpolate(
   }, message)
 }
 
-export function I18nProvider({ children }: PropsWithChildren) {
-  const [locale, setLocale] = useState<SupportedLocale>(() => {
+/** `locale` fixes the language for an embedded page (the embedding App decides it); it is not stored. */
+export function I18nProvider({ children, locale: fixed }: PropsWithChildren<{ locale?: SupportedLocale }>) {
+  const [storedLocale, setLocale] = useState<SupportedLocale>(() => {
     // Validate the persisted value: a stale/foreign locale would make
     // `dictionaries[locale]` undefined and crash every `t()` call at render.
     const saved = window.localStorage.getItem(storageKey)
@@ -43,11 +44,13 @@ export function I18nProvider({ children }: PropsWithChildren) {
       : 'en'
   })
 
+  const locale = fixed ?? storedLocale
+
   useEffect(() => {
-    window.localStorage.setItem(storageKey, locale)
+    if (!fixed) window.localStorage.setItem(storageKey, locale)
     document.documentElement.lang = locale
     document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
-  }, [locale])
+  }, [locale, fixed])
 
   const value = useMemo<I18nContextValue>(() => {
     return {

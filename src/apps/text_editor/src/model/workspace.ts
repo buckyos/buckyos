@@ -1,6 +1,7 @@
 import { contentRefString, contentDescriptor, type OpenRequest, type TransferableContentRef, type TransferableSessionContext } from 'buckyos/content'
-import { decodeText, encodeText, FULL_FEATURE_LIMIT } from '../fs/codec.ts'
-import { sourceKey, splitPath, isMissing, SaveConflict, type DocumentStore } from '../fs/documentStore.ts'
+import type { PreviewEmbedOpenWith } from 'buckyos/app-frame'
+import { ContentError, decodeText, encodeText, FULL_FEATURE_LIMIT } from '../fs/codec.ts'
+import { sourceKey, splitPath, isMissing, errorCategory, SaveConflict, SaveError, type DocumentStore, type ErrorCategory } from '../fs/documentStore.ts'
 import { BufferStore, type BufferRecord, type BufferHeader } from '../fs/bufferStore.ts'
 import { RecoveryStore, type RecoveryRecord } from '../fs/recoveryStore.ts'
 import { archiveMine, saveDocument, type SaveDocument } from '../fs/saveFlow.ts'
@@ -12,10 +13,25 @@ export interface EditorDocument extends SaveDocument {
   disk: 'in-sync' | 'changed' | 'deleted' | 'saving' | 'lease-busy' | 'error'
   buffer?: BufferRecord; syncedVersion: number; localVersion: number; language?: string
   creating?: Promise<void>; flushing?: Promise<void>; saving?: boolean; retryDelay?: number; mutating?: boolean; error?: string; release?: () => void
+  /** Shown read-only in the system Preview instead of the text editor; never buffered, saved or recovered. */
+  preview?: PreviewView
 }
+/**
+ * `not-text`, `too-large`, `media`: content this editor does not edit. `explicit`: the Preview action on a text
+ * document, either of its unsaved `draft` (a snapshot taken at `takenAt`) or of the saved file `ref`.
+ */
+export interface PreviewView { reason: 'not-text' | 'too-large' | 'media' | 'explicit'; of?: string; ref?: TransferableContentRef; draft?: Blob; takenAt?: number; serial: number }
+/** What went wrong, for a message that names the step, the path and whether the draft is safe. */
+export interface Failure { stage: SaveError['stage'] | 'open' | 'close'; path: string; category: ErrorCategory; unknown?: boolean; draft?: 'synced' | 'local' | 'none' }
+export class Problem extends Error {
+  failure: Failure; retry?: () => Promise<unknown>
+  constructor(key: string, failure: Failure, retry?: () => Promise<unknown>) { super(key); this.failure = failure; this.retry = retry }
+}
+const MEDIA = /^(image\/(?!svg)|audio\/|video\/|font\/|application\/pdf$)/
+const CLOSE_SYNC_WAIT = 2000
 export interface Tab { doc: string; transient: boolean }
 export interface Group { id: string; tabs: Tab[]; active?: string }
-export interface SessionItem { source: TransferableContentRef; title: string; text: boolean }
+export interface SessionItem { source: TransferableContentRef; title: string }
 export interface Choice { title: string; options: string[]; resolve: (answer: string) => void }
 export const formatKey = (doc: SaveDocument): string => JSON.stringify([doc.encoding, doc.bom, doc.eol])
 export const dirty = (doc: EditorDocument): boolean => doc.text !== doc.savedText || formatKey(doc) !== doc.savedFormat
@@ -29,8 +45,8 @@ export class Workspace {
   sidebar = !matchMedia('(max-width: 719px)').matches; sidebarWidth = 235; outlineRatio = 50
   settings: Settings = { ...defaultSettings }
   locale = navigator.language; theme: 'dark' | 'light' = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  message = ''; choice?: Choice; recoveries: RecoveryRecord[] = []; abandoned: BufferRecord[] = []; recent: TransferableContentRef[] = []
-  failedSource?: TransferableContentRef
+  message = ''; failure?: Failure; retry?: () => Promise<unknown>
+  choice?: Choice; recoveries: RecoveryRecord[] = []; abandoned: BufferRecord[] = []; recent: TransferableContentRef[] = []
   sessionLost = false; sessionLostMuted = false
   onLogin?: () => Promise<void>
   panel?: 'recovery' | 'buffers' | 'settings' | 'quick' | 'location'
@@ -38,12 +54,17 @@ export class Workspace {
   store: DocumentStore; buffers: BufferStore; recovery: RecoveryStore; local: LocalStore; settingsStore: SettingsStore
   origin: { device: string; windowId: string } = { device: '', windowId: crypto.randomUUID() }
   revision = 0
-  onExternalOpen?: (source: TransferableContentRef, target: 'preview' | 'default') => void
+  /** The Zone's system entry: where the embedded Preview is served from. */
+  systemOrigin = ''
+  /** Hands "Open with…" to the system chooser; false when no system entry is reachable. */
+  onOpenWith?: (open: PreviewEmbedOpenWith) => boolean
   private listeners = new Set<() => void>()
   private timers = new Map<string, { local?: ReturnType<typeof setTimeout>; remote?: ReturnType<typeof setTimeout>; max?: ReturnType<typeof setTimeout> }>()
   private requests = new Set<string>()
   private owner?: () => void
   private snapshotTimer?: ReturnType<typeof setTimeout>
+  private checking?: Promise<void>
+  private checkAgain = false
   constructor(store: DocumentStore, buffers: BufferStore, recovery: RecoveryStore, local: LocalStore, settingsStore: SettingsStore) {
     this.store = store; this.buffers = buffers; this.recovery = recovery; this.local = local; this.settingsStore = settingsStore
   }
@@ -53,11 +74,19 @@ export class Workspace {
     this.revision++; this.listeners.forEach(fn => fn())
     if (this.owner && this.settings.restoreSession) {
       clearTimeout(this.snapshotTimer)
-      this.snapshotTimer = setTimeout(() => { void this.local.put('workspace', { groups: this.groups.map(g => ({ ...g, tabs: g.tabs.map(t => ({ ...t, source: this.documents.get(t.doc)?.source, bufferId: this.documents.get(t.doc)?.buffer?.header.bufferId })) })), layout: this.layout, activeGroup: this.activeGroup, session: this.session, sidebar: this.sidebar, sidebarWidth: this.sidebarWidth, outlineRatio: this.outlineRatio }).catch(e => this.notify(String(e))) }, 500)
+      this.snapshotTimer = setTimeout(() => { void this.saveSnapshot().catch(e => this.notify(String(e))) }, 500)
     }
   }
-  notify(message: string): void { this.message = message; this.revision++; this.listeners.forEach(fn => fn()) }
-  run(task: Promise<unknown>): void { void task.catch(e => this.notify(e instanceof Error ? e.message : String(e))) }
+  /** Draft previews are snapshots of this window only and are not restored. */
+  async saveSnapshot(): Promise<void> {
+    if (!this.owner || !this.settings.restoreSession) return
+    clearTimeout(this.snapshotTimer)
+    const kept = (t: Tab) => this.documents.get(t.doc)?.preview?.reason !== 'explicit'
+    await this.local.put('workspace', { groups: this.groups.map(g => ({ ...g, tabs: g.tabs.filter(kept).map(t => ({ ...t, source: this.documents.get(t.doc)?.source, bufferId: this.documents.get(t.doc)?.buffer?.header.bufferId })) })), layout: this.layout, activeGroup: this.activeGroup, session: this.session, sidebar: this.sidebar, sidebarWidth: this.sidebarWidth, outlineRatio: this.outlineRatio })
+  }
+  notify(message: string): void { this.message = message; this.failure = undefined; this.retry = undefined; this.revision++; this.listeners.forEach(fn => fn()) }
+  report(problem: Problem): void { this.message = problem.message; this.failure = problem.failure; this.retry = problem.retry; this.revision++; this.listeners.forEach(fn => fn()) }
+  run(task: Promise<unknown>): void { void task.catch(e => e instanceof Problem ? this.report(e) : this.notify(e instanceof Error ? e.message : String(e))) }
   async start(): Promise<void> {
     this.settings = await this.settingsStore.load()
     const device = await this.local.get<string>('device') ?? `${crypto.randomUUID().slice(0, 8)} · ${navigator.platform}`
@@ -92,14 +121,8 @@ export class Workspace {
     const key = contentRefString(request.source)
     let doc = [...this.documents.values()].find(d => sourceKey(d.source) === key)
     if (!doc) {
-      this.failedSource = request.source
-      const file = await this.store.read(request.source); const decoded = decodeText(file.bytes)
-      this.failedSource = undefined
-      const writable = request.source.kind === 'cyfs-path' && request.mode !== 'view' && file.info.capabilities.accepts_content !== false && !file.info.flags?.includes('readonly')
-      doc = { ...decoded, id: crypto.randomUUID(), source: request.source, name: file.info.name ?? key.split('/').pop() ?? key,
-        base: { etag: file.etag, size: file.size }, text: decoded.text, savedText: decoded.text, savedFormat: formatKey(decoded as SaveDocument),
-        readOnly: decoded.readOnly || !writable || request.mode === 'view', writable, largeFile: file.size > FULL_FEATURE_LIMIT,
-        disk: 'in-sync', version: 0, syncedVersion: -1, localVersion: -1 }
+      try { doc = await this.load(request) }
+      catch (e) { throw new Problem(`open-${errorCategory(e)}`, { stage: 'open', path: key, category: errorCategory(e) }, () => this.open({ ...request, requestId: crypto.randomUUID() }, transient, checkBuffers)) }
       this.documents.set(doc.id, doc)
     }
     this.requests.add(request.requestId)
@@ -113,6 +136,44 @@ export class Workspace {
       if (this.abandoned.some(b => sourceKey(b.header.source) === key && b.header.bufferId !== doc.buffer?.header.bufferId)) this.panel = 'buffers'
     }
     this.emit()
+  }
+  /**
+   * Text this editor can edit opens as text; anything else (not decodable, too large, a known media type) opens
+   * in the embedded system Preview. The decision is made on the bytes, not the name: an unknown extension is read.
+   */
+  private async load(request: OpenRequest): Promise<EditorDocument> {
+    const key = contentRefString(request.source)
+    const descriptor = contentDescriptor(request.source)
+    if (MEDIA.test(descriptor.mime ?? '')) {
+      const stat = await this.store.stat(request.source)
+      return this.previewDocument(request.source, stat.info.name ?? descriptor.name ?? key, { reason: 'media' })
+    }
+    let file: Awaited<ReturnType<DocumentStore['read']>>
+    try { file = await this.store.read(request.source) }
+    catch (e) { if (e instanceof ContentError && e.code === 'too-large') return this.previewDocument(request.source, descriptor.name ?? key, { reason: 'too-large' }); throw e }
+    let decoded: ReturnType<typeof decodeText>
+    try { decoded = decodeText(file.bytes) }
+    catch (e) { if (e instanceof ContentError && (e.code === 'binary' || e.code === 'too-large')) return this.previewDocument(request.source, file.info.name ?? descriptor.name ?? key, { reason: e.code === 'binary' ? 'not-text' : 'too-large' }); throw e }
+    const writable = request.source.kind === 'cyfs-path' && request.mode !== 'view' && file.info.capabilities.accepts_content !== false && !file.info.flags?.includes('readonly')
+    return { ...decoded, id: crypto.randomUUID(), source: request.source, name: file.info.name ?? key.split('/').pop() ?? key,
+      base: { etag: file.etag, size: file.size }, text: decoded.text, savedText: decoded.text, savedFormat: formatKey(decoded as SaveDocument),
+      readOnly: decoded.readOnly || !writable || request.mode === 'view', writable, largeFile: file.size > FULL_FEATURE_LIMIT,
+      disk: 'in-sync', version: 0, syncedVersion: -1, localVersion: -1 }
+  }
+  private previewDocument(source: TransferableContentRef | undefined, name: string, preview: Omit<PreviewView, 'serial'>): EditorDocument {
+    return { id: crypto.randomUUID(), source, name, text: '', savedText: '', encoding: 'utf-8', bom: false, eol: '\n', mixedEol: false, savedFormat: JSON.stringify(['utf-8', false, '\n']),
+      readOnly: true, writable: false, largeFile: false, disk: 'in-sync', version: 0, syncedVersion: -1, localVersion: -1, preview: { ...preview, serial: 0 } }
+  }
+  /** The Preview action on a text document: its unsaved draft when it has one, else the saved file. Editing state stays as it is. */
+  previewOf(doc = this.active): void {
+    if (!doc || doc.preview) return
+    const draft = dirty(doc) || !doc.source
+    const view: Omit<PreviewView, 'serial'> = { reason: 'explicit', of: doc.id, takenAt: Date.now(),
+      ...draft ? { draft: new Blob([doc.text], { type: (doc.source ? contentDescriptor(doc.source, { name: doc.name }) : contentDescriptor({ kind: 'cyfs-path', path: `cyfs:///${doc.name}` })).mime }) } : { ref: doc.source } }
+    const existing = [...this.documents.values()].find(d => d.preview?.of === doc.id)
+    if (existing) { existing.preview = { ...view, serial: existing.preview!.serial + 1 }; existing.name = doc.name; this.show(existing); return }
+    const preview = this.previewDocument(undefined, doc.name, view)
+    this.documents.set(preview.id, preview); this.show(preview)
   }
   show(doc: EditorDocument, transient = false): void {
     const group = this.group
@@ -178,7 +239,7 @@ export class Workspace {
     return new Promise(resolve => { this.choice = { title, options, resolve: value => { this.choice = undefined; this.emit(); resolve(value) } }; this.emit() })
   }
   async save(doc = this.active, options: Parameters<typeof saveDocument>[2] = {}): Promise<boolean> {
-    if (!doc || doc.saving || doc.mutating) return false
+    if (!doc || doc.saving || doc.mutating || doc.preview) return false
     if ((!doc.source || doc.readOnly || doc.source.kind === 'object-id') && !options.path) { this.chooseLocation(path => this.save(doc, { path }).then(() => {})); return false }
     doc.saving = true; doc.disk = 'saving'; this.emit()
     try {
@@ -187,15 +248,27 @@ export class Workspace {
       if (this.settings.ensureFinalNewline && !text.endsWith('\n')) text += '\n'
       if (text !== doc.text) { doc.text = text; this.changed(doc) }
       const version = doc.version; const format = formatKey(doc); const snapshot = { ...doc }
-      const saved = await saveDocument(snapshot, this.services(doc), { ...options, locale: this.locale })
+      // The draft is kept on this device before anything is sent; its server copy follows without holding the save up.
+      const local = await this.persistLocal(doc).then(() => true, () => false)
+      void this.flush(doc).catch(() => {})
+      let saved: Awaited<ReturnType<typeof saveDocument>>
+      try { saved = await saveDocument(snapshot, this.services(doc), { ...options, locale: this.locale }) }
+      catch (e) {
+        if (e instanceof SaveConflict) throw e
+        const draft = doc.syncedVersion === doc.version ? 'synced' : local ? 'local' : 'none'
+        throw new Problem(e instanceof SaveError && e.unknown ? 'saveUnknown' : 'saveFailed', { stage: e instanceof SaveError ? e.stage : 'prepare', path: e instanceof SaveError ? e.path : options.path ?? sourceKey(doc.source), category: errorCategory(e), unknown: e instanceof SaveError && e.unknown, draft }, () => this.save(doc, options))
+      }
+      // Committed: nothing below may turn this into "not saved".
       doc.source = saved.source; doc.base = { etag: saved.etag, size: saved.size }; doc.name = splitPath(contentRefString(saved.source)).name
-      doc.savedText = snapshot.text; doc.savedFormat = format; doc.readOnly = false; doc.writable = true; doc.disk = 'in-sync'
-      if (doc.version === version && doc.buffer) { const record = doc.buffer; doc.buffer = undefined; await this.buffers.remove(record) }
-      else if (dirty(doc)) { await this.persistLocal(doc); this.schedule(doc) }
+      doc.savedText = snapshot.text; doc.savedFormat = format; doc.readOnly = false; doc.writable = true; doc.disk = 'in-sync'; doc.error = undefined
+      if (doc.version === version && doc.buffer) {
+        const record = doc.buffer; doc.buffer = undefined
+        await this.buffers.remove(record).catch(() => { if (!doc.buffer) { doc.buffer = record; this.schedule(doc) } })
+      } else if (dirty(doc)) { await this.persistLocal(doc).catch(() => {}); this.schedule(doc) }
       this.notify('saved'); return true
     } catch (e) {
       doc.disk = e instanceof SaveConflict && e.kind === 'deleted' ? 'deleted' : e instanceof SaveConflict && e.kind === 'lease-busy' ? 'lease-busy' : e instanceof SaveConflict ? 'changed' : 'error'
-      if (!(e instanceof SaveConflict)) { doc.error = String(e); throw e }
+      if (!(e instanceof SaveConflict)) { doc.error = e instanceof Error ? e.message : String(e); if (e instanceof Problem) this.report(e); else this.notify(doc.error); return false }
       const answer = await this.ask(e.kind, e.kind === 'deleted' ? ['recreate', 'saveAs', 'cancel'] : e.kind === 'lease-busy' ? ['retry', 'saveAs', 'cancel'] : e.kind === 'copy-failed' ? ['overwrite', 'cancel'] : options.path && options.path !== sourceKey(doc.source) ? ['overwrite', 'overwriteCopy', 'saveAs', 'cancel'] : ['reload', 'overwrite', 'overwriteCopy', 'saveAs', 'cancel'])
       doc.saving = false
       if (answer === 'reload') await this.reload(doc)
@@ -211,7 +284,7 @@ export class Workspace {
     finally { doc.mutating = false; if (dirty(doc)) this.schedule(doc); this.emit() }
   }
   async reload(doc: EditorDocument, encoding?: string): Promise<void> {
-    if (!doc.source) return
+    if (!doc.source || doc.preview) return
     await this.replaceContents(doc, async () => {
       const file = await this.store.read(doc.source!); const decoded = decodeText(file.bytes, encoding)
       if (dirty(doc)) await archiveMine(doc, this.services(doc), 'conflict-reload')
@@ -225,23 +298,34 @@ export class Workspace {
     if (encoding === 'utf-8' && doc.text === doc.savedText) doc.savedFormat = 'unconverted'
     this.changed(doc)
   }
-  async checkDisk(): Promise<void> {
+  /** One check at a time: calls that arrive while one runs share it, plus one more pass after it. */
+  checkDisk(): Promise<void> {
+    if (this.checking) { this.checkAgain = true; return this.checking }
+    this.checking = (async () => { do { this.checkAgain = false; await this.checkDiskOnce() } while (this.checkAgain) })().finally(() => { this.checking = undefined })
+    return this.checking
+  }
+  private async checkDiskOnce(): Promise<void> {
+    let changed = false
     for (const doc of this.documents.values()) {
-      if (!doc.source || doc.saving || doc.mutating) continue
+      if (!doc.source || doc.saving || doc.mutating || doc.preview) continue
+      const before = `${doc.disk}|${doc.error}`
       try {
         const stat = await this.store.stat(doc.source)
-        if (doc.base && stat.etag !== doc.base.etag) {
-          if (!dirty(doc) && this.settings.autoReloadClean) await this.reload(doc)
+        // A save whose new etag could not be read back: the size we wrote identifies our own version.
+        if (doc.base && !doc.base.etag && stat.size === doc.base.size) doc.base = { etag: stat.etag, size: stat.size }
+        else if (doc.base && stat.etag !== doc.base.etag) {
+          if (!dirty(doc) && this.settings.autoReloadClean) { await this.reload(doc); changed = true }
           else doc.disk = 'changed'
         }
       } catch (e) { if (isMissing(e)) doc.disk = 'deleted'; else doc.error = String(e) }
+      changed ||= before !== `${doc.disk}|${doc.error}`
     }
     if (this.session?.kind === 'container') await this.refreshItems()
-    this.emit()
+    else if (changed) this.emit()
   }
   async refreshItems(): Promise<void> {
     const session = this.session
-    const item = (source: TransferableContentRef, title: string): SessionItem => ({ source, title, text: /^(text\/|application\/(json|ld\+json|xml|javascript|typescript|ya?ml|x-yaml|toml|x-sh|sql))/.test(contentDescriptor(source, { name: title }).mime ?? '') })
+    const item = (source: TransferableContentRef, title: string): SessionItem => ({ source, title })
     if (session?.kind === 'list') this.items = session.items.map(i => item(i.source, i.title ?? sourceKey(i.source).split('/').pop()!))
     else if (session?.kind === 'container' && session.container.kind === 'cyfs-path') {
       const path = session.container.path
@@ -295,14 +379,33 @@ export class Workspace {
     if (!group.tabs.length && this.groups.length > 1) { this.groups = this.groups.filter(g => g !== group); this.activeGroup = this.groups[0].id; this.layout = 'single' }
     this.emit(); return true
   }
+  /**
+   * Closing never waits on the server before the user can choose. Changes are first written to this device
+   * (IndexedDB, replayed to the server on the next start); the server copy gets a short head start. "Keep" is
+   * offered only for what is actually safe: synced, or at least stored here — and then it says so.
+   */
   async prepareClose(documents = [...this.documents.values()], reason = 'user'): Promise<boolean> {
     const changed = documents.filter(dirty)
-    for (const doc of changed) await this.flush(doc)
-    if (!changed.length || reason === 'logout' || this.settings.closeKeepsChanges) return true
-    const answer = await this.ask('closeChanges', ['save', 'keep', 'discard', 'cancel'])
+    if (!changed.length) return true
+    const local = (await Promise.all(changed.map(doc => this.persistLocal(doc).then(() => true, () => false)))).every(Boolean)
+    await this.saveSnapshot().catch(() => {})
+    const syncing = Promise.allSettled(changed.map(doc => this.flush(doc)))
+    if (reason !== 'logout') await Promise.race([syncing, new Promise(resolve => setTimeout(resolve, CLOSE_SYNC_WAIT))])
+    const synced = changed.every(doc => doc.syncedVersion === doc.version)
+    if (reason === 'logout' || this.settings.closeKeepsChanges) {
+      if (local || synced) return true
+      if (reason === 'logout') { this.notify('closeUnsafe'); return false }
+    }
+    const answer = await this.ask(synced ? 'closeChanges' : local ? 'closeChangesLocal' : 'closeUnsafe', ['save', ...synced ? ['keep'] : local ? ['keepLocal'] : [], 'discard', 'cancel'])
     if (answer === 'cancel') return false
     if (answer === 'save') { for (const doc of changed) if (!await this.save(doc)) return false }
-    if (answer === 'discard') for (const doc of changed) { await archiveMine(doc, this.services(doc), doc.disk === 'deleted' ? 'deleted-close' : 'discarded'); if (doc.buffer) { await this.buffers.remove(doc.buffer); doc.buffer = undefined } }
+    if (answer === 'discard') {
+      for (const doc of changed) {
+        try { await archiveMine(doc, this.services(doc), doc.disk === 'deleted' ? 'deleted-close' : 'discarded') }
+        catch (e) { this.report(new Problem('discardFailed', { stage: 'close', path: sourceKey(doc.source), category: errorCategory(e), draft: synced ? 'synced' : local ? 'local' : 'none' })); return false }
+        if (doc.buffer) { await this.buffers.remove(doc.buffer).catch(() => {}); doc.buffer = undefined }
+      }
+    }
     return true
   }
   split(layout: Workspace['layout']): void {

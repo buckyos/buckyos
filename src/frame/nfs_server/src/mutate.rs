@@ -211,7 +211,10 @@ impl AppState {
                         if self.acls.level(actor, &root_id, &cur) < Level::Write {
                             return Err(denied("write", actor));
                         }
-                        std::fs::create_dir(&p)?;
+                        if !create_dir_racing(&p, &next)? {
+                            cur = next;
+                            continue;
+                        }
                         self.clear_stale_acls(&root_id, &next)?;
                         existed = false;
                         let parent = self.resolve_dfs_path(&format!(
@@ -1057,9 +1060,35 @@ fn place_file(staged: &Path, target: &Path) -> NfsResult<()> {
     }
 }
 
+/// Creates one directory of a `mkdir -p` walk. Returns false when a concurrent writer created it first.
+fn create_dir_racing(p: &std::path::Path, rel: &str) -> NfsResult<bool> {
+    match std::fs::create_dir(p) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => Ok(false),
+            _ => Err(NfsError::new(
+                ErrorCode::NamespaceConflict,
+                format!("a non-directory exists at '{}'", rel),
+            )),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mkdir_walk_tolerates_a_concurrent_creator() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a");
+        assert!(create_dir_racing(&target, "a").unwrap());
+        assert!(!create_dir_racing(&target, "a").unwrap());
+        std::fs::write(dir.path().join("f"), b"x").unwrap();
+        let err = create_dir_racing(&dir.path().join("f"), "f").unwrap_err();
+        assert_eq!(err.code.as_str(), "NAMESPACE_CONFLICT");
+    }
 
     #[test]
     fn hash_normalization() {

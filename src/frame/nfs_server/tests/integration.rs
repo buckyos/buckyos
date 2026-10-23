@@ -1272,3 +1272,15 @@ async fn abort_write_releases_only_the_callers_lease_and_upload() {
     s.ok_write("open_write", json!({"args":{"parent_ref":parent,"name":"abort.txt"}})).await;
     assert!(!s.home.join("abort.txt").exists());
 }
+
+#[tokio::test]
+async fn paths_through_a_file_are_named_not_internal() {
+    let s = start_server().await;
+    std::fs::write(s.home.join("blocker"), b"x").unwrap();
+    s.expect_err("resolve", json!({"at": {"realm": "dfs", "path": "/home/blocker/sub/x.md"}, "args": {}}), "NOT_A_CONTAINER").await;
+    s.expect_err("mkdir", json!({"at": {"realm": "dfs", "path": "/home/blocker/sub"}, "args": {}}), "NAMESPACE_CONFLICT").await;
+    let made = s.ok_write("mkdir", json!({"at": {"realm": "dfs", "path": "/home/a/b/c"}, "args": {}})).await;
+    assert_eq!(made["existed"], false);
+    let again = s.ok_write("mkdir", json!({"at": {"realm": "dfs", "path": "/home/a/b/c"}, "args": {}})).await;
+    assert_eq!(again["existed"], true);
+}

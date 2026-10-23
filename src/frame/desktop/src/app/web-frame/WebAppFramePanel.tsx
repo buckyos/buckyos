@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { buckyos } from 'buckyos'
 import { AppFrameHost } from 'buckyos/app-frame'
-import { expandOpenPath, isOpenRequest, type OpenBinding, type OpenRequest } from 'buckyos/content'
+import { contentDescriptor, expandOpenPath, isOpenRequest, type OpenBinding, type OpenRequest } from 'buckyos/content'
 import { desktopUIStore, useDesktopRuntime } from '../../models/DesktopUIDataModel'
 import { useMobileBackHandler } from '../../desktop/windows/MobileNavContext'
 import type { AppContentLoaderProps } from '../types'
 import { appFrames, openContent } from '../content/open'
+import { requestOpenWith } from '../content/OpenWithSheet'
 import { openPreview } from '../preview/launch'
 import { isMockRuntime } from '../../runtime'
 import { useAppText } from '../../presentation/appText'
@@ -49,9 +50,12 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
       init: { nonce, windowId, theme: { mode: themeMode }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, shellCapabilities: ['content.open', 'beforeClose', 'back'] },
       onTitle: (title, dirty) => desktopUIStore.updateWindow(windowId, { title: `${dirty ? '● ' : ''}${title}` }),
       onRequestClose: () => desktopUIStore.closeWindow(windowId, true),
-      onContentOpen: (next, target, newWindow) => {
-        const req = { source: next.source, session: next.session, origin: { app: app.appInstanceId ?? app.id, windowId }, newWindow }
-        if (target === 'preview') openPreview(req); else void openContent(req)
+      onContentOpen: (next, target, { newWindow, hints }) => {
+        const requester = app.appInstanceId ?? app.id
+        const req = { source: next.source, session: next.session, origin: { app: requester, windowId }, newWindow }
+        if (target === 'preview') openPreview(req)
+        else if (target === 'chooser') requestOpenWith({ source: next.source, session: next.session, name: hints.name ?? contentDescriptor(next.source).name ?? '', mediaType: hints.mime, size: hints.size, exclude: requester, origin: req.origin })
+        else void openContent(req, { name: hints.name, mime: hints.mime, size: hints.size })
       },
     })
     host.current = frame; appFrames.set(windowId, { host: frame, handlerKey: payload?.handlerKey })
@@ -73,8 +77,8 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
   }, [windowId])
   useEffect(() => {
     const top = [...runtime.windows].filter(w => w.state !== 'minimized').sort((a, b) => b.zIndex - a.zIndex)[0]
-    host.current?.send('frame.focusChanged', { focused: top?.id === windowId })
-  }, [runtime.windows, windowId])
+    host.current?.setFocused(top?.id === windowId)
+  }, [runtime.windows, windowId, frameUrl])
   useMobileBackHandler(() => {
     void host.current?.back().then(handled => { if (!handled && windowId) desktopUIStore.closeWindow(windowId) }).catch(() => { if (windowId) desktopUIStore.closeWindow(windowId) })
     return true

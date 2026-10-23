@@ -9,7 +9,7 @@ import { useMobileBackHandler, useMobileTitleOverride } from '../../desktop/wind
  * shown when the app is launched without content.
  */
 
-import { Copy, Download, Pin, PinOff, Settings2, SquareArrowOutUpRight, X } from 'lucide-react'
+import { Pin, PinOff, Settings2, SquareArrowOutUpRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ContentPreview,
@@ -18,12 +18,10 @@ import {
   type PreviewOpenWithRequest,
 } from '../../components/ContentPreview'
 import { refIdentity } from '../../components/preview/session'
-import { extensionRefField, isCyfsPathRef, isObjectIdRef } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { AppContentLoaderProps } from '../types'
-import { contentHandlers, handlerLabel, openContent } from '../content/open'
-import type { HandlerPlan } from 'buckyos/content'
+import { OpenWithSheet } from '../content/OpenWithSheet'
 import { openPreviewInNewWindow } from './launch'
 import { PreviewLanding } from './PreviewLanding'
 import { PreviewSettingsDialog } from './PreviewSettingsDialog'
@@ -170,86 +168,8 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
           if (windowId) previewWindowManager.touch(windowId, { currentMediaType: info.mediaType })
         }}
       />
-      {openWith ? <OpenWithSheet session={payload?.session} request={openWith} onClose={() => setOpenWithState(null)} preferFullApp={settings.preferFullApp} /> : null}
+      {openWith ? <OpenWithSheet target={{ source: openWith.item.source, session: payload.session, name: openWith.item.title, mediaType: openWith.mediaType, size: openWith.resolved?.size, readRef: openWith.resolved?.readRef, displayName: openWith.resolved?.displayName }} onClose={() => setOpenWithState(null)} preferFullApp={settings.preferFullApp} /> : null}
       {settingsOpen ? <PreviewSettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
-    </div>
-  )
-}
-
-function OpenWithSheet({
-  request,
-  session,
-  onClose,
-  preferFullApp,
-}: {
-  request: PreviewOpenWithRequest
-  session?: PreviewOpenRequest['session']
-  onClose: () => void
-  preferFullApp: boolean
-}) {
-  const { t } = useI18n()
-  const [handlers, setHandlers] = useState<HandlerPlan[]>([])
-  useEffect(() => {
-    let current = true
-    void contentHandlers({ source: request.item.source, session }, { name: request.item.title, mime: request.mediaType }).then(plans => { if (current) setHandlers(plans.filter(p => p.appInstanceId)) })
-    return () => { current = false }
-  }, [request, session])
-  const readRef = request.resolved?.readRef
-  const source = request.item.source
-  const reference = isCyfsPathRef(source) ? source.path : isObjectIdRef(source) ? source.objectId : extensionRefField(source, 'reference') ?? request.item.title
-  const download = () => {
-    if (!readRef) return
-    const anchor = document.createElement('a')
-    anchor.download = request.resolved?.displayName ?? request.item.title
-    if (readRef.kind === 'url') {
-      anchor.href = readRef.downloadUrl ?? readRef.url
-      anchor.click()
-    } else {
-      const url = URL.createObjectURL(readRef.blob)
-      anchor.href = url
-      anchor.click()
-      window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
-    }
-    onClose()
-  }
-  return (
-    <div className="absolute inset-0 z-40 flex items-end justify-center bg-[color:color-mix(in_srgb,var(--cp-shadow)_30%,transparent)] p-4 sm:items-center" onClick={onClose} data-testid="preview-open-with">
-      <div
-        className="w-full max-w-sm rounded-[20px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface-opaque)] p-4 shadow-[var(--cp-panel-shadow)]"
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-label={t('preview.action.openWith', 'Open with…')}
-      >
-        <div className="flex items-center justify-between">
-          <div className="text-[14px] font-semibold">{t('preview.action.openWith', 'Open with…')}</div>
-          <button type="button" onClick={onClose} aria-label={t('common.close', 'Close')} className="rounded-full p-1 hover:bg-[color:var(--cp-surface-2)]">
-            <X size={14} />
-          </button>
-        </div>
-        <p className="mt-2 text-[12px] leading-5 text-[color:var(--cp-muted)]">
-          {!handlers.length && preferFullApp
-            ? t('previewApp.openWith.noFullApp', 'No dedicated app is installed for {{type}}. You can download the original or copy its reference.', { type: request.mediaType ?? request.item.title })
-            : t('previewApp.openWith.fallback', 'Download the original or copy its reference to open it elsewhere.')}
-        </p>
-        <div className="mt-3 flex flex-col gap-2">
-          {handlers.map(plan => <button type="button" key={plan.handlerKey} className="rounded-xl border px-3 py-2 text-left" onClick={() => { void openContent({ source: request.item.source, session }, { handlerKey: plan.handlerKey, name: request.item.title, mime: request.mediaType }); onClose() }}>{handlerLabel(plan)}</button>)}
-          {readRef ? (
-            <button type="button" onClick={download} className="flex items-center gap-2 rounded-xl border border-[color:var(--cp-border)] px-3 py-2 text-[13px] hover:border-[color:var(--cp-accent)]">
-              <Download size={15} /> {t('preview.action.download', 'Download original')}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => {
-              void navigator.clipboard?.writeText(reference).catch(() => {})
-              onClose()
-            }}
-            className="flex items-center gap-2 rounded-xl border border-[color:var(--cp-border)] px-3 py-2 text-[13px] hover:border-[color:var(--cp-accent)]"
-          >
-            <Copy size={15} /> {t('preview.action.copySource', 'Copy path / object id')}
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

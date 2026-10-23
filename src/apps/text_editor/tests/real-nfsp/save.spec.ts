@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { readFile, writeFile, readdir } from 'node:fs/promises'
+import { readFile, writeFile, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
 test('real NFSP saves CRLF bytes, detects host writes, archives both conflict sides and persists buffers', async ({ page }) => {
@@ -32,4 +32,27 @@ test('real NFSP saves CRLF bytes, detects host writes, archives both conflict si
   const buffers = await readdir(join(data, 'buffers'))
   expect(buffers.filter(name => name.endsWith('.buf'))).toHaveLength(1)
   expect(await readFile(join(data, 'buffers', buffers[0]), 'utf8')).toContain('Second mine buffered')
+})
+
+test('real NFSP: Save as creates nested folders, refuses a file in the way, and leaves created folders alone', async ({ page }) => {
+  const home = join(process.env.TEXT_EDITOR_NFSP_ROOT!, 'home/test-user')
+  await writeFile(join(home, 'notes/blocker'), 'a plain file')
+  // Independent of the previous test, which leaves its buffer behind for this file.
+  await rm(join(home, '.local/share/text-editor.buckyos.bns.did/buffers'), { recursive: true, force: true })
+  await page.goto('/?src=cyfs:///home/test-user/notes/demo.md')
+  const original = (await readFile(join(home, 'notes/demo.md'), 'utf8')).replace(/\r\n/g, '\n')
+  await expect(page.locator('.cm-content')).toContainText(original.split('\n')[0])
+  const saveAs = async (folder: string, name: string) => {
+    await page.getByRole('button', { name: 'Actions', exact: true }).first().click(); await page.getByRole('menuitem', { name: 'Save as…', exact: true }).click()
+    await page.getByLabel('Location', { exact: true }).fill(folder)
+    await page.getByLabel('File name', { exact: true }).fill(name)
+    await page.getByRole('button', { name: 'Choose', exact: true }).click()
+  }
+  await saveAs('cyfs:///home/test-user/projects/2026/issues', 'note.md')
+  await expect(page.locator('.disk-state')).toHaveText('Saved')
+  expect((await readFile(join(home, 'projects/2026/issues/note.md'), 'utf8')).replace(/\r\n/g, '\n')).toBe(original)
+  await saveAs('cyfs:///home/test-user/notes/blocker/sub', 'x.md')
+  await expect(page.getByRole('status')).toContainText('a path part is a file')
+  expect(await readFile(join(home, 'notes/blocker'), 'utf8')).toBe('a plain file')
+  expect(await readdir(join(home, 'projects/2026/issues'))).toEqual(['note.md'])
 })
