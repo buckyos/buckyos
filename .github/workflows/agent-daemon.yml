@@ -1,0 +1,57 @@
+name: Standalone Linux Agent Daemon
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/kernel/buckyos_agent_daemon/**'
+      - 'src/kernel/node_executor/**'
+      - 'src/kernel/buckyos-api/src/agent_daemon*'
+      - 'src/publish/agent_daemon/**'
+      - '.github/workflows/agent-daemon.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl C and C++ toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          TOOLCHAIN_URL: https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/x86_64-linux-musl-cross.tgz
+          TOOLCHAIN_SHA512: 52abd1a56e670952116e35d1a62e048a9b6160471d988e16fa0e1611923dd108a581d2e00874af5eb04e4968b1ba32e0eb449a1f15c3e4d5240ebe09caf5a9f3
+        run: |
+          curl --fail --location --output "$RUNNER_TEMP/musl.tgz" "$TOOLCHAIN_URL"
+          printf '%s  %s\n' "$TOOLCHAIN_SHA512" "$RUNNER_TEMP/musl.tgz" | sha512sum --check --strict
+          tar -xzf "$RUNNER_TEMP/musl.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/x86_64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+      - name: Regression tests
+        working-directory: src
+        run: cargo test -p node_executor -p buckyos_agent_daemon -- --test-threads=1
+      - name: Package standalone binary
+        run: python3 src/publish/agent_daemon/package.py --target '${{ matrix.target }}' --output dist/agent-daemon
+      - name: Validate launcher checksum and foreground execution
+        run: |
+          archive=$(find dist/agent-daemon -name '*.tar.gz')
+          checksum=$(cut -d ' ' -f 1 "$archive.sha256")
+          sh src/publish/agent_daemon/start-buckyos-agent-daemon.sh --artifact "$archive" --sha256 "$checksum" doctor --json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: agent-daemon-${{ matrix.target }}
+          path: dist/agent-daemon/*

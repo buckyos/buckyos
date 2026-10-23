@@ -25,6 +25,10 @@ pub fn node_executor_resource(node_id: &str, profile_id: &str) -> String {
     format!("obj://node/{node_id}/executor/{profile_id}")
 }
 
+pub fn agent_executor_resource(executor_id: &str, profile_id: &str) -> String {
+    format!("obj://executor/{executor_id}/{profile_id}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutorOp {
@@ -271,6 +275,14 @@ pub struct ExecutorConfig {
 
 impl ExecutorConfig {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_execution()?;
+        if self.enabled {
+            validate_allowed_devices(&self.allowed_devices)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_execution(&self) -> Result<(), String> {
         if self.generation == 0 || !self.revision.starts_with("sha256:") {
             return Err("executor config lacks revision/generation".to_string());
         }
@@ -280,7 +292,6 @@ impl ExecutorConfig {
         if self.profiles.is_empty() {
             return Err("executor enabled without profiles".to_string());
         }
-        validate_allowed_devices(&self.allowed_devices)?;
         for (profile_id, profile) in &self.profiles {
             profile.validate(profile_id)?;
         }

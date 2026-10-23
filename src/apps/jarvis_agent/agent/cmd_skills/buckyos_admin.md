@@ -31,6 +31,15 @@ buckyos system info                                 # BuckyOS version, build_ver
   not running; "Running" with exit 0 can still come with an error-heavy log warning below it.
 
 #### Find the real commands
+- Lightweight Linux executors: Settings → Cluster Manager → Nodes/Devices issues an access URL;
+  `buckyos executor --help` describes device management and online/exec/read/write/edit/query/cancel.
+  Admin Control Panel sessions manage devices; an authorized Agent App session executes operations.
+  Select the current `executor_id`, `generation`, `profile_id` and `store_id` from online discovery;
+  never substitute a Node DID or silently select a new generation. URL creation alone does not make a target online.
+  On the target, `buckyos_agent_daemon doctor --json` and `stop --executor <id>` need no Zone login.
+  URL expiry/revocation or foreground exit removes availability; Linux UI is `unsupported`.
+  Keep URL secrets out of logs/messages. Query an uncertain operation by its original store/op locator before
+  deciding on a new action. Protocol and lifecycle: `doc/arch/agent_daemon.md`.
 - `buckyos command list` (modules and verbs of this install), `buckyos command describe <module> <verb>` (syntax,
   options, `access` read/write/privileged, `async_mode`), `buckyos <module> --help`.
 - Source: `/opt/buckyos/libexec/buckyos-tool/cli/modules/<module>.ts` (`system-config` is `system_config.ts`); identity

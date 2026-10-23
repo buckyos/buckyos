@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    node_executor_resource, AppInstanceId, ExecutorConfig, ExecutorError,
+    agent_executor_resource, node_executor_resource, AppInstanceId, ExecutorConfig, ExecutorError,
     ExecutorErrorCode, ExecutorOp, ExecutorPrincipalBinding, ExecutorProfile, TokenPrincipalKind,
     TokenUse, NODE_EXECUTOR_LEASE_MS,
 };
@@ -39,6 +39,7 @@ pub trait RbacChecker: Send + Sync {
 struct Snapshot {
     config: ExecutorConfig,
     valid_until: Instant,
+    valid_until_suspend_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,8 +59,12 @@ pub struct AuthState {
 impl AuthState {
     /// Remaining validity comes from the deadline as seen now, capped at one
     /// lease, and is then tracked on the monotonic clock.
-    pub fn apply(&self, config: ExecutorConfig, now_wall_ms: u64) -> ApplyResult {
-        if config.validate().is_err() {
+    pub fn apply(&self, config: ExecutorConfig, now_wall_ms: u64, admission: crate::ExecutorAdmission) -> ApplyResult {
+        let valid = match admission {
+            crate::ExecutorAdmission::Node => config.validate(),
+            crate::ExecutorAdmission::Wss => config.validate_execution(),
+        };
+        if valid.is_err() {
             return ApplyResult::Ignored;
         }
         let remaining = config
@@ -67,6 +72,7 @@ impl AuthState {
             .saturating_sub(now_wall_ms)
             .min(NODE_EXECUTOR_LEASE_MS);
         let valid_until = Instant::now() + Duration::from_millis(remaining);
+        let valid_until_suspend_ms = suspend_clock_ms().saturating_add(remaining);
         let mut guard = self.snapshot.write().unwrap();
         match guard.as_mut() {
             Some(current) if config.generation < current.config.generation => ApplyResult::Ignored,
@@ -79,6 +85,7 @@ impl AuthState {
                 current.config.auth_valid_until_ms = config.auth_valid_until_ms;
                 if valid_until > current.valid_until {
                     current.valid_until = valid_until;
+                    current.valid_until_suspend_ms = valid_until_suspend_ms;
                 }
                 ApplyResult::Renewed
             }
@@ -86,6 +93,7 @@ impl AuthState {
                 *guard = Some(Snapshot {
                     config,
                     valid_until,
+                    valid_until_suspend_ms,
                 });
                 ApplyResult::Replaced
             }
@@ -102,13 +110,28 @@ impl AuthState {
         let guard = self.snapshot.read().unwrap();
         guard
             .as_ref()
-            .filter(|s| s.config.is_open() && Instant::now() < s.valid_until)
+            .filter(|s| s.config.is_open()
+                && crate::now_ms() < s.config.auth_valid_until_ms
+                && Instant::now() < s.valid_until
+                && suspend_clock_ms() < s.valid_until_suspend_ms)
             .map(|s| s.config.clone())
     }
 
     pub fn has_snapshot(&self) -> bool {
         self.snapshot.read().unwrap().is_some()
     }
+}
+
+fn suspend_clock_ms() -> u64 {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut value: libc::timespec = std::mem::zeroed();
+        if libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut value) == 0 {
+            return (value.tv_sec as u64).saturating_mul(1000)
+                .saturating_add(value.tv_nsec as u64 / 1_000_000);
+        }
+    }
+    crate::now_ms()
 }
 
 /// What a logged-in stream may do; recomputed when the snapshot changes.
@@ -143,6 +166,7 @@ pub fn map_login(
     config: &ExecutorConfig,
     profile_id: &str,
     host_caps: &BTreeSet<ExecutorOp>,
+    identity_mode: crate::ExecutorIdentityMode,
 ) -> Result<Grant, ExecutorError> {
     if session.token_use != TokenUse::Session || session.principal_kind != TokenPrincipalKind::App {
         return Err(denied(
@@ -197,7 +221,7 @@ pub fn map_login(
             "the Agent is not a principal of this profile",
         ));
     }
-    let fits_host = crate::host_honors_run_as(profile);
+    let fits_host = identity_mode.honors_run_as(profile);
     let caps: BTreeSet<ExecutorOp> = config
         .granted_ops(profile_id, agent_did)
         .intersection(host_caps)
@@ -223,10 +247,14 @@ pub fn map_login(
 pub async fn apply_rbac(
     rbac: &dyn RbacChecker,
     node_id: &str,
+    admission: crate::ExecutorAdmission,
     session: &VerifiedSession,
     grant: &mut Grant,
 ) {
-    let resource = node_executor_resource(node_id, &grant.profile_id);
+    let resource = match admission {
+        crate::ExecutorAdmission::Node => node_executor_resource(node_id, &grant.profile_id),
+        crate::ExecutorAdmission::Wss => agent_executor_resource(node_id, &grant.profile_id),
+    };
     let mut allowed = BTreeSet::new();
     for op in grant.caps.iter() {
         if rbac

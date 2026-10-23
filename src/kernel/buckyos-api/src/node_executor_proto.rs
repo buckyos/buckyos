@@ -319,8 +319,10 @@ pub struct ExecutorLoginOk {
 #[serde(deny_unknown_fields)]
 pub struct ExecutorRuntimeTarget {
     pub node_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_id: Option<String>,
     pub profile_id: String,
-    /// The profile's `run_as`; absent when operations run as the host's user.
+    /// The actual execution identity, when reported by the host.
     #[serde(default)]
     pub uid: Option<u32>,
     #[serde(default)]

@@ -1,3 +1,4 @@
+mod agent_daemon;
 mod agent_mgr;
 mod app_install_deployer;
 mod app_install_driver;
@@ -141,7 +142,9 @@ impl RpcAuthPrincipal {
         if self.agent_permission_mode == Some(buckyos_api::AgentPermissionMode::ReadOnly)
             && !matches!(
                 method,
-                "ui.locale.get"
+                "executor.online.list"
+                    | "executor.stream.open"
+                    | "ui.locale.get"
                     | "ui.dashboard"
                     | "user.list"
                     | "user.get"
@@ -466,6 +469,7 @@ struct DockerOverviewCacheEntry {
 
 #[derive(Clone)]
 struct ControlPanelServer {
+    agent_daemon: Arc<agent_daemon::AgentDaemonHub>,
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     diagnostic_bundles: Arc<Mutex<HashMap<String, DiagnosticBundleEntry>>>,
     running_diagnostic_tasks: Arc<Mutex<HashSet<String>>>,
@@ -504,6 +508,7 @@ impl ControlPanelServer {
         ));
         let install_runner = app_install_runner::InstallRunner::new(install_engine.clone());
         ControlPanelServer {
+            agent_daemon: Arc::new(agent_daemon::AgentDaemonHub::default()),
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             diagnostic_bundles: Arc::new(Mutex::new(HashMap::new())),
             running_diagnostic_tasks: Arc::new(Mutex::new(HashSet::new())),
@@ -1219,6 +1224,7 @@ impl ControlPanelServer {
         principal: Option<&'a RpcAuthPrincipal>,
     ) -> Result<futures::future::BoxFuture<'a, Result<RPCResponse, RPCErrors>>, RPCErrors> {
         Ok(match req.method.as_str() {
+            method if method.starts_with("executor.") => Box::pin(self.handle_agent_daemon_rpc(req, principal)),
             // UI bootstrap
             "ui.locale.get" => Box::pin(self.handle_ui_locale_get(req)),
             "ui.locale.set" => Box::pin(self.handle_ui_locale_set(req)),
@@ -1407,6 +1413,10 @@ impl HttpServer for ControlPanelServer {
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let method = req.method().clone();
         let path = req.uri().path().to_string();
+
+        if method == Method::GET && path.starts_with("/kapi/control-panel/executor/") {
+            return self.serve_agent_daemon_ws(req).await;
+        }
 
         if method == Method::GET && path == "/sso_callback" {
             return self.serve_sso_callback(req, info).await;

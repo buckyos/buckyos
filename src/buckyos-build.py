@@ -157,6 +157,13 @@ def _build_sdk_tool_distribution(env: dict[str, str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
+    standalone_daemon = "--agent-daemon" in args
+    if standalone_daemon:
+        args.remove("--agent-daemon")
+        if any(arg in ("--select", "-s", "--app") for arg in args):
+            print("--agent-daemon cannot be combined with module or app selection.")
+            return 2
+        args.extend(["--select", "buckyos_agent_daemon"])
     executable = _find_command("buckyos-build")
     if executable is None:
         print("buckyos-build not found in the current uv runtime.")
@@ -164,9 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         return 127
 
     env = os.environ.copy()
-    result = _prepare_sdk_tool_distribution(env)
-    if result != 0:
-        return result
+    if not standalone_daemon:
+        result = _prepare_sdk_tool_distribution(env)
+        if result != 0:
+            return result
 
     env["BUCKYOS_PIKG_COMMAND"] = json.dumps([
         _find_command("node") or "node",

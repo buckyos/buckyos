@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use buckyos_api::{
@@ -93,6 +94,7 @@ pub struct OpContext {
     pub profile: ExecutorProfile,
     pub limits: ExecutorLimits,
     pub auth_generation: u64,
+    pub admission_generation: u64,
 }
 
 pub struct ActiveOp {
@@ -116,6 +118,9 @@ pub struct OpsManager {
     launcher: WorkerLauncher,
     shell: PathBuf,
     server_epoch: String,
+    identity: crate::spawn::HostIdentity,
+    accepting: AtomicBool,
+    admission_generation: AtomicU64,
     active: Mutex<HashMap<String, Arc<ActiveOp>>>,
     gate: tokio::sync::Mutex<()>,
     path_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -202,17 +207,48 @@ pub struct SubmitOutcome {
 }
 
 impl OpsManager {
-    pub fn new(store: Arc<Store>, launcher: WorkerLauncher, shell: PathBuf, server_epoch: String) -> Self {
+    pub fn new(store: Arc<Store>, launcher: WorkerLauncher, shell: PathBuf, server_epoch: String, identity: crate::spawn::HostIdentity) -> Self {
         let (events, _) = broadcast::channel(1024);
         Self {
             store,
             launcher,
             shell,
             server_epoch,
+            identity,
+            accepting: AtomicBool::new(true),
+            admission_generation: AtomicU64::new(1),
             active: Mutex::new(HashMap::new()),
             gate: tokio::sync::Mutex::new(()),
             path_locks: Mutex::new(HashMap::new()),
             events,
+        }
+    }
+
+    pub fn is_accepting(&self) -> bool {
+        self.accepting.load(Ordering::SeqCst)
+    }
+
+    pub fn pause(&self) {
+        self.accepting.store(false, Ordering::SeqCst);
+        self.admission_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn admission_generation(&self) -> u64 {
+        self.admission_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn resume(&self) {
+        self.accepting.store(true, Ordering::SeqCst);
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.active.lock().unwrap().len()
+    }
+
+    pub async fn wait_idle(&self, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while self.active_count() > 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -290,6 +326,9 @@ impl OpsManager {
         });
         {
             let mut active = self.active.lock().unwrap();
+            if !self.is_accepting() || ctx.admission_generation != self.admission_generation() {
+                return Err(err(ExecutorErrorCode::Unavailable, "executor admission changed"));
+            }
             if active.len() >= ctx.limits.max_concurrency as usize {
                 return Err(err(ExecutorErrorCode::Busy, "no free execution slot"));
             }
@@ -363,14 +402,21 @@ impl OpsManager {
 
     /// Cancel every active operation the predicate selects.
     pub async fn cancel_where(&self, reason: CancelReason, pred: impl Fn(&ActiveOp) -> bool) -> usize {
+        let gate = self.gate.lock().await;
         let keys: Vec<String> = self
             .active
             .lock()
             .unwrap()
             .values()
             .filter(|op| pred(op))
-            .map(|op| op.key.clone())
+            .map(|op| {
+                op.cancel.send_if_modified(|value| {
+                    if value.is_none() { *value = Some(reason); true } else { false }
+                });
+                op.key.clone()
+            })
             .collect();
+        drop(gate);
         for key in &keys {
             let _ = self.cancel(key, reason).await;
         }
@@ -532,7 +578,7 @@ impl OpsManager {
         self.finish(&op, result).await;
     }
 
-    fn base_env(profile: &ExecutorProfile, overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    fn base_env(&self, profile: &ExecutorProfile, overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut env = profile.env.clone();
         for (k, v) in overrides {
             env.insert(k.clone(), v.clone());
@@ -542,7 +588,7 @@ impl OpsManager {
             env.entry("PATH".into())
                 .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
             env.entry("LANG".into()).or_insert_with(|| DEFAULT_LANG.into());
-            if let Some((home, name)) = profile.run_as.as_ref().and_then(|r| passwd_entry(r.uid)) {
+            if let Some((home, name)) = passwd_entry(profile.run_as.as_ref().map(|r| r.uid).unwrap_or(self.identity.uid)) {
                 env.entry("HOME".into()).or_insert(home);
                 env.entry("USER".into()).or_insert(name.clone());
                 env.entry("LOGNAME".into()).or_insert(name);
@@ -573,6 +619,7 @@ impl OpsManager {
         let run_as = op.profile.run_as.clone();
         let cwd = match self
             .worker_job(
+                op,
                 run_as.as_ref(),
                 &WorkerJob::ResolveDir {
                     path: cwd.clone(),
@@ -589,10 +636,11 @@ impl OpsManager {
                 _ => return Self::failed(internal("worker returned no cwd"), ExecutorOpState::Failed),
             },
             FileJobOutcome::SpawnFailed(e) | FileJobOutcome::Unknown(e) => {
-                return Self::failed(e, ExecutorOpState::Failed)
+                let state = if op.cancel.borrow().is_some() { ExecutorOpState::Cancelled } else { ExecutorOpState::Failed };
+                return Self::failed(e, state)
             }
         };
-        let env = Self::base_env(&op.profile, env_overrides);
+        let env = self.base_env(&op.profile, env_overrides);
         let gate = self.gate.lock().await;
         if self.cancelled_before_start(op).await {
             drop(gate);
@@ -601,7 +649,7 @@ impl OpsManager {
                 ExecutorOpState::Cancelled,
             );
         }
-        let mut shell = match spawn_shell(&self.shell, run_as.as_ref(), &cwd, &env) {
+        let mut shell = match spawn_shell(&self.shell, &self.identity, run_as.as_ref(), &cwd, &env) {
             Ok(c) => c,
             Err(e) => {
                 drop(gate);
@@ -646,7 +694,10 @@ impl OpsManager {
         let timeout = Duration::from_millis(record.budget.execution_timeout_ms.max(1));
         let mut cancel_rx = op.cancel.subscribe();
         let mut timed_out = false;
-        let mut cancelled = None;
+        let mut cancelled = *cancel_rx.borrow();
+        if cancelled.is_some() {
+            shell.terminate().await;
+        }
         let sleep = tokio::time::sleep(timeout);
         tokio::pin!(sleep);
         let status = loop {
@@ -738,8 +789,8 @@ impl OpsManager {
         }
     }
 
-    async fn worker_job(&self, run_as: Option<&ExecutorRunAs>, job: &WorkerJob, payload: &[u8], max_reply: u64) -> FileJobOutcome {
-        run_file_job(&self.launcher, run_as, job, payload, max_reply).await
+    async fn worker_job(&self, op: &ActiveOp, run_as: Option<&ExecutorRunAs>, job: &WorkerJob, payload: &[u8], max_reply: u64) -> FileJobOutcome {
+        run_file_job(&self.launcher, &self.identity, run_as, job, payload, max_reply, Some(op.cancel.subscribe())).await
     }
 
     fn path_lock(&self, path: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -762,6 +813,7 @@ impl OpsManager {
         if let ExecutorOpSpec::Write { path, .. } | ExecutorOpSpec::Edit { path, .. } = &record.spec {
             let target = match self
                 .worker_job(
+                    op,
                     run_as.as_ref(),
                     &WorkerJob::ResolveTarget {
                         path: path.clone(),
@@ -778,7 +830,8 @@ impl OpsManager {
                     _ => return Self::failed(internal("worker returned no path"), ExecutorOpState::Failed),
                 },
                 FileJobOutcome::SpawnFailed(e) | FileJobOutcome::Unknown(e) => {
-                    return Self::failed(e, ExecutorOpState::Failed)
+                    let state = if op.cancel.borrow().is_some() { ExecutorOpState::Cancelled } else { ExecutorOpState::Failed };
+                    return Self::failed(e, state)
                 }
             };
             _path_guard = Some(self.path_lock(&target).lock_owned().await);
@@ -846,13 +899,14 @@ impl OpsManager {
         drop(gate);
         self.mark_running(op, None).await;
         let reply_payload = if matches!(record.spec, ExecutorOpSpec::Write { .. }) { 0 } else { max_file };
-        match self.worker_job(run_as.as_ref(), &job, &payload, reply_payload).await {
+        match self.worker_job(op, run_as.as_ref(), &job, &payload, reply_payload).await {
             FileJobOutcome::SpawnFailed(e) => Self::failed(e, ExecutorOpState::Failed),
             FileJobOutcome::Unknown(e) => {
                 if mutating {
                     Self::failed(e.unknown_effect(), ExecutorOpState::Unknown)
                 } else {
-                    Self::failed(e, ExecutorOpState::Failed)
+                    let state = if op.cancel.borrow().is_some() { ExecutorOpState::Cancelled } else { ExecutorOpState::Failed };
+                    Self::failed(e, state)
                 }
             }
             FileJobOutcome::Reply(reply, data) => {

@@ -9,6 +9,7 @@ members = [
     "./kernel/verify_hub",
     "./kernel/node_daemon",
     "./kernel/node_executor",
+    "./kernel/buckyos_agent_daemon",
     "./kernel/scheduler",
     "./kernel/task_manager",
     "./kernel/workflow",

@@ -30,6 +30,10 @@ mod workflow_service;
 pub mod workflow_types;
 mod zone_gateway;
 
+pub mod agent_daemon;
+pub use agent_daemon::*;
+mod agent_daemon_transport;
+pub use agent_daemon_transport::agent_daemon_byte_stream;
 mod agent_permissions;
 mod aicc_client;
 mod aicc_decision;

@@ -1,0 +1,11 @@
+{
+  "vm_ip": "192.168.1.97",
+  "results": [
+    "explicit user service installation, private credential and no restart policy",
+    "service stop removes route",
+    "verified upgrade preserves executor ledger",
+    "failed upgrade rolls back to previous binary",
+    "URL expiry stops installed service without a restart loop",
+    "uninstall removes service and credentials while preserving user files"
+  ]
+}

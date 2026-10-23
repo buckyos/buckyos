@@ -22,6 +22,8 @@
 uv run buckyos-build.py
 # 指定构建模块，名称取自 bucky_project.yaml 的 modules
 uv run buckyos-build.py -s scheduler
+# 独立 Linux Agent Daemon；不准备 Web/SDK 分发包，不安装完整节点
+uv run buckyos-build.py --agent-daemon
 # 跳过 Web 模块，仍会准备 SDK/CLI
 uv run buckyos-build.py --skip-web
 # 停止现有系统、更新安装文件，再启动 node_daemon；不会自动 build

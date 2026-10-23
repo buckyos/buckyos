@@ -18,6 +18,20 @@ def _load_build_script():
 
 
 class BuckyosBuildEntrypointTests(unittest.TestCase):
+    def test_standalone_daemon_build_does_not_require_sdk_or_web_tools(self) -> None:
+        module = _load_build_script()
+        with (
+            patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_sdk_tool_distribution") as sdk,
+            patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
+        ):
+            self.assertEqual(module.main(["--agent-daemon", "--target=x86_64-unknown-linux-musl"]), 0)
+            sdk.assert_not_called()
+            self.assertEqual(run.call_args.args[0], ["/runtime/buckyos-build", "--target=x86_64-unknown-linux-musl", "--select", "buckyos_agent_daemon"])
+            run.reset_mock()
+            self.assertEqual(module.main(["--agent-daemon", "-s", "scheduler"]), 2)
+            run.assert_not_called()
+
     def test_main_delegates_arguments_to_devkit_build(self) -> None:
         module = _load_build_script()
         completed = module.subprocess.CompletedProcess([], 23)

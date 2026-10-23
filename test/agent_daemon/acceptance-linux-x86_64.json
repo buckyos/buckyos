@@ -1,0 +1,21 @@
+{
+  "platform": "Linux x86_64 musl",
+  "vm_id": 111,
+  "vm_ip": "192.168.1.97",
+  "results": [
+    "clean target, current ordinary user and Linux UI unsupported",
+    "created device is invisible before launch",
+    "verified WSS, authenticated App login and online discovery",
+    "exec cwd, environment and uid",
+    "write, edit, read and result query",
+    "file roots enforced",
+    "long command cancellation",
+    "management transport loss reconnects with a new generation and no action replay",
+    "second independent instance refused",
+    "normal stop immediately removes online target",
+    "restart retains ledger; old generation rejects dispatch; previous result recovers",
+    "revocation closes online route",
+    "absolute URL expiry removes live executor",
+    "stop and revocation preserve business files"
+  ]
+}

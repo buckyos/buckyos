@@ -220,10 +220,33 @@ function gatewayFile(name: unknown): GatewayFileResponse {
   return { name: key, path: `/opt/buckyos/etc/${key}`, sizeBytes: content.length, modifiedAt: new Date().toISOString(), content }
 }
 
+const executorDevices = new Map<string, Record<string, unknown>>()
+
 const LOG_SERVICES = ['control-panel', 'cyfs-gateway', 'msg-center', 'node-daemon', 'scheduler', 'system-config', 'task-manager']
 
 function handle(method: string, params: Record<string, unknown>): unknown {
   switch (method) {
+    case 'executor.device.list':
+      return { devices: [...executorDevices.values()].map((device) => ({ device, online: null })) }
+    case 'executor.device.create':
+    case 'executor.device.issue': {
+      const id = method === 'executor.device.create' ? crypto.randomUUID() : String(params.executor_id)
+      const device = method === 'executor.device.create'
+        ? { ...params, executor_id: id, owner_user_id: 'alice', enabled: true, generation: 1, created_at_ms: Date.now() }
+        : { ...executorDevices.get(id), enabled: true, expires_at_ms: params.expires_at_ms ?? null }
+      executorDevices.set(id, device)
+      const access_url = `wss://${HOST}/kapi/control-panel/executor/manage?executor_id=${id}#mock-credential-for-desktop-preview-only`
+      return { device, access_url, start_command: `./start-buckyos-agent-daemon.sh '${access_url}'` }
+    }
+    case 'executor.device.revoke': {
+      const id = String(params.executor_id)
+      const device = executorDevices.get(id)
+      if (device) executorDevices.set(id, { ...device, enabled: false })
+      return {}
+    }
+    case 'executor.device.delete':
+      executorDevices.delete(String(params.executor_id))
+      return {}
     case 'system.buckyos_info.get':
       return buckyosInfo()
     case 'system.dev_mode.get':

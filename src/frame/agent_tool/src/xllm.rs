@@ -4587,10 +4587,16 @@ async fn expand_tool_sources(
         let desc = src.describe();
         match src {
             ToolSource::Group { groupname } => {
+                if groupname == "executor" {
+                    for tool in crate::runtime::executor::executor_tools(manager.run_binding()) {
+                        out.push(manager.register(tool, &desc)?);
+                    }
+                    continue;
+                }
                 let core = groupname == BUILTIN_TOOL_GROUP_BASH_CORE;
                 if groupname != BUILTIN_TOOL_GROUP_BASH && !core {
                     return Err(XllmError::Tools(format!(
-                        "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH}, {BUILTIN_TOOL_GROUP_BASH_CORE})"
+                        "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH}, {BUILTIN_TOOL_GROUP_BASH_CORE}, executor)"
                     )));
                 }
                 let mut extras = ShellExtras {

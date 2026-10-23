@@ -6,6 +6,9 @@ modules:
   node_daemon:
     type: rust
     name: node_daemon
+  buckyos_agent_daemon:
+    type: rust
+    name: buckyos_agent_daemon
   system_config:
     type: rust
     name: system_config
@@ -100,6 +103,7 @@ apps:
     # 模块指向的 文件/文件夹，每次update的时候都会覆盖更新 
     modules:
       node_daemon: bin/node-daemon/
+      buckyos_agent_daemon: bin/buckyos-agent-daemon/
       system_config: bin/system-config/
       verify_hub: bin/verify-hub/
       scheduler: bin/scheduler/

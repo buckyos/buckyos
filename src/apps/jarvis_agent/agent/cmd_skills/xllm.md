@@ -76,6 +76,26 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   (`filesystem_policy: workspace`, the default; elsewhere: `path not allowed by policy`); shell is not
   sandboxed and runs with the agent's permissions.
 - The default loop is `function_call`; `actions`/`tools2actions` need `--loop-model behavior`.
+- To target an online Agent Daemon from an authenticated BuckyOS runtime, add
+  `groupname: executor` to the `.llm_context` tool list:
+
+  ```yaml
+  tools:
+    enabled: true
+    tools:
+      - groupname: bash
+      - groupname: executor
+  ```
+
+  This adds `executor_list` and `executor_call` while keeping the current runtime.
+  Copy the discovered `executor_id`, `generation` and `store_id`, then choose
+  `profile_id` from `profiles`. Query or cancel an accepted operation by its returned
+  `operation_call_id`; after reconnection rediscover the generation and retain
+  the original store. Unknown outcomes and invalid locators must not be replayed.
+  Linux targets expose commands and files only; UI is unsupported. The current
+  tool schema comes from `src/frame/agent_tool/src/runtime/executor.rs`.
+  Shell users can inspect the equivalent CLI with
+  `buckyos command describe executor exec` and `buckyos command describe executor query`.
 - Limits: `--max-tool-iterations` (default 8), `--timeout` total seconds (3600), `--llm-timeout` per request
   (600), `--max-tokens` per reply. With the tool budget spent the model still answers, perhaps saying it
   could not finish (exit 0).

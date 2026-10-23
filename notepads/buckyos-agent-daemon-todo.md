@@ -2,9 +2,9 @@
 
 日期：2026-10-22
 
-状态：待实现。本文是实施计划，不表示下列接口、安装包或桌面能力已经存在。初稿代码基线为 `401d7b071`，本次在 `5ee602826` 核对接入相关源码，并按已确认的“URL 启动、进程在线、到期下线”流程更新；本次只修改本文档。
+状态：公共骨架与 Linux 版本已实现，双架构安装包及 Linux 用户服务 E2E 已通过。按本轮用户范围，macOS/Windows 原生 GUI、helper 与安装包以及 Android 暂不实现；下文保留这些后续任务，不将它们标成已完成。实现入口与实测结果见 §11。初稿基线 `401d7b071`，接入规划核对基线 `5ee602826`；本轮在当前源码上实现。
 
-相关设计：[Node Executor 设计](../doc/arch/node_exector.md)。其中形态 A 为 node_daemon 内嵌，形态 B 为独立 Agent Daemon，形态 C 为移动端等宿主中的嵌入式运行。本文落实形态 B、桌面操作后端及 Android 受限形态 C；旧文档的规划不能作为已实现依据。
+相关设计：[Node Executor 设计](../doc/arch/node_exector.md)。其中形态 A 为 node_daemon 内嵌，形态 B 为独立 Agent Daemon，形态 C 为移动端等宿主中的嵌入式运行。本轮落实形态 B 的公共接入与 Linux 命令/文件能力；macOS/Windows 桌面操作后端和 Android 受限形态 C 保留为后续规划。跨平台混合条目只有全部子项完成才勾选，Linux 部分的实际交付以 §7.3、§11 为准。旧文档的规划不能作为已实现依据。
 
 ## 1. 目标与交付边界
 
@@ -13,8 +13,8 @@
 已确定的要求：
 
 1. **复用 Node Executor。** 复用 Command Stream、登录鉴权、profile、操作账本、查询、取消与文件传输，不建立第二套远程执行协议。
-2. **不依赖 BuckyOSApp 或目标机网关。** WSS 客户端、平台后端、用户会话 helper 与权限引导随 daemon 交付；目标机不要求 Device DID、DeviceDocument、cyfs-gateway 或完整节点身份。已有完整节点也能获得同一套桌面后端。
-3. **辅助功能优先。** macOS AX、Windows UI Automation、Linux AT-SPI、Android Accessibility 提供结构化观察和语义操作；截图、坐标输入按需补充。普通表单、菜单、文本操作不要求每一步截图。
+2. **不依赖 BuckyOSApp 或目标机网关。** WSS 客户端与平台后端随 daemon 交付，macOS/Windows 另带用户会话 helper 与权限引导；目标机不要求 Device DID、DeviceDocument、cyfs-gateway 或完整节点身份。已有 macOS/Windows 完整节点也能获得同一套桌面后端。
+3. **辅助功能优先，按平台交付。** 当前由 macOS AX、Windows UI Automation 提供结构化观察和语义操作，截图、坐标输入按需补充；普通表单、菜单、文本操作不要求每一步截图。Linux 当前只交付命令与文件能力，不实现 GUI；Android Accessibility 留待后续。
 4. **URL 启动即接入。** 用户在 BuckyOS 添加设备并生成可设有效期的接入 URL，用启动脚本加 URL 参数运行 daemon；目标机不再做一次账号登录或设备配对。脚本负责取得对应平台产物并以前台进程运行，不要求 Python、Homebrew、xdotool 或开发工具。平台必需的首次授权仍需用户完成。
 5. **能力按实际环境报告。** 没有桌面会话、控件不支持辅助功能、授权缺失、锁屏、后台受限等情况要明确返回；不能把命令执行可用等同于桌面可用。
 6. **保持 Agent 当前运行位置。** Agent 通过设备工具访问目标机；完整 OpenDAN Session 迁移到 remote_node 不作为交付前置条件。
@@ -35,7 +35,7 @@
 ./start-buckyos-agent-daemon.sh '<BuckyOS生成的接入URL>'
 ```
 
-Windows 提供等价 PowerShell 脚本。Android 用独立轻量 APK 接收同一接入 URL 并显式启停，不要求通过 ADB 执行桌面脚本。
+Windows 提供等价 PowerShell 脚本。后续 Android TV 方案拟用独立轻量 APK 接收同一接入 URL 并显式启停，暂不实现。
 
 ## 2. 平台范围：以实际构建入口为准
 
@@ -43,20 +43,20 @@ Windows 提供等价 PowerShell 脚本。Android 用独立轻量 APK 接收同�
 
 | 平台 | 当前仓库依据 | 本 TODO 的交付目标 |
 | --- | --- | --- |
-| Linux x86_64 | [主 CI](../.github/workflows/build-all.yml)，构建目标为 musl | 独立 daemon、命令/文件、X11 与 Wayland 桌面适配、无桌面运行 |
-| Linux aarch64 | 同上，构建目标为 GNU | 与 x86_64 相同的协议和功能验收 |
+| Linux x86_64 | [主 CI](../.github/workflows/build-all.yml)，构建目标为 musl | 独立 daemon、WSS 接入、命令/文件与操作恢复；当前不支持 GUI |
+| Linux aarch64 | 同上，构建目标为 GNU | 与 x86_64 相同的命令/文件、接入和恢复验收；当前不支持 GUI |
 | macOS x86_64 / aarch64 | 主 CI 两种架构 | 独立 daemon、AX、按需截图/输入、随包安装的用户会话 helper |
 | Windows x86_64 | 主 CI 当前启用的 Windows 架构 | 独立 daemon、PowerShell/文件、UIA、按需截图/输入 |
-| Android arm64 | [BuckyOSApp Android CI](../../BuckyOSApp/.github/workflows/build-android.yml) 已有 APK 构建、签名和上传入口；不是 Node Executor 的现有支持 | 单独的轻量 Agent Daemon APK；复用核心协议，开放 Android 实际允许的应用/文件能力 |
+| Android arm64 | [BuckyOSApp Android CI](../../BuckyOSApp/.github/workflows/build-android.yml) 已有 APK 构建、签名和上传入口；不是 Node Executor 的现有支持 | 后续规划，主要面向 Android TV，暂不实现；不计入当前交付门槛 |
 | Windows ARM64 | [Windows 子 workflow](../.github/workflows/build-windows.yml) 接受该 target，主 CI 未启用 | 扩展目标：补 CI 和原生机器验收后才能标为支持 |
 | iOS | [现有 Apple 工程](../../BuckyOSApp/src-tauri/gen/apple/project.yml) 有 iOS 配置，未见对应发布 CI | 单列调研，不计入当前支持平台完成条件；不能承诺普通 iOS App 获得 macOS 式跨应用桌面控制 |
 
-说明：以上是构建配置事实，不代表本次验证了各平台远程构建结果。Linux X11/Wayland 是运行环境维度，不是增加 CPU target。Android 的独立 APK 不依赖 BuckyOSApp，但移动系统仍要求安装应用包，不能按桌面后台服务的方式直接部署裸可执行文件。
+说明：以上是构建配置事实，不代表本次验证了各平台远程构建结果。Linux 无论是否安装桌面环境，本期均只提供命令与文件能力；X11/Wayland 与辅助功能后端不在当前范围。Android 的独立 APK 留待后续，不依赖 BuckyOSApp，但仍是应用包交付形态。
 
-- [ ] 冻结各交付包最低 OS/API 版本与桌面环境版本，并写入能力说明；以实际 SDK/API 与原生验收结果决定，不凭 CI runner 名称推断最低版本。
-- [ ] 将上述平台矩阵落实到专用构建任务与 DV 清单；桌面版本先交付，Android 单独里程碑验收，不用桌面通过代替移动端完成。
+- [ ] 冻结各交付包最低 OS/API 版本，并为 macOS/Windows 明确桌面能力要求；以实际 SDK/API 与原生验收结果决定，不凭 CI runner 名称推断最低版本。Linux 不设桌面环境前置条件。
+- [ ] 将当前五个节点构建目标落实到专用构建任务与 DV 清单；Linux 验收命令/文件，macOS/Windows 另验 GUI。Android TV 待后续单独立项，不阻塞当前交付。
 
-## 3. 当前已有基础与真实缺口
+## 3. 实施前基础与缺口（基线记录，当前实现见 §11）
 
 | 源码入口 | 当前事实 | 本次缺口 |
 | --- | --- | --- |
@@ -69,13 +69,13 @@ Windows 提供等价 PowerShell 脚本。Android 用独立轻量 APK 接收同�
 | [cyfs-gateway-lib](../../cyfs-gateway/src/components/cyfs-gateway-lib/src/lib.rs)、[网关装配入口](../../cyfs-gateway/src/components/cyfs-gateway-app-lib/src/composition.rs) | 现有 Node 使用设备信道与 RTCP 转发 | 完整 Node 保留该路径；独立 daemon 不内嵌网关，Zone 侧新增 WSS 接入与路由 |
 | [agent_tool/runtime/node.rs](../src/frame/agent_tool/src/runtime/node.rs) | 已有远程命令、文件读取、DID/SOCKS connector 和恢复 locator | 增加在线 executor 发现与 WSS 路由 connector；目标不再只能是 Node DID |
 | [lib_opendan/runtime/mod.rs](../src/frame/lib_opendan/src/runtime/mod.rs) | 完整 Agent Session 当前拒绝 remote_node | 本任务不以迁移 Session 解决桌面调用 |
-| [agent_tool/xllm.rs](../src/frame/agent_tool/src/xllm.rs)、[context_loop.rs](../src/frame/llm_context/src/context_loop.rs) | 图片输入已有；普通工具结果到模型仍以文本为主 | AX/UIA/AT-SPI JSON 可直接复用；截图工具要另补多模态结果传递 |
+| [agent_tool/xllm.rs](../src/frame/agent_tool/src/xllm.rs)、[context_loop.rs](../src/frame/llm_context/src/context_loop.rs) | 图片输入已有；普通工具结果到模型仍以文本为主 | macOS/Windows 的 AX/UIA JSON 可直接复用；截图工具要另补多模态结果传递 |
 
 现有默认 `max_file_bytes` 为 1 MiB、`max_concurrency` 为 2。高分辨率截图要缩放、压缩或配置额度；桌面输入需要额外的会话级串行队列。`workdir_roots` 约束文件 API 和 cwd，不是通用 shell 沙箱。
 
 ## 4. 组件形态与执行身份
 
-建议新增薄宿主 crate `src/kernel/buckyos_agent_daemon/`，复用 `node_executor`，增加 WSS 客户端与接入生命周期；平台 UI 后端放在 `node_executor` 的按平台编译模块中。Zone 侧提供 URL 签发、连接管理、配置下发与 Agent 路由。Android 通过轻量原生壳接入协议/授权/账本核心，平台执行能力由宿主注入。目录和接入服务是实施建议，尚未创建。
+建议新增薄宿主 crate `src/kernel/buckyos_agent_daemon/`，复用 `node_executor`，增加 WSS 客户端与接入生命周期；macOS/Windows UI 后端放在按平台编译的模块中，Linux 不编译或分发 GUI 后端/helper。Zone 侧提供 URL 签发、连接管理、配置下发与 Agent 路由。后续 Android 可通过轻量原生壳注入平台执行能力，当前不实现。本轮已按该分层实现 Linux 宿主和 Zone 接入；其他平台后端仍为后续任务。
 
 ```mermaid
 flowchart LR
@@ -83,8 +83,8 @@ flowchart LR
     D[目标机 daemon] <-->|daemon 主动建连| Z
     D <--> E[Node Executor 核心]
     E --> W[命令与文件 worker]
-    E --> U[用户会话 UI 后端]
-    U --> S[AX / UIA / AT-SPI / Android Accessibility]
+    E --> U[macOS / Windows 用户会话 UI 后端]
+    U --> S[AX / UIA]
     U --> V[按需截图与输入]
 ```
 
@@ -92,50 +92,52 @@ flowchart LR
 
 | 部署 | 默认身份与生命周期 | 桌面后端 |
 | --- | --- | --- |
-| 已有完整 BuckyOS Node | 保持当前 node_daemon 的系统服务/用户进程模型 | 节点安装器自带 helper，在目标 OS 用户的桌面会话中启动 |
-| 独立桌面 daemon | 脚本以前台当前用户进程启动；退出即结束接入，登录自启动是后续显式可选项 | 同用户上下文，helper 随主进程启动和退出 |
-| Linux 无桌面设备 | 同样支持前台启动；常驻 user/system service 是显式可选模式，仍受 URL 有效期约束 | 报告无桌面，只提供获准的命令与文件能力 |
-| Android | 应用沙箱身份，用户在 APK 中以 URL 启动/停止；系统终止服务则下线 | AccessibilityService / 截图会话，经 JNI 或窄接口接核心 |
+| 已有完整 BuckyOS Node | 保持当前 node_daemon 的系统服务/用户进程模型 | macOS/Windows 节点分发用户会话 helper；Linux 本期不分发 GUI 后端 |
+| 独立 macOS/Windows daemon | 脚本以前台当前用户进程启动；退出即结束接入，登录自启动是后续显式可选项 | 同用户上下文，helper 随主进程启动和退出 |
+| Linux daemon | 同样支持前台启动；常驻 user/system service 是显式可选模式，仍受 URL 有效期约束 | 只提供获准的命令与文件能力；UI 报告 unsupported，不依赖桌面会话 |
+| Android（后续，暂不实现） | 应用沙箱身份，用户在 APK 中以 URL 启动/停止；系统终止服务则下线 | AccessibilityService / 截图会话，经 JNI 或窄接口接核心 |
 
 可复用同一二进制的不同启动模式，但不能把后台系统服务与交互桌面的上下文混为一谈。helper 是随包内部组件，不要求 BuckyOSApp、托盘或常驻可见窗口。权限引导可以由 daemon 自带的最小界面或系统设置入口完成。
 
-- [ ] 明确执行身份模型：`current_user` 与 `switch_user`，由实际宿主能力决定，不能由远程请求任意切换。
-- [ ] Unix 当前用户模式校验真实 uid/gid/组身份并以原身份执行，不调用仅 root 可用的 setgroups；系统模式保留现有显式降权与核验。
+- [x] 明确执行身份模型：`current_user` 与 `switch_user`，由实际宿主能力决定，不能由远程请求任意切换。
+- [x] Unix 当前用户模式校验真实 uid/gid/组身份并以原身份执行，不调用仅 root 可用的 setgroups；系统模式保留现有显式降权与核验。
 - [ ] Windows 当前用户模式绑定 SID 与 session；不能因为进程位于 Windows 就无条件公布全部 worker/UI 能力。
-- [ ] 将平台能力从硬编码 euid/cfg 判断改为实际可执行后端报告；Android 未实现的 exec 和跨应用文件能力必须拒绝。
-- [ ] UI 后端建立专用事件循环/线程或进程，不让 AX、COM、D-Bus、JNI 的阻塞调用卡住 Tokio 网络与撤权处理。
+- [ ] 将平台能力从硬编码 euid/cfg 判断改为实际可执行后端报告；Linux 不公布 UI 操作能力，未来 Android 也只能公布已实现的受限能力。
+- [ ] macOS/Windows UI 后端建立专用事件循环/线程或进程，不让 AX、COM 的阻塞调用卡住 Tokio 网络与撤权处理。
 - [ ] Unix IPC 验证 peer credentials，Windows named pipe 验证 SID/session 并设置 ACL；helper 只接受本机受信宿主的受约束请求。
 - [ ] helper 仅接收所需的用户/session/操作授权上下文，不获得接入 URL 凭据、Owner 私钥或任意远程 shell 凭据。
 
 ### 4.2 与现有 Node 共存
 
-- [ ] 完整 Node 继续由 node_daemon 托管原有执行端；独立 WSS executor 通过独立记录、配置根和账本定位，不冒用 Node DID 或自动继承 Node 权限。
-- [ ] 独立 daemon 默认不监听 3184、不覆盖 `etc/node_executor_acl.json`，不打开完整节点账本；已有 `Store` 单写锁继续生效。
-- [ ] 完整 Node 的 RTCP 接入与轻量 WSS 接入共用执行核心，网络准入由各自宿主负责；不要求轻量目标机安装或发现网关。
-- [ ] 同一 executor_id 默认只允许一个活动实例；同机不同执行端分别绑定当前 OS 用户和数据根，桌面输入仍受目标 session 的串行约束。
+- [x] 完整 Node 继续由 node_daemon 托管原有执行端；独立 WSS executor 通过独立记录、配置根和账本定位，不冒用 Node DID 或自动继承 Node 权限。
+- [x] 独立 daemon 默认不监听 3184、不覆盖 `etc/node_executor_acl.json`，不打开完整节点账本；已有 `Store` 单写锁继续生效。
+- [x] 完整 Node 的 RTCP 接入与轻量 WSS 接入共用执行核心，网络准入由各自宿主负责；不要求轻量目标机安装或发现网关。
+- [x] 同一 executor_id 默认只允许一个活动实例；同机不同执行端分别绑定当前 OS 用户和数据根，桌面输入仍受目标 session 的串行约束。
 - [ ] 显式迁移到完整 Node 时另行定义目标标识、RBAC 和账本交接；不把两种入口自动合并或隐式清空 `store_id`。
 
 ## 5. URL 接入、在线目录与授权
 
-以下字段、路径与接口均为拟议设计，尚未实现；实施时同步共享类型、control-panel、配置生成、SDK 和文档。管理页称为“设备”，底层是轻量 executor 记录，不要求它成为 BuckyOS Device 或 Node。
+以下接入流程已实现，实际字段与路径以共享 `agent_daemon.rs`、control-panel 和 SDK 为准，见 §11。管理页称为“设备”，底层是轻量 executor 记录，不要求它成为 BuckyOS Device 或 Node。
 
 ### 5.1 在 BuckyOS 添加设备并签发 URL
 
-- [ ] 管理端创建稳定的 `executor_id`，保存名称、owner、获准 Agent/profile、启用状态与可选 `expires_at`；生成包含接入地址与随机凭据的 URL，并提供各平台启动命令。
-- [ ] URL 凭据只授权该 executor 的接入、配置读取和状态上报，不能用于调用其他设备或替代 Agent 的执行授权；服务端保存可校验摘要与撤销状态，不依赖难猜的 executor_id 作为凭据。
-- [ ] 不生成目标机 Device DID、DeviceDocument 或设备私钥，不增加目标机浏览器登录、pair/unpair 等前置步骤；BuckyOS 管理端创建 URL 已完成所需授权。
-- [ ] URL 在有效期内可用于重启/断线重连，默认同一执行端只允许一个活动实例，第二个独立进程接入返回占用错误；重置 URL 使旧凭据及其活动连接失效。没有设置到期时间的 URL 仍可主动撤销。
-- [ ] daemon 解析 URL 后，以认证头等专用字段发送凭据，日志、诊断、错误和遥测只输出脱敏地址；启动脚本不打印含凭据的完整命令，不把 URL 写入全局启动项或默认明文配置，提供可选的受限文件/stdin 输入方式。
-- [ ] URL 删除/撤销使执行端下线；删除在线记录、删除管理记录、清理本地账本分别定义，不把“不可见”实现成每次退出都删除设备配置。
+添加设备的入口在Settings - Cluster Manager - Nodes/Devices
+
+- [x] 管理端创建稳定的 `executor_id`，保存名称、owner、获准 Agent/profile、启用状态与可选 `expires_at`；生成包含接入地址与随机凭据的 URL，并提供 Linux 启动命令。
+- [x] URL 凭据只授权该 executor 的接入、配置读取和状态上报，不能用于调用其他设备或替代 Agent 的执行授权；服务端保存可校验摘要与撤销状态，不依赖难猜的 executor_id 作为凭据。
+- [x] 不生成目标机 Device DID、DeviceDocument 或设备私钥，不增加目标机浏览器登录、pair/unpair 等前置步骤；BuckyOS 管理端创建 URL 已完成所需授权。
+- [x] URL 在有效期内可用于重启/断线重连，默认同一执行端只允许一个活动实例，第二个独立进程接入返回占用错误；重置 URL 使旧凭据及其活动连接失效。没有设置到期时间的 URL 仍可主动撤销。
+- [x] daemon 解析 URL 后，以认证头等专用字段发送凭据，日志、诊断、错误和遥测只输出脱敏地址；启动脚本不打印含凭据的完整命令，不把 URL 写入全局启动项或默认明文配置，提供可选的受限文件/stdin 输入方式。
+- [x] URL 删除/撤销使执行端下线；删除在线记录、删除管理记录、清理本地账本分别定义，不把“不可见”实现成每次退出都删除设备配置。
 
 ### 5.2 主动 WSS 与 Command Stream
 
-- [ ] Zone 提供可达的 HTTPS/WSS 接入入口；目标机只发起出站连接。接入服务验证 URL 的归属、状态与绝对到期时间，daemon 验证 TLS 服务端，不需要目标机证书或入站端口。
-- [ ] 脚本下载/校验匹配平台的产物后以前台方式运行 daemon，正确转发 Ctrl-C/终止信号并等待退出；不默认后台脱离、不自动注册登录启动或退出重启服务。
-- [ ] 建立 WSS 管理连接，完成接入鉴权、配置下发、`apply_config`、执行核心初始化和 readiness 上报后才发布在线执行端；初始化失败只报告诊断，不公布可用路由。
-- [ ] 首版每条 Command Stream 对应一条独立数据 WSS，按需由 daemon 主动建立并使用短期流票据关联到当前活动实例；管理连接负责配置、心跳和开流通知，避免先实现复杂多路复用。票据绑定 executor、连接 generation、请求方与有效期，数据连接不能独立维持在线状态。
-- [ ] 数据 WSS 经 binary-message/字节流适配后交给 `NodeExecutor::serve`；daemon 是 WebSocket 客户端，同时是执行协议服务端。Agent 仍先发 `login`，不同 Agent/runtime 使用独立 Command Stream，不能共用一次 App 登录冒充其他调用方。
-- [ ] 复用现有 JSON 控制帧、二进制数据、op_id、账本与 query/cancel；实现 WSS ping/close、消息边界适配、大小限制、背压和有界重连，接入服务不另造 HTTP shell API。
+- [x] Zone 提供可达的 HTTPS/WSS 接入入口；目标机只发起出站连接。接入服务验证 URL 的归属、状态与绝对到期时间，daemon 验证 TLS 服务端，不需要目标机证书或入站端口。
+- [x] 脚本下载/校验匹配平台的产物后以前台方式运行 daemon，正确转发 Ctrl-C/终止信号并等待退出；不默认后台脱离、不自动注册登录启动或退出重启服务。
+- [x] 建立 WSS 管理连接，完成接入鉴权、配置下发、`apply_config`、执行核心初始化和 readiness 上报后才发布在线执行端；初始化失败只报告诊断，不公布可用路由。
+- [x] 首版每条 Command Stream 对应一条独立数据 WSS，按需由 daemon 主动建立并使用短期流票据关联到当前活动实例；管理连接负责配置、心跳和开流通知，避免先实现复杂多路复用。票据绑定 executor、连接 generation、请求方与有效期，数据连接不能独立维持在线状态。
+- [x] 数据 WSS 经 binary-message/字节流适配后交给 `NodeExecutor::serve`；daemon 是 WebSocket 客户端，同时是执行协议服务端。Agent 仍先发 `login`，不同 Agent/runtime 使用独立 Command Stream，不能共用一次 App 登录冒充其他调用方。
+- [x] 复用现有 JSON 控制帧、二进制数据、op_id、账本与 query/cancel；实现 WSS ping/close、消息边界适配、大小限制、背压和有界重连，接入服务不另造 HTTP shell API。
 
 ### 5.3 在线可见性与进程生命周期
 
@@ -147,27 +149,29 @@ flowchart LR
 | 崩溃、断网、休眠或半开连接 | 检测断开或心跳租约到期后移除 | 请求失败为不可用/结果待确认，不宣称任务已取消 |
 | URL 到期或被撤销 | 移除，拒绝新操作和重连 | 关闭关联连接，触发本地停止接单与取消流程 |
 
-- [ ] 持久保存管理记录，单独维护易失在线目录；在线目录只暴露授权给调用 Agent 的执行端。列举、路由和动作派发都检查有效期，不能仅靠 UI 隐藏。
-- [ ] 定义心跳间隔与在线租约上限并提供可测量指标；首版建议 5 秒心跳、15 秒超时。正常关闭立即处理，非正常退出从最后一次有效心跳起至多经过该超时移除，不承诺网络故障下零延迟感知。
-- [ ] 每次进程启动使用新的 `instance_id`，每次重连签发新的连接 generation；同进程凭服务端签发且仅存进程内的恢复凭据接管旧连接，不以自报 instance_id 作为接管依据，凭据不越过 URL 到期时间。旧连接的 heartbeat/close 不得恢复或删除新实例，旧请求与 UI 句柄不得漂移到新实例。
-- [ ] 管理连接失效立即停止发布可用数据通道并暂停新动作派发；同一进程仅在 URL 仍有效时重连。重连后重新同步配置/readiness，查询原操作状态，不自动重放已接受的命令或 UI 动作。
-- [ ] 正常退出先撤下在线路由、停止接单，尽力取消受管命令、释放输入状态并停止 helper，最后关闭连接和退出；脚本不能遗留仍可执行远程请求的子进程。
-- [ ] 保留当前执行语义的限制：单条数据 Command Stream 断流不自动取消已接受的任务，执行端崩溃也不代表子进程和副作用消失；管理连接失效暂停新派发，到期/撤销另行触发取消。失联操作保持待查询，重启后仅将没有持久化最终结果的操作标为 `Unknown`，已完成操作保留原结果，不得凭离线状态伪造成功或取消。
+- [x] 持久保存管理记录，单独维护易失在线目录；在线目录只暴露授权给调用 Agent 的执行端。列举、路由和动作派发都检查有效期，不能仅靠 UI 隐藏。
+- [x] 定义心跳间隔与在线租约上限并提供可测量指标；首版建议 5 秒心跳、15 秒超时。正常关闭立即处理，非正常退出从最后一次有效心跳起至多经过该超时移除，不承诺网络故障下零延迟感知。
+- [x] 每次进程启动使用新的 `instance_id`，每次重连签发新的连接 generation；同进程凭服务端签发且仅存进程内的恢复凭据接管旧连接，不以自报 instance_id 作为接管依据，凭据不越过 URL 到期时间。旧连接的 heartbeat/close 不得恢复或删除新实例，旧请求与 UI 句柄不得漂移到新实例。
+- [x] 管理连接失效立即停止发布可用数据通道并暂停新动作派发；同一进程仅在 URL 仍有效时重连。重连后重新同步配置/readiness，查询原操作状态，不自动重放已接受的命令或 UI 动作。
+- [x] 正常退出先撤下在线路由、停止接单，尽力取消受管命令、释放输入状态并停止 helper，最后关闭连接和退出；脚本不能遗留仍可执行远程请求的子进程。
+- [x] 保留当前执行语义的限制：单条数据 Command Stream 断流不自动取消已接受的任务，执行端崩溃也不代表子进程和副作用消失；管理连接失效暂停新派发，到期/撤销另行触发取消。失联操作保持待查询，重启后仅将没有持久化最终结果的操作标为 `Unknown`，已完成操作保留原结果，不得凭离线状态伪造成功或取消。
 
 ### 5.4 URL 到期、授权配置与身份解耦
 
-- [ ] 到期时间是接入授权的绝对截止时间；控制面不签发越过它的会话/流票据或授权快照。接入服务和 daemon 都在截止时停止新派发，移除在线状态并关闭连接；daemon 结束本轮接入，不无限重试已过期 URL。
-- [ ] daemon 按服务端确认的期限保守建立本地单调时钟截止时间，重连校验原绝对到期时间；控制面不可达或本机时钟回拨均不能延长授权。休眠恢复后先重新验证授权再派发动作，不能依赖不计休眠的计时器续命。授权快照还受现有短租约上限限制，取两者更早的截止时间。
-- [ ] 到期/撤销对已接受工作请求取消，停止后续 UI 步骤并尽力结束受管进程；已发生的副作用不能回滚，未确认结果保持未知。操作自己的 execution timeout 不能替代 URL 截止或延长接入。
-- [ ] 定义通用 executor target，用稳定 `executor_id` 替代独立路径对 Node DID 的依赖；同步 `ExecutorHost`、ledger 归属、describe、客户端 connector/locator 和 RBAC resource。保留 `store_id`，不同机器/账本使用同一 URL 时不能混认旧结果。
-- [ ] 拆开 `ExecutorConfig.allowed_devices` 与执行授权：完整 Node 保留 RTCP 设备 ACL；WSS 使用 URL/活动连接准入，不能为通过校验填造假 DID。共用 profile、Agent/App binding、permission_mode、ops、limits、revision/generation 与租约逻辑。
-- [ ] 为轻量 executor 单独定义管理配置与派生快照的存储和 RBAC，复用现有授权推导。不要直接写入被 scheduler 当作 Node 消费的 `devices/*/info`，也不沿用此前拟议的 Device enrollment 前置条件。
-- [ ] 独立宿主通过接入服务下发的可信 issuer/校验材料、RBAC 和配置实现 `TokenVerifier`/`RbacChecker`；保留 App session → Agent binding 校验，不用接入 URL 代替 Agent 登录，不依赖全局 BuckyOS runtime。
+- [x] 到期时间是接入授权的绝对截止时间；控制面不签发越过它的会话/流票据或授权快照。接入服务和 daemon 都在截止时停止新派发，移除在线状态并关闭连接；daemon 结束本轮接入，不无限重试已过期 URL。
+- [x] daemon 按服务端确认的期限保守建立本地单调时钟截止时间，重连校验原绝对到期时间；控制面不可达或本机时钟回拨均不能延长授权。休眠恢复后先重新验证授权再派发动作，不能依赖不计休眠的计时器续命。授权快照还受现有短租约上限限制，取两者更早的截止时间。
+- [x] 到期/撤销对已接受工作请求取消，停止后续 UI 步骤并尽力结束受管进程；已发生的副作用不能回滚，未确认结果保持未知。操作自己的 execution timeout 不能替代 URL 截止或延长接入。
+- [x] 定义通用 executor target，用稳定 `executor_id` 替代独立路径对 Node DID 的依赖；同步 `ExecutorHost`、ledger 归属、describe、客户端 connector/locator 和 RBAC resource。保留 `store_id`，不同机器/账本使用同一 URL 时不能混认旧结果。
+- [x] 拆开 `ExecutorConfig.allowed_devices` 与执行授权：完整 Node 保留 RTCP 设备 ACL；WSS 使用 URL/活动连接准入，不能为通过校验填造假 DID。共用 profile、Agent/App binding、permission_mode、ops、limits、revision/generation 与租约逻辑。
+- [x] 为轻量 executor 单独定义管理配置与派生快照的存储和 RBAC，复用现有授权推导。不要直接写入被 scheduler 当作 Node 消费的 `devices/*/info`，也不沿用此前拟议的 Device enrollment 前置条件。
+- [x] 独立宿主通过接入服务下发的可信 issuer/校验材料、RBAC 和配置实现 `TokenVerifier`/`RbacChecker`；保留 App session → Agent binding 校验，不用接入 URL 代替 Agent 登录，不依赖全局 BuckyOS runtime。
 - [ ] capability 是能力声明，不是授权。最终允许范围取配置、Agent 权限、宿主身份、平台授权和实际后端支持的交集；缺 GUI 授权不应隐藏仍可用的命令/文件能力。
 
 WSS 负责加密双向传输，客户端认证由应用定义；设计依据 [RFC 6455 §10.5–10.6](https://www.rfc-editor.org/rfc/rfc6455.html#section-10.5)。接入 URL、在线目录和上述生命周期是本项目拟议接口，不是 WebSocket 自带功能。
 
 ## 6. UI 协议与操作语义
+
+本节当前只要求 macOS/Windows 实现。Linux 在 capability/status 中明确报告 UI `unsupported`；不公布可调用的观察、截图或输入工具，直接请求这些操作也返回不支持，不提示安装桌面或授予 GUI 权限。
 
 ### 6.1 最小工具面
 
@@ -240,22 +244,18 @@ AX 支持读取控件属性、执行动作与状态通知；信任检查针对�
 
 Windows 的服务/session 边界、控件操作及输入限制分别依据 [Interactive Services](https://learn.microsoft.com/en-us/windows/win32/services/interactive-services)、[交互用户登录任务](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/ne-taskschd-task_logon_type)、[UIA Client](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-clientsoverview) 与 [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)。截图与桌面变化处理参照 [Desktop Duplication](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/desktop-dup-api)。
 
-### 7.3 Linux：AT-SPI + X11 / Wayland 分支
+### 7.3 Linux：仅命令与文件，当前不支持 GUI
 
-- [ ] 实现 AT-SPI 控件树、Action、Text/EditableText、Selection、Value 等能力与事件监听；限制递归、文本量和远端应用响应等待。
-- [ ] 在目标用户会话中发现 session bus，并通过 `org.a11y.Bus` 取得 accessibility bus；不能把 root 的 D-Bus 环境或 SSH 的 DISPLAY 当成目标桌面会话。
-- [ ] 独立版默认脚本前台运行，GUI helper 跟随 daemon 启停；user service/XDG autostart 是显式可选模式。完整节点的 system service 通过本地 IPC 接用户 helper，明确启动项去重和退出行为。
-- [ ] X11：经本机合法 display 授权使用系统截图与 XTest 等输入接口；不依赖 shell 调用 xdotool，不设置 `xhost +`。
-- [ ] Wayland：使用 RemoteDesktop/ScreenCast portal，按提供者支持情况使用 PipeWire 捕获与 EIS/libei 输入；AT-SPI 语义操作与这些通道分别报告能力。
-- [ ] 探测 portal 版本、可用 backend 与获准设备/屏幕；按 portal 规则处理用户选择、恢复 token、会话关闭和撤权，不承诺首次或每次重启都能无提示恢复。
-- [ ] 不以 root、XWayland 或读取 `/dev/uinput` 作为 Wayland 缺权限时的自动回退；缺 backend 返回原因，不冒充可控。
-- [ ] 无 GUI / 缺 AT-SPI / 缺 portal 时仍提供已授权的命令和文件能力；脚本产物交付核心必需依赖，可选 GUI 库由独立 helper 或动态加载隔离，不能在进程加载时阻止核心启动。明确系统必需库的最低版本；DEB/RPM 安装模式用包依赖补齐，脚本模式探测缺项并提供可选安装指引，doctor 如实报告降级。
-- [ ] 明确 GNOME/KDE 的测试版本，分别验证 X11、Wayland；不能仅在 Xvfb 通过就标记 Linux 桌面完成。
-- [ ] 同时验证 x86_64 musl 与 aarch64 GNU 的链接/运行：引入 AT-SPI、D-Bus、PipeWire、libei 后检查动态依赖和包依赖，避免破坏现有静态产物构建。
+- [x] x86_64 musl 与 aarch64 GNU 均实现脚本+URL 启动、WSS 在线登记、命令执行、文件读写/编辑、查询、取消与操作恢复。
+- [x] 默认以前台当前用户运行，验证 shell/cwd/env、文件路径约束与进程组清理；退出、URL 到期、撤销和异常失联遵守公共生命周期。
+- [x] 无显示服务、桌面 session 或图形用户登录也能运行；当前不实现 AT-SPI、X11/Wayland 截图或输入，不引入这些功能所需的 GUI 库及 helper。
+- [x] capability/doctor 报告命令和文件的真实状态，UI 明确为 `unsupported`；即使机器安装了桌面也保持此能力范围，不把不支持误报成缺少权限或无 GUI session。
+- [x] 脚本产物交付核心必需依赖并明确系统库最低版本；分别验证两种 CPU/libc 目标的链接与运行，保持命令和文件路径不依赖桌面组件。
+- [x] systemd user service 作为显式可选常驻模式，验证停止、升级、卸载和 URL 到期行为；本期不交付独立 system service，不增加 XDG autostart 或 GUI helper 清理任务。
+- [x] 两种架构都在无桌面环境验收接入、命令/文件、断线查询恢复、取消、到期下线及正常退出不可见；Linux GUI 留待后续需求另行立项。
 
-Linux 会话接入参照 [XDG Autostart](https://specifications.freedesktop.org/autostart/latest/) 与 [AT-SPI accessibility bus](https://github.com/GNOME/at-spi2-core/blob/main/bus/README.md)，语义接口参照 [AT-SPI API](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/)。Wayland 授权、输入与图像通道依据 [RemoteDesktop portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html)、[ScreenCast portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html) 与 [libei](https://libinput.pages.freedesktop.org/libei/api/index.html)；不能将 InputCapture 接口误用为远端输入注入。
+### 7.4 Android：独立轻量 APK，受限执行后端 (主要面向Android TV,暂不实现)
 
-### 7.4 Android：独立轻量 APK，受限执行后端
 
 - [ ] 单独交付 `buckyos_agent_daemon` APK，支持输入/打开接入 URL、状态、启停和系统权限入口；不要求 BuckyOSApp、Device 身份注册、ADB、root 或开发者模式。
 - [ ] 先把共享协议、授权、账本与桌面进程 worker 解耦；Android 注入宿主支持的操作，不通过添加 `cfg(unix)` 来假装已有完整 Unix 执行后端。
@@ -271,34 +271,37 @@ Android 适配依据 [AccessibilityService](https://developer.android.com/refere
 
 ## 8. Agent、SDK 与工具手册接入
 
-- [ ] 在已有 Agent runtime 内增加在线 executor 的 list/watch 与显式目标工具；参数包含 executor_id、活动连接 generation、profile/OS session。完整 Node 的 DID 目标另行表达，不用把整个 Session 改为 remote_node。
-- [ ] Agent 发现只返回获准且在线的执行端；下线事件更新工具目标缓存，调用时重新验证路由。失效目标返回不可用，不自动转发到其他设备或新实例。
+- [x] 在已有 Agent runtime 内增加在线 executor list 与显式目标工具，SDK/CLI 提供 watch；参数包含 executor_id、活动连接 generation、profile。完整 Node 的 DID 目标另行表达，不用把整个 Session 改为 remote_node；OS session 随后续 GUI 后端实现。
+- [x] Agent 发现只返回获准且在线的执行端；下线事件更新工具目标缓存，调用时重新验证路由。失效目标返回不可用，不自动转发到其他设备或新实例。
 - [ ] 封装 UI JSON 观察为普通工具结果，模型可通过 inspect/find → perform/set → wait/inspect 完成任务；不强制使用截图型 `agent.computer_use` API。
-- [ ] 平台工具统一报告已支持/已授权/当前就绪及降级原因，Agent 根据结果选择语义操作或截图，不由模型猜测权限。
+- [ ] 平台工具统一报告已支持/已授权/当前就绪及降级原因；Linux 目标只暴露命令和文件工具，macOS/Windows 按实际能力选择语义操作或截图，不由模型猜测权限。
 - [ ] 实现截图结果到 `AiToolResultContent::Image` 或等价结构化图片输入的完整链路；只返回远端路径或文本 base64 不算完成。
-- [ ] 复用已有远端 operation locator、query 与恢复机制，扩展 executor 目标但保留 store_id/op_id 校验。重连到同一账本可查询旧结果，旧连接请求不能自动作为新动作派发；新增 UI 操作遵守未知结果不盲重放的规则。
-- [ ] 补齐 buckyos-websdk 的轻量设备记录、URL 签发/撤销、在线目录与 Executor 客户端及人可用 CLI；当前不能假定 TypeScript SDK 已有 Node Executor 客户端。复用共享协议 schema，避免再造 HTTP 执行入口。
-- [ ] 系统管理命令按仓库约定放 websdk CLI；本地接入 URL 启动、status/doctor/stop 保留在自包含 daemon 中，不要求目标机登录账号或运行 Node.js。
+- [x] 复用已有远端 operation locator、query 与恢复机制，扩展 executor 目标但保留 store_id/op_id 校验。重连到同一账本可查询旧结果，旧连接请求不能自动作为新动作派发；新增 UI 操作遵守未知结果不盲重放的规则。
+- [x] 补齐 buckyos-websdk 的轻量设备记录、URL 签发/撤销、在线目录与 Executor 客户端及人可用 CLI；当前不能假定 TypeScript SDK 已有 Node Executor 客户端。复用共享协议 schema，避免再造 HTTP 执行入口。
+- [x] 系统管理命令按仓库约定放 websdk CLI；本地接入 URL 启动、status/doctor/stop 保留在自包含 daemon 中，不要求目标机登录账号或运行 Node.js。
 - [ ] 同步 [buckyos_admin](../src/apps/jarvis_agent/agent/cmd_skills/buckyos_admin.md)、[opendan_agent_dev](../src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev.md)；按最终工具面增加 computer-use 手册，覆盖发现、授权失败、控件引用失效、截图回退与停止。
 
 ## 9. 安装、数据与发布
 
 ### 9.1 自包含启动与可选安装
 
-- [ ] 增加独立产品/module 构建与安装映射，不直接复用完整 BuckyOS 安装入口的 Docker/容器检查；独立 daemon 不要求 Docker、WSL 或 OOD 服务。
-- [ ] 交付 macOS/Linux 启动脚本和 Windows PowerShell 脚本，自动选择 OS/架构、验证下载产物并缓存到稳定用户目录，传入 URL 后以前台方式运行；支持预下载产物，不因脚本下载模式改变签名或 OS 授权主体。
-- [ ] 同时支持完整节点分发同一 helper；两种分发的 core/协议/后端来自同一源码。
-- [ ] 提供 `doctor`：脱敏 executor 标识、URL 有效期、WSS/在线登记状态、配置是否有效、执行身份、helper/session、平台权限与缺失后端；输出人可读及 JSON 格式。
-- [ ] 启动不带 URL 时给出使用说明，不启动匿名执行入口；带 URL 时自动完成鉴权、配置与在线登记。平台权限不足按能力报告，不额外增加配对流程。
-- [ ] 默认退出即下线，不安装启动项、不自动重启。后续显式可选常驻模式要说明凭据保存、stop 和 URL 到期行为，不能让过期凭据被服务管理器无限重试。
+- [x] 增加独立产品/module 构建与安装映射，不直接复用完整 BuckyOS 安装入口的 Docker/容器检查；独立 daemon 不要求 Docker、WSL 或 OOD 服务。
+- [x] 交付 Linux 启动脚本，自动选择架构、验证下载产物并缓存到稳定用户目录，传入 URL 后以前台方式运行；支持预下载产物。
+- [ ] 交付 macOS 启动脚本与 Windows PowerShell 脚本；不因脚本下载模式改变签名或 OS 授权主体。
+- [ ] macOS/Windows 同时支持完整节点分发同一 helper；两种分发的 core/协议/后端来自同一源码。Linux 包只交付接入与命令/文件组件。
+- [x] 提供 `doctor`：脱敏 executor 标识、URL 有效期、WSS/在线登记状态、配置是否有效、执行身份，以及适用平台的 helper/session、权限和后端状态；Linux UI 标为 unsupported。输出人可读及 JSON 格式。
+- [x] 启动不带 URL 时给出使用说明，不启动匿名执行入口；带 URL 时自动完成鉴权、配置与在线登记。平台权限不足按能力报告，不额外增加配对流程。
+- [x] 默认退出即下线，不安装启动项、不自动重启。Linux 显式可选用户服务说明凭据保存、stop 和 URL 到期行为，`Restart=no` 防止过期凭据被服务管理器无限重试。
 - [ ] 缺少 OS 授权时仍能启动和诊断，提供本地启用路径；普通用户不需要手写 plist、systemd unit 或计划任务。
 
 ### 9.2 数据与更新
 
-- [ ] 独立用户模式使用平台标准应用数据/配置/日志目录；完整节点沿用 `$BUCKYOS_ROOT`。通过显式 roots 注入，不能让独立实例误读 `/opt/buckyos` 身份。
-- [ ] 区分接入凭据、授权快照、操作账本、临时截图与用户文件；设置目录权限和保留期。独立版不生成 Device 私钥，默认不持久保存 URL 秘密；按稳定 executor_id 隔离账本，升级与同目标重启保持 `store_id`。
-- [ ] 更新顺序为停止接单、处理/标记在途操作、停止 helper、替换签名产物、重启、重新探测能力；失败可回滚，不能将未知动作当作未执行重发。
-- [ ] 卸载删除本产品已显式安装的启动项和 helper，停止相应会话进程；保留用户业务文件。退出、撤销 URL、删除设备记录、卸载和清除本地账本分别定义，不要求退出时执行 unpair。
+- [x] 独立用户模式使用平台标准应用数据/配置/日志目录；完整节点沿用 `$BUCKYOS_ROOT`。通过显式 roots 注入，不能让独立实例误读 `/opt/buckyos` 身份。
+- [x] 区分接入凭据、授权快照、操作账本、临时截图与用户文件；设置目录权限和保留期。独立版不生成 Device 私钥，默认不持久保存 URL 秘密；按稳定 executor_id 隔离账本，升级与同目标重启保持 `store_id`。
+- [x] Linux 用户服务升级停止原实例、取消受管任务、校验并替换产物、重启；启动失败回滚，账本和未知结果语义保留，不能将未知动作当作未执行重发。
+- [ ] macOS/Windows 更新补齐 helper 停止、签名产物替换、重新探测能力与回滚。
+- [x] Linux 卸载停止相应实例并删除显式安装的用户 unit 与凭据，保留账本和业务文件。退出、撤销 URL、删除设备记录、卸载和清除本地账本分别定义，不要求退出时执行 unpair。
+- [ ] macOS/Windows 卸载删除显式安装的启动项与 helper，保留用户业务文件。
 - [ ] 不手改系统权限数据库；卸载/重装后的 OS 授权状态由系统决定，并由 doctor 如实反映。
 
 ### 9.3 仓库联动落点
@@ -310,13 +313,14 @@ Android 适配依据 [AccessibilityService](https://developer.android.com/refere
 | 轻量启动 | 新增三大 OS 脚本与产物分发入口，核验下载、URL 参数、退出信号、凭据脱敏和无启动项残留 |
 | macOS | [postinstall](../src/publish/macos_pkg/scripts/buckyos_postinstall)、[preinstall](../src/publish/macos_pkg/scripts/buckyos_preinstall)、[打包器](../src/publish/make_local_osx_pkg.py)；新增独立产品 hooks，补 LaunchAgent 全生命周期 |
 | Windows | [postinstall](../src/publish/win_pkg/scripts/buckyos_postinstall.ps1)、[preuninstall](../src/publish/win_pkg/scripts/buckyos_preuninstall.ps1)、[NSIS 模板](../src/publish/win_pkg/installer.nsi.in)；复用模式而非要求安装完整节点 |
-| Linux DEB | [postinstall](../src/publish/deb_pkg/buckyos_postinstall)、[make_local_deb.py](../src/publish/make_local_deb.py)；当前生成入口缺少完整 prerm/postrm，要补 remove/purge 与 user helper 清理 |
+| Linux DEB | [postinstall](../src/publish/deb_pkg/buckyos_postinstall)、[make_local_deb.py](../src/publish/make_local_deb.py)；当前生成入口缺少完整 prerm/postrm，要补 remove/purge 与可选 daemon service 清理，本期不安装 GUI helper |
 | Linux RPM | [postinstall](../src/publish/rpm_pkg/buckyos_postinstall)、[make_local_rpm.py](../src/publish/make_local_rpm.py) 的升级/卸载 scriptlets |
-| 停止/卸载 | [stop.py](../src/stop.py)、[uninstall.py](../src/uninstall.py)，保证开发安装与正式安装不会遗留 helper |
-| Android | 参考既有 APK CI 组织独立包、签名与 Rust native library 交付；不把 BuckyOSApp 二进制作为运行依赖 |
+| 停止/卸载 | [stop.py](../src/stop.py)、[uninstall.py](../src/uninstall.py)，保证开发安装与正式安装不会遗留 daemon 或适用平台的 helper |
+| Android（后续） | 暂不实现；以后参考既有 APK CI 组织面向 Android TV 的独立包、签名与 Rust native library 交付 |
 
-- [ ] 新增依赖先确认现有 workspace 能否复用；需要新 crate/系统组件时按根目录 AGENTS.md 确认选型。Git 源依赖显式使用 `main`，不自行锁定 rev/tag。
-- [ ] 为发布包记录 OS/架构、最低版本、支持后端、签名、安装文件清单与运行时依赖。每个声明支持的平台必须拿真实安装包验收。
+- [x] 新增依赖先确认现有 workspace 能否复用；需要新 crate/系统组件时按根目录 AGENTS.md 确认选型。Git 源依赖显式使用 `main`，不自行锁定 rev/tag。
+- [x] Linux 便携包 manifest 记录架构、链接方式、最低 glibc、支持后端、文件清单与运行时依赖，并提供 SHA-256 校验；两个目标均使用真实安装包验收，ARM64 为 QEMU TCG。
+- [ ] macOS/Windows 发布包补齐最低版本、平台签名、文件清单、运行时依赖与原生安装包验收。
 
 ## 10. 实施顺序与完成门槛
 
@@ -324,23 +328,26 @@ Android 适配依据 [AccessibilityService](https://developer.android.com/refere
 | --- | --- | --- |
 | P0 | URL/到期契约、WSS/在线目录、executor 标识、授权解耦、普通用户模式、共存策略与 UI 协议 | 固定三步体验及状态机；Node 原有命令/文件测试保持通过；无需 Device DID 的配置与路由契约可实施 |
 | P1 | 控制面签发 URL、WSS 接入服务、薄宿主、三大 OS 脚本、Agent 最小在线发现与 connector/locator、status/doctor 和命令/文件 | 干净机器脚本+URL上线，Agent 发现并 exec/read/edit，退出不可见；在线到期下线、撤销、失联与重连均可验证，无目标机 CYFS/BuckyOSApp |
-| P2 | 公共 UI 生命周期与 macOS AX、Windows UIA、Linux AT-SPI | 各平台在不截图的条件下完成控件发现、填值、触发动作、回读验证；支持取消、失效引用与会话变化 |
-| P3 | 截图、多模态工具结果、输入回退；Linux X11/Wayland 分支 | 自绘区域或视觉验证场景闭环；多屏/DPI、portal/TCC/UIPI 限制与拒绝路径通过 |
-| P4 | 三大 OS 正式打包、完整节点内置 helper、可选持久安装、升级/卸载、完整 SDK/CLI 分发与手册 | 五个当前节点构建目标通过脚本和安装包验收；默认退出不重启，可选启动项与完整 Node 共存可验证 |
-| P5 | Android 受限后端与独立 APK | arm64 真机 URL 接入、在线/退出/到期、语义操作、按需截图和权限边界通过；不能宣布与桌面任意 shell 等价 |
+| P2 | 公共 UI 生命周期与 macOS AX、Windows UIA | macOS/Windows 在不截图的条件下完成控件发现、填值、触发动作、回读验证；支持取消、失效引用与会话变化。Linux 不参与 GUI 验收 |
+| P3 | macOS/Windows 截图、多模态工具结果与输入回退 | 自绘区域或视觉验证场景闭环；多屏/DPI、TCC/UIPI 限制与拒绝路径通过 |
+| P4 | 三大 OS 正式打包、macOS/Windows 节点内置 helper、可选持久安装、升级/卸载、完整 SDK/CLI 分发与手册 | 五个当前节点构建目标按各自能力通过脚本和安装包验收；Linux 只验命令/文件；默认退出不重启，可选启动项与完整 Node 共存可验证 |
+| 后续，暂不实现 | Android TV 受限后端与独立 APK | 不计入当前完成门槛；立项后再验收 URL 接入、在线/退出/到期、语义操作、按需截图和权限边界 |
 | 扩展 | Windows ARM64、iOS 能力调研 | ARM64 补 CI/实机后纳入支持；iOS 先明确公开 API 能力与发布形态，再单独决策 |
 
-P2 的平台适配可在 P0 共享接口稳定后并行；P3 的平台权限验证应尽早做最小实验，避免最后才发现打包身份或 compositor 限制。P4 不能仅补脚本而跳过实际升级/卸载。
+P2 的 macOS/Windows 适配可在 P0 共享接口稳定后并行；P3 的平台权限验证应尽早做最小实验，避免最后才发现打包身份或授权限制。Linux 完成 P1 后直接推进 P4，不等待 GUI 后端。P4 不能仅补脚本而跳过实际升级/卸载。
 
 ### 10.1 公共回归与故障场景
 
-- [ ] 原有 Node Executor 的命令、文件、取消、限额、结果查询、断流恢复、租期过期与权限撤销测试保持通过。
-- [ ] 没有 Device 身份文件、cyfs-gateway、BuckyOSApp 和完整 Node 的干净目标机，脚本加 URL 可完成连接、配置、Agent 发现和真实命令/文件操作，无额外登录/配对。
+接入、命令与文件回归覆盖当前三大 OS；UI、截图、桌面会话与 helper 场景仅覆盖 macOS/Windows。Android 相关场景留待后续立项。
+
+- [x] 原有 Node Executor 的命令、文件、取消、限额、结果查询、断流恢复、租期过期与权限撤销测试保持通过。
+- [x] 没有 Device 身份文件、cyfs-gateway、BuckyOSApp 和完整 Node 的干净目标机，脚本加 URL 可完成连接、配置、Agent 发现和真实命令/文件操作，无额外登录/配对。
 - [ ] 创建 URL 尚未启动时不可见；正常启动就绪后可见，Ctrl-C/正常停止后立即摘除。强杀、断网、休眠和半开连接在约定心跳窗口内摘除，默认无自启动或重启进程残留。
 - [ ] 过期/撤销/错误 URL 不能登记；已在线实例到期停止接单并下线，数据连接不能延续可用性。测试长命令、UI 操作中途到期、本机时钟回拨、断网跨过截止时间及休眠跨截止后恢复，重新校验前不能派发排队动作，过期重连不得刷新截止时间。
 - [ ] 同 URL 第二个独立实例被拒绝；同进程重连的新 generation 不被旧 heartbeat/close 覆盖。旧路由、流票据和 UI 句柄不能操作新连接，重装到另一账本后旧 store_id 查询明确拒绝。
 - [ ] 在线列表按 Agent 授权过滤；离线/已过期 executor 即使被调用方缓存也拒绝派发；GUI 未授权时仍可发现并使用已就绪的命令/文件能力。
-- [ ] 普通用户模式不能选择其他 OS 用户；系统模式依旧按 profile 降权；Android 不支持的操作在执行前拒绝。
+- [x] 普通用户模式不能选择其他 OS 用户；系统模式依旧按 profile 降权。
+- [x] Linux 两种架构在没有桌面组件的环境下完成命令/文件闭环；UI capability 为 unsupported，直接请求 UI 操作也明确拒绝，不引导补装 GUI 库或授权。
 - [ ] 未授权 Agent、只读模式、错 profile、错 OS session、过期授权均不能派发修改动作；完整 Node 验证设备 ACL 撤销，轻量模式验证 URL 撤销和活动连接失效。
 - [ ] 验证动作派发前、派发后未回执、结果落盘前、helper 重启等故障点；未知结果可查询且不自动重复执行。
 - [ ] 对 UI 树失控增长、恶意/异常控件 provider、平台调用超时验证限额、可取消性和服务可恢复性。
@@ -349,20 +356,18 @@ P2 的平台适配可在 P0 共享接口稳定后并行；P3 的平台权限验�
 
 ### 10.2 真机验收表
 
-每项记录 OS/版本/架构、桌面环境、产物版本、授权状态、命令、观察结果与失败原因。所有桌面目标先验收“脚本+URL → Agent 发现 → 操作 → 退出不可见”，再测到期/异常失联；Android 用 APK 输入 URL 完成等价流程。编译通过和 mock 通过不能替代此表。
+每项记录 OS/版本/架构、产物版本、授权状态、命令、观察结果与失败原因；macOS/Windows 另记桌面环境。所有当前目标先验收“脚本+URL → Agent 发现 → 操作 → 退出不可见”，再测到期/异常失联。Android TV 的 APK 流程留待后续。编译通过和 mock 通过不能替代此表。
 
 | 环境 | 最小场景 |
 | --- | --- |
 | macOS Intel / Apple Silicon | 没有 BuckyOSApp 的首次安装；AX 文本编辑/按钮操作；拒绝与撤回授权；Retina 截图；升级后恢复 |
 | Windows x86_64 | PowerShell 脚本前台启动/退出；普通权限文本编辑器/浏览器；UIA 与自绘回退；高权限窗口受限；DPI；可选计划任务与注销重登 |
-| Linux x86_64 / aarch64 无桌面 | 命令/文件完整可用，UI 返回无会话；重启、断网失租与取消 |
-| Linux GNOME/KDE X11 | AT-SPI 文本控件；X11 截图/输入；会话退出与 display 授权失败 |
-| Linux GNOME/KDE Wayland | AT-SPI；portal 用户选择；捕获与输入；拒绝/撤权/会话恢复；后端缺失 |
-| Android arm64 | 独立 APK 接收 URL 并显式启停；用户启用服务；跨应用语义操作；截图授权；旋转、锁屏、被杀下线与主动恢复 |
+| Linux x86_64 musl / aarch64 GNU，无桌面环境 | 命令执行、文件读写/编辑、查询与取消；重启/断线恢复、到期下线；UI 返回 unsupported；没有 GUI 库或 helper 依赖 |
+| Android arm64 / Android TV（后续，暂不实现） | 另行立项后验收 APK URL 接入、启停、语义操作和权限边界，不计入当前验收 |
 
-Linux 桌面测试要覆盖两种 CPU 架构；具体 GNOME/KDE 版本与组合在 P0 定稿，未测试组合标注未验证。
+Linux 命令/文件与接入生命周期测试须覆盖两种 CPU/libc 构建目标；本期不要求 GNOME/KDE、X11 或 Wayland 测试。
 
-建议的既有代码回归入口（后续实现时执行，不代表本次已运行）：
+既有代码回归入口（本轮结果见 §11.2）：
 
 ```bash
 # 在 buckyos/src 下执行
@@ -374,6 +379,43 @@ cargo check -p node_daemon
 
 新增 daemon/package、UI 协议与后端后增加对应原生测试和安装包 DV。修改 Agent 工具链时运行 agent_tool 相关测试；修改 cmd_skills 装配/分发时按根 AGENTS.md 执行对应 libopendan/opendan 回归。非 root 下跳过旧 Unix 测试不能视为普通用户执行模式已经验证。
 
-## 11. 本文交付记录
+## 11. 本轮交付记录（2026-10-22）
 
-本次只更新 TODO，将独立模式确定为“BuckyOS 添加设备并签发 URL → 脚本+URL 前台运行 → 在线可见、退出不可见”，并按用户确认采用 URL 到期使在线实例下线。同步调整了身份、网络、平台启动、SDK、发布与验收要求；未修改运行时代码、协议、依赖、安装器或已有命令手册，因此不需要在本次同步修改 cmd_skills，后续联动项已列在 §8。本文核对相对链接、接入相关源码与 diff 格式；未进行跨平台编译、安装、GUI 真机或模型/provider 验证。
+本轮按用户限定完成公共骨架和 Linux 后端。独立 daemon 不初始化完整 Node runtime；控制面管理与 WSS 接入复用 control-panel，执行操作复用 Node Executor。代码、协议、构建、SDK/CLI、Nodes/Devices UI 和命令手册已联动。
+
+### 11.1 实现入口
+
+| 入口 | 本轮交付 |
+| --- | --- |
+| `src/kernel/buckyos_agent_daemon/` | 自包含前台宿主；URL/stdin/0600 凭据文件；run/status/doctor/stop；Linux 当前用户；心跳/重连/绝对到期/撤销；私有数据根与账本 |
+| `src/kernel/node_executor/` | current_user/switch_user、WSS/Node 准入分离、暂停/关闭/取消、进程组清理、CLOCK_BOOTTIME 租约、流及上传的取消清理、Linux UI unsupported |
+| `src/kernel/buckyos-api/src/agent_daemon*.rs` | 版本化管理协议、在线目标/流票据/真实 App 会话证明、有界双向 WSS 字节流；describe 明确 executor_id，不伪造 Node DID |
+| `src/frame/control_panel/src/agent_daemon.rs` | SystemConfig 持久设备/凭据摘要、管理员签发/撤销/删除、真实 Agent 授权推导、在线目录、单实例及 generation、双 WSS 路由、403 终态拒绝 |
+| `src/frame/desktop/src/app/settings/pages/AgentDevices.tsx` | Cluster Manager → Nodes/Devices 添加 Linux 设备、选择 Agent/profile/目录/权限/期限、复制启动命令、在线状态、重置/撤销/删除 |
+| `src/frame/agent_tool/src/runtime/executor.rs` | 可选 executor 工具组的 executor_list/executor_call，保持 Agent Session 本地运行，持久 locator 与固定 generation/store 校验 |
+| 同级 `buckyos-websdk/src/executor_client.ts` 与 `cli/modules/executor.ts` | 管理/online watch/Command Stream 客户端和人用 CLI，真实 App token 登录，旧 generation 不重放动作 |
+| `src/publish/agent_daemon/`（独立 Git 子模块） | Linux 双架构便携包、架构/链接校验、manifest/checksum、HTTPS 下载或预下载启动、显式 user service 安装/升级回滚/停止/卸载 |
+| `src/Cargo.toml`、`bucky_project.yaml`、`buckyos-build.py`、`rootfs/bin/buckyos-agent-daemon/` | workspace/module/rootfs 接入；`uv run buckyos-build.py --agent-daemon` 单独构建，不准备 SDK/Web，不安装 Docker 或完整 Node |
+| `.github/workflows/agent-daemon.yml` | x86_64 musl / aarch64 GNU 构建、测试与打包任务 |
+
+详细协议、持久数据边界、使用和服务安装见 [Agent Daemon 实现文档](../doc/arch/agent_daemon.md)。新服务没有调度 Node 身份，不新增 scheduler ServiceSpec。复用现有 workspace/传递依赖，未增加 GUI 库或外部运行框架。
+
+### 11.2 验证记录
+
+- `cargo test -p node_executor -p buckyos_agent_daemon -- --test-threads=1`：26 项通过；另外以真正 nobody（uid/gid 65534）执行普通用户相关 4 项，通过。覆盖命令/读写编辑、run_as 拒绝、环境与目录限制、进程组取消、流/上传 abort 清理、真实二进制重连与原结果恢复、到期/停止。
+- `cargo test -p buckyos-api node_executor`：6 项通过；WSS 字节适配 2 项通过，包含同时双向 1 MiB 的背压场景。
+- `cargo test -p scheduler executor_auth`：3 项通过；`cargo check -p node_daemon` 通过，完整 Node 路径保持可构建。
+- control-panel 接入专项 6 项通过：真实 HTTP Upgrade/双 WSS、单次票据、generation/TTL、App/owner/安装状态过滤、只读权限及显式拒绝状态。
+- `agent_tool` runtime 回归 12 项通过、3 项既有 SSH 用例忽略；websdk SDK 4 项、CLI 1 项、launcher 3 项通过；SDK 构建/类型检查、Desktop `pnpm check` 与 Cluster Manager Chromium E2E 通过。
+- cmd_skills/runtime 联动回归：`cargo test -p libopendan --test xagent_lib work_sessions_take` 与 `--test xagent_cli skills_are` 各 1 项通过；`cargo test -p opendan` 共 39 项通过、1 项既有手工 prompt 审阅用例忽略。
+- `uv run python -m unittest discover -s tools/tests -p 'test_buckyos_build_entrypoint.py'`：11 项通过；独立构建真实执行成功，生成 x86_64 musl 静态二进制；aarch64 GNU 交叉构建与打包也成功。
+- PVE VM111：Ubuntu 24.04 x86_64，无完整 BuckyOS/Docker/Node.js，uid 1000；真实 Zone control-panel 与 verify-hub 授权，经校验 CA 的 WSS，使用真实 SDK/CLI及便携安装包。14 项前台 E2E 通过：创建前不可见、就绪上线、命令 cwd/env/uid、写/编辑/读/查询、路径拒绝、取消、第二实例拒绝、停止下线、重启保留账本和旧结果、旧 generation 拒派、撤销、到期下线、保留业务文件；额外强制断开管理 TCP 连接，同进程以新 generation 恢复，在途命令只执行一次。
+- PVE VM112：Ubuntu 24.04.5 aarch64，QEMU TCG 模拟 AArch64，uid 1000；GNU 安装包最低 glibc 2.39，运行时依赖仅 libc/libgcc_s/libm。相同真实 WSS/SDK/包的 13 项前台 E2E 全部通过。该结果是模拟 ARM 系统验收，未声称 ARM 物理机验证。
+- VM111 systemd user service：6 项通过，覆盖显式安装、0600 凭据、stop 摘除、升级保留账本、失败回滚、到期退出且 `NRestarts=0`、卸载移除 unit/秘密并保留用户文件。
+- 可复验入口与脱敏报告位于 [test/agent_daemon](../test/agent_daemon/README.md)。测试使用隔离 control-panel fixture 和专用 CA/TLS 转发，没有重启或修改现有生产服务；两台专用 VM 关机保留。现有 Zone 网关的路径、Upgrade、header/query 转发已核对源码和只读路由探针；生产 443 入口接入新版 control-panel 后的完整 WSS 会话尚未验收。
+
+### 11.3 范围与联动说明
+
+同步了 `buckyos_admin`、`opendan_agent_dev`、`buckyos_dev_release`、`xllm` 四份 cmd_skills，说明在线选择、授权、Linux 能力、未知结果查询、executor 工具组及独立包流程；未改 cmd_skills 发现/冻结/装配协议。Linux 没有 computer-use/图片输入能力，因此不新增 GUI 工具手册，不把 macOS/Windows/Android 或真实模型调用标为已验收。用户服务是显式选项，前台启动不安装启动项。完整 Node 的 DEB/RPM/系统 service 不接管独立用户实例，卸载独立版也不删除业务文件。
+
+`src/publish` 与同级 `buckyos-websdk` 都有配套源码改动；集成时应一起提交，不能只提交主仓库后遗漏子模块和 SDK。当前未向公共发布地址上传产物。两种 Linux 产物与校验文件在 `/tmp/buckyos-agent-daemon-dist/`；临时 App/admin token 配置与接入 URL 已清理，未写入仓库或验收报告。用于复验的专用 SSH 私钥保留在受限临时文件中。

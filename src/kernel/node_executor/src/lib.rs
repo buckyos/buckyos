@@ -38,8 +38,48 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutorIdentityMode {
+    CurrentUser,
+    SwitchUser,
+}
+
+impl ExecutorIdentityMode {
+    pub(crate) fn honors_run_as(self, profile: &ExecutorProfile) -> bool {
+        match self {
+            Self::CurrentUser => profile.run_as.is_none(),
+            Self::SwitchUser => cfg!(unix) && profile.run_as.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutorAdmission {
+    Node,
+    Wss,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExecutorOptions {
+    pub identity_mode: ExecutorIdentityMode,
+    pub admission: ExecutorAdmission,
+}
+
+impl Default for ExecutorOptions {
+    fn default() -> Self {
+        Self {
+            identity_mode: if cfg!(windows) {
+                ExecutorIdentityMode::CurrentUser
+            } else {
+                ExecutorIdentityMode::SwitchUser
+            },
+            admission: ExecutorAdmission::Node,
+        }
+    }
+}
+
 pub struct ExecutorHost {
-    /// Node name used in `obj://node/<node>/executor/<profile>`.
+    /// Node name or standalone executor ID used in its authorization resource.
     pub node_id: String,
     pub node_did: String,
     /// Private ledger directory, e.g. `$BUCKYOS_ROOT/local/node_daemon/executor`.
@@ -70,6 +110,8 @@ pub(crate) struct ExecutorInner {
     pub streams: Mutex<HashMap<u64, StreamEntry>>,
     pub next_stream: AtomicU64,
     pub launcher: WorkerLauncher,
+    pub identity: spawn::HostIdentity,
+    pub admission: ExecutorAdmission,
     expired_handled: AtomicBool,
     reconcile_lock: tokio::sync::Mutex<()>,
 }
@@ -86,57 +128,36 @@ pub(crate) const CONTROL_OPS: [ExecutorOp; 4] = [
     ExecutorOp::Cancel,
 ];
 
-const WORKER_OPS: [ExecutorOp; 4] = [
-    ExecutorOp::Exec,
-    ExecutorOp::Read,
-    ExecutorOp::Write,
-    ExecutorOp::Edit,
-];
-
-/// Operations the host can actually perform. On Linux and macOS form A needs
-/// a root daemon to switch to the profile's OS identity. On Windows the
-/// daemon runs in the desktop session (not as a service) and executes as
-/// that user. Otherwise only the control operations remain and the rest
-/// return Capability.
-fn host_capabilities() -> BTreeSet<ExecutorOp> {
+fn host_capabilities(identity: &spawn::HostIdentity, host: &ExecutorHost, admission: ExecutorAdmission) -> BTreeSet<ExecutorOp> {
     let mut caps: BTreeSet<ExecutorOp> = CONTROL_OPS.into_iter().collect();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let can_run = unsafe { libc::geteuid() } == 0;
-    #[cfg(windows)]
-    let can_run = true;
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    let can_run = false;
-    if can_run {
-        caps.extend(WORKER_OPS);
+    if identity.can_run() {
+        if admission == ExecutorAdmission::Node || spawn::executable_available(&host.worker.program) {
+            caps.extend([ExecutorOp::Read, ExecutorOp::Write, ExecutorOp::Edit]);
+            if admission == ExecutorAdmission::Node || spawn::executable_available(&host.shell) {
+                caps.insert(ExecutorOp::Exec);
+            }
+        }
     }
     caps
-}
-
-/// Whether this host runs the profile's operations under the identity the
-/// profile names: a root Unix daemon needs `run_as` to switch to, a Windows
-/// host cannot switch users, so its profiles leave `run_as` out.
-pub(crate) fn host_honors_run_as(profile: &ExecutorProfile) -> bool {
-    if cfg!(windows) {
-        profile.run_as.is_none()
-    } else {
-        profile.run_as.is_some()
-    }
 }
 
 pub(crate) fn is_host_absolute(path: &str) -> bool {
     !path.contains('\0') && std::path::Path::new(path).is_absolute()
 }
 
-pub(crate) const RUN_AS_MISMATCH: &str = if cfg!(windows) {
-    "this host runs operations as its own user and cannot switch to the profile's run_as"
-} else {
-    "the profile has no run_as to switch to"
-};
+pub(crate) const RUN_AS_MISMATCH: &str =
+    "profile run_as does not match the host's execution identity mode";
 
 impl NodeExecutor {
     /// Open the ledger (single writer) and start the lease watchdog and GC.
     /// Must be called inside a tokio runtime.
     pub fn open(host: ExecutorHost) -> Result<Self, StoreOpenError> {
+        Self::open_with_options(host, ExecutorOptions::default())
+    }
+
+    pub fn open_with_options(host: ExecutorHost, options: ExecutorOptions) -> Result<Self, StoreOpenError> {
+        let identity = spawn::HostIdentity::capture(options.identity_mode)?;
+        let host_caps = host_capabilities(&identity, &host, options.admission);
         let store = Arc::new(Store::open(&host.store_dir, &host.node_did)?);
         let server_epoch = format!("ep-{}", uuid::Uuid::new_v4().simple());
         let ops = Arc::new(OpsManager::new(
@@ -144,6 +165,7 @@ impl NodeExecutor {
             host.worker.clone(),
             host.shell.clone(),
             server_epoch.clone(),
+            identity.clone(),
         ));
         let inner = Arc::new(ExecutorInner {
             node_id: host.node_id,
@@ -154,11 +176,13 @@ impl NodeExecutor {
             store,
             ops,
             auth: AuthState::default(),
-            host_caps: host_capabilities(),
+            host_caps,
             server_epoch,
             streams: Mutex::new(HashMap::new()),
             next_stream: AtomicU64::new(1),
             launcher: host.worker,
+            identity,
+            admission: options.admission,
             expired_handled: AtomicBool::new(true),
             reconcile_lock: tokio::sync::Mutex::new(()),
         });
@@ -211,7 +235,7 @@ impl NodeExecutor {
                     ApplyResult::Ignored
                 }
             }
-            Some(config) => self.inner.auth.apply(config, now_ms()),
+            Some(config) => self.inner.auth.apply(config, now_ms(), self.inner.admission),
         };
         if result == ApplyResult::Replaced {
             self.inner.reconcile().await;
@@ -222,6 +246,9 @@ impl NodeExecutor {
     /// Device ACL the gateway should enforce now: the snapshot's revision and
     /// allowed devices, or None when there is no valid snapshot.
     pub fn gateway_acl(&self) -> Option<(String, Vec<String>)> {
+        if self.inner.admission != ExecutorAdmission::Node {
+            return None;
+        }
         self.inner
             .auth
             .current()
@@ -229,7 +256,40 @@ impl NodeExecutor {
     }
 
     pub fn is_open(&self) -> bool {
-        self.inner.auth.current().is_some()
+        self.inner.ops.is_accepting() && self.inner.auth.current().is_some()
+    }
+
+    pub fn pause(&self) {
+        self.inner.ops.pause();
+    }
+
+    pub fn resume(&self) {
+        self.inner.ops.resume();
+    }
+
+    pub async fn close_streams(&self, reason: ExecutorCloseReason, message: &str) {
+        self.pause();
+        let _lock = self.inner.reconcile_lock.lock().await;
+        let streams = self.inner.streams.lock().unwrap();
+        for entry in streams.values() {
+            let _ = entry.close.send(Some(ExecutorClosing { reason, message: message.to_string() }));
+        }
+    }
+
+    pub async fn shutdown(&self, reason: ExecutorCloseReason, message: &str) {
+        self.pause();
+        let _lock = self.inner.reconcile_lock.lock().await;
+        let cancel = if reason == ExecutorCloseReason::AuthExpired {
+            CancelReason::AuthExpired
+        } else {
+            CancelReason::Revoked
+        };
+        self.inner.revoke_all(reason, cancel, message).await;
+        self.inner.ops.wait_idle(Duration::from_secs(5)).await;
+    }
+
+    pub fn active_operations(&self) -> usize {
+        self.inner.ops.active_count()
     }
 
     /// Serve one Command Stream (a gateway-forwarded TCP connection or an
@@ -318,9 +378,9 @@ impl ExecutorInner {
             .map(|(id, e)| (*id, e.session.clone(), e.grant.clone()))
             .collect();
         for (id, session, old) in streams {
-            let new = match auth::map_login(&session, &config, &old.profile_id, &self.host_caps) {
+            let new = match auth::map_login(&session, &config, &old.profile_id, &self.host_caps, self.identity.mode) {
                 Ok(mut g) => {
-                    auth::apply_rbac(self.rbac.as_ref(), &self.node_id, &session, &mut g).await;
+                    auth::apply_rbac(self.rbac.as_ref(), &self.node_id, self.admission, &session, &mut g).await;
                     Some(g)
                 }
                 Err(_) => None,

@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-22",
+  "platform": "Linux aarch64 GNU (QEMU TCG)",
+  "vm_id": 112,
+  "vm_status_after_test": "stopped",
+  "environment": {
+    "distribution": "Ubuntu 24.04.5 LTS",
+    "architecture": "aarch64",
+    "virtual_cpu": "cortex-a57",
+    "execution": "QEMU TCG on an x86_64 PVE host",
+    "uid": 1000,
+    "identity_mode": "current_user",
+    "glibc": "2.39",
+    "buckyos_node_installed": false,
+    "docker_installed": false,
+    "nodejs_installed": false,
+    "image_url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img",
+    "image_sha256": "50e24e1fb79e89116e939d90aa7738f7af48c442fa1bc2510131e0b39c50348e"
+  },
+  "artifact": {
+    "filename": "buckyos-agent-daemon-0.7.0-aarch64-unknown-linux-gnu.tar.gz",
+    "sha256": "dc3d77148ad1abc7c10a7fad45de0bc71ca8540fa7bf3928dc76968a739e77bf",
+    "binary_sha256": "e3044f382808de01c2e66956d789621e800f38f9b9fd4bce166a14e366fd758d",
+    "minimum_glibc": "2.39"
+  },
+  "runner": "test/agent_daemon/e2e.ts",
+  "transport": "Verified TLS WSS, real Zone executor access service, authenticated App session and SDK client",
+  "exit_code": 0,
+  "results": [
+    "clean target, current ordinary user and Linux UI unsupported",
+    "created device is invisible before launch",
+    "verified WSS, authenticated App login and online discovery",
+    "exec cwd, environment and uid",
+    "write, edit, read and result query",
+    "file roots enforced",
+    "long command cancellation",
+    "second independent instance refused",
+    "normal stop immediately removes online target",
+    "restart retains ledger; old generation rejects dispatch; previous result recovers",
+    "revocation closes online route",
+    "absolute URL expiry removes live executor",
+    "stop and revocation preserve business files"
+  ],
+  "cleanup": {
+    "daemon_processes_remaining": 0,
+    "buckyos_service_units_remaining": 0,
+    "management_records_remaining": 0,
+    "management_record_check": "Final executor.device.list returned zero devices after ARM E2E completed",
+    "temporary_token_config_removed": true,
+    "access_urls_persisted": false,
+    "vm_disk_and_operation_ledger_preserved": true,
+    "business_file_preserved": true
+  },
+  "not_verified": [
+    "Physical ARM64 hardware",
+    "ARM64 user-service installation",
+    "Management transport loss during a running ARM64 daemon; covered separately by x86_64 VM and Rust lifecycle tests"
+  ]
+}

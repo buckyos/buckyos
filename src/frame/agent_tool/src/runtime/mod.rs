@@ -1,4 +1,5 @@
 pub mod files;
+pub mod executor;
 pub mod node;
 pub mod ssh;
 pub mod tmux;

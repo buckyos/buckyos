@@ -1,5 +1,5 @@
 //! End-to-end Command Stream tests over in-memory streams with real worker
-//! processes. Running them needs root (the worker drops to uid 65534).
+//! processes. Switch-user cases need root; current-user cases run unprivileged.
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -96,7 +96,10 @@ struct Env {
 
 fn worker_copy(dir: &Path) -> PathBuf {
     let target = dir.join("node_executor_worker");
-    std::fs::copy(env!("CARGO_BIN_EXE_node_executor_worker"), &target).unwrap();
+    let worker = std::env::var_os("NODE_EXECUTOR_TEST_WORKER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_node_executor_worker")));
+    std::fs::copy(worker, &target).unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
     target
 }
@@ -866,4 +869,171 @@ async fn interrupted_upload_never_touches_the_target() {
     accepted(&c.write_file("wp", "cwp", &target, &content, None).await);
     assert_eq!(c.wait_done("wp").await.0.state, ExecutorOpState::Succeeded);
     assert_eq!(std::fs::read(&target).unwrap(), content);
+}
+
+async fn setup_current_user() -> Env {
+    let dir = tempfile::Builder::new().prefix("nx-current-user").tempdir_in("/tmp").unwrap();
+    let root = dir.path().to_path_buf();
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    let worker = worker_copy(&root);
+    let rbac = Arc::new(FakeRbac::default());
+    let exec = NodeExecutor::open_with_options(ExecutorHost {
+        node_id: "executor-current-user".into(),
+        node_did: "executor-current-user".into(),
+        store_dir: root.join("ledger"),
+        worker: WorkerLauncher { program: worker, args: vec![] },
+        shell: node_executor::default_shell(),
+        verifier: Arc::new(FakeVerifier),
+        rbac: rbac.clone(),
+    }, node_executor::ExecutorOptions {
+        identity_mode: node_executor::ExecutorIdentityMode::CurrentUser,
+        admission: node_executor::ExecutorAdmission::Wss,
+    }).unwrap();
+    let mut authorization = config(&work, 1, AgentPermissionMode::ReadWrite, 30_000);
+    authorization.allowed_devices.clear();
+    authorization.profiles.get_mut("dev").unwrap().run_as = None;
+    assert!(authorization.validate().is_err());
+    authorization.validate_execution().unwrap();
+    assert_eq!(exec.apply_config(Some(authorization)).await, node_executor::ApplyResult::Replaced);
+    assert!(exec.gateway_acl().is_none());
+    Env { _dir: dir, root, work, exec, rbac }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn current_user_exec_preserves_identity_groups_and_clean_environment() {
+    let env = setup_current_user().await;
+    let mut c = Client::connect(&env).await;
+    c.login().await;
+    accepted(&c.exec("identity", "identity-call", "id -u; id -g; id -G; pwd; printf '%s\n' \"$HOME\"; env | sort", &env.work).await);
+    let (status, output) = c.wait_done("identity").await;
+    assert_eq!(status.state, ExecutorOpState::Succeeded);
+    let output = String::from_utf8(output).unwrap();
+    let mut lines = output.lines();
+    assert_eq!(lines.next().unwrap(), unsafe { libc::getuid() }.to_string());
+    assert_eq!(lines.next().unwrap(), unsafe { libc::getgid() }.to_string());
+    let expected_groups = std::process::Command::new("id").arg("-G").output().unwrap();
+    assert_eq!(lines.next().unwrap(), String::from_utf8(expected_groups.stdout).unwrap().trim());
+    assert_eq!(lines.next().unwrap(), env.work.to_str().unwrap());
+    assert!(lines.next().unwrap().starts_with('/'));
+    assert!(!output.contains("BUCKYOS_"));
+    accepted(&c.exec("outside", "outside-call", "true", Path::new("/etc")).await);
+    let (outside, _) = c.wait_done("outside").await;
+    assert_eq!(outside.result.unwrap().error.unwrap().code, ExecutorErrorCode::Forbidden);
+    let file = env.work.join("current.txt");
+    accepted(&c.write_file("write-current", "write-current-call", &file, b"current user content", None).await);
+    let (status, _) = c.wait_done("write-current").await;
+    assert_eq!(status.state, ExecutorOpState::Succeeded);
+    assert_eq!(std::fs::read(&file).unwrap(), b"current user content");
+    let read = ExecutorClientMessage::Read(ExecutorReadRequest {
+        request_id: "read-current".into(), store_id: c.store_id.clone(), op_id: "read-current".into(),
+        run_id: "run1".into(), call_id: "read-current-call".into(),
+        path: file.to_str().unwrap().into(), offset: 0, length: None,
+    });
+    accepted(&c.simple(read, "read-current".into()).await);
+    let (status, _) = c.wait_done("read-current").await;
+    assert_eq!(status.state, ExecutorOpState::Succeeded);
+    assert_eq!(status.result.unwrap().content.unwrap().hash, Some(executor_content_hash(b"current user content")));
+    let edit = ExecutorClientMessage::Edit(ExecutorEditRequest {
+        request_id: "edit-current".into(), store_id: c.store_id.clone(), op_id: "edit-current".into(),
+        run_id: "run1".into(), call_id: "edit-current-call".into(),
+        path: file.to_str().unwrap().into(), expected_hash: None,
+        edits: vec![ExecutorEdit { old_string: "current".into(), new_string: "edited".into(), replace_all: false }],
+    });
+    accepted(&c.simple(edit, "edit-current".into()).await);
+    assert_eq!(c.wait_done("edit-current").await.0.state, ExecutorOpState::Succeeded);
+    assert_eq!(std::fs::read(file).unwrap(), b"edited user content");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn current_user_rejects_remote_identity_and_ui_operations() {
+    let env = setup_current_user().await;
+    let mut c = Client::connect(&env).await;
+    c.login().await;
+    let describe = c.simple(ExecutorClientMessage::Describe(ExecutorDescribeRequest {
+        request_id: "target".into(), workdir: None,
+    }), "target".into()).await;
+    let ExecutorServerMessage::DescribeOk(describe) = describe else { panic!("{describe:?}") };
+    assert_eq!(describe.target.executor_id.as_deref(), Some("executor-current-user"));
+    assert!(describe.target.node_did.is_empty());
+    write_executor_control(&mut c.wr, &serde_json::json!({
+        "type": "ui.inspect", "request_id": "unsupported-ui"
+    })).await.unwrap();
+    let response = c.reply("unsupported-ui").await;
+    assert_eq!(error_code(&response), Some(ExecutorErrorCode::Capability));
+    let ExecutorServerMessage::Error(error) = response else { unreachable!() };
+    assert!(error.error.message.contains("unsupported"));
+    let mut authorization = config(&env.work, 2, AgentPermissionMode::ReadWrite, 30_000);
+    authorization.allowed_devices.clear();
+    env.exec.apply_config(Some(authorization)).await;
+    let mut c = Client::connect(&env).await;
+    let login = c.login_with(app_token(60_000), "run1").await;
+    let ExecutorServerMessage::LoginOk(login) = login else { panic!("{login:?}") };
+    assert!(!login.caps.contains(&ExecutorOp::Exec));
+    assert_eq!(error_code(&c.exec("forbidden-user", "forbidden-call", "true", &env.work).await), Some(ExecutorErrorCode::Capability));
+    assert_eq!(std::fs::read_dir(env.root.join("ledger/operations")).unwrap().count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn current_user_pause_resume_and_shutdown_preserve_queryable_results() {
+    let env = setup_current_user().await;
+    let mut c = Client::connect(&env).await;
+    c.login().await;
+    accepted(&c.exec("completed", "completed-call", "echo completed", &env.work).await);
+    assert_eq!(c.wait_done("completed").await.0.state, ExecutorOpState::Succeeded);
+    env.exec.pause();
+    assert!(!env.exec.is_open());
+    assert_eq!(error_code(&c.exec("paused", "paused-call", "true", &env.work).await), Some(ExecutorErrorCode::Unavailable));
+    let mut paused = Client::connect(&env).await;
+    assert_eq!(error_code(&paused.login_with(app_token(60_000), "run1").await), Some(ExecutorErrorCode::Unavailable));
+    env.exec.resume();
+    accepted(&c.exec("long-current", "long-current-call", "(trap '' TERM; sleep 60) & echo $! > child.pid; wait", &env.work).await);
+    let child_file = env.work.join("child.pid");
+    for _ in 0..100 {
+        if child_file.is_file() { break; }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let child_pid = std::fs::read_to_string(child_file).unwrap().trim().to_owned();
+    env.exec.shutdown(ExecutorCloseReason::Shutdown, "test shutdown").await;
+    assert!(!env.exec.is_open());
+    assert_eq!(env.exec.active_operations(), 0);
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{child_pid}/stat")) {
+        assert_eq!(stat.rsplit_once(')').unwrap().1.split_whitespace().next(), Some("Z"), "cancelled process group still has a live child");
+    }
+    env.exec.resume();
+    let mut resumed = Client::connect(&env).await;
+    resumed.login().await;
+    assert_eq!(resumed.wait_done("completed").await.0.state, ExecutorOpState::Succeeded);
+    assert_eq!(resumed.wait_done("long-current").await.0.state, ExecutorOpState::Cancelled);
+    accepted(&resumed.exec("new-current", "new-current-call", "echo resumed", &env.work).await);
+    assert_eq!(resumed.wait_done("new-current").await.1, b"resumed\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn current_user_aborted_streams_release_admission_slots() {
+    let env = setup_current_user().await;
+    for _ in 0..80 {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let serving = env.exec.clone();
+        let task = tokio::spawn(async move { serving.serve(server).await });
+        let (rd, wr) = tokio::io::split(client);
+        let mut c = Client { rd, wr, next: 1, events: Vec::new(), data: Vec::new(), store_id: env.exec.store_id() };
+        c.login().await;
+        c.send(&ExecutorClientMessage::Write(ExecutorWriteRequest {
+            request_id: "partial".into(), store_id: c.store_id.clone(), op_id: "partial".into(),
+            run_id: "run1".into(), call_id: "partial".into(), path: env.work.join("never-written").to_str().unwrap().into(),
+            mode: ExecutorWriteMode::Replace, expected_hash: None, content_length: 1024,
+            content_hash: executor_content_hash(&vec![0; 1024]),
+        })).await;
+        c.simple(ExecutorClientMessage::Ping(ExecutorPing { request_id: "barrier".into() }), "barrier".into()).await;
+        task.abort();
+        let _ = task.await;
+        assert_eq!(std::fs::read_dir(env.root.join("ledger/tmp")).unwrap().count(), 0);
+        assert!(!env.work.join("never-written").exists());
+    }
+    let mut c = Client::connect(&env).await;
+    c.login().await;
+    accepted(&c.exec("still-available", "still-available-call", "true", &env.work).await);
+    assert_eq!(c.wait_done("still-available").await.0.state, ExecutorOpState::Succeeded);
 }

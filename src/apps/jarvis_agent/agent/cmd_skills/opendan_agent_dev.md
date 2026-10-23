@@ -3,6 +3,16 @@ name: opendan_agent_dev
 description: Develop OpenDAN Agents — AgentRootFS layout, agent.toml, behaviors, cmd_skills and TypeScript CLI tools on the buckyos SDK, sessions and report artifacts, debugging, packaging an Agent template PIKG, registering it and creating an Agent from it, and extending agents with skill packages.
 requires: an OpenDAN session (agent-session on PATH) and the buckyos command; registering templates and creating Agents is done by the owner (Control Panel/Desktop or host CLI); host debugging needs the BuckyOS repo
 ---
+#### Explicit remote executor tools
+The `executor` tool group provides `executor_list` and `executor_call` without moving the Agent Session.
+Discover a permitted online executor and use its exact executor_id, generation, profile_id and store_id.
+Linux supports exec/read/write/edit/query/cancel; UI, input and capture remain unsupported.
+The CLI alternative is `buckyos executor --help`; inspect the installed command schema before use.
+Management URL credentials authenticate the target daemon only, while tool calls use the Agent's App session.
+After connection loss, rediscover the active generation and query the original operation using its
+operation_call_id and original store_id; do not replay commands. A different store_id cannot recover
+the previous machine's ledger. See `doc/arch/agent_daemon.md`.
+
 #### When to use
 Making a new Agent template or changing one (identity text, behaviors, session classes), writing a cmd_skill with its commands, packaging/installing skill packages, or explaining how Agents, templates and Apps relate. Packaging, test installs, waiting for tasks and publish limits are shared with Apps and live in `buckyos_dev_release`; when it is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release.md`. Ordinary Apps are `buckyos_app_dev`.
 

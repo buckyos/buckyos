@@ -39,6 +39,8 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
 hyper = "1.8.1"
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-tungstenite = { workspace = true }
 zip = { workspace = true }
 image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
 base64 = { workspace = true }

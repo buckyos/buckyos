@@ -56,6 +56,68 @@ pub struct WorkerLauncher {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct HostIdentity {
+    pub mode: crate::ExecutorIdentityMode,
+    #[cfg(unix)]
+    pub uid: libc::uid_t,
+    #[cfg(unix)]
+    pub gid: libc::gid_t,
+    #[cfg(unix)]
+    groups: Vec<libc::gid_t>,
+}
+
+impl HostIdentity {
+    pub fn capture(mode: crate::ExecutorIdentityMode) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        unsafe {
+            let uid = libc::getuid();
+            let gid = libc::getgid();
+            if mode == crate::ExecutorIdentityMode::CurrentUser
+                && (uid != libc::geteuid() || gid != libc::getegid())
+            {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+                    "current_user requires matching real and effective uid/gid"));
+            }
+            let count = libc::getgroups(0, std::ptr::null_mut());
+            if count < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut groups = vec![0; count as usize];
+            if libc::getgroups(count, groups.as_mut_ptr()) != count {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self { mode, uid, gid, groups })
+        }
+        #[cfg(not(unix))]
+        Ok(Self { mode })
+    }
+
+    pub fn can_run(&self) -> bool {
+        match self.mode {
+            crate::ExecutorIdentityMode::CurrentUser => cfg!(any(unix, windows)),
+            crate::ExecutorIdentityMode::SwitchUser => {
+                #[cfg(unix)]
+                { unsafe { libc::geteuid() == 0 } }
+                #[cfg(not(unix))]
+                { false }
+            }
+        }
+    }
+}
+
+pub(crate) fn executable_available(path: &Path) -> bool {
+    if !path.is_file() { return false; }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false; };
+        unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
+    }
+    #[cfg(not(unix))]
+    { true }
+}
+
 #[cfg(unix)]
 pub fn default_shell() -> PathBuf {
     for candidate in ["/bin/bash", "/usr/bin/bash"] {
@@ -84,18 +146,21 @@ fn internal(msg: impl Into<String>) -> ExecutorError {
     ExecutorError::new(ExecutorErrorCode::Internal, msg)
 }
 
-/// In the child before exec: a new process group; on Linux no_new_privs and
-/// no ambient capabilities; then setgroups([gid]) + setgid + setuid, checked
-/// afterwards, chdir as the target user, and every inherited descriptor
-/// marked close-on-exec. The group list is always set explicitly: on macOS
-/// `setgroups(0, NULL)` (what std's `Command::uid` uses) makes the egid 0.
 #[cfg(unix)]
-fn drop_privileges(cmd: &mut Command, run_as: Option<&ExecutorRunAs>, cwd: &Path) -> std::io::Result<()> {
+fn drop_privileges(
+    cmd: &mut Command,
+    identity: &HostIdentity,
+    run_as: Option<&ExecutorRunAs>,
+    cwd: &Path,
+) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let run_as = run_as
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH))?;
-    let uid = run_as.uid as libc::uid_t;
-    let gid = run_as.gid as libc::gid_t;
+    let switching = identity.mode == crate::ExecutorIdentityMode::SwitchUser;
+    let (uid, gid, groups) = match (switching, run_as) {
+        (true, Some(run_as)) => (run_as.uid as libc::uid_t, run_as.gid as libc::gid_t, vec![run_as.gid as libc::gid_t]),
+        (false, None) => (identity.uid, identity.gid, identity.groups.clone()),
+        _ => return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH)),
+    };
+    let mut actual_groups = vec![0; groups.len().max(1)];
     let cwd = std::ffi::CString::new(cwd.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     cmd.process_group(0);
@@ -114,17 +179,16 @@ fn drop_privileges(cmd: &mut Command, run_as: Option<&ExecutorRunAs>, cwd: &Path
                     0,
                 );
             }
-            if libc::setgroups(1, &gid) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
+            if switching && (libc::setgroups(1, &gid) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0) {
                 return Err(std::io::Error::last_os_error());
             }
-            let mut groups = [0 as libc::gid_t; 4];
-            let count = libc::getgroups(groups.len() as libc::c_int, groups.as_mut_ptr());
+            let count = libc::getgroups(actual_groups.len() as libc::c_int, actual_groups.as_mut_ptr());
             if libc::getuid() != uid
                 || libc::geteuid() != uid
                 || libc::getgid() != gid
                 || libc::getegid() != gid
-                || count != 1
-                || groups[0] != gid
+                || count != groups.len() as libc::c_int
+                || actual_groups[..groups.len()] != groups[..]
             {
                 return Err(std::io::Error::from_raw_os_error(libc::EPERM));
             }
@@ -252,9 +316,8 @@ impl ShellProcess {
         #[cfg(unix)]
         {
             signal_group(self.pgid, libc::SIGTERM);
-            if tokio::time::timeout(TERM_GRACE, self.child.wait()).await.is_err() {
-                signal_group(self.pgid, libc::SIGKILL);
-            }
+            let _ = tokio::time::timeout(TERM_GRACE, self.child.wait()).await;
+            signal_group(self.pgid, libc::SIGKILL);
         }
         #[cfg(windows)]
         self.job.terminate();
@@ -264,6 +327,7 @@ impl ShellProcess {
 #[cfg(unix)]
 pub fn spawn_shell(
     shell: &Path,
+    identity: &HostIdentity,
     run_as: Option<&ExecutorRunAs>,
     cwd: &Path,
     env: &BTreeMap<String, String>,
@@ -279,7 +343,7 @@ pub fn spawn_shell(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(false);
-    drop_privileges(&mut cmd, run_as, cwd)?;
+    drop_privileges(&mut cmd, identity, run_as, cwd)?;
     let child = cmd.spawn()?;
     let pgid = child.id().unwrap_or(0);
     Ok(ShellProcess { child, pgid })
@@ -290,12 +354,13 @@ pub fn spawn_shell(
 #[cfg(windows)]
 pub fn spawn_shell(
     shell: &Path,
+    identity: &HostIdentity,
     run_as: Option<&ExecutorRunAs>,
     cwd: &Path,
     env: &BTreeMap<String, String>,
 ) -> std::io::Result<ShellProcess> {
     use base64::Engine;
-    if run_as.is_some() {
+    if identity.mode != crate::ExecutorIdentityMode::CurrentUser || run_as.is_some() {
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH));
     }
     let wrapper: Vec<u8> = SHELL_WRAPPER.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -330,14 +395,14 @@ pub fn spawn_shell(
 }
 
 #[cfg(unix)]
-fn prepare_worker(cmd: &mut Command, run_as: Option<&ExecutorRunAs>) -> std::io::Result<()> {
+fn prepare_worker(cmd: &mut Command, identity: &HostIdentity, run_as: Option<&ExecutorRunAs>) -> std::io::Result<()> {
     cmd.env("PATH", "/usr/bin:/bin").env("LANG", "C.UTF-8");
-    drop_privileges(cmd, run_as, Path::new("/"))
+    drop_privileges(cmd, identity, run_as, Path::new("/"))
 }
 
 #[cfg(windows)]
-fn prepare_worker(cmd: &mut Command, run_as: Option<&ExecutorRunAs>) -> std::io::Result<()> {
-    if run_as.is_some() {
+fn prepare_worker(cmd: &mut Command, identity: &HostIdentity, run_as: Option<&ExecutorRunAs>) -> std::io::Result<()> {
+    if identity.mode != crate::ExecutorIdentityMode::CurrentUser || run_as.is_some() {
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, crate::RUN_AS_MISMATCH));
     }
     if let Some(root) = std::env::var_os("SystemRoot") {
@@ -364,10 +429,12 @@ pub enum FileJobOutcome {
 
 pub async fn run_file_job(
     launcher: &WorkerLauncher,
+    identity: &HostIdentity,
     run_as: Option<&ExecutorRunAs>,
     job: &WorkerJob,
     payload: &[u8],
     max_reply_payload: u64,
+    mut cancel: Option<tokio::sync::watch::Receiver<Option<crate::ops::CancelReason>>>,
 ) -> FileJobOutcome {
     let mut cmd = Command::new(&launcher.program);
     cmd.args(&launcher.args)
@@ -376,7 +443,7 @@ pub async fn run_file_job(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let spawned = prepare_worker(&mut cmd, run_as).and_then(|_| cmd.spawn());
+    let spawned = prepare_worker(&mut cmd, identity, run_as).and_then(|_| cmd.spawn());
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => return FileJobOutcome::SpawnFailed(internal(format!("cannot start executor worker: {e}"))),
@@ -406,7 +473,26 @@ pub async fn run_file_job(
         );
         r1.map(|_| (out, err))
     };
-    let collected = tokio::time::timeout(FILE_JOB_TIMEOUT, io).await;
+    let cancelled = async {
+        if let Some(rx) = cancel.as_mut() {
+            loop {
+                if rx.borrow().is_some() { return; }
+                if rx.changed().await.is_err() { break; }
+            }
+        }
+        std::future::pending::<()>().await;
+    };
+    let collected = tokio::select! {
+        result = tokio::time::timeout(FILE_JOB_TIMEOUT, io) => Some(result),
+        _ = cancelled => None,
+    };
+    let Some(collected) = collected else {
+        kill_worker(&mut child);
+        let _ = child.wait().await;
+        writer.abort();
+        return FileJobOutcome::Unknown(ExecutorError::new(ExecutorErrorCode::Unavailable, "worker cancelled"));
+    };
+    writer.abort();
     let _ = writer.await;
     let (out, err) = match collected {
         Ok(Ok(v)) => v,

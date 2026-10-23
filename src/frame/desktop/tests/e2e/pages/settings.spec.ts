@@ -159,7 +159,7 @@ test.describe('settings', () => {
     await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
   })
 
-  test('cluster: devices with their hardware, add-device notice, certificates', async ({ page }) => {
+  test('cluster: devices with their hardware, Linux device creation, certificates', async ({ page }) => {
     const win = await openSettings(page, 'Cluster Manager')
     const devices = win.getByTestId('settings-cluster-devices')
     await expect(devices.getByTestId('settings-device-ood1')).toContainText('This node')
@@ -173,7 +173,25 @@ test.describe('settings', () => {
     await expect(detail).toContainText('32 GB')
 
     await devices.getByTestId('settings-add-device').click()
-    await expect(page.getByTestId('settings-add-device-notice')).toContainText('not supported in BuckyOS Desktop')
+    const addDevice = page.getByRole('dialog', { name: 'Add device' })
+    await expect(addDevice.getByLabel('Device name')).toBeVisible()
+    await expect(addDevice.getByLabel('Allowed Agent')).toBeVisible()
+    await expect(addDevice.getByRole('button', { name: 'Generate URL' })).toBeDisabled()
+    await expect(addDevice).toContainText('Shell commands retain the current OS user')
+    await addDevice.getByLabel('Device name').fill('Agent laptop')
+    await addDevice.getByLabel('Allowed Agent').click()
+    await page.getByRole('option').first().click()
+    await addDevice.getByLabel('Allowed working directories').fill('/home/alice/work')
+    await addDevice.getByRole('button', { name: 'Generate URL' }).click()
+    const issued = page.getByRole('dialog', { name: 'Start your device' })
+    await expect(issued.getByLabel('Startup command')).toHaveValue(/start-buckyos-agent-daemon.sh/)
+    await issued.getByRole('button', { name: 'Close', exact: true }).click()
+    await expect(devices).toContainText('Agent laptop')
+    await expect(devices).toContainText('UI unsupported')
+    await devices.getByRole('button', { name: 'Revoke', exact: true }).click()
+    await expect(devices).toContainText('Access revoked')
+    await devices.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect(devices).not.toContainText('Agent laptop')
 
     await expect(win.getByTestId('settings-cluster-certificates')).toContainText('*.alice.web3.buckyos.ai')
     await expect(win.getByTestId('settings-cluster-certificates')).toContainText('ACME')

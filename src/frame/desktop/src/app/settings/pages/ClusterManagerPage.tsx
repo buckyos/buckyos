@@ -1,5 +1,5 @@
 import { ChevronRight, Globe, Plus, RefreshCw, Server, ShieldCheck, Wifi } from 'lucide-react'
-import { Alert, IconButton, Snackbar, Tooltip } from '@mui/material'
+import { IconButton, Tooltip } from '@mui/material'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import type {
@@ -13,6 +13,8 @@ import { useSettingsResource, useSettingsStore } from '../hooks/use-settings-sto
 import { CollapsibleSection, InfoRow, ListCard, Section, SectionNote, StatusBadge } from '../components/shared/Section'
 import { CopyButton } from '../components/shared/CopyButton'
 import { formatBytes, formatDate, formatDateTime, formatRelative, formatUsage } from '../components/shared/format'
+
+import { AgentDevices } from './AgentDevices'
 
 type Translate = ReturnType<typeof useI18n>['t']
 
@@ -208,16 +210,7 @@ function DevicesSection({ zone, status }: { zone: ZoneDevicesResponse | null; st
       ) : (
         <SectionNote>{t('settings.common.loading', 'Loading…')}</SectionNote>
       )}
-      <Snackbar
-        open={notice}
-        autoHideDuration={3000}
-        onClose={() => setNotice(false)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert severity="info" variant="filled" onClose={() => setNotice(false)} data-testid="settings-add-device-notice">
-          {t('settings.cluster.addDeviceUnsupported', 'Adding devices is not supported in BuckyOS Desktop yet.')}
-        </Alert>
-      </Snackbar>
+      <AgentDevices open={notice} onClose={() => setNotice(false)} />
     </Section>
   )
 }

@@ -15,7 +15,7 @@ export interface BuckyOSInfo {
 type RpcResult<T> = Promise<{ data: T | null; error: unknown }>
 
 /** Settings reads and writes: kRPC to control-panel, or the in-browser mock runtime. */
-async function callSettingsRpc<T>(
+export async function callSettingsRpc<T>(
   method: string,
   params: Record<string, unknown> = {},
   options: RpcCallOptions = {},

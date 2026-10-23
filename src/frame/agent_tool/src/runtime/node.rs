@@ -57,6 +57,7 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> NodeIo for T {}
 pub trait NodeExecutorConnector: Send + Sync {
     async fn connect(&self, node_did: &str) -> std::io::Result<Box<dyn NodeIo>>;
     async fn session_token(&self) -> Result<String, String>;
+    fn executor_target(&self) -> Option<super::executor::ExecutorTarget> { None }
 }
 
 fn unavailable(msg: impl Into<String>) -> ExecutorError {
@@ -285,7 +286,7 @@ impl NodeClient {
         wait: Duration,
     ) -> Result<ExecutorServerMessage, ExecutorError> {
         let mut last = unavailable("node executor stream lost");
-        for _ in 0..2 {
+        for _ in 0..if self.connector.executor_target().is_some() { 1 } else { 2 } {
             let conn = self.conn().await?;
             let rid = self.rid();
             let (tx, rx) = oneshot::channel();
@@ -347,7 +348,17 @@ impl NodeClient {
             )
             .await?
         {
-            ExecutorServerMessage::DescribeOk(ok) => Ok(ok),
+            ExecutorServerMessage::DescribeOk(ok) => {
+                let matches = match self.connector.executor_target() {
+                    Some(target) => ok.target.executor_id.as_deref() == Some(target.executor_id.as_str())
+                        && ok.target.node_did.is_empty(),
+                    None => ok.target.node_did == self.node_did && ok.target.executor_id.is_none(),
+                };
+                if !matches || ok.target.profile_id != self.profile_id {
+                    return Err(ExecutorError::new(ExecutorErrorCode::Conflict, "executor describe target changed"));
+                }
+                Ok(ok)
+            },
             other => Err(unavailable(format!("unexpected reply {other:?}"))),
         }
     }
@@ -595,7 +606,10 @@ impl RemoteOp<'_> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct OperationLocator {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub node_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_target: Option<super::executor::ExecutorTarget>,
     pub profile_id: String,
     pub runtime_id: String,
     pub store_id: String,
@@ -613,9 +627,23 @@ fn locator_path(run_dir: &Path, call_id: &str) -> PathBuf {
         .join(format!("{}.json", sanitize_call_id(call_id)))
 }
 
-fn read_locator(run_dir: &Path, call_id: &str) -> Option<OperationLocator> {
+pub(crate) fn read_locator(run_dir: &Path, call_id: &str) -> Option<OperationLocator> {
     let bytes = std::fs::read(locator_path(run_dir, call_id)).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+pub(crate) fn read_locator_checked(run_dir: &Path, call_id: &str) -> Result<Option<OperationLocator>, AgentToolError> {
+    let bytes = match std::fs::read(locator_path(run_dir, call_id)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AgentToolError::ExecFailed(format!("Cannot read operation locator: {error}"))),
+    };
+    let locator: OperationLocator = serde_json::from_slice(&bytes)
+        .map_err(|_| AgentToolError::ExecFailed("Operation locator is invalid; query the original operation instead of replaying it".into()))?;
+    if locator.version != LOCATOR_VERSION || locator.op_id.is_empty() || locator.store_id.is_empty() {
+        return Err(AgentToolError::ExecFailed("Operation locator has an invalid version or identity".into()));
+    }
+    Ok(Some(locator))
 }
 
 fn write_synced(path: &Path, data: &[u8]) -> std::io::Result<()> {
@@ -652,8 +680,16 @@ impl NodeClient {
             ));
         };
         let digest = op.digest();
-        if let Some(existing) = read_locator(&run_dir, call_id) {
-            if existing.request_digest != digest || existing.kind != op.kind() {
+        let existing = if self.connector.executor_target().is_some() {
+            read_locator_checked(&run_dir, call_id)?
+        } else {
+            read_locator(&run_dir, call_id)
+        };
+        if let Some(existing) = existing {
+            if existing.request_digest != digest || existing.kind != op.kind()
+                || existing.executor_target != self.connector.executor_target()
+                || (existing.executor_target.is_none() && existing.node_did != self.node_did)
+                || existing.profile_id != self.profile_id {
                 return Err(AgentToolError::InvalidArgs(format!(
                     "call {call_id} already has a different remote operation"
                 )));
@@ -663,7 +699,8 @@ impl NodeClient {
         let login = self.login_info().await.map_err(tool_error)?;
         let loc = OperationLocator {
             version: LOCATOR_VERSION,
-            node_did: self.node_did.clone(),
+            node_did: if self.connector.executor_target().is_some() { String::new() } else { self.node_did.clone() },
+            executor_target: self.connector.executor_target(),
             profile_id: self.profile_id.clone(),
             runtime_id: self.runtime_id.clone(),
             store_id: login.store_id,
@@ -1594,6 +1631,68 @@ impl NodeExecutorConnector for BuckyosNodeConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_executor_locator_is_not_treated_as_a_new_operation() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(read_locator_checked(directory.path(), "call").unwrap().is_none());
+        let path = locator_path(directory.path(), "call");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"{corrupt").unwrap();
+        assert!(read_locator_checked(directory.path(), "call").is_err());
+    }
+
+    struct DroppingConnector {
+        lightweight: bool,
+        connections: Arc<AtomicU64>,
+        requests: Arc<AtomicU64>,
+    }
+
+    #[async_trait]
+    impl NodeExecutorConnector for DroppingConnector {
+        async fn connect(&self, _: &str) -> std::io::Result<Box<dyn NodeIo>> {
+            self.connections.fetch_add(1, Ordering::SeqCst);
+            let requests = self.requests.clone();
+            let (client, mut server) = tokio::io::duplex(8192);
+            tokio::spawn(async move {
+                read_executor_frame(&mut server).await.unwrap().unwrap();
+                let reply = json!({"type": "login_ok", "request_id": "login", "posture": "normal",
+                    "principal": "did:ens:agent", "app_instance_id": "agent@owner", "caps": ["exec"],
+                    "limits": ExecutorLimits::default(), "revision": "one", "generation": 1,
+                    "auth_valid_until_ms": now_ms() + 60_000, "token_expires_at_ms": now_ms() + 60_000,
+                    "store_id": "ledger", "server_epoch": "epoch"});
+                server.write_all(&encode_executor_control(&reply).unwrap()).await.unwrap();
+                read_executor_frame(&mut server).await.unwrap().unwrap();
+                requests.fetch_add(1, Ordering::SeqCst);
+            });
+            Ok(Box::new(client))
+        }
+
+        async fn session_token(&self) -> Result<String, String> { Ok("session".into()) }
+
+        fn executor_target(&self) -> Option<super::super::executor::ExecutorTarget> {
+            self.lightweight.then(|| super::super::executor::ExecutorTarget {
+                executor_id: "executor".into(), generation: 1, profile_id: "user".into(), store_id: "ledger".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn lightweight_unknown_request_never_replays_and_node_retry_is_preserved() {
+        for (lightweight, expected) in [(true, 1), (false, 2)] {
+            let connections = Arc::new(AtomicU64::new(0));
+            let requests = Arc::new(AtomicU64::new(0));
+            let connector = Arc::new(DroppingConnector { lightweight, connections: connections.clone(), requests: requests.clone() });
+            let client = NodeClient::new(connector, "executor", "user", "runtime", crate::llm_bash::new_run_binding_slot(), "run", None);
+            let result = client.request(|id, store, run| ExecutorClientMessage::Exec(ExecutorExecRequest {
+                request_id: id.into(), store_id: store.into(), op_id: "operation".into(), run_id: run.into(), call_id: "call".into(),
+                cmd: "write side effect".into(), cwd: "/tmp".into(), env_overrides: BTreeMap::new(), execution_timeout_ms: Some(1000),
+            }), None, Duration::ZERO).await;
+            assert!(result.unwrap_err().effect_unknown);
+            assert_eq!(connections.load(Ordering::SeqCst), expected);
+            assert_eq!(requests.load(Ordering::SeqCst), expected);
+        }
+    }
 
     #[test]
     fn windows_workdirs_resolve_with_windows_rules_on_any_host() {

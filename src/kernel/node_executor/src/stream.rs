@@ -47,6 +47,43 @@ struct PendingUpload {
     deadline: tokio::time::Instant,
 }
 
+struct UploadState {
+    inner: Arc<ExecutorInner>,
+    pending: Option<PendingUpload>,
+}
+
+impl std::ops::Deref for UploadState {
+    type Target = Option<PendingUpload>;
+    fn deref(&self) -> &Self::Target { &self.pending }
+}
+
+impl std::ops::DerefMut for UploadState {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.pending }
+}
+
+impl Drop for UploadState {
+    fn drop(&mut self) { abort_upload(&self.inner, &mut self.pending); }
+}
+
+struct StreamCleanup {
+    inner: Arc<ExecutorInner>,
+    id: Option<u64>,
+    writer: tokio::task::AbortHandle,
+    forwarder: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for StreamCleanup {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            self.inner.streams.lock().unwrap().remove(&id);
+        }
+        self.writer.abort();
+        if let Some(forwarder) = &self.forwarder {
+            forwarder.abort();
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Out {
     tx: mpsc::Sender<Vec<u8>>,
@@ -92,6 +129,9 @@ where
         }
         let _ = writer.shutdown().await;
     });
+    let mut cleanup = StreamCleanup {
+        inner: inner.clone(), id: None, writer: writer_task.abort_handle(), forwarder: None,
+    };
     let out = Out { tx };
 
     let login = match tokio::time::timeout(LOGIN_TIMEOUT, read_executor_frame(&mut reader)).await {
@@ -120,6 +160,7 @@ where
             return;
         }
     };
+    cleanup.id = Some(session.id);
     let config = inner.auth.current();
     let grant = current_grant(&inner, session.id);
     if let (Some(config), Some(grant)) = (config, grant) {
@@ -146,9 +187,10 @@ where
         watched.clone(),
         out.clone(),
     ));
+    cleanup.forwarder = Some(forwarder.abort_handle());
     let session = Arc::new(session);
     let requests = Arc::new(tokio::sync::Semaphore::new(PER_STREAM_REQUESTS));
-    let mut upload: Option<PendingUpload> = None;
+    let mut upload = UploadState { inner: inner.clone(), pending: None };
     let mut close_rx = close_rx;
     let token_deadline = tokio::time::Instant::now()
         + Duration::from_millis(session.token_expires_at_ms.saturating_sub(now_ms()));
@@ -179,7 +221,19 @@ where
                         let msg = match serde_json::from_slice::<ExecutorClientMessage>(&payload) {
                             Ok(m) => m,
                             Err(err) => {
-                                out.error(None, e(ExecutorErrorCode::ProtocolError, err.to_string())).await;
+                                let raw = serde_json::from_slice::<serde_json::Value>(&payload).ok();
+                                let unsupported_ui = raw.as_ref()
+                                    .and_then(|v| v.get("type"))
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|kind| kind.starts_with("ui.") || kind.starts_with("ui_"));
+                                if unsupported_ui {
+                                    let request_id = raw.as_ref().and_then(|v| v.get("request_id"))
+                                        .and_then(|v| v.as_str()).map(str::to_string);
+                                    out.error(request_id, e(ExecutorErrorCode::Capability,
+                                        "UI operations are unsupported on this host")).await;
+                                } else {
+                                    out.error(None, e(ExecutorErrorCode::ProtocolError, err.to_string())).await;
+                                }
                                 continue;
                             }
                         };
@@ -199,11 +253,26 @@ where
                                 match upload.take() {
                                     Some(pending) if pending.request.op_id == end.op_id => {
                                         let request_id = pending.request.request_id.clone();
-                                        let reply = finish_upload(&inner, &session, pending, &watched).await;
-                                        send_op_reply(&out, request_id, reply, true).await;
+                                        let permit = match requests.clone().try_acquire_owned() {
+                                            Ok(permit) => permit,
+                                            Err(_) => {
+                                                abort_upload(&inner, &mut Some(pending));
+                                                out.error(Some(request_id), e(ExecutorErrorCode::Busy, "too many requests in flight on this stream")).await;
+                                                continue;
+                                            }
+                                        };
+                                        let inner = inner.clone();
+                                        let session = session.clone();
+                                        let watched = watched.clone();
+                                        let out = out.clone();
+                                        tokio::spawn(async move {
+                                            let reply = finish_upload(&inner, &session, pending, &watched).await;
+                                            send_op_reply(&out, request_id, reply, true).await;
+                                            drop(permit);
+                                        });
                                     }
                                     other => {
-                                        upload = other;
+                                        *upload = other;
                                         out.error(Some(end.request_id), e(ExecutorErrorCode::NotFound, "no pending upload for this op_id")).await;
                                     }
                                 }
@@ -266,6 +335,9 @@ async fn login_stream(
     inner: &Arc<ExecutorInner>,
     login: &ExecutorLogin,
 ) -> Result<(Session, watch::Receiver<Option<ExecutorClosing>>), ExecutorError> {
+    if !inner.ops.is_accepting() {
+        return Err(e(ExecutorErrorCode::Unavailable, "executor admission is paused"));
+    }
     if login.v != NODE_EXECUTOR_PROTOCOL_VERSION {
         return Err(e(ExecutorErrorCode::ProtocolError, "unsupported protocol version"));
     }
@@ -283,8 +355,8 @@ async fn login_stream(
     if session.expires_at_ms <= now_ms() {
         return Err(e(ExecutorErrorCode::Unauthenticated, "session token expired"));
     }
-    let mut grant = auth::map_login(&session, &config, &login.profile, &inner.host_caps)?;
-    auth::apply_rbac(inner.rbac.as_ref(), &inner.node_id, &session, &mut grant).await;
+    let mut grant = auth::map_login(&session, &config, &login.profile, &inner.host_caps, inner.identity.mode)?;
+    auth::apply_rbac(inner.rbac.as_ref(), &inner.node_id, inner.admission, &session, &mut grant).await;
     if !grant.caps.contains(&ExecutorOp::OpenStream) {
         return Err(e(ExecutorErrorCode::Forbidden, "RBAC denies executor.open_stream"));
     }
@@ -292,6 +364,9 @@ async fn login_stream(
     let id = inner.next_stream.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     {
         let mut streams = inner.streams.lock().unwrap();
+        if !inner.ops.is_accepting() {
+            return Err(e(ExecutorErrorCode::Unavailable, "executor admission is paused"));
+        }
         if streams.len() >= config.limits.max_streams as usize {
             return Err(e(ExecutorErrorCode::Busy, "max_streams reached"));
         }
@@ -316,7 +391,7 @@ async fn login_stream(
 }
 
 fn current_grant(inner: &ExecutorInner, id: u64) -> Option<Grant> {
-    inner.streams.lock().unwrap().get(&id).map(|e| e.grant.clone())
+    inner.streams.lock().unwrap().get(&id).filter(|entry| entry.close.borrow().is_none()).map(|e| e.grant.clone())
 }
 
 fn check_session(inner: &ExecutorInner, session: &Session) -> Option<ExecutorClosing> {
@@ -342,6 +417,10 @@ fn authorize(
     op: ExecutorOp,
     store_id: Option<&str>,
 ) -> Result<(Grant, OpContext), ExecutorError> {
+    let admission_generation = inner.ops.admission_generation();
+    if !inner.ops.is_accepting() {
+        return Err(e(ExecutorErrorCode::Unavailable, "executor admission is paused"));
+    }
     if !inner.host_caps.contains(&op) {
         return Err(e(
             ExecutorErrorCode::Capability,
@@ -354,7 +433,7 @@ fn authorize(
         .ok_or_else(|| e(ExecutorErrorCode::Unavailable, "authorization snapshot is not valid"))?;
     let grant = current_grant(inner, session.id)
         .ok_or_else(|| e(ExecutorErrorCode::Forbidden, "stream is closing"))?;
-    if !crate::CONTROL_OPS.contains(&op) && !crate::host_honors_run_as(&grant.profile) {
+    if !crate::CONTROL_OPS.contains(&op) && !inner.identity.mode.honors_run_as(&grant.profile) {
         return Err(e(ExecutorErrorCode::Capability, crate::RUN_AS_MISMATCH));
     }
     if !grant.caps.contains(&op) {
@@ -375,6 +454,7 @@ fn authorize(
         profile: grant.profile.clone(),
         limits: config.limits.clone(),
         auth_generation: config.generation,
+        admission_generation,
     };
     Ok((grant, ctx))
 }
@@ -464,7 +544,14 @@ async fn submit(
     };
     let key = ident.key_hash(inner.store.store_id());
     watched.lock().unwrap().insert(key);
-    let outcome = inner.ops.submit(ctx, ident, spec, upload).await?;
+    let cleanup_upload = upload.clone();
+    let outcome = match inner.ops.submit(ctx, ident, spec, upload).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            release(&cleanup_upload);
+            return Err(error);
+        }
+    };
     Ok((outcome.status, outcome.duplicate))
 }
 
@@ -584,11 +671,12 @@ async fn describe(
             if !inner.host_caps.contains(&ExecutorOp::Exec) {
                 return Err(e(ExecutorErrorCode::Capability, "this host cannot resolve a workdir"));
             }
-            if !crate::host_honors_run_as(&grant.profile) {
+            if !inner.identity.mode.honors_run_as(&grant.profile) {
                 return Err(e(ExecutorErrorCode::Capability, crate::RUN_AS_MISMATCH));
             }
             match run_file_job(
                 &inner.launcher,
+                &inner.identity,
                 grant.profile.run_as.as_ref(),
                 &WorkerJob::ResolveDir {
                     path,
@@ -596,6 +684,7 @@ async fn describe(
                 },
                 &[],
                 0,
+                None,
             )
             .await
             {
@@ -611,10 +700,11 @@ async fn describe(
     Ok(ExecutorDescribeOk {
         request_id: req.request_id,
         target: ExecutorRuntimeTarget {
-            node_did: inner.node_did.clone(),
+            node_did: if inner.admission == crate::ExecutorAdmission::Node { inner.node_did.clone() } else { String::new() },
+            executor_id: (inner.admission == crate::ExecutorAdmission::Wss).then(|| inner.node_id.clone()),
             profile_id: grant.profile_id.clone(),
-            uid: grant.profile.run_as.as_ref().map(|r| r.uid),
-            gid: grant.profile.run_as.as_ref().map(|r| r.gid),
+            uid: grant.profile.run_as.as_ref().map(|r| r.uid).or_else(|| host_uid(inner)),
+            gid: grant.profile.run_as.as_ref().map(|r| r.gid).or_else(|| host_gid(inner)),
             workdir,
             store_id: inner.store.store_id().to_string(),
             protocol_version: NODE_EXECUTOR_PROTOCOL_VERSION,
@@ -628,6 +718,20 @@ async fn describe(
             path: grant.profile.env.get("PATH").cloned(),
         },
     })
+}
+
+fn host_uid(inner: &ExecutorInner) -> Option<u32> {
+    #[cfg(unix)]
+    { (inner.identity.mode == crate::ExecutorIdentityMode::CurrentUser).then_some(inner.identity.uid) }
+    #[cfg(not(unix))]
+    { let _ = inner; None }
+}
+
+fn host_gid(inner: &ExecutorInner) -> Option<u32> {
+    #[cfg(unix)]
+    { (inner.identity.mode == crate::ExecutorIdentityMode::CurrentUser).then_some(inner.identity.gid) }
+    #[cfg(not(unix))]
+    { let _ = inner; None }
 }
 
 #[cfg(unix)]
