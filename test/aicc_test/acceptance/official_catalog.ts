@@ -58,7 +58,34 @@ function stringField(value: unknown, field: string): string | undefined {
   return typeof result === "string" && result.trim() ? result.trim() : undefined;
 }
 
-export function openRouterTaskTypes(entry: unknown): string[] | undefined {
+/**
+ * Task types `openRouterTaskTypes` may emit.
+ *
+ * Each one must be a `task_type_api_types` key in the OpenRouter capability
+ * baseline: `manifest.ts` maps official task types onto API types through that
+ * table, so a task type without an entry silently yields zero acceptance cases
+ * instead of failing.
+ */
+export const OPENROUTER_CATALOG_TASK_TYPES = [
+  "decision",
+  "rerank",
+  "embedding.text",
+  "audio.tts",
+  "audio.asr",
+  "audio.music",
+  "video.generate",
+  "llm",
+  "vision.ocr",
+  "vision.caption",
+  "image.txt2img",
+  "image.img2img",
+] as const;
+
+export type OpenRouterCatalogTaskType = (typeof OPENROUTER_CATALOG_TASK_TYPES)[number];
+
+export function openRouterTaskTypes(
+  entry: unknown,
+): OpenRouterCatalogTaskType[] | undefined {
   const architecture = object(object(entry)?.architecture);
   const input = Array.isArray(architecture?.input_modalities)
     ? architecture.input_modalities.filter((value): value is string => typeof value === "string")
@@ -66,28 +93,34 @@ export function openRouterTaskTypes(entry: unknown): string[] | undefined {
   const output = Array.isArray(architecture?.output_modalities)
     ? architecture.output_modalities.filter((value): value is string => typeof value === "string")
     : [];
-  const result: string[] = [];
-  if (output.length === 1 && output[0] === "decisions") result.push("decision");
-  else if (output.length === 1 && output[0] === "rerank") result.push("rerank");
-  else if (output.length === 1 && output[0] === "embeddings") result.push("embedding.text");
-  else if (output.length === 1 && output[0] === "speech") result.push("audio.tts");
-  else if (output.length === 1 && output[0] === "transcription") result.push("audio.asr");
+  const result: OpenRouterCatalogTaskType[] = [];
+  const push = (taskType: OpenRouterCatalogTaskType) => result.push(taskType);
+  if (output.length === 1 && output[0] === "decisions") push("decision");
+  else if (output.length === 1 && output[0] === "rerank") push("rerank");
+  else if (output.length === 1 && output[0] === "embeddings") push("embedding.text");
+  else if (output.length === 1 && output[0] === "speech") push("audio.tts");
+  else if (output.length === 1 && output[0] === "transcription") push("audio.asr");
   else if (output.length === 1 && output[0] === "video") {
-    if (input.includes("text")) result.push("video.txt2video");
-    if (input.includes("image")) result.push("video.img2video");
+    // AICC exposes a single canonical video entry point; text prompts, keyframes
+    // and reference images all lower onto `video.generate`, so the legacy
+    // `video.txt2video` / `video.img2video` names must not be emitted here.
+    push("video.generate");
   } else if (
     output.includes("audio") &&
     output.every((value) => ["text", "image", "audio"].includes(value))
   ) {
-    result.push("audio.music");
+    push("audio.music");
   } else if (output.every((value) => ["text", "image"].includes(value))) {
     if (output.includes("text")) {
-      result.push("llm");
-      if (input.includes("image")) result.push("vision.ocr", "vision.caption");
+      push("llm");
+      if (input.includes("image")) {
+        push("vision.ocr");
+        push("vision.caption");
+      }
     }
     if (output.includes("image")) {
-      if (input.includes("text")) result.push("image.txt2img");
-      if (input.includes("image")) result.push("image.img2img");
+      if (input.includes("text")) push("image.txt2img");
+      if (input.includes("image")) push("image.img2img");
     }
   }
   return result.length > 0 ? result : undefined;

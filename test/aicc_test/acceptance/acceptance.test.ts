@@ -59,6 +59,8 @@ import {
   bindOfficialCatalogInstances,
   fetchOfficialCatalogs,
   fetchOfficialModelIds,
+  OPENROUTER_CATALOG_TASK_TYPES,
+  openRouterTaskTypes,
   scopeInventoriesToRequestedCases,
 } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
@@ -712,6 +714,28 @@ function matrixInputs(inventories: ProviderInventory[]) {
     aiccInventories: inventories,
   };
 }
+
+test("openrouter catalog task types resolve onto the unified video API", async () => {
+  const profile = (await baseline()).providers.find((item) =>
+    item.provider_driver === "openrouter"
+  )!;
+  const declared = profile.official_catalog.task_type_api_types ?? {};
+  for (const taskType of OPENROUTER_CATALOG_TASK_TYPES) {
+    assert.ok(
+      (declared[taskType] ?? []).length > 0,
+      `openrouter task type ${taskType} has no task_type_api_types mapping`,
+    );
+  }
+  const taskTypes = (input: string[]) =>
+    openRouterTaskTypes({
+      id: "fixture/video",
+      architecture: { input_modalities: input, output_modalities: ["video"] },
+    });
+  assert.deepEqual(taskTypes(["text"]), ["video.generate"]);
+  assert.deepEqual(taskTypes(["image"]), ["video.generate"]);
+  assert.deepEqual(taskTypes(["text", "image"]), ["video.generate"]);
+  assert.deepEqual(taskTypes(["video"]), ["video.generate"]);
+});
 
 test("official catalog fetches paginated Provider inventory independently of AICC", async () => {
   const profile = (await baseline()).providers.find((item) =>
