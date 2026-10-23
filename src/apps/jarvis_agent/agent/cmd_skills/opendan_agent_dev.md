@@ -107,6 +107,15 @@ Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/
 - Host, in `buckyos/src`: `./debug_jarvis.sh <owner> --agent <agent_id> [--no-build]` runs that Agent's Loader in the foreground from source; `JARVIS_PACKAGE_ROOT=<agent dir>` points it at your package. `opendan --dev --agent-root <dir> --agent-did <did> --queue-dir <dir>` runs without a zone. Container changes need `./build_aios --local-test` and a recreated container (`buckyos_dev_release`). Tests: `cargo test -p opendan --test loader -- --test-threads=1`, `cargo test -p libopendan -- --test-threads=1`.
 
 #### When it fails
+- Auth failure: read `loader.status.authentication` (`state`, `last_error`, `error_code`, `denial`, `next_retry_time`)
+  and `errors`, then `session.read` for persistent `bind_failed`, input ACK and outbox. Renewal is serialized in the
+  shared Rust runtime; new mail operations and tool calls take its latest token. Keep auth bind errors recoverable,
+  preserve unacknowledged input and existing outbox IDs, and do not report recovery before a successful credential exchange.
+- `reauthorization_required` or `unavailable`: use an authorized owner/host session and the existing
+  `buckyos app restart <full_app_instance_id> --strategy recreate` flow after checking current owner/App/Agent grants
+  (`buckyos_admin`). This recreates with a newly signed startup assertion and retains AgentRootFS; `docker restart`
+  reuses the old assertion. Do not copy device keys into the container or automatically relogin after revocation.
+  Verify the same pending message has one reply and later renewal succeeds; `Up` is not an Agent health check.
 - `unknown method skills.list|install` from `buckyos skill`: that Agent's container predates the skills kRPC; it needs a newer aios image and a recreated container.
 - WebUI `503 service_not_ready:opendan`: check that the app uses `/api/opendan` on its own host. The zone gateway reserves `/kapi/<name>` for named services; cross-app callers use `/kapi/<agent_id>` with the full AgentId. See `src/frame/opendan/README.md` for endpoint and login details.
 - Session creation errors name the missing behavior or cmd_skill, or `> 8` / duplicate manual names.

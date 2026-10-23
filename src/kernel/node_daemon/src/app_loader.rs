@@ -3,8 +3,9 @@ use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use crate::wslc;
 use buckyos_api::{
-    generate_service_login_assertion, get_buckyos_api_runtime, get_local_app_runtime_key,
-    hide_child_console_async, AppDoc, AppServiceInstanceConfig, AppType, DeploymentHealth,
+    check_app_runtime_session, generate_service_login_assertion, get_buckyos_api_runtime,
+    get_local_app_runtime_key, hide_child_console_async, AppDoc, AppServiceInstanceConfig,
+    AppServiceSpec, AppType, DeploymentHealth,
     DeploymentIdentity, LocalAppInstanceConfig, ServiceInstanceState, ServiceSpecConfig,
     SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV, BUCKYOS_APP_INSTANCE_ID_ENV,
     BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
@@ -105,6 +106,30 @@ pub(crate) fn process_node_session_id() -> &'static str {
             format!("node-session-{}-{nanos}", std::process::id())
         })
         .as_str()
+}
+
+pub(crate) fn validate_app_launch_config(
+    config: &AppServiceInstanceConfig,
+    current_spec: &AppServiceSpec,
+    node_name: &str,
+) -> Result<()> {
+    let current_execution = current_spec.to_node_execution_spec().map_err(|error| {
+        ControlRuntItemErrors::ExecuteError(
+            "authorize_start".to_string(),
+            format!("current app execution spec is invalid: {error}"),
+        )
+    })?;
+    if config.node_id != node_name
+        || config.target_state != ServiceInstanceState::Started
+        || config.deployment != current_spec.deployment
+        || config.node_execution_spec != current_execution
+    {
+        return Err(ControlRuntItemErrors::ExecuteError(
+            "authorize_start".to_string(),
+            "app launch configuration is stale or does not authorize this node".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn new_instance_epoch() -> String {
@@ -1467,6 +1492,25 @@ impl AppLoader {
                         "device_private_key is missing".to_string(),
                     )
                 })?;
+
+                let client = runtime.get_system_config_client().await.map_err(|error| {
+                    ControlRuntItemErrors::ExecuteError(
+                        "authorize_start".to_string(),
+                        format!("load current app authorization failed: {error}"),
+                    )
+                })?;
+                let current_spec = check_app_runtime_session(
+                    &client,
+                    &config.node_execution_spec.app_instance_id,
+                )
+                .await
+                .map_err(|error| {
+                    ControlRuntItemErrors::ExecuteError(
+                        "authorize_start".to_string(),
+                        format!("app launch requires current authorization: {error}"),
+                    )
+                })?;
+                validate_app_launch_config(config, &current_spec, &device_doc.name)?;
 
                 // App processes receive a device-signed LoginAssertion. Their runtime
                 // exchanges it for a Verify Hub session bound to the exact AppInstance;

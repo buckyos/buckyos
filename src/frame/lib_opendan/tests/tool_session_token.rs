@@ -125,6 +125,7 @@ async fn session_tools_use_current_runtime_token_without_owner_keys() {
     } else {
         eprintln!("tmux unavailable; checking native token injection only");
     }
+    let mut sandboxes = Vec::new();
     for config in configs {
         let rt = RuntimeRegistry::from_config(&config).unwrap();
         let mut open = RuntimeOpenCtx::new(tmp.path(), "token-test", LoopModel::FunctionCall);
@@ -151,17 +152,7 @@ async fn session_tools_use_current_runtime_token_without_owner_keys() {
             assert!(std::env::var_os(TOKEN_ENV).is_none());
         }
 
-        for invalid in [String::new(), "malformed-token".into(), token("expired", 1)] {
-            *runtime.session_token.write().await = invalid;
-            assert!(session_env_vars(&ctx, "test").await.is_err());
-            let err = sandbox
-                .exec(request(tmp.path(), "touch must-not-run"), &context)
-                .await
-                .unwrap_err();
-            assert!(err.to_string().contains("appclient session token"), "{err}");
-            assert!(!tmp.path().join("must-not-run").exists());
-        }
-        *runtime.session_token.write().await = token("restored", expires);
+        sandboxes.push(sandbox);
     }
 
     let session = common::Env::new();
@@ -203,4 +194,26 @@ async fn session_tools_use_current_runtime_token_without_owner_keys() {
         .unwrap()
         .contains(&json!(TOKEN_ENV)));
     assert!(!record.config.runtime.env.contains_key(TOKEN_ENV));
+
+    for invalid in [
+        String::new(),
+        "malformed-token".into(),
+        token("expired", 1),
+        token("raw-restoration-cannot-clear-terminal-auth", expires),
+    ] {
+        *runtime.session_token.write().await = invalid;
+        assert!(session_env_vars(&ctx, "test").await.is_err());
+        assert_eq!(
+            runtime.get_authentication_status().await.state,
+            buckyos_api::RuntimeAuthState::Unavailable,
+        );
+        for sandbox in &sandboxes {
+            let err = sandbox
+                .exec(request(tmp.path(), "touch must-not-run"), &context)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("appclient session token"), "{err}");
+            assert!(!tmp.path().join("must-not-run").exists());
+        }
+    }
 }

@@ -382,6 +382,13 @@ export interface LoaderStatus {
   agent_root: string
   started_at_ms: number
   now_ms: number
+  authentication: {
+    state: 'ready' | 'retry_pending' | 'unavailable' | 'reauthorization_required'
+    last_error: string | null
+    error_code: string | null
+    since: number | null
+    next_retry_time: number | null
+  } | null
   modules: ModuleStatus[]
   hosted: HostedStatus[]
   ui: { scans: number; last_scan_ms: number; last_error?: string; inboxes: InboxStatus[] } | null

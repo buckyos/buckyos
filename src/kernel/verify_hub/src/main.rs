@@ -184,8 +184,22 @@ fn require_active_user_settings(user_settings: &UserSettings) -> Result<()> {
     }
 }
 
+fn refresh_credential_denied(detail: &str) -> RPCErrors {
+    AccessDenial::new(DenyReason::CredentialState)
+        .at(VERIFY_HUB_UNIQUE_ID, "refresh_token")
+        .with_detail(detail)
+        .into_rpc_error()
+}
+
+fn login_assertion_denied(detail: &str) -> RPCErrors {
+    AccessDenial::new(DenyReason::CredentialState)
+        .at(VERIFY_HUB_UNIQUE_ID, "login_by_jwt")
+        .with_detail(detail)
+        .into_rpc_error()
+}
+
 fn family_invalidated() -> RPCErrors {
-    RPCErrors::ReasonError("Refresh token not found or already invalidated".to_string())
+    refresh_credential_denied("refresh_session_invalidated")
 }
 
 /// Sign one token of a family's pair, or a sudo token, for `session`.
@@ -273,21 +287,22 @@ async fn verify_presented_refresh(refresh_jwt: &str) -> Result<PresentedRefresh>
                 "Failed to parse RPCSessionToken from JWT payload: {}",
                 error
             );
-            RPCErrors::ReasonError("Failed to parse RPCSessionToken from JWT payload".to_string())
+            RPCErrors::InvalidToken("Failed to parse RPCSessionToken from JWT payload".to_string())
         })?;
 
     let userid = rpc_session_token
         .sub
         .clone()
-        .ok_or(RPCErrors::ReasonError("Missing sub".to_string()))?;
+        .ok_or(RPCErrors::InvalidToken("Missing sub".to_string()))?;
     reject_root_session_subject(userid.as_str())?;
     let claims = validate_verify_hub_token_claims(&rpc_session_token, TokenUse::Refresh)?;
-    let session_id = get_token_session_id(&rpc_session_token)?;
+    let session_id = get_token_session_id(&rpc_session_token)
+        .map_err(|error| RPCErrors::InvalidToken(error.to_string()))?;
     let session_key = family_key(&userid, &claims.target, session_id);
     let jti = rpc_session_token
         .jti
         .clone()
-        .ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
+        .ok_or(RPCErrors::InvalidToken("Missing jti".to_string()))?;
 
     Ok(PresentedRefresh { session_key, jti })
 }
@@ -419,17 +434,19 @@ async fn validate_service_principal(
     }
 }
 
-async fn check_app_principal_target(target: &AuthTarget) -> Result<()> {
+async fn check_app_principal_target(subject: &str, target: &AuthTarget) -> Result<()> {
     if let AuthTarget::App { app_instance_id } = target {
-        buckyos_api::check_agent_runtime_session(
-            &get_system_config_client().await?,
-            app_instance_id,
-        )
-        .await
-        .map_err(|error| {
-            warn!("App session refused for {}: {}", app_instance_id, error);
-            error
-        })?;
+        if subject != app_instance_id.owner_user_id() {
+            return Err(AccessDenial::new(DenyReason::EntryUnavailable)
+                .with_detail("app_subject_owner_mismatch")
+                .into_rpc_error());
+        }
+        buckyos_api::check_app_runtime_session(&get_system_config_client().await?, app_instance_id)
+            .await
+            .map_err(|error| {
+                warn!("App session refused for {}: {}", app_instance_id, error);
+                error
+            })?;
     }
     Ok(())
 }
@@ -711,13 +728,11 @@ async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<Truste
 async fn verify_trusted_jwt(jwt: &str) -> Result<(Value, TrustedIssuerKind)> {
     let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
         error!("JWT decode header error: {}", error);
-        RPCErrors::ReasonError("JWT decode header error".to_string())
+        login_assertion_denied("login_assertion_invalid")
     })?;
 
     if header.alg != Algorithm::EdDSA {
-        return Err(RPCErrors::ReasonError(
-            "JWT algorithm not allowed".to_string(),
-        ));
+        return Err(login_assertion_denied("login_assertion_invalid"));
     }
 
     let mut validation = Validation::new(Algorithm::EdDSA);
@@ -728,7 +743,7 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<(Value, TrustedIssuerKind)> {
     // JWT format: header.payload.signature
     let claims = decode_jwt_claim_without_verify(jwt).map_err(|error| {
         error!("decode_jwt_claim_without_verify error: {}", error);
-        RPCErrors::ReasonError("decode_jwt_claim_without_verify error".to_string())
+        login_assertion_denied("login_assertion_invalid")
     })?;
 
     let iss = claims
@@ -757,12 +772,15 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<(Value, TrustedIssuerKind)> {
                             "JWT verify error after trust-key reload for iss={}: {}",
                             iss, retry_error
                         );
-                        RPCErrors::ReasonError("JWT verify error".to_string())
+                        login_assertion_denied("login_assertion_invalid")
                     },
                 )?
             } else {
                 error!("JWT verify error: {}", error);
-                return Err(RPCErrors::ReasonError("JWT verify error".to_string()));
+                return Err(login_assertion_denied(match error.kind() {
+                    ErrorKind::ExpiredSignature => "login_assertion_expired",
+                    _ => "login_assertion_invalid",
+                }));
             }
         }
     };
@@ -783,18 +801,18 @@ async fn decode_verify_hub_jwt(
 ) -> Result<Value> {
     let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
         error!("JWT decode header error: {}", error);
-        RPCErrors::ReasonError("JWT decode header error".to_string())
+        RPCErrors::InvalidToken("JWT decode header error".to_string())
     })?;
 
     if header.alg != Algorithm::EdDSA {
-        return Err(RPCErrors::ReasonError(
+        return Err(RPCErrors::InvalidToken(
             "JWT algorithm not allowed".to_string(),
         ));
     }
 
     let claims = decode_jwt_claim_without_verify(jwt).map_err(|error| {
         error!("decode_jwt_claim_without_verify error: {}", error);
-        RPCErrors::ReasonError("decode_jwt_claim_without_verify error".to_string())
+        RPCErrors::InvalidToken("decode_jwt_claim_without_verify error".to_string())
     })?;
 
     let iss = claims
@@ -803,7 +821,7 @@ async fn decode_verify_hub_jwt(
         .unwrap_or(VERIFY_HUB_ISSUER);
 
     if iss != VERIFY_HUB_ISSUER {
-        return Err(RPCErrors::ReasonError("JWT kid not allowed".to_string()));
+        return Err(RPCErrors::InvalidToken("JWT kid not allowed".to_string()));
     }
 
     // Always verify verify-hub issued tokens by verify-hub public key
@@ -824,7 +842,10 @@ async fn decode_verify_hub_jwt(
     let decoded_token =
         jsonwebtoken::decode::<Value>(jwt, &public_key.key, &validation).map_err(|error| {
             error!("JWT verify error: {}", error);
-            RPCErrors::ReasonError("JWT verify error".to_string())
+            match error.kind() {
+                ErrorKind::ExpiredSignature => RPCErrors::TokenExpired("JWT expired".to_string()),
+                _ => RPCErrors::InvalidToken("JWT verify error".to_string()),
+            }
         })?;
 
     Ok(decoded_token.claims)
@@ -1110,7 +1131,7 @@ impl VerifyHubServer {
             principal_kind => {
                 validate_service_principal(&session.subject, principal_kind).await?;
                 if principal_kind == SessionPrincipalKind::App {
-                    check_app_principal_target(&session.target).await?;
+                    check_app_principal_target(&session.subject, &session.target).await?;
                 }
             }
         }
@@ -1148,7 +1169,7 @@ impl VerifyHubServer {
                 presented.session_key
             );
             self.revoke_family(presented.session_key.as_str()).await;
-            RPCErrors::ReasonError("Invalid refresh token jti".to_string())
+            refresh_credential_denied("refresh_token_reused")
         }
     }
 
@@ -1301,10 +1322,10 @@ impl VerifyHubApiHandler for VerifyHubServer {
             ));
         }
         let principal_kind = if issuer_kind == TrustedIssuerKind::Device {
-            if rpc_session_token.iss.as_deref() == Some(userid.as_str()) {
-                SessionPrincipalKind::Device
-            } else if matches!(target, AuthTarget::App { .. }) {
+            if matches!(target, AuthTarget::App { .. }) {
                 SessionPrincipalKind::App
+            } else if rpc_session_token.iss.as_deref() == Some(userid.as_str()) {
+                SessionPrincipalKind::Device
             } else {
                 SessionPrincipalKind::System
             }
@@ -1330,7 +1351,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             target.clone()
         };
         if principal_kind == SessionPrincipalKind::App {
-            check_app_principal_target(&target).await?;
+            check_app_principal_target(&userid, &target).await?;
         }
 
         // ============================================================
@@ -1351,7 +1372,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
         // Step 4: Check if this login JWT has already been used (replay protection)
         if is_used(assertion_key.as_str()).await {
-            return Err(RPCErrors::ReasonError("Login JWT already used".to_string()));
+            return Err(login_assertion_denied("login_assertion_used"));
         }
 
         // Step 5: Generate new session_id for this login session
@@ -1387,7 +1408,18 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair> {
         self.gc().await;
-        let presented = verify_presented_refresh(refresh_jwt).await?;
+        let presented =
+            verify_presented_refresh(refresh_jwt)
+                .await
+                .map_err(|error| match error {
+                    RPCErrors::TokenExpired(_) => {
+                        refresh_credential_denied("refresh_token_expired")
+                    }
+                    RPCErrors::InvalidToken(_) => {
+                        refresh_credential_denied("refresh_token_invalid")
+                    }
+                    other => other,
+                })?;
         let now = buckyos_get_unix_timestamp();
         let family = self.families().get(presented.session_key.as_str())?;
         let presentation = classify_refresh_presentation(family.as_ref(), &presented.jti, now);
@@ -1466,9 +1498,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
                     presented.session_key
                 );
                 self.revoke_family(presented.session_key.as_str()).await;
-                Err(RPCErrors::ReasonError(
-                    "Invalid refresh token jti".to_string(),
-                ))
+                Err(refresh_credential_denied("refresh_token_reused"))
             }
         }
     }
@@ -3137,6 +3167,111 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     }
 
     #[tokio::test]
+    async fn app_service_subject_must_match_target_owner() {
+        let private_key = setup_test_environment().await;
+        let target = AuthTarget::app("demo@alice".parse().unwrap());
+        let (jwt, _) =
+            generate_service_login_assertion("ood1", "demo", "ood1", &private_key).unwrap();
+        let error = test_server()
+            .handle_login_by_jwt(&jwt, &target)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::EntryUnavailable,
+                Some("app_subject_owner_mismatch".into())
+            ))
+        );
+        let error = check_app_principal_target("bob", &target)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::EntryUnavailable,
+                Some("app_subject_owner_mismatch".into())
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn used_and_expired_login_assertions_require_reauthorization() {
+        let private_key = setup_test_environment().await;
+        let handler = test_server();
+        let target = system_target("control-panel");
+        let (jwt, mut assertion) =
+            generate_service_login_assertion("alice", "control-panel", "ood1", &private_key)
+                .unwrap();
+        handler.handle_login_by_jwt(&jwt, &target).await.unwrap();
+        let error = handler
+            .handle_login_by_jwt(&jwt, &target)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::CredentialState,
+                Some("login_assertion_used".into())
+            ))
+        );
+        assertion.exp = Some(buckyos_get_unix_timestamp() - 120);
+        let expired = assertion
+            .generate_jwt(Some("ood1".into()), &private_key)
+            .unwrap();
+        let error = handler
+            .handle_login_by_jwt(&expired, &target)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::CredentialState,
+                Some("login_assertion_expired".into())
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_and_expired_refresh_have_structured_denials() {
+        let private_key = setup_test_environment().await;
+        let handler = test_server();
+        let malformed = handler
+            .handle_refresh_token("invalid.jwt")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&malformed),
+            Some((
+                DenyReason::CredentialState,
+                Some("refresh_token_invalid".into())
+            ))
+        );
+        let (login_jwt, _) =
+            generate_service_login_assertion("alice", "control-panel", "ood1", &private_key)
+                .unwrap();
+        let pair = handler
+            .handle_login_by_jwt(&login_jwt, &system_target("control-panel"))
+            .await
+            .unwrap();
+        let mut expired = decoded(&pair.refresh_token);
+        expired.exp = Some(buckyos_get_unix_timestamp() - 120);
+        let expired = signed_verify_hub_token(expired).await;
+        let error = handler.handle_refresh_token(&expired).await.unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::CredentialState,
+                Some("refresh_token_expired".into())
+            ))
+        );
+        assert!(handler
+            .handle_refresh_token(&pair.refresh_token)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
     async fn stale_refresh_outside_grace_revokes_family() {
         let private_key = setup_test_environment().await;
         let (login_jwt, _) =
@@ -3157,15 +3292,29 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             .backdate_rotation(&key, REFRESH_GRACE_SECONDS + 1)
             .unwrap();
 
-        assert!(handler
+        let error = handler
             .handle_refresh_token(pair.refresh_token.as_str())
             .await
-            .is_err());
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::CredentialState,
+                Some("refresh_token_reused".into())
+            ))
+        );
         assert!(handler.families().get(&key).unwrap().is_none());
-        assert!(handler
+        let error = handler
             .handle_refresh_token(rotated.refresh_token.as_str())
             .await
-            .is_err());
+            .unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((
+                DenyReason::CredentialState,
+                Some("refresh_session_invalidated".into())
+            ))
+        );
     }
 
     #[tokio::test]

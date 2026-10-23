@@ -238,6 +238,9 @@ Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md`
 {
   "agent_did": "…", "agent_id": "…", "who": "app:…@…", "agent_root": "…",
   "started_at_ms": 0, "now_ms": 0,
+  "authentication": { "state": "ready | retry_pending | unavailable | reauthorization_required",
+                      "last_error": null, "error_code": null, "denial": null,
+                      "since": null, "next_retry_time": null } | null,
   "modules": [ { "name": "ui | task_mgr | goals | self_check | self_improve | agent_state_service | webui",
                  "enabled": true, "running": true, "note": "…" } ],
   "hosted":  [ { "session_id", "class", "loaded", "loaded_at_ms", "drives", "last_result": DriveResult,
@@ -253,6 +256,8 @@ Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md`
 ```
 
 `hosted` 只在内存里，重启后由登记表重建，不是协议。
+
+`authentication` 在独立 `--dev` 模式下为 `null`；Zone 模式直接读取共享 runtime 的认证状态，`since` 和 `next_retry_time` 为 Unix 秒。`retry_pending` 按退避重试；`unavailable` 和 `reauthorization_required` 停止复用失效凭据，需要宿主重新核验授权并重建实例。UI inbox bridge 和默认 AICC 调用先通过同一续期入口，新工具执行环境读取续期后的 token；显式配置的 AICC provider token 只作用于该请求。`hosted.last_result` 与 Session `last_error` 保留绑定失败诊断，临时认证失败允许退避重试，认证终止时保留输入游标和 outbox。进程或模块仍在运行不表示认证健康。宿主恢复流程见 [runtime-login](../../../doc/sdk/runtime-login.md)。
 
 zone 内启动时，进程把 `AGENT_TOOL_HOST_ID` 设为 `<device did>/<app instance id>`（已设置则不动）：容器每次重建都会换 hostname，Session 的 runtime 绑定与 lease 用这个稳定身份。
 

@@ -4967,8 +4967,7 @@ async fn bootstrap_service_session(
     let krpc = ::kRPC::kRPC::new_with_timeout_secs(&url, None, 30);
     let verify_hub = buckyos_api::VerifyHubClient::new(krpc);
     let pair = verify_hub.login_by_jwt(jwt.as_str(), target).await?;
-    *runtime.session_token.write().await = pair.session_token;
-    *runtime.refresh_token.write().await = pair.refresh_token;
+    runtime.replace_token_pair(pair).await?;
     Ok(())
 }
 
@@ -5008,8 +5007,7 @@ async fn bootstrap_appclient_session(
     };
     let verify_hub = runtime.get_verify_hub_client().await?;
     let pair = verify_hub.login_by_jwt(jwt.as_str(), target).await?;
-    *runtime.session_token.write().await = pair.session_token;
-    *runtime.refresh_token.write().await = pair.refresh_token;
+    runtime.replace_token_pair(pair).await?;
     Ok(())
 }
 
@@ -5084,25 +5082,33 @@ impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         let runtime = get_buckyos_api_runtime()
             .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
-        if let Some(token) = &self.session_token {
-            let mut guard = runtime.session_token.write().await;
-            if guard.as_str() != token.as_str() {
-                *guard = token.clone();
-            }
-        }
-        let client = runtime
-            .get_aicc_client()
-            .await
-            .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
-        let client = match &self.on_behalf_of {
-            Some(on_behalf_of) => client.with_on_behalf_of(on_behalf_of),
-            None => client,
-        };
+        let client = self.client(runtime).await?;
         Self::infer_with_client(&client, req).await
     }
 }
 
 impl AiccLlmClient {
+    async fn client(&self, runtime: &buckyos_api::BuckyOSRuntime) -> Result<AiccClient, LLMComputeError> {
+        if self.session_token.is_none() {
+            runtime.renew_token_from_verify_hub().await
+                .map_err(|e| provider_error_from_rpc("renew aicc session failed", e))?;
+        }
+        let client = runtime
+            .get_aicc_client()
+            .await
+            .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
+        if let Some(token) = &self.session_token {
+            client.set_context(::kRPC::RPCContext {
+                token: Some(token.clone()),
+                ..Default::default()
+            }).await;
+        }
+        Ok(match &self.on_behalf_of {
+            Some(on_behalf_of) => client.with_on_behalf_of(on_behalf_of),
+            None => client,
+        })
+    }
+
     async fn infer_with_client(
         client: &AiccClient,
         req: LlmInferenceRequest,
@@ -9527,6 +9533,24 @@ mod tests {
             "provider_task_ref": "provider-task"
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn aicc_token_override_does_not_replace_the_runtime_token_pair() {
+        let mut runtime = buckyos_api::BuckyOSRuntime::new(
+            "app2", Some("alice".into()), BuckyOSRuntimeType::AppClient,
+        );
+        runtime.zone_id = name_lib::DID::new("web", "test.invalid");
+        let session = json!({ "iss": "verify-hub", "exp": u64::MAX }).to_string();
+        *runtime.session_token.write().await = session.clone();
+        *runtime.refresh_token.write().await = "rotated-refresh-token".into();
+        let llm = AiccLlmClient::with_session_token(Some("provider-only-token".into()));
+        llm.client(&runtime).await.unwrap();
+        assert_eq!(*runtime.session_token.read().await, session);
+        assert_eq!(*runtime.refresh_token.read().await, "rotated-refresh-token");
+        AiccLlmClient::new().client(&runtime).await.unwrap();
+        assert_eq!(*runtime.session_token.read().await, session);
+        assert_eq!(*runtime.refresh_token.read().await, "rotated-refresh-token");
     }
 
     #[tokio::test]

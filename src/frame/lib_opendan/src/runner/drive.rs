@@ -231,6 +231,10 @@ async fn drive_locked(
         Err(OpenDanError::Busy { holder, .. }) => DriveResult::Busy { holder },
         Err(OpenDanError::RunBusy { run_id }) => DriveResult::RunBusy { run_id },
         Err(OpenDanError::LeaseLost(_)) => DriveResult::LeaseLost,
+        Err(e @ OpenDanError::Bind(_)) => {
+            record_error(&sh, &e).await;
+            DriveResult::BindFailed { error: binding_error(&e).await }
+        }
         Err(e) => {
             record_error(&sh, &e).await;
             DriveResult::Error {
@@ -239,6 +243,18 @@ async fn drive_locked(
             }
         }
     }
+}
+
+async fn binding_error(error: &OpenDanError) -> Value {
+    let mut detail = error.to_json();
+    if matches!(error, OpenDanError::Bind(_)) {
+        if let Ok(runtime) = buckyos_api::get_buckyos_api_runtime() {
+            if runtime.get_authentication_status().await.state == buckyos_api::RuntimeAuthState::RetryPending {
+                detail["recoverable"] = Value::Bool(true);
+            }
+        }
+    }
+    detail
 }
 
 async fn fail_workspace(
@@ -1379,13 +1395,16 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let binding = match bound {
             Ok(b) => b,
             Err(e @ (OpenDanError::Bind(_) | OpenDanError::RuntimeMismatch { .. })) => {
-                if cfg.workspace_binding.is_some() {
+                if cfg.workspace_binding.is_some()
+                    && matches!(e, OpenDanError::RuntimeMismatch { .. })
+                {
                     return Err(OpenDanError::WorkspaceBindingInvalid(e.to_string()));
                 }
+                let error = binding_error(&e).await;
                 let mut s = sh.session.lock().await;
-                s.state.last_error = Some(e.to_json());
+                s.state.last_error = Some(error.clone());
                 commit_and_report(sh, &mut s).await?;
-                return Ok(DriveResult::BindFailed { error: e.to_json() });
+                return Ok(DriveResult::BindFailed { error });
             }
             Err(e) => return Err(e),
         };

@@ -36,6 +36,11 @@ buckyos auth whoami                                 # identity + zone actually u
 - Apply, all restart the zone, ask the owner first: `uv run start.py` (stop, update installed files, start), `--skip-update` (restart), `--all` (fresh dev install devtest/test.buckyos.io, keeps `data/home`, `data/srv`, `storage`), `--reinstall release`. Then `uv run check.py`: "Activation Ready" is not running.
 - Container code (opendan, xagent, agent_tool, buckyos-agent, entrypoint): repo root `./build_aios --local-test` (writes `$BUCKYOS_ROOT/etc/devenv.json` `{"aios":"local/aios-test"}`), then `uv run src/start.py --skip-update` (or wait: node-daemon recreates worker containers whose image id differs from the current one within about 30 s). node-daemon never pulls paios images: a dev install uses local `<repo>:latest-<arch>` and fails deploy when it is missing (`docker pull paios/aios:latest-<arch>` or `uv run build.py`); a release install loads the pinned tarballs in `bin/paios-images/`.
 
+- Refresh-race fixes span the aios image (OpenDAN/runtime) and host binaries (verify-hub/node-daemon). Record the
+  source commit/build id, actual installed binary hashes and running image id for both; publishing only the host or
+  only the image is insufficient. Preserve verify-hub `sessions.db` and AgentRootFS. Use the existing authorized App
+  recreate flow for an invalidated instance, then verify its pending-message reply and later renewals (`buckyos_admin`).
+
 #### Package and inspect
 ```
 buckyos --non-interactive pikg init . --name <app> --owner did:bns:<owner> --kind static-web|script|docker|agent-skills --source <dir | .tar.gz | local image>

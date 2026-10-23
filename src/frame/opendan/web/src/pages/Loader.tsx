@@ -20,6 +20,17 @@ export default function LoaderPage() {
           ]}
         />
       </Panel>
+      <Panel title="Authentication" testId="loader-authentication">
+        {data.authentication ? (
+          <Fields rows={[
+            ['state', <Badge value={data.authentication.state} tone={data.authentication.state === 'ready' ? 'ok' : data.authentication.state === 'retry_pending' ? 'pending' : 'bad'} />],
+            ['error', data.authentication.last_error ?? '–'],
+            ['code', data.authentication.error_code ?? '–'],
+            ['since', data.authentication.since ? <Time ms={data.authentication.since * 1000} /> : '–'],
+            ['next retry', data.authentication.next_retry_time ? <Time ms={data.authentication.next_retry_time * 1000} /> : '–'],
+          ]} />
+        ) : <Empty>Authentication is not configured in development mode.</Empty>}
+      </Panel>
       <Panel title="Modules" testId="loader-modules">
         <table className="tbl">
           <thead>

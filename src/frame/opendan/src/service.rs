@@ -360,19 +360,26 @@ impl StateService {
                 let (index, key) = self.supervisor.goal_feedback(&id, &text, &from).await?;
                 Ok(json!({ "index": index, "key": key }))
             }
-            "loader.status" => Ok(json!({
+            "loader.status" => {
+                let authentication = match buckyos_api::get_buckyos_api_runtime() {
+                    Ok(runtime) => Some(runtime.get_authentication_status().await),
+                    Err(_) => None,
+                };
+                Ok(json!({
                 "agent_did": self.info.agent_did,
                 "agent_id": self.info.agent_id,
                 "who": self.info.who,
                 "agent_root": self.info.agent_root,
                 "started_at_ms": self.info.started_at_ms,
                 "now_ms": libopendan::now_ms(),
+                "authentication": authentication,
                 "modules": *self.info.modules.lock().expect("modules"),
                 "hosted": self.supervisor.status(),
                 "ui": self.ui.as_ref().map(|u| u.status()),
                 "goals": self.supervisor.goals().map(|g| g.status()),
                 "errors": *self.info.errors.lock().expect("errors"),
-            })),
+                }))
+            }
             other => Err(OpenDanError::InvalidArgument(format!("unknown method `{other}`"))),
         }
     }

@@ -7,6 +7,8 @@
 > 依据：[《BuckyOS AiWorkspace 核心架构设计冻结思路》](<BuckyOS AiWorkspace 核心架构设计冻结思路.md>)、围绕该文档的架构评审，以及当前仓库实现。
 >
 > 本文描述建议采用的目标契约。文中的“必须”“不得”约束目标设计，不表示相关能力已经全部实现；现有机制和后续工作在第十二节单独说明。冻结前必须确定的设计决策集中在第十三节，实施 TODO 在这些决策确认后推导。
+>
+> 2026 年 10 月 22 日对 D01–D19 做了一轮深度 review，并按源码重新核对了各项“当前实现”。修正直接改在原处；对已确认决策的二阶后果、相互制约和待补裁决，以“**Review 补充**”段落写在对应决策之下；由 review 提出、尚待确认的新决策为 D20–D26（§13.6）。
 
 ## 一、改进目标与冻结范围
 
@@ -125,6 +127,8 @@ epoch 与 lineage 不能合并成一个版本概念。更换提交历史起点�
 5. 形成规范化操作及足以重放的上下文。
 6. 将数据、引用、历史、接受记录和版本推进作为一个原子提交持久化。
 7. 在达到约定持久化边界后确认成功，随后通知订阅者或派发已保存的工作。
+
+上面是逻辑步骤。当前实现的实际顺序是：协议与 epoch → 请求大小与摘要 → 幂等查找 → 是否持有任意授权 → 放映锁 → run 状态 → 规划（逐操作能力位、`expect` 与前置条件都在规划内检查）→ **写锁**（锁目标由规划产出，因此只能在规划之后）→ 单事务写入（[workspace.rs](../../src/frame/aiworkspace/store/src/workspace.rs) `commit`）。写锁后置是合理的，13.2 按此表述确认。
 
 二进制资源可先进入暂存区，但业务提交成功时，其要求的内容必须已经可靠可用。暂存成功而业务提交失败，可以留下待回收对象，不能留下已经发布却缺失必要内容的引用。
 
@@ -432,20 +436,20 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **当前执行链。** [main.rs](../../src/frame/aiworkspace/server/src/main.rs) 以 `aiworkspace` 的 `KernelService` 身份初始化全局 runtime；[wish/mod.rs](../../src/frame/aiworkspace/server/src/wish/mod.rs) 的 `proc.start` 保存运行记录后，在同一服务中派生 Tokio 任务；[stages.rs](../../src/frame/aiworkspace/server/src/wish/stages.rs) 直接调用 `XllmTask::prepare`、`XllmRun::start` 和 `run.execute`。这里的 xllm 是进程内 Rust 组件，并未为每次用户任务创建独立的用户执行实例。
 
-生成程序由 [runner.rs](../../src/frame/aiworkspace/server/src/wish/runner.rs) 启动 Deno 子进程执行。该路径设置了工作目录读权限、output 写权限和 `--allow-net`，并清理环境变量，但未切换 OS 用户或建立独立用户容器。Deno 权限限制是现有防护的一部分，不能据此将整个 xllm 运行认定为用户资源上的隔离执行。
+生成程序由 [runner.rs](../../src/frame/aiworkspace/server/src/wish/runner.rs) 启动 Deno 子进程执行。该路径设置了工作目录读权限、output 写权限和不限主机的 `--allow-net`，并清理环境变量，但未切换 OS 用户或建立独立用户容器。Deno 只约束生成程序：execute 阶段的 `.llm_context` 以 `shell=true` 给模型 `bash` 工具组（[wish/llm.rs](../../src/frame/aiworkspace/server/src/wish/llm.rs) `llm_context`、[stages.rs](../../src/frame/aiworkspace/server/src/wish/stages.rs) `execute`），该 shell 以服务进程的 OS 权限在 run 工作目录运行，不经 Deno。因此不能把 Deno 权限限制当作整个 xllm 运行的防护边界。
 
-**AI 资源归属已有修正。** 当前 `run_attribution` 按 Workspace 配置选择 `workspace_owner`（默认）或 `current_user`，后者要求触发者是本 Zone 的 Account；归属随新 run 持久化，另存 `operator_id`。主 xllm 调用和 `llm.map` 均通过 [wish/llm.rs](../../src/frame/aiworkspace/server/src/wish/llm.rs) 与 [xllm.rs](../../src/frame/agent_tool/src/xllm.rs) 传递 `on_behalf_of`。
+**AI 资源归属部分修正。** 当前 `run_attribution` 按 Workspace 配置选择 `workspace_owner`（默认）或 `current_user`，后者要求触发者是本 Zone 的 Account；归属随新 run 持久化，另存 `operator_id`。`llm.map` 经 [wish/llm.rs](../../src/frame/aiworkspace/server/src/wish/llm.rs) 正确传递 `on_behalf_of`。但主 xllm 循环存在缺陷：`.llm_context` 中的 `provider.on_behalf_of` 能被 [xllm.rs](../../src/frame/agent_tool/src/xllm.rs) 解析，而 `merge_config_layers` 只合并 `kind`、`session_token`、`base_url`、`api_key`、`headers`，`on_behalf_of` 被丢弃；`prepare` 从合并后的配置取 provider，所以 analyze/execute 的模型调用以 `system:aiworkspace` 自身计费。该结论来自源码阅读，未实跑验证；现有测试只检查 `.llm_context` 文件内容，不会发现此问题。修复应随 D14 的执行模型调整一起做，不单独打补丁。
 
 [AICC identity.rs](../../src/frame/aicc/src/service/identity.rs) 限定可代理的调用主体，检查 `obj://aicc/on_behalf_of` 权限和归属账户有效性，再使用该用户的资源归属。因此当前正常新建 Wish run 的身份应分层理解：
 
 | 层次 | 当前实现 |
 | --- | --- |
 | AICC 服务调用身份 | 使用 aiworkspace 服务 session；记录的服务调用者为 `system:aiworkspace`，没有透传触发者 session |
-| AICC 有效资源归属 | `user_id` / `tenant_id` 为选定的 Owner 或当前用户，业务 `app_id` 为 `aiworkspace`；`operator_id` 记录触发者 |
+| AICC 有效资源归属 | `llm.map`：`user_id` / `tenant_id` 为选定的 Owner 或当前用户，业务 `app_id` 为 `aiworkspace`，`operator_id` 记录触发者。主 xllm 循环：因上述合并缺陷，实际归属为服务自身 |
 | Workspace 数据权限 | 输入读取和结果 Apply 保留调用者上下文；run 访问检查其所属 principal |
 | xllm 与生成程序的执行宿主 | xllm 在 Workspace 服务进程内运行，Deno 由该服务启动；尚未在这条路径中接入用户执行环境 |
 
-因此，不能继续把当前问题概括为“所有 AI 用量都算到系统服务或节点名下”，也不能把“服务使用自己的 session”本身判定为设计错误。已加入的受托 AICC 调用值得保留；它修正了模型资源归属，但尚未完成任务运行模型的调整。
+因此，不能把“服务使用自己的 session”本身判定为设计错误。已加入的受托 AICC 调用机制值得保留；它在 `llm.map` 上修正了模型资源归属，主循环的归属要随缺陷修复一起生效，而任务运行模型的调整尚未开始。
 
 **仍需落实的边界。** Workspace 当前同时承担数据服务和用户计算宿主，执行环境归属、工具能力与任务版本绑定尚需按 §9.4、§9.6 明确并接入执行平台。AICC 的服务代理权限与账户有效性校验，不能替代逐任务委托检查。现有 `on_behalf_of` 在执行器接口中仍是可选值；当使用系统或设备身份代理用户调用 AICC 时，缺少有效归属应拒绝，不能依赖正常新 run 总会填写。直接使用用户、App 或 Agent 身份调用 AICC，以及使用其他 provider 的路径，应按各自明确的授权与资源归属规则校验，不强制携带 `on_behalf_of`；合法系统任务也继续采用自己的授权规则。
 
@@ -489,23 +493,47 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 | D17 | 演示基线与访问策略 | 固定基线统一用克隆；第三期放映锁保留为非公开放映的产品行为 | K13 | 已确认：采纳建议（2026-10-22） |
 | D18 | 公式 v1 边界 | v1 后端不做读时求值；共享结果经 Commit 物化，复用 derived 记录 | K10 | 已确认：采纳建议（2026-10-22） |
 | D19 | 配额与维护通道 | 先定计量口径、超额结果形状和维护方法清单；数值与计费延后 | K09 | 已确认：采纳建议（2026-10-22） |
+| D20 | 规范化日志是否独立于 planner 可应用 | 日志改为纯应用型；K05 验收改为“旧日志在新 planner 下重放一致” | K05、D01、D07 | 待确认（review 提出） |
+| D21 | 本地模式生成程序的执行形态 | sandboxed iframe / Worker + postMessage SDK，不持有 token | D14、K15 | 待确认（review 提出） |
+| D22 | 任务结果写权限的来源 | Agent 模式按执行身份；本地模式按确认者，由服务签发限定输出的 run token | D16、D14 | 待确认（review 提出） |
+| D23 | “用户后台模式”是否并入 Agent 模式 | 并入；默认执行者为该用户的 Jarvis | D14 | 待确认（review 提出） |
+| D24 | v1 自动同步的宿主 | 服务侧只做无凭据公开 URL 抓取，计流量额度；有凭据的 Source 走 Agent 模式 | D12、D14、D19 | 待确认（review 提出） |
+| D25 | 资源 Folder 的命名与 DirObject 时间戳规范化 | 资源 Folder 与树容器 folder 二者改名其一；物化时时间字段固定 | D01、D03 | 待确认（review 提出） |
+| D26 | 内容快照与协作快照的导出格式分离 | 分享与发布只走 ContentRoot；整库克隆只服务同 ACL 的演示 | D03、D17、§4.4 | 待确认（review 提出） |
 
-决策之间的依赖：D01、D02、D03 决定格式；D06 与 D19 相互制约；D14、D16、D15 决定执行模型，D08 的幂等作用域依赖 D14；其余各项相对独立。推导 TODO 时按此顺序展开。
+决策之间的依赖：
+
+```text
+D01 原语/Schema 分层 ──┬── D04 约束集合（哪些校验进内核）
+                       ├── D05 owns 引用（级联删除要进规范化日志）
+                       └── D20 纯应用型日志（K05 确定性）
+D03 固定版本身份 ───────┬── D06 保留根（checkpoint / 克隆要登记）
+                       ├── D10 version 判别联合
+                       └── D26 克隆与 ContentRoot 分家
+D14 执行形态 ───────────┬── D22 权限来源（本地模式需确认者派）
+                       ├── D15 心跳 / report 新方法
+                       ├── D24 自动同步宿主
+                       ├── D21 本地沙箱形态
+                       └── D08 幂等 principal 改按 run
+D06 ⇄ D19 历史计量与回收
+```
+
+D01、D02、D03、D20 决定格式；D14、D16、D22、D23 决定执行模型；其余相对独立。推导 TODO 时按此顺序展开。
 
 ### 13.2 可直接确认为契约的现有实现
 
-以下行为已符合前文原则，建议直接确认为契约，不再单独设计：
+以下行为已符合前文原则，建议直接确认为契约，不再单独设计。这八条尚未单独过目，review 后的意见写在“确认意见”列：
 
-| 契约 | 现有实现 |
-| --- | --- |
-| 共享文档同一事务（K03） | Data Source 与 Block Tree 同在 `doc.sqlite`；一次 Commit 在单个 SQLite 事务中写入数据、引用、历史、幂等记录和 head |
-| 三态结果 | 服务端结果为 accepted、conflict、rejected；超时或断线由客户端副本记为 unknown |
-| 幂等先于状态检查（§4.2） | 按 `(principal, idempotency_key)` 查到接受记录即返回原结果，先于权限、放映锁和写锁检查；同 key 不同请求返回 `IDEMPOTENCY_MISMATCH` |
-| 重放不重新准入（§4.3） | 副本以已接受的规范化操作、原作者和原接受时间，经同一 planner 重放，不按当前 ACL 判断（[replica.rs](../../src/frame/aiworkspace/core/src/replica.rs)） |
-| 撤销是补偿提交（§5.3） | `doc.undo` 生成补偿 Commit；`partial` 模式先返回可执行范围和 `plan_digest`，调用方凭摘要确认执行 |
-| 服务控制状态不随导出传播 | 授权、分享入口、锁、run 和暂存上传位于 `local.sqlite`，不进入导出包 |
-| 取消后拒绝提交（§9.5） | run 进入 cancelled 后，带该 `run_id` 的 Commit 返回 `RUN_CANCELLED` |
-| 资源先可用再引用（§4.1） | AssetRef 只能引用已上传并校验的对象，媒体类型和大小取自内容本身 |
+| 契约 | 现有实现 | 确认意见（2026-10-22 review） |
+| --- | --- | --- |
+| 共享文档同一事务（K03） | Data Source 与 Block Tree 同在 `doc.sqlite`；一次 Commit 在单个 SQLite 事务中写入数据、引用、历史、幂等记录和 head | 可确认。补充：生成结果的内容对象在事务内写入对象库，回滚会留孤儿，属 D06 GC 范围 |
+| 三态结果 | 服务端结果为 accepted、conflict、rejected；超时或断线由客户端副本记为 unknown | 可确认 |
+| 幂等先于状态检查（§4.2） | 按 `(principal, idempotency_key)` 查到接受记录即返回原结果，先于放映锁、规划内的逐操作权限检查和写锁；同 key 不同请求返回 `IDEMPOTENCY_MISMATCH`。epoch 检查在幂等查找之前，写锁检查在规划之后（见 §4.1） | 按改写后的顺序确认。另需修正 `proc.start` 对 mock 程序的幂等回放不比较参数（[proc.rs](../../src/frame/aiworkspace/store/src/proc.rs)），与“同身份不同请求必须拒绝”相违 |
+| 重放不重新准入（§4.3） | 副本以已接受的规范化操作、原作者和原接受时间，经同一 planner 重放，不按当前 ACL 判断（[replica.rs](../../src/frame/aiworkspace/core/src/replica.rs)） | 有条件确认：跳过 ACL 属实，但仍经 planner，确定性只在同 planner 版本内成立，见 D20 |
+| 撤销是补偿提交（§5.3） | `doc.undo` 生成补偿 Commit；`partial` 模式先返回可执行范围和 `plan_digest`，调用方凭摘要确认执行 | 可确认。已知限制应写进协议：`richtext.apply_update` 无逆操作，含富文本编辑的 Commit 不可撤销（`NOT_UNDOABLE`）；migrate 逆操作超 64 MiB 也不可撤销 |
+| 服务控制状态不随导出传播 | 授权、分享入口、锁、run 和暂存上传位于 `local.sqlite`，不进入导出包 | 可确认 |
+| 取消后拒绝提交（§9.5） | run 进入 cancelled 后，带该 `run_id` 的 Commit 返回 `RUN_CANCELLED` | 可确认。取消先 `kill -9` 再写状态，提交端检查才是真正的闸门，与 §9.5 一致 |
+| 资源先可用再引用（§4.1） | AssetRef 只能引用已上传并校验的对象，媒体类型和大小取自内容本身 | 可确认。补充：import 模式容忍缺失资源（[types.rs](../../src/frame/aiworkspace/core/src/types.rs) AssetRef 校验），导入包的引用完整性弱于在线提交，属 §6.3“未闭合依赖显式列出”范围 |
 
 ### 13.3 数据结构决策
 
@@ -540,7 +568,28 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 - 成员修改以名字为寻址单位，与“按顶层 key 划分版本格的对象”一致；需要配套切换时，一次操作把整个 Folder 替换为另一个 DirObject。两种操作都提供。
 - 需要顺序的应用（例如按顺序播放一组资源），在业务 Schema 中另行表达顺序，不改变 Folder 的成员结构。
-- 数据树中的 folder 容器是组织实体的树节点，不是本条的资源 Folder；两者是否统一，另行确定。
+- 数据树中的 folder 容器是组织实体的树节点，不是本条的资源 Folder；两者是否统一，另行确定（review 认为不能统一，见 D25）。
+
+**Review 补充（2026-10-22）**
+
+方案 C 的真正收益要写进契约。“重放只检查原语形状”的价值不在少做校验，而在**旧副本能重放它不认识的业务类型**：Scene 上线后，未升级的离线客户端仍能同步。这要求三件事：
+
+- 未知类型的实体在副本中按不透明对象保存。现有 planner 已保留未知类型（[plan.rs](../../src/frame/aiworkspace/core/src/plan.rs) 创建路径），可直接确认为契约。
+- 每个实体记录自己的业务 Schema 标识与版本。现有 `schema_version` 固定为 1，其他值一律拒绝（[model.rs](../../src/frame/aiworkspace/core/src/model.rs) `degraded`）；需要像 `richtext.basic.v1` 一样随实体演进。
+- 对现有 11 个类型的 Rust 校验器做分类表：哪些是字段约束（如 Viewport zoom 范围）、哪些是引用完整性（如连接线端点存在且同 Surface）、哪些是 Table/RichText 原语自身的结构约束（如 title 字段必须为 text、record body 独占）。只有后两类进重放。这张表应是 TODO 的第一步。
+
+类型目前以字符串常量加 `matches!` 列表声明，没有注册表或 Schema 结构（[model.rs](../../src/frame/aiworkspace/core/src/model.rs) `is_known_type`，[types.rs](../../src/frame/aiworkspace/core/src/types.rs) `init_entity` / `validate_update` 的 `match`）。方案 C 的最小实现是把这个 `match` 拆成“原语校验”和“内置 Schema 校验”两个入口，不要求先做声明式 Schema。
+
+重放确定性依赖 planner 版本，这是 K05 的短板而不只是 D01 的问题，见 D20。
+
+Folder 作为原语有四处需要补定义（命名与时间戳两项归入 D25）：
+
+1. **命名冲突。** 数据树已有 `container(kind=folder)`，有序（`order_key`）、成员是任意实体；资源 Folder 无序、成员只能是文件或子目录。两者语义不同，不能统一。
+2. **ObjId 不是纯内容寻址。** DirObject 的 `gen_obj_id` 把 `name`、`create_time`、`last_update_time` 与统计字段一起哈希（CYFS 标准对象 §11）。相同成员两次物化会得到不同 ObjId，除非规定物化时时间字段取固定值。core 已有 `file_object` 帮助函数采用固定时间戳（[canonical.rs](../../src/frame/aiworkspace/core/src/canonical.rs)），DirObject 应沿用同一规则。
+3. **成员类型。** 冻结思路 §3.3 希望 Folder 能装“文件、流或 URL”，DirObject 成员只能是 `cyfile` 或 `cydir`。建议 v1 禁止外部 URL 成员，Folder 只装内部 AssetRef 和子 Folder。
+4. **按名寻址与 K01 的张力。** Folder 成员没有稳定 ID，重命名等于删加；一人改名、一人替换内容会得到一个孤儿和一个新成员。可以接受，但应写明 Folder 是**值型**容器（像 Table 的 cell，不像 Table 的 record），并为成员数设上限（例如 10k，超出用子 Folder）。
+
+Folder 是唯一能廉价随时算出实体级 Content ID 的原语（成员名到子 ObjId 映射的 hash），§6.3 的依赖闭合检查可优先利用它。
 
 #### D02 集合的协作粒度
 
@@ -556,26 +605,45 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **建议**：A，v1 不做 JSON Patch。Scene 按“文件夹 + 每个实例一个对象实体”建模；Mesh 用 AssetRef，或用加锁、整体更新的对象。show-path 的 `steps` 保持整体替换与前端重放。
 
+**Review 补充（2026-10-22）**
+
+- **Table record 就是“按元素 ID 寻址的列表”。** record_id 由客户端提供、永不复用、每个 cell 是独立版本格（[plan_table.rs](../../src/frame/aiworkspace/core/src/plan_table.rs)）。方案 A 应明说：需要按元素并行编辑的集合首选单表 Table，“子实体”是次选。Scene 的建模相应改为“一个实例表（position、rotation、mesh AssetRef 列）+ Mesh 对象实体集合”，而不是“文件夹 + 每实例一个实体”。后者会让一万个实例变成一万个实体、一万条树边和一万次 `tree_children` hash 重算。
+- **Mesh 的“锁定编辑、整体更新”已有基础设施。** 实体级写锁已存在（`lock.acquire(entity_ids)`，60 秒租约、10 分钟空闲，[workspace.rs](../../src/frame/aiworkspace/store/src/workspace.rs)）。需要补的只是前端“进入编辑即取锁”的约定和 `LOCK_REQUIRED` 的界面表达，不新造机制。
+- show-path steps 的前端重放属于 §3.3 第二类（应用约定），不在内核确定性契约内，写明即可。
+
 #### D03 固定版本的实现方式
 
 **需要决定**：固定版本以什么形式存在和读取；固定引用使用什么身份；单个实体是否有 Content ID。
 
-**当前实现**：存储是状态型 SQLite，保存当前行和 commits 历史，不能按任意 seq 读取旧状态。可寻址的旧版本只有 `entity_versions`（生成结果与 checkpoint）和物化出的 ContentRoot ObjectId；单个实体没有独立的 Content ID。
+**当前实现**：存储是状态型 SQLite，保存当前行、commits 历史和 `commit_ops`（含逆操作），没有按任意 seq 读取旧状态的接口。可寻址的旧版本是 `entity_versions(entity_id, content_rev, object_id)` 与物化出的 ContentRoot ObjectId。实体级 Content ID 已经存在：物化时按 `{ws_type, schema_version, content}` 为每个实体生成 jobj id，写入 `entity_versions`，`doc.resolve` 的 `fixed_revision.object_id` 可以解析（[materialize.rs](../../src/frame/aiworkspace/core/src/materialize.rs)、[reads.rs](../../src/frame/aiworkspace/store/src/reads.rs)）。缺的是“任意时刻可取”，不是“没有”。
 
 **可选方案**：
 
 - A：固定版本取物化快照（ContentRoot）或数据库克隆，在线库只服务当前状态。
 - B：在线库支持按 seq 读取（MVCC），保留旧行。
 
-**建议**：A。协议中的固定版本写作 `{ workspace_id, epoch, seq }`，建立固定引用时必须同时生成 checkpoint 或克隆，并按 D06 登记保留；需要跨 Zone 或长期保存时，解析为 ContentRoot ObjectId。实体级 Content ID 只在发布或导出该实体时物化生成。§5.2 的 fixed 引用、§6.3 的依赖闭合、§8.1 的固定依赖读取和第十节的演示基线都按此实现。
+**建议**：A。协议中的固定版本写作 `{ workspace_id, epoch, seq }`，建立固定引用时必须同时生成 checkpoint 或克隆，并按 D06 登记保留；需要跨 Zone 或长期保存时，解析为 ContentRoot ObjectId。实体级 Content ID 按 `(entity_id, content_rev)` 懒生成并缓存，与现状一致。§5.2 的 fixed 引用、§6.3 的依赖闭合、§8.1 的固定依赖读取和第十节的演示基线都按此实现。
+
+**Review 补充（2026-10-22）**
+
+- **`{epoch, seq}` 是身份，checkpoint 是可读物，二者会脱节。** 没有 MVCC 时，seq 100 可读的前提是恰好存在 seq 100 的 checkpoint 或克隆。协议应把两件事分开：固定引用的身份写 `{epoch, seq}`，建立引用时**必须**同时登记一个保留项（checkpoint、克隆或 ContentRoot ObjId）；`doc.resolve` 找不到保留项时返回 `VERSION_NOT_RETAINED`（D09 预留）。
+- **预留“从最近 checkpoint 重放到任意 seq”。** `commit_ops` 已保存规范化操作，副本已能重放；这条路不改格式、成本有界（重放距离）。v1 不实现，但协议不要禁止按任意 seq 读取。
+- **整库克隆不是内容快照。** `VACUUM INTO` 带 `richtext_updates`、Loro 完整历史、commits 和 `entity_versions`；个人备份也带 `collab/*.loro`。作为同 ACL 的演示基线（D17）没有问题；作为分享或发布的固定版本，就是把已删除的文字一起交出去。见 D26。
 
 #### D04 内核约束集合与读集合词汇
 
 **需要决定**：内核强制哪些声明式约束；读前置条件的选择器目录是否冻结。
 
-**当前实现**：内核检查值域、字段类型与选项、引用目标存在且可读等，没有跨字段或跨记录约束。读前置条件由 `resolve_cell`（[plan.rs](../../src/frame/aiworkspace/core/src/plan.rs)）解析，支持 entity、doc_key、table_members、table_field、table_field_type、table_field_values、table_record、table_cell、tree_children、tree_edge、richtext_block。其中 table_members、tree_children 能发现成员增删，table_field_values 能发现某列任一值的变化。
+**当前实现**：内核检查值域、字段类型与选项、引用目标存在且可读。字段级约束中 `unique` 是跨记录约束，提交时对全部活记录检查；`required` / `nullable` 收紧时也回扫全表（[plan_table.rs](../../src/frame/aiworkspace/core/src/plan_table.rs)）。另有若干固定不变量：title 字段必须为 text 且不可删除、record body 必须是同表富文本且不被其他记录使用、连接线端点须在同一 Surface、Viewport 只能挂自由布局 Surface（[types.rs](../../src/frame/aiworkspace/core/src/types.rs)）。没有用户可定义的跨字段或跨记录规则。读前置条件由 `resolve_cell`（[plan.rs](../../src/frame/aiworkspace/core/src/plan.rs)）解析，支持 entity、doc_key、table_members、table_field、table_field_type、table_field_values、table_record、table_cell、tree_children、tree_edge、richtext_block。其中 table_members、tree_children 能发现成员增删，table_field_values 能发现某列任一值的变化。许愿输入声明在用的 `table_view`、`table_query` 不在该目录中，`resolve_cell` 无法解析。
 
-**建议**：v1 内核只保证单值约束、字段级约束和同一 Workspace 内的强引用完整性。跨字段、跨记录的不变量（例如 min ≤ max）不由内核保证；需要系统级保证时，使用写锁或受信写入路径（§3.3 第三类）。现有选择器目录冻结为读集合词汇，新增选择器按协议变更处理。
+**建议**：v1 内核只保证单值约束、字段级约束（含 `unique`）和同一 Workspace 内的强引用完整性。跨字段、跨记录的用户自定义不变量（例如 min ≤ max）不由内核保证；需要系统级保证时，使用写锁或受信写入路径（§3.3 第三类）。现有选择器目录冻结为读集合词汇，新增选择器按协议变更处理。
+
+**Review 补充（2026-10-22）**
+
+- `unique` 必须留在冻结集合里，它已是内核强制的跨记录约束，去掉等于静默取消现有数据的保证。
+- 现有固定不变量按 D01 分类：title 字段类型、record body 独占属于 Table 原语自身结构约束，留在内核；连接线、Viewport 属于业务 Schema 校验，只在准入时执行。
+- 选择器目录冻结前要补 **Folder 成员**选择器（D01 新原语），并处理 `table_view` / `table_query`：要么补进目录，要么从许愿输入声明里移除。
+- `expect` 的可选性不一致：`set_derived`、`tree.move`、`tree.place`、`add_option` 缺 `expect` 时不检查，而 operations.json 声称结构操作必须带 `expect`（`add_option` 被归为结构操作却用可选检查）。冻结前统一。
 
 #### D05 引用种类目录与删除、复制语义
 
@@ -583,7 +651,7 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **当前实现**：
 
-- 引用种类在代码中逐个定义。bind、embed、value、body、def 阻止删除目标；input、derived、produced、asset、connector_endpoint、show_target、show_surface 不阻止。引用表已有 `dst_workspace_id`、`dst_object_id`、`dst_query_json` 字段，但没有统一的 live/fixed 标记。
+- 引用种类在代码中逐个定义。bind、embed、value、body、def 阻止删除目标；input、derived、produced、asset、anchor、connector_endpoint、show_target、show_surface 不阻止。富文本的 `object_link` 在索引时被归为 `embed`（`ref_set` 丢弃了 `DocRef.kind`，[plan_richtext.rs](../../src/frame/aiworkspace/core/src/plan_richtext.rs)），因此行内链接也阻止删除目标。引用表已有 `dst_workspace_id`、`dst_object_id`、`dst_query_json` 字段，但没有统一的 live/fixed 标记；版本词汇有三套并存：引用对象的 `live_head / fixed_revision / published_channel`、许愿输入的 `follow / fixed`、URL 源的 `live_head / fixed_revision`。
 - 删除：画布删除 Block 时，如果它绑定的数据位于 `canvas-content`、且没有其他 Block 显示，前端会一并删除该数据（代码注释标为待产品确认）。这与 §5.1“默认删除 Block 只删除视图”不一致。
 - 复制：画布复制一律“复制视图、共享数据”，不区分独立可编辑内容；冻结思路 §10.2 期望独立内容复制出新的数据源。
 
@@ -606,17 +674,41 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 - 归属判定需要数据结构支持：数据由哪种入口创建，以及 Block 定义中的“非自有”声明（D01 的业务 Schema）。规则由内核或共享库实现，不只放在单个前端组件中。现有复制一律共享数据，需要改为上述规则。
 - 跨 Workspace 粘贴不在本决定范围内。
 
+**Review 补充（2026-10-22）**
+
+建议用**引用种类**而不是实体标志表达“自有”：新增 `owns` 引用（Block → 数据），与 `bind` 并存。用户规则随之变成纯引用计数：
+
+- 删除 Block：移除它的 `owns` 与 `bind`；目标数据若曾被 `owns` 且不再有任何 `bind`，随之删除。数据模式插入的数据没有 `owns`，永不级联。
+- 同画布复制：克隆数据，新 Block 建新 `owns` + `bind`。跨画布复制：只建 `bind`。声明非自有的 Block：复制只建 `bind`。
+- “直到最后一个引用它的 Block 被删除才删”自然成立；`bind` 本就是阻止删除的强引用，不会出现数据被删而 Block 还绑着。
+
+两个产品边界需要补裁决：
+
+1. **复制整张画布**（“复制页面”）按跨画布规则会让两张画布共享可编辑内容，用户通常期望克隆。建议“复制画布”按同画布语义处理。
+2. **把自有数据升格为共享**（拖进数据面板）需要显式操作（例如 `data.pin`，即删除 `owns`）；反向操作是否允许另定。
+
+级联删除必须由 planner 展开成显式操作写进规范化日志，重放时不能再算一次“还有没有其他 bind”，否则违反 §4.3；这与 D20 是同一件事。
+
+富文本 `object_link` 应改为可失效的弱引用，否则用户删不掉任何被链接过的对象。
+
 #### D06 历史边界、幂等窗口与对象回收
 
 **需要决定**：v1 是否截断提交历史与协作历史；幂等记录保留多久；对象回收的保留根是什么，空间由谁承担。
 
-**当前实现**：commits 表没有截断逻辑，幂等记录永久保留；富文本保留完整的 Loro 历史。对象库是服务级的内容寻址目录，多个 Workspace 和演示克隆共享对象，没有回收路径，只有 `diag.list_unretained` 诊断未被保留的对象。错误码 `BASE_TOO_OLD` 已定义，但服务端没有使用。
+**当前实现**：commits 表没有截断逻辑，幂等记录在同一 epoch 内永久保留（epoch 检查先于幂等查找，换 epoch 后旧 key 得到 `EPOCH_MISMATCH`）；富文本每次 `apply_update` 都是一条 commit，压缩只折叠 `richtext_updates`，不折叠 commits，并保留完整的 Loro 历史。对象库是服务级的内容寻址目录，多个 Workspace 和演示克隆共享对象，没有回收路径；`diag.list_unretained` 实际只列出过期且未被 `assets` 引用的暂存上传，不检查快照等保留根。`snapshots.retained` 列恒为 1 且无人读取。`trash/` 目录不做物理删除。错误码 `BASE_TOO_OLD` 已定义，服务端没有使用，但前端副本已处理它。
 
 **建议**：
 
 - 结构化提交历史 v1 不截断，但协议先预留“历史下界 seq”（由 `ws.get_info` 返回）；低于下界的请求返回 `BASE_TOO_OLD`。幂等窗口等于历史下界，§4.2 的拒绝行为由此表达。
 - 只被历史引用的资源（已删除或被替换的 AssetRef 所指对象）设保留期，到期后可以回收；此后涉及该资源的撤销或版本恢复明确失败，并报告资源已回收（§5.4）。
 - 对象回收采用服务级标记清除。保留根为各 Workspace 的当前状态、保留期内的历史资源、checkpoint 与导出包、演示克隆、运行中 run 的输入和未过期的暂存上传。
+
+**Review 补充（2026-10-22）**
+
+- **历史下界的真实用户含义是“离线副本太旧要重新 bootstrap”。** `BASE_TOO_OLD` 的消费者是前端副本（`session.ts`、`replicaSession.ts`），不只是防旧请求。v1 不截断对离线用户最友好，这应作为“不截断”的理由写入。
+- **结构化历史是否计入 Workspace 占用**要在 D19 定。不截断时每次编辑一行 commits 永不清理；在没有截断手段前计入会让用户陷入无法恢复的超额。建议 v1 不计，等“截断历史后重建”（D07 事件）实现后再计。
+- 保留根清单要补：`entity_versions.generated`（许愿结果版本）、`snapshots` 表（替换恒为 1 的 `retained` 列为真正的保留登记）、导出包、副本 bootstrap 包、`trash/`。现状这些都是回收候选的漏网者。
+- **标记清除与并发上传的竞态**：对象先写入、稍后才在业务提交中被引用，中间窗口会被误回收。建议把 `staged_assets` 记录视为保留根直到 24 小时 TTL 到期，不另加 mtime 宽限。
 
 #### D07 epoch 变更与格式升级策略
 
@@ -625,6 +717,13 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 **当前实现**：以 restore 语义导入时生成新 epoch，旧 epoch 的请求返回 `EPOCH_MISMATCH`。前端副本此时停止同步并保留待发修改，但没有把它们提交到新 epoch 的流程。库或包的格式、协议版本不一致时，一律以 `UNSUPPORTED_VERSION` 拒收，不做迁移。
 
 **建议**：更换 epoch 的事件限定为“恢复导入”和“截断历史后重建”两类，并写入协议。待发修改在新 epoch 下作为新提交重新准入：保留原请求，由用户确认后重发，不自动续接。格式方面设定一个冻结点，例如本节决策落地后的 FORMAT 1.0。冻结点之前，继续遵守当前开发阶段规则（breaking change，全新安装）；冻结点之后，同一 FORMAT 内只增加旧实现可以忽略的内容，不兼容的变化必须提供显式转换。
+
+**Review 补充（2026-10-22）**
+
+- 版本号实际有五个：PROTOCOL、FORMAT、实体业务 Schema 版本、richtext Schema 版本，以及隐含的 planner / 规范化版本（D20）。`ws.get_info` 应返回完整矩阵，并为副本定义每种不匹配时的行为（继续只读、拒绝、重新 bootstrap）。
+- “保留原请求，用户确认后重发”在换 epoch 后不成立于字节层面：请求里的 `expect {rev}` 必然全部过期。副本实际能保留的是**待发操作的意图**，重发应以冲突解决的形式呈现，而不是重放 CommitRequest。
+- 恢复导入换 epoch 会让**所有**用户的离线副本失效，应明确为 manage 级破坏性操作并在界面提示影响范围。
+- FORMAT 1.0 冻结前必须一次进入格式的内容见 §13.6 末尾清单。
 
 ### 13.4 接口决策
 
@@ -636,6 +735,12 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **建议**：确认现有字段。幂等按“实际写入身份”隔离：普通编辑是用户本人，任务结果是该运行的执行身份（D14、D16）。同一逻辑运行的结果提交使用确定的 key，无论由谁触发应用，都落到同一条接受记录。origin 改由服务端根据 Caller 类别和 run 推导，满足 §9.4 的审计要求。
 
+**Review 补充（2026-10-22）**
+
+- 任务结果按执行身份隔离，意味着 `proc.apply` 幂等查找所用的 principal **不是调用者**。现有 `wish_apply` 要求调用者就是 run 的 principal 且 key 落在调用者名下（[runs.rs](../../src/frame/aiworkspace/store/src/wish/runs.rs)）。改动点：查找改按 `run.principal`；权限与结果可见性仍按调用者判断（§4.2）。
+- `proc.start` 的 mock 路径幂等回放不比较参数，需要与许愿路径一样做参数摘要比对。
+- origin 推导需要 Caller 类别可区分。建议规则：Agent principal → `agent`；带 `run_id` → `program`；import API → `import`；内部提交（undo、压缩）→ `system`；其余 → `human`。SDK 脚本以用户 token 调用时归 `human`，不另设类别。
+
 #### D09 结果与错误码
 
 **需要决定**：错误码是否属于协议；新契约需要哪些错误码。
@@ -644,6 +749,8 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **建议**：`Code` 枚举、retryable 语义和冲突详情列入协议，随协议版本演进，调用方只按枚举判断错误类别。现在预留以下错误码：历史下界（`BASE_TOO_OLD`，D06）、配额不足（区分释放空间后可重试与需要提高额度，D19）、执行资格失效（run 已取消或授权已撤销）、执行上下文缺失（§9.6）。
 
+**Review 补充（2026-10-22）**：还需预留 `VERSION_NOT_RETAINED`（D03，固定版本身份存在但保留项已不在）、`RESOURCE_RECLAIMED`（D06，保留期后撤销或恢复失败）、`EXECUTION_CONTEXT_MISSING`（§9.6）、`DELEGATION_STALE`（D16，任务配置摘要已变化需重新确认）。配额错误的 `data` 应带 `needed_bytes` 与 `reclaimable_bytes`，否则前端无法引导“释放后重试”。
+
 #### D10 规范引用对象与名称、URL 投影
 
 **需要决定**：其他 Workspace、App 和 Agent 长期保存的引用采用什么形状；名称、路径和 URL 怎样与它换算。
@@ -651,6 +758,12 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 **当前实现**：`doc.resolve` 接受 reference 或 path。Workspace 内部的持久引用不写 `workspace_id`，以便 Fork 前后 ContentRoot 保持相等。独立页面路由为 `/workspace/<id>`。没有统一的跨 Workspace 引用格式。
 
 **建议**：冻结一个 JSON 引用对象 `{ zone?, workspace_id, entity_id, selector?, version? }`，其中 `version` 为 D03 的固定版本身份；Workspace 内部引用省略 `zone` 和 `workspace_id`。路径、URL 和展示名称只是它的投影；名称解析后的重试使用引用对象，不再按名称重新解析（§3.1）。URL 语法可以延后，但必须能与引用对象无损互转。
+
+**Review 补充（2026-10-22）**
+
+- `version` 应是**判别联合**：`{ epoch, seq }`（同 Zone、依赖保留）与 `{ content_root, path? }`（内容寻址、跨 Zone）。D05 列出的三套版本词汇统一到这里。
+- 跨 Workspace 引用没有引用表维护，不可能是强引用（§5.2 已排除分布式事务）。引用对象应能表达 `mode: live | fixed`，而**强弱由位置决定**：Workspace 内由引用种类目录定，跨 Workspace 一律可失效。写明可省掉实现期的争论。
+- Fork 后内部引用省略 `workspace_id` 使 ContentRoot 相等，但指向被 Fork 者的**外部**引用不会跟随到新 Workspace。可接受，写明。
 
 #### D11 对外稳定接口面
 
@@ -666,11 +779,13 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 稳定方法遵守 K14，变化随协议版本发布；内部方法可以随 Desktop 一起修改。
 
+**Review 补充（2026-10-22）**：稳定级还应包含 `ws.get_user_state` / `ws.set_user_state`（第三方 Block 必用）、`lock.*`（D02 Mesh 编辑路径的一部分）、`asset.begin_upload` / `asset.finish_upload` 及对应 HTTP 上传路由。稳定级要有可执行的契约测试（`schemas/` 下的 fixtures 已有雏形），否则“稳定”只是声明。
+
 #### D12 Source 模型
 
 **需要决定**：Source 表达在哪里；物化刷新走什么路径；多个 Source 的刷新是否需要整体原子；默认采用哪种同步身份和副本授权模式（§6.2）。
 
-**当前实现**：只有“URL 查询表”一种。表格的 `source_ref` 指向服务中注册的 adapter，读取时实时查询，结果不进入本地版本；没有物化同步，也没有通用 HTTP 抓取。
+**当前实现**：只有“URL 查询表”一种。表格的 `source_ref` 指向服务中注册的 adapter，读取时实时查询，结果不进入本地版本；没有物化同步，也没有通用 HTTP 抓取。生产启动路径没有注册任何 adapter（只有 `--fixture-sources` 开关下的 `fixture` 方案），所以当前任何查询都返回 `DEPENDENCY_UNAVAILABLE`；传给 adapter 的调用者上下文只有 principal。
 
 **可选方案**：
 
@@ -678,6 +793,12 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 - 刷新路径：经统一任务入口（第九节）形成普通 Commit；或者由内核提供专用同步路径。
 
 **建议**：表达位置选 A，符合冻结思路 §2.2“类型、来源、求值方式分别理解”。刷新作为统一任务入口下的一次 run：先拉取候选版本，校验后以普通 Commit 写入（origin 为 source，带 `run_id`），复用 §9.3 的结果协议、配额准入和取消规则。v1 每个 Source 的刷新各自原子，不提供跨 Source 的原子刷新。默认模式为“已授权身份导入，作为 Workspace 内容按 Workspace ACL 共享”，刷新者身份记入运行记录；“按读取者权限访问远端”只用于未物化的查询入口。现有 URL 查询表归入后者，并按 §6.1 显式声明其能力。
+
+**Review 补充（2026-10-22）**
+
+- **v1 没有自动同步的宿主。** D14 v1 只有浏览器本地和 Agent 两种执行器，定时刷新没有地方跑。三个选项：(a) v1 只有手动刷新（浏览器）和 Agent 刷新；(b) 为“无凭据的公开 URL 抓取”保留服务侧窄路径，视作 Source 基础设施而非用户计算——它不运行用户代码，只消耗 Workspace 的流量额度（D19 已有口径），归属清晰；(c) 等后台模式。推荐 (b)，有凭据的 Source 留给 Agent 模式。见 D24。
+- **Source 在实体上意味着整实体对 Block 只读**，挡掉最常见的用法：“导入一张表，再自己加一列备注”。v1 没有公式和 lookup，用户无法用第二张表关联。建议补一句：Table 原语以后允许**列组级** Source（同步列只读、手动列可写），现在的实体级 Source 是其特例，不另立原语。
+- 现有 URL 查询表生产环境不可用，归入“未物化查询入口”后要决定是留在 v1 协议里还是先移出稳定面。
 
 #### D13 用户私有状态
 
@@ -691,13 +812,19 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 - `set_user_state` 支持可选的条件写（按修订号或 `updated_at`），由前端决定覆盖还是提示冲突。
 - 草稿在提交前记下将使用的 `idempotency_key`；恢复时先用 `doc.get_submission` 查询，已接受则清理草稿，未接受才用同一 key 重发（§2.2，§11.2 最后一个场景）。
 
+**Review 补充（2026-10-22）**
+
+- 条件写用**修订号**，不用 `updated_at`：多设备时钟不可比。
+- `user_state` 在 `local.sqlite`，不随 Fork、克隆和恢复导入传播（restore-replace 只复制 grants、entries、local_meta）。写明“恢复导入后用户私有状态归零”是预期行为。
+- 草稿恢复依赖 `doc.get_submission` 按 `(principal, idempotency_key)` 查询，与 D08 一致；若表单提交改走 run，principal 会变成执行身份，前端查不到。约定表单直提交不走 run。
+
 ### 13.5 运行模型决策
 
 #### D14 用户任务的执行平台与执行身份
 
 **需要决定**：本地、用户后台和 Agent 三种模式分别由哪个组件承载；执行身份使用哪种凭据；v1 实现哪些模式。
 
-**当前实现**：许愿格在 aiworkspace 服务进程内执行，xllm 是进程内组件，生成的程序由该服务启动 Deno 子进程运行（§12.2）。BuckyOS 中可以承载执行的现有组件有：OpenDAN（一个进程托管一个 Agent，Agent 有独立身份和 AICC 归属）；AppLoader 按用户拉起的 AppInstance；Node Executor（[node_exector.md](../arch/node_exector.md)，P0 已实现托管 xllm 和 App token 一对一映射，并在单 OOD 环境验证）。浏览器侧已有 WASM 版 planner。
+**当前实现**：许愿格在 aiworkspace 服务进程内执行，xllm 是进程内组件，生成的程序由该服务启动 Deno 子进程运行（§12.2）。浏览器侧没有本地许愿执行器，只剩 Mock 的 `HtmlExecutor` 在页面主上下文直接执行 HTML（无沙箱）；WASM 核只导出 id、规范化、`Replica` 引擎和许愿配置摘要，没有执行或规划函数。`WishExecutor` 枚举已有 `agent-work-session` 占位（[types.rs](../../src/frame/aiworkspace/core/src/types.rs)），服务端和 UI 都拒绝它。BuckyOS 中可以承载执行的现有组件有：OpenDAN（一个进程托管一个 Agent，Agent 有独立身份和 AICC 归属）；AppLoader 按用户拉起的 AppInstance；Node Executor（[node_exector.md](../arch/node_exector.md) v1.2，P0 已实现托管 xllm，并在单 OOD 环境验证）。Node Executor 的 D-1“v1 消费方”已定为托管 xllm，D-2 凭据已定为现有 App session token，且只接受 AppDID 等于 AgentDID 的严格一对一映射；仍开放的 D-6、D-9 至 D-14 都是恢复通道与设备配置事项，与 Workspace 作为消费方无关。
 
 **可选方案**：
 
@@ -705,13 +832,27 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 - 用户后台模式：A，每个用户一个 aiworkspace 执行 App 实例，由 AppLoader 拉起，使用该 AppInstance 身份；B，经 Node Executor 托管 xllm，使用绑定到该用户的 App token；C，继续在 Workspace 服务内执行，只用 `on_behalf_of` 区分 AI 资源归属（不满足 §9.6，仅作对照）。
 - Agent 模式：交给用户选定的 OpenDAN Agent，以 Agent 身份读写 Workspace。
 
-**建议**：v1 先做本地模式和 Agent 模式。本地模式恢复浏览器执行；Agent 模式复用 OpenDAN 已有的身份、AICC 归属和容器。用户后台模式在 Node Executor 的剩余待定项（v1 消费方、App token 与 Agent 凭据的取舍等）确定后，在 A、B 中选择。在此之前，现有的服务内执行只作过渡，不再扩展。此项需要用户决定。
+**建议**：v1 先做本地模式和 Agent 模式。本地模式恢复浏览器执行；Agent 模式复用 OpenDAN 已有的身份、AICC 归属和容器。用户后台模式在 Node Executor 的剩余待定项确定后，在 A、B 中选择。在此之前，现有的服务内执行只作过渡，不再扩展。此项需要用户决定。
+
+**Review 补充（2026-10-22）**
+
+**本地模式的安全形态要先定（D21）。** 恢复“AI 生成程序在浏览器执行”意味着模型写的 JS 带着用户 session 跑在应用源下，等价于自我注入 XSS。按“先能力后安全”可以作为已知风险上线，但形态应现在定：生成程序跑在 sandboxed iframe 或 Worker，只通过 postMessage 拿到受限的 Workspace SDK（读输入快照、写候选结果），不直接持有 token。这决定本地执行器的接口形状，后改成本高。本地模式的运行特征还包括：标签页关闭即中断、长任务不可能、需要心跳或租约协议（D15）。
+
+**Agent 模式的三个缺口：**
+
+1. **派发传输未定。** Workspace 怎样把“执行这个 run”交给 Agent：建议复用 msg-center（Agent 已有收消息→开 Work session 的路径），消息携带 run 引用与 run token，不另造通道。
+2. **Agent 侧的 Workspace 工具。** `aiworkspace_template_dev` 手册暂缓，Agent 没有读写 Workspace 的 cmd_skill 和 websdk 客户端；Agent 模式以这两者为前提。
+3. `agent-work-session` 占位可直接沿用。
+
+**“用户后台模式”可并入 Agent 模式（D23）。** Node Executor 已定用 App session token 且要求 AppDID 等于 AgentDID，所以方案 B 的执行身份就是一个 Agent；方案 A（每用户一个 aiworkspace 执行 App）本质是再造一个没有对话能力的 Agent。每个用户都有 Jarvis，“后台执行等于交给我的默认 Agent”是新增代码最少的路线；Owner 委托（冻结思路 §8.7）等于“Owner 的 Agent 替协作者执行”，D16 的委托规则直接套用。代价是没有 Agent 的用户只有本地模式，这与“每人一个 Agent”的产品方向一致。
+
+**现有服务内执行的下线条件要写明。** 它是今天唯一能跑的许愿格路径，“不再扩展”但不能在本地或 Agent 模式可用前拆掉。建议：Agent 模式 DV 通过后下线；在此之前只修 §12.2 指出的 `on_behalf_of` 缺陷。
 
 #### D15 派发可靠性与运行记录归属
 
 **需要决定**：执行意图的可靠性等级；服务或执行器崩溃后的行为；执行器外置后，逻辑运行记录的权威位置。
 
-**当前实现**：`proc.start` 先在 `local.sqlite` 保存 run，再在服务内启动任务。服务重启时，运行中的 run 标记为 interrupted，不自动重跑；处于 applying 的 run 通过结果提交的幂等记录核对是否已写入。
+**当前实现**：`proc.start` 先在 `local.sqlite` 保存 run，再在服务内启动任务。服务重启后没有主动扫描：`proc.get` 发现活动状态而内存中没有 worker 时才把 run 标为 interrupted，不自动重跑；处于 applying 的 run 通过结果提交的幂等记录核对是否已写入（有则 `succeeded`，无则回到 `waiting_confirmation`）。终态是 `succeeded`，没有 `applied`。“活动状态”列表在 `runs.rs` 与 `show.rs` 两处定义不一致（前者不含 `applying`）。
 
 **可选方案**：
 
@@ -719,6 +860,12 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 - B：意图持久保存；崩溃后显示为 interrupted，由用户或策略显式续跑，不自动重做。
 
 **建议**：B。它满足“意图不永久丢失”，又不会自动重做外部副作用，与执行器子进程既定原则一致：resume 不核验，只按 runtime 返回“被打断”的结果。执行器外置后，逻辑运行记录仍以 Workspace 的 `local.sqlite` 为准；执行器只持有执行尝试，结果经条件 Commit 写回。触发执行同时修改共享数据时（§9.1），run 意图在 `local.sqlite`、数据在 `doc.sqlite`，两者之间需要定义恢复衔接（例如先记意图，Commit 携带 `run_id`，启动时按 `run_id` 核对），不引入通用 outbox。
+
+**Review 补充（2026-10-22）**
+
+- 不要靠 SQLite `ATTACH` 跨 `doc.sqlite` 与 `local.sqlite` 做原子事务：WAL 模式下跨库事务不保证原子。“先记意图、Commit 带 `run_id`、启动时核对”是正确做法。
+- 服务启动应有一次主动扫描把活动 run 标为 interrupted，否则 `proc.list` 在用户打开前仍显示 running；两处活动状态列表统一为一处。
+- 本地模式的 interrupted 判定依赖浏览器心跳超时，`proc.*` 需增加心跳或租约方法。Agent 模式下 Agent 的 TaskMgr 任务与 Workspace run 是两份记录，权威在 Workspace run；Agent 任务失败或取消需回写 run 状态，建议新增 `proc.report` 由 Agent 调用，比 Workspace 轮询 TaskMgr 简单。
 
 #### D16 执行授权与任务输出边界
 
@@ -728,11 +875,22 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **建议**：新增 run 能力，授予者可以在某个任务实体上触发执行。结果提交的权限上限为“执行身份的当前权限 ∩ 已确认任务配置声明的输出目标”（包括声明的新建位置）；触发者只需要 run，不需要对输出目标有 update。任务配置摘要改变后，旧授权不覆盖新配置，需要有编辑权限的人重新确认。v1 的任务可以在声明的位置创建结果对象，但不能创建或修改 Source；导入外部来源只在 Agent 模式下、经单独授权提供。此项会修改能力位图和授权条目结构，需要在冻结前确定。
 
+**Review 补充（2026-10-22）**
+
+**权限来源要二选一，或按模式各取其一（D22）：**
+
+- **执行身份派**（本项现方案）：写权限 = 执行身份当前权限 ∩ 声明输出。Agent 模式下成立（Owner 的 Agent 持有 Owner 权限）。本地模式下执行身份就是触发者，只有 `run` 的协作者写不回，等于本地模式只对有 update 的人可用，委托无从谈起。
+- **确认者派**（能力委托）：写权限 = 声明输出 ∩ **确认者**在确认时的权限，apply 时复查确认者仍持有。触发者只需 `run`，执行身份可以是任何人（含触发者自己的浏览器）。服务为该 run 签发限定输出目标的 run token。这才是“允许执行预定义任务但不允许自由编辑”的完整实现。
+
+两者可以并存：Agent 模式用前者（Agent 身份即边界），本地模式用后者。
+
+其他：配置摘要变化后“需要重新确认”要有界面状态和错误码（`DELEGATION_STALE`，D09）；`run` 能力位加入后 `Cap` 从 8 位变 9 位，`grants.capabilities` 整数列可容纳，但 `ALL=255` 常量与导出包中的 `write_policy` 要同步。
+
 #### D17 演示基线与访问策略
 
 **需要决定**：固定基线用写锁还是克隆实现；演示状态与事件是否持久保存；原 Workspace 撤权后，已有演示是否继续可访问。
 
-**当前实现**：第三期的非公开放映按第三期规划 §8.1 实现。有写权限的用户开始放映时，整个 Workspace 被锁写，所有会话的提交返回 `SHOW_LOCKED`；live 放映另建临时克隆（`VACUUM INTO`，1 万行表约 45 ms），租约 60 秒，结束或过期即删除。只读用户放映时不加锁、不克隆，直接读取实时内容，没有固定基线。状态和命令只在内存中转发，不持久保存。第十节描述的固定版本演示面向第四期的公开演示房间。
+**当前实现**：第三期的非公开放映按第三期规划 §8.1 实现。有写权限的用户开始放映时，整个 Workspace 被锁写，所有会话的提交返回 `SHOW_LOCKED`；live 放映另建临时克隆（`VACUUM INTO`，1 万行表约 45 ms），租约 60 秒，结束或过期即删除。“只读”按 Workspace 级 `any_write()` 判定，因此只有子树写权限的用户也被当作只读：不加锁、不克隆，直接读取实时内容，没有固定基线。克隆保留 grants 与 runs（活动 run 变为 interrupted），删除锁、暂存上传和 user_state，并沿用源 Workspace 的 epoch 与 seq。放映锁、状态和命令都只在内存中，服务重启结束所有放映。第十节描述的固定版本演示面向第四期的公开演示房间。
 
 **可选方案**：
 
@@ -742,6 +900,14 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 **建议**：C。第四期的公开演示、回放和“结果带回原文档”都需要独立基线，克隆可以直接提供；放映锁继续服务“作者检验效果”的场景，并在协议中注明只读放映没有固定基线。克隆和事件的保留期按 D06 登记；只读用户发起的克隆由谁承担空间，按 D19 确定。演示访问在每次请求时按原 Workspace 的当前授权判断：原 Workspace 撤权或停止共享后，演示随之不可访问；需要独立于原 Workspace 的长期公开，走导出或发布，不由演示承担。
 
+**Review 补充（2026-10-22）**
+
+- “按原 Workspace 的当前授权判断”与代码不一致：克隆时复制了 grants，之后按克隆内的副本判定。需对齐为查原 Workspace 的当前 grants，否则撤权不会传导到正在进行的演示。
+- 服务重启结束所有放映是内存态的结果；第四期公开演示房间若要跨重启，演示状态必须落盘。D17 应说明这属于第四期范围。
+- 只读用户发起的克隆由谁承担空间：建议计 Workspace（owner）额度，并设每 Workspace 并发克隆上限与 TTL；Guest 没有额度账户，不能计个人。
+- 放映锁判定建议改为“有任何写权限即加锁”，或接受现状并写明子树写权限者放映没有基线。
+- 克隆带完整 Loro 历史，只能服务同 ACL 的演示，不能作为分享或发布的固定版本（D26）。
+
 #### D18 公式 v1 边界
 
 **需要决定**：v1 是否在数据结构中为公式预留位置；后端是否在读取时求值；公式结果如何保存。
@@ -749,6 +915,12 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 **当前实现**：没有公式。生成结果通过 `entity.set_derived` 记录依赖（许愿格、run、执行器和读集合版本），由 `doc.freshness` 判断结果是否过期。
 
 **建议**：v1 后端不做读时求值。公式定义作为实体的普通 key 保存，返回类型由 Schema 声明；需要共享或被其他应用读取的结果，显式物化为 Commit，依赖用现有 derived 记录表达，并增加求值器标识和求值语义版本。前端公式只在客户端显示求值结果，不写回。这样 Get 不会推进权威版本（K10），后端求值语言和缓存可以以后再定，不影响格式。
+
+**Review 补充（2026-10-22）**
+
+- “前端公式只在客户端求值不写回”意味着 **API 消费者（Agent、SDK）读到的是公式文本**，服务化承诺对公式字段不成立。写明：要被外部读取的结果必须物化。
+- 公式的**值形状现在就要进 FORMAT 1.0**，否则以后加公式就是不兼容变化。建议预留 `{ "$formula": { "lang", "version", "expr" } }` 作为带类型 key 的合法值，由 Schema 声明返回类型；v1 只保存、不求值。
+- 物化结果用 `set_derived` 与 `doc.freshness` 判过期，谁来重算？v1 只有浏览器与 Agent，答案是“有人打开时”，与电子表格打开重算一致，写明即可。
 
 #### D19 配额与维护通道
 
@@ -764,10 +936,90 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 D06 与本项相互制约：若提交历史 v1 不截断，删除内容本身不释放资源空间；必须依靠历史资源保留期或上面的“立即回收”，否则触限后无法恢复写入。
 
-### 13.6 可以延后的事项
+**Review 补充（2026-10-22）**
+
+- 逻辑占用需要**随事务更新的用量账本**（commit 内按 assets 大小与结构化字节增量累计），不能靠事后扫表；“立即回收”同步减账。
+- 结构化历史是否计入见 D06 补充（建议 v1 不计）。
+- “维护通道按 manage 开放”意味着超额时普通协作者只能找 owner，可接受，但超额错误应告知前端联系谁。
+- 流量计量的消费者目前只有 Source 抓取与上传下载；若 D24 采纳，流量额度就是服务侧抓取的唯一闸门。
+
+### 13.6 Review 提出的新增决策（待确认）
+
+以下决策由 2026-10-22 的 review 从 D01–D19 的二阶后果中提出，各项的来龙去脉见对应决策下的“Review 补充”。确认后与 D01–D19 同等纳入 TODO 推导。
+
+#### D20 规范化日志是否独立于 planner 可应用
+
+**需要决定**：副本重放是继续经过 planner，还是只应用已完全解析的规范化日志。
+
+**当前实现**：副本以 `Access::full(author)` 和 replay 标志调用同一个 `plan_commit`（[replica.rs](../../src/frame/aiworkspace/core/src/replica.rs)）。planner 内的归一化、`tree.place` 合并、`set_keys` 的 rev 推进等逻辑都参与重放。
+
+**可选方案**：
+
+- A：日志改为**纯应用型**——cell 级写入已完全解析、结构 hash 预计算，重放不再经 planner。日志变大，换来 planner 可自由升级。
+- B：每条 commit 记录 planner 版本，副本携带多版本 planner。实现负担大，WASM 体积随之膨胀。
+
+**建议**：A。K05 的验收改为“旧日志在新 planner 下重放一致”。D05 的级联删除、D01 的业务校验剥离都以此为前提。
+
+#### D21 本地模式生成程序的执行形态
+
+**需要决定**：AI 生成的程序在浏览器中以什么上下文运行。
+
+**当前实现**：浏览器侧只有 Mock 的 `HtmlExecutor`，在页面主上下文执行，无沙箱。
+
+**建议**：sandboxed iframe 或 Worker，只经 postMessage 获得受限 Workspace SDK（读输入快照、写候选结果），不持有 token。安全风险按“先能力后安全”作为已知风险记录，但接口形状现在定。
+
+#### D22 任务结果写权限的来源
+
+**需要决定**：结果写回的权限上限以执行身份还是以确认者为准。
+
+**建议**：按模式各取其一。Agent 模式按执行身份（执行身份权限 ∩ 声明输出）；本地模式按确认者（声明输出 ∩ 确认者在确认时的权限，apply 时复查），由服务签发限定输出目标的 run token。触发者只需 `run`。
+
+#### D23 “用户后台模式”是否并入 Agent 模式
+
+**需要决定**：是否保留 D14 的第三种执行形态。
+
+**建议**：并入。Node Executor 的凭据与映射规则使方案 B 的执行身份就是一个 Agent；方案 A 是再造一个无对话能力的 Agent。默认后台执行者为该用户的 Jarvis；Owner 委托等于“Owner 的 Agent 替协作者执行”。没有 Agent 的用户只有本地模式。
+
+#### D24 v1 自动同步的宿主
+
+**需要决定**：定时刷新 Source 在 v1 由谁执行。
+
+**建议**：服务侧保留“无凭据公开 URL 抓取”的窄路径，视为 Source 基础设施，不运行用户代码，只消耗 Workspace 流量额度；有凭据的 Source 走 Agent 模式。否则 v1 只有手动刷新。
+
+#### D25 资源 Folder 的命名与 DirObject 时间戳规范化
+
+**需要决定**：资源 Folder 与数据树 `container(kind=folder)` 的命名；物化 DirObject 时时间字段取值；是否允许外部 URL 成员。
+
+**建议**：二者改名其一（资源 Folder 改称 `dir` / “资源目录”，或树容器改称 `group`），不拖到实施期；物化时 `create_time` / `last_update_time` 取固定值，与 core 的 `file_object` 规则一致；v1 禁止外部 URL 成员，并为成员数设上限。
+
+#### D26 内容快照与协作快照的导出格式分离
+
+**需要决定**：分享、发布、演示、备份各走哪种快照。
+
+**建议**：分享与发布只走 ContentRoot（不含 CRDT 字节与 commits）；整库克隆只服务同 ACL 的演示基线；个人备份可带 `collab/*.loro`，但要在导出界面标明含完整编辑历史。
+
+#### FORMAT 1.0 冻结前必须一次进入格式的内容
+
+D07 规定冻结点之后不兼容变化必须显式转换。以下若不在 1.0 中，之后每项都是一次转换：
+
+| 字段或结构 | 来源 |
+| --- | --- |
+| 实体 `schema_version` 允许大于 1，并记录业务 Schema 标识 | D01 |
+| 资源 Folder 原语及成员表 | D01、D25 |
+| `owns` 引用种类；引用边的 `mode: live / fixed` 与 `integrity: strong / weak` 列 | D05、§5.2 |
+| 规范化日志改为纯应用型（或记录 planner 版本） | D20 |
+| `version` 判别联合的两种形态 | D03、D10 |
+| 公式值形状 `$formula` | D18 |
+| `run` 能力位 | D16 |
+| 任务配置摘要与委托记录（输出声明、确认者、摘要） | D16、D22 |
+| 用量账本表；保留根表（替换恒为 1 的 `snapshots.retained`） | D19、D06 |
+| `user_state` 修订号列 | D13 |
+| 历史下界 `base_seq`（可先恒为 0） | D06 |
+
+### 13.7 可以延后的事项
 
 以下事项不影响内核数据结构、接口和运行模型的冻结，可以在相应能力开发时再定：Agent 与 XL Agent 的分类及差异；Guest 自带模型 Endpoint 与跨 Zone AICC；函数对象（Function Instance、Lambda Object）的格式、缓存和发布；公开演示房间的事件编码和回放界面；URL 的具体语法；配额数值和计费；后端公式语言和增量求值算法。
 
-### 13.7 下一步
+### 13.8 下一步
 
-D01–D19 已于 2026-10-22 全部确认，结论记录在 13.1 的状态栏；与建议不同或有补充的决定（D01、D05），写在对应小节的“决定”中，其中标为“由决定推导”的细则在实施前需再核对。下一步按这些决策推导实施 TODO，替换 §12.3 的实施顺序。
+D01–D19 已于 2026-10-22 全部确认，结论记录在 13.1 的状态栏；与建议不同或有补充的决定（D01、D05），写在对应小节的“决定”中，其中标为“由决定推导”的细则在实施前需再核对。同日 review 提出的 D20–D26 和 13.2 的确认意见待确认；各决策下的“Review 补充”在推导 TODO 时与决策正文同等对待。下一步按这些决策推导实施 TODO，替换 §12.3 的实施顺序。

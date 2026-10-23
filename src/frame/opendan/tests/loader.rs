@@ -136,6 +136,7 @@ struct Mail {
     sent: Mutex<Vec<(String, MsgObject)>>,
     send_calls: AtomicUsize,
     unreachable: AtomicBool,
+    authentication_unavailable: AtomicBool,
     /// The conversations can replace a message in place.
     editable: AtomicBool,
     seq: AtomicUsize,
@@ -190,6 +191,9 @@ impl Mail {
 #[async_trait]
 impl MailService for Mail {
     async fn list_inboxes(&self, _owner: &DID) -> Result<Vec<MailboxAddress>, String> {
+        if self.authentication_unavailable.load(Ordering::SeqCst) {
+            return Err("authentication unavailable: host authorization required".into());
+        }
         let mut out: Vec<MailboxAddress> = Vec::new();
         for (r, _) in self.records.lock().unwrap().iter() {
             if !out.contains(&r.mailbox) {
@@ -814,6 +818,7 @@ async fn agent_state_over_krpc_matches_the_files() {
     assert_eq!(view["hosted"]["session_id"], ui.sid());
     let status = rpc(port, "loader.status", json!({})).await.unwrap();
     assert_eq!(status["agent_did"], AGENT);
+    assert!(status["authentication"].is_null());
     let modules: HashMap<String, bool> = status["modules"]
         .as_array()
         .unwrap()
@@ -1089,6 +1094,37 @@ async fn a_committed_reply_survives_a_restart_and_is_sent_once() {
     assert_eq!(llm.calls.load(Ordering::SeqCst), 1, "no second inference");
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(w.mail.sent().len(), 1);
+    loader.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authentication_failure_keeps_the_inbox_unread_until_recovery() {
+    let w = World::new();
+    w.mail.authentication_unavailable.store(true, Ordering::SeqCst);
+    w.mail.deliver(&format!("dm:{BOB}"), chat(BOB, "message during auth failure"));
+    let llm = Llm::new(|_, _| "recovered reply".into());
+    let loader = w.start(llm.clone()).await;
+    let ui = loader.ui.as_ref().unwrap();
+    until("authentication unavailable is visible", || {
+        ui.status().last_error.as_deref().is_some_and(|error| error.contains("authentication unavailable"))
+    }).await;
+    assert_eq!(w.mail.unread(), 1);
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 0);
+    assert!(w.mail.sent().is_empty());
+    assert!(loader.agent.sessions().query(&RegistryQuery::default()).await.unwrap().is_empty());
+    loader.shutdown().await;
+
+    w.mail.authentication_unavailable.store(false, Ordering::SeqCst);
+    let loader = w.start(llm.clone()).await;
+    until("backlog reply delivered", || w.mail.sent().len() == 1).await;
+    assert_eq!(w.mail.unread(), 0);
+    assert_eq!(w.mail.sent()[0].1.content.content, "recovered reply");
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 1);
+    loader.shutdown().await;
+    let loader = w.start(llm.clone()).await;
+    loader.ui.as_ref().unwrap().scan().await.unwrap();
+    assert_eq!(w.mail.sent().len(), 1);
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 1);
     loader.shutdown().await;
 }
 

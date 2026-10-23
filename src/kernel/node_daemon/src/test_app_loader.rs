@@ -3,7 +3,8 @@ use crate::app_loader::{
     container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
     docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
-    parse_docker_container_inspect, AppLoader, CommandSpec, ControlOperation, DockerCommandRunner,
+    parse_docker_container_inspect, validate_app_launch_config, AppLoader, CommandSpec,
+    ControlOperation, DockerCommandRunner,
     DockerExecOutcome, DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget,
     RuntimeType, DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
     DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
@@ -431,6 +432,64 @@ fn build_spec_config(app_doc: &AppDoc) -> ServiceSpecConfig {
         );
     }
     install_config
+}
+
+#[test]
+fn app_launch_requires_current_authorized_identity_and_deployment() {
+    let doc = build_agent_doc_without_category();
+    let spec = build_test_app_spec(doc.clone(), build_spec_config(&doc));
+    let config = AppServiceInstanceConfig::new("ood1", &spec).unwrap();
+    assert!(validate_app_launch_config(&config, &spec, "ood1").is_ok());
+    assert!(validate_app_launch_config(&config, &spec, "other-node").is_err());
+    let mut stopped = config.clone();
+    stopped.target_state = ServiceInstanceState::Stopped;
+    assert!(validate_app_launch_config(&stopped, &spec, "ood1").is_err());
+    let mut updated = spec.clone();
+    updated.deployment.spec_generation += 1;
+    assert!(validate_app_launch_config(&config, &updated, "ood1").is_err());
+    let mut revoked_grant = spec.clone();
+    revoked_grant.permission.push(PermissionItem {
+        scope_path: APP_PERMISSION_USER_HOME.into(),
+        required: true,
+        actions: vec!["read".into()],
+        exp: None,
+    });
+    assert!(validate_app_launch_config(&config, &revoked_grant, "ood1").is_err());
+    let mut other = config.clone();
+    other.node_execution_spec.app_instance_id =
+        AppInstanceId::new(spec.app_id().clone(), "bob").unwrap();
+    assert!(validate_app_launch_config(&other, &spec, "ood1").is_err());
+}
+
+#[test]
+fn agent_recreation_keeps_instance_storage_and_requests_new_startup_credentials() {
+    let doc = build_agent_doc_without_category();
+    let spec = build_test_app_spec(doc.clone(), build_spec_config(&doc));
+    let instance_id = spec.app_instance_id.to_string();
+    let config = AppServiceInstanceConfig::new("ood1", &spec).unwrap();
+    let loader = || {
+        AppLoader::new_for_service(&instance_id, config.clone())
+            .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+            .with_container_support_override(true)
+            .with_paios_images_root(local_paios_root())
+            .with_worker_image_repo_override("paios/aios")
+    };
+    let before = loader().preview_operation(ControlOperation::Start).unwrap();
+    let after = loader().preview_operation(ControlOperation::Start).unwrap();
+    assert_eq!(before.commands[0].args, after.commands[0].args);
+    assert_eq!(&after.commands[0].args[..2], &["rm", "-f"]);
+    assert!(!after.commands[0].args.iter().any(|arg| arg == "-v"));
+    let mounts = |command: &CommandSpec| {
+        command.args.windows(2)
+            .filter(|pair| pair[0] == "-v")
+            .map(|pair| pair[1].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(mounts(&before.commands[1]), mounts(&after.commands[1]));
+    assert!(mounts(&after.commands[1]).iter()
+        .any(|mount| mount.contains(":/opt/buckyos/instance:rw")));
+    assert!(after.commands[1].args.iter()
+        .any(|arg| arg == "BUCKYOS_APP_TOKEN=<value>"));
 }
 
 fn build_agent_loader(platform: PlatformTarget) -> AppLoader {

@@ -31,10 +31,10 @@ let system_config = runtime.get_system_config_client().await?;
 | 步骤 | 做什么 | 还不能做什么 |
 | --- | --- | --- |
 | `init_buckyos_api_runtime()` | 解析 `app_id`、owner、runtime type，读取环境变量和本地配置 | 不能证明身份，不能依赖全局 runtime |
-| `runtime.login()` | 确认或生成初始 `session_token`，连接 control-panel 拉取 `zone_config`；service runtime 还会初始化 RBAC 和 trust keys | 不保证此时已经拿到 verify-hub 签发的长期 token pair |
+| `runtime.login()` | 确认或生成初始 `session_token`，连接 control-panel 拉取 `zone_config`；service runtime 还会初始化 RBAC 和 trust keys | AppService 在首次业务请求前兑换 verify-hub token pair；其它类型按凭据来源初始化 |
 | `set_buckyos_api_runtime()` | 注册全局 runtime，并启动后台 keep-alive | 只能调用一次 |
 
-后台 keep-alive 每 5 秒检查一次状态，负责三类工作：接近过期时续期 token、上报 service instance info、刷新 service runtime 的 trust keys。也就是说，AppService 启动时常见的设备签名登录 JWT，会在 runtime 注册后由后台逻辑兑换成 verify-hub 签发的 `session_token + refresh_token`。
+后台 keep-alive 每 5 秒检查一次状态，负责三类工作：接近过期时续期 token、上报 service instance info、刷新 service runtime 的 trust keys。AppService 启动时常见的设备签名登录 JWT，会在 `login()` 的首次业务请求前兑换成 verify-hub 签发的 `session_token + refresh_token`；注册后的后台逻辑继续负责续期。
 
 ## Token 模型
 
@@ -80,6 +80,26 @@ Verify Hub 的 `login_by_jwt` 会验证断言的签名、过期时间、`sub`、
 
 业务服务不能把 refresh token 或 LoginAssertion 当 session token 用。共享本地验签入口只信任 `iss/kid=verify-hub` 且通过 `token_use=session + AuthTarget` 集中校验的 token。
 
+### Rust runtime 的并发续期与健康状态
+
+同一个 `BuckyOSRuntime` 的后台 keep-alive、Session bind 和工具执行共用一个续期互斥。等待者拿到锁后重新读取凭据并检查过期时间；其他调用已完成续期时直接复用结果。锁覆盖刷新 RPC 和 token pair 提交，写入顺序固定为 session、refresh，两把写锁都取得后才更新任一值。直接登录提交也走同一个入口；初始化只在 runtime 发布前写入。
+
+刷新请求超时后可能已经在服务端完成轮换。runtime 在有界时间内用原 refresh 重试，利用服务端 10 秒宽限期取回同一对凭据；不会因此生成新的 LoginAssertion。取消或失败不会留下半对凭据或永久占锁。无法确认轮换结果时保存单调时钟的恢复窗口，窗口结束后停止重放旧 refresh，并要求宿主处理，避免超出宽限期触发重用撤销。终止认证错误会被缓存，后续调用返回同一诊断，不再反复提交已失效的 refresh。
+
+`get_runtime_health_snapshot().authentication` 和 `get_authentication_status()` 提供状态、错误码、拒绝详情、发生时间与下次重试时间：
+
+| 状态 | 含义与处理 |
+| --- | --- |
+| `ready` | 认证当前可用；只有实际完成登录或续期才清除之前的认证错误 |
+| `retry_pending` | 暂时通信故障，按共享退避时间重试；调用方不应自行开并发刷新 |
+| `reauthorization_required` | 凭据或授权明确失效；停止自动刷新，由用户/宿主处理当前授权 |
+| `unavailable` | 无法自动恢复的认证错误；保留原因并由宿主诊断 |
+
+verify-hub 沿用 `access_denied` / `AccessDenial`：`credential_state` 的 detail 为 `refresh_token_invalid`、`refresh_token_expired`、`refresh_token_reused` 或 `refresh_session_invalidated`；账号停用、实例不存在/禁用分别保留 `account_state`、`entry_unavailable` 的拒绝语义。启动断言的重放、过期或非法签名分别使用 `login_assertion_used`、`login_assertion_expired`、`login_assertion_invalid`，也停止自动重试。system-config 读取故障保持暂时错误，不能误判成账号拒绝。客户端按结构化字段判断，不匹配日志文本。缺失的 family 无法区分过期、删除和显式撤销，因此都要求宿主确认，不自动重登。
+
+消息桥接每次业务调用与新工具启动都从共享 runtime 获取当前 token；缓存的 system-config client 在取用时更新凭据。调用方自行保存的 session token 字符串仍是快照，长时间运行的外部工具需重新建立调用。`RenewToken recovered` 只表示实际凭据交换恢复，未到续期时间的空操作不算恢复。
+
+
 ## RuntimeType 决定登录材料从哪来
 
 `BuckyOSRuntimeType` 不是权限等级的 UI 概念，而是 SDK 初始化时选择配置来源和 token 来源的开关。
@@ -107,15 +127,15 @@ sequenceDiagram
   ND->>ND: 用 device private key 为 OwnerUserId或DeviceId + AppId 生成登录 JWT
   ND->>App: 注入固定 BUCKYOS_APP_* 身份变量和 app_instance_config
   App->>App: init_buckyos_api_runtime()
-  App->>CP: runtime.login() 拉取 zone_config
-  App->>App: set_buckyos_api_runtime() 启动 keep-alive
-  App->>VH: login_by_jwt(设备签名登录 JWT)
+  App->>VH: runtime.login(): login_by_jwt(设备签名登录 JWT)
   VH-->>App: session_token + refresh_token
+  App->>CP: 拉取 zone_config
+  App->>App: set_buckyos_api_runtime() 启动 keep-alive
   App->>Svc: 后续 kRPC 携带 session_token
   App->>VH: session 接近过期时 refresh_token()
 ```
 
-这里最容易误解的是 `BUCKYOS_APP_TOKEN`：node-daemon 注入的初始 token 只是登录 JWT，不应被长期保存，也不代表最终 verify-hub 会话。它同时携带 `app_instance_id` 和 `app_owner_user_id`；SDK 会先精确校验当前 AppInstanceId，再在后台尽快兑换并轮换。
+这里最容易误解的是 `BUCKYOS_APP_TOKEN`：node-daemon 注入的初始 token 只是登录 JWT，不应被长期保存，也不代表最终 verify-hub 会话。断言中的 `sub` / `appid` 与固定 `BUCKYOS_APP_*` 身份环境及交换请求的 AuthTarget 共同限定实例；SDK 会先精确校验当前 AppInstanceId，再在首次业务请求前兑换，由后台继续轮换。
 
 ## AppClient 的典型登录流程
 
@@ -238,9 +258,15 @@ refresh token 的 `aud` 是 `verify-hub`，只能发给 verify-hub。业务请�
 
 同一个登录 JWT 不能重复使用。当前 verify-hub 用 JWT 里的 `jti` 做重放检测；重新登录时要重新生成 JWT 和 `jti`。
 
-### verify-hub 重启后需要重新登录
+### verify-hub 重启与 App 实例恢复
 
-当前 session/refresh 缓存在 verify-hub 进程内存中。verify-hub 重启后，已有 session token 在离线验签场景下可能还能用到过期，但 refresh token 可能因为缓存丢失而无法续期。客户端应把 refresh 失败视为需要重新登录的正常恢复路径。
+当前 verify-hub 将 session family、轮换戳及宽限期信息持久化到 SQLite `sessions.db`，正常重启后可继续刷新。不能把所有 refresh 失败归因于重启，也不能自动把明确撤销的 family 换成新登录。
+
+AppService 容器不持有设备私钥；旧 `BUCKYOS_APP_TOKEN` 是短期且一次性的 LoginAssertion。终止认证错误应通过 OpenDAN 的 `loader.status.authentication` 诊断，并结合 `errors` 中的运行错误，结合 `session.read` 的 `last_error`、输入 ACK 游标及 outbox 检查消息状态。认证失败时业务调用和 Session bind 返回错误，输入保持待处理；恢复后复用持久化输入与 outbox 的幂等标识。容器 `Up`、宿主报告 `Healthy` 或进程存活都不足以证明认证或消息处理正常，远端服务状态还可能因无权上报而停留在旧值。
+
+由获授权用户通过现有控制面板 App 重启操作，或 `buckyos app restart <完整 AppInstanceId> --strategy recreate` 发起恢复。先用 `buckyos command describe app restart` 核对已安装 CLI。node-daemon 在签发前重新读取 owner、当前 AppServiceSpec 和 Agent binding，检查账号、实例、部署及节点身份；verify-hub 在交换和续期时也检查当前账号和实例授权。通过检查后沿现有实例重建路径签发新 LoginAssertion，owner、AppId、AppInstanceId 和 AuthTarget 保持不变，复用 AgentRootFS 和消息数据。账号停用、实例删除、Agent 禁用或授权拒绝必须先通过对应管理入口处理，不能靠后台重登绕过。
+
+`docker restart` 复用旧环境，不会产生新的 LoginAssertion；卸载、删除 AgentRootFS、手工推进 ACK 或把消息改为已读也不是恢复方式。重建后应按原消息 ID 验证消费、模型运行、回复投递，并观察后续两轮续期；真实 Zone 的验收与发布是独立部署步骤。
 
 ## 当前实现和旧文档差异
 
@@ -250,7 +276,7 @@ refresh token 的 `aud` 是 `verify-hub`，只能发给 verify-hub。业务请�
 | --- | --- |
 | 通用 `login` 方法，params 里用 `type=password/jwt` | verify-hub client 暴露 `login_by_password`、`login_by_jwt`、`refresh_token`、`logout`、`verify_token` |
 | access token / refresh token | 当前 API 字段是 `session_token` / `refresh_token` |
-| JWT 有统一 `token_use` 字段 | 当前 `RPCSessionToken` 主要用 `aud=verify-hub` 区分 refresh token，用 `sudo` bool 区分 sudo |
+| JWT 有统一 `token_use` 字段 | 当前通过 `token_use`、结构化 AuthTarget 和主体类型集中校验；refresh 的 `aud=verify-hub`，sudo 还带 `sudo=true` |
 | service bootstrap JWT 包含 `target_service_id`、独立 nonce 等完整目标方案 | 当前 node-daemon 注入的是设备签名登录 JWT，`jti` 用于重放检测 |
 | `verify_token` 返回用户/app/exp | 当前 `verify_token` 返回 `bool`，可分别校验 `appid` 与 `app_instance_id`，且用户 token 缺少实例 claim 时拒绝 |
 | sudo 是用户私钥自签特权 token | 当前 `sudo_by_password` 返回 verify-hub 签发的短期 sudo token |

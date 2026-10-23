@@ -73,8 +73,12 @@ pub struct ZoneMailService;
 
 impl ZoneMailService {
     async fn client() -> Result<MsgCenterClient, String> {
-        buckyos_api::get_buckyos_api_runtime()
-            .map_err(|e| e.to_string())?
+        let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+        runtime
+            .renew_token_from_verify_hub()
+            .await
+            .map_err(|e| e.to_string())?;
+        runtime
             .get_msg_center_client()
             .await
             .map_err(|e| e.to_string())

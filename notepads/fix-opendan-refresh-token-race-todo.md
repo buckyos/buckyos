@@ -1,6 +1,6 @@
 # OpenDAN 并发刷新令牌导致 Agent 无回复：修复 TODO
 
-状态：**待实施**。2026-10-22（America/Los_Angeles）已完成 demo.buckyos.io 只读诊断；本记录不表示已修复、部署或恢复线上实例。
+状态：**代码修复已实施，验证结果见第 5 节；发布与真实 Zone 恢复验收待执行**。2026-10-22（America/Los_Angeles）完成本地实现。本次未部署 demo.buckyos.io，也未恢复线上实例。
 
 ## 1. 故障与证据
 
@@ -57,20 +57,20 @@
 
 ### P0：客户端刷新只允许一个请求执行
 
-- [ ] 在共享 runtime 的认证续期路径增加互斥，覆盖“重新读取凭据 → 判断是否需要刷新 → 刷新 RPC → 提交新 token pair”。后台、bind 和工具执行统一走此入口，不在各调用方分别加锁。
-- [ ] 等待者取得锁后必须重新检查有效期；若其他调用已经完成续期，直接复用结果，不能继续使用加锁前读取的旧 token。
-- [ ] 明确现有 session / refresh 锁的获取顺序，避免死锁；新凭据成对提交，失败不得留下新旧混合状态。检查直接登录、初始化等其他写入点与刷新之间的竞争。
-- [ ] 网络超时、调用取消和任务退出不会永久占锁；区分“服务端可能已轮换但客户端未收到响应”与明确拒绝，有限重试需复用服务端宽限语义，不能盲目生成新登录。
-- [ ] 确认续期成功后，消息桥接、服务状态上报和新启动工具读到更新后的 token；核对是否有长生命周期 client 持有旧快照。
+- [x] 在共享 runtime 的认证续期路径增加互斥，覆盖“重新读取凭据 → 判断是否需要刷新 → 刷新 RPC → 提交新 token pair”。后台、bind 和工具执行统一走此入口，不在各调用方分别加锁。
+- [x] 等待者取得锁后必须重新检查有效期；若其他调用已经完成续期，直接复用结果，不能继续使用加锁前读取的旧 token。
+- [x] 明确现有 session / refresh 锁的获取顺序，避免死锁；新凭据成对提交，失败不得留下新旧混合状态。检查直接登录、初始化等其他写入点与刷新之间的竞争。
+- [x] 网络超时、调用取消和任务退出不会永久占锁；区分“服务端可能已轮换但客户端未收到响应”与明确拒绝，有限重试需复用服务端宽限语义，不能盲目生成新登录。
+- [x] 确认续期成功后，消息桥接、服务状态上报和新启动工具读到更新后的 token；核对是否有长生命周期 client 持有旧快照。
 
 ### P1：认证失效后退出无效重试，并提供实例恢复路径
 
-- [ ] 区分暂时网络失败、凭据失效、明确撤销及权限拒绝，复用现有错误分类和退避机制；避免仅靠重复文本日志或一律按网络错误重试。
-- [ ] 对无法继续刷新的 App 实例进入明确的认证不可用状态，保留诊断原因和有界恢复尝试；不得不断用同一失效 refresh 重试并把进程存活当作健康。
-- [ ] 确定由现有 node-daemon / 实例生命周期机制重新核验当前 AppInstance 授权并签发新 LoginAssertion 的恢复流程。Agent 容器不持有设备私钥，不能假定它能自行生成可信启动断言。
-- [ ] 恢复保持 owner、AppId、AppInstance 和 AuthTarget 不变。账号停用、实例删除、显式撤销或授权拒绝时，不得通过自动重新登录绕过拒绝；需要重新授权的情况明确暴露给宿主。
-- [ ] 失败期间不提前 ACK 输入、不改写消息为已读；恢复后沿现有消费与 outbox 幂等机制处理积压消息，避免丢消息或重复回复。
-- [ ] 将持续 `bind_failed` / 认证失效暴露到现有 Agent 或实例健康视图；认证恢复完成后才清除错误。核对日志中的 `RenewToken recovered` 是否只是“暂时未到续期时间”，不能因此宣称认证会话已恢复。
+- [x] 区分暂时网络失败、凭据失效、明确撤销及权限拒绝，复用现有错误分类和退避机制；避免仅靠重复文本日志或一律按网络错误重试。
+- [x] 对无法继续刷新的 App 实例进入明确的认证不可用状态，保留诊断原因和有界恢复尝试；不得不断用同一失效 refresh 重试并把进程存活当作健康。
+- [x] 确定由现有 node-daemon / 实例生命周期机制重新核验当前 AppInstance 授权并签发新 LoginAssertion 的恢复流程。Agent 容器不持有设备私钥，不能假定它能自行生成可信启动断言。
+- [x] 恢复保持 owner、AppId、AppInstance 和 AuthTarget 不变。账号停用、实例删除、显式撤销或授权拒绝时，不得通过自动重新登录绕过拒绝；需要重新授权的情况明确暴露给宿主。
+- [x] 失败期间不提前 ACK 输入、不改写消息为已读；恢复后沿现有消费与 outbox 幂等机制处理积压消息，避免丢消息或重复回复。
+- [x] 将持续 `bind_failed` / 认证失效暴露到现有 Agent 或实例健康视图；认证恢复完成后才清除错误。核对日志中的 `RenewToken recovered` 是否只是“暂时未到续期时间”，不能因此宣称认证会话已恢复。
 
 ### P1：发布与恢复验收
 
@@ -81,8 +81,8 @@
 
 ### 文档和调用方联动
 
-- [ ] 同步 [runtime-login.md](../doc/sdk/runtime-login.md) 的续期并发、失效分类及宿主恢复职责；如果修改对外错误、状态或协议，同步 buckyos-api 共享类型、服务实现、SDK 与实际消费方。
-- [ ] 更新受影响的 `buckyos_admin`、`opendan_agent_dev` 命令手册，记录健康诊断与实例恢复方式；若交付 / 镜像更新流程变化，同时更新 `buckyos_dev_release`。实现时写明各手册修改或无需修改的依据。
+- [x] 同步 [runtime-login.md](../doc/sdk/runtime-login.md) 的续期并发、失效分类及宿主恢复职责；如果修改对外错误、状态或协议，同步 buckyos-api 共享类型、服务实现、SDK 与实际消费方。
+- [x] 更新受影响的 `buckyos_admin`、`opendan_agent_dev` 命令手册，记录健康诊断与实例恢复方式；若交付 / 镜像更新流程变化，同时更新 `buckyos_dev_release`。实现时写明各手册修改或无需修改的依据。
 
 ## 4. 验证与完成条件
 
@@ -109,6 +109,51 @@ cargo test -p agent_tool -p libopendan -p opendan -- --test-threads=1
 cargo test -p node_daemon -- --test-threads=1
 ```
 
-verify-hub 现有测试 `concurrent_refresh_with_one_token_shares_one_pair`、`restart_keeps_families_refreshable_and_grace_idempotent` 应继续通过。按最终改动范围完成构建和真实 Zone 的消息闭环验证；本次仅写 TODO，未运行这些测试。
+verify-hub 现有测试 `concurrent_refresh_with_one_token_shares_one_pair`、`restart_keeps_families_refreshable_and_grace_idempotent` 应继续通过。实际检查结果记录在第 5 节；真实 Zone 的消息闭环与镜像发布单独记录，未执行的检查不计为通过。
 
 完成标准：客户端不再产生同一凭据的并发刷新；认证失效可明确诊断并按授权恢复；积压消息恢复后恰好回复一次；正常续期、服务端重启及明确撤销的行为均有验证记录。不得以“升级后进程运行”或“某次模型调用成功”替代完整验收。
+
+
+## 5. 实施记录（2026-10-22）
+
+- `buckyos-api/runtime.rs`：共享续期锁覆盖重读、过期检查、RPC 和凭据提交；有限重试及共享退避；结构化认证状态保留拒绝原因，失效后不自动重登。pair 与认证状态一起提交，处理取消与结果未知的刷新。
+- `verify_hub/main.rs`：沿用 `AccessDenial`，明确过期、非法、重用与 family 已失效；复用已有 10 秒宽限期和 SQLite family 存储；App 登录/续期重新核验 owner、实例与 Agent binding。
+- `buckyos-api/agent_permissions.rs`、`node_daemon/app_loader.rs`：签发前读取当前授权事实，拒绝停用账号、删除/禁用实例及陈旧部署配置。继续使用获授权的 `apps.restart` / `restart_strategy=recreate`，不会因认证失败自动创建新 family。现有容器重建保留卷和 AgentRootFS。
+- OpenDAN/libopendan/agent_tool：`loader.status.authentication` 与 Loader 页面暴露认证状态；消息调用读最新 runtime token；绑定认证错误保持 `bind_failed`，不当作工作区永久失败，不提前 ACK 输入；直接登录 pair 提交也共用 runtime 入口。
+- 文档：更新 `runtime-login.md`；`buckyos_admin`、`opendan_agent_dev` 增加健康诊断和显式重建流程；`buckyos_dev_release` 增加宿主二进制与 aios 镜像配套交付检查。没有新增依赖、RPC 方法或存储结构。SDK 已支持现有 `access_denied` / `credential_state`，无需新增 TS 错误类型；OpenDAN WebUI 类型同步新增的状态字段。
+
+### 验证记录
+
+Rust 回归结果（`src/` 下，统一 `--test-threads=1`）：
+
+| Package | 通过 | 失败 | 既有忽略项 |
+| --- | ---: | ---: | ---: |
+| `buckyos-api` | 305 | 0 | 0 |
+| `agent_tool` | 271 | 0 | 6 |
+| `libopendan` | 348 | 0 | 1 |
+| `node_daemon` | 130 | 0 | 3 |
+| `opendan` | 40 | 0 | 1 |
+| `verify_hub` | 36 | 0 | 0 |
+
+共 1130 项通过，11 项既有测试（含 1 项文档示例）按原设置忽略。首次六包联合回归发现旧 `tool_session_token` 用例假设原始 token 回写能清除终止状态；已调整为先验证正常轮换，再验证终止状态拒绝手工回写恢复，定向测试通过，并完整重跑 `libopendan`、`node_daemon`、`opendan`、`verify_hub`（`--no-fail-fast`）。`buckyos-api`、`agent_tool` 的单测及集成测试已在首次联合回归中全部通过，文档测试单独补跑通过。
+
+实际命令：
+
+```bash
+cargo test -p buckyos-api -p verify_hub -p node_daemon -p agent_tool -p libopendan -p opendan -- --test-threads=1
+cargo test -p libopendan --test tool_session_token -- --test-threads=1
+cargo test -p libopendan -p node_daemon -p opendan -p verify_hub --no-fail-fast -- --test-threads=1
+cargo test -p buckyos-api -p agent_tool --doc -- --test-threads=1
+cargo build -p buckyos-api -p verify_hub -p node_daemon -p agent_tool -p libopendan -p opendan
+```
+
+- `cargo build`：通过，生成本机开发构建产物；未执行完整 `buckyos-build.py`、跨平台构建或镜像构建。
+- OpenDAN WebUI：`pnpm check`、`pnpm lint`、`pnpm build` 全部通过。
+- `git diff --check`：通过。
+- 并发回归通过屏障同步 16 个等待者，验证一次 RPC 和第二轮续期；响应丢失、取消、部分提交、缓存同步取消、有界超时、越过宽限窗口及永久拒绝均有用例。
+- `concurrent_refresh_with_one_token_shares_one_pair`、`restart_keeps_families_refreshable_and_grace_idempotent` 及 logout/reuse 拒绝用例通过。
+- `authentication_failure_keeps_inputs_and_outbox_until_new_runtime_recovers` 使用独立进程制造真实 runtime 失效，确认输入/待发回复保留、工作区 Session 不被终止、恢复后回复 ID 保持且只回复一次；`authentication_failure_keeps_the_inbox_unread_until_recovery` 验证失败时未读消息保留。这些是隔离回归，不代替真实 Zone / 模型服务验收。
+
+### 尚未执行的发布验收
+
+本机 `uv run check.py` 显示已激活、核心进程与端口可用，但运行的已安装服务不是本次改动产物；因此不能据此声称修复已在 Zone 生效。本次不替换宿主服务、不构建/发布 aios 镜像、不重建 demo 实例。部署时记录 verify-hub/node-daemon 二进制和运行镜像的实际版本、提交与摘要，按第 3 节逐项验证同一积压消息及后续两轮续期。模型/天气工具的真实调用、跨服务消息投递和生产恢复尚未验收。

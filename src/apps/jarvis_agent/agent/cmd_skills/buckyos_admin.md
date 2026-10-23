@@ -172,6 +172,16 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   agent cannot collect an administrator diagnostic bundle. `task list` shows the tasks your agent created.
 - A refusal is an answer: report the code and the owner-side path; don't retry as another identity or route around
   it through raw keys.
+- Agent stops replying with `bind_failed` or refresh failures: inspect `loader.status.authentication` and `errors`
+  through the Agent's existing kRPC endpoint, plus `session.read` input ACK/outbox state. `retry_pending` is transient;
+  `reauthorization_required`/`unavailable` needs host diagnosis. Container `Up` and old service `Healthy` do not prove
+  working authentication. Keep tokens out of the evidence; record the exact owner, AppInstanceId, message ID and error.
+- For authorized recovery, use the existing App lifecycle: check `buckyos command describe app restart`, then
+  `buckyos app restart <full_app_instance_id> --strategy recreate`. node-daemon rechecks the active owner, current
+  enabled installed App and Agent binding before issuing a fresh LoginAssertion. Do not auto-recreate on a revocation
+  or denial; resolve authorization through the owner/admin first. `docker restart` keeps the expired startup assertion.
+  Preserve AgentRootFS, message storage and Session ACK/outbox state. Check the original pending message is consumed
+  and answered once, then observe subsequent renewal; a successful restart task alone is insufficient.
 - `SESSION_EXPIRED` in a long `tail`/`wait`: the injected token lasts minutes and is refreshed per shell call; rerun in
   a new call. `CONNECTION_REQUIRED`: no endpoint; add `--endpoint http://host.docker.internal:3180`.
 - Re-running writes: pass `--idempotency-key <k>` to app and diagnostic verbs; re-read before repeating a set.

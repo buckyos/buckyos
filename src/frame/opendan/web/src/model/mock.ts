@@ -417,6 +417,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
         agent_root: ROOT,
         started_at_ms: ago(7200),
         now_ms: Date.now(),
+        authentication: { state: 'ready', last_error: null, error_code: null, since: null, next_retry_time: null },
         modules: [
           { name: 'agent_state_service', enabled: true, running: true, note: 'port 4060' },
           { name: 'webui', enabled: true, running: true },
