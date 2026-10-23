@@ -164,7 +164,7 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 **兼容策略：** 历史用量及费用不因单位或投影变化被误读；正在执行的 Provider 任务不得按空库重发；产物归属不可从 URL/对象内容猜测。可重建的 inventory/search 等缓存与防回退水位分开处理。
 
-已有 [Runtime Durable Data Schema](../aicc/aicc_runtime_durable_data_schema.md)、[Provider Durable Data Schema](../aicc/provider_architecture_durable_data_schema.md)。当前 runtime 文档写初始 schema 1 和清库策略，而 [storage/mod.rs](../../src/frame/aicc/src/storage/mod.rs) 的全局 schema 已为 2，存在版本检查及迁移代码，必须在发布前对齐。
+已有 [Runtime Durable Data Schema](../aicc/aicc_runtime_durable_data_schema.md)、[Provider Durable Data Schema](../aicc/provider_architecture_durable_data_schema.md)。runtime 文档与 [storage/mod.rs](../../src/frame/aicc/src/storage/mod.rs) 的全局 schema 现均为 3：空库直接建当前表集，已有库只接受版本 3，开发期的迁移代码已删除；正式基线发布后的升级路径仍需单独定义。
 
 ### F12 OpenDAN Agent 与 Session
 
@@ -237,7 +237,7 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 | Repo | RDB spec `1` | 发布事实与可重建索引的边界 |
 | AICC | runtime storage `2`；inventory row `1` | runtime 文档仍写 `1`，对齐；区分 RDB spec 与服务内部 schema |
 | OpenDAN | session config/state `/5`，input `/3`，LLM snapshot `4` | 结合 RunRecord、binding、summary 等形成完整版本矩阵与 fixture |
-| Agent Memory / Notebook / Attention | `2.10` / `0.4` / `0.1` | 定义读写兼容范围及日志/索引/正文重建边界 |
+| Agent Memory / Notebook / Attention | `3.0` / `0.4` / `0.1` | 定义读写兼容范围及日志/索引/正文重建边界 |
 | AI Workspace | `STORAGE_SCHEMA_VERSION = 2` | 当前精确版本检查之外的旧库/旧包读取或迁移路径 |
 | BuckyOSApp vault / CLI profile | `2` / `1` | 加密与派生算法、旧钱包和 profile 样本 |
 | system-config、kmsg、Named Store、FileDB | 上述存储入口未见统一的全库格式版本门禁 | 建立可靠格式识别；无版本库也必须能判定是 Beta2.2 还是未知/损坏数据 |

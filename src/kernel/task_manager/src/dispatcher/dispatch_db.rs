@@ -5,7 +5,9 @@
 //! registrations, operation routes, instance leases and the persisted
 //! round-robin cursor. No SQL joins into the Task Core store.
 
-use crate::task_store::{rewrite_placeholders_to_dollar, split_sql_statements};
+use crate::task_store::{
+    existing_tables, rewrite_placeholders_to_dollar, split_sql_statements, table_columns,
+};
 use buckyos_api::*;
 use kRPC::{RPCErrors, Result};
 use log::*;
@@ -15,6 +17,15 @@ use sqlx::{AnyPool, Executor, Row};
 use std::sync::Once;
 
 static INSTALL_DRIVERS: Once = Once::new();
+
+const DISPATCH_TABLES: [&str; 6] = [
+    "dispatch_record",
+    "delivery_attempt",
+    "runner_registration",
+    "operation_route",
+    "target_instance",
+    "dispatch_cursor",
+];
 
 fn ensure_any_drivers_installed() {
     INSTALL_DRIVERS.call_once(install_default_drivers);
@@ -99,51 +110,55 @@ impl DispatchDb {
                     RdbBackend::Sqlite => TASK_DISPATCHER_RDB_SCHEMA_SQLITE,
                     RdbBackend::Postgres => TASK_DISPATCHER_RDB_SCHEMA_POSTGRES,
                 });
+        let existing = existing_tables(&self.pool, self.backend, &DISPATCH_TABLES).await?;
+        if existing.is_empty() {
+            let mut tx = self.pool.begin().await?;
+            for statement in split_sql_statements(ddl) {
+                (&mut *tx).execute(statement.as_str()).await?;
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+        self.check_current_layout(&existing).await?;
         for statement in split_sql_statements(ddl) {
             self.pool.execute(statement.as_str()).await?;
         }
-        // beta2.2 no-compat: a v2 store (dispatch_record.operation column)
-        // is dropped and rebuilt on the v3 layout.
-        let v2 = match self.backend {
-            RdbBackend::Sqlite => sqlx::query(
-                "SELECT 1 FROM pragma_table_info('dispatch_record') WHERE name = 'operation'",
-            )
-            .fetch_optional(&self.pool)
-            .await?
-            .is_some(),
-            RdbBackend::Postgres => sqlx::query(
-                "SELECT 1 FROM information_schema.columns WHERE table_name = 'dispatch_record' AND column_name = 'operation'",
-            )
-            .fetch_optional(&self.pool)
-            .await?
-            .is_some(),
+        Ok(())
+    }
+
+    /// The dispatcher store keeps no version row, so an existing store must
+    /// have exactly the tables and columns of the current schema.
+    async fn check_current_layout(
+        &self,
+        existing: &[String],
+    ) -> std::result::Result<(), sqlx::Error> {
+        let mismatch = |detail: String| {
+            sqlx::Error::Protocol(format!(
+                "task-dispatcher store does not match schema v{}: {}",
+                TASK_DISPATCHER_RDB_SCHEMA_VERSION, detail
+            ))
         };
-        if v2 {
-            warn!(
-                "dispatch_db: 1.x schema detected; rebuilding as dispatcher schema v3 (no-compat)"
-            );
-            for table in [
-                "delivery_attempt",
-                "dispatch_record",
-                "runner_registration",
-                "operation_route",
-                "target_instance",
-                "dispatch_cursor",
-                "dispatch_approval",
-                "dispatch_event",
-                "target_registration",
-            ] {
-                let sql = format!("DROP TABLE IF EXISTS {}", table);
-                self.pool.execute(sql.as_str()).await?;
-            }
-            let ddl = match self.backend {
-                RdbBackend::Sqlite => TASK_DISPATCHER_RDB_SCHEMA_SQLITE,
-                RdbBackend::Postgres => TASK_DISPATCHER_RDB_SCHEMA_POSTGRES,
-            };
-            for statement in split_sql_statements(ddl) {
-                self.pool.execute(statement.as_str()).await?;
+        if existing.len() != DISPATCH_TABLES.len() {
+            return Err(mismatch(format!("found tables {:?}", existing)));
+        }
+        let current = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        for statement in split_sql_statements(TASK_DISPATCHER_RDB_SCHEMA_SQLITE) {
+            current.execute(statement.as_str()).await?;
+        }
+        for table in DISPATCH_TABLES {
+            let expected = table_columns(&current, RdbBackend::Sqlite, table).await?;
+            let actual = table_columns(&self.pool, self.backend, table).await?;
+            if actual != expected {
+                return Err(mismatch(format!(
+                    "table {} has columns {:?}",
+                    table, actual
+                )));
             }
         }
+        current.close().await;
         Ok(())
     }
 

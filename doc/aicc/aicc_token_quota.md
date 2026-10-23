@@ -26,7 +26,7 @@
 
 - 策略存于 `aicc_visibility_policy`，主体为 `type:admin` / `type:user` / `type:limited` 和 `group:<group_id>`。允许项三种：`all_providers`（跟随清单）、`provider_all_models`（某 Provider 全部模型，跟随清单）、`provider_models`（指定 exact model）。
 - 用户的最终可见集 = 其 UserType 主体与所在系统用户组主体的允许项并集 ∩ 各 Provider 实际模型清单（`visibility::access_for`）。Root 视为 `type:admin`。停用的 Provider 不进入清单。
-- 首次迁移时写入默认策略：`type:admin` 和 `type:user` 为 `all_providers`，`type:limited` 为空。之后不会再自动写入（`aicc_state.visibility_seeded`）。
+- 首次建库后的打开流程写入默认策略：`type:admin` 和 `type:user` 为 `all_providers`，`type:limited` 为空。之后不会再自动写入（`aicc_state.visibility_seeded`）。
 - 策略修改用 `aicc_state.visibility_revision` 做乐观并发，`visibility.update` 必须带 `expected_revision`。
 - 过滤生效点：`models.list`、`provider.list`、路由解析与预览、推理调用（主模型与 fallback 都检查）、额度规则草稿；诊断和路由 trace 对非管理员隐去不可见资源。管理员的 `models.list` 支持 `view: "manage"`，返回全量并标记自己是否可用。
 - 规则所指资源对查看者不可见时，视图把资源替换成 `hidden`，状态为 `resource_unavailable`。

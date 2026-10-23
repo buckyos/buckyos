@@ -118,14 +118,10 @@ Rows are kept when the contact is removed.
 `friend_state` (`none` / `outgoing_pending` / `incoming_pending` / `friend`),
 `tags?`, `created_at`, `updated_at`. The `groups` field no longer exists.
 
-Payloads written before version 13 are rewritten in memory when an owner store
-is loaded: `groups` are merged into `tags` (contacts carrying `zone_user` /
-`zone_agent` keep only those system tags from `groups`, and `zone_agent`
-contacts lose the legacy `agent` tag), `access_level: friend`
-becomes `allow`, and such contacts that carry a system tag and no
-`friend_state` get `friend_state: friend`.
-An owner store is saved as a whole, so the rewritten payloads reach the table
-with the next write to that store.
+Only the current payload format is read. A payload that still carries `groups`
+or an access level outside the list above fails the owner store load, so every
+operation on that owner returns an error; the stored rows are neither rewritten
+nor deleted.
 
 ### Existing durable tables
 
@@ -177,7 +173,8 @@ or migrate existing column definitions or types.
 
 Version 12 removes the v1 self-host group table definitions. Version 13 adds
 `friend_requests` and its indexes with `IF NOT EXISTS`, and changes the contact
-payload, which is migrated on load as described above. Existing database tables
+payload; payloads written before version 13 are rejected on load as described
+above. Existing database tables
 are not automatically dropped; code removal does not delete deployed data.
 Session-addressed queue and sender-mailbox idempotency semantics remain unchanged.
 

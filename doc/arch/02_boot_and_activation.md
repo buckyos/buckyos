@@ -13,7 +13,7 @@
 激活阶段先写本机文件：公开配置进入 system etc 目录，含凭据的启动配置进入 security 根目录（默认 `$BUCKYOS_ROOT/security/`，可用 `BUCKYOS_SECURITY_ROOT` 指定；代码：`src/kernel/node_daemon/src/active_server.rs`）。这些文件会在后续启动时被读取，用来推导 boot 所需的环境变量与调度动作。
 
 当前写入的关键文件（两条激活路径 `handle_active_by_wallet()` 与 `handle_do_active()` 都会写）：
-- `node_private_key.pem`：本设备 Ed25519 私钥（`src/kernel/node_daemon/src/active_server.rs`）。
+- `security/<device host>/authentication.private.pem`：本设备 Ed25519 私钥（路径见 `src/kernel/buckyos-api/src/device_identity.rs`）。
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（见下方 `NodeIdentityConfig` 最小字段视图）。
 - `security/start_config.json`：后续 boot.template 渲染所需的启动参数，含管理员密码哈希和 provider 配置；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）。
 - `sn_zone_info.json`：激活完成后通过 `SnClient::get_zone_info()` 获取的 SN 运行态；下一次 node-daemon 启动生成首份 cyfs-gateway keep-tunnel 配置时优先使用非空 `relay_sn`，为 `null` 时使用 `ZoneBootConfig.sn`。
@@ -174,7 +174,7 @@ boot/config（KV 路径 `boot/config`）是 system-config 中保存 ZoneConfig �
 ```text
 activation_server(3182):                        // src/kernel/node_daemon/src/active_server.rs
   receive {device_doc_jwt, device_private_key, owner_public_key, zone_did, ...}
-  write /etc/node_private_key.pem
+  write /security/<device host>/authentication.private.pem
   write /etc/node_identity.json                 // NodeIdentityConfig
   write /security/start_config.json             // includes ood_jwt and startup credentials
   write /etc/sn_zone_info.json                  // includes assigned relay_sn

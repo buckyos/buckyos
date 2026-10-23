@@ -143,7 +143,7 @@ buckyos是一个典型的多进程系统，因此为了简化配置，减少配�
 - NULL,BUCKYOS_ZONE_DOC,node-daemon boot env
 
 - CURRENT_DEVICE_CONFIG,BUCKYOS_THIS_DEVICE,node_identiy.json (移动到cyfs-gateway-lib)
-- NULL,NULL,node_private_key.pem 设备私钥
+- NULL,NULL,security/<device host>/authentication.private.pem 设备私钥
 
 - user_id,NULL,/.buckycli/user_config.json
 - user_config,NULL,/.buckycli/user_config.json

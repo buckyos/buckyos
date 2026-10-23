@@ -19,6 +19,7 @@ function assertEquals<T>(actual: T, expected: T, message: string) {
 }
 
 const deadZone = { top: 0, bottom: 8, left: 5, right: 5 }
+const grid = { cols: 12, rows: 8 }
 
 function app(id: string, extra: Partial<AppDefinition> = {}): AppDefinition {
   return {
@@ -88,7 +89,7 @@ Deno.test('the seed: the clock, the getting-started note and the default shortcu
 
 Deno.test('a device without saved positions shows the default arrangement', () => {
   const layout = buildDesktopLayout({
-    entries: [...seedEntries(), editorShortcut], folderPath: '/home/alice/Desktop', apps: [...builtins, editor], formFactor: 'desktop', deadZone, positions: null,
+    entries: [...seedEntries(), editorShortcut], folderPath: '/home/alice/Desktop', apps: [...builtins, editor], formFactor: 'desktop', deadZone, positions: null, ...grid,
   })
   const at = positionsOf(layout)
   assertEquals(at['Clock.widget'], [0, 0, 0, 2, 1], 'clock')
@@ -98,12 +99,16 @@ Deno.test('a device without saved positions shows the default arrangement', () =
   // Installed Apps' shortcuts sit between Preview and Workflow.
   assertEquals([at['Preview.lnk'], at['Editor.lnk'], at['Workflow.lnk']], [[1, 0, 0, 1, 1], [1, 1, 0, 1, 1], [1, 2, 0, 1, 1]], 'second screen')
   assertEquals(layout.pages.length, 2, 'two screens')
+  // Default items carry their slot (column-major on the desktop grid) and order.
+  const messageHub = layout.pages[0].items.find((item) => item.id === 'MessageHub.lnk')
+  assertEquals([messageHub?.slotIndex, messageHub?.preferredPage, messageHub?.placementType, typeof messageHub?.seq],
+    [3 * grid.rows, 0, 'auto', 'number'], 'slot fields')
 })
 
 Deno.test('missing apps leave no gap; shortcuts to them stay hidden', () => {
   // A limited account has no Jarvis guide, and the shortcut's App is not installed.
   const apps = builtins.filter((entry) => entry.id !== 'agent-guide')
-  const layout = buildDesktopLayout({ entries: [...seedEntries(), editorShortcut], folderPath: '/d', apps, formFactor: 'desktop', deadZone, positions: null })
+  const layout = buildDesktopLayout({ entries: [...seedEntries(), editorShortcut], folderPath: '/d', apps, formFactor: 'desktop', deadZone, positions: null, ...grid })
   const at = positionsOf(layout)
   assertEquals(at['Jarvis.lnk'], undefined, 'hidden shortcut')
   assertEquals(at['Editor.lnk'], undefined, 'hidden shortcut to an App that is not installed')
@@ -112,7 +117,7 @@ Deno.test('missing apps leave no gap; shortcuts to them stay hidden', () => {
 })
 
 Deno.test('saved positions win; new items are appended; documents point into the folder', () => {
-  const first = buildDesktopLayout({ entries: seedEntries(), folderPath: '/home/alice/Desktop', apps: builtins, formFactor: 'desktop', deadZone, positions: null })
+  const first = buildDesktopLayout({ entries: seedEntries(), folderPath: '/home/alice/Desktop', apps: builtins, formFactor: 'desktop', deadZone, positions: null, ...grid })
   const moved: LayoutState = {
     ...first,
     pages: first.pages.map((page) => ({ ...page, items: page.items.map((item) => (item.id === 'Settings.lnk' ? { ...item, x: 9, y: 5 } : item)) })),
@@ -121,7 +126,7 @@ Deno.test('saved positions win; new items are appended; documents point into the
     ...seedEntries().filter((entry) => entry.name !== 'Files.lnk'),
     parseDesktopEntry({ name: 'photo.jpg', kind: 'file', size: 10, mtime: 1 }),
   ]
-  const next = buildDesktopLayout({ entries, folderPath: '/home/alice/Desktop/', apps: builtins, formFactor: 'desktop', deadZone, positions: moved })
+  const next = buildDesktopLayout({ entries, folderPath: '/home/alice/Desktop/', apps: builtins, formFactor: 'desktop', deadZone, positions: moved, ...grid })
   const at = positionsOf(next)
   assertEquals(at['Settings.lnk'], [0, 9, 5, 1, 1], 'kept its place')
   assertEquals(at['Files.lnk'], undefined, 'deleted file is gone')

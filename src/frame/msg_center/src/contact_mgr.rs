@@ -3,8 +3,7 @@ use buckyos_api::{
     contact_tag_kind, AccessDecision, AccessGroupLevel, AccountBinding, Contact,
     ContactChangedEvent, ContactPatch, ContactQuery, ContactSource, ContactTagKind, FriendState,
     GrantTemporaryAccessResult, ImportContactEntry, ImportReport, RdbBackend,
-    SetGroupSubscribersResult, TemporaryGrant, TemporaryGrantOutcome, CONTACT_TAG_ZONE_AGENT,
-    CONTACT_TAG_ZONE_USER,
+    SetGroupSubscribersResult, TemporaryGrant, TemporaryGrantOutcome, CONTACT_TAG_ZONE_USER,
 };
 use kRPC::RPCErrors;
 use log::info;
@@ -1847,13 +1846,18 @@ impl ContactMgr {
                 RPCErrors::ReasonError(format!("failed to decode contacts.payload: {}", error))
             })?;
             let did = Self::parse_did(&did_str, "contacts.did")?;
-            let mut value: Value = serde_json::from_str(&payload).map_err(|error| {
+            let value: Value = serde_json::from_str(&payload).map_err(|error| {
                 RPCErrors::ReasonError(format!(
                     "failed to parse contact payload for {}: {}",
                     did_str, error
                 ))
             })?;
-            Self::migrate_contact_payload(&mut value);
+            if value.get("groups").is_some() {
+                return Err(RPCErrors::ReasonError(format!(
+                    "unsupported contact payload for {}: `groups` is not part of the current Contact format",
+                    did_str
+                )));
+            }
             let contact: Contact = serde_json::from_value(value).map_err(|error| {
                 RPCErrors::ReasonError(format!(
                     "failed to parse contact payload for {}: {}",
@@ -1911,51 +1915,6 @@ impl ContactMgr {
             group_subscribers,
             alias_index,
         })
-    }
-
-    /// Stored contacts written before `friend_state` existed: `groups` merge
-    /// into `tags`, the `friend` access level becomes `allow`, and Zone users
-    /// and Agents (the only friendships that existed) become friends.
-    fn migrate_contact_payload(value: &mut Value) {
-        let Some(object) = value.as_object_mut() else {
-            return;
-        };
-        let mut tags: Vec<String> = object
-            .get("tags")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        if let Some(groups) = object.remove("groups") {
-            let groups = serde_json::from_value::<Vec<String>>(groups).unwrap_or_default();
-            // Zone users carried the Zone's own user groups here; those are
-            // not the owner's groupings.
-            let system = groups
-                .iter()
-                .chain(tags.iter())
-                .any(|t| t == CONTACT_TAG_ZONE_USER || t == CONTACT_TAG_ZONE_AGENT);
-            if system {
-                tags.extend(
-                    groups
-                        .into_iter()
-                        .filter(|g| g == CONTACT_TAG_ZONE_USER || g == CONTACT_TAG_ZONE_AGENT),
-                );
-                if tags.iter().any(|t| t == CONTACT_TAG_ZONE_AGENT) {
-                    tags.retain(|t| t != "agent");
-                }
-            } else {
-                tags.extend(groups);
-            }
-            object.insert("tags".into(), serde_json::json!(Self::dedupe_strings(tags.clone())));
-        }
-        if object.get("access_level").and_then(Value::as_str) == Some("friend") {
-            object.insert("access_level".into(), Value::String("allow".into()));
-            if !object.contains_key("friend_state")
-                && tags
-                    .iter()
-                    .any(|t| t == CONTACT_TAG_ZONE_USER || t == CONTACT_TAG_ZONE_AGENT)
-            {
-                object.insert("friend_state".into(), Value::String("friend".into()));
-            }
-        }
     }
 
     async fn load_alias_index(
@@ -2993,32 +2952,65 @@ mod tests {
         (mgr, temp_dir)
     }
 
+    async fn stored_contact_payloads(mgr: &ContactMgr, owner: &DID) -> Vec<String> {
+        sqlx::query("SELECT payload FROM contacts WHERE owner_key = ? ORDER BY did")
+            .bind(owner.to_string())
+            .fetch_all(mgr.pool())
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.try_get::<String, _>("payload").unwrap())
+            .collect()
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn stored_contacts_from_before_friend_state_are_migrated() {
-        let (mgr, _tmp) = new_test_mgr().await;
+    async fn stored_contacts_in_old_format_are_rejected_and_kept() {
         let owner = DID::new("bns", "alice");
-        for (did, payload) in [
-            ("did:bns:bob", json!({"did":"did:bns:bob","name":"Bob","source":"shared","is_verified":true,
-                "access_level":"friend","groups":["zone_user","users"],"tags":["zone_user"],"created_at":1,"updated_at":1})),
-            ("did:bns:eve", json!({"did":"did:bns:eve","name":"Eve","source":"manual_create","is_verified":true,
-                "access_level":"friend","groups":["hiking"],"created_at":1,"updated_at":1})),
+        for payload in [
+            json!({"did":"did:bns:bob","name":"Bob","source":"shared","is_verified":true,
+                "access_level":"allow","groups":["zone_user","users"],"tags":["zone_user"],"created_at":1,"updated_at":1}),
+            json!({"did":"did:bns:bob","name":"Bob","source":"manual_create","is_verified":true,
+                "access_level":"friend","created_at":1,"updated_at":1}),
         ] {
+            let (mgr, _tmp) = new_test_mgr().await;
             sqlx::query("INSERT INTO contacts (owner_key, did, payload) VALUES (?, ?, ?)")
                 .bind(owner.to_string())
-                .bind(did)
+                .bind("did:bns:bob")
                 .bind(payload.to_string())
                 .execute(mgr.pool())
                 .await
                 .unwrap();
+
+            assert!(mgr
+                .get_contact(DID::new("bns", "bob"), Some(owner.clone()))
+                .await
+                .is_err());
+            assert!(mgr
+                .check_access_permission(DID::new("bns", "bob"), None, Some(owner.clone()))
+                .await
+                .is_err());
+            assert_eq!(
+                stored_contact_payloads(&mgr, &owner).await,
+                vec![payload.to_string()]
+            );
         }
-        let bob = mgr
-            .get_contact(DID::new("bns", "bob"), Some(owner.clone()))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stored_current_contact_with_defaults_loads() {
+        let (mgr, _tmp) = new_test_mgr().await;
+        let owner = DID::new("bns", "alice");
+        sqlx::query("INSERT INTO contacts (owner_key, did, payload) VALUES (?, ?, ?)")
+            .bind(owner.to_string())
+            .bind("did:bns:eve")
+            .bind(
+                json!({"did":"did:bns:eve","name":"Eve","source":"manual_create","is_verified":true,
+                    "access_level":"allow","created_at":1,"updated_at":1})
+                .to_string(),
+            )
+            .execute(mgr.pool())
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(bob.access_level, AccessGroupLevel::Allow);
-        assert_eq!(bob.friend_state, FriendState::Friend);
-        assert_eq!(bob.tags, vec!["zone_user".to_string()]);
         let eve = mgr
             .get_contact(DID::new("bns", "eve"), Some(owner))
             .await
@@ -3026,7 +3018,7 @@ mod tests {
             .unwrap();
         assert_eq!(eve.access_level, AccessGroupLevel::Allow);
         assert_eq!(eve.friend_state, FriendState::None);
-        assert_eq!(eve.tags, vec!["hiking".to_string()]);
+        assert!(eve.tags.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

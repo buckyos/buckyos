@@ -97,7 +97,6 @@ import {
   clamp,
   invalidatePositions,
   layoutStorageKey,
-  migrateToSlotModel,
   readJson,
   readWindowAppearancePreferences,
   refreshSlotIndexes,
@@ -639,11 +638,8 @@ export class DesktopUIStore {
       const stored = scenario === 'normal' ? readJson<LayoutState>(layoutStorageKey(formFactor)) : null
       let layoutState = this.layoutFromFolder(apps, formFactor, stored, stored?.deadZone ?? payload.layout.deadZone)
 
-      // Fill slotIndex / seq for items that only carry x/y
-      const { gridCols, gridRows } = this.snapshot.runtime
-      layoutState = migrateToSlotModel(layoutState, gridCols, gridRows)
-
       // Validate positions against current grid (init-time reflow)
+      const { gridCols, gridRows } = this.snapshot.runtime
       layoutState = invalidatePositions(layoutState, gridCols, gridRows)
 
       this.update({
@@ -706,7 +702,6 @@ export class DesktopUIStore {
       const stored = readJson<LayoutState>(layoutStorageKey(formFactor))
       let layoutState = this.layoutFromFolder(apps, formFactor, stored, stored?.deadZone ?? payload.layout.deadZone)
       const { gridCols, gridRows } = this.snapshot.runtime
-      layoutState = migrateToSlotModel(layoutState, gridCols, gridRows)
       layoutState = invalidatePositions(layoutState, gridCols, gridRows)
 
       this.update({
@@ -773,6 +768,8 @@ export class DesktopUIStore {
       formFactor,
       deadZone,
       positions,
+      cols: this.snapshot.runtime.gridCols,
+      rows: this.snapshot.runtime.gridRows,
     })
   }
 
@@ -783,7 +780,6 @@ export class DesktopUIStore {
     const positions = positionsOverride === undefined ? (resolvedLayout ?? layoutState) : positionsOverride
     const { gridCols, gridRows } = this.snapshot.runtime
     let next = this.layoutFromFolder(apps, formFactor, positions, layoutState.deadZone)
-    next = migrateToSlotModel(next, gridCols, gridRows)
     next = invalidatePositions(next, gridCols, gridRows)
     if (JSON.stringify(next.pages) === JSON.stringify(layoutState.pages)) return
     this.update({ layoutState: next })
@@ -923,9 +919,6 @@ export class DesktopUIStore {
 
     const before = layoutState
     layoutState = invalidatePositions(layoutState, cols, rows)
-
-    // Migrate legacy layouts to slot model
-    layoutState = migrateToSlotModel(layoutState, cols, rows)
 
     // Slot indexes are grid-relative; keep them in step with the new grid.
     layoutState = refreshSlotIndexes(layoutState, cols, rows)

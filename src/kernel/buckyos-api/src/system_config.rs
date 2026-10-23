@@ -365,24 +365,18 @@ impl ZoneConfig {
     }
 }
 
-fn select_zone_document_hostname(configured_hostname: &str, zone_id: &DID) -> String {
-    let configured_hostname = configured_hostname.trim().trim_end_matches('.');
-    if configured_hostname.is_empty() {
-        zone_id.to_host_name()
-    } else {
-        configured_hostname.to_string()
-    }
-}
-
 /// Return the hostname published by the ZoneDocument.
 ///
 /// A BNS DID's `to_host_name()` result depends on the process-local web3
 /// bridge configuration.  The document's explicit hostname is the authority
 /// for routing, TLS and ACME; converting the DID again can silently move a
-/// test/custom-SN zone onto a different bridge domain.  The fallback keeps
-/// compatibility with legacy documents that did not publish a hostname.
+/// test/custom-SN zone onto a different bridge domain.
 pub fn zone_document_hostname(zone_document: &ZoneDocument) -> String {
-    select_zone_document_hostname(&zone_document.hostname, &zone_document.id)
+    zone_document
+        .hostname
+        .trim()
+        .trim_end_matches('.')
+        .to_string()
 }
 
 #[derive(Error, Debug)]
@@ -901,18 +895,26 @@ mod tests {
     }
 
     #[test]
-    fn zone_document_hostname_prefers_the_published_hostname() {
-        let bns_zone = DID::new("bns", "issue39e2e");
+    fn zone_document_hostname_uses_only_the_published_hostname() {
+        let public_key = serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }))
+        .unwrap();
+        let mut document = ZoneDocument::new(
+            DID::new("bns", "issue39e2e"),
+            DID::new("bns", "alice"),
+            public_key,
+        );
+        document.hostname = "issue39e2e.web3.devtests.org.".to_string();
         assert_eq!(
-            select_zone_document_hostname("issue39e2e.web3.devtests.org.", &bns_zone),
+            zone_document_hostname(&document),
             "issue39e2e.web3.devtests.org"
         );
 
-        let legacy_web_zone = DID::new("web", "legacy.example");
-        assert_eq!(
-            select_zone_document_hostname("", &legacy_web_zone),
-            "legacy.example"
-        );
+        document.hostname = String::new();
+        assert_eq!(zone_document_hostname(&document), "");
     }
 
     #[test]

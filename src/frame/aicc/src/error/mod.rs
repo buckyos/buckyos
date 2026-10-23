@@ -442,6 +442,8 @@ pub(crate) enum StorageError {
     Database(#[from] sqlx::Error),
     #[error("invalid storage record: {0}")]
     InvalidRecord(String),
+    #[error("unsupported AICC storage schema: {0}")]
+    UnsupportedSchema(String),
     #[error("invalid cursor")]
     InvalidCursor,
     #[error("json error: {0}")]

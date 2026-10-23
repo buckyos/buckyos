@@ -42,7 +42,7 @@
 
 根据当前实现（`doc/arch/02_boot_and_activation.md` 对代码的归纳），激活阶段会写入这些关键文件：
 
-- `node_private_key.pem`：本设备 Ed25519 私钥（`src/kernel/node_daemon/src/active_server.rs`）
+- `security/<device host>/authentication.private.pem`：本设备 Ed25519 私钥（`src/kernel/buckyos-api/src/device_identity.rs`）
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（`src/kernel/node_daemon/src/active_server.rs`）
 - `security/start_config.json`：后续 boot.template 渲染所需参数及启动凭据；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）
 - `node_device_config.json`：DeviceConfig 的 JSON 形式，供启动阶段读取（`src/kernel/node_daemon/src/active_server.rs`）

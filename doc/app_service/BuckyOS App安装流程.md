@@ -68,7 +68,7 @@ PKG 是 Content Network 中的一种 NamedObject。它遵循与所有内容（�
 | **包标识** | `PackageId` | `{ name, version_exp?, objid? }`；格式：`pkg_name`、`pkg_name#version`、`pkg_name#version#objid` |
 | **meta_obj_id** | `ObjId` | `PackageMeta.gen_obj_id()` 得到的对象 ID，对应 content_id 的元数据层面标识 |
 | **包环境** | `PackageEnv` | `{ work_dir, config, lock_db }`，管理安装目录、索引与加载 |
-| **环境配置** | `PackageEnvConfig` | `prefix`、`enable_link`、`enable_strict_mode`、`parent`、`named_store_config_path` 等 |
+| **环境配置** | `PackageEnvConfig` | `prefix`、`enable_link`、`enable_meta_db`、`parent`、`named_store_config_path` 等 |
 | **加载结果** | `MediaInfo` | `{ pkg_id, full_path, media_type }`，`load()` 返回的包物理路径信息 |
 | **元数据索引** | `MetaIndexDb` | SQLite：`pkg_metas`（metaobjid, pkg_meta, author）、`pkg_versions`（pkg_name, version, metaobjid, tag） |
 

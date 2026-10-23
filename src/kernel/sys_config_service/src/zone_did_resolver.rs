@@ -196,8 +196,8 @@ struct PublishedAnswer {
 // 一次解析的回答，与文件头的状态码纪律一一对应。
 enum ZoneAnswer {
     Published(PublishedAnswer),
-    // legacy 别名 `self` 专用：裸 ZoneDocument JSON（websdk 等旧消费者读顶层
-    // hostname/id），resolve_did 客户端不会用非 DID 入参查询
+    // 别名 `self` 专用：裸 ZoneDocument JSON（websdk 浏览器端在任意 zone 子域名上
+    // 读顶层 hostname 发现 zone host），resolve_did 客户端不会用非 DID 入参查询
     Bare(Value),
     Missing(DidDocType),
     NoOpinion(String),
@@ -1673,8 +1673,6 @@ mod tests {
     #[test]
     fn answer_status_codes_follow_contract() {
         // JWT 文档：进 DID Resolution Result 信封（didDocument 为 JWT 字符串）。
-        // 旧的裸 JWT 兼容形态已随 name-client（buckyos / cyfs-gateway 均已
-        // 升级到含 ZoneResolverClient 的版本）移除。
         let active_jwt = ZoneDidResolver::active(
             EncodedDocument::Jwt("a.b.c".to_string()),
             &DidDocType::Device,

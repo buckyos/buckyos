@@ -169,8 +169,6 @@ def _detect_windows_root_candidates() -> list[str]:
         ("HKEY_CURRENT_USER", WINDOWS_APP_KEY, "InstallDir"),
         ("HKEY_CURRENT_USER", WINDOWS_APP_KEY, "BuckyOSUserDir"),
         ("HKEY_CURRENT_USER", WINDOWS_APP_KEY, "InstDir_buckyos"),
-        ("HKEY_LOCAL_MACHINE", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "BUCKYOS_ROOT"),
-        ("HKEY_LOCAL_MACHINE", WINDOWS_APP_KEY, "BuckyOSServiceDir"),
     ):
         value = _read_windows_reg_value(root_key, subkey, value_name)
         if value:
@@ -265,8 +263,6 @@ def _delete_windows_reg_value(
     subkey: str,
     value_name: str,
     results: list[ActionResult],
-    *,
-    only_if_matches: str | None = None,
 ) -> None:
     winreg = _import_winreg()
     if winreg is None:
@@ -285,11 +281,6 @@ def _delete_windows_reg_value(
     target = f"{root_key}\\{subkey}\\{value_name}"
     try:
         with winreg.OpenKey(hive, subkey, 0, access) as key:
-            value, _ = winreg.QueryValueEx(key, value_name)
-            value_text = value.strip() if isinstance(value, str) else str(value)
-            if only_if_matches and only_if_matches not in value_text:
-                _append_result(results, "registry", target, "skipped", f"value kept: {value_text}")
-                return
             winreg.DeleteValue(key, value_name)
             _append_result(results, "registry", target, "ok", "deleted")
     except FileNotFoundError:
@@ -368,18 +359,9 @@ def _cleanup_windows_platform(root: Path, results: list[ActionResult]) -> None:
     _delete_windows_reg_value("HKEY_CURRENT_USER", WINDOWS_RUN_KEY, "BuckyOSDaemon", results)
     _kill_process_windows(results)
 
-    root_text = str(root)
     _delete_windows_reg_value("HKEY_CURRENT_USER", "Environment", "BUCKYOS_ROOT", results)
-    _delete_windows_reg_value(
-        "HKEY_LOCAL_MACHINE",
-        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-        "BUCKYOS_ROOT",
-        results,
-        only_if_matches=root_text,
-    )
     _delete_windows_reg_key("HKEY_CURRENT_USER", WINDOWS_UNINSTALL_KEY, results)
     _delete_windows_reg_key("HKEY_CURRENT_USER", WINDOWS_APP_KEY, results)
-    _delete_windows_reg_key("HKEY_LOCAL_MACHINE", WINDOWS_APP_KEY, results)
     _broadcast_windows_environment_change(results)
 
 

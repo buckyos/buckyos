@@ -1149,40 +1149,65 @@ fn reads_do_not_take_the_writer_lock() {
     FileExt::unlock(&lock).unwrap();
 }
 
+fn root_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                out.push((path.clone(), fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 #[test]
-fn schema_rules_and_explicit_migration() {
+fn schema_rules() {
     let t = T::new();
-    migrate::write_legacy_root(&t.root).unwrap();
+    let meta_dir = t.root.join(META_DIR);
+    fs::create_dir_all(&meta_dir).unwrap();
+    fs::write(
+        meta_dir.join(META_JSON),
+        serde_json::to_vec(&json!({"schema_version": "2.10", "primary_language": "en"})).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        meta_dir.join(OCCASIONS_LOG_FILE),
+        b"{\"schema_version\":\"2.10\"}\n",
+    )
+    .unwrap();
+    let before = root_files(&t.root);
     assert!(matches!(
         AgentMemory::open(t.cfg()),
-        Err(AgentMemoryError::NeedsMigration(_))
+        Err(AgentMemoryError::Unsupported(_))
     ));
     assert!(matches!(
         AgentMemory::open_read(t.cfg()),
-        Err(AgentMemoryError::NeedsMigration(_))
+        Err(AgentMemoryError::Unsupported(_))
     ));
-    let report = AgentMemory::migrate(t.cfg()).unwrap();
-    assert_eq!(report.from, "2.10");
-    assert_eq!(report.occasions, 2);
-    assert!(
-        report.notes.iter().any(|n| n.contains("relationship")),
-        "{:?}",
-        report.notes
-    );
-    assert!(
-        report.notes.iter().any(|n| n.contains("notebook")),
-        "{:?}",
-        report.notes
-    );
-    let m = t.mem();
-    assert_eq!(m.get("/user/style").unwrap(), "concise");
-    assert_eq!(
-        m.view().unwrap().object("obj_user").unwrap().kind,
-        ObjectKind::User
-    );
-    assert!(t.root.join(".meta/legacy-2.10/occasions.jsonl").exists());
-    assert!(m.verify(false).unwrap().is_clean());
+    assert_eq!(root_files(&t.root), before);
+
+    // A commit log without meta.json is not a fresh root.
+    fs::remove_file(meta_dir.join(META_JSON)).unwrap();
+    let before = root_files(&t.root);
+    assert!(matches!(
+        AgentMemory::open(t.cfg()),
+        Err(AgentMemoryError::Unsupported(_))
+    ));
+    assert!(matches!(
+        AgentMemory::open_read(t.cfg()),
+        Err(AgentMemoryError::Unsupported(_))
+    ));
+    assert_eq!(root_files(&t.root), before);
+
     // A newer minor mounts read-only.
+    let t = T::new();
+    t.mem().set("/user/style", "concise", "r").unwrap();
     let meta_path = t.root.join(".meta/meta.json");
     let mut meta: Value = serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
     meta["schema_version"] = json!("3.9");
@@ -1323,22 +1348,4 @@ fn replay_tolerates_the_compaction_window() {
         AgentMemory::open_read(t.cfg()).unwrap().view(),
         Err(AgentMemoryError::Corrupted(_))
     ));
-}
-
-#[test]
-fn migration_resumes_after_a_crash() {
-    let t = T::new();
-    migrate::write_legacy_root(&t.root).unwrap();
-    AgentMemory::migrate(t.cfg()).unwrap();
-    // Crash before the new meta landed: the old meta is back in place.
-    fs::copy(
-        t.root.join(".meta/legacy-2.10/meta.json"),
-        t.root.join(".meta/meta.json"),
-    )
-    .unwrap();
-    let again = AgentMemory::migrate(t.cfg()).unwrap();
-    assert_eq!(again.occasions, 2);
-    let m = t.mem();
-    assert_eq!(m.get("/user/style").unwrap(), "concise");
-    assert!(m.view().unwrap().object("obj_user").is_some());
 }

@@ -157,8 +157,6 @@ Description：把已交给 Provider 的内容映射到该 ProviderInstance 与�
 - `content_digest` 键标识**内容本身**。同一份字节换文件名、换 MIME 仍是同一行；代价是先读完内容才能计算摘要。
 - `obj_id` 键标识**对象身份**。它随 `ResourceRef::NamedObject` 免费到手，命中过程不需要读取任何字节；代价是对象 ID 把 `name` 与 attributes 一起算进哈希，同一份字节换个名字就是另一个对象 ID。
 
-> 本表替换了 `aicc_provider_artifact_id`（content_digest 键）与 `aicc_provider_artifact_object`（obj_id 键）：两张表逐列同构，仅首列不同，读写、过期与删除路径全部重复，且都缺 tenant 维度。现在只声明新表名，不再访问旧表名；旧表不迁移、不 `DROP`，就地废弃（内容是可重建的缓存）。表集不参与版本化——`SCHEMA` 由幂等的 `CREATE ... IF NOT EXISTS` 组成并在每次打开时重新应用，因此全新 RDB 与既有 RDB 都会得到本表。
-
 | Column | Type | Nullable | Description |
 |---|---|---:|---|
 | `content_digest` | TEXT | NO | `sha256:<hex>` 内容摘要；obj_id 键的行此处为空串 |
@@ -199,9 +197,9 @@ Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_a
 
 ## 5. Schema Version
 
-本文表集始于 beta 2.2 breaking change 后的初始契约。`aicc_schema_meta.schema_version` 当前为 `2`：`1` 为初始表集，`2` 增加 route trace 过滤列。
+`aicc_schema_meta.schema_version` 当前为 `3`，对应 `storage/mod.rs` 的 `SCHEMA` 与 `storage/quota.rs` 的 `QUOTA_SCHEMA` 组成的完整表集（含 route trace 过滤列 `fallback_applied` / `warning_count`、usage 归属列 `operator_id` / `attribution_json` 和 quota 表）。
 
-**表集本身不参与版本化。** `SCHEMA` 完全由幂等的 `CREATE ... IF NOT EXISTS` 组成，并在每次打开时重新应用，因此新增或改名的表对全新 RDB 与既有 RDB 同时生效，不需要为此新增 migration；`MIGRATIONS` 只保留无法表达为幂等表定义的既有行改写（当前只有 `2` 的 route trace 过滤列）。表名变更不会让既有 RDB 失败：被替换掉的旧表就地废弃、不再访问，也不 `DROP`。`1` 之前的旧 AICC RDB 不提供升级路径，直接清理后由 `SCHEMA` 重建完整表结构。`finance_snapshot_json` 仍是权威数据，普通列是写入时生成且可直接信任的查询投影，读取时不反向解析 JSON，也不做双份校验。
+打开时只接受当前格式：没有任何 `aicc_*` 表的空 RDB 在一个事务内建齐完整表集并写入版本 `3`；已有 RDB 必须记录版本 `3`，否则打开失败。旧版本、未来版本，以及存在 `aicc_*` 表却缺少版本记录的 RDB 都报 unsupported schema，不补列、不回填、不改写版本、不删表。Beta 2.2 之前的开发期 RDB 不提供升级路径，需要重置时使用明确的全新安装。`finance_snapshot_json` 仍是权威数据，普通列是写入时生成且可直接信任的查询投影，读取时不反向解析 JSON，也不做双份校验。
 
 `usage.query` 的时间、身份、模型、Provider、method 等过滤条件、事件游标和页大小均进入 SQL；summary、group 和 time bucket 由数据库基于 typed projection 聚合，只将聚合行和请求页返回进程，不再先加载全部命中事件。
 
@@ -218,10 +216,10 @@ Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_a
 | `aicc_session_route_history` | No-compat；可丢弃时仅影响软偏好，不影响硬约束正确性 |
 | `aicc_artifact_scope` | No-compat；不得从对象内容推测 tenant 重建 |
 | `aicc_artifact_url_source` | No-compat；不得根据 URL host 猜测 Provider 或 owner 重建 |
-| `aicc_provider_artifact` | No-compat；纯缓存，清空只损失加速；只有再次获得 Provider 明确返回的 ID 后才能重建。本表直接以新表名进入 `SCHEMA` 替换旧的两张同构表，旧表不迁移、不 `DROP`，就地废弃且不再访问，无需回填 |
+| `aicc_provider_artifact` | No-compat；纯缓存，清空只损失加速；只有再次获得 Provider 明确返回的 ID 后才能重建 |
 | `aicc_audit_event` | No-compat；不可伪造重建 |
 
-数据库 migration 失败时必须 error-and-stop，不得带着部分新 schema 继续接受请求。
+schema 版本或结构不受支持时必须 error-and-stop，不得带着部分新 schema 继续接受请求。
 
 ## 7. Extensibility Rules
 

@@ -17,6 +17,7 @@
  */
 import type { DesktopFolderEntry, DesktopSeedItem } from '../api/desktop_items'
 import { desktopCatalogIdForLogicalApp } from '../app/backend-apps'
+import { coordToSlot } from './layout'
 import type {
   AppDefinition,
   DeadZone,
@@ -265,6 +266,9 @@ export interface BuildDesktopLayoutInput {
   deadZone: DeadZone
   /** Positions this device saved (or shows now); null on a device that has saved nothing. */
   positions: LayoutState | null
+  /** The current grid, for the slots of the default arrangement. */
+  cols: number
+  rows: number
 }
 
 function itemForEntry(entry: DesktopEntry, input: BuildDesktopLayoutInput): LayoutItem | null {
@@ -334,6 +338,7 @@ export function buildDesktopLayout(input: BuildDesktopLayoutInput): LayoutState 
         ...(item.type === 'widget' && slot.w && slot.h ? { w: slot.w, h: slot.h } : {}),
         x: slot.x,
         y: slot.y,
+        slotIndex: coordToSlot(slot.x, slot.y, input.cols, input.rows, formFactor === 'mobile' ? 'row-major' : 'col-major'),
         preferredPage: slot.page,
         placementType: 'auto',
         seq: order,

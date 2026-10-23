@@ -1141,3 +1141,133 @@ async fn pushes_present_the_lease_delivery_token() {
         assert_eq!(token.as_deref(), Some(attached.delivery_token.as_str()));
     }
 }
+
+async fn dispatch_db_pool(path: &std::path::Path) -> sqlx::AnyPool {
+    sqlx::any::install_default_drivers();
+    sqlx::any::AnyPoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite://{}?mode=rwc", path.to_str().unwrap()))
+        .await
+        .unwrap()
+}
+
+async fn open_dispatch_db(path: &std::path::Path) -> std::result::Result<DispatchDb, String> {
+    DispatchDb::open(
+        &format!("sqlite://{}?mode=rwc", path.to_str().unwrap()),
+        RdbBackend::Sqlite,
+        None,
+    )
+    .await
+}
+
+async fn single_text(path: &std::path::Path, sql: &str) -> Option<String> {
+    use sqlx::Row;
+    let pool = dispatch_db_pool(path).await;
+    let value = sqlx::query(sql)
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+        .map(|row| row.try_get::<String, _>(0).unwrap());
+    pool.close().await;
+    value
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_db_reopen_keeps_current_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("dispatch.db");
+    drop(open_dispatch_db(&path).await.unwrap());
+    let pool = dispatch_db_pool(&path).await;
+    sqlx::query(
+        "INSERT INTO operation_route (schema_id, default_target_id, revision, enabled, updated_at)
+         VALUES ('schema-a', 'target-a', 1, 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    drop(open_dispatch_db(&path).await.unwrap());
+    assert_eq!(
+        single_text(
+            &path,
+            "SELECT default_target_id FROM operation_route WHERE schema_id = 'schema-a'"
+        )
+        .await
+        .as_deref(),
+        Some("target-a")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_db_rejects_old_layout_without_dropping_tables() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("dispatch.db");
+    let pool = dispatch_db_pool(&path).await;
+    for sql in [
+        "CREATE TABLE dispatch_record (dispatch_id TEXT PRIMARY KEY, operation TEXT NOT NULL)",
+        "CREATE TABLE dispatch_event (event_id TEXT PRIMARY KEY, dispatch_id TEXT NOT NULL)",
+        "INSERT INTO dispatch_record VALUES ('legacy-dispatch', 'run')",
+        "INSERT INTO dispatch_event VALUES ('legacy-event', 'legacy-dispatch')",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let err = open_dispatch_db(&path)
+        .await
+        .err()
+        .expect("old dispatcher layout must be rejected");
+    assert!(err.contains("does not match schema v4"), "{err}");
+    assert_eq!(
+        single_text(
+            &path,
+            "SELECT operation FROM dispatch_record WHERE dispatch_id = 'legacy-dispatch'"
+        )
+        .await
+        .as_deref(),
+        Some("run")
+    );
+    assert_eq!(
+        single_text(&path, "SELECT dispatch_id FROM dispatch_event")
+            .await
+            .as_deref(),
+        Some("legacy-dispatch")
+    );
+    assert_eq!(
+        single_text(
+            &path,
+            "SELECT name FROM sqlite_master WHERE name = 'delivery_attempt'"
+        )
+        .await,
+        None
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_db_rejects_store_with_changed_columns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("dispatch.db");
+    drop(open_dispatch_db(&path).await.unwrap());
+    let pool = dispatch_db_pool(&path).await;
+    for sql in [
+        "DROP TABLE dispatch_cursor",
+        "CREATE TABLE dispatch_cursor (target_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL)",
+        "INSERT INTO dispatch_cursor VALUES ('target-a', 7)",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let err = open_dispatch_db(&path)
+        .await
+        .err()
+        .expect("store with changed columns must be rejected");
+    assert!(err.contains("dispatch_cursor"), "{err}");
+    assert_eq!(
+        single_text(&path, "SELECT target_id FROM dispatch_cursor")
+            .await
+            .as_deref(),
+        Some("target-a")
+    );
+}

@@ -973,11 +973,10 @@ impl<T: MsgQueueHandler> RPCHandler for MsgQueueServerHandler<T> {
 /// 这是一个纯函数，不涉及 IO。
 /// 规则:
 /// - 绝对路径对象 ID（`/xxx/...`）保持原样，作为最终 QueueUrn。
-/// - 兼容旧式 URN（`appid::owner::name`）透传，避免二次封装。
-/// - 其他名称按旧规则拼装为 `appid::owner::name`。
+/// - 其他名称拼装为 `appid::owner::name`。
 pub fn calc_queue_urn(appid: &str, app_owner: &str, name: &str) -> String {
     let normalized = name.trim();
-    if normalized.starts_with('/') || normalized.contains("::") {
+    if normalized.starts_with('/') {
         return normalized.to_string();
     }
     format!("{}::{}::{}", appid, app_owner, normalized)
@@ -1010,11 +1009,10 @@ mod tests {
     }
 
     #[test]
-    fn calc_queue_urn_keeps_legacy_urn() {
-        let legacy = "opendan::jarvis.test.buckyos.io::legacy_queue";
+    fn calc_queue_urn_wraps_names_containing_separators() {
         assert_eq!(
-            calc_queue_urn("ignored", "ignored", legacy),
-            legacy.to_string()
+            calc_queue_urn("app", "owner", "opendan::jarvis.test.buckyos.io::queue"),
+            "app::owner::opendan::jarvis.test.buckyos.io::queue"
         );
     }
 

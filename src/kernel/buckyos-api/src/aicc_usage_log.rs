@@ -1,13 +1,13 @@
 /*!
  * AICC usage-log rdb instance declaration, data types, and query DSL.
  *
- * The actual sqlx-backed store and its schema migrations live inside the aicc
- * service itself (see `src/frame/aicc/src/storage/mod.rs`). This module only
+ * The actual sqlx-backed store and its schema live inside the aicc service
+ * itself (see `src/frame/aicc/src/storage/mod.rs`). This module only
  * carries:
  *
  * - the rdb instance id + partitions that the scheduler drops into
  *   `services/aicc/spec.spec_config.rdb_instances` (no DDL: AICC creates and
- *   migrates its own tables)
+ *   checks its own tables)
  * - the row struct (`AiccUsageEvent`) shared between the writer and reader
  * - the query DSL (`QueryUsageRequest` / `QueryUsageResponse`) so callers do
  *   not have to hand-roll SQL to read the log.
@@ -29,7 +29,7 @@ pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
 /// Default rdb-instance config for the aicc usage-log. The scheduler drops
 /// this into `spec_config.rdb_instances` when bootstrapping the service.
-/// The schema map is intentionally empty: AICC applies its own migrations
+/// The schema map is intentionally empty: AICC applies its own schema
 /// (`src/frame/aicc/src/storage/mod.rs`) and never reads `instance.schema`.
 pub fn aicc_usage_log_default_rdb_instance_config() -> RdbInstanceConfig {
     RdbInstanceConfig {

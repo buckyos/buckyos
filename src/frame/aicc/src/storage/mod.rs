@@ -31,43 +31,8 @@ const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
-const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
-/// Versioned steps that can only be expressed as row rewrites.
-///
-/// The table set itself is deliberately *not* versioned: `SCHEMA` is re-applied
-/// on every open (see `migrate`), so a table that has been added or renamed is
-/// created for both new and already-provisioned databases without a migration.
-/// A table that a newer `SCHEMA` no longer declares is left behind unused rather
-/// than dropped — it holds nothing a Provider round trip cannot rebuild, and
-/// leaving it costs nothing.
-const MIGRATIONS: &[(i64, &str)] = &[
-    (2, ROUTE_TRACE_FILTER_COLUMNS),
-    (3, USAGE_ATTRIBUTION_COLUMNS),
-];
-
-const USAGE_ATTRIBUTION_COLUMNS: &str = r#"
-ALTER TABLE aicc_usage_event ADD COLUMN operator_id TEXT;
-ALTER TABLE aicc_usage_event ADD COLUMN attribution_json TEXT;
-"#;
-
-const ROUTE_TRACE_FILTER_COLUMNS: &str = r#"
-ALTER TABLE aicc_route_trace_event ADD COLUMN fallback_applied INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE aicc_route_trace_event ADD COLUMN warning_count BIGINT NOT NULL DEFAULT 0;
-UPDATE aicc_route_trace_event SET fallback_applied=1
- WHERE route_trace_json LIKE '%"fallback_applied":true%';
-UPDATE aicc_route_trace_event SET warning_count=1
- WHERE route_trace_json LIKE '%"warnings":[%'
-   AND route_trace_json NOT LIKE '%"warnings":[]%';
-CREATE INDEX idx_aicc_route_trace_event_fallback_time ON aicc_route_trace_event(tenant_id, fallback_applied, created_at_ms);
-CREATE INDEX idx_aicc_route_trace_event_warning_time ON aicc_route_trace_event(tenant_id, warning_count, created_at_ms);
-"#;
-
-/// The current table set, applied in full on every open.
-///
-/// Every statement is additive and idempotent (`CREATE ... IF NOT EXISTS`), so
-/// applying it to an existing database creates only what is missing. That is
-/// what carries a renamed table to an already-provisioned database without a
-/// versioned migration, and why no statement here drops anything.
+/// The complete current table set, applied together with `quota::QUOTA_SCHEMA`
+/// only when the database holds no AICC table yet.
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS aicc_schema_meta (
  schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
@@ -86,7 +51,7 @@ CREATE TABLE IF NOT EXISTS aicc_usage_event (
  provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
  request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT,
  finance_amount REAL, finance_currency TEXT, finance_valid INTEGER NOT NULL DEFAULT 0,
- created_at_ms BIGINT NOT NULL);
+ created_at_ms BIGINT NOT NULL, operator_id TEXT, attribution_json TEXT);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);
@@ -108,10 +73,13 @@ CREATE TABLE IF NOT EXISTS aicc_route_trace_event (
  trace_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, task_id TEXT NOT NULL,
  request_id TEXT, route_id TEXT, provider_trace_id TEXT, request_model TEXT NOT NULL,
  selected_exact_model TEXT, provider_instance_name TEXT, api_type TEXT NOT NULL,
- scheduler_profile TEXT, outcome TEXT, route_trace_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+ scheduler_profile TEXT, outcome TEXT, route_trace_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL,
+ fallback_applied INTEGER NOT NULL DEFAULT 0, warning_count BIGINT NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_time ON aicc_route_trace_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_tenant_time ON aicc_route_trace_event(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_task_time ON aicc_route_trace_event(task_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_fallback_time ON aicc_route_trace_event(tenant_id, fallback_applied, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_warning_time ON aicc_route_trace_event(tenant_id, warning_count, created_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_session_route_history (
  tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
  session_id TEXT NOT NULL, selected_exact_model TEXT NOT NULL, updated_at_ms BIGINT NOT NULL,
@@ -390,73 +358,66 @@ impl AiccStorage {
             .connect(connection)
             .await?;
         let storage = Self { pool, backend };
-        storage.migrate().await?;
+        storage.init_schema().await?;
         Ok(storage)
     }
 
-    async fn migrate(&self) -> StorageResult<()> {
-        self.pool.execute(SCHEMA_META).await?;
-        let version: Option<i64> = sqlx::query_scalar(
-            "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-        let mut version = version.unwrap_or(0);
-        if version > STORAGE_SCHEMA_VERSION {
-            return Err(StorageError::InvalidRecord(format!(
-                "unsupported AICC storage schema version {version}; latest supported is {STORAGE_SCHEMA_VERSION}"
-            )));
-        }
-        // Apply the table set before the versioned steps. It is entirely
-        // idempotent, so this is what keeps an already-provisioned database
-        // current when a table is added or renamed: the missing table is created
-        // here and the one it replaced stays behind. It runs first so the
-        // versioned steps still see every table they expect.
-        self.apply_script(SCHEMA).await?;
-        self.apply_script(quota::QUOTA_SCHEMA).await?;
-        for (target, schema) in MIGRATIONS {
-            if *target <= version {
-                continue;
+    /// Creates the full current schema in an empty database; an existing one
+    /// must already record `STORAGE_SCHEMA_VERSION`.
+    async fn init_schema(&self) -> StorageResult<()> {
+        let tables_sql = match self.backend {
+            RdbBackend::Sqlite => {
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'aicc\\_%' ESCAPE '\\'"
             }
+            RdbBackend::Postgres => {
+                "SELECT table_name::text FROM information_schema.tables
+                 WHERE table_schema=current_schema() AND table_name LIKE 'aicc\\_%' ESCAPE '\\'"
+            }
+        };
+        let tables: Vec<String> = sqlx::query_scalar(tables_sql).fetch_all(&self.pool).await?;
+        if tables.is_empty() {
             let mut transaction = self.pool.begin().await?;
-            for statement in schema
-                .split(';')
+            for statement in [SCHEMA, quota::QUOTA_SCHEMA]
+                .into_iter()
+                .flat_map(|script| script.split(';'))
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
                 transaction.execute(statement).await?;
             }
-            let update = self.sql(
-                "INSERT INTO aicc_schema_meta (schema_key,schema_version,updated_at_ms)
-                 VALUES ('aicc',?,0) ON CONFLICT(schema_key) DO UPDATE SET schema_version=excluded.schema_version,updated_at_ms=excluded.updated_at_ms",
+            let insert = self.sql(
+                "INSERT INTO aicc_schema_meta (schema_key,schema_version,updated_at_ms) VALUES ('aicc',?,0)",
             );
-            sqlx::query(&update)
-                .bind(*target)
+            sqlx::query(&insert)
+                .bind(STORAGE_SCHEMA_VERSION)
                 .execute(&mut *transaction)
                 .await?;
             transaction.commit().await?;
-            version = *target;
-        }
-        if version != STORAGE_SCHEMA_VERSION {
-            return Err(StorageError::InvalidRecord(format!(
-                "incomplete AICC storage migration at version {version}"
-            )));
+        } else {
+            let version: Option<i64> = if tables.iter().any(|name| name == "aicc_schema_meta") {
+                sqlx::query_scalar(
+                    "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
+                )
+                .fetch_optional(&self.pool)
+                .await?
+            } else {
+                None
+            };
+            match version {
+                Some(STORAGE_SCHEMA_VERSION) => {}
+                Some(version) => {
+                    return Err(StorageError::UnsupportedSchema(format!(
+                        "schema version {version}; this build reads {STORAGE_SCHEMA_VERSION}"
+                    )))
+                }
+                None => {
+                    return Err(StorageError::UnsupportedSchema(format!(
+                        "tables {tables:?} exist without a schema version"
+                    )))
+                }
+            }
         }
         self.seed_default_visibility().await
-    }
-
-    /// Runs a semicolon-separated DDL script inside a single transaction.
-    async fn apply_script(&self, script: &str) -> StorageResult<()> {
-        let mut transaction = self.pool.begin().await?;
-        for statement in script
-            .split(';')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            transaction.execute(statement).await?;
-        }
-        transaction.commit().await?;
-        Ok(())
     }
 
     pub(crate) async fn open_from_service_spec() -> StorageResult<Self> {
@@ -2378,82 +2339,101 @@ mod tests {
         assert_eq!(version, STORAGE_SCHEMA_VERSION);
     }
 
-    #[tokio::test]
-    async fn storage_rejects_a_future_schema_version_before_business_migrations() {
-        let storage = db().await;
-        sqlx::query("UPDATE aicc_schema_meta SET schema_version=99 WHERE schema_key='aicc'")
-            .execute(&storage.pool)
+    async fn route_trace_ids(storage: &AiccStorage) -> Vec<String> {
+        sqlx::query_scalar("SELECT trace_id FROM aicc_route_trace_event ORDER BY trace_id")
+            .fetch_all(&storage.pool)
             .await
-            .unwrap();
-        let error = storage.migrate().await.unwrap_err();
-        assert!(error.to_string().contains("latest supported"));
+            .unwrap()
+    }
+
+    async fn insert_route_trace(storage: &AiccStorage, trace_id: &str) {
+        sqlx::query(
+            "INSERT INTO aicc_route_trace_event
+             (trace_id,tenant_id,task_id,request_model,api_type,route_trace_json,created_at_ms)
+             VALUES (?,'tenant-a','task-a','model-a','llm.chat','{}',1)",
+        )
+        .bind(trace_id)
+        .execute(&storage.pool)
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
-    async fn existing_database_gains_the_merged_table_and_keeps_the_obsolete_one() {
+    async fn storage_rejects_other_schema_versions_without_touching_rows() {
         let storage = db().await;
-        // Simulate a database provisioned by an older build: an obsolete
-        // single-key table is present, the recorded version is already current,
-        // and the merged table does not exist. No versioned step can run here,
-        // so the merged table can only appear because the table set is applied
-        // on every open.
-        sqlx::query(&format!(
-            "UPDATE aicc_schema_meta SET schema_version={STORAGE_SCHEMA_VERSION} WHERE schema_key='aicc'"
-        ))
-        .execute(&storage.pool)
-        .await
-        .unwrap();
-        sqlx::query("DROP TABLE aicc_provider_artifact")
+        insert_route_trace(&storage, "trace-kept").await;
+        for version in [STORAGE_SCHEMA_VERSION - 1, STORAGE_SCHEMA_VERSION + 1] {
+            sqlx::query("UPDATE aicc_schema_meta SET schema_version=? WHERE schema_key='aicc'")
+                .bind(version)
+                .execute(&storage.pool)
+                .await
+                .unwrap();
+            let error = storage.init_schema().await.unwrap_err();
+            assert!(
+                matches!(error, StorageError::UnsupportedSchema(_)),
+                "{error}"
+            );
+            assert_eq!(
+                route_trace_ids(&storage).await,
+                vec!["trace-kept".to_string()]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_non_empty_database_without_schema_version() {
+        let storage = db().await;
+        insert_route_trace(&storage, "trace-kept").await;
+        sqlx::query("DELETE FROM aicc_schema_meta")
             .execute(&storage.pool)
             .await
             .unwrap();
-        sqlx::query(
-            "CREATE TABLE aicc_provider_artifact_id (
-             content_digest TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
-             origin_provider TEXT NOT NULL, artifact_id TEXT NOT NULL,
-             expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
-             PRIMARY KEY (content_digest, provider_instance_name, origin_provider))",
-        )
-        .execute(&storage.pool)
-        .await
-        .unwrap();
-        storage.migrate().await.unwrap();
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type='table'
-               AND name LIKE 'aicc_provider_artifact%' ORDER BY name",
-        )
-        .fetch_all(&storage.pool)
-        .await
-        .unwrap();
-        // The merged table is created; the obsolete one is left untouched.
-        assert_eq!(
-            tables,
-            vec![
-                "aicc_provider_artifact".to_string(),
-                "aicc_provider_artifact_id".to_string()
-            ]
+        let error = storage.init_schema().await.unwrap_err();
+        assert!(
+            matches!(error, StorageError::UnsupportedSchema(_)),
+            "{error}"
         );
-        // The merged table is usable straight after it is created.
-        let key = ProviderArtifactKey::ObjectId(format!("cyfile:{}", "ab".repeat(32)));
-        storage
-            .remember_provider_artifact(&ProviderArtifactRecord {
-                key: key.clone(),
-                provider_instance_name: "aggregator-primary".into(),
-                origin_provider: "gemini".into(),
-                tenant_id: "tenant-a".into(),
-                artifact_id: "files/abc123".into(),
-                expires_at_ms: None,
-                created_at_ms: 10,
-            })
+
+        sqlx::query("DROP TABLE aicc_schema_meta")
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+        let error = storage.init_schema().await.unwrap_err();
+        assert!(
+            matches!(error, StorageError::UnsupportedSchema(_)),
+            "{error}"
+        );
+        assert_eq!(
+            route_trace_ids(&storage).await,
+            vec!["trace-kept".to_string()]
+        );
+        let meta: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='aicc_schema_meta'",
+        )
+        .fetch_optional(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(meta, None);
+    }
+
+    #[tokio::test]
+    async fn storage_reopens_current_database_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("aicc.db").to_str().unwrap()
+        );
+        let storage = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        insert_route_trace(&storage, "trace-kept").await;
+        storage.pool.close().await;
+        let storage = AiccStorage::open(&connection, RdbBackend::Sqlite)
             .await
             .unwrap();
         assert_eq!(
-            storage
-                .provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("files/abc123")
+            route_trace_ids(&storage).await,
+            vec!["trace-kept".to_string()]
         );
     }
 

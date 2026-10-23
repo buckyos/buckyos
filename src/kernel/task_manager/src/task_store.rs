@@ -192,91 +192,16 @@ impl TaskStore {
     async fn probe_physical_schema_version(
         connection: &str,
         backend: RdbBackend,
-    ) -> std::result::Result<Option<u64>, String> {
+    ) -> std::result::Result<Option<i64>, String> {
         ensure_any_drivers_installed();
         let pool = AnyPoolOptions::new()
             .max_connections(1)
             .connect(connection)
             .await
             .map_err(|err| format!("probe task-manager db at {}: {}", connection, err))?;
-        let result = async {
-            let has_meta = match backend {
-                RdbBackend::Sqlite => sqlx::query(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_store_meta'",
-                )
-                .fetch_optional(&pool)
-                .await,
-                RdbBackend::Postgres => sqlx::query(
-                    "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'task_store_meta'",
-                )
-                .fetch_optional(&pool)
-                .await,
-            }
-            .map_err(|err| format!("probe task_store_meta: {}", err))?
-            .is_some();
-            let metadata_version = if has_meta {
-                sqlx::query(
-                    "SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'",
-                )
-                .fetch_optional(&pool)
-                .await
-                .map_err(|err| format!("probe task store schema version: {}", err))?
-                .map(|row| row.try_get::<i64, _>("meta_value"))
-                .transpose()
-                .map_err(|err| format!("decode task store schema version: {}", err))?
-                .map(|version| version.max(0) as u64)
-            } else {
-                None
-            };
-
-            let has_task = match backend {
-                RdbBackend::Sqlite => sqlx::query(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task'",
-                )
-                .fetch_optional(&pool)
-                .await,
-                RdbBackend::Postgres => sqlx::query(
-                    "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'task'",
-                )
-                .fetch_optional(&pool)
-                .await,
-            }
-            .map_err(|err| format!("probe task table: {}", err))?
-            .is_some();
-            if !has_task {
-                return Ok(metadata_version);
-            }
-
-            let has_storage_domain = match backend {
-                RdbBackend::Sqlite => sqlx::query(
-                    "SELECT 1 FROM pragma_table_info('task') WHERE name = 'storage_domain'",
-                )
-                .fetch_optional(&pool)
-                .await,
-                RdbBackend::Postgres => sqlx::query(
-                    "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'task' AND column_name = 'storage_domain'",
-                )
-                .fetch_optional(&pool)
-                .await,
-            }
-            .map_err(|err| format!("probe task storage_domain column: {}", err))?
-            .is_some();
-            let layout_version = if has_storage_domain {
-                TASK_MANAGER_RDB_SCHEMA_VERSION
-            } else {
-                TASK_MANAGER_RDB_SCHEMA_VERSION - 1
-            };
-            if let Some(metadata_version) = metadata_version {
-                if metadata_version != layout_version {
-                    return Err(format!(
-                        "task store metadata schema version {} conflicts with layout version {}",
-                        metadata_version, layout_version
-                    ));
-                }
-            }
-            Ok(Some(metadata_version.unwrap_or(layout_version)))
-        }
-        .await;
+        let result = Self::read_schema_version(&pool, backend)
+            .await
+            .map_err(|err| format!("probe task store schema version: {}", err));
         pool.close().await;
         result
     }
@@ -317,6 +242,31 @@ impl TaskStore {
         .await
     }
 
+    /// `None` for a store without any task-manager table; a non-empty store
+    /// must carry its schema version in `task_store_meta`.
+    async fn read_schema_version(pool: &AnyPool, backend: RdbBackend) -> DbResult<Option<i64>> {
+        let existing = existing_tables(pool, backend, &TASK_STORE_TABLES).await?;
+        if existing.is_empty() {
+            return Ok(None);
+        }
+        let version = if existing.iter().any(|table| table == "task_store_meta") {
+            sqlx::query("SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'")
+                .fetch_optional(pool)
+                .await?
+                .map(|row| row.try_get::<i64, _>("meta_value"))
+                .transpose()?
+        } else {
+            None
+        };
+        match version {
+            Some(version) => Ok(Some(version)),
+            None => Err(sqlx::Error::Protocol(format!(
+                "task store has tables {:?} but no schema version",
+                existing
+            ))),
+        }
+    }
+
     async fn apply_schema(&self, override_ddl: Option<&str>) -> DbResult<()> {
         let ddl: &str =
             override_ddl
@@ -325,79 +275,32 @@ impl TaskStore {
                     RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
                     RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
                 });
-        for statement in split_sql_statements(ddl) {
-            self.pool.execute(statement.as_str()).await?;
-        }
-        // beta2.2 no-compat strategy (doc §15.7): a dev/DV database still on
-        // a pre-StorageDomain layout is dropped and rebuilt as v8.
-        self.rebuild_if_legacy_layout().await?;
-        self.ensure_schema_version().await?;
-        Ok(())
-    }
-
-    async fn ensure_schema_version(&self) -> DbResult<()> {
-        let sql = self
-            .render_sql("SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'");
-        let row = sqlx::query(&sql).fetch_optional(&self.pool).await?;
-        if let Some(row) = row {
-            let actual: i64 = row.try_get("meta_value")?;
-            if actual != TASK_MANAGER_RDB_SCHEMA_VERSION as i64 {
+        match Self::read_schema_version(&self.pool, self.backend).await? {
+            None => {
+                let mut tx = self.pool.begin().await?;
+                for statement in split_sql_statements(ddl) {
+                    (&mut *tx).execute(statement.as_str()).await?;
+                }
+                let sql = self.render_sql(
+                    "INSERT INTO task_store_meta (meta_key, meta_value) VALUES ('schema_version', ?)",
+                );
+                sqlx::query(&sql)
+                    .bind(TASK_MANAGER_RDB_SCHEMA_VERSION as i64)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+            }
+            Some(actual) if actual == TASK_MANAGER_RDB_SCHEMA_VERSION as i64 => {
+                for statement in split_sql_statements(ddl) {
+                    self.pool.execute(statement.as_str()).await?;
+                }
+            }
+            Some(actual) => {
                 return Err(sqlx::Error::Protocol(format!(
                     "{} store schema version {} does not match expected {}",
                     self.domain, actual, TASK_MANAGER_RDB_SCHEMA_VERSION
                 )));
             }
-            return Ok(());
-        }
-        let sql = self.render_sql(
-            "INSERT INTO task_store_meta (meta_key, meta_value) VALUES ('schema_version', ?)",
-        );
-        sqlx::query(&sql)
-            .bind(TASK_MANAGER_RDB_SCHEMA_VERSION as i64)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    async fn rebuild_if_legacy_layout(&self) -> DbResult<()> {
-        let legacy = match self.backend {
-            RdbBackend::Sqlite => {
-                sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = 'storage_domain'")
-                    .fetch_optional(&self.pool)
-                    .await?
-                    .is_none()
-            }
-            RdbBackend::Postgres => sqlx::query(
-                "SELECT 1 FROM information_schema.columns WHERE table_name = 'task' AND column_name = 'storage_domain'",
-            )
-            .fetch_optional(&self.pool)
-            .await?
-            .is_none(),
-        };
-        if !legacy {
-            return Ok(());
-        }
-        warn!(
-            "task_store: pre-v8 schema detected; rebuilding as TaskMgr 2.0 schema v8 (no-compat)"
-        );
-        for table in [
-            "task_note",
-            "task_event",
-            "task_acl_grant",
-            "task_assignee",
-            "task_schema",
-            "task",
-            "task_store_meta",
-        ] {
-            let sql = format!("DROP TABLE IF EXISTS {}", table);
-            self.pool.execute(sql.as_str()).await?;
-        }
-        let ddl = match self.backend {
-            RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
-            RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
-        };
-        for statement in split_sql_statements(ddl) {
-            self.pool.execute(statement.as_str()).await?;
         }
         Ok(())
     }
@@ -2526,6 +2429,61 @@ pub(crate) fn rewrite_placeholders_to_dollar(sql: &str) -> String {
         }
     }
     out
+}
+
+const TASK_STORE_TABLES: [&str; 7] = [
+    "task_store_meta",
+    "task",
+    "task_schema",
+    "task_assignee",
+    "task_acl_grant",
+    "task_event",
+    "task_note",
+];
+
+pub(crate) async fn existing_tables(
+    pool: &AnyPool,
+    backend: RdbBackend,
+    tables: &[&str],
+) -> DbResult<Vec<String>> {
+    let sql = match backend {
+        RdbBackend::Sqlite => "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        RdbBackend::Postgres => {
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
+        }
+    };
+    let mut found = Vec::new();
+    for table in tables {
+        if sqlx::query(sql)
+            .bind(*table)
+            .fetch_optional(pool)
+            .await?
+            .is_some()
+        {
+            found.push(table.to_string());
+        }
+    }
+    Ok(found)
+}
+
+pub(crate) async fn table_columns(
+    pool: &AnyPool,
+    backend: RdbBackend,
+    table: &str,
+) -> DbResult<Vec<String>> {
+    let sql = match backend {
+        RdbBackend::Sqlite => "SELECT name FROM pragma_table_info(?) ORDER BY name",
+        RdbBackend::Postgres => {
+            "SELECT column_name::text AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 ORDER BY name"
+        }
+    };
+    sqlx::query(sql)
+        .bind(table)
+        .fetch_all(pool)
+        .await?
+        .iter()
+        .map(|row| row.try_get::<String, _>("name"))
+        .collect()
 }
 
 pub(crate) fn split_sql_statements(ddl: &str) -> Vec<String> {

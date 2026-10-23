@@ -76,7 +76,7 @@ pub struct BuckyOSRuntime {
 
 代码关键点：
 - `fill_policy_by_load_config()`：读取 machine.json 类策略（如 `force_https`、web3 bridge）。（`src/kernel/buckyos-api/src/runtime.rs`）
-- `fill_by_load_config()`：按 runtime 类型读取 `node_identity.json` / `node_private_key.pem` / `user_config.json` / `user_private_key.pem` 等。（`src/kernel/buckyos-api/src/runtime.rs`）
+- `fill_by_load_config()`：按 runtime 类型读取 `node_identity.json`（`buckyos.node_identity.v2`）/ `security/<device host>/authentication.private.pem` / `user_config.json` / `user_private_key.pem` 等。（`src/kernel/buckyos-api/src/runtime.rs`）
 - `fill_by_env_var()`：为服务类 runtime（KernelService / AppService 等）从环境变量读取启动 token；未配置会直接报错。（`src/kernel/buckyos-api/src/runtime.rs`）
 - `init()` 本身不会注册全局 runtime，也不会启动 keep-alive 后台任务；只有 `set_buckyos_api_runtime()` 成功后，全局 runtime 才可被 `get_buckyos_api_runtime()` 访问。
 

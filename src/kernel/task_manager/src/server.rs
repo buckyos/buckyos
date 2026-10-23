@@ -3914,33 +3914,18 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert!(store.get_task(&system.task_id).await.unwrap().is_none());
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn partition_schema_version_mismatch_stops_open() {
-        let (service, temp_dir) = setup_service().await;
-        drop(service);
-        let user_db_path = temp_dir.path().join("user.db");
-        let system_db_path = temp_dir.path().join("system.db");
-        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
-        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
-        let pool = sqlx::any::AnyPoolOptions::new()
-            .connect(&system_conn)
-            .await
-            .unwrap();
-        sqlx::query("ALTER TABLE task RENAME TO task_v8")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE task_store_meta")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE task (task_id TEXT PRIMARY KEY)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-
-        let err = TaskStore::open_partitioned(
+    async fn open_test_partitions(
+        temp_dir: &tempfile::TempDir,
+    ) -> std::result::Result<TaskStore, String> {
+        let user_conn = format!(
+            "sqlite://{}?mode=rwc",
+            temp_dir.path().join("user.db").to_str().unwrap()
+        );
+        let system_conn = format!(
+            "sqlite://{}?mode=rwc",
+            temp_dir.path().join("system.db").to_str().unwrap()
+        );
+        TaskStore::open_partitioned(
             &user_conn,
             RdbBackend::Sqlite,
             None,
@@ -3949,9 +3934,117 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             None,
         )
         .await
-        .err()
-        .expect("mismatched System store version must fail startup");
+    }
+
+    async fn test_db_pool(temp_dir: &tempfile::TempDir, name: &str) -> sqlx::AnyPool {
+        let conn = format!(
+            "sqlite://{}?mode=rwc",
+            temp_dir.path().join(name).to_str().unwrap()
+        );
+        sqlx::any::AnyPoolOptions::new()
+            .max_connections(1)
+            .connect(&conn)
+            .await
+            .unwrap()
+    }
+
+    async fn task_ids_in(temp_dir: &tempfile::TempDir, name: &str) -> Vec<String> {
+        use sqlx::Row;
+        let pool = test_db_pool(temp_dir, name).await;
+        let ids = sqlx::query("SELECT task_id FROM task ORDER BY task_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.try_get::<String, _>("task_id").unwrap())
+            .collect();
+        pool.close().await;
+        ids
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn partition_schema_version_mismatch_stops_open() {
+        let (service, temp_dir) = setup_service().await;
+        drop(service);
+        let pool = test_db_pool(&temp_dir, "system.db").await;
+        sqlx::query("UPDATE task_store_meta SET meta_value = 7 WHERE meta_key = 'schema_version'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let err = open_test_partitions(&temp_dir)
+            .await
+            .err()
+            .expect("mismatched System store version must fail startup");
         assert!(err.contains("User=8, System=7"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn future_schema_version_stops_open_without_touching_tasks() {
+        let (service, temp_dir) = setup_service().await;
+        let task = service
+            .handle_create_task(
+                raw_create_req("durable", "domain-durable"),
+                user_ctx("alice", "app-a"),
+            )
+            .await
+            .unwrap();
+        drop(service);
+        for name in ["user.db", "system.db"] {
+            let pool = test_db_pool(&temp_dir, name).await;
+            sqlx::query(
+                "UPDATE task_store_meta SET meta_value = 9 WHERE meta_key = 'schema_version'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        let err = open_test_partitions(&temp_dir)
+            .await
+            .err()
+            .expect("future store version must fail startup");
+        assert!(err.contains("schema version 9"), "{err}");
+        assert_eq!(
+            task_ids_in(&temp_dir, "system.db").await,
+            vec![task.task_id]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unversioned_legacy_store_stops_open_without_dropping_tables() {
+        let temp_dir = tempdir().unwrap();
+        let pool = test_db_pool(&temp_dir, "system.db").await;
+        for sql in [
+            "CREATE TABLE task (task_id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+            "CREATE TABLE task_event (event_id TEXT PRIMARY KEY, task_id TEXT NOT NULL)",
+            "INSERT INTO task VALUES ('legacy-task', 'kept')",
+            "INSERT INTO task_event VALUES ('legacy-event', 'legacy-task')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        pool.close().await;
+
+        let err = open_test_partitions(&temp_dir)
+            .await
+            .err()
+            .expect("store without schema version must fail startup");
+        assert!(err.contains("no schema version"), "{err}");
+        assert_eq!(
+            task_ids_in(&temp_dir, "system.db").await,
+            vec!["legacy-task".to_string()]
+        );
+        let pool = test_db_pool(&temp_dir, "system.db").await;
+        let meta = sqlx::query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_store_meta'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(meta.is_none());
+        pool.close().await;
     }
 
     #[tokio::test(flavor = "current_thread")]

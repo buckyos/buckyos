@@ -1689,7 +1689,10 @@ Core schema 升到 `schema_version = 8`；两个分区的物理库使用同一�
 
 beta 2.2 当前处于 breaking-change 开发阶段，TaskMgr 1.x 到 2.0 使用 No-compat 策略：
 
-- 开发和 DV 环境允许清空 TaskMgr/Dispatcher RDB 后重建 schema 7。
+- 只接受当前格式：TaskMgr 空库直接按 schema 8 建库并写入 `task_store_meta`；已有库必须带
+  `schema_version = 8`，且 User/System 两个分区版本一致。缺版本、旧版本或未来版本都启动失败并保留原数据。
+- Dispatcher 库没有版本行：空库按 schema v4 建库；已有库的表和列必须与当前 DDL 一致，否则启动失败。
+- 开发和 DV 环境需要重置时使用明确的全新安装（`start.py --all`），服务启动不会自动清库。
 - 不保留旧 `TaskStatus`、可变 `Task.data`、read/write scope、hard delete 或
   `dispatch_id -> target_task_id` 兼容协议。
 - 实施 PR 必须同步修改所有生产者、消费者、前端、文档和共享类型，不能只修改数据库。

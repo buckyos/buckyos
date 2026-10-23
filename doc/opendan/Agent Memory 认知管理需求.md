@@ -1454,7 +1454,7 @@ v2.10 的术语与本文对照：
 - 跨语言互操作的边界是统一 CLI：digest、规范化和 replay 都在 CLI 内部完成，调用方不复现 canonical JSON。
 - CLI 不构造对象、别名和 tag，不翻译，不做语言检测；这些由整理 Goal 和召回层提供。
 
-相对 v2.10 的调整：写入者从“任意 Agent / curator”收窄为整理 Goal（M-32）；整理提交改为多操作原子提交（A.4.1，推翻 v2.10 B.9“不提供 commit”）；删除 Notebook 相关条款；增加 revision、适用范围、证据性质等字段（A.3.4）。这些调整对应 schema 3.0；2.10 根目录不再直接挂载，须经显式迁移（A.8）。
+相对 v2.10 的调整：写入者从“任意 Agent / curator”收窄为整理 Goal（M-32）；整理提交改为多操作原子提交（A.4.1，推翻 v2.10 B.9“不提供 commit”）；删除 Notebook 相关条款；增加 revision、适用范围、证据性质等字段（A.3.4）。这些调整对应 schema 3.0；2.10 根目录不提供升级路径，打开时报不支持的格式（A.8）。
 
 ### A.3 数据模型
 
@@ -1695,7 +1695,7 @@ v2.10 §5“什么值得写入”与 §5.3 最小问题清单已由本文 §4.4�
 
 #### A.4.3 管理操作
 
-`init`、`verify`、`compact`、`migrate` 与逐条图操作保留给开发、迁移和人工修复使用，不给普通 Session（TD-02）。逐条操作为每次调用新建一条包装 occasion，被引用的 occasion 记在 `parent_occasion` 字段里，`actor_session_id` 为管理身份（TD-05）。组件门面经 `Memory::admin()` 提供这些操作。
+`init`、`verify`、`compact` 与逐条图操作保留给开发和人工修复使用，不给普通 Session（TD-02）。逐条操作为每次调用新建一条包装 occasion，被引用的 occasion 记在 `parent_occasion` 字段里，`actor_session_id` 为管理身份（TD-05）。组件门面经 `Memory::admin()` 提供这些操作。
 
 ### A.5 感知层
 
@@ -1789,7 +1789,6 @@ END
 | `commit --plan <json\|stdin>` | 整理提交（A.4.1） | 整理 Goal | 库方法已有，CLI 未提供（TD-03） |
 | `occasion add`、`object upsert`、`object reinforce`、`observe add`、`relate`、`set-status`、`set`、`remove` | 逐条图操作 | 管理与人工修复 | 已实现；输出 `OCCASION`、`OBSERVATION`、`OBJECT <id> created\|updated\|merged`、`ALIAS_SHARED`、`ITEM <id>@<rev>`；未按调用者限制、只支持一个别名（TD-02、TD-17 的 S 部分） |
 | `verify [--repair]`、`compact` | 一致性检查与压缩 | 管理 | 已实现：verify 报告日志、引用、别名共享与派生物问题，不可恢复时退出码 3 并输出报告；compact 归档日志并写清单（TD-23、TD-25） |
-| `migrate` | 2.10 → 3.0 显式迁移，输出迁移报告（含有损映射说明） | 管理 | 已实现（TD-24） |
 
 相关的 Session 侧命令：`agent-session ctl perceive <text>` 写感知；`agent-session recall <tag>…` 显式召回；`agent-session note` 写 Notebook，随 Notebook 一起删除（TD-09）。
 
@@ -1807,7 +1806,6 @@ END
     ├── occasions.jsonl  # 唯一的追加写真相源
     ├── lock
     ├── archive/occasions_<首个 seq>.jsonl + archive/manifest.json   # compact 归档及清单
-    └── legacy-2.10/     # 显式迁移时移走的旧日志、旧 meta 与旧快照（不删除）
 ```
 
 提交日志每行是完整 envelope，含 `schema_version, occasion_id, seq, occurred_at, noticed_at, occasion_type, actor_session_id, lease_epoch, idempotency_key, plan_digest, produced_by, parent_occasion, source_ref, summary, tags, operations, dispositions, digest`；digest 由组件计算（blake3），覆盖除 digest 外的内容。`actor_session_id` 是真实的整理 Session 或管理身份（TD-05）。
@@ -1816,9 +1814,9 @@ END
 
 replay 顺序：清单中的归档 → 当前日志，按 `seq` 确定，冲突时报错，不静默修复；清单列出的归档缺失或内容与清单不符视为损坏；条目状态按最后一次 `set_status` 或 `replaces` 生效；引用的 `source_occasion` 不存在时 `verify` 必须报错。读者忽略当前日志末尾未以换行结束、也无法解析的内容（正在追加或中断的写入）；中间行损坏则报损坏，召回与观察返回错误，不返回空结果。
 
-`verify` 检查日志行完整性（含未完成尾行）、`seq` 单调、digest、操作 schema、归档清单、别名共享、证据与来源引用完整性，以及 SQLite 的 `graph_seq`、path 索引与 canonical 文件；不带 `--repair` 只报告；`--repair` 只重建派生物，不改写提交日志，不合并共享别名。`compact` 归档当前日志、写清单、新建空日志并重建派生物，不生成状态快照（TD-23 取“去掉快照”），不删除已淡出的条目；归档后 `memory_snapshot` 的 `graph_seq` 取清单中的最大 seq。归档按“硬链接当前日志为归档文件 → 写清单 → 以空文件原子替换当前日志”的顺序进行，读者在任何时刻都看到完整的图；replay 跳过归档与当前日志中 digest 相同的重复 envelope，同一 seq 内容不同仍是损坏。`migrate` 先把原文件复制到 `legacy-2.10/` 并写完成标记，总是从这份副本转换，最后才写新 meta，中途崩溃后重跑结果相同。
+`verify` 检查日志行完整性（含未完成尾行）、`seq` 单调、digest、操作 schema、归档清单、别名共享、证据与来源引用完整性，以及 SQLite 的 `graph_seq`、path 索引与 canonical 文件；不带 `--repair` 只报告；`--repair` 只重建派生物，不改写提交日志，不合并共享别名。`compact` 归档当前日志、写清单、新建空日志并重建派生物，不生成状态快照（TD-23 取“去掉快照”），不删除已淡出的条目；归档后 `memory_snapshot` 的 `graph_seq` 取清单中的最大 seq。归档按“硬链接当前日志为归档文件 → 写清单 → 以空文件原子替换当前日志”的顺序进行，读者在任何时刻都看到完整的图；replay 跳过归档与当前日志中 digest 相同的重复 envelope，同一 seq 内容不同仍是损坏。
 
-写者锁使用 `flock`，默认等待 5 秒，超时退出 `2`；只读端不持写锁，按日志的长度与 inode 缓存 replay 结果（TD-21）。兼容规则：`schema_version` 主版本不一致拒绝读写（返回需要迁移），次版本、`primary_language` 或分词器不一致只读挂载（TD-24）。2.10 → 3.0 只能显式迁移（`AgentMemory::migrate`）：按旧序列化逐行校验 digest，逐字段转换，无法一一对应的取值（未知枚举、Notebook 来源等）映射到兜底值并逐条列入迁移报告，旧文件移到 `.meta/legacy-2.10/`。
+写者锁使用 `flock`，默认等待 5 秒，超时退出 `2`；只读端不持写锁，按日志的长度与 inode 缓存 replay 结果（TD-21）。兼容规则：`schema_version` 主版本不一致拒绝读写（返回不支持的格式），次版本、`primary_language` 或分词器不一致只读挂载（TD-24）。2.10 及更早的根目录不提供升级路径；`.meta/occasions.jsonl` 有内容却没有 `meta.json` 的根目录同样拒绝，不当作空根目录初始化。拒绝时不改动根目录内任何文件。
 
 ### A.9 topic、半订阅与观察进度（新增）
 
@@ -1960,7 +1958,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 **TD-12 认知条目的新字段与 revision**（M-03、M-05、M-20、M-34、A.3.4）
 - 现状：`MemoryItem` 没有 revision、范围、证据性质、明确标记、有效期、复核条件、整理版本；修订方式是新建条目并把旧条目置 `superseded`；同一关系三元组每写一次就新建一个条目。
 - 改为：按 A.3.4 增加字段；修订保持 `item_id` 不变、`revision` 加一，历史版本可由日志 replay 得到；同一三元组的关系修订原条目；`schema_version` 升级并提供迁移。
-- 进度（2026-10-10，组件阶段）：完成：A.3.4 字段、稳定 `item_id` + `revision` 与固定版本读取、同三元组同范围原地修订、schema 3.0 与显式迁移（2.10 → 3.0）。
+- 进度（2026-10-10，组件阶段）：完成：A.3.4 字段、稳定 `item_id` + `revision` 与固定版本读取、同三元组同范围原地修订、schema 3.0（2.10 不提供升级路径，2026-10-23 删除显式迁移）。
 
 **TD-13 召回管线补齐**（M-20、§6.2、A.6.1）
 - 现状：没有范围与有效期过滤；只按对象成员关系加分，没有对象对和有向关系展开；FTS 表只写不查，全仓库没有 MATCH 查询；证据观察不作候选；`recall_hints` 只传 tag，并按 `weight×10 + confidence×6` 重排，丢掉结构、tag 和时间分；`Hint` 只有 id、时间和一句话。
@@ -2022,8 +2020,8 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 
 **TD-24 版本兼容**
 - 现状：`open` 要求 `schema_version` 精确等于 `2.10`。
-- 改为：主版本不一致拒绝写入，次版本不一致只读挂载；TD-12 的字段变更配迁移。`meta.json` 现在硬校验 `primary_language == "en"`，FTS 分词器记为 `unicode61`；TD-13 的中文全文检索要连同这两项一起升级，旧版本按本条规则拒写或只读。
-- 进度（2026-10-10，组件阶段）：完成：主版本不一致拒绝读写并提示迁移，次版本、语言或分词器不一致只读；`primary_language` 改为 `mul`，分词为 unicode61 + CJK 二元组；2.10 显式迁移，旧文件移入 `.meta/legacy-2.10/`。
+- 改为：主版本不一致拒绝写入，次版本不一致只读挂载；TD-12 的字段变更不提供迁移。`meta.json` 现在硬校验 `primary_language == "en"`，FTS 分词器记为 `unicode61`；TD-13 的中文全文检索要连同这两项一起升级，旧版本按本条规则拒写或只读。
+- 进度（2026-10-10，组件阶段）：完成：主版本不一致拒绝读写，次版本、语言或分词器不一致只读；`primary_language` 改为 `mul`，分词为 unicode61 + CJK 二元组。2026-10-23 删除 2.10 显式迁移（`AgentMemory::migrate` 与 `agent-memory migrate`），旧根目录明确报不支持的格式。
 
 **TD-25 verify 补齐**
 - 现状：不检查别名冲突、索引与 SQLite 一致性；不带 `--repair` 遇到不可恢复问题时直接返回错误（退出码 3），而不是只报告。

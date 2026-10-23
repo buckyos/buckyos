@@ -369,8 +369,6 @@ enum AgentMemoryVerb {
         repair: bool,
     },
     Compact,
-    /// Explicit schema migration (2.10 → 3.0).
-    Migrate,
 }
 
 /// Run the `agent_tool` command line and exit with its status: the
@@ -1344,7 +1342,7 @@ fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<String, AgentToolEr
 // =================================================================
 
 const AGENT_MEMORY_USAGE: &str = "agent-memory [--root <path>] [--quiet] \
-<init|occasion|object|observe|relate|set-status|set|remove|get|list|load|verify|compact|migrate> [...]";
+<init|occasion|object|observe|relate|set-status|set|remove|get|list|load|verify|compact> [...]";
 
 fn agent_memory_invalid(message: impl Into<String>) -> AgentToolError {
     AgentToolError::InvalidArgs(format!("{}\nUsage: {}", message.into(), AGENT_MEMORY_USAGE))
@@ -1405,7 +1403,6 @@ fn parse_agent_memory_cli_command(
         "load" => parse_agent_memory_load(rest)?,
         "verify" => parse_agent_memory_verify(rest)?,
         "compact" => parse_agent_memory_compact(rest)?,
-        "migrate" if rest.is_empty() => AgentMemoryVerb::Migrate,
         other => {
             return Err(agent_memory_invalid(format!("unknown verb `{other}`")));
         }
@@ -2402,17 +2399,6 @@ fn run_agent_memory_blocking(
     verb: AgentMemoryVerb,
 ) -> Result<String, AgentMemoryError> {
     let cfg = AgentMemoryConfig::new(root);
-    if let AgentMemoryVerb::Migrate = verb {
-        let r = AgentMemory::migrate(cfg)?;
-        let mut out = format!("FROM {}\nTO {}\nOCCASIONS {}\n", r.from, r.to, r.occasions);
-        for n in &r.notes {
-            out.push_str(&format!("NOTE {n}\n"));
-        }
-        if !r.legacy_dir.is_empty() {
-            out.push_str(&format!("LEGACY {}\n", r.legacy_dir));
-        }
-        return Ok(out);
-    }
     let mem = AgentMemory::open(cfg)?;
     match verb {
         AgentMemoryVerb::Init => Ok(String::new()),
@@ -2538,7 +2524,6 @@ fn run_agent_memory_blocking(
             mem.compact()?;
             Ok(String::new())
         }
-        AgentMemoryVerb::Migrate => unreachable!("handled before open"),
     }
 }
 
@@ -5882,30 +5867,6 @@ methods = ["x_call"]
         assert!(load_output.stdout.contains("---\n"));
         assert!(load_output.stdout.contains("\nEND\n"));
         assert!(load_output.stdout.contains("MATCHED tag:dental"));
-    }
-
-    #[tokio::test]
-    async fn agent_memory_migrate_reports_on_a_current_root() {
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-        let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd).await.expect("create workspace dir");
-        execute(
-            vec![OsString::from("/tmp/agent-memory"), OsString::from("init")],
-            test_env(root.clone(), cwd.clone()),
-            None,
-        )
-        .await
-        .expect("init");
-        let out = execute(
-            vec![OsString::from("/tmp/agent-memory"), OsString::from("migrate")],
-            test_env(root.clone(), cwd),
-            None,
-        )
-        .await
-        .expect("run agent-memory migrate");
-        assert_eq!(out.exit_code, EXIT_SUCCESS, "{}", out.stderr);
-        assert!(out.stdout.contains("FROM 3.0\nTO 3.0\n"), "{}", out.stdout);
     }
 
     #[tokio::test]

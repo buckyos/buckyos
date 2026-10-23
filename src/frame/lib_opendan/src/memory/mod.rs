@@ -91,7 +91,7 @@ pub enum MemoryError {
     ReadOnly(String),
     #[error("memory store is corrupted: {0}")]
     Corrupted(String),
-    /// Storage cannot be read right now (IO, needs migration); never an
+    /// Storage cannot be read right now (IO, unsupported format); never an
     /// empty result.
     #[error("memory store unavailable: {0}")]
     Unavailable(String),
@@ -116,8 +116,8 @@ impl From<AgentMemoryError> for MemoryError {
             AgentMemoryError::CommitUnknown(m) => MemoryError::CommitUnknown(m),
             AgentMemoryError::ReadOnly(m) => MemoryError::ReadOnly(m),
             AgentMemoryError::Corrupted(m) => MemoryError::Corrupted(m),
-            AgentMemoryError::NeedsMigration(m) => {
-                MemoryError::Unavailable(format!("needs migration: {m}"))
+            AgentMemoryError::Unsupported(m) => {
+                MemoryError::Unavailable(format!("unsupported format: {m}"))
             }
             AgentMemoryError::Io(e) => MemoryError::Unavailable(e.to_string()),
             AgentMemoryError::Sqlite(e) => MemoryError::Unavailable(e.to_string()),
@@ -337,7 +337,7 @@ impl Memory {
         Ok(self.graph()?.view()?)
     }
 
-    /// Administrative handle (init, verify, compact, repair, migrate).
+    /// Administrative handle (init, verify, compact, repair).
     pub fn admin(&self) -> MemoryResult<AgentMemory> {
         self.graph_writer()
     }

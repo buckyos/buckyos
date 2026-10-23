@@ -5,7 +5,6 @@ import { isMockRuntime } from '../runtime'
 function removeLocalAuthItems() {
   window.localStorage.removeItem('user_info')
   window.localStorage.removeItem('buckyos.identity')
-  window.localStorage.removeItem('buckyos.account_info')
   window.localStorage.removeItem('buckyos.account_info.control-panel')
   document.cookie = 'control-panel_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax'
 }
