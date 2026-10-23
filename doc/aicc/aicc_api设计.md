@@ -86,7 +86,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 2. typed inference 是数据面。请求必须包含 `exact_model`，逻辑模型名会被拒绝；内部关闭逻辑 fallback。调用阶段重新校验 catalog revision 和动态 availability，并生成内部 `ResolvedProviderCall`。
 3. `helper.*` 接受 `logical_model`、结构化 requirements/policy 和对应 typed 业务字段，内部先 `route.resolve`，再调用 typed inference。Helper 不接受或构造 `AiMethodRequest`。
 
-`route.resolve`、全部 typed inference request 以及两个 Helper request 都接受可选的 body 字段 `trace_id`。调用方提供时，Service 必须原样将其用于路由决策、TaskMgr task data/progress event、usage event 和 route trace 的关联；未提供时由 Service 生成非空 canonical trace id。该字段与 kRPC `sys` 中的传输 trace、`request_id` 及 Provider 返回的 `provider_trace_id` 相互独立，任一字段都不能替代 canonical `trace_id`。
+`route.resolve`、全部 typed inference request 以及三个 Helper request 都接受可选的 body 字段 `trace_id`。调用方提供时，Service 必须原样将其用于路由决策、TaskMgr task data/progress event、usage event 和 route trace 的关联；未提供时由 Service 生成非空 canonical trace id。该字段与 kRPC `sys` 中的传输 trace、`request_id` 及 Provider 返回的 `provider_trace_id` 相互独立，任一字段都不能替代 canonical `trace_id`。
 
 `fallback_attempts` 表达路由建议的运行时 failover 候选顺序，不是 lease，也不保证候选在后续时刻仍可用。它不包含 primary；当前受 `runtime_failover` 和系统 `fallback_limit` 限制，排序来自 scheduler 之后的同 method 候选。
 
@@ -207,6 +207,7 @@ Response：
 5. `enabled_capabilities` / `disabled_capabilities` 表达本次路由后实际启用 / 禁用的能力集合。
 6. `fallback_attempts` 是路由建议的运行时候选顺序（不含 primary），供调用方在失败后自行决定是否重试，不是 lease，也不保证后续时刻仍可用。
 7. `requirements.canonical_fields` 以 typed request 的 JSON Pointer 为 key。Model/Provider metadata 为每个 pointer 选择 AICC 内置的 Rust converter，并用统一 `fallback` 配置字段缺失或转换失败时的 `reject`、`omit` 或 canonical `default`；配置不内联映射表或脚本。默认值仍须通过同一 converter。`strict=true` 不执行 fallback，只接受 converter 产生的 exact，或在 `allow_fuzzy=true` 时接受 fuzzy。无法满足的严格要求会在路由阶段排除，不能作为无效 Provider 参数静默下发。
+8. 视频生成的需求使用 `requirements.video`（`VideoGenerationRequirement`），从 `video.generate` 请求推导；`route.resolve`、`helper.video_generate` 与执行前复核共用同一判定，见 [video_generation.md](video_generation.md) §3。
 
 ### 2.2 typed inference（数据面）
 
@@ -229,7 +230,7 @@ Response：
 }
 ```
 
-全部 typed inference request 都可携带可选 `session_id`，两个 Helper request 也同样支持。它与 `route.resolve.session_id` 共用一套语义：AICC 用 `(tenant_id, user_id, caller_app_id, session_id)` 读写上一次已选 exact model，仅作为下次路由在通过所有硬约束后的软优先级。`session_id` 必须为 1..512 bytes 的非空字符串；不携带时不读写 session 历史。typed request 本身已给出 exact model，因此历史不会覆盖该强制选择，只会记录本次已选值。
+全部 typed inference request 都可携带可选 `session_id`，三个 Helper request 也同样支持。它与 `route.resolve.session_id` 共用一套语义：AICC 用 `(tenant_id, user_id, caller_app_id, session_id)` 读写上一次已选 exact model，仅作为下次路由在通过所有硬约束后的软优先级。`session_id` 必须为 1..512 bytes 的非空字符串；不携带时不读写 session 历史。typed request 本身已给出 exact model，因此历史不会覆盖该强制选择，只会记录本次已选值。
 
 `session_id` 不是 `session_overlay` 的服务端存储 key。`session_overlay` 始终由调用方在每次 Helper 或 `route.resolve` 请求中传入，AICC 不保存 overlay、revision 或 TTL。持久表契约见 [aicc_runtime_durable_data_schema.md](aicc_runtime_durable_data_schema.md)。
 
@@ -280,7 +281,7 @@ Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_mod
 }
 ```
 
-其语义严格等价于 `route.resolve(api_type="llm", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。
+其语义严格等价于 `route.resolve(api_type="llm", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。`helper.video_generate` 在预选路由后先准备参考素材，再带素材事实复核路由，见 [video_generation.md](video_generation.md) §5。
 ### 2.4 typed inference 通用响应约束
 
 每个 typed inference method 使用独立的请求和响应结构，不再通过通用 `AiMethodRequest`、`AiPayload` 或 `AiResponseSummary` 承载业务字段。所有响应共享以下 envelope 字段：
@@ -304,7 +305,7 @@ Provider 为图片、视频、音频等内容返回的原生对象 ID 由 Adapte
 跨进程读取使用流式 HTTP data endpoint：`POST /kapi/aicc/artifact/open`，请求 body 为 `{ "url": string, "artifact_id"?: string }`，身份来自 `X-Auth` 或 `Authorization: Bearer`，成功响应 body 是 artifact byte stream。该 endpoint 不把二进制包装进 kRPC JSON，也不改变 `ResourceRef` schema。
 ### 2.5 流式与进度观察
 
-AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 Provider wire 字段 `stream: true`、token delta event、image step、video frame 等中间态字段。`route.resolve`、全部 typed inference request 和两个 Helper request 使用统一的 canonical `execution_mode`：
+AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 Provider wire 字段 `stream: true`、token delta event、image step、video frame 等中间态字段。`route.resolve`、全部 typed inference request 和三个 Helper request 使用统一的 canonical `execution_mode`：
 
 | `execution_mode` | 语义 |
 |---|---|
@@ -750,8 +751,8 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 | `audio.tts` | `audio.tts` | `audio.tts` | sync 或 async |
 | `audio.asr` | `audio.asr` | `audio.asr` | sync 或 async |
 | `audio.music` / `audio.enhance` | `audio.music` / `audio.enhance` | 同 api_type | async 或 sync |
-| `video.txt2video` / `video.img2video` | 同名 api_type | 对应 `video.*` | async |
-| `video.video2video` / `video.extend` / `video.upscale` | `video.video2video` / `video.extend` / `video.upscale` | 同 api_type | async |
+| `video.generate` / `video.edit` | 同名 api_type | 对应 `video.*` | async |
+| `video.extend` / `video.upscale` | `video.extend` / `video.upscale` | 同 api_type | async |
 | `agent.computer_use` | `agent.computer_use` | `agent_runtime.computer_use` | session async |
 
 命名规范：`method`、`api_type` 和 logical path 是三个独立值域。`method` 只使用本表名称，`api_type` 只使用 `ApiType` 的序列化值，logical path 以冻结逻辑目录契约为准。三者即使文本相同也承担不同职责，调用端和测试不得互相替代，也不得通过字符串相等或前缀关系推导彼此。
@@ -1525,56 +1526,68 @@ Response：
 
 视频生成和编辑默认异步，AI method response 返回 task id，最终结果写 task data / event。
 
-### 11.1 `video.txt2video`
+### 11.1 `video.generate`
+
+文本、首尾帧和参考图/视频/音频统一为一个请求。条件、prompt 引用、输出规格、能力合同与执行顺序见 [video_generation.md](video_generation.md)。
 
 Request：
 
 ```json
 {
-  "prompt": "A cinematic tracking shot through a lantern-lit market at dusk.",
-  "duration_seconds": 8,
-  "aspect_ratio": "16:9",
-  "resolution": "720p",
-  "generate_audio": true,
-  "seed": 12345,
+  "prompt": "@{hero} runs through the rain toward @{door}; the camera follows.",
+  "conditions": [
+    {
+      "type": "reference_image",
+      "id": "hero",
+      "resource": { "kind": "named_object", "obj_id": "chunk:hero" }
+    },
+    {
+      "type": "reference_image",
+      "id": "door",
+      "resource": { "kind": "named_object", "obj_id": "chunk:door" }
+    }
+  ],
   "output": {
-    "media_type": "video/mp4",
-    "fps": 24
-  }
+    "duration_seconds": 6,
+    "aspect_ratio": "16:9",
+    "size": { "short_edge": 1080 },
+    "fps": 24,
+    "audio": "auto",
+    "media_type": "video/mp4"
+  },
+  "seed": 12345
 }
 ```
+
+1. `conditions[]` 的类型为 `keyframe`（`position: start | end`）、`reference_image`、`reference_video`（`time_range?`、`include_audio?`）、`reference_audio`（`time_range?`）；prompt 用 `@{id}` 引用条件，`@@` 表示字面量 `@`。
+2. 省略的 `output` 字段采用部署默认值；所选模型不支持的条件、输出规格、`negative_prompt` 或 `seed` 返回 `unsupported_operation`，不改写、不丢弃。
+3. `helper.video_generate` 使用相同业务字段，把 `exact_model` 换成 `logical_model`（默认逻辑路径 `video.generate`）。
 
 Final result：
 
 ```json
 {
-  "video": {
-    "kind": "named_object",
-    "obj_id": "chunk:generated-video"
-  }
+  "videos": [
+    {
+      "resource": {
+        "kind": "named_object",
+        "obj_id": "chunk:generated-video"
+      },
+      "media_type": "video/mp4",
+      "provider_metadata": { "duration_seconds": 6, "width": null, "height": null, "fps": null, "has_audio": null },
+      "measured_metadata": { "duration_seconds": 6.04, "width": 1920, "height": 1080, "fps": 24, "has_audio": true },
+      "last_frame": null,
+      "deviations": []
+    }
+  ]
 }
 ```
 
-### 11.2 `video.img2video`
+`provider_metadata` 只来自 Provider 响应；`measured_metadata` 只在 AICC 读到产物字节时实测，否则为 `null`。与显式请求不一致的结果写入 `deviations`。Provider 返回多于一个视频时报错，不截断。
 
-Request：
+### 11.2 `video.edit`
 
-```json
-{
-  "image": {
-    "kind": "named_object",
-    "obj_id": "chunk:start-frame"
-  },
-  "prompt": "Animate the scene with slow camera movement.",
-  "duration_seconds": 8,
-  "aspect_ratio": "16:9",
-  "resolution": "720p"
-}
-```
-
-Response：同 `video.txt2video`。
-
-### 11.3 `video.video2video`
+只路由到具备真实源视频编辑合同的模型。以参考片段生成新视频使用 `video.generate` 的 `reference_video`。
 
 Request：
 
@@ -1585,17 +1598,15 @@ Request：
     "obj_id": "chunk:source-video"
   },
   "prompt": "Shift the color palette to teal and warm backlight.",
-  "preserve_motion": true,
-  "time_range": {
-    "start_seconds": 0,
-    "end_seconds": 8
+  "output": {
+    "media_type": "video/mp4"
   }
 }
 ```
 
-Response：同 `video.txt2video`。
+Response：同 `video.generate`。
 
-### 11.4 `video.extend`
+### 11.3 `video.extend`
 
 Request：
 
@@ -1612,9 +1623,9 @@ Request：
 }
 ```
 
-Response：同 `video.txt2video`。
+Response：同 `video.generate`。
 
-### 11.5 `video.upscale`
+### 11.4 `video.upscale`
 
 Request：
 
@@ -1634,7 +1645,7 @@ Request：
 }
 ```
 
-Response：同 `video.txt2video`。
+Response：同 `video.generate`。
 
 Video fallback：
 

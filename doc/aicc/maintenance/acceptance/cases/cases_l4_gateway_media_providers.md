@@ -52,11 +52,13 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 | `audio.asr` | audio、language、timestamps、diarization、output_formats | transcript、segments、vtt/srt/json artifacts | output format 不支持、音频 meta 缺失 |
 | `audio.music` | prompt、duration、instrumental、lyrics、seed、output | async task、audio artifact、structure | duration 越界、异步任务失败 |
 | `audio.enhance` | audio、task、strength、return_stems | enhanced audio artifact、stems | task 不支持 |
-| `video.txt2video` | prompt、duration、aspect_ratio、resolution、generate_audio、seed | async task、video artifact | operation timeout、Provider started 后不跨 Provider 重试 |
-| `video.img2video` | image、prompt、duration、aspect_ratio、resolution | async task、video artifact | image invalid |
-| `video.video2video` | video、prompt、preserve_motion、time_range | async task、video artifact | time_range 越界 |
-| `video.extend` | video、prompt、continuation_handle、duration | async task、video artifact | continuation_handle 缺失或不匹配 |
-| `video.upscale` | video、target_resolution、denoise、sharpen、output | async task、video artifact | target_resolution 不支持 |
+| `video.generate`（纯文本） | prompt、`output`（duration_seconds、aspect_ratio、size、fps、audio、media_type）、negative_prompt、seed | async task、`videos[]`（resource、provider_metadata、measured_metadata、deviations） | operation timeout、Provider started 后不跨 Provider 重试；prompt 为空且无条件报 `invalid_request`；模型不支持的显式规格、negative_prompt 或 seed 报 `unsupported_operation`，不改写、不丢弃 |
+| `video.generate`（首帧 / 首尾帧） | prompt、`keyframe{position:start}`、`keyframe start + end`、output | async task、`videos[]` | keyframe 图片无效、同一 position 重复、模型不支持尾帧或首尾帧 |
+| `video.generate`（多素材参考） | prompt 以 `@{id}` 引用多个 `reference_image` / `reference_video`（time_range、include_audio）/ `reference_audio` | async task、`videos[]`、执行记录 `video_plan` | 引用不存在的 `@{id}`、id 重复、超出模型参考数量或时长上限、关键帧与参考混用不支持、time_range 越界或无法精确裁剪、`include_audio=true` 而源视频无音轨 |
+| `helper.video_generate` | 逻辑模型名 + `video.generate` 业务字段 + `requirements.video` | 带素材事实复核路由后执行 `video.generate` | 调用方 `requirements.video.output` 与请求 `output` 冲突；无合格候选时在下载/探测素材前失败 |
+| `video.edit` | video、prompt、output | async task、`videos[]` | 模型无编辑合同时拒绝、prompt 为空 |
+| `video.extend` | video、prompt、continuation_handle、duration | async task、`videos[]` | continuation_handle 缺失或不匹配 |
+| `video.upscale` | video、target_resolution、denoise、sharpen、output | async task、`videos[]` | target_resolution 不支持 |
 
 ### 1.5 Agent Runtime Support
 

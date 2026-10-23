@@ -316,7 +316,10 @@ Old inventory caches and removed Provider fields are rejected.
 Pricing belongs to Provider Rules/discovery and supports `source_url`,
 `verified_at`, `ratio_exception`, cache reads/writes (including one-hour writes),
 audio/image token rates, tiers and time windows. Discovery and catalog share
-validation. Missing active rates or uncovered tiers return unknown. `AiUsage`
+validation. Output/input token price ratios above 500 require a non-empty
+`ratio_exception`; a ratio of exactly 500 is accepted. Cache read prices above
+input prices and cache write prices above 10 times input prices also require an
+explanation. Missing active rates or uncovered tiers return unknown. `AiUsage`
 input/output totals include cache/reasoning tokens; modality/cache counts are
 subsets. Undeclared provider `reported_cost` is never assumed USD.
 
@@ -339,3 +342,11 @@ verified sources, regional scope, remaining channel gaps and validation.
 OpenRouter Jev 渠道通过 Provider Rules `capability_limits` 将上述模型事实收窄到
 32000 context tokens 和 32000 input/state+question bytes；只对已有整数上限取 min，
 不添加模型能力。字段完整契约见 [Provider schema](provider_profile_schema.md#56-能力收窄)。
+
+## Video generation contract（2026-10-22）
+
+`video.generate` 模型必须在 `capabilities.video_generation` 声明厂商官方云 API 的合同（条件种类与
+数量、关键帧位置、时长/比例/档位/尺寸/fps、音轨、组合规则）；Provider Rules 的同名字段声明渠道的真实
+子集并整体替换它，OpenRouter discovery 再用 `/api/v1/videos/models` 的事实覆盖输出字段。三处使用同一
+校验，未知字段拒绝；没有合同的模型不进入 `video.generate` 路由。合同字段、执行顺序与 Provider 支持矩阵
+见 [统一视频生成协议](video_generation.md)。

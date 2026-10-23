@@ -28,10 +28,11 @@ AICC 服务名为 `aicc`，服务端口为 `4040`，统一通过 NodeGateway 的
 
 ### 2.1 Helper：通常首选
 
-Helper 接受逻辑模型，一次完成路由与推理。目前冻结两个 Helper：
+Helper 接受逻辑模型，一次完成路由与推理。目前冻结三个 Helper：
 
 - `helper.llm_chat`
 - `helper.text_to_image`
+- `helper.video_generate`
 
 适合希望随 inventory、成本和健康状态自动选择模型的应用。
 
@@ -108,9 +109,8 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结两个 Hel
 | ASR | `audio.asr` | `AudioSpeechRecognitionRequest` -> `AudioSpeechRecognitionResponse` |
 | 音乐生成 | `audio.music` | `AudioMusicRequest` -> `AudioMusicResponse` |
 | 音频增强 | `audio.enhance` | `AudioEnhanceRequest` -> `AudioEnhanceResponse` |
-| 文生视频 | `video.txt2video` | `VideoTextToVideoRequest` -> `VideoTextToVideoResponse` |
-| 图生视频 | `video.img2video` | `VideoImageToVideoRequest` -> `VideoImageToVideoResponse` |
-| 视频到视频 | `video.video2video` | `VideoToVideoRequest` -> `VideoToVideoResponse` |
+| 视频生成 | `video.generate` | `VideoGenerateRequest` -> `VideoGenerateResponse` |
+| 视频编辑 | `video.edit` | `VideoEditRequest` -> `VideoEditResponse` |
 | 视频续写 | `video.extend` | `VideoExtendRequest` -> `VideoExtendResponse` |
 | 视频放大 | `video.upscale` | `VideoUpscaleRequest` -> `VideoUpscaleResponse` |
 | Computer Use | `agent.computer_use` | `ComputerUseRequest` -> `ComputerUseResponse` |
@@ -181,7 +181,7 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 ## 7. 路由控制
 
 `ModelRequirement` 用于硬需求，例如 `tool_call`、`json_schema`、`web_search`、
-`vision`、`image_generation`、`min_context_tokens` 和 canonical field 要求。`ModelDisable` 用于显式禁用能力。
+`vision`、`image_generation`、`min_context_tokens`、视频生成需求 `video` 和 canonical field 要求。`ModelDisable` 用于显式禁用能力。
 
 逻辑路由中只有以 `llm.chat`、`llm.plan`、`llm.vision` 为入口的 LLM 请求可以启用云端联网搜索；这三个入口不把联网搜索作为硬性选模条件。本次路由的模型、Adapter 和 Provider discovery 均支持 `web_search` 且未被目录或请求禁用时，AICC 默认向云端开放搜索，由模型决定是否调用。其他逻辑入口（含 `llm.code`、规格、家族和自定义路径）会强制禁用 `web_search`，并在 route trace 中记录；入口限制在 fallback / failover 后仍生效。OpenAI Responses（含 SN）追加 `web_search`，Gemini Interactions 追加 `google_search`，OpenRouter Responses 转换为 `openrouter:web_search`，Claude Messages 追加 `{ "type": "web_search_20250305", "name": "web_search" }`；这些服务端工具与调用方的函数工具共存。不支持搜索的模型仍可使用 Agent 提供的工具；`disable.web_search = true` 关闭云端搜索。仅使用 Responses 格式的其他 Adapter 不会因此继承搜索能力。
 
@@ -247,3 +247,7 @@ method 名、request/response 字段、enum wire 值、逻辑/exact model 格式
 `decision` 是独立 API Type 与 Capability，method 为 `decision.evaluate`，逻辑入口为 `decision`。请求用共享 `state` 与带稳定 ID 的 `choice | score | boolean` 问题列表；答案保留完整概率分布或为真概率，`confidence` 可缺失且不等于答案概率。Score 为零起点等级索引的期望值。完整字段、校验和示例见 [Decision API](decision_api.md)。
 
 `route.resolve` 的 `requirements.decision` 由实际输入推导；Rust `DecisionEvaluateRequest::requirements()` 与 WebSDK `decisionRequirements()` 提供相同推导。`routing.preview` 接受可选 `requirements`，复用相同资格判断。typed exact 调用重新校验输入能力与大小；首版只支持 immediate，不隐式拆题、不生成解释或执行动作。
+
+## 统一视频生成（2026-10-22）
+
+视频生成统一为 `video.generate`（精确模型）和业务字段相同的 `helper.video_generate`（逻辑模型，默认逻辑路径 `video.generate`）。文本、首尾帧（`keyframe`）、参考图/视频/音频都是同一请求的 `conditions[]`，prompt 用 `@{id}` 引用条件；输出规格放在 `output`。改写已有视频用 `video.edit`，只有具备真实编辑合同的模型可路由。`video.generate/edit/extend/upscale` 的结果统一为 `videos: GeneratedVideo[]`，带 Provider 声明值、AICC 实测值与偏差。`requirements.video` 由请求推导，Rust `VideoGenerateRequest::requirement()` 与 WebSDK `videoGenerationRequirement()` 提供相同推导。显式但模型不支持的条件或规格返回 `unsupported_operation`，不改写、不丢弃。完整字段、能力合同、执行顺序与 Provider 支持矩阵见 [统一视频生成协议](video_generation.md)。

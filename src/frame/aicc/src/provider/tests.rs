@@ -365,7 +365,9 @@ fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
                 tiers: None,
 
                 time_windows: Vec::new(),
+                addons: Vec::new(),
             }),
+            video: None,
         }],
     }
 }
@@ -974,6 +976,7 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         .await
         .unwrap_err();
     assert_eq!(error.stage, ProviderDraftValidationStage::Connection);
+    assert!(error.message.contains("workspace"));
 
     let invalid_auth = draft(ProviderAuthConfig::ApiKey {
         credential_ref: "missing-secret".into(),
@@ -990,6 +993,7 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         .unwrap_err();
     assert_eq!(error.stage, ProviderDraftValidationStage::Authentication);
     assert_eq!(error.kind, ProviderRefreshFailure::Credential);
+    assert!(error.message.contains("credential reference was not resolved"));
 
     let mut invalid_adapter = draft(ProviderAuthConfig::ApiKey {
         credential_ref: "system-config://secrets/aicc/openai".into(),
@@ -1006,9 +1010,14 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         .await
         .unwrap_err();
     assert_eq!(error.stage, ProviderDraftValidationStage::Protocol);
+    assert!(error.message.contains("missing-adapter"));
+    assert!(error.message.contains("requires adapter"));
 
     let failed_discovery = ScriptedDiscovery::new(
-        [Err("invalid discovery response".into())],
+        [Err(
+            "invalid discovery response; Authorization: Bearer draft-secret sk-provider-secret-1234"
+                .into(),
+        )],
         discovery("gpt-test"),
     );
     let valid = draft(ProviderAuthConfig::ApiKey {
@@ -1021,6 +1030,10 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         .unwrap_err();
     assert_eq!(error.stage, ProviderDraftValidationStage::Discovery);
     assert_eq!(error.kind, ProviderRefreshFailure::Discovery);
+    assert!(error.message.contains("invalid discovery response"));
+    assert!(error.message.contains("Bearer [REDACTED]"));
+    assert!(!format!("{error:?}").contains("draft-secret"));
+    assert!(!format!("{error:?}").contains("sk-provider-secret-1234"));
 
     let error = manager
         .validate_draft(
@@ -1647,6 +1660,7 @@ fn backoff_is_bounded_and_fingerprint_is_order_independent() {
             availability: ModelAvailability::Unknown,
             deprecated: false,
             pricing: None,
+            video: None,
         },
     ];
     let mut second = first.clone();

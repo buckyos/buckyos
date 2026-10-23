@@ -344,20 +344,56 @@
     },
     {
       "id": "sora-2",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
+      "api_types": ["video.generate", "video.edit"],
       "logical_mounts": [
-        "video.txt2video", "video.txt2video.openai", "video.txt2video.{model}",
-        "video.img2video", "video.img2video.openai", "video.img2video.{model}",
-        "video.video2video", "video.video2video.openai", "video.video2video.{model}", "video.txt2video.sora"]
+        "video.generate",
+        "video.generate.openai",
+        "video.generate.{model}",
+        "video.generate.sora",
+        "video.edit",
+        "video.edit.openai",
+        "video.edit.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "keyframes": {"positions": ["start"]},
+          "output": {
+            "durations": {"values": [4, 8, 12]},
+            "aspect_ratios": ["16:9", "9:16"],
+            "sizes": ["1280x720", "720x1280"],
+            "audio": "always",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "sora-2-pro",
       "parameter_scale": "pro",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
+      "api_types": ["video.generate", "video.edit"],
       "logical_mounts": [
-        "video.txt2video", "video.txt2video.openai", "video.txt2video.{model}",
-        "video.img2video", "video.img2video.openai", "video.img2video.{model}",
-        "video.video2video", "video.video2video.openai", "video.video2video.{model}", "video.txt2video.sora"]
+        "video.generate",
+        "video.generate.openai",
+        "video.generate.{model}",
+        "video.generate.sora",
+        "video.edit",
+        "video.edit.openai",
+        "video.edit.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "keyframes": {"positions": ["start"]},
+          "output": {
+            "durations": {"values": [4, 8, 12]},
+            "aspect_ratios": ["16:9", "9:16", "7:4", "4:7"],
+            "sizes": ["1280x720", "720x1280", "1792x1024", "1024x1792"],
+            "audio": "always",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     }
   ]
 }

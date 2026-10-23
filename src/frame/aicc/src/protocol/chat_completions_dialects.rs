@@ -97,6 +97,13 @@ pub(crate) fn openrouter_responses_adapter() -> (AdapterDescriptor, CodecRegistr
             descriptor: decisions,
         },
     ));
+    let videos = super::openrouter_videos::descriptor();
+    descriptor
+        .operations
+        .insert(videos.operation_id.clone(), videos.clone());
+    registration.native_task_codecs.push(Arc::new(
+        super::openrouter_videos::OpenRouterVideoCodec { descriptor: videos },
+    ));
     (descriptor, registration)
 }
 

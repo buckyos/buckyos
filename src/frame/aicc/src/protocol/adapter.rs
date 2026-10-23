@@ -1610,7 +1610,7 @@ mod tests {
     };
     use buckyos_api::{
         EmbeddingTextItem, EmbeddingTextRequest, LlmChatInvokeRequest, ResourceRef,
-        VideoExtendRequest, VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest,
+        VideoEditRequest, VideoExtendRequest, VideoGenerateRequest,
     };
     use futures_util::{stream, StreamExt};
     use reqwest::{header::HeaderMap, Method, StatusCode};
@@ -1829,7 +1829,7 @@ mod tests {
         let descriptor = operation(
             "media.create",
             vec![OperationBinding::new(
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
                 [ExecutionMode::Immediate, ExecutionMode::NativeTask],
             )],
         );
@@ -1840,11 +1840,11 @@ mod tests {
                 CodecRegistration {
                     operation_codecs: vec![Arc::new(FakeCodec {
                         descriptor: descriptor.clone(),
-                        api_type: ApiType::VideoImageToVideo,
+                        api_type: ApiType::VideoGenerate,
                     }) as Arc<dyn OperationCodec>],
                     native_task_codecs: vec![Arc::new(UrlNativeCodec {
                         descriptor,
-                        api_type: ApiType::VideoImageToVideo,
+                        api_type: ApiType::VideoGenerate,
                     }) as Arc<dyn NativeTaskCodec>],
                 },
             )
@@ -1853,7 +1853,7 @@ mod tests {
             registry.resource_input_form(
                 "mode-dispatch",
                 "media.create",
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
                 ExecutionMode::Immediate,
                 &[],
             ),
@@ -1864,7 +1864,7 @@ mod tests {
             registry.resource_input_form(
                 "mode-dispatch",
                 "media.create",
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
                 ExecutionMode::NativeTask,
                 &[],
             ),
@@ -2647,7 +2647,7 @@ mod tests {
         let mut descriptor = operation(
             "videos",
             vec![OperationBinding::new(
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 [ExecutionMode::NativeTask],
             )],
         );
@@ -2660,7 +2660,7 @@ mod tests {
                     operation_codecs: Vec::new(),
                     native_task_codecs: vec![Arc::new(FakeNativeCodec {
                         descriptor,
-                        api_type: ApiType::VideoTextToVideo,
+                        api_type: ApiType::VideoGenerate,
                     })],
                 },
             )
@@ -2668,9 +2668,9 @@ mod tests {
         let parameters = BTreeMap::from([("prompt".to_string(), json!("ocean"))]);
         let call_context = context("https://video.example", "secret");
         let codec_input = CodecInput {
-            canonical_request: AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
+            canonical_request: AiccCall::VideoGenerate(VideoGenerateRequest::new(
                 "model@instance",
-                "ocean".to_string(),
+                Some("ocean".to_string()),
             )),
             resolved_parameters: BTreeMap::new(),
         };
@@ -2682,13 +2682,13 @@ mod tests {
             context: &call_context,
         };
         registry
-            .encode_native("videos", "videos", ApiType::VideoTextToVideo, &submit)
+            .encode_native("videos", "videos", ApiType::VideoGenerate, &submit)
             .unwrap();
         let NativeTaskOutput::Submitted(handle) = registry
             .decode_native(
                 "videos",
                 "videos",
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Submit,
                 response(json!({"id":"video-1"})),
             )
@@ -2737,7 +2737,7 @@ mod tests {
                 .decode_native(
                     "videos",
                     "videos",
-                    ApiType::VideoTextToVideo,
+                    ApiType::VideoGenerate,
                     NativeTaskOperation::Status,
                     response(json!({"state":wire_state})),
                 )
@@ -2755,7 +2755,7 @@ mod tests {
             .decode_native(
                 "videos",
                 "videos",
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
                 retry_response,
             )
@@ -2770,7 +2770,7 @@ mod tests {
             .decode_native(
                 "videos",
                 "videos",
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Result,
                 response(json!({"result":{"url":"artifact"}})),
             )
@@ -2785,7 +2785,7 @@ mod tests {
             .decode_native(
                 "videos",
                 "videos",
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Cancel,
                 response(json!({"cancelled":true})),
             )
@@ -2798,21 +2798,19 @@ mod tests {
     }
 
     #[test]
-    fn native_submit_dispatches_four_video_api_types_with_typed_requests() {
+    fn native_submit_dispatches_video_api_types_with_typed_requests() {
         let mut descriptor = operation(
             "models.predictLongRunning",
             vec![
-                OperationBinding::new(ApiType::VideoTextToVideo, [ExecutionMode::NativeTask]),
-                OperationBinding::new(ApiType::VideoImageToVideo, [ExecutionMode::NativeTask]),
-                OperationBinding::new(ApiType::VideoToVideo, [ExecutionMode::NativeTask]),
+                OperationBinding::new(ApiType::VideoGenerate, [ExecutionMode::NativeTask]),
+                OperationBinding::new(ApiType::VideoEdit, [ExecutionMode::NativeTask]),
                 OperationBinding::new(ApiType::VideoExtend, [ExecutionMode::NativeTask]),
             ],
         );
         descriptor.supports_cancel = true;
         let codecs = [
-            ApiType::VideoTextToVideo,
-            ApiType::VideoImageToVideo,
-            ApiType::VideoToVideo,
+            ApiType::VideoGenerate,
+            ApiType::VideoEdit,
             ApiType::VideoExtend,
         ]
         .into_iter()
@@ -2834,25 +2832,16 @@ mod tests {
             )
             .unwrap();
 
-        let image = ResourceRef::url("https://resource.example/image.png".to_string(), None);
         let video = ResourceRef::url("https://resource.example/video.mp4".to_string(), None);
-        let text = CodecInput {
-            canonical_request: AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
+        let generate = CodecInput {
+            canonical_request: AiccCall::VideoGenerate(VideoGenerateRequest::new(
                 "model@instance",
-                "text prompt".to_string(),
+                Some("text prompt".to_string()),
             )),
             resolved_parameters: BTreeMap::new(),
         };
-        let image_to_video = CodecInput {
-            canonical_request: AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
-                "model@instance",
-                image,
-                "image prompt".to_string(),
-            )),
-            resolved_parameters: BTreeMap::new(),
-        };
-        let video_to_video = CodecInput {
-            canonical_request: AiccCall::VideoToVideo(VideoToVideoRequest::new(
+        let edit = CodecInput {
+            canonical_request: AiccCall::VideoEdit(VideoEditRequest::new(
                 "model@instance",
                 video.clone(),
                 "video prompt".to_string(),
@@ -2870,9 +2859,8 @@ mod tests {
         let parameters = BTreeMap::new();
 
         for (api_type, codec_input) in [
-            (ApiType::VideoTextToVideo, &text),
-            (ApiType::VideoImageToVideo, &image_to_video),
-            (ApiType::VideoToVideo, &video_to_video),
+            (ApiType::VideoGenerate, &generate),
+            (ApiType::VideoEdit, &edit),
             (ApiType::VideoExtend, &extend),
         ] {
             let submit = NativeTaskInput {
@@ -2907,7 +2895,7 @@ mod tests {
                 .encode_native(
                     "gemini-video",
                     "models.predictLongRunning",
-                    ApiType::VideoTextToVideo,
+                    ApiType::VideoGenerate,
                     &missing,
                 )
                 .unwrap_err()
@@ -2918,7 +2906,7 @@ mod tests {
         let mismatch = NativeTaskInput {
             operation: NativeTaskOperation::Submit,
             remote_task_id: None,
-            codec_input: Some(&text),
+            codec_input: Some(&generate),
             resolved_parameters: &parameters,
             context: &call_context,
         };

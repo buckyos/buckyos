@@ -377,9 +377,8 @@ function defaultInputCombinations(apiType: string, declared: string[]): string[]
     "audio.asr": [["audio"]],
     "audio.music": available.has("audio") ? [["text"], ["text", "audio"]] : [["text"]],
     "audio.enhance": [["audio"]],
-    "video.txt2video": [["text"]],
-    "video.img2video": [["text", "image"]],
-    "video.video2video": [["text", "video"]],
+    "video.generate": available.has("image") ? [["text"], ["text", "image"]] : [["text"]],
+    "video.edit": [["text", "video"]],
     "video.extend": [["video"]],
     "video.upscale": [["video"]],
     "agent.computer_use": [["observation", "action", "environment_state", "session_state"]],
@@ -409,9 +408,8 @@ function defaultOutputCombinations(apiType: string, declared: string[]): string[
     "audio.asr": "text",
     "audio.music": "audio",
     "audio.enhance": "audio",
-    "video.txt2video": "video",
-    "video.img2video": "video",
-    "video.video2video": "video",
+    "video.generate": "video",
+    "video.edit": "video",
     "video.extend": "video",
     "video.upscale": "video",
     "agent.computer_use": "structured",
@@ -421,11 +419,10 @@ function defaultOutputCombinations(apiType: string, declared: string[]): string[
 
 function generatedArtifactSourceApiType(apiType: string, declared: Set<string>): string | undefined {
   if (apiType === "image.img2img" && declared.has("image.txt2img")) return "image.txt2img";
-  if (apiType === "video.img2video" && declared.has("image.txt2img")) return "image.txt2img";
   if (
-    ["video.video2video", "video.extend", "video.upscale"].includes(apiType) &&
-    declared.has("video.txt2video")
-  ) return "video.txt2video";
+    ["video.edit", "video.extend", "video.upscale"].includes(apiType) &&
+    declared.has("video.generate")
+  ) return "video.generate";
   if (apiType === "audio.enhance" && declared.has("audio.tts")) return "audio.tts";
   return undefined;
 }

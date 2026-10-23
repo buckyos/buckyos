@@ -1,3 +1,7 @@
+use super::video::{
+    planned_resource, require_video_parameters, unsupported as video_unsupported,
+    video_generate_input, whole_seconds as video_whole_seconds,
+};
 use super::{
     foreign_provider_state_text, sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall,
     CodecContext, CodecRegistration, CredentialKind, ExecutionMode, HttpBody, HttpRequest,
@@ -13,9 +17,9 @@ use buckyos_api::{
     AiArtifact, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
     AiccExecutionMode, ApiType, AudioSpeechRecognitionRequest, AudioTextToSpeechRequest,
     ComputerAction, ComputerUseRequest, EmbeddingTextItem, ImageInpaintRequest,
-    ImageToImageRequest, LlmChatInvokeRequest, LlmResponseFormatType,
-    ResourceRef as PublicResourceRef, TextToImageInvokeRequest, VisionCaptionRequest,
-    VisionOcrRequest,
+    ImageToImageRequest, KeyframePosition, LlmChatInvokeRequest, LlmResponseFormatType,
+    ResourceRef as PublicResourceRef, TextToImageInvokeRequest, VideoConditionKind,
+    VisionCaptionRequest, VisionOcrRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderValue, CONTENT_TYPE};
@@ -143,17 +147,12 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
         OPENAI_VIDEOS_OPERATION_ID,
         vec![
             binding(
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 [ExecutionMode::NativeTask],
                 std::iter::empty::<&str>(),
             ),
             binding(
-                ApiType::VideoImageToVideo,
-                [ExecutionMode::NativeTask],
-                std::iter::empty::<&str>(),
-            ),
-            binding(
-                ApiType::VideoToVideo,
+                ApiType::VideoEdit,
                 [ExecutionMode::NativeTask],
                 std::iter::empty::<&str>(),
             ),
@@ -241,13 +240,9 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
     let native_task_codecs: Vec<Arc<dyn NativeTaskCodec>> = vec![
         Arc::new(OpenAiVideoCodec::new(
             videos.clone(),
-            ApiType::VideoTextToVideo,
+            ApiType::VideoGenerate,
         )),
-        Arc::new(OpenAiVideoCodec::new(
-            videos.clone(),
-            ApiType::VideoImageToVideo,
-        )),
-        Arc::new(OpenAiVideoCodec::new(videos, ApiType::VideoToVideo)),
+        Arc::new(OpenAiVideoCodec::new(videos, ApiType::VideoEdit)),
     ];
     (
         descriptor,
@@ -1446,6 +1441,7 @@ fn decode_usage(
         image_units: None,
         audio_seconds: None,
         video_seconds: None,
+        reference_images: None,
         request_units: None,
         characters: None,
         audio_input_tokens: value
@@ -2757,36 +2753,22 @@ fn encode_video_submit(
     input: &NativeTaskInput<'_>,
     api_type: ApiType,
 ) -> ProtocolResultValue<HttpRequest> {
-    require_parameter_subset(input.resolved_parameters, &["seconds", "size"], "videos")?;
-    if input
-        .resolved_parameters
-        .get("seconds")
-        .is_some_and(|value| !value.is_string() && !value.is_number())
-        || input
-            .resolved_parameters
-            .get("size")
-            .is_some_and(|value| !value.is_string())
-    {
-        return Err(ProtocolError::invalid_request(
-            "resolved OpenAI videos seconds or size has an invalid type",
-        ));
-    }
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("OpenAI video submit requires a canonical request")
     })?;
-    if let (AiccCall::VideoToVideo(request), ApiType::VideoToVideo) =
+    require_video_parameters(input.resolved_parameters, "OpenAI", &[])?;
+    if let (AiccCall::VideoEdit(request), ApiType::VideoEdit) =
         (&codec_input.canonical_request, api_type)
     {
-        if request.time_range.is_some() {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "OpenAI video editing does not support time_range",
+        if request
+            .output
+            .as_ref()
+            .is_some_and(|output| !output.is_empty())
+        {
+            return Err(video_unsupported(
+                "OpenAI video editing keeps the source format; output options are not accepted",
             ));
         }
-        input.context.ignore_unsupported_options(
-            "OpenAI video editing",
-            &[("preserve_motion", request.preserve_motion.is_some())],
-        );
         let resource = input.context.materialized_resource(&request.video)?;
         if let Some(artifact_id) = &resource.provider_artifact_id {
             let mut http_request = HttpRequest::new(
@@ -2809,55 +2791,58 @@ fn encode_video_submit(
                 .unwrap_or_else(|| "source-video.mp4".to_string()),
             resource.mime.clone(),
         ))?;
-        body.push(MultipartPart::bytes(
-            "model",
-            required_parameter(input.resolved_parameters, "provider_model_id")?,
-        ))?;
+        // The edit body is the source video and the prompt only; the job
+        // keeps the source video's model.
         body.push(MultipartPart::bytes("prompt", request.prompt.clone()))?;
         return multipart_request_context(input.context, Method::POST, "videos/edits", body);
     }
-    let (prompt, image) = match (&codec_input.canonical_request, api_type) {
-        (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
-            if request
-                .output
-                .as_ref()
-                .is_some_and(|output| output.fps.is_some())
-            {
-                return Err(ProtocolError::new(
-                    ProtocolErrorKind::UnsupportedOperation,
-                    "OpenAI video generation does not support output fps",
-                ));
-            }
-            input.context.ignore_unsupported_options(
-                "OpenAI video generation",
-                &[
-                    ("generate_audio", request.generate_audio == Some(true)),
-                    ("seed", request.seed.is_some()),
-                ],
-            );
-            (request.prompt.clone(), None)
-        }
-        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
-            (request.prompt.clone(), Some(&request.image))
-        }
-        _ => {
-            return Err(ProtocolError::invalid_request(
-                "OpenAI video codec received the wrong canonical request",
-            ));
-        }
-    };
+    if api_type != ApiType::VideoGenerate {
+        return Err(ProtocolError::invalid_request(
+            "OpenAI video codec received the wrong canonical request",
+        ));
+    }
+    let (request, plan) = video_generate_input(codec_input)?;
+    if plan.negative_prompt.is_some()
+        || plan.seed.is_some()
+        || plan.fps.is_some()
+        || plan.generate_audio.is_some()
+        || plan.resolution.is_some()
+    {
+        return Err(video_unsupported(
+            "OpenAI video generation only takes a prompt, a start frame, seconds and an exact size",
+        ));
+    }
+    let prompt = plan
+        .submitted_prompt
+        .clone()
+        .filter(|prompt| !prompt.trim().is_empty())
+        .ok_or_else(|| ProtocolError::invalid_request("OpenAI video generation needs a prompt"))?;
     let model = required_parameter(input.resolved_parameters, "provider_model_id")?;
     let mut body = MultipartBody::new(16, input.context.limits.max_request_bytes)?;
     body.push(MultipartPart::bytes("model", model))?;
     body.push(MultipartPart::bytes("prompt", prompt))?;
-    if let Some(seconds) = input.resolved_parameters.get("seconds").map(value_string) {
-        body.push(MultipartPart::bytes("seconds", seconds))?;
+    if let Some(seconds) = video_whole_seconds(&plan)? {
+        body.push(MultipartPart::bytes("seconds", seconds.to_string()))?;
     }
-    if let Some(size) = input.resolved_parameters.get("size").map(value_string) {
-        body.push(MultipartPart::bytes("size", size))?;
+    if let Some(size) = plan.size {
+        body.push(MultipartPart::bytes(
+            "size",
+            format!("{}x{}", size.width, size.height),
+        ))?;
     }
-    if let Some(image) = image {
-        let resource = multipart_resource(image, input.context, "input-reference.bin")?;
+    for planned in &plan.inputs {
+        if (planned.kind, planned.position)
+            != (VideoConditionKind::Keyframe, Some(KeyframePosition::Start))
+        {
+            return Err(video_unsupported(
+                "OpenAI video generation only takes a start keyframe",
+            ));
+        }
+        let resource = multipart_resource(
+            planned_resource(request, planned)?,
+            input.context,
+            "input-reference.bin",
+        )?;
         body.push(MultipartPart::file(
             "input_reference",
             resource.bytes,
@@ -3032,16 +3017,14 @@ fn decode_video_result(response: HttpResponse) -> ProtocolResultValue<NativeTask
         .unwrap_or("video/mp4")
         .to_string();
     let resource = PublicResourceRef::base64(mime.clone(), STANDARD.encode(response.body));
-    Ok(NativeTaskOutput::Result(ProtocolOutput {
-        value: json!({"video": resource}),
-        usage: Some(AiUsage::request_units(1)),
-        artifacts: vec![AiArtifact {
-            name: "video".to_string(),
+    Ok(NativeTaskOutput::Result(super::video::video_output(
+        vec![super::video::generated_video(
             resource,
-            mime: Some(mime),
-            metadata: None,
-        }],
-    }))
+            Some(mime),
+            Default::default(),
+        )],
+        AiUsage::request_units(1),
+    )?))
 }
 
 fn decode_video_cancel(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput> {
@@ -3065,9 +3048,11 @@ mod tests {
         CodecContext, CodecInput, CodecLimits, CodecRegistry, GoldenBody, ProtocolContractHarness,
         ResolvedCredential,
     };
+    use crate::video::test_support::{model_contract, plan_parameters};
+    use crate::video::VideoMaterialFacts;
     use buckyos_api::{
         AiOutputOptions, AiToolSpec, ComputerEnvironment, ComputerUseRequest, EmbeddingTextRequest,
-        MaskSemantics, VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest,
+        MaskSemantics, VideoCondition, VideoEditRequest, VideoGenerateRequest, VideoOutputSpec,
         Viewport, VoiceSpec,
     };
     use bytes::Bytes;
@@ -3150,7 +3135,7 @@ mod tests {
             .native_task_codec(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
             )
             .is_ok());
     }
@@ -4054,15 +4039,19 @@ mod tests {
     async fn videos_cover_submit_status_content_cancel_and_validate_task_ids() {
         let registry = registry();
         let mut context = context();
-        let parameters = BTreeMap::from([
-            ("provider_model_id".to_string(), json!("sora-test")),
-            ("seconds".to_string(), json!("8")),
-            ("size".to_string(), json!("1280x720")),
-        ]);
-        let codec_input = input(AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
-            "ignored@instance",
-            "a cat playing piano".to_string(),
-        )));
+        let mut text =
+            VideoGenerateRequest::new("ignored@instance", Some("a cat playing piano".to_string()));
+        text.output = Some(VideoOutputSpec {
+            duration_seconds: Some(8.0),
+            aspect_ratio: Some("16:9".into()),
+            ..Default::default()
+        });
+        let contract = model_contract("openai", "sora-2");
+        let parameters = plan_parameters(&contract, &text, &VideoMaterialFacts::new(), "sora-test");
+        let codec_input = CodecInput {
+            canonical_request: AiccCall::VideoGenerate(text),
+            resolved_parameters: parameters.clone(),
+        };
         let submit = NativeTaskInput {
             operation: NativeTaskOperation::Submit,
             remote_task_id: None,
@@ -4074,11 +4063,26 @@ mod tests {
             .encode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 &submit,
             )
             .unwrap();
         assert_eq!(request.url, "https://api.openai.com/v1/videos");
+        let GoldenBody::Multipart(parts) = ProtocolContractHarness::default()
+            .request(&request)
+            .unwrap()
+            .body
+        else {
+            panic!("expected video multipart")
+        };
+        let field = |name: &str| {
+            parts
+                .iter()
+                .find(|part| part.name == name)
+                .map(|part| String::from_utf8(part.bytes.clone()).unwrap())
+        };
+        assert_eq!(field("seconds").as_deref(), Some("8"));
+        assert_eq!(field("size").as_deref(), Some("1280x720"));
 
         let image = PublicResourceRef::base64("image/png".to_string(), "aW1hZ2U=".to_string());
         context.resources.insert(
@@ -4090,23 +4094,31 @@ mod tests {
             )
             .unwrap(),
         );
-        let image_codec_input = input(AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
-            "ignored@instance",
-            image,
-            "animate the cat".to_string(),
-        )));
+        let mut animate =
+            VideoGenerateRequest::new("ignored@instance", Some("animate the cat".to_string()));
+        animate.conditions = vec![VideoCondition::Keyframe {
+            id: "cat".into(),
+            resource: image,
+            position: KeyframePosition::Start,
+        }];
+        let image_parameters =
+            plan_parameters(&contract, &animate, &VideoMaterialFacts::new(), "sora-test");
+        let image_codec_input = CodecInput {
+            canonical_request: AiccCall::VideoGenerate(animate),
+            resolved_parameters: image_parameters.clone(),
+        };
         let image_submit = NativeTaskInput {
             operation: NativeTaskOperation::Submit,
             remote_task_id: None,
             codec_input: Some(&image_codec_input),
-            resolved_parameters: &parameters,
+            resolved_parameters: &image_parameters,
             context: &context,
         };
         let request = registry
             .encode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
                 &image_submit,
             )
             .unwrap();
@@ -4134,7 +4146,7 @@ mod tests {
             .get_mut(crate::resource::ResourceKey::from_ref(&source_video).as_str())
             .unwrap()
             .provider_artifact_id = Some("video_source".to_string());
-        let video_codec_input = input(AiccCall::VideoToVideo(VideoToVideoRequest::new(
+        let video_codec_input = input(AiccCall::VideoEdit(VideoEditRequest::new(
             "ignored@instance",
             source_video.clone(),
             "change the color palette".to_string(),
@@ -4152,7 +4164,7 @@ mod tests {
             .encode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoToVideo,
+                ApiType::VideoEdit,
                 &video_submit,
             )
             .unwrap();
@@ -4183,7 +4195,7 @@ mod tests {
             .encode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoToVideo,
+                ApiType::VideoEdit,
                 &video_upload_submit,
             )
             .unwrap();
@@ -4199,9 +4211,11 @@ mod tests {
                 && part.bytes == b"source-video"
                 && part.file_name.as_deref() == Some("source.mp4")
         }));
-        assert!(parts
-            .iter()
-            .any(|part| part.name == "model" && part.bytes == b"sora-test"));
+        // The official edit body is the source video and the prompt only.
+        assert_eq!(
+            parts.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(),
+            ["video", "prompt"]
+        );
 
         let response = ProtocolContractHarness::default()
             .response(
@@ -4218,7 +4232,7 @@ mod tests {
             .decode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Submit,
                 response,
             )
@@ -4259,7 +4273,7 @@ mod tests {
             .decode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
                 status,
             )
@@ -4287,7 +4301,7 @@ mod tests {
             .decode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
                 failed_status,
             )
@@ -4324,7 +4338,7 @@ mod tests {
                 .encode_native(
                     OPENAI_RESPONSES_ADAPTER_ID,
                     OPENAI_VIDEOS_OPERATION_ID,
-                    ApiType::VideoTextToVideo,
+                    ApiType::VideoGenerate,
                     &input,
                 )
                 .unwrap();
@@ -4346,7 +4360,7 @@ mod tests {
             .encode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 &invalid,
             )
             .is_err());
@@ -4364,7 +4378,7 @@ mod tests {
             .decode_native(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_VIDEOS_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Result,
                 content,
             )
@@ -4389,7 +4403,7 @@ mod tests {
                 .decode_native(
                     OPENAI_RESPONSES_ADAPTER_ID,
                     OPENAI_VIDEOS_OPERATION_ID,
-                    ApiType::VideoTextToVideo,
+                    ApiType::VideoGenerate,
                     NativeTaskOperation::Cancel,
                     cancelled,
                 )

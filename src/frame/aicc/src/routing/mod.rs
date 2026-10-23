@@ -87,6 +87,8 @@ pub(crate) struct RoutingRequest {
     pub request_units: u64,
     pub estimated_input_tokens: Option<u64>,
     pub estimated_output_tokens: Option<u64>,
+    /// Measured clip lengths of a video request's references.
+    pub video_clips: crate::video::ClipSummary,
     pub caller: CallerIdentity,
 }
 
@@ -113,6 +115,7 @@ impl RoutingRequest {
             request_units: 1,
             estimated_input_tokens: None,
             estimated_output_tokens: None,
+            video_clips: Default::default(),
             caller,
         }
     }
@@ -945,6 +948,28 @@ fn hard_filter_model(
                 "canonical_field_unsatisfied",
                 format!("model cannot satisfy canonical field {pointer}"),
             ));
+        }
+    }
+    if request.api_type == ApiType::VideoGenerate {
+        match crate::video::VideoGenerationContract::from_capabilities(&model.capabilities) {
+            None => reasons.push(filter_reason(
+                "video_contract_missing",
+                "model declares no video generation contract",
+            )),
+            Some(contract) => {
+                if let Some(requirement) = &request.requirements.video {
+                    for unmet in crate::video::unmet_requirements(
+                        &contract,
+                        requirement,
+                        &request.video_clips,
+                    ) {
+                        reasons.push(filter_reason(
+                            "video_requirement_unsatisfied",
+                            format!("{}: {}", unmet.field, unmet.reason),
+                        ));
+                    }
+                }
+            }
         }
     }
     reasons

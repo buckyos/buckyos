@@ -31,8 +31,7 @@ export function requiredFixtureKinds(apiType: string): string[] {
   if (apiType === "image.bg_remove") return ["bgRemoveImage"];
   if (apiType === "embedding.multimodal") return ["image"];
   if (apiType === "audio.asr" || apiType === "audio.enhance") return ["audio"];
-  if (apiType === "video.img2video") return ["image"];
-  if (apiType === "video.video2video" || apiType === "video.extend" || apiType === "video.upscale") return ["video"];
+  if (apiType === "video.edit" || apiType === "video.extend" || apiType === "video.upscale") return ["video"];
   return [];
 }
 
@@ -71,6 +70,7 @@ function io(
   fixtures: FixtureRefs,
   representation?: ResourceRepresentation,
   documentFormat?: string,
+  inputKinds: string[] = [],
 ): {
   input_json: Record<string, unknown>;
   resources: ResourceRef[];
@@ -183,14 +183,19 @@ function io(
         },
         resources: [],
       };
-    case "video.txt2video":
-      return { input_json: { prompt: "A paper plane moving across a desk" }, resources: [] };
-    case "video.img2video":
-      return {
-        input_json: { prompt: "Slow camera push with subtle motion" },
-        resources: [requireFixture(fixtures, "image", apiType, representation)],
-      };
-    case "video.video2video":
+    case "video.generate":
+      // A cell whose input kinds include an image starts from it as the first
+      // frame; the gateway attaches resources to `conditions` in order.
+      return inputKinds.includes("image")
+        ? {
+          input_json: {
+            prompt: "@{first} comes alive with a slow camera push and subtle motion",
+            conditions: [{ type: "keyframe", id: "first", position: "start" }],
+          },
+          resources: [requireFixture(fixtures, "image", apiType, representation)],
+        }
+        : { input_json: { prompt: "A paper plane moving across a desk" }, resources: [] };
+    case "video.edit":
     case "video.extend":
     case "video.upscale":
       return {
@@ -232,6 +237,7 @@ export function buildExactRequest(args: {
     args.fixtures,
     args.cell.resource_representation,
     args.cell.document_format,
+    args.cell.input_kinds,
   );
   const inputJson = { ...payload.input_json, ...(args.cell.request_defaults ?? {}) };
   const resources = [...payload.resources];

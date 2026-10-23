@@ -2,9 +2,10 @@ use crate::aicc_usage_log::{
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
 };
 use crate::{
-    quota_methods, AiccListView, AiccOnBehalfOf, AppDoc, AppType, DecisionAnswer,
-    DecisionQuestion, DecisionRequirements, QuotaQueryRequest, QuotaQueryResponse, SelectorType,
-    AICC_ON_BEHALF_OF_PARAM,
+    quota_methods, video_error, AiccListView, AiccOnBehalfOf, AppDoc, AppType, DecisionAnswer,
+    DecisionQuestion, DecisionRequirements, GeneratedVideo, QuotaQueryRequest, QuotaQueryResponse,
+    SelectorType, VideoGenerateHelperRequest, VideoGenerateRequest, VideoGenerationRequirement,
+    VideoOutputSpec, AICC_ON_BEHALF_OF_PARAM,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -25,6 +26,7 @@ pub mod ai_methods {
     pub const IMAGES_GENERATE: &str = "images.generate";
     pub const HELPER_LLM_CHAT: &str = "helper.llm_chat";
     pub const HELPER_TEXT_TO_IMAGE: &str = "helper.text_to_image";
+    pub const HELPER_VIDEO_GENERATE: &str = "helper.video_generate";
 
     pub const EMBEDDING_TEXT: &str = "embedding.text";
     pub const EMBEDDING_MULTIMODAL: &str = "embedding.multimodal";
@@ -42,9 +44,8 @@ pub mod ai_methods {
     pub const AUDIO_ASR: &str = "audio.asr";
     pub const AUDIO_MUSIC: &str = "audio.music";
     pub const AUDIO_ENHANCE: &str = "audio.enhance";
-    pub const VIDEO_TXT2VIDEO: &str = "video.txt2video";
-    pub const VIDEO_IMG2VIDEO: &str = "video.img2video";
-    pub const VIDEO_VIDEO2VIDEO: &str = "video.video2video";
+    pub const VIDEO_GENERATE: &str = "video.generate";
+    pub const VIDEO_EDIT: &str = "video.edit";
     pub const VIDEO_EXTEND: &str = "video.extend";
     pub const VIDEO_UPSCALE: &str = "video.upscale";
     pub const AGENT_COMPUTER_USE: &str = "agent.computer_use";
@@ -92,9 +93,8 @@ pub mod ai_methods {
                 | AUDIO_ASR
                 | AUDIO_MUSIC
                 | AUDIO_ENHANCE
-                | VIDEO_TXT2VIDEO
-                | VIDEO_IMG2VIDEO
-                | VIDEO_VIDEO2VIDEO
+                | VIDEO_GENERATE
+                | VIDEO_EDIT
                 | VIDEO_EXTEND
                 | VIDEO_UPSCALE
                 | AGENT_COMPUTER_USE
@@ -104,7 +104,7 @@ pub mod ai_methods {
     pub fn is_aicc_core_method(method: &str) -> bool {
         matches!(
             method,
-            ROUTE_RESOLVE | HELPER_LLM_CHAT | HELPER_TEXT_TO_IMAGE
+            ROUTE_RESOLVE | HELPER_LLM_CHAT | HELPER_TEXT_TO_IMAGE | HELPER_VIDEO_GENERATE
         ) || is_ai_method(method)
     }
 
@@ -275,8 +275,9 @@ mod canonical_contract_tests {
             "voice": {"style": "provider_specific_style"}
         }))
         .is_err());
-        assert!(VideoImageToVideoRequest::from_json(json!({
+        assert!(VideoGenerateRequest::from_json(json!({
             "exact_model": "m@p",
+            "prompt": "fox",
             "image": {"kind": "named_object", "obj_id": "chunk:123456"}
         }))
         .is_err());
@@ -1169,12 +1170,10 @@ pub enum ApiType {
     AudioMusic,
     #[serde(rename = "audio.enhance")]
     AudioEnhance,
-    #[serde(rename = "video.txt2video")]
-    VideoTextToVideo,
-    #[serde(rename = "video.img2video")]
-    VideoImageToVideo,
-    #[serde(rename = "video.video2video")]
-    VideoToVideo,
+    #[serde(rename = "video.generate")]
+    VideoGenerate,
+    #[serde(rename = "video.edit")]
+    VideoEdit,
     #[serde(rename = "video.extend")]
     VideoExtend,
     #[serde(rename = "video.upscale")]
@@ -1202,11 +1201,9 @@ impl ApiType {
             | Self::AudioSpeechRecognition
             | Self::AudioMusic
             | Self::AudioEnhance => Capability::Audio,
-            Self::VideoTextToVideo
-            | Self::VideoImageToVideo
-            | Self::VideoToVideo
-            | Self::VideoExtend
-            | Self::VideoUpscale => Capability::Video,
+            Self::VideoGenerate | Self::VideoEdit | Self::VideoExtend | Self::VideoUpscale => {
+                Capability::Video
+            }
             Self::AgentComputerUse => Capability::Agent,
         }
     }
@@ -1231,9 +1228,8 @@ impl ApiType {
             Self::AudioSpeechRecognition => ai_methods::AUDIO_ASR,
             Self::AudioMusic => ai_methods::AUDIO_MUSIC,
             Self::AudioEnhance => ai_methods::AUDIO_ENHANCE,
-            Self::VideoTextToVideo => ai_methods::VIDEO_TXT2VIDEO,
-            Self::VideoImageToVideo => ai_methods::VIDEO_IMG2VIDEO,
-            Self::VideoToVideo => ai_methods::VIDEO_VIDEO2VIDEO,
+            Self::VideoGenerate => ai_methods::VIDEO_GENERATE,
+            Self::VideoEdit => ai_methods::VIDEO_EDIT,
             Self::VideoExtend => ai_methods::VIDEO_EXTEND,
             Self::VideoUpscale => ai_methods::VIDEO_UPSCALE,
             Self::AgentComputerUse => ai_methods::AGENT_COMPUTER_USE,
@@ -1585,6 +1581,8 @@ pub struct ModelRequirement {
     pub min_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub canonical_fields: BTreeMap<String, CanonicalFieldRequirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoGenerationRequirement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2725,6 +2723,9 @@ pub struct AiUsage {
     pub audio_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_seconds: Option<f64>,
+    /// Reference images a video request submitted, for per-image prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_images: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_units: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2751,6 +2752,7 @@ impl AiUsage {
             image_units: None,
             audio_seconds: None,
             video_seconds: None,
+            reference_images: None,
             request_units: Some(request_units),
             characters: None,
             cost: None,
@@ -3141,7 +3143,7 @@ pub struct LlmChatHelperRequest {
     pub session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HelperModelRequirement {
     #[serde(default, skip_serializing_if = "is_false")]
@@ -3160,6 +3162,8 @@ pub struct HelperModelRequirement {
     pub min_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub canonical_fields: BTreeMap<String, CanonicalFieldRequirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoGenerationRequirement>,
 }
 
 impl From<HelperModelRequirement> for ModelRequirement {
@@ -3174,6 +3178,7 @@ impl From<HelperModelRequirement> for ModelRequirement {
             image_generation: value.image_generation,
             min_context_tokens: value.min_context_tokens,
             canonical_fields: value.canonical_fields,
+            video: value.video,
         }
     }
 }
@@ -4027,31 +4032,6 @@ typed_response!(AudioEnhanceResponse {
     stems: Vec<ResourceRef>
 });
 
-typed_request!(
-    VideoTextToVideoRequest,
-    required { prompt: String },
-    optional {
-        duration_seconds: f64,
-        aspect_ratio: String,
-        resolution: String,
-        generate_audio: bool,
-        seed: u64,
-        output: AiOutputOptions
-    }
-);
-typed_request!(
-    VideoImageToVideoRequest,
-    required {
-        image: ResourceRef,
-        prompt: String
-    },
-    optional {
-        duration_seconds: f64,
-        aspect_ratio: String,
-        resolution: String
-    }
-);
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TimeRange {
@@ -4060,16 +4040,33 @@ pub struct TimeRange {
 }
 
 typed_request!(
-    VideoToVideoRequest,
+    VideoEditRequest,
     required {
         video: ResourceRef,
         prompt: String
     },
-    optional {
-        preserve_motion: bool,
-        time_range: TimeRange
-    }
+    optional { output: VideoOutputSpec }
+    validate validate
 );
+
+impl VideoEditRequest {
+    pub fn validate(&self) -> std::result::Result<(), AiccError> {
+        if self.prompt.trim().is_empty() {
+            return Err(video_error(
+                AiccErrorCode::InvalidRequest,
+                "video edit requires a non-blank prompt",
+                "/prompt",
+                None,
+                None,
+                None,
+            ));
+        }
+        if let Some(output) = &self.output {
+            output.validate("/output")?;
+        }
+        Ok(())
+    }
+}
 typed_request!(
     VideoExtendRequest,
     required {
@@ -4094,11 +4091,10 @@ typed_request!(
         output: AiOutputOptions
     }
 );
-typed_response!(VideoTextToVideoResponse { video: Option<ResourceRef> });
-typed_response!(VideoImageToVideoResponse { video: Option<ResourceRef> });
-typed_response!(VideoToVideoResponse { video: Option<ResourceRef> });
-typed_response!(VideoExtendResponse { video: Option<ResourceRef> });
-typed_response!(VideoUpscaleResponse { video: Option<ResourceRef> });
+typed_response!(VideoGenerateResponse { videos: Vec<GeneratedVideo> });
+typed_response!(VideoEditResponse { videos: Vec<GeneratedVideo> });
+typed_response!(VideoExtendResponse { videos: Vec<GeneratedVideo> });
+typed_response!(VideoUpscaleResponse { videos: Vec<GeneratedVideo> });
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -5058,6 +5054,7 @@ define_aicc_calls! {
     ImagesGenerate(TextToImageInvokeRequest) => ai_methods::IMAGES_GENERATE, Some(ApiType::ImageTextToImage), exact;
     HelperLlmChat(LlmChatHelperRequest) => ai_methods::HELPER_LLM_CHAT, Some(ApiType::Llm), none;
     HelperTextToImage(TextToImageHelperRequest) => ai_methods::HELPER_TEXT_TO_IMAGE, Some(ApiType::ImageTextToImage), none;
+    HelperVideoGenerate(VideoGenerateHelperRequest) => ai_methods::HELPER_VIDEO_GENERATE, Some(ApiType::VideoGenerate), none;
     EmbeddingText(EmbeddingTextRequest) => ai_methods::EMBEDDING_TEXT, Some(ApiType::EmbeddingText), exact;
     EmbeddingMultimodal(EmbeddingMultimodalRequest) => ai_methods::EMBEDDING_MULTIMODAL, Some(ApiType::EmbeddingMultimodal), exact;
     DecisionEvaluate(DecisionEvaluateRequest) => ai_methods::DECISION_EVALUATE, Some(ApiType::Decision), exact;
@@ -5074,9 +5071,8 @@ define_aicc_calls! {
     AudioSpeechRecognition(AudioSpeechRecognitionRequest) => ai_methods::AUDIO_ASR, Some(ApiType::AudioSpeechRecognition), exact;
     AudioMusic(AudioMusicRequest) => ai_methods::AUDIO_MUSIC, Some(ApiType::AudioMusic), exact;
     AudioEnhance(AudioEnhanceRequest) => ai_methods::AUDIO_ENHANCE, Some(ApiType::AudioEnhance), exact;
-    VideoTextToVideo(VideoTextToVideoRequest) => ai_methods::VIDEO_TXT2VIDEO, Some(ApiType::VideoTextToVideo), exact;
-    VideoImageToVideo(VideoImageToVideoRequest) => ai_methods::VIDEO_IMG2VIDEO, Some(ApiType::VideoImageToVideo), exact;
-    VideoToVideo(VideoToVideoRequest) => ai_methods::VIDEO_VIDEO2VIDEO, Some(ApiType::VideoToVideo), exact;
+    VideoGenerate(VideoGenerateRequest) => ai_methods::VIDEO_GENERATE, Some(ApiType::VideoGenerate), exact;
+    VideoEdit(VideoEditRequest) => ai_methods::VIDEO_EDIT, Some(ApiType::VideoEdit), exact;
     VideoExtend(VideoExtendRequest) => ai_methods::VIDEO_EXTEND, Some(ApiType::VideoExtend), exact;
     VideoUpscale(VideoUpscaleRequest) => ai_methods::VIDEO_UPSCALE, Some(ApiType::VideoUpscale), exact;
     ComputerUse(ComputerUseRequest) => ai_methods::AGENT_COMPUTER_USE, Some(ApiType::AgentComputerUse), exact;
@@ -5411,6 +5407,9 @@ impl AiccClient {
             AiccCall::HelperTextToImage(request) => {
                 serde_json::to_value(self.helper_text_to_image(request).await?)
             }
+            AiccCall::HelperVideoGenerate(request) => {
+                serde_json::to_value(self.helper_video_generate(request).await?)
+            }
             AiccCall::EmbeddingText(request) => {
                 serde_json::to_value(self.embedding_text(request).await?)
             }
@@ -5453,15 +5452,10 @@ impl AiccClient {
             AiccCall::AudioEnhance(request) => {
                 serde_json::to_value(self.audio_enhance(request).await?)
             }
-            AiccCall::VideoTextToVideo(request) => {
-                serde_json::to_value(self.video_text_to_video(request).await?)
+            AiccCall::VideoGenerate(request) => {
+                serde_json::to_value(self.video_generate(request).await?)
             }
-            AiccCall::VideoImageToVideo(request) => {
-                serde_json::to_value(self.video_image_to_video(request).await?)
-            }
-            AiccCall::VideoToVideo(request) => {
-                serde_json::to_value(self.video_to_video(request).await?)
-            }
+            AiccCall::VideoEdit(request) => serde_json::to_value(self.video_edit(request).await?),
             AiccCall::VideoExtend(request) => {
                 serde_json::to_value(self.video_extend(request).await?)
             }
@@ -5767,26 +5761,68 @@ impl AiccClient {
         AudioEnhanceRequest,
         AudioEnhanceResponse
     );
+    pub async fn video_generate(
+        &self,
+        request: VideoGenerateRequest,
+    ) -> std::result::Result<VideoGenerateResponse, RPCErrors> {
+        request.validate().map_err(|error| error.to_krpc_error())?;
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_video_generate(request, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let params = serde_json::to_value(&request).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize VideoGenerateRequest: {error}"
+                    ))
+                })?;
+                let result = client.call(ai_methods::VIDEO_GENERATE, params).await?;
+                serde_json::from_value(result).map_err(|error| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to parse video.generate response: {error}"
+                    ))
+                })
+            }
+        }
+    }
+
+    pub async fn helper_video_generate(
+        &self,
+        request: VideoGenerateHelperRequest,
+    ) -> std::result::Result<VideoGenerateResponse, RPCErrors> {
+        request.validate().map_err(|error| error.to_krpc_error())?;
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_helper_video_generate(request, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let params = serde_json::to_value(&request).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize VideoGenerateHelperRequest: {error}"
+                    ))
+                })?;
+                let result = client
+                    .call(ai_methods::HELPER_VIDEO_GENERATE, params)
+                    .await?;
+                serde_json::from_value(result).map_err(|error| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to parse helper.video_generate response: {error}"
+                    ))
+                })
+            }
+        }
+    }
+
     client_inference_method!(
-        video_text_to_video,
-        handle_video_text_to_video,
-        ai_methods::VIDEO_TXT2VIDEO,
-        VideoTextToVideoRequest,
-        VideoTextToVideoResponse
-    );
-    client_inference_method!(
-        video_image_to_video,
-        handle_video_image_to_video,
-        ai_methods::VIDEO_IMG2VIDEO,
-        VideoImageToVideoRequest,
-        VideoImageToVideoResponse
-    );
-    client_inference_method!(
-        video_to_video,
-        handle_video_to_video,
-        ai_methods::VIDEO_VIDEO2VIDEO,
-        VideoToVideoRequest,
-        VideoToVideoResponse
+        video_edit,
+        handle_video_edit,
+        ai_methods::VIDEO_EDIT,
+        VideoEditRequest,
+        VideoEditResponse
     );
     client_inference_method!(
         video_extend,
@@ -6234,34 +6270,32 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
-    async fn handle_video_text_to_video(
+    async fn handle_video_generate(
         &self,
-        _request: VideoTextToVideoRequest,
+        _request: VideoGenerateRequest,
         _ctx: RPCContext,
-    ) -> std::result::Result<VideoTextToVideoResponse, RPCErrors> {
+    ) -> std::result::Result<VideoGenerateResponse, RPCErrors> {
         Err(RPCErrors::UnknownMethod(
-            ai_methods::VIDEO_TXT2VIDEO.to_string(),
+            ai_methods::VIDEO_GENERATE.to_string(),
         ))
     }
 
-    async fn handle_video_image_to_video(
+    async fn handle_helper_video_generate(
         &self,
-        _request: VideoImageToVideoRequest,
+        _request: VideoGenerateHelperRequest,
         _ctx: RPCContext,
-    ) -> std::result::Result<VideoImageToVideoResponse, RPCErrors> {
+    ) -> std::result::Result<VideoGenerateResponse, RPCErrors> {
         Err(RPCErrors::UnknownMethod(
-            ai_methods::VIDEO_IMG2VIDEO.to_string(),
+            ai_methods::HELPER_VIDEO_GENERATE.to_string(),
         ))
     }
 
-    async fn handle_video_to_video(
+    async fn handle_video_edit(
         &self,
-        _request: VideoToVideoRequest,
+        _request: VideoEditRequest,
         _ctx: RPCContext,
-    ) -> std::result::Result<VideoToVideoResponse, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(
-            ai_methods::VIDEO_VIDEO2VIDEO.to_string(),
-        ))
+    ) -> std::result::Result<VideoEditResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(ai_methods::VIDEO_EDIT.to_string()))
     }
 
     async fn handle_video_extend(
@@ -6709,25 +6743,22 @@ impl<T: AiccHandler> AiccServerHandler<T> {
                     .handle_audio_enhance(AudioEnhanceRequest::from_json(req.params)?, ctx)
                     .await?
             )),
-            ai_methods::VIDEO_TXT2VIDEO => RPCResult::Success(json!(
+            ai_methods::VIDEO_GENERATE => RPCResult::Success(json!(
                 self.0
-                    .handle_video_text_to_video(
-                        VideoTextToVideoRequest::from_json(req.params)?,
+                    .handle_video_generate(VideoGenerateRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::HELPER_VIDEO_GENERATE => RPCResult::Success(json!(
+                self.0
+                    .handle_helper_video_generate(
+                        VideoGenerateHelperRequest::from_json(req.params)?,
                         ctx
                     )
                     .await?
             )),
-            ai_methods::VIDEO_IMG2VIDEO => RPCResult::Success(json!(
+            ai_methods::VIDEO_EDIT => RPCResult::Success(json!(
                 self.0
-                    .handle_video_image_to_video(
-                        VideoImageToVideoRequest::from_json(req.params)?,
-                        ctx
-                    )
-                    .await?
-            )),
-            ai_methods::VIDEO_VIDEO2VIDEO => RPCResult::Success(json!(
-                self.0
-                    .handle_video_to_video(VideoToVideoRequest::from_json(req.params)?, ctx)
+                    .handle_video_edit(VideoEditRequest::from_json(req.params)?, ctx)
                     .await?
             )),
             ai_methods::VIDEO_EXTEND => RPCResult::Success(json!(

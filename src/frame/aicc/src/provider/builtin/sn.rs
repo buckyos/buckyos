@@ -341,6 +341,7 @@ fn parse_sn_models(
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
+                video: None,
             })
         })
         .collect::<ProviderResult<Vec<_>>>()?;
@@ -1127,6 +1128,7 @@ mod tests {
                     availability: ModelAvailability::Available,
                     deprecated: false,
                     pricing: None,
+                    video: None,
                 }],
             },
             &catalog,

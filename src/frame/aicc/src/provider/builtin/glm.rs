@@ -95,6 +95,7 @@ pub(crate) fn glm_catalog_only_inventory(
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
+                video: None,
             },
         );
     }
@@ -247,6 +248,7 @@ mod tests {
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
+                video: None,
             }],
         };
         let inventory = InventoryBuilder::build(

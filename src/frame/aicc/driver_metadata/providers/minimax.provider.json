@@ -17,8 +17,7 @@
     "audio.tts",
     "image.txt2img",
     "image.img2img",
-    "video.txt2video",
-    "video.img2video"
+    "video.generate"
   ],
   "models": [
     {
@@ -52,52 +51,19 @@
     {
       "id": "MiniMax-H3",
       "operations": {
-        "video.txt2video": "video_generation.v2.create",
-        "video.img2video": "video_generation.v2.create"
-      },
-      "provider_options": {
-        "minimax_video_v2_constraints": {
-          "min_duration_seconds": 4,
-          "max_duration_seconds": 15,
-          "resolutions": ["768P", "2K"]
-        }
-      },
-      "request_rules": [
-        {
-          "defaults": {
-            "duration_seconds": 4,
-            "resolution": "768P"
-          }
-        }
-      ]
+        "video.generate": "video_generation.v2.create"
+      }
     },
     {
       "id": "MiniMax-H3-Max",
       "operations": {
-        "video.txt2video": "video_generation.v2.create",
-        "video.img2video": "video_generation.v2.create"
-      },
-      "provider_options": {
-        "minimax_video_v2_constraints": {
-          "min_duration_seconds": 5,
-          "max_duration_seconds": 15,
-          "resolutions": ["480P", "768P"]
-        }
-      },
-      "request_rules": [
-        {
-          "defaults": {
-            "duration_seconds": 5,
-            "resolution": "768P"
-          }
-        }
-      ]
+        "video.generate": "video_generation.v2.create"
+      }
     },
     {
       "id": "MiniMax-Hailuo-02",
       "operations": {
-        "video.txt2video": "video_generation.create",
-        "video.img2video": "video_generation.create"
+        "video.generate": "video_generation.create"
       }
     },
     {
@@ -174,8 +140,7 @@
     {
       "match": "MiniMax-Hailuo-*",
       "operations": {
-        "video.txt2video": "video_generation.create",
-        "video.img2video": "video_generation.create"
+        "video.generate": "video_generation.create"
       }
     },
     {
@@ -599,7 +564,7 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/resolution": ["2K", "2k"] },
+            "when": { "/video/resolution": "2K" },
             "amount": 0.8,
             "unit": "video_second"
           }
@@ -619,7 +584,7 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/resolution": ["480P", "480p"] },
+            "when": { "/video/resolution": "480P" },
             "amount": 0.33,
             "unit": "video_second"
           }

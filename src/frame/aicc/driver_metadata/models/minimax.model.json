@@ -251,33 +251,166 @@
     },
     {
       "id": "MiniMax-H3",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.minimax_h3", "video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax_h3", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": [
+        "video.generate.minimax_h3",
+        "video.generate.minimax",
+        "video.generate.{model}",
+        "video.generate.minimax.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "prompt_tokens": "minimax",
+          "keyframes": {"positions": ["start", "end"], "end_only": true},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "max_total": 12
+          },
+          "image_limits": {"min_edge": 256, "max_edge": 5760, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "default_duration_seconds": 4,
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "default_aspect_ratio": "16:9",
+            "keyframe_aspect_ratio": "input",
+            "resolutions": [{"name": "768P", "short_edge": 768}, {"name": "2K", "short_edge": 1440}],
+            "default_resolution": "768P",
+            "audio": "always",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "MiniMax-H3-Max",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.minimax_h3", "video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax_h3", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": [
+        "video.generate.minimax_h3",
+        "video.generate.minimax",
+        "video.generate.{model}",
+        "video.generate.minimax.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "prompt_tokens": "minimax",
+          "keyframes": {"positions": ["start", "end"], "end_only": true},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "max_total": 12
+          },
+          "image_limits": {"min_edge": 256, "max_edge": 5760, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 5, "max": 15, "integer": true},
+            "default_duration_seconds": 5,
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "default_aspect_ratio": "16:9",
+            "keyframe_aspect_ratio": "input",
+            "resolutions": [{"name": "480P", "short_edge": 480}, {"name": "768P", "short_edge": 768}],
+            "default_resolution": "768P",
+            "audio": "never",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "MiniMax-Hailuo-2.3",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}", "video.txt2video.hailuo", "video.img2video.hailuo"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": [
+        "video.generate.minimax",
+        "video.generate.{model}",
+        "video.generate.minimax.{model}",
+        "video.generate.hailuo"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "text_to_video": true,
+          "keyframes": {"positions": ["start"]},
+          "output": {
+            "durations": {"values": [6, 10]},
+            "default_duration_seconds": 6,
+            "resolutions": [{"name": "768P", "short_edge": 768}, {"name": "1080P", "short_edge": 1080}],
+            "default_resolution": "768P",
+            "keyframe_aspect_ratio": "input",
+            "audio": "never",
+            "media_types": ["video/mp4"],
+            "rules": [{"when": {"resolutions": ["1080P"]}, "durations": {"values": [6]}}]
+          }
+        }
+      }
     },
     {
       "id": "MiniMax-Hailuo-2.3-Fast",
-      "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.minimax-fast", "video.img2video.{model}", "video.img2video.minimax.{model}", "video.img2video.hailuo"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": [
+        "video.generate.minimax-fast",
+        "video.generate.{model}",
+        "video.generate.minimax.{model}",
+        "video.generate.hailuo"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "text_to_video": false,
+          "keyframes": {"positions": ["start"]},
+          "output": {
+            "durations": {"values": [6, 10]},
+            "default_duration_seconds": 6,
+            "resolutions": [{"name": "768P", "short_edge": 768}, {"name": "1080P", "short_edge": 1080}],
+            "default_resolution": "768P",
+            "keyframe_aspect_ratio": "input",
+            "audio": "never",
+            "media_types": ["video/mp4"],
+            "rules": [{"when": {"resolutions": ["1080P"]}, "durations": {"values": [6]}}]
+          }
+        }
+      }
     },
     {
       "id": "MiniMax-Hailuo-02",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}", "video.txt2video.hailuo", "video.img2video.hailuo"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": [
+        "video.generate.minimax",
+        "video.generate.{model}",
+        "video.generate.minimax.{model}",
+        "video.generate.hailuo"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "text_to_video": true,
+          "keyframes": {"positions": ["start"]},
+          "output": {
+            "durations": {"values": [6, 10]},
+            "default_duration_seconds": 6,
+            "resolutions": [{"name": "768P", "short_edge": 768}, {"name": "1080P", "short_edge": 1080}],
+            "default_resolution": "768P",
+            "keyframe_aspect_ratio": "input",
+            "audio": "never",
+            "media_types": ["video/mp4"],
+            "rules": [{"when": {"resolutions": ["1080P"]}, "durations": {"values": [6]}}]
+          }
+        }
+      }
     },
     {
       "id": "music-3.0",

@@ -146,31 +146,48 @@ mod tests {
             variant.variant == "reasoning-max"
                 && variant.provider_options["output_config"]["effort"] == "max"
         }));
-        let h3 = rules
-            .models
-            .iter()
-            .find(|model| model.id == "MiniMax-H3")
-            .unwrap();
-        let h3_max = rules
-            .models
-            .iter()
-            .find(|model| model.id == "MiniMax-H3-Max")
-            .unwrap();
+        for (model, operation) in [
+            ("MiniMax-H3", "video_generation.v2.create"),
+            ("MiniMax-H3-Max", "video_generation.v2.create"),
+        ] {
+            let rule = rules.models.iter().find(|rule| rule.id == model).unwrap();
+            assert_eq!(rule.operations["video.generate"], operation);
+            assert!(rule.provider_options.is_empty());
+            assert!(rule.request_rules.is_empty());
+        }
+        let h3 = crate::video::test_support::model_contract("minimax", "MiniMax-H3");
+        let h3_max = crate::video::test_support::model_contract("minimax", "MiniMax-H3-Max");
         assert_eq!(
-            h3.provider_options["minimax_video_v2_constraints"],
-            serde_json::json!({
-                "min_duration_seconds": 4,
-                "max_duration_seconds": 15,
-                "resolutions": ["768P", "2K"]
-            })
+            h3.output
+                .durations
+                .as_ref()
+                .map(|durations| (durations.min, durations.max)),
+            Some((Some(4.0), Some(15.0)))
         );
         assert_eq!(
-            h3_max.provider_options["minimax_video_v2_constraints"],
-            serde_json::json!({
-                "min_duration_seconds": 5,
-                "max_duration_seconds": 15,
-                "resolutions": ["480P", "768P"]
-            })
+            h3_max
+                .output
+                .durations
+                .as_ref()
+                .map(|durations| (durations.min, durations.max)),
+            Some((Some(5.0), Some(15.0)))
+        );
+        assert_eq!(
+            h3.output
+                .resolutions
+                .iter()
+                .map(|tier| tier.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["768P", "2K"]
+        );
+        assert_eq!(
+            h3_max
+                .output
+                .resolutions
+                .iter()
+                .map(|tier| tier.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["480P", "768P"]
         );
         assert_eq!(
             rules.static_inventory_models,
@@ -202,7 +219,7 @@ mod tests {
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
         assert_eq!(registration.operation_codecs.len(), 8);
-        assert_eq!(registration.native_task_codecs.len(), 4);
+        assert_eq!(registration.native_task_codecs.len(), 2);
         let builtin = minimax_catalog_files()
             .into_iter()
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))

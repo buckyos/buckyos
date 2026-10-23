@@ -19,7 +19,7 @@ export type ApiType =
   | 'image.txt2img' | 'image.img2img' | 'image.inpaint' | 'image.upscale' | 'image.bg_remove'
   | 'vision.ocr' | 'vision.caption' | 'vision.detect' | 'vision.segment'
   | 'audio.tts' | 'audio.asr' | 'audio.music' | 'audio.enhance'
-  | 'video.txt2video' | 'video.img2video' | 'video.video2video' | 'video.extend' | 'video.upscale'
+  | 'video.generate' | 'video.edit' | 'video.extend' | 'video.upscale'
   | 'agent.computer_use'
 
 export type ModelHealthStatus = 'available' | 'degraded' | 'unavailable'

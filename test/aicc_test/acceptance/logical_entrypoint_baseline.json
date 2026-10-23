@@ -24,9 +24,8 @@
     "audio.asr": "audio.asr",
     "audio.music": "audio.music",
     "audio.enhance": "audio.enhance",
-    "video.txt2video": "video.txt2video",
-    "video.img2video": "video.img2video",
-    "video.video2video": "video.video2video",
+    "video.generate": "video.generate",
+    "video.edit": "video.edit",
     "video.extend": "video.extend",
     "video.upscale": "video.upscale",
     "agent.computer_use": "agent_runtime.computer_use"
@@ -54,9 +53,8 @@
     { "path": "audio.asr", "api_type": "audio.asr", "kind": "public_function" },
     { "path": "audio.music", "api_type": "audio.music", "kind": "public_function" },
     { "path": "audio.enhance", "api_type": "audio.enhance", "kind": "public_function" },
-    { "path": "video.txt2video", "api_type": "video.txt2video", "kind": "public_function" },
-    { "path": "video.img2video", "api_type": "video.img2video", "kind": "public_function" },
-    { "path": "video.video2video", "api_type": "video.video2video", "kind": "public_function" },
+    { "path": "video.generate", "api_type": "video.generate", "kind": "public_function" },
+    { "path": "video.edit", "api_type": "video.edit", "kind": "public_function" },
     { "path": "video.extend", "api_type": "video.extend", "kind": "public_function" },
     { "path": "video.upscale", "api_type": "video.upscale", "kind": "public_function" },
     { "path": "agent_runtime.computer_use", "api_type": "agent.computer_use", "kind": "public_function" }

@@ -482,7 +482,7 @@ const allCases: SmokeCase[] = [
     }),
   },
   {
-    method: "video.txt2video",
+    method: "video.generate",
     capability: "video",
     check: "video",
     returnsUnstructuredData: true,
@@ -493,20 +493,22 @@ const allCases: SmokeCase[] = [
     }),
   },
   {
-    method: "video.img2video",
+    // The same method with the generated image as its first frame.
+    method: "video.generate",
     capability: "video",
     check: "video",
     returnsUnstructuredData: true,
     requiresGeneratedImage: true,
     buildPayload: (_runId, context) => ({
       input_json: {
-        prompt: "Animate the source image with a subtle camera move.",
+        prompt: "Animate @{first} with a subtle camera move.",
+        conditions: [{ type: "keyframe", id: "first", position: "start" }],
       },
-      resources: [requireGeneratedImage(context, "video.img2video")],
+      resources: [requireGeneratedImage(context, "video.generate")],
     }),
   },
   {
-    method: "video.video2video",
+    method: "video.edit",
     capability: "video",
     check: "video",
     returnsUnstructuredData: true,

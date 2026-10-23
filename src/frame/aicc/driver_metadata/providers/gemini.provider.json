@@ -144,9 +144,8 @@
     {
       "id": "gemini-omni-1.1-flash",
       "operations": {
-        "video.txt2video": "interactions.create",
-        "video.img2video": "interactions.create",
-        "video.video2video": "interactions.create",
+        "video.generate": "interactions.create",
+        "video.edit": "interactions.create",
         "video.extend": "interactions.create"
       },
       "request_rules": [
@@ -175,9 +174,7 @@
         "audio.music": "interactions.create",
         "embedding.text": "models.embedContent",
         "embedding.multimodal": "models.embedContent",
-        "video.txt2video": "models.predictLongRunning",
-        "video.img2video": "models.predictLongRunning",
-        "video.video2video": "models.predictLongRunning",
+        "video.generate": "models.predictLongRunning",
         "video.extend": "models.predictLongRunning"
       },
       "request_rules": [
@@ -437,12 +434,12 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/resolution": ["1080P", "1080p"] },
+            "when": { "/video/resolution": "1080p" },
             "amount": 0.12,
             "unit": "video_second"
           },
           {
-            "when": { "/resolution": ["4K", "4k"] },
+            "when": { "/video/resolution": "4k" },
             "amount": 0.3,
             "unit": "video_second"
           }
@@ -694,7 +691,7 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/resolution": ["4K", "4k"] },
+            "when": { "/video/resolution": "4k" },
             "amount": 0.6,
             "unit": "video_second"
           }
@@ -711,7 +708,7 @@
         "unit": "video_second",
         "rules": [
           {
-            "when": { "/resolution": ["1080P", "1080p"] },
+            "when": { "/video/resolution": "1080p" },
             "amount": 0.08,
             "unit": "video_second"
           }

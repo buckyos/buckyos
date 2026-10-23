@@ -24,8 +24,7 @@ import * as speech_to_text from "./commands/speech_to_text.ts";
 import * as gen_music from "./commands/gen_music.ts";
 import * as enhance_audio from "./commands/enhance_audio.ts";
 import * as gen_video from "./commands/gen_video.ts";
-import * as img2video from "./commands/img2video.ts";
-import * as video2video from "./commands/video2video.ts";
+import * as edit_video from "./commands/edit_video.ts";
 import * as extend_video from "./commands/extend_video.ts";
 import * as upscale_video from "./commands/upscale_video.ts";
 import * as ai_provider from "./commands/ai_provider.ts";
@@ -53,8 +52,7 @@ const COMMANDS: Record<string, Command> = {
   gen_music,
   enhance_audio,
   gen_video,
-  img2video,
-  video2video,
+  edit_video,
   extend_video,
   upscale_video,
   ai_provider,

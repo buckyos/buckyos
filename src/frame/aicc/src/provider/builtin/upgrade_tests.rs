@@ -60,6 +60,7 @@ fn discovery(ids: &[&str]) -> ProviderDiscoverySnapshot {
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
+                video: None,
             })
             .collect(),
     }
@@ -496,6 +497,8 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                 },
                 pricing: None,
                 match_dimensions: Default::default(),
+                video_contract: None,
+                video_facts: Default::default(),
             };
             let lowered = CallResolver::new(&catalog, &codecs)
                 .lower(&route, &call, target)
@@ -706,9 +709,8 @@ async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
     assert_eq!(
         model("active-video").api_types.clone(),
         Some(vec![
-            ApiType::VideoTextToVideo,
-            ApiType::VideoImageToVideo,
-            ApiType::VideoToVideo,
+            ApiType::VideoGenerate,
+            ApiType::VideoEdit,
             ApiType::VideoExtend,
         ])
     );
@@ -1013,32 +1015,32 @@ fn builtin_media_models_mount_their_default_families() {
             "doubao",
             "doubao-seedance-2-5-260628",
             "doubao-seedance-2-5-260628",
-            "video.txt2video.seedance",
-            "video.txt2video",
+            "video.generate.seedance",
+            "video.generate",
             "ark.contents.generate",
         ),
         (
             "doubao-agent-plan",
             "doubao-seedance-2.5",
             "doubao-seedance-2.5",
-            "video.img2video.seedance",
-            "video.img2video",
+            "video.edit.doubao",
+            "video.edit",
             "ark.contents.generate",
         ),
         (
             "minimax",
             "MiniMax-H3",
             "MiniMax-H3",
-            "video.txt2video.minimax_h3",
-            "video.txt2video",
+            "video.generate.minimax_h3",
+            "video.generate",
             "video_generation.v2.create",
         ),
         (
             "glm",
             "vidu2-image",
             "vidu2-image",
-            "video.img2video.vidu",
-            "video.img2video",
+            "video.generate.vidu",
+            "video.generate",
             "videos.generate",
         ),
     ] {
@@ -1556,12 +1558,9 @@ fn routable_builtin_unit_prices_match_operation_usage_dimensions() {
                                 | ApiType::ImageUpscale
                                 | ApiType::ImageBackgroundRemove
                         ),
-                        PricingUnit::VideoSecond => matches!(
+                        PricingUnit::VideoSecond | PricingUnit::ReferenceImage => matches!(
                             api,
-                            ApiType::VideoTextToVideo
-                                | ApiType::VideoImageToVideo
-                                | ApiType::VideoToVideo
-                                | ApiType::VideoExtend
+                            ApiType::VideoGenerate | ApiType::VideoEdit | ApiType::VideoExtend
                         ),
                         PricingUnit::AudioSecond => {
                             matches!(api, ApiType::AudioSpeechRecognition | ApiType::AudioEnhance)
@@ -1681,7 +1680,7 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
     for (model, api) in ids.into_iter().zip([
         ApiType::ImageTextToImage,
         ApiType::ImageImageToImage,
-        ApiType::VideoTextToVideo,
+        ApiType::VideoGenerate,
     ]) {
         assert!(inventory
             .models

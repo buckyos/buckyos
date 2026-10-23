@@ -15,5 +15,7 @@ export async function mockPlaygroundResponse(api: ApiType, params: JsonObject): 
   if (api === 'agent.computer_use') return { ...base, actions: [{ type: 'screenshot' }], requires_next_observation: true }
   const resource = { kind: 'named_object', obj_id: 'mock:generated-resource' }
   if (api.startsWith('image.')) return { ...base, ...(api === 'image.upscale' || api === 'image.bg_remove' ? { image: resource } : { images: [resource] }) }
-  return { ...base, [api.startsWith('audio.') ? 'audio' : 'video']: resource }
+  if (api.startsWith('audio.')) return { ...base, audio: resource }
+  const requested = record(params.output)
+  return { ...base, videos: [{ resource, media_type: 'video/mp4', provider_metadata: { duration_seconds: requested.duration_seconds ?? 5 }, ...(requested.audio === 'none' ? { deviations: [{ field: 'audio', requested: 'none', actual: true, source: 'provider' }] } : {}) }] }
 }

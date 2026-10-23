@@ -77,15 +77,15 @@
     },
     {
       "match": "wan*-i2v*",
-      "operations": { "video.img2video": "dashscope.video_synthesis" }
+      "operations": { "video.generate": "dashscope.video_synthesis" }
     },
     {
       "match": "wan*-t2v*",
-      "operations": { "video.txt2video": "dashscope.video_synthesis" }
+      "operations": { "video.generate": "dashscope.video_synthesis" }
     },
     {
       "match": "wan*-video*",
-      "operations": { "video.txt2video": "dashscope.video_synthesis", "video.img2video": "dashscope.video_synthesis" }
+      "operations": { "video.generate": "dashscope.video_synthesis" }
     },
     {
       "match": "*",
@@ -493,6 +493,6 @@
     "vision.caption",
     "image.txt2img",
     "image.img2img",
-    "video.txt2video"
+    "video.generate"
   ]
 }

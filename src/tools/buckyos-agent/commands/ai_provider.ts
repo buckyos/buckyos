@@ -27,7 +27,7 @@ export const HELP = `Usage:
   ai_provider list      # list configured providers
   ai_provider health <exact_model>  # health for one exact model
   ai_provider models [--api-type <type>]  # models that serve an api_type
-                                          # (e.g. video.txt2video), with price
+                                          # (e.g. video.generate), with price
 ${COMMON_OPTIONS_HELP}`;
 
 export async function run(argv: string[]): Promise<never> {

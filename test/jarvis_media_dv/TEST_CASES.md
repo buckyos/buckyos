@@ -11,7 +11,7 @@
 | `image_edit` | 花朵图片 + 添加大黄蜂 | edit_image、附件回传 | 返回 image Named Object | 编辑对象、位置、背景正确 |
 | `audio_sfx` | 无人声音效，随后要求转写 | 音频描述与 ASR 可信度 | 有文本且不含已知幻觉句 | 判断为非语音，保持不确定性 |
 | `speech_roundtrip` | 清晰语音，随后合成上一句 | ASR → 历史引用 → TTS | 包含编号并返回 audio | 合成语音内容与转写一致 |
-| `image_to_video` | 图片 + 4 秒动画要求 | Veo/img2video、长任务、语言 | 返回 video Named Object | 视频选图正确、终态中文 |
+| `image_to_video` | 图片 + 4 秒动画要求 | gen_video --first-frame（video.generate 首帧条件）、长任务、语言 | 返回 video Named Object | 视频选图正确、终态中文 |
 | `archive_process_and_repack` | 文档媒体混合 ZIP | 安全解包、事实提取、重新打包 | 固定事实码和 ZIP 附件 | 输出清单与内容可读 |
 | `archive_valid_shapes` | 单文档、多文档、嵌套 ZIP | 合法结构、中文路径、空目录和嵌套处理 | 固定事实码或清单 | 文件边界不串包 |
 | `archive_*_rejected` | 空、损坏、加密、路径穿越、超文件数、超解压量、超深 ZIP | 解压安全限制和明确拒绝 | 明确诊断且零结果附件 | 无越界写入或继续处理 |

@@ -29,9 +29,9 @@ export type AiccInferenceResponse =
   | Awaited<ReturnType<SdkAiccClient["audioSpeechRecognition"]>>
   | Awaited<ReturnType<SdkAiccClient["audioMusic"]>>
   | Awaited<ReturnType<SdkAiccClient["audioEnhance"]>>
-  | Awaited<ReturnType<SdkAiccClient["videoTextToVideo"]>>
-  | Awaited<ReturnType<SdkAiccClient["videoImageToVideo"]>>
-  | Awaited<ReturnType<SdkAiccClient["videoToVideo"]>>
+  | Awaited<ReturnType<SdkAiccClient["videoGenerate"]>>
+  | Awaited<ReturnType<SdkAiccClient["helperVideoGenerate"]>>
+  | Awaited<ReturnType<SdkAiccClient["videoEdit"]>>
   | Awaited<ReturnType<SdkAiccClient["videoExtend"]>>
   | Awaited<ReturnType<SdkAiccClient["videoUpscale"]>>;
 
@@ -116,7 +116,22 @@ export function aiResponseArtifacts(
   }
   append("image", record.image);
   append("audio", record.audio);
-  append("video", record.video);
+  if (Array.isArray(record.videos)) {
+    record.videos.forEach((value, index) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return;
+      const video = value as Record<string, unknown>;
+      const before = artifacts.length;
+      append(`video_${index + 1}`, video.resource);
+      if (artifacts.length > before) {
+        const appended = artifacts[before];
+        if (typeof video.media_type === "string") {
+          appended.mime = video.media_type;
+        }
+        appended.metadata = videoMetadata(video);
+      }
+      append(`last_frame_${index + 1}`, video.last_frame);
+    });
+  }
   if (Array.isArray(record.stems)) {
     record.stems.forEach((value, index) => append(`stem_${index + 1}`, value));
   }
@@ -164,6 +179,13 @@ export function aiResponseArtifacts(
   return artifacts;
 }
 
+// What AICC knows about a generated video besides its file: the Provider's
+// report, what AICC measured in the file, and how both differ from the request.
+function videoMetadata(video: Record<string, unknown>): JsonValue {
+  const { resource: _resource, last_frame: _lastFrame, ...metadata } = video;
+  return metadata as JsonValue;
+}
+
 export function aiResponseData(
   response: AiccInferenceResponse,
 ): JsonValue | null {
@@ -183,11 +205,18 @@ export function aiResponseData(
     "images",
     "image",
     "audio",
-    "video",
+    "videos",
   ]);
-  const data = Object.fromEntries(
+  const data: Record<string, unknown> = Object.fromEntries(
     Object.entries(record).filter(([key]) => !omitted.has(key)),
   );
+  if (Array.isArray(record.videos)) {
+    data.videos = record.videos.map((video) =>
+      video && typeof video === "object" && !Array.isArray(video)
+        ? videoMetadata(video as Record<string, unknown>)
+        : null
+    );
+  }
   return Object.keys(data).length ? data as JsonValue : null;
 }
 

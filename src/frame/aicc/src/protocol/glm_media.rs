@@ -1,14 +1,21 @@
+use super::video::{
+    generated_video, planned_resource, require_video_parameters, unsupported, video_generate_input,
+    video_output, whole_seconds,
+};
 use super::{
     openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, HttpBody,
     HttpRequest, HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
     NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding, OperationDescriptor,
-    ProtocolError, ProtocolErrorKind, ProtocolOutput, ProtocolResultValue,
-    OPENAI_AUDIO_SPEECH_OPERATION_ID, OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
-    OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_IMAGES_GENERATE_OPERATION_ID,
+    ProtocolError, ProtocolErrorKind, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
+    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
+    OPENAI_IMAGES_GENERATE_OPERATION_ID,
 };
+use crate::video::VideoScenario;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef};
+use buckyos_api::{
+    AiUsage, ApiType, KeyframePosition, ResourceRef, VideoConditionKind, VideoMetadata,
+};
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
@@ -45,25 +52,20 @@ pub(super) fn glm_media_registration() -> (Vec<OperationDescriptor>, CodecRegist
 
     let video = OperationDescriptor {
         operation_id: GLM_VIDEOS_OPERATION_ID.to_owned(),
-        bindings: [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo]
-            .into_iter()
-            .map(|api_type| OperationBinding::new(api_type, [super::ExecutionMode::NativeTask]))
-            .collect(),
+        bindings: vec![OperationBinding::new(
+            ApiType::VideoGenerate,
+            [super::ExecutionMode::NativeTask],
+        )],
         supports_cancel: false,
         supports_webhook: false,
         max_request_bytes: MAX_REQUEST_BYTES,
         max_response_bytes: MAX_RESPONSE_BYTES,
     };
-    registration.native_task_codecs.extend([
-        Arc::new(GlmVideoCodec {
+    registration
+        .native_task_codecs
+        .push(Arc::new(GlmVideoCodec {
             descriptor: video.clone(),
-            api_type: ApiType::VideoTextToVideo,
-        }) as Arc<dyn NativeTaskCodec>,
-        Arc::new(GlmVideoCodec {
-            descriptor: video.clone(),
-            api_type: ApiType::VideoImageToVideo,
-        }) as Arc<dyn NativeTaskCodec>,
-    ]);
+        }) as Arc<dyn NativeTaskCodec>);
     operations.push(video);
     (operations, registration)
 }
@@ -96,7 +98,6 @@ pub(crate) fn glm_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
 #[derive(Clone)]
 struct GlmVideoCodec {
     descriptor: OperationDescriptor,
-    api_type: ApiType,
 }
 
 #[async_trait]
@@ -112,7 +113,7 @@ impl NativeTaskCodec for GlmVideoCodec {
     }
 
     fn api_type(&self) -> ApiType {
-        self.api_type
+        ApiType::VideoGenerate
     }
 
     fn operations(&self) -> BTreeSet<NativeTaskOperation> {
@@ -125,7 +126,7 @@ impl NativeTaskCodec for GlmVideoCodec {
 
     fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
         match input.operation {
-            NativeTaskOperation::Submit => encode_submit(input, self.api_type),
+            NativeTaskOperation::Submit => encode_submit(input),
             NativeTaskOperation::Status | NativeTaskOperation::Result => {
                 let task_id = safe_task_id(input.remote_task_id)?;
                 json_request(
@@ -194,63 +195,74 @@ impl NativeTaskCodec for GlmVideoCodec {
     }
 }
 
-fn encode_submit(
-    input: &NativeTaskInput<'_>,
-    api_type: ApiType,
-) -> ProtocolResultValue<HttpRequest> {
+fn encode_submit(input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
     let codec_input = input
         .codec_input
         .ok_or_else(|| ProtocolError::invalid_request("GLM video submit requires input"))?;
-    require_parameter_subset(input.resolved_parameters)?;
+    require_video_parameters(input.resolved_parameters, "GLM", &[])?;
     let model = input
         .resolved_parameters
         .get("provider_model_id")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| ProtocolError::invalid_request("missing resolved provider_model_id"))?;
-    let mut body = match (&codec_input.canonical_request, api_type) {
-        (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => Map::from_iter([
-            ("model".to_owned(), json!(model)),
-            ("prompt".to_owned(), json!(request.prompt)),
-        ]),
-        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => Map::from_iter([
-            ("model".to_owned(), json!(model)),
-            ("prompt".to_owned(), json!(request.prompt)),
-            (
-                "image_url".to_owned(),
-                json!(resource_string(&request.image, input.context)?),
-            ),
-        ]),
-        _ => {
-            return Err(ProtocolError::invalid_request(
-                "GLM video codec received the wrong canonical request",
+    let (request, plan) = video_generate_input(codec_input)?;
+    if plan.negative_prompt.is_some() || plan.seed.is_some() || plan.resolution.is_some() {
+        return Err(unsupported(
+            "GLM video generation has no negative prompt, seed or resolution tier",
+        ));
+    }
+    let mut body = Map::from_iter([("model".to_owned(), json!(model))]);
+    if let Some(prompt) = &plan.submitted_prompt {
+        body.insert("prompt".to_owned(), json!(prompt));
+    }
+    let mut images = Vec::new();
+    for planned in &plan.inputs {
+        if !matches!(
+            planned.kind,
+            VideoConditionKind::Keyframe | VideoConditionKind::ReferenceImage
+        ) {
+            return Err(unsupported(
+                "GLM video generation takes keyframes or reference images only",
             ));
         }
-    };
-    match &codec_input.canonical_request {
-        AiccCall::VideoTextToVideo(request) => {
-            if let Some(duration) = request.duration_seconds {
-                body.insert(
-                    "duration".to_owned(),
-                    json!(super::adapter::integer_seconds(duration)?),
-                );
-            }
-            if let Some(resolution) = &request.resolution {
-                body.insert("size".to_owned(), json!(resolution));
-            }
+        images.push((
+            planned.position,
+            resource_string(planned_resource(request, planned)?, input.context)?,
+        ));
+    }
+    // A start/end pair goes in order; a lone start frame or reference set is
+    // sent as the protocol's single URL or URL list.
+    images.sort_by_key(|(position, _)| *position != Some(KeyframePosition::Start));
+    match images.as_slice() {
+        [] => {}
+        [(_, url)] if plan.scenario != VideoScenario::References => {
+            body.insert("image_url".to_owned(), json!(url));
         }
-        AiccCall::VideoImageToVideo(request) => {
-            if let Some(duration) = request.duration_seconds {
-                body.insert(
-                    "duration".to_owned(),
-                    json!(super::adapter::integer_seconds(duration)?),
-                );
-            }
-            if let Some(resolution) = &request.resolution {
-                body.insert("size".to_owned(), json!(resolution));
-            }
+        _ => {
+            body.insert(
+                "image_url".to_owned(),
+                json!(images.iter().map(|(_, url)| url).collect::<Vec<_>>()),
+            );
         }
-        _ => {}
+    }
+    if let Some(seconds) = whole_seconds(&plan)? {
+        body.insert("duration".to_owned(), json!(seconds));
+    }
+    if let Some(size) = plan.size {
+        body.insert(
+            "size".to_owned(),
+            json!(format!("{}x{}", size.width, size.height)),
+        );
+    }
+    if let Some(fps) = plan.fps {
+        if fps.fract() != 0.0 {
+            return Err(unsupported("GLM video fps must be a whole number"));
+        }
+        body.insert("fps".to_owned(), json!(fps as u64));
+    }
+    if let Some(audio) = plan.generate_audio {
+        body.insert("with_audio".to_owned(), json!(audio));
     }
     json_request(
         input.context,
@@ -310,31 +322,23 @@ fn decode_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
         .ok_or_else(|| {
             ProtocolError::invalid_response("GLM video result is missing video_result")
         })?;
-    let mut resources = Vec::with_capacity(videos.len());
-    let mut artifacts = Vec::with_capacity(videos.len());
-    for (index, video) in videos.iter().enumerate() {
+    let mut generated = Vec::with_capacity(videos.len());
+    for video in videos {
         let url = video
             .get("url")
             .and_then(Value::as_str)
             .filter(|url| !url.trim().is_empty())
             .ok_or_else(|| ProtocolError::invalid_response("GLM video result is missing url"))?;
-        let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
-        resources.push(resource.clone());
-        artifacts.push(AiArtifact {
-            name: format!("video-{index}"),
-            resource,
-            mime: Some("video/mp4".to_owned()),
-            metadata: video.get("cover_image_url").cloned(),
-        });
+        generated.push(generated_video(
+            ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned())),
+            Some("video/mp4".to_owned()),
+            VideoMetadata::default(),
+        ));
     }
-    let video = resources.into_iter().next().ok_or_else(|| {
-        ProtocolError::invalid_response("GLM video result must contain at least one video")
-    })?;
-    Ok(NativeTaskOutput::Result(ProtocolOutput {
-        value: json!({"video": video}),
-        usage: Some(AiUsage::request_units(1)),
-        artifacts,
-    }))
+    Ok(NativeTaskOutput::Result(video_output(
+        generated,
+        AiUsage::request_units(1),
+    )?))
 }
 
 fn resource_string(
@@ -364,20 +368,6 @@ fn resource_string(
             ))
         }
     }
-}
-
-fn require_parameter_subset(
-    parameters: &std::collections::BTreeMap<String, Value>,
-) -> ProtocolResultValue<()> {
-    if let Some(name) = parameters
-        .keys()
-        .find(|name| name.as_str() != "provider_model_id")
-    {
-        return Err(ProtocolError::invalid_request(format!(
-            "resolved GLM video parameter `{name}` is not supported"
-        )));
-    }
-    Ok(())
 }
 
 fn safe_task_id(value: Option<&str>) -> ProtocolResultValue<&str> {

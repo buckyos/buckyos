@@ -16,6 +16,7 @@ use crate::protocol::openrouter_decisions::{
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_EMBEDDINGS_OPERATION_ID,
     OPENAI_RESPONSES_OPERATION_ID, OPENROUTER_RERANK_OPERATION_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
+    OPENROUTER_VIDEOS_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
@@ -30,6 +31,7 @@ use std::time::Duration;
 pub(crate) const OPENROUTER_PROVIDER_PROFILE_ID: &str = "openrouter";
 
 const MODELS_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
+const VIDEO_PRICING_SOURCE: &str = "https://openrouter.ai/api/v1/videos/models";
 
 #[cfg(test)]
 pub(crate) fn openrouter_profile() -> ProviderProfile {
@@ -140,26 +142,20 @@ impl ProviderDiscovery for OpenRouterDiscovery {
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
         validate_context(context)?;
-        let mut request =
-            HttpRequest::new(Method::GET, models_endpoint(&context.instance.base_url)?);
-        context
-            .credential
-            .apply(&mut request.headers)
-            .map_err(|error| ProviderError::Credential(error.to_string()))?;
-        request.timeout = Some(Duration::from_secs(30));
-        request.max_response_bytes = Some(MODELS_RESPONSE_LIMIT);
         let response = self
-            .transport
-            .send(request)
-            .await
-            .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        ensure_success(&response)?;
+            .get(context, models_endpoint(&context.instance.base_url)?)
+            .await?;
         let wire: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
             ProviderError::DiscoveryResponse(format!(
                 "OpenRouter models response is invalid: {error}"
             ))
         })?;
         let mut models = BTreeMap::new();
+        let canonical_slugs = wire
+            .data
+            .iter()
+            .map(|model| (model.id.clone(), model.canonical_slug.clone()))
+            .collect::<BTreeMap<_, _>>();
         let verified_target = wire
             .data
             .iter()
@@ -209,6 +205,7 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                 }
             };
             let decision = api_types == [ApiType::Decision];
+            let video = api_types == [ApiType::VideoGenerate];
             let mut availability = ModelAvailability::Available;
             if decision {
                 supported_features = DECISION_FEATURES.into_iter().map(str::to_owned).collect();
@@ -250,9 +247,22 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                     remote_methods: Some(remote_methods),
                     availability,
                     deprecated: model.expiration_date.is_some(),
-                    pricing: parse_pricing(model.pricing)?,
+                    // Video jobs are priced by `/videos/models`, not per token.
+                    pricing: if video {
+                        None
+                    } else {
+                        parse_pricing(model.pricing)?
+                    },
+                    video: None,
                 },
             );
+        }
+        if models
+            .values()
+            .any(|model| model.api_types.as_deref() == Some(&[ApiType::VideoGenerate]))
+        {
+            self.attach_video_catalog(context, &canonical_slugs, &mut models)
+                .await?;
         }
         let models = models.into_values().collect::<Vec<_>>();
         let revision = response
@@ -270,6 +280,186 @@ impl ProviderDiscovery for OpenRouterDiscovery {
         validate_discovery(&snapshot)?;
         Ok(snapshot)
     }
+}
+
+impl OpenRouterDiscovery {
+    async fn get(
+        &self,
+        context: &DiscoveryContext<'_>,
+        url: String,
+    ) -> ProviderResult<HttpResponse> {
+        let mut request = HttpRequest::new(Method::GET, url);
+        context
+            .credential
+            .apply(&mut request.headers)
+            .map_err(|error| ProviderError::Credential(error.to_string()))?;
+        request.timeout = Some(Duration::from_secs(30));
+        request.max_response_bytes = Some(MODELS_RESPONSE_LIMIT);
+        let response = self
+            .transport
+            .send(request)
+            .await
+            .map_err(|error| ProviderError::Discovery(error.to_string()))?;
+        ensure_success(&response)?;
+        Ok(response)
+    }
+
+    /// Video models become routable only with the channel's own video
+    /// catalog entry: its output facts form the channel contract and its SKUs
+    /// the price. A model the catalog lacks, or whose canonical slug differs,
+    /// stays listed but unavailable.
+    async fn attach_video_catalog(
+        &self,
+        context: &DiscoveryContext<'_>,
+        canonical_slugs: &BTreeMap<String, Option<String>>,
+        models: &mut BTreeMap<String, DiscoveredModel>,
+    ) -> ProviderResult<()> {
+        let catalog = match self
+            .get(
+                context,
+                api_endpoint(&context.instance.base_url, "videos/models")?,
+            )
+            .await
+        {
+            Ok(response) => serde_json::from_slice::<VideoModelsResponse>(&response.body)
+                .map_err(|error| {
+                    ProviderError::DiscoveryResponse(format!(
+                        "OpenRouter video models response is invalid: {error}"
+                    ))
+                })?
+                .data
+                .into_iter()
+                .map(|model| (model.id.clone(), model))
+                .collect::<BTreeMap<_, _>>(),
+            Err(error) => {
+                log::warn!("OpenRouter video catalog is unavailable: {error}");
+                BTreeMap::new()
+            }
+        };
+        for (id, model) in models.iter_mut() {
+            if model.api_types.as_deref() != Some(&[ApiType::VideoGenerate]) {
+                continue;
+            }
+            let Some(entry) = catalog.get(id) else {
+                log::warn!("OpenRouter video model {id} is missing from /videos/models");
+                model.availability = ModelAvailability::Unavailable;
+                continue;
+            };
+            let listed_slug = canonical_slugs.get(id).cloned().flatten();
+            if listed_slug.is_some() && entry.canonical_slug != listed_slug {
+                log::warn!(
+                    "OpenRouter video model {id} canonical slug differs between catalogs: {:?} vs {:?}",
+                    listed_slug,
+                    entry.canonical_slug
+                );
+                model.availability = ModelAvailability::Unavailable;
+                continue;
+            }
+            model.video = Some(crate::video::DiscoveredVideoFacts {
+                durations: entry
+                    .supported_durations
+                    .iter()
+                    .flatten()
+                    .map(|seconds| *seconds as f64)
+                    .collect(),
+                resolutions: entry.supported_resolutions.clone().unwrap_or_default(),
+                aspect_ratios: entry.supported_aspect_ratios.clone().unwrap_or_default(),
+                sizes: entry.supported_sizes.clone().unwrap_or_default(),
+                keyframes: entry
+                    .supported_frame_images
+                    .iter()
+                    .flatten()
+                    .filter_map(|frame| match frame.as_str() {
+                        "first_frame" => Some(buckyos_api::KeyframePosition::Start),
+                        "last_frame" => Some(buckyos_api::KeyframePosition::End),
+                        _ => None,
+                    })
+                    .collect(),
+                generate_audio: entry.generate_audio,
+                seed: entry.seed,
+            });
+            model.pricing = entry
+                .pricing_skus
+                .as_ref()
+                .map(|skus| parse_video_pricing(id, skus))
+                .transpose()?
+                .flatten();
+        }
+        Ok(())
+    }
+}
+
+/// `duration_seconds` is a per-second price, `duration_seconds_<resolution>`
+/// its per-resolution override and `reference_images` a per-image add-on.
+/// Any other SKU (token-metered, audio variants, ...) leaves the price
+/// unknown rather than undercounted.
+fn parse_video_pricing(
+    model: &str,
+    skus: &BTreeMap<String, String>,
+) -> ProviderResult<Option<Pricing>> {
+    let mut base = None;
+    let mut rules = Vec::new();
+    let mut addons = Vec::new();
+    for (sku, price) in skus {
+        let amount = parse_nonnegative_price(sku, Some(price))?;
+        let Some(amount) = amount else {
+            return Ok(None);
+        };
+        if sku == "duration_seconds" {
+            base = Some(amount);
+        } else if let Some(resolution) = sku.strip_prefix("duration_seconds_") {
+            rules.push(crate::catalog::PricingRule {
+                when: crate::matching::MatchRule::Object(BTreeMap::from([(
+                    "/video/resolution".to_owned(),
+                    serde_json::Value::String(resolution.to_owned()),
+                )])),
+                amount,
+                unit: Some(crate::catalog::PricingUnit::VideoSecond),
+                input_token: None,
+                output_token: None,
+                cache_input_token: None,
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
+            });
+        } else if sku == "reference_images" {
+            addons.push(crate::catalog::PricingAddon {
+                unit: crate::catalog::PricingUnit::ReferenceImage,
+                amount,
+            });
+        } else {
+            log::warn!("OpenRouter video model {model} has unsupported price SKU {sku}; price stays unknown");
+            return Ok(None);
+        }
+    }
+    if base.is_none() && rules.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Pricing {
+        currency: "USD".to_owned(),
+        source_url: Some(VIDEO_PRICING_SOURCE.to_owned()),
+        verified_at: Some(super::super::now_ms()?.to_string()),
+        ratio_exception: None,
+        cache_write_input_token: None,
+        audio_input_token: None,
+        image_input_token: None,
+        cache_write_1h_input_token: None,
+        audio_output_token: None,
+        image_output_token: None,
+        input_token: None,
+        output_token: None,
+        cache_input_token: None,
+        estimated_cost: None,
+        unit: Some(crate::catalog::PricingUnit::VideoSecond),
+        amount: base,
+        rules,
+        tiers: None,
+        time_windows: Vec::new(),
+        addons,
+    }))
 }
 
 fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing>> {
@@ -302,6 +492,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         tiers: None,
 
         time_windows: Vec::new(),
+        addons: Vec::new(),
     }))
 }
 
@@ -347,6 +538,14 @@ fn validate_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
 }
 
 fn models_endpoint(base_url: &str) -> ProviderResult<String> {
+    let mut url = Url::parse(&api_endpoint(base_url, "models")?).map_err(|_| {
+        ProviderError::InvalidConfiguration("OpenRouter base_url is invalid".to_owned())
+    })?;
+    url.set_query(Some("output_modalities=all"));
+    Ok(url.to_string())
+}
+
+fn api_endpoint(base_url: &str, endpoint: &str) -> ProviderResult<String> {
     let mut url = Url::parse(base_url).map_err(|_| {
         ProviderError::InvalidConfiguration("OpenRouter base_url is invalid".to_owned())
     })?;
@@ -363,8 +562,8 @@ fn models_endpoint(base_url: &str) -> ProviderResult<String> {
     } else {
         format!("{path}/api/v1")
     };
-    url.set_path(&format!("{prefix}/models"));
-    url.set_query(Some("output_modalities=all"));
+    url.set_path(&format!("{prefix}/{endpoint}"));
+    url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
 }
@@ -423,6 +622,7 @@ fn classify_modalities(
         [one] if one == "embeddings" => {
             Some((ApiType::EmbeddingText, OPENAI_EMBEDDINGS_OPERATION_ID))
         }
+        [one] if one == "video" => Some((ApiType::VideoGenerate, OPENROUTER_VIDEOS_OPERATION_ID)),
         _ if output.iter().any(|m| m == "text")
             && output
                 .iter()
@@ -440,6 +640,25 @@ struct ModelArchitecture {
     input_modalities: Vec<String>,
     #[serde(default)]
     output_modalities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct VideoModelsResponse {
+    data: Vec<VideoModelObject>,
+}
+
+#[derive(Deserialize)]
+struct VideoModelObject {
+    id: String,
+    canonical_slug: Option<String>,
+    supported_resolutions: Option<Vec<String>>,
+    supported_aspect_ratios: Option<Vec<String>>,
+    supported_sizes: Option<Vec<String>>,
+    supported_durations: Option<Vec<u64>>,
+    supported_frame_images: Option<Vec<String>>,
+    generate_audio: Option<bool>,
+    seed: Option<bool>,
+    pricing_skus: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -641,6 +860,243 @@ mod tests {
             "/../../../test/aicc_test/acceptance/fixtures/openrouter-jev-models.json"
         )))
         .unwrap()
+    }
+
+    struct SequenceTransport {
+        urls: Mutex<Vec<String>>,
+        responses: Mutex<std::collections::VecDeque<serde_json::Value>>,
+    }
+
+    #[async_trait]
+    impl OpenRouterModelsTransport for SequenceTransport {
+        async fn send(
+            &self,
+            request: HttpRequest,
+        ) -> crate::protocol::ProtocolResultValue<HttpResponse> {
+            self.urls.lock().unwrap().push(request.url.clone());
+            let body = self.responses.lock().unwrap().pop_front().unwrap();
+            Ok(HttpResponse {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+                request_id: "video-discovery".into(),
+                retry_after: None,
+            })
+        }
+    }
+
+    /// `/models?output_modalities=all` and `/videos/models` entries as
+    /// OpenRouter listed them on 2026-10-22.
+    fn openrouter_video_catalogs(include_max: bool) -> (serde_json::Value, serde_json::Value) {
+        let listed = |id: &str, slug: &str, inputs: &[&str]| {
+            serde_json::json!({
+                "id": id, "canonical_slug": slug, "context_length": 0,
+                "architecture": {"input_modalities": inputs, "output_modalities": ["video"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+                "supported_parameters": ["max_tokens", "temperature", "top_p"],
+                "expiration_date": null
+            })
+        };
+        let models = serde_json::json!({"data": [
+            listed("minimax/hailuo-3", "minimax/hailuo-03-20260730", &["text", "image", "video", "audio"]),
+            listed("minimax/hailuo-3-max", "minimax/hailuo-3-max-20260901", &["text", "image"]),
+            listed("bytedance/seedance-2.0", "bytedance/seedance-2.0-20260414", &["text", "image", "video", "audio"]),
+        ]});
+        let ratios = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+        let mut videos = vec![serde_json::json!({
+            "id": "minimax/hailuo-3", "canonical_slug": "minimax/hailuo-03-20260730",
+            "name": "MiniMax: H3", "created": 1785366648,
+            "supported_resolutions": ["2K"], "supported_aspect_ratios": ratios,
+            "supported_sizes": null, "supported_durations": [5,6,7,8,9,10,11,12,13,14,15],
+            "supported_frame_images": ["first_frame", "last_frame"],
+            "upscale_factor": null, "creativity": null, "generate_audio": true, "seed": false,
+            "pricing_skus": {"duration_seconds": "0.13", "reference_images": "0.04"},
+            "allowed_passthrough_parameters": ["aigc_watermark"]
+        })];
+        if include_max {
+            videos.push(serde_json::json!({
+                "id": "minimax/hailuo-3-max", "canonical_slug": "minimax/hailuo-3-max-20260901",
+                "name": "MiniMax: H3 Max", "created": 1788313310,
+                "supported_resolutions": ["768p", "480p"], "supported_aspect_ratios": ratios,
+                "supported_sizes": null, "supported_durations": [5,6,7,8,9,10,11,12,13,14,15],
+                "supported_frame_images": ["first_frame", "last_frame"],
+                "upscale_factor": null, "creativity": null, "generate_audio": false, "seed": false,
+                "pricing_skus": {"duration_seconds": "0.08", "duration_seconds_480p": "0.05", "duration_seconds_768p": "0.08"},
+                "allowed_passthrough_parameters": ["aigc_watermark"]
+            }));
+        }
+        videos.push(serde_json::json!({
+            "id": "bytedance/seedance-2.0", "canonical_slug": "bytedance/seedance-2.0-20260414",
+            "name": "ByteDance: Seedance 2.0", "created": 1776211362,
+            "supported_resolutions": ["480p", "720p"], "supported_aspect_ratios": ratios,
+            "supported_sizes": null, "supported_durations": [4, 5],
+            "supported_frame_images": ["first_frame"], "upscale_factor": null, "creativity": null,
+            "generate_audio": true, "seed": true,
+            "pricing_skus": {"video_tokens": "0.000007"},
+            "allowed_passthrough_parameters": []
+        }));
+        (models, serde_json::json!({"data": videos}))
+    }
+
+    async fn openrouter_video_inventory(
+        include_max: bool,
+    ) -> (
+        crate::provider::ProviderDiscoverySnapshot,
+        crate::provider::ProviderInventorySnapshot,
+        Vec<String>,
+    ) {
+        let (models, videos) = openrouter_video_catalogs(include_max);
+        let transport = Arc::new(SequenceTransport {
+            urls: Mutex::new(Vec::new()),
+            responses: Mutex::new([models, videos].into()),
+        });
+        let discovery = OpenRouterDiscovery::with_transport(transport.clone());
+        let profile = openrouter_profile();
+        let instance = ProviderInstanceConfig {
+            provider_instance_name: "openrouter-main".into(),
+            provider_profile_id: "openrouter".into(),
+            protocol_adapter_id: "openrouter-responses".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            operation_base_urls: BTreeMap::new(),
+            credential: CredentialReference {
+                reference: "secret://openrouter".into(),
+            },
+            credential_kind: None,
+            provider_rules_id: Some("openrouter".into()),
+            region: None,
+            workspace: None,
+            account: None,
+            request_timeout: Duration::from_secs(30),
+            auto_sync_models: true,
+            instance_rules: None,
+        };
+        let credential = ResolvedCredential::bearer("secret://openrouter", "sk-or").unwrap();
+        let snapshot = discovery
+            .discover(&DiscoveryContext {
+                profile: &profile,
+                instance: &instance,
+                credential: &credential,
+            })
+            .await
+            .unwrap();
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let providers = super::super::builtin_provider_registry(&catalog).unwrap();
+        let inventory = crate::provider::InventoryBuilder::build_with_matcher(
+            &profile,
+            &instance,
+            snapshot.clone(),
+            &catalog,
+            &providers.codecs(),
+            Some(&discovery),
+        )
+        .unwrap();
+        let urls = transport.urls.lock().unwrap().clone();
+        (snapshot, inventory, urls)
+    }
+
+    #[tokio::test]
+    async fn h3_channel_ids_map_to_minimax_identities_with_channel_contract_and_prices() {
+        let (snapshot, inventory, urls) = openrouter_video_inventory(true).await;
+        assert_eq!(
+            urls,
+            [
+                "https://openrouter.ai/api/v1/models?output_modalities=all",
+                "https://openrouter.ai/api/v1/videos/models",
+            ]
+        );
+        let discovered = |id: &str| {
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap()
+        };
+        let h3 = discovered("minimax/hailuo-3");
+        assert_eq!(h3.api_types, Some(vec![ApiType::VideoGenerate]));
+        assert_eq!(
+            h3.remote_methods,
+            Some(BTreeSet::from([OPENROUTER_VIDEOS_OPERATION_ID.to_owned()]))
+        );
+        let price = h3.pricing.as_ref().unwrap();
+        assert_eq!(price.unit, Some(crate::catalog::PricingUnit::VideoSecond));
+        assert_eq!(price.amount, Some(0.13));
+        assert_eq!(
+            price.addons[0].unit,
+            crate::catalog::PricingUnit::ReferenceImage
+        );
+        assert_eq!(price.addons[0].amount, 0.04);
+        let max_price = discovered("minimax/hailuo-3-max").pricing.as_ref().unwrap();
+        assert_eq!(max_price.amount, Some(0.08));
+        assert_eq!(max_price.rules.len(), 2);
+        // A token-metered SKU is not mistaken for a free or per-second price.
+        assert!(discovered("bytedance/seedance-2.0").pricing.is_none());
+
+        let model = |id: &str| {
+            inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap_or_else(|| panic!("{id} is not in the inventory"))
+        };
+        for (id, origin) in [
+            ("minimax/hailuo-3", "MiniMax-H3"),
+            ("minimax/hailuo-3-max", "MiniMax-H3-Max"),
+        ] {
+            let model = model(id);
+            assert_eq!(model.model_driver_id, "minimax");
+            assert_eq!(model.origin_model_id, origin);
+            assert_eq!(model.api_types, vec![ApiType::VideoGenerate]);
+            assert_eq!(model.operations["video.generate"], "videos.create");
+            assert!(model
+                .logical_mounts
+                .contains(&"video.generate.minimax_h3".to_owned()));
+            assert!(model.pricing.is_some());
+        }
+        let h3 = crate::video::VideoGenerationContract::from_capabilities(
+            &model("minimax/hailuo-3").capabilities,
+        )
+        .unwrap();
+        assert_eq!(h3.output.resolutions[0].name, "2K");
+        assert_eq!(h3.output.audio, crate::video::AudioOutput::Always);
+        assert_eq!(h3.references.image.as_ref().map(|limit| limit.max), Some(9));
+        assert!(h3.references.video.is_none() && h3.references.audio.is_none());
+        let max = crate::video::VideoGenerationContract::from_capabilities(
+            &model("minimax/hailuo-3-max").capabilities,
+        )
+        .unwrap();
+        assert!(max.references.image.is_none());
+        assert_eq!(max.output.audio, crate::video::AudioOutput::Unknown);
+        assert!(inventory
+            .unmatched_models
+            .iter()
+            .any(|unmatched| unmatched.provider_model_id == "bytedance/seedance-2.0"));
+    }
+
+    #[tokio::test]
+    async fn a_video_model_missing_from_the_video_catalog_is_not_routable() {
+        let (snapshot, inventory, _) = openrouter_video_inventory(false).await;
+        assert_eq!(
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == "minimax/hailuo-3-max")
+                .unwrap()
+                .availability,
+            ModelAvailability::Unavailable
+        );
+        assert!(inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "minimax/hailuo-3-max")
+            .is_none_or(|model| model.api_types.is_empty()));
     }
 
     async fn jev_inventory(

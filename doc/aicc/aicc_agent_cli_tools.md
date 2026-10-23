@@ -26,7 +26,7 @@ Agent CLI 的目标是把常用 AI 能力变成可组合、可脚本化、可观
 1. 文生图、图生图、局部重绘、超分、抠图。
 2. OCR、图片描述、检测、分割。
 3. TTS、ASR、音乐生成、音频增强。
-4. 文生视频、图生视频、视频编辑、续写、超分。
+4. 视频生成（文本、首尾帧、参考素材）、视频编辑、续写、超分。
 5. provider / quota 等服务辅助查询命令。
 
 CLI 只列出最终结果对用户或交付物有直接意义的能力。`embedding.text`、`rerank` 这类中间计算能力应保留在 SDK / Agent Runtime 内部使用，不作为独立面向 Agent 的短命令暴露。
@@ -447,58 +447,60 @@ enhance_audio <input_audio> <output_audio>
 
 ### 6.1 `gen_video`
 
-文生视频。映射到 `video.txt2video`。
+视频生成。映射到 `video.generate`；`--model` 为逻辑模型（默认 `video.generate`）时走 `helper.video_generate`。协议见 [video_generation.md](video_generation.md)。
 
 ```bash
 gen_video "A cinematic tracking shot through a lantern-lit market at dusk." result.mp4
+gen_video "Slow push-in; the lamp turns on at the end." result.mp4 --first-frame start.png --last-frame end.png
+gen_video "@{hero} runs through the rain toward @{door}." result.mp4 --ref-image hero=hero.png --ref-image door=door.png --duration 6 --aspect 16:9
 ```
 
 参数：
 
 ```text
 gen_video <prompt> <output_video>
+  --first-frame <image>            # keyframe start（id "first"）
+  --last-frame <image>             # keyframe end（id "last"）
+  --ref-image <id>=<image>         # reference_image，可重复
+  --ref-video <id>=<video>         # reference_video，可重复
+  --ref-audio <id>=<audio>         # reference_audio，可重复
+  --with-audio <id>                # 该 reference_video 的 include_audio=true
+  --clip <id>=<start>-<end>        # reference_video / reference_audio 的 time_range（秒）
   --duration <seconds>
-  --aspect <16:9|9:16|1:1>
-  --resolution <720p|1080p|4k>
-  --audio
+  --aspect <W:H>
+  --short-edge <px> | --size <WxH>
+  --fps <n>
+  --audio <auto|generate|none>
+  --format <mp4|webm|mov>
+  --negative <text>
   --seed <int>
-  --fps <int>
-  --format <mp4|webm>
 ```
 
-### 6.2 `img2video`
+文本、首尾帧和参考图/视频/音频都是同一请求的 `conditions[]`；素材可以是本地路径、http(s) URL 或 `named_object:<obj_id>`。提示词用 `@{id}` 引用素材（`@@` 表示字面量 `@`），条件足以说明时 prompt 可以为 `""`。输出参数组成 `output`。逻辑模型由 AICC 实测素材后选模。所选模型不支持的条件或输出规格返回 `unsupported_operation`，不丢弃、不取近似值；AICC 尚不裁剪素材，`--clip` 只接受覆盖整段素材的区间。
 
-图生视频。映射到 `video.img2video`。
+### 6.2 `edit_video`
+
+视频编辑。映射到 `video.edit`，只有具备真实源视频编辑合同的模型可用。要以参考片段生成新视频，使用 `gen_video --ref-video`。
 
 ```bash
-img2video start.png "Animate the scene with slow camera movement." result.mp4
+edit_video source.mp4 "Shift the color palette to teal and warm backlight." result.mp4
 ```
 
 参数：
 
 ```text
-img2video <input_image> <prompt> <output_video>
+edit_video <input_video> <prompt> <output_video>
   --duration <seconds>
-  --aspect <16:9|9:16|1:1>
-  --resolution <720p|1080p|4k>
+  --aspect <W:H>
+  --short-edge <px> | --size <WxH>
+  --fps <n>
+  --audio <auto|generate|none>
+  --format <mp4|webm|mov>
 ```
 
-### 6.3 `video2video`
+### 6.3 视频结果
 
-视频风格 / 内容编辑。映射到 `video.video2video`。
-
-```bash
-video2video source.mp4 "Shift the color palette to teal and warm backlight." result.mp4
-```
-
-参数：
-
-```text
-video2video <input_video> <prompt> <output_video>
-  --preserve-motion
-  --start <seconds>
-  --end <seconds>
-```
+视频类命令从 typed response 的 `videos[]` 取产物，结果多于一个视频时报错，不截断。`detail.video` 带 Provider 声明值（`provider_metadata`）、AICC 实测值（`measured_metadata`）和与请求不一致的 `deviations`。
 
 ### 6.4 `extend_video`
 
@@ -605,9 +607,8 @@ materialize_resource <resource> <output_path>
 | `speech_to_text` | `audio.asr` | `audio` | `audio.asr` |
 | `gen_music` | `audio.music` | `audio` | `audio.music` |
 | `enhance_audio` | `audio.enhance` | `audio` | `audio.enhance` |
-| `gen_video` | `video.txt2video` | `video` | `video.txt2video` |
-| `img2video` | `video.img2video` | `video` | `video.img2video` |
-| `video2video` | `video.video2video` | `video` | `video.video2video` |
+| `gen_video` | `helper.video_generate`（精确模型时 `video.generate`） | `video` | `video.generate` |
+| `edit_video` | `video.edit` | `video` | `video.edit` |
 | `extend_video` | `video.extend` | `video` | `video.extend` |
 | `upscale_video` | `video.upscale` | `video` | `video.upscale` |
 

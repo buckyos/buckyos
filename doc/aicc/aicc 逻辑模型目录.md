@@ -53,11 +53,12 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 | api_type | 输入 | 输出 | 说明 |
 |---|---|---|---|
-| `video.txt2video` | `prompt + 参数` | `video` | 文生视频 |
-| `video.img2video` | `image + prompt` | `video` | 图生视频 |
-| `video.video2video` | `video + prompt` | `video` | 视频编辑/风格转换 |
-| `video.extend` | `video + prompt` | `video` | 视频续写 |
-| `video.upscale` | `video + scale` | `video` | 视频超分 |
+| `video.generate` | `prompt? + conditions[] + output?` | `videos[]` | 视频生成：文本、首尾帧（`keyframe`）、参考图/视频/音频 |
+| `video.edit` | `video + prompt` | `videos[]` | 视频编辑/风格转换 |
+| `video.extend` | `video + prompt` | `videos[]` | 视频续写 |
+| `video.upscale` | `video + scale` | `videos[]` | 视频超分 |
+
+视频请求、条件与能力合同见 [统一视频生成协议](video_generation.md)。
 
 ### 1.5 Agent Runtime Support 类
 
@@ -147,9 +148,8 @@ audio
 
 ```
 video
-├── txt2video     # api_type: video.txt2video
-├── img2video     # api_type: video.img2video
-├── video2video   # api_type: video.video2video
+├── generate      # api_type: video.generate
+├── edit          # api_type: video.edit
 ├── extend        # api_type: video.extend
 └── upscale       # api_type: video.upscale
 ```
@@ -347,16 +347,18 @@ video
 
 | 精确模型 | 家族 | 任务挂载 |
 |---|---|---|
-| `seedance-2.0@bytedance` | seedance | video.txt2video、video.img2video |
-| `kling-3.0@kling` | kling | video.txt2video、video.img2video |
-| `kling-3.0-omni@kling` | kling | video.video2video |
-| `wan-2.7@alibaba` | wan | video.img2video |
-| `sora-2@openai` | sora | video.txt2video |
-| `veo-3@google` | veo | video.txt2video |
-| `pixverse-v5@pixverse` | pixverse | video.txt2video |
+| `seedance-2.0@bytedance` | seedance | video.generate |
+| `kling-3.0@kling` | kling | video.generate |
+| `kling-3.0-omni@kling` | kling | video.edit |
+| `wan-2.7@alibaba` | wan | video.generate |
+| `sora-2@openai` | sora | video.generate |
+| `veo-3@google` | veo | video.generate |
+| `pixverse-v5@pixverse` | pixverse | video.generate |
 | `grok-imagine-video@xai` | grok_imagine | video.extend |
-| `hunyuan-video@local` | hunyuan_video | video.txt2video |
+| `hunyuan-video@local` | hunyuan_video | video.generate |
 | `topaz-video-upscale@topaz` | topaz_video | video.upscale |
+
+各模型在 `video.generate` 下支持哪些条件（纯文本、首帧、首尾帧、参考素材）以及能否挂到 `video.edit`，以模型能力合同为准；当前 Provider 支持矩阵见 [video_generation.md](video_generation.md) §7。
 
 
 ---
@@ -447,7 +449,7 @@ routing_config:
       profile: latency_first
 
     # ===== Video =====
-    video.txt2video:
+    video.generate:
       items:
         - { name: kling, target: kling-3.0@kling, weight: 2.5 }
         - { name: seedance, target: seedance-2.0@bytedance, weight: 2.5 }

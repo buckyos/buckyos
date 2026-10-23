@@ -59,8 +59,8 @@ Deno.test("filterModels keeps the models and names of one api_type", () => {
     models: [
       {
         exact_model: "veo-lite@gemini-default",
-        api_types: ["video.txt2video", "video.img2video"],
-        logical_mounts: ["video.txt2video.veo", "video.img2video.veo"],
+        api_types: ["video.generate", "video.edit"],
+        logical_mounts: ["video.generate.veo", "video.edit.veo"],
         attributes: {
           pricing: {
             value: { amount: 0.05, currency: "USD", unit: "video_second" },
@@ -69,10 +69,10 @@ Deno.test("filterModels keeps the models and names of one api_type", () => {
       },
       { exact_model: "tts@gemini-default", api_types: ["audio.tts"] },
     ],
-  }, "video.txt2video");
-  assertIncludes(JSON.stringify(models), "video.txt2video.veo");
+  }, "video.generate");
+  assertIncludes(JSON.stringify(models), "video.generate.veo");
   const summary = formatModelsSummary(models);
   assertIncludes(summary, "1 model(s)");
-  assertIncludes(summary, "veo-lite@gemini-default: video.txt2video");
+  assertIncludes(summary, "veo-lite@gemini-default: video.generate");
   assertIncludes(summary, "price=0.05 USD/video_second");
 });

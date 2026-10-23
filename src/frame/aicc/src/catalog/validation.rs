@@ -231,6 +231,9 @@ fn validate_model_semantics(
                 });
             }
         }
+        if let Some(contract) = capabilities.get(crate::video::VIDEO_CONTRACT_CAPABILITY) {
+            validate_video_contract(owner, contract)?;
+        }
     }
     if let Some(mappings) = &semantics.canonical_fields {
         validate_canonical_fields(owner, mappings)?;
@@ -342,6 +345,7 @@ trait ProviderRuleValidation {
     fn remove_api_types(&self) -> &BTreeSet<String>;
     fn remove_features(&self) -> &BTreeSet<String>;
     fn capability_limits(&self) -> &BTreeMap<String, u64>;
+    fn video_generation(&self) -> Option<&Value>;
 }
 
 macro_rules! impl_provider_rule_validation {
@@ -367,6 +371,9 @@ macro_rules! impl_provider_rule_validation {
             fn remove_features(&self) -> &BTreeSet<String> {
                 &self.remove_features
             }
+            fn video_generation(&self) -> Option<&Value> {
+                self.video_generation.as_ref()
+            }
         }
     };
 }
@@ -374,10 +381,24 @@ macro_rules! impl_provider_rule_validation {
 impl_provider_rule_validation!(ProviderExactRule);
 impl_provider_rule_validation!(ProviderPatternRule);
 
+fn validate_video_contract(owner: &str, contract: &Value) -> Result<(), CatalogBuildError> {
+    serde_json::from_value::<crate::video::VideoGenerationContract>(contract.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|contract| contract.validate())
+        .map_err(|reason| CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field: "video_generation",
+            reason,
+        })
+}
+
 fn validate_provider_rule_data(
     owner: &str,
     rule: &impl ProviderRuleValidation,
 ) -> Result<(), CatalogBuildError> {
+    if let Some(contract) = rule.video_generation() {
+        validate_video_contract(owner, contract)?;
+    }
     for (key, value) in rule.capability_limits() {
         if *value == 0
             || !matches!(
@@ -500,6 +521,8 @@ fn validate_model_pricing(
 }
 
 pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildError> {
+    const MAX_OUTPUT_INPUT_PRICE_RATIO: f64 = 500.0;
+
     if pricing.currency.trim().is_empty() {
         return Err(CatalogBuildError::InvalidValue {
             owner: owner.to_owned(),
@@ -520,6 +543,19 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
                 .into(),
         });
     }
+    if !pricing.addons.is_empty()
+        && (pricing.unit.is_none()
+            || pricing
+                .addons
+                .iter()
+                .any(|addon| !addon.amount.is_finite() || addon.amount < 0.0))
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field: "pricing.addons",
+            reason: "add-ons extend unit billing with finite non-negative amounts".into(),
+        });
+    }
     let ratio_ok = |input: Option<f64>,
                     cache: Option<f64>,
                     write: Option<f64>,
@@ -532,7 +568,7 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         let anomalous = cache.is_some_and(|v| v > input)
             || write.is_some_and(|v| v / input > 10.0)
             || write_1h.is_some_and(|v| v / input > 10.0)
-            || output.is_some_and(|v| v / input > 100.0);
+            || output.is_some_and(|v| v / input > MAX_OUTPUT_INPUT_PRICE_RATIO);
         if anomalous
             && pricing
                 .ratio_exception
@@ -542,7 +578,13 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.into(),
                 field: "pricing.ratio_exception",
-                reason: "unusual token price ratios require an explicit explanation".into(),
+                reason: match output.filter(|v| v / input > MAX_OUTPUT_INPUT_PRICE_RATIO) {
+                    Some(output) => format!(
+                        "output/input token price ratio {:.2} exceeds {MAX_OUTPUT_INPUT_PRICE_RATIO}; set ratio_exception to explain the price difference",
+                        output / input
+                    ),
+                    None => "unusual token price ratios require an explicit explanation".into(),
+                },
             });
         }
         Ok(())

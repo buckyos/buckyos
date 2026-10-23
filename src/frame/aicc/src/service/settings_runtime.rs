@@ -531,9 +531,11 @@ impl ProviderValidator for RuntimeProviderValidator {
                     }
                 };
                 let message = format!(
-                    "provider validation failed at {:?}: {:?}",
-                    error.stage, error.kind
+                    "provider validation failed at {:?}: {}",
+                    error.stage, error.message
                 );
+                let provider_name = crate::observability::redact(&json!(draft.provider_instance_name));
+                log::warn!("provider {provider_name}: {message}");
                 Ok(ProviderValidateResponse {
                     base_url_reachable: !matches!(
                         error.stage,
@@ -561,6 +563,115 @@ impl ProviderValidator for RuntimeProviderValidator {
 #[cfg(test)]
 mod startup_tests {
     use super::*;
+    use crate::error::SettingsError;
+    use crate::settings::RuntimeInputs;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    struct BuiltinRuntimeInputs {
+        catalog: Arc<CatalogSnapshot>,
+    }
+
+    #[async_trait]
+    impl RuntimeInputs for BuiltinRuntimeInputs {
+        async fn metadata_target_seq(&self) -> Result<u64, SettingsError> {
+            Ok(self.catalog.target_revision_seq())
+        }
+
+        async fn load_catalog(
+            &self,
+            _target_seq: u64,
+        ) -> Result<Arc<CatalogSnapshot>, SettingsError> {
+            Ok(self.catalog.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn openrouter_validation_preserves_discovery_price_error_details() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (prompt, completion) in [("0.0000000341", "0.000007"), ("1", "501")] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 4096];
+                let read = stream.read(&mut request).await.unwrap();
+                assert!(String::from_utf8_lossy(&request[..read])
+                    .starts_with("GET /api/v1/models?output_modalities=all "));
+                let body = json!({
+                    "data": [{
+                        "id": "z-ai/glm-5.2",
+                        "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                        "supported_parameters": ["tools", "response_format"],
+                        "pricing": {"prompt": prompt, "completion": completion}
+                    }]
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let storage = Arc::new(
+            AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite)
+                .await
+                .unwrap(),
+        );
+        let runtime = RuntimeState::bootstrap(
+            SettingsDocument::new(1, AiccSettings::default()).unwrap(),
+            Arc::new(BuiltinRuntimeInputs { catalog }),
+            Arc::new(ServiceRuntimeFactory::new(
+                storage.clone(),
+                Arc::new(AiccEventLog::default()),
+            )),
+        )
+        .await
+        .unwrap();
+        let validator = RuntimeProviderValidator::new(runtime.clone(), storage);
+        let request = ProviderValidateRequest::new(
+            ProviderInstanceType::CloudApi,
+            "openrouter",
+            format!("http://{address}/api/v1"),
+            serde_json::from_value(json!({
+                "api_token": {"inline_secret": "sk-test-validation-secret"}
+            }))
+            .unwrap(),
+        );
+
+        let valid = validator.validate(request.clone()).await.unwrap();
+        assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+        assert!(valid.error_details.is_empty());
+        assert_eq!(valid.models_discovered, ["z-ai/glm-5.2"]);
+
+        let invalid = validator.validate(request).await.unwrap();
+        assert!(invalid.models_discovered.is_empty());
+        assert_eq!(invalid.errors.len(), 1);
+        assert_eq!(invalid.error_details.len(), 1);
+        assert_eq!(
+            invalid.error_details[0].kind,
+            buckyos_api::ProviderValidationErrorKind::Models
+        );
+        assert_eq!(invalid.error_details[0].message, invalid.errors[0]);
+        assert!(invalid.errors[0].contains("provider validation failed at Discovery"));
+        assert!(invalid.errors[0].contains("z-ai/glm-5.2"));
+        assert!(invalid.errors[0].contains("pricing.ratio_exception"));
+        assert!(invalid.errors[0].contains("501.00 exceeds 500"));
+        assert!(!serde_json::to_string(&invalid)
+            .unwrap()
+            .contains("sk-test-validation-secret"));
+        server.await.unwrap();
+        runtime.shutdown().await;
+    }
 
     #[test]
     fn credential_sources_are_resolved_explicitly() {

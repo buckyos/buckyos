@@ -9,10 +9,7 @@
     "audio.asr",
     "audio.tts",
     "embedding.text",
-    "video.txt2video",
-    "video.img2video",
-    "video.ref2video",
-    "video.edit"
+    "video.generate"
   ],
   "static_inventory_models": [
     "glm-image",
@@ -93,51 +90,49 @@
     {
       "id": "cogvideox-3",
       "operations": {
-        "video.txt2video": "videos.generate",
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "cogvideox-flash",
       "operations": {
-        "video.txt2video": "videos.generate",
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "viduq1-text",
       "operations": {
-        "video.txt2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "viduq1-image",
       "operations": {
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "viduq1-start-end",
       "operations": {
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "vidu2-image",
       "operations": {
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "vidu2-start-end",
       "operations": {
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     },
     {
       "id": "vidu2-reference",
       "operations": {
-        "video.img2video": "videos.generate"
+        "video.generate": "videos.generate"
       }
     }
   ],

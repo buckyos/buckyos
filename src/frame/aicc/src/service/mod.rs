@@ -8,6 +8,7 @@ mod ports;
 mod provider_execution;
 mod quota;
 mod settings_runtime;
+mod video_materials;
 
 use events::AiccEventLog;
 use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
@@ -62,9 +63,8 @@ use buckyos_api::{
     RoutingUpdateResponse, RunnerWriteEnvelope, ServiceReloadSettingsRequest,
     ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskControlAction,
     TaskExecutor, TaskManagerClient, TextToImageHelperRequest, TextToImageInvokeRequest,
-    TextToImageInvokeResponse, VideoExtendRequest,
-    VideoExtendResponse, VideoImageToVideoRequest, VideoImageToVideoResponse,
-    VideoTextToVideoRequest, VideoTextToVideoResponse, VideoToVideoRequest, VideoToVideoResponse,
+    TextToImageInvokeResponse, VideoEditRequest, VideoEditResponse, VideoExtendRequest,
+    VideoExtendResponse, VideoGenerateHelperRequest, VideoGenerateRequest, VideoGenerateResponse,
     VideoUpscaleRequest, VideoUpscaleResponse, VisionCaptionRequest, VisionCaptionResponse,
     VisionDetectRequest, VisionDetectResponse, VisionOcrRequest, VisionOcrResponse,
     VisionSegmentRequest, VisionSegmentResponse, AICC_COMPUTE_TASK_SCHEMA_ID,
@@ -687,6 +687,7 @@ pub(crate) trait InferencePort: Send + Sync {
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors>;
 }
 
+#[derive(Clone)]
 struct InferenceRouteInput {
     trace_id: Option<String>,
     request_id: Option<String>,
@@ -699,6 +700,8 @@ struct InferenceRouteInput {
     session_id: Option<String>,
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
+    /// Measured clip lengths; empty until materials are prepared.
+    video_clips: crate::video::ClipSummary,
 }
 
 struct RoutedInference {

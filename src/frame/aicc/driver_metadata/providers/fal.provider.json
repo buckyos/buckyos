@@ -36,10 +36,6 @@
         "audio.asr": "queue.submit",
         "audio.music": "queue.submit",
         "audio.enhance": "queue.submit",
-        "video.txt2video": "queue.submit",
-        "video.img2video": "queue.submit",
-        "video.video2video": "queue.submit",
-        "video.extend": "queue.submit",
         "video.upscale": "queue.submit"
       },
       "latency_class": "async"

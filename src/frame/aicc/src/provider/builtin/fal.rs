@@ -189,6 +189,7 @@ mod tests {
             availability: ModelAvailability::Available,
             deprecated: false,
             pricing: None,
+            video: None,
         }
     }
 
@@ -239,9 +240,10 @@ mod tests {
         let rules = fal_provider_rules(7);
         assert_eq!(rules.revision_seq, 3);
         assert_eq!(
-            rules.patterns[0].operations["video.img2video"],
+            rules.patterns[0].operations["video.upscale"],
             FAL_QUEUE_OPERATION_ID
         );
+        assert!(!rules.patterns[0].operations.contains_key("video.generate"));
         assert_eq!(rules.models.len(), 4);
 
         let files = fal_catalog_files();

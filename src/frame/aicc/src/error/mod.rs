@@ -46,6 +46,8 @@ pub(crate) enum CallLoweringError {
         execution_mode: String,
     },
     InvalidRule(String),
+    /// The request cannot be planned for the selected video model.
+    Video(buckyos_api::AiccError),
 }
 
 #[derive(Debug)]
@@ -326,6 +328,7 @@ pub(crate) type ProviderResult<T> = Result<T, ProviderError>;
 pub(crate) struct ProviderDraftValidationError {
     pub stage: ProviderDraftValidationStage,
     pub kind: ProviderRefreshFailure,
+    pub message: String,
 }
 
 #[derive(Clone, Error, PartialEq, Eq)]

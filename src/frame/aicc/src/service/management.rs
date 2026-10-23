@@ -88,6 +88,12 @@ impl AiccHandler for AiccService {
         HelperTextToImage
     );
     typed_inference_handler!(
+        handle_helper_video_generate,
+        VideoGenerateHelperRequest,
+        VideoGenerateResponse,
+        HelperVideoGenerate
+    );
+    typed_inference_handler!(
         handle_embedding_text,
         EmbeddingTextRequest,
         EmbeddingTextResponse,
@@ -179,22 +185,16 @@ impl AiccHandler for AiccService {
         AudioEnhance
     );
     typed_inference_handler!(
-        handle_video_text_to_video,
-        VideoTextToVideoRequest,
-        VideoTextToVideoResponse,
-        VideoTextToVideo
+        handle_video_generate,
+        VideoGenerateRequest,
+        VideoGenerateResponse,
+        VideoGenerate
     );
     typed_inference_handler!(
-        handle_video_image_to_video,
-        VideoImageToVideoRequest,
-        VideoImageToVideoResponse,
-        VideoImageToVideo
-    );
-    typed_inference_handler!(
-        handle_video_to_video,
-        VideoToVideoRequest,
-        VideoToVideoResponse,
-        VideoToVideo
+        handle_video_edit,
+        VideoEditRequest,
+        VideoEditResponse,
+        VideoEdit
     );
     typed_inference_handler!(
         handle_video_extend,

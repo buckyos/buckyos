@@ -37,6 +37,16 @@ const output = object('output', [select('media_type', ['image/png', 'image/jpeg'
 const aspect = select('aspect_ratio', ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'])
 const resolution = (key = 'resolution', required = false) => select(key, ['480p', '720p', '1080p', '4k'], required)
 const duration = num('duration_seconds', 0.1, undefined, 0.1)
+// video.generate / video.edit `output` (doc/aicc/video_generation.md): a size is either a short edge or an exact width × height.
+const videoOutput = object('output', [{ ...duration, max: 600 }, select('aspect_ratio', ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']), object('size', [num('short_edge', 16, 8192), num('width', 16, 8192), num('height', 16, 8192)]), num('fps', 1, 240), select('audio', ['auto', 'generate', 'none']), select('media_type', ['video/mp4', 'video/webm', 'video/quicktime'])])
+const timeRange = object('time_range', [{ ...num('start_seconds', 0, undefined, 0.1), required: true }, { ...num('end_seconds', 0.1, undefined, 0.1), required: true }])
+const conditionId = text('id', true)
+const videoCondition = union('', {
+  keyframe: [conditionId, select('position', ['start', 'end'], true), resource('resource')],
+  reference_image: [conditionId, resource('resource')],
+  reference_video: [conditionId, resource('resource', 'video/*'), timeRange, bool('include_audio')],
+  reference_audio: [conditionId, resource('resource', 'audio/*'), timeRange],
+})
 const bbox = object('bbox', [select('format', ['xywh'], true), select('unit', ['px', 'relative'], true), { ...num('x', 0, undefined, 0.01), required: true }, { ...num('y', 0, undefined, 0.01), required: true }, { ...num('width', 0.01, undefined, 0.01), required: true }, { ...num('height', 0.01, undefined, 0.01), required: true }], true)
 const message = object('', [select('role', ['user', 'system', 'assistant', 'developer', 'tool'], true), array('content', union('', {
   text: [text('text', true)], image: [resource('source')], document: [resource('source', 'application/pdf,text/*'), text('title')],
@@ -68,9 +78,8 @@ export const PLAYGROUND_APIS: Record<ApiType, PlaygroundApi> = {
   'audio.asr': { method: 'audio.asr', fields: [resource('audio', 'audio/*'), language(), select('timestamps', ['none', 'segment', 'word']), bool('diarization'), checks('output_formats', ['text', 'json', 'srt', 'vtt'])] },
   'audio.music': { method: 'audio.music', fields: [prompt, duration, bool('instrumental'), text('lyrics'), num('seed'), output] },
   'audio.enhance': { method: 'audio.enhance', fields: [resource('audio', 'audio/*'), select('task', ['denoise', 'dereverb', 'isolate_voice', 'separate_stems'], true), num('strength', 0, 1, 0.05), bool('return_stems')] },
-  'video.txt2video': { method: 'video.txt2video', fields: [prompt, duration, aspect, resolution(), bool('generate_audio'), num('seed'), output] },
-  'video.img2video': { method: 'video.img2video', fields: [resource('image'), prompt, duration, aspect, resolution()] },
-  'video.video2video': { method: 'video.video2video', fields: [resource('video', 'video/*'), prompt, bool('preserve_motion'), object('time_range', [{ ...num('start_seconds', 0, undefined, 0.1), required: true }, { ...num('end_seconds', 0.1, undefined, 0.1), required: true }])] },
+  'video.generate': { method: 'video.generate', fields: [text('prompt'), text('negative_prompt'), array('conditions', videoCondition), videoOutput, num('seed')] },
+  'video.edit': { method: 'video.edit', fields: [resource('video', 'video/*'), prompt, videoOutput] },
   'video.extend': { method: 'video.extend', fields: [resource('video', 'video/*'), prompt, text('continuation_handle'), duration, resolution()] },
   'video.upscale': { method: 'video.upscale', fields: [resource('video', 'video/*'), resolution('target_resolution', true), bool('denoise'), num('sharpen', 0, 1, 0.05), output] },
   'agent.computer_use': { method: 'agent.computer_use', fields: [text('task', true), object('environment', [text('environment_id', true), text('session_id', true), resource('screenshot'), object('viewport', [{ ...num('width', 1), required: true }, { ...num('height', 1), required: true }], true)], true), { ...checks('allowed_actions', ['screenshot', 'left_click', 'right_click', 'type', 'key', 'scroll', 'wait']), required: true }] },
@@ -193,9 +202,34 @@ export function validateRequest(api: ApiType, params: JsonObject): ValidationIss
       }
     })
   }
-  const range = record(params.time_range)
-  if (Object.keys(range).length && !(typeof range.start_seconds === 'number' && typeof range.end_seconds === 'number' && range.end_seconds > range.start_seconds)) issue('time_range', 'range')
+  if (api === 'video.generate') validateVideoGenerate(params, issue)
+  if (api === 'video.generate' || api === 'video.edit') {
+    const size = record(record(params.output).size)
+    if ('short_edge' in size ? Object.keys(size).length !== 1 : Object.keys(size).length && !('width' in size && 'height' in size && Object.keys(size).length === 2)) issue('output.size', 'invalid')
+  }
   return issues
+}
+
+// The checks the server applies before routing: something to generate from, unique condition IDs, prompt `@{id}` references that resolve.
+function validateVideoGenerate(params: JsonObject, issue: (path: string, code: ValidationIssue['code']) => void) {
+  const conditions = Array.isArray(params.conditions) ? params.conditions.map(record) : []
+  const prompt = typeof params.prompt === 'string' ? params.prompt : ''
+  if (!prompt.trim() && !conditions.length) issue('prompt', 'required')
+  const ids = new Set<string>()
+  const positions = new Set<unknown>()
+  conditions.forEach((condition, index) => {
+    const id = String(condition.id ?? '')
+    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) || ids.has(id.toLowerCase())) issue(`conditions[${index}].id`, 'invalid')
+    ids.add(id.toLowerCase())
+    if (condition.type === 'keyframe') {
+      if (positions.has(condition.position)) issue(`conditions[${index}].position`, 'invalid')
+      positions.add(condition.position)
+    }
+    const range = record(condition.time_range)
+    if (Object.keys(range).length && !(typeof range.start_seconds === 'number' && typeof range.end_seconds === 'number' && range.end_seconds > range.start_seconds)) issue(`conditions[${index}].time_range`, 'range')
+  })
+  const references = [...prompt.replaceAll('@@', '').matchAll(/@\{([^}]*)\}/g)].map((match) => match[1])
+  if (references.some((id) => !conditions.some((condition) => condition.id === id))) issue('prompt', 'invalid')
 }
 
 export function taskResponse(task: JsonObject, initial: JsonObject): JsonObject {

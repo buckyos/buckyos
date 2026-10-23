@@ -18,8 +18,35 @@
     },
     {
       "id": "wan2.6-t2v",
-      "api_types": ["video.txt2video"],
-      "capabilities": { "video_generation": true }
+      "api_types": ["video.generate"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "negative_prompt": true,
+          "seed": true,
+          "output": {
+            "durations": {"values": [5, 10, 15]},
+            "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+            "sizes": [
+              "832x480",
+              "480x832",
+              "624x624",
+              "1280x720",
+              "720x1280",
+              "960x960",
+              "1088x832",
+              "832x1088",
+              "1920x1080",
+              "1080x1920",
+              "1440x1440",
+              "1632x1248",
+              "1248x1632"
+            ],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "qwen3.6-max-preview",

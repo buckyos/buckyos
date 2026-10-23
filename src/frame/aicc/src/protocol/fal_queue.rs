@@ -19,7 +19,7 @@ pub(crate) const FAL_QUEUE_OPERATION_ID: &str = "queue.submit";
 
 const DEFAULT_MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
-const FAL_API_TYPES: [ApiType; 14] = [
+const FAL_API_TYPES: [ApiType; 10] = [
     ApiType::ImageTextToImage,
     ApiType::ImageImageToImage,
     ApiType::ImageInpaint,
@@ -29,10 +29,6 @@ const FAL_API_TYPES: [ApiType; 14] = [
     ApiType::AudioSpeechRecognition,
     ApiType::AudioMusic,
     ApiType::AudioEnhance,
-    ApiType::VideoTextToVideo,
-    ApiType::VideoImageToVideo,
-    ApiType::VideoToVideo,
-    ApiType::VideoExtend,
     ApiType::VideoUpscale,
 ];
 
@@ -200,11 +196,19 @@ fn canonical_body(
         AiccCall::AudioSpeechRecognition(request) => request_value(request)?,
         AiccCall::AudioMusic(request) => request_value(request)?,
         AiccCall::AudioEnhance(request) => request_value(request)?,
-        AiccCall::VideoTextToVideo(request) => request_value(request)?,
-        AiccCall::VideoImageToVideo(request) => request_value(request)?,
-        AiccCall::VideoToVideo(request) => request_value(request)?,
-        AiccCall::VideoExtend(request) => request_value(request)?,
-        AiccCall::VideoUpscale(request) => request_value(request)?,
+        AiccCall::VideoUpscale(request) => {
+            if request
+                .output
+                .as_ref()
+                .is_some_and(|output| output != &Default::default())
+            {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "fal Video Upscaler has no output format options",
+                ));
+            }
+            request_value(request)?
+        }
         _ => {
             return Err(ProtocolError::invalid_request(
                 "fal Queue does not support this canonical request",
@@ -261,15 +265,6 @@ fn canonical_body(
             }
             replace_resource(&mut body, "audio", "audio_url", &request.audio, context)?;
             body.remove("task");
-        }
-        AiccCall::VideoImageToVideo(request) => {
-            replace_resource(&mut body, "image", "image_url", &request.image, context)?;
-        }
-        AiccCall::VideoToVideo(request) => {
-            replace_resource(&mut body, "video", "video_url", &request.video, context)?;
-        }
-        AiccCall::VideoExtend(request) => {
-            replace_resource(&mut body, "video", "video_url", &request.video, context)?;
         }
         AiccCall::VideoUpscale(request) => {
             replace_resource(&mut body, "video", "video_url", &request.video, context)?;
@@ -432,6 +427,23 @@ fn decode_result(
             "fal result contains an empty media list",
         ));
     }
+    if field == "video" {
+        let videos = resources
+            .into_iter()
+            .map(|resource| {
+                let media_type = match &resource {
+                    ResourceRef::Url { mime_hint, .. } => mime_hint.clone(),
+                    ResourceRef::Base64 { mime, .. } => Some(mime.clone()),
+                    ResourceRef::NamedObject { .. } => None,
+                };
+                super::video::generated_video(resource, media_type, Default::default())
+            })
+            .collect();
+        return Ok(NativeTaskOutput::Result(super::video::video_output(
+            videos,
+            AiUsage::request_units(1),
+        )?));
+    }
     let normalized = Value::Object(Map::from_iter([(
         field.to_string(),
         if field == "images" {
@@ -511,11 +523,7 @@ fn media_candidates(
             .get("audio_file")
             .map(|item| ("audio", vec![item]))
             .ok_or_else(|| ProtocolError::invalid_response("fal result has no audio output")),
-        ApiType::VideoTextToVideo
-        | ApiType::VideoImageToVideo
-        | ApiType::VideoToVideo
-        | ApiType::VideoExtend
-        | ApiType::VideoUpscale => single(value, "video", "video"),
+        ApiType::VideoUpscale => single(value, "video", "video"),
         _ => Err(ProtocolError::invalid_response(
             "fal result API type is unsupported",
         )),
@@ -731,7 +739,7 @@ mod tests {
         CodecInput, CodecLimits, CodecRegistry, GoldenBody, MaterializedResource,
         ProtocolContractHarness, ResolvedCredential,
     };
-    use buckyos_api::{TextToImageInvokeRequest, VideoImageToVideoRequest};
+    use buckyos_api::{ImageUpscaleRequest, TextToImageInvokeRequest};
     use bytes::Bytes;
     use reqwest::header::HeaderMap;
 
@@ -967,14 +975,13 @@ mod tests {
             .unwrap(),
         );
         let input = input(
-            AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
-                "fal-ai/video@fal-main",
+            AiccCall::ImageUpscale(ImageUpscaleRequest::new(
+                "fal-ai/esrgan@fal-main",
                 source.clone(),
-                "animate".to_string(),
             )),
-            "fal-ai/video",
+            "fal-ai/esrgan",
         );
-        let request = codec(ApiType::VideoImageToVideo)
+        let request = codec(ApiType::ImageUpscale)
             .encode_native(&native_input(
                 NativeTaskOperation::Submit,
                 None,
@@ -1103,7 +1110,7 @@ mod tests {
 
     #[tokio::test]
     async fn maps_failed_and_rejects_non_queue_statuses() {
-        let codec = codec(ApiType::VideoTextToVideo);
+        let codec = codec(ApiType::VideoUpscale);
         let NativeTaskOutput::Status { state, .. } = codec
             .decode_native(
                 NativeTaskOperation::Status,

@@ -1397,7 +1397,7 @@ function capabilityToApiType(value: string): ApiType {
     case 'image': return 'image.txt2img'
     case 'vision': return 'vision.ocr'
     case 'audio': return 'audio.tts'
-    case 'video': return 'video.txt2video'
+    case 'video': return 'video.generate'
     case 'agent': return 'agent.computer_use'
     case 'llm':
     default: return 'llm'
@@ -2479,7 +2479,7 @@ function inferApiType(path: string): ApiType | undefined {
   if (path.startsWith('image.')) return 'image.txt2img'
   if (path.startsWith('vision.')) return 'vision.ocr'
   if (path.startsWith('audio.')) return 'audio.tts'
-  if (path.startsWith('video.')) return 'video.txt2video'
+  if (path.startsWith('video.')) return 'video.generate'
   if (path.startsWith('agent.')) return 'agent.computer_use'
   return undefined
 }
@@ -2842,9 +2842,8 @@ const API_TYPES: ApiType[] = [
   'audio.asr',
   'audio.music',
   'audio.enhance',
-  'video.txt2video',
-  'video.img2video',
-  'video.video2video',
+  'video.generate',
+  'video.edit',
   'video.extend',
   'video.upscale',
   'agent.computer_use',

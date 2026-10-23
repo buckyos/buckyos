@@ -1,7 +1,8 @@
 use crate::error::{StorageError, StorageResult};
 use crate::execution::{
     ExecutionOutput, ExecutionRecord, ExecutionState, ExecutionStore, IdempotencyClaim,
-    PinnedProviderTask, UsageCompletion, UsageCompletionPort,
+    IdempotencyScope, PinnedProviderTask, RecoverableExecutions, RetiredExecution,
+    UsageCompletion, UsageCompletionPort,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -1173,14 +1174,81 @@ impl AiccStorage {
             == 1)
     }
 
-    async fn recoverable_executions(&self) -> StorageResult<Vec<ExecutionRecord>> {
+    async fn recoverable_executions(&self) -> StorageResult<RecoverableExecutions> {
         let rows = sqlx::query(
-            "SELECT state,record_json FROM aicc_execution_record
+            "SELECT task_id,state,record_json FROM aicc_execution_record
              WHERE state IN ('submitted','queued','running') ORDER BY created_at_ms,task_id",
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(execution_from_row).collect()
+        let mut recoverable = RecoverableExecutions::default();
+        for row in rows {
+            let task_id: String = row.try_get("task_id")?;
+            let record_json: String = row.try_get("record_json")?;
+            match serde_json::from_str::<ExecutionRecord>(&record_json) {
+                Ok(record) => recoverable.records.push(record),
+                Err(error) => {
+                    log::warn!(
+                        "AICC task recovery: retiring unreadable execution {task_id}: {error}"
+                    );
+                    recoverable
+                        .retired
+                        .push(self.retire_execution(task_id, &record_json).await?);
+                }
+            }
+        }
+        Ok(recoverable)
+    }
+
+    /// Stores an unreadable execution as failed. The record keeps what this
+    /// build can still read; its provider binding and staged output, which
+    /// name removed methods or API types, are dropped.
+    async fn retire_execution(
+        &self,
+        task_id: String,
+        record_json: &str,
+    ) -> StorageResult<RetiredExecution> {
+        let error = AiccError::new(
+            AiccErrorCode::UnsupportedOperation,
+            "the task was started with a request this AICC version no longer supports",
+        );
+        let mut value = serde_json::from_str::<Value>(record_json).unwrap_or(Value::Null);
+        let quota_attempt_id = value
+            .pointer("/binding/quota_attempt_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let retired = match value.as_object_mut() {
+            Some(object) => {
+                object.remove("binding");
+                object.remove("output");
+                object.insert("state".into(), serde_json::to_value(ExecutionState::Failed)?);
+                object.insert("error".into(), serde_json::to_value(&error)?);
+                serde_json::from_value::<ExecutionRecord>(value).ok()
+            }
+            None => None,
+        };
+        match retired {
+            Some(record) => {
+                let sql = self.sql(
+                    "UPDATE aicc_execution_record SET state='failed',record_json=? WHERE task_id=?",
+                );
+                sqlx::query(&sql)
+                    .bind(serde_json::to_string(&record)?)
+                    .bind(&task_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            None => {
+                let sql =
+                    self.sql("UPDATE aicc_execution_record SET state='failed' WHERE task_id=?");
+                sqlx::query(&sql).bind(&task_id).execute(&self.pool).await?;
+            }
+        }
+        Ok(RetiredExecution {
+            task_id,
+            error,
+            quota_attempt_id,
+        })
     }
 
     pub(crate) async fn query_usage(
@@ -1604,8 +1672,14 @@ impl ExecutionStore for AiccStorage {
         .map_err(storage_error)
     }
 
-    async fn recoverable(&self) -> Result<Vec<ExecutionRecord>, AiccError> {
+    async fn recoverable(&self) -> Result<RecoverableExecutions, AiccError> {
         self.recoverable_executions().await.map_err(storage_error)
+    }
+
+    async fn find(&self, scope: &IdempotencyScope) -> Result<Option<ExecutionRecord>, AiccError> {
+        self.execution_by_scope(&scope.tenant_id, &scope.method, &scope.key)
+            .await
+            .map_err(storage_error)
     }
 }
 
@@ -3126,7 +3200,7 @@ mod tests {
         let encoded_binding = serde_json::to_string(restored_binding).unwrap();
         assert!(encoded_binding.contains("system-config://secrets/aicc/openai-primary/api-key"));
         assert!(!encoded_binding.contains("plaintext-secret"));
-        assert_eq!(db.recoverable().await.unwrap(), vec![restored]);
+        assert_eq!(db.recoverable().await.unwrap().records, vec![restored]);
         assert!(db.try_cancel(&running.task_id).await.unwrap());
         assert!(!db
             .try_complete(&running.task_id, execution_output())
@@ -3169,7 +3243,45 @@ mod tests {
             db.try_cancel(&raced.task_id)
         );
         assert_ne!(complete.unwrap(), cancel.unwrap());
-        assert!(db.recoverable().await.unwrap().is_empty());
+        assert!(db.recoverable().await.unwrap().records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_execution_of_a_removed_api_type_is_retired_without_blocking_recovery() {
+        let db = db().await;
+        let current = execution_record("task-current", "key-current");
+        db.claim(current.clone()).await.unwrap();
+        let old = execution_record("task-old-video", "key-old-video");
+        db.claim(old.clone()).await.unwrap();
+        let mut binding = serde_json::to_value(provider_binding()).unwrap();
+        binding["api_type"] = json!("video.txt2video");
+        binding["quota_attempt_id"] = json!("attempt-old");
+        let mut old_json = serde_json::to_value(&old).unwrap();
+        old_json["state"] = json!("running");
+        old_json["binding"] = binding;
+        sqlx::query("UPDATE aicc_execution_record SET state='running',record_json=? WHERE task_id=?")
+            .bind(old_json.to_string())
+            .bind(&old.task_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let recoverable = db.recoverable().await.unwrap();
+        assert_eq!(recoverable.records, vec![current]);
+        assert_eq!(recoverable.retired.len(), 1);
+        assert_eq!(recoverable.retired[0].task_id, old.task_id);
+        assert_eq!(
+            recoverable.retired[0].quota_attempt_id.as_deref(),
+            Some("attempt-old")
+        );
+        let retired = db.get_task(&old.task_id).await.unwrap().unwrap();
+        assert_eq!(retired.state, ExecutionState::Failed);
+        assert!(retired.binding.is_none());
+        assert_eq!(
+            retired.error.unwrap().code,
+            AiccErrorCode::UnsupportedOperation
+        );
+        assert!(db.recoverable().await.unwrap().retired.is_empty());
     }
 
     #[tokio::test]

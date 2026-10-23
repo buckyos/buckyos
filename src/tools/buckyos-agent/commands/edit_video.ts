@@ -1,5 +1,6 @@
-// img2video — video.img2video
-// Doc: aicc_agent_cli_tools.md §6.2
+// edit_video — video.edit
+// Doc: aicc_agent_cli_tools.md §6.2, protocol doc/aicc/video_generation.md
+// 改写已有视频（换风格、换元素）；结构与 gen_video 一致，只是输入是一段视频。
 
 import { ndm_proxy } from "buckyos";
 
@@ -7,19 +8,17 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
-  flagInt,
   parseArgvOrExit,
-  requireString,
 } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
-  pickArtifact,
   resolveInputResource,
   saveArtifactToPath,
   suffixPathByMime,
 } from "../lib/io.ts";
+import { pickVideo, VIDEO_OUTPUT_HELP, videoOutputSpec } from "../lib/video.ts";
 import {
   bailAiccError,
   bailAiccFailed,
@@ -33,20 +32,17 @@ import {
   successResult,
 } from "../lib/result.ts";
 
-const TOOL = "img2video";
-const METHOD = "video.img2video";
+const TOOL = "edit_video";
+const METHOD = "video.edit";
 
 export const HELP =
-  `Usage: img2video <input_image> <prompt> <output_video> [options]
+  `Usage: edit_video <input_video> <prompt> <output_video> [options]
 
-Options:
-  --duration <seconds>
-  --aspect <16:9|9:16|1:1>
-  --resolution <720p|1080p|4k>
+Rewrites an existing video as the prompt says. To make a new video that
+follows a reference clip, use gen_video --ref-video instead.
+
+${VIDEO_OUTPUT_HELP}
 ${COMMON_OPTIONS_HELP}`;
-
-const ASPECT = new Set(["16:9", "9:16", "1:1"]);
-const RESOLUTION = new Set(["720p", "1080p", "4k"]);
 
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
@@ -58,32 +54,16 @@ export async function run(argv: string[]): Promise<never> {
       EXIT_ARG_ERROR,
     );
   }
-  const [srcImage, prompt, outputPath] = parsed.positional;
+  const [srcVideo, prompt, outputPath] = parsed.positional;
 
-  const request = {
-    image: undefined,
-    prompt,
-  } as unknown as TypedRequestMap[typeof METHOD];
-  let inputResource;
+  let request: TypedRequestMap[typeof METHOD];
   try {
-    const duration = flagInt(parsed.flags, "duration");
-    if (duration !== undefined) request.duration_seconds = duration;
-    const aspect = requireString(parsed.flags, "aspect");
-    if (aspect !== undefined) {
-      if (!ASPECT.has(aspect)) {
-        throw new ArgError(`--aspect invalid: ${aspect}`);
-      }
-      request.aspect_ratio = aspect;
-    }
-    const resolution = requireString(parsed.flags, "resolution");
-    if (resolution !== undefined) {
-      if (!RESOLUTION.has(resolution)) {
-        throw new ArgError(`--resolution invalid: ${resolution}`);
-      }
-      request.resolution = resolution;
-    }
-    inputResource = await resolveInputResource(srcImage, "image/*");
-    request.image = inputResource;
+    const output = videoOutputSpec(parsed.flags);
+    request = {
+      video: await resolveInputResource(srcVideo, "video/*"),
+      prompt,
+      ...(output ? { output } : {}),
+    };
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     bailIoError(TOOL, undefined, err);
@@ -110,7 +90,12 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  const artifact = pickArtifact(call.summary, "video");
+  let artifact;
+  try {
+    artifact = pickVideo(call.summary);
+  } catch (err) {
+    bailAiccFailed(TOOL, METHOD, call.taskId, (err as Error).message);
+  }
   if (!artifact) bailNoArtifact(TOOL, METHOD, call.taskId);
   // deno-lint-ignore no-explicit-any
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
@@ -118,7 +103,7 @@ export async function run(argv: string[]): Promise<never> {
   try {
     saved = await saveArtifactToPath(
       artifact,
-      suffixPathByMime(outputPath, "video/mp4"),
+      suffixPathByMime(outputPath, artifact.mime ?? "video/mp4"),
       ndmProxy,
     );
   } catch (err) {
@@ -137,6 +122,7 @@ export async function run(argv: string[]): Promise<never> {
         source_kind: saved.source_kind,
         obj_id: saved.obj_id ?? null,
       }],
+      video: artifact.metadata ?? null,
     }),
     EXIT_SUCCESS,
   );

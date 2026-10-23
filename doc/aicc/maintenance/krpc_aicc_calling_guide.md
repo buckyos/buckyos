@@ -102,7 +102,7 @@ Helper 接受逻辑模型和对应业务字段，内部完成一次 route + type
 - Image：`images.generate`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove`
 - Vision：`vision.ocr`、`vision.caption`
 - Audio：`audio.tts`、`audio.asr`、`audio.music`、`audio.enhance`
-- Video：`video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale`
+- Video：`video.generate`、`video.edit`、`video.extend`、`video.upscale`（文本、首尾帧和参考素材都是 `video.generate` 的 `conditions[]`；逻辑模型用 `helper.video_generate`；结果为 `videos[]`。见 [video_generation.md](../video_generation.md)）
 - Agent：`agent.computer_use`
 
 资源输入统一使用 `ResourceRef`，输出统一使用 artifact/FileObject 引用。业务结果不得塞入脱敏后的诊断字段。

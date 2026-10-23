@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-14.1",
-  "checked_at": "2026-10-14",
+  "revision": "official-provider-protocols-2026-10-22.1",
+  "checked_at": "2026-10-22",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -117,9 +117,9 @@
         "image.inpaint": ["gpt-image-2"],
         "audio.tts": ["gpt-4o-mini-tts"],
         "audio.asr": ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
-        "video.txt2video": ["sora-2", "sora-2-pro"],
-        "video.img2video": ["sora-2", "sora-2-pro"],
-        "agent.computer_use": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        "video.generate": ["sora-2", "sora-2-pro"],
+        "agent.computer_use": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        "video.edit": ["sora-2", "sora-2-pro"]
       },
       "official_variant_sources": [
         "https://developers.openai.com/api/docs/models/gpt-5.6",
@@ -137,7 +137,7 @@
         { "model_ids": ["gpt-5.5-pro", "gpt-5.4-pro"], "variants": { "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
         { "model_ids": ["gpt-5.3-codex"], "variants": { "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
       ],
-      "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-2", "image.img2img": "gpt-image-2", "image.inpaint": "gpt-image-2", "audio.tts": "gpt-4o-mini-tts", "audio.asr": "gpt-transcribe", "video.txt2video": "sora-2", "video.img2video": "sora-2", "agent.computer_use": "gpt-5.6" },
+      "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-2", "image.img2img": "gpt-image-2", "image.inpaint": "gpt-image-2", "audio.tts": "gpt-4o-mini-tts", "audio.asr": "gpt-transcribe", "video.generate": "sora-2", "agent.computer_use": "gpt-5.6", "video.edit": "sora-2" },
       "contracts": [
         {
           "id": "openai.responses.v1",
@@ -267,14 +267,13 @@
           "id": "openai.videos.v1",
           "protocol_adapter_id": "openai-responses",
           "api_version": "v1",
-          "api_types": ["video.txt2video", "video.img2video"],
+          "api_types": ["video.generate"],
           "operation": "videos.create",
           "http_method": "POST",
           "path": "/v1/videos",
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "multipart/form-data",
           "required_body_fields": ["model", "prompt"],
-          "required_body_fields_by_api_type": { "video.img2video": ["input_reference"] },
           "allowed_body_fields": ["model", "prompt", "input_reference", "seconds", "size"],
           "body_field_types": { "model": ["string"], "prompt": ["string"], "input_reference": ["object"] },
           "async_protocol": "openai_video",
@@ -284,7 +283,27 @@
           ],
           "success_fixture": { "id": "video_mock_1", "object": "video", "model": "mock-model", "status": "queued", "progress": 0, "created_at": 1770000000 },
           "official_sources": ["https://platform.openai.com/docs/api-reference/videos/create", "https://platform.openai.com/docs/api-reference/videos/retrieve", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
-          "evidence_summary": "Video create posts model/prompt to /v1/videos and returns a video task that is retrieved until completed."
+          "evidence_summary": "Video create posts model/prompt to /v1/videos and returns a video task that is retrieved until completed.",
+          "video_generate_scenarios": ["keyframe"]
+        },
+        {
+          "id": "openai.videos.edits.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["video.edit"],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/v1/videos/edits",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["video", "prompt"],
+          "allowed_body_fields": ["video", "prompt"],
+          "body_field_types": { "video": ["object"], "prompt": ["string"] },
+          "async_protocol": "openai_video",
+          "async_steps": [{ "name": "poll", "http_method": "GET", "path": "/v1/videos/{operation_id}" }, { "name": "result", "http_method": "GET", "path": "/v1/videos/{operation_id}/content" }],
+          "success_fixture": { "id": "video_mock_1", "object": "video", "model": "mock-model", "status": "queued", "progress": 0, "created_at": 1770000000 },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/videos", "https://platform.openai.com/docs/api-reference/videos/retrieve"],
+          "evidence_summary": "The OpenAI Videos API (CreateVideoEdit in the official OpenAPI spec, marked deprecated) posts the completed source video and an edit prompt, and nothing else, to /v1/videos/edits and returns the same video job, which is retrieved until completed."
         }
       ]
     },
@@ -343,9 +362,8 @@
         "image.img2img": ["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
         "audio.tts": ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"],
         "audio.music": ["lyria-3-pro-preview", "lyria-3-clip-preview"],
-        "video.txt2video": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
-        "video.img2video": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
-        "video.video2video": ["gemini-omni-1.1-flash"],
+        "video.generate": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"],
+        "video.edit": ["gemini-omni-1.1-flash"],
         "video.extend": ["gemini-omni-1.1-flash", "veo-3.1-fast-generate-preview"]
       },
       "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking", "https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"],
@@ -357,7 +375,7 @@
         { "model_ids": ["gemini-robotics-er-2-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
         ,{ "model_ids": ["gemma-4-26b-a4b-it", "gemma-4-31b-it"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
-      "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
+      "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.generate": "veo-3.1-generate-preview", "video.edit": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
         {
           "id": "gemini.interactions.v1beta",
@@ -502,7 +520,7 @@
           "id": "gemini.interactions.video.v1beta",
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
-          "api_types": ["video.video2video", "video.extend"],
+          "api_types": ["video.edit", "video.extend"],
           "operation": "interactions.create",
           "http_method": "POST",
           "path": "/v1beta/interactions",
@@ -523,7 +541,7 @@
           "id": "gemini.predict-long-running.v1beta",
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
-          "api_types": ["video.txt2video", "video.img2video"],
+          "api_types": ["video.generate"],
           "operation": "models.predictLongRunning",
           "http_method": "POST",
           "path": "/v1beta/models/{model}:predictLongRunning",
@@ -538,7 +556,8 @@
           ],
           "success_fixture": { "name": "operations/gemini_mock_1", "done": false },
           "official_sources": ["https://ai.google.dev/api/models", "https://ai.google.dev/gemini-api/docs/video", "https://ai.google.dev/gemini-api/docs/api-errors"],
-          "evidence_summary": "Gemini video generation uses models/{model}:predictLongRunning with instances/parameters and returns a pollable operation."
+          "evidence_summary": "Gemini video generation uses models/{model}:predictLongRunning with instances/parameters and returns a pollable operation.",
+          "video_generate_scenarios": ["keyframe", "keyframes"]
         }
       ]
     },
@@ -701,14 +720,7 @@
           "image-01",
           "image-01-live"
         ],
-        "video.txt2video": [
-          "MiniMax-H3",
-          "MiniMax-H3-Max"
-        ],
-        "video.img2video": [
-          "MiniMax-H3",
-          "MiniMax-H3-Max"
-        ],
+        "video.generate": ["MiniMax-H3", "MiniMax-H3-Max"],
         "audio.music": [
           "music-3.0"
         ]
@@ -729,8 +741,7 @@
         "audio.asr": "asr-1.0",
         "image.txt2img": "image-01",
         "image.img2img": "image-01",
-        "video.txt2video": "MiniMax-H3",
-        "video.img2video": "MiniMax-H3",
+        "video.generate": "MiniMax-H3",
         "audio.music": "music-3.0"
       },
       "contracts": [
@@ -808,7 +819,7 @@
           "id": "minimax.video-generation.v2",
           "protocol_adapter_id": "minimax-messages",
           "api_version": "v2",
-          "api_types": ["video.txt2video", "video.img2video"],
+          "api_types": ["video.generate"],
           "operation": "video_generation.v2.create",
           "http_method": "POST",
           "path": "/v2/video_generation",
@@ -826,7 +837,8 @@
           "success_fixture": { "task_id": "minimax_video_mock_1" },
           "async_result_fixture": { "task": { "id": "minimax_video_mock_1", "model": "MiniMax-H3", "status": "succeeded", "content": { "url": "http://mock-artifact/artifacts/result.mp4" }, "resolution": "768P", "duration": 5, "ratio": "16:9", "usage": { "total_seconds": 5, "input_seconds": 0, "output_seconds": 5, "input_image_count": 0 }, "task_type": "generation", "modality": "video" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-v2-create", "https://platform.minimax.io/docs/api-reference/video-generation-v2-query", "https://platform.minimax.io/docs/api-reference/video-generation-v2-delete"],
-          "evidence_summary": "MiniMax H3 video generation submits V2 multimodal content, queries the task by path ID, and supports queued-task cancellation with DELETE."
+          "evidence_summary": "MiniMax H3 video generation submits V2 multimodal content, queries the task by path ID, and supports queued-task cancellation with DELETE.",
+          "video_generate_scenarios": ["keyframe", "keyframes", "reference-images"]
         },
         {
           "id": "minimax.music-generation.v1",
@@ -949,7 +961,8 @@
         ],
         "decision": [
           "typesafe/jev-1.13"
-        ]
+        ],
+        "video.generate": ["minimax/hailuo-3", "minimax/hailuo-3-max"]
       },
       "official_variant_sources": [
         "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
@@ -1030,7 +1043,8 @@
         "llm": "openai/gpt-5.6",
         "embedding.text": "openai/text-embedding-3-small",
         "rerank": "cohere/rerank-v3.5",
-        "decision": "typesafe/jev-1.13"
+        "decision": "typesafe/jev-1.13",
+        "video.generate": "minimax/hailuo-3"
       },
       "contracts": [
         {
@@ -1429,6 +1443,66 @@
             "https://openrouter.ai/blog/tutorials/how-to-use-jev/"
           ],
           "evidence_summary": "OpenAPI DecisionsRequest/Response verified 2026-09-25: immediate batch choice/score/noul; dated build, id/provider, token usage and optional USD cost. Synthetic marker fixture follows official schema."
+        },
+        {
+          "id": "openrouter.videos.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": [
+            "video.generate"
+          ],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/api/v1/videos",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "frame_images",
+            "input_references",
+            "duration",
+            "resolution",
+            "size",
+            "aspect_ratio",
+            "generate_audio",
+            "seed"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": ["string"],
+            "frame_images": ["array"],
+            "input_references": ["array"],
+            "duration": ["integer"],
+            "resolution": ["string"],
+            "size": ["string"],
+            "aspect_ratio": ["string"],
+            "generate_audio": ["boolean"],
+            "seed": ["integer"]
+          },
+          "async_protocol": "openrouter_video",
+          "async_steps": [{ "name": "poll", "http_method": "GET", "path": "/api/v1/videos/{operation_id}" }, { "name": "result", "http_method": "GET", "path": "/api/v1/videos/{operation_id}/content", "required_query_fields": ["index"] }],
+          "success_fixture": {
+            "id": "gen-vid-1789480874-Ab3dEf9hIjKlMnOpQrSt",
+            "polling_url": "/api/v1/videos/gen-vid-1789480874-Ab3dEf9hIjKlMnOpQrSt",
+            "status": "pending"
+          },
+          "official_sources": [
+            "https://openrouter.ai/docs/guides/overview/multimodal/video-generation",
+            "https://openrouter.ai/openapi.json",
+            "https://openrouter.ai/docs/api/api-reference/video-generation/list-all-video-generation-models"
+          ],
+          "evidence_summary": "OpenRouter video generation (OpenAPI checked 2026-10-22) submits model, prompt, frame_images and input_references to /api/v1/videos (202), is polled at /videos/{jobId} until completed with unsigned_urls and usage.cost, and each output is downloaded from /videos/{jobId}/content?index=N with the API key; there is no cancel endpoint.",
+          "video_generate_scenarios": ["keyframe", "keyframes", "reference-images"]
         }
       ]
     },
@@ -1494,8 +1568,7 @@
         "image.txt2img": ["glm-image", "cogview-4-250304", "cogview-4", "cogview-3-flash"],
         "audio.tts": ["glm-tts"],
         "audio.asr": ["glm-asr-2512"],
-        "video.txt2video": ["cogvideox-3", "cogvideox-flash", "viduq1-text"],
-        "video.img2video": ["cogvideox-3", "cogvideox-flash", "viduq1-image", "viduq1-start-end", "vidu2-image", "vidu2-start-end", "vidu2-reference"]
+        "video.generate": ["cogvideox-3", "cogvideox-flash", "viduq1-text", "viduq1-image", "viduq1-start-end", "vidu2-image", "vidu2-start-end", "vidu2-reference"]
       },
       "official_variant_sources": ["https://docs.bigmodel.cn/cn/guide/capabilities/thinking", "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3", "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2"],
       "official_variant_rules": [{
@@ -1520,7 +1593,7 @@
           "reasoning-low": { "reasoning_effort": "low" }
         }
       }],
-      "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash", "embedding.text": "embedding-3", "image.txt2img": "glm-image", "audio.tts": "glm-tts", "audio.asr": "glm-asr-2512", "video.txt2video": "cogvideox-3", "video.img2video": "cogvideox-3" },
+      "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash", "embedding.text": "embedding-3", "image.txt2img": "glm-image", "audio.tts": "glm-tts", "audio.asr": "glm-asr-2512", "video.generate": "cogvideox-3" },
       "contracts": [{
         "id": "glm.chat-completions.v4",
         "protocol_adapter_id": "glm-chat",
@@ -1607,14 +1680,13 @@
         "id": "glm.videos.generations.v4",
         "protocol_adapter_id": "glm-chat",
         "api_version": "v4",
-        "api_types": ["video.txt2video", "video.img2video"],
+        "api_types": ["video.generate"],
         "operation": "videos.generate",
         "http_method": "POST",
         "path": "/api/paas/v4/videos/generations",
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "prompt"],
-        "required_body_fields_by_api_type": { "video.img2video": ["image_url"] },
         "allowed_body_fields": ["model", "prompt", "image_url", "duration", "size"],
         "body_field_types": { "model": ["string"], "prompt": ["string"], "image_url": ["string", "array"], "duration": ["number"], "size": ["string"] },
         "async_protocol": "glm_video",
@@ -1630,7 +1702,8 @@
           "request_id": "glm_request_mock_1"
         },
         "official_sources": ["https://docs.z.ai/api-reference/video-generation/generate-video", "https://docs.z.ai/api-reference/video-generation/query-video-generation-task", "https://raw.githubusercontent.com/MetaGLM/glm-cookbook/main/vision/cogvideox_pysdk.ipynb"],
-        "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available. The official MetaGLM cookbook shows successful query responses with id=None and a request_id; polling must retain the original submitted task ID."
+        "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available. The official MetaGLM cookbook shows successful query responses with id=None and a request_id; polling must retain the original submitted task ID.",
+        "video_generate_scenarios": ["keyframe"]
       }]
     },
     {
@@ -1688,9 +1761,8 @@
         "audio.tts": ["doubao-seed-tts-2.0"],
         "image.txt2img": ["doubao-seedream-5.0-lite", "doubao-seedream-5-0-pro"],
         "image.img2img": ["doubao-seedream-5.0-lite", "doubao-seedream-5-0-pro"],
-        "video.txt2video": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
-        "video.img2video": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
-        "video.video2video": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
+        "video.generate": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
+        "video.edit": ["doubao-seedance-2.5"],
         "video.extend": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"]
       },
       "official_variant_sources": ["https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh", "https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
@@ -1738,7 +1810,7 @@
           }
         }
       ],
-      "test_model_ids": { "llm": "doubao-seed-2.0-mini", "vision.ocr": "doubao-seed-2.0-mini", "vision.caption": "doubao-seed-2.0-mini", "embedding.multimodal": "doubao-embedding-vision", "audio.tts": "doubao-seed-tts-2.0", "image.txt2img": "doubao-seedream-5.0-lite", "image.img2img": "doubao-seedream-5.0-lite", "video.txt2video": "doubao-seedance-2.0", "video.img2video": "doubao-seedance-2.0", "video.video2video": "doubao-seedance-2.0", "video.extend": "doubao-seedance-2.0" },
+      "test_model_ids": { "llm": "doubao-seed-2.0-mini", "vision.ocr": "doubao-seed-2.0-mini", "vision.caption": "doubao-seed-2.0-mini", "embedding.multimodal": "doubao-embedding-vision", "audio.tts": "doubao-seed-tts-2.0", "image.txt2img": "doubao-seedream-5.0-lite", "image.img2img": "doubao-seedream-5.0-lite", "video.generate": "doubao-seedance-2.0", "video.extend": "doubao-seedance-2.0", "video.edit": "doubao-seedance-2.5" },
       "contracts": [{
         "id": "doubao-agent-plan.responses.plan-v3",
         "protocol_adapter_id": "doubao-responses",
@@ -1792,7 +1864,7 @@
         "id": "doubao-agent-plan.video-tasks.plan-v3",
         "protocol_adapter_id": "doubao-responses",
         "api_version": "plan-v3",
-        "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+        "api_types": ["video.generate", "video.edit", "video.extend"],
         "operation": "ark.contents.generate",
         "http_method": "POST",
         "path": "/api/plan/v3/contents/generations/tasks",
@@ -1830,7 +1902,8 @@
           "duration": 5
         },
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
-        "evidence_summary": "Agent Plan Seedance video generation uses /api/plan/v3 asynchronous content generation tasks with GET status/result and DELETE cancellation."
+        "evidence_summary": "Agent Plan Seedance video generation uses /api/plan/v3 asynchronous content generation tasks with GET status/result and DELETE cancellation.",
+        "video_generate_scenarios": ["keyframe", "keyframes", "reference-images"]
       }, {
         "id": "doubao-agent-plan.tts.plan-v3",
         "protocol_adapter_id": "doubao-responses",
@@ -2151,9 +2224,8 @@
         "embedding.multimodal": ["doubao-embedding-vision-251215"],
         "image.txt2img": ["doubao-seedream-5-0-pro-260628"],
         "image.img2img": ["doubao-seedream-5-0-pro-260628"],
-        "video.txt2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
-        "video.img2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
-        "video.video2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
+        "video.generate": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
+        "video.edit": ["doubao-seedance-2-5-260628"],
         "video.extend": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"]
       },
       "official_variant_sources": ["https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh", "https://www.volcengine.com/docs/82379/1554682"],
@@ -2168,10 +2240,9 @@
         "embedding.multimodal": "doubao-embedding-vision-251215",
         "image.txt2img": "doubao-seedream-5-0-pro-260628",
         "image.img2img": "doubao-seedream-5-0-pro-260628",
-        "video.txt2video": "doubao-seedance-2-0-260128",
-        "video.img2video": "doubao-seedance-2-0-260128",
-        "video.video2video": "doubao-seedance-2-0-260128",
-        "video.extend": "doubao-seedance-2-0-260128"
+        "video.generate": "doubao-seedance-2-0-260128",
+        "video.extend": "doubao-seedance-2-0-260128",
+        "video.edit": "doubao-seedance-2-5-260628"
       },
       "contracts": [{
         "id": "doubao.responses.v3",
@@ -2214,7 +2285,7 @@
         "protocol_adapter_id": "doubao-responses",
         "error_fixture_key": "doubao",
         "api_version": "v3",
-        "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+        "api_types": ["video.generate", "video.edit", "video.extend"],
         "operation": "ark.contents.generate",
         "http_method": "POST",
         "path": "/api/v3/contents/generations/tasks",
@@ -2232,7 +2303,8 @@
         "success_fixture": {"id": "doubao_video_v3_mock_1", "status": "queued"},
         "async_result_fixture": {"id": "doubao_video_v3_mock_1", "status": "succeeded", "content": {"video_url": "http://mock-artifact/artifacts/doubao-v3.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature"}},
         "official_sources": ["https://docs.volcengine.com/docs/ark/get-video-generation-task-api?lang=zh", "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh", "https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
-        "evidence_summary": "Standard Seedance uses /api/v3 asynchronous content-generation tasks and returns the result URL as content.video_url; Seedance 2.5 uses omni_reference_task_type for edit and extend validation."
+        "evidence_summary": "Standard Seedance uses /api/v3 asynchronous content-generation tasks and returns the result URL as content.video_url; Seedance 2.5 uses omni_reference_task_type for edit and extend validation.",
+        "video_generate_scenarios": ["keyframe", "keyframes", "reference-images"]
       }, {
         "id": "doubao.embedding-multimodal.v3",
         "protocol_adapter_id": "doubao-responses",
@@ -2300,9 +2372,7 @@
         "image.img2img": [
           "qwen-image-edit"
         ],
-        "video.txt2video": [
-          "wan2.6-t2v"
-        ]
+        "video.generate": ["wan2.6-t2v"]
       },
       "official_aggregated_model_ids": {
         "llm": [
@@ -2421,7 +2491,7 @@
         "vision.caption": "qwen3.8-max",
         "image.txt2img": "wanx2.1-t2i-turbo",
         "image.img2img": "qwen-image-edit",
-        "video.txt2video": "wan2.6-t2v"
+        "video.generate": "wan2.6-t2v"
       },
       "contracts": [
         {
@@ -2612,7 +2682,7 @@
           "protocol_adapter_id": "qwen-responses",
           "api_version": "compatible-v1",
           "api_types": [
-            "video.txt2video"
+            "video.generate"
           ],
           "operation": "dashscope.video_synthesis",
           "http_method": "POST",

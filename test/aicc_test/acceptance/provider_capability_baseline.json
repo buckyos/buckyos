@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-14.1",
-  "checked_at": "2026-10-14",
+  "baseline_revision": "2026-10-22.1",
+  "checked_at": "2026-10-22",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -21,9 +21,8 @@
     "audio.asr",
     "audio.music",
     "audio.enhance",
-    "video.txt2video",
-    "video.img2video",
-    "video.video2video",
+    "video.generate",
+    "video.edit",
     "video.extend",
     "video.upscale",
     "agent.computer_use"
@@ -416,12 +415,12 @@
         {
           "model_pattern": "sora-2*",
           "status": "deprecated",
-          "api_types": ["video.txt2video", "video.img2video"],
-          "methods": ["video.txt2video", "video.img2video"],
-          "input_kinds": ["text", "image"],
+          "api_types": ["video.generate", "video.edit"],
+          "methods": ["video.generate", "video.edit"],
+          "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Sora 2 models are video generation models and are listed as deprecated."
+          "source_urls": ["https://developers.openai.com/api/docs/models/all", "https://platform.openai.com/docs/api-reference/videos"],
+          "evidence_summary": "Sora 2 models generate video from a prompt and an optional input_reference first frame (POST /v1/videos) and edit a completed video (POST /v1/videos/edits); both are listed as deprecated."
         },
         {
           "model_pattern": "gpt-image-*",
@@ -947,61 +946,57 @@
         {
           "model_pattern": "veo-3.1-*lite*",
           "status": "preview",
-          "api_types": ["video.txt2video", "video.img2video"],
-          "methods": ["video.txt2video", "video.img2video"],
+          "api_types": ["video.generate"],
+          "methods": ["video.generate"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
-            "video.img2video": {"duration_seconds": 4, "resolution": "720p"}
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 720}}}
           },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
-          "evidence_summary": "Veo Lite supports text and image conditioned video generation."
+          "evidence_summary": "Veo Lite generates video from a prompt with optional first and last frames."
         },
         {
           "model_pattern": "veo-3.1-*",
           "status": "preview",
-          "api_types": ["video.txt2video", "video.img2video", "video.extend"],
-          "methods": ["video.txt2video", "video.img2video", "video.extend"],
+          "api_types": ["video.generate", "video.extend"],
+          "methods": ["video.generate", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
-            "video.img2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 720}}},
             "video.extend": {"resolution": "720p"}
           },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
-          "evidence_summary": "Veo 3.1 supports text/image generation and supported video extension operations."
+          "evidence_summary": "Veo 3.1 generates video from a prompt with optional first/last frames or up to three reference images, and extends Veo videos."
         },
         {
           "model_pattern": "veo-*",
           "status": "preview",
           "source_status": "official_catalog_preview_family",
-          "api_types": ["video.txt2video", "video.img2video"],
-          "methods": ["video.txt2video", "video.img2video"],
+          "api_types": ["video.generate"],
+          "methods": ["video.generate"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
-            "video.img2video": {"duration_seconds": 4, "resolution": "720p"}
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 720}}}
           },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
-          "evidence_summary": "Veo models generate video from supported text and image inputs."
+          "evidence_summary": "Veo models generate video from a prompt with an optional first frame."
         },
         {
           "model_pattern": "gemini-omni-*",
           "status": "preview",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "api_types": ["video.generate", "video.edit", "video.extend"],
+          "methods": ["video.generate", "video.edit", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
-            "video.img2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 720}}},
             "video.extend": {"resolution": "720p"}
           },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
-          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation, editing, and extension."
+          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation (prompt and reference image), editing of a supplied video, and extension."
         },
         {
           "model_pattern": "gemini-*image*",
@@ -1261,30 +1256,28 @@
         {
           "model_pattern": "MiniMax-H3",
           "status": "active",
-          "api_types": ["video.txt2video", "video.img2video"],
-          "methods": ["video.txt2video", "video.img2video"],
-          "input_kinds": ["text", "image"],
+          "api_types": ["video.generate"],
+          "methods": ["video.generate"],
+          "input_kinds": ["text", "image", "video", "audio"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "768p"},
-            "video.img2video": {"duration_seconds": 4, "resolution": "768p"}
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 768}}}
           },
           "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
-          "evidence_summary": "MiniMax H3 supports text-to-video and image-to-video at 768P or 2K for integer durations from 4 through 15 seconds."
+          "evidence_summary": "MiniMax H3 (v2 video_generation content[]) generates at 768P or 2K for integer durations from 4 through 15 seconds from text, first/last frames, or up to 9 reference images, 3 reference videos and 3 reference audios."
         },
         {
           "model_pattern": "MiniMax-H3-Max",
           "status": "active",
-          "api_types": ["video.txt2video", "video.img2video"],
-          "methods": ["video.txt2video", "video.img2video"],
-          "input_kinds": ["text", "image"],
+          "api_types": ["video.generate"],
+          "methods": ["video.generate"],
+          "input_kinds": ["text", "image", "video", "audio"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 5, "resolution": "768p"},
-            "video.img2video": {"duration_seconds": 5, "resolution": "768p"}
+            "video.generate": {"output": {"duration_seconds": 5, "size": {"short_edge": 768}}}
           },
           "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
-          "evidence_summary": "MiniMax H3-Max supports text-to-video and image-to-video at 480P or 768P for integer durations from 5 through 15 seconds."
+          "evidence_summary": "MiniMax H3-Max (v2 video_generation content[]) generates at 480P or 768P for integer durations from 5 through 15 seconds from text, first/last frames, or reference images, videos and audios."
         },
         {
           "model_pattern": "MiniMax-M2*",
@@ -1441,6 +1434,54 @@
             "https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"
           ],
           "evidence_summary": "OpenRouter exposes a native rerank endpoint whose results preserve document indices and relevance scores."
+        },
+        {
+          "model_pattern": "minimax/hailuo-3-max",
+          "status": "active",
+          "source_status": "openrouter_video_catalog",
+          "api_types": [
+            "video.generate"
+          ],
+          "methods": [
+            "video.generate"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "video"
+          ],
+          "request_defaults": {"video.generate": {"output": {"duration_seconds": 5, "size": {"short_edge": 480}}}},
+          "source_urls": [
+            "https://openrouter.ai/api/v1/videos/models",
+            "https://openrouter.ai/docs/guides/overview/multimodal/video-generation"
+          ],
+          "evidence_summary": "OpenRouter's video catalog (2026-10-22) lists MiniMax H3-Max at 768p/480p for 5-15 s with first/last frame images and generate_audio=false, priced per second by resolution."
+        },
+        {
+          "model_pattern": "minimax/hailuo-3",
+          "status": "active",
+          "source_status": "openrouter_video_catalog",
+          "api_types": [
+            "video.generate"
+          ],
+          "methods": [
+            "video.generate"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "video"
+          ],
+          "request_defaults": {"video.generate": {"output": {"duration_seconds": 5}}},
+          "source_urls": [
+            "https://openrouter.ai/api/v1/videos/models",
+            "https://openrouter.ai/docs/guides/overview/multimodal/video-generation"
+          ],
+          "evidence_summary": "OpenRouter's video catalog (2026-10-22) lists MiniMax H3 at 2K for 5-15 s with first/last frame images and audio, priced per second plus per reference image."
         },
         {
           "model_pattern": "*",
@@ -1628,7 +1669,8 @@
       ],
       "rules": [
         { "model_pattern": "doubao-seedream-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["image.txt2img", "image.img2img"], "methods": ["images.generate", "image.img2img"], "input_kinds": ["text", "image"], "output_kinds": ["image"], "request_defaults": {"image.txt2img": {"n": 1, "size": "1K"}}, "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedream text-to-image and image-to-image on /api/plan/v3/images/generations." },
-        { "model_pattern": "doubao-seedance-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"], "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"], "input_kinds": ["text", "image", "video"], "output_kinds": ["video"], "request_defaults": {"video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false}, "video.img2video": {"duration_seconds": 4, "resolution": "480p"}, "video.extend": {"resolution": "480p"}}, "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedance generation as asynchronous /api/plan/v3 content-generation tasks." },
+        {"model_pattern": "doubao-seedance-2.5*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["video.generate", "video.edit", "video.extend"], "methods": ["video.generate", "video.edit", "video.extend"], "input_kinds": ["text", "image", "video"], "output_kinds": ["video"], "request_defaults": {"video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 480}, "audio": "none"}}, "video.extend": {"resolution": "480p"}}, "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedance 2.5 generation, video editing and extension as asynchronous /api/plan/v3 content-generation tasks."},
+        {"model_pattern": "doubao-seedance-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["video.generate", "video.extend"], "methods": ["video.generate", "video.extend"], "input_kinds": ["text", "image", "video"], "output_kinds": ["video"], "request_defaults": {"video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 480}, "audio": "none"}}, "video.extend": {"resolution": "480p"}}, "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedance generation and extension as asynchronous /api/plan/v3 content-generation tasks."},
         { "model_pattern": "doubao-embedding-vision", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["embedding.multimodal"], "methods": ["embedding.multimodal"], "input_kinds": ["text", "image"], "output_kinds": ["embedding"], "source_urls": ["https://www.volcengine.com/docs/82379/1526459"], "evidence_summary": "Ark multimodal embedding accepts typed text and image input." },
         { "model_pattern": "doubao-seed-tts-2.0", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["audio.tts"], "methods": ["audio.tts"], "input_kinds": ["text"], "output_kinds": ["audio"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Agent Plan TTS uses seed-tts-2.0 and the dedicated HTTP openspeech plan endpoint." },
         { "model_pattern": "deepseek-v4-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents these DeepSeek V4 models as text-input Responses models." },
@@ -1789,10 +1831,10 @@
           "ImageEmbedding": ["embedding.multimodal"],
           "TextToImage": ["image.txt2img"],
           "ImageToImage": ["image.img2img"],
-          "TextToVideo": ["video.txt2video"],
-          "ImageToVideo": ["video.img2video"],
-          "MultimodalToVideo": ["video.txt2video", "video.img2video"],
-          "VideoEditing": ["video.video2video"],
+          "TextToVideo": ["video.generate"],
+          "ImageToVideo": ["video.generate"],
+          "MultimodalToVideo": ["video.generate"],
+          "VideoEditing": ["video.edit"],
           "VideoExtension": ["video.extend"]
         }
       },
@@ -1896,65 +1938,61 @@
           "model_pattern": "doubao-seedance-2-0-260128",
           "status": "active",
           "source_status": "doubao_models_api_runtime_membership",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "input_kinds": ["text", "image", "video"],
+          "api_types": ["video.generate", "video.extend"],
+          "methods": ["video.generate", "video.extend"],
+          "input_kinds": ["text", "image", "video", "audio"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
-            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 480}, "audio": "none"}},
             "video.extend": {"resolution": "480p"}
           },
           "source_urls": ["https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"],
-          "evidence_summary": "Seedance 2.0 Standard documents text/image generation, multimodal reference video editing and video extension on the standard content-generation task API."
+          "evidence_summary": "Seedance 2.0 Standard documents text, first/last-frame and multimodal-reference (image, video, audio) generation and video extension on the standard content-generation task API."
         },
         {
           "model_pattern": "doubao-seedance-2-0-fast-260128",
           "status": "active",
           "source_status": "doubao_models_api_runtime_membership",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "input_kinds": ["text", "image", "video"],
+          "api_types": ["video.generate", "video.extend"],
+          "methods": ["video.generate", "video.extend"],
+          "input_kinds": ["text", "image", "video", "audio"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
-            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 480}, "audio": "none"}},
             "video.extend": {"resolution": "480p"}
           },
           "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
-          "evidence_summary": "The Seedance 2.0 capability table marks Fast active for generation, video editing and extension."
+          "evidence_summary": "The Seedance 2.0 capability table marks Fast active for generation (text, frames, multimodal references) and extension."
         },
         {
           "model_pattern": "doubao-seedance-2-0-mini-260615",
           "status": "active",
           "source_status": "doubao_models_api_runtime_membership",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "input_kinds": ["text", "image", "video"],
+          "api_types": ["video.generate", "video.extend"],
+          "methods": ["video.generate", "video.extend"],
+          "input_kinds": ["text", "image", "video", "audio"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
-            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 480}, "audio": "none"}},
             "video.extend": {"resolution": "480p"}
           },
           "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
-          "evidence_summary": "The Seedance 2.0 capability table marks Mini active for generation, video editing and extension."
+          "evidence_summary": "The Seedance 2.0 capability table marks Mini active for generation (text, frames, multimodal references) and extension."
         },
         {
           "model_pattern": "doubao-seedance-2-5-260628",
           "status": "active",
           "source_status": "doubao_models_api_runtime_membership",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-          "input_kinds": ["text", "image", "video"],
+          "api_types": ["video.generate", "video.edit", "video.extend"],
+          "methods": ["video.generate", "video.edit", "video.extend"],
+          "input_kinds": ["text", "image", "video", "audio"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
-            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.generate": {"output": {"duration_seconds": 4, "size": {"short_edge": 480}, "audio": "none"}},
             "video.extend": {"resolution": "480p"}
           },
           "source_urls": ["https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
-          "evidence_summary": "Seedance 2.5 documents generation, video editing and explicit omni_reference_task_type=extend on the standard task API."
+          "evidence_summary": "Seedance 2.5 documents generation (text, frames, multimodal references), video editing (omni_reference_task_type=edit) and explicit omni_reference_task_type=extend on the standard task API."
         },
         {
           "model_pattern": "doubao-seed-2-0-lite-260428",
@@ -2011,7 +2049,7 @@
         { "model_pattern": "qwen3.7-plus", "status": "active", "source_status": "qwen_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image", "document"], "output_kinds": ["text", "json", "tool_call"], "document_formats": ["pdf"], "source_urls": ["https://www.alibabacloud.com/help/en/model-studio/vision-model", "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"], "evidence_summary": "Qwen3.7-Plus is documented for visual understanding; AICC exposes its text-returning visual understanding through vision OCR and caption operations." },
         { "model_pattern": "wanx2.1-t2i-turbo", "status": "active", "source_status": "qwen_official_documentation", "api_types": ["image.txt2img"], "methods": ["images.generate"], "input_kinds": ["text"], "output_kinds": ["image"], "request_defaults": {"image.txt2img": {"n": 1}}, "source_urls": ["https://help.aliyun.com/en/model-studio/text-to-image-v2-api-reference", "https://www.alibabacloud.com/help/en/model-studio/model-pricing"], "evidence_summary": "Alibaba Cloud documents Wanx 2.1 Turbo text-to-image through the asynchronous DashScope image synthesis API." },
         { "model_pattern": "qwen-image-edit", "status": "active", "source_status": "qwen_official_documentation", "api_types": ["image.img2img"], "methods": ["image.img2img"], "input_kinds": ["text", "image"], "output_kinds": ["image"], "source_urls": ["https://help.aliyun.com/en/model-studio/qwen-image-edit-api", "https://www.alibabacloud.com/help/en/model-studio/model-pricing"], "evidence_summary": "Alibaba Cloud documents Qwen Image Edit as a synchronous image editing model." },
-        { "model_pattern": "wan2.6-t2v", "status": "active", "source_status": "qwen_official_documentation", "api_types": ["video.txt2video"], "methods": ["video.txt2video"], "input_kinds": ["text"], "output_kinds": ["video"], "request_defaults": {"video.txt2video": {"duration_seconds": 5, "resolution": "720P"}}, "source_urls": ["https://www.alibabacloud.com/help/en/model-studio/wan2-6-t2v", "https://help.aliyun.com/en/model-studio/legacy-wan-text-to-video-api-reference"], "evidence_summary": "Alibaba Cloud documents Wan 2.6 text-to-video through the asynchronous DashScope video synthesis API." },
+        {"model_pattern": "wan2.6-t2v", "status": "active", "source_status": "qwen_official_documentation", "api_types": ["video.generate"], "methods": ["video.generate"], "input_kinds": ["text"], "output_kinds": ["video"], "request_defaults": {"video.generate": {"output": {"duration_seconds": 5, "size": {"short_edge": 720}}}}, "source_urls": ["https://www.alibabacloud.com/help/en/model-studio/wan2-6-t2v", "https://help.aliyun.com/en/model-studio/legacy-wan-text-to-video-api-reference"], "evidence_summary": "Alibaba Cloud documents Wan 2.6 text-to-video through the asynchronous DashScope video synthesis API."},
         { "model_pattern": "deepseek-v4.1-flash", "status": "active", "source_status": "qwen_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash-by-vanchin"], "evidence_summary": "DeepSeek V4.1 Flash accepts text and image input on Model Studio; AICC exposes its text-returning visual understanding as OCR and caption." },
         { "model_pattern": "vanchin/deepseek-v4.1-flash", "status": "active", "source_status": "qwen_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash-by-vanchin"], "evidence_summary": "The vendor-qualified DeepSeek V4.1 Flash ID has the same text and image input contract." },
         { "model_pattern": "ZHIPU/GLM-5.3-Flash", "status": "active", "source_status": "qwen_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://help.aliyun.com/zh/model-studio/glm-5-3-flash-by-zhipu"], "evidence_summary": "GLM-5.3-Flash accepts text, image, video and file input on Model Studio; AICC exposes text-returning image understanding as OCR and caption." },

@@ -284,6 +284,7 @@ impl ModelObject {
             availability: ModelAvailability::Available,
             deprecated: false,
             pricing: None,
+            video: None,
         })
     }
 }
@@ -621,6 +622,7 @@ mod tests {
                     availability: ModelAvailability::Available,
                     deprecated: false,
                     pricing: None,
+                    video: None,
                 }],
             },
             &catalog,
@@ -682,6 +684,7 @@ mod tests {
                         availability: ModelAvailability::Available,
                         deprecated: false,
                         pricing: None,
+                        video: None,
                     }],
                 },
                 &catalog,

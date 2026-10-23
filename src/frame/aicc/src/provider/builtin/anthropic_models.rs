@@ -148,6 +148,7 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                     availability: ModelAvailability::Available,
                     deprecated: false,
                     pricing: None,
+                    video: None,
                 });
             }
 

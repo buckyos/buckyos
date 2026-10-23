@@ -1,4 +1,8 @@
 use super::minimax_messages::validate_minimax_response;
+use super::video::{
+    generated_video, planned_resource, require_video_parameters, unsupported, video_generate_input,
+    video_output, whole_seconds,
+};
 use super::{
     AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration, CredentialKind,
     ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource, MultipartBody,
@@ -6,9 +10,13 @@ use super::{
     NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor,
     ProtocolError, ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue,
 };
+use crate::video::VideoScenario;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef, TextToImageInvokeRequest};
+use buckyos_api::{
+    AiArtifact, AiUsage, AiccCall, ApiType, KeyframePosition, ResourceRef,
+    TextToImageInvokeRequest, VideoConditionKind, VideoMetadata,
+};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
@@ -39,10 +47,10 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
     let music = immediate_operation(MUSIC_OPERATION_ID, &[ApiType::AudioMusic]);
     let video = OperationDescriptor {
         operation_id: VIDEO_OPERATION_ID.to_string(),
-        bindings: [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo]
-            .into_iter()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::NativeTask]))
-            .collect(),
+        bindings: vec![OperationBinding::new(
+            ApiType::VideoGenerate,
+            [ExecutionMode::NativeTask],
+        )],
         supports_cancel: false,
         supports_webhook: false,
         max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
@@ -50,10 +58,10 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
     };
     let video_v2 = OperationDescriptor {
         operation_id: VIDEO_V2_OPERATION_ID.to_string(),
-        bindings: [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo]
-            .into_iter()
-            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::NativeTask]))
-            .collect(),
+        bindings: vec![OperationBinding::new(
+            ApiType::VideoGenerate,
+            [ExecutionMode::NativeTask],
+        )],
         supports_cancel: true,
         supports_webhook: false,
         max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
@@ -76,14 +84,8 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
     .collect();
     let native_task_codecs = [(video.clone(), false), (video_v2.clone(), true)]
         .into_iter()
-        .flat_map(|(descriptor, v2)| {
-            [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo].map(|api_type| {
-                Arc::new(MiniMaxVideoCodec {
-                    descriptor: descriptor.clone(),
-                    api_type,
-                    v2,
-                }) as Arc<dyn NativeTaskCodec>
-            })
+        .map(|(descriptor, v2)| {
+            Arc::new(MiniMaxVideoCodec { descriptor, v2 }) as Arc<dyn NativeTaskCodec>
         })
         .collect();
     (
@@ -366,7 +368,6 @@ impl OperationCodec for MiniMaxImmediateCodec {
 #[derive(Clone)]
 struct MiniMaxVideoCodec {
     descriptor: OperationDescriptor,
-    api_type: ApiType,
     v2: bool,
 }
 
@@ -383,7 +384,7 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
     }
 
     fn api_type(&self) -> ApiType {
-        self.api_type
+        ApiType::VideoGenerate
     }
 
     fn operations(&self) -> BTreeSet<NativeTaskOperation> {
@@ -400,7 +401,7 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
 
     fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
         match input.operation {
-            NativeTaskOperation::Submit => encode_video_submit(input, self.api_type, self.v2),
+            NativeTaskOperation::Submit => encode_video_submit(input, self.v2),
             NativeTaskOperation::Status => {
                 let task_id = safe_id(input.remote_task_id, "task ID")?;
                 let path = if self.v2 {
@@ -538,23 +539,28 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                             "MiniMax video result is missing its download URL",
                         )
                     })?;
-                let resource = ResourceRef::url(url.to_string(), Some("video/mp4".to_string()));
-                Ok(NativeTaskOutput::Result(ProtocolOutput {
-                    value: json!({"video":resource}),
-                    usage: Some(AiUsage {
-                        video_seconds: value
-                            .pointer("/task/usage/output_seconds")
-                            .or_else(|| value.pointer("/task/duration"))
-                            .and_then(Value::as_f64),
+                let seconds = value
+                    .pointer("/task/usage/output_seconds")
+                    .or_else(|| value.pointer("/task/duration"))
+                    .and_then(Value::as_f64);
+                let video = generated_video(
+                    ResourceRef::url(url.to_string(), Some("video/mp4".to_string())),
+                    Some("video/mp4".to_string()),
+                    VideoMetadata {
+                        duration_seconds: value
+                            .pointer("/task/duration")
+                            .and_then(Value::as_f64)
+                            .or(seconds),
+                        ..Default::default()
+                    },
+                );
+                Ok(NativeTaskOutput::Result(video_output(
+                    vec![video],
+                    AiUsage {
+                        video_seconds: seconds,
                         ..AiUsage::request_units(1)
-                    }),
-                    artifacts: vec![AiArtifact {
-                        name: "video".to_string(),
-                        resource,
-                        mime: Some("video/mp4".to_string()),
-                        metadata: None,
-                    }],
-                }))
+                    },
+                )?))
             }
             NativeTaskOperation::Cancel if self.v2 => {
                 let accepted = value
@@ -571,127 +577,108 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
     }
 }
 
-fn encode_video_submit(
-    input: &NativeTaskInput<'_>,
-    api_type: ApiType,
-    v2: bool,
-) -> ProtocolResultValue<HttpRequest> {
+fn encode_video_submit(input: &NativeTaskInput<'_>, v2: bool) -> ProtocolResultValue<HttpRequest> {
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("MiniMax video submit requires canonical input")
     })?;
-    if v2 {
-        require_parameters(input.resolved_parameters, &["minimax_video_v2_constraints"])?;
-    } else {
-        require_only_model(input.resolved_parameters)?;
-    }
+    require_video_parameters(input.resolved_parameters, "MiniMax", &[])?;
+    let (request, plan) = video_generate_input(codec_input)?;
     let model = provider_model_id(input.resolved_parameters)?;
-    let mut body = match (&codec_input.canonical_request, api_type) {
-        (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => Map::from_iter([
-            ("model".to_string(), json!(model)),
-            (
-                if v2 { "content" } else { "prompt" }.to_string(),
-                if v2 {
-                    json!([{"type":"text","text":request.prompt}])
-                } else {
-                    json!(request.prompt)
-                },
-            ),
-        ]),
-        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
-            let image = resource_string(&request.image, input.context)?;
-            if v2 {
-                Map::from_iter([
-                    ("model".to_string(), json!(model)),
-                    (
-                        "content".to_string(),
-                        json!([
-                            {"type":"text","text":request.prompt},
-                            {"type":"image_url","image_url":{"url":image},"role":"first_frame"}
-                        ]),
-                    ),
-                ])
-            } else {
-                Map::from_iter([
-                    ("model".to_string(), json!(model)),
-                    ("prompt".to_string(), json!(request.prompt)),
-                    ("first_frame_image".to_string(), json!(image)),
-                ])
-            }
-        }
-        _ => {
-            return Err(ProtocolError::invalid_request(
-                "MiniMax video codec received the wrong canonical request",
-            ));
-        }
-    };
-    match &codec_input.canonical_request {
-        AiccCall::VideoTextToVideo(request) => {
-            if let Some(duration) = request.duration_seconds {
-                body.insert("duration".to_string(), json!(duration));
-            }
-            if let Some(resolution) = &request.resolution {
-                body.insert("resolution".to_string(), json!(resolution));
-            }
-        }
-        AiccCall::VideoImageToVideo(request) => {
-            if let Some(duration) = request.duration_seconds {
-                body.insert("duration".to_string(), json!(duration));
-            }
-            if let Some(resolution) = &request.resolution {
-                body.insert("resolution".to_string(), json!(resolution));
-            }
-        }
-        _ => {}
+    let prompt = plan
+        .submitted_prompt
+        .clone()
+        .filter(|prompt| !prompt.trim().is_empty())
+        .ok_or_else(|| {
+            ProtocolError::invalid_request("MiniMax video generation requires a non-empty prompt")
+        })?;
+    if plan.negative_prompt.is_some()
+        || plan.seed.is_some()
+        || plan.fps.is_some()
+        || plan.size.is_some()
+        || plan.generate_audio.is_some()
+    {
+        return Err(unsupported(
+            "MiniMax video generation has no negative prompt, seed, fps, exact size or audio switch",
+        ));
     }
+    let duration = whole_seconds(&plan)?;
+    let mut body = Map::from_iter([("model".to_string(), json!(model))]);
     if v2 {
-        let duration = body
-            .get("duration")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| {
+        let mut content = vec![json!({"type": "text", "text": prompt})];
+        for planned in &plan.inputs {
+            let url = resource_string(planned_resource(request, planned)?, input.context)?;
+            content.push(match (planned.kind, planned.position) {
+                (VideoConditionKind::Keyframe, Some(KeyframePosition::Start)) => {
+                    json!({"type": "image_url", "image_url": {"url": url}, "role": "first_frame"})
+                }
+                (VideoConditionKind::Keyframe, _) => {
+                    json!({"type": "image_url", "image_url": {"url": url}, "role": "last_frame"})
+                }
+                (VideoConditionKind::ReferenceImage, _) => {
+                    json!({"type": "image_url", "image_url": {"url": url}, "role": "reference_image"})
+                }
+                (VideoConditionKind::ReferenceVideo, _) => {
+                    json!({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
+                }
+                (VideoConditionKind::ReferenceAudio, _) => {
+                    json!({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
+                }
+            });
+        }
+        body.insert("content".to_string(), Value::Array(content));
+        body.insert(
+            "duration".to_string(),
+            json!(duration.ok_or_else(|| {
                 ProtocolError::invalid_configuration(
-                    "MiniMax V2 video duration default is missing from provider rules",
+                    "MiniMax V2 video needs a duration and the model declares no default",
                 )
-            })?;
-        if !duration.is_finite() || duration.fract() != 0.0 {
-            return Err(ProtocolError::invalid_request(
-                "MiniMax V2 duration must be an integer number of seconds",
-            ));
-        }
-        let duration = duration as u64;
-        body.insert("duration".to_string(), json!(duration));
-        let resolution = body
-            .get("resolution")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
+            })?),
+        );
+        body.insert(
+            "resolution".to_string(),
+            json!(plan.resolution.clone().ok_or_else(|| {
                 ProtocolError::invalid_configuration(
-                    "MiniMax V2 video resolution default is missing from provider rules",
+                    "MiniMax V2 video needs a resolution and the model declares no default",
                 )
-            })?;
-        let resolution = resolution.to_ascii_uppercase();
-        let constraints = minimax_video_v2_constraints(input.resolved_parameters)?;
-        if !(constraints.min_duration_seconds..=constraints.max_duration_seconds)
-            .contains(&duration)
-        {
-            return Err(ProtocolError::invalid_request(format!(
-                "MiniMax V2 duration must be between {} and {} seconds",
-                constraints.min_duration_seconds, constraints.max_duration_seconds
-            )));
-        }
-        if !constraints.resolutions.contains(&resolution) {
-            return Err(ProtocolError::invalid_request(format!(
-                "MiniMax V2 resolution must be one of {}",
-                constraints.resolutions.join(", ")
-            )));
-        }
-        body.insert("resolution".to_string(), json!(resolution));
-        let ratio = match &codec_input.canonical_request {
-            AiccCall::VideoTextToVideo(request) => {
-                request.aspect_ratio.as_deref().unwrap_or("16:9")
-            }
-            AiccCall::VideoImageToVideo(_) => "adaptive",
-            _ => unreachable!(),
+            })?),
+        );
+        let ratio = match plan.scenario {
+            VideoScenario::Keyframes => "adaptive".to_string(),
+            VideoScenario::Text => plan.aspect_ratio.clone().ok_or_else(|| {
+                ProtocolError::invalid_configuration(
+                    "MiniMax V2 text-to-video needs a ratio and the model declares no default",
+                )
+            })?,
+            VideoScenario::References => plan
+                .aspect_ratio
+                .clone()
+                .unwrap_or_else(|| "adaptive".to_string()),
         };
         body.insert("ratio".to_string(), json!(ratio));
+    } else {
+        body.insert("prompt".to_string(), json!(prompt));
+        for planned in &plan.inputs {
+            if (planned.kind, planned.position)
+                != (VideoConditionKind::Keyframe, Some(KeyframePosition::Start))
+            {
+                return Err(unsupported(
+                    "MiniMax legacy video generation only takes a start keyframe",
+                ));
+            }
+            body.insert(
+                "first_frame_image".to_string(),
+                json!(resource_string(
+                    planned_resource(request, planned)?,
+                    input.context
+                )?),
+            );
+        }
+        if let Some(duration) = duration {
+            body.insert("duration".to_string(), json!(duration));
+        }
+        if let Some(resolution) = &plan.resolution {
+            body.insert("resolution".to_string(), json!(resolution));
+        }
     }
     media_json_request(
         input.context,
@@ -1055,63 +1042,6 @@ fn require_parameters(
     Ok(())
 }
 
-struct MiniMaxVideoV2Constraints {
-    min_duration_seconds: u64,
-    max_duration_seconds: u64,
-    resolutions: Vec<String>,
-}
-
-fn minimax_video_v2_constraints(
-    parameters: &BTreeMap<String, Value>,
-) -> ProtocolResultValue<MiniMaxVideoV2Constraints> {
-    let constraints = parameters
-        .get("minimax_video_v2_constraints")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            ProtocolError::invalid_configuration(
-                "MiniMax V2 video constraints are missing from provider rules",
-            )
-        })?;
-    let min_duration_seconds = constraints
-        .get("min_duration_seconds")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            ProtocolError::invalid_configuration(
-                "MiniMax V2 minimum duration is missing from provider rules",
-            )
-        })?;
-    let max_duration_seconds = constraints
-        .get("max_duration_seconds")
-        .and_then(Value::as_u64)
-        .filter(|value| *value >= min_duration_seconds)
-        .ok_or_else(|| {
-            ProtocolError::invalid_configuration(
-                "MiniMax V2 maximum duration is invalid in provider rules",
-            )
-        })?;
-    let resolutions = constraints
-        .get("resolutions")
-        .and_then(Value::as_array)
-        .filter(|values| !values.is_empty())
-        .and_then(|values| {
-            values
-                .iter()
-                .map(Value::as_str)
-                .map(|value| value.map(str::to_owned))
-                .collect::<Option<Vec<_>>>()
-        })
-        .ok_or_else(|| {
-            ProtocolError::invalid_configuration(
-                "MiniMax V2 resolutions are invalid in provider rules",
-            )
-        })?;
-    Ok(MiniMaxVideoV2Constraints {
-        min_duration_seconds,
-        max_duration_seconds,
-        resolutions,
-    })
-}
-
 fn resource_string(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
     // Materialization may have handed this resource over as a URL because the
     // protocol takes one (`ResourceInputForm`), in which case there are no
@@ -1185,7 +1115,12 @@ fn audio_mime(format: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::protocol::{CodecInput, CodecLimits, ResolvedCredential};
-    use buckyos_api::{AudioMusicRequest, ProviderStateCoordinate, VideoTextToVideoRequest};
+    use crate::video::test_support::{clip_facts, image_facts, model_contract, plan_parameters};
+    use crate::video::VideoMaterialFacts;
+    use buckyos_api::{
+        AiccErrorCode, AudioMusicRequest, ProviderStateCoordinate, VideoAudioMode, VideoCondition,
+        VideoGenerateRequest, VideoOutputSpec, VideoSize,
+    };
     use bytes::Bytes;
     use reqwest::StatusCode;
     use serde_json::json;
@@ -1292,49 +1227,65 @@ mod tests {
         );
     }
 
+    fn video_submit(
+        v2: bool,
+        model: &str,
+        request: VideoGenerateRequest,
+        facts: VideoMaterialFacts,
+    ) -> Value {
+        let codec = MiniMaxVideoCodec {
+            descriptor: minimax_media_adapter().0.operations[if v2 {
+                VIDEO_V2_OPERATION_ID
+            } else {
+                VIDEO_OPERATION_ID
+            }]
+            .clone(),
+            v2,
+        };
+        let parameters =
+            plan_parameters(&model_contract("minimax", model), &request, &facts, model);
+        let codec_input = CodecInput {
+            canonical_request: AiccCall::VideoGenerate(request),
+            resolved_parameters: parameters.clone(),
+        };
+        let context = context();
+        let wire = codec
+            .encode_native(&NativeTaskInput {
+                operation: NativeTaskOperation::Submit,
+                remote_task_id: None,
+                codec_input: Some(&codec_input),
+                resolved_parameters: &parameters,
+                context: &context,
+            })
+            .unwrap();
+        assert_eq!(wire.method, Method::POST);
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        body
+    }
+
+    fn url(name: &str) -> ResourceRef {
+        ResourceRef::url(format!("https://media.example/{name}"), None)
+    }
+
     #[tokio::test]
     async fn video_v2_maps_submit_status_result_and_cancel() {
         let descriptor = minimax_media_adapter().0.operations[VIDEO_V2_OPERATION_ID].clone();
         let codec = MiniMaxVideoCodec {
             descriptor,
-            api_type: ApiType::VideoTextToVideo,
             v2: true,
         };
-        let mut request = VideoTextToVideoRequest::new("ignored", "ocean".to_owned());
-        request.duration_seconds = Some(6.0);
-        request.aspect_ratio = Some("9:16".to_owned());
-        request.resolution = Some("768p".to_owned());
-        let parameters = BTreeMap::from([
-            ("provider_model_id".to_owned(), json!("MiniMax-H3")),
-            (
-                "minimax_video_v2_constraints".to_owned(),
-                json!({
-                    "min_duration_seconds": 4,
-                    "max_duration_seconds": 15,
-                    "resolutions": ["768P", "2K"]
-                }),
-            ),
-        ]);
-        let codec_input = CodecInput {
-            canonical_request: AiccCall::VideoTextToVideo(request),
-            resolved_parameters: parameters.clone(),
-        };
-        let context = context();
-        let submit = NativeTaskInput {
-            operation: NativeTaskOperation::Submit,
-            remote_task_id: None,
-            codec_input: Some(&codec_input),
-            resolved_parameters: &parameters,
-            context: &context,
-        };
-        let wire = codec.encode_native(&submit).unwrap();
-        assert_eq!(wire.method, Method::POST);
-        assert_eq!(wire.url, "https://api.minimax.io/v2/video_generation");
-        let HttpBody::Json(body) = wire.body else {
-            panic!("expected JSON")
-        };
+        let mut request = VideoGenerateRequest::new("MiniMax-H3@minimax", Some("ocean".into()));
+        request.output = Some(VideoOutputSpec {
+            duration_seconds: Some(6.0),
+            aspect_ratio: Some("9:16".into()),
+            size: Some(VideoSize::short_edge(768)),
+            ..Default::default()
+        });
+        let body = video_submit(true, "MiniMax-H3", request, VideoMaterialFacts::new());
         assert_eq!(body["model"], "MiniMax-H3");
-        assert_eq!(body["content"][0], json!({"type":"text","text":"ocean"}));
+        assert_eq!(body["content"], json!([{"type":"text","text":"ocean"}]));
         assert_eq!(body["duration"], 6);
         assert_eq!(body["resolution"], "768P");
         assert_eq!(body["ratio"], "9:16");
@@ -1352,6 +1303,8 @@ mod tests {
         assert_eq!(handle.remote_task_id, "video-1");
         assert!(handle.cancel_supported);
 
+        let parameters = BTreeMap::new();
+        let context = context();
         let lifecycle = |operation| NativeTaskInput {
             operation,
             remote_task_id: Some("video-1"),
@@ -1381,17 +1334,26 @@ mod tests {
         assert_eq!(state, NativeTaskState::Succeeded);
         assert_eq!(result_ref.as_deref(), Some("video-1"));
 
-        let result = codec
+        let NativeTaskOutput::Result(output) = codec
             .decode_native(
                 NativeTaskOperation::Result,
-                response(json!({"task":{"id":"video-1","status":"succeeded","content":{"url":"https://cdn.example/video.mp4"}},"base_resp":{"status_code":0}})),
+                response(json!({"task":{"id":"video-1","status":"succeeded","duration":6,"usage":{"output_seconds":6.04},"content":{"url":"https://cdn.example/video.mp4"}},"base_resp":{"status_code":0}})),
             )
             .await
-            .unwrap();
-        let NativeTaskOutput::Result(output) = result else {
+            .unwrap()
+        else {
             panic!("expected task result")
         };
         assert_eq!(output.artifacts[0].name, "video");
+        assert_eq!(
+            output.value["videos"][0]["resource"]["url"],
+            "https://cdn.example/video.mp4"
+        );
+        assert_eq!(
+            output.value["videos"][0]["provider_metadata"]["duration_seconds"],
+            6.0
+        );
+        assert_eq!(output.usage.unwrap().video_seconds, Some(6.04));
 
         let cancel = codec
             .encode_native(&lifecycle(NativeTaskOperation::Cancel))
@@ -1414,81 +1376,218 @@ mod tests {
     }
 
     #[test]
-    fn video_v2_enforces_model_specific_duration_and_resolution() {
-        let descriptor = minimax_media_adapter().0.operations[VIDEO_V2_OPERATION_ID].clone();
-        let codec = MiniMaxVideoCodec {
-            descriptor,
-            api_type: ApiType::VideoTextToVideo,
-            v2: true,
-        };
-        let context = context();
-        let encode =
-            |model: &str, duration: Option<f64>, resolution: Option<&str>, constraints: Value| {
-                let mut request = VideoTextToVideoRequest::new("ignored", "ocean".to_owned());
-                request.duration_seconds = duration;
-                request.resolution = resolution.map(str::to_owned);
-                let parameters = BTreeMap::from([
-                    ("provider_model_id".to_owned(), json!(model)),
-                    ("minimax_video_v2_constraints".to_owned(), constraints),
-                ]);
-                let codec_input = CodecInput {
-                    canonical_request: AiccCall::VideoTextToVideo(request),
-                    resolved_parameters: parameters.clone(),
-                };
-                codec.encode_native(&NativeTaskInput {
-                    operation: NativeTaskOperation::Submit,
-                    remote_task_id: None,
-                    codec_input: Some(&codec_input),
-                    resolved_parameters: &parameters,
-                    context: &context,
-                })
-            };
-
-        let h3_constraints = || {
-            json!({
-                "min_duration_seconds": 4,
-                "max_duration_seconds": 15,
-                "resolutions": ["768P", "2K"]
-            })
-        };
-        let h3_max_constraints = || {
-            json!({
-                "min_duration_seconds": 5,
-                "max_duration_seconds": 15,
-                "resolutions": ["480P", "768P"]
-            })
-        };
-
-        assert!(encode("MiniMax-H3", None, None, h3_constraints()).is_err());
-
-        let h3 = encode("MiniMax-H3", Some(4.0), Some("768P"), h3_constraints()).unwrap();
-        let HttpBody::Json(h3) = h3.body else {
-            panic!("expected JSON")
-        };
-        assert_eq!(h3["duration"], 4);
-        assert_eq!(h3["resolution"], "768P");
-
-        let h3_max = encode(
+    fn h3_defaults_come_from_the_model_contract() {
+        let body = video_submit(
+            true,
+            "MiniMax-H3",
+            VideoGenerateRequest::new("MiniMax-H3@minimax", Some("ocean".into())),
+            VideoMaterialFacts::new(),
+        );
+        assert_eq!(body["duration"], 4);
+        assert_eq!(body["resolution"], "768P");
+        assert_eq!(body["ratio"], "16:9");
+        let body = video_submit(
+            true,
             "MiniMax-H3-Max",
-            Some(5.0),
-            Some("768P"),
-            h3_max_constraints(),
-        )
-        .unwrap();
-        let HttpBody::Json(h3_max) = h3_max.body else {
-            panic!("expected JSON")
-        };
-        assert_eq!(h3_max["duration"], 5);
-        assert_eq!(h3_max["resolution"], "768P");
+            VideoGenerateRequest::new("MiniMax-H3-Max@minimax", Some("ocean".into())),
+            VideoMaterialFacts::new(),
+        );
+        assert_eq!(body["duration"], 5);
+        assert_eq!(body["resolution"], "768P");
+    }
 
-        assert!(encode("MiniMax-H3", Some(4.5), Some("768P"), h3_constraints()).is_err());
-        assert!(encode("MiniMax-H3", Some(4.0), Some("480P"), h3_constraints()).is_err());
-        assert!(encode(
-            "MiniMax-H3-Max",
-            Some(5.0),
-            Some("2K"),
-            h3_max_constraints()
+    #[test]
+    fn h3_keyframes_and_references_map_to_content_roles_and_prompt_labels() {
+        let mut keyframes =
+            VideoGenerateRequest::new("MiniMax-H3@minimax", Some("from @{a} to @{b}".into()));
+        keyframes.conditions = vec![
+            VideoCondition::Keyframe {
+                id: "b".into(),
+                resource: url("b.png"),
+                position: KeyframePosition::End,
+            },
+            VideoCondition::Keyframe {
+                id: "a".into(),
+                resource: url("a.png"),
+                position: KeyframePosition::Start,
+            },
+        ];
+        let body = video_submit(true, "MiniMax-H3", keyframes, VideoMaterialFacts::new());
+        assert_eq!(
+            body["content"],
+            json!([
+                {"type":"text","text":"from the first frame to the last frame"},
+                {"type":"image_url","image_url":{"url":"https://media.example/b.png"},"role":"last_frame"},
+                {"type":"image_url","image_url":{"url":"https://media.example/a.png"},"role":"first_frame"}
+            ])
+        );
+        assert_eq!(body["ratio"], "adaptive");
+
+        let mut references = VideoGenerateRequest::new(
+            "MiniMax-H3@minimax",
+            Some("@{hero} dances like @{moves}, voice @{voice}, outfit @{dress}".into()),
+        );
+        references.conditions = vec![
+            VideoCondition::ReferenceImage {
+                id: "hero".into(),
+                resource: url("hero.png"),
+            },
+            VideoCondition::ReferenceVideo {
+                id: "moves".into(),
+                resource: url("moves.mp4"),
+                time_range: None,
+                include_audio: false,
+            },
+            VideoCondition::ReferenceAudio {
+                id: "voice".into(),
+                resource: url("voice.wav"),
+                time_range: None,
+            },
+            VideoCondition::ReferenceImage {
+                id: "dress".into(),
+                resource: url("dress.png"),
+            },
+        ];
+        let facts = VideoMaterialFacts::from([
+            ("moves".to_string(), clip_facts(5.0, true, false)),
+            ("voice".to_string(), clip_facts(4.0, false, true)),
+        ]);
+        let body = video_submit(true, "MiniMax-H3", references, facts);
+        assert_eq!(
+            body["content"][0]["text"],
+            "reference image 1 dances like reference video 1, voice reference audio 1, outfit reference image 2"
+        );
+        assert_eq!(body["content"][2]["role"], "reference_video");
+        assert_eq!(body["content"][3]["type"], "audio_url");
+        assert_eq!(body["ratio"], "adaptive");
+    }
+
+    #[test]
+    fn h3_contract_rejects_what_the_cloud_api_cannot_honor() {
+        let contract = model_contract("minimax", "MiniMax-H3");
+        let reject = |request: VideoGenerateRequest, facts: VideoMaterialFacts| {
+            crate::video::plan_video(&contract, &request, &facts).unwrap_err()
+        };
+        let base = || VideoGenerateRequest::new("MiniMax-H3@minimax", Some("ocean".into()));
+
+        let mut seed = base();
+        seed.seed = Some(7);
+        assert_eq!(
+            reject(seed, VideoMaterialFacts::new()).code,
+            AiccErrorCode::UnsupportedOperation
+        );
+
+        let mut fractional = base();
+        fractional.output = Some(VideoOutputSpec {
+            duration_seconds: Some(4.5),
+            ..Default::default()
+        });
+        assert_eq!(
+            reject(fractional, VideoMaterialFacts::new())
+                .details
+                .unwrap()["field"],
+            "/output/duration_seconds"
+        );
+
+        let mut silent = base();
+        silent.output = Some(VideoOutputSpec {
+            audio: Some(VideoAudioMode::None),
+            ..Default::default()
+        });
+        assert_eq!(
+            reject(silent, VideoMaterialFacts::new()).details.unwrap()["field"],
+            "/output/audio"
+        );
+
+        let mut mixed = base();
+        mixed.conditions = vec![
+            VideoCondition::Keyframe {
+                id: "a".into(),
+                resource: url("a.png"),
+                position: KeyframePosition::Start,
+            },
+            VideoCondition::ReferenceImage {
+                id: "b".into(),
+                resource: url("b.png"),
+            },
+        ];
+        assert_eq!(
+            reject(mixed, VideoMaterialFacts::new()).code,
+            AiccErrorCode::UnsupportedOperation
+        );
+
+        let mut long = base();
+        long.conditions = (0..2)
+            .map(|index| VideoCondition::ReferenceVideo {
+                id: format!("v{index}"),
+                resource: url("v.mp4"),
+                time_range: None,
+                include_audio: false,
+            })
+            .collect();
+        let facts = VideoMaterialFacts::from([
+            ("v0".to_string(), clip_facts(10.0, true, false)),
+            ("v1".to_string(), clip_facts(8.0, true, false)),
+        ]);
+        assert!(reject(long, facts).message.contains("total"));
+
+        let mut ratio = base();
+        ratio.conditions = vec![VideoCondition::Keyframe {
+            id: "a".into(),
+            resource: url("a.png"),
+            position: KeyframePosition::Start,
+        }];
+        ratio.output = Some(VideoOutputSpec {
+            aspect_ratio: Some("9:16".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            reject(
+                ratio.clone(),
+                VideoMaterialFacts::from([("a".to_string(), image_facts(1280, 720))])
+            )
+            .details
+            .unwrap()["field"],
+            "/output/aspect_ratio"
+        );
+        assert!(crate::video::plan_video(
+            &contract,
+            &ratio,
+            &VideoMaterialFacts::from([("a".to_string(), image_facts(720, 1280))])
         )
-        .is_err());
+        .is_ok());
+    }
+
+    #[test]
+    fn legacy_video_only_takes_text_and_a_start_frame() {
+        let mut request =
+            VideoGenerateRequest::new("MiniMax-Hailuo-02@minimax", Some("ocean".into()));
+        request.conditions = vec![VideoCondition::Keyframe {
+            id: "a".into(),
+            resource: url("a.png"),
+            position: KeyframePosition::Start,
+        }];
+        let body = video_submit(
+            false,
+            "MiniMax-Hailuo-02",
+            request,
+            VideoMaterialFacts::new(),
+        );
+        assert_eq!(body["prompt"], "ocean");
+        assert_eq!(body["first_frame_image"], "https://media.example/a.png");
+        assert_eq!(body["duration"], 6);
+        assert_eq!(body["resolution"], "768P");
+
+        let contract = model_contract("minimax", "MiniMax-Hailuo-02");
+        let mut long_1080 =
+            VideoGenerateRequest::new("MiniMax-Hailuo-02@minimax", Some("ocean".into()));
+        long_1080.output = Some(VideoOutputSpec {
+            duration_seconds: Some(10.0),
+            size: Some(VideoSize::short_edge(1080)),
+            ..Default::default()
+        });
+        assert!(
+            crate::video::plan_video(&contract, &long_1080, &VideoMaterialFacts::new()).is_err()
+        );
     }
 }

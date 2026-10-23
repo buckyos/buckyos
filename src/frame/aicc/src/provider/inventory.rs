@@ -428,6 +428,9 @@ pub(crate) struct DiscoveredModel {
     pub deprecated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<Pricing>,
+    /// Video output facts the channel's own catalog reports for this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<crate::video::DiscoveredVideoFacts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -582,6 +585,7 @@ pub(crate) fn catalog_only_inventory(
             availability: ModelAvailability::Available,
             deprecated: false,
             pricing: None,
+            video: None,
         })
         .collect::<Vec<_>>();
     Some(ProviderDiscoverySnapshot {
@@ -838,6 +842,7 @@ impl InventoryBuilder {
                             availability: ModelAvailability::Available,
                             deprecated: false,
                             pricing: None,
+                            video: None,
                         });
                     }
                     continue;
@@ -861,6 +866,7 @@ impl InventoryBuilder {
                         availability: ModelAvailability::Available,
                         deprecated: false,
                         pricing: None,
+                        video: None,
                     });
                 }
             }
@@ -1050,6 +1056,9 @@ impl InventoryBuilder {
                 adapter_features.extend(binding.supported_features.iter().cloned());
                 api_types.push(api_type);
                 operations.insert(api_type_name, operation_id);
+            }
+            if let Some(facts) = &discovered.video {
+                crate::video::apply_discovered_video_facts(&mut capabilities, facts);
             }
             retain_supported_features(
                 &mut capabilities,

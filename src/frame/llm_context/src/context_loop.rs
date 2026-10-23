@@ -2532,6 +2532,7 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
         image_units: add_u64(left.image_units, right.image_units),
         audio_seconds: add_f64(left.audio_seconds, right.audio_seconds),
         video_seconds: add_f64(left.video_seconds, right.video_seconds),
+        reference_images: add_u64(left.reference_images, right.reference_images),
         request_units: add_u64(left.request_units, right.request_units),
         characters: add_u64(left.characters, right.characters),
         audio_input_tokens: add_u64(left.audio_input_tokens, right.audio_input_tokens),

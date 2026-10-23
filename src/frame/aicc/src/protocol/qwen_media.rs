@@ -1,3 +1,7 @@
+use super::video::{
+    generated_video, planned_resource, require_video_parameters, unsupported as video_unsupported,
+    video_generate_input, video_output, whole_seconds,
+};
 use super::{
     AdapterDescriptor, AdapterStatus, CodecCall, CodecRegistration, ExecutionMode, HttpBody,
     HttpRequest, HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
@@ -7,7 +11,10 @@ use super::{
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef};
+use buckyos_api::{
+    AiArtifact, AiUsage, AiccCall, ApiType, KeyframePosition, ResourceRef, VideoConditionKind,
+    VideoMetadata,
+};
 use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
@@ -25,14 +32,10 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) fn qwen_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
     let image = task_operation(QWEN_IMAGE_OPERATION_ID, &[ApiType::ImageTextToImage]);
     let image_edit = immediate_operation(QWEN_IMAGE_EDIT_OPERATION_ID, ApiType::ImageImageToImage);
-    let video = task_operation(
-        QWEN_VIDEO_OPERATION_ID,
-        &[ApiType::VideoTextToVideo, ApiType::VideoImageToVideo],
-    );
+    let video = task_operation(QWEN_VIDEO_OPERATION_ID, &[ApiType::VideoGenerate]);
     let native_task_codecs = [
         (image.clone(), ApiType::ImageTextToImage),
-        (video.clone(), ApiType::VideoTextToVideo),
-        (video.clone(), ApiType::VideoImageToVideo),
+        (video.clone(), ApiType::VideoGenerate),
     ]
     .into_iter()
     .map(|(descriptor, api_type)| {
@@ -324,7 +327,11 @@ fn encode_submit(
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("Qwen media submit requires canonical input")
     })?;
-    require_only_model(input.resolved_parameters)?;
+    if api_type == ApiType::VideoGenerate {
+        require_video_parameters(input.resolved_parameters, "Qwen", &[])?;
+    } else {
+        require_only_model(input.resolved_parameters)?;
+    }
     let model = provider_model_id(input.resolved_parameters)?;
     let mut provider_input = Map::new();
     let mut parameters = Map::new();
@@ -348,32 +355,59 @@ fn encode_submit(
             }
             "services/aigc/text2image/image-synthesis"
         }
-        (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
-            provider_input.insert("prompt".to_owned(), json!(request.prompt));
-            video_parameters(
-                &mut parameters,
-                request.duration_seconds,
-                request.aspect_ratio.as_deref(),
-                request.resolution.as_deref(),
-                request.seed,
-                request.generate_audio,
-            )?;
-            "services/aigc/video-generation/video-synthesis"
-        }
-        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
-            provider_input.insert("prompt".to_owned(), json!(request.prompt));
-            provider_input.insert(
-                "img_url".to_owned(),
-                json!(resource_string(&request.image, input.context)?),
-            );
-            video_parameters(
-                &mut parameters,
-                request.duration_seconds,
-                request.aspect_ratio.as_deref(),
-                request.resolution.as_deref(),
-                None,
-                None,
-            )?;
+        (AiccCall::VideoGenerate(_), ApiType::VideoGenerate) => {
+            let (request, plan) = video_generate_input(codec_input)?;
+            if plan.fps.is_some() {
+                return Err(video_unsupported("Wan video generation has no fps option"));
+            }
+            if let Some(prompt) = &plan.submitted_prompt {
+                provider_input.insert("prompt".to_owned(), json!(prompt));
+            }
+            if let Some(negative) = &plan.negative_prompt {
+                provider_input.insert("negative_prompt".to_owned(), json!(negative));
+            }
+            for planned in &plan.inputs {
+                if (planned.kind, planned.position)
+                    != (VideoConditionKind::Keyframe, Some(KeyframePosition::Start))
+                {
+                    return Err(video_unsupported(
+                        "Wan video generation only takes a start keyframe",
+                    ));
+                }
+                provider_input.insert(
+                    "img_url".to_owned(),
+                    json!(resource_string(
+                        planned_resource(request, planned)?,
+                        input.context
+                    )?),
+                );
+            }
+            if let Some(seconds) = whole_seconds(&plan)? {
+                parameters.insert("duration".to_owned(), json!(seconds));
+            }
+            match (plan.size, &plan.resolution) {
+                (Some(size), _) => {
+                    parameters.insert(
+                        "size".to_owned(),
+                        json!(format!("{}*{}", size.width, size.height)),
+                    );
+                }
+                (None, Some(resolution)) => {
+                    parameters.insert("resolution".to_owned(), json!(resolution));
+                    if model.starts_with("wan2.7") {
+                        if let Some(ratio) = &plan.aspect_ratio {
+                            parameters.insert("ratio".to_owned(), json!(ratio));
+                        }
+                    }
+                }
+                (None, None) => {}
+            }
+            if let Some(seed) = plan.seed {
+                parameters.insert("seed".to_owned(), json!(seed));
+            }
+            if let Some(audio) = plan.generate_audio {
+                parameters.insert("audio".to_owned(), json!(audio));
+            }
             "services/aigc/video-generation/video-synthesis"
         }
         _ => {
@@ -382,75 +416,8 @@ fn encode_submit(
             ))
         }
     };
-    if !model.starts_with("wan2.7") {
-        if let Some(ratio) = parameters.remove("ratio") {
-            if api_type == ApiType::VideoTextToVideo {
-                let resolution = parameters
-                    .remove("resolution")
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "720P".to_owned());
-                let size = wan_size(ratio.as_str().unwrap_or("16:9"), &resolution)?;
-                parameters.insert("size".into(), json!(size));
-            }
-        } else if api_type == ApiType::VideoTextToVideo {
-            if let Some(resolution) = parameters.remove("resolution") {
-                parameters.insert(
-                    "size".into(),
-                    json!(wan_size("16:9", resolution.as_str().unwrap_or("720P"))?),
-                );
-            }
-        }
-    }
     let body = json!({"model":model,"input":provider_input,"parameters":parameters});
     json_request(input.context, Method::POST, path, Some(body), true)
-}
-
-fn wan_size(ratio: &str, resolution: &str) -> ProtocolResultValue<&'static str> {
-    match (resolution.to_ascii_uppercase().as_str(), ratio) {
-        ("480P", "16:9") => Ok("832*480"),
-        ("480P", "9:16") => Ok("480*832"),
-        ("480P", "1:1") => Ok("624*624"),
-        ("720P", "16:9") => Ok("1280*720"),
-        ("720P", "9:16") => Ok("720*1280"),
-        ("720P", "1:1") => Ok("960*960"),
-        ("720P", "4:3") => Ok("1088*832"),
-        ("720P", "3:4") => Ok("832*1088"),
-        ("1080P", "16:9") => Ok("1920*1080"),
-        ("1080P", "9:16") => Ok("1080*1920"),
-        ("1080P", "1:1") => Ok("1440*1440"),
-        ("1080P", "4:3") => Ok("1632*1248"),
-        ("1080P", "3:4") => Ok("1248*1632"),
-        _ => Err(ProtocolError::invalid_request("unsupported Wan size")),
-    }
-}
-
-fn video_parameters(
-    parameters: &mut Map<String, Value>,
-    duration: Option<f64>,
-    ratio: Option<&str>,
-    resolution: Option<&str>,
-    seed: Option<u64>,
-    audio: Option<bool>,
-) -> ProtocolResultValue<()> {
-    if let Some(value) = duration {
-        parameters.insert(
-            "duration".to_owned(),
-            json!(super::adapter::integer_seconds(value)?),
-        );
-    }
-    if let Some(value) = ratio {
-        parameters.insert("ratio".to_owned(), json!(value));
-    }
-    if let Some(value) = resolution {
-        parameters.insert("resolution".to_owned(), json!(value));
-    }
-    if let Some(value) = seed {
-        parameters.insert("seed".to_owned(), json!(value));
-    }
-    if let Some(value) = audio {
-        parameters.insert("audio".to_owned(), json!(value));
-    }
-    Ok(())
 }
 
 fn decode_result(value: &Value, api_type: ApiType) -> ProtocolResultValue<NativeTaskOutput> {
@@ -513,23 +480,33 @@ fn decode_result(value: &Value, api_type: ApiType) -> ProtocolResultValue<Native
         .ok_or_else(|| {
             ProtocolError::invalid_response("Qwen video result is missing output.video_url")
         })?;
-    let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
-    Ok(NativeTaskOutput::Result(ProtocolOutput {
-        value: json!({"video":resource}),
-        usage: Some(AiUsage {
-            video_seconds: value
-                .pointer("/usage/duration")
-                .or_else(|| value.pointer("/usage/video_duration"))
-                .and_then(Value::as_f64),
+    let seconds = value
+        .pointer("/usage/duration")
+        .or_else(|| value.pointer("/usage/video_duration"))
+        .and_then(Value::as_f64);
+    let (width, height) = super::video::size_metadata(
+        value
+            .pointer("/usage/size")
+            .and_then(Value::as_str)
+            .map(|size| size.replace('*', "x"))
+            .as_deref(),
+    );
+    Ok(NativeTaskOutput::Result(video_output(
+        vec![generated_video(
+            ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned())),
+            Some("video/mp4".to_owned()),
+            VideoMetadata {
+                duration_seconds: seconds,
+                width,
+                height,
+                ..Default::default()
+            },
+        )],
+        AiUsage {
+            video_seconds: seconds,
             ..AiUsage::request_units(1)
-        }),
-        artifacts: vec![AiArtifact {
-            name: "video".to_owned(),
-            resource,
-            mime: Some("video/mp4".to_owned()),
-            metadata: None,
-        }],
-    }))
+        },
+    )?))
 }
 
 fn decode_state(status: &str) -> ProtocolResultValue<NativeTaskState> {
@@ -699,7 +676,12 @@ mod tests {
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
     };
-    use buckyos_api::{ImageToImageRequest, ProviderStateCoordinate, VideoTextToVideoRequest};
+    use crate::video::test_support::{model_contract, plan_parameters};
+    use crate::video::VideoMaterialFacts;
+    use buckyos_api::{
+        ImageToImageRequest, ProviderStateCoordinate, VideoAudioMode, VideoGenerateRequest,
+        VideoOutputSpec, VideoSize,
+    };
 
     fn context() -> CodecContext {
         CodecContext {
@@ -751,29 +733,48 @@ mod tests {
         assert_eq!(request.url, "https://ws.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
         assert!(request.headers.get("x-dashscope-async").is_none());
 
+        let mut generate = VideoGenerateRequest::new("wan@qwen", Some("cat".to_owned()));
+        generate.negative_prompt = Some("blur".to_owned());
+        generate.output = Some(VideoOutputSpec {
+            duration_seconds: Some(5.0),
+            aspect_ratio: Some("9:16".into()),
+            size: Some(VideoSize::short_edge(720)),
+            audio: Some(VideoAudioMode::None),
+            ..Default::default()
+        });
+        let video_parameters = plan_parameters(
+            &model_contract("qwen", "wan2.6-t2v"),
+            &generate,
+            &VideoMaterialFacts::new(),
+            "wan2.6-t2v",
+        );
         let video = CodecInput {
-            canonical_request: AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
-                "ignored",
-                "cat".to_owned(),
-            )),
-            resolved_parameters: parameters.clone(),
+            canonical_request: AiccCall::VideoGenerate(generate),
+            resolved_parameters: video_parameters.clone(),
         };
         let input = NativeTaskInput {
             operation: NativeTaskOperation::Submit,
             remote_task_id: None,
             codec_input: Some(&video),
-            resolved_parameters: &parameters,
+            resolved_parameters: &video_parameters,
             context: &context,
         };
         let request = registry
             .encode_native(
                 QWEN_MEDIA_ADAPTER_ID,
                 QWEN_VIDEO_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 &input,
             )
             .unwrap();
         assert_eq!(request.url, "https://ws.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis");
         assert_eq!(request.headers.get("x-dashscope-async").unwrap(), "enable");
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(body["input"]["negative_prompt"], "blur");
+        assert_eq!(body["parameters"]["size"], "720*1280");
+        assert_eq!(body["parameters"]["duration"], 5);
+        assert_eq!(body["parameters"]["audio"], false);
     }
 }

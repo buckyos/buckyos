@@ -10,9 +10,12 @@ import {
   type ProviderProtocolContract,
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
+  videoScenarioOf,
 } from "./provider_protocol_contracts.ts";
 
 const openrouterDecisionCatalog = JSON.parse(readFileSync(new URL("./fixtures/openrouter-jev-models.json", import.meta.url), "utf8")) as {data: Array<Record<string, unknown>>};
+// The official `/videos/models` entries of the OpenRouter video models in the catalog.
+const openrouterVideoCatalog = JSON.parse(readFileSync(new URL("./fixtures/openrouter-video-models.json", import.meta.url), "utf8")) as {data: Array<Record<string, unknown>>};
 
 type Selection = { provider_driver: string; contract_id: string; api_type?: string; scenario: string; selection_seed?: string };
 type DiscoveryContract = {
@@ -334,10 +337,10 @@ function discoveryFixture(
             ...(provider.official_first_party_model_ids?.["image.img2img"]?.includes(id)
               ? ["ImageToImage"]
               : []),
-            ...(provider.official_first_party_model_ids?.["video.txt2video"]?.includes(id)
+            ...(provider.official_first_party_model_ids?.["video.generate"]?.includes(id)
               ? ["MultimodalToVideo"]
               : []),
-            ...(provider.official_first_party_model_ids?.["video.video2video"]?.includes(id)
+            ...(provider.official_first_party_model_ids?.["video.edit"]?.includes(id)
               ? ["VideoEditing"]
               : []),
             ...(provider.official_first_party_model_ids?.["video.extend"]?.includes(id)
@@ -357,11 +360,15 @@ function discoveryFixture(
         : {}),
       ...(provider.provider_driver === "openrouter"
         ? {
-          ...(openrouterDecisionCatalog.data.find(model => model.id === id) ?? {canonical_slug: id}),
+          ...(openrouterDecisionCatalog.data.find(model => model.id === id) ?? {
+            canonical_slug: openrouterVideoCatalog.data.find((model) => model.id === id)?.canonical_slug ?? id,
+          }),
           supported_parameters: id.startsWith("cohere/rerank-") ? ["top_n"] : [],
           architecture: {
-            input_modalities: ["text"],
-            output_modalities: id === "typesafe/jev-1.13" ? ["decisions"] : id.startsWith("cohere/rerank-")
+            input_modalities: openrouterVideoCatalog.data.some((model) => model.id === id) ? ["text", "image"] : ["text"],
+            output_modalities: id === "typesafe/jev-1.13" ? ["decisions"] : openrouterVideoCatalog.data.some((model) => model.id === id)
+              ? ["video"]
+              : id.startsWith("cohere/rerank-")
               ? ["rerank"]
               : id.includes("embedding")
               ? ["embeddings"]
@@ -633,6 +640,30 @@ export function createT15MockHandler(
             selection?.selection_seed,
           ),
         );
+      }
+      if (
+        discoveryProvider?.provider_driver === "openrouter" &&
+        url.pathname === "/api/v1/videos/models" && request.method === "GET"
+      ) {
+        const authValue = request.headers.authorization;
+        const value = Array.isArray(authValue) ? authValue[0] : authValue;
+        const errors = value?.startsWith("Bearer ") && value.length > 7
+          ? []
+          : ["missing or invalid header authentication authorization"];
+        requests.push({
+          received_at: new Date().toISOString(),
+          selection: selection!,
+          method: request.method,
+          pathname: url.pathname,
+          query: Object.fromEntries(url.searchParams),
+          headers: safeHeaders(request.headers),
+          body: null,
+          validation_errors: errors,
+        });
+        if (errors.length > 0) {
+          return json(response, 401, { error: { code: 401, message: "invalid discovery credential" } });
+        }
+        return json(response, 200, { data: openrouterVideoCatalog.data });
       }
       if (
         selectedProvider && request.method === "GET" &&
@@ -1091,6 +1122,48 @@ export function createT15MockHandler(
         response.end(Buffer.from("mock-video"));
         return;
       }
+      const openrouterJob = contract.async_protocol === "openrouter_video" &&
+          request.method === "GET"
+        ? /^\/api\/v1\/videos\/(gen-vid-[^/]+)(\/content)?$/.exec(url.pathname)
+        : null;
+      if (openrouterJob) {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) {
+          return json(response, 400, {
+            type: "t15_mock_contract_violation",
+            errors,
+          });
+        }
+        const [, jobId, content] = openrouterJob;
+        if (content) {
+          if (selection.scenario === "async_artifact_unavailable") {
+            return json(response, 410, {
+              error: { code: 410, message: "Video output is no longer available" },
+            });
+          }
+          response.writeHead(200, { "content-type": "video/mp4" });
+          response.end(Buffer.from("mock-video"));
+          return;
+        }
+        const status = selection.scenario === "async_failed"
+          ? "failed"
+          : selection.scenario === "async_poll_timeout"
+          ? "in_progress"
+          : "completed";
+        return json(response, 200, {
+          id: jobId,
+          generation_id: jobId,
+          polling_url: `/api/v1/videos/${jobId}`,
+          status,
+          ...(status === "failed" ? { error: "Mock upstream generation failed" } : {}),
+          ...(status === "completed"
+            ? {
+              unsigned_urls: [`http://${request.headers.host}/api/v1/videos/${jobId}/content?index=0`],
+              usage: { cost: 0.65, is_byok: false },
+            }
+            : {}),
+        });
+      }
       if (url.pathname === "/v1/files/retrieve" && request.method === "GET") {
         if (contract.async_protocol === "minimax_video") {
           const errors = captureAuxiliary();
@@ -1169,6 +1242,7 @@ export function createT15MockHandler(
             contract,
             captured,
             selection.api_type ?? contract.api_types[0],
+            videoScenarioOf(selection.selection_seed ?? ""),
           );
           requests.push({
             received_at: new Date().toISOString(),
@@ -1286,6 +1360,7 @@ export function createT15MockHandler(
         contract,
         captured,
         selection.api_type ?? contract.api_types[0],
+        videoScenarioOf(selection.selection_seed ?? ""),
       );
       if (
         selection.provider_driver === "qwen" &&

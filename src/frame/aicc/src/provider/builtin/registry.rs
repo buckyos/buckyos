@@ -1234,27 +1234,32 @@ mod tests {
                 .resource_input_form()
         };
         for (adapter, operation, api_type) in [
-            ("fal-queue", "queue.submit", ApiType::VideoImageToVideo),
-            ("glm-media", "videos.generate", ApiType::VideoImageToVideo),
+            ("fal-queue", "queue.submit", ApiType::VideoUpscale),
+            ("glm-media", "videos.generate", ApiType::VideoGenerate),
             (
                 "qwen-media",
                 "dashscope.video_synthesis",
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
             ),
             (
                 "doubao-media",
                 "ark.contents.generate",
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
             ),
             (
                 "gemini-interactions",
                 "models.predictLongRunning",
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
             ),
             (
                 "minimax-media",
                 "video_generation.create",
-                ApiType::VideoImageToVideo,
+                ApiType::VideoGenerate,
+            ),
+            (
+                "openrouter-responses",
+                "videos.create",
+                ApiType::VideoGenerate,
             ),
         ] {
             assert_eq!(
@@ -1263,11 +1268,11 @@ mod tests {
                 "{adapter} accepts a URL and an inlined payload"
             );
         }
-        // OpenAI video keeps the default on purpose: video-to-video posts the
-        // source as a multipart file, so the bytes are required even when the
-        // caller supplied a URL.
+        // OpenAI video keeps the default on purpose: editing posts the source
+        // as a multipart file, so the bytes are required even when the caller
+        // supplied a URL.
         assert_eq!(
-            native_form("openai-responses", "videos.create", ApiType::VideoToVideo),
+            native_form("openai-responses", "videos.create", ApiType::VideoEdit),
             crate::resource::ResourceInputForm::BytesOnly
         );
         // The immediate MiniMax codec serves several wire grammars from one

@@ -5,7 +5,13 @@ import {
   resumeAiccTask,
   textToImage,
 } from "./aicc.ts";
-import { aiResponseArtifacts } from "./types.ts";
+import { aiResponseArtifacts, aiResponseData } from "./types.ts";
+import {
+  pickVideo,
+  takeRepeatedFlags,
+  VIDEO_CONDITION_FLAGS,
+  videoConditions,
+} from "./video.ts";
 import type { AiccRuntime } from "./runtime.ts";
 
 function assertEquals(actual: unknown, expected: unknown): void {
@@ -53,27 +59,27 @@ Deno.test("callAicc resolves a logical model then sends a canonical typed reques
         selected_exact_model: "vendor-model@provider-main",
       });
     },
-    videoImageToVideo: (request: unknown) => {
-      calls.push(["video.img2video", request]);
+    videoEdit: (request: unknown) => {
+      calls.push(["video.edit", request]);
       return Promise.resolve({
         task_id: "task-1",
         status: "succeeded",
-        video: {
-          kind: "url",
-          url: "https://example.invalid/video.mp4",
-          mime_hint: "video/mp4",
-        },
+        videos: [{
+          resource: { kind: "url", url: "https://example.invalid/video.mp4" },
+          media_type: "video/mp4",
+          provider_metadata: { duration_seconds: 4 },
+        }],
       });
     },
   });
 
   const result = await callAicc(runtime, {
-    method: "video.img2video",
-    model: "video.img2video",
+    method: "video.edit",
+    model: "video.edit",
     request: {
-      image: { kind: "named_object", obj_id: "chunk:image" },
-      prompt: "animate",
-      duration_seconds: 4,
+      video: { kind: "named_object", obj_id: "chunk:video" },
+      prompt: "make it snow",
+      output: { duration_seconds: 4 },
     },
     maxCostUsd: 1.25,
     traceId: "trace-1",
@@ -81,8 +87,8 @@ Deno.test("callAicc resolves a logical model then sends a canonical typed reques
 
   assertEquals(calls[0], ["route.resolve", {
     trace_id: "trace-1",
-    api_type: "video.img2video",
-    logical_model: "video.img2video",
+    api_type: "video.edit",
+    logical_model: "video.edit",
     requirements: {},
     disable: {},
     policy: {
@@ -92,15 +98,133 @@ Deno.test("callAicc resolves a logical model then sends a canonical typed reques
       max_cost: { amount: 1.25, currency: "USD" },
     },
   }]);
-  assertEquals(calls[1], ["video.img2video", {
-    image: { kind: "named_object", obj_id: "chunk:image" },
-    prompt: "animate",
-    duration_seconds: 4,
+  assertEquals(calls[1], ["video.edit", {
+    video: { kind: "named_object", obj_id: "chunk:video" },
+    prompt: "make it snow",
+    output: { duration_seconds: 4 },
     exact_model: "vendor-model@provider-main",
     trace_id: "trace-1",
   }]);
   assertEquals(result.status, "succeeded");
-  assertEquals(aiResponseArtifacts(result.summary!).length, 1);
+  const [video] = aiResponseArtifacts(result.summary!);
+  assertEquals([video.name, video.mime], ["video_1", "video/mp4"]);
+  assertEquals(video.metadata, {
+    media_type: "video/mp4",
+    provider_metadata: { duration_seconds: 4 },
+  });
+});
+
+Deno.test("a logical video.generate is routed by the AICC helper with its conditions", async () => {
+  const calls: Array<[string, unknown]> = [];
+  const runtime = runtimeWithClients({
+    routeResolve: () => {
+      throw new Error("conditions must reach routing, not be left behind");
+    },
+    helperVideoGenerate: (request: unknown) => {
+      calls.push(["helper.video_generate", request]);
+      return Promise.resolve({
+        task_id: "task-video",
+        status: "succeeded",
+        videos: [{
+          resource: { kind: "named_object", obj_id: "chunk:video" },
+          media_type: "video/mp4",
+          provider_metadata: {},
+          measured_metadata: { duration_seconds: 6.04, has_audio: true },
+          last_frame: { kind: "named_object", obj_id: "chunk:frame" },
+        }],
+      });
+    },
+  });
+  const conditions = [{
+    type: "keyframe" as const,
+    id: "first",
+    position: "start" as const,
+    resource: { kind: "named_object" as const, obj_id: "chunk:image" },
+  }];
+  const result = await callAicc(runtime, {
+    method: "video.generate",
+    model: "video.generate",
+    request: { prompt: "@{first} comes alive", conditions },
+    idempotencyKey: "shot-3",
+  });
+  assertEquals(calls, [["helper.video_generate", {
+    prompt: "@{first} comes alive",
+    conditions,
+    logical_model: "video.generate",
+    requirements: {},
+    disable: {},
+    policy: { profile: "balanced", allow_fallback: true, runtime_failover: true },
+    idempotency_key: "shot-3",
+  }]]);
+  assertEquals(
+    aiResponseArtifacts(result.summary!).map((artifact) => artifact.name),
+    ["video_1", "last_frame_1"],
+  );
+  assertEquals(aiResponseData(result.summary!), {
+    videos: [{
+      media_type: "video/mp4",
+      provider_metadata: {},
+      measured_metadata: { duration_seconds: 6.04, has_audio: true },
+    }],
+  });
+});
+
+Deno.test("pickVideo refuses a result with more videos than requested", () => {
+  const video = (id: string) => ({
+    resource: { kind: "named_object" as const, obj_id: id },
+    provider_metadata: {},
+  });
+  const response = {
+    task_id: "t",
+    status: "succeeded" as const,
+    videos: [video("chunk:a"), video("chunk:b")],
+  };
+  let message = "";
+  try {
+    pickVideo(response);
+  } catch (err) {
+    message = (err as Error).message;
+  }
+  assertEquals(message, "the result holds 2 videos but one was requested");
+  assertEquals(
+    pickVideo({ ...response, videos: [video("chunk:a")] })?.name,
+    "video_1",
+  );
+});
+
+Deno.test("video condition flags keep their order and attach clips and audio", async () => {
+  const { rest, values } = takeRepeatedFlags([
+    "a prompt",
+    "--ref-image",
+    "hero=named_object:chunk:hero",
+    "--duration",
+    "6",
+    "--ref-video",
+    "motion=https://example.invalid/m.mp4",
+    "--ref-image",
+    "prop=named_object:chunk:prop",
+    "--clip",
+    "motion=0-3",
+    "--with-audio",
+    "motion",
+  ], VIDEO_CONDITION_FLAGS);
+  assertEquals(rest, ["a prompt", "--duration", "6"]);
+  const conditions = await videoConditions(values, {
+    start: "named_object:chunk:first",
+  });
+  assertEquals(conditions.map((condition) => condition.id), [
+    "first",
+    "hero",
+    "prop",
+    "motion",
+  ]);
+  assertEquals(conditions[3], {
+    type: "reference_video",
+    id: "motion",
+    resource: { kind: "url", url: "https://example.invalid/m.mp4", mime_hint: "video/*" },
+    time_range: { start_seconds: 0, end_seconds: 3 },
+    include_audio: true,
+  });
 });
 
 Deno.test("callAicc preserves exact model debug override", async () => {
@@ -229,7 +353,7 @@ function taskSequence(records: Array<Record<string, unknown>>) {
       index += 1;
       return Promise.resolve({
         task_id: taskId,
-        name: "AICC video.txt2video",
+        name: "AICC video.generate",
         schema_id: "aicc.compute/v1",
         ...record,
       });
@@ -258,7 +382,7 @@ Deno.test("resumeAiccTask waits for a running AICC task and returns its output",
   ]));
   const result = await resumeAiccTask(runtime, "t-1", 10_000);
   assertEquals(result.status, "succeeded");
-  assertEquals(result.method, "video.txt2video");
+  assertEquals(result.method, "video.generate");
   assertEquals(aiResponseArtifacts(result.summary!).length, 1);
 });
 
@@ -302,13 +426,13 @@ Deno.test("resumeAiccTask refuses a task that is not an AICC task", async () => 
 
 Deno.test("callAicc wait timeout names the task that keeps running", async () => {
   const runtime = runtimeWithClients({
-    videoTextToVideo: () =>
+    videoGenerate: () =>
       Promise.resolve({ task_id: "t-5", status: "running" }),
   }, taskSequence([{ phase: "Running" }]));
   let error: unknown;
   try {
     await callAicc(runtime, {
-      method: "video.txt2video",
+      method: "video.generate",
       model: "veo@provider-main",
       request: { prompt: "a wave" },
       waitTimeoutMs: 1,

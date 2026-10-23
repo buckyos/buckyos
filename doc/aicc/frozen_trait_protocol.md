@@ -55,8 +55,8 @@ AiccServerHandler<T: AiccHandler>
 
 | 分组 | method |
 | --- | --- |
-| 路由/Helper | `route.resolve`, `helper.llm_chat`, `helper.text_to_image` |
-| typed inference | `chat.completions.create`, `images.generate`, `embedding.text`, `embedding.multimodal`, `decision.evaluate`, `rerank`, `image.img2img`, `image.inpaint`, `image.upscale`, `image.bg_remove`, `vision.ocr`, `vision.caption`, `vision.detect`, `vision.segment`, `audio.tts`, `audio.asr`, `audio.music`, `audio.enhance`, `video.txt2video`, `video.img2video`, `video.video2video`, `video.extend`, `video.upscale`, `agent.computer_use` |
+| 路由/Helper | `route.resolve`, `helper.llm_chat`, `helper.text_to_image`, `helper.video_generate` |
+| typed inference | `chat.completions.create`, `images.generate`, `embedding.text`, `embedding.multimodal`, `decision.evaluate`, `rerank`, `image.img2img`, `image.inpaint`, `image.upscale`, `image.bg_remove`, `vision.ocr`, `vision.caption`, `vision.detect`, `vision.segment`, `audio.tts`, `audio.asr`, `audio.music`, `audio.enhance`, `video.generate`, `video.edit`, `video.extend`, `video.upscale`, `agent.computer_use` |
 | 任务 | `cancel` |
 | 路由/运行管理 | `service.reload_settings`, `routing.get`, `routing.update`, `routing.preview`, `events.list`, `models.list` |
 | Provider 管理 | `provider.catalog`, `protocol_adapter.list`, `provider.validate`, `provider.add`, `provider.list`, `provider.health`, `provider.update`, `provider.delete`, `provider.refresh_models` |

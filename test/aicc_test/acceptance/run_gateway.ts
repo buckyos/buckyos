@@ -838,9 +838,8 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "audio.asr") return ["The transcript faithfully represents the supplied speech audio."];
   if (apiType === "audio.music") return ["The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat."];
   if (apiType === "audio.enhance") return ["The output preserves the source audio while reducing noise or improving clarity."];
-  if (apiType === "video.txt2video") return ["The video shows a paper plane moving across a desk."];
-  if (apiType === "video.img2video") return ["The video preserves the supplied image content and adds subtle motion with a slow camera push."];
-  if (apiType === "video.video2video") return ["The output is a coherent transformation of the supplied video."];
+  if (apiType === "video.generate") return ["The video shows a paper plane moving across a desk, or brings the supplied first frame to life with subtle motion."];
+  if (apiType === "video.edit") return ["The output is a coherent edit of the supplied video."];
   if (apiType === "video.extend") return ["The output coherently extends the supplied video rather than replacing it with unrelated content."];
   if (apiType === "video.upscale") return ["The output preserves the supplied video content at improved resolution or visual quality."];
   if (apiType === "agent.computer_use") return ["The result reports the title visible in the supplied test environment and does not invent an action result."];
@@ -1486,7 +1485,7 @@ async function executeAcceptance(input: {
     const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
     const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
       const sourceApiType = cell.generated_artifact_source_api_type ??
-        (cell.api_type === "video.extend" ? "video.txt2video" : undefined);
+        (cell.api_type === "video.extend" ? "video.generate" : undefined);
       if (!sourceApiType) throw new Error(`${cell.case_id} has no generated artifact source api_type`);
       const key = `${cell.exact_model}:${sourceApiType}`;
       const existing = continuationPrerequisites.get(key);
@@ -1515,6 +1514,8 @@ async function executeAcceptance(input: {
               : sourceApiType.startsWith("video.") ? ["video"]
               : cell.output_kinds,
             generated_artifact_source_api_type: undefined,
+            // The cell's defaults belong to its own api_type, not to the source call.
+            request_defaults: undefined,
           };
           const prerequisiteRequest = buildExactRequest({
             cell: prerequisiteCell,
@@ -1522,7 +1523,7 @@ async function executeAcceptance(input: {
             fixtures: options.fixtures,
           });
           const payload = prerequisiteRequest.payload as Record<string, unknown>;
-          if (sourceApiType === "video.txt2video") {
+          if (sourceApiType === "video.generate") {
             payload.input_json = {
               ...(payload.input_json as Record<string, unknown>),
               prompt: "A paper plane moving across a desk, continuous steady motion",

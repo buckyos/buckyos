@@ -346,6 +346,17 @@ pub(crate) struct Pricing {
     pub tiers: Option<PricingTiers>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub time_windows: Vec<PricingTimeWindow>,
+    /// Further unit prices added to `amount`, such as a per-reference-image
+    /// charge on top of a per-second video price.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addons: Vec<PricingAddon>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PricingAddon {
+    pub unit: PricingUnit,
+    pub amount: f64,
 }
 
 impl Pricing {
@@ -394,6 +405,8 @@ pub(crate) enum PricingUnit {
     Character,
     Second,
     Megapixel,
+    /// Reference images submitted with a video request.
+    ReferenceImage,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -621,6 +634,10 @@ macro_rules! define_provider_rule {
         pub remove_features: BTreeSet<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         pub capability_limits: BTreeMap<String, u64>,
+        /// The video generation contract this channel and adapter honor; it
+        /// replaces the model driver's vendor contract for this provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub video_generation: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub estimated_latency_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -652,6 +669,7 @@ pub(crate) struct ProviderRuleAction {
     pub remove_api_types: BTreeSet<String>,
     pub remove_features: BTreeSet<String>,
     pub capability_limits: BTreeMap<String, u64>,
+    pub video_generation: Option<Value>,
     pub estimated_latency_ms: Option<u64>,
     pub latency_class: Option<String>,
     pub cost_class: Option<String>,
@@ -669,6 +687,7 @@ macro_rules! provider_rule_action {
             remove_api_types: $rule.remove_api_types.clone(),
             remove_features: $rule.remove_features.clone(),
             capability_limits: $rule.capability_limits.clone(),
+            video_generation: $rule.video_generation.clone(),
             estimated_latency_ms: $rule.estimated_latency_ms,
             latency_class: $rule.latency_class.clone(),
             cost_class: $rule.cost_class.clone(),
@@ -682,6 +701,13 @@ impl ProviderRuleAction {
         api_types: &BTreeSet<String>,
         capabilities: &BTreeMap<String, Value>,
     ) -> NarrowedCapabilities {
+        let mut capabilities = capabilities.clone();
+        if let Some(contract) = &self.video_generation {
+            capabilities.insert(
+                crate::video::VIDEO_CONTRACT_CAPABILITY.to_string(),
+                contract.clone(),
+            );
+        }
         NarrowedCapabilities {
             api_types: api_types
                 .difference(&self.remove_api_types)

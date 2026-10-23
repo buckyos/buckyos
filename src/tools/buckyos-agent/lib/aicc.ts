@@ -28,13 +28,8 @@ export type TypedRequestMap = {
   >;
   "audio.music": RoutedRequest<Parameters<AiccClient["audioMusic"]>[0]>;
   "audio.enhance": RoutedRequest<Parameters<AiccClient["audioEnhance"]>[0]>;
-  "video.txt2video": RoutedRequest<
-    Parameters<AiccClient["videoTextToVideo"]>[0]
-  >;
-  "video.img2video": RoutedRequest<
-    Parameters<AiccClient["videoImageToVideo"]>[0]
-  >;
-  "video.video2video": RoutedRequest<Parameters<AiccClient["videoToVideo"]>[0]>;
+  "video.generate": RoutedRequest<Parameters<AiccClient["videoGenerate"]>[0]>;
+  "video.edit": RoutedRequest<Parameters<AiccClient["videoEdit"]>[0]>;
   "video.extend": RoutedRequest<Parameters<AiccClient["videoExtend"]>[0]>;
   "video.upscale": RoutedRequest<Parameters<AiccClient["videoUpscale"]>[0]>;
 };
@@ -57,9 +52,8 @@ const API_TYPE_BY_METHOD: {
   "audio.asr": "audio.asr",
   "audio.music": "audio.music",
   "audio.enhance": "audio.enhance",
-  "video.txt2video": "video.txt2video",
-  "video.img2video": "video.img2video",
-  "video.video2video": "video.video2video",
+  "video.generate": "video.generate",
+  "video.edit": "video.edit",
   "video.extend": "video.extend",
   "video.upscale": "video.upscale",
 };
@@ -249,17 +243,13 @@ async function invokeTyped(
       return await client.audioEnhance(
         request as Parameters<AiccClient["audioEnhance"]>[0],
       );
-    case "video.txt2video":
-      return await client.videoTextToVideo(
-        request as Parameters<AiccClient["videoTextToVideo"]>[0],
+    case "video.generate":
+      return await client.videoGenerate(
+        request as Parameters<AiccClient["videoGenerate"]>[0],
       );
-    case "video.img2video":
-      return await client.videoImageToVideo(
-        request as Parameters<AiccClient["videoImageToVideo"]>[0],
-      );
-    case "video.video2video":
-      return await client.videoToVideo(
-        request as Parameters<AiccClient["videoToVideo"]>[0],
+    case "video.edit":
+      return await client.videoEdit(
+        request as Parameters<AiccClient["videoEdit"]>[0],
       );
     case "video.extend":
       return await client.videoExtend(
@@ -369,6 +359,9 @@ export async function callAicc<M extends TypedMethod>(
   opts: TypedCallOptions<M>,
 ): Promise<CallResult> {
   const client = runtime.buckyos.getAiccClient();
+  if (opts.method === "video.generate" && !opts.model.includes("@")) {
+    return await videoGenerateByHelper(runtime, client, opts);
+  }
   const exactModel = await resolveExactModel(client, opts);
   const request = {
     ...opts.request,
@@ -380,6 +373,32 @@ export async function callAicc<M extends TypedMethod>(
   return await finishCall(
     runtime.buckyos.getTaskManagerClient(),
     opts.method,
+    response,
+    opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 900_000),
+  );
+}
+
+// A logical video model is routed by AICC itself: it measures the clips and
+// audio tracks of the conditions before it picks the model, which a
+// route.resolve made here could not.
+async function videoGenerateByHelper(
+  runtime: AiccRuntime,
+  client: AiccClient,
+  opts: TypedCallOptions<TypedMethod>,
+): Promise<CallResult> {
+  const { decision: _decision, ...requirements } = opts.requirements ?? {};
+  const response = await client.helperVideoGenerate({
+    ...(opts.request as TypedRequestMap["video.generate"]),
+    logical_model: opts.model,
+    requirements,
+    disable: opts.disable ?? {},
+    ...(opts.traceId ? { trace_id: opts.traceId } : {}),
+    policy: buildPolicy(opts),
+    ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
+  });
+  return await finishCall(
+    runtime.buckyos.getTaskManagerClient(),
+    "helper.video_generate",
     response,
     opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 900_000),
   );

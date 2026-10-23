@@ -65,6 +65,8 @@ export type ProviderProtocolContract = {
   content_type: string;
   required_body_fields: string[];
   required_body_fields_by_api_type?: Record<string, string[]>;
+  /** video.generate condition scenarios the official contract documents, beyond text only. */
+  video_generate_scenarios?: VideoScenario[];
   allowed_body_fields: string[];
   body_field_types: Record<
     string,
@@ -99,6 +101,7 @@ export type ProviderProtocolContract = {
     | "minimax_video_v2"
     | "google_lro"
     | "openai_video"
+    | "openrouter_video"
     | "glm_video"
     | "doubao_video"
     | "qwen_media"
@@ -478,6 +481,20 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id} required field ${required} has no type schema`,
           );
+        }
+      }
+      if (contract.video_generate_scenarios !== undefined) {
+        const scenarios = stringArray(
+          contract.video_generate_scenarios,
+          `${id}.video_generate_scenarios`,
+        );
+        if (!(contract.api_types as string[]).includes("video.generate")) {
+          throw new Error(`${id}.video_generate_scenarios requires video.generate`);
+        }
+        for (const scenario of scenarios) {
+          if (!VIDEO_SCENARIOS.includes(scenario as VideoScenario)) {
+            throw new Error(`${id}.video_generate_scenarios has unknown scenario ${scenario}`);
+          }
         }
       }
       if (contract.required_body_fields_by_api_type !== undefined) {
@@ -929,6 +946,7 @@ export function validateProviderRequest(
   contract: ProviderProtocolContract,
   request: CapturedProviderRequest,
   apiType = contract.api_types[0],
+  videoScenario?: VideoScenario,
 ): string[] {
   const errors: string[] = [];
   if (request.method.toUpperCase() !== contract.http_method.toUpperCase()) {
@@ -1120,7 +1138,7 @@ export function validateProviderRequest(
       } else errors.push("invalid System One question type");
     }
   }
-  validateNestedProviderBody(contract, body, errors, requiredFields, apiType);
+  validateNestedProviderBody(contract, body, errors, requiredFields, apiType, videoScenario);
   return errors;
 }
 
@@ -1136,6 +1154,7 @@ function validateNestedProviderBody(
   errors: string[],
   requiredFields = contract.required_body_fields,
   apiType?: string,
+  videoScenario?: VideoScenario,
 ): void {
   for (const field of requiredFields) {
     if (typeof body[field] === "string" && !(body[field] as string).trim()) {
@@ -1244,17 +1263,9 @@ function validateNestedProviderBody(
     ) {
       errors.push("MiniMax V2 video content requires a non-empty text block");
     }
-    if (apiType === "video.img2video") {
-      const firstFrame = blocks.find((block) =>
-        block.type === "image_url" && block.role === "first_frame"
-      );
-      const imageUrl = recordValue(firstFrame?.image_url);
-      if (typeof imageUrl?.url !== "string" || !imageUrl.url.trim()) {
-        errors.push(
-          "MiniMax image-to-video content requires a first_frame image_url block",
-        );
-      }
-    }
+  }
+  if (apiType === "video.generate") {
+    errors.push(...videoScenarioErrors(contract, body, videoScenario));
   }
   if (
     contract.operation === "interactions.create" && Array.isArray(body.input) &&
@@ -1936,6 +1947,77 @@ function providerErrorRetriable(fixture: ProtocolErrorFixture): boolean {
       .includes(fixture.scenario);
 }
 
+export const VIDEO_SCENARIOS = ["keyframe", "keyframes", "reference-images"] as const;
+export type VideoScenario = typeof VIDEO_SCENARIOS[number];
+
+/** The video.generate condition scenario a case id (or mock selection seed) names. */
+export function videoScenarioOf(key: string): VideoScenario | undefined {
+  const match = /\.video-(keyframes|keyframe|reference-images)$/.exec(key);
+  return match ? match[1] as VideoScenario : undefined;
+}
+
+/**
+ * What each official contract requires on the wire for a condition scenario:
+ * the start/end frames and reference images reach the provider in the
+ * documented field and role, and nothing image-shaped is sent for text only.
+ */
+function videoScenarioErrors(
+  contract: ProviderProtocolContract,
+  body: Record<string, unknown>,
+  scenario: VideoScenario | undefined,
+): string[] {
+  const urlOf = (value: unknown) => {
+    const url = recordValue(recordValue(value)?.image_url)?.url;
+    return typeof url === "string" && url.trim() ? url : undefined;
+  };
+  const expected = {
+    first: scenario === "keyframe" || scenario === "keyframes",
+    last: scenario === "keyframes",
+    references: scenario === "reference-images" ? 2 : 0,
+  };
+  let found: { first: boolean; last: boolean; references: number } | undefined;
+  if (contract.async_protocol === "minimax_video_v2" || contract.async_protocol === "doubao_video") {
+    const blocks = (Array.isArray(body.content) ? body.content : [])
+      .map(recordValue).filter(Boolean) as Array<Record<string, unknown>>;
+    const role = (name: string) => blocks.filter((block) => block.type === "image_url" && block.role === name && urlOf(block));
+    found = { first: role("first_frame").length === 1, last: role("last_frame").length === 1, references: role("reference_image").length };
+  } else if (contract.async_protocol === "openrouter_video") {
+    const frames = (Array.isArray(body.frame_images) ? body.frame_images : [])
+      .map(recordValue).filter(Boolean) as Array<Record<string, unknown>>;
+    const references = (Array.isArray(body.input_references) ? body.input_references : [])
+      .map(recordValue).filter(Boolean) as Array<Record<string, unknown>>;
+    found = {
+      first: frames.some((frame) => frame.frame_type === "first_frame" && urlOf(frame)),
+      last: frames.some((frame) => frame.frame_type === "last_frame" && urlOf(frame)),
+      references: references.filter((reference) => reference.type === "image_url" && urlOf(reference)).length,
+    };
+  } else if (contract.async_protocol === "google_lro") {
+    const instance = recordValue(Array.isArray(body.instances) ? body.instances[0] : undefined) ?? {};
+    found = {
+      first: recordValue(instance.image) !== undefined,
+      last: recordValue(instance.lastFrame) !== undefined,
+      references: Array.isArray(instance.referenceImages) ? instance.referenceImages.length : 0,
+    };
+  } else if (contract.async_protocol === "openai_video") {
+    found = { first: body.input_reference !== undefined, last: false, references: 0 };
+  } else if (contract.async_protocol === "glm_video") {
+    const images = Array.isArray(body.image_url) ? body.image_url : body.image_url === undefined ? [] : [body.image_url];
+    found = { first: images.length >= 1, last: images.length === 2, references: 0 };
+  }
+  if (!found) return [];
+  const errors: string[] = [];
+  if (found.first !== expected.first) {
+    errors.push(`video.generate ${scenario ?? "text"} scenario ${expected.first ? "requires" : "must not send"} a start keyframe`);
+  }
+  if (found.last !== expected.last) {
+    errors.push(`video.generate ${scenario ?? "text"} scenario ${expected.last ? "requires" : "must not send"} an end keyframe`);
+  }
+  if (found.references !== expected.references) {
+    errors.push(`video.generate ${scenario ?? "text"} scenario requires ${expected.references} reference images; found ${found.references}`);
+  }
+  return errors;
+}
+
 const TASK_RESULT_ARTIFACT_API_TYPES = new Set([
   "image.txt2img",
   "image.img2img",
@@ -1945,9 +2027,8 @@ const TASK_RESULT_ARTIFACT_API_TYPES = new Set([
   "audio.tts",
   "audio.music",
   "audio.enhance",
-  "video.txt2video",
-  "video.img2video",
-  "video.video2video",
+  "video.generate",
+  "video.edit",
   "video.extend",
   "video.upscale",
 ]);
@@ -2032,6 +2113,20 @@ export function buildT15Manifest(
               `${contract.id}.request.task-result-artifact`,
             response_fixture: `${contract.id}.success`,
           } as AcceptanceCase);
+        }
+        if (apiType === "video.generate") {
+          for (const scenario of contract.video_generate_scenarios ?? []) {
+            cases.push({
+              ...common,
+              case_id: caseId(
+                `t1.5.${provider.provider_driver}.${contract.id}.${apiType}.video-${scenario}`,
+              ),
+              tags: [...common.tags!, "video_scenario", scenario],
+              mock_scenario: "success",
+              expected_wire_fixture: `${contract.id}.request.video-${scenario}`,
+              response_fixture: `${contract.id}.success`,
+            } as AcceptanceCase);
+          }
         }
         if (apiType === "llm" && contract.inline_artifact_success_fixture) {
           cases.push({
@@ -2377,6 +2472,7 @@ export function buildT15Manifest(
       !testCase.tags.includes("structured_output") &&
       !testCase.tags.includes("task_result_artifact") &&
       !testCase.tags.includes("generated_artifact_id") &&
+      !testCase.tags.includes("video_scenario") &&
       !testCase.tags.includes("custom_provider")
     ).map((testCase) => ({
       ...testCase,

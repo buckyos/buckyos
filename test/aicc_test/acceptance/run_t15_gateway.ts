@@ -29,6 +29,7 @@ import {
   protocolContract,
   type ProviderProtocolCatalog,
   selectOfficialModels,
+  videoScenarioOf,
 } from "./provider_protocol_contracts.ts";
 import { defectFromFailure, writeReport } from "./report.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
@@ -1014,19 +1015,43 @@ export function buildT15TypedParams(
       };
     case "audio.enhance":
       return { ...common, audio: resource("audio/wav"), task: "denoise" };
-    case "video.txt2video":
+    case "video.generate": {
+      // Condition scenarios of one API (`video_generate_scenarios` in the
+      // contract catalog); the case id names the scenario.
+      const keyframe = (id: string, position: "start" | "end") => ({
+        type: "keyframe",
+        id,
+        position,
+        resource: resource("image/png"),
+      });
+      const scenario = videoScenarioOf(requestKey);
+      if (scenario === "keyframe") {
+        return { ...common, prompt: "@{first} comes alive with subtle motion", conditions: [keyframe("first", "start")] };
+      }
+      if (scenario === "keyframes") {
+        return {
+          ...common,
+          prompt: "Move from @{first} to @{last}",
+          conditions: [keyframe("first", "start"), keyframe("last", "end")],
+        };
+      }
+      if (scenario === "reference-images") {
+        return {
+          ...common,
+          prompt: "The character from @{hero} picks up the cup from @{prop}",
+          conditions: [
+            { type: "reference_image", id: "hero", resource: resource("image/png") },
+            { type: "reference_image", id: "prop", resource: resource("image/png") },
+          ],
+        };
+      }
       return { ...common, prompt: "A paper plane moves across a desk" };
-    case "video.img2video":
-      return {
-        ...common,
-        prompt: "Subtle motion",
-        image: resource("image/png"),
-      };
-    case "video.video2video":
+    }
+    case "video.edit":
       return {
         ...common,
         video: resource("video/mp4"),
-        prompt: "Preserve motion",
+        prompt: "Make it snow",
       };
     case "video.extend":
       return {
@@ -1339,11 +1364,10 @@ export function assertT15ResponseMapping(
     "audio.asr": ["text", "segments"],
     "audio.music": ["audio", "artifacts"],
     "audio.enhance": ["audio", "artifacts"],
-    "video.txt2video": ["video", "artifacts"],
-    "video.img2video": ["video", "artifacts"],
-    "video.video2video": ["video", "artifacts"],
-    "video.extend": ["video", "artifacts"],
-    "video.upscale": ["video", "artifacts"],
+    "video.generate": ["videos", "artifacts"],
+    "video.edit": ["videos", "artifacts"],
+    "video.extend": ["videos", "artifacts"],
+    "video.upscale": ["videos", "artifacts"],
     "agent.computer_use": ["action", "actions"],
   };
   if (apiType === "decision") assertDecisionResult(value);

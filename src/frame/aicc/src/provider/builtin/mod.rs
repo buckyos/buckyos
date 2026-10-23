@@ -271,6 +271,7 @@ mod wp08d_tests {
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
+                video: None,
             }],
         }
     }
@@ -286,6 +287,8 @@ mod wp08d_tests {
                     driver("gemini", "gemini-fixture"),
                     kimi_model_driver(),
                     glm_model_driver(),
+                    // OpenRouter maps its H3 channel IDs onto the MiniMax driver.
+                    super::builtin_model_driver("minimax"),
                 ],
                 provider_rules: vec![
                     openrouter_provider_rules(1),
@@ -379,6 +382,11 @@ mod wp08d_tests {
             .into_iter()
             .chain(kimi_catalog_files())
             .chain(glm_catalog_files())
+            .chain(
+                super::builtin_catalog_files(&["minimax"])
+                    .into_iter()
+                    .filter(|file| file.kind == crate::catalog::CatalogKind::ModelDriver),
+            )
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();

@@ -62,6 +62,14 @@ impl IdempotencyScope {
     }
 }
 
+fn idempotency_conflict() -> AiccError {
+    aicc_error(
+        AiccErrorCode::IdempotencyConflict,
+        "idempotency key was already used with a different canonical request body",
+        false,
+    )
+}
+
 pub(crate) fn canonical_body_fingerprint(body: &Value) -> Result<String, AiccError> {
     let mut body = body.clone();
     if let Value::Object(object) = &mut body {
@@ -296,6 +304,8 @@ pub(crate) enum PinnedPricingBasis {
     Units {
         unit: PricingUnit,
         amount: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        addons: Vec<crate::catalog::PricingAddon>,
     },
 }
 
@@ -394,6 +404,7 @@ fn apply_time_window(base: &Pricing, window: Option<&PricingTimeWindow>) -> Pric
         tiers: base.tiers.clone(),
         // Already resolved; clearing prevents a second pass from re-applying it.
         time_windows: Vec::new(),
+        addons: base.addons.clone(),
     }
 }
 
@@ -453,7 +464,18 @@ impl PinnedPricingSnapshot {
             if invalid_price(amount) {
                 return Err(invalid_pinned_pricing());
             }
-            PinnedPricingBasis::Units { unit, amount }
+            if pricing
+                .addons
+                .iter()
+                .any(|addon| invalid_price(addon.amount))
+            {
+                return Err(invalid_pinned_pricing());
+            }
+            PinnedPricingBasis::Units {
+                unit,
+                amount,
+                addons: pricing.addons.clone(),
+            }
         } else {
             return Ok(None);
         };
@@ -491,19 +513,16 @@ impl PinnedPricingSnapshot {
                 };
                 resolved.apply(usage)?
             }
-            PinnedPricingBasis::Units { unit, amount } => {
-                let units = match unit {
-                    PricingUnit::Request => usage.request_units? as f64,
-                    PricingUnit::Image => usage.image_units? as f64,
-                    PricingUnit::AudioSecond => usage.audio_seconds?,
-                    PricingUnit::VideoSecond => usage.video_seconds?,
-                    PricingUnit::Character => usage.characters? as f64,
-                    // Billable by compute-second or megapixel (for example fal.ai);
-                    // the vocabulary is expressible but no adapter reports these
-                    // counters yet, so the cost stays unresolved rather than wrong.
-                    PricingUnit::Second | PricingUnit::Megapixel => return None,
-                };
-                units * amount
+            PinnedPricingBasis::Units {
+                unit,
+                amount,
+                addons,
+            } => {
+                let mut total = unit_count(*unit, usage)? * amount;
+                for addon in addons {
+                    total += unit_count(addon.unit, usage)? * addon.amount;
+                }
+                total
             }
         };
         if invalid_price(amount) {
@@ -514,6 +533,23 @@ impl PinnedPricingSnapshot {
             currency: self.currency.clone(),
         })
     }
+}
+
+/// Billable units of `unit` in `usage`; `None` when the usage does not report
+/// them, which leaves the cost unknown rather than zero.
+fn unit_count(unit: PricingUnit, usage: &AiUsage) -> Option<f64> {
+    Some(match unit {
+        PricingUnit::Request => usage.request_units? as f64,
+        PricingUnit::Image => usage.image_units? as f64,
+        PricingUnit::AudioSecond => usage.audio_seconds?,
+        PricingUnit::VideoSecond => usage.video_seconds?,
+        PricingUnit::Character => usage.characters? as f64,
+        PricingUnit::ReferenceImage => usage.reference_images? as f64,
+        // Billable by compute-second or megapixel (for example fal.ai); the
+        // vocabulary is expressible but no adapter reports these counters yet,
+        // so the cost stays unresolved rather than wrong.
+        PricingUnit::Second | PricingUnit::Megapixel => return None,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -831,6 +867,23 @@ fn log_llm_input(record: &ExecutionRecord, call: &ResolvedProviderCall) {
     log::info!("aicc.llm.input {}", event);
 }
 
+/// Non-terminal executions found at startup. A record this build can no
+/// longer read (written for a removed method or API type) is retired: stored
+/// as failed without its provider binding, so it is never polled again and
+/// cannot block the recovery of other tasks.
+#[derive(Debug, Default)]
+pub(crate) struct RecoverableExecutions {
+    pub records: Vec<ExecutionRecord>,
+    pub retired: Vec<RetiredExecution>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RetiredExecution {
+    pub task_id: String,
+    pub error: AiccError,
+    pub quota_attempt_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum IdempotencyClaim {
     Created(ExecutionRecord),
@@ -854,7 +907,8 @@ pub(crate) trait ExecutionStore: Send + Sync {
         -> Result<bool, AiccError>;
     async fn try_fail(&self, task_id: &str, error: AiccError) -> Result<bool, AiccError>;
     async fn try_cancel(&self, task_id: &str) -> Result<bool, AiccError>;
-    async fn recoverable(&self) -> Result<Vec<ExecutionRecord>, AiccError>;
+    async fn recoverable(&self) -> Result<RecoverableExecutions, AiccError>;
+    async fn find(&self, scope: &IdempotencyScope) -> Result<Option<ExecutionRecord>, AiccError>;
 }
 
 #[derive(Debug, Clone)]
@@ -972,6 +1026,50 @@ impl ProviderStartFailure {
         Self {
             error,
             provider_accepted: true,
+            retryable,
+            retry_same_model,
+        }
+    }
+
+    /// A video job the Provider accepted may already be generating and
+    /// billed, so it is neither repeated nor moved to another Provider, even
+    /// when the error would allow that for other APIs.
+    fn for_api(mut self, api_type: ApiType) -> Self {
+        if self.provider_accepted
+            && matches!(
+                api_type,
+                ApiType::VideoGenerate
+                    | ApiType::VideoEdit
+                    | ApiType::VideoExtend
+                    | ApiType::VideoUpscale
+            )
+        {
+            self.retryable = false;
+            self.retry_same_model = false;
+        }
+        self
+    }
+
+    /// A native submit whose outcome is unknown (no response, or a success
+    /// response that could not be read): the Provider may hold a billed task,
+    /// so it is neither resubmitted nor failed over.
+    pub(crate) fn native_submit_unknown(error: ProtocolError) -> Self {
+        Self {
+            error,
+            provider_accepted: true,
+            retryable: false,
+            retry_same_model: false,
+        }
+    }
+
+    /// A native submit the Provider answered with an error status: no task
+    /// exists, so the usual retry and failover policy applies.
+    pub(crate) fn native_submit_rejected(error: ProtocolError) -> Self {
+        let retryable = error.allows_model_failover();
+        let retry_same_model = error.retry_same_model();
+        Self {
+            error,
+            provider_accepted: false,
             retryable,
             retry_same_model,
         }
@@ -1127,6 +1225,31 @@ impl ExecutionEngine {
         }
     }
 
+    /// The task an earlier call with the same idempotency key started, with
+    /// the exact model it is bound to. A retry returns it before routing, so
+    /// a route that would now pick another model (or none) and material
+    /// preparation are not repeated.
+    pub(crate) async fn replay(
+        &self,
+        tenant_id: &str,
+        method: &str,
+        idempotency_key: &str,
+        canonical_body: &Value,
+    ) -> Result<Option<(ExecutionReceipt, Option<String>)>, AiccError> {
+        let scope = IdempotencyScope::new(tenant_id, method, idempotency_key)?;
+        let Some(record) = self.store.find(&scope).await? else {
+            return Ok(None);
+        };
+        if record.body_fingerprint != canonical_body_fingerprint(canonical_body)? {
+            return Err(idempotency_conflict());
+        }
+        let exact_model = record
+            .binding
+            .as_ref()
+            .map(|binding| binding.exact_model.clone());
+        Ok(Some((record.into(), exact_model)))
+    }
+
     pub(crate) async fn execute(
         &self,
         request: ExecutionRequest,
@@ -1212,13 +1335,7 @@ impl ExecutionEngine {
         };
         let record = match self.store.claim(initial).await? {
             IdempotencyClaim::Existing(record) => return Ok(record.into()),
-            IdempotencyClaim::Conflict => {
-                return Err(aicc_error(
-                    AiccErrorCode::IdempotencyConflict,
-                    "idempotency key was already used with a different canonical request body",
-                    false,
-                ));
-            }
+            IdempotencyClaim::Conflict => return Err(idempotency_conflict()),
             IdempotencyClaim::Created(record) => record,
         };
 
@@ -1276,7 +1393,8 @@ impl ExecutionEngine {
                 let started = self
                     .providers
                     .start(request.runtime_generation, call, cancellation.clone())
-                    .await;
+                    .await
+                    .map_err(|failure| failure.for_api(call.api_type));
                 if let Err(failure) = &started {
                     self.settle(
                         quota_attempt.as_deref(),
@@ -1643,7 +1761,23 @@ impl ExecutionEngine {
     }
 
     pub(crate) async fn recover(&self) -> Result<Vec<ExecutionReceipt>, AiccError> {
-        let records = self.store.recoverable().await?;
+        let RecoverableExecutions { records, retired } = self.store.recoverable().await?;
+        for retired in retired {
+            // An upstream task an earlier build submitted keeps running at
+            // the Provider; its result is not collected, so the reservation
+            // settles as unknown rather than as a charge or a refund.
+            self.settle(
+                retired.quota_attempt_id.as_deref(),
+                AttemptSettlement::Unknown,
+            )
+            .await;
+            if let Err(error) = self.tasks.fail_task(&retired.task_id, &retired.error).await {
+                log::warn!(
+                    "AICC task recovery: cannot report retired task {}: {error}",
+                    retired.task_id
+                );
+            }
+        }
         let task_ids: Vec<String> = records
             .iter()
             .map(|record| record.task_id.clone())
@@ -2279,15 +2413,25 @@ mod tests {
             })
         }
 
-        async fn recoverable(&self) -> Result<Vec<ExecutionRecord>, AiccError> {
-            Ok(self
-                .scopes
-                .lock()
-                .unwrap()
-                .values()
-                .filter(|record| !record.state.is_terminal())
-                .cloned()
-                .collect())
+        async fn recoverable(&self) -> Result<RecoverableExecutions, AiccError> {
+            Ok(RecoverableExecutions {
+                records: self
+                    .scopes
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|record| !record.state.is_terminal())
+                    .cloned()
+                    .collect(),
+                retired: Vec::new(),
+            })
+        }
+
+        async fn find(
+            &self,
+            scope: &IdempotencyScope,
+        ) -> Result<Option<ExecutionRecord>, AiccError> {
+            Ok(self.scopes.lock().unwrap().get(scope).cloned())
         }
     }
 
@@ -2690,6 +2834,7 @@ mod tests {
             rules: Vec::new(),
             tiers: None,
             time_windows: Vec::new(),
+            addons: Vec::new(),
         };
         let window = time_window("09:00", "12:00", None, Some(9e-6), None);
         let merged = apply_time_window(&base, Some(&window));
@@ -2723,6 +2868,7 @@ mod tests {
             rules: Vec::new(),
             tiers: None,
             time_windows: vec![time_window("09:00", "12:00", None, Some(9e-6), None)],
+            addons: Vec::new(),
         };
         let unchanged = apply_time_window(&base, None);
         assert_eq!(unchanged.input_token, Some(1e-6));
@@ -2758,6 +2904,7 @@ mod tests {
                 tiers: None,
 
                 time_windows: Vec::new(),
+                addons: Vec::new(),
             }),
             matched_amount: None,
             estimated_cost: Some(buckyos_api::Money::new(777.0, "USD")),
@@ -2790,6 +2937,7 @@ mod tests {
                 tiers: None,
 
                 time_windows: Vec::new(),
+                addons: Vec::new(),
             }),
             matched_amount: None,
             estimated_cost: None,
@@ -2809,6 +2957,7 @@ mod tests {
             image_units: None,
             audio_seconds: None,
             video_seconds: None,
+            reference_images: None,
             request_units: None,
             characters: None,
             audio_input_tokens: None,
@@ -2867,7 +3016,8 @@ mod tests {
             pinned.basis,
             PinnedPricingBasis::Units {
                 unit: PricingUnit::Request,
-                amount: 0.1
+                amount: 0.1,
+                addons: Vec::new(),
             }
         );
         let cost = pinned
@@ -3395,7 +3545,7 @@ mod tests {
         let record = store.get_task("task-1").await.unwrap().unwrap();
         assert_eq!(record.state, ExecutionState::Running);
         assert!(record.output.is_some());
-        assert_eq!(store.recoverable().await.unwrap().len(), 1);
+        assert_eq!(store.recoverable().await.unwrap().records.len(), 1);
         assert_eq!(usage.writes.lock().unwrap().len(), 1);
         assert!(tasks.completed.lock().unwrap().is_empty());
 
@@ -3595,6 +3745,52 @@ mod tests {
         conflict.canonical_body["prompt"] = json!("different");
         let error = engine.execute(conflict).await.unwrap_err();
         assert_eq!(error.code, AiccErrorCode::IdempotencyConflict);
+    }
+
+    #[tokio::test]
+    async fn replay_returns_the_bound_task_before_routing_and_rejects_another_body() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
+                "ok",
+            ))));
+        let (engine, _, _, _) = make_engine(providers.clone());
+        let original = request(call("primary"));
+        let method = original.primary.method.clone();
+        let exact_model = original.primary.exact_model.clone();
+        let body = original.canonical_body.clone();
+        assert!(engine
+            .replay("tenant-1", &method, "idem-1", &body)
+            .await
+            .unwrap()
+            .is_none());
+        let receipt = engine.execute(original).await.unwrap();
+
+        let (replayed, bound_model) = engine
+            .replay("tenant-1", &method, "idem-1", &body)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed.task_id, receipt.task_id);
+        assert_eq!(replayed.state, ExecutionState::Succeeded);
+        assert_eq!(bound_model.as_deref(), Some(exact_model.as_str()));
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+
+        let mut different = body.clone();
+        different["prompt"] = json!("different");
+        let error = engine
+            .replay("tenant-1", &method, "idem-1", &different)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AiccErrorCode::IdempotencyConflict);
+        assert!(engine
+            .replay("tenant-2", &method, "idem-1", &body)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -3921,6 +4117,61 @@ mod tests {
         assert_eq!(receipt.state, ExecutionState::Failed);
         assert_eq!(receipt.error.unwrap().code, AiccErrorCode::QuotaExhausted);
         assert!(providers.starts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_accepted_video_job_is_never_retried_or_failed_over() {
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().extend([
+            StartPlan::Failure(ProviderStartFailure::after_accept(ProtocolError::new(
+                ProtocolErrorKind::Transport,
+                "connection lost after submit",
+            ))),
+            StartPlan::Success(ProviderExecution::Immediate(output("duplicate"))),
+        ]);
+        let (engine, _, _, _) = make_engine(providers.clone());
+        let mut primary = call("primary");
+        primary.api_type = ApiType::VideoGenerate;
+        let mut backup = call("backup");
+        backup.api_type = ApiType::VideoGenerate;
+        let mut req = request(primary);
+        req.failover.push(backup);
+        req.runtime_failover = true;
+        let receipt = engine.execute(req).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        assert_eq!(receipt.error.unwrap().code, AiccErrorCode::ProviderError);
+        assert_eq!(
+            providers.starts.lock().unwrap().as_slice(),
+            ["model@primary"]
+        );
+
+        // A submit the Provider answered with an error status left no job, so
+        // the usual failover still applies.
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().extend([
+            StartPlan::Failure(ProviderStartFailure::native_submit_rejected(
+                ProtocolError::new(ProtocolErrorKind::InvalidRequest, "model does not exist")
+                    .with_provider_code(Some("1211".to_owned())),
+            )),
+            StartPlan::Success(ProviderExecution::Immediate(output("fallback"))),
+        ]);
+        let (engine, _, _, _) = make_engine(providers.clone());
+        let mut primary = call("primary");
+        primary.api_type = ApiType::VideoGenerate;
+        let mut backup = call("backup");
+        backup.api_type = ApiType::VideoGenerate;
+        let mut req = request(primary);
+        req.idempotency_key = "idem-video-rejected".into();
+        req.failover.push(backup);
+        req.runtime_failover = true;
+        assert_eq!(
+            engine.execute(req).await.unwrap().state,
+            ExecutionState::Succeeded
+        );
+        assert_eq!(
+            providers.starts.lock().unwrap().last().map(String::as_str),
+            Some("model@backup")
+        );
     }
 
     #[tokio::test]

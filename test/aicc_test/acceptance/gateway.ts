@@ -256,8 +256,19 @@ export function callInference(
     case "image.img2img": params = { ...common, ...input, images: resources }; break;
     case "image.inpaint": params = { ...common, ...input, image: resources[0], mask: resources[1] }; break;
     case "image.upscale":
-    case "image.bg_remove":
-    case "video.img2video": params = { ...common, ...input, image: resources[0] }; break;
+    case "image.bg_remove": params = { ...common, ...input, image: resources[0] }; break;
+    case "video.generate": params = {
+      ...common,
+      ...input,
+      ...(Array.isArray(input.conditions)
+        ? {
+          conditions: input.conditions.map((condition, index) => ({
+            ...(condition as Record<string, unknown>),
+            resource: resources[index],
+          })),
+        }
+        : {}),
+    }; break;
     case "vision.ocr": {
       const { prompt: _prompt, ...rest } = input;
       params = { ...common, ...rest, document: resources[0] };
@@ -286,7 +297,7 @@ export function callInference(
       params = { ...common, ...rest, audio: resources[0], task: operation ?? input.task };
       break;
     }
-    case "video.video2video":
+    case "video.edit":
     case "video.extend": params = { ...common, ...input, video: resources[0] }; break;
     case "video.upscale": params = {
       ...common,

@@ -487,27 +487,127 @@
     },
     {
       "id": "veo-3.1-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}", "video.txt2video.veo", "video.img2video.veo"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.gemini",
+        "video.generate.{model}",
+        "video.generate.veo",
+        "video.extend.gemini",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "negative_prompt": true,
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "output": {
+            "durations": {"values": [4, 6, 8]},
+            "default_duration_seconds": 8,
+            "aspect_ratios": ["16:9", "9:16"],
+            "resolutions": [
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080},
+              {"name": "4k", "short_edge": 2160}
+            ],
+            "fps": [24],
+            "audio": "always",
+            "media_types": ["video/mp4"],
+            "rules": [
+              {"when": {"resolutions": ["1080p", "4k"]}, "durations": {"values": [8]}},
+              {"when": {"inputs": ["reference_image"]}, "durations": {"values": [8]}}
+            ]
+          },
+          "references": {"image": {"max": 3}}
+        }
+      }
     },
     {
       "id": "veo-3.1-lite-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.txt2video.veo", "video.img2video.veo"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.gemini", "video.generate.{model}", "video.generate.veo"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "negative_prompt": true,
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "output": {
+            "durations": {"values": [4, 6, 8]},
+            "default_duration_seconds": 8,
+            "aspect_ratios": ["16:9", "9:16"],
+            "resolutions": [{"name": "720p", "short_edge": 720}, {"name": "1080p", "short_edge": 1080}],
+            "fps": [24],
+            "audio": "always",
+            "media_types": ["video/mp4"],
+            "rules": [{"when": {"resolutions": ["1080p"]}, "durations": {"values": [8]}}]
+          }
+        }
+      }
     },
     {
       "id": "veo-3.1-fast-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}", "video.txt2video.veo", "video.img2video.veo"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.gemini",
+        "video.generate.{model}",
+        "video.generate.veo",
+        "video.extend.gemini",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "negative_prompt": true,
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "output": {
+            "durations": {"values": [4, 6, 8]},
+            "default_duration_seconds": 8,
+            "aspect_ratios": ["16:9", "9:16"],
+            "resolutions": [
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080},
+              {"name": "4k", "short_edge": 2160}
+            ],
+            "fps": [24],
+            "audio": "always",
+            "media_types": ["video/mp4"],
+            "rules": [
+              {"when": {"resolutions": ["1080p", "4k"]}, "durations": {"values": [8]}},
+              {"when": {"inputs": ["reference_image"]}, "durations": {"values": [8]}}
+            ]
+          },
+          "references": {"image": {"max": 3}}
+        }
+      }
     },
     {
       "id": "gemini-omni-1.1-flash",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.video2video.gemini", "video.video2video.{model}", "video.extend.gemini", "video.extend.{model}", "video.txt2video.gemini_omni", "video.img2video.gemini_omni"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.edit", "video.extend"],
+      "logical_mounts": [
+        "video.generate.gemini",
+        "video.generate.{model}",
+        "video.generate.gemini_omni",
+        "video.edit.gemini",
+        "video.edit.{model}",
+        "video.extend.gemini",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "seed": true,
+          "references": {"image": {"max": 1}},
+          "output": {
+            "durations": {"integer": false},
+            "aspect_ratios": ["16:9", "9:16"],
+            "resolutions": [{"name": "720p", "short_edge": 720}, {"name": "1080p", "short_edge": 1080}],
+            "audio": "always",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "lyria-3.5",

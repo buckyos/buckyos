@@ -111,9 +111,8 @@ impl ProtocolOutput {
             }
             ApiType::AudioMusic => validate!(buckyos_api::AudioMusicResponse),
             ApiType::AudioEnhance => validate!(buckyos_api::AudioEnhanceResponse),
-            ApiType::VideoTextToVideo => validate!(buckyos_api::VideoTextToVideoResponse),
-            ApiType::VideoImageToVideo => validate!(buckyos_api::VideoImageToVideoResponse),
-            ApiType::VideoToVideo => validate!(buckyos_api::VideoToVideoResponse),
+            ApiType::VideoGenerate => validate!(buckyos_api::VideoGenerateResponse),
+            ApiType::VideoEdit => validate!(buckyos_api::VideoEditResponse),
             ApiType::VideoExtend => validate!(buckyos_api::VideoExtendResponse),
             ApiType::VideoUpscale => validate!(buckyos_api::VideoUpscaleResponse),
             ApiType::AgentComputerUse => validate!(buckyos_api::ComputerUseResponse),

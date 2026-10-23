@@ -128,58 +128,352 @@
     {
       "id": "doubao-seedance-2.0",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "audio_requires_visual": true
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [
+              {"name": "480p", "short_edge": 480},
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080},
+              {"name": "4k", "short_edge": 2160}
+            ],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2.0-fast",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "audio_requires_visual": true
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [{"name": "480p", "short_edge": 480}, {"name": "720p", "short_edge": 720}],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2.0-mini",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "audio_requires_visual": true
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [{"name": "480p", "short_edge": 480}, {"name": "720p", "short_edge": 720}],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2.5",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend", "video.edit"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}",
+        "video.edit.doubao",
+        "video.edit.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 30},
+            "video": {
+              "max": 10,
+              "min_seconds": 2,
+              "max_seconds": 30,
+              "max_total_seconds": 30,
+              "include_audio": true
+            },
+            "audio": {"max": 10, "min_seconds": 2, "max_seconds": 30, "max_total_seconds": 30},
+            "audio_requires_visual": false
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 30, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [
+              {"name": "480p", "short_edge": 480},
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080}
+            ],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4", "video/quicktime"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2-0-260128",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "audio_requires_visual": true
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [
+              {"name": "480p", "short_edge": 480},
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080},
+              {"name": "4k", "short_edge": 2160}
+            ],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2-0-fast-260128",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "audio_requires_visual": true
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [{"name": "480p", "short_edge": 480}, {"name": "720p", "short_edge": 720}],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2-0-mini-260615",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 9},
+            "video": {
+              "max": 3,
+              "min_seconds": 2,
+              "max_seconds": 15,
+              "max_total_seconds": 15,
+              "include_audio": true
+            },
+            "audio": {"max": 3, "min_seconds": 2, "max_seconds": 15, "max_total_seconds": 15},
+            "audio_requires_visual": true
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 15, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [{"name": "480p", "short_edge": 480}, {"name": "720p", "short_edge": 720}],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seedance-2-5-260628",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate", "video.extend", "video.edit"],
+      "logical_mounts": [
+        "video.generate.seedance",
+        "video.generate.doubao",
+        "video.generate.{model}",
+        "video.extend.doubao",
+        "video.extend.{model}",
+        "video.edit.doubao",
+        "video.edit.{model}"
+      ],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "references": {
+            "image": {"max": 30},
+            "video": {
+              "max": 10,
+              "min_seconds": 2,
+              "max_seconds": 30,
+              "max_total_seconds": 30,
+              "include_audio": true
+            },
+            "audio": {"max": 10, "min_seconds": 2, "max_seconds": 30, "max_total_seconds": 30},
+            "audio_requires_visual": false
+          },
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 4, "max": 30, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [
+              {"name": "480p", "short_edge": 480},
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080}
+            ],
+            "fps": [24],
+            "audio": "optional",
+            "media_types": ["video/mp4", "video/quicktime"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-embedding-vision",
@@ -226,9 +520,29 @@
     {
       "id": "doubao-seedance-1.0-pro-fast",
       "parameter_scale": "video",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}"],
-      "capabilities": {}
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.seedance", "video.generate.doubao", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "prompt_tokens": "seedance",
+          "seed": true,
+          "keyframes": {"positions": ["start"]},
+          "image_limits": {"min_edge": 300, "max_edge": 6000, "min_aspect": 0.4, "max_aspect": 2.5},
+          "output": {
+            "durations": {"min": 2, "max": 12, "integer": true},
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "resolutions": [
+              {"name": "480p", "short_edge": 480},
+              {"name": "720p", "short_edge": 720},
+              {"name": "1080p", "short_edge": 1080}
+            ],
+            "fps": [24],
+            "audio": "never",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "doubao-seed-tts-2.0",

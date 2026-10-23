@@ -1,0 +1,85 @@
+{
+  "prompt_cases": [
+    {"prompt": "@{hero} runs", "segments": [{"reference": "hero"}, {"text": " runs"}]},
+    {"prompt": "mail a@b.com about @{door_2}", "segments": [{"text": "mail a@b.com about "}, {"reference": "door_2"}]},
+    {"prompt": "literal @@{hero} and @@", "segments": [{"text": "literal @{hero} and @"}]},
+    {"prompt": "trailing @", "segments": [{"text": "trailing @"}]},
+    {"prompt": "@{a}@{B-c}", "segments": [{"reference": "a"}, {"reference": "B-c"}]},
+    {"prompt": "open @{hero", "error": true},
+    {"prompt": "bad @{1hero}", "error": true},
+    {"prompt": "empty @{}", "error": true},
+    {"prompt": "space @{he ro}", "error": true}
+  ],
+  "requests": [
+    {
+      "name": "text only",
+      "valid": true,
+      "request": {"exact_model": "m@p", "prompt": "a fox"},
+      "requirement": {"prompt": true}
+    },
+    {
+      "name": "keyframes and output",
+      "valid": true,
+      "request": {
+        "exact_model": "m@p",
+        "prompt": "from @{first} to @{last}",
+        "conditions": [
+          {"type": "keyframe", "id": "first", "position": "start", "resource": {"kind": "url", "url": "https://example.com/a.png"}},
+          {"type": "keyframe", "id": "last", "position": "end", "resource": {"kind": "url", "url": "https://example.com/b.png"}}
+        ],
+        "output": {"duration_seconds": 6, "aspect_ratio": "16:9", "size": {"width": 1280, "height": 720}, "audio": "none"}
+      },
+      "requirement": {
+        "prompt": true,
+        "keyframes": ["start", "end"],
+        "output": {"duration_seconds": 6, "aspect_ratio": "16:9", "size": {"width": 1280, "height": 720}, "audio": "none"}
+      }
+    },
+    {
+      "name": "references without prompt",
+      "valid": true,
+      "request": {
+        "exact_model": "m@p",
+        "conditions": [
+          {"type": "reference_image", "id": "hero", "resource": {"kind": "url", "url": "https://example.com/a.png"}},
+          {"type": "reference_video", "id": "motion", "include_audio": true, "time_range": {"start_seconds": 0, "end_seconds": 3}, "resource": {"kind": "url", "url": "https://example.com/a.mp4"}},
+          {"type": "reference_audio", "id": "voice", "resource": {"kind": "url", "url": "https://example.com/a.wav"}}
+        ],
+        "output": {"size": {"short_edge": 720}}
+      },
+      "requirement": {
+        "reference_images": 1,
+        "reference_videos": 1,
+        "reference_audios": 1,
+        "reference_video_audio": true,
+        "time_ranges": true,
+        "output": {"size": {"short_edge": 720}}
+      }
+    },
+    {"name": "empty prompt and no conditions", "valid": false, "request": {"exact_model": "m@p", "prompt": "  "}},
+    {"name": "logical model rejected", "valid": false, "request": {"exact_model": "video.generate", "prompt": "a"}},
+    {"name": "unknown top-level field", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "duration_seconds": 5}},
+    {"name": "unknown condition field", "valid": false, "request": {"exact_model": "m@p", "conditions": [{"type": "reference_image", "id": "a", "role": "first_frame", "resource": {"kind": "url", "url": "https://example.com/a.png"}}]}},
+    {"name": "include_audio on image", "valid": false, "request": {"exact_model": "m@p", "conditions": [{"type": "reference_image", "id": "a", "include_audio": true, "resource": {"kind": "url", "url": "https://example.com/a.png"}}]}},
+    {"name": "time_range on keyframe", "valid": false, "request": {"exact_model": "m@p", "conditions": [{"type": "keyframe", "id": "a", "position": "start", "time_range": {"start_seconds": 0, "end_seconds": 1}, "resource": {"kind": "url", "url": "https://example.com/a.png"}}]}},
+    {"name": "duplicate id ignoring case", "valid": false, "request": {"exact_model": "m@p", "conditions": [
+      {"type": "reference_image", "id": "hero", "resource": {"kind": "url", "url": "https://example.com/a.png"}},
+      {"type": "reference_image", "id": "HERO", "resource": {"kind": "url", "url": "https://example.com/b.png"}}
+    ]}},
+    {"name": "invalid id", "valid": false, "request": {"exact_model": "m@p", "conditions": [{"type": "reference_image", "id": "1a", "resource": {"kind": "url", "url": "https://example.com/a.png"}}]}},
+    {"name": "dangling reference", "valid": false, "request": {"exact_model": "m@p", "prompt": "@{ghost} walks"}},
+    {"name": "reference is case-sensitive", "valid": false, "request": {"exact_model": "m@p", "prompt": "@{Hero}", "conditions": [{"type": "reference_image", "id": "hero", "resource": {"kind": "url", "url": "https://example.com/a.png"}}]}},
+    {"name": "duplicate keyframe position", "valid": false, "request": {"exact_model": "m@p", "conditions": [
+      {"type": "keyframe", "id": "a", "position": "start", "resource": {"kind": "url", "url": "https://example.com/a.png"}},
+      {"type": "keyframe", "id": "b", "position": "start", "resource": {"kind": "url", "url": "https://example.com/b.png"}}
+    ]}},
+    {"name": "inverted time range", "valid": false, "request": {"exact_model": "m@p", "conditions": [{"type": "reference_audio", "id": "a", "time_range": {"start_seconds": 3, "end_seconds": 1}, "resource": {"kind": "url", "url": "https://example.com/a.wav"}}]}},
+    {"name": "both size forms", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "output": {"size": {"short_edge": 720, "width": 1280}}}},
+    {"name": "size conflicts with ratio", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "output": {"aspect_ratio": "9:16", "size": {"width": 1280, "height": 720}}}},
+    {"name": "adaptive ratio rejected", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "output": {"aspect_ratio": "adaptive"}}},
+    {"name": "zero duration", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "output": {"duration_seconds": 0}}},
+    {"name": "unknown audio mode", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "output": {"audio": "silent"}}},
+    {"name": "non-video media type", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "output": {"media_type": "image/png"}}},
+    {"name": "blank negative prompt", "valid": false, "request": {"exact_model": "m@p", "prompt": "a", "negative_prompt": " "}}
+  ]
+}

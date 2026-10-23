@@ -378,23 +378,30 @@ impl ProviderRuntimeManager {
             .profiles
             .get(&draft.provider_profile_id)
             .cloned()
-            .ok_or_else(|| ProviderDraftValidationError {
-                stage: ProviderDraftValidationStage::Protocol,
-                kind: ProviderRefreshFailure::UnknownDependency,
+            .ok_or_else(|| {
+                ProviderDraftValidationError::from_provider_error(
+                    ProviderDraftValidationStage::Protocol,
+                    &ProviderError::UnknownProfile(draft.provider_profile_id.clone()),
+                )
             })?;
         if profile.default_protocol_adapter_id != draft.protocol_adapter_id
             && !profile.accepts_any_adapter
         {
-            return Err(ProviderDraftValidationError {
-                stage: ProviderDraftValidationStage::Protocol,
-                kind: ProviderRefreshFailure::InvalidConfiguration,
-            });
+            return Err(ProviderDraftValidationError::from_provider_error(
+                ProviderDraftValidationStage::Protocol,
+                &ProviderError::InvalidConfiguration(format!(
+                    "provider profile `{}` requires adapter `{}`, got `{}`",
+                    profile.provider_profile_id,
+                    profile.default_protocol_adapter_id,
+                    draft.protocol_adapter_id
+                )),
+            ));
         }
         if self.codecs.adapter(&draft.protocol_adapter_id).is_none() {
-            return Err(ProviderDraftValidationError {
-                stage: ProviderDraftValidationStage::Protocol,
-                kind: ProviderRefreshFailure::UnknownDependency,
-            });
+            return Err(ProviderDraftValidationError::from_provider_error(
+                ProviderDraftValidationStage::Protocol,
+                &ProviderError::UnknownAdapter(draft.protocol_adapter_id.clone()),
+            ));
         }
         let connection = connection_contract
             .resolve(ProviderConnectionInput {
@@ -418,12 +425,12 @@ impl ProviderRuntimeManager {
         })?;
         let profile = Arc::new(
             if profile.accepts_any_adapter {
-                let adapter = self.codecs.adapter(&draft.protocol_adapter_id).ok_or(
-                    ProviderDraftValidationError {
-                        stage: ProviderDraftValidationStage::Protocol,
-                        kind: ProviderRefreshFailure::UnknownDependency,
-                    },
-                )?;
+                let adapter = self.codecs.adapter(&draft.protocol_adapter_id).ok_or_else(|| {
+                    ProviderDraftValidationError::from_provider_error(
+                        ProviderDraftValidationStage::Protocol,
+                        &ProviderError::UnknownAdapter(draft.protocol_adapter_id.clone()),
+                    )
+                })?;
                 crate::provider::builtin::custom_profile_for_adapter(
                     profile.as_ref(),
                     adapter,
@@ -466,12 +473,14 @@ impl ProviderRuntimeManager {
                 (reference, credential)
             }
             ProviderAuthConfig::DynamicLogin { .. } => {
-                let user_name = draft.dynamic_login_user_name.as_deref().ok_or(
-                    ProviderDraftValidationError {
-                        stage: ProviderDraftValidationStage::Authentication,
-                        kind: ProviderRefreshFailure::InvalidConfiguration,
-                    },
-                )?;
+                let user_name = draft.dynamic_login_user_name.as_deref().ok_or_else(|| {
+                    ProviderDraftValidationError::from_provider_error(
+                        ProviderDraftValidationStage::Authentication,
+                        &ProviderError::InvalidConfiguration(
+                            "dynamic login requires a user name".into(),
+                        ),
+                    )
+                })?;
                 let context = draft
                     .auth
                     .dynamic_login_context(&draft.provider_instance_name, user_name)
@@ -484,6 +493,7 @@ impl ProviderRuntimeManager {
                 let resolver = dynamic_login_resolver.ok_or(ProviderDraftValidationError {
                     stage: ProviderDraftValidationStage::Authentication,
                     kind: ProviderRefreshFailure::UnknownDependency,
+                    message: "dynamic login credential resolver is unavailable".into(),
                 })?;
                 let credential = resolver.resolve_dynamic(&context).await.map_err(|error| {
                     ProviderDraftValidationError::from_provider_error(

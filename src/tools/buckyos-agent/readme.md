@@ -97,10 +97,18 @@ deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
 `gen_image` / `edit_image` / `inpaint_image` / `upscale_image` / `remove_bg`
 `ocr_image` / `caption_image` / `detect_image` / `segment_image`
 `text_to_speech` / `speech_to_text` / `gen_music` / `enhance_audio`
-`gen_video` / `img2video` / `video2video` / `extend_video` / `upscale_video`
+`gen_video` / `edit_video` / `extend_video` / `upscale_video`
 `ai_provider list|health` / `ai_quota` / `materialize_resource`
 
 每个命令的 `--help` 列出参数。
+
+`gen_video` 对应统一的 `video.generate`（协议见 `doc/aicc/video_generation.md`）：文本、首尾帧
+（`--first-frame/--last-frame`）、参考图/视频/音频（可重复的 `--ref-image/--ref-video/--ref-audio <id>=<素材>`，
+`--clip`、`--with-audio` 细化参考片段）都是同一请求的 `conditions`，提示词用 `@{id}` 引用素材；输出规格
+（`--duration/--aspect/--short-edge|--size/--fps/--audio/--format`）进入 `output`。逻辑模型走
+`helper.video_generate`，由 AICC 按实测素材选模；模型不支持的条件或规格直接报错，不会被丢弃。
+`edit_video` 对应 `video.edit`。视频结果解析 `videos[]`，多于一个视频时报错而不是截断，
+`detail.video` 带 Provider 声明值、AICC 实测值和偏差。
 
 ### 输出协议
 

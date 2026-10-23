@@ -281,6 +281,7 @@ fn catalog_model(provider_model_id: String) -> DiscoveredModel {
         availability: ModelAvailability::Available,
         deprecated: false,
         pricing: None,
+        video: None,
     }
 }
 
@@ -523,18 +524,11 @@ pub(super) async fn discover_volcengine_ark_models(
                     "ImageToImage" => {
                         add_api_type(ApiType::ImageImageToImage);
                     }
-                    "TextToVideo" => {
-                        add_api_type(ApiType::VideoTextToVideo);
-                    }
-                    "ImageToVideo" => {
-                        add_api_type(ApiType::VideoImageToVideo);
-                    }
-                    "MultimodalToVideo" => {
-                        add_api_type(ApiType::VideoTextToVideo);
-                        add_api_type(ApiType::VideoImageToVideo);
+                    "TextToVideo" | "ImageToVideo" | "MultimodalToVideo" => {
+                        add_api_type(ApiType::VideoGenerate);
                     }
                     "VideoEditing" => {
-                        add_api_type(ApiType::VideoToVideo);
+                        add_api_type(ApiType::VideoEdit);
                     }
                     "VideoExtension" => {
                         add_api_type(ApiType::VideoExtend);

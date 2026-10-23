@@ -273,10 +273,10 @@ mod tests {
         let general = rules
             .patterns
             .iter()
-            .find(|rule| rule.operations.contains_key("video.txt2video"))
+            .find(|rule| rule.operations.contains_key("video.generate"))
             .unwrap();
         assert_eq!(
-            general.operations["video.txt2video"],
+            general.operations["video.generate"],
             OPENAI_VIDEOS_OPERATION_ID
         );
         assert_eq!(
@@ -408,6 +408,7 @@ mod tests {
                     availability: ModelAvailability::Available,
                     deprecated: false,
                     pricing: None,
+                    video: None,
                 })
                 .collect(),
             },

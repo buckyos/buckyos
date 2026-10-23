@@ -167,7 +167,7 @@ AICC 里不存在"模型名"这一个层次，而是三层。原 PRD 把它们�
 - `image`：`image.txt2img / img2img / inpaint / upscale / bg_remove`
 - `vision`：`vision.ocr / caption / detect / segment`（结构化输出；要自由文本走 `llm.chat` 传 image block）
 - `audio`：`audio.tts / asr / music / enhance`
-- `video`：`video.txt2video / img2video / video2video / extend / upscale`
+- `video`：`video.generate / edit / extend / upscale`（文本、首尾帧、参考素材都由 `video.generate` 承载）
 - `agent`：`agent.computer_use`（占位，高速演进中）
 
 **对 UI 的影响**：用量分类（原 PRD 的 text/image/audio/video 四桶）要换成这套 namespace，否则 embedding/rerank/vision/ocr 无处归类。
@@ -509,7 +509,7 @@ Home / Usage 是 AI Center 的默认首页，也是用户感知价值最高的�
 - `image`（txt2img / img2img / inpaint / upscale / bg_remove）
 - `vision`（ocr / caption / detect / segment）
 - `audio`（tts / asr / music / enhance）
-- `video`（txt2video / img2video / ...）
+- `video`（generate / edit / extend / upscale）
 - `agent`（computer_use，预留）
 
 说明：

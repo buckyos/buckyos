@@ -139,7 +139,7 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 | Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` | `images.generate`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
 | Vision | `vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` | 同名 typed method |
 | Audio | `audio.tts`、`audio.asr`、`audio.music`、`audio.enhance` | 同名 typed method |
-| Video | `video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale` | 同名 typed method |
+| Video | `video.generate`、`video.edit`、`video.extend`、`video.upscale` | 同名 typed method；`video.generate` 另有 Helper `helper.video_generate` |
 | Agent | `agent.computer_use` | `agent.computer_use` |
 
 method 与 api_type 是不同值域，上表描述显式合法关联，不要求名称相同或 1:1。`route.resolve` 可以接受多个 api_type，同一个 api_type 也可以出现在 route、typed inference 和 Helper 调用形态中。Runner 必须分别从当前协议/schema 枚举 canonical method 和 api_type，并与本清单和 case manifest 校验各自值域及关联；不得检查字符串相等或双射。新增、删除、改名或关联变化如果没有同步更新需求清单、官方能力映射和测试用例，preflight 必须失败。
@@ -588,11 +588,10 @@ T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排�
 - `audio.asr`：语音音频到文本、时间戳和 speaker 信息，后两项按官方能力判定。
 - `audio.music`：文本或参考音频到音乐音频。
 - `audio.enhance`：音频到降噪、分离、修复或增强后的音频，具体 operation 按官方能力判定；同 Provider/model 支持时可使用 `audio.tts` 前置生成物作为输入。
-- `video.txt2video`：文本到视频。
-- `video.img2video`：图片加文本到视频；同 Provider/model 支持时可使用 `image.txt2img` 前置生成物作为输入。
-- `video.video2video`：视频加文本或控制参数到视频；同 Provider/model 支持时优先使用 `video.txt2video` 前置生成物作为输入。
-- `video.extend`：可续作视频及其 Provider/source operation 状态到延长视频；同 Provider/model 支持时必须使用 `video.txt2video` 前置生成物或其可审计 continuation source。
-- `video.upscale`：视频到高分辨率视频；同 Provider/model 支持时可使用 `video.txt2video` 前置生成物作为输入。
+- `video.generate`：文本到视频；模型不支持纯文本时使用其合同允许的最小条件（如首帧），同 Provider/model 支持时可使用 `image.txt2img` 前置生成物作为关键帧或参考图。首帧、首尾帧和参考素材的组合与限制由 T1.5 按模型合同覆盖（见 [video_generation.md](video_generation.md)）。
+- `video.edit`：源视频加编辑指令到视频；同 Provider/model 支持时优先使用 `video.generate` 前置生成物作为输入。
+- `video.extend`：可续作视频及其 Provider/source operation 状态到延长视频；同 Provider/model 支持时必须使用 `video.generate` 前置生成物或其可审计 continuation source。
+- `video.upscale`：视频到高分辨率视频；同 Provider/model 支持时可使用 `video.generate` 前置生成物作为输入。
 - `agent.computer_use`：最小受控环境中的单个可验证动作；只有正式启用时才执行。
 - 新增 canonical API 必须定义一个最小正确性用例后再进入 T2 baseline。
 

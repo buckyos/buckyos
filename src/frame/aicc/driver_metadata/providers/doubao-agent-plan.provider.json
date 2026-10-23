@@ -29,15 +29,15 @@
     "doubao-embedding-vision",
     "doubao-seed-tts-2.0"
   ],
-  "supplemental_inventory_api_types": ["audio.tts", "embedding.multimodal", "image.txt2img", "image.img2img", "video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+  "supplemental_inventory_api_types": ["audio.tts", "embedding.multimodal", "image.txt2img", "image.img2img", "video.generate", "video.edit", "video.extend"],
   "models": [
     {"id": "doubao-seedream-5.0-lite", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
     {"id": "doubao-seedream-5-0-pro", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"id": "doubao-seedance-2.0", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.0-fast", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.0-mini", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2.5", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
-      {"when": {"api_type": "video.video2video", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
+    {"id": "doubao-seedance-2.0", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2.0-fast", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2.0-mini", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2.5", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
+      {"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
       {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
     ]},
     {"id": "doubao-embedding-vision", "operations": {"embedding.multimodal": "ark.embeddings.multimodal"}},
@@ -50,7 +50,7 @@
     },
     {
       "match": "doubao-seedance-*",
-      "operations": { "video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate" }
+      "operations": { "video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate" }
     },
     {
       "match": "doubao-seed-*",

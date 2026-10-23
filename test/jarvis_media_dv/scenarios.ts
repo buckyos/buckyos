@@ -477,7 +477,7 @@ export const SCENARIOS: Scenario[] = [
     id: "image_to_video",
     suite: "smoke",
     title: "图生视频、长任务与中文终态",
-    purpose: "验证 img2video 超过普通 shell 时限后仍能交付视频，终态沿用中文。",
+    purpose: "验证以图片为首帧的 gen_video 超过普通 shell 时限后仍能交付视频，终态沿用中文。",
     requiredAssets: ["image_primary"],
     steps: [
       {

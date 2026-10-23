@@ -5,8 +5,8 @@ mod validation;
 pub(crate) use schema::{
     family_segment, CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile,
     KnownProvider, KnownProviderCatalog, LlmModel, ModelDriverCatalog, ModelIdentity,
-    ModelMatchFailure, ModelPricingRule, ModelSemantics, ModelStability, Pricing, PricingTierStep,
-    PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday, ProviderCredentialDescriptor,
+    ModelMatchFailure, ModelPricingRule, ModelSemantics, ModelStability, Pricing, PricingAddon,
+    PricingRule, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday, ProviderCredentialDescriptor,
     ProviderCredentialKind, ProviderExactRule, ProviderFieldMode, ProviderFieldSchema,
     ProviderModelAccess, ProviderModelMatch, ProviderPatternRule, ProviderRuleAction,
     ProviderRulesCatalog, ProviderVariantRule, RequestRule, ResolvedModelSemantics,

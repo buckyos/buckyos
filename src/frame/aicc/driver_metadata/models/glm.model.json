@@ -268,44 +268,119 @@
     },
     {
       "id": "cogvideox-3",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "keyframes": {"positions": ["start", "end"]},
+          "output": {
+            "durations": {"values": [5, 10]},
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "sizes": ["1280x720", "720x1280", "1024x1024", "1920x1080", "1080x1920", "3840x2160"],
+            "fps": [30, 60],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "cogvideox-flash",
       "parameter_scale": "flash",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": true,
+          "keyframes": {"positions": ["start"]},
+          "output": {
+            "durations": {"values": [5, 10]},
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "sizes": ["1280x720", "720x1280", "1024x1024", "1920x1080", "1080x1920"],
+            "fps": [30, 60],
+            "audio": "optional",
+            "media_types": ["video/mp4"]
+          }
+        }
+      }
     },
     {
       "id": "viduq1-text",
-      "api_types": ["video.txt2video"],
-      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "text_to_video": true,
+          "output": {"audio": "unknown", "media_types": ["video/mp4"]}
+        }
+      }
     },
     {
       "id": "viduq1-image",
-      "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.vidu", "video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "text_to_video": false,
+          "keyframes": {"positions": ["start"]},
+          "output": {"audio": "unknown", "media_types": ["video/mp4"]}
+        }
+      }
     },
     {
       "id": "viduq1-start-end",
-      "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.vidu", "video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "text_to_video": false,
+          "keyframes": {"positions": ["start", "end"], "require_all": true},
+          "output": {"audio": "unknown", "media_types": ["video/mp4"]}
+        }
+      }
     },
     {
       "id": "vidu2-image",
-      "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.vidu", "video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "text_to_video": false,
+          "keyframes": {"positions": ["start"]},
+          "output": {"audio": "unknown", "media_types": ["video/mp4"]}
+        }
+      }
     },
     {
       "id": "vidu2-start-end",
-      "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.vidu", "video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "text_to_video": false,
+          "keyframes": {"positions": ["start", "end"], "require_all": true},
+          "output": {"audio": "unknown", "media_types": ["video/mp4"]}
+        }
+      }
     },
     {
       "id": "vidu2-reference",
-      "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
+      "api_types": ["video.generate"],
+      "logical_mounts": ["video.generate.vidu", "video.generate.glm", "video.generate.{model}"],
+      "capabilities": {
+        "video_generation": {
+          "prompt_required": false,
+          "text_to_video": false,
+          "references": {"image": {"max": 3}},
+          "output": {"audio": "unknown", "media_types": ["video/mp4"]}
+        }
+      }
     },
     {
       "id": "glm-5.1",

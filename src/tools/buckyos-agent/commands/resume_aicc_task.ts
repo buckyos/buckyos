@@ -160,6 +160,7 @@ export async function run(argv: string[]): Promise<never> {
     mime: artifactMime(a),
     kind: a.resource.kind,
     obj_id: a.resource.kind === "named_object" ? a.resource.obj_id : null,
+    metadata: a.metadata ?? null,
   }));
   const summary = files.length
     ? `${TOOL} wrote ${files.map((f) => f.path).join(", ")}`

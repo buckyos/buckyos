@@ -39,6 +39,7 @@ async fn done_without_tool_calls() {
             image_units: Some(2),
             audio_seconds: Some(1.5),
             video_seconds: Some(2.5),
+            reference_images: None,
             request_units: Some(1),
             characters: None,
             audio_input_tokens: None,

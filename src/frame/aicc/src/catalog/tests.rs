@@ -781,6 +781,30 @@ fn removed_provider_fields_and_nested_invalid_prices_are_rejected() {
 }
 
 #[test]
+fn output_price_ratios_allow_500_and_require_explanations_above_it() {
+    for output in [205.28, 500.0, 501.0] {
+        for value in [
+            json!({"currency":"USD","input_token":1.0,"output_token":output}),
+            json!({"currency":"USD","input_token":1.0,"tiers":{"dimension":"input_tokens","steps":[{"output_token":output}]}}),
+            json!({"currency":"USD","input_token":1.0,"time_windows":[{"from":"00:00","to":"12:00","output_token":output}]}),
+            json!({"currency":"USD","input_token":1.0,"rules":[{"when":{},"amount":0.0,"output_token":output}]}),
+        ] {
+            let mut price: Pricing = serde_json::from_value(value).unwrap();
+            let result = validate_pricing("test", &price);
+            if output <= 500.0 {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("output/input token price ratio 501.00 exceeds 500"));
+                assert!(error.contains("ratio_exception"));
+                price.ratio_exception = Some("provider-reported specialized output rate".into());
+                validate_pricing("test", &price).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 fn channel_capacity_ceilings_only_narrow_existing_model_facts() {
     let rule: ProviderExactRule = serde_json::from_value(json!({
         "id":"typesafe/jev-1.13", "capability_limits":{"max_context_tokens":32000,"decision.max_input_bytes":32000,"decision.max_options":300,"decision.max_levels":10}

@@ -1,3 +1,7 @@
+use super::video::{
+    generated_video, planned_resource, require_video_parameters, unsupported, video_generate_input,
+    video_output, whole_seconds,
+};
 use super::{
     AdapterDescriptor, AdapterStatus, CodecCall, CodecRegistration, ExecutionMode, HttpBody,
     HttpRequest, HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
@@ -5,9 +9,13 @@ use super::{
     OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolExecution, ProtocolOutput,
     ProtocolResultValue,
 };
+use crate::video::VideoScenario;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef};
+use buckyos_api::{
+    AiArtifact, AiUsage, AiccCall, ApiType, KeyframePosition, ResourceRef, VideoConditionKind,
+    VideoMetadata,
+};
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
@@ -34,9 +42,8 @@ pub(super) fn doubao_media_registration() -> (Vec<OperationDescriptor>, CodecReg
     let video = OperationDescriptor {
         operation_id: DOUBAO_VIDEO_OPERATION_ID.to_owned(),
         bindings: [
-            ApiType::VideoTextToVideo,
-            ApiType::VideoImageToVideo,
-            ApiType::VideoToVideo,
+            ApiType::VideoGenerate,
+            ApiType::VideoEdit,
             ApiType::VideoExtend,
         ]
         .into_iter()
@@ -60,9 +67,8 @@ pub(super) fn doubao_media_registration() -> (Vec<OperationDescriptor>, CodecReg
         }) as Arc<dyn OperationCodec>))
         .collect();
     let native_task_codecs = [
-        ApiType::VideoTextToVideo,
-        ApiType::VideoImageToVideo,
-        ApiType::VideoToVideo,
+        ApiType::VideoGenerate,
+        ApiType::VideoEdit,
         ApiType::VideoExtend,
     ]
     .into_iter()
@@ -447,49 +453,123 @@ fn encode_video_submit(
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("Doubao video submit requires canonical input")
     })?;
-    require_video_parameters(input.resolved_parameters)?;
+    require_video_parameters(
+        input.resolved_parameters,
+        "Doubao",
+        &["omni_reference_task_type"],
+    )?;
+    let configured_task_type = input
+        .resolved_parameters
+        .get("omni_reference_task_type")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| matches!(*value, "edit" | "extend"))
+                .ok_or_else(|| {
+                    ProtocolError::invalid_configuration(
+                        "Doubao omni_reference_task_type must be `edit` or `extend`",
+                    )
+                })
+        })
+        .transpose()?;
     let model = provider_model_id(input.resolved_parameters)?;
     let mut content = Vec::new();
-    let mut parameters = Map::new();
+    let mut body = Map::from_iter([("model".to_owned(), json!(model))]);
     match (&codec_input.canonical_request, api_type) {
-        (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
-            content.push(json!({"type":"text","text":request.prompt}));
-            video_options(
-                &mut parameters,
-                request.duration_seconds,
-                request.aspect_ratio.as_deref(),
-                request.resolution.as_deref(),
-                request.seed,
-                request.generate_audio,
-            )?;
+        (AiccCall::VideoGenerate(_), ApiType::VideoGenerate) => {
+            let (request, plan) = video_generate_input(codec_input)?;
+            if plan.negative_prompt.is_some() || plan.size.is_some() {
+                return Err(unsupported(
+                    "Seedance has no negative prompt or exact output size",
+                ));
+            }
+            if let Some(prompt) = plan
+                .submitted_prompt
+                .as_ref()
+                .filter(|prompt| !prompt.trim().is_empty())
+            {
+                content.push(json!({"type":"text","text":prompt}));
+            }
+            for planned in &plan.inputs {
+                let url = resource_string(planned_resource(request, planned)?, input.context)?;
+                content.push(match (planned.kind, planned.position) {
+                    (VideoConditionKind::Keyframe, Some(KeyframePosition::Start)) => {
+                        json!({"type":"image_url","image_url":{"url":url},"role":"first_frame"})
+                    }
+                    (VideoConditionKind::Keyframe, _) => {
+                        json!({"type":"image_url","image_url":{"url":url},"role":"last_frame"})
+                    }
+                    (VideoConditionKind::ReferenceImage, _) => {
+                        json!({"type":"image_url","image_url":{"url":url},"role":"reference_image"})
+                    }
+                    (VideoConditionKind::ReferenceVideo, _) => {
+                        json!({"type":"video_url","video_url":{"url":url},"role":"reference_video"})
+                    }
+                    (VideoConditionKind::ReferenceAudio, _) => {
+                        json!({"type":"audio_url","audio_url":{"url":url},"role":"reference_audio"})
+                    }
+                });
+            }
+            if let Some(duration) = whole_seconds(&plan)? {
+                body.insert("duration".to_owned(), json!(duration));
+            }
+            if let Some(ratio) = &plan.aspect_ratio {
+                body.insert("ratio".to_owned(), json!(ratio));
+            }
+            if let Some(resolution) = &plan.resolution {
+                body.insert("resolution".to_owned(), json!(resolution));
+            }
+            if let Some(seed) = plan.seed {
+                body.insert("seed".to_owned(), json!(seed));
+            }
+            if let Some(generate_audio) = plan.generate_audio {
+                body.insert("generate_audio".to_owned(), json!(generate_audio));
+            }
+            if plan.media_type.as_deref() == Some("video/quicktime") {
+                body.insert("output_format".to_owned(), json!("mov"));
+            }
+            // `auto` lets the model reinterpret references as an edit or an
+            // extension; a generation request must stay a generation.
+            if plan.scenario == VideoScenario::References {
+                body.insert("omni_reference_task_type".to_owned(), json!("reference"));
+            }
         }
-        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
-            content.push(json!({"type":"text","text":request.prompt}));
-            content.push(json!({"type":"image_url","image_url":{"url":resource_string(&request.image, input.context)?},"role":"first_frame"}));
-            video_options(
-                &mut parameters,
-                request.duration_seconds,
-                request.aspect_ratio.as_deref(),
-                request.resolution.as_deref(),
-                None,
-                None,
-            )?;
-        }
-        (AiccCall::VideoToVideo(request), ApiType::VideoToVideo) => {
+        (AiccCall::VideoEdit(request), ApiType::VideoEdit) => {
+            if configured_task_type != Some("edit") {
+                return Err(unsupported(
+                    "this Seedance model declares no video edit task type",
+                ));
+            }
+            if request
+                .output
+                .as_ref()
+                .is_some_and(|output| !output.is_empty())
+            {
+                return Err(unsupported(
+                    "Seedance video edit keeps the source duration and ratio; output options are not accepted",
+                ));
+            }
             content.push(json!({"type":"text","text":request.prompt}));
             content.push(json!({"type":"video_url","video_url":{"url":resource_string(&request.video, input.context)?},"role":"reference_video"}));
+            body.insert("ratio".to_owned(), json!("adaptive"));
+            body.insert("duration".to_owned(), json!(-1));
+            body.insert("omni_reference_task_type".to_owned(), json!("edit"));
         }
         (AiccCall::VideoExtend(request), ApiType::VideoExtend) => {
             content.push(json!({"type":"text","text":request.prompt}));
             content.push(json!({"type":"video_url","video_url":{"url":resource_string(&request.video, input.context)?},"role":"reference_video"}));
-            video_options(
-                &mut parameters,
-                request.duration_seconds,
-                None,
-                request.resolution.as_deref(),
-                None,
-                None,
-            )?;
+            if let Some(duration) = request.duration_seconds {
+                body.insert(
+                    "duration".to_owned(),
+                    json!(super::adapter::integer_seconds(duration)?),
+                );
+            }
+            if let Some(resolution) = &request.resolution {
+                body.insert("resolution".to_owned(), json!(resolution));
+            }
+            if let Some(task_type) = configured_task_type {
+                body.insert("omni_reference_task_type".to_owned(), json!(task_type));
+            }
         }
         _ => {
             return Err(ProtocolError::invalid_request(
@@ -497,53 +577,13 @@ fn encode_video_submit(
             ))
         }
     }
-    let mut body = Map::from_iter([
-        ("model".to_owned(), json!(model)),
-        ("content".to_owned(), Value::Array(content)),
-    ]);
-    body.extend(parameters);
-    if let Some(task_type) = input
-        .resolved_parameters
-        .get("omni_reference_task_type")
-        .and_then(Value::as_str)
-    {
-        body.insert("omni_reference_task_type".to_owned(), json!(task_type));
-    }
+    body.insert("content".to_owned(), Value::Array(content));
     json_request(
         input.context,
         Method::POST,
         "contents/generations/tasks",
         Some(Value::Object(body)),
     )
-}
-
-fn video_options(
-    body: &mut Map<String, Value>,
-    duration: Option<f64>,
-    ratio: Option<&str>,
-    resolution: Option<&str>,
-    seed: Option<u64>,
-    audio: Option<bool>,
-) -> ProtocolResultValue<()> {
-    if let Some(value) = duration {
-        body.insert(
-            "duration".to_owned(),
-            json!(super::adapter::integer_seconds(value)?),
-        );
-    }
-    if let Some(value) = ratio {
-        body.insert("ratio".to_owned(), json!(value));
-    }
-    if let Some(value) = resolution {
-        body.insert("resolution".to_owned(), json!(value));
-    }
-    if let Some(value) = seed {
-        body.insert("seed".to_owned(), json!(value));
-    }
-    if let Some(value) = audio {
-        body.insert("generate_audio".to_owned(), json!(value));
-    }
-    Ok(())
 }
 
 fn seedream_size(ratio: &str) -> Option<&'static str> {
@@ -659,10 +699,35 @@ fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
         .ok_or_else(|| {
             ProtocolError::invalid_response("Doubao video result is missing video_url")
         })?;
-    let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
-    Ok(NativeTaskOutput::Result(ProtocolOutput {
-        value: json!({"video":resource}),
-        usage: Some(AiUsage {
+    let media_type = match value.get("output_format").and_then(Value::as_str) {
+        Some("mov") => "video/quicktime",
+        _ => "video/mp4",
+    };
+    let fps = value.get("framespersecond").and_then(Value::as_f64);
+    // `duration` is the frame count divided by the rate, rounded down; the
+    // frame count gives the real length.
+    let seconds = match (value.get("frames").and_then(Value::as_f64), fps) {
+        (Some(frames), Some(fps)) if fps > 0.0 => Some(frames / fps),
+        _ => value.get("duration").and_then(Value::as_f64),
+    };
+    let mut video = generated_video(
+        ResourceRef::url(url.to_owned(), Some(media_type.to_owned())),
+        Some(media_type.to_owned()),
+        VideoMetadata {
+            duration_seconds: seconds,
+            fps,
+            has_audio: value.get("generate_audio").and_then(Value::as_bool),
+            ..Default::default()
+        },
+    );
+    video.last_frame = value
+        .pointer("/content/last_frame_url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(|url| ResourceRef::url(url.to_owned(), None));
+    Ok(NativeTaskOutput::Result(video_output(
+        vec![video],
+        AiUsage {
             input_tokens: value
                 .pointer("/usage/prompt_tokens")
                 .and_then(Value::as_u64)
@@ -671,16 +736,10 @@ fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
                 .pointer("/usage/completion_tokens")
                 .and_then(Value::as_u64),
             total_tokens: value.pointer("/usage/total_tokens").and_then(Value::as_u64),
-            video_seconds: value.get("duration").and_then(Value::as_f64),
+            video_seconds: seconds,
             ..AiUsage::request_units(1)
-        }),
-        artifacts: vec![AiArtifact {
-            name: "video".to_owned(),
-            resource,
-            mime: Some("video/mp4".to_owned()),
-            metadata: None,
-        }],
-    }))
+        },
+    )?))
 }
 
 fn decode_state(status: &str) -> ProtocolResultValue<NativeTaskState> {
@@ -746,23 +805,6 @@ fn require_only_model(parameters: &BTreeMap<String, Value>) -> ProtocolResultVal
     {
         return Err(ProtocolError::invalid_request(format!(
             "resolved Doubao media parameter `{name}` is not supported"
-        )));
-    }
-    Ok(())
-}
-
-fn require_video_parameters(parameters: &BTreeMap<String, Value>) -> ProtocolResultValue<()> {
-    for (name, value) in parameters {
-        if name == "provider_model_id" {
-            continue;
-        }
-        if name == "omni_reference_task_type"
-            && matches!(value.as_str(), Some("reference" | "edit" | "extend"))
-        {
-            continue;
-        }
-        return Err(ProtocolError::invalid_request(format!(
-            "resolved Doubao video parameter `{name}` is not supported"
         )));
     }
     Ok(())
@@ -858,10 +900,51 @@ mod tests {
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
     };
+    use crate::video::test_support::{clip_facts, model_contract, plan_parameters};
+    use crate::video::VideoMaterialFacts;
     use buckyos_api::{
-        ProviderStateCoordinate, ResourceRef, TextToImageInvokeRequest, VideoExtendRequest,
-        VideoTextToVideoRequest,
+        ProviderStateCoordinate, ResourceRef, TextToImageInvokeRequest, VideoAudioMode,
+        VideoCondition, VideoEditRequest, VideoExtendRequest, VideoGenerateRequest,
+        VideoOutputSpec, VideoSize,
     };
+
+    fn seedance_submit(
+        model: &str,
+        request: VideoGenerateRequest,
+        facts: VideoMaterialFacts,
+    ) -> Value {
+        let (descriptor, registration) = doubao_media_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let parameters = plan_parameters(&model_contract("doubao", model), &request, &facts, model);
+        let input = CodecInput {
+            canonical_request: AiccCall::VideoGenerate(request),
+            resolved_parameters: parameters.clone(),
+        };
+        let context = context();
+        let wire = registry
+            .encode_native(
+                DOUBAO_MEDIA_ADAPTER_ID,
+                DOUBAO_VIDEO_OPERATION_ID,
+                ApiType::VideoGenerate,
+                &NativeTaskInput {
+                    operation: NativeTaskOperation::Submit,
+                    remote_task_id: None,
+                    codec_input: Some(&input),
+                    resolved_parameters: &parameters,
+                    context: &context,
+                },
+            )
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        body
+    }
+
+    fn url(name: &str) -> ResourceRef {
+        ResourceRef::url(format!("https://media.example/{name}"), None)
+    }
 
     fn context() -> CodecContext {
         CodecContext {
@@ -910,11 +993,15 @@ mod tests {
             "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations"
         );
 
+        let video_request = VideoGenerateRequest::new("seedance@doubao", Some("cat".to_owned()));
+        let parameters = plan_parameters(
+            &model_contract("doubao", "doubao-seedance-2.0"),
+            &video_request,
+            &VideoMaterialFacts::new(),
+            "doubao-seedance-2.0",
+        );
         let video = CodecInput {
-            canonical_request: AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
-                "ignored",
-                "cat".to_owned(),
-            )),
+            canonical_request: AiccCall::VideoGenerate(video_request),
             resolved_parameters: parameters.clone(),
         };
         let input = NativeTaskInput {
@@ -928,7 +1015,7 @@ mod tests {
             .encode_native(
                 DOUBAO_MEDIA_ADAPTER_ID,
                 DOUBAO_VIDEO_OPERATION_ID,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 &input,
             )
             .unwrap();
@@ -989,12 +1076,192 @@ mod tests {
     }
 
     #[test]
-    fn video_duration_is_encoded_as_an_integer() {
-        let mut body = Map::new();
-        video_options(&mut body, Some(4.0), None, None, None, None).unwrap();
-        assert_eq!(body["duration"], json!(4));
-        assert_eq!(serde_json::to_string(&body["duration"]).unwrap(), "4");
-        assert!(video_options(&mut Map::new(), Some(4.5), None, None, None, None).is_err());
+    fn seedance_maps_conditions_to_roles_tokens_and_switches() {
+        let mut keyframes =
+            VideoGenerateRequest::new("seedance@doubao", Some("@{a} 变成 @{b}".to_owned()));
+        keyframes.conditions = vec![
+            VideoCondition::Keyframe {
+                id: "a".into(),
+                resource: url("a.png"),
+                position: KeyframePosition::Start,
+            },
+            VideoCondition::Keyframe {
+                id: "b".into(),
+                resource: url("b.png"),
+                position: KeyframePosition::End,
+            },
+        ];
+        keyframes.seed = Some(42);
+        keyframes.output = Some(VideoOutputSpec {
+            duration_seconds: Some(5.0),
+            aspect_ratio: Some("9:16".into()),
+            size: Some(VideoSize::short_edge(1080)),
+            audio: Some(VideoAudioMode::None),
+            ..Default::default()
+        });
+        let body = seedance_submit("doubao-seedance-2.0", keyframes, VideoMaterialFacts::new());
+        assert_eq!(
+            body["content"][0],
+            json!({"type":"text","text":"首帧 变成 尾帧"})
+        );
+        assert_eq!(body["content"][1]["role"], "first_frame");
+        assert_eq!(body["content"][2]["role"], "last_frame");
+        assert_eq!(body["duration"], json!(5));
+        assert_eq!(body["ratio"], "9:16");
+        assert_eq!(body["resolution"], "1080p");
+        assert_eq!(body["seed"], 42);
+        assert_eq!(body["generate_audio"], false);
+        assert!(body.get("omni_reference_task_type").is_none());
+
+        let mut references = VideoGenerateRequest::new(
+            "seedance@doubao",
+            Some("@{hero} 跟着 @{motion} 的节奏，配 @{music}".to_owned()),
+        );
+        references.conditions = vec![
+            VideoCondition::ReferenceImage {
+                id: "hero".into(),
+                resource: url("hero.png"),
+            },
+            VideoCondition::ReferenceVideo {
+                id: "motion".into(),
+                resource: url("motion.mp4"),
+                time_range: None,
+                include_audio: true,
+            },
+            VideoCondition::ReferenceAudio {
+                id: "music".into(),
+                resource: url("music.mp3"),
+                time_range: None,
+            },
+        ];
+        let facts = VideoMaterialFacts::from([
+            ("motion".to_string(), clip_facts(6.0, true, true)),
+            ("music".to_string(), clip_facts(5.0, false, true)),
+        ]);
+        let body = seedance_submit("doubao-seedance-2.5", references, facts);
+        assert_eq!(
+            body["content"][0]["text"],
+            "@图像1 跟着 @视频1 的节奏，配 @音频1"
+        );
+        assert_eq!(
+            body["content"][2],
+            json!({"type":"video_url","video_url":{"url":"https://media.example/motion.mp4"},"role":"reference_video"})
+        );
+        assert_eq!(body["content"][3]["role"], "reference_audio");
+        assert_eq!(body["omni_reference_task_type"], "reference");
+        assert!(body.get("duration").is_none());
+        assert!(body.get("generate_audio").is_none());
+    }
+
+    #[test]
+    fn seedance_versions_keep_their_own_limits() {
+        let audio_only = || {
+            let mut request = VideoGenerateRequest::new("seedance@doubao", Some("配乐".to_owned()));
+            request.conditions = vec![VideoCondition::ReferenceAudio {
+                id: "music".into(),
+                resource: url("music.mp3"),
+                time_range: None,
+            }];
+            request
+        };
+        let facts = VideoMaterialFacts::from([("music".to_string(), clip_facts(5.0, false, true))]);
+        assert!(crate::video::plan_video(
+            &model_contract("doubao", "doubao-seedance-2.0"),
+            &audio_only(),
+            &facts
+        )
+        .is_err());
+        assert!(crate::video::plan_video(
+            &model_contract("doubao", "doubao-seedance-2.5"),
+            &audio_only(),
+            &facts
+        )
+        .is_ok());
+
+        let mut long = VideoGenerateRequest::new("seedance@doubao", Some("a".to_owned()));
+        long.output = Some(VideoOutputSpec {
+            duration_seconds: Some(20.0),
+            ..Default::default()
+        });
+        assert!(crate::video::plan_video(
+            &model_contract("doubao", "doubao-seedance-2.0"),
+            &long,
+            &VideoMaterialFacts::new()
+        )
+        .is_err());
+        assert!(crate::video::plan_video(
+            &model_contract("doubao", "doubao-seedance-2.5"),
+            &long,
+            &VideoMaterialFacts::new()
+        )
+        .is_ok());
+
+        let mut end_only = VideoGenerateRequest::new("seedance@doubao", Some("a".to_owned()));
+        end_only.conditions = vec![VideoCondition::Keyframe {
+            id: "b".into(),
+            resource: url("b.png"),
+            position: KeyframePosition::End,
+        }];
+        assert!(crate::video::plan_video(
+            &model_contract("doubao", "doubao-seedance-2.5"),
+            &end_only,
+            &VideoMaterialFacts::new()
+        )
+        .is_err());
+
+        let mut four_k = VideoGenerateRequest::new("seedance@doubao", Some("a".to_owned()));
+        four_k.output = Some(VideoOutputSpec {
+            size: Some(VideoSize::short_edge(2160)),
+            ..Default::default()
+        });
+        assert!(crate::video::plan_video(
+            &model_contract("doubao", "doubao-seedance-2.0-fast"),
+            &four_k,
+            &VideoMaterialFacts::new()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn seedance_edit_requires_the_declared_edit_task_type() {
+        let (descriptor, registration) = doubao_media_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let context = context();
+        let request =
+            VideoEditRequest::new("ignored", url("source.mp4"), "把天空换成黄昏".to_owned());
+        let encode = |parameters: BTreeMap<String, Value>| {
+            let input = CodecInput {
+                canonical_request: AiccCall::VideoEdit(request.clone()),
+                resolved_parameters: parameters.clone(),
+            };
+            registry.encode_native(
+                DOUBAO_MEDIA_ADAPTER_ID,
+                DOUBAO_VIDEO_OPERATION_ID,
+                ApiType::VideoEdit,
+                &NativeTaskInput {
+                    operation: NativeTaskOperation::Submit,
+                    remote_task_id: None,
+                    codec_input: Some(&input),
+                    resolved_parameters: &parameters,
+                    context: &context,
+                },
+            )
+        };
+        let model = || ("provider_model_id".to_owned(), json!("doubao-seedance-2.0"));
+        assert!(encode(BTreeMap::from([model()])).is_err());
+        let wire = encode(BTreeMap::from([
+            model(),
+            ("omni_reference_task_type".to_owned(), json!("edit")),
+        ]))
+        .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["omni_reference_task_type"], "edit");
+        assert_eq!(body["ratio"], "adaptive");
+        assert_eq!(body["duration"], -1);
+        assert_eq!(body["content"][1]["role"], "reference_video");
     }
 
     #[tokio::test]
@@ -1005,7 +1272,7 @@ mod tests {
                 .into_iter()
                 .find(|operation| operation.operation_id == DOUBAO_VIDEO_OPERATION_ID)
                 .unwrap(),
-            api_type: ApiType::VideoTextToVideo,
+            api_type: ApiType::VideoGenerate,
         };
         let response = HttpResponse {
             status: reqwest::StatusCode::OK,
@@ -1054,19 +1321,34 @@ mod tests {
         let NativeTaskOutput::Result(output) = decode_video_result(&json!({
             "id": "video-1",
             "status": "succeeded",
-            "content": {"video_url": "https://example.test/generated/video.mp4"},
+            "content": {
+                "video_url": "https://example.test/generated/video.mp4",
+                "last_frame_url": "https://example.test/generated/last.png"
+            },
+            "frames": 133,
+            "framespersecond": 24,
+            "duration": 5,
+            "generate_audio": true,
             "usage": {"completion_tokens": 120, "total_tokens": 120}
         }))
         .unwrap() else {
             panic!("expected video result")
         };
+        let video = &output.value["videos"][0];
         assert_eq!(
-            output.value["video"]["url"],
+            video["resource"]["url"],
             "https://example.test/generated/video.mp4"
         );
+        assert_eq!(
+            video["last_frame"]["url"],
+            "https://example.test/generated/last.png"
+        );
+        assert_eq!(video["provider_metadata"]["fps"], 24.0);
+        assert_eq!(video["provider_metadata"]["has_audio"], true);
         let usage = output.usage.unwrap();
         assert_eq!(usage.output_tokens, Some(120));
         assert_eq!(usage.total_tokens, Some(120));
+        assert!((usage.video_seconds.unwrap() - 133.0 / 24.0).abs() < 1e-9);
     }
 
     #[test]

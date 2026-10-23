@@ -93,6 +93,8 @@ import {
   validateProviderAuxiliaryRequest,
   validateProviderProtocolCatalog,
   validateProviderRequest,
+  type VideoScenario,
+  videoScenarioOf,
   validateProviderSuccessFixture,
 } from "./provider_protocol_contracts.ts";
 import {
@@ -179,16 +181,7 @@ function t15FieldValue(
     return [{ type: "text", text: "BUCKYOS-AICC-4827" }];
   }
   if (field === "content" && contract.async_protocol === "minimax_video_v2") {
-    return [
-      { type: "text", text: "BUCKYOS-AICC-4827" },
-      ...(apiType === "video.img2video"
-        ? [{
-          type: "image_url",
-          image_url: { url: "https://example.com/input.png" },
-          role: "first_frame",
-        }]
-        : []),
-    ];
+    return [{ type: "text", text: "BUCKYOS-AICC-4827" }];
   }
   if (field === "content") return { parts: [{ text: "BUCKYOS-AICC-4827" }] };
   if (field === "tools") return [{ type: "computer_preview" }];
@@ -969,7 +962,7 @@ test("targeted T2 inventory reconciliation keeps only requested physical models"
       {
         exact_model: "doubao-seedance-2-0-260128@doubao-main",
         provider_model_id: "doubao-seedance-2-0-260128",
-        api_types: ["video.txt2video"],
+        api_types: ["video.generate"],
         logical_mounts: [],
       },
     ],
@@ -1485,7 +1478,7 @@ test("route exposure cell snapshot rejects an API added under an existing model 
   );
   assert.deepEqual(
     qwen.rules.find((item) => item.model_pattern === "wan2.6-t2v")?.api_types,
-    ["video.txt2video"],
+    ["video.generate"],
   );
   const rule = qwen.rules.find((rule) => rule.model_pattern === "*")!;
   rule.api_types.push("vision.caption");
@@ -3010,24 +3003,20 @@ test("T2 request defaults are driven by the capability baseline cell", () => {
       provider_instance: "minimax-main",
       exact_model: "MiniMax-H3-Max@minimax-main",
       provider_model_id: "MiniMax-H3-Max",
-      api_type: "video.txt2video",
-      method: "video.txt2video",
+      api_type: "video.generate",
+      method: "video.generate",
       baseline_status: "active",
       input_kinds: ["text"],
       output_kinds: ["video"],
-      request_defaults: { duration_seconds: 5, resolution: "768p" },
+      request_defaults: { output: { duration_seconds: 5, size: { short_edge: 768 } } },
       source_urls: [],
     },
     runId: "run",
     fixtures: {},
   });
-  assert.equal(
-    ((request.payload as { input_json: Record<string, unknown> }).input_json).duration_seconds,
-    5,
-  );
-  assert.equal(
-    ((request.payload as { input_json: Record<string, unknown> }).input_json).resolution,
-    "768p",
+  assert.deepEqual(
+    ((request.payload as { input_json: Record<string, unknown> }).input_json).output,
+    { duration_seconds: 5, size: { short_edge: 768 } },
   );
 });
 
@@ -3060,13 +3049,11 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     size: "1024x1024",
     quality: "low",
   });
-  assert.deepEqual(request("video.txt2video", {
-    resolution: "480p",
-    generate_audio: false,
+  assert.deepEqual(request("video.generate", {
+    output: { size: { short_edge: 480 }, audio: "none" },
   }).input_json, {
     prompt: "A paper plane moving across a desk",
-    resolution: "480p",
-    generate_audio: false,
+    output: { size: { short_edge: 480 }, audio: "none" },
   });
   assert.deepEqual(request("audio.music").input_json, {
     prompt: "A four-second calm ambient instrumental test tone, very slow and quiet, with no vocals, no speech, no samples, no percussion, and no dance beat",
@@ -3083,22 +3070,17 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     size: "1024x1024",
     quality: "low",
   });
-  assert.deepEqual(defaults("google-gemini", "veo-3.1-*", "video.txt2video"), {
-    duration_seconds: 4,
-    resolution: "720p",
+  assert.deepEqual(defaults("google-gemini", "veo-3.1-*", "video.generate"), {
+    output: { duration_seconds: 4, size: { short_edge: 720 } },
   });
-  assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.txt2video"), {
-    duration_seconds: 4,
-    resolution: "768p",
+  assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.generate"), {
+    output: { duration_seconds: 4, size: { short_edge: 768 } },
   });
-  assert.deepEqual(defaults("minimax", "MiniMax-H3-Max", "video.txt2video"), {
-    duration_seconds: 5,
-    resolution: "768p",
+  assert.deepEqual(defaults("minimax", "MiniMax-H3-Max", "video.generate"), {
+    output: { duration_seconds: 5, size: { short_edge: 768 } },
   });
-  assert.deepEqual(defaults("doubao", "doubao-seedance-2-0-260128", "video.txt2video"), {
-    duration_seconds: 4,
-    resolution: "480p",
-    generate_audio: false,
+  assert.deepEqual(defaults("doubao", "doubao-seedance-2-0-260128", "video.generate"), {
+    output: { duration_seconds: 4, size: { short_edge: 480 }, audio: "none" },
   });
 });
 
@@ -3245,7 +3227,7 @@ test("physical model coverage excludes lifecycle and logical aliases while retai
           {
             exact_model: "sora-2@openai-default",
             provider_model_id: "sora-2",
-            api_types: ["video.txt2video"],
+            api_types: ["video.generate"],
             logical_mounts: [],
           },
           {
@@ -4233,20 +4215,12 @@ test("T1.5 shared endpoints require API-specific media fields", async () => {
   const catalog = await loadProviderProtocolCatalog();
   for (
     const [providerDriver, contractId, apiType, expectedError] of [
-      ["openai", "openai.videos.v1", "video.img2video", "missing body field input_reference"],
       [
         "minimax",
         "minimax.image-generation.v1",
         "image.img2img",
         "missing body field subject_reference",
       ],
-      [
-        "minimax",
-        "minimax.video-generation.v2",
-        "video.img2video",
-        "MiniMax image-to-video content requires a first_frame image_url block",
-      ],
-      ["glm", "glm.videos.generations.v4", "video.img2video", "missing body field image_url"],
     ] as const
   ) {
     const contract = protocolContract(catalog, providerDriver, contractId);
@@ -4272,6 +4246,75 @@ test("T1.5 shared endpoints require API-specific media fields", async () => {
       errors.includes(expectedError),
       `${contractId}/${apiType} accepted a request without its API-specific media input`,
     );
+  }
+});
+
+test("T1.5 video.generate scenarios must reach each Provider in its documented field and role", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const image = (url: string) => ({ type: "image_url", image_url: { url } });
+  const wire = (contractId: string, scenario: VideoScenario | undefined) => {
+    switch (contractId) {
+      case "minimax.video-generation.v2":
+      case "doubao.video-tasks.v3": {
+        const roles = scenario === "keyframe" ? ["first_frame"]
+          : scenario === "keyframes" ? ["first_frame", "last_frame"]
+          : scenario === "reference-images" ? ["reference_image", "reference_image"]
+          : [];
+        return { content: [{ type: "text", text: "go" }, ...roles.map((role, i) => ({ ...image(`https://media.example/${i}.png`), role }))] };
+      }
+      case "openrouter.videos.v1":
+        return {
+          prompt: "go",
+          ...(scenario === "keyframe" || scenario === "keyframes"
+            ? { frame_images: [{ ...image("https://media.example/a.png"), frame_type: "first_frame" }, ...(scenario === "keyframes" ? [{ ...image("https://media.example/b.png"), frame_type: "last_frame" }] : [])] }
+            : {}),
+          ...(scenario === "reference-images" ? { input_references: [image("https://media.example/a.png"), image("https://media.example/b.png")] } : {}),
+        };
+      case "gemini.predict-long-running.v1beta":
+        return { instances: [{ prompt: "go", ...(scenario ? { image: { uri: "https://media.example/a.png" } } : {}), ...(scenario === "keyframes" ? { lastFrame: { uri: "https://media.example/b.png" } } : {}) }] };
+      default:
+        throw new Error(contractId);
+    }
+  };
+  for (const [provider, contractId] of [
+    ["minimax", "minimax.video-generation.v2"],
+    ["doubao", "doubao.video-tasks.v3"],
+    ["openrouter", "openrouter.videos.v1"],
+    ["google-gemini", "gemini.predict-long-running.v1beta"],
+  ] as const) {
+    const contract = protocolContract(catalog, provider, contractId);
+    const headers = new Headers({ "content-type": contract.content_type });
+    headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+    const scenarios = [undefined, ...(contract.video_generate_scenarios ?? [])];
+    for (const sent of scenarios) {
+      for (const expected of scenarios) {
+        const body = {
+          ...Object.fromEntries(contract.required_body_fields.map((field) => [field, t15FieldValue(field, contract, "mock-model", "video.generate")])),
+          ...wire(contractId, sent),
+        };
+        const errors = validateProviderRequest(contract, {
+          method: contract.http_method,
+          pathname: contract.path,
+          query: new URLSearchParams(),
+          headers,
+          body,
+        }, "video.generate", expected).filter((error) => error.startsWith("video.generate"));
+        assert.equal(errors.length === 0, sent === expected, `${contractId}: sent ${sent ?? "text"}, expected ${expected ?? "text"}: ${errors.join("; ")}`);
+      }
+    }
+  }
+  assert.equal(videoScenarioOf("t1.5.minimax.c.video.generate.video-keyframes"), "keyframes");
+  assert.equal(videoScenarioOf("seed:t1.5.minimax.c.video.generate.video-keyframe"), "keyframe");
+  assert.equal(videoScenarioOf("t1.5.minimax.c.video.generate.success"), undefined);
+  const keyframes = buildT15TypedParams("video.generate", "MiniMax-H3@t15-minimax", "run", "immediate", "t1.5.minimax.c.video.generate.video-keyframes");
+  assert.deepEqual(
+    (keyframes.conditions as Array<{ type: string; position?: string }>).map((condition) => [condition.type, condition.position]),
+    [["keyframe", "start"], ["keyframe", "end"]],
+  );
+  assert.equal(buildT15TypedParams("video.generate", "MiniMax-H3@t15-minimax", "run").conditions, undefined);
+  const manifest = buildT15Manifest(catalog);
+  for (const scenario of ["keyframe", "keyframes", "reference-images"]) {
+    assert.ok(manifest.some((item) => item.case_id === `t1.5.openrouter.openrouter.videos.v1.video.generate.video-${scenario}`), scenario);
   }
 });
 
@@ -4696,6 +4739,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
       "google_lro",
       "fal_queue",
       "minimax_video_v2",
+      "openrouter_video",
       "glm_video",
       "doubao_video",
       "doubao_asr",
@@ -4736,13 +4780,15 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
             ? "gemini_mock_1"
             : contract.async_protocol === "glm_video" || contract.async_protocol === "doubao_video"
             ? "glm_video_mock_1"
+            : contract.async_protocol === "openrouter_video"
+            ? String(contract.success_fixture?.id)
             : "video_mock_1",
         );
       const url = new URL(`${baseUrl}${path}`);
       for (const field of step.required_query_fields ?? []) {
         url.searchParams.set(
           field,
-          field === "task_id" ? "minimax_video_mock_1" : "minimax_file_mock_1",
+          field === "task_id" ? "minimax_video_mock_1" : field === "index" ? "0" : "minimax_file_mock_1",
         );
       }
       const headers = new Headers();
@@ -5171,9 +5217,9 @@ test("T1.5 success mapping requires canonical output, usage, and async attributi
     }, llm), /missing mapped field message/);
   const video = protocolContract(catalog, "openai", "openai.videos.v1");
   assert.throws(() =>
-    assertT15ResponseMapping("video.txt2video", {
+    assertT15ResponseMapping("video.generate", {
       status: "succeeded",
-      video: { kind: "named_object", obj_id: "chunk:video" },
+      videos: [{ resource: { kind: "named_object", obj_id: "chunk:video" }, provider_metadata: {} }],
     }, video), /operation attribution/);
 });
 

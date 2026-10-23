@@ -390,39 +390,25 @@
 // │   ├── music
 // │   └── enhance
 // ├── video
-// │   ├── txt2video
-// │   │   ├── gemini_omni -> video.txt2video.gemini_omni (3.0) [1516; gemini-omni-1.1-flash]
-// │   │   ├── seedance -> video.txt2video.seedance (2.8) [1479; dreamina-seedance-2.0-720p]
-// │   │   ├── wan -> video.txt2video.wan (2.8) [1476; wan3.0]
-// │   │   ├── minimax_h3 -> video.txt2video.minimax_h3 (2.7) [1460; minimax-h3]
-// │   │   ├── muse_video -> video.txt2video.muse_video (2.7) [1456; muse-video]
-// │   │   ├── happyhorse -> video.txt2video.happyhorse (2.6) [1427; happyhorse-1.0]
-// │   │   ├── sora -> video.txt2video.sora (2.3) [1368; sora-2-pro]
-// │   │   ├── veo -> video.txt2video.veo (2.2) [1364; veo-3.1-audio]
-// │   │   ├── grok_imagine -> video.txt2video.grok_imagine (2.1) [1342; grok-imagine-video-720p]
-// │   │   ├── pixverse -> video.txt2video.pixverse (1.6) [1240; pixverse-v5.6]
-// │   │   ├── runway -> video.txt2video.runway (1.5) [1225; runway-gen-4.5]
-// │   │   ├── kling -> video.txt2video.kling (1.5) [1216; kling-2.6-pro]
-// │   │   ├── hailuo -> video.txt2video.hailuo (1.5) [1206; hailuo-2.3]
-// │   │   ├── hunyuan_video -> video.txt2video.hunyuan_video (1.3) [1169; hunyuan-video-1.5]
-// │   │   └── ltx -> video.txt2video.ltx (1.2) [1154; ltx-2-19b]
-// │   ├── img2video
-// │   │   ├── minimax_h3 -> video.img2video.minimax_h3 (3.0) [1495; minimax-h3]
-// │   │   ├── gemini_omni -> video.img2video.gemini_omni (3.0) [1488; gemini-omni-1.1-flash]
-// │   │   ├── wan -> video.img2video.wan (2.9) [1480; wan3.0]
-// │   │   ├── seedance -> video.img2video.seedance (2.9) [1477; dreamina-seedance-2.5-720p]
-// │   │   ├── grok_imagine -> video.img2video.grok_imagine (2.8) [1456; grok-imagine-video-1.5-720p]
-// │   │   ├── flux_video -> video.img2video.flux_video (2.8) [1449; flux-3-video-20260811]
-// │   │   ├── happyhorse -> video.img2video.happyhorse (2.7) [1442; happyhorse-1.0]
-// │   │   ├── veo -> video.img2video.veo (2.5) [1398; veo-3.1-audio]
-// │   │   ├── vidu -> video.img2video.vidu (2.3) [1363; vidu-q3-pro]
-// │   │   ├── kling -> video.img2video.kling (2.3) [1354; kling-v3-pro]
-// │   │   ├── pixverse -> video.img2video.pixverse (2.0) [1299; pixverse-v5.6]
-// │   │   ├── hailuo -> video.img2video.hailuo (1.8) [1262; hailuo-2.3]
-// │   │   ├── hunyuan_video -> video.img2video.hunyuan_video (1.5) [1198; hunyuan-video-1.5]
-// │   │   ├── ltx -> video.img2video.ltx (1.3) [1159; ltx-2-19b]
-// │   │   └── runway -> video.img2video.runway (1.0) [1052; runway-gen4-turbo]
-// │   ├── video2video
+// │   ├── generate [文本、关键帧与参考条件统一入口；权重取原文生/图生视频榜单较高者]
+// │   │   ├── minimax_h3 -> video.generate.minimax_h3 (3.0) [1495; minimax-h3]
+// │   │   ├── gemini_omni -> video.generate.gemini_omni (3.0) [1516; gemini-omni-1.1-flash]
+// │   │   ├── seedance -> video.generate.seedance (2.9) [1477; dreamina-seedance-2.5-720p]
+// │   │   ├── wan -> video.generate.wan (2.9) [1480; wan3.0]
+// │   │   ├── grok_imagine -> video.generate.grok_imagine (2.8) [1456; grok-imagine-video-1.5-720p]
+// │   │   ├── flux_video -> video.generate.flux_video (2.8) [1449; flux-3-video-20260811]
+// │   │   ├── muse_video -> video.generate.muse_video (2.7) [1456; muse-video]
+// │   │   ├── happyhorse -> video.generate.happyhorse (2.7) [1442; happyhorse-1.0]
+// │   │   ├── veo -> video.generate.veo (2.5) [1398; veo-3.1-audio]
+// │   │   ├── sora -> video.generate.sora (2.3) [1368; sora-2-pro]
+// │   │   ├── vidu -> video.generate.vidu (2.3) [1363; vidu-q3-pro]
+// │   │   ├── kling -> video.generate.kling (2.3) [1354; kling-v3-pro]
+// │   │   ├── pixverse -> video.generate.pixverse (2.0) [1299; pixverse-v5.6]
+// │   │   ├── hailuo -> video.generate.hailuo (1.8) [1262; hailuo-2.3]
+// │   │   ├── runway -> video.generate.runway (1.5) [1225; runway-gen-4.5]
+// │   │   ├── hunyuan_video -> video.generate.hunyuan_video (1.5) [1198; hunyuan-video-1.5]
+// │   │   └── ltx -> video.generate.ltx (1.3) [1159; ltx-2-19b]
+// │   ├── edit
 // │   ├── extend
 // │   └── upscale
 // └── agent_runtime
@@ -526,36 +512,23 @@ const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
     ("wan_image", "image.img2img.wan_image", 2.2),
     ("flux", "image.img2img.flux", 2.0),
     ("minimax", "image.img2img.minimax", 1.0),
-    ("gemini_omni", "video.txt2video.gemini_omni", 3.0),
-    ("seedance", "video.txt2video.seedance", 2.8),
-    ("wan", "video.txt2video.wan", 2.8),
-    ("minimax_h3", "video.txt2video.minimax_h3", 2.7),
-    ("muse_video", "video.txt2video.muse_video", 2.7),
-    ("happyhorse", "video.txt2video.happyhorse", 2.6),
-    ("sora", "video.txt2video.sora", 2.3),
-    ("veo", "video.txt2video.veo", 2.2),
-    ("grok_imagine", "video.txt2video.grok_imagine", 2.1),
-    ("pixverse", "video.txt2video.pixverse", 1.6),
-    ("runway", "video.txt2video.runway", 1.5),
-    ("kling", "video.txt2video.kling", 1.5),
-    ("hailuo", "video.txt2video.hailuo", 1.5),
-    ("hunyuan_video", "video.txt2video.hunyuan_video", 1.3),
-    ("ltx", "video.txt2video.ltx", 1.2),
-    ("minimax_h3", "video.img2video.minimax_h3", 3.0),
-    ("gemini_omni", "video.img2video.gemini_omni", 3.0),
-    ("wan", "video.img2video.wan", 2.9),
-    ("seedance", "video.img2video.seedance", 2.9),
-    ("grok_imagine", "video.img2video.grok_imagine", 2.8),
-    ("flux_video", "video.img2video.flux_video", 2.8),
-    ("happyhorse", "video.img2video.happyhorse", 2.7),
-    ("veo", "video.img2video.veo", 2.5),
-    ("vidu", "video.img2video.vidu", 2.3),
-    ("kling", "video.img2video.kling", 2.3),
-    ("pixverse", "video.img2video.pixverse", 2.0),
-    ("hailuo", "video.img2video.hailuo", 1.8),
-    ("hunyuan_video", "video.img2video.hunyuan_video", 1.5),
-    ("ltx", "video.img2video.ltx", 1.3),
-    ("runway", "video.img2video.runway", 1.0),
+    ("minimax_h3", "video.generate.minimax_h3", 3.0),
+    ("gemini_omni", "video.generate.gemini_omni", 3.0),
+    ("seedance", "video.generate.seedance", 2.9),
+    ("wan", "video.generate.wan", 2.9),
+    ("grok_imagine", "video.generate.grok_imagine", 2.8),
+    ("flux_video", "video.generate.flux_video", 2.8),
+    ("muse_video", "video.generate.muse_video", 2.7),
+    ("happyhorse", "video.generate.happyhorse", 2.7),
+    ("veo", "video.generate.veo", 2.5),
+    ("sora", "video.generate.sora", 2.3),
+    ("vidu", "video.generate.vidu", 2.3),
+    ("kling", "video.generate.kling", 2.3),
+    ("pixverse", "video.generate.pixverse", 2.0),
+    ("hailuo", "video.generate.hailuo", 1.8),
+    ("runway", "video.generate.runway", 1.5),
+    ("hunyuan_video", "video.generate.hunyuan_video", 1.5),
+    ("ltx", "video.generate.ltx", 1.3),
 ];
 
 pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition> {
@@ -793,8 +766,8 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             Some("audio"),
         ),
         logical_definition(
-            "video.txt2video",
-            ApiType::VideoTextToVideo,
+            "video.generate",
+            ApiType::VideoGenerate,
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,
@@ -802,17 +775,8 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             Some("video"),
         ),
         logical_definition(
-            "video.img2video",
-            ApiType::VideoImageToVideo,
-            ModelRequirement::default(),
-            MountMode::Hybrid,
-            AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
-            Some("video"),
-        ),
-        logical_definition(
-            "video.video2video",
-            ApiType::VideoToVideo,
+            "video.edit",
+            ApiType::VideoEdit,
             ModelRequirement::default(),
             MountMode::Hybrid,
             AiccSchedulerProfile::QualityFirst,

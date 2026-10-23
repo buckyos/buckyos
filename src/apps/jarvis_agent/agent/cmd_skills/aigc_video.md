@@ -1,16 +1,16 @@
 ---
 name: aigc_video
-description: Make videos with the zone's AI models — text or image to clip, video restyle/extend/upscale as far as the providers support it, and multi-shot films from a storyboard (images, narration, clips, ffmpeg assembly with subtitles), with task ids recorded so long jobs resume instead of being paid twice.
-requires: aios agent container with the buckyos-agent commands on PATH (gen_video, img2video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves the video method; stored results are read through the Zone NDM proxy, which only read_write Agents may read
+description: Make videos with the zone's AI models — one video.generate request takes a prompt plus start/end keyframes or reference images, clips and audio; video edit/extend/upscale as far as the providers support it; and multi-shot films from a storyboard (images, narration, clips, ffmpeg assembly with subtitles), with task ids recorded so long jobs resume instead of being paid twice.
+requires: aios agent container with the buckyos-agent commands on PATH (gen_video, edit_video, resume_aicc_task, …), ffmpeg/ffprobe and ImageMagick, and an AICC provider that serves video.generate; stored results are read through the Zone NDM proxy, which only read_write Agents may read
 ---
 #### When to use
-- One clip from a description (`gen_video`) or from a still (`img2video`); restyle a clip (`video2video`); continue one (`extend_video`); raise resolution (`upscale_video`).
+- One clip: from a description, from a start and/or end frame, or following reference images, clips or audio — all `gen_video`. Rewrite a clip (`edit_video`); continue one (`extend_video`); raise resolution (`upscale_video`).
 - A longer piece from several shots: plan a storyboard, make keyframes (aigc_image) and narration (aigc_audio), generate the shots, assemble with ffmpeg (Multi-shot below).
 - Describing an existing video is `llm_understand_media`.
 
 #### Before you start
-- `command -v gen_video resume_aicc_task ffmpeg` — `resume_aicc_task` is newer; without it, re-running with the same `--idempotency-key` is the way back to a running task.
-- Models and list prices: `ai_provider models --api-type video.txt2video`. Today: default route `gemini-omni-1.1-flash` (token priced); `video.txt2video.veo-3-1-lite-generate-preview` 0.05 USD/s (0.08 at 1080p); `veo-3.1-generate-preview` 0.40 USD/s; video.upscale `fal-ai/video-upscaler`. Video is the expensive medium: say the estimated cost before a multi-shot job.
+- `command -v gen_video resume_aicc_task ffmpeg`.
+- Models, what each accepts and list prices: `ai_provider models --api-type video.generate`. OpenRouter lists MiniMax H3 (`minimax/hailuo-3`: 2K, 5–15 s, always with sound, 0.13 USD/s + 0.04 per reference image) and H3-Max (`minimax/hailuo-3-max`: 480p/768p, 5–15 s, cannot generate sound though its file carries an audio track, so `--audio` must stay `auto`; 0.05 USD/s at 480p, 0.08 at 768p) — catalog of 2026-10-22; the zone's own provider list decides what you can use. Gemini's Veo 3.1 Preview was shut down on 2026-10-22. Video is the expensive medium: say the estimated cost before a multi-shot job.
 - No health check is needed before a call; a refusal comes back in the result.
 
 #### Find the real commands
@@ -20,34 +20,36 @@ requires: aios agent container with the buckyos-agent commands on PATH (gen_vide
 ```bash
 mkdir -p out
 gen_video 'A small ocean wave rolls onto a sandy beach at sunset, static camera.' out/wave.mp4 \
-  --model video.txt2video.veo-3-1-lite-generate-preview --duration 4 --resolution 720p --aspect 16:9 \
-  --idempotency-key wave-v1 --timeout 540
+  --model minimax/hailuo-3-max@<openrouter instance> --duration 5 --short-edge 480 --aspect 16:9 \
+  --idempotency-key wave-v1 --timeout 900
 ffprobe -v error -show_entries format=duration:stream=codec_type,width,height,r_frame_rate -of compact=p=0 out/wave.mp4
 ```
-This run took 35 s on the server, cost 0.20 USD and gave 4.000 s, 1280x720, 24 fps, with a sound track. List `out/wave.mp4` in the report's artifacts.
+Without `--model` the logical `video.generate` route picks a model that can do everything asked. List `out/wave.mp4` in the report's artifacts.
 
 #### Inputs and outputs
-- `gen_video <prompt> <out> [--duration S] [--aspect 16:9|9:16|1:1] [--resolution 720p|1080p|4k] [--audio] [--seed N] [--fps N] [--format mp4|webm]`; `img2video <image> <prompt> <out> [--duration] [--aspect] [--resolution]`.
-- Option support differs per model: veo uses duration, aspect, resolution, audio, seed (4 s tested; it adds sound by default); gemini-omni rejects any `--fps`/`--format`; a value the model cannot do fails the task (`invalid_request` / `provider_error`). Check the real length and size afterwards.
-- `video2video <video> <prompt> <out> [--preserve-motion] [--start S --end S]` (omni by default), `upscale_video <in> <out> [--target-resolution 1080p|4k] [--denoise] [--sharpen 0-1] [--fps N]` (fal): not tested here.
-- `extend_video <video> <prompt> <out> [--continuation-handle H]`: AICC neither keeps nor returns provider continuation handles, so no command can give you a valid handle today; without one, whether the provider continues the video is untested. If it fails, tell the user native continuation is not available and offer the substitute: last frame → `img2video` → join (below). The join may show a visible cut; label it as such.
-- Image input: local path (inline base64; above ~700 KB → `RPC call error: 500`), URL, or an object id with its prefix (`named_object:cyfile:…`). Feed a keyframe you generated by its `detail.files[].obj_id` — no upload needed.
-- Results: one `AgentToolResult` JSON line on stdout. Use `status`, `detail.task_id`, `detail.files[]` (`path`, `bytes`, `source_kind`; veo results come from a provider URL that expires, so the downloaded file is your copy).
+- `gen_video <prompt> <out>` with conditions `--first-frame IMG`, `--last-frame IMG`, `--ref-image ID=IMG`, `--ref-video ID=VIDEO`, `--ref-audio ID=AUDIO` (the `--ref-*` ones repeat), `--with-audio ID` (the model may hear that reference video's own sound; it is stripped otherwise), `--clip ID=START-END`; output `--duration S`, `--aspect W:H`, `--short-edge PX` or `--size WxH`, `--fps N`, `--audio auto|generate|none`, `--format mp4|webm|mov`; plus `--negative TEXT`, `--seed N`.
+- In the prompt name a material as `@{ID}` (keyframes are `@{first}` / `@{last}`; `@@` is a literal `@`), e.g. `'the cat from @{cat} jumps over @{fence}'`. AICC rewrites it into the model's own wording ("image 1", "@图像1", "the first frame"); an unknown `@{…}` is refused before anything is sent.
+- Nothing is quietly dropped: a condition, combination or output value the chosen model cannot honour fails with `unsupported_operation` (exit 2; for a logical model, exit 3 `no_candidate_model` when no model can). Keyframes and reference materials cannot be mixed on most models (none of H3, H3-Max, Seedance allow it); `--audio none` is refused by models that always add sound (H3); `--clip` must cover the whole clip because AICC does not trim yet; a reference clip without the audio track it needs is `resource_invalid`.
+- The result's `detail.video` has `provider_metadata` (what the provider said), `measured_metadata` (what AICC read from the file, when it had the bytes) and `deviations` (where the video differs from what you asked). Still check the file with `ffprobe`.
+- `edit_video <video> <prompt> <out>` (same output options; Sora, Gemini Omni, Seedance 2.5) and `upscale_video <in> <out> [--target-resolution 1080p|4k] [--denoise] [--sharpen 0-1] [--fps N]` (fal): not tested here.
+- `extend_video <video> <prompt> <out> [--continuation-handle H]`: AICC neither keeps nor returns provider continuation handles, so no command can give you a valid handle today; without one, whether the provider continues the video is untested. If it fails, tell the user native continuation is not available and offer the substitute: last frame → `gen_video --first-frame` → join (below). The join may show a visible cut; label it as such.
+- Material input: local path (inline base64; above ~700 KB → `RPC call error: 500`), URL, or an object id with its prefix (`named_object:cyfile:…`). Feed a keyframe you generated by its `detail.files[].obj_id` — no upload needed. AICC measures reference clips and audio (length, size, sound track) before choosing a model.
+- Results: one `AgentToolResult` JSON line on stdout. Use `status`, `detail.task_id`, `detail.files[]` (`path`, `bytes`, `source_kind`; provider URLs expire, so the downloaded file is your copy). A result with more than one video is reported as a failure rather than cut down.
 - Hand-over from a Work session: relative path in the final report — `report({…, artifacts: ["out/film.mp4"], is_end: true})` or `<artifacts>["out/film.mp4"]</artifacts>` beside `<report end="true">`. Add the storyboard and key intermediate files when the user may want to rework them.
 
 #### When it fails, and long jobs
-- Exit codes: 1 bad arguments (nothing sent), 2 AICC/provider failure (`=> failed` with `{"code":…}` and the task id: change the request, do not just repeat it), 3 no route (`no_candidate_model`; a misspelled logical `--model` name instead falls back to the default model), 4 still running, 5 file I/O.
+- Exit codes: 1 bad arguments (nothing sent), 2 AICC/provider failure (`=> failed` with `{"code":…}` and the task id: change the request, do not just repeat it), 3 no route (`no_candidate_model`), 4 still running, 5 file I/O.
 - Shell layer: `shell` may return "still running … continues as task <id>". That id is a shell task; keep waiting the way the hint says (`wait_task`, or `agent-session task wait <id> --wait-ms …`).
 - AICC layer: the generation has its own id `t-…`, printed early in stderr (`__BUCKYOS_AGENT_PROGRESS__{"task_id":"t-…",…}` every 5 s while waiting), in `detail.task_id`, and in a timeout (`=> wait_timeout`, exit 4, `still_running: true`). Write it into the storyboard as soon as you see it.
 - A timeout, a killed shell or a dropped connection is not a server failure. `resume_aicc_task t-… out/shot1.mp4` waits (default 900 s, `--timeout S`) and downloads; `--no-wait` just reports (`still_running`, exit 4). Nothing is submitted again.
-- `--idempotency-key K`: the same command with the same K within 24 h returns the same task (checked: the re-run got the same `t-…`). This also covers the default omni route, which (per the AICC source) answers in one long request and prints its task id only at the end; a long omni call itself is untested. The same K also returns an earlier failure; use a new K (e.g. `shot3-v2`) for a real retry.
-- AICC stops polling a provider job after 30 minutes.
+- `--idempotency-key K`: the same command with the same K within 24 h returns the same task without routing or uploading again; the same K with a different request is `idempotency_conflict`. The same K also returns an earlier failure; use a new K (e.g. `shot3-v2`) for a real retry.
+- Once a provider has accepted a video job AICC never resubmits it or moves it to another provider, even when the answer was lost; it waits for that job. AICC stops polling a provider job after 30 minutes. Some providers (OpenRouter, Veo) cannot cancel a job: cancelling then reports `unsupported_operation` and the job (and its charge) runs on.
 - `=> resource_not_permitted` / `quota_*` (`detail.error_code`): the model is not open to your owner or the owner's AI quota does not cover the call — report it, do not retry at once.
 
 #### Multi-shot film (storyboard → assets → shots → assembly)
 - Keep `storyboard.json` in the working directory and update it after every step: per shot `id`, prompt, keyframe path/obj_id, narration text and file, duration, `idempotency_key`, `task_id`, `status` (planned/running/done/failed), output path, cost (`resume_aicc_task <task_id>` shows it); plus the budget. When something fails, redo that shot alone with a new key and keep the finished ones.
 - Assets: keyframes with `gen_image`/`edit_image`; narration with `text_to_speech` (Gemini gives raw PCM: `ffmpeg -f s16le -ar 24000 -ac 1 -i n1.pcm n1.wav`). Shot length = narration length + ~0.5 s, rounded up to whole frames.
-- Shots: `img2video 'named_object:<keyframe obj_id>' '<motion>' shots/s1.mp4 --idempotency-key film-s1-v1`; several can run as separate shell calls, each with its own key. A still with a slow push-in is a cheap alternative shot.
+- Shots: `gen_video '<motion of @{first}>' shots/s1.mp4 --first-frame 'named_object:<keyframe obj_id>' --idempotency-key film-s1-v1`; several can run as separate shell calls, each with its own key. Keep a character consistent across shots with the same `--ref-image hero=…` on every shot (models that take reference images). A still with a slow push-in is a cheap alternative shot.
 - Assembly — ffmpeg recipes tested in this container (1280x720, 24 fps). Set the shot length first, e.g. narration 3.97 s → `F=108; D=4.5` (F = ceil((narration + 0.5) × 24), D = F / 24):
 ```bash
 # normalize a clip and lay narration under it (pads/trims both to D)
@@ -71,7 +73,7 @@ ffmpeg -y -sseof -0.2 -i s1.mp4 -frames:v 1 -update 1 s1-last.png
 - Report the real duration, size, shots used, task ids and cost; a successful command is not yet a correct film.
 
 #### Source and extending
-- Template: `/opt/buckyos/bin/opendan/buckyos-agent/commands/gen_image.ts` (parse argv → request → `initRuntime()` → `callAicc` → save artifacts → `emit()`); `gen_video.ts` / `img2video.ts` / `resume_aicc_task.ts` are the video variants. Library: `lib/aicc.ts` (`callAicc`, `resumeAiccTask`), `lib/io.ts`, `lib/cli.ts`, `lib/result.ts`; SDK types via the `buckyos` entry of the installed `deno.json` (`aicc_client.d.ts`: `VideoTextToVideoRequest`, …).
+- Template: `/opt/buckyos/bin/opendan/buckyos-agent/commands/gen_image.ts` (parse argv → request → `initRuntime()` → `callAicc` → save artifacts → `emit()`); `gen_video.ts` / `edit_video.ts` / `resume_aicc_task.ts` are the video variants, `lib/video.ts` builds conditions and output and picks the video. Library: `lib/aicc.ts` (`callAicc` — a logical `video.generate` goes through `helper.video_generate` so AICC routes with the measured materials —, `resumeAiccTask`), `lib/io.ts`, `lib/cli.ts`, `lib/result.ts`; SDK types via the `buckyos` entry of the installed `deno.json` (`aicc_client.d.ts`: `VideoGenerateRequest`, `VideoCondition`, `VideoOutputSpec`, `GeneratedVideo`). Protocol: `doc/aicc/video_generation.md`.
 - Derived scripts go in the session directory or `$OPENDAN_AGENT_ROOT/tools/`, import the library by absolute path, and run with `deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors <script>.ts`. The installed copy is read-only.
 
-Checked against: BuckyOS 0.7.0 (buckyos-agent commands and AICC source of this tree; DV zone test.buckyos.io: gen_video via veo-3.1-lite 4 s 720p, wait timeout → resume_aicc_task, idempotent re-run, all ffmpeg recipes above on generated assets; img2video, video2video, extend_video, upscale_video, the omni default route not run), 2026-10-17.
+Checked against: BuckyOS 0.7.0 tree of 2026-10-22 (buckyos-agent commands and AICC source). Real generations on DV test.buckyos.io through AICC kRPC, not through the `gen_video` command inside the agent container: OpenRouter H3-Max 480p 5 s text (832x480, 0.25 USD, ~20 s) and with a 640x480 first frame (output 640x480), H3 2K 5 s text (2560x1440, 0.64 USD, ~3 min); both H3-Max files carried an audio track. `gen_video`/`edit_video` passed unit tests only; ffmpeg recipes are from the 2026-10-17 DV run.

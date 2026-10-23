@@ -420,9 +420,14 @@ pub(crate) enum ProviderDraftValidationStage {
 
 impl ProviderDraftValidationError {
     fn from_provider_error(stage: ProviderDraftValidationStage, error: &ProviderError) -> Self {
+        let message = crate::observability::redact(&serde_json::Value::String(error.to_string()))
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         Self {
             stage,
             kind: ProviderRefreshFailure::from_error(error),
+            message,
         }
     }
 }
@@ -601,15 +606,11 @@ fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<(
             )));
         }
         if let Some(pricing) = &model.pricing {
-            validate_pricing(pricing)?;
+            crate::catalog::validate_pricing(&model.provider_model_id, pricing)
+                .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))?;
         }
     }
     Ok(())
-}
-
-fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
-    crate::catalog::validate_pricing("discovery", pricing)
-        .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))
 }
 
 fn resolve_operation(

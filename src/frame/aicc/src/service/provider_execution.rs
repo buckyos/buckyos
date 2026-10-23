@@ -935,6 +935,17 @@ impl RuntimeProviderExecutionPort {
                             &mut output.value,
                             &call.context.state_coordinate,
                         );
+                        if is_video_api(call.api_type) {
+                            let parameters = &call.input.resolved_parameters;
+                            if let Some(images) = reference_image_count(parameters) {
+                                let usage = output.usage.get_or_insert_with(Default::default);
+                                usage.reference_images = usage.reference_images.or(Some(images));
+                            }
+                            crate::protocol::finish_video_output(
+                                &mut output,
+                                requested_video_output(parameters).as_ref(),
+                            );
+                        }
                         let output = self
                             .materialize_embedding_output(call, output)
                             .await
@@ -1058,9 +1069,22 @@ impl RuntimeProviderExecutionPort {
                         &request,
                     )
                     .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                // Everything the resume descriptor needs is checked before the
+                // submit: once the Provider holds a task, only its handle may
+                // be lost to a failure, never resubmitted.
+                let resource_access_context =
+                    call.resource_access_context.clone().ok_or_else(|| {
+                        ProviderStartFailure::before_accept(
+                            ProtocolError::invalid_configuration(
+                                "native task resource context is missing",
+                            ),
+                            false,
+                        )
+                    })?;
                 let response = Self::send_cancelable(cancellation, transport.send(request))
                     .await
-                    .map_err(ProviderStartFailure::after_accept)?;
+                    .map_err(ProviderStartFailure::native_submit_unknown)?;
+                let rejected = !response.status.is_success();
                 let output = self
                     .codecs
                     .decode_native(
@@ -1071,9 +1095,15 @@ impl RuntimeProviderExecutionPort {
                         response,
                     )
                     .await
-                    .map_err(ProviderStartFailure::after_accept)?;
+                    .map_err(|error| {
+                        if rejected {
+                            ProviderStartFailure::native_submit_rejected(error)
+                        } else {
+                            ProviderStartFailure::native_submit_unknown(error)
+                        }
+                    })?;
                 let NativeTaskOutput::Submitted(handle) = output else {
-                    return Err(ProviderStartFailure::after_accept(
+                    return Err(ProviderStartFailure::native_submit_unknown(
                         ProtocolError::invalid_response(
                             "native submit returned a non-submit result",
                         ),
@@ -1094,15 +1124,7 @@ impl RuntimeProviderExecutionPort {
                     resume: NativeTaskResumeDescriptor {
                         base_url: call.context.base_url.clone(),
                         credential,
-                        resource_access_context: call.resource_access_context.clone().ok_or_else(
-                            || {
-                                ProviderStartFailure::after_accept(
-                                    ProtocolError::invalid_configuration(
-                                        "native task resource context is missing",
-                                    ),
-                                )
-                            },
-                        )?,
+                        resource_access_context,
                         resolved_parameters: call.input.resolved_parameters.clone(),
                         output_video_seconds,
                         request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
@@ -1113,6 +1135,33 @@ impl RuntimeProviderExecutionPort {
             }
         }
     }
+}
+
+fn is_video_api(api_type: buckyos_api::ApiType) -> bool {
+    matches!(
+        api_type,
+        buckyos_api::ApiType::VideoGenerate
+            | buckyos_api::ApiType::VideoEdit
+            | buckyos_api::ApiType::VideoExtend
+            | buckyos_api::ApiType::VideoUpscale
+    )
+}
+
+fn video_plan(parameters: &BTreeMap<String, Value>) -> Option<crate::video::VideoPlan> {
+    crate::video::VideoPlan::from_parameters(parameters).ok()
+}
+
+fn requested_video_output(
+    parameters: &BTreeMap<String, Value>,
+) -> Option<buckyos_api::VideoOutputSpec> {
+    video_plan(parameters)?.requested_output
+}
+
+fn reference_image_count(parameters: &BTreeMap<String, Value>) -> Option<u64> {
+    video_plan(parameters).map(|plan| {
+        plan.inputs(buckyos_api::VideoConditionKind::ReferenceImage)
+            .count() as u64
+    })
 }
 
 #[async_trait]
@@ -1204,19 +1253,44 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     .await?
                 {
                     NativeTaskOutput::Result(mut output) => {
-                        let seconds =
-                            result_usage
-                                .and_then(|usage| usage.video_seconds)
-                                .or_else(|| {
-                                    binding
-                                        .resume
-                                        .as_ref()?
-                                        .output_video_seconds
-                                        .map(|seconds| seconds as f64)
-                                });
+                        // Billing seconds come from the Provider; the request's
+                        // own duration is only the fallback the codec declared.
+                        let seconds = result_usage
+                            .as_ref()
+                            .and_then(|usage| usage.video_seconds)
+                            .or_else(|| {
+                                binding
+                                    .resume
+                                    .as_ref()?
+                                    .output_video_seconds
+                                    .map(|seconds| seconds as f64)
+                            });
+                        let usage = output.usage.get_or_insert_with(Default::default);
                         if let Some(seconds) = seconds {
-                            let usage = output.usage.get_or_insert_with(Default::default);
                             usage.video_seconds = usage.video_seconds.or(Some(seconds));
+                        }
+                        // A charge reported with the terminal status (OpenRouter
+                        // `usage.cost`) belongs to the result that follows it.
+                        if let Some(cost) =
+                            result_usage.as_ref().and_then(|usage| usage.reported_cost)
+                        {
+                            usage.reported_cost = usage.reported_cost.or(Some(cost));
+                        }
+                        if is_video_api(binding.api_type) {
+                            let parameters = binding
+                                .resume
+                                .as_ref()
+                                .map(|resume| &resume.resolved_parameters);
+                            if let Some(parameters) = parameters {
+                                if let Some(images) = reference_image_count(parameters) {
+                                    usage.reference_images =
+                                        usage.reference_images.or(Some(images));
+                                }
+                            }
+                            crate::protocol::finish_video_output(
+                                &mut output,
+                                parameters.and_then(requested_video_output).as_ref(),
+                            );
                         }
                         let mut artifact_refs = binding.result_artifacts.clone();
                         artifact_refs.extend(result_artifacts);

@@ -268,6 +268,7 @@ Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显�
 | `remove_api_types` | `[]` | 删除当前 Provider 无法提供的 API type | 新增 |
 | `remove_features` | `[]` | 删除当前 Provider 无法提供的 feature | 新增 |
 | `capability_limits` | `{}` | 对已有数值容量取 min；不新增能力 | 新增 |
+| `video_generation` | 无 | 渠道 + adapter 真实支持的视频生成合同，替换 Model Driver 的 `capabilities.video_generation`，见 [video_generation.md](video_generation.md) §4 | 新增 |
 | `estimated_latency_ms` | 无 | 渠道默认延迟估计 | 从 Model Driver metadata 移入 |
 | `latency_class` | 无 | 渠道延迟分类 | 从 Model Driver metadata 移入 |
 | `cost_class` | 无 | 渠道成本分类 | 从 Model Driver metadata 移入 |
@@ -283,7 +284,7 @@ Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显�
 {
   "match": "vendor/veo-3.1-*",
   "operations": {
-    "video.txt2video": "videos.create"
+    "video.generate": "videos.create"
   },
   "request_rules": [
     {
@@ -331,14 +332,13 @@ Provider model rule 的字符串 `match` 默认匹配 `provider_model_id`。需�
 method exact key > api_type key > adapter default operation
 ```
 
-例如同一 video api_type 下分别选择接口：
+例如 video 下不同 method 分别选择接口：
 
 ```json
 {
   "operations": {
-    "video.txt2video": "videos.create",
-    "video.img2video": "videos.create",
-    "video.video2video": "interactions.create"
+    "video.generate": "videos.create",
+    "video.edit": "interactions.create"
   }
 }
 ```
@@ -452,8 +452,9 @@ Model Driver 不参与价格查找。查找发生在技术规则解析
 - token 计量：`currency` 与 `input_token` / `output_token` / `cache_input_token`，都是**每 token**
   单价（官方"元/百万 Tokens"要除以 1e6）；
 - 非 token 计量：`unit` + `amount`，`unit` 取值 `request`、`image`、`audio_second`、
-  `video_second`、`character`、`second`（算力秒）、`megapixel`（百万像素）；同一份 `pricing` 内
-  token 字段与 `unit` 互斥；
+  `video_second`、`character`、`reference_image`、`second`（算力秒）、`megapixel`（百万像素）；同一份 `pricing` 内
+  token 字段与 `unit` 互斥；`addons: [{unit, amount}]` 在主单位之外叠加按其它单位计的费用（如视频按秒 +
+  每张参考图），任一单位用量未知时整笔费用未知而不是按 0 计；
 - `estimated_cost`：仅在有可靠渠道依据时显式声明的估值，只作展示与路由参考，不能用于补造缺失价格或实际账单。
 
 在计量之上还有三种取价修饰：
@@ -469,6 +470,9 @@ Model Driver 不参与价格查找。查找发生在技术规则解析
 - `rules`：按**请求参数**选价，在请求前确定，使用与 `request_rules.when` 相同的 `MatchRule`。
   `rules` 使用第一条命中的价格，均未命中时退回外层 `amount` / `estimated_cost`。`rules` 是
   Provider Rules 专属能力；`tiers` 与 `time_windows` 同样只在 Provider 价格中声明。
+  `video.generate` 的规则可匹配 lowering 计划给出的 `/video/resolution`、`/video/duration_seconds`、
+  `/video/audio`、`/video/reference_images`、`/video/scenario`（见 [统一视频生成协议](video_generation.md)）；
+  OpenRouter discovery 的 `pricing_skus` 也落成同样的 `rules` / `addons`。
   Model Driver 不接受任何 `model_pricing`，而不只是拒绝其中的条件规则。
 
 以下仅示意 Provider 按 quality/size 计价的结构，金额不是已核验的实际报价：

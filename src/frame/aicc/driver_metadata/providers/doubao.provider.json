@@ -42,11 +42,11 @@
     {"id": "doubao-seed-translation-250915", "operations": {"llm": "responses.create"}, "request_rules": [
       {"when": {"api_type": "llm", "operation": "responses.create"}, "defaults": {"translation_options": {"target_language": "en"}}}
     ]},
-    {"id": "doubao-seedance-2-0-260128", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2-0-fast-260128", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2-0-mini-260615", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
-    {"id": "doubao-seedance-2-5-260628", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
-      {"when": {"api_type": "video.video2video", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
+    {"id": "doubao-seedance-2-0-260128", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2-0-fast-260128", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2-0-mini-260615", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"id": "doubao-seedance-2-5-260628", "operations": {"video.generate": "ark.contents.generate", "video.edit": "ark.contents.generate", "video.extend": "ark.contents.generate"}, "request_rules": [
+      {"when": {"api_type": "video.edit", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "edit"}},
       {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
     ]}
   ],
@@ -54,7 +54,7 @@
     {"match": "doubao-smart-router-*", "exclude": true},
     {"match": "*3d-*", "exclude": true},
     {"match": "doubao-seedream-*", "operations": {"image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate"}},
-    {"match": "doubao-seedance-*", "operations": {"video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
+    {"match": "doubao-seedance-*", "operations": {"video.generate": "ark.contents.generate", "video.extend": "ark.contents.generate"}},
     {"match": "doubao-embedding-vision-*", "operations": {"embedding.multimodal": "ark.embeddings.multimodal"}},
     {"match": "doubao-seed-*", "operations": {"llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create"}, "request_rules": [
       {"when": {"api_type": ["vision.ocr", "vision.caption"]}, "defaults": {"max_output_tokens": 2048, "reasoning": {"effort": "minimal"}}}

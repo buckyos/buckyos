@@ -1248,7 +1248,8 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         "llm.kimi-code",
         "image.txt2img",
         "audio.tts",
-        "video.txt2video",
+        "video.generate",
+        "video.edit",
     ] {
         assert!(directory.get(path).is_some(), "{path}");
         assert!(
@@ -2049,12 +2050,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
     let empty = builtin_tree(&[]);
     let directory = model_directory_json(&empty);
     let mut media_count = 0;
-    for task in [
-        "image.txt2img",
-        "image.img2img",
-        "video.txt2video",
-        "video.img2video",
-    ] {
+    for task in ["image.txt2img", "image.img2img", "video.generate"] {
         let entries = directory[task].as_array().unwrap();
         media_count += entries.len();
         assert!(entries.iter().all(|item| item["target"]
@@ -2062,7 +2058,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
             .unwrap()
             .starts_with(&format!("{task}."))));
     }
-    assert_eq!(media_count, 57);
+    assert_eq!(media_count, 44);
     let mut contract_count = 0;
     for line in include_str!("model_defaults.rs").lines() {
         let Some((left, right)) = line.split_once(" -> ") else {
@@ -2093,7 +2089,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         );
         contract_count += 1;
     }
-    assert_eq!(contract_count, 57);
+    assert_eq!(contract_count, 44);
 
     assert_eq!(
         dir_item(&directory, "image.txt2img", "gpt_image")["weight"],

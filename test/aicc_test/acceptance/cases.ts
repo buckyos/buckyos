@@ -275,12 +275,12 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
     : String(suffix).startsWith("config.")
     ? "service.reload_settings"
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
-    ? "video.txt2video"
+    ? "video.generate"
     : "chat.completions.create",
   api_type: String(suffix).startsWith("config.")
     ? null
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
-    ? "video.txt2video"
+    ? "video.generate"
     : "llm",
   mock_scenario: scenario as string,
   expected_error_class: error as string | null,

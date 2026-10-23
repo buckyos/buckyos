@@ -88,7 +88,7 @@ async fn native_failures_preserve_business_errors_and_pending_poll_intervals() {
             .decode_native(
                 adapter,
                 operation,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
                 response(failed),
             )
@@ -102,7 +102,7 @@ async fn native_failures_preserve_business_errors_and_pending_poll_intervals() {
             .decode_native(
                 adapter,
                 operation,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
                 response(pending.clone()),
             )
@@ -118,7 +118,7 @@ async fn native_failures_preserve_business_errors_and_pending_poll_intervals() {
             .decode_native(
                 adapter,
                 operation,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Status,
                 pending,
             )
@@ -161,7 +161,7 @@ async fn video_result_usage_matches_billable_dimensions() {
             .decode_native(
                 adapter,
                 operation,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 NativeTaskOperation::Result,
                 response(value),
             )
@@ -176,7 +176,7 @@ async fn video_result_usage_matches_billable_dimensions() {
         .decode_native(
             "openai-responses",
             "videos.create",
-            ApiType::VideoTextToVideo,
+            ApiType::VideoGenerate,
             NativeTaskOperation::Status,
             response(json!({"id":"video_1","status":"completed","seconds":"8"})),
         )
@@ -224,7 +224,7 @@ async fn glm_query_does_not_require_submit_id_and_minimax_cancelled_is_terminal(
         .decode_native(
             "glm-media",
             "videos.generate",
-            ApiType::VideoTextToVideo,
+            ApiType::VideoGenerate,
             NativeTaskOperation::Status,
             response(json!({"request_id":"request_1","task_status":"SUCCESS"})),
         )
@@ -239,7 +239,7 @@ async fn glm_query_does_not_require_submit_id_and_minimax_cancelled_is_terminal(
         .decode_native(
             "minimax-media",
             "video_generation.v2.create",
-            ApiType::VideoTextToVideo,
+            ApiType::VideoGenerate,
             NativeTaskOperation::Status,
             response(json!({"task":{"status":"cancelled"}})),
         )
@@ -334,40 +334,54 @@ fn context() -> CodecContext {
 fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
     let registry = registry();
     let context = context();
-    for (adapter, operation, model) in [
+    for (adapter, operation, driver, model) in [
         (
             "doubao-media",
             "ark.contents.generate",
+            "doubao",
             "doubao-seedance-2.0",
         ),
-        ("qwen-media", "dashscope.video_synthesis", "wan2.6-t2v"),
-        ("glm-media", "videos.generate", "cogvideox-3"),
+        (
+            "qwen-media",
+            "dashscope.video_synthesis",
+            "qwen",
+            "wan2.6-t2v",
+        ),
+        ("glm-media", "videos.generate", "glm", "cogvideox-3"),
     ] {
-        let mut request = buckyos_api::VideoTextToVideoRequest::new("ignored", "cat".into());
-        request.duration_seconds = Some(5.0);
-        if adapter == "qwen-media" {
-            request.aspect_ratio = Some("16:9".into());
-            request.resolution = Some("720p".into());
-        }
-        let mut input = CodecInput {
-            canonical_request: AiccCall::VideoTextToVideo(request),
-            resolved_parameters: BTreeMap::from([("provider_model_id".into(), json!(model))]),
+        let contract = crate::video::test_support::model_contract(driver, model);
+        let mut request = buckyos_api::VideoGenerateRequest::new("m@p", Some("cat".into()));
+        request.output = Some(buckyos_api::VideoOutputSpec {
+            duration_seconds: Some(5.0),
+            aspect_ratio: (adapter == "qwen-media").then(|| "16:9".into()),
+            size: (adapter == "qwen-media").then(|| buckyos_api::VideoSize::short_edge(720)),
+            ..Default::default()
+        });
+        let input = CodecInput {
+            resolved_parameters: crate::video::test_support::plan_parameters(
+                &contract,
+                &request,
+                &Default::default(),
+                model,
+            ),
+            canonical_request: AiccCall::VideoGenerate(request.clone()),
         };
-        let encode = |input: &CodecInput| {
-            registry.encode_native(
+        let HttpBody::Json(body) = registry
+            .encode_native(
                 adapter,
                 operation,
-                ApiType::VideoTextToVideo,
+                ApiType::VideoGenerate,
                 &NativeTaskInput {
                     operation: NativeTaskOperation::Submit,
                     remote_task_id: None,
-                    codec_input: Some(input),
+                    codec_input: Some(&input),
                     resolved_parameters: &input.resolved_parameters,
                     context: &context,
                 },
             )
-        };
-        let HttpBody::Json(body) = encode(&input).unwrap().body else {
+            .unwrap()
+            .body
+        else {
             panic!()
         };
         if adapter == "qwen-media" {
@@ -377,10 +391,8 @@ fn media_request_lowering_uses_integer_duration_and_provider_sizes() {
         } else {
             assert_eq!(body["duration"].as_u64(), Some(5));
         }
-        if let AiccCall::VideoTextToVideo(request) = &mut input.canonical_request {
-            request.duration_seconds = Some(5.5);
-        }
-        assert!(encode(&input).is_err());
+        request.output.as_mut().unwrap().duration_seconds = Some(5.5);
+        assert!(crate::video::plan_video(&contract, &request, &Default::default()).is_err());
     }
     let mut image = buckyos_api::TextToImageInvokeRequest::new("ignored", "cat");
     image.aspect_ratio = Some("16:9".into());
