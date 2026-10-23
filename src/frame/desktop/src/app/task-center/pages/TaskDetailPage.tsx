@@ -1,6 +1,6 @@
 /* ── TaskCenter Task Detail Page ── */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft,
   Play,
@@ -15,6 +15,8 @@ import {
 import { useI18n } from '../../../i18n/provider'
 import { useTaskCenterStore } from '../hooks/use-task-center-store'
 import { notifyCardPath, type Task } from '../../../api/task_mgr'
+import { ContentPreview } from '../../../components/ContentPreview'
+import { formatBytes } from '../../../sysdlg/shareFormat'
 import type { TaskCenterNav, TaskCenterPage } from '../components/layout/navigation'
 
 function statusIcon(status: Task['status'], size = 16) {
@@ -66,7 +68,7 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="text-xs font-medium w-28 shrink-0 pt-0.5" style={{ color: 'var(--cp-muted)' }}>
         {label}
       </span>
-      <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
+      <span className="min-w-0 flex-1 break-all text-sm" style={{ color: 'var(--cp-text)' }}>
         {value}
       </span>
     </div>
@@ -110,6 +112,76 @@ function SubTaskRow({ task }: { task: Task }) {
         </span>
       )}
     </div>
+  )
+}
+
+function TaskResults({ task }: { task: Task }) {
+  const { t } = useI18n()
+  const [activeObjectId, setActiveObjectId] = useState<string | null>(null)
+  const artifacts = useMemo(() => {
+    const record = (value: unknown): Record<string, unknown> =>
+      value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+    if (task.schemaType !== 'aicc.compute/v1') return []
+    const values = record(record(task.payload.result).output).artifacts
+    if (!Array.isArray(values)) return []
+    return values.flatMap((value) => {
+      const artifact = record(value)
+      const resource = record(artifact.resource)
+      if (resource.kind !== 'named_object' || typeof resource.obj_id !== 'string' || !resource.obj_id.trim()) return []
+      const size = record(artifact.metadata).size_bytes
+      return [{
+        source: { kind: 'object-id' as const, objectId: resource.obj_id.trim() },
+        name: typeof artifact.name === 'string' && artifact.name.trim() ? artifact.name : resource.obj_id,
+        mime: typeof artifact.mime === 'string' ? artifact.mime : undefined,
+        size: typeof size === 'number' && Number.isFinite(size) && size >= 0 ? size : undefined,
+      }]
+    })
+  }, [task.payload, task.schemaType])
+  const active = artifacts.find((artifact) => artifact.source.objectId === activeObjectId)
+  if (!artifacts.length) return null
+
+  return (
+    <section
+      className="min-w-0 space-y-3 rounded-2xl p-4"
+      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+      data-testid="task-results"
+    >
+      <h2 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+        {t('taskCenter.detail.results', 'Results')}
+      </h2>
+      {artifacts.map((artifact, index) => (
+        <div key={`${artifact.source.objectId}:${index}`} className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1 basis-40">
+            <p className="break-all text-sm" style={{ color: 'var(--cp-text)' }}>{artifact.name}</p>
+            <p className="break-all text-xs" style={{ color: 'var(--cp-muted)' }}>
+              {[artifact.mime, artifact.size === undefined ? undefined : formatBytes(artifact.size)].filter(Boolean).join(' · ')}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg px-3 py-2 text-sm font-medium"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+            aria-pressed={activeObjectId === artifact.source.objectId}
+            onClick={() => setActiveObjectId(artifact.source.objectId)}
+            data-testid="task-result-preview"
+          >
+            {t('taskCenter.detail.previewResult', 'Preview')}
+          </button>
+        </div>
+      ))}
+      {active && (
+        <div className="overflow-hidden rounded-xl" style={{ height: 'clamp(280px, 55vh, 560px)' }}>
+          <ContentPreview
+            key={active.source.objectId}
+            source={active.source}
+            uiMode="visible"
+            autoFocus
+            onRequestExit={() => setActiveObjectId(null)}
+            data-testid="task-result-content-preview"
+          />
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -270,6 +342,8 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
         </div>
       )}
 
+      <TaskResults key={task.taskId} task={task} />
+
       {/* A URL download: where from and where it was saved */}
       {task.download && (
         <section
@@ -400,7 +474,7 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
             {t('taskCenter.detail.payload', 'Extended Data')}
           </h2>
           <pre
-            className="text-xs overflow-x-auto whitespace-pre-wrap"
+            className="text-xs overflow-x-auto whitespace-pre-wrap break-all"
             style={{ color: 'var(--cp-text)' }}
           >
             {JSON.stringify(task.payload, null, 2)}

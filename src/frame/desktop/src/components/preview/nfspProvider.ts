@@ -10,9 +10,11 @@
  * format as Unsupported until the server ships it — never a fake result.
  */
 
+import { getActiveSessionToken } from 'buckyos'
 import { NfspError, type NodeInfo, type WireRef } from '../../api/nfsp_client'
-import { effectiveListLimit, ensureSession, nfspClient } from '../../app/filebrowser/data/nfsp/client'
+import { effectiveListLimit, ensureSession, nfspBaseUrl, nfspClient } from '../../app/filebrowser/data/nfsp/client'
 import { extensionOf, mediaTypeFromExtension } from './mediaTypes'
+import { resolveNdmSource } from './ndmSource'
 import { cyfsPathToLocal, normalizeCyfsPath, parentCyfsPath } from './session'
 import {
   isBlobRef,
@@ -192,6 +194,11 @@ export function createNfspPreviewProvider(): PreviewProvider {
     id: 'nfsp',
 
     async resolvePreviewSource(source, { signal }) {
+      if (isObjectIdRef(source)) {
+        const endpoint = nfspBaseUrl()
+        const token = new URL(endpoint).origin === window.location.origin ? await getActiveSessionToken() : null
+        return resolveNdmSource(source, endpoint, token, signal)
+      }
       if (isBlobRef(source)) {
         const { blob, name } = source.value
         const hint = blob.type || mediaTypeFromExtension(extensionOf(name))

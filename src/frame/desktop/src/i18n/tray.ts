@@ -37,6 +37,8 @@ export const trayEn: Record<string, string> = {
 
   'taskCenter.detail.cancel': 'Cancel Task',
   'taskCenter.detail.canceling': 'Canceling…',
+  'taskCenter.detail.results': 'Results',
+  'taskCenter.detail.previewResult': 'Preview',
   'taskCenter.download.failed': 'Could not start the download: {{detail}}',
   'taskCenter.download.filename': 'Save as (optional)',
   'taskCenter.download.filenamePlaceholder': 'Taken from the link',
@@ -87,6 +89,8 @@ export const trayZh: Record<string, string> = {
 
   'taskCenter.detail.cancel': '取消任务',
   'taskCenter.detail.canceling': '正在取消…',
+  'taskCenter.detail.results': '结果',
+  'taskCenter.detail.previewResult': '预览',
   'taskCenter.download.failed': '无法开始下载：{{detail}}',
   'taskCenter.download.filename': '保存为（可选）',
   'taskCenter.download.filenamePlaceholder': '从链接推断',

@@ -54,9 +54,12 @@ HTML runs in `sandbox=""` with an injected CSP (`default-src 'none'`), so script
 ## Providers
 
 - **NFSP (`nfspProvider.ts`)** — Source Resolver = `resolve` (`base/ident/access`), containers = `list`, read refs = `/nfs/v1/read/{node_id}` (plus `?download=1` for exports). The Pipeline maps onto `repr` / `get_repr` and is gated on the hello feature list: nfs_server does not advertise `repr` yet, so every non-Direct format is planned as **Unsupported** until the server ships it. The wire shape in that file is provisional (§23.8 item 2) and isolated there.
+- **Object IDs (`ndmSource.ts`)** — `cyfile`, chunk and chunk-list IDs use the authenticated NDM store/read endpoints; they do not use NFSP's unsupported object-ref resolution. File metadata supplies the name and MIME hint, and the server resolves single-chunk or chunk-list content. Object previews load the complete content into a Blob before rendering, with cancellation and a 256 MiB limit checked against metadata, response headers and received bytes. These previews currently have no HTTP Range streaming; CYFS path previews retain their existing streaming URLs. The SDK's structured store/proxy helpers reject Browser runtime, so this adapter calls the existing gateway endpoints with the active session token.
 - **Mock (`mockProvider.ts`)** — the File Browser mock library plus `cyfs:///samples` with generated content for every result family, `/home/Private` → permission denied, and a simulated built-in Pipeline catalog (`office-html`, `sheet-html` with a failing first attempt, `media-transmux` via MediaRecorder, `raster-decode`) with idempotent `ensure`, attempts, retry CAS and negative caching.
 
 The provider is chosen like the File Browser backend (`VITE_CP_USE_MOCK`, `?fbData=mock|nfsp`).
+
+Completed AICC tasks expose their named-object artifacts in Task Center's Results section. Each Preview action opens this component inside the task detail page, including the standalone `/taskcenter?taskid=…` route; content loads only after the action, and closing the preview releases it.
 
 ## Preview App
 
@@ -78,6 +81,7 @@ File Browser routes file open actions through the shared Content Open Router; wh
 ```bash
 pnpm run check && pnpm run lint
 node --experimental-strip-types tests/datamodel/preview-window-policy.test.ts
+deno test --no-check --allow-env --allow-read --allow-sys --node-modules-dir=manual --unstable-sloppy-imports tests/datamodel/preview-ndm-source.test.ts
 npx playwright test tests/e2e/pages/preview.spec.ts
 ```
 
