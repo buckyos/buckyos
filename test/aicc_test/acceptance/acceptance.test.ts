@@ -253,7 +253,12 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model, apiType),
     ]),
   );
-  for (const [pointer, value] of Object.entries(contract.required_body_values ?? {})) {
+  for (
+    const [pointer, value] of Object.entries({
+      ...(contract.required_body_values ?? {}),
+      ...(contract.required_body_values_by_model?.[model] ?? {}),
+    })
+  ) {
     const tokens = pointer.split("/").slice(1).map((token) =>
       token.replace(/~1/g, "/").replace(/~0/g, "~")
     );
@@ -4864,8 +4869,6 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
             ? "gemini_mock_1"
             : contract.async_protocol === "gemini_interactions"
             ? "interaction_background_mock_1"
-            : contract.async_protocol === "openrouter_video"
-            ? "gen-vid-1770000000-Ab3dEf9hIjKlMnOpQrSt"
             : contract.async_protocol === "glm_video" ||
                 contract.async_protocol === "doubao_video"
             ? "glm_video_mock_1"

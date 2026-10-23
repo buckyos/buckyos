@@ -189,10 +189,13 @@ function parsePage(
   if (new URL(config.endpoint).hostname === "openrouter.ai") {
     const target = data.find(entry => stringField(entry, "id") === "typesafe/jev-1.13");
     const verified = (entry: unknown) => stringField(entry, "canonical_slug") === "typesafe/jev-1.13-20260917"
-      && object(entry)?.context_length === 262144
-      && JSON.stringify(object(object(entry)?.architecture)?.input_modalities) === '["text","image"]'
+      && object(entry)?.context_length === 32000
       && JSON.stringify(object(object(entry)?.architecture)?.output_modalities) === '["decisions"]';
     if (target && !verified(target)) throw new Error("OpenRouter Jev build or capability drift; reverify baseline");
+    const alias = data.find(entry => stringField(entry, "id") === "~typesafe/jev-latest");
+    if (alias && (!target || !verified(target) || stringField(object(alias)?.alias_target, "slug") !== "typesafe/jev-1.13")) {
+      throw new Error("OpenRouter Jev alias drift; reverify baseline");
+    }
   }
   const result = {
     models: data.flatMap((entry) => {

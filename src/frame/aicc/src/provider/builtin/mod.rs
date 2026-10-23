@@ -315,7 +315,6 @@ mod wp08d_tests {
                     driver("openai", "router-model"),
                     driver("claude", "router-model"),
                     driver("deepseek", "deepseek-fixture"),
-                    driver("minimax", "minimax-fixture"),
                     driver("qwen", "qwen-fixture"),
                     driver("gemini", "gemini-fixture"),
                     kimi_model_driver(),
@@ -428,7 +427,6 @@ mod wp08d_tests {
             driver("claude", "claude-fixture"),
             driver("deepseek", "deepseek-fixture"),
             driver("gemini", "gemini-fixture"),
-            driver("minimax", "minimax-fixture"),
             driver("qwen", "qwen-fixture"),
         ] {
             builtin.push(

@@ -530,6 +530,7 @@
         "video.extend.{model}"
       ],
       "capabilities": {
+        "max_context_tokens": 1024,
         "video_generation": {
           "prompt_required": true,
           "negative_prompt": true,
@@ -561,6 +562,7 @@
       "api_types": ["video.generate"],
       "logical_mounts": ["video.generate.gemini", "video.generate.{model}", "video.generate.veo"],
       "capabilities": {
+        "max_context_tokens": 1024,
         "video_generation": {
           "prompt_required": true,
           "negative_prompt": true,
@@ -590,6 +592,7 @@
         "video.extend.{model}"
       ],
       "capabilities": {
+        "max_context_tokens": 1024,
         "video_generation": {
           "prompt_required": true,
           "negative_prompt": true,
@@ -629,6 +632,7 @@
         "video.extend.{model}"
       ],
       "capabilities": {
+        "max_context_tokens": 1048576,
         "video_generation": {
           "prompt_required": true,
           "seed": true,

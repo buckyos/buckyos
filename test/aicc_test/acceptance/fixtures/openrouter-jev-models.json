@@ -2,7 +2,7 @@
   "sources": [
     "https://openrouter.ai/api/v1/models?output_modalities=all"
   ],
-  "verified_at": "2026-10-15",
+  "verified_at": "2026-09-25",
   "data": [
     {
       "id": "typesafe/jev-router",
@@ -49,16 +49,19 @@
     {
       "id": "~typesafe/jev-latest",
       "canonical_slug": "~typesafe/jev-latest",
+      "alias_target": {
+        "name": "TypeSafe: Jev 1.13",
+        "slug": "typesafe/jev-1.13"
+      },
       "hugging_face_id": null,
       "name": "TypeSafe: Jev Latest",
       "created": 1789689685,
       "description": "This model always redirects to the latest model in the Jev family.",
-      "context_length": 262144,
+      "context_length": 32000,
       "architecture": {
-        "modality": "text+image->decisions",
+        "modality": "text->decisions",
         "input_modalities": [
-          "text",
-          "image"
+          "text"
         ],
         "output_modalities": [
           "decisions"
@@ -71,7 +74,7 @@
         "completion": "0"
       },
       "top_provider": {
-        "context_length": 262144,
+        "context_length": 32000,
         "max_completion_tokens": 28800,
         "is_moderated": false
       },
@@ -92,12 +95,11 @@
       "name": "TypeSafe: Jev 1.13",
       "created": 1789689684,
       "description": "Jev is a structured decision model from TypeSafe, and the first of its System One models. System One models make fast, structured decisions for software, returning a typed choice rather...",
-      "context_length": 262144,
+      "context_length": 32000,
       "architecture": {
-        "modality": "text+image->decisions",
+        "modality": "text->decisions",
         "input_modalities": [
-          "text",
-          "image"
+          "text"
         ],
         "output_modalities": [
           "decisions"
@@ -110,7 +112,7 @@
         "completion": "0"
       },
       "top_provider": {
-        "context_length": 262144,
+        "context_length": 32000,
         "max_completion_tokens": 28800,
         "is_moderated": false
       },

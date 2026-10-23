@@ -2,7 +2,7 @@
   "schema_version": 2,
   "contract_revision": "2026-10-22.1",
   "capability_baseline_revision": "2026-10-22.1",
-  "capability_cells_sha256": "8e3e962768f9ba4f4b48aff5a7817ab9ee57acb721fb6d690cc43b0441be1bf2",
+  "capability_cells_sha256": "411c45df8643dee9213127f07aeda03b1db5957582423a43c7d4034fb260abee",
   "logical_entrypoint_baseline_revision": "2026-10-05.1",
   "profiles": [
     { "provider_driver": "typesafe", "provider_profile_id": "typesafe", "covered_model_patterns": ["jev-1.13.0", "jev-latest", "jev-preview"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
@@ -22,7 +22,7 @@
     { "provider_driver": "claude", "provider_profile_id": "claude", "covered_model_patterns": ["claude-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
       { "model_pattern": "claude-*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.claude-fable" }
     ] },
-    { "provider_driver": "google-gemini", "provider_profile_id": "gemini", "covered_model_patterns": ["gemini-2.5-computer-use-preview-10-2025", "gemma-4-*", "gemini-embedding-2*", "*embedding*", "*tts*", "lyria-*", "veo-3.1-*lite*", "veo-3.1-*", "veo-*", "gemini-omni-*", "gemini-*image*", "*nano-banana*", "gemini-3.5-transcribe", "gemini-robotics-*", "gemini-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "google-gemini", "provider_profile_id": "gemini", "covered_model_patterns": ["gemini-2.5-computer-use-preview-10-2025", "gemma-4-*", "gemini-embedding-2*", "*embedding*", "*tts*", "lyria-3.5", "lyria-*", "veo-3.1-*lite*", "veo-3.1-*", "veo-*", "gemini-omni-*", "gemini-*image*", "*nano-banana*", "gemini-3.5-transcribe", "gemini-robotics-*", "gemini-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
     { "provider_driver": "fal", "provider_profile_id": "fal", "covered_model_patterns": ["fal-ai/esrgan", "fal-ai/imageutils/rembg", "fal-ai/deepfilternet3", "fal-ai/video-upscaler"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
     { "provider_driver": "minimax", "provider_profile_id": "minimax", "covered_model_patterns": ["MiniMax-M3.1-Flash-Preview*", "MiniMax-M3*", "MiniMax-M2*", "asr-*", "speech-2.8-*", "speech-*", "image-*", "music-*", "MiniMax-H3", "MiniMax-H3-Max"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
       { "model_pattern": "MiniMax-M3.1-Flash-Preview*", "api_type": "llm", "mode": "exact_only", "reason": "MiniMax M3.1 Flash Preview is restricted to MiniMax Code and M Plan and is not admitted to the general logical route." },
@@ -31,7 +31,7 @@
       { "model_pattern": "MiniMax-M3*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.minimax-standard" },
       { "model_pattern": "MiniMax-M2*", "api_type": "llm", "mode": "excluded", "reason": "The MiniMax M2 family is legacy or scheduled for retirement and is not admitted to new logical routing." }
     ] },
-    { "provider_driver": "openrouter", "provider_profile_id": "openrouter", "covered_model_patterns": ["typesafe/jev-1.13", "~typesafe/jev-latest", "cohere/rerank-*", "minimax/hailuo-3-max", "minimax/hailuo-3", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "openrouter", "provider_profile_id": "openrouter", "covered_model_patterns": ["google/gemini-*-image", "google/gemini-nano-banana-2.1", "qwen/qwen3.5-*", "qwen/qwen3.6-*", "qwen/qwen3.7-flash", "qwen/qwen3.8-27b", "typesafe/jev-1.13", "~typesafe/jev-latest", "cohere/rerank-*", "minimax/hailuo-3-max", "minimax/hailuo-3", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
     { "provider_driver": "kimi", "provider_profile_id": "kimi", "covered_model_patterns": ["kimi-k3", "kimi-k2.7-code*", "kimi-k2.6", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
     { "provider_driver": "glm", "provider_profile_id": "glm", "covered_model_patterns": ["*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
     { "provider_driver": "deepseek", "provider_profile_id": "deepseek", "covered_model_patterns": ["deepseek-flash", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
