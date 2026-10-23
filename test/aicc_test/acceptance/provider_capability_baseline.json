@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-22.1",
-  "checked_at": "2026-10-22",
+  "baseline_revision": "2026-10-23.1",
+  "checked_at": "2026-10-23",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -2718,29 +2718,6 @@
             "https://www.alibabacloud.com/help/en/model-studio/models"
           ],
           "evidence_summary": "OpenRouter catalog membership is intersected with the Qwen publisher model table; Qwen 3.8 27B is a text LLM."
-        },
-        {
-          "model_pattern": "*",
-          "status": "active",
-          "source_status": "openrouter_models_api_runtime_membership",
-          "api_types": [
-            "llm"
-          ],
-          "methods": [
-            "chat.completions.create"
-          ],
-          "input_kinds": [
-            "text"
-          ],
-          "output_kinds": [
-            "text",
-            "json",
-            "tool_call"
-          ],
-          "source_urls": [
-            "https://openrouter.ai/docs/api/api-reference/models/get-models"
-          ],
-          "evidence_summary": "OpenRouter model capabilities must be refined from the live official model catalog before execution."
         }
       ],
       "coverage_rules": [

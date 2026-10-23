@@ -3268,6 +3268,75 @@ test("provider matrix exposes baseline mismatches for reporting", async () => {
   assert.ok(result.mismatches.some((item) => item.includes("aicc_advertised")));
 });
 
+test("provider matrix derives capabilities from the official catalog, not a catch-all rule", async () => {
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    ...matrixInputs([{
+      provider_instance_name: "openrouter-default",
+      provider_driver: "openrouter",
+      models: [
+        {
+          exact_model: "openai/gpt-5.4@openrouter-default",
+          provider_model_id: "openai/gpt-5.4",
+          api_types: ["llm", "vision.ocr", "vision.caption"],
+          official_task_types: ["llm", "vision.ocr", "vision.caption"],
+          logical_mounts: [],
+        },
+        {
+          exact_model: "openai/gpt-4o-mini-tts@openrouter-default",
+          provider_model_id: "openai/gpt-4o-mini-tts",
+          api_types: ["audio.tts"],
+          official_task_types: ["audio.tts"],
+          logical_mounts: [],
+        },
+        {
+          exact_model: "google/lyria-3@openrouter-default",
+          provider_model_id: "google/lyria-3",
+          api_types: ["audio.music"],
+          official_task_types: ["audio.music"],
+          logical_mounts: [],
+        },
+        {
+          exact_model: "bytedance/seedance-2.0@openrouter-default",
+          provider_model_id: "bytedance/seedance-2.0",
+          api_types: ["video.generate"],
+          official_task_types: ["video.generate"],
+          logical_mounts: [],
+        },
+      ],
+    }]),
+  });
+  const apiTypes = (providerModelId: string) =>
+    result.cells
+      .filter((cell) => cell.provider_model_id === providerModelId)
+      .map((cell) => cell.api_type);
+  // Without this, the catch-all `*` rule replaced the catalog with `["llm"]`,
+  // so TTS, music and video models produced no case at all while vision capable
+  // models were reported as `official_not_supported_but_aicc_advertised`.
+  assert.deepEqual(apiTypes("openai/gpt-5.4"), ["llm", "vision.ocr", "vision.caption"]);
+  assert.deepEqual(apiTypes("openai/gpt-4o-mini-tts"), ["audio.tts"]);
+  assert.deepEqual(apiTypes("google/lyria-3"), ["audio.music"]);
+  assert.deepEqual(apiTypes("bytedance/seedance-2.0"), ["video.generate"]);
+  assert.deepEqual(result.mismatches, []);
+});
+
+test("a catch-all rule stays a fallback for models the catalog leaves unspecified", async () => {
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    ...matrixInputs([{
+      provider_instance_name: "kimi-default",
+      provider_driver: "kimi",
+      models: [{
+        exact_model: "kimi-k2@kimi-default",
+        provider_model_id: "kimi-k2",
+        api_types: ["llm"],
+        logical_mounts: [],
+      }],
+    }]),
+  });
+  assert.deepEqual(result.cells.map((cell) => cell.api_type), ["llm"]);
+});
+
 test("physical model coverage excludes lifecycle and logical aliases while retaining variants", async () => {
   const result = filterPhysicalModels({
     baseline: await baseline(),
