@@ -472,10 +472,12 @@ impl<'a> CallResolver<'a> {
             "provider_model_id".into(),
             Value::String(decision.selected.provider_model_id.clone()),
         );
-        if api_type == ApiType::Llm
-            && binding
-                .supported_features
-                .contains(buckyos_api::features::WEB_SEARCH)
+        // Any binding that declares `web_search` can act on it. Gemini grounds
+        // image generation through the same `google_search` tool, so gating the
+        // injection on `llm` silently dropped the caller's request.
+        if binding
+            .supported_features
+            .contains(buckyos_api::features::WEB_SEARCH)
         {
             let enabled = decision
                 .selected
@@ -2533,6 +2535,69 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Gemini grounds image generation through the same `google_search` tool it
+    /// uses for chat, but lowering only injected the resolved parameter for
+    /// `llm`, so `enabled_capabilities = ["web_search"]` never reached the codec.
+    #[test]
+    fn image_generation_lowering_honours_the_web_search_capability() {
+        let catalog = metadata_snapshot();
+        let codecs = all_codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        for (enabled, expected_tools) in [(true, 1), (false, 0)] {
+            let exact = "gemini-3.1-flash-image@primary".to_string();
+            let mut route = decision(&exact);
+            route.trace.requested_model = "images.generate".into();
+            route.trace.requested_model_type = RouteModelKind::Logical;
+            route.trace.resolved_logical_path = None;
+            route.selected.provider_instance_name = "primary".into();
+            route.selected.provider_profile_id = "gemini".into();
+            route.selected.protocol_adapter_id = "gemini-interactions".into();
+            route.selected.model_driver_id = "gemini".into();
+            route.selected.origin_model_id = "gemini-3.1-flash-image".into();
+            route.selected.provider_model_id = "gemini-3.1-flash-image".into();
+            route.selected.operation = "interactions.create".into();
+            route.selected.enabled_capabilities = if enabled {
+                vec!["web_search".into()]
+            } else {
+                Vec::new()
+            };
+            route.selected.disabled_capabilities = Vec::new();
+            let request = buckyos_api::TextToImageInvokeRequest::new(exact, "上海外滩今天的日出");
+            let mut target = target("test-secret");
+            target.provider_rules_id = Some("gemini".into());
+            target.credential =
+                crate::protocol::gemini_api_key("secret://gemini", "test-secret").unwrap();
+            let lowered = resolver
+                .lower(&route, &AiccCall::ImagesGenerate(request), target)
+                .unwrap();
+            let wire = codecs
+                .encode(
+                    "gemini-interactions",
+                    "interactions.create",
+                    ApiType::ImageTextToImage,
+                    &lowered.input,
+                    &lowered.context,
+                )
+                .unwrap();
+            let crate::protocol::HttpBody::Json(body) = wire.body else {
+                panic!("expected JSON")
+            };
+            let google = body
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(|tools| {
+                    tools
+                        .iter()
+                        .filter(|tool| {
+                            tool.get("type").and_then(Value::as_str) == Some("google_search")
+                        })
+                        .count()
+                })
+                .unwrap_or_default();
+            assert_eq!(google, expected_tools, "web_search={enabled}");
         }
     }
 
