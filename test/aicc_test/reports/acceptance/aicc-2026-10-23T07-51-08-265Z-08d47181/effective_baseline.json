@@ -1,0 +1,525 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-23T07:56:30.012Z",
+  "source_baseline_revision": "2026-10-23.1",
+  "official_catalog_fetched_at": "2026-10-23T07:51:08.490Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "native-minimax-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "sha256:5079a9ef1bc3b4ade1e9be9eca4baab01f0ba2aa5c32faf89cf190b25622b036",
+      "refresh_inventory_revision": "131:1792739553873",
+      "unmatched_count": 1,
+      "after_inventory_revision": "sha256:5079a9ef1bc3b4ade1e9be9eca4baab01f0ba2aa5c32faf89cf190b25622b036"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "132:1792739553873",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792741870975,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 22,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-mini-tts",
+            "gpt-4o-transcribe-diarize",
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-image-2",
+            "kimi-k3",
+            "text-embedding-3-large",
+            "text-embedding-3-small"
+          ],
+          "updated_at_ms": 1792741870975
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792741871418,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792741871418
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main-2",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimaxi.com/anthropic",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792741871834,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 14,
+          "revision": "sha256:5079a9ef1bc3b4ade1e9be9eca4baab01f0ba2aa5c32faf89cf190b25622b036",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [
+            {
+              "discovered_at_ms": 1792741871834,
+              "provider_model_id": "MiniMax-M3.1-Flash",
+              "reason": {
+                "kind": "no_match"
+              }
+            }
+          ],
+          "unpriced_models": [
+            "MiniMax-M2",
+            "MiniMax-M2.1",
+            "MiniMax-M2.1-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed"
+          ],
+          "updated_at_ms": 1792741871834
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "native-minimax-t2",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 6975
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "native-minimax-t2",
+      "inventory_revision": "official-snapshot-2026-10-23T07:51:08.490Z",
+      "models": [
+        {
+          "provider_model_id": "asr-1.0"
+        },
+        {
+          "provider_model_id": "image-01"
+        },
+        {
+          "provider_model_id": "MiniMax-H3"
+        },
+        {
+          "provider_model_id": "MiniMax-H3-Max"
+        },
+        {
+          "provider_model_id": "MiniMax-M2"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.1"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.1-highspeed"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.5"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.5-highspeed"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.7"
+        },
+        {
+          "provider_model_id": "MiniMax-M2.7-highspeed"
+        },
+        {
+          "provider_model_id": "MiniMax-M3"
+        },
+        {
+          "provider_model_id": "MiniMax-M3.1-Flash"
+        },
+        {
+          "provider_model_id": "speech-2.8-hd"
+        },
+        {
+          "provider_model_id": "speech-2.8-turbo"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "minimax",
+      "provider_instance_name": "native-minimax-t2",
+      "inventory_revision": "sha256:5079a9ef1bc3b4ade1e9be9eca4baab01f0ba2aa5c32faf89cf190b25622b036",
+      "models": [
+        {
+          "exact_model": "MiniMax-H3-Max@native-minimax-t2",
+          "provider_model_id": "MiniMax-H3-Max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.img2video",
+            "video.txt2video"
+          ],
+          "logical_mounts": [
+            "video.img2video.minimax",
+            "video.img2video.minimax-h3-max",
+            "video.img2video.minimax_h3",
+            "video.txt2video.minimax",
+            "video.txt2video.minimax-h3-max",
+            "video.txt2video.minimax.minimax-h3-max",
+            "video.txt2video.minimax_h3"
+          ]
+        },
+        {
+          "exact_model": "MiniMax-H3@native-minimax-t2",
+          "provider_model_id": "MiniMax-H3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.img2video",
+            "video.txt2video"
+          ],
+          "logical_mounts": [
+            "video.img2video.minimax",
+            "video.img2video.minimax-h3",
+            "video.img2video.minimax_h3",
+            "video.txt2video.minimax",
+            "video.txt2video.minimax-h3",
+            "video.txt2video.minimax.minimax-h3",
+            "video.txt2video.minimax_h3"
+          ]
+        },
+        {
+          "exact_model": "MiniMax-M2.1-highspeed@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2.1-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.1@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2.1",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5-highspeed@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2.5-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.5@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2.5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.7-highspeed@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2.7-highspeed",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2.7@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2.7",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M2@native-minimax-t2",
+          "provider_model_id": "MiniMax-M2",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M3:reasoning-none@native-minimax-t2",
+          "provider_model_id": "MiniMax-M3:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "MiniMax-M3@native-minimax-t2",
+          "provider_model_id": "MiniMax-M3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "asr-1.0@native-minimax-t2",
+          "provider_model_id": "asr-1.0",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr"
+          ],
+          "logical_mounts": [
+            "audio.asr.asr-1-0",
+            "audio.asr.minimax"
+          ]
+        },
+        {
+          "exact_model": "image-01@native-minimax-t2",
+          "provider_model_id": "image-01",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img"
+          ],
+          "logical_mounts": [
+            "image.img2img.image-01",
+            "image.img2img.minimax",
+            "image.txt2img.image-01",
+            "image.txt2img.minimax",
+            "image.txt2img.minimax.image-01"
+          ]
+        },
+        {
+          "exact_model": "speech-2.8-hd@native-minimax-t2",
+          "provider_model_id": "speech-2.8-hd",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.tts"
+          ],
+          "logical_mounts": [
+            "audio.tts.minimax",
+            "audio.tts.minimax.speech-2-8-hd",
+            "audio.tts.speech-2-8-hd"
+          ]
+        },
+        {
+          "exact_model": "speech-2.8-turbo@native-minimax-t2",
+          "provider_model_id": "speech-2.8-turbo",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.tts"
+          ],
+          "logical_mounts": [
+            "audio.tts.minimax-turbo",
+            "audio.tts.minimax.speech-2-8-turbo",
+            "audio.tts.speech-2-8-turbo"
+          ]
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3-Max@native-minimax-t2",
+      "provider_model_id": "MiniMax-H3-Max",
+      "physical_model_id": "MiniMax-H3-Max",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3@native-minimax-t2",
+      "provider_model_id": "MiniMax-H3",
+      "physical_model_id": "MiniMax-H3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3-Max@native-minimax-t2",
+      "provider_model_id": "MiniMax-H3-Max",
+      "physical_model_id": "MiniMax-H3-Max",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3@native-minimax-t2",
+      "provider_model_id": "MiniMax-H3",
+      "physical_model_id": "MiniMax-H3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.minimax.native-minimax-t2.minimax-h3-max.video.img2video",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3-Max@native-minimax-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.native-minimax-t2.minimax-h3-max.video.txt2video",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3-Max@native-minimax-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.native-minimax-t2.minimax-h3.video.img2video",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3@native-minimax-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ]
+    },
+    {
+      "case_id": "t2.minimax.native-minimax-t2.minimax-h3.video.txt2video",
+      "provider_driver": "minimax",
+      "provider_instance": "native-minimax-t2",
+      "exact_model": "MiniMax-H3@native-minimax-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ]
+    }
+  ]
+}

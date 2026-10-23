@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-23T07:48:56.087Z",
+  "source_baseline_revision": "2026-10-23.1",
+  "official_catalog_fetched_at": "official-frozen-2026-10-04",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "doubao-speech",
+      "provider_instance_name": "native-doubao-speech-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "catalog-doubao-speech-3",
+      "refresh_inventory_revision": "119:1792739553873",
+      "unmatched_count": 0,
+      "after_inventory_revision": "catalog-doubao-speech-3"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "120:1792739553873",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792741674574,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 22,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-mini-tts",
+            "gpt-4o-transcribe-diarize",
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-image-2",
+            "kimi-k3",
+            "text-embedding-3-large",
+            "text-embedding-3-small"
+          ],
+          "updated_at_ms": 1792741674574
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792741674980,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792741674980
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main-2",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://openspeech.bytedance.com/api/v3",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 0,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 3,
+          "revision": "catalog-doubao-speech-3",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 0
+        },
+        "operation_base_urls": {
+          "asr.recognize.flash": "https://openspeech.bytedance.com/api/v3/auc/bigmodel",
+          "asr.recognize.submit": "https://openspeech.bytedance.com/api/v3/auc/bigmodel",
+          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "native-doubao-speech-t2",
+        "provider_profile_id": "doubao-speech",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 6971
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "doubao-speech",
+      "provider_instance_name": "native-doubao-speech-t2",
+      "inventory_revision": "official-frozen-2026-10-04",
+      "models": [
+        {
+          "provider_model_id": "doubao-seed-asr-2.0"
+        },
+        {
+          "provider_model_id": "doubao-seed-asr-2.0-fast"
+        },
+        {
+          "provider_model_id": "doubao-seed-icl-2.0"
+        },
+        {
+          "provider_model_id": "doubao-seed-tts-2.0"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "doubao-speech",
+      "provider_instance_name": "native-doubao-speech-t2",
+      "inventory_revision": "catalog-doubao-speech-3",
+      "models": [
+        {
+          "exact_model": "doubao-seed-asr-2.0-fast@native-doubao-speech-t2",
+          "provider_model_id": "doubao-seed-asr-2.0-fast",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr"
+          ],
+          "logical_mounts": [
+            "audio.asr.doubao",
+            "audio.asr.doubao-seed-asr-2-0-fast"
+          ]
+        },
+        {
+          "exact_model": "doubao-seed-asr-2.0@native-doubao-speech-t2",
+          "provider_model_id": "doubao-seed-asr-2.0",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr"
+          ],
+          "logical_mounts": [
+            "audio.asr.doubao",
+            "audio.asr.doubao-seed-asr-2-0"
+          ]
+        },
+        {
+          "exact_model": "doubao-seed-tts-2.0@native-doubao-speech-t2",
+          "provider_model_id": "doubao-seed-tts-2.0",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.tts"
+          ],
+          "logical_mounts": [
+            "audio.tts",
+            "audio.tts.doubao",
+            "audio.tts.doubao-seed-tts-2-0"
+          ]
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-speech",
+      "provider_instance": "native-doubao-speech-t2",
+      "exact_model": "doubao-seed-asr-2.0@native-doubao-speech-t2",
+      "provider_model_id": "doubao-seed-asr-2.0",
+      "physical_model_id": "doubao-seed-asr-2.0",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+        "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-speech",
+      "provider_instance": "native-doubao-speech-t2",
+      "exact_model": "doubao-seed-asr-2.0@native-doubao-speech-t2",
+      "provider_model_id": "doubao-seed-asr-2.0",
+      "physical_model_id": "doubao-seed-asr-2.0",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+        "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.doubao-speech.native-doubao-speech-t2.doubao-seed-asr-2.0.audio.asr",
+      "provider_driver": "doubao-speech",
+      "provider_instance": "native-doubao-speech-t2",
+      "exact_model": "doubao-seed-asr-2.0@native-doubao-speech-t2",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "input_kinds": [
+        "audio"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+        "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+      ]
+    }
+  ]
+}

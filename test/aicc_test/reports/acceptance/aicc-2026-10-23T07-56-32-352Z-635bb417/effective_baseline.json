@@ -1,0 +1,2335 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-23T07:56:49.417Z",
+  "source_baseline_revision": "2026-10-23.1",
+  "official_catalog_fetched_at": "2026-10-23T07:56:32.604Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "doubao",
+      "provider_instance_name": "native-doubao-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "ecc359c6b8cbb3e09b544b6b2ab6e621f352ce1d4c22702e2a4ea3f5f0b3bdc9",
+      "refresh_inventory_revision": "137:1792739553873",
+      "unmatched_count": 91,
+      "after_inventory_revision": "ecc359c6b8cbb3e09b544b6b2ab6e621f352ce1d4c22702e2a4ea3f5f0b3bdc9"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "138:1792739553873",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792742194400,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 22,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-mini-tts",
+            "gpt-4o-transcribe-diarize",
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-image-2",
+            "kimi-k3",
+            "text-embedding-3-large",
+            "text-embedding-3-small"
+          ],
+          "updated_at_ms": 1792742194400
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792742194816,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792742194816
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main-2",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792742196170,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 41,
+          "state": "loaded",
+          "unavailable_presets": [
+            {
+              "effort": "none",
+              "provider_model_id": "doubao-seed-2-0-code-preview-260215",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "doubao-seed-character-251128",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "doubao-seed-character-260628",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "doubao-seed-translation-250915",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-4-5-air-20250728",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-4-7-251222",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-5-2-260617",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "glm-5-2-260617",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "thinking",
+              "provider_model_id": "glm-5-3-flash-260828",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen2-5-72b-20240919",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-0-6b-20250429",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-14b-20250429",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-32b-20250429",
+              "reason": "missing_channel_mapping"
+            },
+            {
+              "effort": "none",
+              "provider_model_id": "qwen3-8b-20250429",
+              "reason": "missing_channel_mapping"
+            }
+          ],
+          "unmatched_models": [
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-r1-250120",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-r1-250528",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-r1-distill-qwen-32b-250120",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-r1-distill-qwen-7b-250120",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v3-1-250821",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v3-1-terminus",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v3-2-251201",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v3-241226",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v3-250324",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v4-1-flash-261017",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "deepseek-v4-1-flash-economy-261017",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-lite-32k-250115",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-pro-256k-250115",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-pro-32k-250115",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-pro-32k-character-250228",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-pro-32k-character-250715",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-thinking-pro-250415",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-thinking-pro-m-250415",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-thinking-pro-m-250428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-thinking-vision-pro-250428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-ui-tars-250428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1-5-vision-pro-32k-250115",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1.5-ui-tars-250328",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1.5-vision-lite-250315",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-1.5-vision-pro-250328",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-embedding-large-text-240915",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-embedding-large-text-250515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-embedding-text-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-embedding-text-240715",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-128k-240428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-128k-240828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-32k-240428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-32k-240628",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-32k-240828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-32k-character-241015",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-32k-character-250228",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-4k-240328",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-4k-character-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-4k-character-240828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-lite-4k-pretrain-character-240516",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-128k-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-128k-240628",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-256k-241115",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-240615",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-240828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-241215",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-browsing-240615",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-browsing-240828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-browsing-241115",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-character-240528",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-character-240828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-character-241215",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-functioncall-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-functioncall-240815",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-functioncall-241028",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-32k-functioncall-preview",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-4k-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-4k-browsing-240524",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-4k-character-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-4k-character-240728",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-4k-functioncall-240515",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-pro-4k-functioncall-240615",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seaweed-241128",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-250615",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-251015",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-flash-250615",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-flash-250715",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-flash-250828",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-lite-251015",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-thinking-250615",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-thinking-250715",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-6-vision-250815",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-1-8-251228",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-2-0-pro-260215",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seed-code-preview-251028",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seedance-1-0-lite-i2v-250428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seedance-1-0-lite-t2v-250428",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seedance-1-0-pro-250528",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seedance-1-5-pro-251215",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seededit-3-0-i2i-250628",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seedream-3-0-t2i-250415",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-seedream-4-5-251128",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-vision-lite-32k-241015",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "doubao-vision-pro-32k-241028",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "kimi-k2-250711",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "kimi-k2-250905",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "kimi-k2-thinking-251104",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "mistral-7b-instruct-v0.2",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "wan2-1-14b-flf2v-250417",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "wan2-1-14b-i2v-250225",
+              "reason": {
+                "kind": "no_match"
+              }
+            },
+            {
+              "discovered_at_ms": 1792742196170,
+              "provider_model_id": "wan2-1-14b-t2v-250225",
+              "reason": {
+                "kind": "no_match"
+              }
+            }
+          ],
+          "unpriced_models": [
+            "doubao-embedding-vision-241215",
+            "doubao-embedding-vision-250328",
+            "doubao-embedding-vision-250615",
+            "doubao-embedding-vision-251215",
+            "doubao-seed-2-0-code-preview-260215",
+            "doubao-seed-2-0-mini-260215",
+            "doubao-seed-2-0-mini-260428",
+            "doubao-seed-2-1-lite-260915",
+            "doubao-seed-2-1-pro-260628",
+            "doubao-seed-2-1-pro-260915",
+            "doubao-seed-character-251128",
+            "doubao-seed-character-260628",
+            "doubao-seed-evolving",
+            "doubao-seed-translation-250915",
+            "doubao-seedance-1-0-pro-fast-251015",
+            "doubao-seedream-5-0-260128",
+            "doubao-seedream-5-0-flash-260915",
+            "doubao-seedream-5-0-pro-260628",
+            "glm-4-5-air-20250728",
+            "glm-4-7-251222",
+            "qwen2-5-72b-20240919",
+            "qwen3-0-6b-20250429",
+            "qwen3-14b-20250429",
+            "qwen3-32b-20250429",
+            "qwen3-8b-20250429"
+          ],
+          "updated_at_ms": 1792742196170
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "native-doubao-t2",
+        "provider_profile_id": "doubao",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 6977
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "doubao",
+      "provider_instance_name": "native-doubao-t2",
+      "inventory_revision": "official-snapshot-2026-10-23T07:56:32.604Z",
+      "models": [
+        {
+          "provider_model_id": "deepseek-r1-250120"
+        },
+        {
+          "provider_model_id": "deepseek-r1-250528"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-qwen-32b-250120"
+        },
+        {
+          "provider_model_id": "deepseek-r1-distill-qwen-7b-250120"
+        },
+        {
+          "provider_model_id": "deepseek-v3-1-250821"
+        },
+        {
+          "provider_model_id": "deepseek-v3-1-terminus"
+        },
+        {
+          "provider_model_id": "deepseek-v3-2-251201"
+        },
+        {
+          "provider_model_id": "deepseek-v3-241226"
+        },
+        {
+          "provider_model_id": "deepseek-v3-250324"
+        },
+        {
+          "provider_model_id": "deepseek-v4-1-flash-260910"
+        },
+        {
+          "provider_model_id": "deepseek-v4-1-flash-261017"
+        },
+        {
+          "provider_model_id": "deepseek-v4-1-flash-economy-261017"
+        },
+        {
+          "provider_model_id": "deepseek-v4-flash-260425"
+        },
+        {
+          "provider_model_id": "deepseek-v4-flash-ga-260731"
+        },
+        {
+          "provider_model_id": "deepseek-v4-pro-260425"
+        },
+        {
+          "provider_model_id": "deepseek-v4-pro-ga-260813"
+        },
+        {
+          "provider_model_id": "doubao-1-5-lite-32k-250115"
+        },
+        {
+          "provider_model_id": "doubao-1-5-pro-256k-250115"
+        },
+        {
+          "provider_model_id": "doubao-1-5-pro-32k-250115"
+        },
+        {
+          "provider_model_id": "doubao-1-5-pro-32k-character-250228"
+        },
+        {
+          "provider_model_id": "doubao-1-5-pro-32k-character-250715"
+        },
+        {
+          "provider_model_id": "doubao-1-5-thinking-pro-250415"
+        },
+        {
+          "provider_model_id": "doubao-1-5-thinking-pro-m-250415"
+        },
+        {
+          "provider_model_id": "doubao-1-5-thinking-pro-m-250428"
+        },
+        {
+          "provider_model_id": "doubao-1-5-thinking-vision-pro-250428"
+        },
+        {
+          "provider_model_id": "doubao-1-5-ui-tars-250428"
+        },
+        {
+          "provider_model_id": "doubao-1-5-vision-pro-32k-250115"
+        },
+        {
+          "provider_model_id": "doubao-1.5-ui-tars-250328"
+        },
+        {
+          "provider_model_id": "doubao-1.5-vision-lite-250315"
+        },
+        {
+          "provider_model_id": "doubao-1.5-vision-pro-250328"
+        },
+        {
+          "provider_model_id": "doubao-embedding-large-text-240915"
+        },
+        {
+          "provider_model_id": "doubao-embedding-large-text-250515"
+        },
+        {
+          "provider_model_id": "doubao-embedding-text-240515"
+        },
+        {
+          "provider_model_id": "doubao-embedding-text-240715"
+        },
+        {
+          "provider_model_id": "doubao-embedding-vision-241215"
+        },
+        {
+          "provider_model_id": "doubao-embedding-vision-250328"
+        },
+        {
+          "provider_model_id": "doubao-embedding-vision-250615"
+        },
+        {
+          "provider_model_id": "doubao-embedding-vision-251215"
+        },
+        {
+          "provider_model_id": "doubao-lite-128k-240428"
+        },
+        {
+          "provider_model_id": "doubao-lite-128k-240828"
+        },
+        {
+          "provider_model_id": "doubao-lite-32k-240428"
+        },
+        {
+          "provider_model_id": "doubao-lite-32k-240628"
+        },
+        {
+          "provider_model_id": "doubao-lite-32k-240828"
+        },
+        {
+          "provider_model_id": "doubao-lite-32k-character-241015"
+        },
+        {
+          "provider_model_id": "doubao-lite-32k-character-250228"
+        },
+        {
+          "provider_model_id": "doubao-lite-4k-240328"
+        },
+        {
+          "provider_model_id": "doubao-lite-4k-character-240515"
+        },
+        {
+          "provider_model_id": "doubao-lite-4k-character-240828"
+        },
+        {
+          "provider_model_id": "doubao-lite-4k-pretrain-character-240516"
+        },
+        {
+          "provider_model_id": "doubao-pro-128k-240515"
+        },
+        {
+          "provider_model_id": "doubao-pro-128k-240628"
+        },
+        {
+          "provider_model_id": "doubao-pro-256k-241115"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-240615"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-240828"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-241215"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-browsing-240615"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-browsing-240828"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-browsing-241115"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-character-240528"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-character-240828"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-character-241215"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-functioncall-240515"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-functioncall-240815"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-functioncall-241028"
+        },
+        {
+          "provider_model_id": "doubao-pro-32k-functioncall-preview"
+        },
+        {
+          "provider_model_id": "doubao-pro-4k-240515"
+        },
+        {
+          "provider_model_id": "doubao-pro-4k-browsing-240524"
+        },
+        {
+          "provider_model_id": "doubao-pro-4k-character-240515"
+        },
+        {
+          "provider_model_id": "doubao-pro-4k-character-240728"
+        },
+        {
+          "provider_model_id": "doubao-pro-4k-functioncall-240515"
+        },
+        {
+          "provider_model_id": "doubao-pro-4k-functioncall-240615"
+        },
+        {
+          "provider_model_id": "doubao-seaweed-241128"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-250615"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-251015"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-flash-250615"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-flash-250715"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-flash-250828"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-lite-251015"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-thinking-250615"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-thinking-250715"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-6-vision-250815"
+        },
+        {
+          "provider_model_id": "doubao-seed-1-8-251228"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-0-code-preview-260215"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-0-lite-260215"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-0-lite-260428"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-0-mini-260215"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-0-mini-260428"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-0-pro-260215"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-1-lite-260915"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-1-pro-260628"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-1-pro-260915"
+        },
+        {
+          "provider_model_id": "doubao-seed-2-1-turbo-260628"
+        },
+        {
+          "provider_model_id": "doubao-seed-character-251128"
+        },
+        {
+          "provider_model_id": "doubao-seed-character-260628"
+        },
+        {
+          "provider_model_id": "doubao-seed-code-preview-251028"
+        },
+        {
+          "provider_model_id": "doubao-seed-evolving"
+        },
+        {
+          "provider_model_id": "doubao-seed-translation-250915"
+        },
+        {
+          "provider_model_id": "doubao-seed3d-1-0-250928"
+        },
+        {
+          "provider_model_id": "doubao-seed3d-2-0-260328"
+        },
+        {
+          "provider_model_id": "doubao-seedance-1-0-lite-i2v-250428"
+        },
+        {
+          "provider_model_id": "doubao-seedance-1-0-lite-t2v-250428"
+        },
+        {
+          "provider_model_id": "doubao-seedance-1-0-pro-250528"
+        },
+        {
+          "provider_model_id": "doubao-seedance-1-0-pro-fast-251015"
+        },
+        {
+          "provider_model_id": "doubao-seedance-1-5-pro-251215"
+        },
+        {
+          "provider_model_id": "doubao-seedance-2-0-260128"
+        },
+        {
+          "provider_model_id": "doubao-seedance-2-0-fast-260128"
+        },
+        {
+          "provider_model_id": "doubao-seedance-2-0-mini-260615"
+        },
+        {
+          "provider_model_id": "doubao-seedance-2-5-260628"
+        },
+        {
+          "provider_model_id": "doubao-seededit-3-0-i2i-250628"
+        },
+        {
+          "provider_model_id": "doubao-seedream-3-0-t2i-250415"
+        },
+        {
+          "provider_model_id": "doubao-seedream-4-0-20260415"
+        },
+        {
+          "provider_model_id": "doubao-seedream-4-0-250828"
+        },
+        {
+          "provider_model_id": "doubao-seedream-4-5-251128"
+        },
+        {
+          "provider_model_id": "doubao-seedream-5-0-260128"
+        },
+        {
+          "provider_model_id": "doubao-seedream-5-0-flash-260915"
+        },
+        {
+          "provider_model_id": "doubao-seedream-5-0-pro-260628"
+        },
+        {
+          "provider_model_id": "doubao-smart-router-250928"
+        },
+        {
+          "provider_model_id": "doubao-vision-lite-32k-241015"
+        },
+        {
+          "provider_model_id": "doubao-vision-pro-32k-241028"
+        },
+        {
+          "provider_model_id": "glm-4-5-air-20250728"
+        },
+        {
+          "provider_model_id": "glm-4-7-251222"
+        },
+        {
+          "provider_model_id": "glm-5-2-260617"
+        },
+        {
+          "provider_model_id": "glm-5-3-flash-260828"
+        },
+        {
+          "provider_model_id": "hitem3d-2-0-251223"
+        },
+        {
+          "provider_model_id": "hyper3d-gen2-260112"
+        },
+        {
+          "provider_model_id": "kimi-k2-250711"
+        },
+        {
+          "provider_model_id": "kimi-k2-250905"
+        },
+        {
+          "provider_model_id": "kimi-k2-thinking-251104"
+        },
+        {
+          "provider_model_id": "mistral-7b-instruct-v0.2"
+        },
+        {
+          "provider_model_id": "qwen2-5-72b-20240919"
+        },
+        {
+          "provider_model_id": "qwen3-0-6b-20250429"
+        },
+        {
+          "provider_model_id": "qwen3-14b-20250429"
+        },
+        {
+          "provider_model_id": "qwen3-32b-20250429"
+        },
+        {
+          "provider_model_id": "qwen3-8b-20250429"
+        },
+        {
+          "provider_model_id": "wan2-1-14b-flf2v-250417"
+        },
+        {
+          "provider_model_id": "wan2-1-14b-i2v-250225"
+        },
+        {
+          "provider_model_id": "wan2-1-14b-t2v-250225"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "doubao",
+      "provider_instance_name": "native-doubao-t2",
+      "inventory_revision": "ecc359c6b8cbb3e09b544b6b2ab6e621f352ce1d4c22702e2a4ea3f5f0b3bdc9",
+      "models": [
+        {
+          "exact_model": "deepseek-v4-1-flash-260910:reasoning-high@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-1-flash-260910:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-1-flash-260910:reasoning-low@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-1-flash-260910:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-1-flash-260910:reasoning-max@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-1-flash-260910:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-1-flash-260910:reasoning-none@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-1-flash-260910:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-1-flash-260910@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-1-flash-260910",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash-ga-260731:reasoning-high@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-flash-ga-260731:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash-ga-260731:reasoning-low@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-flash-ga-260731:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash-ga-260731:reasoning-max@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-flash-ga-260731:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash-ga-260731:reasoning-none@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-flash-ga-260731:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-flash-ga-260731@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-flash-ga-260731",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro-ga-260813:reasoning-high@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-pro-ga-260813:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro-ga-260813:reasoning-low@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-pro-ga-260813:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro-ga-260813:reasoning-max@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-pro-ga-260813:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro-ga-260813:reasoning-none@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-pro-ga-260813:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro-ga-260813@native-doubao-t2",
+          "provider_model_id": "deepseek-v4-pro-ga-260813",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-embedding-vision-251215@native-doubao-t2",
+          "provider_model_id": "doubao-embedding-vision-251215",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "embedding.multimodal"
+          ],
+          "logical_mounts": [
+            "embedding.multimodal.doubao",
+            "embedding.multimodal.doubao-embedding-vision"
+          ]
+        },
+        {
+          "exact_model": "doubao-seed-2-0-code-preview-260215@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-0-code-preview-260215",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-0-lite-260428:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-0-lite-260428:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-0-lite-260428@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-0-lite-260428",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-0-mini-260428:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-0-mini-260428:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-0-mini-260428@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-0-mini-260428",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-lite-260915:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-lite-260915:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-lite-260915@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-lite-260915",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-pro-260628:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-pro-260628:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-pro-260628@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-pro-260628",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-pro-260915:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-pro-260915:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-pro-260915@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-pro-260915",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-turbo-260628:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-turbo-260628:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-2-1-turbo-260628@native-doubao-t2",
+          "provider_model_id": "doubao-seed-2-1-turbo-260628",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-character-251128@native-doubao-t2",
+          "provider_model_id": "doubao-seed-character-251128",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-character-260628@native-doubao-t2",
+          "provider_model_id": "doubao-seed-character-260628",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-evolving:reasoning-none@native-doubao-t2",
+          "provider_model_id": "doubao-seed-evolving:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-evolving@native-doubao-t2",
+          "provider_model_id": "doubao-seed-evolving",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seed-translation-250915@native-doubao-t2",
+          "provider_model_id": "doubao-seed-translation-250915",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "doubao-seedance-1-0-pro-fast-251015@native-doubao-t2",
+          "provider_model_id": "doubao-seedance-1-0-pro-fast-251015",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.img2video",
+            "video.txt2video"
+          ],
+          "logical_mounts": [
+            "video.img2video.doubao",
+            "video.img2video.doubao-seedance-1-0-pro-fast",
+            "video.img2video.seedance",
+            "video.txt2video.doubao",
+            "video.txt2video.doubao-seedance-1-0-pro-fast",
+            "video.txt2video.seedance"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+          "provider_model_id": "doubao-seedance-2-0-260128",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.extend",
+            "video.img2video",
+            "video.txt2video",
+            "video.video2video"
+          ],
+          "logical_mounts": [
+            "video.extend.doubao",
+            "video.extend.doubao-seedance-2-0-260128",
+            "video.img2video.doubao",
+            "video.img2video.doubao-seedance-2-0-260128",
+            "video.img2video.seedance",
+            "video.txt2video.doubao",
+            "video.txt2video.doubao-seedance-2-0-260128",
+            "video.txt2video.seedance",
+            "video.video2video.doubao",
+            "video.video2video.doubao-seedance-2-0-260128"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+          "provider_model_id": "doubao-seedance-2-0-fast-260128",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.extend",
+            "video.img2video",
+            "video.txt2video",
+            "video.video2video"
+          ],
+          "logical_mounts": [
+            "video.extend.doubao",
+            "video.extend.doubao-seedance-2-0-fast-260128",
+            "video.img2video.doubao",
+            "video.img2video.doubao-seedance-2-0-fast-260128",
+            "video.img2video.seedance",
+            "video.txt2video.doubao",
+            "video.txt2video.doubao-seedance-2-0-fast-260128",
+            "video.txt2video.seedance",
+            "video.video2video.doubao",
+            "video.video2video.doubao-seedance-2-0-fast-260128"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+          "provider_model_id": "doubao-seedance-2-0-mini-260615",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.extend",
+            "video.img2video",
+            "video.txt2video",
+            "video.video2video"
+          ],
+          "logical_mounts": [
+            "video.extend.doubao",
+            "video.extend.doubao-seedance-2-0-mini-260615",
+            "video.img2video.doubao",
+            "video.img2video.doubao-seedance-2-0-mini-260615",
+            "video.img2video.seedance",
+            "video.txt2video.doubao",
+            "video.txt2video.doubao-seedance-2-0-mini-260615",
+            "video.txt2video.seedance",
+            "video.video2video.doubao",
+            "video.video2video.doubao-seedance-2-0-mini-260615"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+          "provider_model_id": "doubao-seedance-2-5-260628",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.extend",
+            "video.img2video",
+            "video.txt2video",
+            "video.video2video"
+          ],
+          "logical_mounts": [
+            "video.extend.doubao",
+            "video.extend.doubao-seedance-2-5-260628",
+            "video.img2video.doubao",
+            "video.img2video.doubao-seedance-2-5-260628",
+            "video.img2video.seedance",
+            "video.txt2video.doubao",
+            "video.txt2video.doubao-seedance-2-5-260628",
+            "video.txt2video.seedance",
+            "video.video2video.doubao",
+            "video.video2video.doubao-seedance-2-5-260628"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedream-4-0-20260415@native-doubao-t2",
+          "provider_model_id": "doubao-seedream-4-0-20260415",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img"
+          ],
+          "logical_mounts": [
+            "image.img2img.doubao",
+            "image.img2img.doubao-seedream-4-0",
+            "image.img2img.seedream",
+            "image.txt2img.doubao",
+            "image.txt2img.doubao-seedream-4-0",
+            "image.txt2img.seedream"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedream-5-0-flash-260915@native-doubao-t2",
+          "provider_model_id": "doubao-seedream-5-0-flash-260915",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img"
+          ],
+          "logical_mounts": [
+            "image.img2img.doubao",
+            "image.img2img.doubao-seedream-5-0",
+            "image.img2img.seedream",
+            "image.txt2img.doubao",
+            "image.txt2img.doubao-seedream-5-0",
+            "image.txt2img.seedream"
+          ]
+        },
+        {
+          "exact_model": "doubao-seedream-5-0-pro-260628@native-doubao-t2",
+          "provider_model_id": "doubao-seedream-5-0-pro-260628",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img"
+          ],
+          "logical_mounts": [
+            "image.img2img.doubao",
+            "image.img2img.doubao-seedream-5-0-pro",
+            "image.img2img.seedream",
+            "image.txt2img.doubao",
+            "image.txt2img.doubao-seedream-5-0-pro",
+            "image.txt2img.seedream"
+          ]
+        },
+        {
+          "exact_model": "glm-4-5-air-20250728@native-doubao-t2",
+          "provider_model_id": "glm-4-5-air-20250728",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-2-260617:reasoning-high@native-doubao-t2",
+          "provider_model_id": "glm-5-2-260617:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-2-260617:reasoning-max@native-doubao-t2",
+          "provider_model_id": "glm-5-2-260617:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-2-260617@native-doubao-t2",
+          "provider_model_id": "glm-5-2-260617",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-3-flash-260828:reasoning-high@native-doubao-t2",
+          "provider_model_id": "glm-5-3-flash-260828:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-3-flash-260828:reasoning-low@native-doubao-t2",
+          "provider_model_id": "glm-5-3-flash-260828:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-3-flash-260828:reasoning-max@native-doubao-t2",
+          "provider_model_id": "glm-5-3-flash-260828:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-3-flash-260828:reasoning-medium@native-doubao-t2",
+          "provider_model_id": "glm-5-3-flash-260828:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5-3-flash-260828@native-doubao-t2",
+          "provider_model_id": "glm-5-3-flash-260828",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen2-5-72b-20240919@native-doubao-t2",
+          "provider_model_id": "qwen2-5-72b-20240919",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-0-6b-20250429@native-doubao-t2",
+          "provider_model_id": "qwen3-0-6b-20250429",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-14b-20250429@native-doubao-t2",
+          "provider_model_id": "qwen3-14b-20250429",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-32b-20250429@native-doubao-t2",
+          "provider_model_id": "qwen3-32b-20250429",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-8b-20250429@native-doubao-t2",
+          "provider_model_id": "qwen3-8b-20250429",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-0-260128",
+      "physical_model_id": "doubao-seedance-2-0-260128",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-0-fast-260128",
+      "physical_model_id": "doubao-seedance-2-0-fast-260128",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-0-mini-260615",
+      "physical_model_id": "doubao-seedance-2-0-mini-260615",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-5-260628",
+      "physical_model_id": "doubao-seedance-2-5-260628",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-0-260128",
+      "physical_model_id": "doubao-seedance-2-0-260128",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-0-fast-260128",
+      "physical_model_id": "doubao-seedance-2-0-fast-260128",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-0-mini-260615",
+      "physical_model_id": "doubao-seedance-2-0-mini-260615",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+      "provider_model_id": "doubao-seedance-2-5-260628",
+      "physical_model_id": "doubao-seedance-2-5-260628",
+      "status": "included",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-260128.video.extend",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+      "api_type": "video.extend",
+      "method": "video.extend",
+      "input_kinds": [
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-260128.video.img2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-260128.video.txt2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-260128.video.video2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-260128@native-doubao-t2",
+      "api_type": "video.video2video",
+      "method": "video.video2video",
+      "input_kinds": [
+        "text",
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-fast-260128.video.extend",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+      "api_type": "video.extend",
+      "method": "video.extend",
+      "input_kinds": [
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-fast-260128.video.img2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-fast-260128.video.txt2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-fast-260128.video.video2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-fast-260128@native-doubao-t2",
+      "api_type": "video.video2video",
+      "method": "video.video2video",
+      "input_kinds": [
+        "text",
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-mini-260615.video.extend",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+      "api_type": "video.extend",
+      "method": "video.extend",
+      "input_kinds": [
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-mini-260615.video.img2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-mini-260615.video.txt2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-0-mini-260615.video.video2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-0-mini-260615@native-doubao-t2",
+      "api_type": "video.video2video",
+      "method": "video.video2video",
+      "input_kinds": [
+        "text",
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2291680?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-5-260628.video.extend",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+      "api_type": "video.extend",
+      "method": "video.extend",
+      "input_kinds": [
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-5-260628.video.img2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-5-260628.video.txt2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh"
+      ]
+    },
+    {
+      "case_id": "t2.doubao.native-doubao-t2.doubao-seedance-2-5-260628.video.video2video",
+      "provider_driver": "doubao",
+      "provider_instance": "native-doubao-t2",
+      "exact_model": "doubao-seedance-2-5-260628@native-doubao-t2",
+      "api_type": "video.video2video",
+      "method": "video.video2video",
+      "input_kinds": [
+        "text",
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh"
+      ]
+    }
+  ]
+}

@@ -46,6 +46,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
     "platform.kimi.com",
     "docs.z.ai",
     "www.alibabacloud.com",
+    "help.aliyun.com",
   ]),
 };
 
@@ -75,6 +76,7 @@ export type ProviderProtocolContract = {
   auth: { kind: "header" | "query"; name: string; prefix: string };
   required_headers?: Record<string, string>;
   content_type: string;
+  alternative_content_types?: string[];
   required_body_fields: string[];
   required_body_fields_by_api_type?: Record<string, string[]>;
   /** video.generate condition scenarios the official contract documents, beyond text only. */
@@ -143,6 +145,7 @@ export type ProviderProtocolContract = {
   computer_screenshot_handshake?: boolean;
   success_fixture_base64?: string;
   provider_artifact_identity?: {
+    fixture_artifact_id: string;
     returns_api_types: string[];
     accepts_api_types: string[];
     id_fields: string[];
@@ -431,6 +434,9 @@ export function validateProviderProtocolCatalog(
         nonEmptyString(contract[field], `${id}.${field}`);
       }
       stringArray(contract.api_types, `${id}.api_types`);
+      if (contract.alternative_content_types !== undefined) {
+        stringArray(contract.alternative_content_types, `${id}.alternative_content_types`);
+      }
       const contractTestModelIds = contract.test_model_ids === undefined
         ? {}
         : object(contract.test_model_ids, `${id}.test_model_ids`);
@@ -777,6 +783,10 @@ export function validateProviderProtocolCatalog(
           contract.provider_artifact_identity,
           `${id}.provider_artifact_identity`,
         );
+        const fixtureId = nonEmptyString(identity.fixture_artifact_id, `${id}.provider_artifact_identity.fixture_artifact_id`);
+        if (!JSON.stringify(contract.success_fixture).includes(JSON.stringify(fixtureId))) {
+          throw new Error(`${id}.fixture_artifact_id is absent from its success fixture`);
+        }
         const returnsApiTypes = stringArray(
           identity.returns_api_types,
           `${id}.provider_artifact_identity.returns_api_types`,
@@ -1155,7 +1165,7 @@ export function validateProviderRequest(
     ";",
     1,
   )[0].trim().toLowerCase();
-  if (actualContentType !== contract.content_type.toLowerCase()) {
+  if (![contract.content_type, ...(contract.alternative_content_types ?? [])].map((type) => type.toLowerCase()).includes(actualContentType ?? "")) {
     errors.push(
       `content-type=${
         actualContentType ?? "<missing>"
@@ -1173,8 +1183,8 @@ export function validateProviderRequest(
   const pointerValue = (pointer: string): unknown =>
     pointer.split("/").slice(1).reduce<unknown>((value, token) => {
       const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
-      return value !== null && typeof value === "object" &&
-          !Array.isArray(value)
+      if (Array.isArray(value)) return /^(0|[1-9][0-9]*)$/.test(key) ? value[Number(key)] : undefined;
+      return value !== null && typeof value === "object"
         ? (value as Record<string, unknown>)[key]
         : undefined;
     }, body);
@@ -1568,6 +1578,24 @@ function validateNestedProviderBody(
         errors.push(
           "OpenRouter image-model vision requests require an explicit text-only instruction",
         );
+      }
+    }
+    if (contract.api_types.includes("audio.asr")) {
+      const message = recordValue(body.messages[0]);
+      const content = Array.isArray(message?.content) ? message.content : [];
+      const audioBlock = recordValue(content[0]);
+      const audio = recordValue(audioBlock?.input_audio);
+      const textBlock = recordValue(content[1]);
+      if (body.messages.length !== 1 || message?.role !== "user" ||
+          Object.keys(message).some((key) => !["role", "content"].includes(key)) || content.length !== 2 ||
+          audioBlock?.type !== "input_audio" || !audio ||
+          Object.keys(audioBlock).some((key) => !["type", "input_audio"].includes(key)) ||
+          Object.keys(audio).some((key) => !["data", "format"].includes(key)) ||
+          typeof audio.data !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(audio.data) ||
+          audio.data.length === 0 || !["wav", "mp3", "flac", "ogg", "aac", "m4a", "webm"].includes(String(audio.format)) ||
+          textBlock?.type !== "text" || typeof textBlock.text !== "string" || !textBlock.text.trim() ||
+          Object.keys(textBlock).some((key) => !["type", "text"].includes(key))) {
+        errors.push("audio transcription chat requires one user message with inline input_audio and a text instruction");
       }
     }
   }

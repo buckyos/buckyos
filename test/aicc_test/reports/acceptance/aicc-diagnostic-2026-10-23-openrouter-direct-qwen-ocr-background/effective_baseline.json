@@ -1,0 +1,26 @@
+{
+  "kind": "direct_protocol_diagnostic",
+  "date": "2026-10-23",
+  "provider_driver": "openrouter",
+  "inference_path": "direct OpenRouter, bypass SN and AICC as explicitly requested",
+  "model": "qwen/qwen3.7-plus",
+  "api_type": "vision.ocr",
+  "endpoint": "https://openrouter.ai/api/v1/responses",
+  "parameters": {
+    "model": "qwen/qwen3.7-plus",
+    "background": true,
+    "stream": false,
+    "max_output_tokens": 4096
+  },
+  "fixture": {
+    "bytes": 2189,
+    "sha256": "eaa912debbdd30ccbbebbdae7ac4950b321afaaf740dd98ad76af3d7cfdc19c9",
+    "representation": "base64"
+  },
+  "limits": {
+    "inference_endpoint_requests": 1,
+    "automatic_retries": 0,
+    "max_cost_usd": 0.1
+  },
+  "result": "authentication_failed_before_model_result"
+}

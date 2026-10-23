@@ -1009,7 +1009,7 @@ mod tests {
             remote_task_id: None,
             codec_input: Some(&video),
             resolved_parameters: &video_parameters,
-            context: &context,
+            context: &public_context,
         };
         let request = registry
             .encode_native(

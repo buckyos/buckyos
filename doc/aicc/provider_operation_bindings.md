@@ -119,6 +119,7 @@ qwen|qwen-responses|vision.ocr|chat.completions.create
 qwen|qwen-responses|vision.ocr|responses.create
 sn|sn-openai|agent.computer_use|responses.create
 sn|sn-openai|audio.asr|audio.transcriptions
+sn|sn-openai|audio.asr|chat.completions.create
 sn|sn-openai|audio.tts|audio.speech
 sn|sn-openai|embedding.text|embeddings.create
 sn|sn-openai|image.img2img|images.edit
@@ -127,6 +128,9 @@ sn|sn-openai|image.inpaint|images.edit
 sn|sn-openai|image.txt2img|images.generate
 sn|sn-openai|image.txt2img|responses.background
 sn|sn-openai|llm|responses.create
+sn|sn-openai|video.edit|videos.create
+sn|sn-openai|video.extend|videos.create
+sn|sn-openai|video.generate|videos.create
 sn|sn-openai|vision.caption|responses.create
 sn|sn-openai|vision.ocr|responses.background
 sn|sn-openai|vision.ocr|responses.create
@@ -143,3 +147,7 @@ SN 的 GPT OCR 和 Responses 生图由 `sn.provider.json` 选择 `responses.back
 OpenAI computer-use 强制使用声明的 computer tool。首轮只请求 screenshot 时，Adapter 可将本次已授权的输入截图作为关联 `call_id` 的 `computer_call_output` 回传，并用 `previous_response_id` 续轮一次；不执行业务动作，不自动确认安全检查，不放宽调用方动作白名单。两轮 usage 合并后归入原 task。HTTP future 中断时，未绑定远端任务的本地执行进入结果未知的失败终态，不自动重发；已绑定原生任务或已暂存结果沿用持久生命周期恢复。
 
 公共内部执行端口变更的背景与必要性：单次 `encode/decode` 无法完成官方 computer-use 的截图握手，故增加默认不启用的 codec continuation hook，协议细节仍留在 OpenAI codec；无需让通用执行器识别厂商或模型名称。Gateway 断开导致 future 被丢弃时，任务可能停在已提交状态且失去执行者，这属于所有 Provider 共用的执行生命周期不变量，因此由执行 lease 统一收敛，不能只在 SN codec 修补。两处均不改变公共 kRPC、SDK DTO、资源权限或模型原厂参数。
+
+SN 的 Qwen Image 使用 `images.generate` / `images.edit` 公共入口。其 OpenRouter 上游要求独立 `/images` API，不能使用 Chat 图片协议；当前 SN 实测未取得可供轮询的远端图片任务 ID，不能据此判定上游是否支持后台任务。Qwen3.7 OCR 使用 `responses.create`，与其图片描述接口保持一致。Wan 视频编辑与延长分别提交到 `/videos/edits` 和 `/videos/extensions`，沿用 `/videos/{id}` 查询和下载；续写需要同一实例的原生视频标识。上述分支均在 SN 私有 adapter 中实现，不改变原厂模型参数或其他 Provider。
+
+公共执行器修复的必要性：原生任务轮询中的 TaskMgr 进度上报若临时失败，原实现会退出轮询并遗留活动任务。现在可重试的进度上报错误不会中断同一远端任务的轮询，不可重试错误进入失败终态；不重新提交推理。该生命周期约束适用于全部原生任务，必须在公共执行器处理，不能依赖 SN 私有协议修补；未改变公共接口或数据结构。

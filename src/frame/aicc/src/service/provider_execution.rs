@@ -422,6 +422,7 @@ impl RuntimeProviderExecutionPort {
                             tenant_id: access.tenant_id.clone(),
                             caller_id: access.caller_id.clone(),
                             storage: self.storage.clone(),
+                            token: None,
                         }),
                         self.resource_store.clone(),
                         self.url_fetcher.clone(),

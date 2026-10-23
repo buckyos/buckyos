@@ -191,7 +191,7 @@ pub(crate) struct SnDialectContract {
 pub(crate) fn sn_dialect_contract() -> SnDialectContract {
     SnDialectContract {
         base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-        override_points: BTreeSet::from(["credential_resolution"]),
+        override_points: BTreeSet::from(["credential_resolution", "video_duration", "audio_transcription"]),
         unsupported_api_types: BTreeSet::new(),
     }
 }
@@ -790,10 +790,7 @@ mod tests {
             OPENAI_RESPONSES_OPERATION_ID
         );
         assert!(rules.patterns[0].exclude);
-        assert_eq!(
-            known.connection.operation_base_urls["embeddings.create"],
-            "https://sn.buckyos.ai/api/v1/ai/v1"
-        );
+        assert!(known.connection.operation_base_urls.is_empty());
         assert_eq!(sn_dynamic_login_profile(), SN_DYNAMIC_LOGIN_PROFILE_ID);
 
         let dynamic = dynamic_instance();
@@ -837,7 +834,7 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            5
+            10
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
         for driver in ["bytedance", "glm", "kimi", "mistral", "openai", "qwen"] {
@@ -888,7 +885,7 @@ mod tests {
         );
         assert_eq!(
             sn_dialect_contract().override_points,
-            BTreeSet::from(["credential_resolution"])
+            BTreeSet::from(["credential_resolution", "video_duration", "audio_transcription"])
         );
         assert!(sn_dialect_contract().unsupported_api_types.is_empty());
         let derived_codec = registry
@@ -1161,7 +1158,7 @@ mod tests {
         .unwrap();
         assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
         assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 29);
+        assert_eq!(inventory.models.len(), 30);
         assert!(inventory.unmatched_models.is_empty());
         assert!(
             inventory.unavailable_presets.is_empty(),
@@ -1172,13 +1169,13 @@ mod tests {
             .models
             .iter()
             .all(|model| !model.api_types.is_empty()));
-        for excluded in ["gpt-realtime-2.1", "sora-2", "sora-2-pro", "wan-3.0"] {
+        for excluded in ["gpt-realtime-2.1", "sora-2", "sora-2-pro"] {
             assert!(
                 !inventory
                     .models
                     .iter()
                     .any(|model| model.provider_model_id == excluded),
-                "{excluded} must remain excluded until SN exposes its complete protocol"
+                "{excluded} must remain excluded because its inference transport is unsupported or the model is discontinued"
             );
         }
         let model = inventory
@@ -1218,12 +1215,22 @@ mod tests {
         assert!(!ui_tars
             .api_types
             .contains(&buckyos_api::ApiType::AgentComputerUse));
+        let qwen_ocr = inventory.models.iter()
+            .find(|model| model.provider_model_id == "qwen3.7-plus")
+            .unwrap();
+        assert_eq!(qwen_ocr.operations["vision.ocr"], "responses.create");
         let voxtral = inventory
             .models
             .iter()
             .find(|model| model.provider_model_id == "voxtral-small-24b-2507")
             .unwrap();
-        assert_eq!(voxtral.api_types, vec![buckyos_api::ApiType::Llm]);
+        assert!(voxtral.api_types.contains(&buckyos_api::ApiType::Llm));
+        assert!(voxtral.api_types.contains(&buckyos_api::ApiType::AudioSpeechRecognition));
+        assert_eq!(voxtral.operations["audio.asr"], "chat.completions.create");
+        let wan = inventory.models.iter().find(|model| model.provider_model_id == "wan-3.0").unwrap();
+        assert_eq!(wan.api_types, vec![buckyos_api::ApiType::VideoEdit, buckyos_api::ApiType::VideoExtend, buckyos_api::ApiType::VideoGenerate]);
+        assert_eq!(wan.operations["video.generate"], "videos.create");
+        assert_eq!(wan.operations["video.edit"], "videos.create");
         let diarize = inventory
             .models
             .iter()

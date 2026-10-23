@@ -1057,20 +1057,20 @@ export function buildT15TypedParams(
     case "video.edit":
       return {
         ...common,
-        video: resource("video/mp4"),
-        prompt: "Make it snow",
+        video: typedOptions.sourceResource ?? resource("video/mp4"),
+        prompt: "Preserve motion",
       };
     case "video.extend":
       return {
         ...common,
-        video: resource("video/mp4"),
+        video: typedOptions.sourceResource ?? resource("video/mp4"),
         prompt: "Continue the motion",
         duration_seconds: 2,
       };
     case "video.upscale":
       return {
         ...common,
-        video: resource("video/mp4"),
+        video: typedOptions.sourceResource ?? resource("video/mp4"),
         target_resolution: "1080p",
       };
     case "decision": return { ...common, ...decisionInput() };
@@ -1308,8 +1308,8 @@ function artifactSources(
   ];
 }
 
-function firstReusableArtifact(value: unknown): Record<string, unknown> {
-  return firstReusableResource(artifactSources(value));
+export function firstReusableArtifact(value: unknown): Record<string, unknown> {
+  return firstReusableResource(artifactSources(taskResultPayload(value)));
 }
 
 async function downloadUrlArtifacts(
@@ -1409,7 +1409,7 @@ export function variantWireDiagnostics(
     diagnostics.push(`variant model was not lowered to ${expectedModel}`);
   }
   for (const [name,expected] of Object.entries(expectedOptions)) {
-    if (JSON.stringify(body?.[name]) !== JSON.stringify(expected)) {
+    if (!sameJsonSemantics(body?.[name], expected)) {
       diagnostics.push(`variant Provider option ${name} was not lowered to ${JSON.stringify(expected)}`);
     }
   }
@@ -1942,6 +1942,7 @@ async function executeGeneratedArtifactCase(
   const sourceProvider = testCase.artifact_source_provider_driver!;
   const sourceContractId = testCase.artifact_source_contract_id!;
   const sourceApiType = testCase.artifact_source_api_type!;
+  const sourceContract = protocolContract(catalog, sourceProvider, sourceContractId);
   const sourceCase: AcceptanceCase = {
     ...testCase,
     case_id: `${testCase.case_id}.source`,
@@ -1991,13 +1992,16 @@ async function executeGeneratedArtifactCase(
     await selectMock(controlUrl, sourceCase, `${runId}:artifact-source`);
     const sourceResult = await session.aicc.call(
       sourceCase.method,
-      buildT15TypedParams(
-        sourceApiType,
-        sourceExactModel,
-        runId,
-        "immediate",
-        `${testCase.case_id}.source-artifact`,
-      ),
+      {
+        ...buildT15TypedParams(
+          sourceApiType,
+          sourceExactModel,
+          runId,
+          "immediate",
+          `${testCase.case_id}.source-artifact`,
+        ),
+        ...(sourceContract.canonical_request_overrides ?? {}),
+      },
     ) as Record<string, unknown>;
     const sourceTerminal = await terminal(
       session,
@@ -2068,7 +2072,7 @@ async function executeGeneratedArtifactCase(
   const targetBody = targetRequests.find((request) => request.body)?.body;
   const hasProviderArtifactId = containsString(
     targetBody,
-    "gemini_image_mock_1",
+    sourceContract.provider_artifact_identity!.fixture_artifact_id,
   );
   if (testCase.artifact_target_expect_provider_id && !hasProviderArtifactId) {
     diagnostics.push(

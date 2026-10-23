@@ -1198,7 +1198,7 @@ export function createT15MockHandler(
       }
       if (
         contract.async_protocol === "openai_video" &&
-        url.pathname === "/v1/videos/video_mock_1" && request.method === "GET"
+        url.pathname === (contract.async_steps?.find((step) => step.name === "poll")?.path ?? `${contract.path}/{operation_id}`).replaceAll("{operation_id}", encodeURIComponent(String(contract.success_fixture?.id ?? "video_mock_1"))) && request.method === "GET"
       ) {
         const errors = captureAuxiliary();
         if (errors.length > 0) {
@@ -1207,8 +1207,9 @@ export function createT15MockHandler(
             errors,
           });
         }
+        const submitted = requests.find((captured) => captured.method === "POST" && captured.pathname === contract.path)?.body as Record<string, unknown> | undefined;
         return json(response, 200, {
-          id: "video_mock_1",
+          id: contract.success_fixture?.id ?? "video_mock_1",
           object: "video",
           model: "mock-model",
           status: selection.scenario === "async_failed"
@@ -1217,14 +1218,14 @@ export function createT15MockHandler(
             ? "in_progress"
             : "completed",
           progress: 100,
-          created_at: 1770000000,
-          completed_at: 1770000001,
-          seconds: "4",
+          created_at: Math.floor(Date.now() / 1000),
+          completed_at: Math.floor(Date.now() / 1000),
+          seconds: String(submitted?.seconds ?? "4"),
         });
       }
       if (
         contract.async_protocol === "openai_video" &&
-        url.pathname === "/v1/videos/video_mock_1/content" &&
+        url.pathname === (contract.async_steps?.find((step) => step.name === "result")?.path ?? `${contract.path}/{operation_id}/content`).replaceAll("{operation_id}", encodeURIComponent(String(contract.success_fixture?.id ?? "video_mock_1"))) &&
         request.method === "GET"
       ) {
         const errors = captureAuxiliary();
@@ -1708,6 +1709,9 @@ export function createT15MockHandler(
           ? contract.inline_artifact_success_fixture ?? {}
           : contract.success_fixture ?? {},
       ) as Record<string, unknown>;
+      if (contract.async_protocol === "openai_video") {
+        rawFixture.created_at = Math.floor(Date.now() / 1000);
+      }
       if (
         ((selection.provider_driver === "openai" &&
           contract.id === "openai.responses.v1") ||

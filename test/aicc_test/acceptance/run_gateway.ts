@@ -1509,7 +1509,7 @@ async function executeAcceptance(input: {
     executableCells
       .filter((cell) => cell.generated_artifact_source_api_type || cell.api_type === "video.extend")
       .map((cell) => [
-        `${cell.exact_model}:${cell.generated_artifact_source_api_type ?? "video.txt2video"}`,
+        `${cell.exact_model}:${cell.generated_artifact_source_api_type ?? "video.generate"}`,
         cell,
       ]),
   ).values()];

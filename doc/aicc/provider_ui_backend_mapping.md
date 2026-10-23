@@ -4,6 +4,8 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 
 同一服务商存在多种账号渠道时，各渠道仍使用独立 `provider_profile_id` 和 Provider Rules；Known Provider 的 `ui_hints.setup_group` 只负责把它们合并成一个向导入口，并提供账号类型标签和默认项。选择账号类型后，UI 必须整体切换到该 profile 的 `base_url`、operation base URLs、连接字段和凭据表单，不得混合不同 profile 的默认值。模型库存由所选 profile 的 discovery 与 Provider Rules 决定，UI 不维护账号类型模型白名单。
 
+SN 的默认 `base_url` 为 `https://sn.buckyos.ai/api/v1/ai`；各媒体操作与 Responses 共用该入口，Known Provider 不再提供 operation URL 覆盖。向导直接消费 catalog，因此 SN 不显示 operation URL 输入项。豆包语音等 profile 仍使用该公共字段，前后端保留其通用处理。
+
 `provider_profile_id` 是 catalog 提供的开放字符串，不是前端枚举。前端必须原样保留和展示后端返回的未知新 ID；不得把它归一化为 `custom`、过滤或要求随客户端版本更新白名单。`custom` 只表示用户主动选择的自定义 Provider。
 
 | UI DataModel | Backend field | Durable owner | Notes |

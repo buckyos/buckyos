@@ -4794,7 +4794,12 @@
         "sn-openai"
       ],
       "model_driver_ids": [
-        "openai"
+        "bytedance",
+        "glm",
+        "kimi",
+        "mistral",
+        "openai",
+        "qwen"
       ],
       "discovery": "internal_inventory",
       "official_catalog": {
@@ -4803,17 +4808,17 @@
         "authentication": "bearer"
       },
       "source_urls": [
-        "https://github.com/buckyos/sn-business/tree/cebf55a/src/modules/sn_aicc",
+        "https://github.com/buckyos/sn-business/tree/main/src/modules/sn_aicc",
         "https://openrouter.ai/models"
       ],
       "protocol_evidence": {
-        "documentation_version": "sn-business cebf55a release inventory, upstream vendor documentation, and OpenRouter endpoint metadata checked 2026-10-18",
+        "documentation_version": "SN source 3907a51, authenticated live inventory, upstream vendor documentation and OpenRouter endpoint metadata checked 2026-10-21",
         "streaming_semantics": "SN forwards Responses-compatible language and visual-understanding requests to its configured LiteLLM/OpenRouter routes; all 33 release aliases are classified explicitly.",
-        "async_operation_semantics": "SN text, image, embedding, speech, and transcription operations are synchronous. Wan 3.0 and Sora are filtered because the SN public video routes do not expose the polling/result lifecycle required by AICC; GPT Realtime is filtered because SN exposes no Realtime session route.",
+        "async_operation_semantics": "SN Responses background operations and Wan video generation use authenticated submit/status/result lifecycles. Sora aliases remain excluded after the upstream shutdown; GPT Realtime remains excluded because SN exposes only WebSocket inference for it.",
         "usage_semantics": "SN usage, credit, and raw cost must be reported through AICC durable finance snapshots.",
         "input_output_formats": "Capabilities are the intersection of current SN inventory, original-vendor model facts, SN public routes, and OpenRouter endpoint restrictions.",
         "item_request_batch_limits": "The stricter of SN gateway policy and the underlying OpenAI model/endpoint limits applies.",
-        "image_audio_video_limits": "Qwen Image 3 Pro and GPT Image 2 expose generation/editing, GPT-4o Mini TTS exposes speech, and the two configured GPT-4o transcription aliases expose ASR. Wan 3.0 and Sora remain excluded until SN exposes a complete AICC-compatible video lifecycle.",
+        "image_audio_video_limits": "Qwen Image 3 Pro and GPT Image 2 expose generation/editing, GPT-4o Mini TTS exposes speech, and the two configured GPT-4o transcription aliases expose ASR. Wan 3.0 exposes text/image video creation with authenticated status and content retrieval. Sora remains excluded after upstream shutdown.",
         "context_output_limits": "Limits are inherited from each exact original-vendor physical model and may be further restricted by SN/OpenRouter policy.",
         "region_restrictions": "SN availability is deployment specific and is determined by runtime inventory.",
         "account_tier_restrictions": "SN entitlement, balance, and credit policy are runtime account constraints.",
@@ -4825,37 +4830,28 @@
           "action": "exclude",
           "reason": "unsupported_canonical_protocol",
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/src/modules/sn_aicc/src/http/public.rs",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
             "https://developers.openai.com/api/docs/models/gpt-realtime-2.1"
           ],
-          "evidence_summary": "The model requires the Realtime session protocol, while SN exposes no public Realtime route and AICC has no canonical realtime API type."
+          "evidence_summary": "SN now exposes WebSocket Realtime sessions, but no HTTP inference equivalent; AICC has no canonical Realtime transport."
         },
         {
           "model_pattern": "sora-2",
           "action": "exclude",
-          "reason": "unsupported_canonical_protocol",
+          "reason": "deprecated_or_retiring",
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/src/modules/sn_aicc/src/http/public.rs"
+            "https://developers.openai.com/api/docs/deprecations"
           ],
-          "evidence_summary": "SN exposes video creation but not the polling and result endpoints required by AICC's canonical asynchronous video lifecycle."
+          "evidence_summary": "OpenAI has discontinued Sora 2 and Sora 2 Pro; keep them excluded independently of SN video transport support."
         },
         {
           "model_pattern": "sora-2-pro",
           "action": "exclude",
-          "reason": "unsupported_canonical_protocol",
+          "reason": "deprecated_or_retiring",
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/src/modules/sn_aicc/src/http/public.rs"
+            "https://developers.openai.com/api/docs/deprecations"
           ],
-          "evidence_summary": "SN exposes video creation but not the polling and result endpoints required by AICC's canonical asynchronous video lifecycle."
-        },
-        {
-          "model_pattern": "wan-3.0",
-          "action": "exclude",
-          "reason": "unsupported_canonical_protocol",
-          "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/src/modules/sn_aicc/src/http/public.rs"
-          ],
-          "evidence_summary": "SN exposes video creation routes but not the polling and result endpoints required by AICC's canonical asynchronous video lifecycle."
+          "evidence_summary": "OpenAI has discontinued Sora 2 and Sora 2 Pro; keep them excluded independently of SN video transport support."
         }
       ],
       "rules": [
@@ -4891,7 +4887,7 @@
             "computer_action"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models"
           ],
           "evidence_summary": "SN publishes the three GPT-6 aliases and routes their documented Responses capabilities."
@@ -4928,7 +4924,7 @@
             "computer_action"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
           ],
           "evidence_summary": "SN publishes the Sol, Terra, and Luna GPT-5.6 aliases with the original model's Responses and computer-tool capabilities."
@@ -4960,7 +4956,7 @@
             "image"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models"
           ],
           "evidence_summary": "SN publishes GPT-5.5 Pro with its documented Responses capabilities."
@@ -4992,7 +4988,7 @@
             "image"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-pro"
           ],
           "evidence_summary": "SN publishes GPT-5.4 Pro with its documented Responses capabilities."
@@ -5026,7 +5022,7 @@
             "image"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models"
           ],
           "evidence_summary": "SN publishes GPT-5.5 with its documented Responses capabilities."
@@ -5060,7 +5056,7 @@
             "image"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4"
           ],
           "evidence_summary": "SN publishes GPT-5.4 with its documented Responses capabilities."
@@ -5094,7 +5090,7 @@
             "image"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
           ],
           "evidence_summary": "SN publishes GPT-5.4 Mini with its documented Responses capabilities."
@@ -5128,7 +5124,7 @@
             "image"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-nano"
           ],
           "evidence_summary": "SN publishes GPT-5.4 Nano with its documented Responses capabilities."
@@ -5157,7 +5153,7 @@
             "tool_call"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
           ],
           "evidence_summary": "SN publishes GPT-5.3 Codex for text and visual understanding through Responses."
@@ -5186,7 +5182,7 @@
           ],
           "resource_representation": "base64",
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-image-2"
           ],
           "evidence_summary": "SN exposes GPT Image 2 through its OpenAI-compatible image generation and edit routes."
@@ -5208,7 +5204,7 @@
             "embedding"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models"
           ],
           "evidence_summary": "SN publishes both Text Embedding 3 aliases through its OpenAI-compatible embeddings route."
@@ -5230,7 +5226,7 @@
             "text"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe"
           ],
           "evidence_summary": "SN exposes GPT-4o Mini Transcribe through its OpenAI-compatible transcription route."
@@ -5252,7 +5248,7 @@
             "text"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize"
           ],
           "evidence_summary": "SN exposes the diarizing transcription alias through its OpenAI-compatible transcription route."
@@ -5274,7 +5270,7 @@
             "audio"
           ],
           "source_urls": [
-            "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts"
           ],
           "evidence_summary": "SN exposes GPT-4o Mini TTS through its OpenAI-compatible speech route."
@@ -5508,22 +5504,64 @@
             "text"
           ],
           "source_urls": [
+            "https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B",
             "https://openrouter.ai/bytedance/ui-tars-1.5-7b"
           ],
-          "evidence_summary": "UI-TARS 1.5 7B accepts text and image input; SN does not expose unsupported tool calling."
+          "evidence_summary": "UI-TARS 1.5 accepts text and image input and emits prompt-based text actions. Its upstream route does not implement the native Responses computer tool protocol required by this adapter."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "video.generate",
+            "video.edit",
+            "video.extend"
+          ],
+          "methods": [
+            "video.generate",
+            "video.edit",
+            "video.extend"
+          ],
+          "input_kinds": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output_kinds": [
+            "video"
+          ],
+          "request_defaults": {
+            "video.generate": {
+              "duration_seconds": 2,
+              "resolution": "480p",
+              "aspect_ratio": "4:3"
+            }
+          },
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+            "https://openrouter.ai/alibaba/wan-3.0",
+            "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
+            "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+          ],
+          "evidence_summary": "SN maps Wan 3.0 to OpenRouter through LiteLLM OpenAI compatibility. SN exposes authenticated create, edit and extension routes with shared status/content endpoints. Native video IDs are required for extension; actual Wan support depends on the upstream proxy channel."
         },
         {
           "model_pattern": "voxtral-small-24b-2507",
           "status": "active",
           "source_status": "sn_runtime_inventory",
           "api_types": [
-            "llm"
+            "llm",
+            "audio.asr"
           ],
           "methods": [
-            "chat.completions.create"
+            "chat.completions.create",
+            "audio.asr"
           ],
           "input_kinds": [
-            "text"
+            "text",
+            "audio"
           ],
           "output_kinds": [
             "text",
@@ -5532,9 +5570,11 @@
           ],
           "source_urls": [
             "https://docs.mistral.ai/getting-started/models/models_overview",
-            "https://openrouter.ai/mistralai/voxtral-small-24b-2507"
+            "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+            "https://openrouter.ai/docs/guides/overview/multimodal/stt",
+            "https://openrouter.ai/docs/guides/overview/multimodal/audio"
           ],
-          "evidence_summary": "AICC exposes Voxtral's text-compatible LLM path; canonical audio input blocks are not synthesized."
+          "evidence_summary": "Voxtral supports text and audio input. SN publishes the chat alias, whereas OpenRouter dedicated STT inventory uses a distinct -stt ID. Canonical ASR transcribes using the documented base64 input_audio Chat Completions protocol."
         }
       ]
     }

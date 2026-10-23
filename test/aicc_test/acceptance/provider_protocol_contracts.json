@@ -1918,7 +1918,8 @@
               "name"
             ],
             "same_provider_reuse": "required",
-            "cross_provider_reuse": "forbidden"
+            "cross_provider_reuse": "forbidden",
+            "fixture_artifact_id": "gemini_image_mock_1"
           },
           "official_sources": [
             "https://ai.google.dev/gemini-api/docs/image-generation",
@@ -7692,51 +7693,214 @@
       "provider_driver": "sn-ai-provider",
       "provider_profile_id": "sn",
       "endpoint_path": "/api/v1/ai",
-      "operation_endpoint_paths": {
-        "embeddings.create": "/api/v1/ai/v1",
-        "images.generate": "/api/v1/ai/v1",
-        "images.edit": "/api/v1/ai/v1",
-        "audio.speech": "/api/v1/ai/v1",
-        "audio.transcriptions": "/api/v1/ai/v1"
-      },
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "llm": [
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.5-pro",
           "gpt-5.5",
           "gpt-5.4",
           "gpt-5.4-pro",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-5.3-codex"
+          "gpt-5.3-codex",
+          "glm-5",
+          "glm-5.3",
+          "kimi-k3",
+          "qwen3.6-plus",
+          "qwen3.7-plus",
+          "qwen3.8-max-0902",
+          "ui-tars-1.5-7b",
+          "voxtral-small-24b-2507"
         ],
         "vision.ocr": [
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.5-pro",
           "gpt-5.5",
           "gpt-5.4",
           "gpt-5.4-pro",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-5.3-codex"
+          "gpt-5.3-codex",
+          "kimi-k3",
+          "qwen3.7-plus",
+          "ui-tars-1.5-7b"
         ],
         "vision.caption": [
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
           "gpt-5.5-pro",
           "gpt-5.5",
           "gpt-5.4",
           "gpt-5.4-pro",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-5.3-codex"
+          "gpt-5.3-codex",
+          "kimi-k3",
+          "qwen3.6-plus",
+          "qwen3.7-plus",
+          "qwen3.8-max-0902",
+          "ui-tars-1.5-7b"
+        ],
+        "embedding.text": [
+          "text-embedding-3-large",
+          "text-embedding-3-small",
+          "qwen3-embedding-8b"
+        ],
+        "image.txt2img": [
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
+          "gpt-5.5-pro",
+          "gpt-5.5",
+          "gpt-5.4",
+          "gpt-5.4-pro",
+          "gpt-5.4-mini",
+          "gpt-5.4-nano",
+          "gpt-image-2",
+          "qwen-image-3-pro"
+        ],
+        "image.img2img": [
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
+          "gpt-5.5",
+          "gpt-5.4",
+          "gpt-5.4-mini",
+          "gpt-5.4-nano",
+          "gpt-image-2",
+          "qwen-image-3-pro"
+        ],
+        "image.inpaint": [
+          "gpt-image-2"
+        ],
+        "audio.tts": [
+          "gpt-4o-mini-tts"
+        ],
+        "audio.asr": [
+          "gpt-4o-mini-transcribe",
+          "gpt-4o-transcribe-diarize",
+          "voxtral-small-24b-2507"
+        ],
+        "video.generate": [
+          "wan-3.0"
+        ],
+        "agent.computer_use": [
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna"
+        ],
+        "video.edit": [
+          "wan-3.0"
+        ],
+        "video.extend": [
+          "wan-3.0"
         ]
       },
       "official_variant_sources": [
-        "https://github.com/buckyos/sn-business/blob/cebf55a/CD/cluster_config/release/apps.ts",
+        "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
         "https://openrouter.ai/z-ai/glm-5",
         "https://openrouter.ai/z-ai/glm-5.3",
         "https://platform.kimi.com/docs/guide/kimi-k3.html",
         "https://openrouter.ai/qwen/qwen3.8-max-0902"
       ],
       "official_variant_rules": [
+        {
+          "model_ids": [
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6-astra"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
         {
           "model_ids": [
             "gpt-5.5",
@@ -7821,12 +7985,133 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "glm-5"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-thinking": {
+              "reasoning": {
+                "enabled": true
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.6-plus",
+            "qwen3.7-plus"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-thinking": {
+              "reasoning": {
+                "enabled": true
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-max-0902"
+          ],
+          "variants": {
+            "reasoning-minimal": {
+              "reasoning": {
+                "effort": "minimal"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
-        "llm": "gpt-5.5",
-        "vision.ocr": "gpt-5.5",
-        "vision.caption": "gpt-5.5"
+        "llm": "gpt-6-sol",
+        "vision.ocr": "gpt-6-sol",
+        "vision.caption": "gpt-6-sol",
+        "embedding.text": "text-embedding-3-small",
+        "image.txt2img": "gpt-image-2",
+        "image.img2img": "gpt-image-2",
+        "image.inpaint": "gpt-image-2",
+        "audio.tts": "gpt-4o-mini-tts",
+        "audio.asr": "gpt-4o-transcribe-diarize",
+        "agent.computer_use": "gpt-6-sol",
+        "video.generate": "wan-3.0",
+        "video.edit": "wan-3.0",
+        "video.extend": "wan-3.0"
       },
       "contracts": [
         {
@@ -7839,6 +8124,16 @@
             "vision.ocr",
             "vision.caption"
           ],
+          "test_model_ids": {
+            "vision.ocr": "kimi-k3"
+          },
+          "model_ids_by_api_type": {
+            "vision.ocr": [
+              "kimi-k3",
+              "qwen3.7-plus",
+              "ui-tars-1.5-7b"
+            ]
+          },
           "operation": "responses.create",
           "http_method": "POST",
           "path": "/api/v1/ai/responses",
@@ -7910,11 +8205,1157 @@
               "total_tokens": 7
             }
           },
-          "official_sources": [
-            "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/public.rs",
-            "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/litellm/mod.rs"
+          "inline_artifact_success_fixture": {
+            "id": "resp_inline_artifact_mock_1",
+            "object": "response",
+            "status": "completed",
+            "model": "mock-model",
+            "output": [
+              {
+                "type": "message",
+                "id": "msg_inline_artifact_mock_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "BUCKYOS-AICC-4827",
+                    "annotations": []
+                  }
+                ]
+              },
+              {
+                "type": "image_generation_call",
+                "id": "ig_inline_artifact_mock_1",
+                "status": "completed",
+                "result": "aW1hZ2U=",
+                "output_format": "png"
+              }
+            ],
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "inline_artifact_payload_paths": [
+            "/output/1/result"
           ],
-          "evidence_summary": "SN public source at f765081 exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses."
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/litellm/mod.rs"
+          ],
+          "evidence_summary": "SN public source at main exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses."
+        },
+        {
+          "id": "sn.openai-responses.background.v1",
+          "model_ids_by_api_type": {
+            "vision.ocr": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex"
+            ],
+            "image.txt2img": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano"
+            ],
+            "image.img2img": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano"
+            ]
+          },
+          "protocol_adapter_id": "sn-openai",
+          "api_version": "v1",
+          "api_types": [
+            "vision.ocr",
+            "image.txt2img",
+            "image.img2img"
+          ],
+          "operation": "responses.background",
+          "http_method": "POST",
+          "path": "/api/v1/ai/responses",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input",
+            "background"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "include",
+            "instructions",
+            "max_output_tokens",
+            "metadata",
+            "parallel_tool_calls",
+            "previous_response_id",
+            "reasoning",
+            "service_tier",
+            "store",
+            "stream",
+            "temperature",
+            "text",
+            "tool_choice",
+            "tools",
+            "top_logprobs",
+            "top_p",
+            "truncation",
+            "user",
+            "background"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "string",
+              "array"
+            ],
+            "background": [
+              "boolean"
+            ],
+            "stream": [
+              "boolean"
+            ]
+          },
+          "success_fixture": {
+            "id": "resp_background_mock_1",
+            "object": "response",
+            "background": true,
+            "status": "queued"
+          },
+          "inline_artifact_success_fixture": {
+            "id": "resp_inline_artifact_mock_1",
+            "object": "response",
+            "status": "completed",
+            "model": "mock-model",
+            "output": [
+              {
+                "type": "message",
+                "id": "msg_inline_artifact_mock_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "BUCKYOS-AICC-4827",
+                    "annotations": []
+                  }
+                ]
+              },
+              {
+                "type": "image_generation_call",
+                "id": "ig_inline_artifact_mock_1",
+                "status": "completed",
+                "result": "aW1hZ2U=",
+                "output_format": "png"
+              }
+            ],
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "inline_artifact_payload_paths": [
+            "/output/1/result"
+          ],
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/litellm/mod.rs",
+            "https://developers.openai.com/api/docs/guides/background"
+          ],
+          "evidence_summary": "Responses background=true creates a response ID; GET /responses/{id} polls and retrieves output; POST /responses/{id}/cancel cancels. SN forwards these endpoints; actual upstream background support is verified separately by T2.",
+          "test_model_ids": {
+            "vision.ocr": "gpt-6-sol",
+            "image.txt2img": "gpt-6-sol",
+            "image.img2img": "gpt-6-sol"
+          },
+          "async_protocol": "openai_responses",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/ai/responses/resp_background_mock_1"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/ai/responses/resp_background_mock_1"
+            },
+            {
+              "name": "cancel",
+              "http_method": "POST",
+              "path": "/api/v1/ai/responses/resp_background_mock_1/cancel"
+            }
+          ],
+          "required_body_values": {
+            "/background": true,
+            "/stream": false
+          },
+          "async_result_fixture": {
+            "id": "resp_mock_1",
+            "object": "response",
+            "status": "completed",
+            "model": "mock-model",
+            "output": [
+              {
+                "type": "message",
+                "id": "msg_mock_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "BUCKYOS-AICC-4827",
+                    "annotations": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          }
+        },
+        {
+          "id": "sn.openai-responses.computer.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.responses.computer.v1",
+          "api_version": "v1",
+          "api_types": [
+            "agent.computer_use"
+          ],
+          "operation": "responses.create",
+          "http_method": "POST",
+          "path": "/api/v1/ai/responses",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input",
+            "tools"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "reasoning",
+            "tools",
+            "tool_choice",
+            "previous_response_id"
+          ],
+          "required_body_values": {
+            "/tool_choice": "required"
+          },
+          "computer_screenshot_handshake": true,
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "array"
+            ],
+            "tools": [
+              "array"
+            ]
+          },
+          "success_fixture": {
+            "id": "resp_computer_mock_1",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-6-sol",
+            "output": [
+              {
+                "type": "computer_call",
+                "id": "computer_mock_1",
+                "call_id": "computer_call_mock_1",
+                "status": "completed",
+                "actions": [
+                  {
+                    "type": "click",
+                    "button": "left",
+                    "x": 640,
+                    "y": 360
+                  }
+                ],
+                "pending_safety_checks": []
+              }
+            ],
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
+          ],
+          "evidence_summary": "SN forwards the Responses computer tool request and computer_call action output unchanged through its public Responses route."
+        },
+        {
+          "id": "sn.openai-embeddings.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.embeddings.v1",
+          "api_version": "v1",
+          "api_types": [
+            "embedding.text"
+          ],
+          "operation": "embeddings.create",
+          "http_method": "POST",
+          "path": "/api/v1/ai/embeddings",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "encoding_format",
+            "dimensions",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "string",
+              "array"
+            ]
+          },
+          "success_fixture": {
+            "object": "list",
+            "data": [
+              {
+                "object": "embedding",
+                "index": 0,
+                "embedding": [
+                  0.1,
+                  0.2,
+                  0.3
+                ]
+              }
+            ],
+            "model": "mock-model",
+            "usage": {
+              "prompt_tokens": 2,
+              "total_tokens": 2
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://openrouter.ai/docs/api-reference/embeddings"
+          ],
+          "evidence_summary": "SN proxies POST /api/v1/ai/embeddings to LiteLLM's OpenAI-compatible embedding endpoint."
+        },
+        {
+          "id": "sn.openai-images-generations.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.images.generations.v1",
+          "api_version": "v1",
+          "api_types": [
+            "image.txt2img"
+          ],
+          "operation": "images.generate",
+          "http_method": "POST",
+          "path": "/api/v1/ai/images/generations",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "prompt"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "background",
+            "moderation",
+            "n",
+            "output_compression",
+            "output_format",
+            "quality",
+            "response_format",
+            "size",
+            "style",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "created": 1770000000,
+            "data": [
+              {
+                "b64_json": "aW1hZ2U="
+              }
+            ],
+            "usage": {
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "total_tokens": 3
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://openrouter.ai/qwen/qwen-image-3-pro"
+          ],
+          "evidence_summary": "SN proxies OpenAI-compatible image generation to its configured Qwen Image 3 Pro OpenRouter route.",
+          "model_ids_by_api_type": {
+            "image.txt2img": [
+              "gpt-image-2"
+            ]
+          }
+        },
+        {
+          "id": "sn.openai-images-edits.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.images.edits.v1",
+          "api_version": "v1",
+          "api_types": [
+            "image.img2img",
+            "image.inpaint"
+          ],
+          "operation": "images.edit",
+          "http_method": "POST",
+          "path": "/api/v1/ai/images/edits",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "multipart/form-data",
+          "required_body_fields": [
+            "model",
+            "image",
+            "prompt"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "image",
+            "mask",
+            "prompt",
+            "background",
+            "input_fidelity",
+            "n",
+            "output_compression",
+            "output_format",
+            "quality",
+            "response_format",
+            "size",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "image": [
+              "object",
+              "array"
+            ],
+            "prompt": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "created": 1770000000,
+            "data": [
+              {
+                "b64_json": "aW1hZ2U="
+              }
+            ],
+            "usage": {
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "total_tokens": 3
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro"
+          ],
+          "evidence_summary": "SN accepts and forwards multipart OpenAI-compatible image editing requests for Qwen Image 3 Pro and GPT Image 2.",
+          "model_ids_by_api_type": {
+            "image.img2img": [
+              "gpt-image-2"
+            ],
+            "image.inpaint": [
+              "gpt-image-2"
+            ]
+          }
+        },
+        {
+          "id": "sn.openai-audio-speech.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.audio.speech.v1",
+          "api_version": "v1",
+          "api_types": [
+            "audio.tts"
+          ],
+          "operation": "audio.speech",
+          "http_method": "POST",
+          "path": "/api/v1/ai/audio/speech",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input",
+            "voice"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "voice",
+            "instructions",
+            "response_format",
+            "speed",
+            "stream_format"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "string"
+            ],
+            "voice": [
+              "string",
+              "object"
+            ]
+          },
+          "success_content_type": "audio/mpeg",
+          "success_fixture_base64": "SUQzAwAAAAA=",
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
+          ],
+          "evidence_summary": "SN proxies OpenAI-compatible speech creation and returns the generated audio bytes."
+        },
+        {
+          "id": "sn.openai-audio-transcriptions.v1",
+          "model_ids_by_api_type": {
+            "audio.asr": [
+              "gpt-4o-mini-transcribe",
+              "gpt-4o-transcribe-diarize"
+            ]
+          },
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.audio.transcriptions.v1",
+          "api_version": "v1",
+          "api_types": [
+            "audio.asr"
+          ],
+          "operation": "audio.transcriptions",
+          "http_method": "POST",
+          "path": "/api/v1/ai/audio/transcriptions",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "multipart/form-data",
+          "required_body_fields": [
+            "file",
+            "model"
+          ],
+          "allowed_body_fields": [
+            "file",
+            "model",
+            "chunking_strategy",
+            "include",
+            "known_speaker_names",
+            "known_speaker_references",
+            "language",
+            "prompt",
+            "response_format",
+            "stream",
+            "temperature",
+            "timestamp_granularities"
+          ],
+          "body_field_types": {
+            "file": [
+              "object"
+            ],
+            "model": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "text": "BUCKYOS-AICC-4827",
+            "usage": {
+              "type": "tokens",
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
+          ],
+          "evidence_summary": "SN proxies multipart OpenAI-compatible audio transcription and returns transcript text with usage where supported."
+        },
+        {
+          "id": "sn.audio-chat.v1",
+          "protocol_adapter_id": "sn-openai",
+          "api_version": "v1",
+          "api_types": [
+            "audio.asr"
+          ],
+          "test_model_ids": {
+            "audio.asr": "voxtral-small-24b-2507"
+          },
+          "model_ids_by_api_type": {
+            "audio.asr": [
+              "voxtral-small-24b-2507"
+            ]
+          },
+          "operation": "chat.completions.create",
+          "http_method": "POST",
+          "path": "/api/v1/ai/chat/completions",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "messages"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "messages"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "messages": [
+              "array"
+            ]
+          },
+          "required_body_values": {
+            "/messages/0/role": "user",
+            "/messages/0/content/0/type": "input_audio",
+            "/messages/0/content/0/input_audio/format": "wav",
+            "/messages/0/content/1/type": "text"
+          },
+          "required_body_paths": [
+            "/messages/0/content/0/input_audio/data",
+            "/messages/0/content/1/text"
+          ],
+          "success_fixture": {
+            "id": "chat_audio_mock_1",
+            "object": "chat.completion",
+            "model": "mock-model",
+            "choices": [
+              {
+                "index": 0,
+                "message": {
+                  "role": "assistant",
+                  "content": "BUCKYOS-AICC-4827"
+                },
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 4,
+              "completion_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "official_sources": [
+            "https://openrouter.ai/docs/guides/overview/multimodal/audio",
+            "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
+          ],
+          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text."
+        },
+        {
+          "id": "sn.openai-videos.v1",
+          "error_fixture_key": "sn-openrouter-video",
+          "protocol_adapter_id": "sn-openai",
+          "api_version": "v1",
+          "api_types": [
+            "video.generate"
+          ],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/api/v1/ai/videos",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "multipart/form-data",
+          "required_body_fields": [
+            "model",
+            "prompt"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "input_reference",
+            "seconds",
+            "size"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": [
+              "string"
+            ],
+            "input_reference": [
+              "object"
+            ]
+          },
+          "canonical_request_overrides": {
+            "output": {
+              "duration_seconds": 2,
+              "size": {
+                "width": 1080,
+                "height": 1920
+              }
+            }
+          },
+          "required_body_values": {
+            "/seconds": "2",
+            "/size": "1080x1920"
+          },
+          "async_protocol": "openai_video",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/ai/videos/{operation_id}"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/ai/videos/{operation_id}/content"
+            }
+          ],
+          "success_fixture": {
+            "id": "video_mock_1.v2",
+            "object": "video",
+            "model": "mock-model",
+            "status": "queued",
+            "progress": 0,
+            "created_at": 1770000000
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/video_resources.rs",
+            "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
+            "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+          ],
+          "evidence_summary": "SN exposes OpenAI-compatible multipart video creation and authenticated status/content reads bound to the original backend credentials. Its Wan route supports text and first-frame image generation.",
+          "base_contract_id": "openai.videos.v1",
+          "video_generate_scenarios": [
+            "keyframe"
+          ]
+        },
+        {
+          "id": "sn.openai-video-edits.v1",
+          "error_fixture_key": "sn-openrouter-video",
+          "alternative_content_types": [
+            "application/json"
+          ],
+          "protocol_adapter_id": "sn-openai",
+          "api_version": "v1",
+          "api_types": [
+            "video.edit"
+          ],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/api/v1/ai/videos/edits",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "multipart/form-data",
+          "required_body_fields": [
+            "model",
+            "prompt",
+            "video"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "video",
+            "seconds"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": [
+              "string"
+            ],
+            "video": [
+              "object"
+            ],
+            "seconds": [
+              "string"
+            ]
+          },
+          "async_protocol": "openai_video",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/ai/videos/{operation_id}"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/ai/videos/{operation_id}/content"
+            }
+          ],
+          "success_fixture": {
+            "id": "video_mock_1.v2",
+            "object": "video",
+            "model": "mock-model",
+            "status": "queued",
+            "progress": 0,
+            "created_at": 1770000000
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/service.rs",
+            "https://github.com/BerriAI/litellm/blob/main/litellm/llms/openai/videos/transformation.py",
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+          ],
+          "evidence_summary": "SN forwards video edits/extensions to the matching LiteLLM OpenAI-compatible routes. Validate the advertised transport independently of current upstream model availability.",
+          "test_model_ids": {
+            "video.edit": "wan-3.0"
+          },
+          "model_ids_by_api_type": {
+            "video.edit": [
+              "wan-3.0"
+            ]
+          },
+          "provider_artifact_identity": {
+            "fixture_artifact_id": "video_mock_1.v2",
+            "returns_api_types": [
+              "video.edit"
+            ],
+            "accepts_api_types": [
+              "video.edit"
+            ],
+            "id_fields": [
+              "id"
+            ],
+            "same_provider_reuse": "required",
+            "cross_provider_reuse": "forbidden"
+          }
+        },
+        {
+          "id": "sn.openai-video-extensions.v1",
+          "error_fixture_key": "sn-openrouter-video",
+          "protocol_adapter_id": "sn-openai",
+          "api_version": "v1",
+          "api_types": [
+            "video.extend"
+          ],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/api/v1/ai/videos/extensions",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "prompt",
+            "video"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "video",
+            "seconds"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": [
+              "string"
+            ],
+            "video": [
+              "object"
+            ],
+            "seconds": [
+              "string"
+            ]
+          },
+          "async_protocol": "openai_video",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/ai/videos/{operation_id}"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/ai/videos/{operation_id}/content"
+            }
+          ],
+          "success_fixture": {
+            "id": "video_mock_1.v2",
+            "object": "video",
+            "model": "mock-model",
+            "status": "queued",
+            "progress": 0,
+            "created_at": 1770000000
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/service.rs",
+            "https://github.com/BerriAI/litellm/blob/main/litellm/llms/openai/videos/transformation.py",
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+          ],
+          "evidence_summary": "SN forwards video edits/extensions to the matching LiteLLM OpenAI-compatible routes. Validate the advertised transport independently of current upstream model availability.",
+          "test_model_ids": {
+            "video.extend": "wan-3.0"
+          },
+          "model_ids_by_api_type": {
+            "video.extend": [
+              "wan-3.0"
+            ]
+          },
+          "provider_artifact_identity": {
+            "fixture_artifact_id": "video_mock_1.v2",
+            "returns_api_types": [
+              "video.extend"
+            ],
+            "accepts_api_types": [
+              "video.extend"
+            ],
+            "id_fields": [
+              "id"
+            ],
+            "same_provider_reuse": "required",
+            "cross_provider_reuse": "forbidden"
+          },
+          "canonical_request_overrides": {
+            "continuation_handle": "video_mock_1.v2"
+          },
+          "required_body_paths": [
+            "/video/id"
+          ],
+          "required_body_values": {
+            "/seconds": "2"
+          }
+        },
+        {
+          "id": "sn.qwen-images-generations.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.images.generations.v1",
+          "api_version": "v1",
+          "api_types": [
+            "image.txt2img"
+          ],
+          "operation": "images.generate",
+          "http_method": "POST",
+          "path": "/api/v1/ai/images/generations",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "prompt"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "background",
+            "moderation",
+            "n",
+            "output_compression",
+            "output_format",
+            "quality",
+            "response_format",
+            "size",
+            "style",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "created": 1770000000,
+            "data": [
+              {
+                "b64_json": "aW1hZ2U="
+              }
+            ],
+            "usage": {
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "total_tokens": 3
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://openrouter.ai/qwen/qwen-image-3-pro",
+            "https://openrouter.ai/blog/tutorials/image-generation/"
+          ],
+          "evidence_summary": "SN publishes OpenAI-compatible image generation/edit routes. The OpenRouter image-only model requires its dedicated Image API upstream; Chat Completions is not a supported alternative. These fixtures validate the public SN transport, not upstream availability.",
+          "model_ids_by_api_type": {
+            "image.txt2img": [
+              "qwen-image-3-pro"
+            ]
+          },
+          "test_model_ids": {
+            "image.txt2img": "qwen-image-3-pro"
+          }
+        },
+        {
+          "id": "sn.qwen-images-edits.v1",
+          "protocol_adapter_id": "sn-openai",
+          "base_contract_id": "openai.images.edits.v1",
+          "api_version": "v1",
+          "api_types": [
+            "image.img2img"
+          ],
+          "operation": "images.edit",
+          "http_method": "POST",
+          "path": "/api/v1/ai/images/edits",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "multipart/form-data",
+          "required_body_fields": [
+            "model",
+            "image",
+            "prompt"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "image",
+            "mask",
+            "prompt",
+            "background",
+            "input_fidelity",
+            "n",
+            "output_compression",
+            "output_format",
+            "quality",
+            "response_format",
+            "size",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "image": [
+              "object",
+              "array"
+            ],
+            "prompt": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "created": 1770000000,
+            "data": [
+              {
+                "b64_json": "aW1hZ2U="
+              }
+            ],
+            "usage": {
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "total_tokens": 3
+            }
+          },
+          "official_sources": [
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
+            "https://openrouter.ai/qwen/qwen-image-3-pro",
+            "https://openrouter.ai/blog/tutorials/image-generation/"
+          ],
+          "evidence_summary": "SN publishes OpenAI-compatible image generation/edit routes. The OpenRouter image-only model requires its dedicated Image API upstream; Chat Completions is not a supported alternative. These fixtures validate the public SN transport, not upstream availability.",
+          "model_ids_by_api_type": {
+            "image.img2img": [
+              "qwen-image-3-pro"
+            ]
+          },
+          "test_model_ids": {
+            "image.img2img": "qwen-image-3-pro"
+          }
         }
       ]
     }
@@ -8069,9 +9510,9 @@
         "v1"
       ],
       "official_sources": [
-        "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"
+        "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/error.rs"
       ],
-      "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error."
+      "evidence_summary": "SN source at main defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error."
     }
   },
   "error_fixtures": {
@@ -9105,6 +10546,64 @@
         "body": {
           "code": "timeout",
           "message": "litellm request timed out"
+        }
+      }
+    ],
+    "sn-openrouter-video": [
+      {
+        "scenario": "invalid_argument",
+        "status": 400,
+        "body": {
+          "code": "invalid_argument",
+          "message": "litellm rejected request"
+        }
+      },
+      {
+        "scenario": "authentication",
+        "status": 401,
+        "body": {
+          "code": "unauthorized",
+          "message": "invalid or missing credentials"
+        }
+      },
+      {
+        "scenario": "insufficient_balance",
+        "status": 429,
+        "body": {
+          "error": {
+            "message": "Insufficient credit balance.",
+            "type": "insufficient_balance",
+            "param": null,
+            "code": "429"
+          }
+        }
+      },
+      {
+        "scenario": "unavailable",
+        "status": 503,
+        "body": {
+          "code": "dependency_unavailable",
+          "message": "litellm is unavailable"
+        }
+      },
+      {
+        "scenario": "timeout",
+        "status": 504,
+        "body": {
+          "code": "timeout",
+          "message": "litellm request timed out"
+        }
+      },
+      {
+        "scenario": "upstream_json_required",
+        "status": 400,
+        "body": {
+          "error": {
+            "message": "litellm.BadRequestError: OpenAIException - Content-Type must be application/json",
+            "type": "invalid_request_error",
+            "param": null,
+            "code": "400"
+          }
         }
       }
     ]

@@ -1,0 +1,405 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-23T07:59:25.621Z",
+  "source_baseline_revision": "2026-10-23.1",
+  "official_catalog_fetched_at": "2026-10-23T07:57:11.212Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "fal",
+      "provider_instance_name": "native-fal-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "catalog-fal-3",
+      "refresh_inventory_revision": "149:1792739553873",
+      "unmatched_count": 0,
+      "after_inventory_revision": "catalog-fal-3"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "150:1792739553873",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792742234447,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 22,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-mini-tts",
+            "gpt-4o-transcribe-diarize",
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-image-2",
+            "kimi-k3",
+            "text-embedding-3-large",
+            "text-embedding-3-small"
+          ],
+          "updated_at_ms": 1792742234447
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792742235274,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792742235274
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main-2",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "fal_key",
+          "mode": "api_key"
+        },
+        "base_url": "https://queue.fal.run",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792742235926,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 4,
+          "revision": "catalog-fal-3",
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 1792742235926
+        },
+        "protocol_adapter_id": "fal-queue",
+        "provider_instance_name": "native-fal-t2",
+        "provider_profile_id": "fal",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 6981
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "fal",
+      "provider_instance_name": "native-fal-t2",
+      "inventory_revision": "official-snapshot-2026-10-23T07:57:11.212Z",
+      "models": [
+        {
+          "provider_model_id": "fal-ai/deepfilternet3"
+        },
+        {
+          "provider_model_id": "fal-ai/esrgan"
+        },
+        {
+          "provider_model_id": "fal-ai/imageutils/rembg"
+        },
+        {
+          "provider_model_id": "fal-ai/video-upscaler"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "fal",
+      "provider_instance_name": "native-fal-t2",
+      "inventory_revision": "catalog-fal-3",
+      "models": [
+        {
+          "exact_model": "fal-ai/deepfilternet3@native-fal-t2",
+          "provider_model_id": "fal-ai/deepfilternet3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.enhance"
+          ],
+          "logical_mounts": [
+            "audio.enhance",
+            "audio.enhance.fal",
+            "audio.enhance.fal-ai.deepfilternet3"
+          ]
+        },
+        {
+          "exact_model": "fal-ai/esrgan@native-fal-t2",
+          "provider_model_id": "fal-ai/esrgan",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.upscale"
+          ],
+          "logical_mounts": [
+            "image.upscale",
+            "image.upscale.fal",
+            "image.upscale.fal-ai.esrgan"
+          ]
+        },
+        {
+          "exact_model": "fal-ai/imageutils/rembg@native-fal-t2",
+          "provider_model_id": "fal-ai/imageutils/rembg",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.bg_remove"
+          ],
+          "logical_mounts": [
+            "image.bg_remove",
+            "image.bg_remove.fal",
+            "image.bg_remove.fal-ai.imageutils.rembg"
+          ]
+        },
+        {
+          "exact_model": "fal-ai/video-upscaler@native-fal-t2",
+          "provider_model_id": "fal-ai/video-upscaler",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.upscale"
+          ],
+          "logical_mounts": [
+            "video.upscale",
+            "video.upscale.fal",
+            "video.upscale.fal-ai.video-upscaler"
+          ]
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/deepfilternet3@native-fal-t2",
+      "provider_model_id": "fal-ai/deepfilternet3",
+      "physical_model_id": "fal-ai/deepfilternet3",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/deepfilternet3/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/esrgan@native-fal-t2",
+      "provider_model_id": "fal-ai/esrgan",
+      "physical_model_id": "fal-ai/esrgan",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/esrgan/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/imageutils/rembg@native-fal-t2",
+      "provider_model_id": "fal-ai/imageutils/rembg",
+      "physical_model_id": "fal-ai/imageutils/rembg",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/imageutils/rembg/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/video-upscaler@native-fal-t2",
+      "provider_model_id": "fal-ai/video-upscaler",
+      "physical_model_id": "fal-ai/video-upscaler",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/video-upscaler/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/deepfilternet3@native-fal-t2",
+      "provider_model_id": "fal-ai/deepfilternet3",
+      "physical_model_id": "fal-ai/deepfilternet3",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/deepfilternet3/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/esrgan@native-fal-t2",
+      "provider_model_id": "fal-ai/esrgan",
+      "physical_model_id": "fal-ai/esrgan",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/esrgan/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/imageutils/rembg@native-fal-t2",
+      "provider_model_id": "fal-ai/imageutils/rembg",
+      "physical_model_id": "fal-ai/imageutils/rembg",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/imageutils/rembg/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/video-upscaler@native-fal-t2",
+      "provider_model_id": "fal-ai/video-upscaler",
+      "physical_model_id": "fal-ai/video-upscaler",
+      "status": "included",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/video-upscaler/api"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.fal.native-fal-t2.fal-ai-deepfilternet3.audio.enhance",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/deepfilternet3@native-fal-t2",
+      "api_type": "audio.enhance",
+      "method": "audio.enhance",
+      "input_kinds": [
+        "audio"
+      ],
+      "output_kinds": [
+        "audio"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/deepfilternet3/api"
+      ]
+    },
+    {
+      "case_id": "t2.fal.native-fal-t2.fal-ai-esrgan.image.upscale",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/esrgan@native-fal-t2",
+      "api_type": "image.upscale",
+      "method": "image.upscale",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "image"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/esrgan/api"
+      ]
+    },
+    {
+      "case_id": "t2.fal.native-fal-t2.fal-ai-imageutils-rembg.image.bg_remove",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/imageutils/rembg@native-fal-t2",
+      "api_type": "image.bg_remove",
+      "method": "image.bg_remove",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "image"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/imageutils/rembg/api"
+      ]
+    },
+    {
+      "case_id": "t2.fal.native-fal-t2.fal-ai-video-upscaler.video.upscale",
+      "provider_driver": "fal",
+      "provider_instance": "native-fal-t2",
+      "exact_model": "fal-ai/video-upscaler@native-fal-t2",
+      "api_type": "video.upscale",
+      "method": "video.upscale",
+      "input_kinds": [
+        "video"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://fal.ai/models/fal-ai/video-upscaler/api"
+      ]
+    }
+  ]
+}

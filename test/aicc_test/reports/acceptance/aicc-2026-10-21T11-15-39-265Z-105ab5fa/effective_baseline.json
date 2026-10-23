@@ -1,0 +1,1219 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-21T11:18:30.711Z",
+  "source_baseline_revision": "2026-10-21.2",
+  "official_catalog_fetched_at": "2026-10-21T11:15:39.518Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_instance_name": "sn-issues-45-46-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "4acd052834f8b8ef0d7df2563cde23f3980d2c67f1b41fa812da00bd436ad95d",
+      "refresh_inventory_revision": "441:1792579076794",
+      "unmatched_count": 0,
+      "after_inventory_revision": "4acd052834f8b8ef0d7df2563cde23f3980d2c67f1b41fa812da00bd436ad95d"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "442:1792579076794",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792581340956,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792581340956
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792581341341,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792581341341
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-main-2",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1792581342016,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 11,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [
+            "glm-5",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen-image-3-pro",
+            "qwen3-embedding-8b",
+            "qwen3.6-plus",
+            "qwen3.7-plus",
+            "qwen3.8-max-0902",
+            "ui-tars-1.5-7b",
+            "voxtral-small-24b-2507",
+            "wan-3.0"
+          ],
+          "updated_at_ms": 1792581342016
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-issues-45-46-t2",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 6856
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_instance_name": "sn-issues-45-46-t2",
+      "inventory_revision": "official-snapshot-2026-10-21T11:15:39.518Z",
+      "models": [
+        {
+          "provider_model_id": "glm-5"
+        },
+        {
+          "provider_model_id": "glm-5.3"
+        },
+        {
+          "provider_model_id": "kimi-k3"
+        },
+        {
+          "provider_model_id": "qwen-image-3-pro"
+        },
+        {
+          "provider_model_id": "qwen3-embedding-8b"
+        },
+        {
+          "provider_model_id": "qwen3.6-plus"
+        },
+        {
+          "provider_model_id": "qwen3.7-plus"
+        },
+        {
+          "provider_model_id": "qwen3.8-max-0902"
+        },
+        {
+          "provider_model_id": "ui-tars-1.5-7b"
+        },
+        {
+          "provider_model_id": "voxtral-small-24b-2507"
+        },
+        {
+          "provider_model_id": "wan-3.0"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_instance_name": "sn-issues-45-46-t2",
+      "inventory_revision": "4acd052834f8b8ef0d7df2563cde23f3980d2c67f1b41fa812da00bd436ad95d",
+      "models": [
+        {
+          "exact_model": "glm-5.3:reasoning-high@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5.3:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3:reasoning-low@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5.3:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3:reasoning-max@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5.3:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5.3@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5.3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5:reasoning-none@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5:reasoning-thinking@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "glm-5@sn-issues-45-46-t2",
+          "provider_model_id": "glm-5",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-high@sn-issues-45-46-t2",
+          "provider_model_id": "kimi-k3:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-low@sn-issues-45-46-t2",
+          "provider_model_id": "kimi-k3:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3:reasoning-max@sn-issues-45-46-t2",
+          "provider_model_id": "kimi-k3:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "kimi-k3@sn-issues-45-46-t2",
+          "provider_model_id": "kimi-k3",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen-image-3-pro@sn-issues-45-46-t2",
+          "provider_model_id": "qwen-image-3-pro",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "image.img2img",
+            "image.txt2img"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3-embedding-8b@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3-embedding-8b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "embedding.text"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus:reasoning-none@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.6-plus:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus:reasoning-thinking@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.6-plus:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.6-plus@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.6-plus",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus:reasoning-none@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.7-plus:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus:reasoning-thinking@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.7-plus:reasoning-thinking",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.7-plus@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.7-plus",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-high@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-low@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-medium@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-medium",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-minimal@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-minimal",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902:reasoning-xhigh@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.8-max-0902:reasoning-xhigh",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "qwen3.8-max-0902@sn-issues-45-46-t2",
+          "provider_model_id": "qwen3.8-max-0902",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "ui-tars-1.5-7b@sn-issues-45-46-t2",
+          "provider_model_id": "ui-tars-1.5-7b",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "voxtral-small-24b-2507@sn-issues-45-46-t2",
+          "provider_model_id": "voxtral-small-24b-2507",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "audio.asr",
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "wan-3.0@sn-issues-45-46-t2",
+          "provider_model_id": "wan-3.0",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "video.img2video",
+            "video.txt2video"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "glm-5.3@sn-issues-45-46-t2",
+      "provider_model_id": "glm-5.3",
+      "physical_model_id": "glm-5.3",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/z-ai/glm-5.3",
+        "https://docs.z.ai/guides/llm/glm-5.3"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "glm-5@sn-issues-45-46-t2",
+      "provider_model_id": "glm-5",
+      "physical_model_id": "glm-5",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/z-ai/glm-5"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "kimi-k3@sn-issues-45-46-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3.html",
+        "https://openrouter.ai/moonshotai/kimi-k3"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen-image-3-pro@sn-issues-45-46-t2",
+      "provider_model_id": "qwen-image-3-pro",
+      "physical_model_id": "qwen-image-3-pro",
+      "status": "included",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
+        "https://openrouter.ai/qwen/qwen-image-3-pro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3-embedding-8b@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3-embedding-8b",
+      "physical_model_id": "qwen3-embedding-8b",
+      "status": "included",
+      "source_urls": [
+        "https://huggingface.co/Qwen/Qwen3-Embedding-8B",
+        "https://openrouter.ai/qwen/qwen3-embedding-8b"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.6-plus@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3.6-plus",
+      "physical_model_id": "qwen3.6-plus",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.6-plus",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.7-plus@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3.7-plus",
+      "physical_model_id": "qwen3.7-plus",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.7-plus"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.8-max-0902@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3.8-max-0902",
+      "physical_model_id": "qwen3.8-max-0902",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "ui-tars-1.5-7b@sn-issues-45-46-t2",
+      "provider_model_id": "ui-tars-1.5-7b",
+      "physical_model_id": "ui-tars-1.5-7b",
+      "status": "included",
+      "source_urls": [
+        "https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B",
+        "https://openrouter.ai/bytedance/ui-tars-1.5-7b"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "voxtral-small-24b-2507@sn-issues-45-46-t2",
+      "provider_model_id": "voxtral-small-24b-2507",
+      "physical_model_id": "voxtral-small-24b-2507",
+      "status": "included",
+      "source_urls": [
+        "https://docs.mistral.ai/getting-started/models/models_overview",
+        "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+        "https://openrouter.ai/docs/guides/overview/multimodal/stt",
+        "https://openrouter.ai/docs/guides/overview/multimodal/audio"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "wan-3.0@sn-issues-45-46-t2",
+      "provider_model_id": "wan-3.0",
+      "physical_model_id": "wan-3.0",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+        "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+        "https://openrouter.ai/alibaba/wan-3.0",
+        "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
+        "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "glm-5.3@sn-issues-45-46-t2",
+      "provider_model_id": "glm-5.3",
+      "physical_model_id": "glm-5.3",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/z-ai/glm-5.3",
+        "https://docs.z.ai/guides/llm/glm-5.3"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "glm-5@sn-issues-45-46-t2",
+      "provider_model_id": "glm-5",
+      "physical_model_id": "glm-5",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/z-ai/glm-5"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "kimi-k3@sn-issues-45-46-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3.html",
+        "https://openrouter.ai/moonshotai/kimi-k3"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen-image-3-pro@sn-issues-45-46-t2",
+      "provider_model_id": "qwen-image-3-pro",
+      "physical_model_id": "qwen-image-3-pro",
+      "status": "included",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
+        "https://openrouter.ai/qwen/qwen-image-3-pro"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3-embedding-8b@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3-embedding-8b",
+      "physical_model_id": "qwen3-embedding-8b",
+      "status": "included",
+      "source_urls": [
+        "https://huggingface.co/Qwen/Qwen3-Embedding-8B",
+        "https://openrouter.ai/qwen/qwen3-embedding-8b"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.6-plus@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3.6-plus",
+      "physical_model_id": "qwen3.6-plus",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.6-plus",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.7-plus@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3.7-plus",
+      "physical_model_id": "qwen3.7-plus",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.7-plus"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.8-max-0902@sn-issues-45-46-t2",
+      "provider_model_id": "qwen3.8-max-0902",
+      "physical_model_id": "qwen3.8-max-0902",
+      "status": "included",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "ui-tars-1.5-7b@sn-issues-45-46-t2",
+      "provider_model_id": "ui-tars-1.5-7b",
+      "physical_model_id": "ui-tars-1.5-7b",
+      "status": "included",
+      "source_urls": [
+        "https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B",
+        "https://openrouter.ai/bytedance/ui-tars-1.5-7b"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "voxtral-small-24b-2507@sn-issues-45-46-t2",
+      "provider_model_id": "voxtral-small-24b-2507",
+      "physical_model_id": "voxtral-small-24b-2507",
+      "status": "included",
+      "source_urls": [
+        "https://docs.mistral.ai/getting-started/models/models_overview",
+        "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+        "https://openrouter.ai/docs/guides/overview/multimodal/stt",
+        "https://openrouter.ai/docs/guides/overview/multimodal/audio"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "wan-3.0@sn-issues-45-46-t2",
+      "provider_model_id": "wan-3.0",
+      "physical_model_id": "wan-3.0",
+      "status": "included",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+        "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+        "https://openrouter.ai/alibaba/wan-3.0",
+        "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
+        "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.glm-5.3.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "glm-5.3@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/z-ai/glm-5.3",
+        "https://docs.z.ai/guides/llm/glm-5.3"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.glm-5.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "glm-5@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/z-ai/glm-5"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.kimi-k3.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "kimi-k3@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3.html",
+        "https://openrouter.ai/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.kimi-k3.vision.caption",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "kimi-k3@sn-issues-45-46-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3.html",
+        "https://openrouter.ai/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.kimi-k3.vision.ocr",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "kimi-k3@sn-issues-45-46-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3.html",
+        "https://openrouter.ai/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen-image-3-pro.image.img2img",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen-image-3-pro@sn-issues-45-46-t2",
+      "api_type": "image.img2img",
+      "method": "image.img2img",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "image"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
+        "https://openrouter.ai/qwen/qwen-image-3-pro"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen-image-3-pro.image.txt2img",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen-image-3-pro@sn-issues-45-46-t2",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "image"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
+        "https://openrouter.ai/qwen/qwen-image-3-pro"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3-embedding-8b.embedding.text",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3-embedding-8b@sn-issues-45-46-t2",
+      "api_type": "embedding.text",
+      "method": "embedding.text",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "embedding"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://huggingface.co/Qwen/Qwen3-Embedding-8B",
+        "https://openrouter.ai/qwen/qwen3-embedding-8b"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.6-plus.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.6-plus@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.6-plus",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.6-plus.vision.caption",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.6-plus@sn-issues-45-46-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.6-plus",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.7-plus.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.7-plus@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.7-plus"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.7-plus.vision.caption",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.7-plus@sn-issues-45-46-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.7-plus"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.7-plus.vision.ocr",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.7-plus@sn-issues-45-46-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.7-plus"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.8-max-0902.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.8-max-0902@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.qwen3.8-max-0902.vision.caption",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "qwen3.8-max-0902@sn-issues-45-46-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "https://help.aliyun.com/zh/model-studio/vision-model"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.ui-tars-1.5-7b.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "ui-tars-1.5-7b@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B",
+        "https://openrouter.ai/bytedance/ui-tars-1.5-7b"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.ui-tars-1.5-7b.vision.caption",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "ui-tars-1.5-7b@sn-issues-45-46-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B",
+        "https://openrouter.ai/bytedance/ui-tars-1.5-7b"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.ui-tars-1.5-7b.vision.ocr",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "ui-tars-1.5-7b@sn-issues-45-46-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B",
+        "https://openrouter.ai/bytedance/ui-tars-1.5-7b"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.voxtral-small-24b-2507.audio.asr",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "voxtral-small-24b-2507@sn-issues-45-46-t2",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "input_kinds": [
+        "audio"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.mistral.ai/getting-started/models/models_overview",
+        "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+        "https://openrouter.ai/docs/guides/overview/multimodal/stt",
+        "https://openrouter.ai/docs/guides/overview/multimodal/audio"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.voxtral-small-24b-2507.llm",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "voxtral-small-24b-2507@sn-issues-45-46-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://docs.mistral.ai/getting-started/models/models_overview",
+        "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
+        "https://openrouter.ai/docs/guides/overview/multimodal/stt",
+        "https://openrouter.ai/docs/guides/overview/multimodal/audio"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.wan-3.0.video.img2video",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "wan-3.0@sn-issues-45-46-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "input_kinds": [
+        "text",
+        "image"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+        "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+        "https://openrouter.ai/alibaba/wan-3.0",
+        "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
+        "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+      ]
+    },
+    {
+      "case_id": "t2.sn-ai-provider.sn-issues-45-46-t2.wan-3.0.video.txt2video",
+      "provider_driver": "sn-ai-provider",
+      "provider_instance": "sn-issues-45-46-t2",
+      "exact_model": "wan-3.0@sn-issues-45-46-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "input_kinds": [
+        "text"
+      ],
+      "output_kinds": [
+        "video"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+        "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+        "https://openrouter.ai/alibaba/wan-3.0",
+        "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
+        "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+      ]
+    }
+  ]
+}

@@ -778,8 +778,8 @@ impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
                             "artifact ownership lookup failed",
                         )
                     })?;
-                if owner.is_some_and(|(tenant_id, user_id)| {
-                    tenant_id != context.tenant_id || user_id != context.caller_id
+                if owner.as_ref().is_some_and(|(tenant_id, user_id)| {
+                    tenant_id != &context.tenant_id || user_id != &context.caller_id
                 }) {
                     return Err(ResourceError::new(
                         ResourceFailure::Unauthorized,

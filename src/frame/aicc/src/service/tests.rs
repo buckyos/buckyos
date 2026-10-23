@@ -526,6 +526,7 @@ async fn aicc_artifact_authorizer_is_owner_scoped() {
         tenant_id: "tenant-a".into(),
         caller_id: "bob".into(),
         storage: storage.clone(),
+        token: None,
     };
     assert!(same_tenant_other_user
         .authorize(
