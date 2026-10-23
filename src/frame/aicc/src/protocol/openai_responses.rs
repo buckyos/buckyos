@@ -2652,7 +2652,12 @@ fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<Pro
                 .filter(|seconds| seconds.is_finite() && *seconds >= 0.0),
             ..AiUsage::request_units(1)
         }),
-        _ => None,
+        Some(_) => None,
+        // OpenRouter answers with a flat usage object — `seconds`,
+        // `input_tokens`, `output_tokens`, `total_tokens`, `cost` — and no
+        // `type` discriminator. Decoding by field presence keeps the OpenAI
+        // shapes working and stops the flat shape settling as `unknown`.
+        None => flat_transcription_usage(&value)?,
     };
     Ok(ProtocolExecution::Immediate(ProtocolOutput {
         value: json!({
@@ -2667,6 +2672,31 @@ fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<Pro
         usage,
         artifacts: Vec::new(),
     }))
+}
+
+fn flat_transcription_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>> {
+    const FIELDS: &[&str] = &[
+        "seconds",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost",
+    ];
+    let Some(raw) = value.get("usage").filter(|raw| raw.is_object()) else {
+        return Ok(None);
+    };
+    if !FIELDS.iter().any(|field| raw.get(*field).is_some()) {
+        return Ok(None);
+    }
+    let Some(mut usage) = decode_usage(Some(raw), None)? else {
+        return Ok(None);
+    };
+    usage.audio_seconds = raw
+        .get("seconds")
+        .and_then(Value::as_f64)
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .or(usage.audio_seconds);
+    Ok(Some(usage))
 }
 
 fn value_string(value: &Value) -> String {
@@ -3884,6 +3914,49 @@ mod tests {
             panic!("expected immediate")
         };
         assert_eq!(output.artifacts.len(), 1);
+    }
+
+    /// OpenRouter's transcription reports a flat usage object without the
+    /// OpenAI `type` discriminator; decoding it keeps the tokens and the cost.
+    #[tokio::test]
+    async fn openrouter_transcription_decodes_flat_usage_and_cost() {
+        let body = json!({
+            "text": "今天上海天气不错",
+            "usage": {
+                "seconds": 3.5,
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "total_tokens": 19,
+                "cost": 0.000508
+            }
+        });
+        let response = ProtocolContractHarness::default()
+            .response(
+                StatusCode::OK,
+                &[("content-type", "application/json")],
+                Bytes::from(body.to_string()),
+                "request-openrouter-asr",
+                UNIX_EPOCH,
+            )
+            .unwrap();
+        let ProtocolExecution::Immediate(output) = registry()
+            .decode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+                ApiType::AudioSpeechRecognition,
+                response,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate")
+        };
+        let usage = output.usage.expect("flat usage must decode");
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.total_tokens, Some(19));
+        assert_eq!(usage.reported_cost, Some(0.000508));
+        assert_eq!(usage.audio_seconds, Some(3.5));
     }
 
     #[tokio::test]
