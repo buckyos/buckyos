@@ -473,10 +473,12 @@ impl<'a> CallResolver<'a> {
             "provider_model_id".into(),
             Value::String(decision.selected.provider_model_id.clone()),
         );
-        if api_type == ApiType::Llm
-            && binding
-                .supported_features
-                .contains(buckyos_api::features::WEB_SEARCH)
+        // Any binding that declares `web_search` can act on it. Gemini grounds
+        // image generation through the same `google_search` tool, so gating the
+        // injection on `llm` silently dropped the caller's request.
+        if binding
+            .supported_features
+            .contains(buckyos_api::features::WEB_SEARCH)
         {
             let enabled = decision
                 .selected
@@ -1557,6 +1559,89 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn vendor_models_that_reject_sampling_parameters_declare_remove_rules() {
+        // Claude 5.5 rejects `temperature`, `top_p` and `top_k` with a 400
+        // ("`temperature` is deprecated for this model"). Only the provider rules can express
+        // that: the values have to be removed from the normalized options so the lowering step
+        // drops them from the canonical request. Every channel that exposes the model has to
+        // declare it, so both the direct and the aggregate profile are asserted here.
+        let catalog = metadata_snapshot();
+        let context = MatchContext::from([
+            ("api_type".into(), Value::String("llm".into())),
+            ("operation".into(), Value::String("messages.create".into())),
+        ]);
+        for (profile, model) in [
+            ("claude", "claude-sonnet-5-5"),
+            ("claude", "claude-haiku-5-5"),
+            ("claude", "claude-opus-5-5"),
+            ("openrouter", "anthropic/claude-sonnet-5.5"),
+            ("openrouter", "anthropic/claude-haiku-5.5"),
+            ("openrouter", "anthropic/claude-opus-5.5"),
+        ] {
+            let rule = catalog
+                .resolve_provider_rule(profile, model, &context)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{profile}/{model} must resolve a provider rule"));
+            let removed = rule
+                .matching_request_rules(&context)
+                .iter()
+                .flat_map(|rule| rule.remove.iter().map(String::as_str))
+                .collect::<Vec<_>>();
+            for pointer in ["/temperature", "/top_p", "/top_k"] {
+                assert!(
+                    removed.contains(&pointer),
+                    "{profile}/{model} must remove {pointer}, got {removed:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn models_without_the_constraint_keep_their_sampling_parameters() {
+        let catalog = metadata_snapshot();
+        let context = MatchContext::from([
+            ("api_type".into(), Value::String("llm".into())),
+            ("operation".into(), Value::String("messages.create".into())),
+        ]);
+        for (profile, model) in [
+            ("claude", "claude-opus-4-6"),
+            ("openrouter", "anthropic/claude-opus-4.6"),
+        ] {
+            let rule = catalog
+                .resolve_provider_rule(profile, model, &context)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{profile}/{model} must resolve a provider rule"));
+            let removed = rule
+                .matching_request_rules(&context)
+                .iter()
+                .flat_map(|rule| rule.remove.iter())
+                .collect::<Vec<_>>();
+            assert!(
+                !removed
+                    .iter()
+                    .any(|pointer| pointer.starts_with("/temperature")
+                        || pointer.starts_with("/top_p")
+                        || pointer.starts_with("/top_k")),
+                "{profile}/{model} must keep sampling parameters, got {removed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_normalized_keys_are_dropped_from_the_canonical_request() {
+        // A remove rule edits the normalized options only. The lowering step has to carry that
+        // deletion over to the canonical request, otherwise the typed request keeps the value
+        // and the codec sends a parameter the provider refuses.
+        let canonical = json!({"temperature": 0.4, "top_p": 0.9, "max_output_tokens": 64});
+        let normalized = json!({"max_output_tokens": 64});
+        let rewritten =
+            rewrite_canonical_options(&canonical, &normalized, &["temperature", "top_p"]).unwrap();
+        assert!(rewritten.get("temperature").is_none());
+        assert!(rewritten.get("top_p").is_none());
+        assert_eq!(rewritten["max_output_tokens"], json!(64));
+    }
+
     fn api_type_from_mapping_key(key: &str) -> ApiType {
         match key {
             "chat.completions.create" => ApiType::Llm,
@@ -2455,6 +2540,69 @@ mod tests {
         }
     }
 
+    /// Gemini grounds image generation through the same `google_search` tool it
+    /// uses for chat, but lowering only injected the resolved parameter for
+    /// `llm`, so `enabled_capabilities = ["web_search"]` never reached the codec.
+    #[test]
+    fn image_generation_lowering_honours_the_web_search_capability() {
+        let catalog = metadata_snapshot();
+        let codecs = all_codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        for (enabled, expected_tools) in [(true, 1), (false, 0)] {
+            let exact = "gemini-3.1-flash-image@primary".to_string();
+            let mut route = decision(&exact);
+            route.trace.requested_model = "images.generate".into();
+            route.trace.requested_model_type = RouteModelKind::Logical;
+            route.trace.resolved_logical_path = None;
+            route.selected.provider_instance_name = "primary".into();
+            route.selected.provider_profile_id = "gemini".into();
+            route.selected.protocol_adapter_id = "gemini-interactions".into();
+            route.selected.model_driver_id = "gemini".into();
+            route.selected.origin_model_id = "gemini-3.1-flash-image".into();
+            route.selected.provider_model_id = "gemini-3.1-flash-image".into();
+            route.selected.operation = "interactions.create".into();
+            route.selected.enabled_capabilities = if enabled {
+                vec!["web_search".into()]
+            } else {
+                Vec::new()
+            };
+            route.selected.disabled_capabilities = Vec::new();
+            let request = buckyos_api::TextToImageInvokeRequest::new(exact, "上海外滩今天的日出");
+            let mut target = target("test-secret");
+            target.provider_rules_id = Some("gemini".into());
+            target.credential =
+                crate::protocol::gemini_api_key("secret://gemini", "test-secret").unwrap();
+            let lowered = resolver
+                .lower(&route, &AiccCall::ImagesGenerate(request), target)
+                .unwrap();
+            let wire = codecs
+                .encode(
+                    "gemini-interactions",
+                    "interactions.create",
+                    ApiType::ImageTextToImage,
+                    &lowered.input,
+                    &lowered.context,
+                )
+                .unwrap();
+            let crate::protocol::HttpBody::Json(body) = wire.body else {
+                panic!("expected JSON")
+            };
+            let google = body
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(|tools| {
+                    tools
+                        .iter()
+                        .filter(|tool| {
+                            tool.get("type").and_then(Value::as_str) == Some("google_search")
+                        })
+                        .count()
+                })
+                .unwrap_or_default();
+            assert_eq!(google, expected_tools, "web_search={enabled}");
+        }
+    }
+
     #[test]
     fn every_builtin_provider_operation_has_a_golden_lowering_binding() {
         let codecs = all_codecs();
@@ -2527,7 +2675,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 106);
+        assert_eq!(golden.len(), 113);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(

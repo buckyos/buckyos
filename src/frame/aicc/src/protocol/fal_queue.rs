@@ -897,6 +897,20 @@ mod tests {
             request.url,
             "https://queue.fal.run/fal-ai/imageutils/requests/request-2"
         );
+        // Nested model ids keep their provider coverage on the status resource as well: the
+        // lifecycle path is the queue app path, not the full model id.
+        let status = codec
+            .encode_native(&native_input(
+                NativeTaskOperation::Status,
+                Some("request-2"),
+                &nested,
+                &context,
+            ))
+            .unwrap();
+        assert_eq!(
+            status.url,
+            "https://queue.fal.run/fal-ai/imageutils/requests/request-2/status"
+        );
 
         for model_id in ["workflows/acme/upscale", "comfy/acme/upscale"] {
             let namespaced = input(

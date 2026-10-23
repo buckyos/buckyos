@@ -762,6 +762,10 @@ export function buildT15TypedParams(
         ? "openrouter"
         : "openai";
       const structuredOutput = requestKey.endsWith(".structured-output");
+      // The sampling probes send explicit sampling parameters so the Provider
+      // Rules removal (or forwarding) is observable on the wire.
+      const samplingProbe = requestKey.endsWith(".sampling-omitted") ||
+        requestKey.endsWith(".sampling-forwarded");
       const providerSwitch = requestKey.endsWith(".provider-switch");
       const videoInput = requestKey.endsWith(".video-input");
       const providerState = typedOptions.foreignProviderState;
@@ -954,6 +958,7 @@ export function buildT15TypedParams(
           }
           : {}),
         max_output_tokens: 32,
+        ...(samplingProbe ? { temperature: 0.4, top_p: 0.9 } : {}),
       };
     }
     case "embedding.text":
@@ -1584,6 +1589,28 @@ async function executeCase(
       );
     }
   }
+  if (testCase.tags.includes("sampling_omitted")) {
+    for (const field of ["temperature", "top_p", "top_k"]) {
+      if (wireBody && wireBody[field] !== undefined) {
+        diagnostics.push(
+          `sampling parameter ${field} reached the wire for a model that rejects it: ${
+            JSON.stringify(wireBody[field])
+          }`,
+        );
+      }
+    }
+  }
+  if (testCase.tags.includes("sampling_forwarded")) {
+    for (const [field, expected] of [["temperature", 0.4], ["top_p", 0.9]]) {
+      if (wireBody?.[field] !== expected) {
+        diagnostics.push(
+          `sampling parameter ${field} was not forwarded: expected ${expected}, got ${
+            JSON.stringify(wireBody?.[field])
+          }`,
+        );
+      }
+    }
+  }
   const contract = protocolContract(
     catalog,
     testCase.provider_driver!,
@@ -2142,14 +2169,20 @@ export function variantCells(
       );
     }
   }
-  return runtimeVariants.flatMap((model) =>
-    model.api_types.map((apiType) => {
+  return runtimeVariants.flatMap((model) => {
+    const baseModelId = model.provider_actual_model_id ??
+      model.provider_model_id.slice(0, model.provider_model_id.lastIndexOf(":"));
+    return model.api_types.filter((apiType) => {
+      const officialModels = new Set([
+        ...(provider.official_aggregated_model_ids?.[apiType] ?? []),
+        ...(provider.official_first_party_model_ids?.[apiType] ?? []),
+      ]);
+      return officialModels.size === 0 || officialModels.has(baseModelId);
+    }).map((apiType) => {
       const candidates = provider.contracts.filter((candidate) =>
           candidate.api_types.includes(apiType) ||
           candidate.variant_api_types?.includes(apiType)
         );
-      const baseModelId = model.provider_actual_model_id ??
-        model.provider_model_id.slice(0, model.provider_model_id.lastIndexOf(":"));
       const aggregated = new Set(
         provider.official_aggregated_model_ids?.[apiType] ?? [],
       );
@@ -2181,7 +2214,7 @@ export function variantCells(
         expected_provider_options: expected.get(model.provider_model_id),
       };
     })
-  );
+  });
 }
 
 async function main(): Promise<void> {

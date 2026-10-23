@@ -58,6 +58,74 @@ function stringField(value: unknown, field: string): string | undefined {
   return typeof result === "string" && result.trim() ? result.trim() : undefined;
 }
 
+/**
+ * Task types `openRouterTaskTypes` may emit.
+ *
+ * Each one must be a `task_type_api_types` key in the OpenRouter capability
+ * baseline: `manifest.ts` maps official task types onto API types through that
+ * table, so a task type without an entry silently yields zero acceptance cases
+ * instead of failing.
+ */
+export const OPENROUTER_CATALOG_TASK_TYPES = [
+  "decision",
+  "rerank",
+  "embedding.text",
+  "audio.tts",
+  "audio.asr",
+  "audio.music",
+  "video.generate",
+  "llm",
+  "vision.ocr",
+  "vision.caption",
+  "image.txt2img",
+  "image.img2img",
+] as const;
+
+export type OpenRouterCatalogTaskType = (typeof OPENROUTER_CATALOG_TASK_TYPES)[number];
+
+export function openRouterTaskTypes(
+  entry: unknown,
+): OpenRouterCatalogTaskType[] | undefined {
+  const architecture = object(object(entry)?.architecture);
+  const input = Array.isArray(architecture?.input_modalities)
+    ? architecture.input_modalities.filter((value): value is string => typeof value === "string")
+    : [];
+  const output = Array.isArray(architecture?.output_modalities)
+    ? architecture.output_modalities.filter((value): value is string => typeof value === "string")
+    : [];
+  const result: OpenRouterCatalogTaskType[] = [];
+  const push = (taskType: OpenRouterCatalogTaskType) => result.push(taskType);
+  if (output.length === 1 && output[0] === "decisions") push("decision");
+  else if (output.length === 1 && output[0] === "rerank") push("rerank");
+  else if (output.length === 1 && output[0] === "embeddings") push("embedding.text");
+  else if (output.length === 1 && output[0] === "speech") push("audio.tts");
+  else if (output.length === 1 && output[0] === "transcription") push("audio.asr");
+  else if (output.length === 1 && output[0] === "video") {
+    // AICC exposes a single canonical video entry point; text prompts, keyframes
+    // and reference images all lower onto `video.generate`, so the legacy
+    // `video.txt2video` / `video.img2video` names must not be emitted here.
+    push("video.generate");
+  } else if (
+    output.includes("audio") &&
+    output.every((value) => ["text", "image", "audio"].includes(value))
+  ) {
+    push("audio.music");
+  } else if (output.every((value) => ["text", "image"].includes(value))) {
+    if (output.includes("text")) {
+      push("llm");
+      if (input.includes("image")) {
+        push("vision.ocr");
+        push("vision.caption");
+      }
+    }
+    if (output.includes("image")) {
+      if (input.includes("text")) push("image.txt2img");
+      if (input.includes("image")) push("image.img2img");
+    }
+  }
+  return result.length > 0 ? result : undefined;
+}
+
 function requireToken(profile: CatalogProfile, token: string | undefined): string {
   if (profile.official_catalog.authentication === "none") return "";
   if (!token?.trim()) {
@@ -167,7 +235,9 @@ function parsePage(
       const id = stringField(entry, "id") ?? stringField(entry, "model");
       if (!id) return [];
       const record = object(entry);
-      const taskTypes = Array.isArray(record?.task_type)
+      const taskTypes = new URL(config.endpoint).hostname === "openrouter.ai"
+        ? openRouterTaskTypes(entry)
+        : Array.isArray(record?.task_type)
         ? record.task_type.filter((value): value is string => typeof value === "string" && value.length > 0)
         : undefined;
       return [{
@@ -250,6 +320,17 @@ async function fetchOfficialModels(input: {
     if (page === 99) throw new Error(`official catalog pagination exceeded 100 pages for ${input.profile.provider_driver}`);
   }
   if (models.size === 0) throw new Error(`official catalog returned no models for ${input.profile.provider_driver}`);
+  const includeModelIds = input.profile.official_catalog.include_model_ids ?? [];
+  if (includeModelIds.length > 0) {
+    const expected = new Map(includeModelIds.map((id) => [id.toLowerCase(), id]));
+    const missing = [...expected.keys()].filter((id) => !models.has(id));
+    if (missing.length > 0) {
+      throw new Error(`official catalog scope mismatch for ${input.profile.provider_driver}: missing=${missing.join(",")}`);
+    }
+    for (const id of [...models.keys()]) {
+      if (!expected.has(id)) models.delete(id);
+    }
+  }
   const endpointIds = input.profile.official_catalog.endpoint_ids ?? [];
   if (endpointIds.length > 0) {
     const expected = new Set(endpointIds.map((id) => id.toLowerCase()));

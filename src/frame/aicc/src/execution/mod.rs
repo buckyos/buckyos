@@ -764,6 +764,8 @@ pub(crate) struct NativeTaskResumeDescriptor {
     pub resolved_parameters: BTreeMap<String, Value>,
     pub output_video_seconds: Option<u64>,
     pub request_timeout_ms: u64,
+    pub max_poll_duration_ms: u64,
+    pub active_poll_elapsed_ms: u64,
     pub max_request_bytes: u64,
     pub max_response_bytes: u64,
 }
@@ -785,6 +787,8 @@ impl NativeTaskResumeDescriptor {
             || self.resource_access_context.caller_id.trim().is_empty()
             || self.resource_access_context.request_id.trim().is_empty()
             || self.request_timeout_ms == 0
+            || self.max_poll_duration_ms == 0
+            || self.active_poll_elapsed_ms > self.max_poll_duration_ms
             || self.max_request_bytes == 0
             || self.max_response_bytes == 0
         {
@@ -815,6 +819,20 @@ impl NativeTaskResumeDescriptor {
             }
         }
         Ok(())
+    }
+
+    fn remaining_active_poll_duration(&self) -> Duration {
+        Duration::from_millis(
+            self.max_poll_duration_ms
+                .saturating_sub(self.active_poll_elapsed_ms),
+        )
+    }
+
+    fn record_active_poll_session(&mut self, elapsed_before_session_ms: u64, elapsed: Duration) {
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        self.active_poll_elapsed_ms = elapsed_before_session_ms
+            .saturating_add(elapsed_ms)
+            .min(self.max_poll_duration_ms);
     }
 }
 
@@ -1035,16 +1053,18 @@ impl ProviderStartFailure {
 
     /// A video job the Provider accepted may already be generating and
     /// billed, so it is neither repeated nor moved to another Provider, even
-    /// when the error would allow that for other APIs.
+    /// when the error would allow that for other APIs. The same holds for any
+    /// attempt that reported usage before it failed.
     fn for_api(mut self, api_type: ApiType) -> Self {
         if self.provider_accepted
-            && matches!(
-                api_type,
-                ApiType::VideoGenerate
-                    | ApiType::VideoEdit
-                    | ApiType::VideoExtend
-                    | ApiType::VideoUpscale
-            )
+            && (self.error.usage.is_some()
+                || matches!(
+                    api_type,
+                    ApiType::VideoGenerate
+                        | ApiType::VideoEdit
+                        | ApiType::VideoExtend
+                        | ApiType::VideoUpscale
+                ))
         {
             self.retryable = false;
             self.retry_same_model = false;
@@ -1402,12 +1422,17 @@ impl ExecutionEngine {
                     .await
                     .map_err(|failure| failure.for_api(call.api_type));
                 if let Err(failure) = &started {
+                    // A failed attempt that reported usage already consumed
+                    // tokens, seconds, or money, so it is settled against what
+                    // the Provider said instead of being written off.
                     self.settle(
                         quota_attempt.as_deref(),
-                        if failure.provider_accepted {
-                            AttemptSettlement::Unknown
-                        } else {
-                            AttemptSettlement::Released
+                        match (&failure.error.usage, failure.provider_accepted) {
+                            (Some(usage), _) => {
+                                AttemptSettlement::Usage(usage.clone(), call.api_type)
+                            }
+                            (None, true) => AttemptSettlement::Unknown,
+                            (None, false) => AttemptSettlement::Released,
                         },
                     )
                     .await;
@@ -1570,6 +1595,7 @@ impl ExecutionEngine {
                 Err(AttemptFailure::Provider(failure)) => {
                     let can_failover =
                         failure.retryable && request.runtime_failover && index + 1 < calls.len();
+                    let consumed = failure.error.usage.clone();
                     let mut error: AiccError = failure.error.into();
                     if failure.provider_accepted {
                         error.code = AiccErrorCode::ProviderError;
@@ -1588,6 +1614,17 @@ impl ExecutionEngine {
                             .await?;
                         last_error = Some(error);
                         continue;
+                    }
+                    if let Some(usage) = consumed {
+                        return self
+                            .finish_failure_with_usage(
+                                &record.task_id,
+                                &record.scope,
+                                &binding,
+                                error,
+                                usage,
+                            )
+                            .await;
                     }
                     return self.finish_failure(&record.task_id, error).await;
                 }
@@ -1625,7 +1662,7 @@ impl ExecutionEngine {
         if record.state.is_terminal() {
             return Ok(record.into());
         }
-        let Some(binding) = record.binding.clone() else {
+        let Some(mut binding) = record.binding.clone() else {
             return self
                 .finish_failure(
                     task_id,
@@ -1678,7 +1715,15 @@ impl ExecutionEngine {
             return self.current_receipt(task_id).await;
         }
         let mut next_poll_after = initial_poll_after;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+        let mut current_state = record.state;
+        let active_poll_started = tokio::time::Instant::now();
+        let resume = binding
+            .resume
+            .as_ref()
+            .expect("validated native task resume descriptor");
+        let active_poll_elapsed_at_start_ms = resume.active_poll_elapsed_ms;
+        let remaining_poll_duration = resume.remaining_active_poll_duration();
+        let deadline = active_poll_started + remaining_poll_duration;
         loop {
             if tokio::time::Instant::now() >= deadline {
                 self.settle(binding.quota_attempt_id.as_deref(), AttemptSettlement::Unknown)
@@ -1688,7 +1733,7 @@ impl ExecutionEngine {
                         task_id,
                         aicc_error(
                             AiccErrorCode::Timeout,
-                            "native Provider task exceeded the 30 minute polling deadline",
+                            "native Provider task exceeded its polling deadline",
                             false,
                         ),
                     )
@@ -1697,6 +1742,13 @@ impl ExecutionEngine {
             if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
                 tokio::select! {
                     _ = cancellation.cancelled() => {
+                        let elapsed = active_poll_started.elapsed();
+                        binding
+                            .resume
+                            .as_mut()
+                            .expect("validated native task resume descriptor")
+                            .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
+                        let _ = self.store.set_running(task_id, current_state, binding.clone()).await?;
                         self.remove_active(task_id);
                         return self.current_receipt(task_id).await;
                     }
@@ -1704,6 +1756,16 @@ impl ExecutionEngine {
                 }
             }
             if cancellation.is_cancelled() {
+                let elapsed = active_poll_started.elapsed();
+                binding
+                    .resume
+                    .as_mut()
+                    .expect("validated native task resume descriptor")
+                    .record_active_poll_session(active_poll_elapsed_at_start_ms, elapsed);
+                let _ = self
+                    .store
+                    .set_running(task_id, current_state, binding.clone())
+                    .await?;
                 self.remove_active(task_id);
                 return self.current_receipt(task_id).await;
             }
@@ -1720,7 +1782,7 @@ impl ExecutionEngine {
                         task_id,
                         aicc_error(
                             AiccErrorCode::Timeout,
-                            "native Provider task exceeded the 30 minute polling deadline",
+                            "native Provider task exceeded its polling deadline",
                             false,
                         ),
                     )
@@ -1738,9 +1800,18 @@ impl ExecutionEngine {
                         );
                         return self.finish_failure(task_id, error).await;
                     }
+                    current_state = ExecutionState::from(state);
+                    let resume = binding
+                        .resume
+                        .as_mut()
+                        .expect("validated native task resume descriptor");
+                    resume.record_active_poll_session(
+                        active_poll_elapsed_at_start_ms,
+                        active_poll_started.elapsed(),
+                    );
                     if !self
                         .store
-                        .set_running(task_id, ExecutionState::from(state), binding.clone())
+                        .set_running(task_id, current_state, binding.clone())
                         .await?
                     {
                         self.remove_active(task_id);
@@ -2016,10 +2087,6 @@ impl ExecutionEngine {
             Ok(cost) => cost,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
-        let completed_at_ms = match current_time_ms() {
-            Ok(timestamp) => timestamp,
-            Err(error) => return self.finish_failure(task_id, error).await,
-        };
         let mut output = match ExecutionOutput::try_from(output) {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
@@ -2029,6 +2096,52 @@ impl ExecutionEngine {
         if let Err(error) = check_result_payload(&output) {
             return self.finish_failure(task_id, error).await;
         }
+        if let Err(error) = self
+            .record_usage_completion(task_id, scope, &binding, &output.usage, finance_snapshot)
+            .await
+        {
+            return self.finish_failure(task_id, error).await;
+        }
+        if !self.store.stage_output(task_id, output.clone()).await? {
+            self.remove_active(task_id);
+            return self.current_receipt(task_id).await;
+        }
+        self.commit_staged_success(task_id, output).await
+    }
+
+    /// Bills what a failed attempt already consumed.
+    ///
+    /// A Provider that reports usage before failing has already charged for
+    /// those tokens, seconds, or images. The attempt is therefore settled with
+    /// its own usage and written to the usage ledger, so the cost is not lost;
+    /// the partial output is still discarded and the task still ends failed.
+    async fn finish_failure_with_usage(
+        &self,
+        task_id: &str,
+        scope: &IdempotencyScope,
+        binding: &PinnedProviderTask,
+        error: AiccError,
+        usage: AiUsage,
+    ) -> Result<ExecutionReceipt, AiccError> {
+        let finance_snapshot = binding.completion_cost(&usage);
+        if let Err(error) = self
+            .record_usage_completion(task_id, scope, binding, &usage, finance_snapshot)
+            .await
+        {
+            return self.finish_failure(task_id, error).await;
+        }
+        self.finish_failure(task_id, error).await
+    }
+
+    /// Writes the usage ledger entry of one attempt.
+    async fn record_usage_completion(
+        &self,
+        task_id: &str,
+        scope: &IdempotencyScope,
+        binding: &PinnedProviderTask,
+        usage: &AiUsage,
+        finance_snapshot: Option<AiCost>,
+    ) -> Result<(), AiccError> {
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(
                 AiccErrorCode::InternalError,
@@ -2041,8 +2154,8 @@ impl ExecutionEngine {
             .as_ref()
             .and_then(|attribution| attribution.operator_id.clone())
             .filter(|operator| operator != &record.user_id);
-        if let Err(error) = self
-            .usage
+        let completed_at_ms = current_time_ms()?;
+        self.usage
             .write_once(UsageCompletion {
                 event_id: record.usage_event_id,
                 tenant_id: scope.tenant_id.clone(),
@@ -2054,23 +2167,15 @@ impl ExecutionEngine {
                 method: scope.method.clone(),
                 capability: capability_name(binding.api_type).to_string(),
                 request_model: record.request_model,
-                provider_instance_name: binding.provider_instance_name,
-                provider_model: binding.exact_model,
-                usage: output.usage.clone(),
+                provider_instance_name: binding.provider_instance_name.clone(),
+                provider_model: binding.exact_model.clone(),
+                usage: usage.clone(),
                 finance_snapshot,
                 operator_id,
                 attribution: record.attribution,
                 completed_at_ms,
             })
             .await
-        {
-            return self.finish_failure(task_id, error).await;
-        }
-        if !self.store.stage_output(task_id, output.clone()).await? {
-            self.remove_active(task_id);
-            return self.current_receipt(task_id).await;
-        }
-        self.commit_staged_success(task_id, output).await
     }
 
     async fn commit_staged_success(
@@ -2699,9 +2804,32 @@ mod tests {
                 .unwrap(),
             output_video_seconds: None,
             request_timeout_ms: 10_000,
+            max_poll_duration_ms: 30 * 60 * 1_000,
+            active_poll_elapsed_ms: 0,
             max_request_bytes: 1_024,
             max_response_bytes: 2_048,
         }
+    }
+
+    #[test]
+    fn native_task_poll_budget_survives_restart_without_counting_downtime() {
+        let mut resume = resume_descriptor();
+        resume.max_poll_duration_ms = 24 * 60 * 60 * 1_000;
+        resume.active_poll_elapsed_ms = 60 * 60 * 1_000;
+
+        let encoded = serde_json::to_value(&resume).unwrap();
+        resume = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            resume.remaining_active_poll_duration(),
+            Duration::from_secs(23 * 60 * 60)
+        );
+
+        resume.record_active_poll_session(60 * 60 * 1_000, Duration::from_secs(2 * 60 * 60));
+        assert_eq!(resume.active_poll_elapsed_ms, 3 * 60 * 60 * 1_000);
+        assert_eq!(
+            resume.remaining_active_poll_duration(),
+            Duration::from_secs(21 * 60 * 60)
+        );
     }
 
     fn call(instance: &str) -> ResolvedProviderCall {
@@ -3130,6 +3258,29 @@ mod tests {
     }
 
     #[test]
+    /// An attempt that reported usage has already been charged upstream, so it
+    /// is neither retried nor moved to another Provider.
+    #[test]
+    fn a_failure_that_reported_usage_is_neither_retried_nor_failed_over() {
+        let plain = ProtocolError::new(
+            crate::error::ProtocolErrorKind::Transport,
+            "transport failed",
+        );
+        let billed = plain.clone().with_usage(Some(buckyos_api::AiUsage {
+            total_tokens: Some(7),
+            reported_cost: Some(0.25),
+            ..Default::default()
+        }));
+        let without_usage = ProviderStartFailure::after_accept(plain).for_api(ApiType::AudioMusic);
+        let with_usage = ProviderStartFailure::after_accept(billed).for_api(ApiType::AudioMusic);
+        assert!(
+            without_usage.retryable,
+            "a transport failure without usage keeps its failover policy"
+        );
+        assert!(!with_usage.retryable);
+        assert!(!with_usage.retry_same_model);
+    }
+
     fn pinned_pricing_uses_cached_input_rate_and_provider_reported_cost_wins() {
         let pricing = PinnedPricingSnapshot {
             currency: "USD".into(),

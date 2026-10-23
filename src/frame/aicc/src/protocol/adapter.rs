@@ -42,6 +42,12 @@ pub(crate) struct OperationBinding {
     /// request treats as optional. Call lowering fills an omitted
     /// `max_output_tokens` with this value, clamped to the model's capability.
     pub default_max_output_tokens: Option<u64>,
+    /// Preference among the operations that bind this API type when a provider
+    /// instance declares no `operations` override of its own — a custom channel,
+    /// for instance, which must still refresh its catalog. The highest value
+    /// wins; `0` means the operation is only ever selected explicitly, by an
+    /// override or by provider discovery narrowing the candidates.
+    pub default_priority: u8,
 }
 
 impl OperationBinding {
@@ -55,6 +61,7 @@ impl OperationBinding {
             supported_features: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
             default_max_output_tokens: None,
+            default_priority: 0,
         }
     }
 
@@ -818,6 +825,10 @@ pub(crate) trait NativeTaskCodec: Send + Sync {
         None
     }
 
+    fn max_poll_duration(&self) -> Duration {
+        Duration::from_secs(30 * 60)
+    }
+
     /// What this codec accepts as the *form* of a resource input.
     ///
     /// Mirrors [`OperationCodec::resource_input_form`]: materialization runs
@@ -1552,6 +1563,17 @@ impl CodecRegistry {
             .native_task_codec
             .as_ref()
             .and_then(|codec| codec.output_video_seconds(request)))
+    }
+
+    pub(crate) fn native_task_max_poll_duration(
+        &self,
+        adapter_id: &str,
+        operation_id: &str,
+        api_type: ApiType,
+    ) -> ProtocolResultValue<Duration> {
+        Ok(self
+            .native_task_codec(adapter_id, operation_id, api_type)?
+            .max_poll_duration())
     }
 
     pub(crate) async fn decode_native(

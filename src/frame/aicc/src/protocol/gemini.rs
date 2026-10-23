@@ -35,8 +35,18 @@ use std::time::Duration;
 
 pub(crate) const GEMINI_ADAPTER_ID: &str = "gemini-interactions";
 pub(crate) const GEMINI_INTERACTIONS_OPERATION_ID: &str = "interactions.create";
+pub(crate) const GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID: &str = "interactions.background";
 pub(crate) const GEMINI_EMBED_CONTENT_OPERATION_ID: &str = "models.embedContent";
 pub(crate) const GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID: &str = "models.predictLongRunning";
+
+/// Preference of each operation when a provider instance binds one API type
+/// through several of them and declares no `operations` override of its own —
+/// a custom Gemini channel, for instance, which must still refresh its catalog
+/// without hand-written rules. Highest wins:
+/// `interactions.background` > `models.predictLongRunning` > `interactions.create`.
+const BACKGROUND_INTERACTIONS_PRIORITY: u8 = 30;
+const PREDICT_LONG_RUNNING_PRIORITY: u8 = 20;
+const INTERACTIONS_PRIORITY: u8 = 10;
 
 const GEMINI_PROVIDER_NAMESPACE: &str = "gemini";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
@@ -50,7 +60,7 @@ pub(crate) fn gemini_api_key(
 }
 
 pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let interactions = operation(
+    let mut interactions = operation(
         GEMINI_INTERACTIONS_OPERATION_ID,
         vec![
             binding(
@@ -75,12 +85,20 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             binding(
                 ApiType::ImageTextToImage,
                 [ExecutionMode::Immediate],
-                [features::IMAGE_GENERATION],
+                [
+                    features::IMAGE_GENERATION,
+                    features::WEB_SEARCH,
+                    "reasoning",
+                ],
             ),
             binding(
                 ApiType::ImageImageToImage,
                 [ExecutionMode::Immediate],
-                [features::IMAGE_GENERATION],
+                [
+                    features::IMAGE_GENERATION,
+                    features::WEB_SEARCH,
+                    "reasoning",
+                ],
             ),
             binding(
                 ApiType::AudioTextToSpeech,
@@ -102,7 +120,32 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         false,
     );
-    let video = operation(
+    let mut background_interactions = operation(
+        GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID,
+        vec![
+            binding(
+                ApiType::Llm,
+                [ExecutionMode::NativeTask],
+                [
+                    features::TOOL_CALL,
+                    features::JSON_SCHEMA,
+                    features::VISION,
+                    features::WEB_SEARCH,
+                ],
+            ),
+            binding(ApiType::VisionOcr, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionCaption, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionDetect, [ExecutionMode::NativeTask], []),
+            binding(ApiType::VisionSegment, [ExecutionMode::NativeTask], []),
+            binding(
+                ApiType::AudioSpeechRecognition,
+                [ExecutionMode::NativeTask],
+                [],
+            ),
+        ],
+        true,
+    );
+    let mut video = operation(
         GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
         vec![
             binding(ApiType::VideoGenerate, [ExecutionMode::NativeTask], []),
@@ -110,6 +153,12 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         false,
     );
+    set_default_priority(&mut interactions, INTERACTIONS_PRIORITY);
+    set_default_priority(
+        &mut background_interactions,
+        BACKGROUND_INTERACTIONS_PRIORITY,
+    );
+    set_default_priority(&mut video, PREDICT_LONG_RUNNING_PRIORITY);
     let descriptor = AdapterDescriptor {
         protocol_family_id: "gemini".to_string(),
         protocol_adapter_id: GEMINI_ADAPTER_ID.to_string(),
@@ -122,6 +171,10 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         credential: super::AdapterCredentialContract::named_header("x-goog-api-key"),
         operations: BTreeMap::from([
             (interactions.operation_id.clone(), interactions.clone()),
+            (
+                background_interactions.operation_id.clone(),
+                background_interactions.clone(),
+            ),
             (embeddings.operation_id.clone(), embeddings.clone()),
             (video.operation_id.clone(), video.clone()),
         ]),
@@ -158,12 +211,30 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             ApiType::EmbeddingMultimodal,
         )) as Arc<dyn OperationCodec>,
     ]);
-    let native_task_codecs = [ApiType::VideoGenerate, ApiType::VideoExtend]
+    let mut native_task_codecs: Vec<Arc<dyn NativeTaskCodec>> =
+        [ApiType::VideoGenerate, ApiType::VideoExtend]
+            .into_iter()
+            .map(|api_type| {
+                Arc::new(GeminiVideoCodec::new(video.clone(), api_type)) as Arc<dyn NativeTaskCodec>
+            })
+            .collect();
+    native_task_codecs.extend(
+        [
+            ApiType::Llm,
+            ApiType::VisionOcr,
+            ApiType::VisionCaption,
+            ApiType::VisionDetect,
+            ApiType::VisionSegment,
+            ApiType::AudioSpeechRecognition,
+        ]
         .into_iter()
         .map(|api_type| {
-            Arc::new(GeminiVideoCodec::new(video.clone(), api_type)) as Arc<dyn NativeTaskCodec>
-        })
-        .collect();
+            Arc::new(GeminiBackgroundInteractionCodec::new(
+                background_interactions.clone(),
+                api_type,
+            )) as Arc<dyn NativeTaskCodec>
+        }),
+    );
     (
         descriptor,
         CodecRegistration {
@@ -185,6 +256,12 @@ fn operation(
         supports_webhook: false,
         max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
         max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+    }
+}
+
+fn set_default_priority(operation: &mut OperationDescriptor, priority: u8) {
+    for binding in &mut operation.bindings {
+        binding.default_priority = priority;
     }
 }
 
@@ -281,6 +358,170 @@ impl OperationCodec for GeminiInteractionCodec {
             .with_request_id(Some(response.request_id)));
         }
         interaction_protocol_stream(response, self.api_type).await
+    }
+}
+
+#[derive(Clone)]
+struct GeminiBackgroundInteractionCodec {
+    descriptor: OperationDescriptor,
+    api_type: ApiType,
+}
+
+impl GeminiBackgroundInteractionCodec {
+    fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
+        Self {
+            descriptor,
+            api_type,
+        }
+    }
+}
+
+#[async_trait]
+impl NativeTaskCodec for GeminiBackgroundInteractionCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        self.api_type
+    }
+
+    fn operations(&self) -> BTreeSet<NativeTaskOperation> {
+        BTreeSet::from([
+            NativeTaskOperation::Submit,
+            NativeTaskOperation::Status,
+            NativeTaskOperation::Result,
+            NativeTaskOperation::Cancel,
+        ])
+    }
+
+    fn max_poll_duration(&self) -> Duration {
+        Duration::from_secs(24 * 60 * 60)
+    }
+
+    fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
+        match input.operation {
+            NativeTaskOperation::Submit => {
+                let codec_input = input.codec_input.ok_or_else(|| {
+                    ProtocolError::invalid_request(
+                        "Gemini background interaction submit requires canonical input",
+                    )
+                })?;
+                let mut body = encode_interaction(
+                    &CodecCall {
+                        api_type: self.api_type,
+                        input: codec_input,
+                        context: input.context,
+                    },
+                    self.api_type,
+                )?;
+                let body = body.as_object_mut().ok_or_else(|| {
+                    ProtocolError::invalid_request("Gemini interaction body must be an object")
+                })?;
+                body.insert("background".to_string(), Value::Bool(true));
+                body.insert("store".to_string(), Value::Bool(true));
+                body.remove("stream");
+                json_request(
+                    input.context,
+                    Method::POST,
+                    "interactions",
+                    Value::Object(body.clone()),
+                )
+            }
+            NativeTaskOperation::Status | NativeTaskOperation::Result => {
+                let id = interaction_task_id(input)?;
+                json_request(
+                    input.context,
+                    Method::GET,
+                    &format!("interactions/{id}"),
+                    Value::Null,
+                )
+            }
+            NativeTaskOperation::Cancel => {
+                let id = interaction_task_id(input)?;
+                json_request(
+                    input.context,
+                    Method::POST,
+                    &format!("interactions/{id}/cancel"),
+                    json!({}),
+                )
+            }
+        }
+    }
+
+    async fn decode_native(
+        &self,
+        operation: NativeTaskOperation,
+        response: HttpResponse,
+    ) -> ProtocolResultValue<NativeTaskOutput> {
+        ensure_success(&response)?;
+        if operation == NativeTaskOperation::Cancel {
+            return Ok(NativeTaskOutput::Cancelled { accepted: true });
+        }
+        let retry_after = response.retry_after;
+        let value: Value = response.json(self.descriptor.max_response_bytes)?;
+        match operation {
+            NativeTaskOperation::Submit => {
+                let id = required_output_string(&value, "id")?;
+                let mut handle = NativeTaskHandle::new(id)?;
+                handle.state = interaction_task_state(&value)?;
+                handle.poll_after = retry_after.or(Some(Duration::from_secs(2)));
+                handle.cancel_supported = true;
+                Ok(NativeTaskOutput::Submitted(handle))
+            }
+            NativeTaskOperation::Status => {
+                let state = interaction_task_state(&value)?;
+                if state == NativeTaskState::Failed {
+                    return Err(interaction_failure(&value));
+                }
+                Ok(NativeTaskOutput::Status {
+                    state,
+                    retry_after: retry_after.or(Some(Duration::from_secs(2))),
+                    result_ref: None,
+                    result_usage: decode_usage(value.get("usage"))?,
+                    result_artifacts: BTreeMap::new(),
+                })
+            }
+            NativeTaskOperation::Result => Ok(NativeTaskOutput::Result(normalize_interaction(
+                &value,
+                self.api_type,
+            )?)),
+            NativeTaskOperation::Cancel => unreachable!(),
+        }
+    }
+}
+
+fn interaction_task_id(input: &NativeTaskInput<'_>) -> ProtocolResultValue<String> {
+    let id = input.remote_task_id.ok_or_else(|| {
+        ProtocolError::invalid_request("Gemini interaction lifecycle requires an interaction ID")
+    })?;
+    if id.is_empty()
+        || id.len() > 512
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(ProtocolError::invalid_request(
+            "Gemini interaction ID contains invalid path characters",
+        ));
+    }
+    Ok(id.to_string())
+}
+
+fn interaction_task_state(value: &Value) -> ProtocolResultValue<NativeTaskState> {
+    match value.get("status").and_then(Value::as_str) {
+        Some("queued") => Ok(NativeTaskState::Queued),
+        Some("in_progress") => Ok(NativeTaskState::Running),
+        Some("completed" | "requires_action") => Ok(NativeTaskState::Succeeded),
+        Some("failed" | "incomplete") => Ok(NativeTaskState::Failed),
+        Some("cancelled" | "canceled") => Ok(NativeTaskState::Cancelled),
+        _ => Err(ProtocolError::invalid_response(
+            "Gemini background interaction contains an unknown status",
+        )),
     }
 }
 
@@ -3171,7 +3412,7 @@ fn validate_file_name(value: &str) -> ProtocolResultValue<String> {
 mod tests {
     use super::*;
     use crate::protocol::{CodecInput, CodecLimits, ProtocolContractHarness};
-    use crate::video::test_support::{model_contract, plan_parameters};
+    use crate::video::test_support::{channel_contract, model_contract, plan_parameters};
     use crate::video::VideoMaterialFacts;
     use buckyos_api::{
         AiMessage, EmbeddingMultimodalItem, VideoCondition, VideoGenerateRequest, VideoOutputSpec,
@@ -3226,10 +3467,13 @@ mod tests {
     fn descriptor_registers_frozen_operations_without_generate_content() {
         let (descriptor, registration) = gemini_interactions_adapter();
         assert_eq!(descriptor.protocol_adapter_id, GEMINI_ADAPTER_ID);
-        assert_eq!(descriptor.operations.len(), 3);
+        assert_eq!(descriptor.operations.len(), 4);
         assert!(descriptor
             .operations
             .contains_key(GEMINI_INTERACTIONS_OPERATION_ID));
+        assert!(descriptor
+            .operations
+            .contains_key(GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID));
         assert!(descriptor
             .operations
             .contains_key(GEMINI_EMBED_CONTENT_OPERATION_ID));
@@ -3267,6 +3511,109 @@ mod tests {
                 ApiType::VideoEdit,
             )
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn background_interaction_maps_submit_status_result_and_cancel() {
+        let descriptor = gemini_interactions_adapter().0.operations
+            [GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID]
+            .clone();
+        let codec = GeminiBackgroundInteractionCodec::new(descriptor, ApiType::Llm);
+        let request = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                "gemini-test@google",
+                vec![AiMessage::text(AiRole::User, "hello")],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-4-argon"),
+            )]),
+        };
+        let empty = BTreeMap::new();
+        let ctx = context();
+        let submit = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&request),
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        let wire = codec.encode_native(&submit).unwrap();
+        assert!(wire.url.ends_with("/v1beta/interactions"));
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["background"], true);
+        assert_eq!(body["store"], true);
+        assert!(body.get("stream").is_none());
+        assert_eq!(codec.max_poll_duration(), Duration::from_secs(24 * 60 * 60));
+
+        let NativeTaskOutput::Submitted(handle) = codec
+            .decode_native(
+                NativeTaskOperation::Submit,
+                response(
+                    StatusCode::OK,
+                    "application/json",
+                    json!({"id":"interaction-1","status":"queued"}),
+                ),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected handle")
+        };
+        assert_eq!(handle.remote_task_id, "interaction-1");
+        assert!(handle.cancel_supported);
+
+        let lifecycle = NativeTaskInput {
+            operation: NativeTaskOperation::Status,
+            remote_task_id: Some("interaction-1"),
+            codec_input: None,
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        assert!(codec
+            .encode_native(&lifecycle)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/interactions/interaction-1"));
+        let NativeTaskOutput::Status { state, .. } = codec
+            .decode_native(
+                NativeTaskOperation::Status,
+                response(
+                    StatusCode::OK,
+                    "application/json",
+                    json!({"id":"interaction-1","status":"completed","usage":{"total_tokens":7}}),
+                ),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected status")
+        };
+        assert_eq!(state, NativeTaskState::Succeeded);
+
+        let NativeTaskOutput::Result(output) = codec
+            .decode_native(
+                NativeTaskOperation::Result,
+                response(StatusCode::OK, "application/json", completed_text()),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected result")
+        };
+        assert_eq!(output.value["message"]["content"][0]["text"], "hello");
+
+        let cancel = NativeTaskInput {
+            operation: NativeTaskOperation::Cancel,
+            ..lifecycle
+        };
+        assert!(codec
+            .encode_native(&cancel)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/interactions/interaction-1/cancel"));
     }
 
     #[test]
@@ -3384,10 +3731,17 @@ mod tests {
         image.seed = Some(7);
         let input = CodecInput {
             canonical_request: AiccCall::ImagesGenerate(image),
-            resolved_parameters: BTreeMap::from([(
-                "provider_model_id".to_string(),
-                json!("gemini-image"),
-            )]),
+            resolved_parameters: BTreeMap::from([
+                (
+                    "provider_model_id".to_string(),
+                    json!("gemini-3.1-flash-image"),
+                ),
+                ("web_search".to_string(), json!(true)),
+                (
+                    "generation_config".to_string(),
+                    json!({"seed": 7, "thinking_level": "high"}),
+                ),
+            ]),
         };
         let value = encode_interaction(
             &CodecCall {
@@ -3400,6 +3754,8 @@ mod tests {
         .unwrap();
         assert_eq!(value["response_format"]["aspect_ratio"], "1:1");
         assert_eq!(value["generation_config"]["seed"], 7);
+        assert_eq!(value["generation_config"]["thinking_level"], "high");
+        assert_eq!(value["tools"][0]["type"], "google_search");
         assert!(value["generation_config"].get("aspect_ratio").is_none());
     }
 
@@ -4103,7 +4459,7 @@ mod tests {
         let generate = VideoGenerateRequest::new("veo@google", Some("ocean".to_string()));
         let request = CodecInput {
             resolved_parameters: plan_parameters(
-                &model_contract("gemini", "veo-3.1-generate-preview"),
+                &channel_contract(Some(3)),
                 &generate,
                 &VideoMaterialFacts::new(),
                 "veo-test",
@@ -4227,21 +4583,20 @@ mod tests {
         );
     }
 
-    fn veo_body(model: &str, request: VideoGenerateRequest) -> ProtocolResultValue<Value> {
+    fn veo_body(
+        contract: &crate::video::VideoGenerationContract,
+        request: VideoGenerateRequest,
+    ) -> ProtocolResultValue<Value> {
         let descriptor = gemini_interactions_adapter().0.operations
             [GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID]
             .clone();
         let codec = GeminiVideoCodec::new(descriptor, ApiType::VideoGenerate);
-        let plan = crate::video::plan_video(
-            &model_contract("gemini", model),
-            &request,
-            &VideoMaterialFacts::new(),
-        )
-        .map_err(|error| {
-            ProtocolError::new(ProtocolErrorKind::UnsupportedOperation, error.message)
-        })?;
+        let plan = crate::video::plan_video(contract, &request, &VideoMaterialFacts::new())
+            .map_err(|error| {
+                ProtocolError::new(ProtocolErrorKind::UnsupportedOperation, error.message)
+            })?;
         let parameters = BTreeMap::from([
-            ("provider_model_id".to_string(), json!(model)),
+            ("provider_model_id".to_string(), json!("veo-test")),
             (
                 crate::video::VIDEO_PLAN_PARAMETER.to_string(),
                 serde_json::to_value(plan).unwrap(),
@@ -4288,7 +4643,7 @@ mod tests {
             },
         ];
         frames.negative_prompt = Some("blur".into());
-        let body = veo_body("veo-3.1-generate-preview", frames).unwrap();
+        let body = veo_body(&channel_contract(Some(3)), frames).unwrap();
         let instance = &body["instances"][0];
         assert_eq!(
             instance["prompt"],
@@ -4309,14 +4664,14 @@ mod tests {
             duration_seconds: Some(4.0),
             ..Default::default()
         });
-        assert!(veo_body("veo-3.1-generate-preview", references.clone()).is_err());
+        assert!(veo_body(&channel_contract(Some(3)), references.clone()).is_err());
         references.output = None;
-        let body = veo_body("veo-3.1-generate-preview", references.clone()).unwrap();
+        let body = veo_body(&channel_contract(Some(3)), references.clone()).unwrap();
         assert_eq!(
             body["instances"][0]["referenceImages"][0]["referenceType"],
             "asset"
         );
-        assert!(veo_body("veo-3.1-lite-generate-preview", references).is_err());
+        assert!(veo_body(&channel_contract(None), references).is_err());
 
         let mut four_k = VideoGenerateRequest::new("veo@google", Some("ocean".into()));
         four_k.output = Some(VideoOutputSpec {
@@ -4324,7 +4679,7 @@ mod tests {
             duration_seconds: Some(6.0),
             ..Default::default()
         });
-        assert!(veo_body("veo-3.1-generate-preview", four_k).is_err());
+        assert!(veo_body(&channel_contract(Some(3)), four_k).is_err());
 
         let mut end_only = VideoGenerateRequest::new("veo@google", Some("ocean".into()));
         end_only.conditions = vec![VideoCondition::Keyframe {
@@ -4332,7 +4687,7 @@ mod tests {
             resource: image("b.png"),
             position: KeyframePosition::End,
         }];
-        assert!(veo_body("veo-3.1-generate-preview", end_only).is_err());
+        assert!(veo_body(&channel_contract(Some(3)), end_only).is_err());
     }
 
     #[test]

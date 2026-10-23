@@ -332,6 +332,17 @@ Provider model rule 的字符串 `match` 默认匹配 `provider_model_id`。需�
 method exact key > api_type key > adapter default operation
 ```
 
+「adapter default operation」不是该 api_type 的唯一绑定：一个 Provider 常用多个 operation 支持同一个 api_type
+（例如 `interactions.background`、`models.predictLongRunning`、`interactions.create` 都能产出视频）。
+没有任何 override 命中时，adapter 用 operation 各自声明的默认优先级 `default_priority` 收窄候选：
+
+- 只保留得分最高的候选；`0` 表示该 operation 只能被显式选中（由 `operations` 指定，或由 provider discovery
+  把候选收窄到一个），从不作为默认。
+- 最高分仍然并列时报 `multiple default operations`，要求 Provider 显式配置，不做猜测。
+- 内置 Gemini 的取值是 `interactions.background`（30）> `models.predictLongRunning`（20）>
+  `interactions.create`（10）。因此没有 `operations` 的自定义 Gemini 渠道同样能解析出默认 operation，
+  并正常刷新模型目录。
+
 例如 video 下不同 method 分别选择接口：
 
 ```json

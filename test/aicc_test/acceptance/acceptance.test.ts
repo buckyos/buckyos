@@ -59,6 +59,8 @@ import {
   bindOfficialCatalogInstances,
   fetchOfficialCatalogs,
   fetchOfficialModelIds,
+  OPENROUTER_CATALOG_TASK_TYPES,
+  openRouterTaskTypes,
   scopeInventoriesToRequestedCases,
 } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
@@ -253,7 +255,12 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model, apiType),
     ]),
   );
-  for (const [pointer, value] of Object.entries(contract.required_body_values ?? {})) {
+  for (
+    const [pointer, value] of Object.entries({
+      ...(contract.required_body_values ?? {}),
+      ...(contract.required_body_values_by_model?.[model] ?? {}),
+    })
+  ) {
     const tokens = pointer.split("/").slice(1).map((token) =>
       token.replace(/~1/g, "/").replace(/~0/g, "~")
     );
@@ -707,6 +714,28 @@ function matrixInputs(inventories: ProviderInventory[]) {
     aiccInventories: inventories,
   };
 }
+
+test("openrouter catalog task types resolve onto the unified video API", async () => {
+  const profile = (await baseline()).providers.find((item) =>
+    item.provider_driver === "openrouter"
+  )!;
+  const declared = profile.official_catalog.task_type_api_types ?? {};
+  for (const taskType of OPENROUTER_CATALOG_TASK_TYPES) {
+    assert.ok(
+      (declared[taskType] ?? []).length > 0,
+      `openrouter task type ${taskType} has no task_type_api_types mapping`,
+    );
+  }
+  const taskTypes = (input: string[]) =>
+    openRouterTaskTypes({
+      id: "fixture/video",
+      architecture: { input_modalities: input, output_modalities: ["video"] },
+    });
+  assert.deepEqual(taskTypes(["text"]), ["video.generate"]);
+  assert.deepEqual(taskTypes(["image"]), ["video.generate"]);
+  assert.deepEqual(taskTypes(["text", "image"]), ["video.generate"]);
+  assert.deepEqual(taskTypes(["video"]), ["video.generate"]);
+});
 
 test("official catalog fetches paginated Provider inventory independently of AICC", async () => {
   const profile = (await baseline()).providers.find((item) =>
@@ -2154,6 +2183,35 @@ test("Provider credentials accept TOML values or provider-specific environment v
   });
 });
 
+test("Provider credential overrides report the instance they resolved to", () => {
+  // `[instances.<driver>].name` defaults to an empty string in the example config. The patch
+  // still resolves a concrete instance, and the runner needs that name to refresh inventory.
+  const original = {
+    providers: [
+      {
+        provider_instance_name: "openai-single",
+        provider_profile_id: "openai",
+      },
+    ],
+  };
+  const resolved: Record<string, string> = {};
+  applyProviderTokens(original, { openai: "token", openrouter: "router" }, {}, {}, resolved);
+  assert.deepEqual(resolved, {
+    openai: "openai-single",
+    openrouter: "openrouter-main",
+  });
+
+  const explicit: Record<string, string> = {};
+  applyProviderTokens(
+    original,
+    { openrouter: "router" },
+    { openrouter: "router-t2" },
+    {},
+    explicit,
+  );
+  assert.deepEqual(explicit, { openrouter: "router-t2" });
+});
+
 test("Provider credential overrides apply configured static inventory subsets", () => {
   const rules = configuredProviderInstanceOverrides({
     "provider_credentials.doubao-speech.enabled_inventory_models": [
@@ -3070,7 +3128,7 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     size: "1024x1024",
     quality: "low",
   });
-  assert.deepEqual(defaults("google-gemini", "veo-3.1-*", "video.generate"), {
+  assert.deepEqual(defaults("google-gemini", "gemini-omni-*", "video.generate"), {
     output: { duration_seconds: 4, size: { short_edge: 720 } },
   });
   assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.generate"), {
@@ -3145,14 +3203,14 @@ test("active official model families are not excluded by lifecycle filters", asy
   }
 });
 
-test("T2 Veo extension requests the protocol-fixed seven second duration", () => {
+test("T2 video extension requests the protocol-fixed seven second duration", () => {
   const request = buildExactRequest({
     cell: {
-      case_id: "veo-extend",
+      case_id: "video-extend",
       provider_driver: "google-gemini",
       provider_instance: "gemini-main",
-      exact_model: "veo-3.1-generate-preview@gemini-main",
-      provider_model_id: "veo-3.1-generate-preview",
+      exact_model: "gemini-omni-1.1-flash@gemini-main",
+      provider_model_id: "gemini-omni-1.1-flash",
       api_type: "video.extend",
       method: "video.extend",
       baseline_status: "active",
@@ -3208,6 +3266,75 @@ test("provider matrix exposes baseline mismatches for reporting", async () => {
     }]),
   });
   assert.ok(result.mismatches.some((item) => item.includes("aicc_advertised")));
+});
+
+test("provider matrix derives capabilities from the official catalog, not a catch-all rule", async () => {
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    ...matrixInputs([{
+      provider_instance_name: "openrouter-default",
+      provider_driver: "openrouter",
+      models: [
+        {
+          exact_model: "openai/gpt-5.4@openrouter-default",
+          provider_model_id: "openai/gpt-5.4",
+          api_types: ["llm", "vision.ocr", "vision.caption"],
+          official_task_types: ["llm", "vision.ocr", "vision.caption"],
+          logical_mounts: [],
+        },
+        {
+          exact_model: "openai/gpt-4o-mini-tts@openrouter-default",
+          provider_model_id: "openai/gpt-4o-mini-tts",
+          api_types: ["audio.tts"],
+          official_task_types: ["audio.tts"],
+          logical_mounts: [],
+        },
+        {
+          exact_model: "google/lyria-3@openrouter-default",
+          provider_model_id: "google/lyria-3",
+          api_types: ["audio.music"],
+          official_task_types: ["audio.music"],
+          logical_mounts: [],
+        },
+        {
+          exact_model: "bytedance/seedance-2.0@openrouter-default",
+          provider_model_id: "bytedance/seedance-2.0",
+          api_types: ["video.generate"],
+          official_task_types: ["video.generate"],
+          logical_mounts: [],
+        },
+      ],
+    }]),
+  });
+  const apiTypes = (providerModelId: string) =>
+    result.cells
+      .filter((cell) => cell.provider_model_id === providerModelId)
+      .map((cell) => cell.api_type);
+  // Without this, the catch-all `*` rule replaced the catalog with `["llm"]`,
+  // so TTS, music and video models produced no case at all while vision capable
+  // models were reported as `official_not_supported_but_aicc_advertised`.
+  assert.deepEqual(apiTypes("openai/gpt-5.4"), ["llm", "vision.ocr", "vision.caption"]);
+  assert.deepEqual(apiTypes("openai/gpt-4o-mini-tts"), ["audio.tts"]);
+  assert.deepEqual(apiTypes("google/lyria-3"), ["audio.music"]);
+  assert.deepEqual(apiTypes("bytedance/seedance-2.0"), ["video.generate"]);
+  assert.deepEqual(result.mismatches, []);
+});
+
+test("a catch-all rule stays a fallback for models the catalog leaves unspecified", async () => {
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    ...matrixInputs([{
+      provider_instance_name: "kimi-default",
+      provider_driver: "kimi",
+      models: [{
+        exact_model: "kimi-k2@kimi-default",
+        provider_model_id: "kimi-k2",
+        api_types: ["llm"],
+        logical_mounts: [],
+      }],
+    }]),
+  });
+  assert.deepEqual(result.cells.map((cell) => cell.api_type), ["llm"]);
 });
 
 test("physical model coverage excludes lifecycle and logical aliases while retaining variants", async () => {
@@ -4325,8 +4452,6 @@ test("T1.5 video.generate scenarios must reach each Provider in its documented f
             : {}),
           ...(scenario === "reference-images" ? { input_references: [image("https://media.example/a.png"), image("https://media.example/b.png")] } : {}),
         };
-      case "gemini.predict-long-running.v1beta":
-        return { instances: [{ prompt: "go", ...(scenario ? { image: { uri: "https://media.example/a.png" } } : {}), ...(scenario === "keyframes" ? { lastFrame: { uri: "https://media.example/b.png" } } : {}) }] };
       default:
         throw new Error(contractId);
     }
@@ -4335,7 +4460,6 @@ test("T1.5 video.generate scenarios must reach each Provider in its documented f
     ["minimax", "minimax.video-generation.v2"],
     ["doubao", "doubao.video-tasks.v3"],
     ["openrouter", "openrouter.videos.v1"],
-    ["google-gemini", "gemini.predict-long-running.v1beta"],
   ] as const) {
     const contract = protocolContract(catalog, provider, contractId);
     const headers = new Headers({ "content-type": contract.content_type });
@@ -4787,11 +4911,14 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
       .filter((contract) => contract.async_protocol)
       .map((contract) => ({ provider, contract }))
   );
+  // `t15_mock_provider.ts` still answers `google_lro`, but no shipped contract
+  // declares it any more: the Veo 3.1 previews were shut down on 2026-10-22 and
+  // Gemini Omni routes video through `interactions.create`. The predictLongRunning
+  // path keeps its Rust coverage through `video::test_support::channel_contract`.
   assert.deepEqual(
     new Set(asyncContracts.map(({ contract }) => contract.async_protocol)),
     new Set([
       "openai_video",
-      "google_lro",
       "fal_queue",
       "minimax_video_v2",
       "openrouter_video",
@@ -4833,7 +4960,10 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
           "{operation_id}",
           contract.async_protocol === "google_lro"
             ? "gemini_mock_1"
-            : contract.async_protocol === "glm_video" || contract.async_protocol === "doubao_video"
+            : contract.async_protocol === "gemini_interactions"
+            ? "interaction_background_mock_1"
+            : contract.async_protocol === "glm_video" ||
+                contract.async_protocol === "doubao_video"
             ? "glm_video_mock_1"
             : contract.async_protocol === "openrouter_video"
             ? String(contract.success_fixture?.id)
@@ -5673,6 +5803,29 @@ test("OpenRouter complete official catalog checks alias drift and plans one Jev 
   }
 });
 
+
+test("OpenRouter Gemini speech rejects a provider default that overrides the requested warm voice", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "openrouter", "openrouter.audio.speech.v1");
+  for (const model of contract.conformance_test_model_ids!["audio.tts"].filter(
+    (model) => model.startsWith("google/"),
+  )) {
+    const request = t15ProviderRequest("https://mock.test", contract, model, {});
+    const wire = {
+      method: "POST",
+      pathname: new URL(request.url).pathname,
+      query: new URLSearchParams(),
+      headers: new Headers(request.init.headers),
+      body: JSON.parse(request.init.body as string),
+    };
+    wire.headers.set("content-type", "application/json");
+    assert.deepEqual(validateProviderRequest(contract, wire), [], model);
+    assert.ok(validateProviderRequest(contract, {
+      ...wire,
+      body: { ...wire.body, voice: "Kore" },
+    }).length > 0, `${model} accepted a default voice instead of Sulafat`);
+  }
+});
 
 test("review media wire regressions reject invalid sizes, duration, missing input, and removed fields", async () => {
   const catalog = await loadProviderProtocolCatalog();

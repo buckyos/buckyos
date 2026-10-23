@@ -29,7 +29,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   "google-gemini": new Set(["ai.google.dev"]),
   fal: new Set(["fal.ai"]),
   minimax: new Set(["platform.minimax.io"]),
-  openrouter: new Set(["openrouter.ai"]),
+  openrouter: new Set(["openrouter.ai", "ai.google.dev", "platform.minimax.io"]),
   kimi: new Set(["platform.kimi.com"]),
   glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
   deepseek: new Set(["api-docs.deepseek.com"]),
@@ -56,6 +56,9 @@ export type ProviderProtocolContract = {
   api_version: string;
   api_types: string[];
   test_model_ids?: Record<string, string>;
+  conformance_test_model_ids?: Record<string, string[]>;
+  native_history_matrix?: boolean;
+  provider_switch_matrix?: boolean;
   variant_api_types?: string[];
   operation: string;
   http_method: string;
@@ -74,9 +77,11 @@ export type ProviderProtocolContract = {
   >;
   body_field_formats?: Record<string, "http_url" | "http_url_or_data_uri">;
   required_body_values?: Record<string, unknown>;
+  required_body_values_by_model?: Record<string, Record<string, unknown>>;
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
   forbidden_body_paths?: string[];
+  forbidden_body_paths_by_model?: Record<string, string[]>;
   canonical_request_overrides?: Record<string, unknown>;
   generation_config?: {
     allowed_fields: string[];
@@ -97,6 +102,7 @@ export type ProviderProtocolContract = {
     | "gemini_interactions";
   async_protocol?:
     | "fal_queue"
+    | "gemini_interactions"
     | "minimax_video"
     | "minimax_video_v2"
     | "google_lro"
@@ -117,6 +123,12 @@ export type ProviderProtocolContract = {
   inline_artifact_success_fixture?: Record<string, unknown>;
   inline_artifact_payload_paths?: string[];
   success_chunk_fixtures?: Array<Record<string, unknown>>;
+  success_chunk_string_expansions?: Array<{
+    chunk_index: number;
+    path: Array<string | number>;
+    value: string;
+    repeat: number;
+  }>;
   async_result_fixture?: Record<string, unknown>;
   success_fixture_base64?: string;
   provider_artifact_identity?: {
@@ -422,6 +434,43 @@ export function validateProviderProtocolCatalog(
           throw new Error(`${id} has no ${driver}.test_model_ids.${apiType}`);
         }
       }
+      if (contract.conformance_test_model_ids !== undefined) {
+        const conformanceModels = object(
+          contract.conformance_test_model_ids,
+          `${id}.conformance_test_model_ids`,
+        );
+        for (const [apiType, rawModelIds] of Object.entries(conformanceModels)) {
+          if (!(contract.api_types as string[]).includes(apiType)) {
+            throw new Error(
+              `${id}.conformance_test_model_ids.${apiType} is not declared by the contract`,
+            );
+          }
+          const modelIds = stringArray(
+            rawModelIds,
+            `${id}.conformance_test_model_ids.${apiType}`,
+          );
+          const officialPool = [
+            ...((provider.official_first_party_model_ids as
+              | Record<string, string[]>
+              | undefined)?.[apiType] ?? []),
+            ...((provider.official_aggregated_model_ids as
+              | Record<string, string[]>
+              | undefined)?.[apiType] ?? []),
+          ];
+          for (const modelId of modelIds) {
+            if (!officialPool.includes(modelId)) {
+              throw new Error(
+                `${id}.conformance_test_model_ids.${apiType} contains ${modelId} outside its official model pool`,
+              );
+            }
+          }
+        }
+      }
+      for (const field of ["native_history_matrix", "provider_switch_matrix"] as const) {
+        if (contract[field] !== undefined && typeof contract[field] !== "boolean") {
+          throw new Error(`${id}.${field} must be a boolean`);
+        }
+      }
       if (contract.variant_api_types !== undefined) {
         stringArray(contract.variant_api_types, `${id}.variant_api_types`);
       }
@@ -448,6 +497,26 @@ export function validateProviderProtocolCatalog(
           }
         }
       }
+      if (contract.required_body_values_by_model !== undefined) {
+        const byModel = object(
+          contract.required_body_values_by_model,
+          `${id}.required_body_values_by_model`,
+        );
+        for (const [modelId, rawValues] of Object.entries(byModel)) {
+          nonEmptyString(modelId, `${id}.required_body_values_by_model key`);
+          const values = object(
+            rawValues,
+            `${id}.required_body_values_by_model.${modelId}`,
+          );
+          for (const pointer of Object.keys(values)) {
+            if (!pointer.startsWith("/")) {
+              throw new Error(
+                `${id}.required_body_values_by_model.${modelId} keys must be JSON pointers`,
+              );
+            }
+          }
+        }
+      }
       if (contract.json_string_body_values !== undefined) {
         const values = object(
           contract.json_string_body_values,
@@ -471,6 +540,47 @@ export function validateProviderProtocolCatalog(
         const pointers = stringArray(contract[field], `${id}.${field}`);
         if (pointers.some((pointer) => !pointer.startsWith("/"))) {
           throw new Error(`${id}.${field} entries must be JSON pointers`);
+        }
+      }
+      if (contract.forbidden_body_paths_by_model !== undefined) {
+        const byModel = object(
+          contract.forbidden_body_paths_by_model,
+          `${id}.forbidden_body_paths_by_model`,
+        );
+        for (const [modelId, rawPointers] of Object.entries(byModel)) {
+          nonEmptyString(modelId, `${id}.forbidden_body_paths_by_model key`);
+          const pointers = stringArray(
+            rawPointers,
+            `${id}.forbidden_body_paths_by_model.${modelId}`,
+          );
+          if (pointers.some((pointer) => !pointer.startsWith("/"))) {
+            throw new Error(
+              `${id}.forbidden_body_paths_by_model.${modelId} entries must be JSON pointers`,
+            );
+          }
+        }
+        const knownModels = new Set([
+          ...Object.values(
+            (provider.official_first_party_model_ids ?? {}) as Record<
+              string,
+              string[]
+            >,
+          ).flat(),
+          ...Object.values(
+            (provider.official_aggregated_model_ids ?? {}) as Record<
+              string,
+              string[]
+            >,
+          ).flat(),
+          ...Object.values(testModelIds as Record<string, string>),
+          ...Object.values(contractTestModelIds as Record<string, string>),
+        ]);
+        for (const modelId of Object.keys(byModel)) {
+          if (!knownModels.has(modelId)) {
+            throw new Error(
+              `${id}.forbidden_body_paths_by_model.${modelId} is not a documented model of ${provider.provider_driver}`,
+            );
+          }
         }
       }
       for (const required of contract.required_body_fields as string[]) {
@@ -1011,6 +1121,15 @@ export function validateProviderRequest(
       errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
     }
   }
+  const modelValues = typeof body.model === "string"
+    ? contract.required_body_values_by_model?.[body.model] ?? {}
+    : {};
+  for (const [pointer, expected] of Object.entries(modelValues)) {
+    const actual = pointerValue(pointer);
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
+    }
+  }
   for (const [pointer, expected] of Object.entries(contract.json_string_body_values ?? {})) {
     const actual = pointerValue(pointer);
     if (typeof actual !== "string") {
@@ -1032,7 +1151,13 @@ export function validateProviderRequest(
       errors.push(`body ${pointer} is required`);
     }
   }
-  for (const pointer of contract.forbidden_body_paths ?? []) {
+  const forbiddenPointers = [
+    ...(contract.forbidden_body_paths ?? []),
+    ...(typeof body.model === "string"
+      ? contract.forbidden_body_paths_by_model?.[body.model] ?? []
+      : []),
+  ];
+  for (const pointer of forbiddenPointers) {
     if (pointerValue(pointer) !== undefined) {
       errors.push(`body ${pointer} is forbidden`);
     }
@@ -1268,7 +1393,9 @@ function validateNestedProviderBody(
     errors.push(...videoScenarioErrors(contract, body, videoScenario));
   }
   if (
-    contract.operation === "interactions.create" && Array.isArray(body.input) &&
+    ["interactions.create", "interactions.background"].includes(
+      contract.operation,
+    ) && Array.isArray(body.input) &&
     (body.input.length === 0 ||
       body.input.some((item) => typeof item !== "string" && !recordValue(item)))
   ) {
@@ -1288,13 +1415,37 @@ function validateNestedProviderBody(
     Array.isArray(body.messages)
   ) {
     validateOpenAiChatMessages(body.messages, errors);
+    if (
+      contract.id === "openrouter.chat-completions.v1" &&
+      apiType !== undefined &&
+      ["vision.ocr", "vision.caption"].includes(apiType)
+    ) {
+      const hasTextOnlyInstruction = body.messages.some((rawMessage) => {
+        const message = recordValue(rawMessage);
+        return Array.isArray(message?.content) && message.content.some((rawPart) => {
+          const part = recordValue(rawPart);
+          return part?.type === "text" &&
+            typeof part.text === "string" &&
+            part.text.includes("Return text only and do not generate an image.");
+        });
+      });
+      if (!hasTextOnlyInstruction) {
+        errors.push(
+          "OpenRouter image-model vision requests require an explicit text-only instruction",
+        );
+      }
+    }
   }
   if (
     contract.operation === "messages.create" && Array.isArray(body.messages)
   ) {
     validateClaudeMessages(contract, body, errors);
   }
-  if (contract.operation === "interactions.create") {
+  if (
+    ["interactions.create", "interactions.background"].includes(
+      contract.operation,
+    )
+  ) {
     if (Array.isArray(body.input)) {
       validateGeminiInteractionInput(body.input, errors);
     }
@@ -1910,6 +2061,14 @@ export function validateProviderSuccessFixture(
       });
       break;
     }
+    case "interactions.background":
+      if (typeof fixture.id !== "string" || !fixture.id) {
+        errors.push("id is required");
+      }
+      if (!["queued", "in_progress"].includes(String(fixture.status))) {
+        errors.push("status must be queued or in_progress");
+      }
+      break;
     case "queue.submit":
       if (typeof fixture.request_id !== "string" || !fixture.request_id) {
         errors.push("request_id is required");
@@ -2104,6 +2263,12 @@ export function buildT15Manifest(
             provider.provider_driver,
             contract.protocol_adapter_id,
             apiType,
+            ...(contract.native_history_matrix === false
+              ? ["native_history_matrix_disabled"]
+              : []),
+            ...(contract.provider_switch_matrix === false
+              ? ["provider_switch_matrix_disabled"]
+              : []),
           ],
           input_entry: "zone_gateway",
           user: "acceptance-user-a",
@@ -2147,6 +2312,20 @@ export function buildT15Manifest(
           ),
           mock_scenario: "success",
         } as AcceptanceCase);
+        for (
+          const modelId of contract.conformance_test_model_ids?.[apiType] ?? []
+        ) {
+          if (modelId === contractModel) continue;
+          cases.push({
+            ...common,
+            case_id: caseId(
+              `t1.5.${provider.provider_driver}.${contract.id}.${apiType}.model.${modelId}.success`,
+            ),
+            tags: [...common.tags!, "model_api_conformance"],
+            model_selector: { kind: "exact", value: modelId },
+            mock_scenario: "success",
+          } as AcceptanceCase);
+        }
         if (TASK_RESULT_ARTIFACT_API_TYPES.has(apiType)) {
           cases.push({
             ...common,
@@ -2308,6 +2487,7 @@ export function buildT15Manifest(
           } as AcceptanceCase);
           const terminalFailureScenarios =
               contract.async_protocol === "google_lro" ||
+              contract.async_protocol === "gemini_interactions" ||
               contract.async_protocol === "minimax_video" ||
               contract.async_protocol === "minimax_video_v2" ||
               contract.async_protocol === "glm_video" ||
@@ -2439,6 +2619,7 @@ export function buildT15Manifest(
     testCase.api_type === "llm" &&
     testCase.mock_scenario === "success" &&
     !testCase.tags.includes("cloud_update") &&
+    !testCase.tags.includes("model_api_conformance") &&
     !testCase.tags.includes("history") &&
     !testCase.tags.includes("tool_history")
   );
@@ -2460,7 +2641,10 @@ export function buildT15Manifest(
       expected_wire_fixture:
         `${base.protocol_contract_id}.request.tool-history`,
     });
-    if (["openai", "openrouter"].includes(base.provider_driver ?? "")) {
+    if (
+      ["openai", "openrouter"].includes(base.provider_driver ?? "") &&
+      !base.tags.includes("native_history_matrix_disabled")
+    ) {
       cases.push({
         ...base,
         case_id: caseId(
@@ -2483,8 +2667,11 @@ export function buildT15Manifest(
       });
     }
   }
-  for (const source of historyBases) {
-    for (const target of historyBases) {
+  const providerSwitchBases = historyBases.filter((testCase) =>
+    !testCase.tags.includes("provider_switch_matrix_disabled")
+  );
+  for (const source of providerSwitchBases) {
+    for (const target of providerSwitchBases) {
       if (source.provider_driver === target.provider_driver) continue;
       cases.push({
         ...target,
@@ -2519,6 +2706,7 @@ export function buildT15Manifest(
       !testCase.tags.includes("task_result_artifact") &&
       !testCase.tags.includes("generated_artifact_id") &&
       !testCase.tags.includes("video_scenario") &&
+      !testCase.tags.includes("model_api_conformance") &&
       !testCase.tags.includes("custom_provider")
     ).map((testCase) => ({
       ...testCase,
@@ -2530,6 +2718,60 @@ export function buildT15Manifest(
       expected_provider_instance: `t15-custom-${testCase.provider_driver}`,
     })),
   );
+  // Vendor models that reject explicit sampling parameters must have those
+  // parameters stripped by Provider Rules before the request reaches the wire.
+  // Each provider keeps a control case on a model without the constraint, so the
+  // assertion cannot pass just because the harness never sends the values.
+  const samplingConstraints: Array<{
+    provider_driver: string;
+    contract_id: string;
+    stripped_model: string;
+    forwarded_model: string;
+  }> = [
+    {
+      provider_driver: "claude",
+      contract_id: "anthropic.messages.2023-06-01",
+      stripped_model: "claude-sonnet-5-5",
+      forwarded_model: "claude-sonnet-5",
+    },
+    {
+      provider_driver: "openrouter",
+      contract_id: "openrouter.responses.v1",
+      stripped_model: "anthropic/claude-sonnet-5.5",
+      forwarded_model: "anthropic/claude-sonnet-5",
+    },
+  ];
+  for (const constraint of samplingConstraints) {
+    const samplingBase = cases.find((testCase) =>
+      testCase.provider_driver === constraint.provider_driver &&
+      testCase.protocol_contract_id === constraint.contract_id &&
+      testCase.api_type === "llm" &&
+      testCase.mock_scenario === "success" &&
+      !testCase.tags.includes("model_api_conformance")
+    );
+    if (!samplingBase) {
+      throw new Error(
+        `${constraint.contract_id} LLM contract is required for the sampling constraint cases`,
+      );
+    }
+    const samplingVariants: Array<[string, string, string]> = [
+      ["sampling-omitted", constraint.stripped_model, "sampling_omitted"],
+      ["sampling-forwarded", constraint.forwarded_model, "sampling_forwarded"],
+    ];
+    for (const [suffix, modelId, tag] of samplingVariants) {
+      cases.push({
+        ...samplingBase,
+        case_id: caseId(
+          `t1.5.${constraint.provider_driver}.${constraint.contract_id}.llm.${suffix}`,
+        ),
+        priority: "P0",
+        tags: [...samplingBase.tags, tag],
+        model_selector: { kind: "exact", value: modelId },
+        mock_scenario: "success",
+        expected_wire_fixture: `${constraint.contract_id}.request.${suffix}`,
+      } as AcceptanceCase);
+    }
+  }
   for (const variant of variants) {
     const contract = protocolContract(
       catalog,

@@ -13,6 +13,7 @@ import {
   validateCaseManifest,
   validateProviderBaseline,
 } from "./manifest.ts";
+import { OPENROUTER_CATALOG_TASK_TYPES } from "./official_catalog.ts";
 import {
   buildT15Manifest,
   loadProviderProtocolCatalog,
@@ -52,12 +53,36 @@ function canonicalCheckoutBytes(bytes: Buffer): Buffer {
   return Buffer.from(normalized);
 }
 
+type ProviderBaselineShape = Awaited<ReturnType<typeof validateProviderBaseline>>;
+
+/**
+ * OpenRouter derives official task types from the catalog's architecture block,
+ * so a task type missing from `task_type_api_types` would silently map to zero
+ * API types and drop the models that report it from the acceptance matrix.
+ */
+function assertOfficialCatalogTaskTypes(baseline: ProviderBaselineShape): void {
+  const openrouter = baseline.providers.find((provider) =>
+    provider.provider_driver === "openrouter"
+  );
+  if (!openrouter) throw new Error("provider baseline is missing openrouter");
+  const declared = new Set(
+    Object.keys(openrouter.official_catalog.task_type_api_types ?? {}),
+  );
+  const undeclared = OPENROUTER_CATALOG_TASK_TYPES.filter((taskType) => !declared.has(taskType));
+  if (undeclared.length > 0) {
+    throw new Error(
+      `openrouter official catalog task types without task_type_api_types: ${undeclared.join(", ")}`,
+    );
+  }
+}
+
 export async function runPreflight(): Promise<PreflightResult> {
   validateMockProviderContract();
   const baselineRaw = JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   );
   const baseline = validateProviderBaseline(baselineRaw);
+  assertOfficialCatalogTaskTypes(baseline);
   const logicalEntrypoints = await loadLogicalEntrypointBaseline();
   const routeExposure = assertRouteExposureCompleteness(
     baseline,

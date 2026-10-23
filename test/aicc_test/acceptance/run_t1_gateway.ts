@@ -536,7 +536,6 @@ async function waitForMockInventories(
     );
     const geminiReady = selected.some((item) =>
       item.provider_driver === "google-gemini" && item.models.some((model) =>
-        model.provider_model_id.toLowerCase().includes("veo-") &&
         model.api_types.includes("video.generate")
       )
     );
@@ -2302,9 +2301,15 @@ async function runCases(
   }
 
   const probeCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "chat.completions.create") ?? cells[0];
-  const asyncInventory = mockInventories.find((inventory) => inventory.provider_driver === "google-gemini");
+  // Gemini no longer ships a `predictLongRunning` video model: the Veo 3.1
+  // previews were shut down on 2026-10-22 and Gemini Omni routes video through
+  // `interactions.create`, i.e. immediate execution. The async lifecycle probe
+  // therefore runs on MiniMax H3, which is still a native task.
+  const asyncInventory = mockInventories.find((inventory) =>
+    inventory.provider_driver === "minimax" &&
+    inventory.models.some((model) => model.api_types.includes("video.generate"))
+  );
   const asyncModel = asyncInventory?.models.find((model) =>
-    model.provider_model_id.toLowerCase().includes("veo-") &&
     model.api_types.includes("video.generate")
   );
   const asyncProbeCell = asyncInventory && asyncModel

@@ -8,13 +8,16 @@ const TEST_SECTIONS: Record<string, string> = {
   google: "google-gemini-main",
   fal: "fal-main",
 };
+const TEST_PROVIDER_INSTANCES = new Set(["openrouter-t2"]);
 
 async function main(): Promise<void> {
   if (!Deno.args.includes("--confirm-remove-test-sections")) {
     throw new Error("--confirm-remove-test-sections is required");
   }
   const configIndex = Deno.args.indexOf("--config");
-  const configPath = configIndex >= 0 ? Deno.args[configIndex + 1] : "aicc_acceptance.local.toml";
+  const configPath = configIndex >= 0
+    ? Deno.args[configIndex + 1]
+    : "aicc_acceptance.local.toml";
   if (!configPath) throw new Error("--config requires a value");
   const config = parseToml(await Deno.readTextFile(configPath));
   const session = await loginGateway({
@@ -24,11 +27,26 @@ async function main(): Promise<void> {
     password: tomlString(config, "auth.password"),
     appId: "control-panel",
   });
-  const current = configValue(await session.systemConfig.call("sys_config_get", {
-    key: "services/aicc/settings",
-  })).parsed;
+  const current = configValue(
+    await session.systemConfig.call("sys_config_get", {
+      key: "services/aicc/settings",
+    }),
+  ).parsed;
   const next = structuredClone(current);
   const removed: string[] = [];
+  if (Array.isArray(next.providers)) {
+    next.providers = next.providers.filter((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return true;
+      }
+      const name = (value as Record<string, unknown>).provider_instance_name;
+      if (typeof name !== "string" || !TEST_PROVIDER_INSTANCES.has(name)) {
+        return true;
+      }
+      removed.push(`providers/${name}`);
+      return false;
+    });
+  }
   for (const [sectionName, expectedInstance] of Object.entries(TEST_SECTIONS)) {
     const section = next[sectionName];
     if (section === undefined) continue;
@@ -37,11 +55,15 @@ async function main(): Promise<void> {
     }
     const instances = (section as Record<string, unknown>).instances;
     if (!Array.isArray(instances) || instances.length !== 1) {
-      throw new Error(`refusing to remove ${sectionName}: expected exactly one test instance`);
+      throw new Error(
+        `refusing to remove ${sectionName}: expected exactly one test instance`,
+      );
     }
     const instance = instances[0] as Record<string, unknown>;
     if (instance.provider_instance_name !== expectedInstance) {
-      throw new Error(`refusing to remove ${sectionName}: unexpected instance name`);
+      throw new Error(
+        `refusing to remove ${sectionName}: unexpected instance name`,
+      );
     }
     delete next[sectionName];
     removed.push(`${sectionName}/${expectedInstance}`);

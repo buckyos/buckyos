@@ -146,6 +146,10 @@ impl ClaudeMessagesCodec {
         if !request.tools.is_empty() {
             body.insert("tools".to_string(), encode_tools(request)?);
         }
+        // Sampling parameters are forwarded only when the caller supplied them. Models that
+        // reject explicit sampling parameters (Claude 5.5 family) are handled one layer up:
+        // `claude.provider.json` and `openrouter.provider.json` remove `/temperature`, `/top_p`
+        // and `/top_k` for those models, so the values never reach this codec.
         if let Some(temperature) = request.temperature {
             body.insert(
                 "temperature".to_string(),
@@ -2422,7 +2426,7 @@ mod review_parameter_tests {
         ] {
             assert!(apply_resolved_parameters(
                 &mut Map::new(),
-                &BTreeMap::from([(field.into(), value)])
+                &BTreeMap::from([(field.into(), value)]),
             )
             .is_err());
         }

@@ -1085,6 +1085,14 @@ impl RuntimeProviderExecutionPort {
                             false,
                         )
                     })?;
+                let max_poll_duration = self
+                    .codecs
+                    .native_task_max_poll_duration(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
                 let response = Self::send_cancelable(cancellation, transport.send(request))
                     .await
                     .map_err(ProviderStartFailure::native_submit_unknown)?;
@@ -1141,6 +1149,8 @@ impl RuntimeProviderExecutionPort {
                         resolved_parameters: call.input.resolved_parameters.clone(),
                         output_video_seconds,
                         request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
+                        max_poll_duration_ms: max_poll_duration.as_millis() as u64,
+                        active_poll_elapsed_ms: 0,
                         max_request_bytes: call.context.limits.max_request_bytes as u64,
                         max_response_bytes: call.context.limits.max_response_bytes as u64,
                     },
@@ -1315,29 +1325,15 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     .await?
                 {
                     NativeTaskOutput::Result(mut output) => {
-                        // Billing seconds come from the Provider; the request's
-                        // own duration is only the fallback the codec declared.
-                        let seconds = result_usage
-                            .as_ref()
-                            .and_then(|usage| usage.video_seconds)
-                            .or_else(|| {
-                                binding
-                                    .resume
-                                    .as_ref()?
-                                    .output_video_seconds
-                                    .map(|seconds| seconds as f64)
-                            });
-                        let usage = output.usage.get_or_insert_with(Default::default);
-                        if let Some(seconds) = seconds {
-                            usage.video_seconds = usage.video_seconds.or(Some(seconds));
-                        }
-                        // A charge reported with the terminal status (OpenRouter
-                        // `usage.cost`) belongs to the result that follows it.
-                        if let Some(cost) =
-                            result_usage.as_ref().and_then(|usage| usage.reported_cost)
-                        {
-                            usage.reported_cost = usage.reported_cost.or(Some(cost));
-                        }
+                        merge_native_result_usage(
+                            &mut output,
+                            result_usage,
+                            binding
+                                .resume
+                                .as_ref()
+                                .and_then(|resume| resume.output_video_seconds)
+                                .map(|seconds| seconds as f64),
+                        );
                         if is_video_api(binding.api_type) {
                             let parameters = binding
                                 .resume
@@ -1345,6 +1341,7 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                 .map(|resume| &resume.resolved_parameters);
                             if let Some(parameters) = parameters {
                                 if let Some(images) = reference_image_count(parameters) {
+                                    let usage = output.usage.get_or_insert_with(Default::default);
                                     usage.reference_images =
                                         usage.reference_images.or(Some(images));
                                 }
@@ -1508,6 +1505,31 @@ fn observed_protocol_stream(
     }
 }
 
+fn merge_native_result_usage(
+    output: &mut ProtocolOutput,
+    status_usage: Option<buckyos_api::AiUsage>,
+    fallback_video_seconds: Option<f64>,
+) {
+    let reported_cost = status_usage.as_ref().and_then(|usage| usage.reported_cost);
+    let settled_cost = status_usage.as_ref().and_then(|usage| usage.cost.clone());
+    let video_seconds = status_usage
+        .and_then(|usage| usage.video_seconds)
+        .or(fallback_video_seconds);
+    if reported_cost.is_none() && settled_cost.is_none() && video_seconds.is_none() {
+        return;
+    }
+    let usage = output.usage.get_or_insert_with(Default::default);
+    if usage.reported_cost.is_none() {
+        usage.reported_cost = reported_cost;
+    }
+    if usage.cost.is_none() {
+        usage.cost = settled_cost;
+    }
+    if usage.video_seconds.is_none() {
+        usage.video_seconds = video_seconds;
+    }
+}
+
 fn health_failure_kind(error: &ProtocolError) -> HealthFailureKind {
     if error.is_account_exhausted() {
         HealthFailureKind::Permanent
@@ -1539,6 +1561,66 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_result_usage_keeps_result_values_and_fills_status_settlement() {
+        let mut output = ProtocolOutput {
+            value: Value::Null,
+            usage: Some(buckyos_api::AiUsage {
+                request_units: Some(1),
+                ..Default::default()
+            }),
+            artifacts: Vec::new(),
+        };
+        merge_native_result_usage(
+            &mut output,
+            Some(buckyos_api::AiUsage {
+                reported_cost: Some(0.5),
+                cost: Some(buckyos_api::AiCost::new(0.5, "USD")),
+                video_seconds: Some(8.0),
+                ..Default::default()
+            }),
+            Some(10.0),
+        );
+        let usage = output.usage.as_ref().unwrap();
+        assert_eq!(usage.request_units, Some(1));
+        assert_eq!(usage.reported_cost, Some(0.5));
+        assert_eq!(usage.cost, Some(buckyos_api::AiCost::new(0.5, "USD")));
+        assert_eq!(usage.video_seconds, Some(8.0));
+
+        let mut existing = ProtocolOutput {
+            value: Value::Null,
+            usage: Some(buckyos_api::AiUsage {
+                reported_cost: Some(0.25),
+                cost: Some(buckyos_api::AiCost::new(0.25, "CNY")),
+                video_seconds: Some(4.0),
+                ..Default::default()
+            }),
+            artifacts: Vec::new(),
+        };
+        merge_native_result_usage(
+            &mut existing,
+            Some(buckyos_api::AiUsage {
+                reported_cost: Some(0.5),
+                cost: Some(buckyos_api::AiCost::new(0.5, "USD")),
+                video_seconds: Some(8.0),
+                ..Default::default()
+            }),
+            None,
+        );
+        let usage = existing.usage.unwrap();
+        assert_eq!(usage.reported_cost, Some(0.25));
+        assert_eq!(usage.cost, Some(buckyos_api::AiCost::new(0.25, "CNY")));
+        assert_eq!(usage.video_seconds, Some(4.0));
+
+        let mut empty = ProtocolOutput {
+            value: Value::Null,
+            usage: None,
+            artifacts: Vec::new(),
+        };
+        merge_native_result_usage(&mut empty, None, None);
+        assert!(empty.usage.is_none());
+    }
 
     #[test]
     fn artifact_materialization_does_not_recollect_replaced_value_resource() {

@@ -3,7 +3,7 @@ use crate::provider::{ProviderDraftValidationStage, ProviderRefreshFailure};
 use crate::routing::policy::PolicyScope;
 use crate::routing::{FilterReasonTrace, FilteredCandidateTrace};
 use crate::settings::MetadataSource;
-use buckyos_api::{AiccError, AiccErrorCode};
+use buckyos_api::{AiUsage, AiccError, AiccErrorCode};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
@@ -279,7 +279,7 @@ pub(crate) fn protocol_error_kind_from_http_status(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProtocolError {
     pub kind: ProtocolErrorKind,
     pub message: String,
@@ -287,6 +287,10 @@ pub(crate) struct ProtocolError {
     pub http_status: Option<u16>,
     pub request_id: Option<String>,
     pub retry_after: Option<Duration>,
+    /// Usage the Provider reported before the attempt failed. A failed attempt
+    /// that already consumed tokens, seconds, or money must still be settled
+    /// and billed, so the error carries whatever the Provider told us.
+    pub usage: Option<AiUsage>,
 }
 
 pub(crate) type ProtocolResultValue<T> = Result<T, ProtocolError>;
@@ -470,7 +474,13 @@ impl ProtocolError {
             http_status: None,
             request_id: None,
             retry_after: None,
+            usage: None,
         }
+    }
+
+    pub(crate) fn with_usage(mut self, usage: Option<AiUsage>) -> Self {
+        self.usage = usage;
+        self
     }
 
     pub(crate) fn with_request_id(mut self, request_id: Option<String>) -> Self {

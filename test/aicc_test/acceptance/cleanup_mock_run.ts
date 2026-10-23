@@ -27,11 +27,25 @@ async function main(): Promise<void> {
     password: tomlString(config, "auth.password"),
     appId: "control-panel",
   });
-  const current = configValue(await session.systemConfig.call("sys_config_get", {
-    key: "services/aicc/settings",
-  })).parsed;
+  const current = configValue(
+    await session.systemConfig.call("sys_config_get", {
+      key: "services/aicc/settings",
+    }),
+  ).parsed;
   const next = structuredClone(current);
   const removed: string[] = [];
+  if (Array.isArray(next.providers)) {
+    next.providers = next.providers.filter((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return true;
+      }
+      const name = (value as Record<string, unknown>).provider_instance_name;
+      const matches = typeof name === "string" && name.startsWith("dv-") &&
+        name.endsWith(suffix);
+      if (matches) removed.push(`providers/${name}`);
+      return !matches;
+    });
+  }
   for (const sectionName of MOCK_SECTIONS) {
     const section = next[sectionName];
     if (section === undefined) continue;
@@ -40,27 +54,36 @@ async function main(): Promise<void> {
     }
     const object = section as Record<string, unknown>;
     if (!Array.isArray(object.instances)) {
-      throw new Error(`refusing to modify ${sectionName}: instances is not an array`);
+      throw new Error(
+        `refusing to modify ${sectionName}: instances is not an array`,
+      );
     }
     const retained = object.instances.filter((value) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return true;
+      }
       const name = (value as Record<string, unknown>).provider_instance_name;
-      const matches = typeof name === "string" && name.startsWith("dv-") && name.endsWith(suffix);
+      const matches = typeof name === "string" && name.startsWith("dv-") &&
+        name.endsWith(suffix);
       if (matches) removed.push(`${sectionName}/${name}`);
       return !matches;
     });
     if (retained.length === 0) delete next[sectionName];
     else object.instances = retained;
   }
-  if (removed.length !== 6) {
-    throw new Error(`refusing cleanup: expected exactly 6 run-scoped instances, found ${removed.length}`);
+  if (removed.length === 0) {
+    throw new Error(
+      `refusing cleanup: no run-scoped instance matched ${runId}`,
+    );
   }
   await session.systemConfig.call("sys_config_set", {
     key: "services/aicc/settings",
     value: JSON.stringify(next),
   });
   await session.aicc.call("service.reload_settings", {});
-  console.log(JSON.stringify({ cleanup: "restored", run_id: runId, removed }, null, 2));
+  console.log(
+    JSON.stringify({ cleanup: "restored", run_id: runId, removed }, null, 2),
+  );
 }
 
 if (import.meta.main) {

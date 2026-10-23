@@ -175,6 +175,18 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         throw new Error(`${driver}.official_catalog.endpoint_ids must contain 1-50 unique ids`);
       }
     }
+    if (rawProvider.official_catalog.include_model_ids !== undefined) {
+      const ids = requireStringArray(
+        rawProvider.official_catalog.include_model_ids,
+        `${driver}.official_catalog.include_model_ids`,
+      );
+      if (ids.length === 0 || new Set(ids.map((id) => id.toLowerCase())).size !== ids.length) {
+        throw new Error(`${driver}.official_catalog.include_model_ids must be non-empty and unique`);
+      }
+      if (rawProvider.official_catalog.format === "frozen") {
+        throw new Error(`${driver}.official_catalog.include_model_ids is invalid for frozen catalogs`);
+      }
+    }
     if (rawProvider.official_catalog.supplemental_model_ids !== undefined) {
       const supplementalModelIds = requireStringArray(
         rawProvider.official_catalog.supplemental_model_ids,
@@ -475,14 +487,24 @@ export function analyzeProviderMatrix(args: {
     }
     for (const model of inventory.models) {
       if (model.provider_actual_model_id || model.provider_model_id.includes(":")) continue;
-      const configuredRule = capabilityProfile.rules.find((candidate) =>
+      const matchingRules = capabilityProfile.rules.filter((candidate) =>
         globMatches(candidate.model_pattern, model.provider_model_id)
+      );
+      // A `*` rule declares "everything else is an LLM". It must not shadow what
+      // the official catalog reports: `task_type_api_types` is the capability
+      // authority, and only models the catalog leaves unspecified fall back to
+      // the catch-all.
+      const specificRule = matchingRules.find((candidate) =>
+        candidate.model_pattern !== "*"
+      );
+      const catchAllRule = matchingRules.find((candidate) =>
+        candidate.model_pattern === "*"
       );
       const catalogApiTypes = model.official_task_types?.flatMap((taskType) =>
         profile.official_catalog.task_type_api_types?.[taskType] ?? []
       );
       const derivedApiTypes = catalogApiTypes ? [...new Set(catalogApiTypes)] : [];
-      const rule = configuredRule ?? (derivedApiTypes.length > 0
+      const rule = specificRule ?? (derivedApiTypes.length > 0
         ? {
           model_pattern: model.provider_model_id,
           status: "active" as const,
@@ -494,7 +516,7 @@ export function analyzeProviderMatrix(args: {
           source_urls: profile.source_urls,
           evidence_summary: `Official catalog task_type: ${model.official_task_types?.join(", ")}.`,
         }
-        : undefined);
+        : catchAllRule);
       if (!rule) {
         errors.push(
           `missing official capability rule for ${inventory.provider_driver}/${model.provider_model_id}`,

@@ -2086,7 +2086,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
             .unwrap()
             .starts_with(&format!("{task}."))));
     }
-    assert_eq!(media_count, 44);
+    assert_eq!(media_count, 43);
     let mut contract_count = 0;
     for line in include_str!("model_defaults.rs").lines() {
         let Some((left, right)) = line.split_once(" -> ") else {
@@ -2117,7 +2117,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         );
         contract_count += 1;
     }
-    assert_eq!(contract_count, 44);
+    assert_eq!(contract_count, 43);
 
     assert_eq!(
         dir_item(&directory, "image.txt2img", "gpt_image")["weight"],
