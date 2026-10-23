@@ -1244,6 +1244,45 @@ pub(crate) mod test_support {
             .unwrap_or_else(|error| panic!("`{driver}/{model}` contract: {error}"))
     }
 
+    /// A `predictLongRunning`-shaped channel contract.
+    ///
+    /// No shipped Gemini model uses this shape any more: the Veo 3.1 previews
+    /// were shut down on the Gemini API on 2026-10-22 and Gemini Omni routes
+    /// video through `interactions.create`. The codec keeps the path for
+    /// channels that still expose it, so its tests carry their own contract
+    /// instead of borrowing a retired catalog entry. `reference_images` mirrors
+    /// the retired `-lite-` variant when `None`.
+    pub(crate) fn channel_contract(reference_images: Option<usize>) -> VideoGenerationContract {
+        let mut value = serde_json::json!({
+            "prompt_required": true,
+            "negative_prompt": true,
+            "seed": true,
+            "keyframes": {"positions": ["start", "end"]},
+            "output": {
+                "durations": {"values": [4, 6, 8]},
+                "default_duration_seconds": 8,
+                "aspect_ratios": ["16:9", "9:16"],
+                "resolutions": [
+                    {"name": "720p", "short_edge": 720},
+                    {"name": "1080p", "short_edge": 1080},
+                    {"name": "4k", "short_edge": 2160}
+                ],
+                "fps": [24],
+                "audio": "always",
+                "media_types": ["video/mp4"],
+                "rules": [
+                    {"when": {"resolutions": ["1080p", "4k"]}, "durations": {"values": [8]}},
+                    {"when": {"inputs": ["reference_image"]}, "durations": {"values": [8]}}
+                ]
+            }
+        });
+        if let Some(max) = reference_images {
+            value["references"] = serde_json::json!({"image": {"max": max}});
+        }
+        serde_json::from_value(value)
+            .unwrap_or_else(|error| panic!("channel contract fixture: {error}"))
+    }
+
     /// The channel contract a provider rule declares for `id`.
     pub(crate) fn provider_contract(rules: &str, id: &str) -> VideoGenerationContract {
         let catalog = builtin(CatalogKind::ProviderRules, rules);

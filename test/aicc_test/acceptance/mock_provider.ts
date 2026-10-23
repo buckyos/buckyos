@@ -608,11 +608,6 @@ async function providerResponse(
           supportedGenerationMethods: ["predictLongRunning"],
         },
         {
-          name: "models/veo-3.1-generate-preview",
-          displayName: "Veo Mock",
-          supportedGenerationMethods: ["predictLongRunning"],
-        },
-        {
           name: "models/gemini-omni-1.1-flash",
           displayName: "Gemini Omni Mock",
           supportedGenerationMethods: ["generateContent", "predictLongRunning"],

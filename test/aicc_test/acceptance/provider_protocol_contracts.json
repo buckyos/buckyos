@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-22.1",
-  "checked_at": "2026-10-22",
+  "revision": "official-provider-protocols-2026-10-23.1",
+  "checked_at": "2026-10-23",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1312,16 +1312,13 @@
           "lyria-3.5"
         ],
         "video.generate": [
-          "veo-3.1-generate-preview",
-          "veo-3.1-fast-generate-preview",
-          "veo-3.1-lite-generate-preview"
+          "gemini-omni-1.1-flash"
         ],
         "video.edit": [
           "gemini-omni-1.1-flash"
         ],
         "video.extend": [
-          "gemini-omni-1.1-flash",
-          "veo-3.1-fast-generate-preview"
+          "gemini-omni-1.1-flash"
         ]
       },
       "official_variant_sources": [
@@ -1490,7 +1487,7 @@
         "image.img2img": "gemini-3.1-flash-image",
         "audio.tts": "gemini-3.1-flash-tts-preview",
         "audio.music": "lyria-3-clip-preview",
-        "video.generate": "veo-3.1-generate-preview",
+        "video.generate": "gemini-omni-1.1-flash",
         "video.edit": "gemini-omni-1.1-flash",
         "video.extend": "gemini-omni-1.1-flash"
       },
@@ -2087,6 +2084,7 @@
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
           "api_types": [
+            "video.generate",
             "video.edit",
             "video.extend"
           ],
@@ -2175,57 +2173,6 @@
             "https://ai.google.dev/gemini-api/docs/api-errors"
           ],
           "evidence_summary": "Gemini Omni video editing and extension use POST /v1beta/interactions with media input and generation_config.video_config."
-        },
-        {
-          "id": "gemini.predict-long-running.v1beta",
-          "protocol_adapter_id": "gemini-interactions",
-          "api_version": "v1beta",
-          "api_types": [
-            "video.generate"
-          ],
-          "operation": "models.predictLongRunning",
-          "http_method": "POST",
-          "path": "/v1beta/models/{model}:predictLongRunning",
-          "auth": {
-            "kind": "header",
-            "name": "x-goog-api-key",
-            "prefix": ""
-          },
-          "content_type": "application/json",
-          "required_body_fields": [
-            "instances"
-          ],
-          "allowed_body_fields": [
-            "instances",
-            "parameters"
-          ],
-          "body_field_types": {
-            "instances": [
-              "array"
-            ]
-          },
-          "async_protocol": "google_lro",
-          "async_steps": [
-            {
-              "name": "poll",
-              "http_method": "GET",
-              "path": "/v1beta/operations/{operation_id}"
-            }
-          ],
-          "success_fixture": {
-            "name": "operations/gemini_mock_1",
-            "done": false
-          },
-          "official_sources": [
-            "https://ai.google.dev/api/models",
-            "https://ai.google.dev/gemini-api/docs/video",
-            "https://ai.google.dev/gemini-api/docs/api-errors"
-          ],
-          "evidence_summary": "Gemini video generation uses models/{model}:predictLongRunning with instances/parameters and returns a pollable operation.",
-          "video_generate_scenarios": [
-            "keyframe",
-            "keyframes"
-          ]
         }
       ]
     },

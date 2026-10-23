@@ -1,4 +1,4 @@
-use super::test_support::{clip_facts, image_facts, model_contract};
+use super::test_support::{channel_contract, clip_facts, image_facts, model_contract};
 use super::*;
 use buckyos_api::{ResourceRef, TimeRange, VideoCondition, VideoGenerateRequest};
 
@@ -62,7 +62,7 @@ fn every_builtin_video_contract_is_valid() {
             );
         }
     }
-    assert!(checked >= 30, "only {checked} contracts were checked");
+    assert!(checked >= 28, "only {checked} contracts were checked");
 }
 
 #[test]
@@ -194,15 +194,15 @@ fn time_ranges_must_cover_the_whole_clip_until_trimming_exists() {
 
 #[test]
 fn routing_requirements_and_output_rules_are_enforced() {
-    let veo = model_contract("gemini", "veo-3.1-generate-preview");
+    let channel = channel_contract(Some(3));
     let mut requirement = VideoGenerationRequirement {
         prompt: true,
         reference_images: 4,
         ..Default::default()
     };
-    assert!(!unmet_requirements(&veo, &requirement, &ClipSummary::default()).is_empty());
+    assert!(!unmet_requirements(&channel, &requirement, &ClipSummary::default()).is_empty());
     requirement.reference_images = 3;
-    assert!(unmet_requirements(&veo, &requirement, &ClipSummary::default()).is_empty());
+    assert!(unmet_requirements(&channel, &requirement, &ClipSummary::default()).is_empty());
 
     let mut tall = request("a", Vec::new());
     tall.output = Some(buckyos_api::VideoOutputSpec {
@@ -210,7 +210,7 @@ fn routing_requirements_and_output_rules_are_enforced() {
         duration_seconds: Some(6.0),
         ..Default::default()
     });
-    assert!(plan_video(&veo, &tall, &VideoMaterialFacts::new())
+    assert!(plan_video(&channel, &tall, &VideoMaterialFacts::new())
         .unwrap_err()
         .message
         .contains("requires durations"));
@@ -220,7 +220,7 @@ fn routing_requirements_and_output_rules_are_enforced() {
         keyframes: [KeyframePosition::End].into(),
         ..Default::default()
     };
-    assert!(!unmet_requirements(&veo, &lite_only, &ClipSummary::default()).is_empty());
+    assert!(!unmet_requirements(&channel, &lite_only, &ClipSummary::default()).is_empty());
 
     let vidu = model_contract("glm", "vidu2-start-end");
     let start = VideoGenerationRequirement {

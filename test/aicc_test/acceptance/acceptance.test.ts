@@ -3128,7 +3128,7 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     size: "1024x1024",
     quality: "low",
   });
-  assert.deepEqual(defaults("google-gemini", "veo-3.1-*", "video.generate"), {
+  assert.deepEqual(defaults("google-gemini", "gemini-omni-*", "video.generate"), {
     output: { duration_seconds: 4, size: { short_edge: 720 } },
   });
   assert.deepEqual(defaults("minimax", "MiniMax-H3", "video.generate"), {
@@ -3203,14 +3203,14 @@ test("active official model families are not excluded by lifecycle filters", asy
   }
 });
 
-test("T2 Veo extension requests the protocol-fixed seven second duration", () => {
+test("T2 video extension requests the protocol-fixed seven second duration", () => {
   const request = buildExactRequest({
     cell: {
-      case_id: "veo-extend",
+      case_id: "video-extend",
       provider_driver: "google-gemini",
       provider_instance: "gemini-main",
-      exact_model: "veo-3.1-generate-preview@gemini-main",
-      provider_model_id: "veo-3.1-generate-preview",
+      exact_model: "gemini-omni-1.1-flash@gemini-main",
+      provider_model_id: "gemini-omni-1.1-flash",
       api_type: "video.extend",
       method: "video.extend",
       baseline_status: "active",
@@ -4452,8 +4452,6 @@ test("T1.5 video.generate scenarios must reach each Provider in its documented f
             : {}),
           ...(scenario === "reference-images" ? { input_references: [image("https://media.example/a.png"), image("https://media.example/b.png")] } : {}),
         };
-      case "gemini.predict-long-running.v1beta":
-        return { instances: [{ prompt: "go", ...(scenario ? { image: { uri: "https://media.example/a.png" } } : {}), ...(scenario === "keyframes" ? { lastFrame: { uri: "https://media.example/b.png" } } : {}) }] };
       default:
         throw new Error(contractId);
     }
@@ -4462,7 +4460,6 @@ test("T1.5 video.generate scenarios must reach each Provider in its documented f
     ["minimax", "minimax.video-generation.v2"],
     ["doubao", "doubao.video-tasks.v3"],
     ["openrouter", "openrouter.videos.v1"],
-    ["google-gemini", "gemini.predict-long-running.v1beta"],
   ] as const) {
     const contract = protocolContract(catalog, provider, contractId);
     const headers = new Headers({ "content-type": contract.content_type });
@@ -4914,11 +4911,14 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
       .filter((contract) => contract.async_protocol)
       .map((contract) => ({ provider, contract }))
   );
+  // `t15_mock_provider.ts` still answers `google_lro`, but no shipped contract
+  // declares it any more: the Veo 3.1 previews were shut down on 2026-10-22 and
+  // Gemini Omni routes video through `interactions.create`. The predictLongRunning
+  // path keeps its Rust coverage through `video::test_support::channel_contract`.
   assert.deepEqual(
     new Set(asyncContracts.map(({ contract }) => contract.async_protocol)),
     new Set([
       "openai_video",
-      "google_lro",
       "fal_queue",
       "minimax_video_v2",
       "openrouter_video",

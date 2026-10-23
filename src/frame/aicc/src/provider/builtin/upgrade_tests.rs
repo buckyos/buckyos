@@ -1148,7 +1148,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("doubao", 12),
         ("doubao-agent-plan", 0),
         ("fal", 4),
-        ("gemini", 35),
+        ("gemini", 32),
         ("glm", 101),
         ("kimi", 4),
         ("minimax", 23),
@@ -1219,7 +1219,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 329);
+    assert_eq!(pricing_count, 326);
 }
 
 #[test]
@@ -1299,16 +1299,28 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
     assert_eq!(rembg.pricing.amount, Some(0.0));
 
     let gemini = catalog.provider_rules("gemini").unwrap();
-    let veo = gemini
+    // The Veo 3.1 previews were shut down on the Gemini API on 2026-10-22; they
+    // must not linger as priced entries that discovery can still advertise.
+    for retired in [
+        "veo-3.1-generate-preview",
+        "veo-3.1-fast-generate-preview",
+        "veo-3.1-lite-generate-preview",
+    ] {
+        assert!(
+            gemini
+                .model_pricing
+                .iter()
+                .all(|rule| rule.id.as_deref() != Some(retired)),
+            "{retired} is retired but still carries pricing"
+        );
+    }
+    let omni = gemini
         .model_pricing
         .iter()
-        .find(|rule| rule.id.as_deref() == Some("veo-3.1-generate-preview"))
+        .find(|rule| rule.id.as_deref() == Some("gemini-omni-1.1-flash"))
         .unwrap();
-    assert_eq!(
-        veo.pricing.unit,
-        Some(crate::catalog::PricingUnit::VideoSecond)
-    );
-    assert_eq!(veo.pricing.amount, Some(0.4));
+    assert_eq!(omni.pricing.input_token, Some(1.5e-6));
+    assert_eq!(omni.pricing.output_token, Some(9e-6));
 
     let kimi = catalog.provider_rules("kimi").unwrap();
     let k3 = kimi

@@ -447,28 +447,6 @@
       }
     },
     {
-      "id": "veo-3.1-fast-generate-preview",
-      "pricing": {
-        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-        "verified_at": "2026-10-14",
-        "currency": "USD",
-        "amount": 0.1,
-        "unit": "video_second",
-        "rules": [
-          {
-            "when": { "/video/resolution": "1080p" },
-            "amount": 0.12,
-            "unit": "video_second"
-          },
-          {
-            "when": { "/video/resolution": "4k" },
-            "amount": 0.3,
-            "unit": "video_second"
-          }
-        ]
-      }
-    },
-    {
       "id": "gemini-3.1-flash-lite",
       "pricing": {
         "currency": "USD",
@@ -701,40 +679,6 @@
         "currency": "USD",
         "audio_input_token": 0.000002,
         "output_token": 0.000012
-      }
-    },
-    {
-      "id": "veo-3.1-generate-preview",
-      "pricing": {
-        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-        "verified_at": "2026-09-26",
-        "currency": "USD",
-        "amount": 0.4,
-        "unit": "video_second",
-        "rules": [
-          {
-            "when": { "/video/resolution": "4k" },
-            "amount": 0.6,
-            "unit": "video_second"
-          }
-        ]
-      }
-    },
-    {
-      "id": "veo-3.1-lite-generate-preview",
-      "pricing": {
-        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-        "verified_at": "2026-09-26",
-        "currency": "USD",
-        "amount": 0.05,
-        "unit": "video_second",
-        "rules": [
-          {
-            "when": { "/video/resolution": "1080p" },
-            "amount": 0.08,
-            "unit": "video_second"
-          }
-        ]
       }
     },
     {

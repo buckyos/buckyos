@@ -3412,7 +3412,7 @@ fn validate_file_name(value: &str) -> ProtocolResultValue<String> {
 mod tests {
     use super::*;
     use crate::protocol::{CodecInput, CodecLimits, ProtocolContractHarness};
-    use crate::video::test_support::{model_contract, plan_parameters};
+    use crate::video::test_support::{channel_contract, model_contract, plan_parameters};
     use crate::video::VideoMaterialFacts;
     use buckyos_api::{
         AiMessage, EmbeddingMultimodalItem, VideoCondition, VideoGenerateRequest, VideoOutputSpec,
@@ -4459,7 +4459,7 @@ mod tests {
         let generate = VideoGenerateRequest::new("veo@google", Some("ocean".to_string()));
         let request = CodecInput {
             resolved_parameters: plan_parameters(
-                &model_contract("gemini", "veo-3.1-generate-preview"),
+                &channel_contract(Some(3)),
                 &generate,
                 &VideoMaterialFacts::new(),
                 "veo-test",
@@ -4583,21 +4583,20 @@ mod tests {
         );
     }
 
-    fn veo_body(model: &str, request: VideoGenerateRequest) -> ProtocolResultValue<Value> {
+    fn veo_body(
+        contract: &crate::video::VideoGenerationContract,
+        request: VideoGenerateRequest,
+    ) -> ProtocolResultValue<Value> {
         let descriptor = gemini_interactions_adapter().0.operations
             [GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID]
             .clone();
         let codec = GeminiVideoCodec::new(descriptor, ApiType::VideoGenerate);
-        let plan = crate::video::plan_video(
-            &model_contract("gemini", model),
-            &request,
-            &VideoMaterialFacts::new(),
-        )
-        .map_err(|error| {
-            ProtocolError::new(ProtocolErrorKind::UnsupportedOperation, error.message)
-        })?;
+        let plan = crate::video::plan_video(contract, &request, &VideoMaterialFacts::new())
+            .map_err(|error| {
+                ProtocolError::new(ProtocolErrorKind::UnsupportedOperation, error.message)
+            })?;
         let parameters = BTreeMap::from([
-            ("provider_model_id".to_string(), json!(model)),
+            ("provider_model_id".to_string(), json!("veo-test")),
             (
                 crate::video::VIDEO_PLAN_PARAMETER.to_string(),
                 serde_json::to_value(plan).unwrap(),
@@ -4644,7 +4643,7 @@ mod tests {
             },
         ];
         frames.negative_prompt = Some("blur".into());
-        let body = veo_body("veo-3.1-generate-preview", frames).unwrap();
+        let body = veo_body(&channel_contract(Some(3)), frames).unwrap();
         let instance = &body["instances"][0];
         assert_eq!(
             instance["prompt"],
@@ -4665,14 +4664,14 @@ mod tests {
             duration_seconds: Some(4.0),
             ..Default::default()
         });
-        assert!(veo_body("veo-3.1-generate-preview", references.clone()).is_err());
+        assert!(veo_body(&channel_contract(Some(3)), references.clone()).is_err());
         references.output = None;
-        let body = veo_body("veo-3.1-generate-preview", references.clone()).unwrap();
+        let body = veo_body(&channel_contract(Some(3)), references.clone()).unwrap();
         assert_eq!(
             body["instances"][0]["referenceImages"][0]["referenceType"],
             "asset"
         );
-        assert!(veo_body("veo-3.1-lite-generate-preview", references).is_err());
+        assert!(veo_body(&channel_contract(None), references).is_err());
 
         let mut four_k = VideoGenerateRequest::new("veo@google", Some("ocean".into()));
         four_k.output = Some(VideoOutputSpec {
@@ -4680,7 +4679,7 @@ mod tests {
             duration_seconds: Some(6.0),
             ..Default::default()
         });
-        assert!(veo_body("veo-3.1-generate-preview", four_k).is_err());
+        assert!(veo_body(&channel_contract(Some(3)), four_k).is_err());
 
         let mut end_only = VideoGenerateRequest::new("veo@google", Some("ocean".into()));
         end_only.conditions = vec![VideoCondition::Keyframe {
@@ -4688,7 +4687,7 @@ mod tests {
             resource: image("b.png"),
             position: KeyframePosition::End,
         }];
-        assert!(veo_body("veo-3.1-generate-preview", end_only).is_err());
+        assert!(veo_body(&channel_contract(Some(3)), end_only).is_err());
     }
 
     #[test]

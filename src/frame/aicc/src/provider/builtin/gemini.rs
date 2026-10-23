@@ -856,9 +856,6 @@ mod tests {
             ("gemini-3.8-flash-lite-tts", 8_192, Some(16_384)),
             ("gemini-2.5-flash-preview-tts", 8_192, Some(16_384)),
             ("gemini-2.5-pro-preview-tts", 8_192, Some(16_384)),
-            ("veo-3.1-generate-preview", 1_024, None),
-            ("veo-3.1-fast-generate-preview", 1_024, None),
-            ("veo-3.1-lite-generate-preview", 1_024, None),
             ("gemini-omni-1.1-flash", 1_048_576, None),
             ("lyria-3.5", 131_072, None),
             ("lyria-3-pro-preview", 131_072, None),
@@ -1007,8 +1004,6 @@ mod tests {
             "gemini-embedding-2-preview",
             "gemini-2.5-flash-preview-tts",
             "lyria-3-clip-preview",
-            "veo-3.1-generate-preview",
-            "veo-3.1-fast-generate-preview",
             "gemini-omni-1.1-flash",
             "gemini-2.5-computer-use-preview-10-2025",
         ] {

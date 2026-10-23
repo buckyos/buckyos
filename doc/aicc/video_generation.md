@@ -207,7 +207,7 @@ Model Driver 的 `capabilities.video_generation` 声明厂商官方云 API 的�
 
 ✓ 支持；✗ 明确拒绝；? 按官方文档开放但未在线验证。
 
-| 能力 | MiniMax H3 | H3-Max | OpenRouter H3 | OpenRouter H3-Max | Seedance 2.0 / fast / mini | Seedance 2.5 | Veo 3.1（Gemini API，Preview 已停服） |
+| 能力 | MiniMax H3 | H3-Max | OpenRouter H3 | OpenRouter H3-Max | Seedance 2.0 / fast / mini | Seedance 2.5 | Veo 3.1（Preview 已于 2026-10-22 停服，已从 `driver_metadata` 撤下；下表为该型号停服前的合同记录） |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 纯文本 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ? |
 | 首帧 / 尾帧 / 首尾帧 | ✓/✓/✓ | ✓/✓/✓ | ✓/✓/✓ | ✓/✓/✓ | ✓/✗/✓ | ✓/✗/✓ | ?/✗/? |
@@ -221,7 +221,7 @@ Model Driver 的 `capabilities.video_generation` 声明厂商官方云 API 的�
 | seed / negative_prompt | ✗/✗ | ✗/✗ | 目录 / ✗ | 目录 / ✗ | ✓/✗ | ✓/✗ | ✓/✗ |
 | 取消 | ✓ | ✓ | ✗ | ✗ | ✓（排队中） | ✓ | ✗ |
 
-其它模型：Hailuo-02/2.3（MiniMax v1：文本、首帧 ?）、Sora 2（文本、首帧、`video.edit`）、Gemini Omni（文本、单张参考图、`video.edit` ?）、GLM CogVideoX / Vidu（文本、首帧、首尾帧、参考图 ?）、Qwen Wan（文本、首帧 ?）、fal（仅 `video.upscale`；通用 queue 不再声明生成能力）。完整合同以 `driver_metadata` 为准。
+其它模型：Hailuo-02/2.3（MiniMax v1：文本、首帧 ?）、Sora 2（文本、首帧、`video.edit`）、Gemini Omni 1.1 Flash（文本、单张参考图、`video.generate`/`video.edit`/`video.extend`，是 Gemini API 上目前唯一在售的视频型号）、GLM CogVideoX / Vidu（文本、首帧、首尾帧、参考图 ?）、Qwen Wan（文本、首帧 ?）、fal（仅 `video.upscale`；通用 queue 不再声明生成能力）。完整合同以 `driver_metadata` 为准。
 
 ## 8. 错误
 

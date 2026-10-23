@@ -399,7 +399,6 @@
 // │   │   ├── flux_video -> video.generate.flux_video (2.8) [1449; flux-3-video-20260811]
 // │   │   ├── muse_video -> video.generate.muse_video (2.7) [1456; muse-video]
 // │   │   ├── happyhorse -> video.generate.happyhorse (2.7) [1442; happyhorse-1.0]
-// │   │   ├── veo -> video.generate.veo (2.5) [1398; veo-3.1-audio]
 // │   │   ├── sora -> video.generate.sora (2.3) [1368; sora-2-pro]
 // │   │   ├── vidu -> video.generate.vidu (2.3) [1363; vidu-q3-pro]
 // │   │   ├── kling -> video.generate.kling (2.3) [1354; kling-v3-pro]
@@ -520,7 +519,6 @@ const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
     ("flux_video", "video.generate.flux_video", 2.8),
     ("muse_video", "video.generate.muse_video", 2.7),
     ("happyhorse", "video.generate.happyhorse", 2.7),
-    ("veo", "video.generate.veo", 2.5),
     ("sora", "video.generate.sora", 2.3),
     ("vidu", "video.generate.vidu", 2.3),
     ("kling", "video.generate.kling", 2.3),
