@@ -84,6 +84,7 @@ fn customer_groups() -> UserGroupDirectory {
 /// policy for msg-center: users reach it, Limited accounts only their own
 /// address book, External sessions nothing. Account state is read now.
 struct GateVerifier {
+    imports: Mutex<std::collections::HashSet<(String, String)>>,
     accounts: Mutex<HashMap<String, UserSettings>>,
     groups: Mutex<UserGroupDirectory>,
     sso: Mutex<SsoSettings>,
@@ -93,6 +94,7 @@ struct GateVerifier {
 impl GateVerifier {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            imports: Default::default(),
             accounts: Mutex::new(HashMap::from([
                 (SVC.to_string(), settings(SVC, UserType::User, &["service"])),
                 (CUST.to_string(), settings(CUST, UserType::Limited, &["customer"])),
@@ -140,6 +142,10 @@ impl GateVerifier {
 
 #[async_trait::async_trait]
 impl SessionTokenVerifier for GateVerifier {
+    async fn authorize_imported_attachment(&self, token: &str, id: &ndn_lib::ObjId) -> Result<bool> {
+        let caller = Self::decode(token)?.sub.unwrap();
+        Ok(self.imports.lock().unwrap().contains(&(caller, id.to_string())))
+    }
     async fn authorize(&self, token: &str, resource: &str, _: &str) -> Result<()> {
         let token = self.verify(token).await?;
         self.rbac(&token, resource)
@@ -492,7 +498,7 @@ async fn restricted_sessions_reach_only_the_methods_that_open_their_scope() {
 
 #[tokio::test]
 async fn limited_guest_joins_posts_and_reads_without_personal_mailboxes() {
-    let (c, _tmp, _) = center().await;
+    let (c, _tmp, verifier) = center().await;
     support_group(&c, json!({})).await;
     let svc = user(SVC);
     let cust = limited(CUST, AuthMethod::ExclusiveInvite);
@@ -530,6 +536,7 @@ async fn limited_guest_joins_posts_and_reads_without_personal_mailboxes() {
 
     // Staff answer with an attachment; the guest reads the timeline from the
     // group alone and the attachment through its message.
+    verifier.imports.lock().unwrap().insert((SVC.into(), file.to_string()));
     let reply = with_attachment(group_message(&account(SVC), "ticket-1", "see the label", 5), &file);
     let answered = post(&c, &svc, reply.clone()).await.unwrap();
     assert!(answered.ok, "{:?}", answered.reason);
@@ -565,6 +572,7 @@ async fn limited_guest_joins_posts_and_reads_without_personal_mailboxes() {
     assert_eq!(read_object(&c, &cust, &file, None).await, StatusCode::NOT_FOUND);
     let guessed = ndn_lib::build_named_object_by_json("file", &json!({"name":"secret.pdf"})).0;
     assert_eq!(read_object(&c, &cust, &guessed, Some(&context)).await, StatusCode::NOT_FOUND);
+    verifier.imports.lock().unwrap().insert((SVC.into(), guessed.to_string()));
     let other_ticket = with_attachment(group_message(&account(SVC), "ticket-2", "other ticket", 6), &guessed);
     assert!(post(&c, &svc, other_ticket.clone()).await.unwrap().ok);
     let other_context = format!(

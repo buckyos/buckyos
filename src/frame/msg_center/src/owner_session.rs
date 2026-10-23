@@ -55,6 +55,27 @@ pub trait SessionTokenVerifier: Send + Sync {
         Ok(())
     }
 
+    /// A new local attachment must be readable and complete under the original
+    /// caller's NDM target. Object existence or a service identity is not a grant.
+    async fn authorize_imported_attachment(&self, token: &str, obj_id: &ndn_lib::ObjId) -> std::result::Result<bool, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let base = runtime.get_zone_service_url(buckyos_api::NFS_SERVER_SERVICE_NAME, false).await?;
+        let mut url = reqwest::Url::parse(&base).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let client = reqwest::Client::new();
+        for method in ["get_object", "is_object_stored"] {
+            url.set_path(&format!("/ndm/v1/store/{method}"));
+            let response = client.post(url.clone()).bearer_auth(token)
+                .json(&serde_json::json!({ "obj_id": obj_id.to_string() })).send().await
+                .map_err(|error| RPCErrors::ReasonError(format!("attachment authorization: {error}")))?;
+            if !response.status().is_success() { return Ok(false); }
+            if method == "is_object_stored" {
+                let result: Value = response.json().await.map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+                return Ok(result.get("stored").and_then(Value::as_bool) == Some(true));
+            }
+        }
+        Ok(false)
+    }
+
     /// RBAC of a method opened to restricted sessions of `scope`.
     async fn authorize_opened(
         &self,
@@ -394,6 +415,10 @@ struct RequestScopedVerifier(Arc<dyn SessionTokenVerifier>);
 
 #[async_trait]
 impl SessionTokenVerifier for RequestScopedVerifier {
+    async fn authorize_imported_attachment(&self, token: &str, obj_id: &ndn_lib::ObjId) -> std::result::Result<bool, RPCErrors> {
+        self.0.authorize_imported_attachment(token, obj_id).await
+    }
+
     async fn authorize(
         &self,
         token: &str,

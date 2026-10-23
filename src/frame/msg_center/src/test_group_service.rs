@@ -157,10 +157,15 @@ fn actor(d: DID) -> GroupActor {
     }
 }
 struct Verifier {
+    imports: std::sync::RwLock<std::collections::HashSet<(String, String)>>,
     agents: HashMap<DID, ZoneAgentInfo>,
 }
 #[async_trait::async_trait]
 impl SessionTokenVerifier for Verifier {
+    async fn authorize_imported_attachment(&self, token: &str, id: &ndn_lib::ObjId) -> Result<bool> {
+        let caller = self.verify(token).await?.sub.unwrap();
+        Ok(self.imports.read().unwrap().contains(&(caller, id.to_string())))
+    }
     async fn authorize(&self, _: &str, _: &str, _: &str) -> Result<()> {
         Ok(())
     }
@@ -186,6 +191,7 @@ fn verifier(private_allow_group: bool) -> Arc<Verifier> {
         allow_group,
     };
     Arc::new(Verifier {
+        imports: Default::default(),
         agents: HashMap::from([
             (agent(), info(true)),
             (private_agent(), info(private_allow_group)),
@@ -2458,6 +2464,7 @@ async fn an_agent_runtime_app_posts_group_messages_as_its_agent() {
     let (c, _tmp, _) = center().await;
     let helper = DID::new("web", "helper.test.example");
     c.set_token_verifier(Arc::new(Verifier {
+        imports: Default::default(),
         agents: HashMap::from([(
             helper.clone(),
             ZoneAgentInfo {
@@ -2590,6 +2597,46 @@ mod attachment_holds {
     async fn rows(c: &MessageCenter, state: &str) -> i64 {
         let sql = c.msg_box_db.render_sql("SELECT COUNT(*) AS n FROM msg_attachment_retentions WHERE state=?");
         sqlx::Row::try_get(&sqlx::query(&sql).bind(state).fetch_one(c.msg_box_db.pool()).await.unwrap(), "n").unwrap()
+    }
+
+    #[tokio::test]
+    async fn outgoing_attachments_require_a_caller_grant_before_any_hold() {
+        let (c, tmp, _) = center().await;
+        let mgr = open_store(&tmp.path().join("store")).await;
+        c.set_attachment_store(Arc::new(mgr.clone()));
+        let verifier = verifier(false);
+        c.set_token_verifier(verifier.clone());
+        let (known, _) = snapshot(&mgr, "private.txt", b"another target owns this").await;
+        let attempt = with_refs(direct(&owner(), &member(), "guess", 1), &[&known]);
+        let attempted_id = attempt.gen_obj_id().0;
+        assert!(c.handle_post_send(attempt.clone(), None, context(&owner())).await.is_err());
+        assert!(!holds(&mgr, &known, &attempted_id).await);
+        assert!(c.msg_box_db.list_message_records(&attempted_id).await.unwrap().is_empty());
+
+        // A verified, complete import belongs to this caller's canonical target.
+        verifier.imports.write().unwrap().insert((owner().to_string(), known.to_string()));
+        c.authorize_outgoing_attachments(&context(&owner()), &attempt).await.expect("valid import authorization");
+        c.handle_post_send(attempt, None, context(&owner())).await.expect("accept imported message");
+        assert!(holds(&mgr, &known, &attempted_id).await);
+        verifier.imports.write().unwrap().clear();
+        // The existing readable sent message remains a legitimate source.
+        c.handle_post_send(with_refs(direct(&owner(), &member(), "forward", 2), &[&known]), None, context(&owner())).await.unwrap();
+
+        // A group member can reuse a visible attachment, without an NDM import;
+        // recall revokes that source before a new message can pin it.
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        let (group_file, _) = snapshot(&mgr, "group.txt", b"group-only").await;
+        let shared = with_refs(message(&owner(), None, "group file", 3), &[&group_file]);
+        let shared_id = shared.gen_obj_id().0;
+        assert!(c.accept_group_message(&actor(owner()), shared, None).await.unwrap().ok);
+        let forward = with_refs(direct(&member(), &owner(), "forward group", 4), &[&group_file]);
+        c.authorize_outgoing_attachments(&context(&member()), &forward).await.unwrap();
+        let mut recall = message(&owner(), None, "", 5);
+        recall.relates_to = Some(MsgRelation { rel: MsgRelType::Redact, target: shared_id, key: None });
+        assert!(c.accept_group_message(&actor(owner()), recall, None).await.unwrap().ok);
+        assert!(c.handle_post_send(forward.clone(), None, context(&member())).await.is_err());
+        assert!(!holds(&mgr, &group_file, &forward.gen_obj_id().0).await);
     }
 
     #[tokio::test]

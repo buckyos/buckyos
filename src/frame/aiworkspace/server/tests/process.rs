@@ -83,6 +83,12 @@ impl Server {
         id
     }
 
+    async fn export_package(&self, token: &str, workspace: &str) -> Vec<u8> {
+        let export = self.rpc(token, "doc.export", json!({"workspace_id": workspace, "mode": "share", "self_contained": true})).await;
+        self.http.get(format!("{}/export/{workspace}/{}", self.base, export["export_id"].as_str().unwrap())).bearer_auth(token)
+            .send().await.unwrap().bytes().await.unwrap().to_vec()
+    }
+
     /// Create a Workspace and replay the shared fixture through the public interface only.
     async fn project(&self, token: &str) -> (String, String) {
         let ws = self.rpc(token, "ws.create", json!({ "title": "项目工作区" })).await;
@@ -192,14 +198,23 @@ async fn v23_service_api_end_to_end() {
     assert_eq!(&pkg[..2], b"PK");
     let dir2 = tempfile::tempdir().unwrap();
     let s2 = Server::start(dir2.path(), None).await;
-    let up = s2.upload("tok-bob", ("ws.begin_import", json!({})), pkg).await;
+    let up = s2.upload("tok-bob", ("ws.begin_import", json!({})), pkg.clone()).await;
     assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "sideways" })).await["error"]["code"], "INVALID_OPERATION", "semantics has no default");
-    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await["error"]["code"], "NOT_FOUND", "an upload is consumed by its import attempt");
     assert_eq!(s2.rpc("tok-bob", "ws.list", json!({})).await["workspaces"], json!([]), "nothing became visible");
-    let pkg2 = s.http.get(format!("{}/export/{id}/{}", s.base, exp["export_id"].as_str().unwrap())).bearer_auth("tok-alice").send().await.unwrap().bytes().await.unwrap().to_vec();
-    let up = s2.upload("tok-bob", ("ws.begin_import", json!({})), pkg2).await;
     let imp = s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await;
     assert_eq!(imp["content_root"], exp["manifest"]["content_root"], "{imp}");
+    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await, imp, "retry recovers the committed result");
+    drop(s2);
+    let staging = dir2.path().join("data/staging");
+    let manifest_path = staging.join(format!("{up}.upload.json"));
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["result"] = Value::Null;
+    std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+    std::fs::write(staging.join(format!("{up}.part")), pkg).unwrap();
+    let s2 = Server::start(dir2.path(), None).await;
+    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "restore", "replace": true })).await["error"]["code"], "INVALID_OPERATION");
+    assert_eq!(s2.rpc("tok-bob", "ws.import", json!({ "upload_id": up, "semantics": "new" })).await, imp, "workspace receipt recovers a crash before upload receipt persistence");
+    assert_eq!(s2.rpc("tok-bob", "ws.list", json!({})).await["workspaces"].as_array().unwrap().len(), 1);
     let forked = s.rpc("tok-alice", "ws.fork", w.clone()).await;
     assert_eq!(forked["content_root"], s.rpc("tok-alice", "doc.checkpoint", w.clone()).await["content_root"]);
     // the replica database is downloadable only by a workspace-level reader
@@ -216,6 +231,83 @@ async fn v23_service_api_end_to_end() {
     assert_eq!(notes["content"]["content"]["content"][1]["attrs"]["block_id"], "n-crash");
     assert_eq!(s.rpc("tok-alice", "diag.verify_refs", w.clone()).await["ok"], true);
     assert_eq!(s.rpc("tok-alice", "doc.commit", mixed_batch(&id, &epoch)).await["replayed"], true);
+}
+
+#[tokio::test]
+async fn asset_upload_is_bound_to_workspace_and_recovers_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let srv = Server::start(dir.path(), None).await;
+    let first = srv.rpc("tok-alice", "ws.create", json!({"title": "first"})).await;
+    let second = srv.rpc("tok-alice", "ws.create", json!({"title": "second"})).await;
+    let id = first["workspace_id"].clone();
+    let upload = srv.upload("tok-alice", ("asset.begin_upload", json!({"workspace_id": id, "size": 4})), b"test".to_vec()).await;
+    let wrong = srv.rpc("tok-alice", "asset.finish_upload", json!({"workspace_id": second["workspace_id"], "upload_id": upload})).await;
+    assert_eq!(wrong["error"]["code"], "NOT_FOUND", "{wrong}");
+    let params = json!({"workspace_id": id, "upload_id": upload});
+    let staged = srv.rpc("tok-alice", "asset.finish_upload", params.clone()).await;
+    assert_eq!(staged["ok"], true, "{staged}");
+    assert_eq!(srv.rpc("tok-alice", "asset.finish_upload", params.clone()).await, staged);
+    assert_ne!(srv.rpc("tok-bob", "asset.finish_upload", params.clone()).await["ok"], true);
+    drop(srv);
+    let srv = Server::start(dir.path(), None).await;
+    assert_eq!(srv.rpc("tok-alice", "asset.finish_upload", params).await, staged);
+    drop(srv);
+    let staging = dir.path().join("data/staging");
+    let receipt = staging.join(format!("{upload}.upload.json"));
+    let mut expired: Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+    expired["expires_at"] = json!(1);
+    std::fs::write(&receipt, expired.to_string()).unwrap();
+    std::fs::write(staging.join(format!("{upload}.part")), b"expired owned bytes").unwrap();
+    let unrelated = staging.join("unrelated.part");
+    std::fs::write(&unrelated, b"keep").unwrap();
+    let _srv = Server::start(dir.path(), None).await;
+    assert!(!receipt.exists());
+    assert!(!staging.join(format!("{upload}.part")).exists());
+    assert_eq!(std::fs::read(unrelated).unwrap(), b"keep");
+}
+
+#[tokio::test]
+async fn replaying_an_import_receipt_does_not_undo_a_later_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let srv = Server::start(dir.path(), None).await;
+    let workspace = srv.rpc("tok-alice", "ws.create", json!({"title": "restore receipts"})).await;
+    let id = workspace["workspace_id"].as_str().unwrap();
+    assert_eq!(srv.rpc("tok-alice", "ws.grant", json!({"workspace_id": id, "subject": "bob", "capabilities": ["read"]})).await["ok"], true);
+    let first_package = srv.export_package("tok-alice", id).await;
+    let first = srv.upload("tok-alice", ("ws.begin_import", json!({})), first_package.clone()).await;
+    let params = json!({"upload_id": first, "semantics": "restore", "replace": true});
+    let accepted = srv.rpc("tok-alice", "ws.import", params.clone()).await;
+    assert_eq!(accepted["ok"], true, "{accepted}");
+    let changed = srv.rpc("tok-alice", "doc.commit", commit_req(id, accepted["epoch"].as_str().unwrap(), "later", json!([
+        {"op":"entity.create", "entity_id":"later-folder", "type_id":"buckyos.container", "parent_id":"data", "order_key":"z", "payload":{"kind":"folder", "title":"later"}}
+    ]))).await;
+    assert_eq!(changed["status"], "accepted", "{changed}");
+    let second_package = srv.export_package("tok-alice", id).await;
+    let second = srv.upload("tok-alice", ("ws.begin_import", json!({})), second_package).await;
+    let latest = srv.rpc("tok-alice", "ws.import", json!({"upload_id": second, "semantics": "restore", "replace": true})).await;
+    assert_eq!(latest["ok"], true, "{latest}");
+    drop(srv);
+    let staging = dir.path().join("data/staging");
+    let receipt = staging.join(format!("{first}.upload.json"));
+    let mut incomplete: Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+    incomplete["result"] = Value::Null;
+    std::fs::write(receipt, incomplete.to_string()).unwrap();
+    std::fs::write(staging.join(format!("{first}.part")), first_package).unwrap();
+    let srv = Server::start(dir.path(), None).await;
+    assert_eq!(srv.rpc("tok-alice", "ws.import", params).await, accepted);
+    assert_eq!(srv.rpc("tok-alice", "ws.get_info", json!({"workspace_id": id})).await["epoch"], latest["epoch"]);
+    assert_eq!(srv.rpc("tok-alice", "doc.read", json!({"workspace_id": id, "entity_id":"later-folder"})).await["ok"], true);
+    drop(srv);
+    let workspaces = dir.path().join("data/workspaces");
+    let pending = workspaces.join(".tmp-restore-recovery");
+    std::fs::rename(workspaces.join(id), &pending).unwrap();
+    let backup = std::fs::read_dir(dir.path().join("data/trash")).unwrap().filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("restore_")).unwrap().file_name().into_string().unwrap();
+    std::fs::write(pending.join("restore-intent.json"), json!({"workspace_id": id, "backup": backup}).to_string()).unwrap();
+    let srv = Server::start(dir.path(), None).await;
+    assert!(!pending.exists());
+    assert_eq!(srv.rpc("tok-bob", "doc.read", json!({"workspace_id": id, "entity_id":"later-folder"})).await["ok"], true);
+    assert_eq!(srv.rpc("tok-alice", "ws.get_info", json!({"workspace_id": id})).await["epoch"], latest["epoch"]);
 }
 
 /// Crash at each of the three positions while committing a mixed batch. After the

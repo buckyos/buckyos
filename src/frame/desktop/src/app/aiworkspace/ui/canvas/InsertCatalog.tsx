@@ -3,7 +3,7 @@
  * extension). One catalog serves the main menu, the object toolbar's "+" and the blank-spot context menu.
  * "Existing data" only creates a view: the new Block shares the data, its view configuration is its own. */
 
-import { useCallback, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { BlockDefPayload, EntityEnvelope, Json } from '../../api/types'
 import type { ReadOk } from '../../api/session'
 import { useLoad, useOutlineVersion, useStore, useUserState } from '../../state/hooks'
@@ -19,11 +19,12 @@ import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type Insert
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
 
-export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport }: {
+export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport, onImportAssets }: {
   initialTab?: CatalogTab
   initialKey?: string
   /** "Import draw.io…" (draw.io 导入 TODO §3), when importing is possible here. */
   onImport?: () => void
+  onImportAssets?: (files: File[], folder: boolean, signal: AbortSignal) => Promise<void>
   /** A free Surface: the entry can also be placed by a click on the canvas. */
   canPlace: boolean
   onClose: () => void
@@ -44,6 +45,17 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
     && (!q || entry.title.toLowerCase().includes(q) || entry.catalog.description.toLowerCase().includes(q) || entry.definition.type.toLowerCase().includes(q)))
   const chosen = entries.find((entry) => entry.key === chosenKey) ?? (tab !== 'existing' ? shown[0] : undefined)
   const dialogRef = useRef<HTMLDivElement>(null)
+  const importController = useRef<AbortController | null>(null)
+  const [importing, setImporting] = useState(false)
+  useEffect(() => () => importController.current?.abort(), [])
+  const importAssets = async (files: File[], folder: boolean) => {
+    if (!onImportAssets || importing) return
+    const controller = new AbortController()
+    importController.current = controller
+    setImporting(true)
+    try { await onImportAssets(files, folder, controller.signal) }
+    finally { importController.current = null; setImporting(false) }
+  }
   return (
     <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div ref={dialogRef} className="aiws-dialog aiws-catalog" role="dialog" aria-modal="true" aria-label={t('aiworkspace.canvas.catalog.title')} data-testid="aiws-catalog"
@@ -53,9 +65,15 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
           <input className="aiws-catalog-search" type="search" aria-label={t('aiworkspace.canvas.catalog.search')} placeholder={t('aiworkspace.canvas.catalog.searchPlaceholder')} autoFocus value={query} data-testid="aiws-catalog-search"
             onChange={(event) => { setQuery(event.target.value); if (tab === 'existing') setTab('all') }} />
           {onImport && <button type="button" className="aiws-link" data-testid="aiws-catalog-import-drawio" onClick={onImport}>{t('aiworkspace.canvas.catalog.importDrawio')}</button>}
+          {onImportAssets && <>
+            <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-catalog-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importAssets(files, false) }} /></label>
+            {'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-catalog-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importAssets(files, true) }} /></label>}
+            {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}
+          </>}
           <button type="button" className="aiws-link" onClick={onClose}>{t('aiworkspace.common.close')}</button>
         </div>
         <div className="aiws-catalog-body">
+          {onImportAssets && <p className="aiws-muted">{t('aiworkspace.data.tree.folderLimit')}</p>}
           <nav className="aiws-catalog-tabs" role="tablist" aria-label={t('aiworkspace.canvas.catalog.categories')}>
             {TABS.map((item) => (
               <button key={item} type="button" role="tab" aria-selected={tab === item} data-testid={`aiws-catalog-tab-${item}`} onClick={() => { setTab(item); setChosenKey(null) }}>{tabLabel(item)}</button>

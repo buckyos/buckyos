@@ -1,3 +1,4 @@
+import { ObjectAttachment } from './ObjectAttachment'
 import clsx from 'clsx'
 import {
   ExternalLink,
@@ -292,6 +293,8 @@ export function ContentBody({ view, mode = 'standard', onOpen, clampText = true 
   ) : null
 
   switch (item.contentType) {
+    case 'files':
+      return <>{textBlock}<ul>{(content?.media ?? []).map(part => <li key={part.object}><ObjectAttachment objId={part.object} name={part.alt ?? part.object} /></li>)}</ul></>
     case 'image':
       return (
         <>

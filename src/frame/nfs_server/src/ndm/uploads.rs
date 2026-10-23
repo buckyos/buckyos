@@ -308,7 +308,7 @@ pub async fn create(State(state): State<SharedState>, headers: HeaderMap) -> Res
     // The chunk is already here: nothing to upload.
     let known = chunk_hash.as_deref().and_then(|h| ChunkId::new(h).ok());
     if let Some(chunk) = known {
-        if store.have_chunk(&chunk).await {
+        if super::may_read(&state, &p, &chunk.to_obj_id().to_string()).await && store.have_chunk(&chunk).await {
             let obj = chunk.to_obj_id();
             session.offset = size;
             session.status = "skipped".into();
@@ -324,10 +324,15 @@ pub async fn create(State(state): State<SharedState>, headers: HeaderMap) -> Res
     if let Err(r) = make_room(&state, &principal_key, size).await {
         return r;
     }
-    if size == 0 {
-        session.status = "completed".into();
-    } else if let Err(e) = tokio::fs::File::create(part_path(&state, &session_id)).await {
+    if let Err(e) = tokio::fs::File::create(part_path(&state, &session_id)).await {
         return tus_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", format!("create staging file: {e}"));
+    }
+    if size == 0 {
+        match finish(&state, &p, &session).await {
+            Ok(id) => { session.status = "completed".into(); session.chunk_obj_id = Some(id); }
+            Err(r) => { let _ = tokio::fs::remove_file(part_path(&state, &session_id)).await; return r; }
+        }
+        let _ = tokio::fs::remove_file(part_path(&state, &session_id)).await;
     }
     if let Err(r) = insert(&state, &session, &upload_key, chunk_index) {
         return r;

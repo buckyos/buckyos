@@ -348,7 +348,7 @@ Store 的选择（`store/createStore.ts`）：设置了开发覆盖（见 §11�
 | `quote`、`comment` | `interact.quote {objId, text, audience}`、`interact.comment {objId, text}` | |
 | `withdraw`、`editPost`、`setAudience`、`retryDelivery` | `entry.withdraw {entry}`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery {entry}` | |
 | `publish`、`retryPublish`、`shareCapture` | `publish.create {key, input}`、`publish.retry {key}`、`publish.share_capture {objId}` | |
-| `uploadAttachment(file, kind)` | `PUT /kapi/homestation/upload?name=&mime=&width=&height=&duration_ms=`（`Authorization: Bearer`） | 图片尺寸、音视频时长在浏览器读出 |
+| `uploadAttachment(fileOrFolder, kind, {signal, onProgress})` | SDK `importFiles` → `ensureUploaded` → `object.register {objId, metadata}` | 文件/目录均以就绪 ObjId 交付；图片尺寸、音视频时长在浏览器读出，保存为业务元数据，不修改 canonical 对象 |
 | `fetchLinkPreview` | `publish.link_preview {url}` | |
 | `resolveSourceInput`、`follow`、`unfollow`、`pauseSource`、`listSources` | `sources.resolve {kind, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.list` | |
 | `setMuteRule`、`setFilterRule`、`setTagOverride`、`markLessLike`、`setDefaultAudience` | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override}`、`prefs.mark_less_like {objId}`、`prefs.set_default_audience {audience}` | 设置先在本地生效，写完后重取 bootstrap |
@@ -375,3 +375,8 @@ HS_BACKEND=http://127.0.0.1:4131 pnpm run dev
 打开 `/homestation?hsDevToken=tok-me`（令牌存入 `localStorage['homestation.dev']`，也可直接写 `{"token":"tok-me","baseUrl":"/kapi/homestation"}`；删除该键回到 Mock）。门户：`/homestation/me`、`/homestation/kai`、`/homestation/~zone`；匿名访问加 `?hsDevToken=anonymous`，以 kai 的身份加 `?hsDevToken=tok-kai`；`http://www.localhost:<port>/` 模拟短域名的默认发表流。`HS_BACKEND` 让 Vite 把 `/kapi/homestation` 与 `/home/*` 转发到 `me` 的 Zone（门户只能看这个 Zone 的用户）。
 
 真实后端 e2e：`pnpm exec playwright test --config=playwright.homestation.config.ts`（自行启动 devnet 于 4231–4236 和 Vite；`HS_DEVNET_BIN` 可指定已构建的 devnet）。
+
+
+通用附件支持 `kind: file | dir`，与 image/video/audio 分开选择；目录引用作为 `content.type: files` 的部件发布，包含通用附件的批次保持全部附件的 ObjId。目录浏览和逐项下载遵守发布受众；支持 File System Access 的浏览器还可保存真实目录。文件夹 picker 基于 FileList，保留根和层级，但不能枚举空子目录；不支持目录选择的浏览器禁用该入口。每个文件最大 64 MiB，与服务端有界内容下载一致。
+
+上传状态为 uploading/uploaded/failed/cancelled，保留具体 error、真实字节 progress；移除中断该任务，失败项可单独重试同一导入 session，成功登记后释放客户端 session。媒体入口校验 MIME、非空和浏览器解码，通用目录不压缩其中的图片。`object.register` 将当前浏览器 session 转发 NDM 验证读取权，然后检查全部依赖并登记本用户对象与展示元数据；发布仍由 `publish.create` 的 key 保证幂等，正式发布按根递归 retention。

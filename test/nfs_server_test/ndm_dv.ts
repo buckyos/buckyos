@@ -12,7 +12,7 @@
  * Env: BUCKYOS_TEST_ZONE_HOST (default test.buckyos.io), BUCKYOS_TEST_USER
  *      (default bob), BUCKYOS_TEST_USER_PASSWORD (dev config default).
  */
-import { buckyos, ndn as sdkNdn } from "buckyos";
+import { buckyos, ndm as sdkNdm, ndn as sdkNdn } from "buckyos";
 
 function getEnv(name: string, fallback: string): string {
   const v = Deno.env.get(name);
@@ -189,6 +189,44 @@ await test("objects the caller does not hold are not readable by id", async () =
   assert(s2 === 403, `user chunk read ${s2}`);
   const [s3] = await json("POST", "/ndm/v1/store/put_object", user, { obj_id: otherIdObj.toString(), obj_data: otherBody });
   assert(s3 === 403, `user registers a chunk it never uploaded ${s3}`);
+});
+
+await test("SDK ready folder preserves empty entries, reads bytes and reuses content", async () => {
+  const bytes = new TextEncoder().encode(`SDK named import ${stamp} `.repeat(3000));
+  const tree = { kind: "dir" as const, name: `目录 ${stamp}`, children: [
+    { kind: "file" as const, file: new File([bytes], "same.txt") },
+    { kind: "dir" as const, name: "nested", children: [{ kind: "file" as const, file: new File([bytes], "same.txt") }] },
+    { kind: "dir" as const, name: "empty", children: [] },
+    { kind: "file" as const, file: new File([], "zero.txt") },
+  ] };
+  const options = { endpoint: BASE, sessionToken: user, autoStartUpload: false };
+  let root = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const imported = await sdkNdm.importDirectory(tree, options);
+    try {
+      let transmittedBytes = 0;
+      const ready = await sdkNdm.ensureUploaded(imported.sessionId, { ...options, onProgress: (progress: { transmittedBytes: number }) => { transmittedBytes = progress.transmittedBytes; } });
+      assert(ready.objectStatus === "ready", `object state ${ready.objectStatus}`);
+      assert(ready.warnings.length === 0, JSON.stringify(ready.warnings));
+      assert(!Array.isArray(imported.selection), "one directory root");
+      if (attempt === 0) root = imported.selection.objectId;
+      else {
+        assert(imported.selection.objectId === root, "stable directory identity");
+        assert(transmittedBytes === 0, `repeat transmitted ${transmittedBytes}`);
+      }
+      console.log(`[import] user=${userName} attempt=${attempt} size=${bytes.length} transmitted=${transmittedBytes} root=${root}`);
+    } finally { sdkNdm.releaseImportSession(imported.sessionId); }
+  }
+  for (const path of ["same.txt", "nested/same.txt", "zero.txt"]) {
+    const response = await req("POST", "/ndm/proxy/v1/read/object/open", user, {
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obj_id: root, inner_path: path }),
+    });
+    const actual = new Uint8Array(await response.arrayBuffer());
+    const expected = path === "zero.txt" ? new Uint8Array() : bytes;
+    assert(response.ok && actual.length === expected.length && actual.every((value, index) => value === expected[index]), `readback ${path}: ${response.status}`);
+  }
+  const [emptyStatus] = await json("POST", "/ndm/v1/store/get_dir_child", user, { dir_obj_id: root, item_name: "empty" });
+  assert(emptyStatus === 200, `empty directory ${emptyStatus}`);
 });
 
 await test("management is separate from uploads", async () => {

@@ -72,21 +72,11 @@ impl AttachmentStore for NamedDataMgr {
     }
 
     async fn issue(&self, obj_id: &ObjId) -> Option<String> {
-        let body = match self.get_object(obj_id).await {
-            Ok(body) => body,
-            Err(_) => return Some("object_missing".into()),
-        };
-        let content = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v.get("content").and_then(|c| c.as_str()).map(str::to_string));
-        let Some(content) = content else { return None };
-        let Ok(content) = ObjId::new(&content) else { return Some("object_invalid".into()) };
-        let present = if content.is_chunk() {
-            self.have_chunk(&ndn_lib::ChunkId::from_obj_id(&content)).await
-        } else {
-            self.is_object_exist(&content).await.unwrap_or(false)
-        };
-        (!present).then(|| "content_missing".into())
+        match self.is_object_stored(obj_id, None).await {
+            Ok(true) => None,
+            Ok(false) => Some("content_missing".into()),
+            Err(error) => Some(format!("object_unavailable: {error}")),
+        }
     }
 }
 
@@ -165,6 +155,38 @@ fn now_ms() -> i64 {
 }
 
 impl MessageCenter {
+    /// Authorize user-originated references before creating any message or hold.
+    /// Signed remote ingress and trusted in-process sends use their existing path.
+    pub(crate) async fn authorize_outgoing_attachments(&self, ctx: &kRPC::RPCContext, msg: &MsgObject) -> Result<()> {
+        let ids = attachment_ids(msg);
+        if ids.is_empty() { return Ok(()); }
+        let Some(caller) = self.caller_identity(ctx).await? else { return Ok(()); };
+        Self::refuse_guest_attachments(Some(&caller), msg)?;
+        let token = ctx.token.as_deref().ok_or_else(|| RPCErrors::NoPermission("attachment token required".into()))?;
+        for id in ids {
+            if self.authorize_attachment(ctx, &id, None).await.is_ok() { continue; }
+            // A group reference may be reused only while its original message
+            // remains readable to this caller (membership, history and recall).
+            let sql = self.msg_box_db.render_sql("SELECT obj_id,body_json FROM group_objects WHERE body_json LIKE ?");
+            let rows = sqlx::query(&sql).bind(format!("%{}%", id.to_string()))
+                .fetch_all(self.msg_box_db.pool()).await.map_err(db_error)?;
+            let mut readable = false;
+            for row in rows {
+                let body: String = row.try_get("body_json").map_err(db_error)?;
+                let source: MsgObject = serde_json::from_str(&body).map_err(db_error)?;
+                if !Self::message_references(&source, &id) { continue; }
+                let raw: String = row.try_get("obj_id").map_err(db_error)?;
+                let source_id = ObjId::new(&raw).map_err(db_error)?;
+                if self.authorize_group_message(&self.group_actor(ctx).await?, &source_id).await.is_ok() { readable = true; break; }
+            }
+            if readable { continue; }
+            if !self.token_verifier.get().authorize_imported_attachment(token, &id).await? {
+                return Err(RPCErrors::NoPermission("attachment is not readable by this caller".into()));
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_attachment_store(&self, store: Arc<dyn AttachmentStore>) {
         self.attachment_store.set(store);
     }

@@ -561,6 +561,18 @@ export class NfsBrowserClient {
     return r
   }
 
+  async commitObject(
+    parent: LocatorLike,
+    name: string,
+    objId: string,
+    opts?: { overwrite?: boolean; expectedRevision?: string; leaseId?: string },
+  ) {
+    const result = await this.withSession(() => this.raw.commitObject(parent, name, objId, opts))
+    await this.invalidateContainer(parent)
+    await this.invalidateSubtree(parent, name)
+    return result
+  }
+
   async uploadFile(
     parentRef: WireRef,
     name: string,

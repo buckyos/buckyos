@@ -1,3 +1,5 @@
+import type { UploadOptions } from '../api/transport'
+import { registerMockAttachment } from './attachments'
 import type {
   AudienceSpec,
   CandidateEntry,
@@ -39,7 +41,7 @@ import { EMPTY_PERSONAL } from '../datamodel/types'
 import type { AttachmentInput, PublishInput } from '../datamodel/inputs'
 import { commentTarget, type CommentType, type Did, type EntryUrl, type FeedContent, type FeedObject, type ObjId } from '../protocol/feed'
 import type { CommentList, CommentTypeFilter, EntryDebugView, HomeStationStore, StoreDomain, TagOverride } from '../store/types'
-import { feedEntry, fid, oid, OWNER_DID, reactionEntry, seedDatabase, userOf, zoneOf, type MockDb, type StoredEntry } from './data'
+import { feedEntry, oid, OWNER_DID, reactionEntry, seedDatabase, userOf, zoneOf, type MockDb, type StoredEntry } from './data'
 import { registerNetworkMockHost } from '../../../components/network/mock/hosts'
 
 export interface StoreScenario {
@@ -534,6 +536,7 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
 
   function contentFromInput(input: PublishInput): Pick<FeedObject, 'content' | 'wraps' | 'link'> {
     const text = input.text || undefined
+    if (input.attachments.some(item => item.kind === 'file' || item.kind === 'dir')) return { content: { type: 'files', text, media: input.attachments.map(item => ({ object: item.object!, alt: item.name })) } }
     if (input.link) {
       return { content: { type: 'link', title: input.link.title, summary: input.link.summary || undefined, text }, link: input.link.url }
     }
@@ -1044,11 +1047,15 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
       return startTask(`share-${objId}`, { text: '', attachments: [], link: null, audience: db.settings.defaultAudience }, objId)
     },
 
-    async uploadAttachment(file: File, kind: AttachmentInput['kind']): Promise<ObjId> {
+    async uploadAttachment(selected: File | readonly File[], kind: AttachmentInput['kind'], options?: UploadOptions): Promise<ObjId> {
+      const file = Array.isArray(selected) ? selected[0] : selected as File
+      options?.signal?.throwIfAborted()
       await delay()
-      runtimeCounter += 1
-      const objId = fid(`upload-${id}-${runtimeCounter}-${file.name}`)
-      db.files.set(objId, { kind: 'file', name: file.name, meta: { mime: file.type || (kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : 'audio/mp4'), size: file.size, ...(kind === 'image' ? { width: 1600, height: 1200 } : { duration_ms: 42_000 }) } })
+      options?.signal?.throwIfAborted()
+      const total = Array.isArray(selected) ? selected.reduce((sum, item) => sum + item.size, 0) : file.size
+      options?.onProgress?.(total, total)
+      const objId = registerMockAttachment(selected, kind === 'dir')
+      db.files.set(objId, { kind: 'file', name: file.name, meta: { mime: kind === 'dir' ? 'application/x-directory' : file.type || (kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : kind === 'audio' ? 'audio/mp4' : 'application/octet-stream'), size: file.size, ...(kind === 'image' ? { width: 1600, height: 1200 } : { duration_ms: 42_000 }) } })
       return objId
     },
 

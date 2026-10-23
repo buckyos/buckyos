@@ -26,6 +26,16 @@ function sample(api: ApiType): JsonObject {
 }
 
 async function serviceFixture(page: Page, mode = 'success') {
+  await page.route('**/src/app/ai-center/api/resourceImport.ts*', route => route.fulfill({ contentType: 'application/javascript', body: `
+    export async function importPlaygroundResource(file, signal, progress) {
+      progress?.(50);
+      if (globalThis.deferResourceImport) await new Promise((resolve, reject) => {
+        globalThis.resumeFileRead = resolve;
+        signal.addEventListener('abort', () => reject(new Error('Import cancelled')), { once: true });
+      });
+      return 'cyfile:' + 'a'.repeat(64);
+    }
+  ` }));
   await page.route('**/src/api/aicc_playground.ts*', (route) => route.fulfill({ contentType: 'application/javascript', body: `
     import { mockPlaygroundResponse } from '/src/app/ai-center/mock/playground.ts';
     let polls = 0;
@@ -221,11 +231,11 @@ test('URL, data URL and file input, plus invalid import leaves the form intact',
   await expect(page.getByRole('region', { name: 'Call result' })).toContainText('Succeeded')
   await page.getByRole('combobox', { name: 'image Input mode', exact: true }).selectOption('file')
   await page.getByLabel('image Choose file', { exact: true }).setInputFiles({ name: 'image.png', mimeType: 'image/png', buffer: Buffer.from('image bytes') })
-  await expect(page.getByText('Reading file…')).toBeHidden()
+  await expect(page.getByText('Importing file…', { exact: false })).toBeHidden()
   await page.getByRole('button', { name: 'Run request', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Call result' })).toContainText('Succeeded')
   const submitted = await page.evaluate(() => (globalThis as unknown as { playgroundLastRequest: { params: JsonObject } }).playgroundLastRequest.params)
-  expect(submitted.image).toEqual({ kind: 'base64', mime: 'image/png', data_base64: Buffer.from('image bytes').toString('base64') })
+  expect(submitted.image).toEqual({ kind: 'named_object', obj_id: 'cyfile:' + 'a'.repeat(64) })
   expect(submitted.mask).toEqual({ kind: 'base64', mime: 'image/png', data_base64: 'aGk=' })
   await page.getByRole('checkbox', { name: 'Advanced mode / import request JSON' }).check()
   await page.getByRole('textbox', { name: 'Request JSON to import' }).fill('{bad')
@@ -309,24 +319,18 @@ test('Task Center retains original AICC input alongside a terminal result', asyn
 test('file completion preserves recent edits and cannot overwrite another API form', async ({ page }) => {
   await serviceFixture(page)
   await openPlayground(page)
-  await page.evaluate(() => {
-    const original = FileReader.prototype.readAsDataURL
-    FileReader.prototype.readAsDataURL = function (blob) {
-      const resumeFileRead = original.bind(this, blob)
-      ;(globalThis as unknown as { resumeFileRead: () => void }).resumeFileRead = resumeFileRead
-    }
-  })
+  await page.evaluate(() => { (globalThis as unknown as { deferResourceImport: boolean }).deferResourceImport = true })
   await page.getByRole('combobox', { name: 'API Type', exact: true }).selectOption('image.inpaint')
   await page.getByRole('combobox', { name: 'image Input mode', exact: true }).selectOption('file')
   const file = { name: 'image.png', mimeType: 'image/png', buffer: Buffer.from('image') }
   await page.getByLabel('image Choose file', { exact: true }).setInputFiles(file)
-  await expect(page.getByText('Reading file…')).toBeVisible()
+  await expect(page.getByText('Importing file…', { exact: false })).toBeVisible()
   await page.getByRole('textbox', { name: 'prompt', exact: true }).fill('Latest prompt')
   await page.evaluate(() => (globalThis as unknown as { resumeFileRead: () => void }).resumeFileRead())
-  await expect(page.getByText('Reading file…')).toBeHidden()
+  await expect(page.getByText('Importing file…', { exact: false })).toBeHidden()
   await expect(page.getByRole('textbox', { name: 'prompt', exact: true })).toHaveValue('Latest prompt')
   await page.getByLabel('image Choose file', { exact: true }).setInputFiles({ ...file, name: 'next.png' })
-  await expect(page.getByText('Reading file…')).toBeVisible()
+  await expect(page.getByText('Importing file…', { exact: false })).toBeVisible()
   await page.getByRole('combobox', { name: 'API Type', exact: true }).selectOption('audio.tts')
   await page.getByRole('textbox', { name: 'text', exact: true }).fill('Keep this text')
   await page.evaluate(() => (globalThis as unknown as { resumeFileRead: () => void }).resumeFileRead())

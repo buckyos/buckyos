@@ -104,6 +104,7 @@ fn post(object: &ObjId) -> homestation::publish::PublishInput {
 }
 
 async fn publish(station: &Station, key: &str, object: &ObjId) -> String {
+    station.register_object(&object.to_string(), json!({"mime":"image/png"})).await.unwrap();
     let row = station.publish(key, post(object)).await.unwrap();
     assert_eq!(row.stage, "published", "{row:?}");
     row.entry.unwrap()
@@ -176,6 +177,7 @@ async fn posts_hold_their_files_until_withdrawn() {
 
     // A failed pin fails the publish; the reconcile drops the half-made hold; a retry works.
     let (other, _) = snapshot(&mgr, "other.png", &[3u8; 700]).await;
+    station.register_object(&other.to_string(), json!({"mime":"image/png"})).await.unwrap();
     store.fail_retain.store(true, Ordering::SeqCst);
     let failed = station.publish("p3", post(&other)).await.unwrap();
     assert_eq!(failed.stage, "failed");

@@ -1,3 +1,4 @@
+import { getAttachmentKey } from '../conversation/input/attachmentDraft'
 /**
  * MessageHub data layer backed by the msg-center service. Implements
  * `MessageHubStore` on top of the real RPC surface:
@@ -33,7 +34,7 @@ import { LocalStateStore } from './local'
 import { apiObjectAccess, setObjectViewer } from './objects'
 import { parseTunnelDid, projectOwner, shortDid, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
 import { emptyHistory, itemToMessage, messageId as messageIdOf, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
-import { uploadAttachments } from './upload'
+import { releaseAttachmentUploads, uploadAttachments } from './upload'
 import { translate } from '../translate'
 
 const SESSION_PAGE_SIZE = 50
@@ -1040,7 +1041,7 @@ export class MessageHubApiStore implements MessageHubStore {
     try {
       showUpload({ phase: 'preparing' })
       const text = payload.content.trim()
-      const attachmentSignature = payload.attachments.map(item => `${item.relativePath ?? item.file.name}:${item.file.size}:${item.file.lastModified}`).join('|')
+      const attachmentSignature = payload.attachments.map(getAttachmentKey).join('|')
       const relationSignature = JSON.stringify([payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null, payload.voice ?? null])
       const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:${await hashKey(`${text}\n${attachmentSignature}\n${relationSignature}`)}`
       // The idempotency key is reused when the composer retries the same payload,
@@ -1049,15 +1050,17 @@ export class MessageHubApiStore implements MessageHubStore {
       this.pendingSendKeys.set(pendingKey, idempotencyKey)
       let uploads
       try {
-        uploads = await uploadAttachments(payload.attachments, showUpload)
+        uploads = await uploadAttachments(payload.attachments, showUpload, payload.signal)
       } catch (error) {
         if (placeholder && localId) { data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, pendingBubbleId(localId))); this.notify() }
         throw error
       }
-      uploads.forEach(upload => rememberLocalObject(upload.objId, upload.file, upload.name))
+      uploads.forEach(upload => { if (upload.file) rememberLocalObject(upload.objId, upload.file, upload.name) })
+      payload.signal?.throwIfAborted()
       const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
       const meta: OutgoingMeta = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}), ...(payload.voice && refs.length === 1 ? { voice: payload.voice } : {}) }
       await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta, { createdAtMs: payload.submittedAt, replaces: localId && pendingBubbleId(localId) })
+      releaseAttachmentUploads(payload.attachments)
     } finally {
       if (localId) this.sendingLocalIds.delete(localId)
     }

@@ -1,10 +1,10 @@
 //! HTTP surface: kRPC at `/kapi/homestation` (each user's own HomeStation, plus `portal.*`
-//! for anyone), uploads, and the cross-node protocol paths under `/home/`: the zone index and
+//! for anyone), and the cross-node protocol paths under `/home/`: the zone index and
 //! DID lookup at `/home/`, each user's home at `/home/<user>/...` (stream, entries, objects,
 //! chunks, comment views, profile, inbox) and the zone feed at `/home/~zone/...`.
 
 use crate::audience::Reader;
-use crate::auth::{reader_from_request, Caller};
+use crate::auth::reader_from_request;
 use crate::delivery::HEADER_AUDIENCE;
 use crate::error::{denied, HsError};
 use crate::host::{Host, Viewer};
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const KRPC_PATH: &str = "/kapi/homestation";
-pub const MAX_UPLOAD: usize = 32 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -32,7 +32,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route(KRPC_PATH, post(krpc))
         .route(&format!("{KRPC_PATH}/"), post(krpc))
-        .route(&format!("{KRPC_PATH}/upload"), axum::routing::put(upload).post(upload))
         .route("/home/", get(zone_index))
         .route("/home/{user}/feed", get(feed))
         .route("/home/{user}/profile", get(profile))
@@ -44,7 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/home/{user}/inbox", axum::routing::put(inbox_put).get(inbox_status))
         .route("/home/{user}/{ns}/@/{key}", get(entry_head))
         .route("/healthz", get(|| async { "ok" }))
-        .layer(DefaultBodyLimit::max(MAX_UPLOAD + 1024))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state)
 }
 
@@ -92,6 +91,15 @@ async fn krpc(State(state): State<AppState>, body: Bytes) -> Response {
         None if portal => None,
         None => return rpc_error(seq, "session token required"),
     };
+    if method == "object.register" {
+        let Some(token) = token else { return rpc_error(seq, "session token required") };
+        if caller.as_ref().is_some_and(|caller| caller.restricted) {
+            return rpc_failure(seq, &denied(buckyos_api::DenyReason::SessionKindNotAllowed, "object.register"));
+        }
+        if let Err(error) = authorize_import(token, params.get("objId").and_then(Value::as_str).unwrap_or_default()).await {
+            return rpc_failure(seq, &error);
+        }
+    }
     match state.host.handle_rpc(caller.as_ref(), &method, params).await {
         Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
         Err(e) => rpc_failure(seq, &e),
@@ -106,17 +114,6 @@ fn error_response(e: HsError) -> Response {
     (e.status(), Json(body)).into_response()
 }
 
-async fn caller_from_bearer(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> Result<Caller, Response> {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::to_string)
-        .or_else(|| query.get("access").cloned())
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session token required").into_response())?;
-    state.host.auth.authenticate(&token).await.map_err(error_response)
-}
-
 fn not_found(what: &str) -> Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found", "message": what }))).into_response()
 }
@@ -127,38 +124,6 @@ async fn station_of(state: &AppState, user: &str) -> Result<Arc<Station>, Respon
         Ok(Some(station)) => Ok(station),
         Ok(None) => Err(not_found("no such home")),
         Err(e) => Err(error_response(e)),
-    }
-}
-
-/// `PUT /kapi/homestation/upload?name=&mime=[&width=&height=&duration_ms=]`: store one
-/// single-chunk FileObject (§9.7) and return its ObjId.
-async fn upload(State(state): State<AppState>, headers: HeaderMap, Query(query): Query<HashMap<String, String>>, body: Bytes) -> Response {
-    let caller = match caller_from_bearer(&state, &headers, &query).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    if caller.restricted {
-        return error_response(denied(buckyos_api::DenyReason::SessionKindNotAllowed, "upload"));
-    }
-    let station = match state.host.station_for_caller(&caller).await {
-        Ok(Some(station)) => station,
-        Ok(None) => return (StatusCode::FORBIDDEN, "this account has no HomeStation here").into_response(),
-        Err(e) => return error_response(e),
-    };
-    if body.is_empty() || body.len() > MAX_UPLOAD {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "file must be 1 byte to 32 MiB").into_response();
-    }
-    let name = query.get("name").cloned().unwrap_or_else(|| "file".into());
-    let mime = query.get("mime").cloned().unwrap_or_else(|| "application/octet-stream".into());
-    let mut meta = serde_json::Map::new();
-    for key in ["width", "height", "duration_ms"] {
-        if let Some(v) = query.get(key).and_then(|v| v.parse::<u64>().ok()) {
-            meta.insert(key.into(), json!(v));
-        }
-    }
-    match station.store_file(&name, &mime, body.to_vec(), Value::Object(meta)).await {
-        Ok((obj_id, body)) => Json(json!({ "objId": obj_id, "file": crate::projection::file_view(&body), "object": body })).into_response(),
-        Err(e) => error_response(e),
     }
 }
 
@@ -315,7 +280,7 @@ async fn object(State(state): State<AppState>, headers: HeaderMap, Path((user, i
     }
 }
 
-/// `GET /home/<user>/objects/<file id>/content`: bytes of a single-chunk FileObject, for
+/// `GET /home/<user>/objects/<file id>/content`: FileObject bytes, for
 /// media elements (session token may come as `?access=`).
 async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
     let id = normalize_obj_id(&id);
@@ -327,8 +292,7 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
         Ok(None) => return (StatusCode::NOT_FOUND, "not found").into_response(),
         Err(r) => return r,
     };
-    let Some(content) = file.body.get("content").and_then(Value::as_str) else { return (StatusCode::NOT_FOUND, "empty file").into_response() };
-    let data = match station.chunks.get_chunk(content).await {
+    let data = match station.chunks.read_file(&id).await {
         Ok(Some(d)) => d,
         Ok(None) if reader == Reader::Owner => match station.fetch_content_on_demand(&id).await {
             Ok(Some(d)) => d,
@@ -338,7 +302,9 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
         Ok(None) => return (StatusCode::NOT_FOUND, "content not held here").into_response(),
         Err(e) => return error_response(e),
     };
-    let mime = file.body.get("mime").and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
+    let key = id.clone();
+    let metadata = station.db.call(move |c| crate::objects::import_metadata(c, &key)).await.unwrap_or(Value::Null);
+    let mime = metadata.get("mime").or_else(|| file.body.get("mime_type")).or_else(|| file.body.get("mime")).and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
     let mut response = (StatusCode::OK, data).into_response();
     if let Ok(v) = HeaderValue::from_str(&mime) {
         response.headers_mut().insert(header::CONTENT_TYPE, v);
@@ -513,4 +479,14 @@ impl Station {
             })
             .await
     }
+}
+
+async fn authorize_import(token: &str, obj_id: &str) -> crate::error::HsResult<()> {
+    let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| HsError::Unavailable(e.to_string()))?;
+    let base = runtime.get_zone_service_url(buckyos_api::NFS_SERVER_SERVICE_NAME, false).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+    let mut url = url::Url::parse(&base).map_err(|e| HsError::Unavailable(e.to_string()))?;
+    url.set_path("/ndm/v1/store/get_object");
+    let response = reqwest::Client::new().post(url).bearer_auth(token).json(&json!({ "obj_id": obj_id })).send().await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+    if !response.status().is_success() { return Err(HsError::Forbidden("attachment is not readable by this upload session".into())); }
+    Ok(())
 }

@@ -115,6 +115,9 @@ export class AiwsClient {
   assetFinishUpload(ws: Ws, upload_id: string) {
     return this.call<Result<{ object_id: string; media_type: string; size: number }>>('asset.finish_upload', { ...ws, upload_id })
   }
+  assetImportObject(ws: Ws, obj_id: string) {
+    return this.call<Result<{ object_id: string; source_obj_id: string; media_type: string; size: number }>>('asset.import_object', { ...ws, obj_id })
+  }
 
   // ---- controlled processing (Mock)
   procStart(ws: Ws, program: string, params: Record<string, Json>, idempotency_key: string) {

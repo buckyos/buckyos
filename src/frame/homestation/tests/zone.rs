@@ -133,17 +133,8 @@ async fn zone_feed_lists_and_follows_changes() {
     let err = net.try_rpc("kai", "publish.create", json!({ "key": "k2", "input": restricted })).await.unwrap_err();
     assert!(err.contains("zoneFeedPublic"), "{err}");
     assert!(net.rpc("mia", "published.list", json!({})).await["entries"].as_array().unwrap().is_empty());
-    let image: Value = net
-        .http
-        .put(format!("{}/kapi/homestation/upload?name=p.png&mime=image/png&width=4&height=3", lin.base))
-        .header("authorization", format!("Bearer {}", lin.token))
-        .body(vec![7u8; 64])
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let (image_id, _) = lin.station.store_file("p.png", "image/png", vec![7u8; 64], json!({ "width": 4, "height": 3 })).await.unwrap();
+    let image = json!({ "objId": image_id });
     let lin_post = publish(
         &net,
         "lin",

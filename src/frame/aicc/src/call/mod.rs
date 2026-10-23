@@ -109,6 +109,7 @@ pub(crate) struct ResolvedProviderCall {
     pub credential_header_name: Option<String>,
     pub resource_requirements: Vec<ResourceRequirement>,
     pub resource_access_context: Option<ResourceAccessContext>,
+    pub resource_leases: Vec<crate::resource::ResourceLease>,
     pub pricing: ResolvedPricing,
     pub reported_cost_currency: Option<String>,
     /// Model metadata output cap: the quota budget when the call sets none.
@@ -624,6 +625,7 @@ impl<'a> CallResolver<'a> {
             credential_header_name,
             resource_requirements: resources,
             resource_access_context: None,
+            resource_leases: Vec::new(),
             pricing,
             model_max_output_tokens,
             reported_cost_currency: target

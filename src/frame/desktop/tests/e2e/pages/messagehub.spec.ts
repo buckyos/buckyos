@@ -726,7 +726,7 @@ test('touch controls have names and 44px targets; message status is readable tex
 test('attachments over the sendable size are refused before upload', async ({ page }) => {
   await openHub(page)
   await createSession(page, 'Large attachment')
-  await page.locator('input[type="file"]').first().setInputFiles({ name: 'big.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(32 * 1024 * 1024 + 1) })
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'big.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(64 * 1024 * 1024 + 1) })
   await expect(page.getByTestId('attachment-too-large')).toContainText('big.bin')
   await expect(page.getByTestId('message-composer').getByRole('button', { name: 'Remove big.bin', exact: true })).toHaveCount(0)
   await page.locator('input[type="file"]').first().setInputFiles('package.json')

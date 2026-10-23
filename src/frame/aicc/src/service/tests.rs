@@ -512,6 +512,7 @@ async fn aicc_artifact_authorizer_is_tenant_scoped() {
         tenant_id: "tenant-a".into(),
         caller_id: "alice".into(),
         storage: storage.clone(),
+        token: None,
     };
     assert!(own
         .authorize(
@@ -525,6 +526,7 @@ async fn aicc_artifact_authorizer_is_tenant_scoped() {
         tenant_id: "tenant-b".into(),
         caller_id: "bob".into(),
         storage,
+        token: None,
     };
     assert!(foreign
         .authorize(
@@ -532,6 +534,32 @@ async fn aicc_artifact_authorizer_is_tenant_scoped() {
             &target,
             ResourceAccessOperation::Inspect,
         )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn imported_named_object_requires_original_caller_token() {
+    let authorizer = AuthenticatedResourceAuthorizer {
+        tenant_id: "tenant-a".into(),
+        caller_id: "alice".into(),
+        storage: Arc::new(
+            AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite)
+                .await
+                .unwrap(),
+        ),
+        token: None,
+    };
+    let target = ResourceTarget::NamedObject {
+        obj_id: ndn_lib::ObjId::new("cyfile:010203").unwrap(),
+    };
+    let context = ResourceAccessContext::new("tenant-a", "alice", "request-a").unwrap();
+    assert!(authorizer
+        .authorize(&context, &target, ResourceAccessOperation::Inspect)
+        .await
+        .is_err());
+    assert!(authorizer
+        .authorize(&context, &target, ResourceAccessOperation::ReadContent)
         .await
         .is_err());
 }

@@ -46,6 +46,16 @@ generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the
 
 `AIWS_FAILPOINT=before_txn|in_txn|after_commit[:abort][:N]` injects a fault into the N-th commit.
 
+Named-object imports in standalone mode require `--named-store-config <json>` and `--ndm-gateway <origin>` together. The config uses NamedDataMgr's `stores` array; both the NDM gateway and AIWorkspace must access that store. Service mode resolves both through the BuckyOS runtime. The Desktop Playwright backend starts an isolated NFS/NDM process and supplies these options automatically.
+
+## File and folder imports
+
+The Desktop imports through WebSDK NDM and waits for object readiness, then calls `asset.import_object { workspace_id, obj_id }` for each FileObject. AIWorkspace checks workspace update/structure access and authorizes the object at the trusted NDM gateway using the original caller token. It reads the complete FileObject, including ChunkList content, locally from NamedStore and stages it in the existing workspace ObjectStore. The response retains the workspace `object_id` and adds `source_obj_id`; the two IDs are not interchangeable. This preserves AssetRef reads, package export, replica bootstrap and offline synchronization. The per-asset limit remains 32 MiB, including each leaf of a directory.
+
+Directory roots and descendants become `buckyos.container` folders, and files become AssetRefs in one normal business commit. A canvas import also creates corresponding groups and asset cells. Online imports may be cancelled; after failure or refresh, reselecting the source uses NDM deduplication. There is no offline upload queue or automatic recovery of browser File handles. FileList-based folder pickers cannot enumerate empty folders; callers with an explicit directory tree can preserve them through the SDK. draw.io and workspace ZIP retain their format validation, while image replacement and generated snapshots use the same asset stage/commit semantics.
+
+The existing binary staging API remains available to service/fixture producers and format-specific workspace ZIP import. Staging sessions bind kind, caller and target workspace, persist under `staging/<upload_id>.upload.json`, expire after 24 hours and are swept every minute. The submission intent is persisted before the business operation; a failed finish retains its bytes for a same-parameter retry, and an accepted finish records its result before removing bytes. Repeating identical parameters recovers the same result, including after restart; different parameters are rejected. Workspace imports additionally store per-upload receipts with the committed workspace and preserve them across later restores, so replaying an older upload cannot undo newer work. A restore journal recovers interruption between backing up the old directory and promoting the new one. Restore holds the workspace writer lock while rechecking permission, copying ACLs and replacing its state; queued writers observe the new epoch. Final asset submission rechecks current workspace permission.
+
 ## Tests
 
 ```bash
@@ -335,6 +345,7 @@ errors.
 | `doc.wait_changes` | `epoch?`, `after_seq`, `timeout_ms?` (long poll) |
 | `doc.checkpoint`, `doc.export` | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?` |
 | `asset.begin_upload` → PUT → `asset.finish_upload` | `size`, `upload_id` |
+| `asset.import_object` | `workspace_id`, `obj_id` (ready NDM FileObject) → workspace `object_id`, `source_obj_id`, `size`, `media_type` |
 | `replica.bootstrap` | — then `GET /replica/<workspace_id>/<replica_id>` |
 | `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
 | `proc.list` | `wish_id?`, `limit?` — wish runs, newest first |

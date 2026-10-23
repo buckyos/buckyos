@@ -1,6 +1,6 @@
-import { buckyos } from 'buckyos'
+import { buckyos, ndm } from 'buckyos'
 import { isMockRuntime } from '../../../runtime'
-import type { FileObject, ObjId } from '../protocol/feed'
+import type { ObjId } from '../protocol/feed'
 
 export const SERVICE_NAME = 'homestation'
 export const DEV_OVERRIDE_KEY = 'homestation.dev'
@@ -22,11 +22,17 @@ export interface UploadMeta {
   duration_ms?: number
 }
 
+export interface UploadOptions {
+  signal?: AbortSignal
+  onProgress?: (loaded: number, total: number) => void
+}
+
 export interface Transport {
   readonly mode: 'zone' | 'dev-override'
   call<T>(method: string, params?: Record<string, unknown>): Promise<T>
-  upload(body: Blob, meta: UploadMeta): Promise<{ objId: ObjId; file: FileObject }>
+  upload(body: File | readonly File[], meta: UploadMeta, options?: UploadOptions): Promise<{ objId: ObjId }>
   contentUrl(objId: ObjId): string
+  objectUrl(objId: ObjId): string
 }
 
 // Media are read from the home that serves the page: the signed-in user's own home in the
@@ -58,24 +64,30 @@ async function httpError(response: Response): Promise<TransportError> {
   return new TransportError('protocol', `HTTP ${response.status}${text ? `: ${text.slice(0, 300)}` : ''}`)
 }
 
-function uploadQuery(meta: UploadMeta) {
-  const query = new URLSearchParams({ name: meta.name, mime: meta.mime })
-  for (const key of ['width', 'height', 'duration_ms'] as const) {
-    const value = meta[key]
-    if (value !== undefined) query.set(key, String(Math.round(value)))
-  }
-  return query.toString()
-}
+const imports = new WeakMap<File, { sessionId: string; objId: string }>()
 
-async function putUpload(url: string, token: string, body: Blob): Promise<{ objId: ObjId; file: FileObject }> {
-  let response: Response
-  try {
-    response = await fetch(url, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body })
-  } catch (error) {
-    throw new TransportError('network', error instanceof Error ? error.message : String(error))
+async function importAttachment(transport: Transport, endpoint: string, token: string, body: File | readonly File[], meta: UploadMeta, options: UploadOptions = {}): Promise<{ objId: ObjId }> {
+  const files = Array.isArray(body) ? body : [body as File]
+  if (!files.length) throw new Error('This browser cannot select an empty folder; use a directory drag-and-drop capable browser.')
+  if (files.some(file => file.size > 64 * 1024 * 1024)) throw new Error('Each file must be at most 64 MiB.')
+  const first = files[0]
+  let imported = imports.get(first)
+  if (!imported) {
+    const snapshot = await ndm.importFiles(files, { mode: meta.mime === 'application/x-directory' ? 'single_dir' : 'single_file', endpoint, sessionToken: token, signal: options.signal, autoStartUpload: false })
+    const object = snapshot.items[0]
+    if (!object) throw new Error('No file or folder was selected.')
+    imported = { sessionId: snapshot.sessionId, objId: object.objectId }
+    imports.set(first, imported)
   }
-  if (!response.ok) throw await httpError(response)
-  return response.json() as Promise<{ objId: ObjId; file: FileObject }>
+  const total = files.reduce((sum, file) => sum + file.size, 0)
+  const status = await ndm.ensureUploaded(imported.sessionId, { endpoint, sessionToken: token, signal: options.signal, onProgress: progress => options.onProgress?.(progress.uploadedBytes, total) })
+  if (status.objectStatus !== 'ready') throw new Error('Attachment object is not ready.')
+  options.signal?.throwIfAborted()
+  const result = await transport.call<{ objId: ObjId }>('object.register', { objId: imported.objId, metadata: meta })
+  options.onProgress?.(total, total)
+  ndm.releaseImportSession(imported.sessionId)
+  imports.delete(first)
+  return result
 }
 
 function contentPath(origin: string, objId: ObjId, token: string) {
@@ -119,9 +131,11 @@ class DevOverrideTransport implements Transport {
     return body.result as T
   }
 
-  upload(body: Blob, meta: UploadMeta) {
-    return putUpload(`${this.base}/upload?${uploadQuery(meta)}`, this.token, body)
+  upload(body: File | readonly File[], meta: UploadMeta, options?: UploadOptions) {
+    return importAttachment(this, this.origin, this.token, body, meta, options)
   }
+
+  objectUrl(objId: ObjId) { return this.contentUrl(objId).replace('/content', '') }
 
   contentUrl(objId: ObjId) {
     return contentPath(this.origin, objId, this.token)
@@ -154,10 +168,12 @@ class ZoneTransport implements Transport {
     }
   }
 
-  async upload(body: Blob, meta: UploadMeta) {
-    const base = buckyos.getZoneServiceURL(SERVICE_NAME).replace(/\/+$/, '')
-    return putUpload(`${base}/upload?${uploadQuery(meta)}`, await this.token(), body)
+  async upload(body: File | readonly File[], meta: UploadMeta, options?: UploadOptions) {
+    const base = buckyos.getZoneServiceURL(SERVICE_NAME).replace(/\/kapi\/[^/]+\/?$/, '')
+    return importAttachment(this, base, await this.token(), body, meta, options)
   }
+
+  objectUrl(objId: ObjId) { return this.contentUrl(objId).replace('/content', '') }
 
   contentUrl(objId: ObjId) {
     return contentPath('', objId, this.client().getSessionToken() ?? this.knownToken ?? '')
@@ -172,4 +188,12 @@ export function homeStationTransport(): Transport | null {
     resolved = { transport: override ? new DevOverrideTransport(override) : isMockRuntime() ? null : new ZoneTransport() }
   }
   return resolved.transport
+}
+
+export function releaseAttachmentImport(selected: File | readonly File[]) {
+  const file = Array.isArray(selected) ? selected[0] : selected as File
+  if (!file) return
+  const session = imports.get(file)
+  if (session) ndm.releaseImportSession(session.sessionId)
+  imports.delete(file)
 }

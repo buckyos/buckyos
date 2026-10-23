@@ -759,6 +759,8 @@ pub(crate) struct NativeTaskResumeDescriptor {
     pub base_url: String,
     pub credential: Option<ResumeCredential>,
     pub resource_access_context: ResourceAccessContext,
+    #[serde(default)]
+    pub input_leases: Vec<crate::resource::ResourceLeaseSpec>,
     pub resolved_parameters: BTreeMap<String, Value>,
     pub output_video_seconds: Option<u64>,
     pub request_timeout_ms: u64,
@@ -1112,6 +1114,10 @@ pub(crate) trait ProviderExecutionPort: Send + Sync {
         &self,
         binding: &PinnedProviderTask,
     ) -> Result<bool, NativeTaskResumeError>;
+
+    /// Stop renewal when execution no longer tracks an upstream task. Unknown
+    /// outcomes retain the bounded TTL because the provider may still read input.
+    async fn release_native_inputs(&self, _binding: &PinnedProviderTask, _outcome_unknown: bool) {}
 
     fn completion_cost(
         &self,
@@ -1494,22 +1500,27 @@ impl ExecutionEngine {
                             .await;
                     }
                     ProviderExecution::NativeTask { handle, resume } => {
+                        binding.remote_task_id = Some(handle.remote_task_id.clone());
                         if let Err(error) = resume.validate() {
+                            self.providers.release_native_inputs(&binding, true).await;
                             return self.finish_failure(&record.task_id, error).await;
                         }
-                        binding.remote_task_id = Some(handle.remote_task_id.clone());
                         binding.result_artifacts = handle.result_artifacts.clone();
                         binding.cancel_supported = handle.cancel_supported;
                         binding.resume = Some(resume);
                         let state = ExecutionState::from(handle.state);
-                        if !self
-                            .store
-                            .set_running(&record.task_id, state, binding.clone())
-                            .await?
-                        {
+                        let running = match self.store.set_running(&record.task_id, state, binding.clone()).await {
+                            Ok(running) => running,
+                            Err(error) => {
+                                self.providers.release_native_inputs(&binding, true).await;
+                                return Err(error);
+                            }
+                        };
+                        if !running {
                             if binding.cancel_supported {
                                 let _ = self.providers.cancel_native(&binding).await;
                             }
+                            self.providers.release_native_inputs(&binding, true).await;
                             self.settle(
                                 binding.quota_attempt_id.as_deref(),
                                 AttemptSettlement::Unknown,
@@ -1518,7 +1529,7 @@ impl ExecutionEngine {
                             self.remove_active(&record.task_id);
                             return self.current_receipt(&record.task_id).await;
                         }
-                        self.tasks
+                        if let Err(error) = self.tasks
                             .report_state(
                                 &record.task_id,
                                 state,
@@ -1528,7 +1539,10 @@ impl ExecutionEngine {
                                     record.trace_id.as_deref(),
                                 ),
                             )
-                            .await?;
+                            .await {
+                                self.providers.release_native_inputs(&binding, true).await;
+                                return Err(error);
+                            }
                         self.remove_active(&record.task_id);
                         let mut receipt = self.current_receipt(&record.task_id).await?;
                         receipt.initial_poll_after = handle.poll_after;
@@ -1854,6 +1868,9 @@ impl ExecutionEngine {
             {
                 let _ = self.providers.cancel_native(binding).await;
             }
+            if let Some(binding) = record.binding.as_ref() {
+                self.providers.release_native_inputs(binding, true).await;
+            }
             self.tasks
                 .cancel_task(
                     task_id,
@@ -1978,6 +1995,7 @@ impl ExecutionEngine {
         binding: PinnedProviderTask,
         output: ProtocolOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
+        self.providers.release_native_inputs(&binding, false).await;
         self.settle(
             binding.quota_attempt_id.as_deref(),
             match &output.usage {
@@ -2079,6 +2097,9 @@ impl ExecutionEngine {
         task_id: &str,
         error: AiccError,
     ) -> Result<ExecutionReceipt, AiccError> {
+        if let Some(binding) = self.store.get_task(task_id).await?.and_then(|record| record.binding) {
+            self.providers.release_native_inputs(&binding, true).await;
+        }
         if self.store.try_fail(task_id, error.clone()).await? {
             self.log_llm_terminal(task_id, false).await;
             self.tasks.fail_task(task_id, &error).await?;
@@ -2582,10 +2603,15 @@ mod tests {
         cancel_result: Mutex<bool>,
         cancel_error: Mutex<Option<NativeTaskResumeError>>,
         completion_cost: Mutex<Option<AiCost>>,
+        released_inputs: Mutex<Vec<(Option<String>, bool)>>,
     }
 
     #[async_trait]
     impl ProviderExecutionPort for FakeProviders {
+        async fn release_native_inputs(&self, binding: &PinnedProviderTask, outcome_unknown: bool) {
+            self.released_inputs.lock().unwrap().push((binding.remote_task_id.clone(), outcome_unknown));
+        }
+
         async fn start(
             &self,
             runtime_generation: u64,
@@ -2667,6 +2693,7 @@ mod tests {
                 kind: ResumeCredentialKind::Bearer,
                 header_name: None,
             }),
+            input_leases: Vec::new(),
             resolved_parameters: BTreeMap::from([("provider_model_id".into(), json!("model"))]),
             resource_access_context: ResourceAccessContext::new("tenant-a", "alice", "request-a")
                 .unwrap(),
@@ -2724,6 +2751,7 @@ mod tests {
             credential_reference: "credential-1".into(),
             credential_header_name: None,
             resource_requirements: Vec::new(),
+            resource_leases: Vec::new(),
             resource_access_context: Some(
                 ResourceAccessContext::new("tenant-1", "user-1", "request-1").unwrap(),
             ),
@@ -4411,9 +4439,10 @@ mod tests {
         let started = engine.execute(request(call("primary"))).await.unwrap();
         *providers.poll_error.lock().unwrap() = Some(NativeTaskResumeError::CredentialUnavailable);
 
-        let restarted = ExecutionEngine::new(store.clone(), tasks.clone(), providers, usage);
+        let restarted = ExecutionEngine::new(store.clone(), tasks.clone(), providers.clone(), usage);
         let recovered = restarted.recover().await.unwrap();
         assert_eq!(recovered[0].state, ExecutionState::Failed);
+        assert!(providers.released_inputs.lock().unwrap().contains(&(Some("remote-credential-lost".into()), true)));
         let error = recovered[0].error.as_ref().unwrap();
         assert_eq!(error.code, AiccErrorCode::ProviderError);
         assert!(!error.retriable);

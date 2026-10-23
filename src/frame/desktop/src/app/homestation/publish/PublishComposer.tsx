@@ -1,7 +1,8 @@
+import { releaseAttachmentImport } from '../api/transport'
 import { zodResolver } from '@hookform/resolvers/zod'
 import clsx from 'clsx'
-import { CircleAlert, Globe2, Image, Link2, Loader2, Mic, RotateCw, Send, Video, X } from 'lucide-react'
-import { useCallback, useContext, useRef, useState } from 'react'
+import { CircleAlert, Globe2, FileUp, FolderUp, Image, Link2, Loader2, Mic, RotateCw, Send, Video, X } from 'lucide-react'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
 import { linkCardSchema, publishInputSchema, type AttachmentInput, type PublishInput } from '../datamodel/inputs'
@@ -24,7 +25,8 @@ function newPublishKey() {
 function kindOfFile(file: File): AttachmentInput['kind'] {
   if (file.type.startsWith('video/')) return 'video'
   if (file.type.startsWith('audio/')) return 'audio'
-  return 'image'
+  if (file.type.startsWith('image/')) return 'image'
+  return 'file'
 }
 
 export function PublishComposer({ variant = 'full', onPublished }: { variant?: 'full' | 'compact'; onPublished?: () => void }) {
@@ -41,6 +43,10 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   const [linkBusy, setLinkBusy] = useState(false)
   const [linkError, setLinkError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const genericRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
+  const uploads = useRef(new Map<string, { file: File | readonly File[]; kind: AttachmentInput['kind']; controller: AbortController }>())
+  useEffect(() => { const jobs = uploads.current; return () => jobs.forEach(job => { job.controller.abort(); releaseAttachmentImport(job.file) }) }, [])
   const compact = variant === 'compact'
   const idPrefix = compact ? 'hs-quick' : 'hs-publish'
 
@@ -67,16 +73,24 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
     form.setValue('attachments', form.getValues('attachments').map(attachment => (attachment.id === id ? { ...attachment, ...patch } : attachment)), { shouldValidate: form.formState.isSubmitted })
   }, [form])
 
-  const addAttachment = useCallback(async (kind: AttachmentInput['kind'], file: File) => {
-    const id = crypto.randomUUID()
-    form.setValue('attachments', [...form.getValues('attachments'), { id, kind, name: file.name, status: 'uploading' }])
+  const runUpload = useCallback(async (id: string, kind: AttachmentInput['kind'], file: File | readonly File[]) => {
+    const controller = new AbortController()
+    uploads.current.set(id, { file, kind, controller })
+    updateAttachment(id, { status: 'uploading', error: undefined, progress: 0 })
     try {
-      const object = await store.uploadAttachment(file, kind)
-      updateAttachment(id, { status: 'uploaded', object })
-    } catch {
-      updateAttachment(id, { status: 'failed' })
+      const object = await store.uploadAttachment(file, kind, { signal: controller.signal, onProgress: (loaded, total) => updateAttachment(id, { progress: total ? Math.min(99, Math.round(loaded / total * 100)) : 0 }) })
+      updateAttachment(id, { status: 'uploaded', object, progress: 100 })
+    } catch (error) {
+      updateAttachment(id, { status: controller.signal.aborted ? 'cancelled' : 'failed', error: error instanceof Error ? error.message : String(error) })
     }
-  }, [form, store, updateAttachment])
+  }, [store, updateAttachment])
+
+  const addAttachment = useCallback(async (kind: AttachmentInput['kind'], file: File | readonly File[]) => {
+    const id = crypto.randomUUID()
+    const name = Array.isArray(file) ? file[0]?.webkitRelativePath.split('/')[0] || 'folder' : (file as File).name
+    form.setValue('attachments', [...form.getValues('attachments'), { id, kind, name, status: 'uploading' }])
+    await runUpload(id, kind, file)
+  }, [form, runUpload])
 
   const fetchLink = async () => {
     const parsed = linkCardSchema.shape.url.safeParse(linkUrl)
@@ -98,6 +112,8 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
       setSharedId(null)
       prefillSource.clear()
     }
+    uploads.current.forEach(job => releaseAttachmentImport(job.file))
+    uploads.current.clear()
     setFailed(false)
     form.reset({ text: '', attachments: [], link: null, audience: form.getValues('audience'), zoneFeed: form.getValues('zoneFeed') })
     setPublishKey(newPublishKey())
@@ -142,8 +158,10 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
               <li key={attachment.id} className="hs-badge" data-status={attachment.status}>
                 {attachment.status === 'uploading' ? <Loader2 size={11} className="animate-spin" /> : attachment.status === 'failed' ? <CircleAlert size={11} /> : null}
                 {attachment.name}
-                {attachment.status === 'uploading' ? ` · ${t('homestation.publish.uploadingShort', 'uploading')}` : attachment.status === 'failed' ? ` · ${t('homestation.publish.uploadFailed', 'upload failed')}` : ''}
-                <button type="button" aria-label={t('homestation.publish.removeAttachment', 'Remove')} onClick={() => form.setValue('attachments', form.getValues('attachments').filter(entry => entry.id !== attachment.id))}><X size={11} /></button>
+                {attachment.status === 'uploading' ? ` · ${attachment.progress ?? 0}%` : attachment.error ? ` · ${attachment.error}` : ''}
+                {attachment.status === 'uploading' ? <button type="button" onClick={() => uploads.current.get(attachment.id)?.controller.abort()}>{t('common.cancel', 'Cancel')}</button> : null}
+                {attachment.status === 'failed' || attachment.status === 'cancelled' ? <button type="button" onClick={() => { const job = uploads.current.get(attachment.id); if (job) void runUpload(attachment.id, job.kind, job.file) }}><RotateCw size={12} />{t('common.retry', 'Retry')}</button> : null}
+                <button type="button" aria-label={t('homestation.publish.removeAttachment', 'Remove')} onClick={() => { const job = uploads.current.get(attachment.id); if (job) { job.controller.abort(); releaseAttachmentImport(job.file) } uploads.current.delete(attachment.id); form.setValue('attachments', form.getValues('attachments').filter(entry => entry.id !== attachment.id)) }}><X size={11} /></button>
               </li>
             ))}
           </ul>
@@ -179,6 +197,10 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
               event.target.value = ''
             }}
           />
+          <input ref={genericRef} type="file" multiple className="hidden" data-testid={`${idPrefix}-generic-file`} onChange={event => { for (const file of Array.from(event.target.files ?? [])) void addAttachment('file', file); event.target.value = '' }} />
+          <input ref={element => { folderRef.current = element; element?.setAttribute('webkitdirectory', '') }} type="file" multiple className="hidden" data-testid={`${idPrefix}-folder`} onChange={event => { const files = Array.from(event.target.files ?? []); if (files.length) void addAttachment('dir', files); else toast({ text: 'The folder is empty or this browser cannot enumerate it.', tone: 'warning' }); event.target.value = '' }} />
+          <button type="button" className="hs-icon-btn" title="Upload files" aria-label="Upload files" onClick={() => genericRef.current?.click()}><FileUp size={17} /></button>
+          <button type="button" className="hs-icon-btn" title="Upload folder (FileList omits empty subfolders)" aria-label="Upload folder" disabled={!('webkitdirectory' in document.createElement('input'))} onClick={() => folderRef.current?.click()}><FolderUp size={17} /></button>
           <button type="button" className="hs-icon-btn" title={t('homestation.publish.addMedia', 'Add photos or video')} aria-label={t('homestation.publish.addMedia', 'Add photos or video')} onClick={() => fileRef.current?.click()}>
             <Image size={17} />
           </button>

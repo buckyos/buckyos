@@ -776,6 +776,7 @@ impl AppState {
                 Ok(n) => n,
                 Err(_) => continue, // non-UTF8 names are not representable in the protocol
             };
+            if validate_name(&name).is_err() { continue; }
             let meta = match lstat(&dent.path()) {
                 Ok(m) => m,
                 Err(_) => continue,

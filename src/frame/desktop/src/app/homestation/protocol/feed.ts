@@ -7,7 +7,7 @@ export type EntryUrl = string
 
 export type FeedObjectKind = 'post' | 'comment'
 export type CommentType = 'text' | 'like' | 'bookmark' | 'repost' | 'quote'
-export type ContentType = 'text' | 'image' | 'video' | 'audio' | 'article' | 'link' | 'product'
+export type ContentType = 'files' | 'text' | 'image' | 'video' | 'audio' | 'article' | 'link' | 'product'
 export type PublicationCategory = 'work' | 'product'
 
 export interface MediaPart {

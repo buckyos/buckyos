@@ -59,3 +59,12 @@ cargo test -p homestation
 Unit tests cover the object rules, signing, audience, rule evaluation, feed parsing and intent keywords; the
 integration tests start several real HomeStations with their own keys, databases and listeners and check the
 acceptance scenarios of architecture §20 (mapping in the doc §8).
+
+
+File and folder attachments use WebSDK NDM import/finalize followed by `object.register` and `publish.create`.
+The registration route verifies the caller's own NDM read access, checks the complete object graph, and keeps
+presentation metadata separately. `files` posts carry FileObject/DirObject references; audience grants and
+retention extend through directories and ChunkLists. Content reads currently buffer at most 64 MiB per file.
+The former whole-Blob `/kapi/homestation/upload` route has been removed. Standalone tests seed the named store;
+real upload acceptance requires NDM, while `tests/object_import.rs` covers directory/empty-file/ChunkList
+readback, audience denial, repeated publication and retention.

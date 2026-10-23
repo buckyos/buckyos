@@ -8,7 +8,7 @@
 //! table existed and records unreadable content in `retention_issues`.
 
 use crate::error::HsResult;
-use crate::protocol::{normalize_obj_id, obj_type_of, FeedObject, HeadState, OBJ_TYPE_FEED, OBJ_TYPE_FILE};
+use crate::protocol::{obj_type_of, FeedObject, HeadState, OBJ_TYPE_FEED, OBJ_TYPE_FILE, OBJ_TYPE_DIR};
 use crate::objects::get_object;
 use crate::publish::{entry_versions, get_head};
 use crate::Station;
@@ -22,7 +22,7 @@ pub fn retention_owner(entry: &str) -> String {
 
 /// FileObjects among a Feed Object's content parts.
 pub fn file_parts(feed: &FeedObject) -> Vec<String> {
-    feed.content_parts().into_iter().filter(|p| obj_type_of(p).as_deref() == Some(OBJ_TYPE_FILE)).collect()
+    feed.content_parts().into_iter().filter(|p| matches!(obj_type_of(p).as_deref(), Some(OBJ_TYPE_FILE | OBJ_TYPE_DIR))).collect()
 }
 
 /// What the entry should hold right now: the files of all its versions while its Head is Active.
@@ -205,15 +205,10 @@ impl Station {
 
     /// Why a held FileObject cannot be served from the store, if it cannot.
     async fn content_issue(&self, obj_id: &str) -> Option<String> {
-        let body = match self.chunks.get_named_object(obj_id).await {
-            Ok(Some(body)) => body,
-            _ => return Some("object_missing".into()),
-        };
-        let content = serde_json::from_str::<Value>(&body).ok()?.get("content").and_then(Value::as_str).map(normalize_obj_id);
-        match content {
-            Some(content) if self.chunks.has_chunk(&content).await => None,
-            Some(_) => Some("content_missing".into()),
-            None => Some("object_invalid".into()),
+        match self.chunks.is_complete(obj_id).await {
+            Ok(true) => None,
+            Ok(false) => Some("content_missing".into()),
+            Err(error) => Some(format!("object_unavailable: {error}")),
         }
     }
 

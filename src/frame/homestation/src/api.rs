@@ -148,6 +148,7 @@ impl Station {
                 json!({ "ok": true })
             }
 
+            "object.register" => self.register_object(&arg::<String>(p, "objId")?, p.get("metadata").cloned().unwrap_or_else(|| json!({}))).await?,
             "publish.create" => {
                 let key: String = arg(p, "key")?;
                 let input: PublishInput = arg(p, "input")?;

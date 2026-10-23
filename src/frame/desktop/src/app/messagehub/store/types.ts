@@ -14,6 +14,7 @@ import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, 
  * `voice` marks the only attachment as a voice note (`MsgObject.voice`).
  */
 export interface OutgoingPayload {
+  signal?: AbortSignal
   content: string
   attachments: ComposerAttachmentInput[]
   relatesTo?: MsgRelation

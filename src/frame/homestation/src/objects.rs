@@ -268,6 +268,36 @@ pub trait ChunkStore: Send + Sync {
     /// Keeps `obj_id` and everything it references for `owner` until released (share design D17).
     async fn retain(&self, obj_id: &str, owner: &str) -> HsResult<()>;
     async fn release(&self, obj_id: &str, owner: &str) -> HsResult<()>;
+    async fn is_complete(&self, obj_id: &str) -> HsResult<bool> {
+        let mut pending = vec![obj_id.to_string()];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) { continue; }
+            if is_chunk_id(&id) {
+                if !self.has_chunk(&id).await { return Ok(false); }
+                continue;
+            }
+            let Some(body) = self.get_named_object(&id).await? else { return Ok(false) };
+            pending.extend(object_dependencies(&id, &body)?);
+        }
+        Ok(true)
+    }
+    async fn read_file(&self, obj_id: &str) -> HsResult<Option<Vec<u8>>> {
+        let Some(body) = self.get_named_object(obj_id).await? else { return Ok(None) };
+        let file: ndn_lib::FileObject = ndn_lib::load_named_obj(&body).map_err(|e| bad(e.to_string()))?;
+        if file.size > 64 * 1024 * 1024 { return Err(bad("file exceeds 64 MiB download limit")); }
+        if is_chunk_id(&file.content) { return self.get_chunk(&file.content).await; }
+        let Some(list) = self.get_named_object(&file.content).await? else { return Ok(None) };
+        let chunks = ndn_lib::ChunkList::from_json(&list).map_err(|e| bad(e.to_string()))?;
+        if chunks.total_size != file.size { return Err(bad("file size does not match chunks")); }
+        let mut bytes = Vec::with_capacity(file.size as usize);
+        for chunk in chunks.body {
+            let Some(data) = self.get_chunk(&chunk.to_string()).await? else { return Ok(None) };
+            bytes.extend_from_slice(&data);
+        }
+        Ok(Some(bytes))
+    }
+
 }
 
 pub struct FsChunkStore {
@@ -338,6 +368,25 @@ pub struct NdmChunkStore {
 
 #[async_trait]
 impl ChunkStore for NdmChunkStore {
+    async fn is_complete(&self, obj_id: &str) -> HsResult<bool> {
+        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
+        self.ndm.is_object_stored(&id, None).await.map_err(|e| HsError::Unavailable(e.to_string()))
+    }
+
+    async fn read_file(&self, obj_id: &str) -> HsResult<Option<Vec<u8>>> {
+        use tokio::io::AsyncReadExt;
+        let id = ndn_lib::ObjId::new(obj_id).map_err(|e| bad(e.to_string()))?;
+        let (mut reader, size) = match self.ndm.open_reader(&id, None).await {
+            Ok(value) => value,
+            Err(ndn_lib::NdnError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(HsError::Unavailable(e.to_string())),
+        };
+        if size > 64 * 1024 * 1024 { return Err(bad("file exceeds 64 MiB download limit")); }
+        let mut bytes = Vec::with_capacity(size as usize);
+        reader.read_to_end(&mut bytes).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+        Ok(Some(bytes))
+    }
+
     async fn put_chunk(&self, chunk_id: &str, data: Vec<u8>) -> HsResult<()> {
         let id = ChunkId::new(chunk_id).map_err(|e| bad(format!("invalid chunk id: {e}")))?;
         self.ndm.put_chunk(&id, &data).await.map_err(|e| HsError::Internal(format!("named store: {e}")))
@@ -399,18 +448,19 @@ pub async fn load_local(db: &Db, chunks: &dyn ChunkStore, obj_id: &str) -> HsRes
     if let Some(obj) = db.call(move |c| get_object(c, &id2)).await? {
         return Ok(Some(obj));
     }
-    if obj_type_of(&id).as_deref() != Some(OBJ_TYPE_FILE) {
+    let kind = obj_type_of(&id).unwrap_or_default();
+    if kind != OBJ_TYPE_FILE && kind != OBJ_TYPE_DIR && kind != ndn_lib::OBJ_TYPE_CHUNK_LIST {
         return Ok(None);
     }
     let Some(body) = chunks.get_named_object(&id).await? else { return Ok(None) };
     let value: Value = serde_json::from_str(&body).map_err(|_| bad("named store returned invalid JSON"))?;
-    let (computed, _) = obj_id_of(OBJ_TYPE_FILE, &value).map_err(bad)?;
+    let computed = object_id(&kind, &body)?;
     if computed != id {
         return Err(HsError::Internal(format!("named store object {id} does not match its id")));
     }
     let obj = StoredObject {
         obj_id: id.clone(),
-        obj_type: OBJ_TYPE_FILE.into(),
+        obj_type: kind,
         body: value,
         jwt: None,
         signer: None,
@@ -422,4 +472,36 @@ pub async fn load_local(db: &Db, chunks: &dyn ChunkStore, obj_id: &str) -> HsRes
     let now = crate::now_ms();
     db.call(move |c| put_object(c, &stored, Some("named_store"), now)).await?;
     Ok(Some(obj))
+}
+
+pub fn object_id(kind: &str, body: &str) -> HsResult<String> {
+    if kind == OBJ_TYPE_DIR {
+        let dir: ndn_lib::DirObject = ndn_lib::load_named_obj(body).map_err(|e| bad(e.to_string()))?;
+        return dir.gen_obj_id().map(|(id, _)| id.to_string()).map_err(|e| bad(e.to_string()));
+    }
+    if kind == ndn_lib::OBJ_TYPE_CHUNK_LIST {
+        return ndn_lib::ChunkList::from_json(body).map(|list| list.gen_obj_id().0.to_string()).map_err(|e| bad(e.to_string()));
+    }
+    obj_id_of(kind, &serde_json::from_str(body)?).map(|(id, _)| id).map_err(bad)
+}
+
+pub fn object_dependencies(id: &str, body: &str) -> HsResult<Vec<String>> {
+    let id = ndn_lib::ObjId::new(id).map_err(|e| bad(e.to_string()))?;
+    if id.is_file_object() {
+        let file: ndn_lib::FileObject = ndn_lib::load_named_obj(body).map_err(|e| bad(e.to_string()))?;
+        return Ok(vec![file.content]);
+    }
+    if id.is_dir_object() {
+        let dir: ndn_lib::DirObject = ndn_lib::load_named_obj(body).map_err(|e| bad(e.to_string()))?;
+        return dir.object_map.body.values().map(|item| item.get_obj_id().map(|(id, _)| id.to_string()).map_err(|e| bad(e.to_string()))).collect();
+    }
+    if id.obj_type == ndn_lib::OBJ_TYPE_CHUNK_LIST {
+        return Ok(ndn_lib::ChunkList::from_json(body).map_err(|e| bad(e.to_string()))?.body.into_iter().map(|id| id.to_string()).collect());
+    }
+    Err(bad("unsupported attachment object type"))
+}
+
+pub fn import_metadata(conn: &Connection, id: &str) -> HsResult<Value> {
+    let value: Option<String> = conn.query_row("SELECT metadata FROM import_metadata WHERE obj_id=?1", [id], |row| row.get(0)).optional()?;
+    Ok(value.and_then(|value| serde_json::from_str(&value).ok()).unwrap_or(Value::Null))
 }

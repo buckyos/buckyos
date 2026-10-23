@@ -2892,6 +2892,7 @@ impl MsgCenterHandler for MessageCenter {
             self.authorize_mailbox(&ctx, &mailbox, MailboxKind::Sent, "write")
                 .await?;
         }
+        self.authorize_outgoing_attachments(&ctx, &msg).await?;
         // Friend messages carry state msg-center keeps for the owner; only
         // the `contact.*` friend RPCs build them.
         if crate::friend_service::is_friend_message(&msg) {

@@ -15,12 +15,12 @@
  * Each group also leaves a placeholder area for future per-service manual
  * call panels (point 4 of the task brief).
  */
-import { buckyos, ndm, ndn, RuntimeType } from 'buckyos'
+import { buckyos, ndm, RuntimeType } from 'buckyos'
+import { NfspClient } from 'buckyos/nfsp'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 
 const APP_ID = 'buckyos-systest.buckyos.bns.did'
 const SELFTEST_BASE_URL = '/sdk/appservice/selftest'
-const NDM_CHUNK_SIZE = 32 * 1024 * 1024
 
 type CaseResult = {
   name: string
@@ -39,34 +39,6 @@ type AuthState =
   | { kind: 'error'; message: string }
 
 let authState: AuthState = { kind: 'init' }
-
-function isChunkListContentId(contentId: string | undefined): contentId is string {
-  return typeof contentId === 'string' && (contentId.startsWith('clist:') || contentId.startsWith('chunklist:'))
-}
-
-async function sha256Bytes(bytes: Uint8Array): Promise<Uint8Array> {
-  return ndn.sha256Bytes(bytes)
-}
-
-async function buildChunkListPayload(file: File, expectedContentId: string): Promise<string[]> {
-  const chunkList = new ndn.SimpleChunkList()
-  let offset = 0
-
-  while (offset < file.size) {
-    const end = Math.min(offset + NDM_CHUNK_SIZE, file.size)
-    const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer())
-    const hash = await sha256Bytes(bytes)
-    chunkList.appendChunk(ndn.ChunkId.fromMix256Result(bytes.length, hash))
-    offset = end
-  }
-
-  const [chunkListObjId] = chunkList.genObjId()
-  if (chunkListObjId.toString() !== expectedContentId) {
-    throw new Error(`chunkList objId mismatch: expected ${expectedContentId}, got ${chunkListObjId.toString()}`)
-  }
-
-  return chunkList.body.map(chunk => chunk.toString())
-}
 
 function $<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id)
@@ -365,43 +337,73 @@ function renderGroups() {
 // ── NDM Client Demo Panel ──────────────────────────────────────────
 
 type NdmDemoState = {
-  sessionId: string | null
-  fileObjId: string | null
-  uploadStatus: string
-  pollTimer: ReturnType<typeof setInterval> | null
+  snapshot: ndm.ImportSessionSnapshot<unknown> | null
+  abort: AbortController | null
+  busy: boolean
+  entries: NdmLogEntry[]
+  committed: Set<string>
 }
 
 const ndmState: NdmDemoState = {
-  sessionId: null,
-  fileObjId: null,
-  uploadStatus: 'idle',
-  pollTimer: null,
+  snapshot: null, abort: null, busy: false, entries: [], committed: new Set(),
 }
 
 function renderNdmDemoPanel() {
-  const container = $('groups') as HTMLElement
-
   const card = document.createElement('section')
   card.className = 'group'
   card.dataset.group = 'ndm_client'
-
   card.innerHTML = `
-    <div class="group-header">
-      <h2 class="group-title">NDM Client</h2>
-      <span class="group-id">ndm_client</span>
-    </div>
-    <p class="group-desc">
-      NDM 文件上传演示：选择文件 → 本地计算 ObjectId → 上传到 NDM → 轮询上传进度 → 通知后端查询 FileObjId 及 ChunkId 状态。
-    </p>
+    <div class="group-header"><h2 class="group-title">NDM 文件 / 目录导入</h2></div>
+    <p class="group-desc">SDK：QCID 查询 → 对象标识 → 缺失内容上传 → 元数据登记 → 强依赖就绪。默认只取得 ObjId，不落盘。相同内容可再次选择以验证去重。</p>
     <div class="group-actions">
-      <button id="ndm-upload-btn" class="btn primary">选择文件并上传</button>
+      <button id="ndm-single-btn" class="btn primary">选择文件</button>
+      <button id="ndm-multi-btn" class="btn">选择多个文件</button>
+      <button id="ndm-folder-btn" class="btn">选择文件夹</button>
+      <button id="ndm-cancel-btn" class="btn" disabled>取消</button>
+      <button id="ndm-retry-btn" class="btn" disabled>重试此任务</button>
+      <button id="ndm-release-btn" class="btn" disabled>释放任务</button>
     </div>
+    <p id="ndm-capability" class="group-desc"></p>
+    <div class="group-actions">
+      <input id="ndm-target-path" type="text" aria-label="目标父目录" placeholder="目标父目录，例如 /home/alice" />
+      <button id="ndm-extract-btn" class="btn" disabled>按 ObjId 本地提取到目标目录</button>
+    </div>
+    <p class="group-desc">本地提取通过 NFSP 提交，服务端重新校验权限及目标冲突，不覆盖已有路径。多根目录/文件分别提交；部分失败会保留已完成项，重试仅处理未确认项。响应丢失后的冲突需检查目标，不自动覆盖。</p>
     <div id="ndm-results" class="results"></div>
   `
-  container.appendChild(card)
+  $('groups').appendChild(card)
+  const folderSupported = ndm.getImportProvider().getCapabilities().canPickDirectory
+  $('ndm-capability').textContent = folderSupported
+    ? '目录 picker 保留根目录及路径；浏览器 FileList 无法枚举空目录。支持目录节点的应用可调用 SDK importDirectory 保留空目录。'
+    : '当前浏览器不支持目录选择；仍可上传单文件或多文件。'
+  ;($('ndm-folder-btn') as HTMLButtonElement).disabled = !folderSupported
+  ;(['single', 'multi', 'folder'] as const).forEach(kind => {
+    $(`ndm-${kind}-btn`).addEventListener('click', () => void handleNdmUpload(kind === 'single' ? 'single_file' : kind === 'multi' ? 'multi_file' : 'single_dir'))
+  })
+  $('ndm-cancel-btn').addEventListener('click', () => {
+    ndmState.abort?.abort()
+    if (ndmState.snapshot) ndm.cancelImportSession(ndmState.snapshot.sessionId)
+  })
+  $('ndm-retry-btn').addEventListener('click', () => void handleNdmUpload())
+  $('ndm-release-btn').addEventListener('click', () => {
+    if (ndmState.snapshot) ndm.releaseImportSession(ndmState.snapshot.sessionId)
+    ndmState.snapshot = null
+    ndmState.committed.clear()
+    ndmState.entries.push({ icon: '✓', label: '已释放本地任务；再次操作请重新选择', status: 'ok' })
+    renderNdmLog($('ndm-results'), ndmState.entries)
+    updateNdmButtons(false)
+  })
+  $('ndm-extract-btn').addEventListener('click', () => void extractNdmObjects())
+}
 
-  const uploadBtn = card.querySelector('#ndm-upload-btn') as HTMLButtonElement
-  uploadBtn.addEventListener('click', () => void handleNdmUpload(uploadBtn))
+function updateNdmButtons(ready: boolean) {
+  for (const kind of ['single', 'multi', 'folder']) {
+    ;($(`ndm-${kind}-btn`) as HTMLButtonElement).disabled = ndmState.busy || (kind === 'folder' && !ndm.getImportProvider().getCapabilities().canPickDirectory)
+  }
+  ;($('ndm-cancel-btn') as HTMLButtonElement).disabled = !ndmState.busy
+  ;($('ndm-retry-btn') as HTMLButtonElement).disabled = ndmState.busy || !ndmState.snapshot || ready
+  ;($('ndm-release-btn') as HTMLButtonElement).disabled = ndmState.busy || !ndmState.snapshot
+  ;($('ndm-extract-btn') as HTMLButtonElement).disabled = ndmState.busy || !ready
 }
 
 function renderNdmLog(container: HTMLElement, entries: NdmLogEntry[]) {
@@ -506,231 +508,89 @@ function formatDuration(ms: number): string {
   return `${m}m${s % 60}s`
 }
 
-function describePreUploadState(materializationStatus: string, uploadStatus: string): {
-  label: string
-  detail: string
-} {
-  if (materializationStatus === 'all_in_store') {
-    return {
-      label: '上传前查询状态: InStore',
-      detail: 'QCID 秒传命中，文件内容已在 NDM Store 中，无需再次上传。',
-    }
+async function handleNdmUpload(mode?: 'single_file' | 'multi_file' | 'single_dir') {
+  if (ndmState.busy) return
+  ndmState.busy = true
+  ndmState.abort = new AbortController()
+  if (mode) {
+    if (ndmState.snapshot) ndm.releaseImportSession(ndmState.snapshot.sessionId)
+    ndmState.snapshot = null
+    ndmState.committed.clear()
+    ndmState.entries = [{ icon: '⏳', label: '正在选择并导入...', status: 'run' }]
   }
-
-  if (materializationStatus === 'on_cache') {
-    return {
-      label: '上传前查询状态: OnCache',
-      detail: '文件已命中本地缓存，但还不在 NDM Store 中，仍需上传。',
+  const entries = ndmState.entries
+  const container = $('ndm-results')
+  updateNdmButtons(false)
+  let ready = false
+  try {
+    if (mode) {
+      ndmState.snapshot = await ndm.pickupAndImport({ mode, signal: ndmState.abort.signal,
+        onProgress: progress => {
+          entries[0] = { icon: '⏳', label: `${progress.phase}: ${progress.fileName} (${progress.fileIndex + 1}/${progress.fileCount})`, status: 'run' }
+          renderNdmLog(container, entries)
+        },
+      })
     }
-  }
-
-  return {
-    label: '上传前查询状态: NotInStore',
-    detail: `materializationStatus=${materializationStatus}, uploadStatus=${uploadStatus}`,
+    const snapshot = ndmState.snapshot
+    if (!snapshot) return
+    entries.push({ icon: '✓', label: '对象标识已生成；尚未视为就绪', status: 'ok', detail: JSON.stringify({
+      roots: snapshot.items.map(item => ({ kind: item.kind, name: item.name, objectId: item.objectId })),
+      summary: snapshot.summary, materializationStatus: snapshot.materializationStatus,
+    }, null, 2) })
+    const status = await ndm.ensureUploaded(snapshot.sessionId, {
+      signal: ndmState.abort.signal,
+      onProgress: progress => renderProgressBar(container, entries, progress),
+    })
+    const progress = await ndm.getUploadProgress(snapshot.sessionId)
+    ready = status.objectStatus === 'ready'
+    entries.push({ icon: '✓', label: '对象及全部强依赖已就绪；可直接消费 ObjId', status: 'ok', detail: JSON.stringify({
+      objectStatus: status.objectStatus, uploadStatus: status.uploadStatus,
+      logicalBytes: progress.uploadedBytes, transmittedBytes: progress.transmittedBytes,
+      roots: snapshot.items.map(item => item.objectId),
+    }, null, 2) })
+    for (const warning of status.warnings) entries.push({ icon: '!', label: '能力 / 查重优化提示', status: 'run', detail: warning })
+  } catch (error) {
+    entries.push({ icon: '✕', label: ndmState.abort.signal.aborted ? '已取消；保留任务可重试' : '导入未就绪', status: 'err', detail: error instanceof Error ? error.message : String(error) })
+  } finally {
+    ndmState.busy = false
+    ndmState.abort = null
+    renderNdmLog(container, entries)
+    updateNdmButtons(ready)
   }
 }
 
-async function handleNdmUpload(btn: HTMLButtonElement) {
-  btn.disabled = true
-  const resultsContainer = document.getElementById('ndm-results')!
-  const entries: NdmLogEntry[] = []
-
-  // Clean up previous poll timer
-  if (ndmState.pollTimer) {
-    clearInterval(ndmState.pollTimer)
-    ndmState.pollTimer = null
+async function extractNdmObjects() {
+  const snapshot = ndmState.snapshot
+  if (!snapshot || ndmState.busy) return
+  const target = ($('ndm-target-path') as HTMLInputElement).value.trim()
+  if (!target) {
+    ndmState.entries.push({ icon: '✕', label: '请填写目标父目录后再提取', status: 'err' })
+    renderNdmLog($('ndm-results'), ndmState.entries)
+    return
   }
-
+  ndmState.busy = true
+  updateNdmButtons(true)
+  ;($('ndm-cancel-btn') as HTMLButtonElement).disabled = true // NFSP commit itself is not cancellable.
+  const client = new NfspClient({ baseUrl: window.location.origin, sessionToken: async () => (await buckyos.getAccountInfo())?.session_token ?? null })
   try {
-    // Step 1: Pick file and materialize (compute objectId locally)
-    entries.push({ icon: '⏳', label: '正在选择文件...', status: 'run' })
-    renderNdmLog(resultsContainer, entries)
-
-    let snapshot: Awaited<ReturnType<typeof ndm.pickupAndImport>>
-    try {
-      snapshot = await ndm.pickupAndImport({
-        mode: 'single_file',
-        autoStartUpload: false,
-        onProgress: progress => {
-          const phaseLabel = progress.phase === 'qcid_lookup'
-            ? '正在查询 QCID 秒传状态'
-            : progress.phase === 'thumbnail'
-              ? '正在生成缩略图'
-              : '正在计算文件对象'
-          const byteProgress = progress.bytesProcessed != null && progress.fileTotalBytes != null
-            ? ` (${formatBytes(progress.bytesProcessed)} / ${formatBytes(progress.fileTotalBytes)})`
-            : ''
-          entries[entries.length - 1] = {
-            icon: '⏳',
-            label: `${phaseLabel}: ${progress.fileName}${byteProgress}`,
-            status: 'run',
-          }
-          renderNdmLog(resultsContainer, entries)
-        },
-      })
-    } catch (e: any) {
-      if (e?.code === 'USER_CANCELLED') {
-        entries[entries.length - 1] = { icon: '✕', label: '用户取消了文件选择', status: 'err' }
-        renderNdmLog(resultsContainer, entries)
-        return
-      }
-      throw e
+    const status = await ndm.getImportSessionStatus(snapshot.sessionId)
+    if (status.objectStatus !== 'ready') throw new Error('对象尚未就绪')
+    await client.hello()
+    const parent = await client.resolve(target)
+    for (const item of snapshot.items) {
+      const key = `${target}/${item.name}:${item.objectId}`
+      if (ndmState.committed.has(key)) continue
+      const committed = await client.commitObject(parent.ref, item.name, item.objectId, { overwrite: false })
+      ndmState.committed.add(key)
+      ndmState.entries.push({ icon: '✓', label: `本地提取并提交: ${target}/${item.name}`, status: 'ok', detail: JSON.stringify(committed, null, 2) })
     }
-
-    const sel = snapshot.selection
-    ndmState.sessionId = snapshot.sessionId
-    ndmState.fileObjId = sel.objectId
-    ndmState.uploadStatus = snapshot.uploadStatus
-
-    entries[entries.length - 1] = {
-      icon: '✓',
-      label: `文件已选择: ${sel.name} (${formatBytes(sel.size)})`,
-      status: 'ok',
-    }
-
-    const ndnFileObject = sel._ndnFileObject
-    const fileObjContent = ndnFileObject ? (ndnFileObject as any).content as string : undefined
-    let chunkList: string[] | null = null
-
-    entries.push({
-      icon: '✓',
-      label: `FileObjId 已计算`,
-      status: 'ok',
-      detail: `objectId: ${sel.objectId}\ncontent (chunk ref): ${fileObjContent ?? 'N/A'}`,
-    })
-
-    const preUploadState = describePreUploadState(
-      snapshot.materializationStatus,
-      snapshot.uploadStatus,
-    )
-    entries.push({
-      icon: snapshot.materializationStatus === 'all_in_store' ? '✓' : '⏳',
-      label: preUploadState.label,
-      status: 'ok',
-      detail: preUploadState.detail,
-    })
-
-    if (sel._file && isChunkListContentId(fileObjContent)) {
-      chunkList = await buildChunkListPayload(sel._file, fileObjContent)
-      entries.push({
-        icon: '✓',
-        label: 'ChunkList 已计算',
-        status: 'ok',
-        detail: `${chunkList.length} chunks`,
-      })
-    }
-
-    // Step 1b: Compute QCID for instant-upload optimization
-    let qcid: string | null = null
-    if (sel._file) {
-      try {
-        qcid = await ndm.calculateQcidFromFile(sel._file)
-        entries.push({
-          icon: '✓',
-          label: 'QCID 已计算（用于秒传优化）',
-          status: 'ok',
-          detail: qcid,
-        })
-      } catch {
-        entries.push({
-          icon: '✓',
-          label: 'QCID 跳过（文件过小，不适用）',
-          status: 'ok',
-        })
-      }
-    }
-    renderNdmLog(resultsContainer, entries)
-
-    // Step 2: Start upload
-    if (snapshot.uploadStatus === 'not_required' || snapshot.materializationStatus === 'all_in_store') {
-      entries.push({
-        icon: '✓',
-        label: '跳过上传',
-        status: 'ok',
-        detail: '上传前查询已命中 InStore，QCID 秒传成功。',
-      })
-      renderNdmLog(resultsContainer, entries)
-    } else {
-      entries.push({ icon: '⏳', label: '开始上传...', status: 'run' })
-      renderNdmLog(resultsContainer, entries)
-
-      await ndm.startUpload(snapshot.sessionId)
-      entries[entries.length - 1] = { icon: '✓', label: '上传已启动', status: 'ok' }
-
-      // Step 3: Poll upload progress
-      await new Promise<void>((resolve, reject) => {
-        ndmState.pollTimer = setInterval(async () => {
-          try {
-            const progress = await ndm.getUploadProgress(snapshot.sessionId)
-            ndmState.uploadStatus = progress.uploadStatus
-            renderProgressBar(resultsContainer, entries, progress)
-
-            if (progress.uploadStatus === 'completed') {
-              clearInterval(ndmState.pollTimer!)
-              ndmState.pollTimer = null
-              const idx = entries.findIndex(e => e.label.startsWith('上传进度:'))
-              if (idx >= 0) {
-                entries[idx] = {
-                  icon: '✓',
-                  label: `上传完成: ${formatBytes(progress.totalBytes)}, ${progress.totalObjects} 个对象`,
-                  status: 'ok',
-                  extra: progress.elapsedMs != null ? `${(progress.elapsedMs / 1000).toFixed(1)}s` : '',
-                }
-              }
-              renderNdmLog(resultsContainer, entries)
-              resolve()
-            } else if (progress.uploadStatus === 'failed') {
-              clearInterval(ndmState.pollTimer!)
-              ndmState.pollTimer = null
-              reject(new Error('上传失败'))
-            }
-          } catch (err) {
-            clearInterval(ndmState.pollTimer!)
-            ndmState.pollTimer = null
-            reject(err)
-          }
-        }, 500)
-      })
-    }
-
-    // Step 4: Notify backend with FileObjId, FileObject, chunkList, qcid
-    entries.push({ icon: '⏳', label: '正在通知后端，查询对象和Chunk状态...', status: 'run' })
-    renderNdmLog(resultsContainer, entries)
-
-    const queryResp = await fetch('/sdk/appservice/ndm_query', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        fileObjId: sel.objectId,
-        fileObject: ndnFileObject,
-        chunkList,
-        qcid,
-        preUploadState: {
-          materializationStatus: snapshot.materializationStatus,
-          uploadStatus: snapshot.uploadStatus,
-        },
-      }),
-    })
-    const queryResult = await queryResp.json()
-
-    entries[entries.length - 1] = {
-      icon: queryResult.ok ? '✓' : '✕',
-      label: '后端查询结果',
-      status: queryResult.ok ? 'ok' : 'err',
-      detail: JSON.stringify(queryResult, null, 2),
-    }
-    renderNdmLog(resultsContainer, entries)
-
   } catch (error) {
-    entries.push({
-      icon: '✕',
-      label: '操作失败',
-      status: 'err',
-      detail: error instanceof Error ? error.message : String(error),
-    })
-    renderNdmLog(resultsContainer, entries)
+    ndmState.entries.push({ icon: '✕', label: '目标提交失败；已就绪对象与已完成路径仍保留', status: 'err', detail: error instanceof Error ? error.message : String(error) })
   } finally {
-    btn.disabled = false
+    await client.bye().catch(() => undefined)
+    ndmState.busy = false
+    updateNdmButtons(true)
+    renderNdmLog($('ndm-results'), ndmState.entries)
   }
 }
 

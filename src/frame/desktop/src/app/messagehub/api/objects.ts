@@ -26,9 +26,12 @@ export function setObjectViewer(identityKey: string) {
 }
 
 /** `context` is the `context_path` of an object shown in a hosted group session. */
-export function objectUrl(objId: string, content = false, context?: string): string {
+export function objectUrl(objId: string, content = false, context?: string, innerPath?: string): string {
   const base = msgCenterServiceUrl().replace(/\/$/, '')
-  const query = context ? `?context_path=${encodeURIComponent(context)}` : ''
+  const params = new URLSearchParams()
+  if (context) params.set('context_path', context)
+  if (innerPath) params.set('inner_path', innerPath)
+  const query = params.size ? `?${params}` : ''
   return `${base}/objects/${encodeURIComponent(objId)}${content ? '/content' : ''}${query}`
 }
 
@@ -55,19 +58,22 @@ export async function authorizedFetch(url: string): Promise<Response> {
 const cacheKey = (objId: string, context: string | undefined) => `${viewer}\n${context ?? ''}\n${objId}`
 
 export const apiObjectAccess: ObjectAccess = {
-  describe(objId, context) {
-    const key = cacheKey(objId, context)
+  describe(objId, context, innerPath) {
+    const key = `${cacheKey(objId, context)}\n${innerPath ?? ''}`
     let pending = infoCache.get(key)
     if (!pending) {
-      pending = authorizedFetch(objectUrl(objId, false, context)).then(async response => {
+      pending = authorizedFetch(objectUrl(objId, false, context, innerPath)).then(async response => {
         const json = await response.json() as Record<string, unknown>
-        const isFile = objId.startsWith('cyfile:')
+        const isFile = typeof json.content === 'string'
+        const isDirectory = typeof json.body === 'object' && json.body !== null
         const meta = json
         return {
           objId,
           isFile,
+          isDirectory,
+          entries: isDirectory ? Object.keys(json.body as object).sort() : undefined,
           name: typeof meta.name === 'string' ? meta.name : undefined,
-          size: typeof meta.size === 'number' ? meta.size : undefined,
+          size: typeof meta.size === 'number' ? meta.size : typeof meta.total_size === 'number' ? meta.total_size : undefined,
           mimeType: typeof meta.mime_type === 'string' ? meta.mime_type : undefined,
         } satisfies ObjectInfo
       })
@@ -76,11 +82,11 @@ export const apiObjectAccess: ObjectAccess = {
     }
     return pending
   },
-  contentUrl(objId, context) {
-    const key = cacheKey(objId, context)
+  contentUrl(objId, context, innerPath) {
+    const key = `${cacheKey(objId, context)}\n${innerPath ?? ''}`
     let pending = contentCache.get(key)
     if (!pending) {
-      pending = authorizedFetch(objectUrl(objId, true, context)).then(async response => URL.createObjectURL(await response.blob()))
+      pending = authorizedFetch(objectUrl(objId, true, context, innerPath)).then(async response => URL.createObjectURL(await response.blob()))
       pending.catch(() => { if (contentCache.get(key) === pending) contentCache.delete(key) })
       contentCache.set(key, pending)
     }

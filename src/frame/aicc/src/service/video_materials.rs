@@ -85,6 +85,7 @@ impl RuntimeInferencePort {
                 tenant_id: caller.tenant_id.clone(),
                 caller_id: caller.user_id.clone(),
                 storage: self.storage.clone(),
+                token: Some(caller.token.clone()),
             }),
             self.resource_store.clone(),
             self.url_fetcher.clone(),
@@ -92,6 +93,7 @@ impl RuntimeInferencePort {
         )
         .map_err(resource_rpc_error)?
         .with_input_form(ResourceInputForm::BytesOnly);
+        let mut input_leases = Vec::new();
         for (index, condition) in prepared.conditions.iter_mut().enumerate() {
             let kind = condition.kind();
             let id = condition.id().to_string();
@@ -99,6 +101,31 @@ impl RuntimeInferencePort {
                 continue;
             }
             let source = condition.resource().clone();
+            if let ResourceRef::NamedObject { obj_id } = &source {
+                AuthenticatedResourceAuthorizer {
+                    tenant_id: caller.tenant_id.clone(),
+                    caller_id: caller.user_id.clone(),
+                    storage: self.storage.clone(),
+                    token: Some(caller.token.clone()),
+                }
+                .authorize(
+                    &context,
+                    &ResourceTarget::NamedObject {
+                        obj_id: obj_id.clone(),
+                    },
+                    ResourceAccessOperation::Inspect,
+                )
+                .await
+                .map_err(resource_rpc_error)?;
+                if let Some(lease) = self
+                    .resource_store
+                    .retain(obj_id, None)
+                    .await
+                    .map_err(resource_rpc_error)?
+                {
+                    input_leases.push(lease);
+                }
+            }
             let inspected = manager
                 .inspect(&context, std::slice::from_ref(&source))
                 .await

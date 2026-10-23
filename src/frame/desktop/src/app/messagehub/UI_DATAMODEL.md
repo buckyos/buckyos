@@ -1114,12 +1114,12 @@ export type ConversationComposerSubmitPayload = ComposerDraft
 - `attachments` 上限 64 项；附件按 `relativePath || file.name`、大小与 `lastModified` 去重，
   同名不同内容的文件都保留（iOS 相机每张都叫 `image.jpg`，粘贴的截图都叫 `image.png`）。
 - 不支持选目录的环境（`webkitdirectory` 不可用或粗指针设备，如 iPhone）不显示“选择文件夹”，回形针直接打开系统文件选择器。
-- HEIC / HEIF 图片（按类型、扩展名或 `ftyp` 品牌识别）在上传前由浏览器解码并转成 JPEG（`conversation/input/imageNormalize.ts`，
+- 独立选择的 HEIC / HEIF 图片（按类型、扩展名或 `ftyp` 品牌识别）在上传前由浏览器解码并转成 JPEG（`conversation/input/imageNormalize.ts`，
   画布像素上限 1600 万，超出等比缩小），文件名改为 `.jpg`；浏览器解不了（如桌面 Chrome）则原样上传。
-- 单个附件上限 32 MiB（`MAX_ATTACHMENT_BYTES`，2026-09-30）：WebSDK 把更大的文件切成 chunk list，
-  但上传不保存 chunk list 对象，msg-center 对象路由也只能读单 chunk，发出去也无法打开。
-  超限文件在选择时拒绝并提示名称与上限，`uploadAttachments` 在上传前再次拒绝（`attachment_too_large`）。
-  支持更大附件需要 WebSDK 发布 chunk list 并由对象路由流式读取（`NamedDataMgr::open_reader`），届时再放宽。
+- 每个叶文件上限 64 MiB，SDK 完成 FileObject / ChunkList / DirObject 登记且 `objectStatus === ready` 后才提交消息；msg-center 用 `NamedDataMgr::open_reader` 读取单 chunk 或 ChunkList，下载仍有 64 MiB 内存缓冲上限。
+- 文件夹作为一个 DirObject 附件，保留选中根、嵌套和同名不同路径；目录内文件保持原始字节，不进行图片规范化。目录拖拽保留空目录，FileList picker 无法提供空目录节点。枚举失败显示具体路径和原因，整个选择失败，不把失败当目录结束。
+- `importFiles` / `importDirectory` 接收已选对象，`ensureUploaded` 完成上传和登记；页面不覆盖全局 picker、不手工写对象。发送失败重用导入 session，发送成功释放客户端 session；取消中止当前导入并恢复草稿，移除附件释放本任务 session。
+- 接收端以附件根 ObjId 验证消息/群上下文权限，`inner_path` 只在该根之下解析；可浏览目录并逐叶下载。支持 File System Access 的浏览器可直接保存真实目录（含空目录），其他环境保留逐文件下载。消息保留继续按根递归 pin，检查完整依赖。
 - 空草稿（无文本且无附件）不可提交，错误文案走 i18n key。
 - 提交即快照（2026-09-30，E2E MH2U-1）：Enter / 发送把当前文本与附件快照放入 Composer 发送队列，
   立即清空输入并持久化空草稿，用户可继续输入；发送中不锁输入框。队列按提交顺序逐条调用 `store.send`，
@@ -1838,3 +1838,5 @@ UI DataModel 层把扁平的 `session_id` 空间还原成「实体 → 会话」
 （标题、置顶、静音、草稿）统一收到 `ui_session` KV；组件层只消费 UI DataModel。
 这一层投影还须对齐 owner 作用域、连接绑定、创建策略与读写能力（§3.3 / §5.3）；
 这些业务关系由后端契约支撑，不能仅凭 Session ID 形态或 UI 展示 KV 推断。
+
+用户 `post_send` 在消息与 retention 落库前逐个校验附件：当前仍可读的私信/群消息引用可复用；新导入对象必须由原浏览器 token 在 NDM `get_object` 与 `is_object_stored` 同时通过。仅知道 ObjId、查重命中或服务级 NamedStore 存在性不授予发送权。已撤回/不可读群消息不能作为转发授权来源；签名跨 Zone ingress 保持既有验证路径。

@@ -23,9 +23,11 @@ function freePort(): string {
 
 // Chosen once in the runner process; workers inherit the environment.
 process.env.AIWS_E2E_BACKEND_PORT ??= freePort()
+process.env.AIWS_E2E_NDM_PORT ??= freePort()
 process.env.AIWS_E2E_WEB_PORT ??= freePort()
 process.env.AIWS_E2E_PREVIEW_PORT ??= freePort()
 const backend = `http://127.0.0.1:${process.env.AIWS_E2E_BACKEND_PORT}`
+const ndmBackend = `http://127.0.0.1:${process.env.AIWS_E2E_NDM_PORT}`
 const preview = `http://127.0.0.1:${process.env.AIWS_E2E_PREVIEW_PORT}`
 const previewDir = 'test-results/aiworkspace-dist'
 const web = `http://127.0.0.1:${process.env.AIWS_E2E_WEB_PORT}`
@@ -64,7 +66,7 @@ export default defineConfig({
       url: web,
       reuseExistingServer: false,
       timeout: 120_000,
-      env: { AIWS_BACKEND: backend },
+      env: { AIWS_BACKEND: backend, VITE_NFS_PROXY: ndmBackend },
     },
     {
       // The offline specs (offline*.spec.ts) need the service worker, which only a production build
@@ -74,7 +76,7 @@ export default defineConfig({
       url: `${preview}/sw.js`,
       reuseExistingServer: false,
       timeout: 300_000,
-      env: { AIWS_BACKEND: backend, VITE_CP_USE_MOCK: 'true' },
+      env: { AIWS_BACKEND: backend, VITE_NFS_PROXY: ndmBackend, VITE_CP_USE_MOCK: 'true' },
     },
   ],
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1600, height: 1000 } } }],

@@ -517,6 +517,10 @@ impl AppState {
     }
 
     pub fn op_commit_file(&self, actor: &Actor, at: Option<&Locator>, args: &Value, session: &str) -> NfsResult<Value> {
+        self.commit_file_content(actor, at, args, session, None)
+    }
+
+    fn commit_file_content(&self, actor: &Actor, at: Option<&Locator>, args: &Value, session: &str, content: Option<(PathBuf, u64, String)>) -> NfsResult<Value> {
         let parent = self.parent_dir_min(actor, at, args, Level::Traverse)?;
         let name = args["name"].as_str().ok_or_else(|| invalid("commit_file requires name"))?;
         validate_name(name)?;
@@ -545,6 +549,10 @@ impl AppState {
             (None, _) => None,
         };
         let current = std::fs::symlink_metadata(&target_path).ok().map(|m| node_meta(&m));
+        let identical = match (&content, &current) {
+            (Some((_, size, hash)), Some(meta)) if meta.kind == "file" && meta.size == *size => sha256_file(&target_path)? == *hash,
+            _ => false,
+        };
         if let Some(h) = &held {
             // Re-check against the open_write snapshot (bypass edits conflict loudly).
             match (&h.base, &current) {
@@ -568,7 +576,7 @@ impl AppState {
                 }
                 _ => {}
             }
-        } else if current.is_some() && !overwrite {
+        } else if current.is_some() && !overwrite && !identical {
             return Err(NfsError::new(
                 ErrorCode::TargetMismatch,
                 format!("'{}' already exists (open_write it, or pass overwrite:true)", name),
@@ -582,7 +590,9 @@ impl AppState {
         }
 
         // Obtain content: staged upload, or dedup by hash (秒传).
-        let (staged_tmp, size, hash) = if let Some(fb) = args["fb_handle"].as_str() {
+        let (staged_tmp, size, hash) = if let Some(content) = content {
+            content
+        } else if let Some(fb) = args["fb_handle"].as_str() {
             if let Some(h) = &held {
                 if h.fb_handle != fb {
                     return Err(invalid("fb_handle does not belong to the held lease"));
@@ -590,7 +600,7 @@ impl AppState {
             }
             let fin = self.uploads.finish(fb)?;
             (fin.path, fin.size, fin.sha256)
-        } else if let Some(hash_arg) = args["hash"].as_str().or(args["obj_id"].as_str()) {
+        } else if let Some(hash_arg) = args["hash"].as_str() {
             let hex_hash = normalize_hash(hash_arg)?;
             // Dedup only draws from content the actor could read anyway.
             let indexed = self
@@ -633,7 +643,7 @@ impl AppState {
             self.clear_stale_acls(&root, &target_rel)?;
         }
         // Atomic placement: rename into a temp in the target dir, then rename over.
-        place_file(&staged_tmp, &target_path)?;
+        if !identical { place_file(&staged_tmp, &target_path)?; }
         let final_meta = lstat(&target_path)?;
 
         // Refresh anchor if this path is anchored (edit keeps node identity).
@@ -661,6 +671,89 @@ impl AppState {
             "revision": revision,
             "obj": {"sha256": hash, "size": size},
         }))
+    }
+
+    pub async fn op_commit_object(&self, actor: &Actor, at: Option<&Locator>, args: &Value, session: &str, headers: &axum::http::HeaderMap) -> NfsResult<Value> {
+        let obj_id = ndn_lib::ObjId::new(args["obj_id"].as_str().ok_or_else(|| invalid("commit_object requires obj_id"))?)
+            .map_err(|e| invalid(e.to_string()))?;
+        if !obj_id.is_file_object() && !obj_id.is_dir_object() {
+            return Err(invalid("commit_object requires a FileObject or DirObject"));
+        }
+        let principal = crate::ndm::principal(self, headers).await.map_err(|_| denied("read object", actor))?;
+        if !crate::ndm::may_read(self, &principal, &obj_id.to_string()).await {
+            return Err(denied("read object", actor));
+        }
+        let name = args["name"].as_str().ok_or_else(|| invalid("commit_object requires name"))?;
+        validate_name(name)?;
+        let parent = self.parent_dir_min(actor, at, args, Level::Traverse)?;
+        self.check_no_binding(&parent, name)?;
+        let (root, rel, full) = self.dir_parts(&parent)?;
+        let target_rel = rel_join(&rel, name);
+        normalize_rel(&target_rel)?;
+        let target = full.join(name);
+        let parent_id = lstat(&full)?.id;
+        self.require_file_write(actor, &root, &rel, &target_rel, target.exists())?;
+        self.check_dir_cas(&parent.container_key().unwrap(), args["expected_revision"].as_str())?;
+        let store = crate::ndm::store(self).await.map_err(|_| internal("named store unavailable"))?;
+        let owner = format!("nfs-import:{}", uuid::Uuid::new_v4().simple());
+        store.pin(&obj_id, &owner, named_store::PinScope::Recursive, Some(std::time::Duration::from_secs(3600))).await
+            .map_err(|e| internal(e.to_string()))?;
+        let staged = full.join(format!(".nfs_import_{}", uuid::Uuid::new_v4().simple()));
+        let result = async {
+            store.extract_object(&obj_id, &staged).await.map_err(|e| NfsError::new(ErrorCode::NeedPull, e.to_string()))?;
+            if obj_id.is_file_object() {
+                let size = std::fs::metadata(&staged)?.len();
+                let hash = sha256_file(&staged)?;
+                let mut result = self.commit_file_content(actor, at, args, session, Some((staged.clone(), size, hash)))?;
+                result["obj_id"] = json!(obj_id.to_string());
+                result["kind"] = json!("file");
+                return Ok(result);
+            }
+            let parent = self.parent_dir(actor, at, args)?;
+            if self.dir_parts(&parent)? != (root.clone(), rel.clone(), full.clone()) || lstat(&full)?.id != parent_id {
+                return Err(NfsError::new(ErrorCode::NamespaceConflict, "import destination moved during extraction; retry"));
+            }
+            self.check_dir_cas(&parent.container_key().unwrap(), args["expected_revision"].as_str())?;
+            self.check_no_binding(&parent, name)?;
+            let mut pending = vec![(staged.clone(), target_rel.clone())];
+            let mut size = 0u64;
+            while let Some((path, child_rel)) = pending.pop() {
+                normalize_rel(&child_rel)?;
+                if self.acls.level(actor, &root, &child_rel) < Level::Write {
+                    return Err(denied("write", actor));
+                }
+                if self.leases.get(&root, &child_rel).is_some() {
+                    return Err(NfsError::new(ErrorCode::LeaseConflict, "import destination has an active write lease"));
+                }
+                let meta = std::fs::symlink_metadata(&path)?;
+                if meta.is_dir() {
+                    for child in std::fs::read_dir(path)? {
+                        let child = child?;
+                        let child_name = child.file_name().into_string().map_err(|_| invalid("invalid entry name"))?;
+                        validate_name(&child_name)?;
+                        pending.push((child.path(), rel_join(&child_rel, &child_name)));
+                    }
+                } else { size = size.saturating_add(meta.len()); }
+            }
+            let existed = std::fs::symlink_metadata(&target).is_ok();
+            if existed {
+                if !same_extracted_tree(&staged, &target)? {
+                    return Err(NfsError::new(ErrorCode::NamespaceConflict, "directory import requires a new destination name; choose rename or skip"));
+                }
+            } else {
+                self.clear_stale_acls(&root, &target_rel)?;
+                std::fs::rename(&staged, &target)?;
+            }
+            let final_meta = lstat(&target)?;
+            let revision = if existed { self.revisions.current(&parent.container_key().unwrap()) }
+                else { self.bump_dir(&parent, "entries_changed", Some(json!({"added":[name]}))) };
+            let node = self.resolve_dfs_path(&format!("{root}/{target_rel}"))?;
+            Ok(json!({"ref":self.node_ref(&node), "entry_ref":native_entry_ref(&root, &rel, name, final_meta.id.ino), "revision":revision, "obj_id":obj_id.to_string(), "kind":"dir", "obj":{"size":size}}))
+        }.await;
+        if obj_id.is_dir_object() { let _ = std::fs::remove_dir_all(&staged); }
+        else { let _ = std::fs::remove_file(&staged); }
+        let _ = store.unpin(&obj_id, &owner).await;
+        result
     }
 
     /// Verifies a content_index hit: sizes must match; a changed mtime triggers
@@ -926,6 +1019,25 @@ pub fn sha256_file(path: &Path) -> NfsResult<String> {
 
 /// Moves `staged` over `target` atomically: rename within the target dir; a
 /// cross-device staged file is first copied to a temp sibling of the target.
+fn same_extracted_tree(source: &Path, destination: &Path) -> NfsResult<bool> {
+    let mut pending = vec![(source.to_path_buf(), destination.to_path_buf())];
+    while let Some((source, destination)) = pending.pop() {
+        let left = std::fs::symlink_metadata(&source)?;
+        let right = match std::fs::symlink_metadata(&destination) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if right.file_type().is_symlink() || left.is_dir() != right.is_dir() { return Ok(false); }
+        if left.is_dir() {
+            let children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
+            if children.len() != std::fs::read_dir(&destination)?.count() { return Ok(false); }
+            for child in children { pending.push((child.path(), destination.join(child.file_name()))); }
+        } else if left.len() != right.len() || sha256_file(&source)? != sha256_file(&destination)? { return Ok(false); }
+    }
+    Ok(true)
+}
+
 fn place_file(staged: &Path, target: &Path) -> NfsResult<()> {
     match std::fs::rename(staged, target) {
         Ok(()) => Ok(()),

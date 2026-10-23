@@ -14,6 +14,7 @@ pub const OBJ_TYPE_FOLLOW: &str = "cyfollow";
 pub const OBJ_TYPE_EVALUATION: &str = "cyfeval";
 pub const OBJ_TYPE_CONSUMPTION: &str = "cyfproof";
 pub const OBJ_TYPE_FILE: &str = ndn_lib::OBJ_TYPE_FILE;
+pub const OBJ_TYPE_DIR: &str = ndn_lib::OBJ_TYPE_DIR;
 
 /// Largest dispatched object body (the CYFS named-inbox default).
 pub const MAX_OBJECT_BYTES: usize = 65536;
@@ -75,6 +76,7 @@ impl CommentType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentType {
+    Files,
     Text,
     Image,
     Video,
@@ -87,6 +89,7 @@ pub enum ContentType {
 impl ContentType {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Files => "files",
             Self::Text => "text",
             Self::Image => "image",
             Self::Video => "video",

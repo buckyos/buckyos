@@ -42,10 +42,20 @@ impl Service {
         std::fs::create_dir_all(&root).map_err(io)?;
         std::fs::create_dir_all(data_dir.join("trash")).map_err(io)?;
         std::fs::create_dir_all(data_dir.join("staging")).map_err(io)?;
-        // half-built folders never carry a real name; drop what a crash left behind
         for entry in std::fs::read_dir(&root).map_err(io)? {
             let entry = entry.map_err(io)?;
             if entry.file_name().to_string_lossy().starts_with(".tmp-") {
+                let intent = std::fs::read(entry.path().join("restore-intent.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                if let Some(intent) = intent {
+                    let workspace = intent["workspace_id"].as_str().unwrap_or_default();
+                    let backup = intent["backup"].as_str().unwrap_or_default();
+                    if is_prefixed_id("ws_", workspace) && is_prefixed_id("restore_", backup)
+                        && !root.join(workspace).exists() && data_dir.join("trash").join(backup).is_dir() {
+                        std::fs::rename(entry.path(), root.join(workspace)).map_err(io)?;
+                        let _ = std::fs::remove_file(root.join(workspace).join("restore-intent.json"));
+                        continue;
+                    }
+                }
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
@@ -71,12 +81,16 @@ impl Service {
         self.data_dir.join("workspaces").join(format!(".tmp-{}", random_id("")))
     }
 
-    fn register(&self, mut ws: Workspace) -> WsHandle {
+    fn configure(&self, ws: &mut Workspace) {
         ws.failpoint = self.failpoint.clone();
         ws.show_locks = Some(self.show_locks.clone());
         if let Some(hook) = &self.on_open {
-            hook(&mut ws);
+            hook(ws);
         }
+    }
+
+    fn register(&self, mut ws: Workspace) -> WsHandle {
+        self.configure(&mut ws);
         let id = ws.workspace_id.clone();
         let handle = Arc::new(Mutex::new(ws));
         self.open.lock().unwrap().insert(id, handle.clone());
@@ -104,6 +118,10 @@ impl Service {
     /// Release the writer of an idle Workspace (its WAL is checkpointed on close).
     pub fn close(&self, id: &str) {
         self.open.lock().unwrap().remove(id);
+    }
+
+    pub fn is_current_workspace(&self, id: &str, handle: &WsHandle) -> bool {
+        self.open.lock().unwrap().get(id).is_some_and(|current| Arc::ptr_eq(current, handle))
     }
 
     /// `ws.create`: built under a temporary name, renamed into place when complete.
@@ -198,6 +216,15 @@ impl Service {
     /// package's id; replacing an existing Workspace needs `replace: true` *and*
     /// `manage` on the existing one — nothing inside the package grants anything).
     pub fn import(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool) -> WsResult<Value> {
+        self.import_inner(caller, package, semantics, replace, None)
+    }
+
+    pub fn import_upload(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool, upload_id: &str) -> WsResult<Value> {
+        if !is_prefixed_id("up_", upload_id) { return Err(WsError::invalid_op("invalid upload id")); }
+        self.import_inner(caller, package, semantics, replace, Some(upload_id))
+    }
+
+    fn import_inner(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool, upload_id: Option<&str>) -> WsResult<Value> {
         require_may_own(caller)?;
         let pkg = open_package(package, &self.objects)?;
         let m = &pkg.manifest;
@@ -211,8 +238,19 @@ impl Service {
         let source_id = snap["workspace_id"].as_str().unwrap_or("").to_string();
         let title = m["title"].as_str().unwrap_or("");
         let personal_backup = m["export_mode"] == json!("personal_backup");
+        let fresh_id = upload_id.map(|id| format!("ws_{}", id.trim_start_matches("up_"))).unwrap_or_else(|| random_id("ws_"));
+        let target_id = if semantics == "new" { &fresh_id } else { &source_id };
+        if upload_id.is_some() && is_prefixed_id("ws_", target_id) {
+            if let Some(receipt) = std::fs::read(self.ws_dir(target_id).join("import-receipts").join(format!("{}.json", upload_id.unwrap()))).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+                if receipt["upload_id"].as_str() == upload_id && receipt["principal"] == json!(caller.principal) && receipt["semantics"] == json!(semantics) && receipt["replace"] == json!(replace) {
+                    let handle = self.workspace(target_id)?;
+                    handle.lock().unwrap().require_ws(caller, Cap::Manage)?;
+                    return Ok(receipt["result"].clone());
+                }
+            }
+        }
         let (id, forked_from, existing) = match semantics {
-            "new" => (random_id("ws_"), Some(json!({ "workspace_id": source_id, "snapshot": snapshot })), false),
+            "new" => (fresh_id, Some(json!({ "workspace_id": source_id, "snapshot": snapshot })), false),
             "restore" => {
                 if !is_prefixed_id("ws_", &source_id) {
                     return Err(WsError::invalid_schema("package has no valid workspace_id"));
@@ -253,10 +291,31 @@ impl Service {
         let info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": ws.head_seq, "content_root": content_root,
                            "semantics": semantics, "replaced": existing, "missing": m["missing"], "external_sources": m["external_sources"] });
         drop(ws);
+        if let Some(upload_id) = upload_id {
+            let receipt = json!({ "upload_id": upload_id, "principal": caller.principal, "semantics": semantics, "replace": replace, "result": info });
+            crate::objects::write_atomic(&tmp.join("import-receipts").join(format!("{upload_id}.json")), receipt.to_string().as_bytes())?;
+        }
         if existing {
+            let handle = self.workspace(&id)?;
+            let mut active = handle.lock().unwrap();
+            if !self.is_current_workspace(&id, &handle) {
+                return Err(WsError::new(Code::WriterBusy, "workspace writer was replaced; retry"));
+            }
+            active.require_ws(caller, Cap::Manage)?;
+            if let Ok(receipts) = std::fs::read_dir(self.ws_dir(&id).join("import-receipts")) {
+                for entry in receipts {
+                    let entry = entry.map_err(io)?;
+                    let name = entry.file_name();
+                    let Some(receipt_id) = name.to_str().and_then(|name| name.strip_suffix(".json")) else { continue };
+                    if !is_prefixed_id("up_", receipt_id) || !entry.file_type().map_err(io)?.is_file() { continue; }
+                    let destination = tmp.join("import-receipts").join(name);
+                    if !destination.exists() {
+                        crate::objects::write_atomic(&destination, &std::fs::read(entry.path()).map_err(io)?)?;
+                    }
+                }
+            }
             // restoring content does not change who may access it: grants and entries move over, runs and uploads do not
             let old_local = self.ws_dir(&id).join("local.sqlite");
-            self.close(&id);
             let conn = rusqlite::Connection::open(tmp.join("local.sqlite")).map_err(crate::docdb::db_err)?;
             conn.execute("ATTACH DATABASE ?1 AS old", [old_local.to_string_lossy().as_ref()]).map_err(crate::docdb::db_err)?;
             conn.execute_batch("DELETE FROM grants; INSERT INTO grants SELECT * FROM old.grants; \
@@ -264,9 +323,32 @@ impl Service {
                                 INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta; DETACH DATABASE old;")
                 .map_err(crate::docdb::db_err)?;
             drop(conn);
-            self.trash(&id)?;
+            let backup = random_id("restore_");
+            crate::objects::write_atomic(&tmp.join("restore-intent.json"), json!({"workspace_id": id, "backup": backup}).to_string().as_bytes())?;
+            let backup_path = self.data_dir.join("trash").join(&backup);
+            let doc = rusqlite::Connection::open_in_memory().map_err(crate::docdb::db_err)?;
+            let local = rusqlite::Connection::open_in_memory().map_err(crate::docdb::db_err)?;
+            drop(std::mem::replace(&mut active.doc, doc));
+            drop(std::mem::replace(&mut active.local, local));
+            let replaced = (|| {
+                std::fs::rename(self.ws_dir(&id), &backup_path).map_err(io)?;
+                if let Err(error) = std::fs::rename(&tmp, self.ws_dir(&id)) {
+                    let _ = std::fs::rename(&backup_path, self.ws_dir(&id));
+                    return Err(io(error));
+                }
+                let _ = std::fs::remove_file(self.ws_dir(&id).join("restore-intent.json"));
+                Ok(())
+            })();
+            let mut replacement = match Workspace::open(&self.ws_dir(&id), self.objects.clone(), self.clock.clone()) {
+                Ok(workspace) => workspace,
+                Err(error) => { self.close(&id); return Err(error); }
+            };
+            self.configure(&mut replacement);
+            *active = replacement;
+            replaced?;
+        } else {
+            std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         }
-        std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)
     }
 

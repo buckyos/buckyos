@@ -640,6 +640,11 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     return this.direct.uploadAsset(file, fileName)
   }
 
+  async importAssets(files: File[], folder: boolean, signal?: AbortSignal) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.upload'))
+    return this.direct.importAssets(files, folder, signal)
+  }
+
   async fetchAsset(objectId: string): Promise<Blob> {
     const cached = this.replica.dead === null ? await this.replica.call('getAsset', objectId).catch(() => null) : null
     if (cached) return new Blob([cached])

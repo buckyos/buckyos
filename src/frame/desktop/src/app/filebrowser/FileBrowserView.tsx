@@ -62,7 +62,8 @@ import { resolveReader } from './data/readerRegistry'
 import { collectionTitleSchema, entryNameSchema, validationFallback } from './data/schemas'
 import { useSidebarDevices, useSidebarDfs, useSidebarTopics } from './data/sidebarSources'
 import { toUiError } from './data/state'
-import { stashLocalFile, transferStore } from './data/transfers'
+import { stashLocalInput, transferStore, type LocalUpload } from './data/transfers'
+import { describeUpload, droppedUploads, selectedUploads } from './data/localUploads'
 import { useBrowserPane } from './data/useBrowserPane'
 import {
   COLLECTION_SCHEME,
@@ -515,45 +516,38 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
     }
   }
 
-  const enqueueFiles = async (target: string, files: FileList | File[] | null) => {
-    if (!files?.length) return
+  const enqueueInputs = async (target: string, inputs: LocalUpload[]) => {
     const parent = dfsPathOf(target)
     if (!parent) { showToast(t('filebrowser.operation.localUploadUnsupported', 'Local files can only be uploaded to a writable folder')); return }
     const resolveConflict = conflictResolver()
     let cancelled = false
-    for (const file of [...files]) {
-      let destination = parent
-      const candidate = { localId: crypto.randomUUID(), name: file.name, sizeBytes: file.size, mimeType: file.type || undefined }
-      const retry = () => void enqueueFiles(target, [file])
+    for (const input of inputs) {
+      const candidate = { localId: crypto.randomUUID(), ...describeUpload(input) }
+      const retry = () => void enqueueInputs(target, [input])
       if (cancelled) { transferStore.recordOutcome(target, candidate, 'cancelled', null, retry); continue }
       try {
-        if (file.webkitRelativePath) {
-          const segments = file.webkitRelativePath.split('/').slice(0, -1)
-          for (const segment of segments) {
-            entryNameSchema.parse(segment)
-            const existing = await folderOps().statEntry(destination, segment)
-            if (existing && existing.kind !== 'folder') throw new Error(t('filebrowser.operation.folderNameConflict', 'A file blocks the upload folder path'))
-            if (!existing) await folderOps().createFolder(destination, segment)
-            destination = `${destination === '/' ? '' : destination}/${segment}`
-          }
-        }
-        let name = file.name
-        const existing = await folderOps().statEntry(destination, name)
+        let name = candidate.name
+        entryNameSchema.parse(name)
+        const existing = await folderOps().statEntry(parent, name)
         if (existing) {
-          const choice = await resolveConflict({ source: { id: '', path: file.webkitRelativePath || name, name, kind: 'other', sizeBytes: file.size, modifiedAt: new Date(file.lastModified).toISOString() }, target: existing, targetPath: destination })
-          if (choice === 'cancel') { cancelled = true; transferStore.recordOutcome(normalizeUrl(destination), candidate, 'cancelled', null, retry); continue }
-          if (choice === 'skip') { transferStore.recordOutcome(normalizeUrl(destination), candidate, 'skipped'); continue }
-          name = await availableName(destination, name)
+          const choice = await resolveConflict({ source: { id: '', path: name, name, kind: input.kind === 'file' ? 'other' : 'folder', sizeBytes: candidate.sizeBytes, modifiedAt: new Date().toISOString() }, target: existing, targetPath: parent })
+          if (choice === 'cancel') { cancelled = true; transferStore.recordOutcome(target, candidate, 'cancelled', null, retry); continue }
+          if (choice === 'skip') { transferStore.recordOutcome(target, candidate, 'skipped'); continue }
+          name = await availableName(parent, name)
         }
-        const localId = crypto.randomUUID()
-        stashLocalFile(localId, file)
-        const { rejected } = transferStore.enqueue(normalizeUrl(destination), [{ ...candidate, localId, name }], retry)
+        stashLocalInput(candidate.localId, input)
+        const { rejected } = transferStore.enqueue(target, [{ ...candidate, name }])
         for (const reject of rejected) {
           const key = reject.messageKeys[0]
-          transferStore.recordOutcome(normalizeUrl(destination), candidate, 'error', { code: 'VALIDATION', messageKey: key, fallback: validationFallback[key] ?? key, retryable: false })
+          transferStore.recordOutcome(target, candidate, 'error', { code: 'VALIDATION', messageKey: key, fallback: validationFallback[key] ?? key, retryable: false })
         }
-      } catch (err) { transferStore.recordOutcome(normalizeUrl(destination), candidate, 'error', toUiError(err), retry) }
+      } catch (error) { transferStore.recordOutcome(target, candidate, 'error', toUiError(error), retry) }
     }
+  }
+
+  const enqueueFiles = (target: string, files: FileList | File[] | null) => {
+    if (!files?.length) return
+    return enqueueInputs(target, selectedUploads([...files]))
   }
 
   const triggerUpload = (pane: BrowserPane, accept?: string, folder = false) => {
@@ -564,7 +558,10 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
     input.multiple = true
     if (accept) input.accept = accept
     if (folder) input.webkitdirectory = true
-    input.onchange = () => void enqueueFiles(target, input.files)
+    input.onchange = () => {
+      if (folder && !input.files?.length) { showToast(t('filebrowser.operation.emptyFolderPicker', 'This browser cannot select an empty folder; drag the folder here instead')); return }
+      void enqueueFiles(target, input.files)
+    }
     input.click()
   }
 
@@ -1103,8 +1100,7 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
         return
       }
       if (!pane.list.capabilities.acceptsContent || pane.searchQuery) { showToast(t('filebrowser.operation.localUploadUnsupported', 'Local files can only be uploaded to a writable folder')); return }
-      if ([...event.dataTransfer.items].some((item) => item.webkitGetAsEntry?.()?.isDirectory)) { showToast(t('filebrowser.operation.useFolderUpload', 'Use Upload folder to preserve directory structure')); return }
-      void enqueueFiles(pane.currentUrl, event.dataTransfer.files)
+      void droppedUploads(event.dataTransfer).then(inputs => enqueueInputs(pane.currentUrl, inputs)).catch(error => showToast(String(error)))
     },
   })
   const dialogs = <>

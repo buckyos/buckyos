@@ -1,3 +1,4 @@
+import type { AttachmentDirectory } from '../conversation/input/attachmentDraft'
 import type { ObjectAccess, ObjectInfo } from '../conversation/history/objectAccess'
 
 interface MockObject {
@@ -165,6 +166,20 @@ const MOCK_OBJECTS: Record<string, MockObject> = {
 const blobs = new Map<string, Promise<Blob>>()
 const urls = new Map<string, Promise<string>>()
 const uploads = new Map<string, MockObject>()
+const directories = new Map<string, AttachmentDirectory>()
+
+export function registerMockDirectory(objId: string, directory: AttachmentDirectory) { directories.set(objId, directory) }
+
+function resolveMockId(objId: string, innerPath?: string): string {
+  if (!innerPath) return objId
+  let node: AttachmentDirectory | { kind: 'file'; file: File } | undefined = directories.get(objId)
+  for (const part of innerPath.split('/')) node = node?.kind === 'dir' ? node.children.find(child => (child.kind === 'dir' ? child.name : child.file.name) === part) : undefined
+  if (!node) throw new Error('404 object unavailable')
+  const key = `${objId}/${innerPath}`
+  if (node.kind === 'dir') registerMockDirectory(key, node)
+  else registerMockUpload(key, node.file.name, node.file)
+  return key
+}
 
 export function registerMockUpload(objId: string, name: string, blob: Blob) {
   uploads.set(objId, { name, mimeType: blob.type, make: async () => blob })
@@ -185,13 +200,17 @@ function blobOf(objId: string): Promise<Blob> {
 }
 
 export const mockObjectAccess: ObjectAccess = {
-  async describe(objId) {
+  async describe(objId, _context, innerPath) {
+    objId = resolveMockId(objId, innerPath)
+    const directory = directories.get(objId)
+    if (directory) return { objId, name: directory.name, isFile: false, isDirectory: true, entries: directory.children.map(child => child.kind === 'dir' ? child.name : child.file.name) }
     const spec = specOf(objId)
     if (!spec) throw new Error('404 object unavailable')
     const blob = await blobOf(objId).catch(() => null)
     return { objId, isFile: true, name: spec.name, mimeType: spec.mimeType, size: blob?.size } satisfies ObjectInfo
   },
-  contentUrl(objId) {
+  contentUrl(objId, _context, innerPath) {
+    objId = resolveMockId(objId, innerPath)
     let pending = urls.get(objId)
     if (!pending) {
       pending = blobOf(objId).then(blob => URL.createObjectURL(blob))

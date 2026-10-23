@@ -1,39 +1,27 @@
-/**
- * NFSP transfer executor (UI_DATAMODEL.md §4.7, §8.3): drives the real
- * probe → open_write/tus → commit_file pipeline behind the transfer store's
- * stage model. A probe hit commits by hash (秒传) and skips the upload;
- * NEED_PULL falls through to the byte upload. Name collisions surface as a
- * conflict before any bytes move. Cancellation is honored between chunks.
- */
-
-import type { CommitResult } from '../../../../api/nfsp_client'
+import { getActiveSessionToken, ndm } from 'buckyos'
+import type { CommitObjectResult } from '../../../../api/nfsp_client'
 import type { FileEntry } from '../../types'
 import { classifyFileKind } from '../fileKinds'
 import type { TransferControls } from '../transfers'
-import { registerTransferExecutor, takeLocalFile, TransferCancelledError } from '../transfers'
+import { registerTransferExecutor, takeLocalInput, TransferCancelledError } from '../transfers'
 import type { TransferTask } from '../state'
 import { dfsPathOf } from '../urls'
-import { ensureSession, nfspClient } from './client'
+import { ensureSession, nfspBaseUrl, nfspClient } from './client'
 import { nfspToUiError } from './errors'
 import { notifyDfsPath } from './invalidation'
 
-const CHUNK_SIZE = 4 * 1024 * 1024
+const imports = new Map<string, { sessionId: string; objectId: string }>()
 
 function checkCancelled(controls: TransferControls) {
-  if (controls.isCancelled()) throw new TransferCancelledError()
+  if (controls.isCancelled() || controls.signal.aborted) throw new TransferCancelledError()
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource)
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-function committedEntry(task: TransferTask, parentPath: string, result: CommitResult): FileEntry {
+function committedEntry(task: TransferTask, parentPath: string, result: CommitObjectResult): FileEntry {
   const name = task.candidate.name
   return {
-    id: result.ref.type === 'live' ? result.ref.node_id : result.obj.sha256,
+    id: result.ref.type === 'live' ? result.ref.node_id : result.obj_id,
     name,
-    kind: classifyFileKind(name, task.candidate.mimeType),
+    kind: result.kind === 'dir' ? 'folder' : classifyFileKind(name, task.candidate.mimeType),
     path: parentPath === '/' ? `/${name}` : `${parentPath}/${name}`,
     sizeBytes: result.obj.size,
     modifiedAt: new Date().toISOString(),
@@ -41,97 +29,65 @@ function committedEntry(task: TransferTask, parentPath: string, result: CommitRe
   }
 }
 
-async function runNfspTransfer(
-  task: TransferTask,
-  controls: TransferControls,
-): Promise<FileEntry> {
+async function runNfspTransfer(task: TransferTask, controls: TransferControls): Promise<FileEntry> {
   const parentPath = dfsPathOf(task.targetUrl)
-  if (parentPath === null) {
-    throw {
-      code: 'UNSUPPORTED',
-      messageKey: 'filebrowser.transfer.badTarget',
-      fallback: 'This location does not accept uploads',
-      retryable: false,
-    }
-  }
-  const file = takeLocalFile(task.candidate.localId)
-  if (!file) {
-    throw {
-      code: 'INTERNAL',
-      messageKey: 'filebrowser.transfer.missingFile',
-      fallback: 'The selected file is no longer available — pick it again',
-      retryable: false,
-    }
-  }
-
+  if (parentPath === null) throw { code: 'UNSUPPORTED', fallback: 'This location does not accept uploads', retryable: false }
+  const input = takeLocalInput(task.candidate.localId)
+  if (!input) throw { code: 'INTERNAL', fallback: 'The selected files are no longer available — pick them again', retryable: false }
   await ensureSession()
   const client = nfspClient()
   const name = task.candidate.name
-
   try {
     checkCancelled(controls)
-    controls.setStatus('hashing')
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    const hash = `sha256:${await sha256Hex(bytes)}`
-
-    checkCancelled(controls)
     controls.setStatus('probing')
-    // Collision requires a user decision (§4.7) before any bytes move.
-    const existing = await client.stat(parentPath, { name, cache: 'no-cache' }).catch((err: unknown) => { if (nfspToUiError(err).code === 'NOT_FOUND') return null; throw err })
-    if (existing) {
-      throw {
-        code: 'NAMESPACE_CONFLICT',
-        messageKey: 'filebrowser.transfer.conflict',
-        fallback: `"${name}" already exists here`,
-        retryable: true,
-      }
+    const existing = await client.stat(parentPath, { name, cache: 'no-cache' }).catch((error: unknown) => {
+      if (nfspToUiError(error).code === 'NOT_FOUND') return null
+      throw error
+    })
+    if (existing && !imports.has(task.candidate.localId)) throw { code: 'NAMESPACE_CONFLICT', fallback: `"${name}" already exists here; choose another destination name`, retryable: true }
+    const endpoint = nfspBaseUrl()
+    const sessionToken = new URL(endpoint).origin === window.location.origin ? await getActiveSessionToken() : null
+    const options = { endpoint, sessionToken, signal: controls.signal, autoStartUpload: false }
+    let imported = imports.get(task.candidate.localId)
+    if (!imported) {
+      controls.setStatus('hashing')
+      const snapshot = input.kind === 'tree'
+        ? await ndm.importDirectory(input.tree, options)
+        : input.kind === 'folder'
+          ? await ndm.importFiles(input.files, { ...options, mode: 'single_dir' })
+          : await ndm.importFiles([input.file], { ...options, mode: 'single_file' })
+      const object = snapshot.items[0]
+      if (!object) throw new Error('Object import returned no object')
+      imported = { sessionId: snapshot.sessionId, objectId: object.objectId }
+      imports.set(task.candidate.localId, imported)
     }
-    const parentInfo = await client.resolve(parentPath)
-    if (!parentInfo) throw nfspToUiError({ code: 'NOT_FOUND', message: 'destination gone' })
-    const probe = await client.raw.probe([{ hash, size: bytes.byteLength }])
-    if (probe.missing.length === 0) {
-      // Content already known: commit by hash (秒传). NEED_PULL falls back
-      // to the byte upload instead of failing the transfer (§8.5).
-      controls.setStatus('committing')
-      try {
-        const result = await client.commitFile(parentPath, name, { hash })
-        notifyDfsPath(parentPath)
-        return committedEntry(task, parentPath, result)
-      } catch (err) {
-        if (nfspToUiError(err).code !== 'NEED_PULL') throw err
-      }
-    }
-
     checkCancelled(controls)
     controls.setStatus('uploading')
-    const openResult = await client.raw.openWrite({
-      parentRef: parentInfo.ref,
-      name,
-      size: bytes.byteLength,
+    const status = await ndm.ensureUploaded(imported.sessionId, {
+      ...options,
+      onProgress: progress => controls.setProgress(progress.uploadedBytes),
     })
-    let offset = await client.raw.uploadOffset(openResult.fb_handle)
-    controls.setProgress(offset)
-    while (offset < bytes.byteLength) {
-      checkCancelled(controls)
-      const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_SIZE, bytes.byteLength))
-      offset = await client.raw.uploadChunk(openResult.fb_handle, offset, chunk)
-      controls.setProgress(offset)
-    }
-
+    if (status.objectStatus !== 'ready') throw new Error('The imported object is not ready')
     checkCancelled(controls)
     controls.setStatus('committing')
-    const result = await client.commitFile(parentPath, name, {
-      fbHandle: openResult.fb_handle,
-      leaseId: openResult.lease.lease_id,
-    })
+    const result = await client.commitObject(parentPath, name, imported.objectId)
     notifyDfsPath(parentPath)
+    imports.delete(task.candidate.localId)
+    ndm.releaseImportSession(imported.sessionId)
     return committedEntry(task, parentPath, result)
-  } catch (err) {
-    if (err instanceof TransferCancelledError) throw err
-    throw nfspToUiError(err)
+  } catch (error) {
+    if (error instanceof TransferCancelledError || controls.signal.aborted) throw new TransferCancelledError()
+    throw nfspToUiError(error)
   }
 }
 
 export function registerNfspTransferExecutor() {
-  return registerTransferExecutor({ run: runNfspTransfer })
+  return registerTransferExecutor({
+    run: runNfspTransfer,
+    release: localId => {
+      const imported = imports.get(localId)
+      if (imported) ndm.releaseImportSession(imported.sessionId)
+      imports.delete(localId)
+    },
+  })
 }

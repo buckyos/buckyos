@@ -39,4 +39,12 @@ pnpm exec playwright test --config=playwright.aiworkspace.config.ts --list
 
 去掉 `--list` 会构建或启动独立后台与 Web 服务，并执行浏览器测试；不是单纯的检查命令。真实模型质量、Zone 登录与 Gateway 权限需要另行验证。套件环境、CI 范围和证据要求见 [BuckyOS E2E 入口](../../../doc/testing/e2e.md)。
 
+Files 的对象上传与 NFSP 实体提取可以用独立真实 NFS 服务验证。在 `buckyos/src` 构建包含 NamedStore 的 `cargo build -p nfs_server` 后，从本目录运行：
+
+```bash
+FB_NFSP_AUTO=1 pnpm exec playwright test tests/e2e/pages/filebrowser.nfsp.spec.ts
+```
+
+夹具自动启动端口 `3262` 的 NFS 和端口 `4178` 的 Vite，创建临时 export/NamedStore，退出时清理；构建目录不在默认 `buckyos/src/target` 时设置 `CARGO_TARGET_DIR`。测试通过真实 HTTP 验证单文件、重复内容不再上传数据、嵌套目录、同名叶子、空文件及落盘字节回读，并确保浏览器未调用旧 NFSP 上传接口。该模式仅模拟 Desktop 外壳，不依赖已安装 Zone；SSO、Gateway 和容器授权需另做 Zone DV。
+
 Canvas 探索性原型已删除；保留的 [Canvas E2E](../../../doc/ai-canvas/e2e/README.md) 是历史规范及用户目标材料，当前工作区 app 为 AI Workspace。

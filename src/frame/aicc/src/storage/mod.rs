@@ -3076,6 +3076,7 @@ mod tests {
                     ("result_path".into(), json!("/tasks/{task_id}/result")),
                     ("cancel_path".into(), json!("/tasks/{task_id}/cancel")),
                 ]),
+                input_leases: Vec::new(),
                 resource_access_context: crate::resource::ResourceAccessContext::new(
                     "tenant-a",
                     "alice",

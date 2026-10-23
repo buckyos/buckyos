@@ -1,6 +1,9 @@
 /* AI Workspace text: data (see src/app/aiworkspace/i18n.ts). English first; the Chinese table has the same keys. */
 
 export const en: Record<string, string> = {
+  'aiworkspace.data.tree.importFiles': 'Upload files',
+  'aiworkspace.data.tree.importFolder': 'Upload folder',
+  'aiworkspace.data.tree.folderLimit': '32 MiB per file. Folder selection cannot include empty subfolders; choose files if this browser has no folder picker.',
   // shared words of the data area
   'aiworkspace.data.simulated': 'Simulated',
   'aiworkspace.data.stickyNote': 'Sticky note',
@@ -441,6 +444,9 @@ export const en: Record<string, string> = {
 }
 
 export const zh: Record<string, string> = {
+  'aiworkspace.data.tree.importFiles': '上传文件',
+  'aiworkspace.data.tree.importFolder': '上传文件夹',
+  'aiworkspace.data.tree.folderLimit': '单文件上限 32 MiB。文件夹选择器无法包含空子目录；浏览器不支持文件夹选择时可上传文件。',
   'aiworkspace.data.simulated': '模拟',
   'aiworkspace.data.stickyNote': '便签',
   'aiworkspace.data.canvas': '画布',

@@ -104,18 +104,8 @@ async fn a_restricted_session_cannot_publish_or_manage_a_home() {
     assert!(comments.get("code").is_none(), "{comments}");
     assert!(zone.rpc(Some("tok-carol"), "portal.home", json!({})).await.get("error").is_none());
 
-    let upload = |token: &'static str| {
-        zone.http
-            .put(format!("{}/kapi/homestation/upload?name=a.txt&mime=text/plain", zone.base))
-            .header("authorization", format!("Bearer {token}"))
-            .body("hello")
-            .send()
-    };
-    let denied = upload("tok-carol").await.unwrap();
-    assert_eq!(denied.status().as_u16(), 403);
-    let body: Value = denied.json().await.unwrap();
-    assert_eq!((body["error"].as_str(), body["data"]["reason"].as_str()), (Some("access_denied"), Some("session_kind_not_allowed")), "{body}");
-    assert_eq!(upload("tok-alice").await.unwrap().status().as_u16(), 200);
+    assert_kind_not_allowed(&zone.rpc(Some("tok-carol"), "object.register", json!({ "objId": "cyfile:missing" })).await, "object.register");
+    assert_eq!(zone.http.put(format!("{}/kapi/homestation/upload", zone.base)).body("hello").send().await.unwrap().status().as_u16(), 404);
     assert!(zone.rpc(Some("tok-alice"), "ui.bootstrap", json!({})).await.get("error").is_none());
 }
 

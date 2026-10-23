@@ -54,6 +54,7 @@ import { ImportReportDialog } from './ImportReportDialog'
 import { MetadataForm } from './MetadataForm'
 import { libraryShapeConfig, SHAPE_DRAG_TYPE, stencilPack } from './stencilLibrary'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
+import { importedAssetOps } from '../sources/dataOps'
 import { boundsOf, groupAt, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
 import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
@@ -1124,7 +1125,19 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               }
             }} />}
             {catalog && (
-              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree} onClose={() => setCatalog(null)} onImport={importReason === null ? () => { setCatalog(null); importCommand.run() } : undefined} onInsert={(request, how) => {
+              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree} onClose={() => setCatalog(null)} onImport={importReason === null ? () => { setCatalog(null); importCommand.run() } : undefined}
+                onImportAssets={insertReason === null ? async (files, folder, signal) => {
+                  try {
+                    const items = await store.session.importAssets(files, folder, signal)
+                    signal.throwIfAborted()
+                    const spot = catalog.world ?? centreSpot({ w: 320, h: 240 })
+                    const operations = importedAssetOps(store, surface.content_folder_id!, items, { parentId: catalog.parentId ?? surfaceId, free: isFree, ...spot })
+                    const result = await store.submit({ editId: randomId('import'), label: t('aiworkspace.data.tree.importFiles'), operations })
+                    if (result.status === 'accepted' || result.status === 'saved_locally') setCatalog(null)
+                  } catch (error) {
+                    if (!signal.aborted) store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) }))
+                  }
+                } : undefined} onInsert={(request, how) => {
                 const at = catalog.world
                 const parentId = catalog.parentId
                 setCatalog(null)

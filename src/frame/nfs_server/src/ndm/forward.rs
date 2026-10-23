@@ -18,11 +18,12 @@ use crate::state::{AppState, SharedState};
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxPath, Request, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use buckyos_http_server::{HttpServer, StreamInfo};
 use http_body_util::BodyExt;
 use ndn_lib::{ChunkList, KnownStandardObject, ObjId, OBJ_TYPE_CHUNK_LIST};
 use serde_json::Value;
+use rusqlite::OptionalExtension;
 
 const MAX_CONTROL_BODY: usize = 1024 * 1024;
 const MAX_CHUNK_BODY: usize = 32 * 1024 * 1024;
@@ -206,12 +207,58 @@ pub async fn lookup(State(state): State<SharedState>, req: Request) -> Response 
     if !(allowed(&state, &p, RES_UPLOADS, "write").await || allowed(&state, &p, RES_OBJECTS, "read").await) {
         return denied("query the named store");
     }
+    let scope = req.uri().query().unwrap_or_default().split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "scope").then(|| percent_encoding::percent_decode_str(value).decode_utf8_lossy().into_owned())
+    });
+    if !matches!(scope.as_deref(), Some("app" | "global")) {
+        return ndm_error(StatusCode::BAD_REQUEST, "invalid_data", "scope must be app or global");
+    }
+    let id = req.uri().query().unwrap_or_default().split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "quick_hash").then(|| percent_encoding::percent_decode_str(value).decode_utf8_lossy().into_owned())
+    });
+    if let Some(id) = &id {
+        let mapping: Option<(String, u64)> = state.db.lock().query_row(
+            "SELECT content_id,size FROM ndm_import_qcids WHERE principal=?1 AND qcid=?2",
+            rusqlite::params![p.key(), normalized(id)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().ok().flatten();
+        if let Some((content, size)) = mapping {
+            if let (Ok(store), Ok(content_id)) = (store(&state).await, ObjId::new(&content)) {
+                if store.is_object_stored(&content_id, None).await.unwrap_or(false) {
+                    let reusable = may_read(&state, &p, &content).await;
+                    return axum::Json(serde_json::json!({"object_id": normalized(id), "content_id": content, "scope": scope, "state": "completed", "chunk_size": size, "reusable": reusable})).into_response();
+                }
+            }
+        }
+    }
+    let reusable = match id {
+        Some(id) => may_read(&state, &p, &normalized(&id)).await,
+        None => false,
+    };
     let (parts, bytes) = match buffered(req, MAX_CONTROL_BODY).await {
         Ok(v) => v,
         Err(r) => return r,
     };
     match gateways(&state).await {
-        Ok((zone, _)) => serve(zone.as_ref(), parts, bytes).await,
+        Ok((zone, _)) => {
+            let response = serve(zone.as_ref(), parts, bytes).await;
+            if !response.status().is_success() {
+                return response;
+            }
+            let status = response.status();
+            match axum::body::to_bytes(response.into_body(), MAX_CONTROL_BODY).await {
+                Ok(body) => match serde_json::from_slice::<Value>(&body) {
+                    Ok(mut value) if value.is_object() => {
+                        value["reusable"] = Value::Bool(reusable);
+                        (status, axum::Json(value)).into_response()
+                    }
+                    _ => ndm_error(StatusCode::BAD_GATEWAY, "invalid_data", "invalid lookup response"),
+                },
+                Err(e) => ndm_error(StatusCode::BAD_GATEWAY, "invalid_data", e),
+            }
+        }
         Err(r) => r,
     }
 }

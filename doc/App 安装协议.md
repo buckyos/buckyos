@@ -328,7 +328,9 @@ PIKG 安装源在 Resolve 前必须成为 Installer staging 内完整、已校�
 连接 OOD 本机回环地址时，可向 `cache/control_panel/pikg_staging/incoming` 写入私有文件，
 通过 `apps.staging.finalize(local_file_id, pikg_digest, size, purpose)` 纳入 staging；接口只解释
 32 位 hex 随机文件标识，不解释客户端路径。远端通过 FileObject 表示和传输 PIKG，内容可由
-多个不超过 32MiB 的 chunk 组成，以 `source_obj_id` 替代 `local_file_id` 调用 finalize。
+多个不超过 32MiB 的 chunk 组成，以 `source_obj_id` 替代 `local_file_id` 调用 finalize。 浏览器通过 WebSDK `importFiles` / `ensureUploaded` 获得 ready FileObject；对象分支可以省略 `pikg_digest`，由服务端验证 canonical ID 并在本地提取中计算整包 digest。服务端使用原调用者 token 经 NDM 重新校验读取权限，提取期间以任务自有 Recursive pin + 24 小时 TTL 保留 FileObject 及依赖，完成或失败后释放此 pin。
+
+Desktop 本机选择目前已经接入真实 NDM → staging → `apps.inspect`，展示服务端校验结果；后续安装计划编辑、批准、提交仍未接入真实安装 UI，因此该入口阻止继续到 mock submit，不能把检查完成显示为安装完成。取消/切换来源/关闭页面会释放本次 staging handle，响应不确定时由 staging TTL 清理。
 服务端核对 FileObject/流的长度、整文件摘要、PIKG 结构与内容后才签发原有 staging handle。
 32MiB 不限制整包或子包；Prepare 导入大子包时使用文件导入接口分块保存，以 SameAs
 保留 PackageMeta 中已有的内容 ChunkId。staging 配额、principal/Zone/purpose 绑定和租约继续生效。

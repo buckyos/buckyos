@@ -14,6 +14,9 @@ pub fn validate_name(name: &str) -> NfsResult<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(invalid(format!("invalid name '{}'", name)));
     }
+    if name.starts_with(".nfs_import_") || name.starts_with(".nfs_tmp_") {
+        return Err(invalid("reserved staging name"));
+    }
     if name.len() > MAX_NAME_BYTES {
         return Err(invalid("name too long"));
     }

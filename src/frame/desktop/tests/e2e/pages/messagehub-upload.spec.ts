@@ -151,3 +151,60 @@ test('a file attachment downloads from its own button', async ({ page }) => {
   expect((await download).suggestedFilename()).toBe('design-brief.pdf')
   await expect(page.getByTestId('messagehub-media-viewer')).toHaveCount(0)
 })
+
+test('directory enumeration retains empty nodes and reports file or reader failures', async ({ page }) => {
+  await page.goto('/messagehub')
+  const result = await page.evaluate(async () => {
+    const modulePath = '/src/app/messagehub/conversation/input/attachmentDraft.ts'
+    const { extractTransferFiles } = await import(modulePath)
+    const transfer = (entry: object) => ({ items: [{ kind: 'file', webkitGetAsEntry: () => entry }], files: [] })
+    const directory = (path: string, entries: object[]) => ({ isDirectory: true, isFile: false, fullPath: path, createReader() { let sent = false; return { readEntries(done: (items: object[]) => void) { done(sent ? [] : entries); sent = true } } } })
+    const selected = await extractTransferFiles(transfer(directory('/旅行', [directory('/旅行/空目录', []), { isFile: true, fullPath: '/旅行/photo.heic', file(done: (file: File) => void) { done(new File(['original'], 'photo.heic', { type: 'image/heic' })) } }])) as unknown as DataTransfer)
+    const failures: string[] = []
+    for (const entry of [
+      { isFile: true, fullPath: '/旅行/unreadable.txt', file(_done: unknown, fail: (error: DOMException) => void) { fail(new DOMException('permission denied')) } },
+      { isDirectory: true, fullPath: '/旅行', createReader: () => ({ readEntries(_done: unknown, fail: (error: DOMException) => void) { fail(new DOMException('directory unavailable')) } }) },
+    ]) {
+      try { await extractTransferFiles(transfer(entry) as unknown as DataTransfer) } catch (error) { failures.push(String(error)) }
+    }
+    return { count: selected.length, root: selected[0].directory?.name, empty: selected[0].directory?.children[0], failures, bytes: await selected[0].directory?.children[1].file.text() }
+  })
+  expect(result).toMatchObject({ count: 1, root: '旅行', empty: { kind: 'dir', name: '空目录', children: [] }, bytes: 'original' })
+  expect(result.failures[0]).toContain('unreadable.txt: permission denied')
+  expect(result.failures[1]).toContain('旅行: directory unavailable')
+})
+
+test('a directory is one attachment with empty children and original file bytes after reload', async ({ page }) => {
+  const sessionId = await openSession(page, 'Directory attachment')
+  const bytes = await page.evaluate(async ({ context, sessionId }) => {
+    const directory = { kind: 'dir' as const, name: '旅行', children: [
+      { kind: 'dir' as const, name: '空目录', children: [] },
+      { kind: 'file' as const, file: new File(['original HEIC bytes'], 'photo.heic', { type: 'image/heic' }) },
+    ] }
+    await window.__messageHubMock.send(context, sessionId, { content: 'folder', attachments: [{ file: new File([], directory.name), directory }] }, undefined)
+    const [message] = await window.__messageHubMock.reader(context, sessionId).readRange(0, 1)
+    const target = message.content.refs?.[0].target
+    if (target?.type !== 'data_obj') throw Error('missing directory reference')
+    const modulePath = '/src/app/messagehub/conversation/history/objectAccess.ts'
+    const { getObjectAccess } = await import(modulePath)
+    return { count: message.content.refs?.length, id: target.obj_id, content: await (await fetch(await getObjectAccess()!.contentUrl(target.obj_id, undefined, 'photo.heic'))).text() }
+  }, { context: OWN, sessionId })
+  expect(bytes).toMatchObject({ count: 1, id: expect.stringMatching(/^cydir:/), content: 'original HEIC bytes' })
+  await page.reload()
+  const folder = page.getByTestId('conversation-history').getByTestId('attachment-directory').first()
+  await folder.getByRole('button', { name: '旅行', exact: true }).click()
+  await expect(folder.getByRole('button', { name: '空目录', exact: true })).toBeVisible()
+  await expect(folder.getByRole('button', { name: 'photo.heic', exact: true })).toBeVisible()
+})
+
+test('a directory read failure names the failed path in the composer', async ({ page }) => {
+  await openSession(page, 'Directory failure')
+  await page.getByTestId('message-composer').evaluate(element => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([''], 'unreadable.txt'))
+    Object.defineProperty(transfer, 'items', { value: [{ kind: 'file', webkitGetAsEntry: () => ({ isFile: true, fullPath: '/旅行/unreadable.txt', file(_done: unknown, fail: (error: DOMException) => void) { fail(new DOMException('permission denied')) } }) }] })
+    element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+  })
+  await expect(page.getByTestId('message-composer').getByRole('alert')).toContainText('unreadable.txt: permission denied')
+  await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '0')
+})

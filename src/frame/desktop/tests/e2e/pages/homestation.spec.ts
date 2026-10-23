@@ -404,3 +404,17 @@ test.describe('HomeStation on a phone', () => {
     expect(errors).toEqual([])
   })
 })
+
+test('a generic file publishes as a downloadable file with unchanged bytes', async ({ page }) => {
+  await openHomeStation(page)
+  await page.getByTestId('hs-quick-generic-file').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('original attachment bytes') })
+  await page.getByTestId('hs-quick-text').fill('File attachment test')
+  await expect(page.getByTestId('hs-quick-submit')).toBeEnabled()
+  await page.getByTestId('hs-quick-submit').click()
+  await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
+  await page.getByTestId('hs-nav-published').click()
+  const link = card(page, 'File attachment test').getByRole('link', { name: 'notes.txt', exact: true })
+  await expect(link).toBeVisible()
+  const bytes = await link.evaluate(async element => (await fetch((element as HTMLAnchorElement).href)).text())
+  expect(bytes).toBe('original attachment bytes')
+})

@@ -1274,7 +1274,7 @@ Search is a separate scoped query and MUST NOT be emulated by filtering only the
 | Set/Map selection storage | Volatile | Runtime representation only |
 | <code>Date.now()</code> tab IDs | Volatile | Session-local implementation |
 | Device navigation string <code>DeviceName:/path</code> | Volatile | No registered device reader |
-| Mock transfer executor stage timing | Volatile | Real executor drives NFSP probe/tus/commit |
+| Mock transfer executor stage timing | Volatile | Real executor imports and finalizes SDK named objects, then calls NFSP commit_object |
 | Human-readable source label | Volatile | Presentation/provenance copy |
 | Toast duration and menu anchors | Volatile | Rendering behavior |
 
@@ -1472,7 +1472,7 @@ Collection ID.
 | Rename/move | <code>move</code> | Preserve from/to revisions; cross-device failure is visible |
 | Delete native item | <code>delete</code> | Never call for reference/member binding |
 | Remove folder link | <code>unlink</code> | Deletes binding only |
-| Upload file | <code>probe/open_write/tus/commit_file</code> | Local placeholder until commit |
+| Upload file | <code>ndm.importFiles/importDirectory → ensureUploaded → commit_object</code> | Local placeholder until commit |
 | Read/download | data-plane <code>readUrl/readFile</code> | Range/ETag supported |
 | Create Collection | <code>create_collection</code> | Server owns Collection ID |
 | Add Collection refs | <code>collection_patch.add_ref</code> | Resolve locator to target Ref first |
@@ -1585,3 +1585,12 @@ Items 1–5 and 11 are DONE in the prototype; items 6–9 are DONE in the NFSP i
 - [x] NFSP mapping, revision/watch semantics, errors, and known protocol gaps are recorded.
 - [x] The document can be handed to the backend-integration stage without treating NFSP DTOs as
   UI models.
+
+
+### File and folder object imports
+
+Files now submit selected `File` objects or directory trees directly to the WebSDK. Folder picker selections form one DirObject retaining the chosen root; recursive drops retain explicit empty directory nodes. FileList cannot represent an entirely empty folder, so the picker reports that limitation and folder selection is hidden where unsupported. File and directory name/path conflicts are rejected before commit. Directory enumeration errors abort that selection and are displayed.
+
+Each root is one transfer task. SDK `objectStatus === ready` is required before NFSP receives its ObjId. The frontend no longer hashes entire files, probes NFSP digests, or manages TUS offsets. Existing destination collision choices remain keep-both, skip, and cancel; a new folder name is selected for keep-both. AbortSignal cancels SDK preparation/upload; once Saving starts a server commit may finish. Cancel all stops queued and active preparation tasks without undoing successful tasks.
+
+Failed/cancelled tasks retain the local input and import session for retry; completed/dismissed tasks release them. A commit retry reuses the same ObjId without browser re-upload. NFSP recognizes an identical existing tree/file to reconcile a lost response, but differing content is a conflict. Refreshing the page loses local File handles; reselect the source to use SDK deduplication. Batches are not atomic and successful roots remain on disk after another root fails. Real Zone validation must cover ACL revocation, large ChunkLists, exact downloaded bytes and token renewal; a mock transfer success does not establish these properties.

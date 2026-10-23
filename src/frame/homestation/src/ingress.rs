@@ -556,15 +556,16 @@ impl Station {
         let expected = normalize_obj_id(expected);
         let body = body.trim();
         let obj_type = obj_type_of(&expected).ok_or_else(|| bad("invalid object id"))?;
-        if body.starts_with('{') {
+        if body.starts_with('{') || body.starts_with('[') {
             let value: Value = serde_json::from_str(body).map_err(|_| bad("invalid object JSON"))?;
-            let (computed, _) = obj_id_of(&obj_type, &value).map_err(bad)?;
+            let computed = crate::objects::object_id(&obj_type, body)?;
             if computed != expected {
                 return Err(bad("object does not match its id"));
             }
             if crate::objects::obj_type_for_claims(&value).is_some() {
                 return Err(bad("signed objects must arrive as JWT"));
             }
+            self.chunks.put_named_object(&expected, body).await?;
             let obj = StoredObject {
                 obj_id: expected,
                 obj_type,

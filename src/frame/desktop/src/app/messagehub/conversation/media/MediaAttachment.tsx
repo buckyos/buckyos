@@ -1,4 +1,4 @@
-import { Download, File, FileArchive, FileText, Film, Loader2, Music, Play } from 'lucide-react'
+import { Download, File, FileArchive, FileText, Film, FolderOpen, Loader2, Music, Play } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { usePreviewThumbnail } from '../../../../components/preview/thumbnail'
 import { useI18n } from '../../../../i18n/provider'
@@ -79,6 +79,7 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
     return <span className="text-xs break-all" role="alert" data-testid="attachment-error">{label} · {t('messagehub.attachmentUnavailable')} <button type="button" className="underline" onClick={() => { setState({ phase: 'loading' }); setRetry(value => value + 1) }}>{t('messagehub.retry')}</button></span>
   }
   const { info } = state
+  if (info.isDirectory) return <DirectoryAttachment attachment={attachment} info={info} />
   if (!info.isFile) {
     return <span className="flex items-center gap-2 text-sm break-all" data-testid="attachment-ready" data-kind="object"><FileText size={14} />{info.name ?? label} · {t('messagehub.attachmentNotFile')}</span>
   }
@@ -261,4 +262,63 @@ function DownloadButton({ attachment, name, compact = false }: { attachment: Mes
       {state === 'loading' ? <Loader2 size={compact ? 14 : 18} className="animate-spin" /> : <Download size={compact ? 14 : 18} />}
     </button>
   )
+}
+
+function DirectoryAttachment({ attachment, info, innerPath = '' }: { attachment: MessageAttachment; info: ObjectInfo; innerPath?: string }) {
+  const [opened, setOpened] = useState(false)
+  const [entries, setEntries] = useState<Array<{ name: string; path: string; info: ObjectInfo }>>([])
+  const [error, setError] = useState('')
+  const load = async () => {
+    if (opened) { setOpened(false); return }
+    const access = getObjectAccess()
+    if (!access || !attachment.objId) return
+    try {
+      setEntries(await Promise.all((info.entries ?? []).map(async name => {
+        const path = innerPath ? `${innerPath}/${name}` : name
+        return { name, path, info: await access.describe(attachment.objId!, attachment.context, path) }
+      })))
+      setError('')
+      setOpened(true)
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+  }
+  const download = async (path: string, name: string) => {
+    try {
+      const url = await getObjectAccess()?.contentUrl(attachment.objId!, attachment.context, path)
+      if (!url) return
+      const anchor = document.createElement('a')
+      anchor.href = url; anchor.download = name; anchor.click()
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+  }
+  const pickDirectory = (window as Window & { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker
+  const saveDirectory = async () => {
+    if (!pickDirectory || !attachment.objId) return
+    try {
+      const destination = await pickDirectory.call(window)
+      const access = getObjectAccess()!
+      const save = async (folder: ObjectInfo, path: string, parent: FileSystemDirectoryHandle) => {
+        try { await parent.getDirectoryHandle(folder.name || attachment.label); throw new Error('A folder with this name already exists; choose another destination.') } catch (error) { if (!(error instanceof DOMException) || error.name !== 'NotFoundError') throw error }
+        const target = await parent.getDirectoryHandle(folder.name || attachment.label, { create: true })
+        for (const name of folder.entries ?? []) {
+          const childPath = path ? `${path}/${name}` : name
+          const child = await access.describe(attachment.objId!, attachment.context, childPath)
+          if (child.isDirectory) await save(child, childPath, target)
+          else {
+            const response = await fetch(await access.contentUrl(attachment.objId!, attachment.context, childPath))
+            const writable = await (await target.getFileHandle(name, { create: true })).createWritable()
+            try { await writable.write(await response.blob()); await writable.close() } catch (error) { await writable.abort(); throw error }
+          }
+        }
+      }
+      await save(info, innerPath, destination)
+      setError('')
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+  }
+  return <div className="p-2" data-testid="attachment-directory">
+    <button type="button" onClick={() => void load()} className="flex items-center gap-2"><FolderOpen size={18} />{info.name ?? attachment.label}</button>
+    {pickDirectory ? <button type="button" className="text-xs underline" onClick={() => void saveDirectory()}>Save folder</button> : <span className="text-xs">Open the folder to download individual files.</span>}
+    {error ? <p role="alert">{error}</p> : null}
+    {opened ? <ul className="ml-4">{entries.map(entry => <li key={entry.path}>{entry.info.isDirectory
+      ? <DirectoryAttachment attachment={attachment} info={entry.info} innerPath={entry.path} />
+      : <button type="button" className="flex items-center gap-2 p-1" onClick={() => void download(entry.path, entry.name)}><Download size={14} />{entry.name}</button>}</li>)}</ul> : null}
+  </div>
 }

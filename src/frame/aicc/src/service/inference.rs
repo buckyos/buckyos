@@ -65,7 +65,10 @@ impl RuntimeInferencePort {
         snapshot: &crate::runtime::RuntimeSnapshot,
     ) -> Result<crate::visibility::Access, RPCErrors> {
         self.governance
-            .access(caller, &crate::visibility::Inventory::from_runtime(snapshot))
+            .access(
+                caller,
+                &crate::visibility::Inventory::from_runtime(snapshot),
+            )
             .await
     }
 
@@ -104,7 +107,10 @@ impl RuntimeInferencePort {
             ) {
                 return Err(buckyos_api::video_error(
                     AiccErrorCode::UnsupportedOperation,
-                    format!("{} cannot serve this request: {}", input.model, unmet.reason),
+                    format!(
+                        "{} cannot serve this request: {}",
+                        input.model, unmet.reason
+                    ),
                     &unmet.field,
                     None,
                     None,
@@ -373,6 +379,7 @@ impl RuntimeInferencePort {
                 tenant_id: caller.tenant_id.clone(),
                 caller_id: caller.user_id.clone(),
                 storage: self.storage.clone(),
+                token: Some(caller.token.clone()),
             }),
             self.resource_store.clone(),
             self.url_fetcher.clone(),
@@ -386,6 +393,33 @@ impl RuntimeInferencePort {
             .iter()
             .map(|requirement| requirement.resource.clone())
             .collect::<Vec<_>>();
+        for resource in &resources {
+            if let ResourceRef::NamedObject { obj_id } = resource {
+                AuthenticatedResourceAuthorizer {
+                    tenant_id: caller.tenant_id.clone(),
+                    caller_id: caller.user_id.clone(),
+                    storage: self.storage.clone(),
+                    token: Some(caller.token.clone()),
+                }
+                .authorize(
+                    &context,
+                    &ResourceTarget::NamedObject {
+                        obj_id: obj_id.clone(),
+                    },
+                    ResourceAccessOperation::Inspect,
+                )
+                .await
+                .map_err(resource_rpc_error)?;
+                if let Some(lease) = self
+                    .resource_store
+                    .retain(obj_id, None)
+                    .await
+                    .map_err(resource_rpc_error)?
+                {
+                    call.resource_leases.push(lease);
+                }
+            }
+        }
         // A `ResourceRef::NamedObject` input carries the object id with it, and
         // the resource key is derived from that same id — so this map recovers
         // the id the key was built from. That matters because the object id is
@@ -535,6 +569,7 @@ pub(super) struct AuthenticatedResourceAuthorizer {
     pub(super) tenant_id: String,
     pub(super) caller_id: String,
     pub(super) storage: Arc<AiccStorage>,
+    pub(super) token: Option<String>,
 }
 
 #[async_trait]
@@ -566,16 +601,82 @@ impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
                             "artifact ownership lookup failed",
                         )
                     })?;
-                if owner.is_some_and(|owner| owner != context.tenant_id) {
+                if owner
+                    .as_ref()
+                    .is_some_and(|owner| owner != &context.tenant_id)
+                {
                     return Err(ResourceError::new(
                         ResourceFailure::Unauthorized,
                         "AICC artifact belongs to another tenant",
                     ));
                 }
+                if owner.is_none() {
+                    let token = self
+                        .token
+                        .as_deref()
+                        .filter(|token| !token.is_empty())
+                        .ok_or_else(|| {
+                            ResourceError::new(
+                                ResourceFailure::Unauthorized,
+                                "NDM input requires the authenticated caller session",
+                            )
+                        })?;
+                    authorize_ndm_input(token, obj_id).await?;
+                }
             }
         }
         Ok(())
     }
+}
+
+async fn authorize_ndm_input(token: &str, obj_id: &ndn_lib::ObjId) -> Result<(), ResourceError> {
+    let unavailable = |_| {
+        ResourceError::new(
+            ResourceFailure::Unavailable,
+            "NDM authorization is unavailable",
+        )
+    };
+    let runtime = get_buckyos_api_runtime().map_err(unavailable)?;
+    let endpoint = runtime
+        .get_zone_service_url(buckyos_api::NFS_SERVER_SERVICE_NAME, false)
+        .await
+        .map_err(unavailable)?;
+    let mut url = reqwest::Url::parse(&endpoint)
+        .map_err(|_| ResourceError::new(ResourceFailure::Unavailable, "invalid NDM service URL"))?;
+    url.set_path("/ndm/v1/store/get_object");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| {
+            ResourceError::new(
+                ResourceFailure::Unavailable,
+                "NDM authorization client failed",
+            )
+        })?;
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .json(&json!({ "obj_id": obj_id.to_string() }))
+        .send()
+        .await
+        .map_err(|_| {
+            ResourceError::new(
+                ResourceFailure::Unavailable,
+                "NDM authorization request failed",
+            )
+        })?;
+    if !response.status().is_success() {
+        return Err(ResourceError::new(
+            if matches!(response.status().as_u16(), 401 | 403 | 404) {
+                ResourceFailure::Unauthorized
+            } else {
+                ResourceFailure::Unavailable
+            },
+            "input object is not readable by the authenticated caller",
+        ));
+    }
+    Ok(())
 }
 
 fn resource_rpc_error(error: ResourceError) -> RPCErrors {

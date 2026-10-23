@@ -4,7 +4,7 @@
  * The store owns the task list and its observable lifecycle
  * (queued → hashing → probing → uploading → committing → success, plus
  * error/cancelled); a pluggable executor performs the actual work — the mock
- * executor simulates stages, the real one drives NFSP probe/tus/commit.
+ * executor simulates stages, the real one imports named objects and commits them to NFSP destinations.
  * Browser `File` objects are stashed out-of-band by `localId` and never enter
  * shared state.
  */
@@ -14,8 +14,10 @@ import type { TransferStatus, TransferTask, UiError } from './state'
 import { toUiError } from './state'
 import type { UploadCandidateInput } from './schemas'
 import { uploadCandidateSchema } from './schemas'
+import type { ndm } from 'buckyos'
 
 export interface TransferControls {
+  signal: AbortSignal
   /** Executors poll this between stages and abort with CancelledError. */
   isCancelled(): boolean
   setStatus(status: Exclude<TransferStatus, 'success' | 'error' | 'cancelled' | 'skipped'>): void
@@ -23,6 +25,7 @@ export interface TransferControls {
 }
 
 export interface TransferExecutor {
+  release?(localId: string): void
   /** Resolves with the committed entry once the destination exposes it. */
   run(task: TransferTask, controls: TransferControls): Promise<FileEntry>
 }
@@ -45,6 +48,17 @@ export function registerTransferExecutor(next: TransferExecutor): () => void {
 // ─── Out-of-band File stash (§3: never serialized into shared state) ───
 
 const localFiles = new Map<string, File>()
+export type LocalUpload = { kind: 'file'; file: File } | { kind: 'folder'; files: File[] } | { kind: 'tree'; tree: ndm.ImportDirectoryEntry }
+const localInputs = new Map<string, LocalUpload>()
+const abortControllers = new Map<string, AbortController>()
+
+export function stashLocalInput(localId: string, input: LocalUpload) {
+  localInputs.set(localId, input)
+}
+
+export function takeLocalInput(localId: string): LocalUpload | undefined {
+  return localInputs.get(localId) ?? (localFiles.has(localId) ? { kind: 'file', file: localFiles.get(localId)! } : undefined)
+}
 
 export function stashLocalFile(localId: string, file: File) {
   localFiles.set(localId, file)
@@ -70,9 +84,7 @@ let snapshotVersion = 0
 let taskCounter = 0
 
 /**
- * Concurrency limit: each running task holds its whole file in memory while
- * hashing/uploading, so dropping hundreds of files must not start hundreds of
- * pipelines at once. Accepted tasks beyond the limit wait in `queued` state.
+ * Limit simultaneous imports; additional tasks wait in `queued` state.
  */
 const MAX_RUNNING = 3
 let running = 0
@@ -113,13 +125,17 @@ function runTask(task: TransferTask) {
     return
   }
   cancelRequested.delete(task.id)
+  const controller = new AbortController()
+  abortControllers.set(task.id, controller)
   running += 1
   const settle = () => {
+    abortControllers.delete(task.id)
     running -= 1
     emit()
     pump()
   }
   const controls: TransferControls = {
+    signal: controller.signal,
     isCancelled: () => cancelRequested.has(task.id),
     setStatus: (status) => {
       task.status = status
@@ -139,6 +155,7 @@ function runTask(task: TransferTask) {
       task.committedEntry = entry
       task.error = null
       localFiles.delete(task.candidate.localId)
+      localInputs.delete(task.candidate.localId)
       retryHandlers.delete(task.id)
       cancelRequested.delete(task.id)
       settle()
@@ -191,6 +208,7 @@ export const transferStore = {
       const parsed = uploadCandidateSchema.safeParse(raw)
       if (!parsed.success) {
         localFiles.delete(raw.localId)
+        localInputs.delete(raw.localId)
         rejected.push({
           name: raw.name || raw.localId,
           messageKeys: parsed.error.issues.map((issue) => issue.message),
@@ -233,6 +251,7 @@ export const transferStore = {
     }
     // The executor notices at its next stage boundary and settles the task.
     cancelRequested.add(id)
+    abortControllers.get(id)?.abort()
   },
 
   retry(id: string) {
@@ -259,6 +278,8 @@ export const transferStore = {
       return
     }
     localFiles.delete(task.candidate.localId)
+    localInputs.delete(task.candidate.localId)
+    executor?.release?.(task.candidate.localId)
     retryHandlers.delete(id)
     cancelRequested.delete(id)
     tasks.splice(index, 1)

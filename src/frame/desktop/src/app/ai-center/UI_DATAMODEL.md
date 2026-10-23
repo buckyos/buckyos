@@ -2,7 +2,7 @@
 
 ## Overview
 
-WP-17A uses `/kapi/aicc` as its only backend. Provider setup is driven by `provider.catalog` and `protocol_adapter.list`; Provider instances, models, routing, usage, and traces use their corresponding AICC management methods. AI Center does not read or write system-config or control-panel AICC helpers.
+AI Center management and inference use `/kapi/aicc`. Playground local files use the WebSDK NDM import API before an inference request. Provider setup is driven by `provider.catalog` and `protocol_adapter.list`; Provider instances, models, routing, usage, and traces use their corresponding AICC management methods. AI Center does not read or write system-config or control-panel AICC helpers.
 
 ## Provider setup
 
@@ -117,7 +117,9 @@ deno test --node-modules-dir=manual --unstable-sloppy-imports tests/datamodel/mo
 - `PlaygroundModel` 包含 `exact_model`、`provider`、`api_types`、`health`。真实模式独立调用一次 `models.list`，按 API Type 和 Provider 在本地筛选，无逐模型查询或分页。手动刷新、Provider snapshot 更新后可重新读取；加载、空列表和错误/重试分别展示，加载失败时禁止使用旧模型发起调用。
 - 请求直接保存为 canonical JSON 对象，字段编辑只替换对应字段，保留已导入的附加字段。`PlaygroundField` 定义文本、数值、下拉框、复选框、嵌套对象、数组、联合类型、JSON 和资源字段。可选字段默认省略，默认 `execution_mode=immediate`，数值范围、必填、资源格式与决策题约束由 `validateRequest` 校验，错误携带字段路径。
 - `llm` → `chat.completions.create`，`image.txt2img` → `images.generate`，`decision` → `decision.evaluate`；其他 API Type 与调用方法同名。只允许映射中的推理方法，不能通过导入 JSON 调用管理接口。
-- ResourceRef 支持 HTTP(S) URL、Base64（含粘贴 data URL 的解析）、文件和 `named_object`。文件在浏览器读取为 Base64，与请求一并发送，单文件限制 20 MiB；较大资源用 URL。MIME 由文件类型提供，也可下拉选择。文件读取失败不会复用旧文件内容。
+- ResourceRef 支持 HTTP(S) URL、Base64（含粘贴 data URL 的解析）、文件和 `named_object`。本地文件通过 WebSDK `importFiles` / `ensureUploaded` 导入，等待对象 ready 后提交 `{kind: "named_object", obj_id}`；不在浏览器转 Base64。单文件限制仍为非空且 ≤20 MiB；提供真实传输进度、取消和失败重试。取消、切换模式/API 或重新选择后旧任务不得覆盖新输入；导入未完成时禁止提交。Base64 和 URL 仍为用户明确选择的输入方式。
+- AICC 对上传对象以请求原始用户 token 向 NDM `get_object` 重新验权；不能凭 ObjId 获得服务身份读权限。SDK FileObject 不添加 MIME 元数据，AICC 在授权后读取少量内容头识别常见图片/音频/视频/PDF/ZIP，对 `.txt` 验证 UTF-8。无法满足所选 API MIME 约束时拒绝请求。
+- AICC 使用任务自有的 Recursive pin（24 小时 TTL，运行中每 5 分钟续租）保护 FileObject 及内容依赖。同步调用结束/失败释放；native provider task 将 pin 描述随任务恢复信息持久化，完成/确认取消后释放。提交是否已被 provider 接受不明确时停止续租并保留有界 TTL，不删除其他业务的引用。
 - 高级模式接受 `{method, params}`、完整 TaskMgr task、`input.request.request`、request 包装和裸 canonical 参数。包装内的方法决定 API Type；裸参数使用当前选择的 API Type。导入不自动执行，找不到模型时需重新选择。移除旧 `idempotency_key`、`trace_id`、`task_options`，保留 `session_id` 和业务参数，防止重用旧调用或旧父任务。
 - Task Center 的 `Task.aiccRequest` 从 AICC task 的不可变 `input.request.request` 提取，方法来自 `AICC <method>` 任务名；即使任务已经有 result，原始请求仍独立展示并可复制。
 

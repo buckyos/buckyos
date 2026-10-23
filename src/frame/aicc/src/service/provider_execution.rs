@@ -7,6 +7,7 @@ pub(crate) struct RuntimeProviderExecutionPort {
     url_fetcher: Arc<dyn UrlResourceFetcher>,
     storage: Arc<AiccStorage>,
     model_health: Arc<ModelHealthRegistry>,
+    native_input_leases: tokio::sync::Mutex<HashMap<String, Vec<crate::resource::ResourceLease>>>,
 }
 
 impl RuntimeProviderExecutionPort {
@@ -25,6 +26,7 @@ impl RuntimeProviderExecutionPort {
             url_fetcher,
             storage,
             model_health,
+            native_input_leases: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -392,6 +394,7 @@ impl RuntimeProviderExecutionPort {
                 tenant_id: context.tenant_id.clone(),
                 caller_id: context.caller_id.clone(),
                 storage: self.storage.clone(),
+                token: None,
             }),
             self.resource_store.clone(),
             self.url_fetcher.clone(),
@@ -482,6 +485,7 @@ impl RuntimeProviderExecutionPort {
                 tenant_id: context.tenant_id.clone(),
                 caller_id: context.caller_id.clone(),
                 storage: self.storage.clone(),
+                token: None,
             }),
             self.resource_store.clone(),
             self.url_fetcher.clone(),
@@ -1119,12 +1123,21 @@ impl RuntimeProviderExecutionPort {
                             header_name: call.credential_header_name.clone(),
                             fingerprint: credential_fingerprint(&call.credential_reference),
                         });
+                self.native_input_leases.lock().await.insert(
+                    format!("{}:{}", call.provider_instance_name, handle.remote_task_id),
+                    call.resource_leases.clone(),
+                );
                 Ok(ProviderExecution::NativeTask {
                     handle,
                     resume: NativeTaskResumeDescriptor {
                         base_url: call.context.base_url.clone(),
                         credential,
                         resource_access_context,
+                        input_leases: call
+                            .resource_leases
+                            .iter()
+                            .map(|lease| lease.spec.clone())
+                            .collect(),
                         resolved_parameters: call.input.resolved_parameters.clone(),
                         output_video_seconds,
                         request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
@@ -1191,6 +1204,15 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
         }
         let result = match result {
             Ok(ProviderExecution::Stream(stream)) => {
+                // Providers may fetch URL-backed input after the response stream
+                // starts. Keep request-owned content until that stream is dropped.
+                let input_leases = call.resource_leases.clone();
+                let stream = ProtocolStream {
+                    events: Box::pin(stream.events.map(move |event| {
+                        let _retained_inputs = &input_leases;
+                        event
+                    })),
+                };
                 Ok(ProviderExecution::Stream(observed_protocol_stream(
                     stream,
                     self.model_health.clone(),
@@ -1211,6 +1233,11 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 now_ms(),
             ),
             Err(failure) => {
+                if failure.provider_accepted {
+                    for lease in &call.resource_leases {
+                        lease.keep_until_expiry();
+                    }
+                }
                 let kind = health_failure_kind(&failure.error);
                 self.model_health.record_failure(
                     &call.exact_model,
@@ -1229,7 +1256,42 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
         binding: &PinnedProviderTask,
         cancellation: crate::protocol::Cancellation,
     ) -> Result<NativeTaskPoll, NativeTaskResumeError> {
-        return match self
+        let lease_key = format!(
+            "{}:{}",
+            binding.provider_instance_name,
+            binding.remote_task_id.as_deref().unwrap_or_default()
+        );
+        let mut retained = self.native_input_leases.lock().await;
+        if !retained.contains_key(&lease_key) {
+            let mut leases = Vec::new();
+            for spec in binding
+                .resume
+                .as_ref()
+                .into_iter()
+                .flat_map(|resume| &resume.input_leases)
+            {
+                let obj_id = ndn_lib::ObjId::new(&spec.obj_id).map_err(|_| {
+                    NativeTaskResumeError::Protocol(ProtocolError::invalid_configuration(
+                        "invalid retained input ID",
+                    ))
+                })?;
+                if let Some(lease) = self
+                    .resource_store
+                    .retain(&obj_id, Some(spec))
+                    .await
+                    .map_err(|_| {
+                        NativeTaskResumeError::Protocol(ProtocolError::invalid_configuration(
+                            "retained input is unavailable",
+                        ))
+                    })?
+                {
+                    leases.push(lease);
+                }
+            }
+            retained.insert(lease_key.clone(), leases);
+        }
+        drop(retained);
+        let result = match self
             .native_request(binding, NativeTaskOperation::Status, Some(&cancellation))
             .await?
         {
@@ -1355,6 +1417,20 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 ProtocolError::invalid_response("native status returned an unexpected result"),
             )),
         };
+        if matches!(
+            result,
+            Ok(NativeTaskPoll::Complete(_)) | Ok(NativeTaskPoll::Failed(_))
+        ) {
+            self.native_input_leases.lock().await.remove(&lease_key);
+        }
+        result
+    }
+
+    async fn release_native_inputs(&self, binding: &PinnedProviderTask, outcome_unknown: bool) {
+        let key = format!("{}:{}", binding.provider_instance_name, binding.remote_task_id.as_deref().unwrap_or_default());
+        if let Some(leases) = self.native_input_leases.lock().await.remove(&key) {
+            if outcome_unknown { for lease in leases { lease.keep_until_expiry(); } }
+        }
     }
 
     async fn cancel_native(
@@ -1365,7 +1441,16 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
             .native_request(binding, NativeTaskOperation::Cancel, None)
             .await?
         {
-            NativeTaskOutput::Cancelled { accepted } => Ok(accepted),
+            NativeTaskOutput::Cancelled { accepted } => {
+                if accepted {
+                    self.native_input_leases.lock().await.remove(&format!(
+                        "{}:{}",
+                        binding.provider_instance_name,
+                        binding.remote_task_id.as_deref().unwrap_or_default()
+                    ));
+                }
+                Ok(accepted)
+            }
             _ => Err(NativeTaskResumeError::Protocol(
                 ProtocolError::invalid_response(
                     "native cancellation returned an unexpected response",

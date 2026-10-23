@@ -53,7 +53,7 @@ Zone 的每个用户都是一个发表者：服务模式下用户来自 system c
 | `cyfollow` | `follow` | 关注声明（E17） |
 | `cyfproof` | `consumption_proof` | 消费证明（§11.3） |
 | `cyfeval` | `evaluation` | 对外共享的评价（§6.5） |
-| `cyfile` | — | 部件与包裹对象（ndn-lib FileObject，`mime`/`width`/`height`/`duration_ms` 平铺在 meta） |
+| `cyfile` / `cydir` / ChunkList | — | 标准文件、目录和分块依赖；SDK canonical 对象不增加展示字段，上传展示元数据保存在本用户 `import_metadata` |
 
 ### 2.2 Feed Object（`cyfeed`）
 
@@ -142,7 +142,7 @@ Zone 级：
 
 列表响应不签名，条目是签名的 Head。展示 / 变化读取的 `objects` 是“随附”：读者有权读的对象及其部件（ObjId → JWT/JSON），接收方逐个按 ObjId 校验（§5.5）。条目的 `restricted` 与 `tier`（`public`/`followers`/`friends`/`group`/`dids`）是不签名的附带信息。
 
-对象读取授权（A32）：对象必须属于某个读者可见、且未撤回的条目（`object_grants`；FileObject 的授权延伸到其 content chunk，被包裹的 Feed Object 延伸到其部件与 Head）。Head 对象在条目撤回后仍可读，以保留撤回的发现能力。私人对象（私有收藏、私人抓取）只有 owner 可读。
+对象读取授权（A32）：对象必须属于某个读者可见、且未撤回的条目（`object_grants`；FileObject、ChunkList 和 DirObject 的授权递归延伸到其全部内容依赖，被包裹的 Feed Object 延伸到其部件与 Head）。Head 对象在条目撤回后仍可读，以保留撤回的发现能力。私人对象（私有收藏、私人抓取）只有 owner 可读。
 
 ### 3.4 投递入口（CYFS dispatch）
 
@@ -212,7 +212,7 @@ Push 对象（§13.1）：
 | Zone 汇总列表 | `zone.set_listing {entry, listed}`：列入或移出自己的一条公开正文 / 引用转发；无写权限 `homestation.zoneFeed.notWriter`，非公开 `homestation.validation.zoneFeedPublic`，已撤回 `homestation.zoneFeed.withdrawn` |
 | 互动 | `interact.like / bookmark {public} / read_later / dislike / repost {objId, on}`、`interact.quote {objId, text, audience}`、`interact.comment {objId, text}` |
 | 条目 | `entry.withdraw`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery` |
-| 发布 | `publish.create {key, input}`（`input.zoneFeed: true` 同时列入汇总列表，只限公开受众，无写权限时在发表前拒绝）、`publish.retry {key}`、`publish.share_capture {objId}`、`publish.task {key}`、`publish.link_preview {url}`；上传 `PUT /kapi/homestation/upload?name=&mime=[&width=&height=&duration_ms=]` |
+| 发布 | `publish.create {key, input}`（`input.zoneFeed: true` 同时列入汇总列表，只限公开受众，无写权限时在发表前拒绝）、`publish.retry {key}`、`publish.share_capture {objId}`、`publish.task {key}`、`publish.link_preview {url}`；附件由 SDK 上传并登记后调用 `object.register {objId, metadata:{name,mime,width?,height?,duration_ms?}}`，旧 Blob 上传路由已删除 |
 | 收藏 | `saved.list {kind: bookmark\|read_later}` |
 | 门户 | `profile.get {did?, reader?}`（返回含 `avatar`：本人取自 Message Center 中本人联系人的公开头像，他人取自其公开资料）、`profile.set {name, bio}`、`profile.set_featured {order}` |
 | 来源 | `sources.list`、`sources.resolve {kind: follow\|url\|natural, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.sync {sourceId?}` |
@@ -234,7 +234,7 @@ Push 对象（§13.1）：
 1. **候选**：Push 自好友 / 已关注者、关注对象的 Pull、收录者、订阅抓取形成候选，同一 ObjId 一行、来源路径合并（A01）。好友或关注者的正文评论、普通转发、引用转发也进入候选；点赞类不进入。
 2. **筛查**：规则档案评价 `topic`、`generation_method`、`quality`、`ad`；有效标签 = 作者标签 + 评价判断 + 用户修正；已撤回的丢弃；过滤规则命中的记为 `filtered`（保留推荐理由，查询时可显式查看）。
 3. **打分**（可替换）：好友 3、关注 2.5、订阅 1.5、收录者 1；每个订阅 Topic 命中 +1.5；每小时 −0.05（最多 −2）；本地行为偏好 −2…+1。≥1 才入选，每轮最多 `admission_batch`（12）条。
-4. **准备**：私人抓取的链接卡片先做快照；按 ObjId 从发表者、推送者或收录者获取被包裹对象、媒体与封面，chunk 按 ChunkId 校验后存入本地；单个文件超过预取预算（32 MiB）或内容是 chunk list 时记为 `reachable`。封面缺失不阻止入列。
+4. **准备**：私人抓取的链接卡片先做快照；按 ObjId 从发表者、推送者或收录者获取被包裹对象、媒体与封面，chunk 按 ChunkId 校验后存入本地；目录及 ChunkList 依赖递归准备，累计缺失内容超过预取预算（32 MiB）时记为 `reachable`。封面缺失不阻止入列。
 5. **复查与入列**：带正文重新评价、复查过滤，通过后写入待读列表并记录首次入列时间。待读窗口默认 300 条，超出部分移出窗口，入列历史保留（A39）。
 
 “不看”与过滤规则在读取时计算，改规则立即生效；修改过滤规则或标签修正后，被过滤的候选重新参与筛选（A56）。待读查询：`filter`（`all`/`following`/`images`/`videos`/`longform`/`news`）、`topicId`、`search`（在整个视图上搜索标题、正文、作者、原作者与被包裹内容）、`showFiltered`。
@@ -382,3 +382,10 @@ Desktop 前端：`pnpm exec playwright test tests/e2e/pages/homestation.spec.ts`
 | 收录者 | 只提供评论视图与最近公开发表；没有检索接口与运营策略 |
 | 内联上限、受众枚举、游标与分页编码、压缩策略 | 按本文的实现选择，宣布稳定前可调整 |
 | DV | 2026-10-09 在 test.buckyos.io 验证通过（v0.2 多用户版）：服务为 Zone 的 3 个用户（devtest、alice、bob）各开一个 HomeStation；alice、bob 的好友派生关注经本机监听投递到 devtest 并被接受，devtest 经同一路径 Pull alice、bob 无错误；Zone 索引与 DID 查询、`/home/<user>/*`、Zone 汇总列表、匿名 `portal.*`、发表 / 编辑 / 点赞 / 评论 / 撤回、NDM 上传与读取、评价服务；Desktop 发布并同步到 Zone 主页，匿名访问 `/homestation/~zone`、`/homestation/devtest`、条目链接，`www.test.buckyos.io/` 与 `homestation.test.buckyos.io/` 打开默认发表流（scheduler 已生成 `homestation` 主机路由）。未验证：跨 Zone（对方验证 Zone 托管签名、向其他 Zone 投递与 Pull），DV 环境里没有可达的第二个 Zone |
+
+
+### 标准文件与目录导入
+
+浏览器使用 WebSDK `importFiles` / `ensureUploaded` 等待 `objectStatus=ready`，然后登记 ObjId。`object.register` 仅接受本用户的非 restricted session，并将该 session 原样转发到 NDM `get_object` 检查读取权（不借用 HomeStation 服务身份）；全依赖完整后登记对象树。图片、音视频保留专用类型，普通文件/目录用 `file` / `dir` 附件及 `content.type=files`。媒体展示元数据独立于 canonical 对象，发布时核对类型和非空；目录不自动转 ZIP 或图片集。
+
+FileObject 内容通过 NamedStore `open_reader` 支持 ChunkList，内容响应目前最多 64 MiB/文件；目录 JSON 可逐层读取，子对象与 chunks 继承同一条目的受众授权，撤回后停止访客访问。发布前按文件/目录根递归保留，失败或重试继续使用现有 publish key，NDM 临时 holding 不代替正式 retention。普通 Zone 的浏览器授权/断网恢复仍需在部署环境验收；独立服务测试通过预置对象验证业务读写和权限，不模拟成真实 NDM 登录上传。

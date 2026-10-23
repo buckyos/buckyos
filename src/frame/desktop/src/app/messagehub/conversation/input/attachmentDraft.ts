@@ -1,13 +1,15 @@
-/**
- * Largest attachment that can be sent. The upload splits bigger files into a
- * chunk list that the msg-center object route cannot serve, so they would be
- * delivered but could never be opened; they are refused before upload.
- */
 import type { VoiceNote } from '../../protocol/msgobj'
 
-export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
+export const MAX_ATTACHMENT_BYTES = 64 * 1024 * 1024
+
+export interface AttachmentDirectory {
+  kind: 'dir'
+  name: string
+  children: (AttachmentDirectory | { kind: 'file'; file: File })[]
+}
 
 export interface ComposerAttachmentInput {
+  directory?: AttachmentDirectory
   file: File
   relativePath?: string
   /** A recorded voice note: sent alone it goes out as one (`MsgObject.voice`), next to other files as an audio file. */
@@ -16,7 +18,7 @@ export interface ComposerAttachmentInput {
 
 export interface ComposerAttachmentItem extends ComposerAttachmentInput {
   id: string
-  kind: 'image' | 'file'
+  kind: 'image' | 'file' | 'dir'
   previewUrl?: string
 }
 
@@ -67,10 +69,22 @@ export function filesFromInputList(
     return []
   }
 
-  return Array.from(files).map((file) => ({
-    file,
-    relativePath: file.webkitRelativePath || undefined,
-  }))
+  const selected = Array.from(files)
+  const roots = new Map<string, AttachmentDirectory>()
+  const loose: ComposerAttachmentInput[] = []
+  for (const file of selected) {
+    const parts = file.webkitRelativePath.split('/').filter(Boolean)
+    if (parts.length < 2) { loose.push({ file }); continue }
+    let directory = roots.get(parts[0])
+    if (!directory) { directory = { kind: 'dir', name: parts[0], children: [] }; roots.set(parts[0], directory) }
+    for (const name of parts.slice(1, -1)) {
+      let child = directory.children.find(item => item.kind === 'dir' && item.name === name) as AttachmentDirectory | undefined
+      if (!child) { child = { kind: 'dir', name, children: [] }; directory.children.push(child) }
+      directory = child
+    }
+    directory.children.push({ kind: 'file', file })
+  }
+  return [...loose, ...Array.from(roots.values(), directoryAttachment)]
 }
 
 export async function extractTransferFiles(
@@ -91,7 +105,7 @@ export async function extractTransferFiles(
       const entry = (item as DataTransferItemWithEntry).webkitGetAsEntry?.()
 
       if (entry) {
-        return collectEntryFiles(entry)
+        return [await collectEntry(entry)]
       }
 
       const file = item.getAsFile()
@@ -112,7 +126,8 @@ export function createAttachmentItem(
   return {
     id: createAttachmentId(input),
     file: input.file,
-    kind: input.file.type.startsWith('image/') ? 'image' : 'file',
+    kind: input.directory ? 'dir' : input.file.type.startsWith('image/') ? 'image' : 'file',
+    directory: input.directory,
     previewUrl,
     relativePath: input.relativePath,
     ...(input.voice ? { voice: input.voice } : {}),
@@ -122,7 +137,8 @@ export function createAttachmentItem(
 export function getAttachmentKey(
   input: ComposerAttachmentInput,
 ): string {
-  return [normalizeAttachmentPath(input.relativePath || input.file.name), input.file.size, input.file.lastModified].join(':')
+  const fingerprint = (entry: AttachmentDirectory | { kind: 'file'; file: File }): unknown => entry.kind === 'file' ? [entry.file.name, entry.file.size, entry.file.lastModified] : [entry.name, entry.children.map(fingerprint)]
+  return input.directory ? JSON.stringify(fingerprint(input.directory)) : [normalizeAttachmentPath(input.relativePath || input.file.name), input.file.size, input.file.lastModified].join(':')
 }
 
 export function revokeAttachmentItem(item: ComposerAttachmentItem) {
@@ -160,71 +176,42 @@ function createAttachmentId({
   ].join(':')
 }
 
-async function collectEntryFiles(
-  entry: FileSystemEntryLike,
-): Promise<ComposerAttachmentInput[]> {
+export function directoryAttachment(directory: AttachmentDirectory): ComposerAttachmentInput {
+  return { file: new File([], directory.name, { type: 'application/x-directory', lastModified: 0 }), directory }
+}
+
+export function attachmentSize(input: ComposerAttachmentInput): number {
+  const size = (entry: AttachmentDirectory | { kind: 'file'; file: File }): number => entry.kind === 'file' ? entry.file.size : entry.children.reduce((total, child) => total + size(child), 0)
+  return input.directory ? size(input.directory) : input.file.size
+}
+
+async function collectEntry(entry: FileSystemEntryLike): Promise<ComposerAttachmentInput> {
+  const path = (entry.fullPath ?? '').replace(/^\/+/, '')
   if (entry.isFile) {
-    const file = await readFileEntry(entry as FileSystemFileEntryLike)
-
-    if (!file) {
-      return []
-    }
-
-    const fullPath = sanitizeEntryPath(entry.fullPath)
-
-    return [{
-      file,
-      relativePath: fullPath.includes('/') ? fullPath : undefined,
-    }]
+    const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntryLike).file(resolve, error => reject(new Error(`${path}: ${error.message}`))))
+    return { file }
   }
-
-  if (!entry.isDirectory) {
-    return []
-  }
-
+  if (!entry.isDirectory) throw new Error(`${path}: unsupported file system entry`)
   const reader = (entry as FileSystemDirectoryEntryLike).createReader()
-  const entries = await readDirectoryEntries(reader)
-  const nestedFiles = await Promise.all(entries.map((child) => collectEntryFiles(child)))
-
-  return nestedFiles.flat()
-}
-
-function readFileEntry(
-  entry: FileSystemFileEntryLike,
-): Promise<File | null> {
-  return new Promise((resolve) => {
-    entry.file(
-      (file) => resolve(file),
-      () => resolve(null),
-    )
-  })
-}
-
-async function readDirectoryEntries(
-  reader: FileSystemDirectoryReaderLike,
-): Promise<FileSystemEntryLike[]> {
-  const entries: FileSystemEntryLike[] = []
-
-  while (true) {
-    const batch = await new Promise<FileSystemEntryLike[]>((resolve) => {
-      reader.readEntries(
-        (nextEntries) => resolve(nextEntries),
-        () => resolve([]),
-      )
-    })
-
-    if (batch.length === 0) {
-      return entries
+  const children: AttachmentDirectory['children'] = []
+  for (;;) {
+    const entries = await new Promise<FileSystemEntryLike[]>((resolve, reject) => reader.readEntries(resolve, error => reject(new Error(`${path}: ${error.message}`))))
+    if (entries.length === 0) break
+    for (const child of entries) {
+      const input = await collectEntry(child)
+      children.push(input.directory ?? { kind: 'file', file: input.file })
     }
-
-    entries.push(...batch)
   }
-}
-
-function sanitizeEntryPath(path?: string): string {
-  return (path ?? '').replace(/^\/+/, '')
+  return directoryAttachment({ kind: 'dir', name: path.split('/').pop() || 'folder', children })
 }
 
 function normalizeAttachmentPath(path: string): string {
   return path.trim().replaceAll('\\', '/')
+}
+
+export function oversizedAttachmentNames(input: ComposerAttachmentInput): string[] {
+  const visit = (entry: AttachmentDirectory | { kind: 'file'; file: File }, path: string): string[] => entry.kind === 'file'
+    ? entry.file.size > MAX_ATTACHMENT_BYTES ? [`${path}${entry.file.name}`] : []
+    : entry.children.flatMap(child => visit(child, `${path}${entry.name}/`))
+  return input.directory ? visit(input.directory, '') : input.file.size > MAX_ATTACHMENT_BYTES ? [input.relativePath || input.file.name] : []
 }

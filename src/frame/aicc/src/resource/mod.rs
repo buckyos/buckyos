@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use buckyos_api::{AiArtifact, AiccError, AiccErrorCode, ResourceRef};
 use futures_util::StreamExt;
-use named_store::NamedDataMgr;
+use named_store::{NamedDataMgr, PinScope};
 use ndn_lib::{load_named_obj_and_verify, ChunkHasher, FileObject, NamedObject, ObjId};
 use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
@@ -560,8 +560,72 @@ pub(crate) struct StoredFile {
     attributes: Map<String, Value>,
 }
 
+/// Request-owned lease. Clones share renewal; dropping the last guard releases
+/// only this request's pin. A process crash leaves a bounded 24-hour lease.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResourceLeaseSpec {
+    pub obj_id: String,
+    pub owner: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct ResourceLease {
+    pub spec: ResourceLeaseSpec,
+    _release: Arc<tokio::sync::oneshot::Sender<()>>,
+    keep_until_expiry: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ResourceLease {
+    pub fn keep_until_expiry(&self) {
+        self.keep_until_expiry
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    async fn acquire(store: NamedDataMgr, spec: ResourceLeaseSpec) -> Result<Self, ResourceError> {
+        let obj_id = ObjId::new(&spec.obj_id).map_err(store_error)?;
+        let ttl = std::time::Duration::from_secs(24 * 60 * 60);
+        store
+            .pin(&obj_id, &spec.owner, PinScope::Recursive, Some(ttl))
+            .await
+            .map_err(store_error)?;
+        let (release, mut released) = tokio::sync::oneshot::channel();
+        let owner = spec.owner.clone();
+        let keep_until_expiry = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let keep = keep_until_expiry.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut released => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(5 * 60)) => {
+                        if let Err(error) = store.pin(&obj_id, &owner, PinScope::Recursive, Some(ttl)).await {
+                            log::warn!("AICC input lease renewal failed for {}: {}", obj_id, error);
+                        }
+                    }
+                }
+            }
+            if keep.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            if let Err(error) = store.unpin(&obj_id, &owner).await {
+                log::warn!("AICC input lease release failed for {}: {}", obj_id, error);
+            }
+        });
+        Ok(Self {
+            spec,
+            _release: Arc::new(release),
+            keep_until_expiry,
+        })
+    }
+}
+
 #[async_trait]
 pub(crate) trait ResourceStore: Send + Sync {
+    async fn retain(
+        &self,
+        _obj_id: &ObjId,
+        _resume: Option<&ResourceLeaseSpec>,
+    ) -> Result<Option<ResourceLease>, ResourceError> {
+        Ok(None)
+    }
     async fn inspect(&self, obj_id: &ObjId) -> Result<StoredFile, ResourceError>;
     async fn read(&self, obj_id: &ObjId, max_bytes: u64) -> Result<Vec<u8>, ResourceError>;
     async fn write_artifact(
@@ -584,6 +648,33 @@ impl NamedDataMgrResourceStore {
 
 #[async_trait]
 impl ResourceStore for NamedDataMgrResourceStore {
+    async fn retain(
+        &self,
+        obj_id: &ObjId,
+        resume: Option<&ResourceLeaseSpec>,
+    ) -> Result<Option<ResourceLease>, ResourceError> {
+        static NEXT_LEASE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let spec = resume.cloned().unwrap_or_else(|| ResourceLeaseSpec {
+            obj_id: obj_id.to_string(),
+            owner: format!(
+                "aicc:input:{}:{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                NEXT_LEASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
+        });
+        if spec.obj_id != obj_id.to_string() || !spec.owner.starts_with("aicc:input:") {
+            return Err(ResourceError::new(
+                ResourceFailure::InvalidReference,
+                "invalid input lease descriptor",
+            ));
+        }
+        ResourceLease::acquire(self.store.clone(), spec)
+            .await
+            .map(Some)
+    }
     async fn inspect(&self, obj_id: &ObjId) -> Result<StoredFile, ResourceError> {
         if !obj_id.is_file_object() {
             return Err(ResourceError::new(
@@ -598,7 +689,32 @@ impl ResourceStore for NamedDataMgrResourceStore {
                 "FileObject verification failed",
             )
         })?;
-        stored_file_from_object(obj_id.clone(), file)
+        let mut stored = stored_file_from_object(obj_id.clone(), file)?;
+        if stored.mime.is_none() {
+            let (reader, _) = self
+                .store
+                .open_reader(obj_id, None)
+                .await
+                .map_err(store_error)?;
+            let mut header = Vec::new();
+            reader
+                .take(4096)
+                .read_to_end(&mut header)
+                .await
+                .map_err(|_| {
+                    ResourceError::new(ResourceFailure::Unavailable, "resource header read failed")
+                })?;
+            stored.mime = sniff_mime(&header).map(str::to_string).or_else(|| {
+                (stored
+                    .file_name
+                    .as_deref()
+                    .is_some_and(|name| name.to_ascii_lowercase().ends_with(".txt"))
+                    && std::str::from_utf8(&header).is_ok()
+                    && !header.contains(&0))
+                .then(|| "text/plain".to_string())
+            });
+        }
+        Ok(stored)
     }
 
     async fn read(&self, obj_id: &ObjId, max_bytes: u64) -> Result<Vec<u8>, ResourceError> {
@@ -1440,6 +1556,18 @@ fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
         Some("application/zip")
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
         Some("audio/wav")
+    } else if bytes.starts_with(b"fLaC") {
+        Some("audio/flac")
+    } else if bytes.starts_with(b"OggS") {
+        Some("audio/ogg")
+    } else if bytes.starts_with(b"ID3")
+        || (bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
+    {
+        Some("audio/mpeg")
+    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        Some("video/mp4")
+    } else if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        Some("video/webm")
     } else {
         None
     }
@@ -1772,6 +1900,84 @@ mod tests {
     use std::io::Write;
     use std::sync::Mutex;
     use zip::write::SimpleFileOptions;
+
+    #[tokio::test]
+    async fn imported_file_sniffs_mime_and_request_retention_protects_content_until_last_guard() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = root.path().join("layout.json");
+        std::fs::write(
+            &layout,
+            r#"{"stores":[{"path":"store","store_id":"test"}]}"#,
+        )
+        .unwrap();
+        let store = NamedDataMgr::get_store_mgr(&layout, &std::collections::HashMap::new())
+            .await
+            .unwrap();
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(16384, 0x5a);
+        let chunk = ChunkHasher::new(None)
+            .unwrap()
+            .calc_chunk_id_from_bytes(&bytes);
+        store.put_chunk(&chunk, &bytes).await.unwrap();
+        let file = FileObject::new(
+            "picture.png".to_string(),
+            bytes.len() as u64,
+            chunk.to_string(),
+        );
+        let (obj_id, encoded) = file.gen_obj_id();
+        store.put_object(&obj_id, &encoded).await.unwrap();
+        let resource = NamedDataMgrResourceStore::new(store.clone());
+        let guard = resource.retain(&obj_id, None).await.unwrap().unwrap();
+        let last_guard = guard.clone();
+        let inspected = resource.inspect(&obj_id).await.unwrap();
+        assert_eq!(inspected.mime.as_deref(), Some("image/png"));
+        assert!(store.forced_gc_until(u64::MAX).await.is_err());
+        assert_eq!(resource.read(&obj_id, 32768).await.unwrap(), bytes);
+        drop(guard);
+        assert!(store.forced_gc_until(u64::MAX).await.is_err());
+        assert_eq!(resource.read(&obj_id, 32768).await.unwrap(), bytes);
+        drop(last_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let _ = store.forced_gc_until(u64::MAX).await;
+                if resource.read(&obj_id, 32768).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("request pin must be released after the last guard drops");
+    }
+
+    #[tokio::test]
+    async fn uncertain_provider_acceptance_retains_only_its_bounded_owner_pin() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = root.path().join("layout.json");
+        std::fs::write(
+            &layout,
+            r#"{"stores":[{"path":"store","store_id":"test"}]}"#,
+        )
+        .unwrap();
+        let store = NamedDataMgr::get_store_mgr(&layout, &std::collections::HashMap::new())
+            .await
+            .unwrap();
+        let obj_id = FileObject::new("pending.txt".into(), 0, "mix256:00".into())
+            .gen_obj_id()
+            .0;
+        let resource = NamedDataMgrResourceStore::new(store.clone());
+        let guard = resource.retain(&obj_id, None).await.unwrap().unwrap();
+        let spec = guard.spec.clone();
+        guard.keep_until_expiry();
+        drop(guard);
+        tokio::task::yield_now().await;
+        assert_eq!(store.unpin_owner(&spec.owner).await.unwrap(), 1);
+        let bad = ResourceLeaseSpec {
+            obj_id: obj_id.to_string(),
+            owner: "another-service".into(),
+        };
+        assert!(resource.retain(&obj_id, Some(&bad)).await.is_err());
+    }
 
     #[derive(Default)]
     struct RecordingAuthorizer {

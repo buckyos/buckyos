@@ -26,6 +26,7 @@ const WRITE_METHODS: &[&str] = &[
     "open_write",
     "abort_write",
     "commit_file",
+    "commit_object",
     "bind_ref",
     "unlink",
     "set_meta",
@@ -60,6 +61,7 @@ pub fn build_router(state: SharedState) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/ndm/v1/objects/lookup", get(crate::ndm::forward::lookup))
+        .route("/ndm/v1/import/finalize", post(crate::ndm::import::finalize).layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/ndm/v1/store/{method}", post(crate::ndm::forward::store_api))
         .route("/ndm/proxy/v1/rpc/{method}", post(crate::ndm::forward::proxy_rpc))
         .route("/ndm/proxy/v1/read/{*kind}", post(crate::ndm::forward::proxy_read))
@@ -150,7 +152,7 @@ async fn control_handler(
             }
             Err(e) => return envelope_error(&state, e),
         }
-        let result = dispatch(&state, &actor, &method, &env, &session, creds.bearer()).await;
+        let result = dispatch(&state, &actor, &method, &env, &session, creds.bearer(), &headers).await;
         return match result {
             Ok(v) => {
                 state.sessions.record_seq(&session, env.seq.unwrap(), v.clone());
@@ -159,7 +161,7 @@ async fn control_handler(
             Err(e) => envelope_error(&state, e),
         };
     }
-    match dispatch(&state, &actor, &method, &env, &session, creds.bearer()).await {
+    match dispatch(&state, &actor, &method, &env, &session, creds.bearer(), &headers).await {
         Ok(v) => envelope_ok(&state, v),
         Err(e) => envelope_error(&state, e),
     }
@@ -256,6 +258,7 @@ async fn dispatch(
     env: &Envelope,
     session: &str,
     bearer: Option<&str>,
+    headers: &HeaderMap,
 ) -> NfsResult<Value> {
     let want = WantMask::from_opt(&env.want);
     let at = env.at.as_ref();
@@ -293,6 +296,7 @@ async fn dispatch(
         "abort_write" => state.op_abort_write(args, session),
         "open_write" => state.op_open_write(actor, args, session),
         "commit_file" => state.op_commit_file(actor, at, args, session),
+        "commit_object" => state.op_commit_object(actor, at, args, session, headers).await,
         "probe" => state.op_probe(actor, args),
         "get_meta" => state.op_get_meta(actor, at, args),
         "set_meta" => state.op_set_meta(actor, at, args),

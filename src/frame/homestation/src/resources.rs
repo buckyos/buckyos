@@ -101,35 +101,46 @@ impl Station {
     }
 
     async fn prepare_file(&self, file_id: &str, holders: &[String]) -> HsResult<ResourceState> {
-        if !self.ensure_object(file_id, holders).await? {
-            return Ok(ResourceState::Unavailable);
-        }
-        let id = file_id.to_string();
-        let Some(file) = self.db.call(move |c| get_object(c, &id)).await? else { return Ok(ResourceState::Unavailable) };
-        let Some(content) = file.body.get("content").and_then(Value::as_str).map(str::to_string) else { return Ok(ResourceState::Local) };
-        if content.is_empty() {
-            return Ok(ResourceState::Local);
-        }
-        if !crate::objects::is_chunk_id(&content) {
-            return Ok(ResourceState::Reachable);
-        }
-        if self.chunks.has_chunk(&content).await {
-            return Ok(ResourceState::Local);
-        }
-        let size = file.body.get("size").and_then(Value::as_u64).unwrap_or(0);
-        if !self.cfg.prefetch || size > self.cfg.max_prefetch_bytes {
-            return Ok(ResourceState::Reachable);
-        }
-        for holder in holders {
-            match self.fetch_chunk_from(holder, &content, self.cfg.max_prefetch_bytes).await {
-                Ok(data) => {
-                    self.chunks.put_chunk(&content, data).await?;
-                    return Ok(ResourceState::Local);
+        let mut pending = vec![file_id.to_string()];
+        let mut seen = std::collections::HashSet::new();
+        let mut state = ResourceState::Local;
+        let mut fetched_bytes = 0u64;
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) { continue; }
+            if seen.len() > 100_000 { return Err(crate::error::bad("attachment tree is too large")); }
+            if crate::objects::is_chunk_id(&id) {
+                if self.chunks.has_chunk(&id).await { continue; }
+                let size = ndn_lib::ChunkId::new(&id).ok().and_then(|chunk| chunk.get_length()).unwrap_or(self.cfg.max_prefetch_bytes);
+                if !self.cfg.prefetch || fetched_bytes.saturating_add(size) > self.cfg.max_prefetch_bytes {
+                    state = state.worst(ResourceState::Reachable);
+                    continue;
                 }
-                Err(e) => log::debug!("chunk {content} not available from {holder}: {e}"),
+                let mut stored = false;
+                for holder in holders {
+                    if let Ok(data) = self.fetch_chunk_from(holder, &id, self.cfg.max_prefetch_bytes).await {
+                        fetched_bytes += data.len() as u64;
+                        self.chunks.put_chunk(&id, data).await?;
+                        stored = true;
+                        break;
+                    }
+                }
+                if !stored { state = state.worst(ResourceState::Unavailable); }
+                continue;
             }
+            if !self.ensure_object(&id, holders).await? { return Ok(ResourceState::Unavailable); }
+            let lookup = id.clone();
+            let Some(object) = self.db.call(move |c| get_object(c, &lookup)).await? else { return Ok(ResourceState::Unavailable) };
+            let body = crate::objects::canonical(&object.body);
+            self.chunks.put_named_object(&id, &body).await?;
+            pending.extend(crate::objects::object_dependencies(&id, &body)?);
         }
-        Ok(ResourceState::Unavailable)
+        let root = file_id.to_string();
+        self.db.call(move |c| {
+            let entries = c.prepare("SELECT entry FROM object_grants WHERE obj_id=?1")?.query_map([&root], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            for entry in entries { crate::publish::grant(c, &root, &entry, 0)?; }
+            Ok(())
+        }).await?;
+        Ok(state)
     }
 
     /// Prepare everything a Feed Object fixes as content (wrapped object, media, cover).
@@ -186,7 +197,7 @@ impl Station {
         }
         let mut state = ResourceState::Local;
         for part in inner.content_parts() {
-            if obj_type_of(&part).as_deref() == Some(OBJ_TYPE_FILE) {
+            if matches!(obj_type_of(&part).as_deref(), Some(OBJ_TYPE_FILE | OBJ_TYPE_DIR)) {
                 state = state.worst(self.prepare_file(&part, &holders).await?);
             }
         }

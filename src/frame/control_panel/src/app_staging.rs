@@ -7,8 +7,8 @@ use buckyos_api::{
 use buckyos_kit::buckyos_get_unix_timestamp;
 use kRPC::RPCErrors;
 use name_lib::DID;
-use named_store::NamedDataMgr;
-use ndn_lib::{ChunkReader, FileObject, ObjId};
+use named_store::{NamedDataMgr, PinScope};
+use ndn_lib::{load_named_obj_and_verify, ChunkReader, FileObject, ObjId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -296,7 +296,7 @@ impl PikgStagingStore {
     pub async fn finalize_named_object(
         &self,
         source: &ObjId,
-        expected_digest: &str,
+        expected_digest: Option<&str>,
         expected_size: u64,
         owner_user_id: &str,
         owner_app_id: &str,
@@ -305,24 +305,39 @@ impl PikgStagingStore {
     ) -> Result<PikgStagingMetadata, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let named_store = runtime.get_named_store().await?;
-        self.finalize_file_object(
-            &named_store,
-            source,
-            expected_digest,
-            expected_size,
-            owner_user_id,
-            owner_app_id,
-            zone_did,
-            purpose,
-        )
-        .await
+        let owner = format!("control-panel:pikg-import:{}", uuid::Uuid::new_v4());
+        named_store
+            .pin(
+                source,
+                &owner,
+                PinScope::Recursive,
+                Some(std::time::Duration::from_secs(24 * 60 * 60)),
+            )
+            .await
+            .map_err(|error| Self::error(format!("retain staging source failed: {error}")))?;
+        let result = self
+            .finalize_file_object(
+                &named_store,
+                source,
+                expected_digest,
+                expected_size,
+                owner_user_id,
+                owner_app_id,
+                zone_did,
+                purpose,
+            )
+            .await;
+        if let Err(error) = named_store.unpin(source, &owner).await {
+            log::warn!("release PIKG source pin failed: {error}");
+        }
+        result
     }
 
     async fn finalize_file_object(
         &self,
         named_store: &NamedDataMgr,
         source: &ObjId,
-        expected_digest: &str,
+        expected_digest: Option<&str>,
         expected_size: u64,
         owner_user_id: &str,
         owner_app_id: &str,
@@ -339,7 +354,7 @@ impl PikgStagingStore {
             .get_object(source)
             .await
             .map_err(|error| Self::error(format!("read staging FileObject failed: {error}")))?;
-        let file_object: FileObject = serde_json::from_str(&object)
+        let file_object: FileObject = load_named_obj_and_verify(source, &object)
             .map_err(|error| Self::error(format!("invalid staging FileObject: {error}")))?;
         if file_object.size != expected_size {
             return Err(Self::error("PIKG_SIZE_MISMATCH: FileObject size differs"));
@@ -375,7 +390,7 @@ impl PikgStagingStore {
         zone_did: &DID,
         purpose: PikgStagingPurpose,
     ) -> Result<PikgStagingMetadata, RPCErrors> {
-        Self::validate_expected_content(expected_digest, expected_size)?;
+        Self::validate_expected_content(Some(expected_digest), expected_size)?;
         if file_id.len() != 32 || !file_id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(RPCErrors::ParseRequestError(
                 "invalid local_file_id".to_string(),
@@ -417,7 +432,7 @@ impl PikgStagingStore {
         let result = self
             .finalize_reader(
                 Box::pin(file),
-                expected_digest,
+                Some(expected_digest),
                 expected_size,
                 owner_user_id,
                 owner_app_id,
@@ -431,12 +446,13 @@ impl PikgStagingStore {
         result
     }
 
-    fn validate_expected_content(digest: &str, size: u64) -> Result<(), RPCErrors> {
-        if digest.len() != 64
-            || !digest
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
+    fn validate_expected_content(digest: Option<&str>, size: u64) -> Result<(), RPCErrors> {
+        if digest.is_some_and(|digest| {
+            digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
             return Err(RPCErrors::ParseRequestError(
                 "invalid pikg_digest".to_string(),
             ));
@@ -452,7 +468,7 @@ impl PikgStagingStore {
     async fn finalize_reader(
         &self,
         reader: ChunkReader,
-        expected_digest: &str,
+        expected_digest: Option<&str>,
         expected_size: u64,
         owner_user_id: &str,
         owner_app_id: &str,
@@ -495,7 +511,10 @@ impl PikgStagingStore {
                     .await
                     .map_err(|error| Self::error(format!("write staging file failed: {error}")))?;
             }
-            if size != expected_size || hex::encode(hasher.finalize()) != expected_digest {
+            let actual_digest = hex::encode(hasher.finalize());
+            if size != expected_size
+                || expected_digest.is_some_and(|digest| actual_digest != digest)
+            {
                 return Err(Self::error(
                     "PIKG_DIGEST_MISMATCH: staging source differs from client snapshot",
                 ));
@@ -504,7 +523,7 @@ impl PikgStagingStore {
                 .await
                 .map_err(|error| Self::error(format!("sync staging file failed: {error}")))?;
             drop(file);
-            let reader = PikgReader::open(&tmp, Some(expected_digest))
+            let reader = PikgReader::open(&tmp, Some(&actual_digest))
                 .await
                 .map_err(|error| Self::error(format!("validate staged pikg failed: {error}")))?;
             reader
@@ -512,7 +531,7 @@ impl PikgStagingStore {
                 .await
                 .map_err(|error| Self::error(format!("verify staged pikg failed: {error}")))?;
             self.register_staged_content(
-                expected_digest.to_string(),
+                actual_digest,
                 tmp.clone(),
                 size,
                 owner_user_id,
@@ -843,7 +862,7 @@ mod tests {
             .finalize_file_object(
                 &manager,
                 &object,
-                &digest,
+                None,
                 size,
                 "bob",
                 "buckyos-tool",
@@ -920,7 +939,7 @@ mod tests {
             assert!(store
                 .finalize_reader(
                     Box::pin(std::io::Cursor::new(data)),
-                    &expected_digest,
+                    Some(&expected_digest),
                     expected_size,
                     "alice",
                     "buckyos-tool",
@@ -943,7 +962,7 @@ mod tests {
             .finalize_file_object(
                 &manager,
                 &chunk,
-                &digest,
+                Some(&digest),
                 bytes.len() as u64,
                 "alice",
                 "buckyos-tool",

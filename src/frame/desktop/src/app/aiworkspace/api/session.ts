@@ -6,6 +6,7 @@
  * "saved on this device → queued → sent". Nothing above this file talks to the client directly. */
 
 import type { AccessDenial, AdjustLocation, DenyReason } from 'buckyos'
+import { ndm } from 'buckyos'
 import { AiwsClient, ServiceFailure, unwrap } from './client'
 import { randomId } from './ids'
 import { TransportError } from './transport'
@@ -40,6 +41,8 @@ export interface CommitOptions {
   /** Replica session: stored with the pending row so the edit can be shown again after a restart. */
   meta?: PendingMeta
 }
+
+export type ImportedAsset = { kind: 'file'; name: string; object_id: string; source_obj_id: string; size: number } | { kind: 'dir'; name: string; children: ImportedAsset[] }
 
 /** How this window is connected to the Workspace (design §6.1). */
 export type SessionMode =
@@ -146,6 +149,7 @@ export interface WorkspaceSession {
   lockList(): Promise<LockInfo[]>
 
   uploadAsset(file: Blob, fileName?: string): Promise<{ object_id: string; media_type: string; size: number }>
+  importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]>
   fetchAsset(objectId: string): Promise<Blob>
 
   procStart(program: string, params: Record<string, Json>): Promise<RunView>
@@ -583,10 +587,36 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   // ---- assets (design §3.6): verified bytes first, then the reference is committed by the caller
 
   async uploadAsset(file: Blob, fileName?: string) {
-    const begin = unwrap(await this.client.assetBeginUpload(this.ws, file.size, fileName))
-    await this.client.transport.upload(begin.upload_id, file)
-    const done = unwrap(await this.client.assetFinishUpload(this.ws, begin.upload_id))
-    return { object_id: done.object_id, media_type: done.media_type, size: done.size }
+    if (file.size > 32 * 1024 * 1024) throw new Error('Workspace assets are limited to 32 MiB.')
+    const source = file instanceof File ? file : new File([file], fileName ?? 'asset', { type: file.type })
+    const options = await this.client.transport.importOptions()
+    const snapshot = await ndm.importFiles([source], { ...options, mode: 'single_file', autoStartUpload: false })
+    try {
+      await ndm.ensureUploaded(snapshot.sessionId, options)
+      return unwrap(await this.client.assetImportObject(this.ws, snapshot.selection.objectId))
+    } finally { ndm.releaseImportSession(snapshot.sessionId) }
+  }
+
+  async importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]> {
+    if (files.some(file => file.size > 32 * 1024 * 1024)) throw new Error('Workspace assets are limited to 32 MiB per file.')
+    const options = await this.client.transport.importOptions()
+    const snapshot = await ndm.importFiles(files, { ...options, mode: folder ? 'single_dir' : 'multi_file', autoStartUpload: false, signal })
+    try {
+      await ndm.ensureUploaded(snapshot.sessionId, { ...options, signal })
+      const stage = async (item: ndm.ImportedFileObject | ndm.ImportedDirObject): Promise<ImportedAsset> => {
+        signal?.throwIfAborted()
+        if (item.kind === 'dir') {
+          const children: ImportedAsset[] = []
+          for (const child of item.children ?? []) children.push(await stage(child))
+          return { kind: 'dir', name: item.name, children }
+        }
+        const asset = unwrap(await this.client.assetImportObject(this.ws, item.objectId))
+        return { kind: 'file', name: item.name, ...asset }
+      }
+      const items: ImportedAsset[] = []
+      for (const item of snapshot.items) items.push(await stage(item))
+      return items
+    } finally { ndm.releaseImportSession(snapshot.sessionId) }
   }
 
   fetchAsset(objectId: string) {

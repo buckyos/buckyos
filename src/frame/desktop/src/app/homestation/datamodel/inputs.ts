@@ -13,9 +13,11 @@ export const audienceSchema = z.discriminatedUnion('kind', [
 
 export const attachmentSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(['image', 'video', 'audio']),
+  kind: z.enum(['image', 'video', 'audio', 'file', 'dir']),
   name: z.string().min(1).max(200),
-  status: z.enum(['uploading', 'uploaded', 'failed']),
+  status: z.enum(['uploading', 'uploaded', 'failed', 'cancelled']),
+  error: z.string().optional(),
+  progress: z.number().optional(),
   object: z.string().optional(),
 })
 

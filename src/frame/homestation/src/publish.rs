@@ -168,11 +168,9 @@ pub fn grant(conn: &Connection, obj_id: &str, entry: &str, depth: u8) -> HsResul
     let obj_id = normalize_obj_id(obj_id);
     conn.execute("INSERT OR IGNORE INTO object_grants(obj_id, entry) VALUES (?1, ?2)", params![obj_id, entry])?;
     if let Some(obj) = get_object(conn, &obj_id)? {
-        if obj.obj_type == OBJ_TYPE_FILE {
-            if let Some(content) = obj.body.get("content").and_then(Value::as_str) {
-                if !content.is_empty() {
-                    conn.execute("INSERT OR IGNORE INTO object_grants(obj_id, entry) VALUES (?1, ?2)", params![normalize_obj_id(content), entry])?;
-                }
+        if matches!(obj.obj_type.as_str(), OBJ_TYPE_FILE | OBJ_TYPE_DIR | ndn_lib::OBJ_TYPE_CHUNK_LIST) && depth < 128 {
+            for child in crate::objects::object_dependencies(&obj_id, &crate::objects::canonical(&obj.body))? {
+                grant(conn, &child, entry, depth + 1)?;
             }
         } else if obj.obj_type == OBJ_TYPE_FEED && depth < 2 {
             if let Ok(feed) = serde_json::from_value::<FeedObject>(obj.body.clone()) {
@@ -697,6 +695,9 @@ impl PublishInput {
         if self.attachments.iter().any(|a| a.status != "uploaded" || a.object.is_none()) {
             return Err(bad("homestation.validation.uploadPending"));
         }
+        if self.attachments.iter().any(|a| !matches!(a.kind.as_str(), "image" | "video" | "audio" | "file" | "dir")) {
+            return Err(bad("unsupported attachment kind"));
+        }
         let count = |kind: &str| self.attachments.iter().filter(|a| a.kind == kind).count();
         if count("video") > 1 || count("audio") > 1 {
             return Err(bad("homestation.validation.oneVideoOrAudio"));
@@ -838,21 +839,50 @@ impl Station {
         Ok(row)
     }
 
-    /// The attachment's FileObject and its content must be here before a post may use it.
-    async fn ensure_file(&self, obj_id: &str) -> HsResult<StoredObject> {
-        let obj = match crate::objects::load_local(&self.db, self.chunks.as_ref(), obj_id).await? {
-            Some(obj) if obj.obj_type == OBJ_TYPE_FILE => obj,
-            _ => return Err(HsError::Unavailable("upload_missing".into())),
-        };
-        match obj.body.get("content").and_then(Value::as_str) {
-            Some(content) if self.chunks.has_chunk(&normalize_obj_id(content)).await => Ok(obj),
-            _ => Err(HsError::Unavailable("upload_missing".into())),
+    pub async fn register_object(&self, obj_id: &str, metadata: Value) -> HsResult<Value> {
+        let root = normalize_obj_id(obj_id);
+        if !matches!(obj_type_of(&root).as_deref(), Some(OBJ_TYPE_FILE | OBJ_TYPE_DIR)) {
+            return Err(bad("attachment must be a FileObject or DirObject"));
         }
+        if !self.chunks.is_complete(&root).await? { return Err(HsError::Unavailable("upload_missing".into())); }
+        let mut pending = vec![root.clone()];
+        let mut seen = std::collections::HashSet::new();
+        let mut result = None;
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) || crate::objects::is_chunk_id(&id) { continue; }
+            let obj = crate::objects::load_local(&self.db, self.chunks.as_ref(), &id).await?.ok_or_else(|| HsError::Unavailable("upload_missing".into()))?;
+            if id == root { result = Some(obj.body.clone()); }
+            pending.extend(crate::objects::object_dependencies(&id, &crate::objects::canonical(&obj.body))?);
+        }
+        let key = root.clone();
+        let mime = metadata.get("mime").and_then(Value::as_str).unwrap_or("application/octet-stream");
+        if mime.len() > 128 || !mime.contains('/') || mime.chars().any(char::is_control) { return Err(bad("invalid attachment mime")); }
+        let metadata = serde_json::to_string(&metadata)?;
+        self.db.call(move |c| {
+            c.execute("INSERT INTO import_metadata(obj_id, metadata) VALUES (?1, ?2) ON CONFLICT(obj_id) DO NOTHING", params![key, metadata])?;
+            Ok(())
+        }).await?;
+        Ok(json!({ "objId": root, "object": result }))
     }
 
     async fn publish_input(&self, input: &PublishInput) -> HsResult<Published> {
         for attachment in &input.attachments {
-            self.ensure_file(attachment.object.as_deref().unwrap_or_default()).await?;
+            let id = normalize_obj_id(attachment.object.as_deref().unwrap_or_default());
+            let lookup = id.clone();
+            let obj = self.db.call(move |c| get_object(c, &lookup)).await?.ok_or_else(|| HsError::Unavailable("attachment_not_registered".into()))?;
+            let directory = attachment.kind == "dir";
+            if obj.obj_type != if directory { OBJ_TYPE_DIR } else { OBJ_TYPE_FILE } {
+                return Err(bad("attachment type does not match object"));
+            }
+            if !self.chunks.is_complete(&id).await? { return Err(HsError::Unavailable("upload_missing".into())); }
+            if matches!(attachment.kind.as_str(), "image" | "video" | "audio") {
+                let key = id.clone();
+                let metadata = self.db.call(move |c| crate::objects::import_metadata(c, &key)).await?;
+                let mime = metadata.get("mime").or_else(|| obj.body.get("mime_type")).or_else(|| obj.body.get("mime")).and_then(Value::as_str).unwrap_or_default();
+                if !mime.starts_with(&format!("{}/", attachment.kind)) || obj.body.get("size").and_then(Value::as_u64) == Some(0) {
+                    return Err(bad("attachment media type does not match object"));
+                }
+            }
         }
         let text = input.text.trim();
         let text_opt = (!text.is_empty()).then(|| text.to_string());
@@ -883,7 +913,11 @@ impl Station {
         let video = input.attachments.iter().find(|a| a.kind == "video");
         let audio: Vec<&Attachment> = input.attachments.iter().filter(|a| a.kind == "audio").collect();
         let images: Vec<&Attachment> = input.attachments.iter().filter(|a| a.kind == "image").collect();
-        if let Some(article) = &input.article {
+        if input.attachments.iter().any(|item| matches!(item.kind.as_str(), "file" | "dir")) {
+            let mut c = content(ContentType::Files, text_opt.clone());
+            c.media = input.attachments.iter().map(|item| MediaPart { object: item.object.clone().unwrap(), alt: Some(item.name.clone()) }).collect();
+            obj.content = Some(c);
+        } else if let Some(article) = &input.article {
             let file = self.store_text_file(&format!("{}.md", slug(&article.title)), "text/markdown", article.markdown.as_bytes()).await?;
             let mut c = content(ContentType::Article, text_opt.clone());
             c.title = Some(article.title.clone());

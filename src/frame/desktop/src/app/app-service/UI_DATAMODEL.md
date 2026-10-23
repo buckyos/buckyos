@@ -310,3 +310,9 @@ AppDoc v1 输入预检样本：
 2026-09-05：从 `mock/types.ts` 提取稳定类型至 `types.ts`；拆开 source/draft/plan/readiness/task/record/runtime；任务 ID 改为字符串；多任务缓存按 Zone/用户/模型隔离；新任务 retry_of；取消边界；独立运行证据；声明驱动输入 schema；统一 sudo Mock 适配；Task Center 共用身份；移除旧缓存迁移、假信任、假运行成功、任意 grant 和 Settings 假保存。
 
 测试文件：`tests/e2e/pages/app-service.spec.ts` 与 `app-installer.spec.ts`。覆盖 UI 主路径及独立的 schema、并发幂等和异步检查失效验证；所有 UI 用例收集 pageerror、console.error 和意外 `/kapi/` 请求。截图与最终执行结果见[执行清单](../../../../../../notepads/app-service-beta2.2-prototype-todo.md)。
+
+## Real local PIKG inspection
+
+Outside the mock runtime, the device picker calls WebSDK `importFiles` / `ensureUploaded`, then `apps.staging.finalize({source_obj_id,size,purpose:"inspect"})` and `apps.inspect({source:{kind:"local_pikg",staging_handle}})`. The server validates the package manifest and all payloads, computes the whole-package digest, and enforces original-caller NDM read permission. The browser does not reread the package for a second digest or upload its bytes twice.
+
+The result is an inspection only: it displays the authoritative package identity, digest, and readiness. Real install plan editing/approval/submission is not wired to this page yet; Continue stays disabled and a clear message says no application was installed. The fixture store is inaccessible to real source analysis. Personal Server fixture selection and identifier import remain mock-only until their real consumers are connected. Cancellation and source replacement stop SDK work; late staging responses release their own handle. Closing/replacing a successful inspection also releases that handle, with server TTL as the crash fallback.

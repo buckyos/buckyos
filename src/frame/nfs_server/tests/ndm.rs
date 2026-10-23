@@ -235,6 +235,7 @@ async fn uploads_belong_to_their_session_and_resume() {
         .await
         .unwrap();
     assert_eq!(lookup.status(), StatusCode::OK, "existence checks serve upload dedupe");
+    assert_eq!(lookup.json::<Value>().await.unwrap()["reusable"], false);
 
     // A finished upload holds its chunk, the registration its object, through a GC.
     let store = srv.state.share.store(&srv.state.config).await.unwrap();
@@ -242,6 +243,119 @@ async fn uploads_belong_to_their_session_and_resume() {
     let report = store.get_store(&id).await.unwrap().lock().await.gc_round(0).await.unwrap();
     assert_eq!(report.evicted_objects, 0, "{report:?}");
     assert!(store.is_object_exist(&file_id).await.unwrap());
+}
+
+#[tokio::test]
+async fn import_finalize_requires_complete_owned_dependencies_and_is_retryable() {
+    let srv = start(3600).await;
+    let (alice, bob) = (user("alice"), user("bob"));
+    let data = b"finalize file contents";
+    let (id, body) = file_of("ready.txt", data);
+    let manifest = json!({"objects": [{"obj_id": id.to_string(), "obj_data": body}], "roots": [id.to_string()]});
+    let endpoint = "/ndm/v1/import/finalize";
+    assert_eq!(srv.rpc(&None, endpoint, manifest.clone()).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(srv.rpc(&alice, endpoint, manifest.clone()).await.0, StatusCode::CONFLICT);
+    assert!(srv.write_chunk(&alice, data).await.is_success());
+    assert_eq!(srv.rpc(&bob, endpoint, manifest.clone()).await.0, StatusCode::CONFLICT);
+    for _ in 0..2 {
+        let (status, result) = srv.rpc(&alice, endpoint, manifest.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["ready"], true);
+        assert_eq!(result["roots"][0]["obj_id"], id.to_string());
+    }
+    assert_eq!(open(&srv, &alice, &id).await, StatusCode::OK);
+    assert_eq!(open(&srv, &bob, &id).await, StatusCode::FORBIDDEN);
+    let store = srv.state.share.store(&srv.state.config).await.unwrap();
+    let retention = store.debug_dump_expand_state(&id).await.unwrap();
+    assert!(retention.has_recursive_pin && retention.children_expanded);
+    let reused = srv.create(&bob, data, "known.txt").await;
+    assert_eq!(header(&reused, "upload-offset"), "0", "knowing a chunk hash must not grant its bytes");
+    let mut corrupt = manifest;
+    corrupt["objects"][0]["obj_data"] = json!("{}");
+    assert_eq!(srv.rpc(&alice, endpoint, corrupt).await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn import_finalize_handles_chunk_lists_in_dependency_order() {
+    let srv = start(3600).await;
+    let alice = user("alice");
+    let first = b"first chunk";
+    let second = b"second chunk";
+    for bytes in [first.as_slice(), second.as_slice()] {
+        assert!(srv.write_chunk(&alice, bytes).await.is_success());
+    }
+    let (list, list_body) = ndn_lib::ChunkList::from_chunk_list(vec![chunk_of(first), chunk_of(second)]).unwrap().gen_obj_id();
+    let (file, file_body) = ndn_lib::FileObject::new("chunks.txt".into(), (first.len() + second.len()) as u64, list.to_string()).gen_obj_id();
+    let manifest = json!({"objects": [
+        {"obj_id": file.to_string(), "obj_data": file_body},
+        {"obj_id": list.to_string(), "obj_data": list_body}
+    ], "roots": [file.to_string()], "qcid_links": [{"qcid": "bad", "content_id": list.to_string(), "size": 23}]});
+    let (status, result) = srv.rpc(&alice, "/ndm/v1/import/finalize", manifest).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["ready"], true);
+    assert_eq!(result["warnings"].as_array().unwrap().len(), 1);
+    let store = srv.state.share.store(&srv.state.config).await.unwrap();
+    let (mut reader, _) = store.open_reader(&file, None).await.unwrap();
+    let mut bytes = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut bytes).await.unwrap();
+    assert_eq!(bytes, [first.as_slice(), second.as_slice()].concat());
+}
+
+#[tokio::test]
+async fn import_holdings_follow_the_user_and_canonical_app_instance() {
+    let srv = start(3600).await;
+    let alice = Some(token("alice", TokenPrincipalKind::User, "app:testapp@alice"));
+    let shared = Some(token("alice", TokenPrincipalKind::User, "app:testapp@bob"));
+    let bob = Some(token("bob", TokenPrincipalKind::User, "app:testapp@bob"));
+    let data = b"same bytes, separate authorized holdings";
+    let (id, body) = file_of("shared.txt", data);
+    let manifest = json!({"objects": [{"obj_id": id.to_string(), "obj_data": body}], "roots": [id.to_string()]});
+    assert!(srv.write_chunk(&alice, data).await.is_success());
+    assert_eq!(srv.rpc(&alice, "/ndm/v1/import/finalize", manifest.clone()).await.0, StatusCode::OK);
+    for other in [&shared, &bob] {
+        assert_eq!(srv.rpc(other, "/ndm/v1/import/finalize", manifest.clone()).await.0, StatusCode::CONFLICT);
+        assert_eq!(open(&srv, other, &id).await, StatusCode::FORBIDDEN);
+    }
+    assert!(srv.write_chunk(&shared, data).await.is_success());
+    assert_eq!(srv.rpc(&shared, "/ndm/v1/import/finalize", manifest).await.0, StatusCode::OK);
+    assert_eq!(open(&srv, &shared, &id).await, StatusCode::OK);
+    assert_eq!(open(&srv, &bob, &id).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn empty_tus_upload_is_ready_without_a_patch() {
+    let srv = start(3600).await;
+    let alice = user("alice");
+    let upload = srv.create(&alice, b"", "empty").await;
+    assert!(upload.status().is_success());
+    assert_eq!(header(&upload, "ndm-chunk-object-id"), chunk_of(b"").to_string());
+    let (id, body) = file_of("empty", b"");
+    let (status, result) = srv.rpc(&alice, "/ndm/v1/import/finalize", json!({"objects":[{"obj_id":id.to_string(),"obj_data":body}],"roots":[id.to_string()]})).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["ready"], true);
+}
+
+#[tokio::test]
+async fn qcid_reuse_preserves_single_chunk_identity_and_checks_sampled_bytes() {
+    let srv = start(3600).await;
+    let alice = user("alice");
+    let data = vec![71; 48 * 1024];
+    assert!(srv.write_chunk(&alice, &data).await.is_success());
+    let qcid = ndn_lib::calc_quick_hash_by_buffer(&data).unwrap().to_string();
+    let (file, body) = file_of("medium.bin", &data);
+    let mut manifest = json!({"objects":[{"obj_id":file.to_string(),"obj_data":body}],"roots":[file.to_string()],
+        "qcid_links":[{"qcid": qcid,"content_id": chunk_of(&data).to_string(),"size":data.len()}]});
+    let (status, result) = srv.rpc(&alice, "/ndm/v1/import/finalize", manifest.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["warnings"], json!([]));
+    let lookup: Value = srv.http.get(format!("{}/ndm/v1/objects/lookup?scope=app&quick_hash={qcid}", srv.base)).bearer_auth(alice.as_ref().unwrap()).send().await.unwrap().json().await.unwrap();
+    assert_eq!(lookup["reusable"], true, "{lookup}");
+    assert_eq!(lookup["content_id"], chunk_of(&data).to_string());
+    assert_eq!(srv.http.get(format!("{}/ndm/v1/objects/lookup?scope=invalid&quick_hash={qcid}", srv.base)).bearer_auth(alice.as_ref().unwrap()).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+    manifest["qcid_links"][0]["qcid"] = json!(ndn_lib::calc_quick_hash_by_buffer(&vec![72; data.len()]).unwrap().to_string());
+    let (_, invalid) = srv.rpc(&alice, "/ndm/v1/import/finalize", manifest).await;
+    assert_eq!(invalid["ready"], true);
+    assert_eq!(invalid["warnings"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -338,4 +452,59 @@ async fn proxy_permissions_separate_uploads_reads_retention_and_management() {
     assert_eq!(srv.proxy_call(&owner, "outbox_count", json!({})).await.0, StatusCode::OK);
     assert_eq!(srv.proxy_call(&owner, "unpin", json!({"obj_id": file_id.to_string(), "owner": own})).await.0, StatusCode::NO_CONTENT);
     assert_eq!(srv.proxy_call(&owner, "remove_object", json!({"obj_id": other_id.to_string()})).await.0, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn commit_named_objects_materializes_chunklists_and_directories_with_acl() {
+    let srv = start(3600).await;
+    let alice = user("alice");
+    let bob = user("bob");
+    let store = nfs_server::ndm::store(&srv.state).await.unwrap();
+    let chunks = [b"first".as_slice(), b"second".as_slice()];
+    for bytes in chunks { assert!(srv.write_chunk(&alice, bytes).await.is_success()); }
+    let (list_id, list_json) = ndn_lib::ChunkList::from_chunk_list(chunks.iter().map(|data| chunk_of(data)).collect()).unwrap().gen_obj_id();
+    assert!(srv.store_call(&alice, "put_object", json!({"obj_id": list_id.to_string(), "obj_data": list_json})).await.0.is_success());
+    let file = ndn_lib::FileObject::new("data.txt".into(), 11, list_id.to_string());
+    let (file_id, file_json) = file.gen_obj_id();
+    assert!(srv.store_call(&alice, "put_object", json!({"obj_id":file_id.to_string(), "obj_data":file_json})).await.0.is_success());
+    let empty = ndn_lib::DirObject::new(Some("empty".into()));
+    let (empty_id, empty_json) = empty.gen_obj_id().unwrap();
+    assert!(srv.store_call(&alice, "put_object", json!({"obj_id":empty_id.to_string(), "obj_data":empty_json})).await.0.is_success());
+    let mut dir = ndn_lib::DirObject::new(Some("root".into()));
+    dir.object_map.body.insert("data.txt".into(), ndn_lib::SimpleMapItem::ObjId(file_id.clone()));
+    dir.object_map.body.insert("empty".into(), ndn_lib::SimpleMapItem::ObjId(empty_id));
+    let (dir_id, dir_json) = dir.gen_obj_id().unwrap();
+    assert!(srv.store_call(&alice, "put_object", json!({"obj_id":dir_id.to_string(), "obj_data":dir_json})).await.0.is_success());
+    assert!(store.is_object_stored(&dir_id, None).await.unwrap());
+    let (_, hello) = srv.rpc(&alice, "/nfs/v1/hello", json!({"args":{}})).await;
+    let session = hello["result"]["session"].as_str().unwrap();
+    let request = json!({"session":session,"seq":1,"at":{"path":"/home/alice"},"args":{"name":"folder","obj_id":dir_id.to_string()}});
+    let (status, committed) = srv.rpc(&alice, "/nfs/v1/commit_object", request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{committed}");
+    assert_eq!(committed["result"]["kind"], "dir");
+    let home = &srv.state.config.root("home").unwrap().path;
+    assert_eq!(std::fs::read(home.join("alice/folder/data.txt")).unwrap(), b"firstsecond");
+    assert!(home.join("alice/folder/empty").is_dir());
+    let (_, replay) = srv.rpc(&alice, "/nfs/v1/commit_object", request).await;
+    assert_eq!(replay["result"], committed["result"]);
+    let (status, _) = srv.rpc(&alice, "/nfs/v1/commit_object", json!({"session":session,"seq":2,"at":{"path":"/home/alice"},"args":{"name":"folder","obj_id":dir_id.to_string()}})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = srv.rpc(&alice, "/nfs/v1/commit_object", json!({"session":session,"seq":3,"at":{"path":"/home/alice"},"args":{"name":"other","obj_id":file_id.to_string(),"expected_revision":"stale"}})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // A different existing tree is never replaced, even with overwrite=true.
+    std::fs::write(home.join("alice/folder/data.txt"), b"edited locally").unwrap();
+    let (status, _) = srv.rpc(&alice, "/nfs/v1/commit_object", json!({"session":session,"seq":4,"at":{"path":"/home/alice"},"args":{"name":"folder","obj_id":dir_id.to_string(),"overwrite":true}})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(std::fs::read(home.join("alice/folder/data.txt")).unwrap(), b"edited locally");
+    assert!(std::fs::read_dir(home.join("alice")).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".nfs_import_")));
+    #[cfg(unix)] {
+        std::os::unix::fs::symlink(home.join("alice/folder"), home.join("alice/link")).unwrap();
+        let (status, _) = srv.rpc(&alice, "/nfs/v1/commit_object", json!({"session":session,"seq":5,"at":{"path":"/home/alice/link/empty"},"args":{"name":"escaped","obj_id":dir_id.to_string()}})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!home.join("alice/folder/empty/escaped").exists());
+    }
+    let (_, bob_hello) = srv.rpc(&bob, "/nfs/v1/hello", json!({"args":{}})).await;
+    let (status, _) = srv.rpc(&bob, "/nfs/v1/commit_object", json!({"session":bob_hello["result"]["session"],"seq":1,"at":{"path":"/home/bob"},"args":{"name":"stolen","obj_id":dir_id.to_string()}})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!home.join("bob/stolen").exists());
 }

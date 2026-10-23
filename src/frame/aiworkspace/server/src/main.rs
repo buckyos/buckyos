@@ -37,6 +37,8 @@ fn main() {
         .arg(Arg::new("data-dir").long("data-dir").help("Data directory (standalone mode)"))
         .arg(Arg::new("listen").long("listen").help("Address to listen on (standalone; default 127.0.0.1:4120)"))
         .arg(Arg::new("auth-file").long("auth-file").help("Static test identities JSON (standalone mode)"))
+        .arg(Arg::new("named-store-config").long("named-store-config").requires("ndm-gateway").requires("data-dir").help("NamedStore configuration for standalone object imports"))
+        .arg(Arg::new("ndm-gateway").long("ndm-gateway").requires("named-store-config").help("Trusted NDM gateway URL for caller authorization"))
         .arg(Arg::new("fixture-sources").long("fixture-sources").action(ArgAction::SetTrue).help("Register the generated fixture:// data source (dev/test)"))
         .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { provider: { type, base_url, api_key_env }, analyze_model, execute_model, map_model, deno, … }"))
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
@@ -70,7 +72,8 @@ fn main() {
                 }
             }
         }
-        rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), Limits::default(), fixtures, None, wish));
+        let named_import = matches.get_one::<String>("named-store-config").map(|config| (PathBuf::from(config), matches.get_one::<String>("ndm-gateway").unwrap().clone()));
+        rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), Limits::default(), fixtures, None, wish, named_import));
     } else {
         init_logging("aiworkspace", true);
         rt.block_on(buckyos_service_main(matches.get_flag("fixture-sources")));
@@ -142,11 +145,11 @@ async fn buckyos_service_main(fixtures: bool) {
     log::info!("aiworkspace buckyos mode: data in {}", data_dir.display());
     // models are reached through AICC with this service's session, on behalf of the user each run is charged to
     let wish = WishConfig::from_settings(&settings.wish, serde_json::json!({ "type": "buckyos" }));
-    run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish).await;
+    run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish, None).await;
 }
 
 async fn run(data_dir: PathBuf, listen: String, auth: Arc<dyn Authenticator>, limits: Limits, fixtures: bool,
-             wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: WishConfig) {
+             wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: WishConfig, named_import: Option<(PathBuf, String)>) {
     let mut svc = match Service::open(&data_dir) {
         Ok(s) => s,
         Err(e) => {
@@ -163,6 +166,12 @@ async fn run(data_dir: PathBuf, listen: String, auth: Arc<dyn Authenticator>, li
         log::warn!("failpoint armed: {spec}");
     }
     let state = AppState::new(svc, auth, limits, wake, wish);
+    if let Some((config, gateway)) = named_import {
+        match named_store::NamedDataMgr::get_store_mgr(&config, &Default::default()).await {
+            Ok(store) => { let _ = state.named_import.set((store, gateway)); }
+            Err(error) => { eprintln!("named store startup failed: {error}"); std::process::exit(1); }
+        }
+    }
     if let Err(e) = aiworkspace_server::serve(state, &listen).await {
         log::error!("server error on {listen}: {e}");
         eprintln!("server error on {listen}: {e}");

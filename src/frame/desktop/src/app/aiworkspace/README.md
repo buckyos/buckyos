@@ -10,6 +10,10 @@ its source directory and Desktop entry have been removed. Current test routing i
 There is **no mock backend**. In the Desktop's mock runtime the app says so and stays empty unless the
 dev override below points it at a real backend process.
 
+File/folder import is available in the data tree and canvas insert catalog. `OnlineWorkspaceSession.importAssets` uses SDK NDM import → ready → `asset.import_object`, preserving the selected directory root and mapping leaves to workspace AssetRefs. `importedAssetOps` builds one structure commit; canvas imports add matching groups/cells. Each asset keeps the existing 32 MiB limit and local ObjectStore ID, so exports and prepared offline replicas continue to contain the bytes. Image replacement and derived snapshots use `uploadAsset`, which shares this NDM path. Offline sessions reject imports while disconnected; cancellation or refresh does not preserve browser File handles, and retry requires reselecting the source. FileList pickers cannot represent empty folders, as stated beside the picker.
+
+`tests/aiworkspace/features.spec.ts` exercises a real browser, isolated NDM and AIWorkspace processes: nested Chinese/space paths, equal-content files in different folders, zero-byte assets, byte readback, ID deduplication and refresh. The existing image replacement/embed/link regression runs against the same fixture.
+
 ## Structure
 
 ```text

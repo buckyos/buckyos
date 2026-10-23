@@ -82,6 +82,7 @@ export interface Transport {
   restricted(): Promise<boolean>
   /** The service told who the caller is (`ws.get_info.principal`): the only way a guest learns its principal. */
   learnPrincipal(principal: string): void
+  importOptions(): Promise<{ endpoint: string; sessionToken: string | null }>
   /** kRPC call; resolves with `result` (business results live there), rejects with TransportError. */
   call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T>
   /** `PUT /upload/<upload_id>`. */
@@ -140,6 +141,7 @@ class DevOverrideTransport implements Transport {
   async isGuest(): Promise<boolean> { return this.guest }
   async restricted(): Promise<boolean> { return this.limited }
   learnPrincipal(principal: string) { if (this.guest) this.principalHint = principal }
+  async importOptions() { return { endpoint: new URL(this.base, window.location.origin).origin, sessionToken: this.token } }
 
   call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     return guestCall<T>(this.base, method, params, this.token, this.seq++, signal)
@@ -196,6 +198,7 @@ class ZoneTransport implements Transport {
   }
 
   learnPrincipal(principal: string) { if (isGuestPrincipal(principal)) this.principalHint = principal }
+  async importOptions() { return { endpoint: new URL(this.base(), window.location.origin).origin, sessionToken: await this.token() } }
 
   private client() {
     return buckyos.getServiceRpcClient(SERVICE_NAME)

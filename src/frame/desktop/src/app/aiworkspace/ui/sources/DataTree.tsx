@@ -3,13 +3,13 @@
  * folder, move, and deletion with the pre-check that names only visible referrers. Blocks are not
  * shown here; pure UI Blocks are managed on the canvas. */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { randomId } from '../../api/ids'
 import { describeError } from '../../api/session'
 import type { EntityEnvelope, Operation } from '../../api/types'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
-import { TYPE_LABEL, entityLabel, newDataOps, type NewDataKind } from './dataOps'
+import { TYPE_LABEL, entityLabel, importedAssetOps, newDataOps, type NewDataKind } from './dataOps'
 import { FreshnessBadge } from './FreshnessBadge'
 
 type TypeFilter = 'all' | 'buckyos.table-source' | 'buckyos.richtext' | 'buckyos.record' | 'buckyos.asset-ref' | 'buckyos.annotation' | 'buckyos.wish' | 'buckyos.block-def'
@@ -105,6 +105,9 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
   const target = folder && folder.kind !== 'surfaces' && folder.kind !== 'surface' && folder.kind !== 'group' && folder.entity_id !== 'shows' ? folder : store.outline.get('data')
   const [kind, setKind] = useState<NewDataKind>('table')
   const [title, setTitle] = useState('')
+  const importController = useRef<AbortController | null>(null)
+  const [importing, setImporting] = useState(false)
+  useEffect(() => () => importController.current?.abort(), [])
   const [deleting, setDeleting] = useState<{ referrers: { entity_id: string; target: string }[]; hidden: boolean } | null>(null)
   const canCreate = Boolean(target?.capabilities.includes('structure'))
   const create = async () => {
@@ -122,6 +125,22 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
       const outcome = await store.submit({ editId: `new-data:${id}`, label: t('aiworkspace.data.tree.importImageEdit', { name: file.name }), operations: [{ op: 'entity.create', entity_id: id, type_id: 'buckyos.asset-ref', parent_id: target.entity_id, order_key: key, name: file.name, payload: { object_id: uploaded.object_id, file_name: file.name } }] })
       if (outcome.status === 'accepted' || outcome.status === 'saved_locally') onSelect(id)
     } catch (error) { store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) })) }
+  }
+  const importFiles = async (files: File[], folder: boolean) => {
+    if (!target || importing) return
+    const controller = new AbortController()
+    importController.current = controller
+    setImporting(true)
+    try {
+      const items = await store.session.importAssets(files, folder, controller.signal)
+      controller.signal.throwIfAborted()
+      const operations = importedAssetOps(store, target.entity_id, items)
+      const id = randomId('import')
+      const result = await store.submit({ editId: id, label: t('aiworkspace.data.tree.importFiles'), operations })
+      if (result.status === 'accepted' || result.status === 'saved_locally') onSelect(operations[0].entity_id as string)
+    } catch (error) {
+      if (!controller.signal.aborted) store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) }))
+    } finally { setImporting(false); importController.current = null }
   }
   const precheck = async () => {
     if (!entity) return
@@ -160,6 +179,10 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
           <input aria-label={t('aiworkspace.data.tree.titleField')} placeholder={t('aiworkspace.data.tree.titlePlaceholder')} value={title} onChange={(event) => setTitle(event.target.value)} />
           <button type="submit" data-testid="aiws-new-data">{t('aiworkspace.data.tree.create')}</button>
           <label className="aiws-link">{t('aiworkspace.data.tree.image')}<input type="file" hidden accept="image/*" data-testid="aiws-new-image" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void addImage(file) }} /></label>
+          <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, false) }} /></label>
+          {'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, true) }} /></label>}
+          <span className="aiws-muted">{t('aiworkspace.data.tree.folderLimit')}</span>
+          {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}
         </form>
       )}
       {entity && !isSystem && entity.system !== 'surface_content' && (

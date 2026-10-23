@@ -1,4 +1,4 @@
-import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
+import { attachmentSize, type AttachmentDirectory, type ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import type { z } from 'zod'
 import { createCodeAssistantMockReaders } from '../../codeassistant/mockHistory'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
@@ -13,7 +13,7 @@ import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
 import { isHiddenAccount } from '../api/projection'
-import { mockObjectAccess, registerMockUpload } from './objects'
+import { mockObjectAccess, registerMockUpload, registerMockDirectory } from './objects'
 import { mockAgentGroupAllowed } from '../../../api/control_panel_mock'
 import { MOCK_NOTIFY_SENDER, mockNotifyEntity, mockNotifyMessages, mockNotifySessions } from './notify'
 import { translate } from '../translate'
@@ -63,7 +63,7 @@ type Snapshot = {
   policies: Record<string, CreationPolicy>
   drafts: Record<string, string>
   draftAttachments: Record<string, ComposerAttachmentInput[]>
-  uploads: Record<string, { name: string; blob: Blob }>
+  uploads: Record<string, { name: string; blob: Blob; directory?: AttachmentDirectory }>
   /** The seed's pinned / muted entities; a flag holds until pin or mute is written for that entity, then its sessions' preferences decide as in the real store. */
   seedFlags?: Record<string, { isPinned?: boolean; isMuted?: boolean }>
 }
@@ -342,7 +342,7 @@ export class MessageHubMockStore implements MessageHubStore {
     }
     if (stored) this.snapshot = { ...stored, hidden: stored.hidden ?? {}, uploads: stored.uploads ?? {} }
     else await this.persist(this.snapshot)
-    for (const [objId, upload] of Object.entries(this.snapshot.uploads)) registerMockUpload(objId, upload.name, upload.blob)
+    for (const [objId, upload] of Object.entries(this.snapshot.uploads)) { if (upload.directory) registerMockDirectory(objId, upload.directory); else registerMockUpload(objId, upload.name, upload.blob) }
     this.listeners.forEach(listener => listener())
   }
   private persist(snapshot: Snapshot) {
@@ -612,24 +612,26 @@ export class MessageHubMockStore implements MessageHubStore {
     try {
       show({ phase: 'preparing' })
       const files: File[] = []
-      for (const item of payload.attachments) files.push(await normalizeImageFile(item.file))
-      const total = files.reduce((sum, file) => sum + file.size, 0)
+      for (const item of payload.attachments) files.push(item.directory ? item.file : await normalizeImageFile(item.file))
+      const total = payload.attachments.reduce((sum, item) => sum + attachmentSize(item), 0)
       const steps = 4
       for (let step = 0; step <= steps; step++) {
         show({ phase: 'uploading', loaded: Math.round((total * step) / steps), total })
+        payload.signal?.throwIfAborted()
         if (step < steps && this.uploadMs) await new Promise(resolve => setTimeout(resolve, this.uploadMs / steps))
       }
+      payload.signal?.throwIfAborted()
       const uploads = files.map((file, index) => {
         const label = payload.attachments[index].relativePath || payload.attachments[index].file.name
-        return { objId: `cyfile:mock-upload-${crypto.randomUUID()}`, name: file === payload.attachments[index].file ? label : jpegName(label), file }
+        return { objId: `${payload.attachments[index].directory ? 'cydir' : 'cyfile'}:mock-upload-${crypto.randomUUID()}`, name: file === payload.attachments[index].file ? label : jpegName(label), file, directory: payload.attachments[index].directory }
       })
       message.content = { ...message.content, refs: uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name })) }
       await this.sendMessage(context, id, message, confirmation, localId, next => {
-        for (const upload of uploads) next.uploads[upload.objId] = { name: upload.name, blob: upload.file }
+        for (const upload of uploads) next.uploads[upload.objId] = { name: upload.name, blob: upload.file, directory: upload.directory }
       })
       for (const upload of uploads) {
-        registerMockUpload(upload.objId, upload.name, upload.file)
-        rememberLocalObject(upload.objId, upload.file, upload.name)
+        if (upload.directory) registerMockDirectory(upload.objId, upload.directory)
+        else { registerMockUpload(upload.objId, upload.name, upload.file); rememberLocalObject(upload.objId, upload.file, upload.name) }
       }
     } finally {
       this.sendingLocalIds.delete(localId)

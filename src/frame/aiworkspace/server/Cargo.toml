@@ -29,9 +29,11 @@ buckyos-kit = { workspace = true }
 buckyos-api = { path = "../../../kernel/buckyos-api" }
 agent_tool = { path = "../../agent_tool" }
 llm_context = { path = "../../llm_context" }
+named_store = { workspace = true }
+ndn-lib = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-reqwest = { workspace = true }
 base64 = { workspace = true }
 loro = "1.16"

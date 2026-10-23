@@ -7,17 +7,8 @@ use common::*;
 use serde_json::{json, Value};
 
 async fn upload(net: &Net, name: &str, file: &str, mime: &str, data: Vec<u8>) -> Value {
-    let node = net.n(name);
-    net.http
-        .put(format!("{}/kapi/homestation/upload?name={file}&mime={mime}&width=4&height=3", node.base))
-        .header("authorization", format!("Bearer {}", node.token))
-        .body(data)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap()
+    let (id, object) = net.n(name).station.store_file(file, mime, data, json!({ "width": 4, "height": 3 })).await.unwrap();
+    json!({ "objId": id, "file": homestation::projection::file_view(&object), "object": object })
 }
 
 async fn reading(net: &Net, name: &str, query: Value) -> Value {

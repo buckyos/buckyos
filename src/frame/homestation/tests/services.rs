@@ -7,19 +7,7 @@ use common::*;
 use serde_json::{json, Value};
 
 async fn upload_text(net: &Net, name: &str, file: &str, text: &str) -> String {
-    let node = net.n(name);
-    let v: Value = net
-        .http
-        .put(format!("{}/kapi/homestation/upload?name={file}&mime=text/markdown", node.base))
-        .header("authorization", format!("Bearer {}", node.token))
-        .body(text.as_bytes().to_vec())
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    v["objId"].as_str().unwrap().to_string()
+    net.n(name).station.store_file(file, "text/markdown", text.as_bytes().to_vec(), Value::Null).await.unwrap().0
 }
 
 /// A57–A62, E20–E22: identity and content targets without any Feed entry, paths bound to a
@@ -182,7 +170,7 @@ async fn permission_boundaries() {
         .unwrap()
         .status()
         .as_u16();
-    assert_eq!(status, 403);
+    assert_eq!(status, 404);
     // A bad token is refused, an anonymous portal read works.
     assert!(net.try_rpc_token("alice", "nope", "profile.get", json!({})).await.unwrap_err().contains("unauthorized"));
     assert!(net.try_rpc_token("alice", "nope", "portal.home", json!({})).await.unwrap()["viewer"].is_null());

@@ -128,7 +128,7 @@ export interface HomeStationStore {
   retryPublish(key: string): Promise<PublishTask>
   retryDelivery(entry: EntryUrl): Promise<void>
   shareCapture(objId: ObjId): Promise<PublishTask>
-  uploadAttachment(file: File, kind: AttachmentInput['kind']): Promise<ObjId>
+  uploadAttachment(file: File | readonly File[], kind: AttachmentInput['kind'], options?: import('../api/transport').UploadOptions): Promise<ObjId>
   fetchLinkPreview(url: string): Promise<{ title: string; summary: string }>
 
   resolveSourceInput(kind: SourceResolution['inputKind'], text: string): Promise<SourceResolution>

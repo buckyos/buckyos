@@ -22,6 +22,7 @@
 //! own retention.
 
 pub mod forward;
+pub mod import;
 pub mod uploads;
 
 use crate::auth::Credentials;
@@ -71,6 +72,13 @@ CREATE TABLE IF NOT EXISTS ndm_holdings(
   how TEXT NOT NULL,
   at INTEGER NOT NULL,
   PRIMARY KEY(principal, obj_id)
+);
+CREATE TABLE IF NOT EXISTS ndm_import_qcids(
+  principal TEXT NOT NULL,
+  qcid TEXT NOT NULL,
+  content_id TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  PRIMARY KEY(principal, qcid)
 );
 "#;
 
@@ -238,6 +246,16 @@ pub async fn lease(store: &NamedDataMgr, obj_id: &ObjId, owner: &str) {
 pub async fn hold(state: &AppState, store: &NamedDataMgr, p: &Principal, obj_id: &ObjId, how: &str) {
     record_holding(state, p, obj_id, how);
     lease(store, obj_id, &p.hold_owner()).await;
+}
+
+pub async fn hold_checked(state: &AppState, store: &NamedDataMgr, p: &Principal, obj_id: &ObjId, how: &str) -> Result<(), Response> {
+    store.pin(obj_id, &p.hold_owner(), PinScope::Recursive, Some(std::time::Duration::from_secs(HOLD_TTL_SECS))).await
+        .map_err(|e| ndm_error(StatusCode::SERVICE_UNAVAILABLE, "retention_failed", e))?;
+    state.db.lock().execute(
+        "INSERT INTO ndm_holdings(principal, obj_id, how, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(principal, obj_id) DO UPDATE SET at=excluded.at",
+        params![p.key(), obj_id.to_string(), how, unix_now()],
+    ).map_err(|e| ndm_error(StatusCode::SERVICE_UNAVAILABLE, "retention_failed", e))?;
+    Ok(())
 }
 
 /// Read access to one object or chunk: the general read right, or the caller's own holding.

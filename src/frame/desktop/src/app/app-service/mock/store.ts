@@ -313,6 +313,9 @@ export class AppServiceMockStore {
     onProgress?: (state: 'preparing' | 'importing', percent: number) => void,
     signal?: AbortSignal,
   ): Promise<SourceParseResult> {
+    // Real device uploads are handled by the NDM/staging/inspect bridge. Other
+    // installer entrypoints must never turn real input into fixture plans.
+    if (!isMockRuntime()) return { ok: false, code: 'PIKG_BRIDGE_REQUIRED' }
     const scope = scopeStorageKey(this.scope)
     const canceled = () =>
       signal?.aborted || scope !== scopeStorageKey(this.scope)

@@ -1,8 +1,57 @@
 import type { Page } from '@playwright/test'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, expectAllCommitted, openApp, openWorkspace, test, closeWorkspace, openSide } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
+
+test('named imports preserve folder structure and workspace asset bytes after refresh', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `named import ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-top-sources').click()
+  const temporary = mkdtempSync(join(tmpdir(), 'aiws-import-'))
+  const root = join(temporary, '资料 folder')
+  mkdirSync(join(root, 'nested'), { recursive: true })
+  const contents = Buffer.alloc(48 * 1024, 73)
+  writeFileSync(join(root, 'same.txt'), contents)
+  writeFileSync(join(root, 'nested', 'same.txt'), contents)
+  writeFileSync(join(root, 'empty.txt'), '')
+  try {
+    await page.getByTestId('aiws-import-folder').setInputFiles(root)
+    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(1)
+    const entities = await api.outline(ALICE, ws.workspace_id)
+    const directory = entities.find(e => e.name === '资料 folder')
+    const nested = entities.find(e => e.parent_id === directory.entity_id && e.name === 'nested')
+    expect(directory.type_id).toBe('buckyos.container')
+    expect(nested.type_id).toBe('buckyos.container')
+    const leaves = entities.filter(e => [directory.entity_id, nested.entity_id].includes(e.parent_id) && e.type_id === 'buckyos.asset-ref')
+    expect(leaves).toHaveLength(3)
+    const ids: string[] = []
+    for (const leaf of leaves) {
+      const asset = await api.read(ALICE, ws.workspace_id, leaf.entity_id)
+      const id = asset.content.payload.object_id
+      ids.push(id)
+      const response = await fetch(`${api.base}/asset/${ws.workspace_id}/${id}`, { headers: { authorization: `Bearer ${ALICE}` } })
+      expect(response.ok).toBe(true)
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(leaf.name === 'empty.txt' ? Buffer.alloc(0) : contents)
+    }
+    expect(new Set(ids).size).toBe(2)
+    await openWorkspace(page, ALICE, ws.workspace_id)
+    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(1)
+    await page.getByTestId('aiws-top-canvas').click()
+    await page.getByTestId('aiws-tool-catalog').click()
+    await page.getByTestId('aiws-catalog-import-folder').setInputFiles(root)
+    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(2)
+    const canvasEntities = await api.outline(ALICE, ws.workspace_id)
+    const importedGroup = canvasEntities.find(e => e.kind === 'group' && e.title === '资料 folder')
+    expect(importedGroup).toBeTruthy()
+    const nestedGroup = canvasEntities.find(e => e.kind === 'group' && e.parent_id === importedGroup.entity_id)
+    expect(nestedGroup.title).toBe('nested')
+    expect(canvasEntities.filter(e => [importedGroup.entity_id, nestedGroup.entity_id].includes(e.parent_id) && e.view_type === 'asset')).toHaveLength(3)
+  } finally { rmSync(temporary, { recursive: true, force: true }) }
+})
 
 function notesBlock(page: Page, blockId: string) {
   return page.getByTestId('aiws-richtext-notes').locator(`[data-block-id="${blockId}"]`)

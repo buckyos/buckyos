@@ -88,12 +88,16 @@ function loadMedia<T>(file: File, tag: 'img' | 'video' | 'audio', read: (element
 
 async function uploadMeta(file: File, kind: AttachmentInput['kind']): Promise<UploadMeta> {
   const meta: UploadMeta = { name: file.name, mime: file.type || 'application/octet-stream' }
+  if (kind === 'file' || kind === 'dir') return meta
+  if (!file.size || !file.type.startsWith(`${kind}/`)) throw new Error(`Expected a non-empty ${kind} file.`)
   if (kind === 'image') {
     const size = await loadMedia(file, 'img', element => ({ width: (element as HTMLImageElement).naturalWidth, height: (element as HTMLImageElement).naturalHeight }))
-    return size && size.width > 0 ? { ...meta, ...size } : meta
+    if (!size || !size.width || !size.height) throw new Error('The image could not be decoded.')
+    return { ...meta, ...size }
   }
   const duration = await loadMedia(file, kind, element => (element as HTMLMediaElement).duration)
-  return duration && Number.isFinite(duration) ? { ...meta, duration_ms: duration * 1000 } : meta
+  if (!duration || !Number.isFinite(duration)) throw new Error(`The ${kind} could not be decoded.`)
+  return { ...meta, duration_ms: duration * 1000 }
 }
 
 let storeCounter = 0
@@ -486,8 +490,9 @@ export function createApiHomeStationStore(transport: Transport): HomeStationStor
       await written(['published', 'profile', 'reading'], [objId])
       return task
     },
-    async uploadAttachment(file, kind) {
-      const uploaded = await transport.upload(file, await uploadMeta(file, kind))
+    async uploadAttachment(file, kind, options) {
+      const meta = kind === 'dir' ? { name: (file as readonly File[])[0]?.webkitRelativePath.split('/')[0] || 'folder', mime: 'application/x-directory' } : await uploadMeta(file as File, kind)
+      const uploaded = await transport.upload(file, meta, options)
       return uploaded.objId
     },
     fetchLinkPreview: url => call<{ title: string; summary: string }>('publish.link_preview', { url }),

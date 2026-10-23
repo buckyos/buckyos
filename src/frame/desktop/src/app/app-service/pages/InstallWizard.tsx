@@ -12,6 +12,8 @@ import {
 } from '../schemas'
 import type { PickedPikgFile, SourceParseResult } from '../types'
 import type { AppInstallerDialogParams } from '../../../sysdlg'
+import { isMockRuntime } from '../../../runtime'
+import { inspectPikgFile, releasePikgInspection, type PikgInspection } from '../realPikg'
 
 export function InstallWizard({
   onNavigate,
@@ -29,6 +31,14 @@ export function InstallWizard({
   const [pickerOpen, setPickerOpen] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [analysis, setAnalysis] = useState<SourceParseResult | null>(null)
+  const [realInspection, setRealInspection] = useState<PikgInspection | null>(null)
+  const [realError, setRealError] = useState<string | null>(null)
+  const stagedHandle = useRef<string | null>(null)
+  const releaseStaging = () => {
+    const handle = stagedHandle.current
+    stagedHandle.current = null
+    if (handle) void releasePikgInspection(handle).catch(error => console.warn('PIKG staging release failed; the handle will expire:', error))
+  }
   const [progress, setProgress] = useState<{
     state: 'preparing' | 'importing'
     percent: number
@@ -42,14 +52,36 @@ export function InstallWizard({
     void sourceRegistration.onChange(event)
     abort.current?.abort()
     setAnalysis(null)
+    setRealInspection(null)
+    setRealError(null)
+    releaseStaging()
     setProgress(null)
   }
-  useEffect(() => () => abort.current?.abort(), [])
+  useEffect(() => () => { abort.current?.abort(); releaseStaging() }, [])
   const analyze = async (input: string | PickedPikgFile) => {
     abort.current?.abort()
     const controller = new AbortController()
     abort.current = controller
     setAnalysis(null)
+    setRealInspection(null)
+    setRealError(null)
+    releaseStaging()
+    if (!isMockRuntime()) {
+      if (typeof input === 'string' || !input.file) { setRealError(t('app22.source.realDeviceOnly')); return }
+      try {
+        const inspected = await inspectPikgFile(input.file, controller.signal, (state, percent) => {
+          if (!controller.signal.aborted) setProgress({ state, percent })
+        })
+        if (controller.signal.aborted) { void releasePikgInspection(inspected.staging.handle); return }
+        stagedHandle.current = inspected.staging.handle
+        setRealInspection(inspected)
+      } catch (error) {
+        if (!controller.signal.aborted) setRealError(error instanceof Error ? error.message : String(error))
+      } finally {
+        if (!controller.signal.aborted) setProgress(null)
+      }
+      return
+    }
     const result = await store.analyzeInstallSource(
       input,
       (state, percent) => setProgress({ state, percent }),
@@ -242,6 +274,17 @@ export function InstallWizard({
           )}
         </section>
       )}
+      {realError && <section role="alert" className="break-words rounded-xl border border-[var(--cp-border)] p-4 text-sm">{realError}</section>}
+      {realInspection && <section data-testid="app-service-real-inspection" className="space-y-3 break-words rounded-xl border border-[var(--cp-border)] p-4 text-sm">
+        <h2 className="font-semibold">{t('app22.source.realValidated')}</h2>
+        <p>{realInspection.inspection.plan.app.show_name} · {realInspection.inspection.plan.app.version}</p>
+        <p className="text-xs">{realInspection.inspection.plan.app.did}</p>
+        <p className="text-xs">ObjId: {realInspection.sourceObjId}</p>
+        <p className="text-xs">SHA-256: {realInspection.staging.pikg_digest}</p>
+        {realInspection.inspection.status.warnings?.map((warning, index) => <p key={index}>{warning}</p>)}
+        <details><summary>{t('app22.source.realReadiness')}</summary><pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(realInspection.inspection.status.readiness, null, 2)}</pre></details>
+        <p>{t('app22.source.realInstallUnavailable')}</p>
+      </section>}
       <footer className="flex justify-end">
         <button
           type="button"

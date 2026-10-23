@@ -6,9 +6,9 @@
 >
 > 依据：[《BuckyOS AiWorkspace 核心架构设计冻结思路》](<BuckyOS AiWorkspace 核心架构设计冻结思路.md>)、围绕该文档的架构评审，以及当前仓库实现。
 >
-> 本文描述建议采用的目标契约。文中的“必须”“不得”约束目标设计，不表示相关能力已经全部实现；现有机制和后续工作在第十二节单独说明。冻结前必须确定的设计决策集中在第十三节，实施 TODO 在这些决策确认后推导。
+> 本文描述建议采用的目标契约。文中的“必须”“不得”约束目标设计，不表示相关能力已经全部实现；现有机制在 §12.1、§12.2 说明。冻结前必须确定的设计决策集中在第十三节（已全部确认），由其推导的实施 TODO 在 §12.3。
 >
-> 2026 年 10 月 22 日对 D01–D19 做了一轮深度 review，并按源码重新核对了各项“当前实现”。修正直接改在原处；对已确认决策的二阶后果、相互制约和待补裁决，以“**Review 补充**”段落写在对应决策之下；由 review 提出、尚待确认的新决策为 D20–D26（§13.6）。
+> 2026 年 10 月 22 日对 D01–D19 做了一轮深度 review，并按源码重新核对了各项“当前实现”。修正直接改在原处；对已确认决策的二阶后果、相互制约和待补裁决，以“**Review 补充**”段落写在对应决策之下；由 review 提出的新决策为 D20–D26（§13.6），已于 10 月 23 日确认。本文所称“托管执行模式”指经 AppLoader 启动一个 Agent Work Session 来执行任务（D23），不再使用“Agent 模式”“用户后台模式”两个名称。
 
 ## 一、改进目标与冻结范围
 
@@ -26,7 +26,7 @@
 | F12—F14：用户资源执行、身份分离、Owner 上限 | Workspace 作为任务发起端；执行上下文显式绑定身份与资源；执行意图可靠派发；委托绑定任务版本与能力范围 |
 | F15、F16：状态分域、固定版本演示 | 明确共享事务边界、运行状态归属、引用生命周期，以及演示依赖与保留规则 |
 
-许愿格需要补回本地执行模式，但当前首先需要修正的是执行归属：Workspace 服务不能因接收了用户任务，就默认成为该任务的计算宿主和权限来源。本轮应先建立各执行器共同遵守的执行上下文、数据读取、授权、运行和结果提交契约，再分别实现本地、用户后台和 Agent 模式。当前后端运行路径及已补充的 AICC 资源归属见 §12.2。
+许愿格需要补回本地执行模式，但当前首先需要修正的是执行归属：Workspace 服务不能因接收了用户任务，就默认成为该任务的计算宿主和权限来源。本轮应先建立各执行器共同遵守的执行上下文、数据读取、授权、运行和结果提交契约，再分别实现本地与托管执行两种模式（D23）。当前后端运行路径及已补充的 AICC 资源归属见 §12.2。
 
 ## 二、逻辑分层与状态归属
 
@@ -343,7 +343,7 @@ xllm 是可复用的执行组件。用户任务由哪个进程托管、使用哪
 | 资源归属 | AI 用量承担者、计算资源承担者、各自预算和拒绝规则；两者不必是同一主体 |
 | 委托与结果权限 | 绑定的任务版本、输入与输出范围、凭据或能力来源、有效期，以及取消和撤权规则 |
 
-本地模式使用当前用户明确授权的执行环境；后台模式由明确归属用户的执行环境承载，使用 Owner 资源时还需满足 §9.4 的委托要求；Agent 模式绑定具体 Agent 及其授权。不能只给任务填写一个 userid 或 appid 就视为已经建立隔离，也不能把所有任务默认归到 Workspace 服务名下。
+本地模式使用当前用户明确授权的执行环境；托管执行模式由 AppLoader 启动的 Agent Work Session 承载，绑定具体 Agent 及其授权，使用 Owner 的 Agent 与资源时还需满足 §9.4 的委托要求（D22）。不能只给任务填写一个 userid 或 appid 就视为已经建立隔离，也不能把所有任务默认归到 Workspace 服务名下。
 
 Workspace 服务可以作为经过授权的服务调用中介。例如，以服务 session 向 AICC 提交经过校验的 `on_behalf_of`，可以明确 AI 资源归属；这不意味着任务程序已在对应用户的执行环境中运行，也不自动授予文件、网络或结果写回权限。服务认证身份、有效资源归属和实际执行环境必须分别审计。
 
@@ -438,7 +438,7 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 生成程序由 [runner.rs](../../src/frame/aiworkspace/server/src/wish/runner.rs) 启动 Deno 子进程执行。该路径设置了工作目录读权限、output 写权限和不限主机的 `--allow-net`，并清理环境变量，但未切换 OS 用户或建立独立用户容器。Deno 只约束生成程序：execute 阶段的 `.llm_context` 以 `shell=true` 给模型 `bash` 工具组（[wish/llm.rs](../../src/frame/aiworkspace/server/src/wish/llm.rs) `llm_context`、[stages.rs](../../src/frame/aiworkspace/server/src/wish/stages.rs) `execute`），该 shell 以服务进程的 OS 权限在 run 工作目录运行，不经 Deno。因此不能把 Deno 权限限制当作整个 xllm 运行的防护边界。
 
-**AI 资源归属部分修正。** 当前 `run_attribution` 按 Workspace 配置选择 `workspace_owner`（默认）或 `current_user`，后者要求触发者是本 Zone 的 Account；归属随新 run 持久化，另存 `operator_id`。`llm.map` 经 [wish/llm.rs](../../src/frame/aiworkspace/server/src/wish/llm.rs) 正确传递 `on_behalf_of`。但主 xllm 循环存在缺陷：`.llm_context` 中的 `provider.on_behalf_of` 能被 [xllm.rs](../../src/frame/agent_tool/src/xllm.rs) 解析，而 `merge_config_layers` 只合并 `kind`、`session_token`、`base_url`、`api_key`、`headers`，`on_behalf_of` 被丢弃；`prepare` 从合并后的配置取 provider，所以 analyze/execute 的模型调用以 `system:aiworkspace` 自身计费。该结论来自源码阅读，未实跑验证；现有测试只检查 `.llm_context` 文件内容，不会发现此问题。修复应随 D14 的执行模型调整一起做，不单独打补丁。
+**AI 资源归属部分修正。** 当前 `run_attribution` 按 Workspace 配置选择 `workspace_owner`（默认）或 `current_user`，后者要求触发者是本 Zone 的 Account；归属随新 run 持久化，另存 `operator_id`。`llm.map` 经 [wish/llm.rs](../../src/frame/aiworkspace/server/src/wish/llm.rs) 正确传递 `on_behalf_of`。但主 xllm 循环存在缺陷：`.llm_context` 中的 `provider.on_behalf_of` 能被 [xllm.rs](../../src/frame/agent_tool/src/xllm.rs) 解析，而 `merge_config_layers` 只合并 `kind`、`session_token`、`base_url`、`api_key`、`headers`，`on_behalf_of` 被丢弃；`prepare` 从合并后的配置取 provider，所以 analyze/execute 的模型调用以 `system:aiworkspace` 自身计费。该结论来自源码阅读，未实跑验证；现有测试只检查 `.llm_context` 文件内容，不会发现此问题。合并缺陷是局部修复，列为 §12.3 的 T0-6 先行处理；宿主 bash 工具的问题随托管执行模式（M3）一起解决，不在服务内执行路径上打补丁。
 
 [AICC identity.rs](../../src/frame/aicc/src/service/identity.rs) 限定可代理的调用主体，检查 `obj://aicc/on_behalf_of` 权限和归属账户有效性，再使用该用户的资源归属。因此当前正常新建 Wish run 的身份应分层理解：
 
@@ -455,14 +455,103 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 
 本次发现应作为运行模型的架构修正项处理。保留输入快照、readset、候选计划、条件 Apply 和已有 AICC 归属机制，将用户任务的 xllm 与生成程序执行接到有明确身份、资源和隔离边界的执行环境，而不是只在现有后台实现旁增加一个本地开关。
 
-### 12.3 建议实施顺序
+### 12.3 实施 TODO
 
-1. **补齐契约。** 明确原语、稳定身份、版本层次、提交和失败语义；确定引用、保留、授权与资源计量政策；冻结用户任务的显式执行上下文及禁止权限兜底规则。先让各模块使用同一组定义。
-2. **验证内核闭环。** 复用现有 planner、事务和 replica，验证跨对象原子性、约束、幂等、历史恢复及失效行为；补齐维护通道与资源准入。
-3. **统一执行和依赖协议。** 将 Source 刷新、公式物化和各类任务结果接入固定输入、候选版本、条件提交及保留机制；分别实现可靠派发和执行授权，并修正许愿格由 Workspace 服务默认承载用户计算的路径。
-4. **扩展执行与界面能力。** 补回许愿格本地执行模式，接入用户后台与 Agent，完善固定演示和 Block 草稿。公式语言、函数对象及更复杂协作模型在这些边界上演进。
+> 2026-10-23 由第十三节 D01–D26 与 13.2 推导，替换原“建议实施顺序”。编号 `T<里程碑>-<序号>`；每项写明依据的决策、主要落点和验收方式。标注“再核对”的项对应决策中“由决定推导”的细则，实施前先核对再动手。
 
-纯文档阶段不改变运行协议、源码和内置命令手册。后续涉及 AIWorkspace RPC、类型、模板或执行器的实现变更时，应同步检查服务、共享 API、SDK、前端、WASM、文档及相关 cmd_skills；本轮文档不宣称任何新增能力已经可用。
+**总体约束**
+
+- 开发阶段允许 breaking change：FORMAT、PROTOCOL、`schema.rs` 的 DDL 版本一律直接升级，旧库与旧包拒收，DV 用 `start.py --all` 全新安装；不写迁移或兼容层（D07 冻结点之前）。
+- M1 结束时声明 FORMAT 1.0 与 PROTOCOL 1.0；此后按 D07 的冻结点规则演进。§13.6 末尾“必须一次进入格式”的 11 项全部落在 M1。
+- 每项改动按 AGENTS.md 的联动要求同步检查：`buckyos-api` 的 `aiworkspace_client.rs`、`schemas/*.json` 与 `tests/schemas.rs`、WASM 产物（`wasm/build.sh`）、Desktop 前端、`fixtures/` 向量（`AIWS_REGEN=1`）、README 协议表、`aiworkspace_template_dev` 手册。
+- 里程碑内部可并行；里程碑之间按依赖顺序（M0 → M1 → M2 → M3/M4 → M5），M3 与 M4 互不依赖。
+
+**验证命令**（在 `buckyos/src`）：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace -- --test-threads=1`；WASM 重建见第一期实施记录；Desktop e2e 在 `frame/desktop` 以 `playwright.aiworkspace.config.ts` 运行；DV 按 §12.2 的 kRPC 驱动法，在真实 Zone 上验收 §11.2 对应场景。
+
+#### M0 契约落地（只改协议文件与局部缺陷，不改格式）
+
+| 编号 | 内容 | 依据 | 落点 | 验收 |
+| --- | --- | --- | --- | --- |
+| T0-1 | 现有 11 个类型的校验器分类表：原语结构约束 / 引用完整性 / 业务 Schema 字段约束，写入 README 协议节 | D01、D04 | `core/src/types.rs` 注释与 README | 表中每条校验器都能对应到 `types.rs` 的一个分支 |
+| T0-2 | `Code` 枚举与 `error-codes.json` 补齐预留码：`BASE_TOO_OLD` 启用说明、`QUOTA_EXCEEDED`（`retryable` 与 `data{needed_bytes, reclaimable_bytes}`）、`QUOTA_LIMIT`、`VERSION_NOT_RETAINED`、`RESOURCE_RECLAIMED`、`EXECUTION_CONTEXT_MISSING`、`DELEGATION_STALE`、`RUN_REVOKED` | D09 | `core/src/error.rs`、`schemas/error-codes.json` | `tests/schemas.rs` 通过；前端 `api/session.ts` 的错误映射补齐 |
+| T0-3 | kRPC 方法分级标注：README 方法表加“稳定 / 内部 / 实验”列；稳定级含 `ws.*`（含 `get_user_state` / `set_user_state`）、`doc.resolve/read/query/prepare/commit/get_submission/undo/get_changes/wait_changes`、`asset.*`、`lock.*`；`proc.*` 暂列实验，M3 结束升稳定 | D11 | README、`server/src/lib.rs` 方法表注释 | 稳定级每个方法有契约测试（请求/响应 fixture） |
+| T0-4 | 引用对象 JSON Schema：`{ zone?, workspace_id, entity_id, selector?, mode: live\|fixed, version?: {epoch, seq} \| {content_root, path?} }`；`doc.resolve` 接受该形状 | D10、D03 | `schemas/reference.schema.json`、`core/src/value.rs`、`store/src/reads.rs` | 现有三套版本词汇（`live_head/fixed_revision/published_channel`、`follow/fixed`、URL 源）映射到新形状的单元测试 |
+| T0-5 | 冻结选择器目录：补 `folder_member`；`table_view` / `table_query` 从许愿输入声明中移除或补进 `resolve_cell`（二选一，建议移除，许愿改用 `table_members` + `table_field_values`） | D04 | `core/src/plan.rs` `resolve_cell`、`core/src/types.rs` 许愿输入校验、`store/src/wish/readset.rs` | readset 测试覆盖全部选择器 |
+| T0-6 | 修复 `merge_config_layers` 丢弃 `provider.on_behalf_of`；补一条断言实际 AICC 请求携带 `on_behalf_of` 的测试 | §12.2 | `agent_tool/src/xllm.rs`、`server/tests/wish.rs` | DV：AICC 用量记录中 run 的 `user_id` 为归属用户而非 `system:aiworkspace` |
+| T0-7 | `proc.start` mock 路径幂等回放比较参数摘要；`expect` 可选性统一（`set_derived`、`tree.move`、`tree.place`、`add_option` 与 operations.json 一致） | 13.2、D04 | `store/src/proc.rs`、`core/src/plan.rs`、`schemas/operations.json` | 同 key 不同参数返回 `IDEMPOTENCY_MISMATCH` |
+| T0-8 | 协议文档写明已知限制：含 `richtext.apply_update` 的 Commit 不可撤销；import 模式容忍缺失资源；只读放映无固定基线 | 13.2、D17 | README | 文档核对 |
+
+#### M1 格式 1.0：数据结构与日志
+
+| 编号 | 内容 | 依据 | 落点 | 验收 |
+| --- | --- | --- | --- | --- |
+| T1-1 | 实体 `schema_version` 允许大于 1，并增加业务 Schema 标识字段；`degraded()` 对未知类型按不透明对象处理而非拒绝；`init_entity` / `validate_update` 拆为“原语校验”与“内置 Schema 校验”两个入口，后者仅在准入（非 replay）执行 | D01 | `core/src/model.rs`、`core/src/types.rs`、`core/src/plan.rs` | 副本重放含未知类型实体的日志成功；3D Scene 用 Table 实例表 + AssetRef 建模的测试不改原语、不升 FORMAT |
+| T1-2 | 资源 Folder 原语（再核对 D25 命名）：成员名→AssetRef 或子 Folder 的映射，按成员名分版本格；操作 `folder.set_member` / `folder.remove_member` / `folder.replace`；成员数上限；物化为 DirObject 时时间字段固定；导入 DirObject 得到 Folder | D01、D25 | `core/src/types.rs`、`core/src/plan.rs`、`core/src/materialize.rs`、`core/src/canonical.rs` | 同成员两次物化 ObjId 相同；与 cyfs-ndn `DirObject::gen_obj_id` 交叉验证 |
+| T1-3 | 树容器 `container(kind=folder)` 与资源 Folder 的命名区分（再核对：改名其一） | D25 | `core/src/types.rs`、前端 `app/aiworkspace`、i18n 表 | 两个名字在协议表、UI 文案中不再同名 |
+| T1-4 | 引用目录冻结：refs 表加 `mode`（live / fixed）与 `integrity`（strong / weak）列；新增 `owns` 种类；`object_link` 改为 weak；`anchor` 等列入目录；`blocks_delete` 改由 `integrity` 决定 | D05、§5.2 | `core/src/model.rs` `RefEdge`、`store/src/schema.rs`、`core/src/plan_richtext.rs`、`core/src/types.rs` | 删除被链接对象成功；删除被 bind 对象 `REFERENCE_BROKEN` |
+| T1-5 | 自有数据规则（再核对 D05 细则）：画布创建数据建 `owns`+`bind`；数据模式创建只建 `bind`；`entity.delete` 对 Block 由 planner 展开级联（目标曾被 `owns` 且无剩余 `bind` 则一并删除），展开结果写入规范化日志；新增 `data.pin`（删除 `owns`）；复制语义由共享库实现：同画布与“复制画布”克隆，跨画布引用，非自有声明总是引用 | D05 | `core/src/plan.rs`、`core/src/types.rs`（Block Schema 的非自有声明）、前端复制粘贴改走共享库 | §11.2“同时创建数据源、Block 和绑定中途失败”；删除/复制五种情形各一测试 |
+| T1-6 | 规范化日志改为纯应用型：`commit_ops` 保存完全解析的 cell 级写入与预计算的结构 hash；`replica.rs` 重放不再调用 `plan_commit`，改为 `apply_ops`；planner 版本号写入 `ws.get_info` | D20 | `core/src/plan.rs`（产出）、`core/src/replica.rs`、`store/src/docdb.rs` | 用旧版本 planner 生成的日志在新 planner 下重放一致（固定 fixtures 向量）；`AIWS_REGEN` 重生成向量 |
+| T1-7 | 公式值形状 `{ "$formula": { lang, version, expr } }` 作为带类型 key 的合法值；Schema 声明返回类型；v1 只保存不求值；`doc.read` 原样返回 | D18 | `core/src/value.rs`、`core/src/types.rs`、`schemas/` | 带公式的实体可提交、导出、重放 |
+| T1-8 | `run` 能力位（第 9 位）；`ALL` 常量、`write_policy` 导出、grants 校验同步；授权条目增加任务配置摘要与输出声明字段 | D16、D22 | `core/src/access.rs`、`store/src/workspace.rs` grants、`core/src/materialize.rs` | 仅 `run` 的主体不能 `doc.commit`，可 `proc.start` |
+| T1-9 | `user_state` 增加 `revision` 列与条件写；key 前缀 `block:<entity_id>/`；实体永久删除后服务端清理 | D13 | `store/src/schema.rs`、`store/src/workspace.rs` | 两客户端并发写同 key，后写者带旧 revision 得冲突 |
+| T1-10 | 历史下界 `base_seq`（恒为 0）进 `workspace_meta` 与 `ws.get_info`；低于下界的请求返回 `BASE_TOO_OLD`；保留根表 `retentions(kind, ref, holder, expires_at)` 替换 `snapshots.retained`；用量账本表 `usage(category, bytes)` 随事务更新 | D06、D19 | `store/src/schema.rs`、`store/src/workspace.rs`、`store/src/export.rs` | checkpoint / 导出 / 克隆 / staged 上传各写一条保留根；commit 后 usage 增量正确 |
+| T1-11 | 幂等按实际写入身份：run 结果提交以 `run.principal`（执行身份）查重，权限与可见性按调用者；origin 改服务端推导 | D08 | `store/src/workspace.rs` commit、`store/src/wish/runs.rs` | 两个用户 apply 同一 run 落到同一接受记录；客户端传入 origin 被忽略 |
+| T1-12 | 固定版本解析：`doc.resolve` 对 `{epoch, seq}` 查保留根，缺失返回 `VERSION_NOT_RETAINED`；建立 fixed 引用（`fixed_revision`、许愿 fixed 输入、演示基线）时必须同时登记 checkpoint 或克隆 | D03 | `store/src/reads.rs`、`store/src/export.rs`、`core/src/types.rs` | 删除 checkpoint 后解析该 seq 得明确错误 |
+| T1-13 | 版本常量升 FORMAT 1.0 / PROTOCOL 1.0 / DDL 版本 +1；`ws.get_info` 返回 PROTOCOL、FORMAT、planner、richtext Schema 版本矩阵；更新 README、fixtures、WASM、`aiworkspace_client.rs` | D07、D20 | `core/src/model.rs`、`store/src/schema.rs`、全部联动点 | 旧库 / 旧包 `UNSUPPORTED_VERSION`；全部测试通过 |
+
+#### M2 内核闭环：保留、回收、配额、恢复
+
+| 编号 | 内容 | 依据 | 落点 | 验收 |
+| --- | --- | --- | --- | --- |
+| T2-1 | 服务级标记清除 GC：保留根 = 各 Workspace 当前状态 + `retentions` 表 + 未过期 `staged_assets` + 运行中 run 输入；`trash/` 纳入保留期；`diag.list_unretained` 改为按保留根计算 | D06 | `store/src/service.rs`、`store/src/objects.rs`、`store/src/export.rs` | §11.2“解除最后一份历史保留后回收资源”；并发上传期间 GC 不误删 |
+| T2-2 | 历史资源保留期：被替换或删除的 AssetRef 目标到期可回收；回收后相关撤销与版本恢复返回 `RESOURCE_RECLAIMED` | D06 | `store/src/workspace.rs` undo、`store/src/reads.rs` restore_version | 对应测试 |
+| T2-3 | 配额准入：commit、上传、克隆、checkpoint 前检查 `usage` + 预留；超额 `QUOTA_EXCEEDED` / `QUOTA_LIMIT`；结构化历史 v1 不计 | D19 | `store/src/workspace.rs`、`server/src/lib.rs` 上传 | §11.2“Source 刷新时达到配额”“满额后维护操作” |
+| T2-4 | 维护通道方法（manage）：`ws.release_retention`、`ws.delete_checkpoint`、`ws.purge_deleted`（立即回收并放弃撤销）、`proc.cancel`、`ws.clear_staged`；超额时仍可调用，有独立预算 | D19、§7.3 | `server/src/lib.rs`、`store/src/workspace.rs` | 满额 Workspace 走维护方法后可恢复写入 |
+| T2-5 | 服务启动扫描：活动 run 标 interrupted；两处 `ACTIVE_STATES` 合一；事务回滚后清理已写入对象库的生成结果对象 | D15、13.2 | `store/src/wish/runs.rs`、`server/src/wish/mod.rs`、`store/src/workspace.rs` | 重启后 `proc.list` 立即正确 |
+| T2-6 | epoch 变更：事件限定为恢复导入与截断重建；副本收到 `EPOCH_MISMATCH` 后保留待发意图，以冲突解决形式让用户重发；恢复导入在 UI 标为 manage 级破坏性操作 | D07 | `core/src/replica.rs`、前端 `offline/replicaSession.ts`、`store/src/service.rs` | §11.2“对象改名后旧名称被复用，离线命令迟到” |
+| T2-7 | 演示 ACL 查原 Workspace 当前 grants；放映锁判定改“有任何写权限即加锁”；克隆计 Workspace 额度，设并发上限与 TTL | D17 | `server/src/show.rs`、`store/src/show.rs` | §11.2“演示期间原数据更新 / 授权失效” |
+| T2-8 | §11.2 场景逐条落为 store / server 测试，未覆盖项在验收报告中列明 | §11.2 | `store/tests/`、`server/tests/` | 每条场景对应测试名 |
+
+#### M3 执行模型：本地与托管执行
+
+| 编号 | 内容 | 依据 | 落点 | 验收 |
+| --- | --- | --- | --- | --- |
+| T3-1 | 执行上下文结构进 run 记录：触发者、执行身份、执行位置（local / hosted）、AI 归属、计算归属、绑定的任务配置摘要、输出声明、有效期；缺失即 `EXECUTION_CONTEXT_MISSING` | §9.6、K15 | `core/src/wish.rs`、`store/src/wish/runs.rs`、`store/src/schema.rs` | 不带执行上下文的 `proc.start` 被拒 |
+| T3-2 | `proc.*` 补齐：`proc.heartbeat`（本地模式租约）、`proc.report`（执行器回写状态与候选结果）、`proc.claim`（执行器领取 run 并取得 run 作用域凭据）；interrupted 由心跳超时判定 | D15 | `server/src/wish/mod.rs`、`store/src/wish/runs.rs` | 关闭浏览器后 run 在租约到期转 interrupted；§11.2“意图保存后服务崩溃 / 提交时断线” |
+| T3-3 | 结果写权限 = 执行身份当前权限 ∩ 已确认输出声明；配置摘要变化返回 `DELEGATION_STALE`；取消或撤权后旧尝试提交 `RUN_REVOKED` | D16、D22、§9.5 | `store/src/workspace.rs` commit、`store/src/wish/plan.rs` | §11.2“已授权任务被修改 / 运行中撤权 / 旧尝试迟到” |
+| T3-4 | 本地模式执行器：分析与执行阶段的 xllm 循环以浏览器为宿主（经 AICC 以用户 session 调用）；生成程序在 Worker 中运行，经 postMessage 拿受限 SDK（读输入快照、写候选结果），不持 token；复用 snapshot / readset / plan / 条件 Apply | D14、D21 | 前端 `app/aiworkspace/api`、新 `executor/` 目录、`wasm/` 增加输入快照与计划摘要帮助函数 | 本地模式跑通现有许愿 e2e；Worker 内无 token |
+| T3-5 | 托管执行模式（再核对 D23 派发接口）：Workspace 请求 AppLoader 以 Owner 指定 Agent 开 Work Session，携带 run 引用与 run 作用域凭据；Agent 以自身身份读写 Workspace；`WishExecutor::agent-work-session` 启用 | D14、D22、D23 | `server/src/wish/`、`buckyos-api`（AppLoader 入口）、`lib_opendan` Work Session 创建、`store/src/wish/runs.rs` | DV：协作者仅 `run` 权限触发，结果由 Owner 的 Agent 写回，AICC 归属为 Owner |
+| T3-6 | Agent 侧 Workspace 能力：websdk `aiworkspace` 客户端模块；恢复 `aiworkspace_template_dev` 手册或新增 `aiworkspace_run` 手册（读输入、提交候选结果、`proc.report`） | D14、AGENTS.md cmd_skills 规则 | `buckyos-websdk`、`src/apps/jarvis_agent/agent/cmd_skills/` | Agent 按手册完成一次 run 并写回 |
+| T3-7 | Owner 托管配置管理面：允许的任务、可触发的协作者、Agent 选择、能力与额度上限；配置摘要进授权条目 | D22 | `server/src/lib.rs`（`ws.set_hosted_exec`）、Desktop 分享/设置面板 | 配置变化后旧授权失效需重新确认 |
+| T3-8 | 许愿 UI：执行模式选择（本地 / 托管）、interrupted 续跑、`DELEGATION_STALE` 与 `RUN_REVOKED` 提示；仅 `run` 权限者引导走托管 | D14、D22 | `app/aiworkspace/ui`、`WishService.ts` | e2e |
+| T3-9 | 下线服务内执行路径：删除 `server/src/wish/stages.rs` 的进程内 xllm 与 Deno runner、`wish-host` HTTP 路由；`proc.*` 升稳定级 | D14、D11 | `server/src/wish/`、README | 托管执行 DV 通过后执行；全部测试通过 |
+
+#### M4 Source、发布与域名
+
+| 编号 | 内容 | 依据 | 落点 | 验收 |
+| --- | --- | --- | --- | --- |
+| T4-1 | Source 作为数据实体属性：`source{kind, url, query, refresh, auth_mode}`；有 Source 的实体对 Block 只读；刷新 = 一次 run（origin `source`，带 `run_id`），候选版本校验后普通 Commit 写入，每 Source 各自原子 | D12 | `core/src/types.rs`、`core/src/plan.rs`、`store/src/wish/`（复用 run 协议） | §11.2“Source 初次下载失败 / 刷新失败 / 刷新达配额” |
+| T4-2 | 服务侧无凭据公开 URL 抓取：唯一的服务内 Source 执行器；计流量额度；有凭据的 Source 只能经托管执行刷新 | D24 | `store/src/urlsource.rs` 重构为 fetcher、`server/src/lib.rs` 定时器 | 定时刷新在无浏览器、无 Agent 时生效 |
+| T4-3 | 现有 URL 查询表：声明能力（§6.1）后归入“未物化查询入口”，移出稳定面；或在 v1 删除（再核对） | D12 | `store/src/urlsource.rs`、`doc.source_capabilities` | 协议表更新 |
+| T4-4 | 按路径发布：`ws.publish(entity_id)` 对数据源授予 `public` 读权限并登记发布项；发布链接 = 引用对象的 URL 投影（D21 形态）；`ws.unpublish` 后消费方得 unavailable | D26、D10 | `store/src/workspace.rs` grants、`server/src/lib.rs`、`store/src/schema.rs` 发布表 | 另一 Workspace 以 live / fixed 两种方式插入成功 |
+| T4-5 | 消费方插入发布链接：解析为 Source（同 Zone 直接读；跨 Zone 走 T4-2）；fixed 解析为实体 Content ID 或 ContentRoot | D26、D12 | `store/src/reads.rs` resolve、T4-1 | 跨 Workspace 插入 e2e |
+| T4-6 | 反向引用登记：同服务内由跨 Workspace 引用索引提供 `ws.list_referrers`；跨 Zone 由消费方插入时登记订阅记录 | D26 | `store/src/service.rs`、`store/src/schema.rs` | 发布方能列出引用者；撤回不受引用者阻止 |
+| T4-7 | 导出分离：分享 / 发布只走 ContentRoot；`personal_backup` 带 Loro 历史并在 UI 标明；克隆只服务演示 | D26、D03 | `store/src/export.rs`、Desktop 导出面板 | 分享包中不含 `collab/`、`commits` |
+| T4-8 | 独立域名（再核对 SSO cookie 策略）：cyfs-gateway 子域路由 `aiws-<id>.<zonehost>`；路径 `/<workspace_name>/<surface_name>`；名称→ID 解析与改名别名；`/workspace/<id>` 路由迁移；Desktop 入口改链接 | D21、D10 | `cyfs-gateway` 配置生成（scheduler `gateway_config`）、`app/aiworkspace/links.ts`、`AIWorkspaceRoute.tsx` | 子域打开、登录态有效、改名后旧链接行为符合决定 |
+| T4-9 | 公开内容预渲染（SEO）：发布的 Surface 服务端出静态 HTML 骨架 | D21、D26 | `server/src/lib.rs` HTTP 路由 | 无脚本抓取可见标题与正文 |
+
+#### M5 界面、手册与收尾
+
+| 编号 | 内容 | 依据 | 落点 | 验收 |
+| --- | --- | --- | --- | --- |
+| T5-1 | Block 草稿协议：表单 Block 用 `block:<id>/` 私有状态，提交前记 `idempotency_key`，恢复时先 `doc.get_submission` | D13 | `app/aiworkspace/state/userState.ts`、表单类 Block | §11.2“表单提交成功后清理草稿失败，再从另一设备打开” |
+| T5-2 | Mesh 类对象“进入编辑即取锁”约定与 `LOCK_REQUIRED` 界面 | D02 | 前端对象编辑器 | e2e |
+| T5-3 | 公式只读显示：前端对 `$formula` 值求值显示，不写回；物化按钮生成 Commit 与 derived 记录 | D18 | 前端 Table / 对象编辑器 | `doc.read` 返回公式文本，UI 显示结果 |
+| T5-4 | 复制画布 = 同画布语义；`data.pin` 入口（拖入数据面板） | D05 | 前端 | e2e |
+| T5-5 | cmd_skills 与文档：`aiworkspace_template_dev` 恢复并覆盖新建 / 导出导入 / 引用 / 运行 / 发布；README 协议表与 `doc/workspace` 各期文档回写“已实施”标注 | AGENTS.md | `src/apps/jarvis_agent/agent/cmd_skills/`、README、本文第十二节 | 手册示例在 DV 可执行 |
+| T5-6 | 验收报告：按 §11.2 列出每条场景的测试名或 DV 证据，未覆盖项明示 | §11.2 | `doc/workspace/…验收报告.md` | 报告与测试名一一对应 |
+
+**不在本 TODO 范围**（§13.7）：当前用户 Agent 的托管执行、后端公式求值、公开演示房间持久化与回放、函数对象、配额数值与计费、Agent 与 XL Agent 分类、Guest 自带 Endpoint 与跨 Zone AICC。
 
 ## 十三、冻结前必须确定的设计决策
 
@@ -487,19 +576,19 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 | D11 | 对外稳定接口面 | kRPC 方法分为稳定、内部、实验三级 | K14 | 已确认：采纳建议（2026-10-22） |
 | D12 | Source 模型 | Source 是数据实体的属性；刷新是一次任务并以普通 Commit 写入 | K08 | 已确认：采纳建议（2026-10-22） |
 | D13 | 用户私有状态 | 保留 KV；增加 Block 命名约定、条件写和草稿恢复协议 | §2.2 | 已确认：采纳建议（2026-10-22） |
-| D14 | 用户任务的执行平台与执行身份 | v1 做本地与 Agent 模式；用户后台模式随 Node Executor 待定项确定 | K15 | 已确认：采纳建议（2026-10-22） |
+| D14 | 用户任务的执行平台与执行身份 | v1 做本地与托管执行模式；原“用户后台模式”已由 D23 并入托管执行 | K15 | 已确认：采纳建议（2026-10-22）；形态按 D23 收敛为两种 |
 | D15 | 派发可靠性与运行记录归属 | 意图持久保存；崩溃后显示 interrupted，显式续跑，不自动重做 | K11 | 已确认：采纳建议（2026-10-22） |
 | D16 | 执行授权与任务输出边界 | 新增 run 能力；结果写权限为执行身份权限与已确认输出声明的交集 | K12 | 已确认：采纳建议（2026-10-22） |
 | D17 | 演示基线与访问策略 | 固定基线统一用克隆；第三期放映锁保留为非公开放映的产品行为 | K13 | 已确认：采纳建议（2026-10-22） |
 | D18 | 公式 v1 边界 | v1 后端不做读时求值；共享结果经 Commit 物化，复用 derived 记录 | K10 | 已确认：采纳建议（2026-10-22） |
 | D19 | 配额与维护通道 | 先定计量口径、超额结果形状和维护方法清单；数值与计费延后 | K09 | 已确认：采纳建议（2026-10-22） |
-| D20 | 规范化日志是否独立于 planner 可应用 | 日志改为纯应用型；K05 验收改为“旧日志在新 planner 下重放一致” | K05、D01、D07 | 待确认（review 提出） |
-| D21 | 本地模式生成程序的执行形态 | sandboxed iframe / Worker + postMessage SDK，不持有 token | D14、K15 | 待确认（review 提出） |
-| D22 | 任务结果写权限的来源 | Agent 模式按执行身份；本地模式按确认者，由服务签发限定输出的 run token | D16、D14 | 待确认（review 提出） |
-| D23 | “用户后台模式”是否并入 Agent 模式 | 并入；默认执行者为该用户的 Jarvis | D14 | 待确认（review 提出） |
-| D24 | v1 自动同步的宿主 | 服务侧只做无凭据公开 URL 抓取，计流量额度；有凭据的 Source 走 Agent 模式 | D12、D14、D19 | 待确认（review 提出） |
-| D25 | 资源 Folder 的命名与 DirObject 时间戳规范化 | 资源 Folder 与树容器 folder 二者改名其一；物化时时间字段固定 | D01、D03 | 待确认（review 提出） |
-| D26 | 内容快照与协作快照的导出格式分离 | 分享与发布只走 ContentRoot；整库克隆只服务同 ACL 的演示 | D03、D17、§4.4 | 待确认（review 提出） |
+| D20 | 规范化日志是否独立于 planner 可应用 | 日志改为纯应用型；K05 验收改为“旧日志在新 planner 下重放一致” | K05、D01、D07 | 已确认：采纳建议（2026-10-23） |
+| D21 | 本地模式生成程序的执行形态 | sandboxed iframe / Worker + postMessage SDK，不持有 token | D14、K15 | 已确认：Worker + postMessage；不用 iframe，每个 Workspace 独立域名，见 D21 决定（2026-10-23） |
+| D22 | 任务结果写权限的来源 | 托管执行模式按执行身份；本地模式按确认者，由服务签发限定输出的 run token | D16、D14 | 已确认：v1 托管执行用 Owner 指定配置，后续支持当前用户的 Agent，见 D22 决定（2026-10-23） |
+| D23 | “用户后台模式”是否并入托管执行模式 | 并入；默认执行者为该用户的 Jarvis | D14 | 已确认：并入，但改称“托管执行模式”（Run Agent Work Session 是 AppLoader 的一种形式），见 D23 决定（2026-10-23） |
+| D24 | v1 自动同步的宿主 | 服务侧只做无凭据公开 URL 抓取，计流量额度；有凭据的 Source 走托管执行模式 | D12、D14、D19 | 已确认：采纳建议（2026-10-23） |
+| D25 | 资源 Folder 的命名与 DirObject 时间戳规范化 | 资源 Folder 与树容器 folder 二者改名其一；物化时时间字段固定 | D01、D03 | 已确认：以 DirObject 为准，不够时两者并存，见 D25 决定（2026-10-23） |
+| D26 | 内容快照与协作快照的导出格式分离 | 分享与发布只走 ContentRoot；整库克隆只服务同 ACL 的演示 | D03、D17、§4.4 | 已确认：重点是按路径发布与引用追踪，见 D26 决定（2026-10-23） |
 
 决策之间的依赖：
 
@@ -522,7 +611,7 @@ D01、D02、D03、D20 决定格式；D14、D16、D22、D23 决定执行模型；
 
 ### 13.2 可直接确认为契约的现有实现
 
-以下行为已符合前文原则，建议直接确认为契约，不再单独设计。这八条尚未单独过目，review 后的意见写在“确认意见”列：
+以下行为已符合前文原则，确认为契约，不再单独设计。2026-10-23 按“确认意见”列确认：其中“幂等先于状态检查”按改写后的顺序确认，“重放不重新准入”以 D20 为前提确认；各列中的“补充”与“需修正”事项进入 TODO。
 
 | 契约 | 现有实现 | 确认意见（2026-10-22 review） |
 | --- | --- | --- |
@@ -796,7 +885,7 @@ Folder 是唯一能廉价随时算出实体级 Content ID 的原语（成员名�
 
 **Review 补充（2026-10-22）**
 
-- **v1 没有自动同步的宿主。** D14 v1 只有浏览器本地和 Agent 两种执行器，定时刷新没有地方跑。三个选项：(a) v1 只有手动刷新（浏览器）和 Agent 刷新；(b) 为“无凭据的公开 URL 抓取”保留服务侧窄路径，视作 Source 基础设施而非用户计算——它不运行用户代码，只消耗 Workspace 的流量额度（D19 已有口径），归属清晰；(c) 等后台模式。推荐 (b)，有凭据的 Source 留给 Agent 模式。见 D24。
+- **v1 没有自动同步的宿主。** D14 v1 只有浏览器本地和 Agent 两种执行器，定时刷新没有地方跑。三个选项：(a) v1 只有手动刷新（浏览器）和 Agent 刷新；(b) 为“无凭据的公开 URL 抓取”保留服务侧窄路径，视作 Source 基础设施而非用户计算——它不运行用户代码，只消耗 Workspace 的流量额度（D19 已有口径），归属清晰；(c) 等后台模式。推荐 (b)，有凭据的 Source 留给托管执行模式。见 D24。
 - **Source 在实体上意味着整实体对 Block 只读**，挡掉最常见的用法：“导入一张表，再自己加一列备注”。v1 没有公式和 lookup，用户无法用第二张表关联。建议补一句：Table 原语以后允许**列组级** Source（同步列只读、手动列可写），现在的实体级 Source 是其特例，不另立原语。
 - 现有 URL 查询表生产环境不可用，归入“未物化查询入口”后要决定是留在 v1 协议里还是先移出稳定面。
 
@@ -830,23 +919,23 @@ Folder 是唯一能廉价随时算出实体级 Content ID 的原语（成员名�
 
 - 本地模式：浏览器执行，以当前用户的 session 调用 AICC 和 Workspace。
 - 用户后台模式：A，每个用户一个 aiworkspace 执行 App 实例，由 AppLoader 拉起，使用该 AppInstance 身份；B，经 Node Executor 托管 xllm，使用绑定到该用户的 App token；C，继续在 Workspace 服务内执行，只用 `on_behalf_of` 区分 AI 资源归属（不满足 §9.6，仅作对照）。
-- Agent 模式：交给用户选定的 OpenDAN Agent，以 Agent 身份读写 Workspace。
+- 托管执行模式（Run Agent Work Session，AppLoader 的一种形式，D23）：经 AppLoader 启动一个 Agent Work Session 执行任务，以该 Agent 身份读写 Workspace。v1 使用 Workspace Owner 指定的 Agent 与配置，后续支持当前用户自己的 Agent（D22）。原“用户后台模式”并入此形态。
 
-**建议**：v1 先做本地模式和 Agent 模式。本地模式恢复浏览器执行；Agent 模式复用 OpenDAN 已有的身份、AICC 归属和容器。用户后台模式在 Node Executor 的剩余待定项确定后，在 A、B 中选择。在此之前，现有的服务内执行只作过渡，不再扩展。此项需要用户决定。
+**建议**：v1 先做本地模式和托管执行模式。本地模式恢复浏览器执行；托管执行模式复用 OpenDAN 已有的身份、AICC 归属和容器。用户后台模式在 Node Executor 的剩余待定项确定后，在 A、B 中选择。在此之前，现有的服务内执行只作过渡，不再扩展。此项需要用户决定。
 
 **Review 补充（2026-10-22）**
 
 **本地模式的安全形态要先定（D21）。** 恢复“AI 生成程序在浏览器执行”意味着模型写的 JS 带着用户 session 跑在应用源下，等价于自我注入 XSS。按“先能力后安全”可以作为已知风险上线，但形态应现在定：生成程序跑在 sandboxed iframe 或 Worker，只通过 postMessage 拿到受限的 Workspace SDK（读输入快照、写候选结果），不直接持有 token。这决定本地执行器的接口形状，后改成本高。本地模式的运行特征还包括：标签页关闭即中断、长任务不可能、需要心跳或租约协议（D15）。
 
-**Agent 模式的三个缺口：**
+**托管执行模式的三个缺口：**
 
 1. **派发传输未定。** Workspace 怎样把“执行这个 run”交给 Agent：建议复用 msg-center（Agent 已有收消息→开 Work session 的路径），消息携带 run 引用与 run token，不另造通道。
-2. **Agent 侧的 Workspace 工具。** `aiworkspace_template_dev` 手册暂缓，Agent 没有读写 Workspace 的 cmd_skill 和 websdk 客户端；Agent 模式以这两者为前提。
+2. **Agent 侧的 Workspace 工具。** `aiworkspace_template_dev` 手册暂缓，Agent 没有读写 Workspace 的 cmd_skill 和 websdk 客户端；托管执行模式以这两者为前提。
 3. `agent-work-session` 占位可直接沿用。
 
-**“用户后台模式”可并入 Agent 模式（D23）。** Node Executor 已定用 App session token 且要求 AppDID 等于 AgentDID，所以方案 B 的执行身份就是一个 Agent；方案 A（每用户一个 aiworkspace 执行 App）本质是再造一个没有对话能力的 Agent。每个用户都有 Jarvis，“后台执行等于交给我的默认 Agent”是新增代码最少的路线；Owner 委托（冻结思路 §8.7）等于“Owner 的 Agent 替协作者执行”，D16 的委托规则直接套用。代价是没有 Agent 的用户只有本地模式，这与“每人一个 Agent”的产品方向一致。
+**“用户后台模式”可并入托管执行模式（D23）。** Node Executor 已定用 App session token 且要求 AppDID 等于 AgentDID，所以方案 B 的执行身份就是一个 Agent；方案 A（每用户一个 aiworkspace 执行 App）本质是再造一个没有对话能力的 Agent。每个用户都有 Jarvis，“后台执行等于交给我的默认 Agent”是新增代码最少的路线；Owner 委托（冻结思路 §8.7）等于“Owner 的 Agent 替协作者执行”，D16 的委托规则直接套用。代价是没有 Agent 的用户只有本地模式，这与“每人一个 Agent”的产品方向一致。
 
-**现有服务内执行的下线条件要写明。** 它是今天唯一能跑的许愿格路径，“不再扩展”但不能在本地或 Agent 模式可用前拆掉。建议：Agent 模式 DV 通过后下线；在此之前只修 §12.2 指出的 `on_behalf_of` 缺陷。
+**现有服务内执行的下线条件要写明。** 它是今天唯一能跑的许愿格路径，“不再扩展”但不能在本地或托管执行模式可用前拆掉。建议：托管执行模式 DV 通过后下线（§12.3 T3-9）；在此之前只修 §12.2 指出的 `on_behalf_of` 合并缺陷（T0-6）。
 
 #### D15 派发可靠性与运行记录归属
 
@@ -865,7 +954,7 @@ Folder 是唯一能廉价随时算出实体级 Content ID 的原语（成员名�
 
 - 不要靠 SQLite `ATTACH` 跨 `doc.sqlite` 与 `local.sqlite` 做原子事务：WAL 模式下跨库事务不保证原子。“先记意图、Commit 带 `run_id`、启动时核对”是正确做法。
 - 服务启动应有一次主动扫描把活动 run 标为 interrupted，否则 `proc.list` 在用户打开前仍显示 running；两处活动状态列表统一为一处。
-- 本地模式的 interrupted 判定依赖浏览器心跳超时，`proc.*` 需增加心跳或租约方法。Agent 模式下 Agent 的 TaskMgr 任务与 Workspace run 是两份记录，权威在 Workspace run；Agent 任务失败或取消需回写 run 状态，建议新增 `proc.report` 由 Agent 调用，比 Workspace 轮询 TaskMgr 简单。
+- 本地模式的 interrupted 判定依赖浏览器心跳超时，`proc.*` 需增加心跳或租约方法。托管执行模式下 Agent 的 TaskMgr 任务与 Workspace run 是两份记录，权威在 Workspace run；Agent 任务失败或取消需回写 run 状态，建议新增 `proc.report` 由 Agent 调用，比 Workspace 轮询 TaskMgr 简单。
 
 #### D16 执行授权与任务输出边界
 
@@ -873,16 +962,16 @@ Folder 是唯一能廉价随时算出实体级 Content ID 的原语（成员名�
 
 **当前实现**：能力位只有 read、append、update、delete、structure、comment、export、manage，没有执行能力。许愿格结果以调用 `proc.apply` 的用户权限提交；候选计划允许 keep、replace、new，因此可以创建新的结果对象，但不能创建 Source。
 
-**建议**：新增 run 能力，授予者可以在某个任务实体上触发执行。结果提交的权限上限为“执行身份的当前权限 ∩ 已确认任务配置声明的输出目标”（包括声明的新建位置）；触发者只需要 run，不需要对输出目标有 update。任务配置摘要改变后，旧授权不覆盖新配置，需要有编辑权限的人重新确认。v1 的任务可以在声明的位置创建结果对象，但不能创建或修改 Source；导入外部来源只在 Agent 模式下、经单独授权提供。此项会修改能力位图和授权条目结构，需要在冻结前确定。
+**建议**：新增 run 能力，授予者可以在某个任务实体上触发执行。结果提交的权限上限为“执行身份的当前权限 ∩ 已确认任务配置声明的输出目标”（包括声明的新建位置）；触发者只需要 run，不需要对输出目标有 update。任务配置摘要改变后，旧授权不覆盖新配置，需要有编辑权限的人重新确认。v1 的任务可以在声明的位置创建结果对象，但不能创建或修改 Source；导入外部来源只在托管执行模式下、经单独授权提供。此项会修改能力位图和授权条目结构，需要在冻结前确定。
 
 **Review 补充（2026-10-22）**
 
 **权限来源要二选一，或按模式各取其一（D22）：**
 
-- **执行身份派**（本项现方案）：写权限 = 执行身份当前权限 ∩ 声明输出。Agent 模式下成立（Owner 的 Agent 持有 Owner 权限）。本地模式下执行身份就是触发者，只有 `run` 的协作者写不回，等于本地模式只对有 update 的人可用，委托无从谈起。
+- **执行身份派**（本项现方案）：写权限 = 执行身份当前权限 ∩ 声明输出。托管执行模式下成立（Owner 的 Agent 持有 Owner 权限）。本地模式下执行身份就是触发者，只有 `run` 的协作者写不回，等于本地模式只对有 update 的人可用，委托无从谈起。
 - **确认者派**（能力委托）：写权限 = 声明输出 ∩ **确认者**在确认时的权限，apply 时复查确认者仍持有。触发者只需 `run`，执行身份可以是任何人（含触发者自己的浏览器）。服务为该 run 签发限定输出目标的 run token。这才是“允许执行预定义任务但不允许自由编辑”的完整实现。
 
-两者可以并存：Agent 模式用前者（Agent 身份即边界），本地模式用后者。
+两者可以并存：托管执行模式用前者（Agent 身份即边界），本地模式用后者。D22 的决定是 v1 统一用执行身份派，只有 `run` 的协作者改走 Owner 配置的托管执行；确认者派不在 v1 范围。
 
 其他：配置摘要变化后“需要重新确认”要有界面状态和错误码（`DELEGATION_STALE`，D09）；`run` 能力位加入后 `Cap` 从 8 位变 9 位，`grants.capabilities` 整数列可容纳，但 `ALL=255` 常量与导出包中的 `write_policy` 要同步。
 
@@ -943,9 +1032,9 @@ D06 与本项相互制约：若提交历史 v1 不截断，删除内容本身不
 - “维护通道按 manage 开放”意味着超额时普通协作者只能找 owner，可接受，但超额错误应告知前端联系谁。
 - 流量计量的消费者目前只有 Source 抓取与上传下载；若 D24 采纳，流量额度就是服务侧抓取的唯一闸门。
 
-### 13.6 Review 提出的新增决策（待确认）
+### 13.6 Review 提出的新增决策
 
-以下决策由 2026-10-22 的 review 从 D01–D19 的二阶后果中提出，各项的来龙去脉见对应决策下的“Review 补充”。确认后与 D01–D19 同等纳入 TODO 推导。
+以下决策由 2026-10-22 的 review 从 D01–D19 的二阶后果中提出，各项的来龙去脉见对应决策下的“Review 补充”；2026-10-23 全部确认，与 D01–D19 同等纳入 TODO 推导。标为“由决定推导”的细则在实施前需再核对。
 
 #### D20 规范化日志是否独立于 planner 可应用
 
@@ -960,6 +1049,8 @@ D06 与本项相互制约：若提交历史 v1 不截断，删除内容本身不
 
 **建议**：A。K05 的验收改为“旧日志在新 planner 下重放一致”。D05 的级联删除、D01 的业务校验剥离都以此为前提。
 
+**决定（2026-10-23）**：采纳方案 A。
+
 #### D21 本地模式生成程序的执行形态
 
 **需要决定**：AI 生成的程序在浏览器中以什么上下文运行。
@@ -968,23 +1059,53 @@ D06 与本项相互制约：若提交历史 v1 不截断，删除内容本身不
 
 **建议**：sandboxed iframe 或 Worker，只经 postMessage 获得受限 Workspace SDK（读输入快照、写候选结果），不持有 token。安全风险按“先能力后安全”作为已知风险记录，但接口形状现在定。
 
+**决定（2026-10-23）**：不用 iframe。每个 Workspace 使用独立域名，URL 对 SEO 友好，形态为 `aiws-<id>.<zonehost>/<workspace_name>/<surface_name>?...`，Workspace 之间以及与 Desktop 之间由浏览器源隔离。生成程序用 Worker + postMessage。
+
+以下细则由决定推导，实施前需再核对：
+
+- 独立源隔离的是 Workspace 彼此及 Desktop，不隔离生成程序与本 Workspace 页面。Worker 与页面同源，但没有 DOM 和 cookie 访问；token 只留在页面主线程，SDK 调用经 postMessage 代理。建议中的“不持有 token”仍然成立。
+- 子域名由 cyfs-gateway 的子域路由提供；现有 `/workspace/<id>` 独立页面路由迁到子域。登录态在 `<zonehost>` 父域还是各子域各自持有，要与混合 SSO 的 cookie 策略一起定。
+- URL 中的 `workspace_name`、`surface_name` 是 D10 的名称投影，可变。改名后旧链接是否继续解析（保留名称到 ID 的历史别名）需要决定；D10 的“URL 与引用对象无损互转”要求 URL 里仍能带上 ID 或 ID 可由名字唯一解析。
+- SEO 友好意味着公开内容需要服务端渲染或预渲染，属于 D26 发布链路的产品项，不属于内核。
+- §13.7 的“URL 的具体语法”相应改为“URL 的完整语法”，基本形态已由本项决定。
+
 #### D22 任务结果写权限的来源
 
 **需要决定**：结果写回的权限上限以执行身份还是以确认者为准。
 
-**建议**：按模式各取其一。Agent 模式按执行身份（执行身份权限 ∩ 声明输出）；本地模式按确认者（声明输出 ∩ 确认者在确认时的权限，apply 时复查），由服务签发限定输出目标的 run token。触发者只需 `run`。
+**建议**：按模式各取其一。托管执行模式按执行身份（执行身份权限 ∩ 声明输出）；本地模式按确认者（声明输出 ∩ 确认者在确认时的权限，apply 时复查），由服务签发限定输出目标的 run token。触发者只需 `run`。
 
-#### D23 “用户后台模式”是否并入 Agent 模式
+**决定（2026-10-23）**：托管执行分两步。v1 使用 Workspace Owner 指定的配置执行（Owner 的 Agent，以及 Owner 管理的能力与额度配置）；后续再支持使用当前用户自己的 Agent。Owner 要承担配置管理。
+
+以下细则由决定推导，实施前需再核对：
+
+- v1 的权限来源统一为**执行身份派**：托管执行的执行身份是 Owner 配置的 Agent，写权限 = 该 Agent 的当前权限 ∩ 已确认的输出声明。只有 `run` 权限的协作者通过它执行，不需要“确认者派”的 run token。
+- 本地模式写权限 = 触发者本人权限 ∩ 输出声明。没有 update 的人在本地模式写不回，界面应引导其改用托管执行。
+- 冻结思路 §8.7 的触发者、执行环境所有者、执行身份三角色直接对应：触发者是点击者，环境所有者是 Owner，执行身份是 Owner 配置的 Agent。§9.4“委托绑定任务版本”落在 Owner 的配置项上：任务配置摘要变化后由 Owner 重新确认（`DELEGATION_STALE`）。
+- 后续加入“当前用户的 Agent”时，权限来源仍是执行身份派，协议不变，只在 run 记录中增加执行身份的选择与审计字段。
+- Owner 配置需要的管理面：允许哪些任务、哪些协作者可触发、能力与额度上限、Agent 选择。属 D16 的授权条目结构，冻结前一并确定。
+
+#### D23 “用户后台模式”是否并入托管执行模式
 
 **需要决定**：是否保留 D14 的第三种执行形态。
 
 **建议**：并入。Node Executor 的凭据与映射规则使方案 B 的执行身份就是一个 Agent；方案 A 是再造一个无对话能力的 Agent。默认后台执行者为该用户的 Jarvis；Owner 委托等于“Owner 的 Agent 替协作者执行”。没有 Agent 的用户只有本地模式。
 
+**决定（2026-10-23）**：原理上并入，但不叫“Agent 模式”：Run Agent Work Session 被视为 AppLoader 的一种形式，“Agent 模式”的叫法会误导。本文统一改称**托管执行模式**，定义为“经 AppLoader 启动一个 Agent Work Session 来执行任务”。
+
+以下细则由决定推导，实施前需再核对：
+
+- D14 的三形态收敛为两形态：本地（浏览器）与托管（AppLoader 启动 Agent Work Session）。Node Executor 方案 B 是托管形态的一种底层实现选择，不再是独立形态。
+- 结合 D22：v1 托管执行的 Agent 由 Owner 指定；“默认执行者为该用户的 Jarvis”推迟到支持当前用户 Agent 的阶段。
+- 派发传输（D14 Review 补充第 1 点）按 AppLoader 语义理解：Workspace 请求 AppLoader 以指定 Agent 开一个 Work Session，而不是向 Agent 发一条消息。两者的接口差异在实施前核对 OpenDAN 的 Work Session 创建入口。
+
 #### D24 v1 自动同步的宿主
 
 **需要决定**：定时刷新 Source 在 v1 由谁执行。
 
-**建议**：服务侧保留“无凭据公开 URL 抓取”的窄路径，视为 Source 基础设施，不运行用户代码，只消耗 Workspace 流量额度；有凭据的 Source 走 Agent 模式。否则 v1 只有手动刷新。
+**建议**：服务侧保留“无凭据公开 URL 抓取”的窄路径，视为 Source 基础设施，不运行用户代码，只消耗 Workspace 流量额度；有凭据的 Source 走托管执行模式。否则 v1 只有手动刷新。
+
+**决定（2026-10-23）**：采纳建议。
 
 #### D25 资源 Folder 的命名与 DirObject 时间戳规范化
 
@@ -992,11 +1113,29 @@ D06 与本项相互制约：若提交历史 v1 不截断，删除内容本身不
 
 **建议**：二者改名其一（资源 Folder 改称 `dir` / “资源目录”，或树容器改称 `group`），不拖到实施期；物化时 `create_time` / `last_update_time` 取固定值，与 core 的 `file_object` 规则一致；v1 禁止外部 URL 成员，并为成员数设上限。
 
+**决定（2026-10-23）**：以 DirObject 为准。若 DirObject 无法满足内部需求，则同时支持内部 Folder 形态与 DirObject，两者并存而不是放弃 DirObject：DirObject 很容易成为被 Workspace 引用的外部资源。命名与时间戳规范化按建议处理（未另表态）。
+
+以下细则由决定推导，实施前需再核对：
+
+- 并存时需要明确映射：内部 Folder 的成员若都能表达为 FileObject 或子 Folder，物化时直接生成 DirObject；含 DirObject 无法表达的成员（外部 URL、顺序以外的元信息）时，按 §6.3 规则在导出或固定演示时拒绝、物化或显式降级。
+- 外部 DirObject 作为被引用资源进入 Workspace 时走 D12 的 Source 路径：ObjId 本身不变，所以天然是 fixed；“live”只能经名字入口或 PathObject 解析。
+- 时间戳固定规则同时适用于物化出的 FileObject 与 DirObject。
+
 #### D26 内容快照与协作快照的导出格式分离
 
 **需要决定**：分享、发布、演示、备份各走哪种快照。
 
 **建议**：分享与发布只走 ContentRoot（不含 CRDT 字节与 commits）；整库克隆只服务同 ACL 的演示基线；个人备份可带 `collab/*.loro`，但要在导出界面标明含完整编辑历史。
+
+**决定（2026-10-23）**：重点是**按路径发布**：Workspace 在一个数据源上标记为公开后，得到一个链接，该链接可以在另一个 Workspace 里直接插入；发布方能跟踪自己的产物有没有被引用。快照格式分离的建议作为发布链路的实现约束保留。
+
+以下细则由决定推导，实施前需再核对：
+
+- 公开链接是 D10 引用对象的 URL 投影，形态按 D21（`aiws-<id>.<zonehost>/<workspace_name>/<data_name>`）。默认 live，对应现有引用对象的 `published_channel` 版本模式；消费方插入时可选 fixed，解析为该数据源的实体 Content ID 或 ContentRoot，不是整库克隆。
+- 消费方以 D12 的 Source 接入：同 Zone 内由服务直接读取；跨 Zone 走 D24 的无凭据公开抓取。发布即对该数据源授予 `public` 主体读权限（现有 grants 的 `public` 主体可复用），其余 ACL 不变；§6.2 的“导入副本授权”由消费方 Workspace 的 ACL 决定。
+- “跟踪被引用”需要反向引用登记。同一服务内由服务级跨 Workspace 引用索引实现（refs 已有 `dst_workspace_id`）；跨 Zone 需要消费方插入时向发布方登记订阅记录，否则只能退化为访问日志。登记是弱引用，不阻止发布方撤回；撤回后消费方按 §5.2 得到 unavailable。
+- 发布的数据源可以是 Folder（D25）：产物文件夹（冻结思路 §3.5）就是“标记公开的 Folder”，解析为 DirObject ObjId。
+- 关联：D10（引用对象）、D12（Source）、D21（URL）、D24（抓取）、D25（Folder）。
 
 #### FORMAT 1.0 冻结前必须一次进入格式的内容
 
@@ -1018,8 +1157,8 @@ D07 规定冻结点之后不兼容变化必须显式转换。以下若不在 1.0
 
 ### 13.7 可以延后的事项
 
-以下事项不影响内核数据结构、接口和运行模型的冻结，可以在相应能力开发时再定：Agent 与 XL Agent 的分类及差异；Guest 自带模型 Endpoint 与跨 Zone AICC；函数对象（Function Instance、Lambda Object）的格式、缓存和发布；公开演示房间的事件编码和回放界面；URL 的具体语法；配额数值和计费；后端公式语言和增量求值算法。
+以下事项不影响内核数据结构、接口和运行模型的冻结，可以在相应能力开发时再定：Agent 与 XL Agent 的分类及差异；Guest 自带模型 Endpoint 与跨 Zone AICC；函数对象（Function Instance、Lambda Object）的格式、缓存和发布；公开演示房间的事件编码和回放界面；URL 的完整语法（基本形态已由 D21 决定）；配额数值和计费；后端公式语言和增量求值算法；托管执行使用当前用户自己的 Agent（D22 第二步）。
 
 ### 13.8 下一步
 
-D01–D19 已于 2026-10-22 全部确认，结论记录在 13.1 的状态栏；与建议不同或有补充的决定（D01、D05），写在对应小节的“决定”中，其中标为“由决定推导”的细则在实施前需再核对。同日 review 提出的 D20–D26 和 13.2 的确认意见待确认；各决策下的“Review 补充”在推导 TODO 时与决策正文同等对待。下一步按这些决策推导实施 TODO，替换 §12.3 的实施顺序。
+D01–D19 已于 2026-10-22 全部确认，D20–D26 已于 2026-10-23 全部确认，结论记录在 13.1 的状态栏；与建议不同或有补充的决定（D01、D05、D21、D22、D23、D25、D26），写在对应小节的“决定”中，其中标为“由决定推导”的细则在实施前需再核对。13.2 的八条契约已于 2026-10-23 按确认意见确认；各决策下的“Review 补充”与决策正文同等对待。冻结前的设计决策至此全部确定，实施 TODO 已推导为 §12.3（M0–M5，T0-1 至 T5-6），从 M0 开始实施。

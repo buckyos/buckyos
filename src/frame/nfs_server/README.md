@@ -151,8 +151,7 @@ cargo build -p nfs_server
 cargo build -p task_manager --example nfs_copy_fixture
 FB_NFSP_E2E=1 FB_COPY_AUTO=1 VITE_NFS_PROXY=http://127.0.0.1:3262 \
   pnpm --dir frame/desktop exec playwright test \
-  tests/e2e/pages/filebrowser.copy.nfsp.spec.ts \
-  tests/e2e/pages/filebrowser.nfsp.spec.ts --workers=1 --reporter=list
+  tests/e2e/pages/filebrowser.copy.nfsp.spec.ts --workers=1 --reporter=list
 ```
 
 `CARGO_TARGET_DIR` 如果有自定义，构建与 E2E 必须使用同一环境值。fixture 自动启动
@@ -191,6 +190,24 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 `product/bucky_file/nfs_server.md` §13。回归：`cargo test -p nfs_server --test ndm`（真实 RBAC 模型 + 默认策略，
 覆盖归属、续传、终止、过期、登记校验、未授权读取与权限分离）。
 
+浏览器使用 WebSDK `ndm.importFiles` / `ndm.importDirectory`，再等待 `ndm.ensureUploaded`；稳定 ObjId 与 `objectStatus: ready` 分开。`POST /ndm/v1/import/finalize` 接收 `{ objects: [{ obj_id, obj_data }], roots: [ObjId], qcid_links?: [{ qcid, content_id, size }] }`，在原上传用户和 canonical App/System target 下按依赖顺序登记 FileObject、ChunkList、DirObject，校验 ID、子对象读取权限及递归完整性。请求体上限 8 MiB、对象和根各最多 10000 个；根只能是 FileObject 或 DirObject。
+
+成功返回 `{ ready: true, roots: [{ obj_id, ready: true }], warnings: [] }`。缺失/无权访问依赖、登记或临时保留失败均不返回 ready，重试相同 manifest 不重复创建内容。QCID 是可选优化：服务端从已完成内容采样验证，失败只写 warnings；索引按上传主体隔离，并保存原 chunk/ChunkList 标识，避免复用改变 FileObject ID。lookup 的 `scope` 为 `app` 或 `global`；只有 `reusable: true` 才允许跳过上传，存在性查询本身不授予读取或登记权限。
+
+就绪根及依赖元数据使用 24 小时、递归展开的临时 pin，覆盖复用内容的强依赖；该保留不能替代消息、发布、异步请求等业务引用。零字节 TUS 在创建时直接完成真实空 chunk 写入，无需 PATCH。上传取消只清理所属 session 的 staging/pin，不删除共享对象。
+
 ## 编辑器取消写入
 
 控制面写操作 `abort_write { lease_id }` 使用当前 NFSP `session` 与递增 `seq`。有效租约只能由所属会话取消；成功返回 `{ "aborted": true }`、释放租约并删除暂存上传。不存在或已提交的租约重复取消也成功，便于客户端在 `finally` 清理。跨会话取消返回 `LEASE_CONFLICT`。NFSP 会话绑定发起 hello 的身份，因此租约也只属于该用户。
+
+## Named-object destination commits
+
+`POST /nfs/v1/commit_object` is a sequenced write. Its envelope uses `at` (or `args.parent_ref`) plus `args.name`, `args.obj_id`, and optional `overwrite`, `expected_revision`, `lease_id`. Only FileObject and DirObject are accepted. The gateway validates the request's original Bearer/cookie principal against NDM holdings/read authorization, then extracts from NamedStore locally. Browser bytes are sent only through the SDK's NDM import.
+
+File commits retain the existing path ACL, binding, CAS, active-lease, and bypass-edit guards. Directory imports preserve their root and empty descendants, check destination ACLs and leases, and require an unused destination name. A retry whose extracted bytes/tree exactly match the existing destination succeeds without replacing content; a differing existing directory requires rename or skip. Successful writes invalidate the parent listing. A sequence replay returns the recorded result; after session expiry the same object and destination can be retried by content comparison. Client cancellation stops preparation and transport; an in-flight destination commit can finish and should be reconciled by refreshing or retrying the same object.
+
+Extraction uses a task-owned staging path on the target filesystem. `.nfs_import_*` and `.nfs_tmp_*` are reserved and inaccessible through NFSP. Failures clean only the task's staging and temporary pin. This is not a multi-root directory transaction or an atomic upload batch: earlier successful tasks remain present, and failed tasks are retried individually. File-system readers no longer depend on the uploaded object's temporary lease after extraction. `commit_file` remains the content-edit operation and no longer accepts an `obj_id` alias for a SHA-256 hash.
+
+To verify the browser path against an isolated real NFS instance, build the WebSDK and `nfs_server`, then run `FB_NFSP_AUTO=1 pnpm --dir frame/desktop exec playwright test tests/e2e/pages/filebrowser.nfsp.spec.ts` from `buckyos/src`. The fixture creates temporary exports and NamedStore, checks actual destination bytes and duplicate upload offsets, and cleans up its own processes and data. Set `CARGO_TARGET_DIR` consistently when using a custom Cargo target directory.
+
+The SDK can also exercise the real HTTP protocol without a browser. From the repository root run `NFS_SERVER_BIN=/path/to/target/debug/nfs_server node test/nfs_server_test/sdk_import_http.mjs` after building both the SDK and NFS. `BUCKYOS_SDK_MODULE` optionally selects the SDK's `dist/node.mjs`; by default the sibling `buckyos-websdk` checkout is used. This creates a fresh NamedStore on a random loopback port and verifies zero bytes, 48 KiB, 33 MiB, duplicate content (12 KiB sampling and no data upload), and Unicode/empty/nested directories. The Node runner uses AuthDisabled; the browser fixture uses local test identities. Neither replaces normal-user Zone/SSO/Gateway acceptance.

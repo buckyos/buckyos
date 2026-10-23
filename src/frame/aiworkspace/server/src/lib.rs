@@ -43,12 +43,18 @@ impl Default for Limits {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Upload {
-    kind: &'static str,
+    kind: String,
     workspace_id: Option<String>,
     principal: String,
     path: PathBuf,
     received: Option<u64>,
+    expires_at: i64,
+    result: Option<Value>,
+    finish_params: Option<Value>,
+    #[serde(skip)]
+    writing: bool,
 }
 
 /// A head or lock change of one Workspace: the payload of the wake-up hint.
@@ -67,6 +73,7 @@ pub struct AppState {
     pub shows: show::Shows,
     heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
     uploads: Mutex<HashMap<String, Upload>>,
+    pub named_import: tokio::sync::OnceCell<(named_store::NamedDataMgr, String)>,
 }
 
 impl AppState {
@@ -99,7 +106,25 @@ impl AppState {
                 }
             }));
         }));
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, uploads: Mutex::new(HashMap::new()) })
+        let mut uploads = HashMap::new();
+        let staging = svc.data_dir.join("staging");
+        if let Ok(entries) = std::fs::read_dir(&staging) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(id) = path.file_name().and_then(|s| s.to_str()).and_then(|s| s.strip_suffix(".upload.json")) else { continue };
+                if !aiworkspace_core::id::is_prefixed_id("up_", id) { continue; }
+                if let Some(upload) = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<Upload>(&bytes).ok()) {
+                    if upload.path != staging.join(format!("{id}.part")) { continue; }
+                    if upload.expires_at <= (svc.clock)() {
+                        let _ = std::fs::remove_file(&upload.path);
+                        let _ = std::fs::remove_file(&path);
+                    } else {
+                        uploads.insert(id.to_string(), upload);
+                    }
+                }
+            }
+        }
+        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, uploads: Mutex::new(uploads), named_import: tokio::sync::OnceCell::new() })
     }
 
     pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
@@ -112,6 +137,9 @@ impl AppState {
                 return Err(WsError::new(Code::WriterBusy, "workspace writer was reset; retry"));
             }
         };
+        if !self.svc.is_current_workspace(id, &handle) {
+            return Err(WsError::new(Code::WriterBusy, "workspace writer was replaced; retry"));
+        }
         f(&mut guard)
     }
 
@@ -121,6 +149,15 @@ impl AppState {
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
+    let weak = Arc::downgrade(&state);
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            timer.tick().await;
+            let Some(state) = weak.upgrade() else { break };
+            sweep_uploads(&state);
+        }
+    });
     let krpc_limit = state.limits.max_commit_bytes + 64 * 1024;
     Router::new()
         .route(HTTP_PATH, post(krpc))
@@ -300,6 +337,8 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
         wait_changes(&state, &params, caller.as_ref().expect("authenticated above")).await
     } else if method == "ws.join_entry" {
         join_entry(&state, &params, caller.as_ref().expect("authenticated above")).await
+    } else if method == "asset.import_object" {
+        import_asset_object(&state, &params, caller.as_ref().expect("authenticated above"), req["sys"][1].as_str().unwrap_or_default()).await
     } else {
         let c = caller.clone().expect("authenticated above");
         let st = state.clone();
@@ -378,10 +417,13 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             begin_upload(state, "import", None, caller)?
         }
         "ws.import" => {
-            let upload = take_upload(state, s(p, "upload_id")?, "import", caller)?;
-            let r = svc.import(caller, &upload, s(p, "semantics")?, p.get("replace").and_then(Value::as_bool).unwrap_or(false));
-            let _ = std::fs::remove_file(&upload);
-            r?
+            require_may_own(caller)?;
+            if !matches!(s(p, "semantics")?, "new" | "restore") {
+                return Err(WsError::invalid_op("semantics must be \"restore\" or \"new\""));
+            }
+            finish_upload(state, s(p, "upload_id")?, "import", None, caller, p, |path| {
+                svc.import_upload(caller, path, s(p, "semantics")?, p.get("replace").and_then(Value::as_bool).unwrap_or(false), s(p, "upload_id")?)
+            })?
         }
         "ws.create_entry" => state.with_ws(ws_id()?, |ws| {
             let caps = strings(p, "capabilities")?;
@@ -462,10 +504,18 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         }
         "asset.finish_upload" => {
             let id = ws_id()?;
-            let path = take_upload(state, s(p, "upload_id")?, "asset", caller)?;
-            let data = std::fs::read(&path).map_err(|e| WsError::io(e.to_string()));
-            let _ = std::fs::remove_file(&path);
-            state.with_ws(id, |ws| ws.stage_asset(caller, &data?))?
+            state.with_ws(id, |ws| {
+                let access = ws.require_ws_any(caller)?;
+                use aiworkspace_core::access::Cap;
+                if !access.ws_caps.has(Cap::Update) && !access.ws_caps.has(Cap::Structure) {
+                    return Err(WsError::denied("update or structure capability required"));
+                }
+                Ok(())
+            })?;
+            finish_upload(state, s(p, "upload_id")?, "asset", Some(id), caller, p, |path| {
+                let data = std::fs::read(path).map_err(|e| WsError::io(e.to_string()))?;
+                state.with_ws(id, |ws| ws.stage_asset(caller, &data))
+            })?
         }
         "replica.bootstrap" => state.with_ws(ws_id()?, |ws| {
             let mut r = ws.replica_bootstrap(caller)?;
@@ -642,18 +692,98 @@ async fn wait_changes(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsRe
 fn begin_upload(state: &Arc<AppState>, kind: &'static str, workspace_id: Option<String>, caller: &Caller) -> WsResult<Value> {
     let upload_id = aiworkspace_store::workspace::random_id("up_");
     let path = state.staging_file(&format!("{upload_id}.part"));
-    state.uploads.lock().unwrap().insert(upload_id.clone(), Upload { kind, workspace_id, principal: caller.principal.clone(), path, received: None });
+    sweep_uploads(state);
+    let mut uploads = state.uploads.lock().unwrap();
+    let upload = Upload { kind: kind.into(), workspace_id, principal: caller.principal.clone(), path, received: None, expires_at: (state.svc.clock)() + 86_400_000, result: None, finish_params: None, writing: false };
+    save_upload(state, &upload_id, &upload)?;
+    uploads.insert(upload_id.clone(), upload);
     Ok(json!({ "ok": true, "upload_id": upload_id, "put": format!("{HTTP_PATH}/upload/{upload_id}") }))
 }
 
-/// Consume a finished upload of the expected kind belonging to the caller.
-fn take_upload(state: &Arc<AppState>, upload_id: &str, kind: &str, caller: &Caller) -> WsResult<PathBuf> {
-    let mut uploads = state.uploads.lock().unwrap();
-    match uploads.get(upload_id) {
-        Some(u) if u.kind == kind && u.principal == caller.principal && u.received.is_some() => Ok(uploads.remove(upload_id).unwrap().path),
-        Some(u) if u.kind == kind && u.principal == caller.principal => Err(WsError::new(Code::DependencyUnavailable, "upload has not completed")),
-        _ => Err(WsError::not_found("upload not found")),
+fn sweep_uploads(state: &AppState) {
+    state.uploads.lock().unwrap().retain(|id, upload| {
+        if upload.writing || upload.expires_at > (state.svc.clock)() { return true; }
+        let _ = std::fs::remove_file(&upload.path);
+        let _ = std::fs::remove_file(state.staging_file(&format!("{id}.upload.json")));
+        false
+    });
+}
+
+async fn import_asset_object(state: &Arc<AppState>, params: &Value, caller: &Caller, token: &str) -> WsResult<Value> {
+    let workspace = s(params, "workspace_id")?.to_string();
+    let id = ndn_lib::ObjId::new(s(params, "obj_id")?).map_err(|e| WsError::invalid_op(e.to_string()))?;
+    if !id.is_file_object() {
+        return Err(WsError::invalid_op("an asset must be a FileObject; import folders as workspace containers"));
     }
+    state.with_ws(&workspace, |ws| {
+        let access = ws.require_ws_any(caller)?;
+        use aiworkspace_core::access::Cap;
+        if !access.ws_caps.has(Cap::Update) && !access.ws_caps.has(Cap::Structure) {
+            return Err(WsError::denied("update or structure capability required"));
+        }
+        Ok(())
+    })?;
+    let (store, gateway) = state.named_import.get_or_try_init(|| async {
+        let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| WsError::io(e.to_string()))?;
+        let gateway = runtime.get_zone_service_url("nfs-server", false).await.map_err(|e| WsError::io(e.to_string()))?;
+        let store = runtime.get_named_store().await.map_err(|e| WsError::io(e.to_string()))?;
+        Ok::<_, WsError>((store, gateway))
+    }).await?;
+    let mut url = reqwest::Url::parse(gateway).map_err(|e| WsError::io(e.to_string()))?;
+    url.set_path("/ndm/v1/store/get_object");
+    url.set_query(None);
+    let response = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|e| WsError::io(e.to_string()))?
+        .post(url).bearer_auth(token).json(&json!({"obj_id": id.to_string()})).send().await.map_err(|e| WsError::io(e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(WsError::denied("the current session cannot read the imported object"));
+    }
+    if !store.is_object_stored(&id, None).await.map_err(|e| WsError::io(e.to_string()))? {
+        return Err(WsError::new(Code::DependencyUnavailable, "imported object is incomplete"));
+    }
+    let (reader, size) = store.open_reader(&id, None).await.map_err(|e| WsError::io(e.to_string()))?;
+    if size > state.limits.max_asset_bytes {
+        return Err(WsError::limit(format!("workspace assets are limited to {} bytes", state.limits.max_asset_bytes)));
+    }
+    use tokio::io::AsyncReadExt;
+    let mut data = Vec::new();
+    reader.take(state.limits.max_asset_bytes + 1).read_to_end(&mut data).await.map_err(|e| WsError::io(e.to_string()))?;
+    if data.len() as u64 != size {
+        return Err(WsError::new(Code::DependencyUnavailable, "imported object size mismatch"));
+    }
+    let (st, c) = (state.clone(), caller.clone());
+    blocking(move || st.with_ws(&workspace, |ws| {
+        let mut result = ws.stage_asset(&c, &data)?;
+        result["source_obj_id"] = json!(id.to_string());
+        Ok(result)
+    })).await
+}
+
+fn save_upload(state: &Arc<AppState>, id: &str, upload: &Upload) -> WsResult<()> {
+    let bytes = serde_json::to_vec(upload).map_err(|e| WsError::io(e.to_string()))?;
+    aiworkspace_store::objects::write_atomic(&state.staging_file(&format!("{id}.upload.json")), &bytes)
+}
+
+fn finish_upload(state: &Arc<AppState>, upload_id: &str, kind: &str, workspace_id: Option<&str>, caller: &Caller, params: &Value, finish: impl FnOnce(&std::path::Path) -> WsResult<Value>) -> WsResult<Value> {
+    let mut uploads = state.uploads.lock().unwrap();
+    let upload = uploads.get_mut(upload_id).filter(|u| u.kind == kind && u.principal == caller.principal && u.workspace_id.as_deref() == workspace_id && u.expires_at > (state.svc.clock)())
+        .ok_or_else(|| WsError::not_found("upload not found for this workspace"))?;
+    if upload.received.is_none() || upload.writing {
+        return Err(WsError::new(Code::DependencyUnavailable, "upload has not completed"));
+    }
+    if upload.finish_params.as_ref().is_some_and(|intent| intent != params) {
+        return Err(WsError::invalid_op("upload was already submitted with different parameters"));
+    }
+    if let Some(result) = &upload.result {
+        save_upload(state, upload_id, upload)?;
+        return Ok(result.clone());
+    }
+    upload.finish_params = Some(params.clone());
+    save_upload(state, upload_id, upload)?;
+    let result = finish(&upload.path)?;
+    upload.result = Some(result.clone());
+    save_upload(state, upload_id, upload)?;
+    let _ = std::fs::remove_file(&upload.path);
+    Ok(result)
 }
 
 /// The caller of an HTTP route, its memberships settled for `workspace_id` (when the route names one).
@@ -696,9 +826,10 @@ async fn upload(State(state): State<Arc<AppState>>, Path(upload_id): Path<String
         Err(r) => return r,
     };
     let (path, limit) = {
-        let uploads = state.uploads.lock().unwrap();
-        match uploads.get(&upload_id) {
-            Some(u) if u.principal == caller.principal && u.received.is_none() => {
+        let mut uploads = state.uploads.lock().unwrap();
+        match uploads.get_mut(&upload_id) {
+            Some(u) if u.principal == caller.principal && u.received.is_none() && !u.writing && u.expires_at > (state.svc.clock)() => {
+                u.writing = true;
                 (u.path.clone(), if u.kind == "asset" { state.limits.max_asset_bytes } else { state.limits.max_package_bytes })
             }
             _ => return http_error(WsError::not_found("upload not found"), Some(&caller), "upload"),
@@ -724,13 +855,14 @@ async fn upload(State(state): State<Arc<AppState>>, Path(upload_id): Path<String
         Ok(total) => {
             if let Some(u) = state.uploads.lock().unwrap().get_mut(&upload_id) {
                 u.received = Some(total);
-                let _ = &u.workspace_id;
+                u.writing = false;
+                if let Err(e) = save_upload(&state, &upload_id, u) { return http_error(e, Some(&caller), "upload"); }
             }
             Json(json!({ "ok": true, "upload_id": upload_id, "received": total })).into_response()
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&path).await;
-            state.uploads.lock().unwrap().remove(&upload_id);
+            if let Some(u) = state.uploads.lock().unwrap().get_mut(&upload_id) { u.writing = false; }
             http_error(e, Some(&caller), "upload")
         }
     }

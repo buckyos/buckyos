@@ -14,12 +14,14 @@ export interface ObjectInfo {
   size?: number
   mimeType?: string
   isFile: boolean
+  isDirectory?: boolean
+  entries?: string[]
 }
 
 export interface ObjectAccess {
-  describe(objId: string, context?: string): Promise<ObjectInfo>
+  describe(objId: string, context?: string, innerPath?: string): Promise<ObjectInfo>
   /** Blob URL of the file content (cached per viewer, context and object id). */
-  contentUrl(objId: string, context?: string): Promise<string>
+  contentUrl(objId: string, context?: string, innerPath?: string): Promise<string>
 }
 
 export interface LocalObject {
@@ -36,13 +38,13 @@ const cacheResets = new Set<() => void>()
 export function registerObjectAccess(access: ObjectAccess | null) {
   handler = access
   wrapped = access ? {
-    describe: (objId, context) => {
-      const local = localObjects.get(objId)
-      return local ? Promise.resolve(local.info) : access.describe(objId, context)
+    describe: (objId, context, innerPath) => {
+      const local = innerPath ? undefined : localObjects.get(objId)
+      return local ? Promise.resolve(local.info) : access.describe(objId, context, innerPath)
     },
-    contentUrl: (objId, context) => {
-      const local = localObjects.get(objId)
-      return local ? Promise.resolve(local.url) : access.contentUrl(objId, context)
+    contentUrl: (objId, context, innerPath) => {
+      const local = innerPath ? undefined : localObjects.get(objId)
+      return local ? Promise.resolve(local.url) : access.contentUrl(objId, context, innerPath)
     },
   } : null
 }

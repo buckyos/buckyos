@@ -69,9 +69,11 @@ fn v04_export_import_roundtrip() {
     // restoring over an existing Workspace: explicit replace + manage on the existing one
     assert_eq!(other.svc.import(&bob(), &pkg, "restore", false).unwrap_err().code.as_str(), "PERMISSION_DENIED");
     assert_eq!(other.svc.import(&alice(), &pkg, "restore", true).unwrap_err().code.as_str(), "PERMISSION_DENIED");
+    let pending_handle = h.clone();
     let again = other.svc.import(&bob(), &pkg, "restore", true).unwrap();
     assert_ne!(again["epoch"], json!(epoch_imported), "a restore starts a new epoch");
     let h = other.svc.workspace(&id).unwrap();
+    assert!(Arc::ptr_eq(&pending_handle, &h), "queued writers must observe the replacement through the same handle");
     let ws = h.lock().unwrap();
     assert_eq!(ws.get_changes(&bob(), &epoch_imported, 0, 10, false).unwrap_err().code.as_str(), "EPOCH_MISMATCH");
     assert!(ws.read(&bob(), "tasks", None).is_ok(), "grants of the replaced workspace are kept");

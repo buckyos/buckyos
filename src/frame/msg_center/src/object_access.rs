@@ -18,7 +18,7 @@ use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use kRPC::RPCContext;
-use ndn_lib::{load_named_obj, ChunkId, FileObject, ObjId};
+use ndn_lib::{load_named_obj, FileObject, ObjId};
 use tokio::io::AsyncReadExt;
 
 type Body = BoxBody<Bytes, ServerError>;
@@ -199,7 +199,7 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
         if let Ok(Some((_, body, jwt))) = center.groups.object(&obj_id).await {
             return Some(group_message_response(body, jwt));
         }
-        return Some(fetch_authorized_object(&obj_id, want_content).await);
+        return Some(fetch_authorized_object_path(&obj_id, want_content, query_param(req.uri().query().unwrap_or(""), "inner_path")).await);
     }
 
     if center
@@ -223,7 +223,7 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
     {
         return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
     }
-    Some(fetch_authorized_object(&obj_id, want_content).await)
+    Some(fetch_authorized_object_path(&obj_id, want_content, query_param(req.uri().query().unwrap_or(""), "inner_path")).await)
 }
 
 /// A stored group message: its signed form when it has one.
@@ -267,6 +267,10 @@ fn denial_response(status: StatusCode, denial: AccessDenial) -> Response<Body> {
 }
 
 pub(crate) async fn fetch_authorized_object(obj_id: &ObjId, want_content: bool) -> Response<Body> {
+    fetch_authorized_object_path(obj_id, want_content, None).await
+}
+
+async fn fetch_authorized_object_path(root: &ObjId, want_content: bool, inner_path: Option<String>) -> Response<Body> {
     let runtime = match get_buckyos_api_runtime() {
         Ok(runtime) => runtime,
         Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
@@ -275,6 +279,18 @@ pub(crate) async fn fetch_authorized_object(obj_id: &ObjId, want_content: bool) 
         Ok(store) => store,
         Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
     };
+    let mut obj_id = root.clone();
+    if let Some(path) = inner_path {
+        for name in path.split('/') {
+            if name.is_empty() || name == "." || name == ".." || name.contains('\\') {
+                return text_response(StatusCode::BAD_REQUEST, "invalid inner path");
+            }
+            obj_id = match named_store.get_dir_child(&obj_id, name).await {
+                Ok(child) => child,
+                Err(_) => return text_response(StatusCode::NOT_FOUND, "directory entry unavailable"),
+            };
+        }
+    }
     let obj_str = match named_store.get_object(&obj_id).await {
         Ok(value) => value,
         Err(error) => {
@@ -312,16 +328,7 @@ pub(crate) async fn fetch_authorized_object(obj_id: &ObjId, want_content: bool) 
             "file is too large for inline download",
         );
     }
-    let chunk_id = match ChunkId::new(file_obj.content.trim()) {
-        Ok(id) => id,
-        Err(_) => {
-            return text_response(
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "file content is not a single chunk",
-            )
-        }
-    };
-    let (mut reader, len) = match named_store.open_chunk_reader(&chunk_id, 0).await {
+    let (mut reader, len) = match named_store.open_reader(&obj_id, None).await {
         Ok(value) => value,
         Err(_) => return text_response(StatusCode::NOT_FOUND, "file content unavailable"),
     };

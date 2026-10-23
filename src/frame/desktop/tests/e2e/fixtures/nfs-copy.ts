@@ -18,18 +18,19 @@ export class CopyServices {
   async start() {
     this.root = await mkdtemp(join(uid === undefined ? tmpdir() : '/tmp', 'buckyos-copy-e2e-'))
     await chmod(this.root, 0o755)
-    for (const directory of ['task', 'nfs', 'home', 'public', 'home/Documents', 'home/Pictures', 'home/Dest/a/b']) {
+    for (const directory of ['task', 'nfs', 'named-store', 'home', 'public', 'home/Documents', 'home/Pictures', 'home/Dest/a/b']) {
       const path = join(this.root, directory)
       await mkdir(path, { recursive: true }); await chmod(path, 0o777)
       if (uid !== undefined) await chown(path, uid, uid)
     }
     await this.directory('Dest/a/b')
     await this.write('Documents/notes.txt', Buffer.from('Real NFSP copy — 文件内容\n'))
-    for (const binary of ['nfs_server', 'examples/nfs_copy_fixture']) {
+    for (const binary of process.env.FB_NFSP_AUTO ? ['nfs_server'] : ['nfs_server', 'examples/nfs_copy_fixture']) {
       const destination = join(this.root, binary.replace('examples/', ''))
       await copyFile(join(target, 'debug', binary), destination)
       await chmod(destination, 0o755)
     }
+    if (process.env.FB_NFSP_AUTO) { await this.restartNfs(); return }
     this.startTask()
     await expect.poll(async () => readFile(join(this.root, 'task/user-token'), 'utf8').catch(() => ''), { timeout: 30000 }).not.toBe('')
     this.token = await readFile(join(this.root, 'task/user-token'), 'utf8')
@@ -50,7 +51,7 @@ export class CopyServices {
   }
   async restartNfs(env: Record<string, string> = {}) {
     await this.stopProcess(this.nfs)
-    this.nfs = this.startProcess('nfs_server', ['--listen', '127.0.0.1:3262', '--data-dir', join(this.root, 'nfs'), '--export', `home=${join(this.root, 'home')}`, '--export', `public=${join(this.root, 'public')}`, '--debug-api', '--copy-test-config', join(this.root, 'task/nfs-copy-test.json')], env)
+    this.nfs = this.startProcess('nfs_server', ['--listen', '127.0.0.1:3262', '--data-dir', join(this.root, 'nfs'), '--export', `home=${join(this.root, 'home')}`, '--export', `public=${join(this.root, 'public')}`, ...(process.env.FB_NFSP_AUTO ? ['--named-store', join(this.root, 'named-store')] : ['--debug-api', '--copy-test-config', join(this.root, 'task/nfs-copy-test.json')])], env)
     await expect.poll(async () => {
       try { this.session = (await this.call('hello', {})).session; return !!this.session } catch { return false }
     }, { timeout: 30000 }).toBe(true)
@@ -105,12 +106,12 @@ export class CopyServices {
 }
 export const test = base.extend<{}, { services: CopyServices | null }>({
   services: [async ({}, use) => {
-    if (!process.env.FB_COPY_AUTO) { await use(null); return }
+    if (!process.env.FB_COPY_AUTO && !process.env.FB_NFSP_AUTO) { await use(null); return }
     const services = new CopyServices()
     try { await services.start(); await use(services) } finally { await services.close() }
   }, { scope: 'worker', auto: true }],
   context: async ({ context, services }, use) => {
-    if (services) await context.setExtraHTTPHeaders({ Authorization: `Bearer ${services.token}` })
+    if (services?.token) await context.setExtraHTTPHeaders({ Authorization: `Bearer ${services.token}` })
     await use(context)
   },
 })

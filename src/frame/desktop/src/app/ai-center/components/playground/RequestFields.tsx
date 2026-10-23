@@ -4,6 +4,7 @@ import { useI18n } from '../../../../i18n/provider'
 import { fieldDefault, fieldsDefault, record, type JsonObject, type PlaygroundField } from '../../datamodel/playground'
 
 import { controlClass, controlStyle } from './styles'
+import { importPlaygroundResource } from '../../api/resourceImport'
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 
@@ -28,21 +29,42 @@ function ResourceInput({ field, value, onChange, label }: { field: PlaygroundFie
   const [reading, setReading] = useState(false)
   const [error, setError] = useState('')
   const generation = useRef(0)
+  const abort = useRef<AbortController | null>(null)
+  const selectedFile = useRef<File | null>(null)
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  const [percent, setPercent] = useState(0)
   const latestOnChange = useRef(onChange)
   useEffect(() => { latestOnChange.current = onChange }, [onChange])
-  useEffect(() => () => { generation.current++ }, [])
+  useEffect(() => () => { generation.current++; abort.current?.abort() }, [])
   const mode = upload ? 'file' : String(ref.kind ?? 'url')
   const mimes = field.accept?.startsWith('audio') ? ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac'] : field.accept?.startsWith('video') ? ['video/mp4', 'video/webm'] : ['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'text/plain']
+  const importFile = async (file: File, input?: HTMLInputElement) => {
+    abort.current?.abort()
+    input?.setCustomValidity('')
+    const controller = new AbortController()
+    abort.current = controller
+    selectedFile.current = file
+    const current = ++generation.current
+    setError(''); setReading(true); setPercent(0)
+    onChange({ kind: 'named_object', obj_id: '' })
+    try {
+      if (file.size === 0 || file.size > MAX_FILE_BYTES) throw new Error(t('aiCenter.playground.fileSize'))
+      const objectId = await importPlaygroundResource(file, controller.signal, next => { if (current === generation.current) setPercent(next) })
+      if (current === generation.current) { latestOnChange.current({ kind: 'named_object', obj_id: objectId }); input?.setCustomValidity('') }
+    } catch (error) {
+      if (current === generation.current) { const message = error instanceof Error ? error.message : String(error); setError(message); input?.setCustomValidity(message) }
+    } finally { if (current === generation.current) setReading(false) }
+  }
   return <div className="space-y-2 min-w-0">
     <select aria-label={`${label} ${t('aiCenter.playground.inputMode')}`} className={controlClass} style={controlStyle} value={mode} onChange={(event) => {
-      generation.current++; setReading(false); setError(''); setUpload(event.target.value === 'file')
+      generation.current++; abort.current?.abort(); setReading(false); setError(''); setUpload(event.target.value === 'file')
       onChange(event.target.value === 'url' ? { kind: 'url', url: '' } : event.target.value === 'named_object' ? { kind: 'named_object', obj_id: '' } : { kind: 'base64', mime: mimes[0], data_base64: '' })
     }}>
       <option value="url">URL</option><option value="base64">Base64</option><option value="file">{t('aiCenter.playground.upload')}</option><option value="named_object">{t('aiCenter.playground.namedObject')}</option>
     </select>
     {mode === 'url' && <input aria-label={`${label} URL`} type="url" className={controlClass} style={controlStyle} placeholder="https://" value={String(ref.url ?? '')} onChange={(event) => onChange({ ...ref, url: event.target.value })} />}
     {mode === 'named_object' && <input aria-label={`${label} Object ID`} className={controlClass} style={controlStyle} value={String(ref.obj_id ?? '')} onChange={(event) => onChange({ ...ref, obj_id: event.target.value })} />}
-    {(mode === 'base64' || mode === 'file') && <select aria-label={`${label} MIME`} className={controlClass} style={controlStyle} value={String(ref.mime ?? mimes[0])} onChange={(event) => onChange({ ...ref, mime: event.target.value })}>
+    {mode === 'base64' && <select aria-label={`${label} MIME`} className={controlClass} style={controlStyle} value={String(ref.mime ?? mimes[0])} onChange={(event) => onChange({ ...ref, mime: event.target.value })}>
       {[...new Set([...mimes, ...(ref.mime ? [String(ref.mime)] : [])])].map((mime) => <option key={mime}>{mime}</option>)}
     </select>}
     {mode === 'base64' && <textarea aria-label={`${label} Base64`} className={`${controlClass} font-mono`} style={controlStyle} rows={3} value={String(ref.data_base64 ?? '')} onChange={(event) => {
@@ -51,29 +73,18 @@ function ResourceInput({ field, value, onChange, label }: { field: PlaygroundFie
       onChange({ kind: 'base64', mime: data?.[1] ?? ref.mime, data_base64: (data?.[2] ?? raw).replace(/\s/g, '') })
     }} />}
     {mode === 'file' && <>
-      <input aria-label={`${label} ${t('aiCenter.playground.upload')}`} type="file" accept={field.accept} className={controlClass} style={controlStyle} onChange={async (event) => {
+      <input ref={fileInput} aria-label={`${label} ${t('aiCenter.playground.upload')}`} type="file" accept={field.accept} className={controlClass} style={controlStyle} onChange={async (event) => {
         const input = event.currentTarget
         const file = input.files?.[0]
         if (!file) return
-        const current = ++generation.current
-        setError(''); setReading(true)
-        onChange({ kind: 'base64', mime: file.type || mimes[0], data_base64: '' })
-        try {
-          if (file.size === 0 || file.size > MAX_FILE_BYTES) throw new Error(t('aiCenter.playground.fileSize'))
-          const data = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve(String(reader.result).split(',')[1])
-            reader.onerror = () => reject(new Error(t('aiCenter.playground.fileRead')))
-            reader.readAsDataURL(file)
-          })
-          if (current === generation.current) { latestOnChange.current({ kind: 'base64', mime: file.type || mimes[0], data_base64: data }); input.setCustomValidity('') }
-        } catch (error) {
-          if (current === generation.current) { const message = String(error instanceof Error ? error.message : error); setError(message); input.setCustomValidity(message) }
-        } finally { if (current === generation.current) setReading(false) }
+        input.setCustomValidity('')
+        await importFile(file, input)
       }} />
       <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.playground.fileHint')}</p>
     </>}
-    {reading && <p role="status">{t('aiCenter.playground.reading')}</p>}
+    {reading && <p role="status">{t('aiCenter.playground.reading')} {percent}% <button type="button" onClick={() => abort.current?.abort()}>{t('common.cancel')}</button></p>}
+    {error && selectedFile.current && mode === 'file' && <button type="button" onClick={() => void importFile(selectedFile.current!, fileInput.current ?? undefined)}>{t('common.retry')}</button>}
+    {mode === 'file' && !reading && ref.kind === 'named_object' && typeof ref.obj_id === 'string' && ref.obj_id && <p className="text-xs break-all">{String(ref.obj_id)}</p>}
     {error && <p role="alert" style={{ color: 'var(--cp-danger)' }}>{error}</p>}
   </div>
 }
