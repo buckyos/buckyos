@@ -42,6 +42,12 @@ pub(crate) struct OperationBinding {
     /// request treats as optional. Call lowering fills an omitted
     /// `max_output_tokens` with this value, clamped to the model's capability.
     pub default_max_output_tokens: Option<u64>,
+    /// Preference among the operations that bind this API type when a provider
+    /// instance declares no `operations` override of its own — a custom channel,
+    /// for instance, which must still refresh its catalog. The highest value
+    /// wins; `0` means the operation is only ever selected explicitly, by an
+    /// override or by provider discovery narrowing the candidates.
+    pub default_priority: u8,
 }
 
 impl OperationBinding {
@@ -55,6 +61,7 @@ impl OperationBinding {
             supported_features: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
             default_max_output_tokens: None,
+            default_priority: 0,
         }
     }
 

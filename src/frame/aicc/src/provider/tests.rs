@@ -585,6 +585,7 @@ fn codecs() -> Arc<CodecRegistry> {
             ]),
             execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
             default_max_output_tokens: None,
+            default_priority: 0,
         }],
         supports_cancel: false,
         supports_webhook: false,
@@ -1675,5 +1676,81 @@ fn backoff_is_bounded_and_fingerprint_is_order_independent() {
     assert_eq!(
         model_list_fingerprint(&first),
         model_list_fingerprint(&second)
+    );
+}
+
+/// A custom Gemini channel declares `provider_rules_id: None`, so the inventory
+/// has no `operations` override to pick between the adapter's overlapping
+/// bindings. The descriptor priority decides instead of failing the whole
+/// inventory with `multiple default operations`.
+#[test]
+fn custom_channel_defaults_each_api_type_to_its_preferred_operation() {
+    let (adapter, _) = crate::protocol::gemini_interactions_adapter();
+    for (api_type, name, expected) in [
+        (ApiType::Llm, "llm", "interactions.background"),
+        (ApiType::VisionOcr, "vision.ocr", "interactions.background"),
+        (
+            ApiType::AudioSpeechRecognition,
+            "audio.asr",
+            "interactions.background",
+        ),
+        (
+            ApiType::VideoGenerate,
+            "video.generate",
+            "models.predictLongRunning",
+        ),
+        (
+            ApiType::VideoExtend,
+            "video.extend",
+            "models.predictLongRunning",
+        ),
+        (ApiType::VideoEdit, "video.edit", "interactions.create"),
+        (
+            ApiType::ImageTextToImage,
+            "image.txt2img",
+            "interactions.create",
+        ),
+        (
+            ApiType::ImageImageToImage,
+            "image.img2img",
+            "interactions.create",
+        ),
+        (
+            ApiType::AudioTextToSpeech,
+            "audio.tts",
+            "interactions.create",
+        ),
+        (
+            ApiType::EmbeddingText,
+            "embedding.text",
+            "models.embedContent",
+        ),
+    ] {
+        assert_eq!(
+            resolve_operation(&adapter, &BTreeMap::new(), None, api_type, name).unwrap(),
+            Some(expected.to_string()),
+            "{name}"
+        );
+    }
+    // Discovery narrows the candidates before the priority applies, so an
+    // instance that only exposes the synchronous interactions endpoint still
+    // resolves `llm` onto it.
+    let discovered = BTreeSet::from(["interactions.create".to_string()]);
+    assert_eq!(
+        resolve_operation(
+            &adapter,
+            &BTreeMap::new(),
+            Some(&discovered),
+            ApiType::Llm,
+            "llm"
+        )
+        .unwrap(),
+        Some("interactions.create".to_string())
+    );
+    // An explicit override always wins.
+    let overrides = BTreeMap::from([("llm".to_string(), "models.embedContent".to_string())]);
+    assert_eq!(
+        resolve_operation(&adapter, &overrides, None, ApiType::Llm, "llm").unwrap(),
+        Some("models.embedContent".to_string())
     );
 }

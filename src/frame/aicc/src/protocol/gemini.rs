@@ -39,6 +39,15 @@ pub(crate) const GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID: &str = "interactio
 pub(crate) const GEMINI_EMBED_CONTENT_OPERATION_ID: &str = "models.embedContent";
 pub(crate) const GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID: &str = "models.predictLongRunning";
 
+/// Preference of each operation when a provider instance binds one API type
+/// through several of them and declares no `operations` override of its own —
+/// a custom Gemini channel, for instance, which must still refresh its catalog
+/// without hand-written rules. Highest wins:
+/// `interactions.background` > `models.predictLongRunning` > `interactions.create`.
+const BACKGROUND_INTERACTIONS_PRIORITY: u8 = 30;
+const PREDICT_LONG_RUNNING_PRIORITY: u8 = 20;
+const INTERACTIONS_PRIORITY: u8 = 10;
+
 const GEMINI_PROVIDER_NAMESPACE: &str = "gemini";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -51,7 +60,7 @@ pub(crate) fn gemini_api_key(
 }
 
 pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let interactions = operation(
+    let mut interactions = operation(
         GEMINI_INTERACTIONS_OPERATION_ID,
         vec![
             binding(
@@ -111,7 +120,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         false,
     );
-    let background_interactions = operation(
+    let mut background_interactions = operation(
         GEMINI_BACKGROUND_INTERACTIONS_OPERATION_ID,
         vec![
             binding(
@@ -136,7 +145,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         true,
     );
-    let video = operation(
+    let mut video = operation(
         GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
         vec![
             binding(ApiType::VideoGenerate, [ExecutionMode::NativeTask], []),
@@ -144,6 +153,12 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         ],
         false,
     );
+    set_default_priority(&mut interactions, INTERACTIONS_PRIORITY);
+    set_default_priority(
+        &mut background_interactions,
+        BACKGROUND_INTERACTIONS_PRIORITY,
+    );
+    set_default_priority(&mut video, PREDICT_LONG_RUNNING_PRIORITY);
     let descriptor = AdapterDescriptor {
         protocol_family_id: "gemini".to_string(),
         protocol_adapter_id: GEMINI_ADAPTER_ID.to_string(),
@@ -241,6 +256,12 @@ fn operation(
         supports_webhook: false,
         max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
         max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+    }
+}
+
+fn set_default_priority(operation: &mut OperationDescriptor, priority: u8) {
+    for binding in &mut operation.bindings {
+        binding.default_priority = priority;
     }
 }
 
