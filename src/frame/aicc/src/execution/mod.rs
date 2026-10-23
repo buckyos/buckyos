@@ -1051,16 +1051,18 @@ impl ProviderStartFailure {
 
     /// A video job the Provider accepted may already be generating and
     /// billed, so it is neither repeated nor moved to another Provider, even
-    /// when the error would allow that for other APIs.
+    /// when the error would allow that for other APIs. The same holds for any
+    /// attempt that reported usage before it failed.
     fn for_api(mut self, api_type: ApiType) -> Self {
         if self.provider_accepted
-            && matches!(
-                api_type,
-                ApiType::VideoGenerate
-                    | ApiType::VideoEdit
-                    | ApiType::VideoExtend
-                    | ApiType::VideoUpscale
-            )
+            && (self.error.usage.is_some()
+                || matches!(
+                    api_type,
+                    ApiType::VideoGenerate
+                        | ApiType::VideoEdit
+                        | ApiType::VideoExtend
+                        | ApiType::VideoUpscale
+                ))
         {
             self.retryable = false;
             self.retry_same_model = false;
@@ -1414,12 +1416,17 @@ impl ExecutionEngine {
                     .await
                     .map_err(|failure| failure.for_api(call.api_type));
                 if let Err(failure) = &started {
+                    // A failed attempt that reported usage already consumed
+                    // tokens, seconds, or money, so it is settled against what
+                    // the Provider said instead of being written off.
                     self.settle(
                         quota_attempt.as_deref(),
-                        if failure.provider_accepted {
-                            AttemptSettlement::Unknown
-                        } else {
-                            AttemptSettlement::Released
+                        match (&failure.error.usage, failure.provider_accepted) {
+                            (Some(usage), _) => {
+                                AttemptSettlement::Usage(usage.clone(), call.api_type)
+                            }
+                            (None, true) => AttemptSettlement::Unknown,
+                            (None, false) => AttemptSettlement::Released,
                         },
                     )
                     .await;
@@ -1574,6 +1581,7 @@ impl ExecutionEngine {
                 Err(AttemptFailure::Provider(failure)) => {
                     let can_failover =
                         failure.retryable && request.runtime_failover && index + 1 < calls.len();
+                    let consumed = failure.error.usage.clone();
                     let mut error: AiccError = failure.error.into();
                     if failure.provider_accepted {
                         error.code = AiccErrorCode::ProviderError;
@@ -1592,6 +1600,17 @@ impl ExecutionEngine {
                             .await?;
                         last_error = Some(error);
                         continue;
+                    }
+                    if let Some(usage) = consumed {
+                        return self
+                            .finish_failure_with_usage(
+                                &record.task_id,
+                                &record.scope,
+                                &binding,
+                                error,
+                                usage,
+                            )
+                            .await;
                     }
                     return self.finish_failure(&record.task_id, error).await;
                 }
@@ -2050,10 +2069,6 @@ impl ExecutionEngine {
             Ok(cost) => cost,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
-        let completed_at_ms = match current_time_ms() {
-            Ok(timestamp) => timestamp,
-            Err(error) => return self.finish_failure(task_id, error).await,
-        };
         let mut output = match ExecutionOutput::try_from(output) {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
@@ -2063,6 +2078,52 @@ impl ExecutionEngine {
         if let Err(error) = check_result_payload(&output) {
             return self.finish_failure(task_id, error).await;
         }
+        if let Err(error) = self
+            .record_usage_completion(task_id, scope, &binding, &output.usage, finance_snapshot)
+            .await
+        {
+            return self.finish_failure(task_id, error).await;
+        }
+        if !self.store.stage_output(task_id, output.clone()).await? {
+            self.remove_active(task_id);
+            return self.current_receipt(task_id).await;
+        }
+        self.commit_staged_success(task_id, output).await
+    }
+
+    /// Bills what a failed attempt already consumed.
+    ///
+    /// A Provider that reports usage before failing has already charged for
+    /// those tokens, seconds, or images. The attempt is therefore settled with
+    /// its own usage and written to the usage ledger, so the cost is not lost;
+    /// the partial output is still discarded and the task still ends failed.
+    async fn finish_failure_with_usage(
+        &self,
+        task_id: &str,
+        scope: &IdempotencyScope,
+        binding: &PinnedProviderTask,
+        error: AiccError,
+        usage: AiUsage,
+    ) -> Result<ExecutionReceipt, AiccError> {
+        let finance_snapshot = binding.completion_cost(&usage);
+        if let Err(error) = self
+            .record_usage_completion(task_id, scope, binding, &usage, finance_snapshot)
+            .await
+        {
+            return self.finish_failure(task_id, error).await;
+        }
+        self.finish_failure(task_id, error).await
+    }
+
+    /// Writes the usage ledger entry of one attempt.
+    async fn record_usage_completion(
+        &self,
+        task_id: &str,
+        scope: &IdempotencyScope,
+        binding: &PinnedProviderTask,
+        usage: &AiUsage,
+        finance_snapshot: Option<AiCost>,
+    ) -> Result<(), AiccError> {
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(
                 AiccErrorCode::InternalError,
@@ -2075,8 +2136,8 @@ impl ExecutionEngine {
             .as_ref()
             .and_then(|attribution| attribution.operator_id.clone())
             .filter(|operator| operator != &record.user_id);
-        if let Err(error) = self
-            .usage
+        let completed_at_ms = current_time_ms()?;
+        self.usage
             .write_once(UsageCompletion {
                 event_id: record.usage_event_id,
                 tenant_id: scope.tenant_id.clone(),
@@ -2088,23 +2149,15 @@ impl ExecutionEngine {
                 method: scope.method.clone(),
                 capability: capability_name(binding.api_type).to_string(),
                 request_model: record.request_model,
-                provider_instance_name: binding.provider_instance_name,
-                provider_model: binding.exact_model,
-                usage: output.usage.clone(),
+                provider_instance_name: binding.provider_instance_name.clone(),
+                provider_model: binding.exact_model.clone(),
+                usage: usage.clone(),
                 finance_snapshot,
                 operator_id,
                 attribution: record.attribution,
                 completed_at_ms,
             })
             .await
-        {
-            return self.finish_failure(task_id, error).await;
-        }
-        if !self.store.stage_output(task_id, output.clone()).await? {
-            self.remove_active(task_id);
-            return self.current_receipt(task_id).await;
-        }
-        self.commit_staged_success(task_id, output).await
     }
 
     async fn commit_staged_success(
@@ -3177,6 +3230,29 @@ mod tests {
     }
 
     #[test]
+    /// An attempt that reported usage has already been charged upstream, so it
+    /// is neither retried nor moved to another Provider.
+    #[test]
+    fn a_failure_that_reported_usage_is_neither_retried_nor_failed_over() {
+        let plain = ProtocolError::new(
+            crate::error::ProtocolErrorKind::Transport,
+            "transport failed",
+        );
+        let billed = plain.clone().with_usage(Some(buckyos_api::AiUsage {
+            total_tokens: Some(7),
+            reported_cost: Some(0.25),
+            ..Default::default()
+        }));
+        let without_usage = ProviderStartFailure::after_accept(plain).for_api(ApiType::AudioMusic);
+        let with_usage = ProviderStartFailure::after_accept(billed).for_api(ApiType::AudioMusic);
+        assert!(
+            without_usage.retryable,
+            "a transport failure without usage keeps its failover policy"
+        );
+        assert!(!with_usage.retryable);
+        assert!(!with_usage.retry_same_model);
+    }
+
     fn pinned_pricing_uses_cached_input_rate_and_provider_reported_cost_wins() {
         let pricing = PinnedPricingSnapshot {
             currency: "USD".into(),

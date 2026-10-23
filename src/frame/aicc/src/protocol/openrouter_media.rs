@@ -426,6 +426,12 @@ impl OperationCodec for OpenRouterMusicCodec {
                             usage.cost = Some(buckyos_api::AiCost::new(cost, "USD"));
                         }
                     }
+                    if let Some(error) = stream_failure(&value) {
+                        // Whatever arrived before the failure is a truncated
+                        // track, and the Provider charged for the work it did:
+                        // fail the attempt and keep the reported usage.
+                        return Err(error.with_usage(Some(usage)));
+                    }
                 }
                 SseFrame::Terminated { marker } if marker == "[DONE]" => terminated = true,
                 SseFrame::Terminated { .. } => {
@@ -776,4 +782,82 @@ mod tests {
         };
         assert_eq!(data_base64.len(), audio.len());
     }
+
+    #[tokio::test]
+    async fn music_stream_error_frame_fails_the_attempt_and_keeps_its_usage() {
+        let codec = OpenRouterMusicCodec {
+            descriptor: music_descriptor(),
+        };
+        let response = HttpResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::from_iter([(CONTENT_TYPE, "text/event-stream".parse().unwrap())]),
+            body: Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"UklG\"}}}],\"usage\":{\"total_tokens\":9,\"cost\":0.25}}\n\ndata: {\"error\":{\"code\":\"upstream_timeout\",\"message\":\"upstream timed out\"}}\n\ndata: [DONE]\n\n",
+            ),
+            request_id: "openrouter-music-failed".to_owned(),
+            retry_after: None,
+        };
+        let error = codec.decode(response).await.unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::ProviderRejected);
+        assert!(error.message.contains("upstream timed out"), "{error:?}");
+        assert_eq!(error.provider_code.as_deref(), Some("upstream_timeout"));
+        let usage = error.usage.expect("a billed attempt keeps its usage");
+        assert_eq!(usage.total_tokens, Some(9));
+        assert_eq!(usage.reported_cost, Some(0.25));
+    }
+
+    #[tokio::test]
+    async fn music_stream_finish_reason_error_fails_the_attempt() {
+        let codec = OpenRouterMusicCodec {
+            descriptor: music_descriptor(),
+        };
+        let response = HttpResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::from_iter([(CONTENT_TYPE, "text/event-stream".parse().unwrap())]),
+            body: Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"UklG\"}}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}\n\ndata: [DONE]\n\n",
+            ),
+            request_id: "openrouter-music-finish-reason".to_owned(),
+            retry_after: None,
+        };
+        let error = codec.decode(response).await.unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::ProviderRejected);
+        assert!(error.message.contains("finish_reason=error"), "{error:?}");
+        assert!(error.usage.is_some());
+    }
+}
+
+/// OpenRouter reports a mid-stream failure either as a top-level `error` object
+/// or as `choices[0].finish_reason == "error"`. Both mean the audio delivered so
+/// far is truncated, so neither may be decoded as a successful result.
+fn stream_failure(value: &Value) -> Option<ProtocolError> {
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| error.as_str())
+            .unwrap_or("the stream reported an error without a message");
+        let code = error.get("code").map(|code| match code.as_str() {
+            Some(code) => code.to_owned(),
+            None => code.to_string(),
+        });
+        return Some(
+            ProtocolError::new(
+                ProtocolErrorKind::ProviderRejected,
+                format!("OpenRouter music stream failed: {message}"),
+            )
+            .with_provider_code(code),
+        );
+    }
+    if value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        == Some("error")
+    {
+        return Some(ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            "OpenRouter music stream finished with finish_reason=error",
+        ));
+    }
+    None
 }
