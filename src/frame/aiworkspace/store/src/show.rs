@@ -36,7 +36,6 @@ pub type ShowLocks = Arc<Mutex<HashMap<String, ShowLock>>>;
 pub const PURPOSE_SHOW: &str = "show";
 
 /// Run states a worker owns: a clone's copy of such a run has no worker (the original's keeps running).
-const ACTIVE_RUN_STATES: &str = "'queued','snapshotting','running','validating','applying'";
 
 impl Workspace {
     /// The show holding this Workspace now, if any.
@@ -55,6 +54,9 @@ impl Workspace {
         meta_get(&self.doc, "purpose").ok().flatten()
     }
 }
+
+/// Concurrent show clones of one Workspace (D17).
+pub const MAX_CLONES: usize = 4;
 
 /// Hard-link every file of `src` into `dst` (same names): the runs of a clone share their working files.
 fn link_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -119,12 +121,22 @@ impl Service {
             {
                 let handle = self.workspace(source_id)?;
                 let ws = handle.lock().unwrap();
+                // clones count on the source (D17): its quota, and at most MAX_CLONES at once
+                ws.check_quota(0, false)?;
+                let live: usize = ws.retentions()?.iter().filter(|(k, ..)| k == "clone").count();
+                if live >= MAX_CLONES {
+                    return Err(WsError::limit(format!("at most {MAX_CLONES} shows of this workspace may run at once")));
+                }
                 for name in ["doc.sqlite", "local.sqlite"] {
                     let conn = if name == "doc.sqlite" { &ws.doc } else { &ws.local };
                     conn.execute("VACUUM INTO ?1", [tmp.join(name).to_string_lossy().as_ref()]).map_err(db_err)?;
                 }
                 link_tree(&ws.dir.join("runs"), &tmp.join("runs")).map_err(io)?;
                 link_tree(&ws.dir.join("cache"), &tmp.join("cache")).map_err(io)?;
+                // the clone retains the source's current content for the show (D06); it counts on the source (D17)
+                ws.add_retention("clone", &id, show_id, Some(expires_at))?;
+                let bytes = std::fs::metadata(tmp.join("doc.sqlite")).map(|m| m.len()).unwrap_or(0) as i64;
+                ws.add_usage("clones", bytes)?;
             }
             let doc = Connection::open(tmp.join("doc.sqlite")).map_err(db_err)?;
             meta_set(&doc, "workspace_id", &id)?;
@@ -137,7 +149,7 @@ impl Service {
             local
                 .execute_batch(&format!(
                     "DELETE FROM locks; DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM upload_sessions; DELETE FROM user_state; \
-                     UPDATE runs SET state = 'interrupted' WHERE state IN ({ACTIVE_RUN_STATES});"
+                     UPDATE runs SET state = 'interrupted' WHERE state IN ({});", crate::wish::runs::active_states_sql()
                 ))
                 .map_err(db_err)?;
             Ok(())
@@ -156,6 +168,18 @@ impl Service {
             return Err(WsError::invalid_op(format!("{id} is not a show clone")));
         }
         self.close(id);
+        // the source's retention root and clone usage go with it
+        if let Ok(doc) = Connection::open_with_flags(self.ws_dir(id).join("doc.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) {
+            if let Ok(Some(source)) = meta_get(&doc, "show_source") {
+                let bytes = std::fs::metadata(self.ws_dir(id).join("doc.sqlite")).map(|m| m.len()).unwrap_or(0) as i64;
+                drop(doc);
+                if let Ok(h) = self.workspace(&source) {
+                    let ws = h.lock().unwrap();
+                    let _ = ws.release_retention("clone", id);
+                    let _ = ws.add_usage("clones", -bytes);
+                }
+            }
+        }
         std::fs::remove_dir_all(self.ws_dir(id)).map_err(io)
     }
 

@@ -25,6 +25,8 @@ fn inputs() -> Vec<(&'static str, Value)> {
         ("jobj", json!({ "ws_type": "buckyos.richtext", "schema_version": 1, "content": { "editor_schema": "buckyos.richtext.basic.v1",
             "doc": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" }, "content": [{ "type": "text", "text": "本周项目进展" }] }] } } })),
         ("cyfile", json!({ "content": "mix256:05abcd", "create_time": 0, "last_update_time": 0, "size": 5 })),
+        ("cydir", json!({ "create_time": 0, "last_update_time": 0, "total_size": 5, "file_count": 1, "file_size": 5,
+            "body": { "hello.txt": "cyfile:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "sub": "cydir:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } })),
     ]
 }
 
@@ -57,6 +59,8 @@ fn build() -> Value {
         { "def": { "field_id": "f", "name": "f", "type": "decimal", "scale": 2 }, "input": "-0.00", "output": "0.00" },
         { "def": { "field_id": "f", "name": "f", "type": "decimal", "scale": 2 }, "input": "1.005", "error": "INVALID_SCHEMA" },
         { "def": { "field_id": "f", "name": "f", "type": "number" }, "input": -0.0, "output": 0 },
+        { "def": { "field_id": "f", "name": "f", "type": "number" }, "input": { "$formula": { "lang": "aiws", "version": "1", "expr": "sum(n) * 2" } }, "output": { "$formula": { "lang": "aiws", "version": "1", "expr": "sum(n) * 2" } } },
+        { "def": { "field_id": "f", "name": "f", "type": "text" }, "input": { "$formula": { "lang": "excel", "version": "1", "expr": "1" } }, "error": "INVALID_SCHEMA" },
         { "def": { "field_id": "f", "name": "f", "type": "number" }, "input": 9007199254740992u64, "error": "INVALID_SCHEMA" },
         { "def": { "field_id": "f", "name": "f", "type": "date" }, "input": "2026-02-29", "error": "INVALID_SCHEMA" },
         { "def": { "field_id": "f", "name": "f", "type": "datetime" }, "input": "2026-10-04T16:00:00+08:00", "output": "2026-10-04T08:00:00.000Z" },

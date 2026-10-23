@@ -37,15 +37,22 @@ fn set_progress(active: &ActiveRun, phase: &str) {
 /// The worker of one run: never panics into the service, always leaves a final state.
 pub async fn drive(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, active: Arc<ActiveRun>) {
     let res = drive_inner(&state, &caller, &ws_id, &run_id, &active).await;
+    settle(&state, caller, &ws_id, &run_id, &active, res).await;
+    state.wish.unregister(&run_id);
+}
+
+/// The end of a worker: a failure or cancellation becomes the run's final state, a success leaves
+/// what the stage wrote.
+async fn settle(state: &Arc<AppState>, caller: Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>, res: WsResult<()>) {
     let cancelled = active.cancelled.load(Ordering::SeqCst);
     let progress = active.progress.lock().unwrap().clone();
-    let (rid, final_state) = (run_id.clone(), if cancelled { "cancelled" } else { "failed" });
+    let (rid, final_state) = (run_id.to_string(), if cancelled { "cancelled" } else { "failed" });
     let outcome = match res {
         Ok(()) if !cancelled => None,
         Ok(()) => Some(json!({ "code": "RUN_CANCELLED", "detail": "Cancelled" })),
         Err(e) => Some(if cancelled { json!({ "code": "RUN_CANCELLED", "detail": "Cancelled" }) } else { e.to_json() }),
     };
-    let _ = with_ws(&state, &ws_id, move |ws| {
+    let _ = with_ws(state, ws_id, move |ws| {
         let run = ws.wish_run(&caller, &rid)?;
         let mut detail = json!({ "progress": progress });
         match outcome {
@@ -62,21 +69,33 @@ pub async fn drive(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: 
         }
     })
     .await;
-    state.wish.unregister(&run_id);
 }
 
 fn wish_payload(stage: &Stage) -> Value {
     Value::Object(stage.wish.payload.clone())
 }
 
-async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>) -> WsResult<()> {
-    let (c, rid) = (caller.clone(), run_id.to_string());
-    let (run, ws_dir) = with_ws(state, ws_id, move |ws| {
-        let r = ws.wish_run(&c, &rid)?;
-        ws.wish_run_set(&rid, Some("snapshotting"), None, None, None, Some(&json!({ "progress": { "phase": "snapshotting" } })))?;
+/// A stage opened for a run: its state and what the run record said.
+pub struct Opened {
+    pub st: Arc<StageState>,
+    pub run: Value,
+    pub params: Value,
+    pub run_dir: PathBuf,
+    pub stage_name: String,
+    pub program: String,
+}
+
+/// Take the stage snapshot, build the stage directory and the shared state of a run's tools. With
+/// `transition` the run record moves queued → snapshotting → running (the in-service worker); an
+/// executor outside the service already holds the run in `running` under its lease.
+pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>, transition: bool) -> WsResult<Opened> {
+    let (run, ws_dir) = state.with_ws(ws_id, |ws| {
+        let r = ws.wish_run(caller, run_id)?;
+        if transition {
+            ws.wish_run_set(run_id, Some("snapshotting"), None, None, None, Some(&json!({ "progress": { "phase": "snapshotting" } })))?;
+        }
         Ok((r, ws.dir.clone()))
-    })
-    .await?;
+    })?;
     set_progress(active, "snapshotting");
     let params = run["params"].clone();
     let stage_name = params["stage"].as_str().unwrap_or("").to_string();
@@ -100,19 +119,17 @@ async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id
         map_budget_chars: state.wish.config.map_budget_chars,
         materialize: kind != StageKind::Analyze && program != super::PROGRAM_MOCK,
     };
-    let c = caller.clone();
-    let snap = with_ws(state, ws_id, move |ws| ws.wish_snapshot(&c)).await?;
-    let (wid, rid, wd) = (wish_id.clone(), run_id.to_string(), workdir.clone());
-    let stage = blocking(move || Stage::open(snap, &wid, &rid, &wd, &opts)).await?;
+    let snap = state.with_ws(ws_id, |ws| ws.wish_snapshot(caller))?;
+    let stage = Stage::open(snap, &wish_id, run_id, &workdir, &opts)?;
     // the snapshot is fixed: the stage runs from here on (a cancel that came first stays)
-    let (c, rid) = (caller.clone(), run_id.to_string());
-    with_ws(state, ws_id, move |ws| {
-        if ws.wish_run(&c, &rid)?["state"] == json!("snapshotting") {
-            ws.wish_run_set(&rid, Some("running"), None, None, None, None)?;
-        }
-        Ok(())
-    })
-    .await?;
+    if transition {
+        state.with_ws(ws_id, |ws| {
+            if ws.wish_run(caller, run_id)?["state"] == json!("snapshotting") {
+                ws.wish_run_set(run_id, Some("running"), None, None, None, None)?;
+            }
+            Ok(())
+        })?;
+    }
     // the program host the model debugs with is the one the service runs
     write(&workdir.join("lib/aiws.js"), AIWS_JS)?;
     write(&workdir.join("lib/run.js"), RUN_JS)?;
@@ -154,14 +171,25 @@ async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id
         map_calls: Default::default(),
         map_cached: Default::default(),
     });
-    state.wish.stages.lock().unwrap().insert(token.clone(), st.clone());
-    let res = match (program.as_str(), stage_name.as_str()) {
-        (super::PROGRAM_MOCK, _) => mock(state, caller, ws_id, &st, &params).await,
-        (_, "analyze") => analyze(state, caller, ws_id, &st, &run_dir).await,
-        (_, "rerun_program") => rerun(state, caller, ws_id, &st).await,
+    state.wish.stages.lock().unwrap().insert(token, st.clone());
+    Ok(Opened { st, run, params, run_dir, stage_name, program })
+}
+
+async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>) -> WsResult<()> {
+    let (st, c, w, r, a) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.to_string(), active.clone());
+    let Opened { st, run, params, run_dir, stage_name, program } = blocking(move || open_stage(&st, &c, &w, &r, &a, true)).await?;
+    let provided = run["detail"]["exec"]["provided"].clone();
+    let executor_label = run["detail"]["exec"]["mode"].as_str().unwrap_or("service").to_string();
+    let res = match (program.as_str(), stage_name.as_str(), provided.is_object()) {
+        // an executor outside the service reported its candidate (M3): plan it like a Mock's results
+        (_, "analyze", true) => provided_analysis(state, caller, ws_id, &st, &provided).await,
+        (_, _, true) => mock(state, caller, ws_id, &st, &provided, &executor_label).await,
+        (super::PROGRAM_MOCK, _, _) => mock(state, caller, ws_id, &st, &params["provided"], "mock").await,
+        (_, "analyze", _) => analyze(state, caller, ws_id, &st, &run_dir).await,
+        (_, "rerun_program", _) => rerun(state, caller, ws_id, &st).await,
         _ => execute(state, caller, ws_id, &st, &run_dir, &params).await,
     };
-    state.wish.stages.lock().unwrap().remove(&token);
+    state.wish.stages.lock().unwrap().remove(&st.token);
     res
 }
 
@@ -226,14 +254,14 @@ async fn run_xllm(st: &Arc<StageState>, run_dir: &Path, system: String, user: St
     let cfg = &rt.config;
     let names: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
     let ctx_file = st.workdir.join(".llm_context");
-    let llm_ctx = llm::llm_context(cfg, model, iterations, &run_dir.join("xllm"), &names, shell, st.aicc.as_ref());
+    let llm_ctx = llm::llm_context(cfg, model, iterations, &run_dir.join("xllm"), &names, shell, llm::attribution(cfg, st.aicc.as_ref())?);
     write(&ctx_file, &serde_json::to_string_pretty(&llm_ctx).unwrap_or_default())?;
     let mut deps = XllmDeps::default().with_observer(Arc::new(Observer { active: st.active.clone() })).with_lock_dir(run_dir.join("locks"));
     for t in tools(st, kinds) {
         deps = deps.with_host_tool(t);
     }
     if let Some(l) = &cfg.llm_override {
-        deps = deps.with_llm(l.clone());
+        deps.llm_factory = l.clone();
     }
     deps.skip_workdir_lock = true;
     for (k, v) in st.program_env() {
@@ -311,28 +339,38 @@ async fn finish_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &
 
 // ---- analysis (§7)
 
+/// The user message of the analysis stage and the run's evidence.
+fn analyze_user(st: &Arc<StageState>) -> WsResult<(String, Value)> {
+    let stage = st.stage.lock().unwrap();
+    let p = wish_payload(&stage);
+    let map = std::fs::read_to_string(stage.workdir.join("WORKSPACE.md")).unwrap_or_default();
+    let mut u = String::from("# Wish (analysis stage)\n\n");
+    u.push_str(&section("Original request", p["prompt"].as_str().unwrap_or("")));
+    u.push_str(&section("Wish knowledge (definitions, background, preferences)", p["knowledge"].as_str().unwrap_or("")));
+    u.push_str(&section("Refinements (to be followed every time from now on)", &refinement_lines(&p)));
+    u.push_str(&section("Fixed parameters (request)", &serde_json::to_string(&stage.request).unwrap_or_default()));
+    if let Some(a) = p.get("analysis") {
+        u.push_str(&section(
+            "Previous analysis (a new analysis keeps its result names, types, keys and views by default)",
+            &format!("context_prompt: {}\n\noutput_contract: {}\n\nchecks: {}", a["context_prompt"].as_str().unwrap_or(""), a["output_contract"], a["checks"]),
+        ));
+    }
+    u.push_str("---\n\n");
+    u.push_str(&map);
+    u.push_str("\n\nAfter reading the map: verify with the ws_* tools where needed, then submit with submit_analysis.");
+    Ok((u, stage.evidence()?))
+}
+
+const ANALYZE_KINDS: [Kind; 7] = [Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query, Kind::SubmitAnalysis];
+
 async fn analyze(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, run_dir: &Path) -> WsResult<()> {
-    let (user, evidence) = {
-        let stage = st.stage.lock().unwrap();
-        let p = wish_payload(&stage);
-        let map = std::fs::read_to_string(stage.workdir.join("WORKSPACE.md")).unwrap_or_default();
-        let mut u = String::from("# Wish (analysis stage)\n\n");
-        u.push_str(&section("Original request", p["prompt"].as_str().unwrap_or("")));
-        u.push_str(&section("Wish knowledge (definitions, background, preferences)", p["knowledge"].as_str().unwrap_or("")));
-        u.push_str(&section("Refinements (to be followed every time from now on)", &refinement_lines(&p)));
-        u.push_str(&section("Fixed parameters (request)", &serde_json::to_string(&stage.request).unwrap_or_default()));
-        if let Some(a) = p.get("analysis") {
-            u.push_str(&section(
-                "Previous analysis (a new analysis keeps its result names, types, keys and views by default)",
-                &format!("context_prompt: {}\n\noutput_contract: {}\n\nchecks: {}", a["context_prompt"].as_str().unwrap_or(""), a["output_contract"], a["checks"]),
-            ));
-        }
-        u.push_str("---\n\n");
-        u.push_str(&map);
-        u.push_str("\n\nAfter reading the map: verify with the ws_* tools where needed, then submit with submit_analysis.");
-        (u, stage.evidence()?)
-    };
-    let x = run_xllm(st, run_dir, ANALYZE_SYSTEM.to_string(), user, &st.runtime.config.analyze_model, st.runtime.config.analyze_tool_iterations, &[Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query, Kind::SubmitAnalysis], false).await?;
+    let (user, evidence) = analyze_user(st)?;
+    let x = run_xllm(st, run_dir, ANALYZE_SYSTEM.to_string(), user, &st.runtime.config.analyze_model, st.runtime.config.analyze_tool_iterations, &ANALYZE_KINDS, false).await?;
+    analyze_tail(state, caller, ws_id, st, evidence, x).await
+}
+
+/// The accepted analysis becomes the candidate (`x`: the model run's record, or what an outside executor said).
+async fn analyze_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, evidence: Value, x: Value) -> WsResult<()> {
     if st.cancelled() {
         return Ok(());
     }
@@ -415,19 +453,20 @@ fn ready_to_execute(stage: &Stage) -> WsResult<()> {
     Ok(())
 }
 
-async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, run_dir: &Path, params: &Value) -> WsResult<()> {
+/// What the execution stage starts from: the user message, whether this repairs a program, and the
+/// program already present (`program/main.js`) when there is one.
+fn execute_prepare(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, params: &Value) -> WsResult<(String, bool, Option<String>)> {
     let repair = params["stage"] == json!("repair_program");
     // the previous round of a feedback / repair chain: its program is the starting point
     let parent = match params.get("parent_run_id").and_then(Value::as_str) {
         Some(pid) => {
-            let (c, p) = (caller.clone(), pid.to_string());
-            let run = with_ws(state, ws_id, move |ws| ws.wish_run(&c, &p)).await?;
+            let run = state.with_ws(ws_id, |ws| ws.wish_run(caller, pid))?;
             let src = std::fs::read_to_string(st.ws_dir.join("runs").join(pid).join("work/program/main.js")).ok();
             Some((run, src))
         }
         None => None,
     };
-    let user = {
+    let (user, existing) = {
         let stage = st.stage.lock().unwrap();
         ready_to_execute(&stage)?;
         // repairing makes the stored program work again: written results stay as they are (§9.2)
@@ -469,7 +508,7 @@ async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<S
         }
         u.push_str("---\n\n");
         u.push_str(&map);
-        u
+        (u, existing)
     };
     // a feedback round starts from the previous round's written results
     if let Some((prun, _)) = &parent {
@@ -484,10 +523,27 @@ async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<S
             }
         }
     }
-    let system = EXECUTE_SYSTEM.replace("{AIWS_API}", AIWS_API);
+    Ok((user, repair, existing))
+}
+
+fn execute_system() -> String {
+    EXECUTE_SYSTEM.replace("{AIWS_API}", AIWS_API)
+}
+
+fn execute_kinds() -> Vec<Kind> {
     let mut kinds = Kind::READ.to_vec();
     kinds.extend(Kind::DELIVERY);
-    let x = run_xllm(st, run_dir, system, user, &st.runtime.config.execute_model, st.runtime.config.execute_tool_iterations, &kinds, true).await?;
+    kinds
+}
+
+async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, run_dir: &Path, params: &Value) -> WsResult<()> {
+    let (user, repair, _) = execute_prepare(state, caller, ws_id, st, params)?;
+    let x = run_xllm(st, run_dir, execute_system(), user, &st.runtime.config.execute_model, st.runtime.config.execute_tool_iterations, &execute_kinds(), true).await?;
+    execute_tail(state, caller, ws_id, st, x, repair).await
+}
+
+/// The collector's results become the candidate once `finish` was accepted.
+async fn execute_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, x: Value, repair: bool) -> WsResult<()> {
     if st.cancelled() {
         return Ok(());
     }
@@ -567,17 +623,21 @@ async fn stage_files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, cand: 
 
 // ---- re-running the stored program (§9.2): no model
 
-async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
-    {
-        let stage = st.stage.lock().unwrap();
-        let p = &stage.wish.payload;
-        if p.get("analysis").is_none() {
-            return Err(WsError::invalid_op("This wish has not been analyzed yet"));
-        }
-        let src = program_source(&stage).ok_or_else(|| WsError::invalid_op("This wish has no program this service can run yet: execute it once first (generate)"))?;
-        write(&stage.workdir.join("program/main.js"), &src)?;
-        *st.collector.lock().unwrap() = collector_for(&stage, true)?;
+/// The stored program, written into the stage for a run without a model.
+fn rerun_prepare(st: &Arc<StageState>) -> WsResult<String> {
+    let stage = st.stage.lock().unwrap();
+    let p = &stage.wish.payload;
+    if p.get("analysis").is_none() {
+        return Err(WsError::invalid_op("This wish has not been analyzed yet"));
     }
+    let src = program_source(&stage).ok_or_else(|| WsError::invalid_op("This wish has no program this service can run yet: execute it once first (generate)"))?;
+    write(&stage.workdir.join("program/main.js"), &src)?;
+    *st.collector.lock().unwrap() = collector_for(&stage, true)?;
+    Ok(src)
+}
+
+async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
+    rerun_prepare(st)?;
     set_progress(&st.active, "running");
     st.note_tool("run_program");
     let out = runner::run(st).await.map_err(|e| WsError::new(Code::DependencyUnavailable, e))?;
@@ -591,11 +651,24 @@ async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Sta
         return Err(fail(format!("The program threw an error: {}", e.lines().next().unwrap_or(""))));
     }
     let source = std::fs::read_to_string(st.workdir.join("program/main.js")).unwrap_or_default();
-    let (mut candidate, evidence) = {
-        let stage = st.stage.lock().unwrap();
+    {
         let mut c = st.collector.lock().unwrap();
         let run = program_output(&c, &raw, &source, &log).map_err(|errs| fail(format!("The program's results failed validation: {}", errs.join("; "))))?;
         c.program = Some(run);
+    }
+    st.note_program_run();
+    rerun_tail(state, caller, ws_id, st, log).await
+}
+
+/// The program's validated output becomes the candidate of a run without a model.
+async fn rerun_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, log: String) -> WsResult<()> {
+    let fail = |msg: String| WsError::sub(Code::InvalidOperation, "PROGRAM_FAILED", msg).with_data(json!({ "program_log": log }));
+    let (mut candidate, evidence) = {
+        let stage = st.stage.lock().unwrap();
+        let mut c = st.collector.lock().unwrap();
+        if c.program.is_none() {
+            return Err(fail("The program did not run".into()));
+        }
         let blocking = c.blocking();
         if !blocking.is_empty() {
             return Err(fail(format!("The program's results are incomplete: {}", blocking.join("; "))));
@@ -603,7 +676,6 @@ async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Sta
         c.finished = Some(json!({ "summary": "Re-ran only the program (no model call)" }));
         (c.candidate(), stage.evidence()?)
     };
-    st.note_program_run();
     stage_files(state, caller, ws_id, &mut candidate).await?;
     fill_candidate(&mut candidate, &evidence, "xllm", st, "program");
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({ "program_log": log })).await
@@ -735,8 +807,23 @@ fn check_mock(results: &[Value]) -> WsResult<()> {
     }
 }
 
-async fn mock(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, params: &Value) -> WsResult<()> {
-    let provided = params["provided"].clone();
+/// An executor's reported analysis (M3): validated exactly like the model's `submit_analysis`.
+async fn provided_analysis(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, provided: &Value) -> WsResult<()> {
+    let (validated, evidence) = {
+        let mut stage = st.stage.lock().unwrap();
+        let v = stage.validate_analysis(&provided["analysis"])?;
+        (v, stage.evidence()?)
+    };
+    let v = match validated {
+        Ok(v) => v,
+        Err(problems) => return Err(WsError::invalid_op("the reported analysis was not accepted").with_data(json!({ "problems": problems }))),
+    };
+    let candidate = json!({ "wish_id": evidence["wish_id"], "analysis": v.analysis, "inputs": v.inputs, "basis": evidence["basis"], "executed_at": now() });
+    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
+}
+
+async fn mock(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, provided: &Value, executor: &str) -> WsResult<()> {
+    let provided = provided.clone();
     let mut results = mock_results(st, &provided)?;
     check_mock(&results)?;
     // video frames: staged now, kept as a record of frame assets (the phase-two frame preview)
@@ -787,6 +874,183 @@ async fn mock(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Stag
         "warnings": provided.get("warnings").cloned().unwrap_or(json!([])), "external_data": [], "model_judgment": [], "refinements": [],
     });
     stage_files(state, caller, ws_id, &mut candidate).await?;
-    fill_candidate(&mut candidate, &evidence, "mock", st, "generate");
+    fill_candidate(&mut candidate, &evidence, executor, st, "generate");
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
+}
+
+// ---- the stage host (内核架构改进 §9, T3-4): an executor outside the service drives the model loop and
+// runs the program; the service keeps the snapshot, answers the stage tools, validates and plans
+
+/// What an outside executor starts a run from, opened at `proc.claim`: the stage's prompts and tool
+/// catalogue (a model stage), or the stored program (re-running only the program). The stage stays
+/// open under the run id until the executor reports, the run is cancelled, or its lease lapses.
+pub fn host_open(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str) -> WsResult<Value> {
+    state.wish.drop_hosted(run_id);
+    let active = state.wish.register(run_id);
+    *active.progress.lock().unwrap() = json!({ "phase": "claimed" });
+    let Opened { st, params, stage_name, .. } = match open_stage(state, caller, ws_id, run_id, &active, false) {
+        Ok(o) => o,
+        Err(e) => {
+            state.wish.unregister(run_id);
+            return Err(e);
+        }
+    };
+    let cfg = &state.wish.config;
+    let brief = match stage_name.as_str() {
+        "analyze" => {
+            let (user, _) = analyze_user(&st)?;
+            json!({ "kind": "model", "stage": stage_name, "system": ANALYZE_SYSTEM, "user": user, "tools": tool_specs(&ANALYZE_KINDS), "model": cfg.analyze_model, "iterations": cfg.analyze_tool_iterations })
+        }
+        "rerun_program" => {
+            let source = rerun_prepare(&st)?;
+            json!({ "kind": "program", "stage": stage_name, "source": source })
+        }
+        _ => {
+            let (mut user, _, existing) = execute_prepare(state, caller, ws_id, &st, &params)?;
+            if let Some(src) = &existing {
+                user.push_str(&format!("\n\n## Current program (program/main.js)\n\n```js\n{src}\n```\n"));
+            }
+            user.push_str("\n\nThere is no shell and no file tool here: give run_program the complete program as its `source`; the host runs it and keeps it as program/main.js.");
+            json!({ "kind": "model", "stage": stage_name, "system": execute_system(), "user": user, "tools": tool_specs(&execute_kinds()), "model": cfg.execute_model, "iterations": cfg.execute_tool_iterations, "source": existing })
+        }
+    };
+    set_progress(&active, "running");
+    state.wish.set_hosted(run_id, st);
+    Ok(brief)
+}
+
+/// The tools of a stage as a model sees them; `run_program` takes the program text here.
+fn tool_specs(kinds: &[Kind]) -> Vec<Value> {
+    kinds
+        .iter()
+        .map(|k| {
+            let (description, mut parameters) = k.spec();
+            if *k == Kind::RunProgram {
+                parameters = json!({ "type": "object", "properties": { "source": { "type": "string", "description": "The complete program/main.js (an ES module exporting `default async function main(aiws)`)" } }, "required": ["source"] });
+            }
+            json!({ "name": k.name(), "description": description, "parameters": parameters })
+        })
+        .collect()
+}
+
+/// `proc.tool`: one stage tool call of an outside executor. `llm_map` serves a program's `aiws.llm.map`
+/// (the service calls the model under the run's attribution and keeps the cache); `run_program` is
+/// `proc.program`.
+pub async fn host_tool(st: &Arc<StageState>, name: &str, args: &Value) -> Value {
+    if st.cancelled() {
+        return json!({ "ok": true, "status": "error", "text": "the run was cancelled" });
+    }
+    if name == "llm_map" {
+        return json!({ "ok": true, "status": "ok", "map": llm::llm_map(st, args).await });
+    }
+    let Some(kind) = super::tools::kind_of(name) else {
+        return json!({ "ok": true, "status": "error", "text": format!("unknown tool {name}") });
+    };
+    if kind == Kind::RunProgram {
+        return json!({ "ok": true, "status": "error", "text": "run the program on the executor and report it with proc.program" });
+    }
+    st.note_tool(name);
+    let (s, a) = (st.clone(), args.clone());
+    let answer = tokio::task::spawn_blocking(move || super::tools::blocking_call(&s, kind, &a)).await.unwrap_or_else(|e| Err(e.to_string()));
+    match answer {
+        Ok(text) => json!({ "ok": true, "status": "ok", "text": text }),
+        Err(text) => json!({ "ok": true, "status": "error", "text": text }),
+    }
+}
+
+/// `proc.program`: the executor ran `source` on the stage's snapshot and hands in what the program host
+/// collected (`output/.aiws/results.json`), the files it wrote under `output/` and its log; the service
+/// judges it exactly like its own `run_program`.
+pub fn host_program(st: &Arc<StageState>, source: &str, results: Option<&Value>, log: &str, files: &Value) -> WsResult<Value> {
+    if st.cancelled() {
+        return Ok(json!({ "ok": true, "status": "error", "text": "the run was cancelled" }));
+    }
+    st.note_tool("run_program");
+    write(&st.workdir.join("program/main.js"), source)?;
+    let out = st.workdir.join("output");
+    for (path, content) in files.as_object().into_iter().flatten() {
+        let rel = Path::new(path.strip_prefix("output/").unwrap_or(path));
+        if rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) || rel.as_os_str().is_empty() {
+            return Err(WsError::invalid_op(format!("program file {path}: only paths under output/")));
+        }
+        let bytes = match content {
+            Value::String(text) => text.as_bytes().to_vec(),
+            Value::Object(o) => {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.decode(o["base64"].as_str().unwrap_or("")).map_err(|e| WsError::invalid_op(format!("program file {path}: {e}")))?
+            }
+            _ => return Err(WsError::invalid_op(format!("program file {path}: text or {{ base64 }}"))),
+        };
+        let target = out.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| WsError::io(e.to_string()))?;
+        }
+        std::fs::write(&target, bytes).map_err(|e| WsError::io(e.to_string()))?;
+    }
+    if let Some(r) = results {
+        write(&out.join(".aiws/results.json"), &r.to_string())?;
+    }
+    let answer = super::tools::judge_program(st, results, "the executor reported no results", log, "");
+    Ok(match answer {
+        Ok(text) => json!({ "ok": true, "status": "ok", "text": text }),
+        Err(text) => json!({ "ok": true, "status": "error", "text": text }),
+    })
+}
+
+/// `proc.files`: the stage directory an executor's program host reads (`context/`, `request.json`,
+/// `catalog/`, and `lib/` so a Deno executor runs `lib/run.js` as the service would), text as is, bytes base64.
+pub fn host_files(st: &Arc<StageState>) -> WsResult<Value> {
+    use base64::Engine;
+    let mut files = serde_json::Map::new();
+    let root = st.workdir.clone();
+    let mut stack = vec![root.join("context"), root.join("catalog"), root.join("lib")];
+    let mut paths = vec![root.join("request.json"), root.join("WORKSPACE.md")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                paths.push(p);
+            }
+        }
+    }
+    for p in paths {
+        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let rel = p.strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        if bytes.len() > 16 * 1024 * 1024 {
+            files.insert(rel, json!({ "skipped": "larger than 16 MiB" }));
+            continue;
+        }
+        match String::from_utf8(bytes) {
+            Ok(text) => files.insert(rel, json!({ "text": text })),
+            Err(e) => files.insert(rel, json!({ "base64": base64::engine::general_purpose::STANDARD.encode(e.into_bytes()) })),
+        };
+    }
+    Ok(json!({ "ok": true, "files": files }))
+}
+
+/// The executor reported it is done (`proc.report { finished: true }`): what the stage collected
+/// becomes the candidate, planned and left waiting for confirmation; failures end the run.
+pub async fn drive_host(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, st: Arc<StageState>, repair: bool) {
+    let res = host_finish(&state, &caller, &ws_id, &st, repair).await;
+    settle(&state, caller, &ws_id, &run_id, &st.active, res).await;
+    state.wish.drop_hosted(&run_id);
+    state.wish.unregister(&run_id);
+}
+
+async fn host_finish(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, repair: bool) -> WsResult<()> {
+    let kind = st.stage.lock().unwrap().kind;
+    let external = json!({ "status": "external" });
+    match kind {
+        StageKind::Analyze => {
+            let evidence = st.stage.lock().unwrap().evidence()?;
+            analyze_tail(state, caller, ws_id, st, evidence, external).await
+        }
+        StageKind::Program => {
+            let log = st.collector.lock().unwrap().program.as_ref().map(|p| p.logs.clone()).unwrap_or_default();
+            rerun_tail(state, caller, ws_id, st, log).await
+        }
+        StageKind::Execute => execute_tail(state, caller, ws_id, st, external, repair).await,
+    }
 }

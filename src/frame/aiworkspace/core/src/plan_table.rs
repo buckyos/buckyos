@@ -57,6 +57,9 @@ fn source(p: &mut Planner, op: &Value, data_write: bool) -> WsResult<EntityRow> 
     if data_write && is_url_table(&e) {
         return Err(WsError::sub(Code::InvalidOperation, "SOURCE_READ_ONLY", "URL query sources are read-only in this phase"));
     }
+    if data_write {
+        crate::types::require_source_writable(p, &e)?;
+    }
     p.need_lock(&e);
     Ok(e)
 }
@@ -108,7 +111,7 @@ fn check_unique(p: &Planner, source_id: &str, def: &FieldDef) -> WsResult<()> {
     let mut dup: Vec<String> = Vec::new();
     p.ov.scan_records(source_id, &mut |r| {
         if r.alive() {
-            if let Some(v) = r.values.get(&def.field_id).filter(|v| !v.is_null()) {
+            if let Some(v) = r.values.get(&def.field_id).filter(|v| !v.is_null() && !crate::value::is_formula(v)) {
                 // canonical values of unique-capable types compare by their JSON text
                 let key = match def.ty {
                     FieldType::Number => v.as_f64().map(|f| f.to_string()).unwrap_or_default(),
@@ -136,9 +139,14 @@ fn check_unique(p: &Planner, source_id: &str, def: &FieldDef) -> WsResult<()> {
 /// derived cell keeps the provenance and flags a manual override.
 fn apply_meta(p: &Planner, rec: &mut RecordRow, field_id: &str, derived: Option<&Value>) {
     let by_program = matches!(p.env.origin.as_str(), "program" | "agent") && p.env.run_id.is_some();
-    if by_program {
+    // a materialized formula (内核架构改进 D18, T5-3) is a reproducible computation: its provenance is the formula
+    let by_formula = derived.is_some_and(|d| d["program"] == json!("formula") && d["formula"].is_string());
+    if by_program || by_formula {
         let mut d = derived.and_then(Value::as_object).cloned().unwrap_or_default();
         d.insert("run_id".into(), json!(p.env.run_id));
+        if by_formula && !by_program {
+            d.insert("by".into(), json!(p.env.principal));
+        }
         rec.meta.insert(field_id.to_string(), json!({ "derived": d }));
     } else if let Some(m) = rec.meta.get_mut(field_id) {
         if m.get("derived").is_some() && p.env.origin == "human" {
@@ -853,7 +861,7 @@ fn add_option(p: &mut Planner, op: &Value) -> OpResult {
     p.require(&sid, Cap::Structure)?;
     let fid = get_str(op, "field_id")?;
     let mut f = select_field(p, &sid, fid)?;
-    if !p.check_rev_opt(op.get("expect"), f.def_rev, None, &sid, sel(field_sel(fid)), || None)? {
+    if !p.check_rev(op.get("expect"), f.def_rev, None, &sid, sel(field_sel(fid)), || None)? {
         return Ok((op.clone(), None));
     }
     let option: OptionDef = serde_json::from_value(op.get("option").cloned().unwrap_or(Value::Null))

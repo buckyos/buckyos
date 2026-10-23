@@ -11,6 +11,7 @@ import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { TYPE_LABEL, entityLabel, importedAssetOps, newDataOps, type NewDataKind } from './dataOps'
 import { FreshnessBadge } from './FreshnessBadge'
+import { insertLinkedSource } from './sourceLinks'
 
 type TypeFilter = 'all' | 'buckyos.table-source' | 'buckyos.richtext' | 'buckyos.record' | 'buckyos.asset-ref' | 'buckyos.annotation' | 'buckyos.wish' | 'buckyos.block-def'
 type OriginFilter = 'all' | 'original' | 'generated'
@@ -18,7 +19,7 @@ type OriginFilter = 'all' | 'original' | 'generated'
 /** The edit label of creating each kind of data. */
 const CREATE_LABEL: Record<NewDataKind, string> = {
   folder: 'aiworkspace.data.tree.newFolder', table: 'aiworkspace.data.tree.newTable', richtext: 'aiworkspace.data.tree.newRichtext',
-  record: 'aiworkspace.data.tree.newRecord', wish: 'aiworkspace.data.tree.newWish', note: 'aiworkspace.data.tree.newNote',
+  record: 'aiworkspace.data.tree.newRecord', wish: 'aiworkspace.data.tree.newWish', note: 'aiworkspace.data.tree.newNote', link: 'aiworkspace.data.tree.newLink',
 }
 
 export function DataTree({ selected, onSelect }: { selected: string | null; onSelect: (id: string | null) => void }) {
@@ -110,8 +111,23 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
   useEffect(() => () => importController.current?.abort(), [])
   const [deleting, setDeleting] = useState<{ referrers: { entity_id: string; target: string }[]; hidden: boolean } | null>(null)
   const canCreate = Boolean(target?.capabilities.includes('structure'))
+  const [link, setLink] = useState('')
+  const [linkError, setLinkError] = useState<string | null>(null)
   const create = async () => {
     if (!target) return
+    if (kind === 'link') {
+      setLinkError(null)
+      try {
+        const { entityId, run } = await insertLinkedSource(store, target.entity_id, link, title.trim())
+        setTitle('')
+        setLink('')
+        onSelect(entityId)
+        if (run.state !== 'succeeded') setLinkError(t('aiworkspace.data.source.failed', { error: (run.result as { error?: { detail?: string } } | null)?.error?.detail ?? run.state }))
+      } catch (error) {
+        setLinkError(describeError(error))
+      }
+      return
+    }
     const ops = newDataOps(store, target.entity_id, kind, title.trim())
     const outcome = await store.submit({ editId: `new-data:${randomId().slice(0, 6)}`, label: t(CREATE_LABEL[kind]), operations: ops })
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') { setTitle(''); const created = ops.filter((op) => op.op === 'entity.create').at(-1); if (created) onSelect(created.entity_id as string) }
@@ -175,13 +191,16 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
           <select aria-label={t('aiworkspace.data.tree.newKind')} data-testid="aiws-new-kind" value={kind} onChange={(event) => setKind(event.target.value as NewDataKind)}>
             <option value="table">{t('aiworkspace.data.tree.kindTable')}</option><option value="richtext">{t('aiworkspace.data.tree.kindRichtext')}</option><option value="record">{t('aiworkspace.data.tree.kindRecord')}</option>
             <option value="wish">{t('aiworkspace.data.tree.kindWish')}</option><option value="note">{t('aiworkspace.data.stickyNote')}</option><option value="folder">{t('aiworkspace.data.tree.kindFolder')}</option>
+            <option value="link">{t('aiworkspace.data.tree.kindLink')}</option>
           </select>
+          {kind === 'link' && <input aria-label={t('aiworkspace.data.tree.kindLink')} data-testid="aiws-new-link" placeholder={t('aiworkspace.data.tree.linkPlaceholder')} value={link} onChange={(event) => setLink(event.target.value)} />}
           <input aria-label={t('aiworkspace.data.tree.titleField')} placeholder={t('aiworkspace.data.tree.titlePlaceholder')} value={title} onChange={(event) => setTitle(event.target.value)} />
           <button type="submit" data-testid="aiws-new-data">{t('aiworkspace.data.tree.create')}</button>
           <label className="aiws-link">{t('aiworkspace.data.tree.image')}<input type="file" hidden accept="image/*" data-testid="aiws-new-image" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void addImage(file) }} /></label>
           <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, false) }} /></label>
           {'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, true) }} /></label>}
           <span className="aiws-muted">{t('aiworkspace.data.tree.folderLimit')}</span>
+          {linkError && <div className="aiws-error" role="alert" data-testid="aiws-new-link-error">{linkError}</div>}
           {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}
         </form>
       )}

@@ -91,7 +91,14 @@ export interface Transport {
   download(path: string): Promise<Blob>
 }
 
-interface DevOverride { token: string; guest: boolean; baseUrl?: string; principal?: string; restricted?: boolean }
+interface DevOverride { token: string; guest: boolean; baseUrl?: string; principal?: string; restricted?: boolean; llm?: DevModelEndpoint }
+
+/** Development only: the local executor talks OpenAI-format chat to this endpoint instead of the Zone's AICC. */
+export interface DevModelEndpoint { baseUrl: string; apiKey?: string }
+
+export function devModelEndpoint(): DevModelEndpoint | null {
+  return readDevOverride()?.llm ?? null
+}
 
 function readDevOverride(): DevOverride | null {
   try {
@@ -102,7 +109,7 @@ function readDevOverride(): DevOverride | null {
     const parsed = JSON.parse(raw) as Partial<DevOverride>
     if (parsed.guest === true) return { token: guestToken(), guest: true, baseUrl: parsed.baseUrl }
     return typeof parsed.token === 'string' && parsed.token
-      ? { token: parsed.token, guest: false, baseUrl: parsed.baseUrl, principal: parsed.principal, restricted: parsed.restricted === true }
+      ? { token: parsed.token, guest: false, baseUrl: parsed.baseUrl, principal: parsed.principal, restricted: parsed.restricted === true, llm: parsed.llm && typeof parsed.llm.baseUrl === 'string' ? parsed.llm : undefined }
       : null
   } catch {
     return null

@@ -119,6 +119,12 @@
       "input": "{\"content\":\"mix256:05abcd\",\"create_time\":0,\"last_update_time\":0,\"size\":5}",
       "obj_type": "cyfile",
       "object_id": "cyfile:8d36320f18ec08b498c33ff4b103f1643af1dd0f8be6257c3d0438def7e391b4"
+    },
+    {
+      "canonical": "{\"body\":{\"hello.txt\":\"cyfile:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"sub\":\"cydir:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},\"create_time\":0,\"file_count\":1,\"file_size\":5,\"last_update_time\":0,\"total_size\":5}",
+      "input": "{\"body\":{\"hello.txt\":\"cyfile:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"sub\":\"cydir:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},\"create_time\":0,\"file_count\":1,\"file_size\":5,\"last_update_time\":0,\"total_size\":5}",
+      "obj_type": "cydir",
+      "object_id": "cydir:61bec8a7f7fd88b041543df8e5a31c472e71c260978368a03dba8907bdafe739"
     }
   ],
   "values": [
@@ -160,6 +166,42 @@
       },
       "input": -0.0,
       "output": 0
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "number"
+      },
+      "input": {
+        "$formula": {
+          "expr": "sum(n) * 2",
+          "lang": "aiws",
+          "version": "1"
+        }
+      },
+      "output": {
+        "$formula": {
+          "expr": "sum(n) * 2",
+          "lang": "aiws",
+          "version": "1"
+        }
+      }
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "text"
+      },
+      "error": "INVALID_SCHEMA",
+      "input": {
+        "$formula": {
+          "expr": "1",
+          "lang": "excel",
+          "version": "1"
+        }
+      }
     },
     {
       "def": {

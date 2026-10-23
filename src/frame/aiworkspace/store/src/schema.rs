@@ -1,7 +1,8 @@
 //! Storage DDL (design doc §4.2, §2.11, §7). Version 3 added share entries and `grants.via_entry` (hybrid SSO);
-//! older stores are refused, not migrated.
+//! version 4 is FORMAT 1.0 (内核架构改进 §13.6): reference `mode` / `integrity`, the pure-application commit delta,
+//! the retention roots and the usage ledger, `user_state.revision`. Older stores are refused, not migrated.
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 3;
+pub const STORAGE_SCHEMA_VERSION: u32 = 4;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"
@@ -14,6 +15,7 @@ CREATE TABLE entities (
   entity_id      TEXT PRIMARY KEY,
   type_id        TEXT NOT NULL,
   schema_version INTEGER NOT NULL,
+  schema_id      TEXT,
   scope          TEXT NOT NULL DEFAULT 'shared',
   name           TEXT,
   write_policy   TEXT NOT NULL DEFAULT 'open',
@@ -44,6 +46,8 @@ CREATE TABLE refs (
   dst_entity_id    TEXT NOT NULL DEFAULT '',
   dst_object_id    TEXT NOT NULL DEFAULT '',
   dst_query_json   TEXT NOT NULL DEFAULT '',
+  mode             TEXT NOT NULL DEFAULT 'live',
+  integrity        TEXT NOT NULL DEFAULT 'strong',
   PRIMARY KEY (src_entity_id, src_selector, kind, dst_workspace_id, dst_entity_id, dst_object_id, dst_query_json)
 ) WITHOUT ROWID;
 CREATE INDEX refs_dst_entity ON refs(dst_workspace_id, dst_entity_id);
@@ -121,11 +125,17 @@ CREATE TABLE commit_ops (
   PRIMARY KEY (seq, op_index)
 ) WITHOUT ROWID;
 
+CREATE TABLE commit_deltas (
+  seq       INTEGER PRIMARY KEY REFERENCES commits(seq),
+  rows_json TEXT NOT NULL
+) WITHOUT ROWID;
+
 CREATE TABLE assets (
   object_id   TEXT PRIMARY KEY,
   media_type  TEXT NOT NULL,
   size        INTEGER NOT NULL,
-  first_seq   INTEGER NOT NULL
+  first_seq   INTEGER NOT NULL,
+  ended_seq   INTEGER
 ) WITHOUT ROWID;
 
 CREATE TABLE entity_versions (
@@ -144,9 +154,22 @@ CREATE TABLE snapshots (
   content_root TEXT NOT NULL,
   seq          INTEGER NOT NULL,
   kind         TEXT NOT NULL,
-  retained     INTEGER NOT NULL DEFAULT 1,
   created_at   TEXT NOT NULL,
   created_by   TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE retentions (
+  kind       TEXT NOT NULL,
+  ref        TEXT NOT NULL,
+  holder     TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (kind, ref, holder)
+) WITHOUT ROWID;
+
+CREATE TABLE usage (
+  category TEXT PRIMARY KEY,
+  bytes    INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 "#;
 
@@ -174,7 +197,26 @@ CREATE TABLE grants (
   scope_entity_id TEXT NOT NULL DEFAULT '',
   capabilities    INTEGER NOT NULL,
   via_entry       TEXT,
+  task_digest     TEXT,
+  outputs_json    TEXT,
   PRIMARY KEY (subject, scope_entity_id)
+) WITHOUT ROWID;
+
+CREATE TABLE publications (
+  name        TEXT PRIMARY KEY,
+  entity_id   TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  created_by  TEXT NOT NULL,
+  current     INTEGER NOT NULL DEFAULT 1
+) WITHOUT ROWID;
+CREATE INDEX publications_entity ON publications(entity_id);
+
+CREATE TABLE referrers (
+  entity_id     TEXT NOT NULL,
+  referrer_key  TEXT NOT NULL,
+  referrer_json TEXT NOT NULL,
+  registered_at TEXT NOT NULL,
+  PRIMARY KEY (entity_id, referrer_key)
 ) WITHOUT ROWID;
 
 CREATE TABLE share_entries (
@@ -222,6 +264,7 @@ CREATE TABLE user_state (
   subject    TEXT NOT NULL,
   key        TEXT NOT NULL,
   value_json TEXT NOT NULL,
+  revision   INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (subject, key)
 ) WITHOUT ROWID;

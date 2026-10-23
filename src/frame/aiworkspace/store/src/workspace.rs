@@ -53,6 +53,12 @@ pub struct Caller {
     pub principal: String,
     pub app_id: Option<String>,
     pub class: CallerClass,
+    /// The service principal's kind as the token names it (`agent`, `app`, `system`, `device`); `None` for
+    /// accounts, Externals and guests. Decides the `agent` origin of a Commit (D08). `run` is a run token's
+    /// holder (M3): the run's execution identity, limited to that run.
+    pub kind: Option<String>,
+    /// The run a run token speaks for.
+    pub run_scope: Option<String>,
     /// How the session was established (`password`, `exclusive_invite`, `did_federation`, `assertion`).
     pub auth_method: Option<String>,
     /// `contact:<owner_did>#<tag>` subjects the service confirmed the caller belongs to.
@@ -74,7 +80,18 @@ pub const CONTACT_PREFIX: &str = "contact:";
 
 impl Caller {
     fn with_class(principal: &str, class: CallerClass) -> Caller {
-        Caller { principal: principal.to_string(), app_id: None, class, auth_method: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new() }
+        Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new() }
+    }
+    /// The holder of a run token (M3): acts as the run's principal, for that run only.
+    pub fn run_token(principal: &str, run_id: &str) -> Caller {
+        Caller { kind: Some("run".into()), run_scope: Some(run_id.to_string()), ..Self::with_class(principal, CallerClass::Service) }
+    }
+    /// An Agent principal (its own DID): its Commits carry origin `agent`.
+    pub fn agent(principal: &str) -> Caller {
+        Caller { kind: Some("agent".into()), ..Self::with_class(principal, CallerClass::Service) }
+    }
+    pub fn is_agent(&self) -> bool {
+        self.kind.as_deref() == Some("agent")
     }
     /// An unrestricted account (Admin / User).
     pub fn user(principal: &str) -> Caller {
@@ -229,6 +246,14 @@ pub struct CommitOpts {
     pub import: bool,
     /// `commit_id` this commit compensates.
     pub undoes: Option<String>,
+    /// The identity the Commit is written as (D08): a run's result is written as the run's execution
+    /// identity, whoever applies it, so every apply of the same run meets the same idempotency record.
+    /// Authorization is still the caller's.
+    pub as_principal: Option<String>,
+    /// The maintenance channel (D19): accepted over quota.
+    pub maintenance: bool,
+    /// A Source refresh (D12): the Commit's origin is `source`, the only path that writes sourced content.
+    pub as_source: bool,
 }
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -264,7 +289,16 @@ pub struct Workspace {
     pub on_lock_change: Option<Box<dyn Fn() + Send>>,
     /// Show locks of the service (third phase §8.1): a presented Workspace accepts no document writes.
     pub show_locks: Option<crate::show::ShowLocks>,
+    /// Logical bytes this Workspace may occupy (D19); `None` = no quota.
+    pub quota: Option<u64>,
+    /// Bytes this Workspace's Sources may fetch (D24); `None` = unlimited.
+    pub traffic_quota: Option<u64>,
+    /// Retention period of history-only resources, in milliseconds (D06).
+    pub history_retention_ms: i64,
 }
+
+/// Default retention of resources only the history references: 30 days (D06).
+pub const HISTORY_RETENTION_MS: i64 = 30 * 24 * 3_600_000;
 
 fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
     let conn = Connection::open(path).map_err(db_err)?;
@@ -274,6 +308,91 @@ fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON").map_err(db_err)?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
     Ok(conn)
+}
+
+/// The origin of a Commit as the server reads it (内核架构改进 D08): internal compensations are `system`,
+/// packages `import`, a run's result `program`, an Agent's own writes `agent`, everything else `human`
+/// (SDK scripts with a user token included).
+pub fn derive_origin(caller: &Caller, opts: &CommitOpts, has_run: bool) -> &'static str {
+    if opts.import {
+        "import"
+    } else if opts.internal {
+        "system"
+    } else if opts.as_source {
+        "source"
+    } else if has_run {
+        "program"
+    } else if caller.is_agent() {
+        "agent"
+    } else {
+        "human"
+    }
+}
+
+/// Keep only the rows of entities `can_read` admits (the replica bootstrap applies the same rule).
+fn filter_rows(rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>) -> WsResult<()> {
+    let keep = |table: &str, key: &str, rows: &mut Value, can_read: &mut dyn FnMut(&str) -> WsResult<bool>| -> WsResult<()> {
+        if let Some(a) = rows.get_mut(table).and_then(Value::as_array_mut) {
+            let mut out = Vec::with_capacity(a.len());
+            for r in a.drain(..) {
+                if can_read(r[key].as_str().unwrap_or(""))? {
+                    out.push(r);
+                }
+            }
+            *a = out;
+        }
+        Ok(())
+    };
+    keep("entities", "entity_id", rows, can_read)?;
+    keep("tree_edges", "child_id", rows, can_read)?;
+    keep("table_fields", "source_id", rows, can_read)?;
+    keep("table_records", "source_id", rows, can_read)?;
+    keep("richtext_states", "entity_id", rows, can_read)?;
+    keep("richtext_updates", "entity_id", rows, can_read)?;
+    keep("refs", "src_entity_id", rows, can_read)?;
+    keep("refs_deleted", "src_entity_id", rows, can_read)?;
+    Ok(())
+}
+
+fn add_usage(conn: &Connection, category: &str, bytes: i64) -> WsResult<()> {
+    if bytes == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO usage (category, bytes) VALUES (?1, ?2) ON CONFLICT(category) DO UPDATE SET bytes = MAX(0, bytes + excluded.bytes)",
+        params![category, bytes],
+    )
+    .map_err(db_err)?;
+    Ok(())
+}
+
+/// `(structured bytes delta, new asset bytes)` of applying `changes` over what the transaction sees now.
+fn usage_delta(tx: &Connection, changes: &Changes) -> WsResult<(i64, i64)> {
+    let mut delta: i64 = 0;
+    for (id, e) in &changes.entities {
+        let old: i64 = tx.query_row("SELECT LENGTH(payload_json) + LENGTH(key_revs_json) FROM entities WHERE entity_id = ?1", [id], |r| r.get(0)).optional().map_err(db_err)?.unwrap_or(0);
+        delta += (serde_json::to_string(&e.payload).map(|s| s.len()).unwrap_or(0) + serde_json::to_string(&e.key_revs).map(|s| s.len()).unwrap_or(0)) as i64 - old;
+    }
+    for ((s, r), rec) in &changes.records {
+        let old: i64 = tx.query_row("SELECT LENGTH(values_json) + LENGTH(meta_json) FROM table_records WHERE source_id = ?1 AND record_id = ?2", params![s, r], |x| x.get(0)).optional().map_err(db_err)?.unwrap_or(0);
+        delta += (serde_json::to_string(&rec.values).map(|s| s.len()).unwrap_or(0) + serde_json::to_string(&rec.meta).map(|s| s.len()).unwrap_or(0)) as i64 - old;
+    }
+    for ((s, f), field) in &changes.fields {
+        let old: i64 = tx.query_row("SELECT LENGTH(def_json) FROM table_fields WHERE source_id = ?1 AND field_id = ?2", params![s, f], |x| x.get(0)).optional().map_err(db_err)?.unwrap_or(0);
+        delta += serde_json::to_string(&field.def).map(|s| s.len()).unwrap_or(0) as i64 - old;
+    }
+    for (id, bytes) in &changes.rt_updates {
+        let _ = id;
+        delta += bytes.len() as i64;
+    }
+    let mut assets: i64 = 0;
+    for (id, a) in &changes.assets {
+        let known: bool = tx.query_row("SELECT 1 FROM assets WHERE object_id = ?1", [id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+        if !known {
+            assets += a.size as i64;
+        }
+    }
+    Ok((delta, assets))
 }
 
 pub fn err_json(e: &WsError) -> Value {
@@ -309,6 +428,7 @@ impl Workspace {
             ("format_version", FORMAT_VERSION.to_string()),
             ("storage_schema_version", STORAGE_SCHEMA_VERSION.to_string()),
             ("head_seq", "0".to_string()),
+            ("base_seq", "0".to_string()),
             ("head_commit_id", String::new()),
             ("created_at", now.clone()),
             ("title", title.to_string()),
@@ -369,8 +489,157 @@ impl Workspace {
             on_commit: None,
             on_lock_change: None,
             show_locks: None,
+            quota: None,
+            traffic_quota: None,
+            history_retention_ms: HISTORY_RETENTION_MS,
         };
         Ok(ws)
+    }
+
+    /// Admission under the quota (D19): refused when `needed` more bytes would pass it. `QUOTA_EXCEEDED`
+    /// (retryable) when the maintenance channel can release enough — exports, clones, staged uploads and
+    /// reclaimable history — `QUOTA_LIMIT` otherwise. Maintenance writes are never refused.
+    pub fn check_quota(&self, needed: u64, maintenance: bool) -> WsResult<()> {
+        let Some(quota) = self.quota else { return Ok(()) };
+        if maintenance {
+            return Ok(());
+        }
+        let usage = self.usage()?;
+        let used = usage["total"].as_i64().unwrap_or(0).max(0) as u64;
+        if used + needed <= quota {
+            return Ok(());
+        }
+        let reclaimable: u64 = ["exports", "clones", "staged", "history"].iter().map(|c| usage[c].as_i64().unwrap_or(0).max(0) as u64).sum();
+        let over = used + needed - quota;
+        let data = json!({ "needed_bytes": over, "reclaimable_bytes": reclaimable, "quota_bytes": quota, "used_bytes": used, "owner": self.owner()?.unwrap_or_default() });
+        if reclaimable >= over {
+            Err(WsError::new(Code::QuotaExceeded, format!("the workspace is {over} bytes over its quota; release space and retry")).with_data(data))
+        } else {
+            Err(WsError::new(Code::QuotaLimit, format!("the workspace is {over} bytes over its quota and nothing it holds can be released; raise the quota")).with_data(data))
+        }
+    }
+
+    /// `ws.delete_checkpoint { snapshot_id }` (maintenance, `manage`): the snapshot row and its retention go;
+    /// its objects are reclaimed by the collector when nothing else holds them.
+    pub fn delete_checkpoint(&mut self, caller: &Caller, snapshot_id: &str) -> WsResult<Value> {
+        self.require_ws(caller, Cap::Manage)?;
+        let n = self.doc.execute("DELETE FROM snapshots WHERE snapshot_id = ?1", [snapshot_id]).map_err(db_err)?;
+        let released = self.release_retention("snapshot", snapshot_id)?;
+        Ok(json!({ "ok": true, "removed": n > 0, "released": released }))
+    }
+
+    /// `ws.clear_staged` (maintenance, `manage`): staged uploads nobody referenced go, expired or not.
+    pub fn clear_staged(&mut self, caller: &Caller) -> WsResult<Value> {
+        self.require_ws(caller, Cap::Manage)?;
+        let mut st = self.local.prepare("SELECT object_id, size FROM staged_assets").map_err(db_err)?;
+        let rows: Vec<(String, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        drop(st);
+        let (mut removed, mut bytes) = (0, 0i64);
+        for (id, size) in rows {
+            let referenced: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            if referenced {
+                continue;
+            }
+            self.local.execute("DELETE FROM staged_assets WHERE object_id = ?1", [&id]).map_err(db_err)?;
+            self.release_retention("staged", &id)?;
+            removed += 1;
+            bytes += size;
+        }
+        self.add_usage("staged", -bytes)?;
+        Ok(json!({ "ok": true, "removed": removed, "bytes": bytes }))
+    }
+
+    /// `ws.purge_deleted { entity_ids? }` (maintenance, `manage`): deleted entities give up content and
+    /// references for good (`entity.purge`), their resources become reclaimable at once, their undo and
+    /// version restore answer `RESOURCE_RECLAIMED`, and their Block state is cleared. Without ids: every
+    /// deleted entity.
+    pub fn purge_deleted(&mut self, caller: &Caller, entity_ids: Option<&[String]>, session_id: Option<&str>) -> WsResult<Value> {
+        self.require_ws(caller, Cap::Manage)?;
+        let ids: Vec<String> = match entity_ids {
+            Some(ids) => ids.to_vec(),
+            None => {
+                let mut st = self.doc.prepare("SELECT entity_id FROM entities WHERE deleted_seq IS NOT NULL AND payload_json NOT LIKE '%\"#purged\"%' ORDER BY entity_id").map_err(db_err)?;
+                let rows: Vec<String> = st.query_map([], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+                rows
+            }
+        };
+        if ids.is_empty() {
+            return Ok(json!({ "ok": true, "purged": [] }));
+        }
+        // the objects they alone referenced, before the purge drops those references
+        let mut objects: Vec<String> = Vec::new();
+        for id in &ids {
+            let mut st = self.doc.prepare_cached("SELECT dst_object_id FROM refs WHERE src_entity_id = ?1 AND dst_object_id <> ''").map_err(db_err)?;
+            let rows: Vec<String> = st.query_map([id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+            objects.extend(rows);
+        }
+        let ops: Vec<Value> = ids.iter().map(|id| json!({ "op": "entity.purge", "entity_id": id })).collect();
+        let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": self.workspace_id, "epoch": self.epoch,
+                          "idempotency_key": format!("purge/{}", random_id("")), "session_id": session_id, "message": "purge deleted entities", "operations": ops });
+        let opts = CommitOpts { internal: true, import: false, undoes: None, as_principal: None, maintenance: true, as_source: false };
+        let r = self.commit(&req, caller, &opts);
+        if r["status"] != json!("accepted") {
+            return Err(WsError::new(Code::InvalidOperation, "purge was not accepted").with_data(r));
+        }
+        // their history-only resources are reclaimable now, not after the retention period
+        for object_id in &objects {
+            self.doc.execute("UPDATE assets SET ended_seq = 0 WHERE object_id = ?1 AND ended_seq IS NOT NULL", [object_id]).map_err(db_err)?;
+        }
+        self.clear_block_state(&ids)?;
+        Ok(json!({ "ok": true, "purged": ids, "commit_id": r["commit_id"] }))
+    }
+
+    /// Object ids a set of operations would need that the store no longer holds although this Workspace
+    /// once referenced them (reclaimed after their retention, D06): such an undo or restore is refused.
+    pub fn reclaimed_objects(&self, ops: &[Value]) -> WsResult<Vec<String>> {
+        fn walk(v: &Value, out: &mut Vec<String>) {
+            match v {
+                Value::String(s) if s.starts_with("cyfile:") || s.starts_with("cydir:") || s.starts_with("jobj:") => out.push(s.clone()),
+                Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+                _ => {}
+            }
+        }
+        let mut ids = Vec::new();
+        for op in ops {
+            walk(op, &mut ids);
+            // restoring a deleted entity brings its references back: the objects they name must be there
+            if op["op"] == json!("entity.restore") {
+                if let Some(id) = op["entity_id"].as_str() {
+                    let mut st = self.doc.prepare_cached("SELECT dst_object_id FROM refs WHERE src_entity_id = ?1 AND dst_object_id <> ''").map_err(db_err)?;
+                    let rows: Vec<String> = st.query_map([id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+                    ids.extend(rows);
+                }
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        let mut gone = Vec::new();
+        for id in ids {
+            if self.objects.has_object(&id) {
+                continue;
+            }
+            let known: bool = self.doc.query_row("SELECT 1 FROM assets WHERE object_id = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            if known {
+                gone.push(id);
+            }
+        }
+        Ok(gone)
+    }
+
+    /// A show clone judges access by the grants of the Workspace it was cloned from, as they are now (D17):
+    /// revoking there ends the show's audience here.
+    fn show_source_grants(&self) -> WsResult<Option<Vec<(String, String, u16, Option<String>)>>> {
+        let Some(source) = meta_get(&self.doc, "show_source")? else { return Ok(None) };
+        let Some(parent) = self.dir.parent() else { return Ok(None) };
+        let path = parent.join(&source).join("local.sqlite");
+        if !path.exists() {
+            return Ok(Some(Vec::new()));
+        }
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(db_err)?;
+        let mut st = conn.prepare("SELECT subject, scope_entity_id, capabilities, via_entry FROM grants ORDER BY subject, scope_entity_id").map_err(db_err)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        Ok(Some(rows))
     }
 
     pub fn title(&self) -> String {
@@ -397,7 +666,11 @@ impl Workspace {
             }
         };
         let mut undecided = false;
-        for (subject, scope, caps, _) in self.grant_rows()? {
+        let rows = match self.show_source_grants()? {
+            Some(source) => source,
+            None => self.grant_rows()?,
+        };
+        for (subject, scope, caps, _) in rows {
             if caller.matches(&subject, public) {
                 add(scope, caps);
             } else if caller.unconfirmed.contains(&subject) {
@@ -463,6 +736,66 @@ impl Workspace {
         Ok(json!({ "ok": true, "wish_aicc_mode": mode }))
     }
 
+    /// The Owner's hosted execution configuration (D22, T3-7): `{ enabled, agent_id, allowed_wishes?: [ids],
+    /// triggerers?: [subjects], limits?: { max_runs_per_day?, max_tool_iterations? } }`; `digest` is what a run
+    /// binds to (D16: a changed configuration makes older delegations `DELEGATION_STALE`).
+    pub fn hosted_exec(&self) -> WsResult<Value> {
+        let raw: Option<String> = self.local.query_row("SELECT value FROM local_meta WHERE key = 'hosted_exec'", [], |r| r.get(0)).optional().map_err(db_err)?;
+        let mut v = raw.and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or_else(|| json!({ "enabled": false }));
+        let digest = sha256_hex(aiworkspace_core::canonical::canonical_json(&v).unwrap_or_default().as_bytes())[..32].to_string();
+        v["digest"] = json!(digest);
+        Ok(v)
+    }
+
+    /// `ws.set_hosted_exec` (`manage`): the Owner's configuration; runs accepted afterwards bind to its digest.
+    pub fn set_hosted_exec(&mut self, caller: &Caller, config: &Value) -> WsResult<Value> {
+        self.require_ws(caller, Cap::Manage)?;
+        let o = config.as_object().ok_or_else(|| WsError::invalid_op("config must be an object"))?;
+        for k in o.keys() {
+            if !matches!(k.as_str(), "enabled" | "agent_id" | "allowed_wishes" | "triggerers" | "limits") {
+                return Err(WsError::invalid_op(format!("unknown hosted_exec key {k}")));
+            }
+        }
+        let enabled = o.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+        if enabled && !o.get("agent_id").and_then(Value::as_str).is_some_and(|a| !a.is_empty() && a.len() <= 256) {
+            return Err(WsError::invalid_op("hosted execution needs the Owner's agent_id"));
+        }
+        for k in ["allowed_wishes", "triggerers"] {
+            if o.get(k).is_some_and(|v| !v.is_null() && !v.as_array().is_some_and(|a| a.iter().all(Value::is_string))) {
+                return Err(WsError::invalid_op(format!("{k} must be an array of strings")));
+            }
+        }
+        if o.get("limits").is_some_and(|l| !l.is_object()) {
+            return Err(WsError::invalid_op("limits must be an object"));
+        }
+        let text = Value::Object(o.clone()).to_string();
+        if text.len() > 16 * 1024 {
+            return Err(WsError::limit("hosted_exec configuration is limited to 16 KiB"));
+        }
+        self.local.execute("INSERT OR REPLACE INTO local_meta (key, value) VALUES ('hosted_exec', ?1)", [text]).map_err(db_err)?;
+        let v = self.hosted_exec()?;
+        Ok(json!({ "ok": true, "hosted_exec": v }))
+    }
+
+    /// May `caller` trigger a hosted run of `wish_id` under this configuration (D22)?
+    pub fn hosted_exec_admits(&self, caller: &Caller, wish_id: &str) -> WsResult<Value> {
+        let cfg = self.hosted_exec()?;
+        if cfg["enabled"] != json!(true) {
+            return Err(WsError::new(Code::ExecutionContextMissing, "hosted execution is not configured for this workspace: the owner sets it up (ws.set_hosted_exec)"));
+        }
+        if let Some(allowed) = cfg["allowed_wishes"].as_array() {
+            if !allowed.is_empty() && !allowed.iter().any(|w| w == wish_id) {
+                return Err(WsError::denied(format!("wish {wish_id} is not among the tasks the owner allows to run hosted")));
+            }
+        }
+        if let Some(who) = cfg["triggerers"].as_array() {
+            if !who.is_empty() && !who.iter().filter_map(Value::as_str).any(|s| caller.matches(s, true)) {
+                return Err(WsError::denied("the owner's hosted execution configuration does not admit this caller"));
+            }
+        }
+        Ok(cfg)
+    }
+
     pub fn require_ws(&self, caller: &Caller, cap: Cap) -> WsResult<Access> {
         let access = self.access(caller)?;
         if access.is_empty() {
@@ -476,9 +809,29 @@ impl Workspace {
     }
 
     pub fn grant(&mut self, caller: &Caller, subject: &str, scope: Option<&str>, caps: &[String]) -> WsResult<Value> {
+        self.grant_with(caller, subject, scope, caps, None, None)
+    }
+
+    /// `ws.grant` with the delegation fields of a `run` grant (D16, D22): the digest of the task
+    /// configuration the granter confirmed and the outputs it declared. A run whose configuration no longer
+    /// matches the digest is `DELEGATION_STALE` (M3).
+    pub fn grant_with(&mut self, caller: &Caller, subject: &str, scope: Option<&str>, caps: &[String], task_digest: Option<&str>, outputs: Option<&Value>) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
         check_subject(subject, caller.did())?;
         let caps = CapSet::parse(caps)?;
+        if (task_digest.is_some() || outputs.is_some()) && !caps.has(Cap::Run) {
+            return Err(WsError::invalid_op("task_digest and outputs belong to a run grant"));
+        }
+        if let Some(d) = task_digest {
+            if d.is_empty() || d.len() > 128 {
+                return Err(WsError::invalid_op("task_digest must be a short string"));
+            }
+        }
+        if let Some(o) = outputs {
+            if !o.is_array() || o.to_string().len() > 16 * 1024 {
+                return Err(WsError::invalid_op("outputs must be a small array of output declarations"));
+            }
+        }
         if subject == PUBLIC_SUBJECT && caps.has(Cap::Manage) {
             return Err(WsError::invalid_op("a public link cannot carry the manage capability"));
         }
@@ -490,11 +843,35 @@ impl Workspace {
         }
         self.local
             .execute(
-                "INSERT OR REPLACE INTO grants (subject, scope_entity_id, capabilities, via_entry) VALUES (?1, ?2, ?3, NULL)",
-                params![subject, scope.unwrap_or(""), caps.0],
+                "INSERT OR REPLACE INTO grants (subject, scope_entity_id, capabilities, via_entry, task_digest, outputs_json) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+                params![subject, scope.unwrap_or(""), caps.0, task_digest, outputs.map(Value::to_string)],
             )
             .map_err(db_err)?;
         Ok(json!({ "ok": true }))
+    }
+
+    /// The delegation fields of the caller's `run` grants: `(scope, task_digest, outputs)`.
+    pub fn run_grants(&self, caller: &Caller) -> WsResult<Vec<(String, Option<String>, Option<Value>)>> {
+        let mut st = self.local.prepare_cached("SELECT subject, scope_entity_id, capabilities, task_digest, outputs_json FROM grants ORDER BY subject, scope_entity_id").map_err(db_err)?;
+        let rows: Vec<(String, String, u16, Option<String>, Option<String>)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .filter(|(subject, _, caps, ..)| CapSet(*caps).has(Cap::Run) && caller.matches(subject, true))
+            .map(|(_, scope, _, digest, outputs)| (scope, digest, outputs.and_then(|o| serde_json::from_str(&o).ok())))
+            .collect())
+    }
+
+    /// The caller may start a run here: `run` or any editing right on the Workspace (D16).
+    pub fn require_run(&self, caller: &Caller) -> WsResult<Access> {
+        let access = self.require_ws_any(caller)?;
+        if !access.ws_caps.may_run() {
+            return Err(WsError::denied("run capability required"));
+        }
+        Ok(access)
     }
 
     pub fn revoke(&mut self, caller: &Caller, subject: &str, scope: Option<&str>) -> WsResult<Value> {
@@ -520,8 +897,17 @@ impl Workspace {
             .into_iter()
             .filter(|(subject, ..)| manage || caller.matches(subject, true))
             .map(|(subject, scope, caps, via)| {
-                json!({ "subject": subject, "scope_entity_id": if scope.is_empty() { Value::Null } else { json!(scope) },
-                        "capabilities": CapSet(caps).names(), "via_entry": via.map(|v| self.entry_public_id(&v)) })
+                let mut row = json!({ "subject": subject, "scope_entity_id": if scope.is_empty() { Value::Null } else { json!(scope) },
+                        "capabilities": CapSet(caps).names(), "via_entry": via.map(|v| self.entry_public_id(&v)) });
+                if let Ok((digest, outputs)) = self.local.query_row("SELECT task_digest, outputs_json FROM grants WHERE subject = ?1 AND scope_entity_id = ?2", params![subject, scope], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))) {
+                    if let Some(d) = digest {
+                        row["task_digest"] = json!(d);
+                    }
+                    if let Some(o) = outputs.and_then(|o| serde_json::from_str::<Value>(&o).ok()) {
+                        row["outputs"] = o;
+                    }
+                }
+                row
             })
             .collect();
         let owner = if manage { self.owner()? } else { None };
@@ -533,61 +919,151 @@ impl Workspace {
     /// `ws.get_user_state`: every entry of the caller.
     pub fn get_user_state(&self, caller: &Caller) -> WsResult<Value> {
         self.require_ws_any(caller)?;
-        let mut st = self.local.prepare("SELECT key, value_json, updated_at FROM user_state WHERE subject = ?1 ORDER BY key").map_err(db_err)?;
-        let rows: Vec<(String, String, String)> = st
-            .query_map([&caller.principal], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        let mut st = self.local.prepare("SELECT key, value_json, updated_at, revision FROM user_state WHERE subject = ?1 ORDER BY key").map_err(db_err)?;
+        let rows: Vec<(String, String, String, i64)> = st
+            .query_map([&caller.principal], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .map_err(db_err)?
             .collect::<rusqlite::Result<_>>()
             .map_err(db_err)?;
         let mut entries = serde_json::Map::new();
         let mut updated = serde_json::Map::new();
-        for (k, v, at) in rows {
+        let mut revisions = serde_json::Map::new();
+        for (k, v, at, rev) in rows {
             entries.insert(k.clone(), serde_json::from_str(&v).unwrap_or(Value::Null));
-            updated.insert(k, json!(at));
+            updated.insert(k.clone(), json!(at));
+            revisions.insert(k, json!(rev));
         }
-        Ok(json!({ "ok": true, "entries": entries, "updated_at": updated }))
+        Ok(json!({ "ok": true, "entries": entries, "updated_at": updated, "revisions": revisions }))
     }
 
-    /// `ws.set_user_state`: `entries: { key: value | null }` — null removes. Last writer wins per
-    /// entry. Not a document Commit: no history, no change-stream event, no undo.
-    pub fn set_user_state(&mut self, caller: &Caller, entries: &Value) -> WsResult<Value> {
+    /// `ws.set_user_state`: `entries: { key: value | null }` — null removes; `expect: { key: revision }`
+    /// makes a write conditional (D13: `REVISION_CONFLICT` with the current revision when it moved; a new
+    /// key expects 0). Each write bumps the entry's revision. Keys `block:<entity_id>/…` are a Block's private
+    /// state. Not a document Commit: no history, no change-stream event, no undo.
+    pub fn set_user_state(&mut self, caller: &Caller, entries: &Value, expect: Option<&Value>) -> WsResult<Value> {
         self.require_ws_any(caller)?;
         let o = entries.as_object().ok_or_else(|| WsError::invalid_op("entries must be an object"))?;
         if o.len() > 500 {
             return Err(WsError::limit("at most 500 entries per call"));
         }
+        let expect = match expect {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(Value::Object(m)) => m.clone(),
+            Some(_) => return Err(WsError::invalid_op("expect must be { key: revision }")),
+        };
         let now = self.now();
         let tx = self.local.unchecked_transaction().map_err(db_err)?;
+        let mut revisions = serde_json::Map::new();
         for (k, v) in o {
             if k.is_empty() || k.len() > 256 {
                 return Err(WsError::invalid_op("invalid user state key"));
             }
+            let current: i64 = tx
+                .query_row("SELECT revision FROM user_state WHERE subject = ?1 AND key = ?2", params![caller.principal, k], |r| r.get(0))
+                .optional()
+                .map_err(db_err)?
+                .unwrap_or(0);
+            if let Some(want) = expect.get(k) {
+                let want = want.as_i64().ok_or_else(|| WsError::invalid_op("expect revisions must be integers"))?;
+                if want != current {
+                    return Err(WsError::new(Code::RevisionConflict, format!("user state {k} changed")).with_data(json!({ "key": k, "expected": want, "current": current })));
+                }
+            }
             if v.is_null() {
                 tx.execute("DELETE FROM user_state WHERE subject = ?1 AND key = ?2", params![caller.principal, k]).map_err(db_err)?;
+                revisions.insert(k.clone(), json!(0));
             } else {
                 let text = v.to_string();
                 if text.len() > 256 * 1024 {
                     return Err(WsError::limit("a user state entry is limited to 256 KiB"));
                 }
                 tx.execute(
-                    "INSERT OR REPLACE INTO user_state (subject, key, value_json, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                    params![caller.principal, k, text, now],
+                    "INSERT OR REPLACE INTO user_state (subject, key, value_json, revision, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![caller.principal, k, text, current + 1, now],
                 )
                 .map_err(db_err)?;
+                revisions.insert(k.clone(), json!(current + 1));
             }
         }
         tx.commit().map_err(db_err)?;
-        Ok(json!({ "ok": true, "updated_at": now }))
+        Ok(json!({ "ok": true, "updated_at": now, "revisions": revisions }))
+    }
+
+    /// Drop every user's `block:<entity_id>/…` state of entities that are gone for good (D13).
+    pub fn clear_block_state(&mut self, entity_ids: &[String]) -> WsResult<u64> {
+        let mut n = 0;
+        for id in entity_ids {
+            n += self.local.execute("DELETE FROM user_state WHERE key LIKE ?1", [format!("block:{id}/%")]).map_err(db_err)? as u64;
+        }
+        Ok(n)
+    }
+
+    /// The history floor (D06): requests below it are `BASE_TOO_OLD`. 0 until history is truncated.
+    pub fn base_seq(&self) -> u64 {
+        meta_get(&self.doc, "base_seq").ok().flatten().and_then(|s| s.parse().ok()).unwrap_or(0)
+    }
+
+    /// Raise the history floor (truncation, D06 / D07): requests below it are refused from now on.
+    pub fn set_base_seq(&self, seq: u64) -> WsResult<()> {
+        meta_set(&self.doc, "base_seq", &seq.to_string())
+    }
+
+    fn check_base(&self, seq: u64) -> WsResult<()> {
+        if seq < self.base_seq() {
+            return Err(WsError::new(Code::BaseTooOld, format!("history below seq {} is no longer available; prepare the replica again", self.base_seq())));
+        }
+        Ok(())
+    }
+
+    /// The usage ledger (D19): logical bytes per category, kept by every transaction.
+    pub fn usage(&self) -> WsResult<Value> {
+        let mut st = self.doc.prepare_cached("SELECT category, bytes FROM usage ORDER BY category").map_err(db_err)?;
+        let rows: Vec<(String, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let mut m = serde_json::Map::new();
+        let mut total = 0;
+        for (c, b) in rows {
+            total += b;
+            m.insert(c, json!(b));
+        }
+        m.insert("total".into(), json!(total));
+        Ok(Value::Object(m))
+    }
+
+    /// Add `bytes` (negative to release) to a usage category, outside a Commit (exports, clones, staged uploads).
+    pub fn add_usage(&self, category: &str, bytes: i64) -> WsResult<()> {
+        add_usage(&self.doc, category, bytes)
+    }
+
+    /// Register a retention root (D06): `kind` ∈ checkpoint / export / clone / staged / run_input …
+    pub fn add_retention(&self, kind: &str, reference: &str, holder: &str, expires_at: Option<&str>) -> WsResult<()> {
+        let now = self.now();
+        self.doc
+            .execute("INSERT OR REPLACE INTO retentions (kind, ref, holder, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![kind, reference, holder, expires_at, now])
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// End a retention root; `true` when a row went.
+    pub fn release_retention(&self, kind: &str, reference: &str) -> WsResult<bool> {
+        Ok(self.doc.execute("DELETE FROM retentions WHERE kind = ?1 AND ref = ?2", params![kind, reference]).map_err(db_err)? > 0)
+    }
+
+    pub fn retentions(&self) -> WsResult<Vec<(String, String, String, Option<String>)>> {
+        let mut st = self.doc.prepare_cached("SELECT kind, ref, holder, expires_at FROM retentions ORDER BY kind, ref").map_err(db_err)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        Ok(rows)
     }
 
     pub fn info(&self, caller: &Caller) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         Ok(json!({ "ok": true, "workspace_id": self.workspace_id, "title": self.title(), "epoch": self.epoch,
-                   "head_seq": self.head_seq, "head_commit_id": self.head_commit_id, "format_version": FORMAT_VERSION,
-                   "protocol_version": PROTOCOL_VERSION, "capabilities": access.ws_caps.names(), "principal": caller.principal,
+                   "head_seq": self.head_seq, "head_commit_id": self.head_commit_id, "base_seq": self.base_seq(), "format_version": FORMAT_VERSION,
+                   "protocol_version": PROTOCOL_VERSION, "planner_version": aiworkspace_core::plan::PLANNER_VERSION,
+                   "richtext_schema": aiworkspace_core::richtext::schema()["id"], "usage": self.usage()?,
+                   "capabilities": access.ws_caps.names(), "principal": caller.principal,
                    "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
-                   "wish_aicc_mode": self.wish_aicc_mode()? }))
+                   "wish_aicc_mode": self.wish_aicc_mode()?, "hosted_exec": self.hosted_exec()? }))
     }
 
     /// Any grant at all (workspace-level or scoped) is enough to know the Workspace exists.
@@ -656,13 +1132,15 @@ impl Workspace {
             return Err(reject(WsError::limit("commit request exceeds 8 MiB")));
         }
         let digest = CommitRequest::digest(req_json).map_err(reject)?;
+        // the identity the Commit is written as (D08): the caller, or a run's execution identity
+        let writer = opts.as_principal.clone().unwrap_or_else(|| caller.principal.clone());
         // idempotency comes before anything that depends on document state: a
         // successful create whose response was lost must not hit its own ID_CONFLICT
         let prior: Option<(String, String)> = self
             .doc
             .query_row(
                 "SELECT request_digest, result_json FROM commits WHERE principal = ?1 AND idem_key = ?2",
-                params![caller.principal, req.idempotency_key],
+                params![writer, req.idempotency_key],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -679,6 +1157,8 @@ impl Workspace {
         if access.is_empty() {
             return Err(reject(WsError::not_found("workspace not found")));
         }
+        // the quota is checked before anything is planned (D19); the request size is the reservation
+        self.check_quota(req_json.to_string().len() as u64, opts.maintenance).map_err(reject)?;
         // a presented Workspace is closed for writes, from every session (third phase §8.1)
         if let Some(lock) = self.show_lock() {
             return Err(reject(Self::show_locked_error(&lock)));
@@ -697,14 +1177,20 @@ impl Workspace {
         }
         let seq = self.head_seq + 1;
         let now = self.now();
+        // origin is the server's reading of who writes (D08); what the client wrote is ignored
+        let origin = derive_origin(caller, opts, req.run_id.is_some());
+        let mut req = req;
+        req.origin = origin.to_string();
+        let req = &req;
         let env = PlanEnv {
             seq,
-            principal: caller.principal.clone(),
-            origin: req.origin.clone(),
+            principal: writer.clone(),
+            origin: origin.to_string(),
             run_id: req.run_id.clone(),
             now: now.clone(),
             internal: opts.internal,
             import: opts.import,
+            schema_checks: true,
             replay: false,
             peer_id: self.peer_id,
             limits: self.limits.clone(),
@@ -758,9 +1244,13 @@ impl Workspace {
         self.fire(FailAt::BeforeTxn).map_err(reject)?;
         // one SQLite transaction: data, references, history, idempotency record, head
         let stats = self
-            .write_commit(&req, caller, opts, &digest, seq, &commit_id, &now, &ops, &changes, &result)
+            .write_commit(req, caller, &writer, opts, &digest, seq, &commit_id, &now, &ops, &changes, &result)
             .map_err(reject)?;
         // durable from here on; a crash before publishing is recovered from the database
+        for id in changes.assets.keys() {
+            // a referenced upload is no longer staged
+            let _ = self.local.execute("DELETE FROM staged_assets WHERE object_id = ?1", [id]);
+        }
         self.fire(FailAt::AfterCommit).map_err(reject)?;
         // 5. publish
         self.publish(seq, &commit_id, changes, stats, &lock_targets, caller, req.session_id.as_deref(), &now);
@@ -772,6 +1262,7 @@ impl Workspace {
         &mut self,
         req: &CommitRequest,
         caller: &Caller,
+        writer: &str,
         opts: &CommitOpts,
         digest: &str,
         seq: u64,
@@ -791,7 +1282,20 @@ impl Workspace {
             None => false,
         };
         let tx = self.doc.unchecked_transaction().map_err(db_err)?;
+        // the usage ledger moves with the transaction (D19): structured bytes by their delta, assets by size
+        let (content_delta, asset_delta) = usage_delta(&tx, changes)?;
         let stats = apply_changes(&tx, changes, seq)?;
+        add_usage(&tx, "content", content_delta)?;
+        add_usage(&tx, "assets", asset_delta)?;
+        // a staged upload this Commit references is an asset now: its staging root and usage end
+        let mut staged_bytes: i64 = 0;
+        for (id, a) in &changes.assets {
+            if tx.execute("DELETE FROM retentions WHERE kind = 'staged' AND ref = ?1", [id]).map_err(db_err)? > 0 {
+                staged_bytes += a.size as i64;
+            }
+        }
+        add_usage(&tx, "staged", -staged_bytes)?;
+
         // a generated result gets an addressable version right away (phase two §7.4): its content is
         // materialized and listed in entity_versions together with the dependency record
         let versioned: Vec<String> = ops
@@ -799,6 +1303,7 @@ impl Workspace {
             .filter(|o| o.op["op"] == json!("entity.set_derived"))
             .filter_map(|o| o.op["entity_id"].as_str().map(str::to_string))
             .collect();
+        let mut written_objects: Vec<String> = Vec::new();
         if !versioned.is_empty() {
             let ctx = SqlCtx { conn: &tx, local: Some(&self.local), cache: &self.cache, now };
             let mut sink = crate::objects::StoreSink::new(&self.objects);
@@ -812,16 +1317,20 @@ impl Workspace {
                 )
                 .map_err(db_err)?;
             }
+            written_objects = sink.written.clone();
         }
         tx.execute(
             "INSERT INTO commits (seq, commit_id, principal, app_id, session_id, origin, run_id, undo_group, undoes, idem_key, \
              request_digest, message, accepted_at, result_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
-                seq, commit_id, caller.principal, caller.app_id, req.session_id, req.origin, req.run_id, req.undo_group,
+                seq, commit_id, writer, caller.app_id, req.session_id, req.origin, req.run_id, req.undo_group,
                 opts.undoes, req.idempotency_key, digest, req.message, now, result.to_string()
             ],
         )
         .map_err(db_err)?;
+        // the pure-application delta replicas apply (D20)
+        let rows = aiworkspace_core::replica::changes_to_rows(changes)?;
+        tx.execute("INSERT INTO commit_deltas (seq, rows_json) VALUES (?1, ?2)", params![seq, rows.to_string()]).map_err(db_err)?;
         {
             let mut st = tx
                 .prepare_cached("INSERT INTO commit_ops (seq, op_index, op_json, inverse_json, touched_json) VALUES (?1,?2,?3,?4,?5)")
@@ -836,10 +1345,18 @@ impl Workspace {
         meta_set(&tx, "head_commit_id", commit_id)?;
         if fail_in_txn {
             drop(tx); // rollback: neither data nor history nor the idempotency record exists
+            for id in &written_objects {
+                let _ = self.objects.remove(id); // generated result objects of a rolled-back transaction (13.2)
+            }
             self.fire(FailAt::InTxn)?;
             return Err(WsError::io("injected failure"));
         }
-        tx.commit().map_err(db_err)?;
+        if let Err(e) = tx.commit() {
+            for id in &written_objects {
+                let _ = self.objects.remove(id);
+            }
+            return Err(db_err(e));
+        }
         Ok(stats)
     }
 
@@ -942,6 +1459,7 @@ impl Workspace {
             .optional()
             .map_err(db_err)?;
         let (seq, author) = row.ok_or_else(|| WsError::not_found("commit not found"))?;
+        self.check_base(seq)?;
         if author != caller.principal && !access.ws_caps.has(Cap::Manage) {
             return Err(WsError::denied("only the author or a manager may undo this commit"));
         }
@@ -963,13 +1481,17 @@ impl Workspace {
         if inverse.is_empty() {
             return Err(WsError::new(Code::NotUndoable, "nothing to undo"));
         }
+        let gone = self.reclaimed_objects(&inverse)?;
+        if !gone.is_empty() {
+            return Err(WsError::new(Code::ResourceReclaimed, "the undo needs resources reclaimed after their retention period").with_data(json!({ "object_ids": gone })));
+        }
         let (workspace_id, epoch) = (self.workspace_id.clone(), self.epoch.clone());
         let build = |ops: &[Value]| -> Value {
             json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": workspace_id, "epoch": epoch,
                     "idempotency_key": idem, "session_id": req.get("session_id").cloned().unwrap_or(Value::Null),
                     "origin": "human", "message": format!("undo {target}"), "operations": ops })
         };
-        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()) };
+        let opts = CommitOpts { internal: true, import: false, undoes: Some(target.to_string()), as_principal: None, maintenance: false, as_source: false };
         // applicability is the ordinary pipeline: every inverse carries `expect: { rev: S }`
         let dry = self.commit_inner(&build(&inverse), caller, &opts, true);
         let dry = match dry {
@@ -1015,6 +1537,7 @@ impl Workspace {
     pub fn get_changes(&self, caller: &Caller, epoch: &str, after_seq: u64, limit: usize, with_ops: bool) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         self.check_epoch(epoch)?;
+        self.check_base(after_seq)?;
         let now = self.now();
         let ctx = self.ctx(&now);
         let limit = limit.clamp(1, 500);
@@ -1074,6 +1597,14 @@ impl Workspace {
                              "undo_group": undo_group, "author": principal, "accepted_at": accepted_at, "touched": touched_out });
                 if with_ops {
                     ev["ops"] = json!(ops_out);
+                    // the row delta, restricted to what the caller may read (D20)
+                    let delta: Option<String> = self.doc.query_row("SELECT rows_json FROM commit_deltas WHERE seq = ?1", [seq], |r| r.get(0)).optional().map_err(db_err)?;
+                    if let Some(d) = delta {
+                        let mut rows: Value = serde_json::from_str(&d).map_err(|e| WsError::io(e.to_string()))?;
+                        bytes += d.len();
+                        filter_rows(&mut rows, &mut can_read)?;
+                        ev["rows"] = rows;
+                    }
                 }
             }
             if principal == caller.principal {

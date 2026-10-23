@@ -484,18 +484,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const entity = store.outline.get(id)
       if (!entity || !entity.capabilities.includes('delete')) continue
       const descendants = store.outline.descendants(id)
+      // a Block's own data (created with it on the canvas) goes with its last Block: the planner expands
+      // that cascade itself (内核架构改进 D05); shared data of the data tree is never touched
       ops.push({ op: 'entity.delete', entity_id: id, ...(descendants.length ? { subtree: { delete: descendants.map((d) => d.entity_id) } } : {}), expect: { rev: entity.life_rev } })
-      // canvas content data that only this Block showed goes with it (§4.3, pending product confirmation §14-2)
-      for (const cell of [entity, ...descendants].filter((e) => e.type_id === 'buckyos.cell')) {
-        const source = cell.source_id ? store.outline.get(cell.source_id) : undefined
-        if (!source || source.deleted || !source.capabilities.includes('delete')) continue
-        const inContent = store.outline.ancestors(source.entity_id).includes('canvas-content')
-        const otherBlocks = store.outline.all().some((e) => e.type_id === 'buckyos.cell' && e.source_id === source.entity_id && e.entity_id !== cell.entity_id && !e.deleted && !descendants.some((d) => d.entity_id === e.entity_id))
-        if (inContent && !otherBlocks && !ops.some((op) => op.entity_id === source.entity_id)) {
-          const kids = store.outline.descendants(source.entity_id)
-          ops.push({ op: 'entity.delete', entity_id: source.entity_id, ...(kids.length ? { subtree: { delete: kids.map((d) => d.entity_id) } } : {}), expect: { rev: source.life_rev } })
-        } else if (inContent && otherBlocks) store.notify('info', t('aiworkspace.canvas.delete.stillUsed', { name: source.title ?? source.name ?? source.entity_id }))
-      }
     }
     if (ops.length === 0) return
     if (!ops.some((op) => op.op === 'entity.delete')) return

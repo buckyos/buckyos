@@ -38,6 +38,8 @@ export interface SubmitOptions {
   /** Read-set preconditions guarding the commit (wish application, §7.2). */
   preconditions?: unknown[]
   origin?: 'human' | 'agent' | 'program'
+  /** The key the submission uses (a form Block's draft protocol, D13). */
+  idempotencyKey?: string
 }
 
 /** An input that is saved nowhere but in this window's memory (storage failure, unknown result): exportable. */
@@ -342,7 +344,7 @@ export class WorkspaceStore {
     const hooks = testHooks()
     if (hooks) hooks.commits = (hooks.commits ?? 0) + 1
     try {
-      outcome = await this.session.commit(options.operations, { message: label, preconditions: options.preconditions, origin: options.origin, meta: { editId, label, mine, hasMine, undoable: options.undoable !== false } })
+      outcome = await this.session.commit(options.operations, { message: label, preconditions: options.preconditions, origin: options.origin, idempotencyKey: options.idempotencyKey, meta: { editId, label, mine, hasMine, undoable: options.undoable !== false } })
     } catch (error) {
       outcome = { status: 'unknown', idempotency_key: '', detail: error instanceof Error ? error.message : String(error) }
     }

@@ -23,6 +23,8 @@ pub enum Cap {
     Comment = 32,
     Export = 64,
     Manage = 128,
+    /// Trigger the predefined tasks of a wish without editing its data (内核架构改进 D16): `proc.start`.
+    Run = 256,
 }
 
 pub const ALL_CAPS: &[(Cap, &str)] = &[
@@ -34,11 +36,12 @@ pub const ALL_CAPS: &[(Cap, &str)] = &[
     (Cap::Comment, "comment"),
     (Cap::Export, "export"),
     (Cap::Manage, "manage"),
+    (Cap::Run, "run"),
 ];
 
 impl CapSet {
     pub const NONE: CapSet = CapSet(0);
-    pub const ALL: CapSet = CapSet(255);
+    pub const ALL: CapSet = CapSet(511);
     pub fn has(&self, c: Cap) -> bool {
         self.0 & c as u16 != 0
     }
@@ -47,6 +50,10 @@ impl CapSet {
     }
     pub fn any_write(&self) -> bool {
         self.has(Cap::Update) || self.has(Cap::Append) || self.has(Cap::Delete) || self.has(Cap::Structure)
+    }
+    /// May start a run: `run`, or any editing right (an editor runs what it could write by hand).
+    pub fn may_run(&self) -> bool {
+        self.has(Cap::Run) || self.any_write()
     }
     pub fn parse(names: &[String]) -> WsResult<CapSet> {
         let mut out = 0;

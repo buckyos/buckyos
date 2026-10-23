@@ -208,7 +208,8 @@ pub fn eval(c: &Compiled, values: &JsonMap) -> bool {
         Compiled::Or(a) => a.iter().any(|x| eval(x, values)),
         Compiled::Not(a) => !eval(a, values),
         Compiled::Cmp { def, op, value } => {
-            let cell = values.get(&def.field_id);
+            // a formula (D18) is empty to every filter: the backend never evaluates it
+            let cell = values.get(&def.field_id).filter(|v| !value::is_formula(v));
             match op {
                 Operator::IsEmpty => return is_empty_value(def, cell),
                 Operator::IsNotEmpty => return !is_empty_value(def, cell),
@@ -253,8 +254,8 @@ pub struct SortKey {
 /// Empty values sort last in both directions; `record_id` is the final tiebreak.
 pub fn compare_rows(sorts: &[SortKey], a: (&JsonMap, &str), b: (&JsonMap, &str)) -> Ordering {
     for s in sorts {
-        let va = a.0.get(&s.def.field_id).filter(|v| !v.is_null());
-        let vb = b.0.get(&s.def.field_id).filter(|v| !v.is_null());
+        let va = a.0.get(&s.def.field_id).filter(|v| !v.is_null() && !value::is_formula(v));
+        let vb = b.0.get(&s.def.field_id).filter(|v| !v.is_null() && !value::is_formula(v));
         let o = match (va, vb) {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Greater,

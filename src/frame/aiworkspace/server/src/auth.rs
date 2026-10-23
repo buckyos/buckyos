@@ -160,6 +160,7 @@ impl Authenticator for RuntimeAuth {
         let mut caller = match claims.principal_kind {
             TokenPrincipalKind::User if token_is_external(&verified) => Caller::external(&principal),
             TokenPrincipalKind::User => Caller::account(&principal, ceiling.restricted),
+            TokenPrincipalKind::Agent => Caller::agent(&principal),
             _ => Caller::service(&principal),
         };
         caller.app_id = Some(claims.target.canonical_key());

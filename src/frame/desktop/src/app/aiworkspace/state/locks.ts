@@ -14,6 +14,7 @@ interface Held { lockId: string; expiresAt: number }
 export class LockManager {
   private readonly held = new Map<string, Held>()
   private readonly lost = new Map<string, string>()
+  private readonly pending = new Map<string, Promise<void>>()
   private readonly emitter = new Emitter()
   private readonly session: WorkspaceSession
   private timer: number | null = null
@@ -40,14 +41,20 @@ export class LockManager {
     return this.lost.get(entityId) ?? null
   }
 
-  /** Throws ServiceFailure (`LOCK_HELD` carries the holder in `data.locks`). */
-  async acquire(entityId: string): Promise<void> {
-    if (this.held.has(entityId)) return
-    const lock = await this.session.lockAcquire(entityId)
-    this.held.set(entityId, { lockId: lock.lock_id, expiresAt: Date.parse(lock.expires_at) })
-    this.lost.delete(entityId)
-    this.timer ??= window.setInterval(() => { void this.renew() }, RENEW_MS)
-    this.changed()
+  /** Throws ServiceFailure (`LOCK_HELD` carries the holder in `data.locks`). A second call while one is in flight joins it. */
+  acquire(entityId: string): Promise<void> {
+    if (this.held.has(entityId)) return Promise.resolve()
+    const pending = this.pending.get(entityId)
+    if (pending) return pending
+    const work = (async () => {
+      const lock = await this.session.lockAcquire(entityId)
+      this.held.set(entityId, { lockId: lock.lock_id, expiresAt: Date.parse(lock.expires_at) })
+      this.lost.delete(entityId)
+      this.timer ??= window.setInterval(() => { void this.renew() }, RENEW_MS)
+      this.changed()
+    })().finally(() => this.pending.delete(entityId))
+    this.pending.set(entityId, work)
+    return work
   }
 
   async release(entityId: string): Promise<void> {

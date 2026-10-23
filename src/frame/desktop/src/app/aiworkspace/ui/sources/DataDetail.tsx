@@ -9,6 +9,7 @@ import { useAiwsText } from '../../useAiwsText'
 import { AssetCell, NoteEditor, RecordCell, RichTextCell, TableEditor } from '../blocks/editors'
 import { WishPanel } from '../wish/WishPanel'
 import { RelationsPanel } from './RelationsPanel'
+import { PublicationSection, SourceSection } from './SourcePanel'
 import { TYPE_LABEL, entityLabel } from './dataOps'
 import { FreshnessBadge } from './FreshnessBadge'
 
@@ -20,6 +21,15 @@ export function DataDetail({ entity }: { entity: EntityEnvelope }) {
   const readOnly = store.session.status().kind === 'offline' && store.session.mode().kind === 'direct' && store.session.mode().kind === 'direct' && (store.session.mode() as { reason?: string }).reason !== 'not_prepared'
   const renderEmbed = useCallback((reference: Reference) => ui.renderCell(reference.entity_id, 1), [ui])
   const blocks = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.source_id === entity.entity_id && !e.deleted)
+  // data a canvas owns (内核架构改进 D05): pinning ends the ownership and moves it to the data tree
+  const ownData = entity.type_id !== 'buckyos.container' && store.outline.ancestors(entity.entity_id).includes('canvas-content')
+  const pin = async () => {
+    const key = store.core.order_key_between(store.outline.childrenOf('data').at(-1)?.order_key ?? undefined, undefined)
+    await store.submit({ editId: `pin:${entity.entity_id}`, label: t('aiworkspace.data.detail.pinLabel', { name: entityLabel(entity) }), operations: [
+      { op: 'data.pin', entity_id: entity.entity_id },
+      { op: 'tree.move', entity_id: entity.entity_id, new_parent_id: 'data', order_key: key },
+    ] })
+  }
   return (
     <div className="aiws-detail" data-testid={`aiws-detail-${entity.entity_id}`} data-type={entity.type_id}>
       <div className="aiws-detail-head">
@@ -32,6 +42,14 @@ export function DataDetail({ entity }: { entity: EntityEnvelope }) {
       </div>
       {tab === 'relations' ? <RelationsPanel entityId={entity.entity_id} /> : (
         <div className="aiws-detail-body">
+          {ownData && (
+            <div className="aiws-inline-form" data-testid="aiws-own-data">
+              <span className="aiws-muted">{t('aiworkspace.data.detail.ownData')}</span>
+              {entity.capabilities.includes('structure') && !readOnly && <button type="button" data-testid="aiws-data-pin" onClick={() => { void pin() }}>{t('aiworkspace.data.detail.pin')}</button>}
+            </div>
+          )}
+          <SourceSection entity={entity} />
+          <PublicationSection entity={entity} />
           {blocks.length > 0 && (
             <div className="aiws-muted aiws-detail-blocks" data-testid="aiws-detail-blocks">{tNode('aiworkspace.data.detail.onCanvas', {
               blocks: blocks.map((b) => {
@@ -40,10 +58,10 @@ export function DataDetail({ entity }: { entity: EntityEnvelope }) {
               }),
             })}</div>
           )}
-          {entity.type_id === 'buckyos.table-source' && <TableEditor sourceId={entity.entity_id} source={entity} readOnly={readOnly} />}
+          {entity.type_id === 'buckyos.table-source' && <TableEditor sourceId={entity.entity_id} source={entity} readOnly={readOnly || Boolean(entity.source)} />}
           {entity.type_id === 'buckyos.richtext' && <RichTextCell key={entity.entity_id} entity={entity} entityId={entity.entity_id} renderEmbed={renderEmbed} />}
           {entity.type_id === 'buckyos.record' && <RecordCell entityId={entity.entity_id} entity={entity} readOnly={readOnly} />}
-          {entity.type_id === 'buckyos.asset-ref' && <AssetCell entityId={entity.entity_id} fit="contain" readOnly={readOnly} />}
+          {entity.type_id === 'buckyos.asset-ref' && <AssetCell entityId={entity.entity_id} fit="contain" readOnly={readOnly || Boolean(entity.source)} />}
           {entity.type_id === 'buckyos.annotation' && <NoteEditor entityId={entity.entity_id} entity={entity} readOnly={readOnly} />}
           {entity.type_id === 'buckyos.wish' && <WishPanel wishId={entity.entity_id} readOnly={readOnly} />}
           {entity.type_id === 'buckyos.block-def' && <BlockDefDetail entity={entity} />}

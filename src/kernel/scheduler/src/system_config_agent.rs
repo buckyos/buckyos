@@ -1223,6 +1223,18 @@ pub(crate) async fn update_node_gateway_info(
                             .or_insert_with(|| service_entry.clone());
                     }
                 }
+            } else if spec_id == "aiworkspace" {
+                // `aiws-<workspace id>.<zone>`: every Workspace's own origin (AI Workspace 内核架构改进 D21); the
+                // gateway folds such hosts onto the `aiws` entry (boot_gateway.yaml get_app_info_from_req)
+                if let Some(selector) = selector.as_ref() {
+                    node_gateway_info.app_info.insert(
+                        "aiws".to_string(),
+                        NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+                            service_id: spec_id.clone(),
+                            selector: selector.clone(),
+                        }),
+                    );
+                }
             } else if spec_id == NFS_SERVER_SERVICE_NAME {
                 // `share.<zone>/s/{token}`: share links served by nfs-server (its own
                 // origin, apart from the Desktop), see notepads/share-content-mgr-tech-design-todo.md.

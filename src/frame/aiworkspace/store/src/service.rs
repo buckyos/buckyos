@@ -4,7 +4,11 @@
 use crate::export::{load_workspace, open_package, LoadSpec};
 use crate::objects::FsObjectStore;
 use crate::urlsource::SourceRegistry;
+use crate::docdb::db_err;
 use crate::workspace::{random_id, system_clock, Caller, Clock, FailPoint, Workspace};
+use aiworkspace_core::value::format_utc_ms;
+use rusqlite::Connection;
+use std::collections::BTreeSet;
 use aiworkspace_core::access::Cap;
 use aiworkspace_core::id::is_prefixed_id;
 use aiworkspace_core::{Code, Deny, WsError, WsResult};
@@ -25,8 +29,21 @@ pub struct Service {
     pub on_open: Option<Box<dyn Fn(&mut Workspace) + Send + Sync>>,
     /// Show locks of this deployment's Workspaces (third phase §8.1); in memory, a restart ends every show.
     pub show_locks: crate::show::ShowLocks,
+    /// Logical bytes a Workspace may occupy (D19); `None` = no quota.
+    pub quota: Option<u64>,
+    /// Bytes a Workspace's Sources may fetch (D24); `None` = unlimited.
+    pub traffic_quota: Option<u64>,
+    /// Retention of history-only resources (D06), in milliseconds.
+    pub history_retention_ms: i64,
+    /// An object younger than this (wall clock) is never swept; tests set 0.
+    pub gc_grace_secs: i64,
     open: Mutex<HashMap<String, WsHandle>>,
 }
+
+/// A deleted Workspace stays in `trash/` (a retention root) this long before the collector drops it (D06).
+pub const TRASH_RETENTION_MS: i64 = 30 * 24 * 3_600_000;
+/// An object younger than this is never swept: an upload may still be about to reference it (D06).
+pub const GC_GRACE_SECS: i64 = 3_600;
 
 fn io(e: std::io::Error) -> WsError {
     WsError::io(e.to_string())
@@ -67,10 +84,149 @@ impl Service {
             failpoint: None,
             on_open: None,
             show_locks: Default::default(),
+            quota: None,
+            traffic_quota: None,
+            history_retention_ms: crate::workspace::HISTORY_RETENTION_MS,
+            gc_grace_secs: GC_GRACE_SECS,
             open: Mutex::new(HashMap::new()),
         };
         svc.drop_stale_clones()?;
+        svc.mark_interrupted_runs()?;
         Ok(svc)
+    }
+
+    /// Service start (D15): no worker survived, so every run a worker owned is `interrupted` now — before
+    /// anyone asks `proc.list` — and never restarted on its own. `applying` runs are reconciled through their
+    /// idempotency record when they are next read.
+    fn mark_interrupted_runs(&self) -> WsResult<()> {
+        for id in self.workspace_ids()? {
+            let path = self.ws_dir(&id).join("local.sqlite");
+            let Ok(local) = Connection::open(&path) else { continue };
+            let states = crate::wish::runs::active_states_sql().replace("'applying'", "''");
+            let mut st = local.prepare(&format!("SELECT run_id, result_json FROM runs WHERE state IN ({states})")).map_err(db_err)?;
+            let rows: Vec<(String, Option<String>)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+            drop(st);
+            for (run_id, result) in rows {
+                let mut detail: Value = result.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+                detail["error"] = json!({ "code": "INTERRUPTED", "detail": "The service restarted during the run; it does not restart automatically" });
+                local
+                    .execute("UPDATE runs SET state = 'interrupted', result_json = ?2, updated_at = ?3 WHERE run_id = ?1", rusqlite::params![run_id, detail.to_string(), format_utc_ms((self.clock)())])
+                    .map_err(db_err)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The service-wide mark-and-sweep collector (D06). Roots: every Workspace's current content (assets an
+    /// alive entity references), history-only assets inside their retention period, generated entity
+    /// versions, retained snapshots (checkpoints, exports, clones), unexpired staged uploads; Workspaces in
+    /// `trash/` are roots until `TRASH_RETENTION_MS` and are dropped after it. Everything the roots reach is
+    /// kept; the rest is swept once older than `GC_GRACE_SECS`. `dry_run` only reports.
+    pub fn gc(&self, dry_run: bool) -> WsResult<Value> {
+        use aiworkspace_core::materialize::ObjectSource;
+        let now = (self.clock)();
+        let mut roots: BTreeSet<String> = BTreeSet::new();
+        let mut workspaces = 0;
+        for id in self.workspace_ids()? {
+            self.collect_roots(&self.ws_dir(&id), now, &mut roots)?;
+            workspaces += 1;
+        }
+        let mut trashed = 0;
+        for entry in std::fs::read_dir(self.data_dir.join("trash")).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let at: Option<i64> = name.rsplit('-').next().and_then(|s| s.parse().ok());
+            let expired = at.is_some_and(|t| now - t > TRASH_RETENTION_MS);
+            if expired {
+                if !dry_run {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+                trashed += 1;
+            } else if entry.path().join("doc.sqlite").exists() {
+                self.collect_roots(&entry.path(), now, &mut roots)?;
+            }
+        }
+        // mark: every id any reachable object names (jobj, cyfile, cydir contents; chunks are leaves)
+        let mut marked: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = roots.iter().cloned().collect();
+        while let Some(id) = queue.pop() {
+            if !marked.insert(id.clone()) {
+                continue;
+            }
+            if aiworkspace_core::canonical::is_obj_id(&id) {
+                if let Ok(text) = self.objects.get_object(&id) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                        collect_ids(&v, &mut queue);
+                    }
+                }
+            }
+        }
+        let (mut reclaimed, mut bytes, mut kept) = (0u64, 0u64, 0u64);
+        for id in self.objects.list_objects()? {
+            if marked.contains(&id) {
+                kept += 1;
+                continue;
+            }
+            if self.objects.age_secs(&id).is_some_and(|a| a < self.gc_grace_secs) {
+                kept += 1;
+                continue;
+            }
+            reclaimed += 1;
+            if dry_run {
+                continue;
+            }
+            bytes += self.objects.remove(&id)?;
+        }
+        let mut out = json!({ "ok": true, "dry_run": dry_run, "workspaces": workspaces, "roots": roots.len(), "marked": marked.len(), "kept": kept,
+                              "reclaimed": reclaimed, "bytes": bytes, "trash_dropped": trashed });
+        if dry_run {
+            out["root_ids"] = json!(roots);
+        }
+        Ok(out)
+    }
+
+    /// The retention roots one Workspace folder contributes (read-only, outside its writer).
+    fn collect_roots(&self, dir: &Path, now: i64, roots: &mut BTreeSet<String>) -> WsResult<()> {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let Ok(doc) = Connection::open_with_flags(dir.join("doc.sqlite"), flags) else { return Ok(()) };
+        let retention = self.history_retention_ms;
+        let mut st = doc.prepare("SELECT a.object_id, a.ended_seq, c.accepted_at FROM assets a LEFT JOIN commits c ON c.seq = a.ended_seq").map_err(db_err)?;
+        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?))).map_err(db_err)? {
+            let (id, ended, at) = row.map_err(db_err)?;
+            let keep = match ended {
+                None => true,
+                Some(0) => false,
+                Some(_) => at.and_then(|a| aiworkspace_core::value::parse_datetime_ms(&a)).is_some_and(|t| now - t < retention),
+            };
+            if keep {
+                roots.insert(id);
+            }
+        }
+        drop(st);
+        // generated results keep their versions; checkpoint versions live through their snapshots
+        let mut st = doc.prepare("SELECT object_id FROM entity_versions WHERE kind = 'generated'").map_err(db_err)?;
+        for row in st.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)? {
+            roots.insert(row.map_err(db_err)?);
+        }
+        drop(st);
+        let mut st = doc.prepare("SELECT s.content_root FROM snapshots s WHERE EXISTS (SELECT 1 FROM retentions r WHERE r.kind = 'snapshot' AND r.ref = s.snapshot_id)").map_err(db_err)?;
+        for row in st.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)? {
+            roots.insert(row.map_err(db_err)?);
+        }
+        drop(st);
+        let now_iso = format_utc_ms(now);
+        let mut st = doc.prepare("SELECT ref FROM retentions WHERE kind = 'staged' AND (expires_at IS NULL OR expires_at > ?1)").map_err(db_err)?;
+        for row in st.query_map([&now_iso], |r| r.get::<_, String>(0)).map_err(db_err)? {
+            roots.insert(row.map_err(db_err)?);
+        }
+        drop(st);
+        if let Ok(local) = Connection::open_with_flags(dir.join("local.sqlite"), flags) {
+            let mut st = local.prepare("SELECT object_id FROM staged_assets WHERE expires_at > ?1").map_err(db_err)?;
+            for row in st.query_map([&now_iso], |r| r.get::<_, String>(0)).map_err(db_err)? {
+                roots.insert(row.map_err(db_err)?);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn ws_dir(&self, id: &str) -> PathBuf {
@@ -84,6 +240,9 @@ impl Service {
     fn configure(&self, ws: &mut Workspace) {
         ws.failpoint = self.failpoint.clone();
         ws.show_locks = Some(self.show_locks.clone());
+        ws.quota = self.quota;
+        ws.traffic_quota = self.traffic_quota;
+        ws.history_retention_ms = self.history_retention_ms;
         if let Some(hook) = &self.on_open {
             hook(ws);
         }
@@ -144,6 +303,11 @@ impl Service {
         drop(ws);
         std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)
+    }
+
+    /// Every Workspace of this service (the timers' list).
+    pub fn all_workspace_ids(&self) -> WsResult<Vec<String>> {
+        self.workspace_ids()
     }
 
     fn workspace_ids(&self) -> WsResult<Vec<String>> {
@@ -390,6 +554,16 @@ impl Service {
 
 /// Workspaces are created, imported and forked — and the Zone's principals listed — by unrestricted accounts and
 /// services only: a guest, an External DID or a restricted (Limited) account owns nothing (PRE-03).
+/// Every object or chunk id a JSON value names (the collector's edges).
+fn collect_ids(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::String(s) if aiworkspace_core::canonical::is_obj_id(s) || s.starts_with("mix256:") => out.push(s.clone()),
+        Value::Array(a) => a.iter().for_each(|x| collect_ids(x, out)),
+        Value::Object(o) => o.values().for_each(|x| collect_ids(x, out)),
+        _ => {}
+    }
+}
+
 pub fn require_may_own(caller: &Caller) -> WsResult<()> {
     if !caller.may_own() {
         return Err(WsError::refused(Code::PermissionDenied, Deny::SessionKindNotAllowed, "this kind of account cannot own workspaces"));

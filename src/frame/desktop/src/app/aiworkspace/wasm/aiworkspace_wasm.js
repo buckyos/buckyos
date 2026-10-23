@@ -116,6 +116,15 @@ export class Replica {
         return ret !== 0;
     }
     /**
+     * The history was replaced: live submissions become conflicts to resend (D07).
+     * @param {string} detail
+     */
+    epoch_mismatch(detail) {
+        const ptr0 = passStringToWasm0(detail, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.replica_epoch_mismatch(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
      * `doc.freshness` on the working view: `{ entity_ids }` → `{ items }` (same shape as the backend).
      * @param {string} params_json
      * @returns {string}
@@ -1132,7 +1141,7 @@ function __wbg_get_imports() {
             const ret = getObject(arg0).node;
             return addHeapObject(ret);
         },
-        __wbg_now_08b1211f5e7581ea: function() {
+        __wbg_now_e9a103e6f2c18d6d: function() {
             const ret = Date.now();
             return ret;
         },

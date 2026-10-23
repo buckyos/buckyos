@@ -66,7 +66,7 @@ function program(cat, num, desc) {
 `
 }
 
-function execution(msgs, user, tools) {
+function execution(msgs, user, tools, fileTools) {
   const contract = JSON.parse((/## Output contract\n\n```json\n([\s\S]*?)\n```/.exec(user) ?? [])[1] ?? '{}')
   const key = contract.results?.[0]?.key?.[0] ?? '分组'
   const task = (/## Task description \(context prompt\)\n\n([\s\S]*?)\n\n/.exec(user) ?? [])[1] ?? ''
@@ -74,11 +74,13 @@ function execution(msgs, user, tools) {
   const feedback = user.includes('## User feedback')
   const hasProgram = user.includes('program/main.js already has a program')
   const steps = []
-  if (!hasProgram || feedback) steps.push('write')
+  // the service's stage has file tools (the model writes program/main.js first); an executor outside the
+  // service (the browser, T3-4) takes the program as run_program's `source`
+  if (fileTools && (!hasProgram || feedback)) steps.push('write')
   steps.push('run', 'put', 'check', 'finish', 'done')
   const step = steps[tools.length] ?? 'done'
   if (step === 'write') return toolCall('write_file', { path: 'program/main.js', content: program(key, num, feedback) })
-  if (step === 'run') return toolCall('run_program', {})
+  if (step === 'run') return toolCall('run_program', fileTools ? {} : { source: program(key, num, feedback) })
   if (step === 'put') {
     const runOut = tools.find((t) => t.includes('\nfacts: ')) ?? ''
     const facts = JSON.parse((/\nfacts: (\{.*\})/.exec(runOut) ?? [])[1] ?? '{}')
@@ -100,6 +102,10 @@ function mapJudge(user) {
 
 export function startMockLlm(port) {
   const server = createServer((req, res) => {
+    // the browser's local executor calls this endpoint cross-origin
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization')
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
     let body = ''
     req.on('data', (c) => { body += c })
     req.on('end', () => {
@@ -110,7 +116,8 @@ export function startMockLlm(port) {
         const system = msgs.filter((m) => m.role === 'system').map(text).join('\n')
         const user = msgs.filter((m) => m.role === 'user').map(text).join('\n')
         const tools = msgs.filter((m) => m.role === 'tool').map(text)
-        const message = system.includes('item-by-item judge') ? mapJudge(user) : system.includes('the **analysis stage**') ? analysis(msgs, user, tools) : execution(msgs, user, tools)
+        const fileTools = (r.tools ?? []).some((t) => (t.function?.name ?? t.name) === 'write_file')
+        const message = system.includes('item-by-item judge') ? mapJudge(user) : system.includes('the **analysis stage**') ? analysis(msgs, user, tools) : execution(msgs, user, tools, fileTools)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ id: `cmpl_${Date.now()}`, object: 'chat.completion', model: r.model, choices: [{ index: 0, message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }))
       } catch (error) {

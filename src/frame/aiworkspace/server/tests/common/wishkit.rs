@@ -5,6 +5,7 @@ use aiworkspace_server::auth::StaticTokens;
 use aiworkspace_server::wish::WishConfig;
 use aiworkspace_server::{build_router, AppState, Limits};
 use aiworkspace_store::Service;
+use agent_tool::xllm::{LlmClientFactory, ProviderConfig, XllmError};
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiResponse, AiToolCall, AiToolResultContent};
 use llm_context::{LLMComputeError, LlmClient, LlmInferenceRequest};
@@ -34,6 +35,19 @@ pub struct ScriptedModel {
     pub max_tokens: Mutex<Option<u32>>,
     /// Every call is refused by the AI service with this reason.
     pub refuse: Mutex<Option<llm_context::RefusalKind>>,
+    /// The provider of every model client the service asked for (stages and `llm.map`), in order.
+    pub providers: Mutex<Vec<ProviderConfig>>,
+}
+
+/// The service's model factory: records the provider it is asked for, answers with the script.
+pub struct ScriptedFactory(pub Arc<ScriptedModel>);
+
+#[async_trait]
+impl LlmClientFactory for ScriptedFactory {
+    async fn create(&self, provider: &ProviderConfig) -> Result<Arc<dyn LlmClient>, XllmError> {
+        self.0.providers.lock().unwrap().push(provider.clone());
+        Ok(self.0.clone())
+    }
 }
 
 pub fn call(name: &str, args: Value) -> AiResponse {
@@ -105,7 +119,7 @@ impl Srv {
         let svc = Service::open(&dir.path().join("data")).unwrap();
         let tokens: StaticTokens = serde_json::from_value(json!({ "tokens": tokens })).unwrap();
         let mut cfg = WishConfig::default();
-        cfg.llm_override = Some(model.clone());
+        cfg.llm_override = Some(Arc::new(ScriptedFactory(model.clone())));
         cfg.deno = find_deno();
         cfg.program_timeout_secs = 60;
         let state = AppState::new(svc, Arc::new(tokens), Limits::default(), None, cfg);
@@ -149,7 +163,7 @@ impl Srv {
     pub async fn commit(&self, ops: Value) -> Value {
         static K: AtomicU64 = AtomicU64::new(0);
         let info = self.rpc("ws.get_info", json!({})).await;
-        let r = self.rpc("doc.commit", json!({ "protocol_version": "0.5", "epoch": info["epoch"], "idempotency_key": format!("k{}", K.fetch_add(1, Ordering::SeqCst)), "session_id": "s1", "operations": ops })).await;
+        let r = self.rpc("doc.commit", json!({ "protocol_version": "1.0", "epoch": info["epoch"], "idempotency_key": format!("k{}", K.fetch_add(1, Ordering::SeqCst)), "session_id": "s1", "operations": ops })).await;
         assert_eq!(r["status"], "accepted", "{r}");
         r
     }
@@ -199,7 +213,7 @@ pub fn handle(map: &str, needle: &str) -> String {
 
 /// Scripts by default answer the stage with a plain sentence.
 pub fn model() -> Arc<ScriptedModel> {
-    Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0), max_tokens: Mutex::new(None), refuse: Mutex::new(None) })
+    Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0), max_tokens: Mutex::new(None), refuse: Mutex::new(None), providers: Mutex::new(Vec::new()) })
 }
 
 /// The tool results so far contain `needle`.

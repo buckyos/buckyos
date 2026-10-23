@@ -29,6 +29,12 @@ pub struct AiWorkspaceSettings {
     pub max_asset_bytes: u64,
     /// Wish runs (xllm executor, program runner).
     pub wish: AiWorkspaceWishSettings,
+    /// Logical bytes one Workspace may occupy (内核架构改进 D19); `None` = no quota.
+    pub quota_bytes: Option<u64>,
+    /// Days a resource only the history references is kept before the collector may reclaim it (D06).
+    pub history_retention_days: u64,
+    /// Bytes a Workspace's Sources may fetch over HTTP (内核架构改进 D24); `None` = unlimited.
+    pub traffic_quota_bytes: Option<u64>,
 }
 
 /// Wish execution settings (doc/workspace 许愿格详细设计 §13.3). Models are AICC selectors (logical
@@ -52,6 +58,11 @@ pub struct AiWorkspaceWishSettings {
     pub program_timeout_secs: u64,
     pub program_memory_mb: u32,
     pub llm_map_max_items: u32,
+    /// Where a wish runs when the request names no mode (内核架构改进 D14): `service` (the transitional
+    /// in-service executor, until T3-9), `local` (the browser) or `hosted` (an Agent Work Session).
+    pub default_execution: String,
+    /// The transitional in-service executor may still be chosen (`false` once hosted execution passed DV, T3-9).
+    pub allow_service_execution: bool,
 }
 
 impl Default for AiWorkspaceWishSettings {
@@ -68,6 +79,8 @@ impl Default for AiWorkspaceWishSettings {
             program_timeout_secs: 120,
             program_memory_mb: 1024,
             llm_map_max_items: 2000,
+            default_execution: "service".into(),
+            allow_service_execution: true,
         }
     }
 }
@@ -80,6 +93,9 @@ impl Default for AiWorkspaceSettings {
             max_wait_ms: 30_000,
             max_asset_bytes: 32 * 1024 * 1024,
             wish: AiWorkspaceWishSettings::default(),
+            quota_bytes: None,
+            history_retention_days: 30,
+            traffic_quota_bytes: None,
         }
     }
 }

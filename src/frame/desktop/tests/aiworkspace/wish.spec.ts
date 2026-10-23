@@ -399,3 +399,60 @@ test('aiws v2: an HTML Block reads by binding name, writes typed values in one b
   const frameDoc = await (await page.locator('.aiws-html-frame').elementHandle())?.contentFrame()
   await expect.poll(() => frameDoc?.evaluate(() => (window as unknown as { __seen?: number }).__seen ?? 0)).toBeGreaterThan(0)
 })
+
+test('内核架构改进 T3-4: the local executor — this browser hosts the model loop and runs the program in a Worker; the service plans; a reload leaves the run interrupted and the browser resumes it', async ({ page, api }) => {
+  test.slow()
+  const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
+  await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
+  const ws = await api.demo(ALICE, 'quarterly', `local ${Date.now()}`)
+  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
+  await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [
+    { key: 'executor', value: 'xllm', expect: { rev: wish.content.key_revs.executor } },
+    { key: 'prompt', value: '按区域汇总「原始销售数据」的销售额，并写一段解读', expect: { rev: wish.content.key_revs.prompt } }] }])
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
+  await page.getByTestId('aiws-wish-exec-mode').selectOption('local')
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  // analysis in the browser: the stage tools are answered by the service, the analysis is written back by the click
+  await page.getByTestId('aiws-wish-analyze').click()
+  await expect(page.getByTestId('aiws-wish-contract')).toContainText('summary', { timeout: 30_000 })
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  const analysed = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
+  expect(analysed.content.payload.inputs).toEqual([{ entity_id: 'sales', name: 'data', label: '原始销售数据', version: { mode: 'follow' } }])
+  // execution: the program runs in the Worker on the fetched snapshot; the candidate is the same as the service's
+  await page.getByTestId('aiws-wish-execute').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByTestId('aiws-wish-result')).toHaveCount(2)
+  await expect(page.getByTestId('aiws-wish-preview-table')).toContainText('华东')
+  await expect(page.locator('[data-testid="aiws-wish-check"][data-check="total"]')).toHaveAttribute('data-status', 'passed')
+  const runs = await api.runs(ALICE, ws.workspace_id, 'wish-analysis')
+  expect((runs[0].execution as { mode: string }).mode).toBe('local')
+  expect(((runs[0].context as { executor: { kind: string } }).executor).kind).toBe('browser')
+  await page.getByTestId('aiws-wish-apply').click()
+  await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 2 项')
+  const applied = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
+  expect(applied.content.payload.program.api_version).toBe(2)
+  // re-running only the program: the Worker again, no model
+  const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
+  await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 500000, expect: { rev } }] }])
+  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
+  await page.getByTestId('aiws-wish-rerun').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('程序（未调用模型）', { timeout: 60_000 })
+  await page.getByTestId('aiws-wish-apply').click()
+  await expect(page.getByTestId('aiws-wish-direct-stale')).toBeVisible()
+  // the executor dies with the page while the model is slow: the run's lease lapses (interrupted, AIWS_RUN_LEASE_MS);
+  // this browser still holds the claim and resumes the run as a new attempt
+  await page.route(`${llm}/chat/completions`, () => { /* the model never answers */ })
+  await page.getByTestId('aiws-wish-execute').click()
+  await expect(page.getByTestId('aiws-wish-progress')).toBeVisible({ timeout: 30_000 })
+  await expect.poll(async () => (await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0].state).toBe('running')
+  await page.unroute(`${llm}/chat/completions`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
+  // the lease lapses without the browser's heartbeats; the service notices on the next read
+  await expect.poll(async () => { const latest = (await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0]; await api.rpc(ALICE, 'proc.get', { workspace_id: ws.workspace_id, run_id: latest.run_id }); const lease = (latest.execution as { lease_until?: string }).lease_until ?? ''; return `${latest.state} lease_ms=${Date.parse(lease) - Date.parse(latest.updated_at as string)} ahead_ms=${Date.parse(lease) - Date.now()}` }, { timeout: 30_000 }).toMatch(/^interrupted/)
+  await expect(page.getByTestId('aiws-wish-interrupted')).toBeVisible({ timeout: 30_000 })
+  await page.getByTestId('aiws-wish-resume').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
+  expect(((await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0].execution as { attempt: number }).attempt).toBe(2)
+})

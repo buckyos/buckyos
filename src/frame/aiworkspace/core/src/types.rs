@@ -97,11 +97,16 @@ pub fn record_schema(payload: &JsonMap) -> WsResult<BTreeMap<String, FieldDef>> 
     Ok(out)
 }
 
+/// Validator class: schema (property values under the record's declared schema); reference for `object_ref` targets.
 fn validate_record(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     let schema = record_schema(&e.payload)?;
     let keys: Vec<String> = e.payload.keys().cloned().collect();
     for k in keys {
         if k == "schema" {
+            continue;
+        }
+        if k == "source" {
+            check_source(&e.payload["source"])?;
             continue;
         }
         let Some(prop) = k.strip_prefix("p:") else { return Err(bad(format!("record: unknown key {k}"))) };
@@ -148,6 +153,7 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 const CELL_KEYS: &[&str] = &[
     "source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked",
     "flip", "start", "end", "route", "controls", "label", "presentation",
+    "data_ownership",
 ];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
@@ -171,7 +177,13 @@ fn view_source_type(view_type: &str) -> Option<&'static str> {
 
 const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF];
 
+/// Validator class: schema (view configuration); reference for `source_ref` / `bindings` / `def_ref`; primitive for `config.snapshot` (an AssetRef).
 fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    if let Some(d) = e.payload.get("data_ownership") {
+        if !matches!(d.as_str(), Some("own" | "shared")) {
+            return Err(bad("cell.data_ownership must be own or shared"));
+        }
+    }
     check_keys(&e.payload, CELL_KEYS, "cell")?;
     // a package may legitimately carry dangling view configuration; it is preserved, not re-judged
     let importing = p.env.import;
@@ -382,6 +394,7 @@ fn is_color(v: &Value) -> bool {
     })
 }
 
+/// Validator class: schema.
 fn check_notes(payload: &JsonMap, what: &str) -> WsResult<()> {
     match payload.get("notes") {
         None => {}
@@ -396,6 +409,7 @@ fn check_notes(payload: &JsonMap, what: &str) -> WsResult<()> {
     }
 }
 
+/// Validator class: schema.
 /// A Cell's `presentation`: `{ live? }` on any Block, plus `{ background?, notes?, caption? }` on a Frame.
 /// `null` removes it. A line has none.
 fn check_presentation(payload: &mut JsonMap, view_type: &str) -> WsResult<()> {
@@ -429,6 +443,7 @@ fn check_presentation(payload: &mut JsonMap, view_type: &str) -> WsResult<()> {
 
 const VIEWPORT_KEYS: &[&str] = &["title", "surface_ref", "center", "zoom", "notes", "caption"];
 
+/// Validator class: schema (center, zoom, free-layout rule); reference for `surface_ref`.
 /// `buckyos.viewport`: `{ title?, surface_ref: { entity_id }, center: { x, y }, zoom, notes?, caption? }`. The
 /// visible area is `stage / zoom` around `center`, `stage` being the size of the path that shows it (§5.1).
 fn validate_viewport(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
@@ -469,6 +484,7 @@ fn validate_viewport(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>)
 
 const SHOW_PATH_KEYS: &[&str] = &["title", "purpose", "stage", "background", "steps"];
 
+/// Validator class: schema (fields, Frame-on-free-Surface rule); reference for new or retargeted step targets.
 /// `buckyos.show-path` (§6.1): `{ title?, purpose: presentation | guide, stage: { w, h }, background?, steps }`; a step is
 /// `{ id, target: { kind: frame | viewport, entity_id }, title?, enabled?, transition?, hide? }`. Targets are judged
 /// when a step is added or retargeted; an untouched step whose target went away stays (a dangling item, §6.2).
@@ -589,6 +605,7 @@ fn is_anchor_id(s: &str) -> bool {
     (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
 }
 
+/// Validator class: schema (shapes, Surface rule); reference for bound endpoints.
 /// Shapes always; bindings only when written (create, or `start` / `end` / `route` changed). Import and
 /// replay keep dangling endpoints verbatim (写严读宽), and an endpoint that was not touched is not
 /// re-judged, so a line whose target went away stays editable.
@@ -674,6 +691,7 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
 
 // ---- Container ----
 
+/// Validator class: primitive (tree node kinds, layout, system nodes); reference for `content_folder_id`; schema for icon / config / locked.
 /// Container kinds (phase two §4.5): `folder` in the data tree, `surface` under `surfaces`, `group`
 /// in a BlockTree. `root` / `data` / `surfaces` exist only as system nodes. A Surface names its
 /// canvas content folder (`content_folder_id`, a folder under `canvas-content`); the folder may
@@ -756,8 +774,12 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
 
 // ---- AssetRef ----
 
+/// Validator class: primitive (AssetRef shape, media type and size from the verified content); reference for the uploaded object.
 fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
-    check_keys(&e.payload, &["object_id", "media_type", "size", "file_name", "image"], "asset")?;
+    check_keys(&e.payload, &["object_id", "media_type", "size", "file_name", "image", "source"], "asset")?;
+    if let Some(s) = e.payload.get("source") {
+        check_source(s)?;
+    }
     let object_id = e.payload.get("object_id").and_then(Value::as_str).ok_or_else(|| bad("asset needs object_id"))?.to_string();
     if !crate::canonical::is_obj_id(&object_id) {
         return Err(bad("asset object_id must be a type:hex object id"));
@@ -782,10 +804,174 @@ fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
     Ok(())
 }
 
+// ---- resource directory (内核架构改进 D01, D25) ----
+
+const DIR_KEYS: &[&str] = &["members", "meta", "source"];
+pub const MAX_DIR_MEMBERS: usize = 10_000;
+pub const MAX_DIR_META_BYTES: usize = 64 * 1024;
+
+/// A member name: non-empty, at most 255 bytes, no `/`, not `.` or `..` (a DirObject key).
+pub fn check_member_name(name: &str) -> WsResult<()> {
+    if name.is_empty() || name.len() > 255 || name.contains('/') || name == "." || name == ".." || name.contains('\0') {
+        return Err(bad(format!("invalid directory member name {name:?}")));
+    }
+    Ok(())
+}
+
+/// Does the directory `from` reach `target` through child directory members (depth-limited)?
+fn dir_reaches(ctx: &dyn ReadCtx, from: &str, target: &str, depth: usize) -> WsResult<bool> {
+    if depth > 64 {
+        return Ok(true);
+    }
+    let Some(e) = ctx.entity(from)? else { return Ok(false) };
+    for (_, m) in e.payload.get("members").and_then(Value::as_object).into_iter().flatten() {
+        if m["kind"] == json!("dir") {
+            let child = m["entity_id"].as_str().unwrap_or("");
+            if child == target || dir_reaches(ctx, child, target, depth + 1)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Validator class: primitive (the member map's shape, names and limits); reference (file members name
+/// uploaded objects — media type and size come from the content; child directories are alive directories
+/// that do not contain this one).
+pub fn validate_dir(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
+    check_keys(&e.payload, DIR_KEYS, "dir")?;
+    if let Some(s) = e.payload.get("source") {
+        check_source(s)?;
+    }
+    let members = e.payload.get("members").cloned().unwrap_or_else(|| json!({}));
+    let m = members.as_object().ok_or_else(|| bad("dir.members must be an object of name → member"))?;
+    if m.len() > MAX_DIR_MEMBERS {
+        return Err(WsError::limit(format!("a directory holds at most {MAX_DIR_MEMBERS} members; use child directories")));
+    }
+    let mut out = Map::new();
+    for (name, v) in m {
+        check_member_name(name)?;
+        let o = v.as_object().ok_or_else(|| bad(format!("member {name} must be an object")))?;
+        match o.get("kind").and_then(Value::as_str) {
+            Some("file") => {
+                if o.keys().any(|k| !matches!(k.as_str(), "kind" | "object_id" | "media_type" | "size")) {
+                    return Err(bad(format!("member {name}: unknown key")));
+                }
+                let object_id = o.get("object_id").and_then(Value::as_str).filter(|s| crate::canonical::is_obj_id(s)).ok_or_else(|| bad(format!("member {name} needs a file object_id")))?.to_string();
+                let mut member = json!({ "kind": "file", "object_id": object_id });
+                match p.ov.asset(&object_id)? {
+                    Some(info) => {
+                        member["media_type"] = json!(info.media_type);
+                        member["size"] = json!(info.size);
+                        p.ov.assets.insert(object_id, info);
+                    }
+                    None if p.env.import && o.get("size").is_some_and(Value::is_u64) => {
+                        member["size"] = o["size"].clone();
+                        if let Some(t) = o.get("media_type") {
+                            member["media_type"] = t.clone();
+                        }
+                    }
+                    None => return Err(WsError::new(Code::DependencyUnavailable, format!("member {name}: {object_id} has not been uploaded"))),
+                }
+                out.insert(name.clone(), member);
+            }
+            Some("dir") => {
+                if o.keys().any(|k| !matches!(k.as_str(), "kind" | "entity_id")) {
+                    return Err(bad(format!("member {name}: unknown key")));
+                }
+                let child = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad(format!("member {name} needs a directory entity_id")))?;
+                if child == e.entity_id {
+                    return Err(WsError::sub(Code::InvalidOperation, "TREE_CYCLE", "a directory cannot contain itself"));
+                }
+                match p.ov.entity(child)? {
+                    Some(c) if c.alive() && c.type_id == TYPE_DIR => {
+                        if dir_reaches(&p.ov, child, &e.entity_id, 0)? {
+                            return Err(WsError::sub(Code::InvalidOperation, "TREE_CYCLE", format!("{child} already contains {}", e.entity_id)));
+                        }
+                    }
+                    Some(c) if c.alive() => return Err(bad(format!("member {name}: {child} is not a directory"))),
+                    None if p.env.import => {}
+                    _ => return Err(WsError::new(Code::ReferenceBroken, format!("member {name}: directory {child} does not exist"))),
+                }
+                out.insert(name.clone(), json!({ "kind": "dir", "entity_id": child }));
+            }
+            _ => return Err(bad(format!("member {name}: kind must be file or dir"))),
+        }
+    }
+    e.payload.insert("members".into(), Value::Object(out));
+    if let Some(meta) = e.payload.get("meta") {
+        if !meta.is_object() || canonical_len(meta) > MAX_DIR_META_BYTES {
+            return Err(bad("dir.meta must be a small object"));
+        }
+    }
+    Ok(())
+}
+
+/// Reference edges of a directory's members: files as `asset` (fixed, strong), child directories as `member`.
+fn dir_refs(e: &EntityRow, out: &mut BTreeSet<RefEdge>) {
+    for (name, m) in e.payload.get("members").and_then(Value::as_object).into_iter().flatten() {
+        let s = selector_string(&json!({ "kind": "folder_member", "name": name }));
+        match m["kind"].as_str() {
+            Some("file") => {
+                if let Some(oid) = m["object_id"].as_str() {
+                    let mut edge = RefEdge::local(&e.entity_id, &s, "asset", "");
+                    edge.dst_object_id = oid.to_string();
+                    out.insert(edge);
+                }
+            }
+            Some("dir") => {
+                if let Some(id) = m["entity_id"].as_str() {
+                    out.insert(RefEdge::local(&e.entity_id, &s, "member", id));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A DirObject (`cydir`) as a directory payload. `dirs` maps a child `cydir:` id to the entity holding it
+/// (children are imported before their parents). Inline `{ obj_type, body }` members are hashed to their id.
+pub fn dir_payload_from_dir_object(v: &Value, dirs: &BTreeMap<String, String>) -> WsResult<JsonMap> {
+    let body = v.get("body").and_then(Value::as_object).ok_or_else(|| bad("DirObject needs a body"))?;
+    let mut members = Map::new();
+    for (name, item) in body {
+        check_member_name(name)?;
+        let (id, size) = match item {
+            Value::String(id) => (id.clone(), None),
+            Value::Object(o) => {
+                let t = o.get("obj_type").and_then(Value::as_str).ok_or_else(|| bad("DirObject member needs obj_type"))?;
+                let b = o.get("body").ok_or_else(|| bad("DirObject member needs body"))?;
+                let (id, _) = crate::canonical::named_object(t, b)?;
+                (id, b.get("size").and_then(Value::as_u64))
+            }
+            _ => return Err(bad("DirObject member must be an object id or an inline object")),
+        };
+        if id.starts_with("cyfile:") {
+            let mut m = json!({ "kind": "file", "object_id": id });
+            if let Some(s) = size {
+                m["size"] = json!(s);
+            }
+            members.insert(name.clone(), m);
+        } else if id.starts_with("cydir:") {
+            let child = dirs.get(&id).ok_or_else(|| WsError::new(Code::DependencyUnavailable, format!("child directory {id} of {name} is not imported")))?;
+            members.insert(name.clone(), json!({ "kind": "dir", "entity_id": child }));
+        } else {
+            return Err(bad(format!("DirObject member {name} is neither a file nor a directory")));
+        }
+    }
+    let mut payload = Map::new();
+    payload.insert("members".into(), Value::Object(members));
+    if let Some(meta) = v.get("meta").filter(|m| m.is_object()) {
+        payload.insert("meta".into(), meta.clone());
+    }
+    Ok(payload)
+}
+
 // ---- Annotation ----
 
 const ANCHOR_KEYS: &[&str] = &["target", "range", "context"];
 
+/// Validator class: schema (kind, body, style, author rules); reference for the target and its anchor.
 /// Anchor keys (`target`, `range`, `context`) are checked by `anchor`; changing them later
 /// re-anchors the annotation, which only its author may do.
 fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>, changed: Option<&[String]>) -> WsResult<()> {
@@ -854,6 +1040,7 @@ fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
 const WISH_KEYS: &[&str] = &["title", "prompt", "knowledge", "refinements", "analysis", "inputs", "executor", "output", "output_mode", "executor_config", "program", "last_run"];
 pub const MAX_PROMPT_CHARS: usize = 20_000;
 
+/// Validator class: schema (selector and version shape); reference for the input target and its `table_view` cell.
 /// One input reference of a wish or of a dependency record:
 /// `{ entity_id, selector?, version: { mode: follow | fixed, rev? }, label?, name?, appended_by? }`.
 /// A wish input (`wish`) selects *what* is read — the whole entity, a saved table view
@@ -943,6 +1130,7 @@ fn check_input(p: &Planner, v: &Value, require_target: bool, wish: bool) -> WsRe
     Ok(Value::Object(out))
 }
 
+/// Validator class: schema (prompt, executor, output, inputs, size limits); reference for the program source object.
 fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     check_keys(&e.payload, WISH_KEYS, "wish")?;
     let importing = p.env.import;
@@ -1053,6 +1241,7 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 
 // ---- Block definition (phase two §10.3) ----
 
+/// Validator class: schema.
 fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
     check_keys(&e.payload, &["def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description"], "block_def")?;
     let def_id = e.payload.get("def_id").and_then(Value::as_str).ok_or_else(|| bad("block_def needs def_id"))?;
@@ -1121,6 +1310,7 @@ fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
 
 // ---- dependency record (phase two §7.3) ----
 
+/// Validator class: schema (the dependency record of a generated result).
 /// `{ wish_id, run_id, executor, inputs: [{ entity_id, selector?, version: { mode, rev? | hash? } }], generated_rev }`.
 /// The version cells are the read set the application was guarded with; `generated_rev` is set here.
 pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value> {
@@ -1200,12 +1390,110 @@ pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value
     Ok(Value::Object(out))
 }
 
+// ---- Source (内核架构改进 D12, D24, D26): where a data entity's content comes from ----
+
+/// `source{ kind: url | workspace, url?, zone?, workspace_id?, entity_id?, mode: live | fixed, version?, query?,
+/// refresh?: { interval_s }, auth_mode: none | hosted, name? }`. An entity with a Source is read-only for Blocks
+/// and people: its content is written only by a refresh run (commit origin `source`). Credentials never
+/// belong in it (§6.2): `auth_mode: hosted` means the owner's Agent refreshes it.
+pub fn check_source(v: &Value) -> WsResult<()> {
+    let o = v.as_object().ok_or_else(|| bad("source must be an object"))?;
+    for k in o.keys() {
+        if !matches!(k.as_str(), "kind" | "url" | "zone" | "workspace_id" | "entity_id" | "mode" | "version" | "query" | "refresh" | "auth_mode" | "name") {
+            return Err(bad(format!("source: unknown key {k}")));
+        }
+    }
+    match o.get("kind").and_then(Value::as_str) {
+        Some("url") => {
+            check_absolute_url(o.get("url").and_then(Value::as_str).unwrap_or(""))?;
+        }
+        Some("workspace") => {
+            let ws = o.get("workspace_id").and_then(Value::as_str).unwrap_or("");
+            if ws.is_empty() || ws.len() > 64 {
+                return Err(bad("source.workspace_id required for kind workspace"));
+            }
+            let id = o.get("entity_id").and_then(Value::as_str).unwrap_or("");
+            if !crate::id::is_valid_id(id) {
+                return Err(bad("source.entity_id required for kind workspace"));
+            }
+            if let Some(z) = o.get("zone") {
+                if !z.as_str().is_some_and(|z| !z.is_empty() && z.len() <= 256) {
+                    return Err(bad("source.zone must be a host"));
+                }
+            }
+            if let Some(u) = o.get("url") {
+                check_absolute_url(u.as_str().unwrap_or(""))?;
+            }
+        }
+        _ => return Err(bad("source.kind must be url or workspace")),
+    }
+    match (o.get("mode").and_then(Value::as_str), o.get("version")) {
+        (None | Some("live"), None) => {}
+        (Some("fixed"), Some(v)) => {
+            if !v.get("content_root").and_then(Value::as_str).is_some_and(crate::canonical::is_obj_id) {
+                return Err(bad("a fixed source names version.content_root (an object id)"));
+            }
+        }
+        (Some("fixed"), None) => return Err(bad("a fixed source needs its version")),
+        (Some("live"), Some(_)) => return Err(bad("a live source has no version")),
+        _ => return Err(bad("source.mode must be live or fixed")),
+    }
+    if o.get("query").is_some_and(|q| !q.is_object()) {
+        return Err(bad("source.query must be an object"));
+    }
+    if let Some(r) = o.get("refresh") {
+        let secs = r.get("interval_s").and_then(Value::as_u64).ok_or_else(|| bad("source.refresh.interval_s must be a number of seconds"))?;
+        if secs < 60 {
+            return Err(bad("source.refresh.interval_s is at least 60"));
+        }
+        if r.as_object().is_some_and(|m| m.keys().any(|k| k != "interval_s")) {
+            return Err(bad("source.refresh: only interval_s"));
+        }
+    }
+    match o.get("auth_mode").and_then(Value::as_str) {
+        None | Some("none") | Some("hosted") => {}
+        _ => return Err(bad("source.auth_mode must be none or hosted")),
+    }
+    if let Some(n) = o.get("name") {
+        if !n.as_str().is_some_and(|n| !n.is_empty() && n.len() <= 256) {
+            return Err(bad("source.name must be a short string"));
+        }
+    }
+    Ok(())
+}
+
+fn check_absolute_url(url: &str) -> WsResult<()> {
+    let (scheme, rest) = url.split_once("://").ok_or_else(|| bad("source.url must be an absolute URL"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if !matches!(scheme, "http" | "https") || authority.is_empty() || authority.contains('@') || url.chars().any(|c| c.is_control() || c == ' ') || url.len() > 2048 {
+        return Err(bad("source.url must be an http(s) URL without credentials"));
+    }
+    Ok(())
+}
+
+pub fn has_source(e: &EntityRow) -> bool {
+    e.payload.get("source").is_some_and(Value::is_object)
+}
+
+/// Content of a sourced entity is written only by its refresh (origin `source`) or an internal path.
+pub fn require_source_writable(p: &Planner, e: &EntityRow) -> WsResult<()> {
+    if has_source(e) && p.env.origin != "source" && !p.env.internal && !p.env.import {
+        return Err(WsError::sub(Code::InvalidOperation, "SOURCE_READ_ONLY", format!("{} comes from a Source: its content is refreshed, not edited", e.entity_id))
+            .with_data(json!({ "entity_id": e.entity_id, "source": e.payload.get("source").cloned().unwrap_or(Value::Null) })));
+    }
+    Ok(())
+}
+
+/// Keys a sourced entity's `entity.set_keys` may still touch: the Source itself and presentation metadata.
+pub const SOURCE_FREE_KEYS: &[&str] = &["source", "title", "description", "title_field_id", "file_name"];
+
 // ---- TableSource metadata ----
 
 pub fn is_url_table(e: &EntityRow) -> bool {
     e.payload.get("data_mode").and_then(Value::as_str) == Some("url_query")
 }
 
+/// Validator class: schema (URL query source reference).
 /// Validate a `QueryReference` (design doc §2.4). Credentials never belong in it.
 pub fn check_query_reference(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| bad("source_ref must be an object"))?;
@@ -1240,9 +1528,16 @@ pub fn check_query_reference(v: &Value) -> WsResult<()> {
     }
 }
 
+/// Validator class: primitive (`title_field_id` names a live text field, `data_mode` fixed); schema for `description` and the `url_query` reference.
 fn validate_table_meta(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["title_field_id", "description", "data_mode", "source_ref"], "table")?;
+    check_keys(&e.payload, &["title_field_id", "description", "data_mode", "source_ref", "source"], "table")?;
     opt_text(&e.payload, "description", 4000)?;
+    if let Some(s) = e.payload.get("source") {
+        check_source(s)?;
+        if e.payload.contains_key("source_ref") {
+            return Err(bad("a table has either a Source or a URL query source_ref"));
+        }
+    }
     let mode = e.payload.get("data_mode").and_then(Value::as_str).unwrap_or("embedded").to_string();
     if let Some(b) = before {
         if b.payload.get("data_mode") != e.payload.get("data_mode") {
@@ -1271,30 +1566,46 @@ fn validate_table_meta(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
 
 // ---- entry points used by the planner ----
 
+/// Validator class: dispatch — the `TYPE_TABLE` branch is primitive (field ids and names unique, order keys), the rest delegates to the typed validators.
 /// Initialize a newly created entity of a known type from the caller's
 /// payload. Returns the payload as recorded in history (replayable form).
 pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -> WsResult<Value> {
+    // primitive shape first (always): a JSON object of bounded size
+    if canonical_len(&Value::Object(payload.clone())) > MAX_PAYLOAD_BYTES {
+        return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", row.entity_id)));
+    }
+    let schema = p.env.schema_checks;
     match row.type_id.as_str() {
         TYPE_CONTAINER => {
             row.payload = payload;
-            validate_container(p, row, None)?;
+            if schema {
+                validate_container(p, row, None)?;
+            }
         }
         TYPE_RECORD => {
-            check_keys(&payload, &["schema", "props"], "record")?;
+            check_keys(&payload, &["schema", "props", "source"], "record")?;
             let mut stored = Map::new();
             stored.insert("schema".into(), payload.remove("schema").ok_or_else(|| bad("record needs schema"))?);
+            if let Some(s) = payload.remove("source") {
+                check_source(&s)?;
+                stored.insert("source".into(), s);
+            }
             if let Some(props) = payload.remove("props") {
                 for (k, v) in props.as_object().ok_or_else(|| bad("props must be an object"))? {
                     stored.insert(format!("p:{k}"), v.clone());
                 }
             }
             row.payload = stored;
-            validate_record(p, row, None)?;
+            if schema {
+                validate_record(p, row, None)?;
+            }
             return Ok(record_nested(&row.payload));
         }
         TYPE_CELL => {
             row.payload = payload;
-            validate_cell(p, row, None)?;
+            if schema {
+                validate_cell(p, row, None)?;
+            }
         }
         TYPE_ASSET => {
             row.payload = payload;
@@ -1306,7 +1617,9 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             }
             let author = payload.remove("author");
             row.payload = payload;
-            validate_annotation(p, row, None, None)?;
+            if schema {
+                validate_annotation(p, row, None, None)?;
+            }
             if let (Some(a), true) = (author, p.env.internal) {
                 row.payload.insert("author".into(), a); // import keeps the original author
             }
@@ -1363,27 +1676,58 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
         TYPE_RICHTEXT => return crate::plan_richtext::create(p, row, payload),
         TYPE_WISH => {
             row.payload = payload;
-            validate_wish(p, row, None)?;
+            if schema {
+                validate_wish(p, row, None)?;
+            }
         }
         TYPE_BLOCK_DEF => {
             row.payload = payload;
-            validate_block_def(row)?;
+            if schema {
+                validate_block_def(row)?;
+            }
         }
         TYPE_VIEWPORT => {
             row.payload = payload;
-            validate_viewport(p, row, None)?;
+            if schema {
+                validate_viewport(p, row, None)?;
+            }
         }
         TYPE_SHOW_PATH => {
             row.payload = payload;
-            validate_show_path(p, row, None, None)?;
+            if schema {
+                validate_show_path(p, row, None, None)?;
+            }
+        }
+        TYPE_DIR => {
+            row.payload = payload;
+            validate_dir(p, row)?;
+            let seq = p.seq();
+            for name in row.payload.get("members").and_then(Value::as_object).map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+                row.key_revs.insert(format!("m:{name}"), seq);
+            }
         }
         _ => row.payload = payload,
     }
     Ok(Value::Object(row.payload.clone()))
 }
 
+/// A keyed payload never exceeds this many canonical bytes (a primitive constraint, D01).
+pub const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Validator class: dispatch to the typed validators (see README “Validator classes”).
 /// Validate a keyed document after `set_keys`/`unset_keys` changed `changed`.
 pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, changed: &[String]) -> WsResult<()> {
+    if canonical_len(&Value::Object(e.payload.clone())) > MAX_PAYLOAD_BYTES {
+        return Err(WsError::limit(format!("payload of {} exceeds {MAX_PAYLOAD_BYTES} bytes", e.entity_id)));
+    }
+    if !p.env.schema_checks {
+        // replay: the primitives' own structure is all that is judged; a Table's `source_ref` still
+        // needs `structure` (it is a tree-level right, not a Schema rule)
+        if e.type_id == TYPE_TABLE && changed.iter().any(|k| k == "source_ref") {
+            p.require(&e.entity_id, Cap::Structure)?;
+        }
+        return Ok(());
+    }
     match e.type_id.as_str() {
         TYPE_CONTAINER => validate_container(p, e, Some(before)),
         TYPE_RECORD => validate_record(p, e, Some(changed)),
@@ -1411,10 +1755,26 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
             }
             validate_table_meta(p, e, Some(before))
         }
+        TYPE_RICHTEXT => {
+            // a rich text's content is edited with richtext.* operations; its Source is a key
+            if changed.iter().any(|k| k != "source") {
+                return Err(WsError::invalid_op("rich text content is edited with richtext.* operations"));
+            }
+            match e.payload.get("source") {
+                Some(s) => check_source(s),
+                None => Ok(()),
+            }
+        }
         TYPE_WISH => validate_wish(p, e, Some(changed)),
         TYPE_BLOCK_DEF => validate_block_def(e),
         TYPE_VIEWPORT => validate_viewport(p, e, Some(changed)),
         TYPE_SHOW_PATH => validate_show_path(p, e, Some(before), Some(changed)),
+        TYPE_DIR => {
+            if changed.iter().any(|k| k == "members") {
+                return Err(WsError::invalid_op("directory members change through dir.set_member / dir.remove_member / dir.replace"));
+            }
+            validate_dir(p, e)
+        }
         _ => Err(WsError::invalid_op("this type has no keyed content")),
     }
 }
@@ -1515,6 +1875,7 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
                 out.insert(edge);
             }
         }
+        TYPE_DIR => dir_refs(e, &mut out),
         _ => {}
     }
     Ok(out)
@@ -1539,7 +1900,8 @@ pub fn body_ref_edge(source_id: &str, record_id: &str, body_entity_id: &str) -> 
     RefEdge::local(source_id, &s, "body", body_entity_id)
 }
 
-pub fn richtext_ref_edge(entity_id: &str, block_id: &str, reference: &Value) -> RefEdge {
+/// `kind` is the rich text's own word: `embed` (object_embed, strong) or `link` (object_link, weak).
+pub fn richtext_ref_edge(entity_id: &str, block_id: &str, kind: &str, reference: &Value) -> RefEdge {
     let s = selector_string(&json!({ "kind": "richtext_block", "block_id": block_id }));
-    ref_edge(entity_id, &s, "embed", reference)
+    ref_edge(entity_id, &s, if kind == "link" { "object_link" } else { "embed" }, reference)
 }

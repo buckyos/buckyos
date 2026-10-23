@@ -1,0 +1,911 @@
+{
+  "description": "Request / response shapes of the stable methods, in the order server/tests/contract.rs calls them. Values are types, not data. Regenerate with AIWS_REGEN=1.",
+  "not_covered": [
+    {
+      "method": "asset.import_object",
+      "reason": "needs the Zone's named store (NDM); covered by DV"
+    }
+  ],
+  "steps": [
+    {
+      "method": "ws.create",
+      "params": {
+        "title": "string"
+      },
+      "result": {
+        "epoch": "string",
+        "head_seq": "number",
+        "ok": "boolean",
+        "title": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.get_info",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "base_seq": "number",
+        "capabilities": [
+          "string"
+        ],
+        "epoch": "string",
+        "forked_from": null,
+        "format_version": "string",
+        "head_commit_id": "string",
+        "head_seq": "number",
+        "hosted_exec": {
+          "digest": "string",
+          "enabled": "boolean"
+        },
+        "ok": "boolean",
+        "planner_version": "number",
+        "principal": "string",
+        "protocol_version": "string",
+        "public_base": null,
+        "purpose": null,
+        "richtext_schema": "string",
+        "show_lock": null,
+        "title": "string",
+        "traffic": "number",
+        "usage": {
+          "total": "number"
+        },
+        "wish_aicc_mode": "string",
+        "wish_execution": {
+          "default": "string",
+          "service": "boolean"
+        },
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.list",
+      "params": {},
+      "result": {
+        "ok": "boolean",
+        "workspaces": [
+          {
+            "capabilities": [
+              "string"
+            ],
+            "epoch": "string",
+            "head_seq": "number",
+            "title": "string",
+            "workspace_id": "string"
+          }
+        ]
+      }
+    },
+    {
+      "method": "doc.prepare",
+      "params": {
+        "epoch": "string",
+        "idempotency_key": "string",
+        "operations": [
+          {
+            "entity_id": "string",
+            "name": "string",
+            "op": "string",
+            "order_key": "string",
+            "parent_id": "string",
+            "payload": {
+              "fields": [
+                {
+                  "field_id": "string",
+                  "name": "string",
+                  "type": "string"
+                }
+              ]
+            },
+            "type_id": "string"
+          }
+        ],
+        "protocol_version": "string",
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "request_digest": "string",
+        "status": "string",
+        "touched": [
+          {
+            "change": "string",
+            "entity_id": "string",
+            "rev": "number"
+          }
+        ],
+        "would_be_seq": "number"
+      }
+    },
+    {
+      "method": "doc.commit",
+      "params": {
+        "epoch": "string",
+        "idempotency_key": "string",
+        "operations": [
+          {
+            "entity_id": "string",
+            "name": "string",
+            "op": "string",
+            "order_key": "string",
+            "parent_id": "string",
+            "payload": {
+              "fields": [
+                {
+                  "field_id": "string",
+                  "name": "string",
+                  "type": "string"
+                }
+              ]
+            },
+            "type_id": "string"
+          }
+        ],
+        "protocol_version": "string",
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "commit_id": "string",
+        "replayed": "boolean",
+        "seq": "number",
+        "server_ops": [],
+        "status": "string",
+        "touched": [
+          {
+            "change": "string",
+            "entity_id": "string",
+            "rev": "number"
+          }
+        ]
+      }
+    },
+    {
+      "method": "doc.get_submission",
+      "params": {
+        "epoch": "string",
+        "idempotency_key": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "result": {
+          "commit_id": "string",
+          "replayed": "boolean",
+          "seq": "number",
+          "server_ops": [],
+          "status": "string",
+          "touched": [
+            {
+              "change": "string",
+              "entity_id": "string",
+              "rev": "number"
+            }
+          ]
+        },
+        "status": "string"
+      }
+    },
+    {
+      "method": "doc.read",
+      "params": {
+        "entity_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "capabilities": [
+          "string"
+        ],
+        "content": {
+          "fields": [
+            {
+              "def_rev": "number",
+              "field_id": "string",
+              "name": "string",
+              "order_key": "string",
+              "type": "string",
+              "type_rev": "number",
+              "values_rev": "number"
+            }
+          ],
+          "key_revs": {},
+          "members_rev": "number",
+          "payload": {},
+          "record_count": "number"
+        },
+        "content_rev": "number",
+        "deleted": "boolean",
+        "entity_id": "string",
+        "head_seq": "number",
+        "life_rev": "number",
+        "meta_rev": "number",
+        "name": "string",
+        "ok": "boolean",
+        "order_key": "string",
+        "parent_id": "string",
+        "schema_version": "number",
+        "scope": "string",
+        "struct_rev": "number",
+        "type_id": "string",
+        "write_policy": "string"
+      }
+    },
+    {
+      "method": "doc.resolve",
+      "params": {
+        "reference": {
+          "entity_id": "string",
+          "mode": "string"
+        },
+        "workspace_id": "string"
+      },
+      "result": {
+        "canonical": {
+          "entity_id": "string",
+          "mode": "string",
+          "workspace_id": "string"
+        },
+        "capabilities": [
+          "string"
+        ],
+        "content_rev": "number",
+        "ok": "boolean",
+        "reference": {
+          "entity_id": "string",
+          "version": {
+            "mode": "string"
+          },
+          "workspace_id": "string"
+        },
+        "type_id": "string"
+      }
+    },
+    {
+      "method": "doc.query",
+      "params": {
+        "limit": "number",
+        "source_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "consistency": "string",
+        "content_rev": "number",
+        "ok": "boolean",
+        "rows": [
+          {
+            "record_id": "string",
+            "rev": "number",
+            "revs": {
+              "n": "number",
+              "title": "number"
+            },
+            "values": {
+              "n": "number",
+              "title": "string"
+            }
+          }
+        ],
+        "source_id": "string",
+        "total": "number"
+      }
+    },
+    {
+      "method": "doc.get_changes",
+      "params": {
+        "after_seq": "number",
+        "epoch": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "changes": [
+          {
+            "accepted_at": "string",
+            "author": "string",
+            "commit_id": "string",
+            "idempotency_key": "string",
+            "ops": [
+              {
+                "entity_id": "string",
+                "name": "string",
+                "op": "string",
+                "order_key": "string",
+                "parent_id": "string",
+                "payload": {
+                  "fields": [
+                    {
+                      "field_id": "string",
+                      "name": "string",
+                      "order_key": "string",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type_id": "string"
+              }
+            ],
+            "origin": "string",
+            "rows": {
+              "assets": [],
+              "entities": [
+                {
+                  "content_rev": "number",
+                  "created_seq": "number",
+                  "deleted_seq": null,
+                  "derived_json": null,
+                  "entity_id": "string",
+                  "key_revs_json": "string",
+                  "life_rev": "number",
+                  "meta_rev": "number",
+                  "name": "string",
+                  "payload_json": "string",
+                  "schema_id": null,
+                  "schema_version": "number",
+                  "scope": "string",
+                  "type_id": "string",
+                  "write_policy": "string"
+                }
+              ],
+              "refs": [],
+              "refs_deleted": [],
+              "richtext_states": [],
+              "richtext_updates": [],
+              "table_fields": [
+                {
+                  "def_json": "string",
+                  "def_rev": "number",
+                  "deleted_seq": null,
+                  "field_id": "string",
+                  "order_key": "string",
+                  "source_id": "string",
+                  "type_rev": "number",
+                  "values_rev": "number"
+                }
+              ],
+              "table_records": [
+                {
+                  "body_entity_id": null,
+                  "created_seq": "number",
+                  "deleted_seq": null,
+                  "meta_json": "string",
+                  "record_id": "string",
+                  "rev": "number",
+                  "revs_json": "string",
+                  "source_id": "string",
+                  "values_json": "string"
+                }
+              ],
+              "tree_edges": [
+                {
+                  "child_id": "string",
+                  "order_key": "string",
+                  "parent_id": "string",
+                  "placement_json": null,
+                  "struct_rev": "number"
+                }
+              ]
+            },
+            "run_id": null,
+            "seq": "number",
+            "touched": [
+              {
+                "change": "string",
+                "entity_id": "string",
+                "rev": "number"
+              }
+            ],
+            "undo_group": null,
+            "undoes": null
+          }
+        ],
+        "epoch": "string",
+        "head_seq": "number",
+        "more": "boolean",
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "doc.wait_changes",
+      "params": {
+        "after_seq": "number",
+        "epoch": "string",
+        "timeout_ms": "number",
+        "workspace_id": "string"
+      },
+      "result": {
+        "epoch": "string",
+        "head_seq": "number",
+        "ok": "boolean",
+        "show_lock": null,
+        "timed_out": "boolean"
+      }
+    },
+    {
+      "method": "ws.grant",
+      "params": {
+        "capabilities": [
+          "string"
+        ],
+        "subject": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "ws.list_grants",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "complete": "boolean",
+        "grants": [
+          {
+            "capabilities": [
+              "string"
+            ],
+            "scope_entity_id": null,
+            "subject": "string",
+            "via_entry": null
+          }
+        ],
+        "ok": "boolean",
+        "owner": "string",
+        "principal": "string"
+      }
+    },
+    {
+      "method": "ws.list_subjects",
+      "params": {},
+      "result": {
+        "ok": "boolean",
+        "subjects": [
+          {
+            "kind": "string",
+            "subject": "string"
+          }
+        ]
+      }
+    },
+    {
+      "method": "ws.revoke",
+      "params": {
+        "subject": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "removed": "number"
+      }
+    },
+    {
+      "method": "ws.set_user_state",
+      "params": {
+        "entries": {
+          "panel": {
+            "open": "boolean"
+          }
+        },
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "revisions": {
+          "panel": "number"
+        },
+        "updated_at": "string"
+      }
+    },
+    {
+      "method": "ws.get_user_state",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "entries": {
+          "panel": {
+            "open": "boolean"
+          }
+        },
+        "ok": "boolean",
+        "revisions": {
+          "panel": "number"
+        },
+        "updated_at": {
+          "panel": "string"
+        }
+      }
+    },
+    {
+      "method": "ws.set_wish_aicc",
+      "params": {
+        "mode": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "wish_aicc_mode": "string"
+      }
+    },
+    {
+      "method": "ws.create_entry",
+      "params": {
+        "capabilities": [
+          "string"
+        ],
+        "methods": {
+          "guest": "boolean"
+        },
+        "workspace_id": "string"
+      },
+      "result": {
+        "entry": {
+          "capabilities": [
+            "string"
+          ],
+          "created_at": "number",
+          "created_by": "string",
+          "entry_id": "string",
+          "expires_at": null,
+          "methods": {
+            "did_login": "boolean",
+            "guest": "boolean",
+            "password": "boolean",
+            "self_register": "boolean"
+          },
+          "scope_entity_id": null,
+          "state": "string",
+          "workspace_id": "string"
+        },
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "entry.describe",
+      "params": {
+        "entry_id": "string"
+      },
+      "result": {
+        "methods": {
+          "did_login": "boolean",
+          "guest": "boolean",
+          "password": "boolean",
+          "self_register": "boolean"
+        },
+        "ok": "boolean",
+        "resource": {
+          "kind": "string",
+          "owner_name": "string",
+          "path": "string",
+          "title": "string"
+        },
+        "state": "string"
+      }
+    },
+    {
+      "method": "ws.list_entries",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "entries": [
+          {
+            "capabilities": [
+              "string"
+            ],
+            "created_at": "number",
+            "created_by": "string",
+            "entry_id": "string",
+            "expires_at": null,
+            "methods": {
+              "did_login": "boolean",
+              "guest": "boolean",
+              "password": "boolean",
+              "self_register": "boolean"
+            },
+            "scope_entity_id": null,
+            "state": "string",
+            "workspace_id": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "ws.join_entry",
+      "params": {
+        "entry_id": "string"
+      },
+      "result": {
+        "capabilities": [
+          "string"
+        ],
+        "entry_id": "string",
+        "granted": "boolean",
+        "joined": "boolean",
+        "ok": "boolean",
+        "path": "string",
+        "scope_entity_id": null,
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.close_entry",
+      "params": {
+        "entry_id": "string"
+      },
+      "result": {
+        "entry": {
+          "capabilities": [
+            "string"
+          ],
+          "created_at": "number",
+          "created_by": "string",
+          "entry_id": "string",
+          "expires_at": null,
+          "methods": {
+            "did_login": "boolean",
+            "guest": "boolean",
+            "password": "boolean",
+            "self_register": "boolean"
+          },
+          "scope_entity_id": null,
+          "state": "string",
+          "workspace_id": "string"
+        },
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "lock.acquire",
+      "params": {
+        "entity_ids": [
+          "string"
+        ],
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "locks": [
+          {
+            "entity_id": "string",
+            "lock_id": null,
+            "write_policy": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "lock.list",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "locks": [],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "lock.renew",
+      "params": {
+        "lock_ids": [
+          null
+        ],
+        "workspace_id": "string"
+      },
+      "result": {
+        "locks": [],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "lock.break",
+      "params": {
+        "entity_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "lock.acquire",
+      "params": {
+        "entity_ids": [
+          "string"
+        ],
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "locks": [
+          {
+            "entity_id": "string",
+            "lock_id": null,
+            "write_policy": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "lock.release",
+      "params": {
+        "lock_ids": [
+          null
+        ],
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "asset.begin_upload",
+      "params": {
+        "size": "number",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "put": "string",
+        "upload_id": "string"
+      }
+    },
+    {
+      "method": "asset.finish_upload",
+      "params": {
+        "upload_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "expires_at": "string",
+        "media_type": "string",
+        "object_id": "string",
+        "ok": "boolean",
+        "size": "number"
+      }
+    },
+    {
+      "method": "ws.begin_import",
+      "params": {},
+      "result": {
+        "ok": "boolean",
+        "put": "string",
+        "upload_id": "string"
+      }
+    },
+    {
+      "method": "ws.import",
+      "params": {
+        "semantics": "string",
+        "upload_id": "string"
+      },
+      "result": {
+        "content_root": "string",
+        "epoch": "string",
+        "external_sources": [],
+        "head_seq": "number",
+        "missing": [],
+        "ok": "boolean",
+        "replaced": "boolean",
+        "semantics": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "doc.undo",
+      "params": {
+        "commit_id": "string",
+        "epoch": "string",
+        "idempotency_key": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "commit_id": "string",
+        "replayed": "boolean",
+        "seq": "number",
+        "server_ops": [],
+        "status": "string",
+        "touched": [
+          {
+            "change": "string",
+            "entity_id": "string",
+            "rev": "number",
+            "selector": {
+              "kind": "string",
+              "record_id": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "method": "ws.release_retention",
+      "params": {
+        "kind": "string",
+        "ref": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "released": "boolean"
+      }
+    },
+    {
+      "method": "ws.delete_checkpoint",
+      "params": {
+        "snapshot_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "released": "boolean",
+        "removed": "boolean"
+      }
+    },
+    {
+      "method": "ws.purge_deleted",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "commit_id": "string",
+        "ok": "boolean",
+        "purged": [
+          "string"
+        ]
+      }
+    },
+    {
+      "method": "ws.clear_staged",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "bytes": "number",
+        "ok": "boolean",
+        "removed": "number"
+      }
+    },
+    {
+      "method": "ws.fork",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "content_root": "string",
+        "epoch": "string",
+        "excluded_entities": "number",
+        "forked_from": {
+          "snapshot": "string",
+          "workspace_id": "string"
+        },
+        "head_seq": "number",
+        "ok": "boolean",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.delete",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "ws.delete",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean"
+      }
+    }
+  ]
+}

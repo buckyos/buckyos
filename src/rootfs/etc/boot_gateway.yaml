@@ -221,6 +221,10 @@ servers:
               else
                 return false;
               end
+              # aiws-<workspace id>.<zone>: every AI Workspace's own origin, served by the aiworkspace service
+              if match-reg $app_lookup_key "^aiws-[a-z0-9]+$" then
+                app_lookup_key="aiws";
+              end
               match-include $APP_INFO $app_lookup_key || return false;
               local app_info=$APP_INFO[$app_lookup_key];
               if match-include $app_info "service_id" then

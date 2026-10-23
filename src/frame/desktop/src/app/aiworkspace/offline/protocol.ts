@@ -88,6 +88,8 @@ export interface ReplicaApi {
   /** `unsentOnly`: refuse to remove a submission the backend may already have (`sending` / `unknown`). */
   discard(key: string, unsentOnly: boolean): { removed: PendingRow | null; pending: PendingRow[] }
   applyRemote(events: CommitEvent[]): { confirmed_seq: number; settled: string[]; pending: PendingRow[] }
+  /** The server's history was replaced (EPOCH_MISMATCH, D07): live submissions become conflicts the user resends. */
+  epochMismatch(detail: string): { pending: PendingRow[] }
   pending(): PendingRow[]
   updateInfo(info: WorkspaceInfo): null
   saveDraft(draft: RichTextDraftRow): null

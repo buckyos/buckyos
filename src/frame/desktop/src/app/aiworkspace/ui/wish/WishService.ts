@@ -12,8 +12,10 @@
 import { describeError, runErrorText } from '../../api/session'
 import type {
   AssetContent, CellPayload, DerivedInput, EntityEnvelope, Json, KeyedContent, QueryPage, RecordContent, RichTextContent, TableSourceContent,
-  WishChoices, WishPayload, WishPayloadRead, WishRunView, WishStage,
+  WishChoices, WishExecutionMode, WishPayload, WishPayloadRead, WishRunView, WishStage,
 } from '../../api/types'
+import { resolveChatClient } from '../../executor/chat'
+import { claims, LocalExecutor } from '../../executor/localExecutor'
 import { aiwsT, aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { makeBridge } from '../extensions/bridge'
@@ -36,6 +38,8 @@ export interface ExecuteResult { results: MockResult[]; warnings: string[]; assu
 
 const ACTIVE = new Set(['queued', 'snapshotting', 'running', 'validating', 'applying'])
 const WAITING = new Set(['waiting_confirmation', 'conflict', 'rejected'])
+/** The execution mode this browser prefers (内核架构改进 D14); a per-viewer convenience. */
+const EXECUTION_KEY = 'aiworkspace.execution'
 
 export function isActive(run: WishRunView | undefined | null): boolean { return Boolean(run && ACTIVE.has(run.state)) }
 export function isWaiting(run: WishRunView | undefined | null): boolean { return Boolean(run && WAITING.has(run.state) && run.candidate) }
@@ -126,6 +130,8 @@ export class WishService {
   private readonly autoApply = new Set<string>()
   private readonly restored = new Set<string>()
   private readonly executors = new Map<string, HtmlExecutor>()
+  /** Local runs this window executes, by run id (T3-4). */
+  private readonly locals = new Map<string, LocalExecutor>()
   private readonly listeners = new Set<() => void>()
   private disposed = false
   private version = 0
@@ -137,7 +143,12 @@ export class WishService {
 
   constructor(store: WorkspaceStore) {
     this.store = store
+    // the page goes away: local executors stop without reporting a failure — the lease lapses and the run is
+    // interrupted, which this browser can resume (D15)
+    window.addEventListener('pagehide', this.onPageHide)
   }
+
+  private readonly onPageHide = () => { for (const local of this.locals.values()) local.cancel() }
 
   private changed() { this.version += 1; for (const listener of [...this.listeners]) listener() }
 
@@ -221,10 +232,76 @@ export class WishService {
     }
   }
 
+  // ---- where a run executes (内核架构改进 §9, D14, D22)
+
+  /** The modes this service and workspace offer: the transitional in-service executor when allowed, this
+   * browser, and the owner's Agent when hosted execution is configured. Empty on a service without the
+   * execution model. */
+  executionModes(): WishExecutionMode[] {
+    const info = this.store.session.info()
+    if (!info.wish_execution) return []
+    const modes: WishExecutionMode[] = []
+    if (info.wish_execution.service) modes.push('service')
+    modes.push('local')
+    if (info.hosted_exec?.enabled) modes.push('hosted')
+    return modes
+  }
+
+  /** A collaborator with only `run` on the wish runs it hosted (the owner's Agent writes the results). */
+  runOnly(wishId: string): boolean {
+    const caps = this.store.outline.get(wishId)?.capabilities ?? []
+    return !caps.includes('update') && caps.includes('run') && this.executionModes().includes('hosted')
+  }
+
+  executionMode(wishId?: string): WishExecutionMode {
+    const modes = this.executionModes()
+    if (wishId && this.runOnly(wishId)) return 'hosted'
+    let saved: string | null = null
+    try { saved = window.localStorage.getItem(EXECUTION_KEY) } catch { saved = null }
+    if (saved && modes.includes(saved as WishExecutionMode)) return saved as WishExecutionMode
+    const preset = this.store.session.info().wish_execution?.default
+    if (preset && modes.includes(preset)) return preset
+    return modes.includes('local') ? 'local' : modes[0] ?? 'service'
+  }
+
+  setExecutionMode(mode: WishExecutionMode) {
+    try { window.localStorage.setItem(EXECUTION_KEY, mode) } catch { /* not remembered */ }
+    this.changed()
+  }
+
+  /** An interrupted local run resumes from this browser, which keeps its claim token. */
+  canResume(run: WishRunView | undefined | null): boolean {
+    return Boolean(run && run.state === 'interrupted' && run.execution?.mode === 'local' && claims.get(run.run_id))
+  }
+
+  private runLocally(runId: string, claimToken: string, wishId: string) {
+    claims.set(runId, claimToken)
+    const executor = new LocalExecutor(this.store.session, resolveChatClient(), runId, claimToken)
+    this.locals.set(runId, executor)
+    executor.run()
+      .then((outcome) => { if (outcome === 'finished') claims.forget(runId) })
+      .catch((error: unknown) => { this.errors.set(wishId, describeError(error)); this.changed() })
+      .finally(() => { this.locals.delete(runId) })
+  }
+
+  async resume(run: WishRunView): Promise<WishRunView> {
+    return this.guard(run.wish_id, run.stage === 'analyze' ? 'analyzing' : 'executing', async () => {
+      const token = claims.get(run.run_id)
+      if (!token) throw new Error(aiwsT('aiworkspace.wish.resumeHint'))
+      this.runLocally(run.run_id, token, run.wish_id)
+      const next = await this.poll(run.run_id, run.wish_id)
+      if (run.stage === 'analyze') return this.finishAnalysis(run.wish_id, next)
+      if (next.state === 'failed') throw new Error(runErrorText(next.error) ?? aiwsT('aiworkspace.wish.error.executeFailed'))
+      return next
+    })
+  }
+
   private async start(wishId: string, program: 'wish.xllm@1' | 'wish.mock@1', stage: WishStage, extra: Record<string, Json>, cellId?: string): Promise<WishRunView> {
     const params: Record<string, Json> = { wish_id: wishId, stage, location: this.location(wishId, cellId) as unknown as Json, request: this.request(), ...extra }
+    if (program === 'wish.xllm@1' && this.executionModes().length) params.execution = { mode: this.executionMode(wishId) }
     const started = await this.store.session.wishStart(program, params)
     this.setRun(started)
+    if (started.claim_token) this.runLocally(started.run_id, started.claim_token, wishId)
     return this.poll(started.run_id, wishId)
   }
 
@@ -241,15 +318,19 @@ export class WishService {
       if (read.payload.executor !== 'xllm') throw new Error(aiwsT('aiworkspace.wish.error.executorNotAvailable', { executor: read.payload.executor }))
       this.autoApply.add(wishId)
       const run = await this.start(wishId, 'wish.xllm@1', 'analyze', {}, cellId)
-      if (run.state === 'waiting_confirmation' && run.preview) {
-        // clicking 分析 is the write-back (§7.3): no second confirmation
-        if (!run.preview.ready) throw new Error(aiwsT('aiworkspace.wish.error.analysisNotWritten', { problems: aiwsText().clauses(run.preview.summary.problems) }))
-        await this.applyRun(run, run.preview.plan_digest, aiwsT('aiworkspace.wish.edit.analyze'))
-      } else if (run.state === 'failed') {
-        throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.analysisFailed'))
-      }
-      return this.runs.get(wishId) ?? run
+      return this.finishAnalysis(wishId, run)
     })
+  }
+
+  /** Clicking 分析 is the write-back (§7.3): a ready analysis is applied without a second confirmation. */
+  private async finishAnalysis(wishId: string, run: WishRunView): Promise<WishRunView> {
+    if (run.state === 'waiting_confirmation' && run.preview) {
+      if (!run.preview.ready) throw new Error(aiwsT('aiworkspace.wish.error.analysisNotWritten', { problems: aiwsText().clauses(run.preview.summary.problems) }))
+      await this.applyRun(run, run.preview.plan_digest, aiwsT('aiworkspace.wish.edit.analyze'))
+    } else if (run.state === 'failed') {
+      throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.analysisFailed'))
+    }
+    return this.runs.get(wishId) ?? run
   }
 
   private executorFor(wish: EntityEnvelope): HtmlExecutor {
@@ -452,6 +533,7 @@ export class WishService {
 
   async cancel(run: WishRunView): Promise<void> {
     await this.guard(run.wish_id, 'cancelling', async () => {
+      this.locals.get(run.run_id)?.cancel()
       await this.store.session.procCancel(run.run_id)
       this.setRun(await this.store.session.wishGet(run.run_id))
     })
@@ -488,6 +570,9 @@ export class WishService {
 
   dispose() {
     this.disposed = true
+    window.removeEventListener('pagehide', this.onPageHide)
+    for (const local of this.locals.values()) local.cancel()
+    this.locals.clear()
     for (const executor of this.executors.values()) executor.dispose()
     this.executors.clear()
     this.runs.clear()

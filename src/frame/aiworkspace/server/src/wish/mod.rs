@@ -5,6 +5,7 @@
 //! kills the program; a run found active without a worker (service restart) is reported
 //! interrupted, never restarted.
 
+pub mod exec;
 pub mod llm;
 pub mod runner;
 pub mod stages;
@@ -17,8 +18,7 @@ use aiworkspace_store::wish::plan::{Plan, PlanRequest};
 use aiworkspace_store::wish::results::Collector;
 use aiworkspace_store::wish::runs::{is_wish_program, ACTIVE_STATES, PROGRAM_MOCK, PROGRAM_XLLM};
 use aiworkspace_store::Caller;
-use agent_tool::xllm::XllmInterrupter;
-use llm_context::LlmClient;
+use agent_tool::xllm::{LlmClientFactory, XllmInterrupter};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,8 +50,12 @@ pub struct WishConfig {
     pub llm_map_max_items: usize,
     pub map_budget_chars: usize,
     pub context_window: Option<u32>,
-    /// Tests: every model call goes to this client.
-    pub llm_override: Option<Arc<dyn LlmClient>>,
+    /// Tests: every model client comes from this factory, which sees the provider of each run.
+    pub llm_override: Option<Arc<dyn LlmClientFactory>>,
+    /// Execution mode of a run that names none (D14): `service` | `local` | `hosted`.
+    pub default_execution: String,
+    /// The transitional in-service executor may be chosen (T3-9 switches it off after hosted DV).
+    pub allow_service_execution: bool,
 }
 
 impl Default for WishConfig {
@@ -79,6 +83,8 @@ impl WishConfig {
             map_budget_chars: 16_000,
             context_window: None,
             llm_override: None,
+            default_execution: s.default_execution.clone(),
+            allow_service_execution: s.allow_service_execution,
         }
     }
 
@@ -100,6 +106,12 @@ impl WishConfig {
         }
         if let Some(x) = s("deno") {
             self.deno = x;
+        }
+        if let Some(x) = s("default_execution") {
+            self.default_execution = x;
+        }
+        if let Some(x) = v.get("allow_service_execution").and_then(Value::as_bool) {
+            self.allow_service_execution = x;
         }
         if let Some(x) = n("analyze_tool_iterations") {
             self.analyze_tool_iterations = x as u32;
@@ -139,28 +151,46 @@ pub struct WishRuntime {
     active: Mutex<HashMap<String, Arc<ActiveRun>>>,
     /// callback token → stage (programs' `llm.map`)
     stages: Mutex<HashMap<String, Arc<StageState>>>,
+    /// run id → the stage an executor outside the service works on (T3-4), from its claim to its report
+    hosted: Mutex<HashMap<String, Arc<StageState>>>,
     /// `http://127.0.0.1:<port>/kapi/aiworkspace` once the service listens.
     pub host_base: Mutex<Option<String>>,
 }
 
 impl WishRuntime {
     pub fn new(config: WishConfig) -> Arc<WishRuntime> {
-        Arc::new(WishRuntime { config, active: Mutex::default(), stages: Mutex::default(), host_base: Mutex::default() })
+        Arc::new(WishRuntime { config, active: Mutex::default(), stages: Mutex::default(), hosted: Mutex::default(), host_base: Mutex::default() })
     }
 
     pub fn active(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
         self.active.lock().unwrap().get(run_id).cloned()
     }
 
-    fn register(&self, run_id: &str) -> Arc<ActiveRun> {
+    pub(super) fn register(&self, run_id: &str) -> Arc<ActiveRun> {
         let a = Arc::new(ActiveRun::default());
         *a.progress.lock().unwrap() = json!({ "phase": "queued" });
         self.active.lock().unwrap().insert(run_id.to_string(), a.clone());
         a
     }
 
-    fn unregister(&self, run_id: &str) {
+    pub(super) fn unregister(&self, run_id: &str) {
         self.active.lock().unwrap().remove(run_id);
+    }
+
+    pub fn hosted(&self, run_id: &str) -> Option<Arc<StageState>> {
+        self.hosted.lock().unwrap().get(run_id).cloned()
+    }
+
+    pub(super) fn set_hosted(&self, run_id: &str, st: Arc<StageState>) {
+        self.hosted.lock().unwrap().insert(run_id.to_string(), st);
+    }
+
+    /// Close the stage an outside executor worked on (its tools answer "cancelled" from now on).
+    pub fn drop_hosted(&self, run_id: &str) {
+        if let Some(st) = self.hosted.lock().unwrap().remove(run_id) {
+            st.active.cancelled.store(true, Ordering::SeqCst);
+            self.stages.lock().unwrap().remove(&st.token);
+        }
     }
 
     pub fn stage_by_token(&self, token: &str) -> Option<Arc<StageState>> {
@@ -259,6 +289,9 @@ pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
         "created_at": run["created_at"], "updated_at": run["updated_at"],
         "warnings": run["warnings"], "error": run["detail"]["error"], "usage": run["detail"]["usage"],
         "aicc": run["detail"]["aicc"],
+        "context": run["detail"]["context"], "dispatch": run["detail"]["dispatch"],
+        "execution": { "mode": run["detail"]["exec"]["mode"], "attempt": run["detail"]["exec"]["attempt"], "lease_until": run["detail"]["exec"]["lease_until"], "executor": run["detail"]["exec"]["executor"] },
+        "brief": run["detail"]["brief"],
         "parent_run_id": run["params"]["parent_run_id"], "feedback": run["params"]["feedback"],
     });
     let mut progress = run["detail"]["progress"].clone();
@@ -285,9 +318,10 @@ pub fn run_view(rt: &WishRuntime, run: &Value, full: bool) -> Value {
 
 /// Whose AICC a new run uses (AI Center Quota PRD §3.3), fixed when the run is accepted:
 /// the workspace owner's by default, or the starting user's. Nobody falls back to the other.
-pub fn run_attribution(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller) -> WsResult<Value> {
+pub fn run_attribution(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, force_current_user: bool) -> WsResult<Value> {
     use aiworkspace_store::workspace::{CallerClass, WISH_AICC_CURRENT_USER, WISH_AICC_WORKSPACE_OWNER};
-    let mode = ws.wish_aicc_mode()?;
+    // a local run's model calls come from the starter's own browser session (D14): nobody else can pay for them
+    let mode = if force_current_user { WISH_AICC_CURRENT_USER.to_string() } else { ws.wish_aicc_mode()? };
     let user_id = if mode == WISH_AICC_CURRENT_USER {
         if !matches!(caller.class, CallerClass::Account { .. }) {
             return Err(WsError::sub(Code::PermissionDenied, "AI_ATTRIBUTION_UNAVAILABLE", "You have no AI resources in this Zone: this workspace runs wish blocks with the AI resources of the user who starts them")
@@ -356,14 +390,19 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
     if program == PROGRAM_MOCK && !params.get("provided").is_some_and(Value::is_object) {
         return Err(WsError::invalid_op("wish.mock@1 needs params.provided (the Mock executor's results)"));
     }
-    let (run_id, replayed) = state.with_ws(ws_id, |ws| {
+    let run_id = state.with_ws(ws_id, |ws| {
         // the wish must exist and be writable by the caller: a run ends in writing it
         let read = ws.read(caller, &wish_id, None)?;
         if read["type_id"] != json!("buckyos.wish") {
             return Err(WsError::invalid_op(format!("{wish_id} is not a wish")));
         }
-        if !read["capabilities"].as_array().is_some_and(|c| c.iter().any(|x| x == "update")) {
-            return Err(WsError::denied("running a wish needs the update capability on it"));
+        // the execution context (§9.6): named in full, or the run does not start
+        let mode_name = params["execution"]["mode"].as_str().map(str::to_string).unwrap_or_else(|| state.wish.config.default_execution.clone());
+        let mode = exec::Mode::parse(&mode_name).ok_or_else(|| WsError::invalid_op(format!("unknown execution mode {mode_name}")))?;
+        // hosted execution is what a collaborator with only `run` on the wish gets (D22); other modes write as the caller
+        let needed = if mode == exec::Mode::Hosted { "run" } else { "update" };
+        if !read["capabilities"].as_array().is_some_and(|c| c.iter().any(|x| x == needed)) {
+            return Err(WsError::denied(format!("running a wish {} needs the {needed} capability on it", mode.as_str())));
         }
         let executor = read["content"]["payload"]["executor"].as_str().unwrap_or("");
         if (program == PROGRAM_XLLM && executor != "xllm") || (program == PROGRAM_MOCK && executor != "mock") {
@@ -375,17 +414,47 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
                 return Err(WsError::invalid_op("parent_run_id belongs to another wish"));
             }
         }
-        let aicc = run_attribution(ws, caller)?;
-        ws.wish_run_create(caller, program, params, idem, &aicc)
+        let aicc = run_attribution(ws, caller, mode == exec::Mode::Local)?;
+        if mode == exec::Mode::Service && (program == PROGRAM_XLLM && !state.wish.config.allow_service_execution) {
+            return Err(WsError::new(Code::ExecutionContextMissing, "the in-service executor is switched off; run locally or hosted"));
+        }
+        let hosted = if mode == exec::Mode::Hosted { Some(ws.hosted_exec_admits(caller, &wish_id)?) } else { None };
+        let context = exec::execution_context(ws, caller, &wish_id, &read["content"]["payload"], mode, &aicc, hosted.as_ref())?;
+        let (exec_record, claim) = exec::new_exec_record(mode);
+        let payload = &read["content"]["payload"];
+        // what an executor outside the service starts from (inputs are read through the run token)
+        let brief = json!({ "prompt": payload["prompt"], "knowledge": payload["knowledge"], "refinements": payload["refinements"], "analysis": payload["analysis"],
+                            "inputs": payload["inputs"], "output": payload["output"], "request": params.get("request").cloned().unwrap_or(Value::Null), "stage": stage });
+        let (run_id, replayed) = ws.wish_run_create_with(caller, program, params, idem, &aicc, &json!({ "context": context, "exec": exec_record, "brief": brief }))?;
+        Ok((run_id, replayed, mode, claim, hosted, context))
     })?;
-    if !replayed {
+    let (run_id, replayed, mode, claim, hosted, context) = (run_id.0, run_id.1, run_id.2, run_id.3, run_id.4, run_id.5);
+    if !replayed && (mode == exec::Mode::Service || program == PROGRAM_MOCK) {
         let active = state.wish.register(&run_id);
         let (st, c, ws, rid) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.clone());
         tokio::runtime::Handle::current().spawn(async move {
             stages::drive(st, c, ws, rid, active).await;
         });
     }
-    get(state, caller, ws_id, &run_id, &Value::Null)
+    if !replayed && mode == exec::Mode::Hosted {
+        let (st, w, rid, token, cfg, ctx) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), hosted.clone().unwrap_or(Value::Null), context.clone());
+        tokio::runtime::Handle::current().spawn(async move {
+            let mut dispatch = exec::dispatch_hosted(&st, &w, &rid, &token, &cfg, &ctx).await;
+            if dispatch["status"] == json!("unavailable") {
+                // nobody got the token: whoever may read the run (its trigger, an editor) hands it to an executor
+                dispatch["claim_token"] = json!(token);
+            }
+            let _ = st.with_ws(&w, |ws| ws.wish_run_set(&rid, None, None, None, None, Some(&json!({ "dispatch": dispatch }))));
+        });
+    }
+    let mut v = get(state, caller, ws_id, &run_id, &Value::Null)?;
+    if !replayed {
+        if let Some(t) = claim.filter(|_| mode == exec::Mode::Local) {
+            // the browser that started a local run is its executor: the claim token goes to it, once
+            v["claim_token"] = json!(t);
+        }
+    }
+    Ok(v)
 }
 
 /// `proc.get`: state, progress, candidate and — when waiting for confirmation — the preview of the
@@ -394,8 +463,15 @@ pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, ch
     let rt = state.wish.clone();
     state.with_ws(ws_id, |ws| {
         let mut run = ws.wish_run(caller, run_id)?;
+        if exec::expire_if_due(ws, &run)? {
+            rt.drop_hosted(run_id);
+            rt.unregister(run_id);
+            run = ws.wish_run(caller, run_id)?;
+        }
         let st = run["state"].as_str().unwrap_or("").to_string();
-        if ACTIVE_STATES.contains(&st.as_str()) && rt.active(run_id).is_none() {
+        // a run an outside executor owns waits for its claim (queued) or its lease (running), not for a service worker
+        let executor_owned = run["detail"]["exec"]["mode"].as_str().is_some_and(|m| m != "service") && matches!(st.as_str(), "queued" | "running");
+        if ACTIVE_STATES.contains(&st.as_str()) && st != "applying" && !executor_owned && rt.active(run_id).is_none() {
             // nobody owns it any more (service restart): interrupted, never silently re-run (§13.1)
             ws.wish_run_set(run_id, Some("interrupted"), None, None, None, Some(&json!({ "error": { "code": "INTERRUPTED", "detail": "The service restarted or was interrupted during the run; the run does not restart automatically" } })))?;
             run = ws.wish_run(caller, run_id)?;
@@ -441,6 +517,23 @@ pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
     let run_id = s(p, "run_id")?;
     state.with_ws(ws_id, |ws| {
         let run = ws.wish_run(caller, run_id)?;
+        // the delegation still holds (D16, §9.5): the task configuration the run bound, the attempt that
+        // produced the candidate, and the run itself
+        if run["state"] == json!("cancelled") {
+            return Err(WsError::new(Code::RunRevoked, "the run was cancelled"));
+        }
+        if let Some(bound) = run["detail"]["context"]["task"]["digest"].as_str() {
+            let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
+            let payload = ws.read(caller, wish_id, None)?["content"]["payload"].as_object().cloned().unwrap_or_default();
+            if aiworkspace_core::wish::basis_digest(&payload)[..32] != *bound {
+                return Err(WsError::new(Code::DelegationStale, "the wish configuration changed after the run was started; run it again under the current configuration").with_data(json!({ "bound": bound })));
+            }
+        }
+        if let (Some(produced), Some(current)) = (run["detail"]["exec"]["provided"]["attempt"].as_u64(), run["detail"]["exec"]["attempt"].as_u64()) {
+            if produced != current {
+                return Err(WsError::new(Code::RunRevoked, format!("the candidate came from attempt {produced}; attempt {current} superseded it")));
+            }
+        }
         let digest = match p.get("plan_digest").and_then(Value::as_str) {
             Some(d) => d.to_string(),
             None => run["detail"]["plan_order"].as_array().and_then(|o| o.last()).and_then(Value::as_str).map(str::to_string).ok_or_else(|| WsError::invalid_op("plan_digest required: preview first"))?,
@@ -482,6 +575,7 @@ pub fn cancel(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str)
                 kill(pid);
             }
         }
+        rt.drop_hosted(run_id);
         ws.wish_run_set(run_id, Some("cancelled"), None, None, None, Some(&json!({ "progress": progress_line("cancelled") })))?;
         Ok(json!({ "ok": true, "state": "cancelled", "already_applied": false }))
     })

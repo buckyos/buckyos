@@ -437,7 +437,8 @@ interface OpenRequest {               // 展开到 entry.path 的占位符，或
 - 桌面 / 窗口管理器负责窗口复用与数量策略（Preview PRD §13），`open` Handler 只负责接管内容；
 - “打开方式…”菜单 = `resolve(open)` 全部候选 + 系统 Preview App（Preview App 自身是 `provider: system` 的 `open` 条目，选择器 `mime:*/*`，`fidelity: partial`，兜底）；
 - 双击 = 候选列表第一位；用户勾选“始终使用”即调用 `setDefault("open", selector, handlerKey)`；
-- App 收到 `open` 后必须在自身权限内重新读取内容，不能假设系统已替它读好；无法处理时返回可见错误并允许用户回到 Preview。
+- App 收到 `open` 后必须在自身权限内重新读取内容，不能假设系统已替它读好；无法作为自身格式处理的内容在 App 内嵌入系统 Preview（Zone 根域 `/embed/preview`，`buckyos.preview-embed`），不再把内容路由出去；读取失败显示对应错误（不存在 / 无权限 / 网络），不笼统归为“不支持”。
+- “打开方式…”由系统统一处理：App 发 `content.open { target: "chooser", hints }`（websdk `AppFrameClient.openContent`），Shell 列出候选并启动所选应用，**不把请求方 App 自己的任何 handler 列回给它**（按 AppId，含 `mime: */*` 的通配 handler）；独立标签页走 Zone 根域 `/?open=…&intent=chooser`。实现见 `src/apps/text_editor/readme.md` §7.3、§7.6。
 
 ### 9.4 `cell.view` / `cell.edit`
 

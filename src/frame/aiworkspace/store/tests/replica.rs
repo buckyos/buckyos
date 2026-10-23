@@ -66,7 +66,7 @@ fn bootstrap(ws: &mut Workspace, who: &Caller, peer: u64) -> Replica {
 }
 
 fn local(rep: &Replica, key: &str, ops: Value) -> Value {
-    json!({ "protocol_version": "0.5", "workspace_id": rep.workspace_id, "epoch": rep.epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
+    json!({ "protocol_version": "1.0", "workspace_id": rep.workspace_id, "epoch": rep.epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
 }
 
 fn working_cell(rep: &Replica, record: &str, field: &str) -> (Option<Value>, u64) {
@@ -283,6 +283,12 @@ fn unknown_results_revoked_permission_and_epoch_change() {
     let mut ws = h.lock().unwrap();
     assert_eq!(ws.commit(&req, &bob(), &CommitOpts::default())["code"], "EPOCH_MISMATCH");
     assert_eq!(rep.pending.len(), 1, "pending input is kept for the user, not discarded");
+    // the replica turns a live intent into a conflict to resend onto the new history (D07), never replays it
+    rep.mark(&req["idempotency_key"].as_str().unwrap().to_string(), "queued", None).unwrap();
+    rep.epoch_mismatch("history replaced");
+    assert_eq!((rep.pending[0].state.as_str(), rep.pending[0].result.as_ref().unwrap()["code"].as_str()), ("conflict", Some("EPOCH_MISMATCH")));
+    assert_eq!(rep.pending[0].request, req, "the request is kept for the user");
+    assert_eq!(root_of(&rep.working), root_of(&rep.confirmed), "it left the working view");
 }
 
 /// A commit accepted by a newer backend (an anchor kind this core does not know) must not stop
@@ -295,11 +301,11 @@ fn replica_keeps_anchors_it_does_not_know() {
     let mut ws = h.lock().unwrap();
     let mut rep = bootstrap(&mut ws, &alice(), 4343);
     // stand-in for a newer backend: the import path keeps what a strict write would refuse
-    let req = json!({ "protocol_version": "0.5", "workspace_id": ws.workspace_id, "epoch": ws.epoch, "idempotency_key": "newer/1",
+    let req = json!({ "protocol_version": "1.0", "workspace_id": ws.workspace_id, "epoch": ws.epoch, "idempotency_key": "newer/1",
         "operations": [{ "op": "entity.create", "entity_id": "note-future", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "zz", "payload": { "target": { "entity_id": "notes", "selector": { "kind": "richtext_line", "line": 2 } },
                 "range": { "kind": "richtext_columns", "from": 1 }, "kind": "note", "body": "来自新版本" } }] });
-    let r = ws.commit(&req, &alice(), &CommitOpts { internal: true, import: true, undoes: None });
+    let r = ws.commit(&req, &alice(), &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false });
     assert_eq!(r["status"], "accepted", "{r}");
     catch_up(&ws, &alice(), &mut rep);
     let read = aiworkspace_core::read::read(&rep.working, &aiworkspace_core::access::Access::full("alice"), "note-future", None).unwrap();

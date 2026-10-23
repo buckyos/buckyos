@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { describeError, runErrorText, type ReadOk } from '../../api/session'
-import { SHOWS_ID, SYSTEM_IDS, type Json, type WishInput, type WishPayloadRead, type WishRunView } from '../../api/types'
+import { SHOWS_ID, SYSTEM_IDS, type Json, type WishExecutionMode, type WishInput, type WishPayloadRead, type WishRunView } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdit, useEntity, useFreshness, useLoad, useOutlineVersion, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
@@ -19,6 +19,7 @@ const BUSY_LABEL: Record<WishBusy, string> = {
   analyzing: 'aiworkspace.wish.busy.analyzing', executing: 'aiworkspace.wish.busy.executing', rerunning: 'aiworkspace.wish.busy.rerunning', repairing: 'aiworkspace.wish.busy.repairing',
   previewing: 'aiworkspace.wish.busy.previewing', applying: 'aiworkspace.wish.busy.applying', cancelling: 'aiworkspace.wish.busy.cancelling',
 }
+const EXECUTION_LABEL: Record<WishExecutionMode, string> = { service: 'aiworkspace.wish.execution.service', local: 'aiworkspace.wish.execution.local', hosted: 'aiworkspace.wish.execution.hosted' }
 const PHASE_LABEL: Record<string, string> = {
   queued: 'aiworkspace.wish.phase.queued', snapshotting: 'aiworkspace.wish.phase.snapshotting', running: 'aiworkspace.wish.phase.running',
   validating: 'aiworkspace.wish.phase.validating', waiting_confirmation: 'aiworkspace.wish.phase.waitingConfirmation', applying: 'aiworkspace.wish.phase.applying',
@@ -155,6 +156,10 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const payload = read.data.content.payload
   const keyRevs = read.data.content.key_revs
   const canEdit = !readOnly && entity.capabilities.includes('update')
+  // a collaborator with only `run`: the owner's Agent executes and writes (D22)
+  const runOnly = !readOnly && !canEdit && store.wish.runOnly(wishId)
+  const canRun = canEdit || runOnly
+  const executionModes = payload.executor === 'xllm' ? store.wish.executionModes() : []
   const analysis = payload.analysis
   const needsAnalysis = freshness?.needs_analysis ?? !analysis
   const ready = analysis?.status === 'ready' && !needsAnalysis
@@ -195,6 +200,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   }
   const analyze = () => act(async () => { await store.wish.analyze(wishId, cellId); setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }) })
   const execute = () => act(() => store.wish.execute(wishId, { cellId }))
+  const resume = () => act(async () => { if (run) { await store.wish.resume(run); if (run.stage === 'analyze') setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }) } })
   const selectedInputs = canEdit ? [...new Set((canvasSelection ?? []).map((id) => { const e = store.outline.get(id); return e?.type_id === 'buckyos.cell' ? e.source_id ?? null : e && e.type_id !== 'buckyos.container' ? e.entity_id : null })
     .filter((id): id is string => Boolean(id) && id !== wishId && !inputs.some((input) => input.entity_id === id)))] : []
   const rerun = () => act(() => store.wish.rerunProgram(wishId, cellId))
@@ -211,9 +217,15 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
           <option value="xllm">{t('aiworkspace.wish.executor.xllm')}</option>
           <option value="mock">{t('aiworkspace.wish.executor.mock')}</option>
         </select>
+        {executionModes.length > 0 && !runOnly && (
+          <select data-testid="aiws-wish-exec-mode" aria-label={t('aiworkspace.wish.execution')} value={store.wish.executionMode(wishId)} disabled={running} onChange={(e) => store.wish.setExecutionMode(e.target.value as WishExecutionMode)}>
+            {executionModes.map((mode) => <option key={mode} value={mode}>{t(EXECUTION_LABEL[mode])}</option>)}
+          </select>
+        )}
         <FreshnessBadge entityId={wishId} />
         {busy && <span className="aiws-muted" data-testid="aiws-wish-busy">{t(BUSY_LABEL[busy])}</span>}
       </div>
+      {runOnly && <div className="aiws-muted" data-testid="aiws-wish-run-only">{t('aiworkspace.wish.runOnlyHosted')}</div>}
       <label className="aiws-wish-prompt">
         <span className="aiws-muted">{t('aiworkspace.wish.request')}</span>
         <textarea data-testid="aiws-wish-prompt" rows={compact ? 2 : 3} value={prompt ?? payload.prompt} disabled={!canEdit} onChange={(event) => setPrompt(event.target.value)} onBlur={savePrompt} />
@@ -304,8 +316,8 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
             <option value="new">{t('aiworkspace.wish.outputNew')}</option>
           </select>
         </label>
-        <button type="button" data-testid="aiws-wish-analyze" disabled={!canEdit || running || Boolean(busy)} onClick={() => { void analyze() }}>{t('aiworkspace.wish.analyze')}</button>
-        <button type="button" data-testid="aiws-wish-execute" disabled={!canEdit || running || Boolean(busy) || !ready} title={t(!analysis ? 'aiworkspace.wish.executeHint.analyzeFirst' : needsAnalysis ? 'aiworkspace.wish.executeHint.changed' : analysis.status !== 'ready' ? 'aiworkspace.wish.executeHint.missingInputs' : 'aiworkspace.wish.executeHint.ready')} onClick={() => { void execute() }}>{t('aiworkspace.wish.execute')}</button>
+        <button type="button" data-testid="aiws-wish-analyze" disabled={!canRun || running || Boolean(busy)} onClick={() => { void analyze() }}>{t('aiworkspace.wish.analyze')}</button>
+        <button type="button" data-testid="aiws-wish-execute" disabled={!canRun || running || Boolean(busy) || !ready} title={t(!analysis ? 'aiworkspace.wish.executeHint.analyzeFirst' : needsAnalysis ? 'aiworkspace.wish.executeHint.changed' : analysis.status !== 'ready' ? 'aiworkspace.wish.executeHint.missingInputs' : 'aiworkspace.wish.executeHint.ready')} onClick={() => { void execute() }}>{t('aiworkspace.wish.execute')}</button>
         {payload.program && payload.executor === 'xllm' && <button type="button" data-testid="aiws-wish-rerun" disabled={!canEdit || running || Boolean(busy)} title={t('aiworkspace.wish.rerunHint')} onClick={() => { void rerun() }}>{t('aiworkspace.wish.rerun')}</button>}
         {programFailed && <button type="button" data-testid="aiws-wish-repair" disabled={!canEdit || running || Boolean(busy)} onClick={() => { void repair() }}>{t('aiworkspace.wish.repair')}</button>}
       </div>
@@ -315,6 +327,14 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
         <div className={message?.kind === 'info' ? 'aiws-warning' : 'aiws-error'} role={message?.kind === 'info' ? 'status' : 'alert'} data-testid="aiws-wish-message">{message?.text ?? flowError}</div>
       )}
       {run && !isActive(run) && run.state === 'failed' && !message && !flowError && <div className="aiws-error" data-testid="aiws-wish-message">{t('aiworkspace.wish.runFailed', { detail: runErrorText(run.error) ?? run.state })}</div>}
+      {run && run.state === 'interrupted' && !busy && (
+        <div className="aiws-warning aiws-inline-form" data-testid="aiws-wish-interrupted">
+          <span>{t('aiworkspace.wish.interrupted')}</span>
+          {store.wish.canResume(run)
+            ? <button type="button" data-testid="aiws-wish-resume" disabled={!canRun} onClick={() => { void resume() }}>{t('aiworkspace.wish.resume')}</button>
+            : <span className="aiws-muted">{t('aiworkspace.wish.resumeHint')}</span>}
+        </div>
+      )}
       {editEntry && editEntry.state !== 'committed' && <div className={`aiws-state aiws-state-${editEntry.state}`} data-testid="aiws-wish-apply-state">{editEntry.detail ? t('aiworkspace.wish.stateWithDetail', { state: EDIT_STATE_LABEL[editEntry.state], detail: editEntry.detail }) : EDIT_STATE_LABEL[editEntry.state]}</div>}
       {run && isWaiting(run) && <WishCandidate run={run} canApply={canEdit} onMessage={(kind, text) => setMessage({ kind, text })} />}
       {lastRun && (

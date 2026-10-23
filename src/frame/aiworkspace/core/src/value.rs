@@ -156,6 +156,10 @@ impl FieldDef {
     /// Normalize a non-absent value. `null` passes only on nullable fields.
     /// `object_ref` is normalized structurally; target existence is the caller's check.
     pub fn normalize(&self, v: &Value) -> WsResult<Value> {
+        if is_formula(v) {
+            // a formula of this field's return type (D18): saved as given, evaluated by readers, never here
+            return check_formula(v).map(|_| v.clone()).map_err(|m| WsError::invalid_schema(format!("field {}: {m}", self.field_id)));
+        }
         if v.is_null() {
             return if self.nullable {
                 Ok(Value::Null)
@@ -462,6 +466,145 @@ pub fn normalize_reference(v: &Value) -> WsResult<Value> {
         }
     }
     Ok(Value::Object(out))
+}
+
+/// The frozen reference object (内核架构改进 D10, D03; `schemas/reference.schema.json`):
+/// `{ zone?, workspace_id?, entity_id, selector?, mode: live | fixed, version?: { epoch, seq } | { content_root, path? } }`.
+/// Accepts that shape, or any of the older vocabularies it replaces — a persisted reference
+/// (`version.mode: live_head | fixed_revision | published_channel`), a wish input
+/// (`version.mode: follow | fixed`) — and returns the frozen shape. A `fixed` version that only
+/// names a cell revision or a URL source revision has no identity of its own and is refused.
+pub fn canonical_reference(v: &Value) -> WsResult<Value> {
+    let bad = |m: &str| WsError::invalid_schema(format!("bad reference: {m}"));
+    let o = v.as_object().ok_or_else(|| bad("expected object"))?;
+    for k in o.keys() {
+        if !matches!(k.as_str(), "zone" | "workspace_id" | "entity_id" | "selector" | "mode" | "version" | "name" | "label") {
+            return Err(bad(&format!("unknown key {k}")));
+        }
+    }
+    let entity_id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("entity_id required"))?;
+    let mut out = Map::new();
+    if let Some(z) = o.get("zone") {
+        let z = z.as_str().filter(|s| !s.is_empty() && s.len() <= 256).ok_or_else(|| bad("zone"))?;
+        out.insert("zone".into(), json!(z));
+    }
+    if let Some(ws) = o.get("workspace_id") {
+        let ws = ws.as_str().filter(|s| !s.is_empty() && s.len() <= 64).ok_or_else(|| bad("workspace_id"))?;
+        out.insert("workspace_id".into(), json!(ws));
+    }
+    out.insert("entity_id".into(), json!(entity_id));
+    if let Some(sel) = o.get("selector").filter(|s| !s.is_null()) {
+        let kind = sel.get("kind").and_then(Value::as_str).ok_or_else(|| bad("selector.kind required"))?;
+        if kind != "entity" {
+            out.insert("selector".into(), sel.clone());
+        }
+    }
+    let fixed_root = |root: &str, path: Option<&Value>| -> WsResult<Value> {
+        if !crate::canonical::is_obj_id(root) {
+            return Err(bad("version.content_root must be an object id"));
+        }
+        let mut v = json!({ "content_root": root });
+        if let Some(p) = path {
+            let p = p.as_str().filter(|s| !s.is_empty() && s.len() <= 1024).ok_or_else(|| bad("version.path"))?;
+            v["path"] = json!(p);
+        }
+        Ok(v)
+    };
+    let (mode, version): (&str, Option<Value>) = match (o.get("mode").and_then(Value::as_str), o.get("version")) {
+        // the frozen shape
+        (Some("live"), None) => ("live", None),
+        (Some("live"), Some(_)) => return Err(bad("a live reference carries no version")),
+        (Some("fixed"), Some(ver)) => {
+            let m = ver.as_object().ok_or_else(|| bad("version must be an object"))?;
+            if let Some(root) = m.get("content_root") {
+                if m.keys().any(|k| !matches!(k.as_str(), "content_root" | "path")) {
+                    return Err(bad("version: content_root takes only path"));
+                }
+                ("fixed", Some(fixed_root(root.as_str().unwrap_or(""), m.get("path"))?))
+            } else {
+                let epoch = m.get("epoch").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(|| bad("version needs { epoch, seq } or { content_root, path? }"))?;
+                let seq = m.get("seq").and_then(Value::as_u64).ok_or_else(|| bad("version.seq must be a non-negative integer"))?;
+                if m.len() != 2 {
+                    return Err(bad("version: epoch takes only seq"));
+                }
+                ("fixed", Some(json!({ "epoch": epoch, "seq": seq })))
+            }
+        }
+        (Some("fixed"), None) => return Err(bad("a fixed reference needs its version")),
+        (Some(m), _) => return Err(bad(&format!("unknown mode {m}"))),
+        // the older vocabularies: `version.mode` decides
+        (None, ver) => {
+            let m = ver.and_then(|v| v.get("mode")).and_then(Value::as_str).unwrap_or("live_head");
+            match m {
+                "live_head" | "follow" | "published_channel" => ("live", None),
+                "fixed_revision" | "fixed" => {
+                    let ver = ver.unwrap();
+                    match ver.get("object_id").and_then(Value::as_str) {
+                        Some(root) => ("fixed", Some(fixed_root(root, None)?)),
+                        None if ver.get("seq").and_then(Value::as_u64).is_some() => {
+                            let epoch = ver.get("epoch").and_then(Value::as_str).ok_or_else(|| bad("a fixed { seq } needs its epoch"))?;
+                            ("fixed", Some(json!({ "epoch": epoch, "seq": ver["seq"] })))
+                        }
+                        None if ver.get("source_revision").is_some() => return Err(bad("a URL source revision is a query entry's own version, not a Workspace version (§6.1)")),
+                        None => return Err(bad("a fixed cell revision (rev / hash) is a read-set precondition, not a reference version")),
+                    }
+                }
+                m => return Err(bad(&format!("unknown version.mode {m}"))),
+            }
+        }
+    };
+    out.insert("mode".into(), json!(mode));
+    if let Some(v) = version {
+        out.insert("version".into(), v);
+    }
+    Ok(Value::Object(out))
+}
+
+/// The persisted (`live_head` / `fixed_revision`) form of a frozen reference, for the code paths that
+/// still speak it. A `{ epoch, seq }` version has no persisted form yet (T1-12 resolves it through retention).
+pub fn reference_from_canonical(v: &Value) -> WsResult<Value> {
+    let mut out = Map::new();
+    for k in ["workspace_id", "entity_id", "selector"] {
+        if let Some(x) = v.get(k) {
+            out.insert(k.into(), x.clone());
+        }
+    }
+    let version = match (v["mode"].as_str(), v.get("version")) {
+        (Some("live"), _) => json!({ "mode": "live_head" }),
+        (Some("fixed"), Some(ver)) if ver.get("content_root").is_some() => json!({ "mode": "fixed_revision", "object_id": ver["content_root"] }),
+        (Some("fixed"), Some(ver)) => return Err(WsError::new(Code::VersionNotRetained, format!("version {} of epoch {} is not retained by a checkpoint or clone", ver["seq"], ver["epoch"].as_str().unwrap_or("?")))),
+        _ => return Err(WsError::invalid_schema("bad reference: mode required")),
+    };
+    out.insert("version".into(), version);
+    Ok(Value::Object(out))
+}
+
+/// `{ "$formula": { lang, version, expr } }` — the one value shape a typed key may hold instead of a value
+/// of its type (内核架构改进 D18): kept verbatim, not evaluated by the backend, treated as empty by sorting,
+/// filtering and uniqueness.
+pub fn is_formula(v: &Value) -> bool {
+    v.as_object().is_some_and(|o| o.len() == 1 && o.contains_key("$formula"))
+}
+
+pub const FORMULA_EXPR_MAX_CHARS: usize = 4096;
+
+pub fn check_formula(v: &Value) -> Result<(), String> {
+    let f = v.get("$formula").and_then(Value::as_object).ok_or("$formula must be an object")?;
+    for k in f.keys() {
+        if !matches!(k.as_str(), "lang" | "version" | "expr") {
+            return Err(format!("$formula: unknown key {k}"));
+        }
+    }
+    if f.get("lang").and_then(Value::as_str) != Some("aiws") {
+        return Err("$formula.lang must be \"aiws\"".into());
+    }
+    if !f.get("version").and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s.len() <= 16) {
+        return Err("$formula.version must be a short string".into());
+    }
+    match f.get("expr").and_then(Value::as_str) {
+        Some(e) if !e.trim().is_empty() && e.chars().count() <= FORMULA_EXPR_MAX_CHARS => Ok(()),
+        _ => Err(format!("$formula.expr must be a non-empty string of at most {FORMULA_EXPR_MAX_CHARS} characters")),
+    }
 }
 
 pub fn reference_entity_id(v: &Value) -> Option<&str> {

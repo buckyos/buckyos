@@ -31,6 +31,20 @@ pub enum Code {
     LockLost,
     /// The Workspace is being presented (third phase §8.1): document writes are closed until the show ends.
     ShowLocked,
+    /// The Workspace is over its quota; `data { needed_bytes, reclaimable_bytes }` says whether releasing space helps (D19).
+    QuotaExceeded,
+    /// The Workspace is at its quota and nothing can be released: the limit itself must be raised (D19).
+    QuotaLimit,
+    /// The fixed version `{ epoch, seq }` exists but nothing retains it any more (D03).
+    VersionNotRetained,
+    /// A resource of this history was reclaimed after its retention period: the undo or restore cannot be done (D06).
+    ResourceReclaimed,
+    /// A run was started without an execution context (§9.6).
+    ExecutionContextMissing,
+    /// The task configuration changed since it was confirmed: the delegation must be confirmed again (D16, D22).
+    DelegationStale,
+    /// The run's authorization was revoked or an older attempt reports after a newer one (§9.5).
+    RunRevoked,
 }
 
 impl Code {
@@ -61,6 +75,13 @@ impl Code {
         Code::LockHeld,
         Code::LockLost,
         Code::ShowLocked,
+        Code::QuotaExceeded,
+        Code::QuotaLimit,
+        Code::VersionNotRetained,
+        Code::ResourceReclaimed,
+        Code::ExecutionContextMissing,
+        Code::DelegationStale,
+        Code::RunRevoked,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -91,6 +112,13 @@ impl Code {
             Code::LockHeld => "LOCK_HELD",
             Code::LockLost => "LOCK_LOST",
             Code::ShowLocked => "SHOW_LOCKED",
+            Code::QuotaExceeded => "QUOTA_EXCEEDED",
+            Code::QuotaLimit => "QUOTA_LIMIT",
+            Code::VersionNotRetained => "VERSION_NOT_RETAINED",
+            Code::ResourceReclaimed => "RESOURCE_RECLAIMED",
+            Code::ExecutionContextMissing => "EXECUTION_CONTEXT_MISSING",
+            Code::DelegationStale => "DELEGATION_STALE",
+            Code::RunRevoked => "RUN_REVOKED",
         }
     }
 
@@ -103,6 +131,7 @@ impl Code {
                 | Code::BaseUnknown
                 | Code::SnapshotExpired
                 | Code::ShowLocked
+                | Code::QuotaExceeded
         )
     }
 

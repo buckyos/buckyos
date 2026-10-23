@@ -47,11 +47,14 @@ writeFileSync(auth, JSON.stringify({
   sso: { self_register_enabled: true, did_login_enabled: false },
 }))
 // wish runs talk to a scripted OpenAI-compatible model (许愿格 §16.1: controlled model returns)
-const llmPort = await new Promise((resolvePort) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolvePort(p)) }) })
+// the port is chosen by playwright.aiworkspace.config.ts: the local executor spec reaches the same model from the browser
+const llmPort = process.env.AIWS_E2E_LLM_PORT ?? await new Promise((resolvePort) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolvePort(p)) }) })
 const llm = startMockLlm(llmPort)
 const wishConfig = join(root, 'wish.json')
 writeFileSync(wishConfig, JSON.stringify({ provider: { type: 'openai', base_url: `http://127.0.0.1:${llmPort}/v1`, api_key_env: 'AIWS_E2E_LLM_KEY' }, analyze_model: 'scripted', execute_model: 'scripted', map_model: 'scripted', program_timeout_secs: 60 }))
 const env = { ...process.env, AIWS_E2E_LLM_KEY: 'e2e' }
+// a local run whose browser went away is interrupted within seconds (the browser heartbeats at a third of the lease)
+env.AIWS_RUN_LEASE_MS ??= '6000'
 delete env.AIWS_FAILPOINT
 const child = spawn(binary, ['--data-dir', join(root, 'data'), '--listen', `127.0.0.1:${port}`, '--auth-file', auth, '--fixture-sources', '--wish-config', wishConfig, '--named-store-config', storeConfig, '--ndm-gateway', ndmBase, '--log-level', 'warn'], { stdio: 'inherit', env })
 

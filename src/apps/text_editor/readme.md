@@ -1,7 +1,7 @@
 # BuckyOS Text Editor
 
-> 文档状态：Draft v0.3（详细设计，未实现）
-> 日期：2026-10-06（v0.2：增加文件缓冲区与恢复区；§15 记录已确认决策。v0.3：覆盖时提供“覆盖 / 覆盖并保留冲突副本”两个选项）
+> 文档状态：v0.4（已实现）
+> 日期：2026-10-06（v0.2：增加文件缓冲区与恢复区；§15 记录已确认决策。v0.3：覆盖时提供“覆盖 / 覆盖并保留冲突副本”两个选项）；2026-10-23 v0.4（issue #675：编辑区内嵌系统 Preview §7.6、系统“打开方式”选择器 §7.3、关闭不再等待服务端 §7.4、保存创建缺失目录与分阶段错误 §8.7、焦点/标题回环修复 §7.2）
 > 上游需求：[BuckyOS Preview App / Component PRD](../../../product/bucky_file/BuckyOS%20Preview%20App-Component%20PRD.md)（§4 非目标、§8 支持级别、§10.6“使用专用应用打开”、§11 Session Context、§23.8 第 10 项）、[内容扩展机制 Content Extension](../../../doc/sdk/context%20ext.md)（`open` 意图、Content Registry、调用模型）
 > 关联协议：[App 安装协议](../../../doc/App%20安装协议.md)（AppDoc v1、预装）、[路径约定](../../../doc/path_usage.md)（App 数据区）、NFSP（`cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md`、[nfs_server 产品设计](../../../product/bucky_file/nfs_server.md)、`src/frame/nfs_server/README.md`）
 > 读者：BuckyOS 系统 / Desktop / buckyos-websdk / nfs_server 开发者，以及按本文实施的 Code Agent
@@ -251,7 +251,7 @@ UI 框架用 React + Vite（与 Desktop 一致）；编辑内核用 CodeMirror 6
 - 页面公开（static-web 默认 `allow_guest=true`，gateway `access_mode=public`），没有会话时只显示外壳和“登录”状态，不读任何内容。
 - 启动时 `initBuckyOS("text-editor.buckyos.bns.did")`，没有会话则 `login()` 走 SSO（`sys.<zone>/login` → App 源 `/sso_callback` → `/sso_refresh`）。桌面内用户已登录，嵌入的 iframe 按 sys_test 的先例完成静默跳转。
 - 若 iframe 内 SSO 被浏览器策略阻断（第三方 Cookie、登录页禁止嵌入），编辑器显示“需要登录”，按钮用顶层弹窗完成登录，然后回到 iframe 重试 `/sso_refresh`。这是 V1/V3 的验证项。
-- **Shell origin 不写死。** App Frame 消息只发给嵌入方：被嵌入时取 `document.referrer` 的 origin（限本 Zone 根域或其子域），独立标签页/无 referrer 时回退 `sys.<zone>`。DV 上桌面跑在 Zone 根域而非 `sys.`，写死 `sys.<zone>` 会让握手静默失败（`frame.init` 收不到、`window: reuse` 失效、标题/关闭守卫都不工作）。
+- **Shell origin 与系统入口不写死、不拆主机名。** 系统入口是 Zone 根域：`${protocol}//${buckyos.getZoneHostName()}`（`initBuckyOS` 之后由 SDK 给出）。App Frame 消息只发给嵌入方：websdk `embedderOrigin()` 先取 `location.ancestorOrigins[0]`、再取 `document.referrer`，限本 Zone（`originInZone`）；都没有时用系统入口。只看 referrer 不够：iframe 内经 `sys.<zone>/login` 走过一次 SSO 后 referrer 变成 `sys.<zone>`，握手静默失败，旧版随后把“Preview”跳到 `sys.<zone>/?open=…`，而 `sys.` 不能签发 control-panel 令牌（issue #675 第 5 点的完整链路）。
 - **会话保活与失效。** 浏览器 runtime 的 token 续期由 websdk 自己完成（`getAccountInfo()` 在 access token 临近过期时调 `/sso_refresh`，并维持续期定时器），App 不另做刷新。编辑器只处理两件事：① 启动时在 `getAccountInfo()` 返回前只显示“正在连接…”，不显示登录按钮，避免用户在会话仍有效时误触发整套 SSO；② 运行中一旦 `getAccountInfo()` 返回空（refresh token 失效、Zone 重装、verify-hub 重启等都会让 gateway 清掉 SSO Cookie），顶部显示“登录已失效”横幅，点“登录”先把所有文档落到本地缓冲区再跳 SSO，回来后按 `restoreSession` 恢复工作区。
 - **多用户（已确认的安装策略）**：Owner 安装 App，默认所有用户可用，除非手工改为仅自己可用。预装实例 `text-editor.buckyos.bns.did@<owner>` 与主机 `text-editor` 由全体可用用户共用；每个用户以自己的会话登录，读写都以自己的身份进行。设置、缓冲区、恢复区都放在**当前用户**自己的路径下（`users/<当前用户>/apps/...`、`cyfs:///home/<当前用户>/.local/share/...`），用户之间互不可见。
 
@@ -381,7 +381,7 @@ Preview 首版已经完成，Preview PRD 中“首版不接入 `content_handlers
 
 - `mime`：优先使用 NFSP 返回的类型；没有时用 websdk 共享的扩展名 → MIME 表（由 Desktop `components/preview/mediaTypes.ts` 现有表迁入，`TEXT_CODE_EXTENSIONS` 全部映射到 `text/*` 或 §5.2 列出的 `application/*`）；
 - `objType`：`cyfs-path` 文件为 `cyfile`；
-- P0 不做内容探测（sniff）：`open` 由用户触发，且编辑器加载时会自行校验内容（二进制检测，§8.5），误路由的代价只是一个可回退的错误页。无扩展名的文本文件在 P0 默认仍进 Preview，P1 由 Open Router 对无 MIME 的文件做一次有界探测。
+- Open Router 不做内容探测（sniff）：`open` 由用户触发，编辑器加载时自行按字节判断（§8.5），不能编辑的内容就在编辑区内交给系统 Preview（§7.6），不会再路由出去。无扩展名的文本文件默认仍进 Preview。
 
 ---
 
@@ -442,8 +442,10 @@ interface OpenContentOptions {
 | File Browser 右键“打开方式 ▸” | 列出 `resolve(open)` 全部候选（含 Preview），末尾“选择默认应用…”；勾选“始终使用此应用打开 `<选择器>`”时写入 `content_defaults.defaults.open` |
 | File Browser“在新窗口中打开” | 由原“在新 Preview 窗口中打开”改名，走 `openContent(..., { newWindow: true })` |
 | File Browser“预览 N 项” | 保持调用 Preview（多选预览是 Preview 的职责） |
-| Preview“使用专用应用打开” | `OpenWithSheet` 列出 `resolve(open)` 中除 Preview 外的候选，保留下载与复制引用 |
-| 编辑器内“在 Preview 中打开” / 点击非文本文件 | App Frame `content.open`（§7.3），由 Shell 解析 |
+| Preview“使用专用应用打开” | 系统 `OpenWithSheet`（`app/content/OpenWithSheet.tsx`）列出 `resolve(open)` 中除 Preview 外的候选，保留下载与复制引用 |
+| 编辑器内点击非文本文件（侧栏、打开文件、快速打开、最近文件、外部 OpenRequest） | 在当前编辑区以只读预览标签打开（§7.6），不弹 Preview 窗口、不开新页 |
+| 编辑器内“预览” | 有未保存修改时预览草稿快照，否则预览已保存文件；都是新标签，编辑状态不变（§7.6） |
+| 预览中的“打开方式…” | `content.open target:"chooser"`（§7.3）：桌面内由 Shell 弹出系统选择器；独立标签页打开 Zone 根域的 `/?open=…&intent=chooser` |
 | 桌面启动器图标 | 打开 App 窗口，无 OpenRequest，编辑器显示起始页（§9.11） |
 | 独立浏览器标签页 | 直接访问 `https://text-editor.<zone>/?src=…`；没有 App Frame，只用 URL 通道 |
 
@@ -505,7 +507,7 @@ sequenceDiagram
 | `frame.localeChanged` | `{ locale }` | — | |
 | `frame.beforeClose` | `{ reason: "user"\|"logout"\|"shell" }` | `frame.beforeCloseResult { decision: "allow"\|"deny"\|"pending" }` | 关闭守卫，见 §7.4 |
 | `frame.back` | `{}` | `frame.backResult { handled }` | 移动端返回键 / 返回手势 |
-| `frame.focusChanged` | `{ focused }` | — | 编辑器借此在回到前台时检查磁盘变化 |
+| `frame.focusChanged` | `{ focused }` | — | 只在聚焦状态**变化**时发送（`AppFrameHost.setFocused`）；编辑器借此在回到前台时检查磁盘变化。v0.3 在每次窗口列表变化时都发，而编辑器检查磁盘后又会改标题、标题又改窗口列表，形成回环：DV 实测一个空闲窗口每秒约 650 个 NFSP 请求，浏览器请求槽耗尽（`ERR_INSUFFICIENT_RESOURCES`），保存报 “Failed to fetch”、关闭应答被拖慢（issue #675 第 1、4 点）。现在 Host 去重、`updateWindow` 对相同值不产生新状态、Client 只在变化时回调与发送标题、编辑器的磁盘检查同一时刻只跑一个 |
 
 ### 7.3 App → Shell
 
@@ -514,7 +516,7 @@ sequenceDiagram
 | `frame.hello` | `{ nonce, appCapabilities: Array<"open"\|"beforeClose"\|"back"> }` | 声明支持的可选能力 |
 | `window.setTitle` | `{ title, dirty? }` | Shell 更新窗口标题；`dirty` 在标题前显示未保存标记 |
 | `window.requestClose` | `{}` | App 已完成自己的确认流程，请求关闭窗口 |
-| `content.open` | `{ request: { source, session?, mode? }, target: "default"\|"preview"\|"chooser", newWindow? }` | 请求 Shell 用解析结果 / Preview / 打开方式选择器打开内容。Shell 补全 `origin`（发起 App 与窗口），每个窗口每 10 s 最多 5 次。它只让 Shell 打开窗口，不授予任何数据访问。`chooser` 为 P1 |
+| `content.open` | `{ request: { source, session?, mode? }, target: "default"\|"preview"\|"chooser", newWindow?, hints?: { name?, mime?, size? } }` | 请求 Shell 用解析结果 / Preview / 系统“打开方式”选择器打开内容。Shell 补全 `origin`（发起 App 与窗口），每个窗口每 10 s 最多 5 次。它只让 Shell 打开窗口，不授予任何数据访问。`chooser` 由系统列出候选、处理选择并启动应用，**不再提供发起 App 自己的任何 handler**（`text` 与 `any-as-text` 都按 AppId 排除，系统内没有 Text Editor 专用分支）；取消、无候选、启动失败都不改变发起 App 的状态。App 不维护应用列表、不拼 App URL。SDK：`AppFrameClient.openContent(request, target, { hints })`；未嵌入时用构造参数 `systemOrigin` 在新标签页打开 `systemOpenUrl()` 生成的 Zone 根域入口（`/?open=&intent=&name=&mime=&size=&from=<AppId>`，Desktop 用 `parseSystemOpen()` 解析） |
 
 ### 7.4 关闭守卫
 
@@ -540,11 +542,23 @@ sequenceDiagram
   end
 ```
 
-- 关闭前编辑器先把所有缓冲区刷写到服务端（§8.6），然后再提示；“保留修改”关闭窗口但保留缓冲区，下次打开该文件时自动恢复；“不保存”把缓冲区内容移入恢复区后关闭（§8.8）。设置“关闭时不再询问，保留修改”后直接按“保留修改”处理（类似 Sublime 的 hot exit）。
-- `reason: "logout"`：缓冲区刷写完成后直接回复 `allow`，不弹窗。
-- Shell 3 s 内既没收到 `allow`/`deny` 也没收到 `pending` 时，询问“应用无响应，是否强制关闭？”。
+- 关闭**不等服务端**再让用户选择：先把未保存文档写入本地预写（IndexedDB 事务完成才算成功）并保存工作区快照，再给服务端缓冲区最多 2 s 的同步时间，然后提示。选项按实际安全程度给出：已同步 → “保留修改”；只在本机 → 提示“已保存在本机、尚未同步到服务器、只能在本机恢复”，选项“保留在本机并关闭”；本机也没写成 → 不提供“保留”，只能保存、放弃或取消。保留下来的本机草稿在下次启动时回放到服务端缓冲区并按 `restoreSession` 恢复。“不保存”仍先把我的版本存入恢复区，存档失败则什么都不放弃并说明原因（§8.8）。设置“关闭时不再询问，保留修改”后，只要已同步或已写入本机就直接关闭。
+- `reason: "logout"`：只写本机预写、不等服务端，立即回复；本机也写不成时回复 `deny` 并提示，Desktop 据此中止注销而不是丢弃草稿。
+- Shell 3 s 内既没收到 `allow`/`deny` 也没收到 `pending` 时，询问“应用无响应，是否强制关闭？”。DV 复现（单机、无 CPU 节流）中应答在 0.37 s 内到达，6× CPU 节流下 1.44 s：v0.3 的强关提示来自 §7.2 的焦点/标题回环挤占主线程与请求槽，而不是从未握手；修复后不再依赖这一超时。
 - Desktop 当前的窗口关闭路径没有异步守卫，需要在窗口容器的关闭动作上增加可选的 `closeGuard`（WebAppFrame 面板注册）。
 - 强制关闭、崩溃或断网都不会丢失编辑内容：最近的修改至少已在本地预写或服务端缓冲区中（§8.6），关闭守卫只负责体验。
+
+### 7.6 编辑区内嵌系统 Preview（`buckyos.preview-embed`）
+
+不能作为文本编辑的内容（前 8 KiB 含 NUL、超过 16 MiB、已知媒体类型 `image/*`（SVG 除外）/`audio/*`/`video/*`/`font/*`/`application/pdf`）在当前编辑区以**预览标签**打开，复用系统 Preview 的格式识别、renderer、provider、工具栏与错误态，不复制渲染器，也不把 Desktop 依赖搬进编辑器：
+
+- 系统在 Zone 根域提供仅组件页面 `/embed/preview`（Desktop `src/app/preview/embed/PreviewEmbedApp.tsx`，`main.tsx` 在该路径只渲染组件，不载入桌面外壳与路由）。编辑器用 websdk `PreviewEmbed` 嵌入它（URL 带 `#bpe=<nonce>&po=<编辑器 origin>`），页面用 `PreviewEmbedHost` 只接受本 Zone 内的嵌入方。
+- 页面用**自己（Zone 根域）的会话**读取内容；编辑器只交内容引用（或草稿字节的 Blob），任何令牌都不跨源，后端来源校验不放宽。桌面内用户已在根域登录，预览不会再次登录；独立标签页若根域没有会话，预览区内会出现根域登录页（已知限制）。
+- 消息：页面 → 编辑器 `embed.hello{nonce}`、`embed.state{status, error?{kind,code}, title?, mediaType?}`、`embed.openWith{request, hints}`、`embed.exit`；编辑器 → 页面 `embed.init{nonce, source, session?, theme, locale}`、`embed.update{theme?, locale?}`。主题和语言由嵌入方决定，页面不写回桌面自己的偏好。
+- 预览标签是只读展示：不进入文本保存、dirty、缓冲区和恢复区；切换标签、关闭预览不影响其它文档的未保存修改；关闭或切走即卸载 iframe，释放请求与媒体。
+- 错误各自显示：打开时网络失败、无权限、不存在由编辑器给出对应提示（`open-*`）；已打开的预览中文件被删、断网、组件也不支持的格式由 Preview 自己的错误态显示（含“打开方式…”）。未知扩展名按字节判断，不凭扩展名认定二进制。
+- 显式“预览”：有未保存修改时预览草稿快照（标签“预览（草稿）”，提示条注明取自何时），否则预览已保存文件（提示“不含未保存的修改”）；草稿预览不进入工作区恢复。
+- 已知风险：任何本 Zone 内的页面都能让 `/embed/preview` 显示当前用户可读的内容并从 `embed.state` 得知是否存在 / 媒体类型（不能读取内容本身，跨源 iframe 内容不可读）。按“先能力后安全”记录，未加额外授权。
 
 ### 7.5 WebAppFrame 面板（Desktop）
 
@@ -615,7 +629,7 @@ App 数据区路径：`cyfs:///home/<当前用户>/.local/share/text-editor.buck
 
 | 项 | P0 规则 |
 |---|---|
-| 二进制检测 | 无 UTF-16 BOM 且前 8 KiB 含 NUL → 不打开，显示“这不是文本文件”，按钮“用 Preview 打开”（`content.open target:"preview"`） |
+| 二进制检测 | 无 UTF-16 BOM 且前 8 KiB 含 NUL → 在编辑区以预览标签打开（§7.6）；超过 16 MiB 同样进入预览 |
 | 编码识别 | BOM `EF BB BF` → UTF-8（保留 BOM）；`FF FE` / `FE FF` → UTF-16LE / BE；否则以 `TextDecoder("utf-8", { fatal: true })` 解码 |
 | 非 UTF-8 | 解码失败 → 只读打开并提示“无法以 UTF-8 解码”，可“以其他编码重新打开”（gb18030、big5、shift_jis、euc-kr、windows-1252，使用浏览器 TextDecoder）。旧编码只读；“转换为 UTF-8 并编辑”后以 UTF-8 保存 |
 | 保存编码 | UTF-8（按原样保留或去除 BOM）与 UTF-16LE / BE（手写编码器）原样往返 |
@@ -678,7 +692,7 @@ interface BufferHeader {
 ```text
 save(doc):
   0. 无关联文件（新建） → 另存为
-  1. 先把缓冲区刷写到服务端
+  1. 草稿先写入本机预写；服务端缓冲区同步并行进行，不阻塞保存（v0.3 串行等待它，慢网下多出一整轮 open_write/上传/commit）
   2. info = stat(doc.file.ref, 不走缓存)
        STALE / NOT_FOUND → 按路径重新 resolve：
          仍存在 → 视为被替换，进入 3 比较 etag
@@ -692,6 +706,13 @@ save(doc):
   7. post = stat(commit 返回的 ref)
      doc.file.{ref, etag, size} ← post；doc.base ← post；删除缓冲区
 ```
+
+**v0.4 的阶段与失败语义**（`documentStore.ts` `SaveError { stage, path, category, unknown }`）：
+
+- `prepare`（stat / 解析父目录 / open_write）与 `upload` 失败时目标文件没有被动过；`commit` 失败分两种：服务端明确回答的错误是已知失败；连接丢失或网关 502/503/504 时结果未知——websdk 已用**同一 session/seq** 重放过（服务端重放窗口保证只执行一次），仍拿不到回答就读回目标文件比对字节，一致即视为已提交，不一致报“无法确认是否已保存”。重试时保存流程先看磁盘：etag 变了但内容与要保存的完全一致，直接采用，不报冲突、不重复覆盖。
+- commit 成功之后的一切都不能把结果反转成“未保存”：`commit_file` 自己释放租约，不再调用 `abort_write`（v0.3 在 finally 里调用，失败会让已成功的保存报错）；读回新 etag 最多试 3 次，仍失败就记为未知 etag，下次磁盘检查按写入大小认领；缓冲区删除失败只留待下次清理。
+- 另存为 / 保存的正式提交路径会用 NFSP 路径形式的 `mkdir`（服务端 `mkdir_path`，逐级创建并校验权限）创建缺失的父目录；在位置面板里输入或浏览路径不创建任何目录，只提示“保存时会自动创建”。路径中有一段是普通文件时报“路径中有一段是文件而不是目录”（服务端对 `ENOTDIR` 返回 `NOT_A_CONTAINER`，`mkdir_path` 返回 `NAMESPACE_CONFLICT`；并发创建同一目录不再报 INTERNAL）。写文件失败不删除刚创建的目录。
+- 失败提示写明：目标路径、失败步骤、错误类别（网络 / 无权限 / 不存在 / 路径被文件占用 / 空间不足）、草稿在哪里（已同步到服务器 / 只在本机 / 尚未保存），并提供“重试”。保存期间继续输入的内容保持未保存并继续进入缓冲区，旧保存完成不会把它标为已保存。
 
 冲突处理（“恢复区写入”一列的动作都在破坏性步骤之前完成）：
 
@@ -878,7 +899,7 @@ interface Workspace {
 | `single` / 无 Session | 以 Source 父目录作为隐式 `container` |
 
 - 一个窗口只有一个当前 Session：`frame.open` 带来不同 Session 时，文件列表切换到新 Session，已打开的标签不受影响；列表标题显示 Session 名（目录名或“N 个选中文件”）。
-- 每项显示文件名与状态：已打开、未保存（●）、有遗留缓冲区（可恢复标记）、只读（锁）。不能用文本方式打开的项（按 §5.4 的 MIME 表判断）显示外部打开标记（↗），点击时发 `content.open{ target:"default" }`，由 Shell 交给默认应用（例如图片进 Preview）。
+- 每项显示文件名与状态：已打开、未保存（●）、有遗留缓冲区（可恢复标记）、只读（锁）。所有项都在编辑器内打开：文本进编辑器，其它进预览标签（§7.6）。
 - 单击：在当前组打开为预览标签；双击或开始编辑：转为固定标签（Sublime / VS Code 习惯）。
 - `Ctrl+P` 快速打开：在当前 Session Items 中模糊匹配（P0）。
 - 目录变化（watch 事件）时刷新 `container` 列表。
@@ -1086,7 +1107,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 
 - N2–N4、N6，按次授权 grant（§9.10），完成 V9 验证；
 - `grid-4` 布局、代码大纲、冲突对比与合并视图、恢复区条目对比、Session 内全文查找、命令面板；
-- 系统文件选择器（App Frame）；打开方式选择器（`content.open target:"chooser"`）；
+- 系统文件选择器（App Frame）；打开方式选择器（`content.open target:"chooser"`，v0.4 已实现，§7.3）；
 - D7–D9，`icon` 意图，新 Handler 接管类型时的通知；
 - 无扩展名文件的有界探测；旧编码保存；重命名跟踪；Markdown 渲染预览分屏；文件夹树模式；缓冲区增量写入（避免大文件每次全量上传）。
 
@@ -1118,7 +1139,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 - [ ] 多种语言语法高亮正确，非当前语言不在首屏加载。
 - [ ] Markdown 与 HTML 大纲正确，点击跳转，光标所在章节高亮。
 - [ ] 双列 / 双行分屏下同一文档两个视图同步编辑，撤销作用于同一历史。
-- [ ] UTF-8（含 BOM）、UTF-16 文件原样往返；CRLF 文件保存后仍为 CRLF；二进制文件被拒绝并可转到 Preview；> 16 MiB 文件被拒绝。
+- [ ] UTF-8（含 BOM）、UTF-16 文件原样往返；CRLF 文件保存后仍为 CRLF；二进制与 > 16 MiB 文件在编辑区内以只读预览打开。
 - [ ] 断网编辑后状态栏显示“尚未同步到服务器”，恢复网络后自动同步。
 - [ ] 只读来源（`object-id`、无写权限、`mode:view`）不能直接保存，只能另存为。
 - [ ] 第二个用户使用同一预装实例时，设置、缓冲区、恢复区都写在该用户自己的路径下。
@@ -1187,7 +1208,7 @@ uv run buckyos-build.py -s text_editor
 uv run --no-project --with ../../buckyos-devkit python buckyos-build.py -s text_editor
 
 # buckyos/src/frame/desktop/
-VITE_CP_USE_MOCK=1 pnpm exec playwright test tests/e2e/pages/content-open.spec.ts tests/e2e/pages/preview.spec.ts --workers=1
+VITE_CP_USE_MOCK=1 pnpm exec playwright test tests/e2e/pages/content-open.spec.ts tests/e2e/pages/preview.spec.ts tests/e2e/pages/preview-embed.spec.ts --workers=1
 ```
 
 产物为 `dapp_dist/text-editor.buckyos.bns.did-0.1.0.pikg`，并汇总到 `src/rootfs/data/cache/`。第二个 Handler 夹具位于 `test/app_installer_test/pikg_samples/content-open-handler/`；其 README 提供构建和安装验证方式。

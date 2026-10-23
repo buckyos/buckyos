@@ -237,6 +237,9 @@ export default async function main(aiws) {
     let first_map_calls = m.map_calls.load(Ordering::SeqCst);
     assert!(first_map_calls >= 1);
     assert_eq!(e["candidate"]["model_judgment"], json!(["情感"]));
+    // the analysis, the execution and the per-item judge each asked for a client charged to the owner
+    let seen = m.providers.lock().unwrap().clone();
+    assert!(seen.len() >= 3 && seen.iter().all(|p| p.on_behalf_of.as_ref().is_some_and(|o| o.user_id == "alice")), "{seen:?}");
     srv.apply(&e, json!({})).await;
     let w = srv.wish().await;
     let fid = w["last_run"]["result_bindings"]["results"]["情感"]["fields"]["情感"].as_str().unwrap().to_string();
@@ -313,6 +316,83 @@ fn restart_reports_interrupted_and_reconciles_applying() {
     });
 }
 
+#[test]
+fn executors_outside_the_service_claim_report_and_the_service_plans_their_candidates() {
+    run_test(|| async move {
+    let m = scripted();
+    let mut srv = Srv::start(tempfile::tempdir().unwrap(), m.clone()).await;
+    setup(&mut srv).await;
+    let ws = srv.ws.clone();
+    // a local run: the starter's browser is the executor; the claim token comes back once
+    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "loc-a", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "local" } } })).await;
+    assert_eq!((start["state"].as_str(), start["context"]["location"].as_str(), start["context"]["executor"]["kind"].as_str()), (Some("queued"), Some("local"), Some("browser")), "{start}");
+    assert_eq!(start["context"]["trigger"], "alice");
+    assert_eq!((start["aicc"]["mode"].as_str(), start["aicc"]["user_id"].as_str()), (Some("current_user"), Some("alice")), "a local run's model calls are the starter's own: {start}");
+    assert!(start["context"]["task"]["digest"].is_string() && start["brief"]["prompt"].is_string());
+    let (run_id, claim_token) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+    assert_eq!(m.calls.load(Ordering::SeqCst), 0, "the service runs no model for a local run");
+    let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    let (attempt, run_token) = (claimed["attempt"].as_u64().unwrap(), claimed["run_token"].as_str().unwrap().to_string());
+    assert_eq!(attempt, 1);
+    // the run token speaks for the run, reads the Workspace, and nothing else
+    let hb = srv.call_as(&run_token, "proc.heartbeat", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "progress": { "phase": "thinking" } })).await;
+    assert_eq!(hb["result"]["ok"], true, "{hb}");
+    assert_eq!(srv.call_as(&run_token, "doc.read", json!({ "workspace_id": ws, "entity_id": "orders" })).await["result"]["type_id"], "buckyos.table-source");
+    assert!(srv.call_as(&run_token, "doc.commit", json!({ "workspace_id": ws, "epoch": "x", "idempotency_key": "k", "operations": [] })).await["error"].is_string(), "a run token cannot write");
+    assert_eq!(srv.rpc("proc.get", json!({ "run_id": run_id })).await["progress"]["phase"], "thinking");
+    // the executor reports its analysis (ids instead of handles); the service validates and plans it
+    let analysis = json!({ "schema_version": "wish.analysis.v2", "status": "ready", "context_prompt": "读取 blk-orders 的全部记录，按月汇总销售额并写解读。",
+        "inputs": [{ "name": "sales", "ref": "blk-orders" }],
+        "output_contract": { "results": [{ "name": "commentary", "type": "richtext", "title": "解读", "approach": "direct" }] },
+        "checks": [], "blockers": [], "warnings": [] });
+    let reported = srv.call_as(&run_token, "proc.report", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "analysis": analysis })).await;
+    assert!(reported["result"]["ok"] == json!(true), "{reported}");
+    let done = srv.wait(&run_id).await;
+    assert_eq!(done["state"], "waiting_confirmation", "{done}");
+    assert_eq!(done["candidate"]["inputs"][0]["name"], "sales", "{done}");
+    srv.apply(&done, json!({})).await;
+    // an execute run reports results; a superseded attempt is refused; a changed wish is DELEGATION_STALE
+    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "loc-e", "params": { "wish_id": "wish-q3", "stage": "execute", "location": loc(), "execution": { "mode": "local" } } })).await;
+    let (run_id, claim_token) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+    let first = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    let second = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    assert_eq!((first["attempt"].as_u64(), second["attempt"].as_u64()), (Some(1), Some(2)));
+    let stale = srv.call_as(first["run_token"].as_str().unwrap(), "proc.report", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "results": [] })).await;
+    assert_eq!(stale["result"]["error"]["code"], "RUN_REVOKED", "{stale}");
+    let results = json!([{ "name": "commentary", "type": "richtext", "title": "解读", "content": { "markdown": "# 解读
+
+华东三个月稳步增长。" } }]);
+    let reported = srv.call_as(second["run_token"].as_str().unwrap(), "proc.report", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 2, "results": results, "summary": "done", "read_set": [] })).await;
+    assert!(reported["result"]["ok"] == json!(true), "{reported}");
+    let done = srv.wait(&run_id).await;
+    assert_eq!((done["state"].as_str(), done["candidate"]["executor"].as_str(), done["execution"]["attempt"].as_u64()), (Some("waiting_confirmation"), Some("local"), Some(2)), "{done}");
+    let rev = srv.rpc("doc.read", json!({ "entity_id": "wish-q3" })).await["content"]["key_revs"]["prompt"].clone();
+    srv.commit(json!([{ "op": "entity.set_keys", "entity_id": "wish-q3", "keys": [{ "key": "prompt", "value": "改了题目", "expect": { "rev": rev } }] }])).await;
+    let preview = srv.rpc("proc.get", json!({ "run_id": run_id, "choices": {} })).await;
+    let refused = srv.call_as("tok-alice", "proc.apply", json!({ "workspace_id": ws, "run_id": run_id, "plan_digest": preview["preview"]["plan_digest"] })).await;
+    assert_eq!(refused["result"]["error"]["code"], "DELEGATION_STALE", "{refused}");
+    // hosted: the owner configures the agent; without a Zone runtime the dispatch is recorded unavailable and the run waits
+    let denied = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "host-0", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "hosted" } } }));
+    assert_eq!(srv.call_as("tok-alice", "proc.start", json!({ "workspace_id": ws, "program": "wish.xllm@1", "idempotency_key": "host-0", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "hosted" } } })).await["result"]["error"]["code"], "EXECUTION_CONTEXT_MISSING");
+    drop(denied);
+    let cfg = srv.rpc("ws.set_hosted_exec", json!({ "config": { "enabled": true, "agent_id": "jarvis.test.buckyos.io", "allowed_wishes": ["wish-q3"] } })).await;
+    assert!(cfg["hosted_exec"]["digest"].is_string());
+    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "host-1", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "hosted" } } })).await;
+    assert_eq!((start["context"]["location"].as_str(), start["context"]["executor"]["principal"].as_str()), (Some("hosted"), Some("jarvis.test.buckyos.io")), "{start}");
+    assert!(start.get("claim_token").is_none(), "the token goes to the agent, not the starter");
+    let run_id = start["run_id"].as_str().unwrap().to_string();
+    let mut got = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
+    for _ in 0..100 {
+        if got["dispatch"]["status"].is_string() { break; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        got = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
+    }
+    assert_eq!(got["dispatch"]["status"], "unavailable", "{got}");
+    let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": got["dispatch"]["claim_token"] })).await;
+    assert_eq!(claimed["attempt"], 1);
+    });
+}
+
 fn llm_context_of(dir: &std::path::Path, run_id: &str) -> Value {
     fn find(dir: &std::path::Path, run_id: &str) -> Option<std::path::PathBuf> {
         for e in std::fs::read_dir(dir).ok()?.flatten() {
@@ -360,6 +440,14 @@ fn wish_runs_use_the_owners_or_the_starters_aicc() {
     assert_eq!(ctx["provider"]["on_behalf_of"]["user_id"], "alice");
     assert_eq!(ctx["provider"]["on_behalf_of"]["operator_id"], "bob");
     assert_eq!(ctx["provider"]["on_behalf_of"]["run_ref"]["run_id"], json!(run_id));
+    // and the AICC client the stage loop actually asked for carries it (内核架构改进 §12.2)
+    let seen: Vec<_> = m.providers.lock().unwrap().drain(..).collect();
+    assert!(!seen.is_empty());
+    for p in &seen {
+        let o = p.on_behalf_of.as_ref().expect("a delegated AICC client");
+        assert_eq!((o.user_id.as_str(), o.operator_id.as_deref(), o.mode), ("alice", Some("bob"), buckyos_api::AiccAttributionMode::WorkspaceOwner));
+        assert_eq!(o.run_ref.as_ref().and_then(|r| r.run_id.as_deref()), Some(run_id.as_str()));
+    }
 
     // only a manager switches the mode
     let denied = srv.call_as("tok-bob", "ws.set_wish_aicc", json!({ "mode": "current_user" })).await;
@@ -369,6 +457,8 @@ fn wish_runs_use_the_owners_or_the_starters_aicc() {
         "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc() } })).await["result"].clone();
     assert_eq!(start["aicc"]["user_id"], "bob");
     srv.wait_as("tok-bob", start["run_id"].as_str().unwrap()).await;
+    let seen: Vec<_> = m.providers.lock().unwrap().drain(..).collect();
+    assert!(!seen.is_empty() && seen.iter().all(|p| p.on_behalf_of.as_ref().is_some_and(|o| o.user_id == "bob" && o.mode == buckyos_api::AiccAttributionMode::CurrentUser)), "{seen:?}");
 
     // an External user has no AI resources here and is not moved to the owner's
     let refused = srv.call_as("tok-eve", "proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "e1",
@@ -388,5 +478,87 @@ fn wish_runs_use_the_owners_or_the_starters_aicc() {
     let own = srv.run("wish.xllm@1", json!({ "wish_id": "wish-q3", "stage": "analyze", "location": loc() })).await;
     assert_eq!(own["error"]["sub_code"], "AI_QUOTA_EXHAUSTED");
     assert!(own["error"]["detail"].as_str().unwrap().contains("Your AI token quota"), "{own}");
+    });
+}
+
+#[test]
+fn an_outside_executor_works_on_the_services_stage_through_proc_tool_and_proc_program() {
+    run_test(|| async move {
+    let m = scripted();
+    let mut srv = Srv::start(tempfile::tempdir().unwrap(), m.clone()).await;
+    setup(&mut srv).await;
+    let ws = srv.ws.clone();
+    // analysis: the claim opens the stage; the executor's model loop calls the stage tools over the run token
+    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "host-a", "params": { "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "execution": { "mode": "local" } } })).await;
+    let (run_id, claim_token) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+    let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    let stage = &claimed["stage"];
+    assert_eq!((stage["kind"].as_str(), stage["stage"].as_str(), stage["model"].is_string()), (Some("model"), Some("analyze"), true), "{claimed}");
+    let user = stage["user"].as_str().unwrap().to_string();
+    assert!(user.contains("# Wish (analysis stage)") && user.contains("华东订单"), "the user message carries the context map");
+    let names: Vec<&str> = stage["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(names.contains(&"ws_profile") && names.contains(&"submit_analysis") && !names.contains(&"run_program"), "{names:?}");
+    let rt = claimed["run_token"].as_str().unwrap().to_string();
+    let b = handle(&user, "table view \"华东订单\"");
+    let profile = srv.call_as(&rt, "proc.tool", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "name": "ws_profile", "args": { "target": b } })).await;
+    assert_eq!(profile["result"]["status"], "ok", "{profile}");
+    assert!(profile["result"]["text"].as_str().unwrap().contains("销售额"));
+    let bad = srv.call_as(&rt, "proc.tool", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "name": "submit_analysis", "args": { "analysis": { "schema_version": "wish.analysis.v2", "status": "ready", "context_prompt": "x", "inputs": [{ "name": "sales", "ref": "@Z9" }], "output_contract": { "results": [] }, "checks": [], "blockers": [], "warnings": [] } } })).await;
+    assert_eq!(bad["result"]["status"], "error", "a wrong handle is answered to the model, not failed: {bad}");
+    let analysis = json!({ "schema_version": "wish.analysis.v2", "status": "ready",
+        "context_prompt": format!("读取 {b} 的全部记录，排除 状态=未结算，按月汇总销售额与订单数；写一段解读，数字取自 facts。"),
+        "inputs": [{ "name": "sales", "ref": b }],
+        "output_contract": { "results": [
+            { "name": "monthly", "type": "table", "title": "月度汇总", "approach": "program", "key": ["月份"], "views": [{ "renderer": "table" }] },
+            { "name": "commentary", "type": "richtext", "title": "解读", "approach": "direct" }] },
+        "checks": [{ "id": "total", "kind": "program", "text": "月度合计等于已结算合计" }], "blockers": [], "warnings": [] });
+    let ok = srv.call_as(&rt, "proc.tool", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "name": "submit_analysis", "args": { "analysis": analysis } })).await;
+    assert_eq!(ok["result"]["status"], "ok", "{ok}");
+    assert_eq!(srv.rpc("proc.get", json!({ "run_id": run_id })).await["progress"]["tool_calls"], 3);
+    let reported = srv.call_as(&rt, "proc.report", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "finished": true })).await;
+    assert_eq!(reported["result"]["ok"], true, "{reported}");
+    let done = srv.wait(&run_id).await;
+    assert_eq!((done["state"].as_str(), done["candidate"]["inputs"][0]["name"].as_str()), (Some("waiting_confirmation"), Some("sales")), "{done}");
+    assert_eq!(m.calls.load(Ordering::SeqCst), 0, "the service called no model");
+    srv.apply(&done, json!({})).await;
+    // execution: the executor runs the program on the snapshot it fetches and hands the host's output in
+    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "host-e", "params": { "wish_id": "wish-q3", "stage": "execute", "location": loc(), "execution": { "mode": "local" } } })).await;
+    let (run_id, claim_token) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+    let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    let stage = &claimed["stage"];
+    assert!(stage["user"].as_str().unwrap().contains("## Output contract") && stage["source"].is_null(), "{claimed}");
+    let run_tool = stage["tools"].as_array().unwrap().iter().find(|t| t["name"] == "run_program").unwrap();
+    assert_eq!(run_tool["parameters"]["required"][0], "source");
+    let rt = claimed["run_token"].as_str().unwrap().to_string();
+    let files = srv.call_as(&rt, "proc.files", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1 })).await;
+    let inputs: Value = serde_json::from_str(files["result"]["files"]["context/inputs.json"]["text"].as_str().unwrap()).unwrap();
+    assert!(inputs["sales"]["entity_id"].is_string(), "{files}");
+    assert!(files["result"]["files"].as_object().unwrap().keys().any(|k| k.ends_with("rows.jsonl")), "the rows are in the snapshot");
+    let output = json!({ "results": [{ "name": "monthly", "type": "table", "rows": [{ "月份": "2026-07-01", "销售额": 10.5, "订单数": 1 }], "fields": [{ "name": "月份", "type": "date" }, { "name": "销售额", "type": "decimal" }, { "name": "订单数", "type": "number" }], "key": ["月份"] }],
+        "facts": { "total": 10.5, "months": 1 }, "checks": [{ "id": "total", "passed": true, "detail": null }], "external": [], "llm_map": { "calls": 0, "items": 0, "cached": 0 }, "error": null });
+    let ran = srv.call_as(&rt, "proc.program", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "source": PROGRAM, "results": output, "log": "", "files": { "output/note.txt": "hello" } })).await;
+    assert_eq!(ran["result"]["status"], "ok", "{ran}");
+    assert!(ran["result"]["text"].as_str().unwrap().contains("ran successfully"));
+    let put = srv.call_as(&rt, "proc.tool", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "name": "put_result", "args": { "name": "commentary", "type": "text", "markdown": "## 解读\n\n合计 10.5，共 1 个月。" } })).await;
+    assert_eq!(put["result"]["status"], "ok", "{put}");
+    let fin = srv.call_as(&rt, "proc.tool", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "name": "finish", "args": { "summary": "done" } })).await;
+    assert_eq!(fin["result"]["status"], "ok", "{fin}");
+    let reported = srv.call_as(&rt, "proc.report", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "finished": true })).await;
+    assert_eq!(reported["result"]["ok"], true, "{reported}");
+    let done = srv.wait(&run_id).await;
+    assert_eq!((done["state"].as_str(), done["candidate"]["results"].as_array().map(Vec::len), done["candidate"]["executor"].as_str()), (Some("waiting_confirmation"), Some(2), Some("xllm")), "{done}");
+    assert!(done["candidate"]["program"]["object_id"].is_string(), "the program is staged with the candidate");
+    assert_eq!(done["candidate"]["checks"][0]["status"], "passed");
+    assert!(done["preview"]["ready"] == json!(true), "{done}");
+    // cancelled under the executor: its tools answer cancelled and its report is refused; a new claim opens a fresh stage
+    let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "idempotency_key": "host-c", "params": { "wish_id": "wish-q3", "stage": "execute", "location": loc(), "execution": { "mode": "local" } } })).await;
+    let (run_id, claim_token) = (start["run_id"].as_str().unwrap().to_string(), start["claim_token"].as_str().unwrap().to_string());
+    let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    let rt = claimed["run_token"].as_str().unwrap().to_string();
+    srv.rpc("proc.cancel", json!({ "run_id": run_id })).await;
+    let refused = srv.call_as(&rt, "proc.tool", json!({ "workspace_id": ws, "run_id": run_id, "attempt": 1, "name": "check_results", "args": {} })).await;
+    assert_eq!(refused["result"]["error"]["code"], "RUN_REVOKED", "{refused}");
+    let again = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": claim_token })).await;
+    assert_eq!(again["error"]["code"].as_str().or(again["code"].as_str()), Some("RUN_REVOKED"), "{again}");
     });
 }

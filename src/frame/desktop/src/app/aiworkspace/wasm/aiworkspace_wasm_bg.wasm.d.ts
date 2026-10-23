@@ -15,6 +15,7 @@ export const replica_collab_snapshot: (a: number, b: number, c: number, d: numbe
 export const replica_confirmed_rows: (a: number, b: number) => void;
 export const replica_confirmed_seq: (a: number) => number;
 export const replica_discard: (a: number, b: number, c: number) => number;
+export const replica_epoch_mismatch: (a: number, b: number, c: number) => void;
 export const replica_freshness: (a: number, b: number, c: number, d: number) => void;
 export const replica_lineage_id: (a: number, b: number, c: number, d: number) => void;
 export const replica_list_annotations: (a: number, b: number, c: number, d: number) => void;

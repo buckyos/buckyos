@@ -450,6 +450,18 @@ const handlers: Handlers = {
     return rows
   },
 
+  epochMismatch(detail: string) {
+    engine(() => core().epoch_mismatch(detail))
+    const rows = pendingRows()
+    try {
+      transaction(() => writePendingStates(rows))
+    } catch (error) {
+      // the states are recomputed from the engine next time; nothing is lost
+      void error
+    }
+    return { pending: rows }
+  },
+
   discard(key: string, unsentOnly: boolean) {
     const before = pendingRows().find((row) => row.idempotency_key === key) ?? null
     if (!before) return { removed: null, pending: pendingRows() }

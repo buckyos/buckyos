@@ -6,8 +6,9 @@ import {
   MenuItem,
   useMediaQuery,
 } from '@mui/material'
-import { isTransferableRef } from 'buckyos/content'
+import { contentDescriptor, parseSystemOpen } from 'buckyos/content'
 import { openContent } from '../app/content/open'
+import { OpenWithHost, requestOpenWith } from '../app/content/OpenWithSheet'
 import { openPreview } from '../app/preview/launch'
 import { agentGuide } from '../app/agent-setup/guide'
 import { agentSetupLaunchSchema, openAgentSetup } from '../app/agent-setup/launch'
@@ -254,13 +255,13 @@ export function DesktopRoute() {
   const currentUser = useCurrentUser()
   const launchHandled = useRef(false)
   useEffect(() => {
-    const value = searchParams.get('open')
-    if (snap.status !== 'success' || !value || launchHandled.current) return
-    const source = value.startsWith('obj://') ? { kind: 'object-id' as const, objectId: value.slice(6) } : { kind: 'cyfs-path' as const, path: value }
-    if (!isTransferableRef(source)) return
+    const open = parseSystemOpen(searchParams)
+    if (snap.status !== 'success' || !open || launchHandled.current) return
     launchHandled.current = true
-    if (searchParams.get('intent') === 'preview') openPreview({ source })
-    else void openContent({ source })
+    const { request: { source, session }, hints } = open
+    if (open.target === 'preview') openPreview({ source, session })
+    else if (open.target === 'chooser') requestOpenWith({ source, session, name: hints.name ?? contentDescriptor(source).name ?? '', mediaType: hints.mime, size: hints.size, exclude: open.from })
+    else void openContent({ source, session }, { name: hints.name, mime: hints.mime, size: hints.size })
   }, [snap.status, searchParams])
 
   // The Agent setup wizard comes back here after a sign-in (`?agent_setup=<source>[&agent_id=]`).
@@ -1030,6 +1031,7 @@ export function DesktopRoute() {
         </MenuItem>
       </Menu>
 
+      <OpenWithHost />
       <Alert
         severity="success"
         onClose={() => store.setSnackbar(null)}

@@ -80,7 +80,8 @@ export function useWriteAccess(entity: EntityEnvelope | undefined, capability: '
   useLocksVersion()
   const readOnlyNow = useDirectReadOnly()
   if (!entity) return { editable: false, held: false, required: false }
-  const capable = entity.capabilities.includes(capability) && !readOnlyNow
+  // a sourced entity's content is written only by its refresh (内核架构改进 D12)
+  const capable = entity.capabilities.includes(capability) && !readOnlyNow && !entity.source
   const required = entity.write_policy === 'lock_required'
   const held = store.locks.isHeld(entity.entity_id)
   return { editable: capable && (!required || held), held, required }

@@ -182,7 +182,7 @@ cmd_skills 是 Agent 完成一类事的命令手册（加可选命令），是�
 | AICC 协议、provider 能力、媒体 CLI、Task/结果/下载和消息附件 | `aigc_image`、`aigc_audio`、`aigc_video`：真实生成、长任务恢复、交付可访问 |
 | xllm 参数、模型路由、工具开关、上下文/behavior 协议 | `xllm`：示例调用、结构化结果、上下文与执行边界 |
 | SDK/Tool、PIKG/AppDoc、devkit、Installer/Repo/BNS、系统/镜像发布 | `buckyos_dev_release`、`buckyos_app_dev` 及相关场景：构建、包验证、测试安装、发布回读 |
-| AIWorkspace schema/RPC、对象/资源、renderer、Wish/Block 执行器、模板格式 | `aiworkspace_template_dev`（暂缓，恢复后生效）：新建、导出导入、引用和运行 |
+| AIWorkspace schema/RPC、对象/资源、renderer、Wish/Block 执行器、模板格式、`proc.*` 执行器协议 | `aiworkspace_run`：领取 run、读快照、跑程序、交结果、心跳；`aiworkspace_template_dev`：新建、导出导入、引用、运行和发布 |
 | skill 安装 kRPC、PIKG 的 `agent_skills` 子包、AgentRoot 的 `cmd_skills/` / `goal_skills/` / `tools/` 布局 | `opendan_agent_dev` 及所有内置手册的打包位置：安装、列表、选择、删除 |
 | AgentRootFS、Loader、Session/Behavior、cmd_skill 冻结/装配、PATH/helper、模板和扩展分发 | `opendan_agent_dev`、`ui_core` 及受影响的专项手册：发现/选择/执行、冻结与升级 |
 

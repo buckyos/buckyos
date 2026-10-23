@@ -13,7 +13,7 @@ fn user_state_is_per_subject_and_never_a_commit() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     let head = ws.head_seq;
-    ws.set_user_state(&alice(), &json!({ "mode": "canvas", "viewport:surface-main": { "x": 10, "y": 20, "zoom": 0.5 } })).unwrap();
+    ws.set_user_state(&alice(), &json!({ "mode": "canvas", "viewport:surface-main": { "x": 10, "y": 20, "zoom": 0.5 } }), None).unwrap();
     let mine = ws.get_user_state(&alice()).unwrap();
     assert_eq!(mine["entries"]["mode"], "canvas");
     assert_eq!(mine["entries"]["viewport:surface-main"]["zoom"], 0.5);
@@ -23,7 +23,7 @@ fn user_state_is_per_subject_and_never_a_commit() {
     // another principal has its own entries; a null removes
     ws.grant(&alice(), "bob", None, &["read".into()]).unwrap();
     assert_eq!(ws.get_user_state(&bob()).unwrap()["entries"].as_object().unwrap().len(), 0);
-    ws.set_user_state(&alice(), &json!({ "mode": null })).unwrap();
+    ws.set_user_state(&alice(), &json!({ "mode": null }), None).unwrap();
     assert!(ws.get_user_state(&alice()).unwrap()["entries"].get("mode").is_none());
     // no grant at all: the workspace does not exist for the caller
     assert_eq!(ws.get_user_state(&Caller::user("nobody")).unwrap_err().code.as_str(), "NOT_FOUND");
@@ -139,6 +139,9 @@ fn mock_program_writes_data_and_block_into_the_two_trees() {
     let mut ws = h.lock().unwrap();
     let run = ws.proc_start(&alice(), "mock.task-summary@1", &json!({ "today": "2026-10-13" }), "run-p2").unwrap();
     assert_eq!(run["state"], "waiting_confirmation", "{run}");
+    // the same key replays the same request only; another request under it is refused (13.2)
+    assert_eq!(ws.proc_start(&alice(), "mock.task-summary@1", &json!({ "today": "2026-10-13" }), "run-p2").unwrap()["replayed"], true);
+    assert_eq!(ws.proc_start(&alice(), "mock.task-summary@1", &json!({ "today": "2026-10-14" }), "run-p2").unwrap_err().code, aiworkspace_core::Code::IdempotencyMismatch);
     let applied = ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), None).unwrap();
     assert_eq!(applied["state"], "succeeded", "{applied}");
     let outline = ws.outline(&alice()).unwrap();

@@ -35,7 +35,7 @@ export class Api {
   }
 
   async commit(token: string, ws: { workspace_id: string; epoch: string }, operations: Json[], key = `test/${Date.now()}/${Math.random().toString(36).slice(2)}`): Promise<Json> {
-    return this.rpc(token, 'doc.commit', { protocol_version: '0.5', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: key, session_id: 'test-api', operations })
+    return this.rpc(token, 'doc.commit', { protocol_version: '1.0', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: key, session_id: 'test-api', operations })
   }
 
   /** The shared sample of design §3.8, replayed through the public interface (same as the Rust tests). */
@@ -93,12 +93,18 @@ export class Api {
   async headSeq(token: string, workspaceId: string): Promise<number> {
     return (await this.rpc(token, 'ws.get_info', { workspace_id: workspaceId })).head_seq
   }
+
+  /** The runs of a wish, newest first (`proc.list`). */
+  async runs(token: string, workspaceId: string, wishId: string): Promise<Record<string, Json>[]> {
+    return (await this.rpc(token, 'proc.list', { workspace_id: workspaceId, wish_id: wishId, limit: 5 })).runs as Record<string, Json>[]
+  }
 }
 
 /** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`, and
  * end on the workspace list (a normal start restores the last workspace: it is closed again here). */
 export async function openApp(page: Page, token: string) {
-  await page.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), token)
+  // keeps what an earlier init script put there (the local executor spec adds its model endpoint)
+  await page.addInitScript((value) => { let prev: Record<string, unknown> = {}; try { prev = JSON.parse(window.localStorage.getItem('aiworkspace.dev') ?? '{}') as Record<string, unknown> } catch { prev = {} }; window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ ...prev, token: value })) }, token)
   await page.goto('/?scenario=normal')
   await page.getByTestId('desktop-app-aiworkspace').click()
   // the window opens maximised: the canvas has the room the specs' coordinates assume

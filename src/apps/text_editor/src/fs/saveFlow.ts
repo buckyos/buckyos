@@ -1,6 +1,6 @@
 import type { TransferableContentRef } from 'buckyos/content'
 import { encodeText, decodeText, type TextFormat } from './codec.ts'
-import { SaveConflict, isMissing, splitPath, type DocumentStore, type FileSnapshot } from './documentStore.ts'
+import { SaveConflict, holdsBytes, isMissing, splitPath, type DocumentStore, type FileSnapshot, type WriteResult } from './documentStore.ts'
 import { conflictCopyName, type RecoveryEntry, type RecoveryRecord } from './recoveryStore.ts'
 export interface SaveDocument extends TextFormat {
   source?: TransferableContentRef; name: string; text: string; base?: { etag: string; size: number }; readOnly: boolean
@@ -16,17 +16,24 @@ export async function archiveMine(doc: SaveDocument, services: SaveServices, rea
   await services.flush()
   await services.archive(encodeText(doc.text, doc), { source: doc.source, encoding: doc.encoding, bom: doc.bom, eol: doc.eol, displayName: doc.name, reason, side: 'mine', baseEtag: doc.base?.etag, origin: services.origin })
 }
+/**
+ * The draft is already safe in the local buffer when this runs (the caller persisted it); the remote buffer copy
+ * is not awaited here, so a slow buffer sync never delays or fails the save itself.
+ */
 export async function saveDocument(doc: SaveDocument, services: SaveServices,
-  options: { path?: string; overwrite?: boolean; conflictCopy?: boolean; recreate?: boolean; locale?: string } = {}): Promise<FileSnapshot> {
+  options: { path?: string; overwrite?: boolean; conflictCopy?: boolean; recreate?: boolean; locale?: string } = {}): Promise<WriteResult> {
   if (!options.path && (doc.readOnly || doc.source?.kind !== 'cyfs-path')) throw new Error('save-as-required')
   const path = options.path ?? (doc.source as { path: string }).path
   const source: TransferableContentRef = { kind: 'cyfs-path', path }
-  await services.flush()
+  const bytes = encodeText(doc.text, doc)
   let disk: FileSnapshot | undefined
   try { disk = await services.store.stat(source) } catch (e) { if (!isMissing(e)) throw e }
   const saveAs = path !== (doc.source?.kind === 'cyfs-path' ? doc.source.path : undefined)
   if (!disk && !saveAs && !options.recreate) throw new SaveConflict('deleted')
-  if (disk && (saveAs || disk.etag !== doc.base?.etag) && !options.overwrite) throw new SaveConflict('external-modified')
+  if (disk && (saveAs || disk.etag !== doc.base?.etag) && !options.overwrite) {
+    if (!saveAs && await holdsBytes(services.store, source, bytes)) return { source, etag: disk.etag, size: disk.size }
+    throw new SaveConflict('external-modified')
+  }
   if (disk && options.overwrite) {
     const original = await services.store.read(source)
     let format: TextFormat = { encoding: 'utf-8', bom: false, eol: '\n', mixedEol: false }
@@ -49,5 +56,5 @@ export async function saveDocument(doc: SaveDocument, services: SaveServices,
       if (!copied) throw new SaveConflict('copy-failed')
     }
   }
-  return services.store.write(path, encodeText(doc.text, doc), disk?.etag ?? null)
+  return services.store.write(path, bytes, disk?.etag ?? null, { createParents: true })
 }

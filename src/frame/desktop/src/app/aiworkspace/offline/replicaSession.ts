@@ -27,7 +27,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo, type WishChoices,
-  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode,
+  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -198,6 +198,10 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
 
   private stop(code: string) {
     if (this.isStopped()) return
+    if (code === 'EPOCH_MISMATCH') {
+      // the intents stay, shown as conflicts to resend onto the new history (D07)
+      void this.replica.call('epochMismatch', STOP_TEXT[code] ?? code).catch(() => undefined)
+    }
     this.setStatus({ kind: 'stopped', code, detail: STOP_TEXT[code] ?? SESSION_STOP_TEXT[code] ?? code })
     this.waitAbort?.abort()
     this.wakeAbort.abort()
@@ -518,6 +522,28 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     this.wsInfo = { ...this.wsInfo, wish_aicc_mode: applied }
     return applied
   }
+  async setHostedExec(config: HostedExecConfig) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    const applied = await this.direct.setHostedExec(config)
+    this.wsInfo = { ...this.wsInfo, hosted_exec: applied }
+    return applied
+  }
+  async publish(entityId: string, name?: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    return this.direct.publish(entityId, name)
+  }
+  async unpublish(entityId: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    return this.direct.unpublish(entityId)
+  }
+  async listPublications() {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    return this.direct.listPublications()
+  }
+  async listReferrers(entityId: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    return this.direct.listReferrers(entityId)
+  }
 
   async getCollabState(entityId: string): Promise<CollabState> {
     const state = await this.replica.call('collab', entityId)
@@ -541,7 +567,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   }
 
   async commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome> {
-    const key = this.nextKey()
+    const key = options?.idempotencyKey ?? this.nextKey()
     const status = this.currentStatus
     if (status.kind === 'stopped') {
       return { status: 'rejected', code: status.code, retryable: false, detail: status.detail, errors: [{ code: status.code, detail: status.detail }], idempotency_key: key }
@@ -689,6 +715,35 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   async wishList(wishId: string, limit?: number) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.listRuns'))
     return this.direct.wishList(wishId, limit)
+  }
+  // the executor protocol of a local run (T3-4): the browser speaks to the service for the run it executes
+  async submissionStatus(epoch: string, idempotencyKey: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readRun'))
+    return this.direct.submissionStatus(epoch, idempotencyKey)
+  }
+  async procClaim(runId: string, claimToken: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.procClaim(runId, claimToken)
+  }
+  async procHeartbeat(runId: string, attempt: number, progress?: Json) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.procHeartbeat(runId, attempt, progress)
+  }
+  async procReport(runId: string, attempt: number, body: Record<string, Json>) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.procReport(runId, attempt, body)
+  }
+  async procTool(runId: string, attempt: number, name: string, args: Json) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.procTool(runId, attempt, name, args)
+  }
+  async procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.procProgram(runId, attempt, body)
+  }
+  async procFiles(runId: string, attempt: number) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.procFiles(runId, attempt)
   }
 
   close() {

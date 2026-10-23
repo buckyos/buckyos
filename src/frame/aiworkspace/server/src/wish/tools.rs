@@ -46,7 +46,7 @@ impl Kind {
     pub const READ: [Kind; 6] = [Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query];
     pub const DELIVERY: [Kind; 4] = [Kind::RunProgram, Kind::PutResult, Kind::CheckResults, Kind::Finish];
 
-    fn spec(self) -> (&'static str, Value) {
+    pub fn spec(self) -> (&'static str, Value) {
         let target = json!({ "type": "string", "description": "A handle (such as @T1, @B2, @T1.f3) or an entity id" });
         match self {
             Kind::Outline => (
@@ -122,12 +122,27 @@ pub fn tools(state: &Arc<StageState>, kinds: &[Kind]) -> Vec<Arc<dyn AgentTool>>
     kinds.iter().map(|k| Arc::new(WishTool { kind: *k, state: state.clone() }) as Arc<dyn AgentTool>).collect()
 }
 
-fn ok(text: String) -> AgentToolResult {
-    AgentToolResult::from_details(json!({})).with_output(text)
+/// Every tool answers text: `Ok` is what the model reads on, `Err` what it must correct.
+pub type ToolAnswer = Result<String, String>;
+
+fn ok(text: String) -> ToolAnswer {
+    Ok(text)
 }
 
-fn fail(text: String) -> AgentToolResult {
-    AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Error).with_result(text)
+fn fail(text: String) -> ToolAnswer {
+    Err(text)
+}
+
+fn to_result(answer: ToolAnswer) -> AgentToolResult {
+    match answer {
+        Ok(text) => AgentToolResult::from_details(json!({})).with_output(text),
+        Err(text) => AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Error).with_result(text),
+    }
+}
+
+/// `Kind` by tool name (an executor outside the service names them over `proc.tool`).
+pub fn kind_of(name: &str) -> Option<Kind> {
+    [Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query, Kind::SubmitAnalysis, Kind::RunProgram, Kind::PutResult, Kind::CheckResults, Kind::Finish].into_iter().find(|k| k.name() == name)
 }
 
 fn pretty(v: &Value) -> String {
@@ -156,11 +171,11 @@ impl AgentTool for WishTool {
             Kind::RunProgram => run_program(&state).await,
             _ => tokio::task::spawn_blocking(move || blocking_call(&state, kind, &args)).await.map_err(|e| AgentToolError::ExecFailed(e.to_string()))?,
         };
-        Ok(res)
+        Ok(to_result(res))
     }
 }
 
-fn blocking_call(state: &Arc<StageState>, kind: Kind, args: &Value) -> AgentToolResult {
+pub fn blocking_call(state: &Arc<StageState>, kind: Kind, args: &Value) -> ToolAnswer {
     let mut stage = state.stage.lock().unwrap();
     let r = match kind {
         Kind::Outline => stage.ws_outline(args),
@@ -202,7 +217,7 @@ fn blocking_call(state: &Arc<StageState>, kind: Kind, args: &Value) -> AgentTool
     }
 }
 
-fn put_result(state: &Arc<StageState>, args: &Value) -> AgentToolResult {
+fn put_result(state: &Arc<StageState>, args: &Value) -> ToolAnswer {
     let mut c = state.collector.lock().unwrap();
     let name = args["name"].as_str().unwrap_or("").to_string();
     if c.program.as_ref().is_some_and(|p| p.results.iter().any(|r| r["name"] == json!(name))) {
@@ -222,7 +237,7 @@ fn put_result(state: &Arc<StageState>, args: &Value) -> AgentToolResult {
     }
 }
 
-fn check_results(state: &Arc<StageState>) -> AgentToolResult {
+fn check_results(state: &Arc<StageState>) -> ToolAnswer {
     let c = state.collector.lock().unwrap();
     let texts = state.prompt_texts();
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
@@ -242,7 +257,7 @@ fn check_results(state: &Arc<StageState>) -> AgentToolResult {
     ok(text)
 }
 
-fn finish(state: &Arc<StageState>, args: &Value) -> AgentToolResult {
+fn finish(state: &Arc<StageState>, args: &Value) -> ToolAnswer {
     let mut c = state.collector.lock().unwrap();
     let blocking = c.blocking();
     if !blocking.is_empty() {
@@ -275,41 +290,47 @@ fn finish(state: &Arc<StageState>, args: &Value) -> AgentToolResult {
     ok(msg)
 }
 
-async fn run_program(state: &Arc<StageState>) -> AgentToolResult {
+async fn run_program(state: &Arc<StageState>) -> ToolAnswer {
     match runner::run(state).await {
         Err(e) => fail(e),
         Ok(out) => {
             if out.timed_out {
                 return fail(format!("The program timed out ({} s). Optimize the program or narrow the range.\n{}", state.runtime.config.program_timeout_secs, out.tail()));
             }
-            let raw = out.results.clone().unwrap_or(json!({}));
-            if let Some(err) = raw.get("error").and_then(Value::as_str) {
-                return fail(format!("The program threw an error:\n{err}\n{}", out.tail()));
-            }
-            if out.results.is_none() {
-                return fail(format!("The program did not write output/.aiws/results.json (exit code {:?}).\n{}", out.code, out.tail()));
-            }
-            let source = std::fs::read_to_string(state.workdir.join("program/main.js")).unwrap_or_default();
-            let mut c = state.collector.lock().unwrap();
-            match program_output(&c, &raw, &source, &out.tail()) {
-                Ok(run) => {
-                    let previews: Vec<Value> = run.results.iter().map(|r| c.preview(r)).collect();
-                    let facts = run.facts.clone();
-                    c.program = Some(run);
-                    let checks = c.checks();
-                    state.note_program_run();
-                    let mut text = format!("The program ran successfully.\nResult previews:\n{}\nfacts: {}\nChecks: {}", pretty(&json!(previews)), facts, pretty(&json!(checks)));
-                    let remaining = c.blocking();
-                    if !remaining.is_empty() {
-                        text.push_str(&format!("\nNot done yet:\n- {}", remaining.join("\n- ")));
-                    }
-                    if !out.stdout.trim().is_empty() {
-                        text.push_str(&format!("\n\nProgram output:\n{}", out.stdout.chars().take(2000).collect::<String>()));
-                    }
-                    ok(text)
-                }
-                Err(errs) => fail(format!("The program ran, but its results failed validation:\n- {}\nFix the program, then call run_program again.", errs.join("\n- "))),
-            }
+            judge_program(state, out.results.as_ref(), &format!("exit code {:?}", out.code), &out.tail(), &out.stdout)
         }
+    }
+}
+
+/// What a program run produced, judged against the contract: the same words whether the service's
+/// Deno or an executor outside the service ran it (`proc.program`).
+pub fn judge_program(state: &Arc<StageState>, results: Option<&Value>, ended: &str, tail: &str, stdout: &str) -> ToolAnswer {
+    let raw = results.cloned().unwrap_or(json!({}));
+    if let Some(err) = raw.get("error").and_then(Value::as_str) {
+        return fail(format!("The program threw an error:\n{err}\n{tail}"));
+    }
+    if results.is_none() {
+        return fail(format!("The program did not write output/.aiws/results.json ({ended}).\n{tail}"));
+    }
+    let source = std::fs::read_to_string(state.workdir.join("program/main.js")).unwrap_or_default();
+    let mut c = state.collector.lock().unwrap();
+    match program_output(&c, &raw, &source, tail) {
+        Ok(run) => {
+            let previews: Vec<Value> = run.results.iter().map(|r| c.preview(r)).collect();
+            let facts = run.facts.clone();
+            c.program = Some(run);
+            let checks = c.checks();
+            state.note_program_run();
+            let mut text = format!("The program ran successfully.\nResult previews:\n{}\nfacts: {}\nChecks: {}", pretty(&json!(previews)), facts, pretty(&json!(checks)));
+            let remaining = c.blocking();
+            if !remaining.is_empty() {
+                text.push_str(&format!("\nNot done yet:\n- {}", remaining.join("\n- ")));
+            }
+            if !stdout.trim().is_empty() {
+                text.push_str(&format!("\n\nProgram output:\n{}", stdout.chars().take(2000).collect::<String>()));
+            }
+            ok(text)
+        }
+        Err(errs) => fail(format!("The program ran, but its results failed validation:\n- {}\nFix the program, then call run_program again.", errs.join("\n- "))),
     }
 }

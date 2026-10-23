@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 pub const OBJ_TYPE_JSON: &str = "jobj";
 pub const OBJ_TYPE_FILE: &str = "cyfile";
+pub const OBJ_TYPE_DIR: &str = "cydir";
 pub const CHUNK_TYPE_MIX256: &str = "mix256";
 /// Single-chunk ceiling of the named store (`put_chunk_by_reader`).
 pub const MAX_CHUNK_SIZE: u64 = 32 * 1024 * 1024;
@@ -166,6 +167,40 @@ pub fn file_object(data_len: u64, chunk: &str) -> WsResult<(ObjId, String)> {
         m.insert("size".into(), Value::from(data_len));
     }
     named_object(OBJ_TYPE_FILE, &Value::Object(m))
+}
+
+/// One member of a DirObject: its name, the child object id (`cyfile:` or `cydir:`), the bytes under it
+/// and whether it is a file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirMember {
+    pub name: String,
+    pub object_id: String,
+    pub size: u64,
+    pub is_file: bool,
+}
+
+/// The cyfs-ndn DirObject (`cydir`, CYFS 标准对象 §11) of a member set, with the time fields fixed to 0
+/// like [`file_object`] (内核架构改进 D25): equal members give equal ids. The hashed body maps member
+/// names to child object ids, exactly as `DirObject::gen_obj_id` builds it.
+pub fn dir_object(members: &[DirMember]) -> WsResult<(ObjId, String)> {
+    let mut body = Map::new();
+    let (mut file_count, mut file_size, mut total) = (0u64, 0u64, 0u64);
+    for m in members {
+        body.insert(m.name.clone(), Value::String(m.object_id.clone()));
+        if m.is_file {
+            file_count += 1;
+            file_size += m.size;
+        }
+        total += m.size;
+    }
+    let mut o = Map::new();
+    o.insert("create_time".into(), Value::from(0));
+    o.insert("last_update_time".into(), Value::from(0));
+    o.insert("total_size".into(), Value::from(total));
+    o.insert("file_count".into(), Value::from(file_count));
+    o.insert("file_size".into(), Value::from(file_size));
+    o.insert("body".into(), Value::Object(body));
+    named_object(OBJ_TYPE_DIR, &Value::Object(o))
 }
 
 // ---- strict JSON parsing: duplicate keys are an error, not last-wins ----

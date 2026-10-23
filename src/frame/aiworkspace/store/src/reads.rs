@@ -7,7 +7,7 @@ use aiworkspace_core::access::Cap;
 use aiworkspace_core::filter::{run_query, QuerySpec};
 use aiworkspace_core::model::*;
 use aiworkspace_core::read;
-use aiworkspace_core::value::{normalize_reference, reference_entity_id, reference_is_local};
+use aiworkspace_core::value::{canonical_reference, normalize_reference, reference_entity_id, reference_from_canonical, reference_is_local};
 use aiworkspace_core::{richtext, types, Code, WsError, WsResult};
 use base64::Engine;
 use rusqlite::{params, OptionalExtension};
@@ -145,6 +145,9 @@ impl Workspace {
             .optional()
             .map_err(db_err)?;
         let (object_id, derived) = row.ok_or_else(|| WsError::not_found("that version is not available here"))?;
+        if !self.objects.has_object(&object_id) {
+            return Err(WsError::new(Code::ResourceReclaimed, "that version's content was reclaimed after its retention period").with_data(json!({ "object_ids": [object_id] })));
+        }
         let object = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(&object_id)?)?;
         if object["ws_type"] != json!(e.type_id) {
             return Err(WsError::invalid_schema("stored version has another type"));
@@ -191,6 +194,10 @@ impl Workspace {
         let now = self.now();
         let ctx = self.ctx(&now);
         let reference = match (reference, path) {
+            // a retained point of this history (D03, T1-12): `{ epoch, seq }` reads through its checkpoint
+            (Some(r), _) if r.get("mode").is_some() && r["version"].get("seq").is_some() => return self.resolve_retained(&access, &canonical_reference(r)?),
+            // the frozen reference object (D10) or the persisted form it replaces
+            (Some(r), _) if r.get("mode").is_some() => reference_from_canonical(&canonical_reference(r)?)?,
             (Some(r), _) => normalize_reference(r)?,
             (None, Some(p)) => json!({ "entity_id": read::resolve_path(&ctx, &access, p)?, "version": { "mode": "live_head" } }),
             _ => return Err(WsError::invalid_op("reference or path required")),
@@ -217,8 +224,8 @@ impl Workspace {
                 }
                 use aiworkspace_core::materialize::ObjectSource;
                 let content = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(obj)?)?;
-                return Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "object_id": obj,
-                                  "content_rev": known, "fixed": true, "object": content }));
+                return Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "canonical": canonical_reference(&with_ws(&reference, &self.workspace_id))?,
+                                  "object_id": obj, "content_rev": known, "fixed": true, "object": content }));
             }
             _ => return Err(WsError::invalid_op("unknown version mode")),
         }
@@ -227,8 +234,62 @@ impl Workspace {
         if !e.alive() {
             return Err(WsError::deleted(format!("entity {id} is deleted")));
         }
-        Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "type_id": e.type_id,
-                   "content_rev": e.content_rev, "capabilities": access.entity_caps(&ctx, &e)?.names() }))
+        Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "canonical": canonical_reference(&with_ws(&reference, &self.workspace_id))?,
+                   "type_id": e.type_id, "content_rev": e.content_rev, "capabilities": access.entity_caps(&ctx, &e)?.names() }))
+    }
+
+    /// A fixed version `{ epoch, seq }` of an entity (D03): readable only while a snapshot taken at that
+    /// seq is still a retention root (checkpoint, export, clone — `ws.release_retention` ends it); then the
+    /// entity's content object in that snapshot. Anything else is `VERSION_NOT_RETAINED`.
+    fn resolve_retained(&self, access: &aiworkspace_core::access::Access, canon: &Value) -> WsResult<Value> {
+        use aiworkspace_core::materialize::ObjectSource;
+        let not_retained = |what: String| WsError::new(Code::VersionNotRetained, what);
+        let epoch = canon["version"]["epoch"].as_str().unwrap_or("");
+        let seq = canon["version"]["seq"].as_u64().unwrap_or(0);
+        if epoch != self.epoch {
+            return Err(not_retained(format!("epoch {epoch} is not this Workspace's history")));
+        }
+        let mut st = self.doc.prepare_cached("SELECT snapshot_id, content_root FROM snapshots WHERE seq = ?1 ORDER BY created_at").map_err(db_err)?;
+        let snaps: Vec<(String, String)> = st.query_map([seq], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+        let mut retained = None;
+        for (id, root) in snaps {
+            let kept: bool = self.doc.query_row("SELECT 1 FROM retentions WHERE kind = 'snapshot' AND ref = ?1", [&id], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+            if kept && self.objects.has_object(&root) {
+                retained = Some((id, root));
+                break;
+            }
+        }
+        let Some((snapshot_id, content_root)) = retained else {
+            return Err(not_retained(format!("no checkpoint or clone retains seq {seq} of epoch {epoch}")).with_data(json!({ "epoch": epoch, "seq": seq })));
+        };
+        let id = reference_entity_id(canon).unwrap_or("");
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        match ctx.entity(id)? {
+            Some(e) if !access.can_read(&ctx, &e)? => return Err(WsError::not_found(format!("entity {id} not found"))),
+            None if !access.ws_caps.has(Cap::Read) => return Err(WsError::not_found(format!("entity {id} not found"))),
+            _ => {}
+        }
+        let root = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(&content_root)?)?;
+        let mut object_id: Option<String> = None;
+        if let Some(file) = root["entities"]["file"].as_str() {
+            let bytes = self.objects.get_file(file)?;
+            for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+                let entry: Value = serde_json::from_slice(line).map_err(|e| WsError::io(e.to_string()))?;
+                if entry["entity_id"] == json!(id) {
+                    object_id = entry["object_id"].as_str().map(str::to_string);
+                    break;
+                }
+            }
+        }
+        let Some(object_id) = object_id else {
+            return Err(WsError::not_found(format!("entity {id} is not part of seq {seq}")));
+        };
+        let object = aiworkspace_core::canonical::parse_strict(&self.objects.get_object(&object_id)?)?;
+        let mut reference = canon.clone();
+        reference["workspace_id"] = json!(self.workspace_id);
+        Ok(json!({ "ok": true, "reference": reference, "canonical": reference, "fixed": true, "snapshot_id": snapshot_id,
+                   "content_root": content_root, "object_id": object_id, "object": object }))
     }
 
     /// `doc.get_collab_state`: the only way CRDT bytes leave the backend
