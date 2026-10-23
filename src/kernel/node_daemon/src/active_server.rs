@@ -1590,8 +1590,14 @@ fn persist_activation(
     let etc_dir = get_buckyos_system_etc_dir();
     let start_config = serde_json::to_vec_pretty(&build_start_config(req, effective_owner))
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-    atomic_write(etc_dir.join("start_config.json").as_path(), &start_config)
-        .map_err(RPCErrors::ReasonError)?;
+    let security_root = identity_roots()
+        .map_err(RPCErrors::ReasonError)?
+        .security_root;
+    atomic_write(
+        security_root.join("start_config.json").as_path(),
+        &start_config,
+    )
+    .map_err(RPCErrors::ReasonError)?;
     save_sn_zone_info(zone_info).map_err(RPCErrors::ReasonError)?;
     save_zone_document_jwt(
         etc_dir.as_path(),

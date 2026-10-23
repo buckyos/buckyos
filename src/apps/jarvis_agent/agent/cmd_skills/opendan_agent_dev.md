@@ -107,6 +107,9 @@ Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/
 - Host, in `buckyos/src`: `./debug_jarvis.sh <owner> --agent <agent_id> [--no-build]` runs that Agent's Loader in the foreground from source; `JARVIS_PACKAGE_ROOT=<agent dir>` points it at your package. `opendan --dev --agent-root <dir> --agent-did <did> --queue-dir <dir>` runs without a zone. Container changes need `./build_aios --local-test` and a recreated container (`buckyos_dev_release`). Tests: `cargo test -p opendan --test loader -- --test-threads=1`, `cargo test -p libopendan -- --test-threads=1`.
 
 #### When it fails
+- MessageHub links ending in `.bns.did`: inspect `/opt/buckyos/etc/machine.json` and `web3_bridge.bns`. The file is
+  part of the host's read-only `etc/` mount, and AppService uses it to initialize DID hostname conversion.
+  Updating this behavior requires both node-daemon and aios, then a recreated container; see `buckyos_admin`.
 - Auth failure: read `loader.status.authentication` (`state`, `last_error`, `error_code`, `denial`, `next_retry_time`)
   and `errors`, then `session.read` for persistent `bind_failed`, input ACK and outbox. Renewal is serialized in the
   shared Rust runtime; new mail operations and tool calls take its latest token. Keep auth bind errors recoverable,

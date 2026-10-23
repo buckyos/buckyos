@@ -75,11 +75,15 @@ Deno.test("offline activation writes a self-contained did:web identity", async (
     assert(fs.existsSync(ownerKeyBackupPath), "owner key backup missing");
 
     const startConfig = readJson(
-      path.join(rootDir, "etc", "start_config.json"),
+      path.join(rootDir, "security", "start_config.json"),
     );
-    for (const filename of ["start_config.json", "node_identity.json"]) {
+    assert(
+      !fs.existsSync(path.join(rootDir, "etc", "start_config.json")),
+      "private startup config must not be written to etc",
+    );
+    for (const filename of [path.join("security", "start_config.json"), path.join("etc", "node_identity.json")]) {
       assert(
-        (fs.statSync(path.join(rootDir, "etc", filename)).mode & 0o777) === 0o600,
+        (fs.statSync(path.join(rootDir, filename)).mode & 0o777) === 0o600,
         `${filename} must be private when activation commits it`,
       );
     }
@@ -207,6 +211,36 @@ Deno.test("offline activation writes a self-contained did:web identity", async (
       repeatedError.includes("already or partially activated"),
       "repeat activation should be rejected",
     );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+Deno.test("offline activation rejects a private startup config already present", async () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "active-test-"));
+  try {
+    const rootDir = path.join(sandbox, "root");
+    for (const directory of ["bin", "etc", "security"]) {
+      fs.mkdirSync(path.join(rootDir, directory), { recursive: true });
+    }
+    const startConfigPath = path.join(rootDir, "security", "start_config.json");
+    fs.writeFileSync(startConfigPath, "preserve existing startup config");
+    let failure = "";
+    try {
+      await activateOffline({
+        rootDir,
+        domain: "home.example.com",
+        ownerName: "alice",
+        adminPassword: "test-password",
+        ownerKeyBackupPath: path.join(sandbox, "owner.pem"),
+      });
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    assert(failure.includes("already or partially activated"), "existing startup config must block activation");
+    assert(failure.includes(startConfigPath), "activation must identify the private startup config");
+    assert(fs.readFileSync(startConfigPath, "utf8") === "preserve existing startup config", "existing startup config changed");
+    assert(!fs.existsSync(path.join(sandbox, "owner.pem")), "rejected activation wrote an owner key");
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }

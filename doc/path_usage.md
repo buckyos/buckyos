@@ -24,6 +24,17 @@
 
 ### Docker Worker Volume 视角
 
+Docker App 和 Agent/Script Worker 默认将宿主 `$BUCKYOS_ROOT/etc/` 只读映射到
+`/opt/buckyos/etc/`。AppService runtime 从 `machine.json` 读取 `web3_bridge`、`force_https` 等机器策略，
+身份和启动凭据仍由应用环境变量提供。缺少 `machine.json` 时 runtime 使用默认机器策略。
+`security/` 不挂载。启动配置 `start_config.json`、开发 CA 私钥 `ca_key.pem` 和包含私钥或 API 凭据的
+开发模板 `scheduler/boot.template.toml` 放在 security 根目录，默认 `$BUCKYOS_ROOT/security/`。
+Rust 服务和备份脚本支持 `BUCKYOS_SECURITY_ROOT`；显式目标目录的配置生成器使用目标下的 `security/`。
+公开基础模板仍在 `etc/scheduler/`，scheduler 优先读取 security 中的私有模板。
+已有安装在开放 `etc/` 前须迁走敏感文件，并恢复公开基础模板；node-daemon 检测到 `etc/start_config.json`
+或 `etc/ca_key.pem`、基础模板中含 PEM 私钥时会拒绝创建容器。更新 node-daemon 后需重建已有容器，
+并更新容器内使用 `buckyos-api` 的程序；OpenDAN 需要重建 `paios/aios` 镜像。
+
 正式 Docker 模式下,App/Agent 还会看到两类不属于用户 home 数据的运行卷:
 
 ```
@@ -128,6 +139,7 @@ $buckyos_root/data/srv/library/ => cyfs://$zone_id/srv/library/ : zone内共享�
 $buckyos_root/data/srv/publish/ => cyfs://$zone_id/srv/publish/ : zone级别的分享数据
 $buckyos_root/storage : 内核基础设施在本机的持久化存储(dcfs chunks、named_store,未来可能包含dRDB数据),卸载不会删除
 $buckyos_root/etc : 内核配置区,覆盖安装和卸载时的操作是逐个文件定义的
+$buckyos_root/security : 启动配置、私钥和私有启动模板，不向应用容器默认开放
 
 
 ## 安装卸载整理

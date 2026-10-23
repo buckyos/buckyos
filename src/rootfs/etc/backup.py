@@ -32,7 +32,6 @@ def get_backup_file_list():
     """Get backup file list"""
     return [
         "node_identity.json",
-        "start_config.json",
         "machine.json"
     ]
 
@@ -77,12 +76,14 @@ def find_device_identity_dir(buckyos_root: str, device_did: str):
     return None
 
 
-def copy_file(src_file: Path, dst_file: Path, label: str, copied_items: list):
+def copy_file(src_file: Path, dst_file: Path, label: str, copied_items: list, mode=None):
     if src_file.exists():
         try:
             dst_file.parent.mkdir(parents=True, exist_ok=True)
             print(f"Copying {src_file} -> {dst_file} ...")
             shutil.copy2(src_file, dst_file)
+            if mode is not None and os.name != "nt":
+                dst_file.chmod(mode)
             copied_items.append(label)
             print(f"  ✓ Copied: {label}")
         except Exception as e:
@@ -107,12 +108,12 @@ def copy_tree(src_dir: Path, dst_dir: Path, label: str, copied_items: list):
 def backup_identity_file(target_dir: str):
     """
     Backup identity files
-    Files to backup: [etc/node_identity.json, etc/start_config.json, etc/machine.json, local/identity/<device>, security/<device>]
+    Files to backup: [etc/node_identity.json, etc/machine.json, local/identity/<device>, security/start_config.json, security/<device>]
     Backup to target_dir/$zone_name directory, zone_name is obtained from start_config.json file
     """
     buckyos_root = get_buckyos_rootfs_dir()
     etc_dir = Path(buckyos_root) / "etc"
-    start_config_file = etc_dir / "start_config.json"
+    start_config_file = get_security_root(buckyos_root) / "start_config.json"
     
     # Check if start_config.json exists
     if not start_config_file.exists():
@@ -152,6 +153,13 @@ def backup_identity_file(target_dir: str):
     
     # Backup files
     backed_up_files = []
+    copy_file(
+        start_config_file,
+        backup_dir / "security" / "start_config.json",
+        "security/start_config.json",
+        backed_up_files,
+        mode=0o600,
+    )
     for filename in files_to_backup:
         src_file = etc_dir / filename
         dst_file = backup_dir / "etc" / filename
@@ -221,6 +229,13 @@ def restore_identity_file(source_dir: str, zone_name: str):
     etc_dir.mkdir(parents=True, exist_ok=True)
     
     restored_files = []
+    copy_file(
+        backup_dir / "security" / "start_config.json",
+        get_security_root(buckyos_root) / "start_config.json",
+        "security/start_config.json",
+        restored_files,
+        mode=0o600,
+    )
     for filename in get_backup_file_list():
         src_file = backup_dir / "etc" / filename
         dst_file = etc_dir / filename

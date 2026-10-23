@@ -802,7 +802,9 @@ export function copyIdentityOutputs(
   delete startConfig.public_key;
   delete startConfig.device_private_key;
   delete startConfig.device_public_key;
-  writeJson(path.join(etcDir, "start_config.json"), startConfig);
+  const runtimeStartConfigPath = path.join(targetDir, "security", "start_config.json");
+  writeJson(runtimeStartConfigPath, startConfig);
+  fs.chmodSync(runtimeStartConfigPath, 0o600);
   writeText(
     path.join(etcDir, ZONE_DOCUMENT_JWT_FILE_NAME),
     localIdentity.zoneDocumentJwt,
@@ -833,7 +835,7 @@ export function copyIdentityOutputs(
 function makeUnactivatedIdentityConfig(targetDir: string): void {
   const etcDir = ensureDir(path.join(targetDir, "etc"));
   removeIfExists(path.join(etcDir, "node_identity.json"));
-  removeIfExists(path.join(etcDir, "start_config.json"));
+  removeIfExists(path.join(targetDir, "security", "start_config.json"));
   removeIfExists(path.join(etcDir, ZONE_DOCUMENT_JWT_FILE_NAME));
   removeTreeIfExists(path.join(etcDir, ".buckycli"));
   writeJson(path.join(etcDir, "node_gateway_params.json"), {
@@ -900,8 +902,9 @@ async function generateTls(
   );
   copyIfExists(
     path.join(caDir, `${caName}_ca_key.pem`),
-    path.join(etcDir, "ca_key.pem"),
+    path.join(securityRoot, "ca_key.pem"),
   );
+  fs.chmodSync(path.join(securityRoot, "ca_key.pem"), 0o600);
   console.log(`tls identity certs generated under ${publicRoot}`);
 
   if (!writePostGateway) {
@@ -1061,14 +1064,20 @@ function applyDevBootTemplate(
     console.log(`skip missing dev boot override: ${localBootToml}`);
   }
 
-  const dstBootTemplate = path.join(
+  const baseBootTemplate = path.join(
     targetDir,
     "etc",
     "scheduler",
     "boot.template.toml",
   );
-  let merged = fs.existsSync(dstBootTemplate)
-    ? fs.readFileSync(dstBootTemplate, "utf8")
+  const dstBootTemplate = path.join(
+    targetDir,
+    "security",
+    "scheduler",
+    "boot.template.toml",
+  );
+  let merged = fs.existsSync(baseBootTemplate)
+    ? fs.readFileSync(baseBootTemplate, "utf8")
     : "";
   let replaced = 0;
   let added = 0;
@@ -1096,6 +1105,7 @@ function applyDevBootTemplate(
   }
 
   writeText(dstBootTemplate, merged);
+  fs.chmodSync(dstBootTemplate, 0o600);
   console.log(
     `merge dev boot entries into template: ${dstBootTemplate} (replaced=${replaced}, added=${added})`,
   );

@@ -36,6 +36,10 @@ buckyos auth whoami                                 # identity + zone actually u
 - Apply, all restart the zone, ask the owner first: `uv run start.py` (stop, update installed files, start), `--skip-update` (restart), `--all` (fresh dev install devtest/test.buckyos.io, keeps `data/home`, `data/srv`, `storage`), `--reinstall release`. Then `uv run check.py`: "Activation Ready" is not running.
 - Container code (opendan, xagent, agent_tool, buckyos-agent, entrypoint): repo root `./build_aios --local-test` (writes `$BUCKYOS_ROOT/etc/devenv.json` `{"aios":"local/aios-test"}`), then `uv run src/start.py --skip-update` (or wait: node-daemon recreates worker containers whose image id differs from the current one within about 30 s). node-daemon never pulls paios images: a dev install uses local `<repo>:latest-<arch>` and fails deploy when it is missing (`docker pull paios/aios:latest-<arch>` or `uv run build.py`); a release install loads the pinned tarballs in `bin/paios-images/`.
 
+- Runtime startup credentials now live in `security/start_config.json`; development CA keys and private boot
+  templates also stay in `security/`. Containers receive a read-only host `etc/` mount. Before applying this layout
+  to an existing install, move its sensitive files out of `etc/` and restore the public boot template; see
+  `doc/path_usage.md` and `buckyos_admin`. Use the current backup script with the new layout.
 - Refresh-race fixes span the aios image (OpenDAN/runtime) and host binaries (verify-hub/node-daemon). Record the
   source commit/build id, actual installed binary hashes and running image id for both; publishing only the host or
   only the image is insufficient. Preserve verify-hub `sessions.db` and AgentRootFS. Use the existing authorized App

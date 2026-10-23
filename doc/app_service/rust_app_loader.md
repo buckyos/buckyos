@@ -295,6 +295,12 @@ Rust App Loader 需要支持：
 6. 容器命名必须可稳定映射到实例。
 7. 需要显式支持 Windows/macOS/Linux 下 Docker 的差异化路径处理。
 
+Docker App 和 Agent/Script Worker 默认将宿主 `$BUCKYOS_ROOT/etc/` 只读映射到容器 `/opt/buckyos/etc/`，
+AppService runtime 读取 `machine.json` 中的 bridge 与 HTTPS 策略，缺文件使用默认机器策略。
+`start_config.json`、开发 CA 私钥和私有 boot 模板存放于不挂载的 `security/`。
+宿主 `etc/` 中仍有 `start_config.json`、`ca_key.pem` 或基础模板含 PEM 私钥时拒绝挂载，须先迁走这些文件并恢复公开基础模板。
+已有容器需通过 recreate 流程重建以获得新挂载，单纯 `docker restart` 不更新挂载；路径说明见 `doc/path_usage.md`。
+
 ## 9.1.1 Worker 镜像（paios/aios、paios/exttool）
 
 Agent 和 Host Script 共用 Worker 镜像 `paios/aios`，ExtTool 内容由 `paios/exttool` 播种到命名卷。规则与第三方 Docker App 不同（实现在 `node_daemon/src/paios_images.rs`）：

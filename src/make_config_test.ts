@@ -15,7 +15,7 @@ Deno.test("release and nightly remain unactivated without a seed identity handof
         machine.web3_bridge.bns !== `web3.${domain}` || !machine.force_https) {
         throw new Error("formal environment machine config changed");
       }
-      for (const forbidden of [env, `${target}/etc/node_identity.json`, `${target}/etc/start_config.json`]) {
+      for (const forbidden of [env, `${target}/etc/node_identity.json`, `${target}/security/start_config.json`, `${target}/etc/start_config.json`]) {
         try {
           await Deno.stat(forbidden);
         } catch (error) {
@@ -40,6 +40,68 @@ Deno.test("vmtest remains unactivated with an isolated environment root", async 
     if (params.params.device_did !== "did:bns:unactivated.local" ||
         params.params.rtcp_port !== "2980") {
       throw new Error("vmtest preseeded a device identity");
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("generated runtime startup config and CA keys stay in security", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const target = `${root}/target`;
+    const caDir = `${root}/ca`;
+    await makeConfigByGroupName("alice.ood1", target, caDir, `${root}/env`);
+    const params = getParamsFromGroupName("alice.ood1");
+    const sourceKey = await Deno.readTextFile(`${caDir}/${params.ca_name}_ca_key.pem`);
+    const copiedKey = await Deno.readTextFile(`${target}/security/ca_key.pem`);
+    if (copiedKey !== sourceKey || !copiedKey.includes("PRIVATE KEY")) {
+      throw new Error("runtime CA key does not match the generated CA");
+    }
+    await Deno.stat(`${target}/etc/ca.cert`);
+    for (const filename of ["start_config.json", "ca_key.pem"]) {
+      if (Deno.build.os !== "windows") {
+        const file = await Deno.stat(`${target}/security/${filename}`);
+        if (file.mode === null || (file.mode & 0o777) !== 0o600) {
+          throw new Error(`${filename} must be private`);
+        }
+      }
+      try {
+        await Deno.stat(`${target}/etc/${filename}`);
+        throw new Error(`${filename} must not be published through etc`);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("dev bootstrap secrets are merged into a private template", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const target = `${root}/target`;
+    const publicTemplatePath = `${target}/etc/scheduler/boot.template.toml`;
+    const privateTemplatePath = `${target}/security/scheduler/boot.template.toml`;
+    const publicTemplate = '"public/bootstrap" = """\npublic-base-value\n"""\n';
+    await Deno.mkdir(`${target}/etc/scheduler`, { recursive: true });
+    await Deno.writeTextFile(publicTemplatePath, publicTemplate);
+    await makeConfigByGroupName("devtest_ood1", target, `${root}/ca`, `${root}/env`);
+    if (await Deno.readTextFile(publicTemplatePath) !== publicTemplate) {
+      throw new Error("dev bootstrap changed the public base template");
+    }
+    const privateTemplate = await Deno.readTextFile(privateTemplatePath);
+    for (const required of ["public-base-value", '"security/bob/key"', '"security/alice/key"', "PRIVATE KEY"]) {
+      if (!privateTemplate.includes(required)) {
+        throw new Error(`private bootstrap is missing ${required}`);
+      }
+    }
+    if (Deno.build.os !== "windows") {
+      const file = await Deno.stat(privateTemplatePath);
+      if (file.mode === null || (file.mode & 0o777) !== 0o600) {
+        throw new Error("private bootstrap template must be private");
+      }
     }
   } finally {
     await Deno.remove(root, { recursive: true });
@@ -81,7 +143,13 @@ Deno.test("seed materialization validates owner passwords and preserves the devi
       start.admin_password_hash = expectedHash;
       await Deno.writeTextFile(startPath, JSON.stringify(start));
       copyIdentityOutputs(userDir, nodeDir, target, params);
-      const saved = JSON.parse(await Deno.readTextFile(`${target}/etc/start_config.json`));
+      const saved = JSON.parse(await Deno.readTextFile(`${target}/security/start_config.json`));
+      try {
+        await Deno.stat(`${target}/etc/start_config.json`);
+        throw new Error("private startup config was written to etc");
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
       const gateway = JSON.parse(await Deno.readTextFile(`${target}/etc/node_gateway_params.json`));
       if (saved.admin_password_hash !== expectedHash ||
           gateway.params.rtcp_port !== String(params.rtcp_port)) {

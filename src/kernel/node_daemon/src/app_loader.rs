@@ -11,7 +11,7 @@ use buckyos_api::{
     BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
     BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT, APP_PERMISSION_USER_HOME,
 };
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir, get_buckyos_system_etc_dir};
 use log::{debug, error, info, warn};
 use ndn_lib::{load_named_object_from_obj_str, NamedObject, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
@@ -1898,6 +1898,11 @@ impl AppLoader {
             );
         }
 
+        validate_system_config_mount()?;
+        if let Some((container_path, host_path, permission)) = system_config_mount() {
+            mounts.insert(container_path, (host_path, permission));
+        }
+
         let mut result = Vec::new();
         for (container_path, (host_path, permission)) in mounts {
             ensure_directory(&host_path, permission == "rw")?;
@@ -2114,6 +2119,11 @@ impl AppLoader {
             let host_relative = config.target_path.to_string_lossy();
             let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
             let permission = mount_access_to_docker(&config.access, "ro");
+            mounts.insert(container_path, (host_path, permission));
+        }
+
+        validate_system_config_mount()?;
+        if let Some((container_path, host_path, permission)) = system_config_mount() {
             mounts.insert(container_path, (host_path, permission));
         }
 
@@ -2629,6 +2639,14 @@ impl AppLoader {
             docker_run_args.push(format!("{instance_port}:{container_port}"));
         }
 
+        if let Some((container_path, host_path, permission)) = system_config_mount() {
+            docker_run_args.push("-v".to_string());
+            docker_run_args.push(format!(
+                "{}:{container_path}:{permission}",
+                host_path.display()
+            ));
+        }
+
         for env_key in self.preview_env_keys(PackageRole::DockerImage) {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("{env_key}=<value>"));
@@ -2798,6 +2816,13 @@ impl AppLoader {
             "<app_data>:{}:rw",
             container_app_data_dir(&self.owner_user_id, &self.app_id)
         ));
+        if let Some((container_path, host_path, permission)) = system_config_mount() {
+            docker_run_args.push("-v".to_string());
+            docker_run_args.push(format!(
+                "{}:{container_path}:{permission}",
+                host_path.display()
+            ));
+        }
         let with_agent_skills = app_type_label == "agent" && self.agent_skills_pkg_id().is_some();
         if app_type_label == "agent" {
             for entry in BUCKYOS_TOOL_MOUNT_ENTRIES {
@@ -2967,6 +2992,23 @@ impl AppLoader {
         pkg_root: &Path,
     ) -> Result<Vec<(String, PathBuf, &'static str)>> {
         self.build_worker_volume_mounts(pkg_root, PackageRole::AgentPkg, None)
+    }
+
+    pub(crate) fn test_docker_volume_mounts(&self) -> Result<Vec<(String, PathBuf, &'static str)>> {
+        self.build_volume_mounts()
+    }
+
+    pub(crate) fn test_worker_volume_mounts(
+        &self,
+        pkg_root: &Path,
+        agent: bool,
+    ) -> Result<Vec<(String, PathBuf, &'static str)>> {
+        let role = if agent {
+            PackageRole::AgentPkg
+        } else {
+            PackageRole::HostApp
+        };
+        self.build_worker_volume_mounts(pkg_root, role, None)
     }
 
     pub(crate) fn with_docker_command_runner(mut self, runner: DockerCommandRunner) -> Self {
@@ -3544,6 +3586,46 @@ pub(crate) fn buckyos_tool_mounts(tool_root: &Path) -> Vec<(String, PathBuf)> {
             }
         })
         .collect()
+}
+
+fn validate_system_config_mount() -> Result<()> {
+    let host_path = get_buckyos_system_etc_dir();
+    for name in ["start_config.json", "ca_key.pem"] {
+        if host_path.join(name).exists() {
+            return Err(ControlRuntItemErrors::ParserConfigError(format!(
+                "move {} from etc to the security directory before mounting etc into containers",
+                host_path.join(name).display()
+            )));
+        }
+    }
+    let template_path = host_path.join("scheduler/boot.template.toml");
+    if template_path.is_file() {
+        let template = fs::read_to_string(&template_path).map_err(|error| {
+            ControlRuntItemErrors::ParserConfigError(format!(
+                "read {} failed: {}",
+                template_path.display(),
+                error
+            ))
+        })?;
+        if template.contains("-----BEGIN PRIVATE KEY-----") {
+            return Err(ControlRuntItemErrors::ParserConfigError(format!(
+                "move private boot template {} to security/scheduler and restore the public template before mounting etc into containers",
+                template_path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn system_config_mount() -> Option<(String, PathBuf, &'static str)> {
+    let host_path = get_buckyos_system_etc_dir();
+    host_path.is_dir().then(|| {
+        (
+            "/opt/buckyos/etc".to_string(),
+            canonicalize_mount_path(&host_path),
+            "ro",
+        )
+    })
 }
 
 fn agent_worker_env(with_agent_skills: bool) -> Result<Vec<(String, String)>> {

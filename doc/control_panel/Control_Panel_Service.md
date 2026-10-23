@@ -232,7 +232,7 @@ Control Panel 在校验 App session token 后读取绑定 Agent 的权限模式�
 
 以下模块只读，服务于运维面板，列出以明确服务边界（不在“写功能”范畴）：
 
-* **Zone**：`zone.overview` / `zone.config` — 聚合 `start_config.json` / `node_identity.json` / `did.json`，输出 zone/device/SN/DNS 自检与文件清单。
+* **Zone**：`zone.overview` / `zone.config` — 聚合 security 根目录中的 `start_config.json`、`etc/node_identity.json` 与公开身份目录中的 `did.json`，输出 zone/device/SN/DNS 自检与文件清单。
 * **设备与证书**：`zone.devices.list` 返回 `{zone_did, hostname, owner_did, sn, local_device, online_window_secs, devices: [...]}`，每台设备含 `role`（`ood`/`gateway`/设备类型）、`online`、`last_seen`、`os_version`、`cpu`/`memory`/`storage`/`gpu`、`ips`、`endpoints`、`ipv6_state`（见 §2.2）。`zone.certificates.list` 用 name-client `IdentityRoots` 读取本节点身份库里 Zone 主机名及其通配符的 server 证书元数据（cyfs-gateway ACME 管理器写入），返回 `{hostname, node, certificates: [{host, source, issuer, not_before, not_after, days_remaining, dns_names, fingerprint_sha256, state, cert_pem}]}`；`state` 为 `valid`/`expired`/`not_yet_valid`/`unusable`/`unknown`，`cert_pem` 只是公开证书，不含私钥。两者只读，需登录。
 * **Gateway**：`gateway.overview` / `gateway.config` / `gateway.file.get` — 解析 `cyfs_gateway.json` / `boot_gateway.yaml` / `node_gateway.json` 等（白名单文件，单文件 ≤2MB），输出 stacks / routes / tlsDomains。
 * **Container**：`container.overview` / `container.action`（start/stop/restart，带缓存与刷新锁）。

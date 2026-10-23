@@ -1,3 +1,5 @@
-Runtime private identity materials live here.
+Runtime private identity materials and start_config.json live here.
+Development CA keys and private scheduler/boot.template.toml overrides also live here.
+This directory is not mounted into application containers.
 
 Files in this directory are generated per installation and should not be committed.

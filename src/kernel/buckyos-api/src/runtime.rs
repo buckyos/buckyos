@@ -495,11 +495,6 @@ impl BuckyOSRuntime {
     }
 
     pub async fn fill_policy_by_load_config(&mut self) -> Result<()> {
-        if self.runtime_type == BuckyOSRuntimeType::AppService {
-            info!("AppService runtime skips system config root bootstrap");
-            return Ok(());
-        }
-
         let mut config_root_dir = None;
         if self.runtime_type == BuckyOSRuntimeType::AppClient {
             let bucky_dev_user_home_dir = get_buckyos_dev_user_home();
@@ -528,7 +523,7 @@ impl BuckyOSRuntime {
             ));
         }
         let config_root_dir = config_root_dir.unwrap();
-        if !config_root_dir.exists() {
+        if !config_root_dir.exists() && self.runtime_type != BuckyOSRuntimeType::AppService {
             error!(
                 "config_root_dir not exists: {}, init buckyos runtime config would failed!",
                 config_root_dir.to_string_lossy()

@@ -71,7 +71,7 @@ printf '%s\n' "$ADMIN_PASSWORD" | ./src/active.ts \
 脚本生成与 Node Active 同构的 Owner、ZoneBoot、Device、DeviceMini 和 Zone 文档，并写入运行时使用的相同位置：
 
 - `$BUCKYOS_ROOT/etc/node_identity.json`
-- `$BUCKYOS_ROOT/etc/start_config.json`
+- `$BUCKYOS_ROOT/security/start_config.json`
 - `$BUCKYOS_ROOT/etc/zone_document.jwt`
 - `$BUCKYOS_ROOT/etc/<domain>.zone.json`
 - `$BUCKYOS_ROOT/local/identity/<device>/...`

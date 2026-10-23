@@ -21,7 +21,15 @@ buckyos system info                                 # BuckyOS version, build_ver
   `BUCKYOS_APPCLIENT_SESSION_TOKEN`: the agent app, `principal` = your owner, `appid` = your agent id.
   On a host, `buckyos` uses the device identity on `127.0.0.1:3180` and asks for `--yes`.
 - Container paths are not host paths. Your `/opt/buckyos/logs` is the host's `$BUCKYOS_ROOT/logs/apps/<instance-hash>/`;
-  the host's `etc/`, `security/`, `bin/`, other containers and processes are not visible to you.
+  `/opt/buckyos/etc/` is the host's configuration directory mounted read-only. Host `security/`, `bin/`, other
+  containers and processes are not visible to you. Startup credentials are in the host's `security/start_config.json`;
+  development CA keys and private scheduler templates also belong under `security/`, outside this mount.
+- A browser link ending in `.bns.did`: check `web3_bridge.bns` in the container's `machine.json` against the host's
+  policy. AppService loads that policy before name resolution; an absent file uses defaults. After updating
+  node-daemon and aios, recreate the Agent container to apply its mount; `docker restart` keeps the old mounts.
+- Container creation reports misplaced `etc/start_config.json` or `etc/ca_key.pem`: an authorized host operator must
+  move those files into the security root and restore the public boot template before exposing `etc/`. See the repo's
+  `doc/path_usage.md`; never copy startup credentials or private templates into a container.
 - Agent creation defaults to `permission_mode: read_write`; the owner can choose `read_only` in Add Agent.
   `agent get <agent_id>` returns the selected mode. Owner home follows that mode; `$OPENDAN_AGENT_ROOT` is always
   writable for sessions, memory, workspaces, tools and skills. This grant is in AgentSpec, not agent settings.

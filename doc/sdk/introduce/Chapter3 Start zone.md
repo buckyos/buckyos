@@ -44,7 +44,7 @@
 
 - `node_private_key.pem`：本设备 Ed25519 私钥（`src/kernel/node_daemon/src/active_server.rs`）
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（`src/kernel/node_daemon/src/active_server.rs`）
-- `start_config.json`：后续 boot.template 渲染所需参数；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）
+- `security/start_config.json`：后续 boot.template 渲染所需参数及启动凭据；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）
 - `node_device_config.json`：DeviceConfig 的 JSON 形式，供启动阶段读取（`src/kernel/node_daemon/src/active_server.rs`）
 
 其中 `node_identity.json` 是最核心的“粘合剂”。它把 `zone_did`、`owner_public_key`、设备文档 JWT 固化下来，让启动阶段可以验证“我是谁、我属于谁、我要加入哪个 Zone”。

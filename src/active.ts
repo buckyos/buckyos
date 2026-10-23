@@ -260,7 +260,6 @@ function commitStagedTree(stagedRoot: string, targetRoot: string): void {
     }
     const destination = path.join(targetRoot, relative);
     const isPrivate = relative.startsWith(`security${path.sep}`) ||
-      relative === path.join("etc", "start_config.json") ||
       relative === path.join("etc", "node_identity.json");
     atomicCopyFile(source, destination, isPrivate ? 0o600 : 0o644);
   }
@@ -308,13 +307,13 @@ function requireUnactivatedRoot(rootDir: string, domain: string): void {
   }
   for (
     const marker of [
-      "node_identity.json",
-      "start_config.json",
-      "zone_document.jwt",
-      `${domain}.zone.json`,
+      path.join("etc", "node_identity.json"),
+      path.join("security", "start_config.json"),
+      path.join("etc", "zone_document.jwt"),
+      path.join("etc", `${domain}.zone.json`),
     ]
   ) {
-    const markerPath = path.join(rootDir, "etc", marker);
+    const markerPath = path.join(rootDir, marker);
     if (fs.existsSync(markerPath)) {
       throw new Error(
         `BuckyOS is already or partially activated: ${markerPath}`,
@@ -391,7 +390,7 @@ export async function activateOffline(
       );
     }
 
-    const startConfigPath = path.join(stagedRoot, "etc", "start_config.json");
+    const startConfigPath = path.join(stagedRoot, "security", "start_config.json");
     const startConfig = readJsonObject(startConfigPath);
     startConfig.admin_password_hash = hashAdminPassword(
       ownerName,

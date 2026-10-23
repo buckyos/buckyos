@@ -2,11 +2,11 @@ use crate::image_data_url::{validate_image_data_url, MAX_ZONE_ICON_PX};
 use crate::{
     docker_command, external_command, gateway_etc_dir, sn_self_cert_state_path, ControlPanelServer,
     DockerOverviewCacheEntry, RpcAuthPrincipal, DOCKER_OVERVIEW_CACHE_TTL_SECS,
-    GATEWAY_CONFIG_FILES, ZONE_CONFIG_FILES,
+    GATEWAY_CONFIG_FILES,
 };
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
-    get_buckyos_api_runtime, zone_document_hostname, BuckyOSRuntime, SystemConfigClient,
+    get_buckyos_api_runtime, identity_roots, zone_document_hostname, BuckyOSRuntime, SystemConfigClient,
     SystemConfigError, ZonePresentationConfig, ZonePresentationFields, ZONE_PRESENTATION_KEY,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
@@ -178,13 +178,6 @@ impl ControlPanelServer {
 
     fn gateway_config_file_path(name: &str) -> Option<PathBuf> {
         if !GATEWAY_CONFIG_FILES.contains(&name) {
-            return None;
-        }
-        Some(gateway_etc_dir().join(name))
-    }
-
-    fn zone_config_file_path(name: &str) -> Option<PathBuf> {
-        if !ZONE_CONFIG_FILES.contains(&name) {
             return None;
         }
         Some(gateway_etc_dir().join(name))
@@ -454,10 +447,11 @@ impl ControlPanelServer {
         req: RPCRequest,
     ) -> Result<RPCResponse, RPCErrors> {
         let etc_dir = gateway_etc_dir();
-        let start_config_path = Self::zone_config_file_path("start_config.json")
-            .unwrap_or_else(|| etc_dir.join("start_config.json"));
-        let node_identity_path = Self::zone_config_file_path("node_identity.json")
-            .unwrap_or_else(|| etc_dir.join("node_identity.json"));
+        let start_config_path = identity_roots()
+            .map_err(RPCErrors::ReasonError)?
+            .security_root
+            .join("start_config.json");
+        let node_identity_path = etc_dir.join("node_identity.json");
         let mut device_doc_path: Option<PathBuf> = None;
 
         let mut zone_name = String::new();

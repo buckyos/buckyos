@@ -83,6 +83,208 @@ fn build_agent_doc_without_category() -> AppDoc {
 }
 
 #[test]
+fn container_system_config_mount_is_read_only_and_scoped() {
+    if std::env::var_os("BUCKYOS_SYSTEM_CONFIG_MOUNT_TEST_CHILD").is_none() {
+        let root = tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "test_app_loader::container_system_config_mount_is_read_only_and_scoped",
+                "--nocapture",
+            ])
+            .env("BUCKYOS_ROOT", root.path())
+            .env("BUCKYOS_SYSTEM_CONFIG_MOUNT_TEST_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+
+    let root = buckyos_kit::get_buckyos_root_dir();
+    let canonical_root = fs::canonicalize(&root).unwrap();
+    let etc = root.join("etc");
+    let pkg = root.join("test-package");
+    fs::create_dir_all(&etc).unwrap();
+    fs::create_dir_all(&pkg).unwrap();
+    fs::create_dir_all(root.join("security")).unwrap();
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::write(root.join("security/start_config.json"), "private-start-config").unwrap();
+    fs::write(etc.join("node_identity.json"), "host-node-identity").unwrap();
+    fs::write(root.join("security/device.key"), "private-device-key").unwrap();
+    fs::write(root.join("bin/host-runtime"), "host-platform-binary").unwrap();
+    let machine = etc.join("machine.json");
+    let target = "/opt/buckyos/etc";
+    let platform = PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64);
+    let docker = build_service_loader(build_appservice_doc(), HashMap::new(), platform, true);
+    let agent = build_agent_loader(platform);
+    let script = AppLoader::new_for_local(
+        "desktop-tool",
+        LocalAppInstanceConfig {
+            target_state: ServiceInstanceState::Started,
+            enable: true,
+            app_doc: build_local_service_doc(),
+            user_id: "alice".to_string(),
+            install_config: ServiceSpecConfig::default(),
+        },
+    )
+    .with_platform(platform)
+    .with_container_support_override(false)
+    .with_worker_image_repo_override("paios/aios")
+    .with_paios_images_root(local_paios_root());
+    let loaders = [
+        (RuntimeType::Docker, docker),
+        (RuntimeType::Agent, agent),
+        (RuntimeType::HostScript, script),
+    ];
+
+    for present in [false, true] {
+        if present {
+            fs::write(
+                &machine,
+                r#"{"web3_bridge":{"bns":"bridge.example.org"},"force_https":true}"#,
+            )
+            .unwrap();
+        }
+        for (runtime, loader) in &loaders {
+            let mounts = match runtime {
+                RuntimeType::Docker => loader.test_docker_volume_mounts(),
+                RuntimeType::Agent => loader.test_worker_volume_mounts(&pkg, true),
+                RuntimeType::HostScript => loader.test_worker_volume_mounts(&pkg, false),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            let config_mounts = mounts
+                .iter()
+                .filter(|(container_path, _, _)| container_path == target)
+                .collect::<Vec<_>>();
+            assert_eq!(config_mounts.len(), 1, "{runtime:?}");
+            assert_eq!(
+                fs::canonicalize(&config_mounts[0].1).unwrap(),
+                fs::canonicalize(&etc).unwrap(),
+                "{runtime:?}"
+            );
+            assert_eq!(config_mounts[0].2, "ro", "{runtime:?}");
+            for (container_path, host_path, _) in &mounts {
+                let canonical_host_path = fs::canonicalize(host_path).unwrap();
+                if canonical_host_path.starts_with(canonical_root.join("etc")) {
+                    assert_eq!(
+                        canonical_host_path,
+                        fs::canonicalize(&etc).unwrap(),
+                        "{runtime:?}: {host_path:?}"
+                    );
+                }
+                assert!(
+                    !canonical_host_path.starts_with(canonical_root.join("security")),
+                    "{runtime:?}"
+                );
+                assert!(
+                    !canonical_host_path.starts_with(canonical_root.join("bin")),
+                    "{runtime:?}"
+                );
+                if Path::new(container_path).starts_with("/opt/buckyos/etc") {
+                    assert_eq!(container_path, target, "{runtime:?}");
+                }
+                assert_ne!(container_path, "/opt/buckyos", "{runtime:?}");
+                assert!(
+                    !Path::new(container_path).starts_with("/opt/buckyos/security"),
+                    "{runtime:?}"
+                );
+                assert!(
+                    !Path::new(container_path).starts_with("/opt/buckyos/bin"),
+                    "{runtime:?}"
+                );
+            }
+            if present {
+                if let Ok(image) = std::env::var("BUCKYOS_MACHINE_CONFIG_DOCKER_IMAGE") {
+                    let mut command = std::process::Command::new("docker");
+                    command.args([
+                        "run", "--rm", "--network", "none", "--user", "0", "--cap-drop",
+                        "ALL", "--security-opt", "no-new-privileges", "--entrypoint", "sh",
+                    ]);
+                    for (container_path, host_path, access) in &mounts {
+                        command.args([
+                            "-v",
+                            &format!("{}:{container_path}:{access}", host_path.display()),
+                        ]);
+                    }
+                    let script = r#"set -eu
+test "$(cat /opt/buckyos/etc/machine.json)" = '{"web3_bridge":{"bns":"bridge.example.org"},"force_https":true}'
+if (printf changed >> /opt/buckyos/etc/machine.json) 2>/dev/null; then exit 23; fi
+test ! -e /opt/buckyos/etc/start_config.json
+test "$(cat /opt/buckyos/etc/node_identity.json)" = 'host-node-identity'
+if (touch /opt/buckyos/etc/new-config.json) 2>/dev/null; then exit 24; fi
+test ! -e /opt/buckyos/security/start_config.json
+test ! -e /opt/buckyos/security/device.key
+test ! -e /opt/buckyos/bin/host-runtime
+"#;
+                    let output = command.args([&image, "-c", script]).output().unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{runtime:?}: {}\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+
+            let preview = loader.preview_operation(ControlOperation::Start).unwrap();
+            assert_eq!(&preview.runtime, runtime);
+            let preview_etc = if cfg!(target_os = "windows") {
+                etc.clone()
+            } else {
+                canonical_root.join("etc")
+            };
+            let config_mount = format!("{}:{target}:ro", preview_etc.display());
+            let preview_mounts = preview.commands[1]
+                .args
+                .windows(2)
+                .filter(|pair| pair[0] == "-v")
+                .map(|pair| pair[1].as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                preview_mounts.contains(&config_mount.as_str()),
+                "{runtime:?}"
+            );
+            for mount in preview_mounts {
+                for forbidden in [
+                    "start_config.json",
+                    ":/opt/buckyos/security",
+                    ":/opt/buckyos/bin",
+                ] {
+                    assert!(!mount.contains(forbidden), "{runtime:?}: {mount}");
+                }
+            }
+        }
+        assert_eq!(machine.is_file(), present);
+        assert!(!machine.is_dir());
+        if !present {
+            assert!(!machine.exists());
+        }
+    }
+    fs::create_dir_all(etc.join("scheduler")).unwrap();
+    for name in ["start_config.json", "ca_key.pem", "scheduler/boot.template.toml"] {
+        let misplaced = etc.join(name);
+        fs::write(&misplaced, "-----BEGIN PRIVATE KEY-----").unwrap();
+        for (runtime, loader) in &loaders {
+            let result = match runtime {
+                RuntimeType::Docker => loader.test_docker_volume_mounts(),
+                RuntimeType::Agent => loader.test_worker_volume_mounts(&pkg, true),
+                RuntimeType::HostScript => loader.test_worker_volume_mounts(&pkg, false),
+                _ => unreachable!(),
+            };
+            assert!(result.is_err(), "{runtime:?}: {name}");
+        }
+        fs::remove_file(misplaced).unwrap();
+    }
+}
+
+#[test]
 fn agent_permission_mount_boundaries() {
     if std::env::var_os("BUCKYOS_AGENT_MOUNTS_TEST_CHILD").is_none() {
         let root = tempdir().unwrap();

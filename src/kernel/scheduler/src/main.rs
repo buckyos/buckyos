@@ -53,10 +53,11 @@ async fn create_init_list_by_template(
     zone_document: &ZoneDocument,
     zone_document_str: &str,
     buckyos_root_dir: &Path,
+    security_root_dir: &Path,
 ) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
     let etc_dir = buckyos_root_dir.join("etc");
-    let start_params_file_path = etc_dir.join("start_config.json");
+    let start_params_file_path = security_root_dir.join("start_config.json");
     info!(
         "load start_params from :{}",
         start_params_file_path.to_string_lossy()
@@ -77,7 +78,12 @@ async fn create_init_list_by_template(
         .map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
     //load boot.template
-    let template_file_path = etc_dir.join("scheduler").join("boot.template.toml");
+    let private_template_path = security_root_dir.join("scheduler").join("boot.template.toml");
+    let template_file_path = if tokio::fs::try_exists(&private_template_path).await? {
+        private_template_path
+    } else {
+        etc_dir.join("scheduler").join("boot.template.toml")
+    };
     let template_str = match tokio::fs::read_to_string(&template_file_path).await {
         Ok(content) => content,
         Err(err) => {
@@ -188,10 +194,12 @@ async fn do_boot_scheduler() -> Result<()> {
         ));
     }
 
+    let roots = identity_roots().map_err(anyhow::Error::msg)?;
     let mut init_list = create_init_list_by_template(
         &zone_document,
         &zone_document_str,
         get_buckyos_root_dir().as_path(),
+        &roots.security_root,
     )
     .await
     .map_err(|e| {
@@ -400,12 +408,16 @@ mod test {
 
         let zone_document = prepare_scheduler_test_configs(temp_root.path()).await;
         let zone_document_str = serde_json::to_string(&zone_document).unwrap();
-        let mut init_map =
-            create_init_list_by_template(&zone_document, &zone_document_str, temp_root.path())
-                .await
-                .expect("init list generation should succeed");
+        let mut init_map = create_init_list_by_template(
+            &zone_document,
+            &zone_document_str,
+            temp_root.path(),
+            &temp_root.path().join("security"),
+        )
+        .await
+        .expect("init list generation should succeed");
         let start_config_value: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(temp_root.path().join("etc").join("start_config.json"))
+            &fs::read_to_string(temp_root.path().join("security").join("start_config.json"))
                 .expect("failed to read start_config"),
         )
         .expect("start_config should be valid json");
@@ -556,6 +568,27 @@ mod test {
             .service_infos
             .contains_key("scheduler"));
 
+        assert!(!init_map.contains_key("test/private_template"));
+        let private_template_dir = temp_root.path().join("security/scheduler");
+        fs::create_dir_all(&private_template_dir).unwrap();
+        fs::write(
+            private_template_dir.join("boot.template.toml"),
+            format!(
+                "{}\n\"test/private_template\" = \"selected\"\n",
+                include_str!("../../../rootfs/etc/scheduler/boot.template.toml")
+            ),
+        )
+        .unwrap();
+        let private_init_map = create_init_list_by_template(
+            &zone_document,
+            &zone_document_str,
+            temp_root.path(),
+            &temp_root.path().join("security"),
+        )
+        .await
+        .expect("private init template should load");
+        assert_eq!(private_init_map["test/private_template"], "selected");
+
         let mut multi_ood_zone_document = zone_document.clone();
         multi_ood_zone_document.oods = vec![
             OODDescriptionString::new(
@@ -572,6 +605,7 @@ mod test {
             &multi_ood_zone_document,
             &multi_ood_zone_document_str,
             temp_root.path(),
+            &temp_root.path().join("security"),
         )
         .await
         .expect("multi OOD init list generation should succeed");
@@ -597,6 +631,7 @@ mod test {
             &gateway_only_zone_document,
             &gateway_only_zone_document_str,
             temp_root.path(),
+            &temp_root.path().join("security"),
         )
         .await
         .err()
@@ -646,11 +681,11 @@ mod test {
         .await
         .expect("failed to create node config");
 
-        let etc_dir = root.join("etc");
-        fs::create_dir_all(&etc_dir).unwrap();
+        let security_dir = root.join("security");
+        fs::create_dir_all(&security_dir).unwrap();
         let start_config_src: std::path::PathBuf =
             output_dir.join(TEST_DEVICE_NAME).join("start_config.json");
-        fs::copy(start_config_src, etc_dir.join("start_config.json"))
+        fs::copy(start_config_src, security_dir.join("start_config.json"))
             .expect("failed to copy start_config");
 
         let owner_config_path = output_dir.join("user_config.json");

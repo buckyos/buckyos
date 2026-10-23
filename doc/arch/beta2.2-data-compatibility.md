@@ -56,7 +56,7 @@ Beta2.2 应作为后续覆盖升级的第一份正式数据基线。凡升级后
 
 ### F01 本机身份、启动与密钥材料
 
-**内容：** `etc/node_identity.json`、`etc/start_config.json`、`etc/zone_document.jwt`；`local/identity/<encoded-identity>/` 下的 `did.json`、`device_doc.jwt`、`device_mini_doc.jwt` 等；`security/` 下的私钥、keyref、signer descriptor。
+**内容：** `etc/node_identity.json`、`etc/zone_document.jwt`；`local/identity/<encoded-identity>/` 下的 `did.json`、`device_doc.jwt`、`device_mini_doc.jwt` 等；`security/` 下的 `start_config.json`、私钥、keyref、signer descriptor。
 
 **文档必须包括：** 节点/Zone/Owner/Device DID 关系、路径编码、JWK/PEM/JWT 格式、key usage、引用解析、文档签发和验签规则、文件缺失的处理、权限以及身份恢复所需的完整文件集。启动种子与运行中的权威配置必须区分。
 

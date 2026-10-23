@@ -91,7 +91,6 @@ const GATEWAY_CONFIG_FILES: [&str; 6] = [
     "user_gateway.yaml",
     "post_gateway.yaml",
 ];
-const ZONE_CONFIG_FILES: [&str; 2] = ["start_config.json", "node_identity.json"];
 const CONTROL_PANEL_LOCALE_KEY: &str = "services/control_panel/settings/locale";
 /// Request facts the HTTP layer adds to kRPC params; callers cannot set them.
 const REQ_HOST_PARAM: &str = "x_req_host";
