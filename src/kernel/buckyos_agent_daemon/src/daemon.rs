@@ -362,7 +362,11 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
         if !status.running() {
             return Err("cannot identify current Windows process".into());
         }
-        let controls = crate::local::windows::Controls::create(&status)?;
+        let controls = crate::local::windows::Controls::create(
+            status.pid,
+            &status.process_start,
+            &status.user_sid,
+        )?;
         let (tx, rx) = watch::channel(*stop.borrow());
         let mut external_stop = std::mem::replace(&mut stop, rx);
         let executor = executor.clone();

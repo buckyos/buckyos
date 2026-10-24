@@ -526,14 +526,18 @@ impl InstanceLock {
     }
 }
 
-fn event_name(state: &super::Status, command: &str) -> Result<Vec<u16>, String> {
+fn event_name(
+    pid: u32,
+    start_time: &str,
+    user_sid: &str,
+    command: &str,
+) -> Result<Vec<u16>, String> {
     let sid = current_user_sid()?;
-    if state.user_sid != sid || state.process_start.parse::<u64>().is_err() {
+    if user_sid != sid || start_time.parse::<u64>().is_err() {
         return Err("daemon identity does not match current Windows user".into());
     }
     wide(std::ffi::OsStr::new(&format!(
-        "Global\\buckyos-agent-daemon-{sid}-{}-{}-{command}",
-        state.pid, state.process_start
+        "Global\\buckyos-agent-daemon-{sid}-{pid}-{start_time}-{command}"
     )))
 }
 
@@ -542,12 +546,12 @@ pub struct Controls {
 }
 
 impl Controls {
-    pub fn create(state: &super::Status) -> Result<Self, String> {
+    pub fn create(pid: u32, start_time: &str, user_sid: &str) -> Result<Self, String> {
         let descriptor = security(false)?;
         let security = attributes(&descriptor);
         let mut handles = Vec::new();
         for command in ["stop", "pause", "resume"] {
-            let name = event_name(state, command)?;
+            let name = event_name(pid, start_time, user_sid, command)?;
             let raw = unsafe { CreateEventW(&security, 0, 0, name.as_ptr()) };
             let error = unsafe { GetLastError() };
             if raw.is_null() {
@@ -572,17 +576,17 @@ impl Controls {
     }
 }
 
-pub fn signal(state: &super::Status, command: &str) -> Result<(), String> {
-    if !state.running() {
+pub fn signal(pid: u32, start_time: &str, user_sid: &str, command: &str) -> Result<(), String> {
+    if process_start(pid).as_deref() != Some(start_time) {
         return Err("daemon exited before the control request".into());
     }
-    let name = event_name(state, command)?;
+    let name = event_name(pid, start_time, user_sid, command)?;
     let raw = unsafe { OpenEventW(2, 0, name.as_ptr()) };
     if raw.is_null() {
         return Err("cannot open local daemon control event".into());
     }
     let event = Handle(raw);
-    if !state.running() || unsafe { SetEvent(event.0) } == 0 {
+    if process_start(pid).as_deref() != Some(start_time) || unsafe { SetEvent(event.0) } == 0 {
         return Err("cannot send local daemon control request".into());
     }
     Ok(())
@@ -615,17 +619,20 @@ mod tests {
 
     #[test]
     fn control_events_and_stale_identity() {
-        let mut status = super::super::Status::new("local-test", &node_executor::default_shell());
-        assert!(status.running());
-        let controls = Controls::create(&status).unwrap();
+        let pid = std::process::id();
+        let start_time = process_start(pid).unwrap();
+        let sid = current_user_sid().unwrap();
+        let controls = Controls::create(pid, &start_time, &sid).unwrap();
+        assert!(Controls::create(pid, &start_time, &sid).is_err());
         for (command, index) in [("pause", 1), ("resume", 2), ("stop", 0)] {
-            signal(&status, command).unwrap();
+            signal(pid, &start_time, &sid, command).unwrap();
             assert_eq!(controls.poll().unwrap(), Some(index));
             assert_eq!(controls.poll().unwrap(), None);
         }
-        status.process_start = "0".into();
-        assert!(!status.running());
-        assert!(signal(&status, "stop").is_err());
+        assert!(signal(pid, "0", &sid, "stop").is_err());
+        assert!(signal(pid, &start_time, "S-1-0-0", "stop").is_err());
+        assert!(signal(0, &start_time, &sid, "stop").is_err());
+        assert_eq!(controls.poll().unwrap(), None);
     }
 
     #[test]

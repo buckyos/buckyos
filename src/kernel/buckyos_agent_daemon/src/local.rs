@@ -305,7 +305,7 @@ pub async fn stop(base: &Path, executor_id: Option<&str>) -> Result<(), String> 
         return Err("multiple daemons are running; select --executor".into());
     }
     for state in active {
-        windows::signal(&state, "stop")?;
+        windows::signal(state.pid, &state.process_start, &state.user_sid, "stop")?;
         for _ in 0..100 {
             if !state.running() {
                 return Ok(());
@@ -342,7 +342,12 @@ pub fn set_computer_paused(
             return Err("daemon exited before the control request".into());
         }
         #[cfg(windows)]
-        return windows::signal(state, if paused { "pause" } else { "resume" });
+        return windows::signal(
+            state.pid,
+            &state.process_start,
+            &state.user_sid,
+            if paused { "pause" } else { "resume" },
+        );
         #[cfg(target_os = "macos")]
         {
             let signal = if paused { libc::SIGUSR1 } else { libc::SIGUSR2 };
