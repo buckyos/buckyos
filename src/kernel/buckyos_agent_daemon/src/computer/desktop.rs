@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -55,6 +57,94 @@ extern "C" {
     fn bucky_desktop_keycode(character: u16) -> i32;
     fn bucky_desktop_release(cleanup: u16) -> i32;
     fn bucky_desktop_scroll(x: f64, y: f64, dx: i32, dy: i32, pixel: u32) -> i32;
+    #[cfg(windows)]
+    fn bucky_desktop_free(bytes: *mut std::ffi::c_void);
+    #[cfg(windows)]
+    fn bucky_desktop_finish() -> i32;
+    #[cfg(windows)]
+    fn bucky_desktop_set_guard(
+        guard: Option<unsafe extern "C" fn(*const std::ffi::c_void, *const Desktop) -> i32>,
+        context: *const std::ffi::c_void,
+    );
+}
+
+#[cfg(windows)]
+struct NativeInputFence<'a> {
+    driver: &'a DesktopComputer,
+    context: &'a ComputerContext,
+    epoch: u64,
+    desktop: &'a Desktop,
+    guard_focus: bool,
+    require_focus_on_display: bool,
+}
+
+#[cfg(windows)]
+fn native_focus_matches(expected: &Desktop, current: &Desktop, require_on_display: bool) -> bool {
+    expected.focus_pid == current.focus_pid
+        && expected.focus == current.focus
+        && (!require_on_display || current.focus_on_display != 0)
+}
+
+#[cfg(windows)]
+unsafe extern "C" fn check_native_fence(
+    context: *const std::ffi::c_void,
+    current: *const Desktop,
+) -> i32 {
+    let fence = &*context.cast::<NativeInputFence<'_>>();
+    let current = &*current;
+    if current.hardware_events != fence.desktop.hardware_events {
+        fence.driver.set_paused(true);
+        return 0;
+    }
+    i32::from(
+        fence.driver.stopped(fence.context, fence.epoch).is_none()
+            && same_surface(fence.desktop, current)
+            && (!fence.guard_focus
+                || native_focus_matches(fence.desktop, current, fence.require_focus_on_display)),
+    )
+}
+
+#[cfg(windows)]
+struct NativeGuard;
+
+#[cfg(windows)]
+impl Drop for NativeGuard {
+    fn drop(&mut self) {
+        unsafe { bucky_desktop_set_guard(None, std::ptr::null()) };
+    }
+}
+
+unsafe fn free_capture(bytes: *mut u8) {
+    #[cfg(windows)]
+    bucky_desktop_free(bytes.cast());
+    #[cfg(unix)]
+    libc::free(bytes.cast());
+}
+
+fn interactive_user(desktop: &Desktop) -> String {
+    #[cfg(windows)]
+    {
+        let _ = desktop;
+        crate::local::windows::current_user_sid().unwrap_or_default()
+    }
+    #[cfg(unix)]
+    desktop.uid.to_string()
+}
+
+fn input_reason() -> &'static str {
+    if cfg!(windows) {
+        "foreground_identity_or_integrity_unavailable"
+    } else {
+        "accessibility_permission_required"
+    }
+}
+
+fn capture_reason() -> &'static str {
+    if cfg!(windows) {
+        "desktop_capture_unavailable"
+    } else {
+        "screen_capture_permission_required"
+    }
 }
 
 fn probe() -> Desktop {
@@ -90,11 +180,11 @@ fn native_capabilities(desktop: &Desktop, paused: bool) -> ComputerCapabilities 
     ComputerCapabilities {
         capture: capability(
             true,
-            state.or((desktop.capture == 0).then_some("screen_capture_permission_required")),
+            state.or((desktop.capture == 0).then_some(capture_reason())),
         ),
         input: capability(
             true,
-            state.or((desktop.input == 0).then_some("accessibility_permission_required")),
+            state.or((desktop.input == 0).then_some(input_reason())),
         ),
         accessibility: capability(false, Some("semantic_observation_unsupported")),
         observation_modes: vec![
@@ -105,7 +195,7 @@ fn native_capabilities(desktop: &Desktop, paused: bool) -> ComputerCapabilities 
             .into_iter()
             .map(str::to_owned)
             .collect(),
-        focus_guard: "focused_element_and_surface".into(),
+        focus_guard: focus_guard().into(),
     }
 }
 
@@ -115,14 +205,26 @@ pub fn capabilities() -> Value {
     json!({
         "ui": {"supported": true, "ready": caps.capture.ready && caps.input.ready,
             "state": desktop_reason(&desktop).unwrap_or(if caps.capture.ready && caps.input.ready {"ready"} else {"permission_required"}),
-            "backend": "macos_desktop", "minimum_os": "14.0", "display_id": desktop.display,
+            "backend": if cfg!(windows) {"windows_desktop"} else {"macos_desktop"},
+            "minimum_os": if cfg!(windows) {"10.0.15063"} else {"14.0"},
+            "display_id": desktop.display,
             "surface_id": format!("display:{}", desktop.display),
             "binding_format": "<authorized_profile_id>:display:<display_id>",
-            "interactive_user": desktop.uid, "interactive_session_id": desktop.session,
+            "interactive_user": if cfg!(windows) {json!(interactive_user(&desktop))} else {json!(desktop.uid)},
+            "interactive_session_id": desktop.session,
             "focus_guard": caps.focus_guard, "observation_modes": caps.observation_modes,
-            "commands": caps.commands, "text_delivery": ["text"], "scroll_units": ["pixel", "line"]},
+            "commands": caps.commands, "text_delivery": ["text"],
+            "scroll_units": if cfg!(windows) {vec!["line"]} else {vec!["pixel", "line"]}},
         "capture": caps.capture, "input": caps.input, "accessibility": caps.accessibility
     })
+}
+
+fn focus_guard() -> &'static str {
+    if cfg!(windows) {
+        "focused_window_and_surface"
+    } else {
+        "focused_element_and_surface"
+    }
 }
 
 #[derive(Clone)]
@@ -171,32 +273,79 @@ struct DesktopLock {
 
 impl DesktopLock {
     fn try_acquire() -> Result<Option<Self>, &'static str> {
-        let uid = unsafe { libc::geteuid() };
-        let path = std::path::Path::new("/tmp").join(format!("buckyos-computer-{uid}.lock"));
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)
-            .map_err(|_| "desktop_lock_unavailable")?;
-        let metadata = file.metadata().map_err(|_| "desktop_lock_unavailable")?;
-        if !metadata.is_file()
-            || metadata.uid() != uid
-            || metadata.mode() & 0o077 != 0
-            || metadata.nlink() != 1
-        {
-            return Err("desktop_lock_invalid");
-        }
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            let error = std::io::Error::last_os_error();
-            return if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                Ok(None)
-            } else {
-                Err("desktop_lock_unavailable")
+        #[cfg(windows)]
+        let mut file = {
+            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+            let directory = std::env::var_os("LOCALAPPDATA")
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .ok_or("desktop_lock_unavailable")?
+                .join("buckyos-agent-daemon")
+                .join("computer");
+            crate::local::private_dir(&directory).map_err(|_| "desktop_lock_unavailable")?;
+            let session = crate::local::windows::current_session_id()
+                .map_err(|_| "interactive_session_unavailable")?;
+            let path = directory.join(format!("session-{session}.lock"));
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+                        return Err("desktop_lock_invalid");
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("desktop_lock_unavailable"),
+            }
+            let file = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .share_mode(0)
+                .custom_flags(0x00200000)
+                .open(path)
+            {
+                Ok(file) => file,
+                Err(error) if error.raw_os_error() == Some(32) => return Ok(None),
+                Err(_) => return Err("desktop_lock_unavailable"),
             };
-        }
+            let metadata = file.metadata().map_err(|_| "desktop_lock_unavailable")?;
+            if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+                return Err("desktop_lock_invalid");
+            }
+            crate::local::windows::private_file_handle(&file)
+                .map_err(|_| "desktop_lock_invalid")?;
+            file
+        };
+        #[cfg(unix)]
+        let mut file = {
+            let uid = unsafe { libc::geteuid() };
+            let path = std::path::Path::new("/tmp").join(format!("buckyos-computer-{uid}.lock"));
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)
+                .map_err(|_| "desktop_lock_unavailable")?;
+            let metadata = file.metadata().map_err(|_| "desktop_lock_unavailable")?;
+            if !metadata.is_file()
+                || metadata.uid() != uid
+                || metadata.mode() & 0o077 != 0
+                || metadata.nlink() != 1
+            {
+                return Err("desktop_lock_invalid");
+            }
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                let error = std::io::Error::last_os_error();
+                return if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                    Ok(None)
+                } else {
+                    Err("desktop_lock_unavailable")
+                };
+            }
+            file
+        };
         let size = file
             .metadata()
             .map_err(|_| "desktop_lock_unavailable")?
@@ -265,7 +414,9 @@ fn parse_resource(bytes: &[u8; 12]) -> Result<(u64, bool, u16), &'static str> {
     let cleanup = u16::from_be_bytes(bytes[10..].try_into().unwrap());
     if bytes[0] != 1
         || bytes[9] > 1
-        || !(cleanup < 128 || (256..=258).contains(&cleanup) || cleanup == u16::MAX)
+        || !(cleanup < if cfg!(windows) { 256 } else { 128 }
+            || (256..=if cfg!(windows) { 259 } else { 258 }).contains(&cleanup)
+            || cleanup == u16::MAX)
     {
         return Err("desktop_revision_corrupt");
     }
@@ -276,6 +427,7 @@ fn parse_resource(bytes: &[u8; 12]) -> Result<(u64, bool, u16), &'static str> {
     ))
 }
 
+#[cfg(unix)]
 impl Drop for DesktopLock {
     fn drop(&mut self) {
         unsafe {
@@ -284,7 +436,7 @@ impl Drop for DesktopLock {
     }
 }
 
-struct MacosComputer {
+struct DesktopComputer {
     serial: tokio::sync::Mutex<()>,
     observations: Mutex<HashMap<String, ObservationRecord>>,
     epoch: AtomicU64,
@@ -297,8 +449,8 @@ pub fn driver() -> Arc<dyn ComputerDriver> {
     Arc::new(new_driver())
 }
 
-fn new_driver() -> MacosComputer {
-    MacosComputer {
+fn new_driver() -> DesktopComputer {
+    DesktopComputer {
         serial: tokio::sync::Mutex::new(()),
         observations: Mutex::new(HashMap::new()),
         epoch: AtomicU64::new(1),
@@ -374,6 +526,7 @@ fn flags(modifiers: &[String]) -> u64 {
     })
 }
 
+#[cfg(unix)]
 fn key_code(key: &str) -> Option<u16> {
     Some(match key {
         "Enter" => 36,
@@ -406,6 +559,39 @@ fn key_code(key: &str) -> Option<u16> {
     })
 }
 
+#[cfg(windows)]
+fn key_code(key: &str) -> Option<u16> {
+    Some(match key {
+        "Enter" => 0x0d,
+        "Tab" => 0x09,
+        "Space" => 0x20,
+        "Backspace" => 0x08,
+        "Escape" => 0x1b,
+        "Delete" => 0x2e,
+        "Home" => 0x24,
+        "End" => 0x23,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "ArrowLeft" => 0x25,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "ArrowUp" => 0x26,
+        "F1" => 0x70,
+        "F2" => 0x71,
+        "F3" => 0x72,
+        "F4" => 0x73,
+        "F5" => 0x74,
+        "F6" => 0x75,
+        "F7" => 0x76,
+        "F8" => 0x77,
+        "F9" => 0x78,
+        "F10" => 0x79,
+        "F11" => 0x7a,
+        "F12" => 0x7b,
+        _ => return None,
+    })
+}
+
 fn resolve_key(key: &str) -> Option<u16> {
     key_code(key).or_else(|| {
         let mut chars = key.chars();
@@ -429,17 +615,56 @@ fn cleanup_for(request: &ComputerRequest) -> Result<u16, &'static str> {
         ComputerRequest::Type {
             delivery: ComputerTextDelivery::Text,
             ..
-        } => Ok(0),
+        } => Ok(if cfg!(windows) { 259 } else { 0 }),
         ComputerRequest::Type { .. } => Err("text_delivery_unsupported"),
         ComputerRequest::Keypress { keys, .. } => keys
             .last()
             .and_then(|key| resolve_key(key))
             .ok_or("key_unsupported"),
+        ComputerRequest::Scroll {
+            unit: ComputerScrollUnit::Pixel,
+            ..
+        } if cfg!(windows) => Err("scroll_unit_unsupported"),
         _ => Ok(u16::MAX),
     }
 }
 
-impl MacosComputer {
+impl DesktopComputer {
+    fn native_input(
+        &self,
+        context: &ComputerContext,
+        request: &ComputerRequest,
+        epoch: u64,
+        desktop: &Desktop,
+        guard_focus: bool,
+        call: impl FnOnce() -> i32,
+    ) -> i32 {
+        #[cfg(windows)]
+        let fence = NativeInputFence {
+            driver: self,
+            context,
+            epoch,
+            desktop,
+            guard_focus,
+            require_focus_on_display: matches!(
+                request.target(),
+                Some(ComputerTarget::Focus { .. })
+            ),
+        };
+        #[cfg(windows)]
+        unsafe {
+            bucky_desktop_set_guard(
+                Some(check_native_fence),
+                (&fence as *const NativeInputFence<'_>).cast(),
+            )
+        };
+        #[cfg(windows)]
+        let _guard = NativeGuard;
+        #[cfg(not(windows))]
+        let _ = (context, request, epoch, desktop, guard_focus);
+        call()
+    }
+
     fn stopped(&self, context: &ComputerContext, epoch: u64) -> Option<&'static str> {
         if context.cancellation.is_timed_out() {
             Some("execution_timeout")
@@ -465,7 +690,7 @@ impl MacosComputer {
         let mode = request.feedback().1;
         validate_mode(mode)?;
         if desktop.capture == 0 {
-            return Err("screen_capture_permission_required");
+            return Err(capture_reason());
         }
         if let Some(error) = self.stopped(context, epoch).or(desktop_reason(&desktop)) {
             return Err(error);
@@ -491,7 +716,7 @@ impl MacosComputer {
             };
             if code != 0 {
                 return Err(if code == 1 {
-                    "screen_capture_permission_required"
+                    capture_reason()
                 } else if code == 2 {
                     "capture_timeout"
                 } else if code == 4 {
@@ -502,13 +727,13 @@ impl MacosComputer {
             }
             if bytes.is_null() || length == 0 || length > max_image_bytes {
                 unsafe {
-                    libc::free(bytes.cast());
+                    free_capture(bytes);
                 }
                 return Err("capture_size_limit");
             }
             let image = unsafe { std::slice::from_raw_parts(bytes, length).to_vec() };
             unsafe {
-                libc::free(bytes.cast());
+                free_capture(bytes);
             }
             Ok(image)
         })
@@ -554,7 +779,7 @@ impl MacosComputer {
                 interactive: true,
             },
             focus_guard: if desktop.focus != 0 && desktop.focus_on_display != 0 {
-                "focused_element_and_surface"
+                focus_guard()
             } else {
                 "surface"
             }
@@ -617,6 +842,11 @@ impl MacosComputer {
         ) {
             return Err("observation_forbidden");
         }
+        #[cfg(windows)]
+        if record.desktop.hardware_events != desktop.hardware_events {
+            self.set_paused(true);
+            return Err("human_takeover");
+        }
         if record.expired()
             || record.epoch != epoch
             || record.revision != revision
@@ -676,6 +906,9 @@ impl MacosComputer {
             {
                 return Err(("focus_unverifiable", dispatched));
             }
+            if let Some(error) = self.stopped(context, epoch) {
+                return Err((error, dispatched));
+            }
             Ok(())
         };
         match request {
@@ -689,21 +922,31 @@ impl MacosComputer {
                 let (x, y) = point(desktop, *x, *y).map_err(|e| (e, false))?;
                 for click in 1..=*count {
                     check(dispatched)?;
-                    let code = unsafe {
-                        bucky_desktop_click(
-                            x,
-                            y,
-                            match button {
-                                ComputerButton::Left => 0,
-                                ComputerButton::Right => 1,
-                                ComputerButton::Middle => 2,
-                            },
-                            u32::from(click),
-                            flags(modifiers),
-                        )
-                    };
+                    let code = self.native_input(
+                        context,
+                        request,
+                        epoch,
+                        desktop,
+                        !dispatched,
+                        || unsafe {
+                            bucky_desktop_click(
+                                x,
+                                y,
+                                match button {
+                                    ComputerButton::Left => 0,
+                                    ComputerButton::Right => 1,
+                                    ComputerButton::Middle => 2,
+                                },
+                                u32::from(click),
+                                flags(modifiers),
+                            )
+                        },
+                    );
                     if code != 0 {
-                        return Err(("input_failed", dispatched));
+                        return Err((
+                            self.stopped(context, epoch).unwrap_or("input_failed"),
+                            dispatched || code == 2,
+                        ));
                     }
                     dispatched = true;
                     if click < *count {
@@ -719,9 +962,15 @@ impl MacosComputer {
                     check(dispatched)?;
                     let mut utf16 = [0u16; 2];
                     let character = character.encode_utf16(&mut utf16);
-                    if unsafe { bucky_desktop_key(0, 0, character.as_ptr(), character.len()) } != 0
-                    {
-                        return Err(("input_failed", dispatched));
+                    let code =
+                        self.native_input(context, request, epoch, desktop, true, || unsafe {
+                            bucky_desktop_key(0, 0, character.as_ptr(), character.len())
+                        });
+                    if code != 0 {
+                        return Err((
+                            self.stopped(context, epoch).unwrap_or("input_failed"),
+                            dispatched || code == 2,
+                        ));
                     }
                     dispatched = true;
                     tokio::time::sleep(Duration::from_millis(2)).await;
@@ -730,11 +979,14 @@ impl MacosComputer {
             ComputerRequest::Keypress { keys, .. } => {
                 let code = cleanup;
                 check(false)?;
-                if unsafe {
+                let status = self.native_input(context, request, epoch, desktop, true, || unsafe {
                     bucky_desktop_key(code, flags(&keys[..keys.len() - 1]), std::ptr::null(), 0)
-                } != 0
-                {
-                    return Err(("input_failed", false));
+                });
+                if status != 0 {
+                    return Err((
+                        self.stopped(context, epoch).unwrap_or("input_failed"),
+                        status == 2,
+                    ));
                 }
             }
             ComputerRequest::Scroll {
@@ -746,7 +998,7 @@ impl MacosComputer {
             } => {
                 let (x, y) = point(desktop, *x, *y).map_err(|e| (e, false))?;
                 check(false)?;
-                if unsafe {
+                let status = self.native_input(context, request, epoch, desktop, true, || unsafe {
                     bucky_desktop_scroll(
                         x,
                         y,
@@ -754,9 +1006,12 @@ impl MacosComputer {
                         *delta_y,
                         u32::from(*unit == ComputerScrollUnit::Pixel),
                     )
-                } != 0
-                {
-                    return Err(("input_failed", false));
+                });
+                if status != 0 {
+                    return Err((
+                        self.stopped(context, epoch).unwrap_or("input_failed"),
+                        status == 2,
+                    ));
                 }
             }
             ComputerRequest::WaitFor {
@@ -790,7 +1045,7 @@ impl MacosComputer {
 }
 
 #[async_trait]
-impl ComputerDriver for MacosComputer {
+impl ComputerDriver for DesktopComputer {
     async fn execute(&self, context: ComputerContext, request: ComputerRequest) -> ComputerOutput {
         if request.validate().is_err() {
             return failed(
@@ -862,16 +1117,24 @@ impl ComputerDriver for MacosComputer {
             store_id: context.store_id.clone(),
             origin_generation: self.generation.load(Ordering::Acquire),
             authorized_principal: context.actor.agent_did.clone(),
-            interactive_user: desktop.uid.to_string(),
+            interactive_user: interactive_user(&desktop),
             interactive_session_id: desktop.session.to_string(),
             desktop_epoch: self.desktop_epoch.clone(),
             computer_session_id: format!("{}:{epoch}", self.desktop_epoch),
             surface_id: format!("display:{}", desktop.display),
             surface_epoch: epoch,
-            interaction_resource_id: format!(
-                "macos:uid:{}:audit-session:{}",
-                desktop.uid, desktop.session
-            ),
+            interaction_resource_id: if cfg!(windows) {
+                format!(
+                    "windows:user:{}:session:{}:WinSta0:Default",
+                    interactive_user(&desktop),
+                    desktop.session
+                )
+            } else {
+                format!(
+                    "macos:uid:{}:audit-session:{}",
+                    desktop.uid, desktop.session
+                )
+            },
             expires_at_ms: (node_executor::now_ms() + OBSERVATION_TTL.as_millis() as u64)
                 .min(context.auth_valid_until_ms),
         });
@@ -915,7 +1178,7 @@ impl ComputerDriver for MacosComputer {
                     &context,
                     &request,
                     ComputerExecutionState::NotStarted,
-                    "accessibility_permission_required",
+                    input_reason(),
                 );
             }
             if let Err(error) = self.target(&context, &request, &desktop, epoch, lock.revision) {
@@ -947,6 +1210,16 @@ impl ComputerDriver for MacosComputer {
             }
             self.observations.lock().unwrap().clear();
             let executed = self.act(&context, &request, &desktop, epoch, cleanup).await;
+            #[cfg(windows)]
+            if unsafe { bucky_desktop_finish() } != 0 {
+                self.set_paused(true);
+                return failed(
+                    &context,
+                    &request,
+                    ComputerExecutionState::Unknown,
+                    "input_release_failed",
+                );
+            }
             if let Err(error) = lock.finish() {
                 self.set_paused(true);
                 return failed(&context, &request, ComputerExecutionState::Unknown, error);
@@ -1070,7 +1343,10 @@ mod tests {
             flags(&["Control".into(), "Meta".into()]),
             (1 << 18) | (1 << 20)
         );
-        assert_eq!(key_code("Enter"), Some(36));
+        assert_eq!(
+            key_code("Enter"),
+            Some(if cfg!(windows) { 0x0d } else { 36 })
+        );
         assert_eq!(key_code("Meta"), None);
         assert_eq!(key_code("a"), None);
     }
@@ -1184,5 +1460,134 @@ mod tests {
             record.created_boot_ms = boot - OBSERVATION_TTL.as_millis() as u64;
             assert!(record.expired());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_final_focus_guard_rejects_window_moved_to_another_display() {
+        let observed = Desktop {
+            ready: 1,
+            display: 1,
+            session: 1,
+            layout: 7,
+            focus_pid: 100,
+            focus: 200,
+            focus_on_display: 1,
+            ..Desktop::default()
+        };
+        let moved = Desktop {
+            focus_on_display: 0,
+            ..observed
+        };
+        assert!(same_surface(&observed, &moved));
+        assert!(native_focus_matches(&observed, &observed, true));
+        assert!(!native_focus_matches(&observed, &moved, true));
+        assert!(native_focus_matches(&observed, &moved, false));
+        assert!(!native_focus_matches(
+            &observed,
+            &Desktop {
+                focus: 201,
+                ..observed
+            },
+            false
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_physical_coordinates_preserve_dpi_and_display_origin() {
+        let desktop = Desktop {
+            x: -1920.0,
+            y: -1080.0,
+            width: 1920,
+            height: 1080,
+            logical_width: 1920.0,
+            logical_height: 1080.0,
+            ..Desktop::default()
+        };
+        assert_eq!(point(&desktop, 0, 0).unwrap(), (-1919.5, -1079.5));
+        assert_eq!(point(&desktop, 1919, 1079).unwrap(), (-0.5, -0.5));
+        assert!(point(&desktop, 1920, 100).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_cleanup_and_capabilities_match_native_input() {
+        assert_eq!(
+            parse_resource(&resource_bytes(3, true, 259)).unwrap(),
+            (3, true, 259)
+        );
+        assert!(parse_resource(&resource_bytes(3, true, 260)).is_err());
+        assert_eq!(key_code("Delete"), Some(0x2e));
+        assert_eq!(key_code("F12"), Some(0x7b));
+        let request: ComputerRequest = serde_json::from_value(json!({
+            "command": "scroll", "binding_id": "profile:display:1",
+            "target": {"kind":"point", "observation_id":"obs", "x":0, "y":0, "space":"screenshot"},
+            "delta_x":0, "delta_y":1, "unit":"pixel"
+        }))
+        .unwrap();
+        assert_eq!(cleanup_for(&request), Err("scroll_unit_unsupported"));
+        let desktop = Desktop {
+            ready: 1,
+            capture: 1,
+            input: 0,
+            ..Desktop::default()
+        };
+        let caps = native_capabilities(&desktop, false);
+        assert!(caps.capture.ready);
+        assert_eq!(
+            caps.input.reason.as_deref(),
+            Some("foreground_identity_or_integrity_unavailable")
+        );
+        assert!(!caps.accessibility.supported);
+        assert!(!native_capabilities(&desktop, true).capture.ready);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an unlocked Windows interactive desktop; captures without input"]
+    fn windows_desktop_capture_smoke() {
+        let desktop = probe();
+        assert_eq!(desktop.ready, 1, "desktop is unavailable: {desktop:?}");
+        assert_eq!(desktop.capture, 1, "capture is unavailable: {desktop:?}");
+        assert_eq!(
+            desktop.session,
+            crate::local::windows::current_session_id().unwrap()
+        );
+        assert_eq!(desktop.width as f64, desktop.logical_width);
+        assert_eq!(desktop.height as f64, desktop.logical_height);
+        let mut bytes = std::ptr::null_mut();
+        let mut length = 0;
+        let status = unsafe {
+            bucky_desktop_capture(
+                desktop.display,
+                desktop.width,
+                desktop.height,
+                10000,
+                &mut bytes,
+                &mut length,
+            )
+        };
+        assert_eq!(status, 0, "native screenshot failed");
+        assert!(!bytes.is_null() && length >= 24 && length <= COMPUTER_MAX_IMAGE_BYTES);
+        let png = unsafe { std::slice::from_raw_parts(bytes, length).to_vec() };
+        unsafe { free_capture(bytes) };
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            u32::from_be_bytes(png[16..20].try_into().unwrap()),
+            desktop.width
+        );
+        assert_eq!(
+            u32::from_be_bytes(png[20..24].try_into().unwrap()),
+            desktop.height
+        );
+        let resource = DesktopLock::try_acquire().unwrap().expect("desktop busy");
+        assert!(DesktopLock::try_acquire().unwrap().is_none());
+        assert!(
+            !resource.dirty,
+            "desktop has unfinished input requiring local resume"
+        );
+        drop(resource);
+        assert!(DesktopLock::try_acquire().unwrap().is_some());
     }
 }

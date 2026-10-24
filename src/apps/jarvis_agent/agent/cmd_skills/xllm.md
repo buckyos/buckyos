@@ -94,6 +94,9 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   the original store. Unknown outcomes and invalid locators must not be replayed.
   Linux targets expose commands and files only; UI is unsupported. The current
   tool schema comes from `src/frame/agent_tool/src/runtime/executor.rs`.
+  Windows target commands use PowerShell 7 from PATH or Windows PowerShell; do not send Bash syntax.
+  Native Windows/macOS desktop operations use the SDK Computer protocol described in
+  `doc/arch/agent_daemon.md`; this does not add Computer commands to `executor_call` or deliver PNGs to the model.
   Shell users can inspect the equivalent CLI with
   `buckyos command describe executor exec` and `buckyos command describe executor query`.
 - Limits: `--max-tool-iterations` (default 8), `--timeout` total seconds (3600), `--llm-timeout` per request

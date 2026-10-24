@@ -25,7 +25,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             patch.object(module, "_prepare_sdk_tool_distribution") as sdk,
             patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
         ):
-            for target in ("x86_64-unknown-linux-musl", "aarch64-apple-darwin", "x86_64-apple-darwin"):
+            for target in ("x86_64-unknown-linux-musl", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
                 with self.subTest(target=target):
                     self.assertEqual(module.main(["--agent-daemon", f"--target={target}"]), 0)
                     sdk.assert_not_called()
@@ -83,6 +83,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
                 "/inputs/deno",
                 "--sbom",
                 "/inputs/sbom.json",
+                *(["--windows"] if module.os.name == "nt" else []),
             ],
             env=env,
         )

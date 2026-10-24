@@ -11,7 +11,7 @@ use tokio::sync::watch;
 #[derive(Parser)]
 #[command(
     version,
-    about = "BuckyOS Agent Daemon: foreground executor for Linux and macOS",
+    about = "BuckyOS Agent Daemon: foreground executor for Linux, macOS and Windows",
     arg_required_else_help = true
 )]
 struct Args {
@@ -66,19 +66,28 @@ fn read_url(url: Option<String>, stdin: bool, file: Option<PathBuf>) -> Result<S
         return Ok(url);
     }
     if let Some(path) = file {
-        let metadata = std::fs::symlink_metadata(&path).map_err(|_| "cannot read URL file")?;
-        if !metadata.is_file() || metadata.len() > 4096 {
-            return Err("URL file must be a regular file of at most 4096 bytes".into());
-        }
-        #[cfg(unix)]
+        #[cfg(windows)]
         {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            if metadata.uid() != local::current_uid() || metadata.permissions().mode() & 0o077 != 0
-            {
-                return Err("URL file must belong to the current user with mode 0600".into());
-            }
+            return String::from_utf8(local::windows::read_private_file(&path, 4096)?)
+                .map_err(|_| "URL file must contain UTF-8".into());
         }
-        return std::fs::read_to_string(path).map_err(|_| "cannot read URL file".into());
+        #[cfg(not(windows))]
+        {
+            let metadata = std::fs::symlink_metadata(&path).map_err(|_| "cannot read URL file")?;
+            if !metadata.is_file() || metadata.len() > 4096 {
+                return Err("URL file must be a regular file of at most 4096 bytes".into());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                if metadata.uid() != local::current_uid()
+                    || metadata.permissions().mode() & 0o077 != 0
+                {
+                    return Err("URL file must belong to the current user with mode 0600".into());
+                }
+            }
+            return std::fs::read_to_string(path).map_err(|_| "cannot read URL file".into());
+        }
     }
     if stdin {
         use std::io::Read;
@@ -156,10 +165,14 @@ async fn main_async(args: Args) -> Result<(), String> {
             let instances = local::statuses(&data_dir, executor.as_deref())?;
             let capabilities = local::capabilities(&node_executor::default_shell());
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"), "identity": { "uid": local::current_uid(), "mode": "current_user" },
-                    "capabilities": capabilities, "instances": instances
-                })).map_err(|_| "cannot encode status")?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "version": env!("CARGO_PKG_VERSION"), "identity": local::identity(),
+                        "capabilities": capabilities, "instances": instances
+                    }))
+                    .map_err(|_| "cannot encode status")?
+                );
             } else {
                 println!(
                     "BuckyOS Agent Daemon {} — {} backend",
@@ -167,8 +180,8 @@ async fn main_async(args: Args) -> Result<(), String> {
                     std::env::consts::OS
                 );
                 println!(
-                    "Identity: current_user (uid {}); UI: {}",
-                    local::current_uid(),
+                    "Identity: current_user ({}); UI: {}",
+                    local::current_identity(),
                     capabilities["ui"]["state"]
                         .as_str()
                         .unwrap_or("unavailable")

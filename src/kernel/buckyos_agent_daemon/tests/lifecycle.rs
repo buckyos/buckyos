@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", target_os = "macos"))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -338,7 +338,7 @@ async fn real_daemon_exec_file_reconnect_expiry_and_credential_redaction() {
         SECRET,
     )
     .await;
-    let expiry = Some(node_executor::now_ms() + 7_000);
+    let expiry = Some(node_executor::now_ms() + if cfg!(windows) { 15_000 } else { 7_000 });
     let (instance, store_id, resume) = welcome(&mut management, &work, 1, expiry).await;
     assert!(resume.is_none());
     let mut wire = open_stream(&mut management, &listener, 1, &store_id).await;
@@ -346,7 +346,11 @@ async fn real_daemon_exec_file_reconnect_expiry_and_credential_redaction() {
         &mut wire,
         &store_id,
         "exec",
-        "printf command > command.txt",
+        if cfg!(windows) {
+            "[System.IO.File]::WriteAllText((Join-Path $PWD 'command.txt'), 'command')"
+        } else {
+            "printf command > command.txt"
+        },
         &work,
     )
     .await;
@@ -433,7 +437,7 @@ async fn real_daemon_exec_file_reconnect_expiry_and_credential_redaction() {
         &mut wire,
         &store_id,
         "detached",
-        "sleep 1; printf recovered > recovered.txt",
+        if cfg!(windows) { "Start-Sleep -Seconds 1; [System.IO.File]::WriteAllText((Join-Path $PWD 'recovered.txt'), 'recovered')" } else { "sleep 1; printf recovered > recovered.txt" },
         &work,
     )
     .await;
@@ -469,7 +473,7 @@ async fn real_daemon_exec_file_reconnect_expiry_and_credential_redaction() {
         &mut wire,
         &store_id,
         "expiry",
-        "sleep 60; printf should-not-run > escaped.txt",
+        if cfg!(windows) { "Start-Sleep -Seconds 60; [System.IO.File]::WriteAllText((Join-Path $PWD 'escaped.txt'), 'should-not-run')" } else { "sleep 60; printf should-not-run > escaped.txt" },
         &work,
     )
     .await;
@@ -607,9 +611,9 @@ async fn real_daemon_deadline_interrupts_reconnect_backoff_and_welcome() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn macos_local_pause_resume_is_reported_without_desktop_input() {
+async fn local_pause_resume_is_reported_without_desktop_input() {
     let temp = tempfile::tempdir().unwrap();
     let work = temp.path().join("work");
     std::fs::create_dir(&work).unwrap();

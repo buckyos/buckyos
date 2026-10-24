@@ -7,9 +7,15 @@ requires: an OpenDAN session (agent-session on PATH) and the buckyos command; re
 The `executor` tool group provides `executor_list` and `executor_call` without moving the Agent Session.
 Discover a permitted online executor and use its exact executor_id, generation, profile_id and store_id.
 Linux supports exec/read/write/edit/query/cancel; UI, input and capture remain unsupported.
-macOS 14+ adds a native ComputerUse driver through the authenticated Command Stream and SDK
+macOS 14+ and Windows interactive user sessions add native ComputerUse drivers through the authenticated Command Stream and SDK
 `ExecutorCommandStream.computer`; it does not add an Agent tool or change Session Runtime binding.
+Windows runs the foreground `buckyos_agent_daemon.exe`, uses PowerShell for command execution and
+stores its ledger under `%LOCALAPPDATA%\buckyos-agent-daemon` by default. Its desktop driver supports
+the primary display with visual/auto observations, click, Unicode type, keypress, line scrolling and
+delay waits. Semantic/hybrid, dragging and pixel scrolling are unsupported. Do not run it in Session 0.
 Desktop grants, local pause/resume and recovery are documented in `doc/arch/agent_daemon.md`.
+If the Windows input monitor stops being healthy after sleep, a debugger pause or a scheduling stall,
+restart the daemon and check readiness; local resume alone cannot restore it. Query old operations and observe again.
 The planned `buckyos computer` CLI and image-to-model bridge are not yet available; PNG bytes alone
 do not prove the model received an image. Do not publish a `computer_use` recipe requiring those commands.
 The CLI alternative is `buckyos executor --help`; inspect the installed command schema before use.

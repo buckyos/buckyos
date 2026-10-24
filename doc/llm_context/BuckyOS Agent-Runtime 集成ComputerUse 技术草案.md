@@ -4,7 +4,7 @@
 | --- | --- |
 | 文档版本 | 0.2，已确定 CLI 路线的实施 TODO |
 | 更新日期 | 2026-10-23 |
-| 状态 | 待实现；本文的 ComputerUse 命令、字段及测试场景是交付目标 |
+| 状态 | daemon 子集已实现；本文的上层 ComputerUse CLI、模型图片桥接及完整验收仍是交付目标 |
 | 设计基线 | [AgentRuntime 设计](<AgentRuntime 设计.md>)、[Agent Daemon 协议](../arch/agent_daemon.md)及当前工作区源码 |
 | Agent 入口 | 现有 `shell` 工具调用 `buckyos computer …` |
 | 首期目标 | Windows、macOS 用户桌面上的观察—动作—再观察闭环 |
@@ -13,9 +13,9 @@
 
 > 本文取代 0.1 草案中“新增第五个标准 Function、浏览器先交付、桌面放 P3”的决策。保留观察有效性、输入语义、去重、并发与恢复约束，将其落实到 daemon、SDK/CLI 和通用工具结果链路。
 >
-> 下文所有 `buckyos computer` 命令均待实现，不能当作当前可执行命令。复选框仅在对应实现、检查和证据齐备后勾选。本次文档整理不代表功能已实现或已实机验收。
+> 下文所有 `buckyos computer` 命令均待实现，不能当作当前可执行命令。复选框按完整交付条目记录，仅在对应实现、检查和证据齐备后勾选；daemon 子集的实现及验证进度单独记录，不据此推定完整链路已通过。
 
-> macOS daemon 实施进展：本仓库已实现共享 Computer 协议、复用 Executor 账本的执行入口和 macOS 14+ 原生桌面驱动，实际支持范围及限制见 [Agent Daemon](../arch/agent_daemon.md#macos-computeruse)。本草案仍是完整交付目标；下文的上层 CLI、图片桥接和 T1–T6 整体验收不能据 daemon 子集实现勾选完成。
+> daemon 实施进展：本仓库已实现共享 Computer 协议、复用 Executor 账本的执行入口、macOS 14+ 和 Windows 当前用户会话原生驱动。Windows 提供前台 `.exe` 宿主、ZIP 打包入口、Win32/GDI 主显示器 visual/auto 观察、点击、Unicode 输入、按键、按行滚动与 delay 等待；不提供 Session 0 服务、semantic/hybrid、drag 或像素滚动。Windows x64 已通过相关单元/生命周期测试、真实只读截图和静态 CRT debug 构建及导入核验，release 发行归档尚未构建。实际支持范围及证据见 [macOS ComputerUse](../arch/agent_daemon.md#macos-computeruse)、[Windows ComputerUse](../arch/agent_daemon.md#windows-computeruse) 与 [本机验证入口](../arch/agent_daemon.md#本机验证入口)。本草案仍是完整交付目标；下文的上层 CLI、图片桥接和 T1–T6 整体验收不能据 daemon 子集实现勾选完成，Windows 真实桌面输入与完整 Agent loop 尚未验收。
 
 ## 0. 已确定的决策
 
@@ -43,8 +43,8 @@ CLI 可以既用于逐步决策，也用于自动组合：
 | --- | --- | --- |
 | AgentRuntime 负责环境、工具装配、身份核验和中断解释，并未限定只能有四个工具 | [runtime/mod.rs](../../src/frame/agent_tool/src/runtime/mod.rs)、[Runtime 设计第 2 节](<AgentRuntime 设计.md#2-核心抽象>) | 复用已有入口，ComputerUse 不增加 trait 方法或 runtime kind |
 | `executor_list / executor_call` 已按在线 daemon 目标执行操作，不改变 Session Runtime binding | [runtime/executor.rs](../../src/frame/agent_tool/src/runtime/executor.rs) | 复用目标发现、路由与原操作定位思路 |
-| 控制面 kRPC 获取路由，执行数据经 WSS Command Stream 到 daemon；已有 `op_id / store_id / query / cancel` | [agent_daemon.md](../arch/agent_daemon.md) | 扩展 UI 操作类型、结果和 artifact；不是另起一套 HTTP shell 服务 |
-| 当前 daemon 宿主交付为 Linux，GUI 能力未实现 | [daemon.rs](../../src/kernel/buckyos_agent_daemon/src/daemon.rs)、[node_executor](../../src/kernel/node_executor/src/lib.rs) | Windows/macOS 宿主、用户会话 Driver 和打包 |
+| 控制面 kRPC 获取路由，执行数据经 WSS Command Stream 到 daemon；已有 `op_id / store_id / query / cancel`，Computer 请求与 PNG 结果复用此账本 | [agent_daemon.md](../arch/agent_daemon.md)、[computer.rs](../../src/kernel/buckyos-api/src/computer.rs) | SDK/CLI 目标绑定、派发前 locator 和模型图片结果链路 |
+| daemon 已有 Linux/macOS/Windows 当前用户宿主；macOS/Windows 原生 Driver 提供主屏视觉输入子集，Linux GUI 仍 unsupported | [daemon.rs](../../src/kernel/buckyos_agent_daemon/src/daemon.rs)、[desktop.rs](../../src/kernel/buckyos_agent_daemon/src/computer/desktop.rs)、[package_agent_daemon.py](../../src/tools/package_agent_daemon.py) | Windows/macOS 真实桌面与完整 Agent loop 验收、语义/多显示器等未支持范围 |
 | shell 会注入 `XLLM_CALL_ID`；简单命令可透传 `AgentToolResult`，复合脚本不自动透传 | [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs) | 子操作身份及不依赖 stdout 形式的附件反馈 |
 | `buckyos` CLI 使用 `--output json`，输出全局 `schema_version / ok / data / error / meta` 信封，不是 `AgentToolResult` | 同级 websdk 的 `cli/core/argv.ts`、`output.ts` | 保持同一 CLI 输出合同，由消费侧做通用适配 |
 | 工具结果到模型的现有路径仍存在字符串化；基础消息类型虽有图片，不能据此声称闭环已通 | [context_loop.rs](../../src/frame/llm_context/src/context_loop.rs)、[xllm.rs](../../src/frame/agent_tool/src/xllm.rs)、[aicc_client.rs](../../src/kernel/buckyos-api/src/aicc_client.rs) | 结果、快照、恢复、裁剪、Provider 全链路保留图像 |
@@ -481,6 +481,8 @@ CLI 入口不会削弱授权，function 入口也不会自动提供 OS 隔离。
 
 这是部署决策，不由进程名称中是否包含 daemon 决定。官方依据见文末参考资料。
 
+当前 Windows 实现选择“daemon 已位于 GUI 用户会话”的部署：`buckyos_agent_daemon.exe` 在当前用户 PowerShell 终端前台运行，默认数据位于 `%LOCALAPPDATA%\buckyos-agent-daemon`，复用现有 PowerShell 命令后端、当前用户私有账本与本地 stop/pause/resume 控制。打包入口为 `uv run src/tools/package_agent_daemon.py --target x86_64-pc-windows-msvc --output dist/agent-daemon`（仓库根运行）；ARM64 target 为 `aarch64-pc-windows-msvc`，归档测试不代表该平台编译或实机验证已完成。会话身份、锁屏、焦点/UIPI、DPI 和崩溃释放仍按下表逐项实测，不因已有实现勾选完整 T3/T6。
+
 ### 10.2 平台 TODO
 
 | 平台 | 首期必须验证 | 后续能力 |
@@ -762,7 +764,7 @@ exit $cuCode
 
 ## 12. 实施 TODO 与依赖顺序
 
-各任务给出接口、实现入口和验收产物；当前均未完成。T1 后 T2/T3/T4 可并行，T5 汇合，T6 做真实验收。
+各任务按完整链路给出接口、实现入口和验收产物；其整体验收尚未完成。共享协议、操作账本与 Windows/macOS daemon 已实现的子集及测试证据见第 1 节和 [Agent Daemon](../arch/agent_daemon.md#本机验证入口)，不把以下未勾选条目解释为全部代码尚未实现。完整实施顺序为 T1 后 T2/T3/T4 可并行，T5 汇合，T6 做真实验收。
 
 ### T1：共享协议和持久操作合同
 
@@ -834,7 +836,7 @@ exit $cuCode
 
 验收：从发行产物安装后，Agent 只靠已有 shell 和 cmd_skill 完成任务；不依赖开发目录中的未分发脚本。
 
-本次仅修改 TODO，不更新运行时手册或生成产物，避免把未实现命令发布为当前可用功能。实施 T5 时必须同步上述手册。
+本次 Windows daemon 实现已同步 `buckyos_admin`、`opendan_agent_dev`、`xllm` 和独立包 README 的平台、运行路径、恢复与打包说明。上层 CLI、图片桥接和 `computer_use` 手册仍待交付，不能把草案示例发布为可执行命令。实施完整 T5 时还需同步这些上层能力及其分发产物，并完成示例验收。
 
 ### T6：故障、平台和端到端验收
 
@@ -880,7 +882,7 @@ exit $cuCode
 - Node 操作恢复回归：`cargo test -p node_executor --test remote_node_runtime`；按现有平台/root 条件核对实际跳过项。
 - 新增 CLI/SDK 契约用例放同级 websdk 既有 tests 体系；新增 daemon/Driver 故障用例按所属 package 运行。
 - 新增 Windows/macOS DV runner 与测试应用/固定任务数据；在实现阶段给出真实可运行入口，不能提前把尚不存在的测试命令写成已通过。
-- 纯 TODO 文档变更只检查链接、示例语法、合同一致性与差异；不宣称 GUI、图片桥接或拟议 CLI 已跑通。
+- 后续纯 TODO 文档变更只检查链接、示例语法、合同一致性与差异；daemon 实现变更按 [当前验证记录](../arch/agent_daemon.md#本机验证入口) 列明实测及未验证范围，不据此宣称图片桥接或拟议 CLI 已跑通。
 
 指标：命令/任务成功率、unknown/partial 比例、过期目标比例、观察与输入延迟、人工接管次数、图片字节与上下文成本、重复派发数、孤立输入/资源数量。重复派发应在支持的故障与保留范围内为零。
 

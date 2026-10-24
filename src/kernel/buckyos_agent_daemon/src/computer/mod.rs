@@ -1,10 +1,10 @@
-#[cfg(target_os = "macos")]
-mod macos;
+#[cfg(any(target_os = "macos", windows))]
+mod desktop;
 
-#[cfg(target_os = "macos")]
-pub use macos::{capabilities, driver};
+#[cfg(any(target_os = "macos", windows))]
+pub use desktop::{capabilities, driver};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn capabilities() -> serde_json::Value {
     let unsupported =
         serde_json::json!({"supported": false, "ready": false, "state": "unsupported"});

@@ -39,7 +39,7 @@ buckyos system info                                 # BuckyOS version, build_ver
   not running; "Running" with exit 0 can still come with an error-heavy log warning below it.
 
 #### Find the real commands
-- Lightweight Linux/macOS executors: Settings → Cluster Manager → Nodes/Devices issues an access URL;
+- Lightweight Linux/macOS/Windows executors: Settings → Cluster Manager → Nodes/Devices issues an access URL;
   `buckyos executor --help` describes device management and online/exec/read/write/edit/query/cancel.
   Admin Control Panel sessions manage devices; an authorized Agent App session executes operations.
   Select the current `executor_id`, `generation`, `profile_id` and `store_id` from online discovery;
@@ -48,9 +48,25 @@ buckyos system info                                 # BuckyOS version, build_ver
   URL expiry/revocation or foreground exit removes availability; Linux UI is `unsupported`.
   macOS 14+ desktop access is a separate profile grant (`computer_inspect`, `computer_observe`,
   `computer_act`) and requires Screen Recording/Accessibility readiness on the logged-in user's Mac.
-  The owner can run `buckyos_agent_daemon pause|resume --executor <id>`; signal acceptance is not
+  Windows uses `buckyos_agent_daemon.exe` in the logged-in user's foreground desktop session, with the same
+  desktop grants; Session 0 services, locked/secure desktops and targets with higher integrity than the daemon
+  are not supported. Elevation does not grant access across users or secure desktops.
+  Its command backend uses PowerShell 7 from PATH or Windows PowerShell, and data defaults to
+  `%LOCALAPPDATA%\buckyos-agent-daemon`. Run `doctor --json` before desktop work.
+  The standalone Windows package build links the MSVC CRT statically; ordinary Cargo development binaries
+  require the matching VC++ v14 runtime. `--binary` packages are unverified: inspect their manifest and
+  provide the prebuilt binary's runtime dependencies instead of assuming VC runtime DLLs ship with Windows.
+  Windows supports the primary display, visual/auto observations, click, Unicode type, keypress,
+  line scrolling and delay waits; semantic/hybrid, dragging and pixel scrolling are unsupported.
+  The owner can run `buckyos_agent_daemon pause|resume --executor <id>`; request acceptance is not
   cancellation confirmation. Inspect `instances[].capabilities` in local status, query the original operation,
   and take a new observation after resuming. Never replace the original store or replay uncertain input.
+  Windows automatically pauses on detected human input; the owner must resume locally and observe again.
+  If a crash loses the pending Unicode release data, resume stays paused/dirty and requires owner handling;
+  do not delete its coordination file to bypass that state.
+  A Windows input monitor heartbeat gap disables desktop access until daemon restart, including gaps after
+  sleep or debugger pauses. Resume cannot repair this state; restart, check readiness and observe again,
+  while querying the original operation instead of replaying uncertain input.
   The native driver and SDK `ExecutorCommandStream.computer` are implemented; use the source protocol
   in `src/kernel/buckyos-api/src/computer.rs`. Do not assume the planned `buckyos computer` CLI or `--present` bridge exists.
   Keep URL secrets out of logs/messages. Query an uncertain operation by its original store/op locator before

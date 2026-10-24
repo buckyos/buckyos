@@ -83,10 +83,10 @@ pub struct DaemonOptions {
     pub shell: PathBuf,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct ComputerSignals(tokio::task::JoinHandle<()>);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Drop for ComputerSignals {
     fn drop(&mut self) {
         self.0.abort();
@@ -287,17 +287,19 @@ async fn retry_wait(retry: u32, stop: &mut watch::Receiver<bool>, deadline: &Dea
 }
 
 pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Result<(), String> {
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Err(
-            "this build supports Linux and macOS hosts".into(),
-        );
+    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+        return Err("this build supports Linux, macOS and Windows hosts".into());
     }
     if !options.shell.is_absolute() || !options.shell.is_file() {
-        return Err("an installed absolute bash path is required".into());
+        return Err("an installed absolute platform shell path is required".into());
     }
     private_dir(&options.data_dir)?;
     let dir = options.data_dir.join(&options.access.executor_id);
     private_dir(&dir)?;
+    #[cfg(windows)]
+    let _instance_lock = crate::local::windows::InstanceLock::acquire(&dir.join("daemon.lock"))?;
+    #[cfg(windows)]
+    private_dir(&dir.join("ledger"))?;
     let gate = Arc::new(AtomicU64::new(0));
     let auth = Arc::new(Authorization {
         executor_id: options.access.executor_id.clone(),
@@ -306,32 +308,36 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
         gate: gate.clone(),
     });
     let host = ExecutorHost {
-            node_id: options.access.executor_id.clone(),
-            node_did: options.access.executor_id.clone(),
-            store_dir: dir.join("ledger"),
-            shell: options.shell.clone(),
-            worker: WorkerLauncher {
-                program: std::env::current_exe().map_err(|_| "cannot locate daemon worker")?,
-                args: vec![node_executor::worker::WORKER_ARG.into()],
-            },
-            verifier: auth.clone(),
-            rbac: auth.clone(),
-        };
+        node_id: options.access.executor_id.clone(),
+        node_did: options.access.executor_id.clone(),
+        store_dir: dir.join("ledger"),
+        shell: options.shell.clone(),
+        worker: WorkerLauncher {
+            program: std::env::current_exe().map_err(|_| "cannot locate daemon worker")?,
+            args: vec![node_executor::worker::WORKER_ARG.into()],
+        },
+        verifier: auth.clone(),
+        rbac: auth.clone(),
+    };
     let executor_options = ExecutorOptions {
-            identity_mode: ExecutorIdentityMode::CurrentUser,
-            admission: ExecutorAdmission::Wss,
-        };
-    #[cfg(target_os = "macos")]
-    let opened = NodeExecutor::open_with_computer(host, executor_options, crate::computer::driver());
-    #[cfg(not(target_os = "macos"))]
+        identity_mode: ExecutorIdentityMode::CurrentUser,
+        admission: ExecutorAdmission::Wss,
+    };
+    #[cfg(any(target_os = "macos", windows))]
+    let opened =
+        NodeExecutor::open_with_computer(host, executor_options, crate::computer::driver());
+    #[cfg(not(any(target_os = "macos", windows)))]
     let opened = NodeExecutor::open_with_options(host, executor_options);
-    let executor = opened.map_err(|_| "cannot open executor ledger (another instance may be running)")?;
+    let executor =
+        opened.map_err(|_| "cannot open executor ledger (another instance may be running)")?;
     #[cfg(target_os = "macos")]
     let computer_signals = {
-        let mut pause = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
-            .map_err(|_| "cannot install desktop pause signal")?;
-        let mut resume = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2())
-            .map_err(|_| "cannot install desktop resume signal")?;
+        let mut pause =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+                .map_err(|_| "cannot install desktop pause signal")?;
+        let mut resume =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2())
+                .map_err(|_| "cannot install desktop resume signal")?;
         let executor = executor.clone();
         ComputerSignals(tokio::spawn(async move {
             loop {
@@ -351,6 +357,30 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
     executor.pause();
     let mut status = Status::new(&options.access.executor_id, &options.shell);
     status.store_id = Some(executor.store_id());
+    #[cfg(windows)]
+    let computer_signals = {
+        if !status.running() {
+            return Err("cannot identify current Windows process".into());
+        }
+        let controls = crate::local::windows::Controls::create(&status)?;
+        let (tx, rx) = watch::channel(*stop.borrow());
+        let mut external_stop = std::mem::replace(&mut stop, rx);
+        let executor = executor.clone();
+        ComputerSignals(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(25));
+            loop {
+                tokio::select! {
+                    _ = external_stop.changed() => { let _ = tx.send(true); break; }
+                    _ = tick.tick() => match controls.poll() {
+                        Ok(Some(0)) | Err(_) => { let _ = tx.send(true); break; }
+                        Ok(Some(1)) => executor.set_computer_paused(true),
+                        Ok(Some(2)) => executor.set_computer_paused(false),
+                        _ => {}
+                    }
+                }
+            }
+        }))
+    };
     status.write(&dir)?;
     let instance = uuid::Uuid::new_v4().to_string();
     let mut resume_token = None;
@@ -432,7 +462,7 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
     }
     gate.store(0, Ordering::Release);
     executor.invalidate_computer();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     drop(computer_signals);
     executor
         .shutdown(

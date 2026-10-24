@@ -140,7 +140,15 @@ pub(crate) fn suspend_clock_ms() -> u64 {
         }
         return u64::MAX;
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetTickCount64() -> u64;
+        }
+        GetTickCount64()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     crate::now_ms()
 }
 

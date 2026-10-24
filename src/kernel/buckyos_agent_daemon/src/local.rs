@@ -6,12 +6,18 @@ use serde_json::{json, Value};
 
 use crate::access::valid_executor_id;
 
+#[cfg(windows)]
+#[path = "local_windows.rs"]
+pub mod windows;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Status {
     pub executor_id: String,
     pub pid: u32,
     pub process_start: String,
     pub uid: u32,
+    #[cfg(windows)]
+    pub user_sid: String,
     pub state: String,
     pub generation: Option<u64>,
     pub store_id: Option<String>,
@@ -21,42 +27,58 @@ pub struct Status {
 }
 
 pub fn default_data_dir() -> Result<PathBuf, String> {
-    #[cfg(not(target_os = "macos"))]
-    if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
-        if Path::new(&path).is_absolute() {
-            return Ok(PathBuf::from(path).join("buckyos-agent-daemon"));
-        }
+    #[cfg(windows)]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|path| path.join("buckyos-agent-daemon"))
+            .ok_or_else(|| "an absolute LOCALAPPDATA or --data-dir is required".into());
     }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .map(|home| {
-            home.join(if cfg!(target_os = "macos") {
-                "Library/Application Support/buckyos-agent-daemon"
-            } else {
-                ".local/share/buckyos-agent-daemon"
+    #[cfg(not(windows))]
+    {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
+            if Path::new(&path).is_absolute() {
+                return Ok(PathBuf::from(path).join("buckyos-agent-daemon"));
+            }
+        }
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute())
+            .map(|home| {
+                home.join(if cfg!(target_os = "macos") {
+                    "Library/Application Support/buckyos-agent-daemon"
+                } else {
+                    ".local/share/buckyos-agent-daemon"
+                })
             })
-        })
-        .ok_or_else(|| "an absolute HOME or --data-dir is required".into())
+            .ok_or_else(|| "an absolute HOME or --data-dir is required".into())
+    }
 }
 
 pub fn private_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|_| "cannot create daemon data directory")?;
-    let metadata =
-        fs::symlink_metadata(path).map_err(|_| "cannot inspect daemon data directory")?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err("daemon data directory must be a real directory".into());
-    }
-    #[cfg(unix)]
+    #[cfg(windows)]
+    return windows::private_dir(path);
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.uid() != unsafe { libc::geteuid() } {
-            return Err("daemon data directory belongs to another OS user".into());
+        fs::create_dir_all(path).map_err(|_| "cannot create daemon data directory")?;
+        let metadata =
+            fs::symlink_metadata(path).map_err(|_| "cannot inspect daemon data directory")?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("daemon data directory must be a real directory".into());
         }
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "cannot secure daemon data directory")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                return Err("daemon data directory belongs to another OS user".into());
+            }
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .map_err(|_| "cannot secure daemon data directory")?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 pub fn current_uid() -> u32 {
@@ -113,7 +135,12 @@ fn process_start(pid: u32) -> Option<String> {
     ))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+fn process_start(pid: u32) -> Option<String> {
+    windows::process_start(pid)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn process_start(_: u32) -> Option<String> {
     None
 }
@@ -126,14 +153,18 @@ pub fn capabilities(shell: &Path) -> Value {
             .ok()
             .is_some_and(|path| unsafe { libc::access(path.as_ptr(), libc::X_OK) } == 0)
     };
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let executable = shell
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    #[cfg(not(any(unix, windows)))]
     let executable = false;
-    let supported = cfg!(any(target_os = "linux", target_os = "macos"));
+    let supported = cfg!(any(target_os = "linux", target_os = "macos", windows));
     let result = json!({
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "identity_mode": "current_user",
-        "os_session": format!("uid:{}", current_uid()),
+        "os_session": current_identity(),
         "command": {"supported": supported, "ready": supported && shell.is_file() && executable},
         "file": {"supported": supported, "ready": supported},
         "ui": {"supported": false, "ready": false, "state": "unsupported"},
@@ -141,7 +172,7 @@ pub fn capabilities(shell: &Path) -> Value {
         "capture": {"supported": false, "ready": false, "state": "unsupported"},
         "input": {"supported": false, "ready": false, "state": "unsupported"}
     });
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let mut result = result;
         if let Some(computer) = crate::computer::capabilities().as_object() {
@@ -149,8 +180,32 @@ pub fn capabilities(shell: &Path) -> Value {
         }
         result
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     result
+}
+
+pub fn current_identity() -> String {
+    #[cfg(windows)]
+    {
+        windows::current_user_sid()
+            .map(|sid| format!("sid:{sid}"))
+            .unwrap_or_else(|_| "unavailable".into())
+    }
+    #[cfg(not(windows))]
+    {
+        format!("uid:{}", current_uid())
+    }
+}
+
+pub fn identity() -> Value {
+    #[cfg(windows)]
+    {
+        json!({"sid": windows::current_user_sid().ok(), "mode": "current_user"})
+    }
+    #[cfg(not(windows))]
+    {
+        json!({"uid": current_uid(), "mode": "current_user"})
+    }
 }
 
 impl Status {
@@ -161,6 +216,8 @@ impl Status {
             pid,
             process_start: process_start(pid).unwrap_or_default(),
             uid: current_uid(),
+            #[cfg(windows)]
+            user_sid: windows::current_user_sid().unwrap_or_default(),
             state: "connecting".into(),
             generation: None,
             store_id: None,
@@ -192,6 +249,12 @@ impl Status {
     }
 
     pub fn running(&self) -> bool {
+        #[cfg(windows)]
+        if self.user_sid.is_empty()
+            || windows::current_user_sid().ok().as_deref() != Some(self.user_sid.as_str())
+        {
+            return false;
+        }
         self.uid == current_uid()
             && !self.process_start.is_empty()
             && process_start(self.pid).as_deref() == Some(self.process_start.as_str())
@@ -213,7 +276,11 @@ pub fn statuses(base: &Path, executor_id: Option<&str>) -> Result<Vec<Status>, S
     };
     let mut output = Vec::new();
     for dir in dirs {
-        if let Ok(content) = fs::read(dir.join("status.json")) {
+        #[cfg(windows)]
+        let content = windows::read_private_file(&dir.join("status.json"), 1024 * 1024);
+        #[cfg(not(windows))]
+        let content = fs::read(dir.join("status.json"));
+        if let Ok(content) = content {
             if let Ok(mut state) = serde_json::from_slice::<Status>(&content) {
                 if !state.running() {
                     state.state = "offline".into();
@@ -249,7 +316,29 @@ pub async fn stop(base: &Path, executor_id: Option<&str>) -> Result<(), String> 
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub async fn stop(base: &Path, executor_id: Option<&str>) -> Result<(), String> {
+    let active: Vec<_> = statuses(base, executor_id)?
+        .into_iter()
+        .filter(Status::running)
+        .collect();
+    if active.len() > 1 {
+        return Err("multiple daemons are running; select --executor".into());
+    }
+    for state in active {
+        windows::signal(&state, "stop")?;
+        for _ in 0..100 {
+            if !state.running() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        return Err("daemon has not exited within 10 seconds".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub async fn stop(_: &Path, _: Option<&str>) -> Result<(), String> {
     Err("local stop is not implemented on this platform".into())
 }
@@ -259,7 +348,7 @@ pub fn set_computer_paused(
     executor_id: Option<&str>,
     paused: bool,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let active: Vec<_> = statuses(base, executor_id)?
             .into_iter()
@@ -273,16 +362,21 @@ pub fn set_computer_paused(
         if !state.running() {
             return Err("daemon exited before the control request".into());
         }
-        let signal = if paused { libc::SIGUSR1 } else { libc::SIGUSR2 };
-        if unsafe { libc::kill(state.pid as libc::pid_t, signal) } != 0 {
-            return Err("cannot change desktop input state".into());
+        #[cfg(windows)]
+        return windows::signal(state, if paused { "pause" } else { "resume" });
+        #[cfg(target_os = "macos")]
+        {
+            let signal = if paused { libc::SIGUSR1 } else { libc::SIGUSR2 };
+            if unsafe { libc::kill(state.pid as libc::pid_t, signal) } != 0 {
+                return Err("cannot change desktop input state".into());
+            }
+            Ok(())
         }
-        Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (base, executor_id, paused);
-        Err("desktop pause/resume is only supported on macOS".into())
+        Err("desktop pause/resume is only supported on Windows and macOS".into())
     }
 }
 
