@@ -244,6 +244,10 @@ export interface AgentSettings {
   role_supplement: string
   template_auto_update: boolean
   desktop_entry?: string | null
+  /** The Agent has a HomeStation of its own and follows / is followed by its owner and the zone's Agents. */
+  homestation?: boolean
+  /** After a user task ends, the Agent posts a privacy-free note about it to its HomeStation. */
+  auto_share_results?: boolean
   msg_tunnels: AgentMsgTunnelSummary[]
   /** Execution runtimes beyond the Agent's container, by runtime id (`host` = the owner's desktop). */
   runtimes?: Record<string, AgentRuntimeSetting>
@@ -360,6 +364,8 @@ export interface AgentCreateRequest {
   permission_mode: AgentPermissionMode
   allow_group: boolean
   allow_other_users: boolean
+  homestation?: boolean
+  auto_share_results?: boolean
   template_id: string
   template_auto_update: boolean
   desktop_entry?: AgentDesktopEntry
@@ -809,6 +815,8 @@ export const fetchAgentDetail = async (
 export const updateAgent = async (input: {
   agentId: string
   allowGroup?: boolean
+  homestation?: boolean
+  autoShareResults?: boolean
   /** `{ "<id>": { enabled?, computer? } | null }`; targets come from the directory, never from here. */
   runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess } | null>
   /** `null` or `'container'`: the Agent's own environment. */
@@ -816,6 +824,8 @@ export const updateAgent = async (input: {
 }): Promise<{ data: AgentEntry | null; error: unknown }> => {
   const params: Record<string, unknown> = { agent_id: input.agentId }
   if (input.allowGroup !== undefined) params.allow_group = input.allowGroup
+  if (input.homestation !== undefined) params.homestation = input.homestation
+  if (input.autoShareResults !== undefined) params.auto_share_results = input.autoShareResults
   if (input.runtimes !== undefined) params.runtimes = input.runtimes
   if (input.defaultRuntimeId !== undefined) params.default_runtime_id = input.defaultRuntimeId
   return callControlPanel<AgentEntry>('agent.update', params)

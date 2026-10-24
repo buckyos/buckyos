@@ -77,6 +77,9 @@ pub struct LoaderEnv {
     /// The owner's notification service (msg-center; files with `--dev`).
     /// `None`: a Work cannot ask, `agent-session notify` is not available.
     pub notify: Option<Arc<dyn libopendan::notify::NotifyHost>>,
+    /// Where a finished user task is shared as the agent's own post (the
+    /// agent's HomeStation; files with `--dev`). `None`: nothing is shared.
+    pub share: Option<Arc<dyn libopendan::share::ShareHost>>,
     pub access: Access,
     pub port: u16,
     pub web_dir: Option<PathBuf>,
@@ -301,6 +304,7 @@ impl Loader {
             outbound,
             objects: env.objects.clone(),
             notify: env.notify.clone(),
+            share: env.share.clone(),
             turn_tasks: env.tasks.clone().map(|tasks| {
                 Arc::new(TurnTasks {
                     tasks,

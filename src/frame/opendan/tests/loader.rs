@@ -503,6 +503,7 @@ impl World {
                 .notify
                 .clone()
                 .map(|n| n as Arc<dyn libopendan::notify::NotifyHost>),
+            share: None,
             access: Access::Open { who: WHO.into() },
             port,
             web_dir: None,

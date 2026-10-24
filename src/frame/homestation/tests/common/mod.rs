@@ -30,6 +30,8 @@ pub struct Node {
     pub signer: String,
     pub station: Arc<Station>,
     pub contacts: Arc<homestation::contacts::StaticContacts>,
+    /// The zone's user list as its host reads it.
+    pub users: Arc<homestation::users::StaticUsers>,
     _dir: Option<TempDir>,
 }
 
@@ -93,6 +95,19 @@ impl Net {
     /// `extra`: (zone owner, user) — more users served by that owner's zone, signed by its key.
     /// `zone_options`: (zone owner, JSON merged into that zone's standalone config).
     pub async fn new_zones(names: &[&str], collectors: &[&str], spider: &[&str], extra: &[(&str, &str)], zone_options: &[(&str, Value)]) -> Net {
+        Self::new_zones_with_agents(names, collectors, spider, extra, zone_options, &[]).await
+    }
+
+    /// `agents`: (zone owner, agent short name) — Agents of that owner with a home in the zone
+    /// (`did:test:<name>`, AgentId `<name>.<owner>.test`, token `tok-<name>`).
+    pub async fn new_zones_with_agents(
+        names: &[&str],
+        collectors: &[&str],
+        spider: &[&str],
+        extra: &[(&str, &str)],
+        zone_options: &[(&str, Value)],
+        agents: &[(&str, &str)],
+    ) -> Net {
         let mut listeners = Vec::new();
         let mut keys = Vec::new();
         let mut directory = StaticDirectory::default();
@@ -104,8 +119,7 @@ impl Net {
             directory.identities.insert(did_of(name), StaticIdentity { zone: Some(zone.clone()), user: Some(name.to_string()), public_key_x: Some(x), devices: vec![], owner: None });
             // An identity of the same zone without a HomeStation (an agent, say).
             directory.identities.insert(format!("did:test:{name}-kid"), StaticIdentity { zone: Some(zone.clone()), user: None, public_key_x: None, devices: vec![], owner: None });
-            for (owner, user) in extra.iter().filter(|(o, _)| o == name) {
-                let _ = owner;
+            for (_, user) in extra.iter().chain(agents.iter()).filter(|(o, _)| o == name) {
                 directory.identities.insert(did_of(user), StaticIdentity { zone: Some(zone.clone()), user: Some(user.to_string()), public_key_x: None, devices: vec![did_of(name)], owner: None });
             }
             directory.zones.insert(zone, format!("http://127.0.0.1:{port}"));
@@ -123,6 +137,7 @@ impl Net {
                 settings.collectors = collector_refs.clone();
             }
             let users: Vec<&str> = extra.iter().filter(|(o, _)| o == name).map(|(_, u)| *u).collect();
+            let my_agents: Vec<&str> = agents.iter().filter(|(o, _)| o == name).map(|(_, a)| *a).collect();
             let mut raw = json!({
                 "owner": did_of(name),
                 "owner_name": name,
@@ -148,6 +163,11 @@ impl Net {
             for u in &users {
                 raw["tokens"][format!("tok-{u}")] = json!({ "principal": u, "did": did_of(u), "app_id": "control-panel" });
             }
+            for a in &my_agents {
+                let agent_id = format!("{a}.{name}.test");
+                raw["tokens"][format!("tok-{a}")] = json!({ "principal": name, "did": did_of(a), "app_id": agent_id });
+                raw["users"].as_array_mut().unwrap().push(json!({ "user": a, "did": did_of(a), "name": a, "agent": { "agent_id": agent_id, "owner_did": did_of(name) } }));
+            }
             for (_, options) in zone_options.iter().filter(|(o, _)| o == name) {
                 for (k, v) in options.as_object().unwrap() {
                     raw[k] = v.clone();
@@ -161,7 +181,7 @@ impl Net {
             let handle = tokio::spawn(async move {
                 let _ = serve_listener(serve_state, listener).await;
             });
-            for u in &users {
+            for u in users.iter().chain(my_agents.iter()) {
                 nodes.push(Node {
                     port,
                     state: state.clone(),
@@ -176,6 +196,7 @@ impl Net {
                     signer: did_of(name),
                     station: standalone.host.station(u).await.unwrap().unwrap(),
                     contacts: standalone.user_contacts[*u].clone(),
+                    users: standalone.users.clone(),
                     _dir: None,
                 });
             }
@@ -193,6 +214,7 @@ impl Net {
                 signer: did_of(name),
                 station: standalone.station,
                 contacts: standalone.contacts,
+                users: standalone.users,
                 _dir: Some(dir),
             });
         }

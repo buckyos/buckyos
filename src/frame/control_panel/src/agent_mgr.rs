@@ -953,6 +953,8 @@ pub(crate) struct AgentCreateRequest {
     pub template_auto_update: bool,
     pub desktop_entry: Option<String>,
     pub bot_token: Option<String>,
+    pub homestation: bool,
+    pub auto_share_results: bool,
 }
 
 impl AgentCreateRequest {
@@ -1012,6 +1014,8 @@ impl AgentCreateRequest {
             template_auto_update: flag("template_auto_update", true)?,
             desktop_entry: optional_text(params.get("desktop_entry")),
             bot_token,
+            homestation: flag("homestation", true)?,
+            auto_share_results: flag("auto_share_results", true)?,
         })
     }
 
@@ -1027,6 +1031,8 @@ impl AgentCreateRequest {
             "template_auto_update": self.template_auto_update,
             "desktop_entry": self.desktop_entry,
             "bot_token": self.bot_token,
+            "homestation": self.homestation,
+            "auto_share_results": self.auto_share_results,
         });
         build_named_object_by_json("agentreq", &material)
             .0
@@ -1039,6 +1045,8 @@ impl AgentCreateRequest {
             role_supplement: self.role_supplement.clone(),
             template_auto_update: self.template_auto_update,
             desktop_entry: self.desktop_entry.clone(),
+            homestation: self.homestation,
+            auto_share_results: self.auto_share_results,
             msg_tunnels: self
                 .bot_token
                 .iter()
@@ -2040,6 +2048,8 @@ fn settings_view(settings: &AgentSettings) -> Value {
         "role_supplement": settings.role_supplement,
         "template_auto_update": settings.template_auto_update,
         "desktop_entry": settings.desktop_entry,
+        "homestation": settings.homestation,
+        "auto_share_results": settings.auto_share_results,
         "msg_tunnels": settings.msg_tunnels.iter().map(|tunnel| json!({
             "platform": tunnel.platform,
             "bot_account_id": tunnel.bot_account_id,
@@ -2950,17 +2960,27 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let agent_id = Self::param_agent_id(&req)?;
-        let allow_group = match req.params.get("allow_group") {
-            None | Some(Value::Null) => None,
-            Some(_) => Some(Self::param_bool(&req, "allow_group").ok_or_else(|| {
-                RPCErrors::ParseRequestError("allow_group must be a boolean".to_string())
-            })?),
+        let flag = |key: &str| -> Result<Option<bool>, RPCErrors> {
+            match req.params.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(_) => Self::param_bool(&req, key).map(Some).ok_or_else(|| {
+                    RPCErrors::ParseRequestError(format!("{key} must be a boolean"))
+                }),
+            }
         };
+        let allow_group = flag("allow_group")?;
+        let homestation = flag("homestation")?;
+        let auto_share_results = flag("auto_share_results")?;
         let runtimes = req.params.get("runtimes");
         let default_runtime_id = req.params.get("default_runtime_id");
-        if allow_group.is_none() && runtimes.is_none() && default_runtime_id.is_none() {
+        if allow_group.is_none()
+            && homestation.is_none()
+            && auto_share_results.is_none()
+            && runtimes.is_none()
+            && default_runtime_id.is_none()
+        {
             return Err(RPCErrors::ParseRequestError(
-                "agent.update changes allow_group, runtimes or default_runtime_id".to_string(),
+                "agent.update changes allow_group, homestation, auto_share_results, runtimes or default_runtime_id".to_string(),
             ));
         }
         let kv = ZoneKv::connect().await?;
@@ -2971,6 +2991,12 @@ impl ControlPanelServer {
             .unwrap_or_default();
         if let Some(allow_group) = allow_group {
             settings.allow_group = allow_group;
+        }
+        if let Some(homestation) = homestation {
+            settings.homestation = homestation;
+        }
+        if let Some(auto_share_results) = auto_share_results {
+            settings.auto_share_results = auto_share_results;
         }
         crate::agent_runtimes::apply_update(&kv, &owner, &mut settings, runtimes, default_runtime_id).await?;
         kv.exec_tx(
@@ -3779,6 +3805,7 @@ mod tests {
         assert_eq!(request.permission_mode, AgentPermissionMode::ReadWrite);
         let settings = request.settings();
         assert!(settings.allow_group);
+        assert!(settings.homestation && settings.auto_share_results);
         assert_eq!(settings.desktop_entry.as_deref(), Some("jarvis_guide"));
         assert_eq!(settings.msg_tunnels[0].bot_token, "123:abc_DEF-9");
         assert_eq!(settings.msg_tunnels[0].bot_account_id, None);
@@ -3792,6 +3819,11 @@ mod tests {
             request.fingerprint(),
             AgentCreateRequest::parse(&changed).unwrap().fingerprint()
         );
+        let mut no_share = params.clone();
+        no_share["auto_share_results"] = json!(false);
+        let no_share = AgentCreateRequest::parse(&no_share).unwrap();
+        assert!(!no_share.settings().auto_share_results);
+        assert_ne!(request.fingerprint(), no_share.fingerprint());
         let mut bad_token = params.clone();
         bad_token["msg_tunnel"]["bot_token"] = json!("not a token");
         assert!(AgentCreateRequest::parse(&bad_token).is_err());

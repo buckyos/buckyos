@@ -565,12 +565,12 @@ impl Station {
         }
         let id = source_id.to_string();
         let now = now_ms();
-        if basis.contains(&"friend".to_string()) {
+        if let Some(derived) = DERIVED_BASES.iter().find(|b| basis.iter().any(|x| x == *b)) {
             self.db
                 .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&basis)?, now])?))
                 .await?;
             self.bump(&["sources"]);
-            return Ok("friend_basis");
+            return Ok(if *derived == "friend" { "friend_basis" } else { "zone_basis" });
         }
         if let Some(did) = &did {
             self.publish_follow(did, false).await?;
@@ -639,42 +639,69 @@ impl Station {
         let contacts = self.contacts.current_list().await?;
         let mut friends: Vec<(String, String)> = Vec::new();
         for c in contacts.iter().filter(|c| c.friend && !c.blocked && c.did != self.cfg.owner) {
-            // Friends without a HomeStation (agents, people whose zone has none) have no stream to follow.
+            // Friends without a HomeStation (people whose zone has none) have no stream to follow.
             if let Err(crate::directory::DirError::NotFound(_)) = self.directory.home_of(&c.did).await {
                 continue;
             }
             friends.push((c.did.clone(), c.name.clone()));
         }
-        for (did, name) in &friends {
-            if let Err(e) = self.follow_did(did, name, "friend", None).await {
-                log::warn!("friend follow {did}: {e}");
+        self.sync_derived("friend", &friends).await
+    }
+
+    /// The zone's own relations follow each other by default (§4.3 of the Agent TODO): an
+    /// Agent follows its owner and the zone's other Agents, a person follows their Agents.
+    pub async fn sync_zone_relations(&self) -> HsResult<()> {
+        let Some(host) = self.host() else { return Ok(()) };
+        let users = host.users.list().await;
+        let want: Vec<(String, String)> = match &self.cfg.agent {
+            Some(me) => users
+                .iter()
+                .filter(|u| u.did != self.cfg.owner && (u.did == me.owner_did || u.is_agent()))
+                .map(|u| (u.did.clone(), u.name.clone()))
+                .collect(),
+            None => users
+                .iter()
+                .filter(|u| u.agent.as_ref().is_some_and(|a| a.owner_did == self.cfg.owner))
+                .map(|u| (u.did.clone(), u.name.clone()))
+                .collect(),
+        };
+        self.sync_derived("zone", &want).await
+    }
+
+    /// Give `basis` to exactly the people in `want`: follow the new ones, drop the basis from
+    /// the others and withdraw follows left without any basis.
+    async fn sync_derived(&self, basis: &'static str, want: &[(String, String)]) -> HsResult<()> {
+        for (did, name) in want {
+            if let Err(e) = self.follow_did(did, name, basis, None).await {
+                log::warn!("{basis} follow {did}: {e}");
             }
         }
-        let friend_dids: Vec<String> = friends.iter().map(|f| f.0.clone()).collect();
+        let keep: Vec<String> = want.iter().map(|f| f.0.clone()).collect();
+        let pattern = format!("%{basis}%");
         let stale: Vec<(String, String, Vec<String>)> = self
             .db
             .call(move |c| {
-                let mut stmt = c.prepare("SELECT id, did, basis FROM sources WHERE kind='person' AND basis LIKE '%friend%'")?;
+                let mut stmt = c.prepare("SELECT id, did, basis FROM sources WHERE kind='person' AND basis LIKE ?1")?;
                 let rows = stmt
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+                    .query_map([pattern], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows
                     .into_iter()
-                    .filter(|(_, did, _)| !friend_dids.contains(did))
+                    .filter(|(_, did, _)| !keep.contains(did))
                     .map(|(id, did, basis)| (id, did, serde_json::from_str(&basis).unwrap_or_default()))
                     .collect())
             })
             .await?;
-        for (id, did, mut basis) in stale {
-            basis.retain(|b| b != "friend");
-            if basis.is_empty() {
+        for (id, did, mut list) in stale {
+            list.retain(|b| b != basis);
+            if list.is_empty() {
                 self.publish_follow(&did, false).await?;
                 let id = id.clone();
                 self.db.call(move |c| Ok(c.execute("DELETE FROM sources WHERE id=?1", [id])?)).await?;
             } else {
                 let now = now_ms();
                 self.db
-                    .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&basis)?, now])?))
+                    .call(move |c| Ok(c.execute("UPDATE sources SET basis=?2, updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&list)?, now])?))
                     .await?;
             }
         }
@@ -682,6 +709,9 @@ impl Station {
         Ok(())
     }
 }
+
+/// Bases the system derives; a follow that keeps one cannot be cancelled by hand.
+const DERIVED_BASES: &[&str] = &["friend", "zone"];
 
 /// Keywords of an intent: Latin words of 3+ letters and CJK runs of 2+ characters.
 pub fn intent_keywords(text: &str) -> Vec<String> {

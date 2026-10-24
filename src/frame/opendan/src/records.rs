@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use buckyos_api::{
@@ -55,6 +55,23 @@ pub async fn profile(records: &dyn AgentRecords) -> Result<AgentProfile, String>
 
 pub async fn set_profile(records: &dyn AgentRecords, profile: &AgentProfile) -> Result<(), String> {
     put_typed(records, PROFILE, profile).await
+}
+
+/// The owner's "share results" switch, read from the records at every
+/// decision (the owner may change it while the agent runs).
+pub struct RecordsShareSwitch(pub Arc<dyn AgentRecords>);
+
+#[async_trait]
+impl libopendan::share::ShareSwitch for RecordsShareSwitch {
+    async fn shares_results(&self) -> bool {
+        match settings(self.0.as_ref()).await {
+            Ok(s) => s.shares_results(),
+            Err(e) => {
+                log::warn!("share: agent settings not readable ({e}); nothing is shared");
+                false
+            }
+        }
+    }
 }
 
 pub async fn info(records: &dyn AgentRecords) -> Result<Option<AgentRuntimeInfo>, String> {

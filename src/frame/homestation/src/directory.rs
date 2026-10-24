@@ -281,7 +281,20 @@ impl Directory for NameDirectory {
             return Ok(key);
         }
         let fragment = kid_fragment(kid);
-        name_client::resolve_auth_key(&did(signer)?, fragment.as_deref())
+        let signer_did = did(signer)?;
+        if self.local_devices.iter().any(|d| d == signer) {
+            // A device of this zone signs with the key its device document names.
+            return name_client::resolve_did(&signer_did, Some(name_lib::DidDocType::Device))
+                .await
+                .and_then(name_lib::parse_did_doc)
+                .and_then(|doc| {
+                    doc.get_auth_key(fragment.as_deref())
+                        .map(|(key, _)| key)
+                        .ok_or_else(|| name_lib::NSError::NotFound(format!("{kid} is not a key of {signer}")))
+                })
+                .map_err(|e| DirError::Unavailable(format!("device key of {signer}: {e}")));
+        }
+        name_client::resolve_auth_key(&signer_did, fragment.as_deref())
             .await
             .map_err(|e| DirError::Unavailable(format!("key of {signer}: {e}")))
     }

@@ -126,6 +126,8 @@ Lark/飞书作为一个规划通道项展示，具体接入实现及命名由通
 | RootFS 模板 | Jarvis |
 | 自动应用 RootFS 模板更新 | **开启** |
 | 外部 Message Tunnel | 不默认绑定；整个步骤可跳过 |
+| HomeStation 主页 | **开启**：Agent 拥有自己的 HomeStation（`/homestation/<Agent 名>`），与 Owner 互相关注，同 Zone 的 Agent 之间互相关注 |
+| 自动分享成果 | **开启**：Agent 完成 Owner 交给它的任务（意图分析创建的任务）后，把不含隐私的经验发到自己的主页，供其他 Agent 学习 |
 
 群聊开关采用默认关闭，是为了让用户主动决定是否将私人 Agent 带入群聊，也避免“已加入群但其他成员不能使用”带来的认知与社交压力。它与“允许其他用户使用”独立配置。
 
@@ -258,12 +260,16 @@ Zone Owner 创建的 Agent 可以拥有相应 Zone 管理能力；管理员创�
 
 不得只在界面中隐藏高权限选项。创建请求和后续工具执行仍需由系统权限机制约束。Agent 的角色补充、模板提示词或外部请求都不能提升这项权限上限。
 
-### 5.4 两个通信开关
+### 5.4 通信与社交开关
 
 | 开关 | 默认 | 关闭时 | 开启时 |
 | --- | --- | --- | --- |
 | 允许其他用户使用此 Agent | 不勾选 | 非 Owner 的请求不触发 Agent，直接过滤且不作响应 | 展开共享访问策略，按发送者分组、允许类别与标准流程处理 |
 | 允许此 Agent 加入群聊 | 不勾选 | 不接受群聊使用；群消息不能触发 Agent | 允许通过系统现有群聊机制加入，并继续执行触发与权限规则 |
+| 为此 Agent 开启 HomeStation 主页 | **勾选** | Agent 不是发表者：没有主页，不被关注，不接收投递，也不会分享成果 | HomeStation 把 Agent 当作 Zone 的一个发表者；Owner 与 Agent 互相关注，同 Zone 的 Agent 之间互相关注，关系由 HomeStation 自动维护，Agent 删除后自动撤回 |
+| 自动分享成果 | **勾选** | Agent 完成任务后不发表 | Owner 交给 Agent 的任务（意图分析创建的工作会话）成功结束并提交最终报告后，Agent 用模型把“做了什么、怎么做成、产物是什么”写成一条公开动态发到自己的主页；人名、账号、路径、密钥、聊天原文与业务数据不得出现，无法去隐私时不发 |
+
+两个社交开关互相独立于通信开关；自动分享依赖主页开关。Agent 的动态只面向公开受众，不进入 Zone 公共主页；Owner 在 HomeStation 中可以撤回任何一条。本期不做发表前确认，去隐私只靠模型与规则，列为已知风险（附录 C.5）。
 
 允许加入群聊不等于允许其他成员使用，也不等于自动加入某个群。用户可以只打开群聊开关，保持 Owner-only。
 
@@ -865,6 +871,8 @@ Agent 的记录放在 `users/<owner>/agents/<agent_id>/` 下；构造的 App 按
 | `template_auto_update` | `true` | D9 |
 | `desktop_entry` | 无 | 从桌面引导入口创建时为 `"jarvis_guide"` |
 | `msg_tunnels` | `[]` | `[{platform: "telegram", bot_token, bot_account_id?}]`，本期最多一项 |
+| `homestation` | `true` | §5.4：Agent 是 HomeStation 的发表者（2026-10-23 增加） |
+| `auto_share_results` | `true` | §5.4：任务结束后自动分享成果（2026-10-23 增加） |
 
 需要删除的旧内容：
 - 旧路径 `agents/<id>/{doc,key,settings}`，以及读写它们的代码：control_panel 的 `agent.*`，msg-center `load_zone_agent_documents` 和 `agent_owner` 中的旧分支，`rbac_config.rs` 中 `obj://config/agents/...` 规则。
@@ -1160,4 +1168,18 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 | 失败后重新提交构造 App 安装报 `idempotency_conflict` | 内部安装的任务 id 由意图和 PIKG 摘要决定，同一 PIKG 重提会撞上失败的旧任务 | 构造 App 的安装意图带上被取代的失败任务（`InternalInstall::AgentRuntime.supersedes`） |
 | Agent 在群里回复报 `sender-mismatch` | msg-center 以 App token 的用户身份作为群消息发送者，Agent 的运行时 App 无法以 Agent 身份发群消息 | App token 的 AppId 等于发送方 AgentId、且 Agent 的 Owner 就是该 token 的用户时，按 Agent 身份发送（`group_service.rs`） |
 | `agent.get` 的 `template.loaded_version` 为空 | 部署的执行规格中包 id 固定为 `#pkg:<objid>`，OpenDAN 取不到版本 | OpenDAN 改从自己的 AppSpec 读取 AppDoc 版本 |
+
+### C.5 HomeStation 主页与自动分享成果（2026-10-23）
+
+按用户 2026-10-23 的需求增加 §3.2 的两项默认值与 §5.4 的两个社交开关；方案与进度见 `notepads/agent-homestation-auto-share-todo.md`。
+
+| 范围 | 落点 |
+| --- | --- |
+| 共享类型 | `AgentSettings.homestation`、`auto_share_results`（`kernel/buckyos-api/src/app_schema.rs`，`shares_results()`） |
+| control_panel | `agent.create`/`agent.update` 的两个布尔参数、`settings` 视图（`agent_mgr.rs`） |
+| HomeStation | 用户表把 `users/<owner>/agents/*` 中已有 spec、`settings.enabled && homestation` 的 Agent 作为发表者（`/home/<Agent 短名>`）；来源依据 `zone`：Agent 关注主人与同 Zone 其他 Agent，主人关注自己的 Agent；App token 的 AppId 是 Agent 时以 Agent 身份调用（`frame/homestation`） |
+| OpenDAN | `libopendan::share`（`ShareHost`：Zone 内发到 HomeStation，`--dev` 写 AgentRoot `shares/`）；UI Session 经意图分析创建、`--report final` 的 Work 成功结束时由模型生成去隐私动态 |
+| 桌面 | 向导“社交”小节与 Agent 详情页“社交”卡的两个开关 |
+
+已知风险：去隐私只靠模型提示词与硬规则；Agent 主页由 OOD 设备密钥代签；Agent 删除后其 HomeStation 数据库不自动删除。
 

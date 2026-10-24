@@ -1304,6 +1304,7 @@ async fn after_run_end(
     let status = s.status(sh.lease.epoch());
     drop(s);
     report(sh, status).await;
+    super::share::after_finish(sh, run, next, super::share::Finished { config: cfg, turns });
     super::outbound::flush_outbox(sh).await;
     super::turn_task::flush_turn_tasks(sh).await;
     Ok(())

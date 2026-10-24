@@ -588,6 +588,7 @@ fn spawn_host(env: &Env, llm: Arc<dyn LlmClient>, parent: &SessionDir) -> HostDe
         objects: None,
         turn_tasks: None,
         notify: None,
+        share: None,
         runtime_id: None,
     }
 }

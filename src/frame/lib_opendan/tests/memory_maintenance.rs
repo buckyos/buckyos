@@ -53,6 +53,7 @@ fn host_deps(env: &Env, llm: Arc<ScriptedLlm>) -> HostDeps {
         objects: None,
         turn_tasks: None,
         notify: None,
+        share: None,
         runtime_id: None,
     }
 }

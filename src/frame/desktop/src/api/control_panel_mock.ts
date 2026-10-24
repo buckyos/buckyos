@@ -192,6 +192,8 @@ function defaultSettings(): AgentSettings {
     role_supplement: '',
     template_auto_update: true,
     desktop_entry: null,
+    homestation: true,
+    auto_share_results: true,
     msg_tunnels: [],
   }
 }
@@ -694,6 +696,8 @@ function createAgent(state: MockState, params: Record<string, unknown>) {
     settings: {
       ...defaultSettings(),
       allow_group: Boolean(request.allow_group),
+      homestation: request.homestation !== false,
+      auto_share_results: request.auto_share_results !== false,
       role_supplement: request.role_supplement ?? '',
       template_auto_update: request.template_auto_update !== false,
       desktop_entry: request.desktop_entry ?? null,
@@ -1305,6 +1309,8 @@ function handle(state: MockState, method: string, params: Record<string, unknown
     case 'agent.update': {
       const agent = findAgent(state, stringParam(params, 'agent_id'))
       if (typeof params.allow_group === 'boolean') agent.settings.allow_group = params.allow_group
+      if (typeof params.homestation === 'boolean') agent.settings.homestation = params.homestation
+      if (typeof params.auto_share_results === 'boolean') agent.settings.auto_share_results = params.auto_share_results
       return toEntry(state, agent)
     }
     case 'agent.profile.get':

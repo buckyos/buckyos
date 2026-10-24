@@ -565,6 +565,7 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         objects: None,
         turn_tasks: None,
         notify: crate::notify::StateNotify::of(c.agent.clone()),
+        share: None,
         runtime_id: a.get("runtime"),
     })
 }

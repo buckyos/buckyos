@@ -100,6 +100,15 @@ export function ConfirmPage({
         />
       </Section>
 
+      <Section title={t('agentSetup.social.title')} testId="agent-setup-confirm-social">
+        <SummaryRows
+          rows={[
+            [t('agentSetup.social.homestation'), draft.homestation ? yes : no],
+            [t('agentSetup.social.autoShare'), draft.homestation && draft.autoShareResults ? yes : no],
+          ]}
+        />
+      </Section>
+
       <Section title={t('agentSetup.confirm.runtime')}>
         <SummaryRows
           rows={[

@@ -34,6 +34,7 @@ pub mod protocol;
 pub mod runner;
 pub mod runtime;
 pub mod session;
+pub mod share;
 pub mod skills;
 pub mod state;
 pub mod template;

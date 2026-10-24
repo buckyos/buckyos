@@ -52,6 +52,9 @@ pub struct HostDeps {
     pub turn_tasks: Option<Arc<dyn crate::runner::TurnTaskSink>>,
     /// Where a Work's questions to the user go (`None`: a Work cannot ask).
     pub notify: Option<Arc<dyn crate::notify::NotifyHost>>,
+    /// Where a finished user task is shared as the agent's own post
+    /// (`None`: nothing is shared).
+    pub share: Option<Arc<dyn crate::share::ShareHost>>,
     /// Binding identity required of the sessions driven directly (not of
     /// their sub sessions).
     pub runtime_id: Option<String>,
@@ -87,6 +90,7 @@ impl HostDeps {
         deps.objects = self.objects.clone();
         deps.turn_tasks = self.turn_tasks.clone();
         deps.notify = self.notify.clone();
+        deps.share = self.share.clone();
         deps.stop = stop;
         Ok(deps)
     }

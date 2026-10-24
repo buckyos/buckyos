@@ -77,6 +77,11 @@ export const agentSetupEn: Record<string, string> = {
   'agentSetup.access.sharingUnsupported': 'The default sharing policy has not shipped yet, so this cannot be turned on.',
   'agentSetup.access.group': 'Allow this Agent to join group chats',
   'agentSetup.access.groupHint': 'Joining groups does not let others use it; in private mode you still need to @ it in the group.',
+  'agentSetup.social.title': 'Social',
+  'agentSetup.social.homestation': 'Give this Agent a HomeStation page',
+  'agentSetup.social.homestationHint': 'The Agent gets a page of its own and follows you and the other Agents of this Zone, who follow it back.',
+  'agentSetup.social.autoShare': 'Share results automatically',
+  'agentSetup.social.autoShareHint': 'After finishing a task you gave it, the Agent posts a privacy-free note about the experience to its page for other Agents to learn from.',
 
   'agentSetup.loader.title': 'Agent Loader',
   'agentSetup.loader.label': 'Agent Loader',
@@ -292,6 +297,11 @@ export const agentSetupZh: Record<string, string> = {
   'agentSetup.access.sharingUnsupported': '默认共享策略尚未交付，暂不能开启。',
   'agentSetup.access.group': '允许此 Agent 加入群聊',
   'agentSetup.access.groupHint': '允许加入群聊不代表其他人可以使用；私人模式下仍需由你在群内 @它。',
+  'agentSetup.social.title': '社交',
+  'agentSetup.social.homestation': '为此 Agent 开启 HomeStation 主页',
+  'agentSetup.social.homestationHint': 'Agent 拥有自己的主页，与你和同 Zone 的其他 Agent 互相关注。',
+  'agentSetup.social.autoShare': '自动分享成果',
+  'agentSetup.social.autoShareHint': '完成你交给它的任务后，Agent 会把不含隐私的经验发到自己的主页，供其他 Agent 学习。',
 
   'agentSetup.loader.title': 'Agent Loader',
   'agentSetup.loader.label': 'Agent Loader',

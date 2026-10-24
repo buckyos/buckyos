@@ -299,6 +299,9 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
     // Long `shell` commands become tasks of the zone's TaskMgr (under the
     // Turn they belong to), not of this process.
     let xllm = opendan::tasks::zone_xllm_deps(&spec.agent_did.to_string(), Some(owner.clone()));
+    let share: Arc<dyn libopendan::share::ShareHost> = Arc::new(libopendan::share::ZoneShare {
+        switch: Arc::new(records::RecordsShareSwitch(records.clone())),
+    });
     Ok(LoaderEnv {
         who: format!("app:{}@{owner}", runtime.get_app_id()),
         agent_did: spec.agent_did.to_string(),
@@ -331,6 +334,7 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         notify: Some(Arc::new(opendan::notify::ZoneNotify {
             owner_user: owner.clone(),
         })),
+        share: Some(share),
         access: Access::Zone {
             owner,
             app_id: runtime.get_app_id(),
@@ -380,6 +384,10 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         libopendan::notify::LocalNotify::enable(&agent_root, &agent_did)
             .map_err(|e| anyhow!("notifications: {e}"))?,
     );
+    // Shared results as files of the AgentRoot (`shares/`).
+    let share: Arc<dyn libopendan::share::ShareHost> = Arc::new(
+        libopendan::share::LocalShare::enable(&agent_root).map_err(|e| anyhow!("shares: {e}"))?,
+    );
     Ok(LoaderEnv {
         who: who.clone(),
         agent_did,
@@ -401,6 +409,7 @@ async fn dev_env(args: &Args) -> Result<LoaderEnv> {
         tasks: None,
         objects: None,
         notify: Some(notify),
+        share: Some(share),
         access: Access::Open { who },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),

@@ -227,6 +227,8 @@ export interface AgentSetupDraft {
   roleSupplement: string
   permissionMode: AgentPermissionMode
   allowGroup: boolean
+  homestation: boolean
+  autoShareResults: boolean
   templateId: string | null
   templateAutoUpdate: boolean
   channel: AgentSetupChannel
@@ -253,6 +255,8 @@ export function newAgentSetupDraft(source: AgentSetupSource, idempotencyKey: str
     roleSupplement: '',
     permissionMode: 'read_write',
     allowGroup: false,
+    homestation: true,
+    autoShareResults: true,
     templateId: null,
     templateAutoUpdate: true,
     channel: 'none',
@@ -286,6 +290,8 @@ export function parseAgentSetupDraft(raw: unknown, source: AgentSetupSource): Ag
     roleSupplement: stringField(value.roleSupplement, base.roleSupplement),
     permissionMode: value.permissionMode === 'read_only' ? 'read_only' : 'read_write',
     allowGroup: boolField(value.allowGroup, base.allowGroup),
+    homestation: boolField(value.homestation, base.homestation),
+    autoShareResults: boolField(value.autoShareResults, base.autoShareResults),
     templateId: typeof value.templateId === 'string' && value.templateId ? value.templateId : null,
     templateAutoUpdate: boolField(value.templateAutoUpdate, base.templateAutoUpdate),
     channel: value.channel === 'telegram' ? 'telegram' : 'none',
@@ -336,6 +342,8 @@ export function buildAgentCreateRequest(draft: AgentSetupDraft, botToken: string
     permission_mode: draft.permissionMode,
     allow_group: draft.allowGroup,
     allow_other_users: false,
+    homestation: draft.homestation,
+    auto_share_results: draft.autoShareResults,
     template_id: draft.templateId ?? '',
     template_auto_update: draft.templateAutoUpdate,
     ...(draft.source === 'jarvis_guide' ? { desktop_entry: 'jarvis_guide' as const } : {}),

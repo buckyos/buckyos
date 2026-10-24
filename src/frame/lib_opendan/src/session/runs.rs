@@ -407,6 +407,28 @@ impl RunHandle {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
+    /// The finished user task was shared (or decided not to be) as the
+    /// agent's post (`host.extra.shared`): never asked again on a redo.
+    pub fn mark_shared(&self) -> Result<()> {
+        self.update(|r| {
+            if let Some(h) = r.host.as_mut() {
+                if !h.extra.is_object() {
+                    h.extra = serde_json::json!({});
+                }
+                h.extra["shared"] = serde_json::json!(true);
+            }
+        })
+    }
+
+    pub fn shared(&self) -> bool {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("shared"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
     pub fn reports(&self) -> Result<Vec<crate::protocol::ReportSubmission>> {
         let record = self.record();
         let Some(value) = record.host.as_ref().and_then(|h| h.extra.get("reports")) else {

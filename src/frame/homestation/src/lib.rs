@@ -87,6 +87,8 @@ pub struct StationConfig {
     pub comment_sync_interval: Duration,
     /// Directly reachable web for the Spider (off in tests that must stay offline).
     pub spider_enabled: bool,
+    /// Set when this home belongs to a zone Agent (§4.3 zone-basis follows).
+    pub agent: Option<crate::users::ZoneAgentRef>,
 }
 
 impl StationConfig {
@@ -109,6 +111,7 @@ impl StationConfig {
             select_interval: Duration::from_secs(60),
             comment_sync_interval: Duration::from_secs(600),
             spider_enabled: true,
+            agent: None,
         }
     }
 }
@@ -233,6 +236,9 @@ impl Station {
         // change (`contacts_changed`), not polled.
         if let Err(e) = self.sync_friends().await {
             log::warn!("friend sync failed: {e}");
+        }
+        if let Err(e) = self.sync_zone_relations().await {
+            log::warn!("zone relation sync failed: {e}");
         }
         if let Err(e) = self.reconcile_following().await {
             log::warn!("following tag reconciliation failed: {e}");

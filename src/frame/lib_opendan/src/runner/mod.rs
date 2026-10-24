@@ -22,6 +22,7 @@ mod receipts;
 mod reports;
 mod reconcile;
 mod rounds;
+mod share;
 mod shared;
 mod tools;
 mod todos;
@@ -251,6 +252,9 @@ pub struct RunnerDeps {
     /// The host's notification service (`None`: a Work cannot ask its
     /// user).
     pub notify: Option<Arc<dyn crate::notify::NotifyHost>>,
+    /// Where a finished user task is shared as the agent's own post
+    /// (`None`: nothing is shared).
+    pub share: Option<Arc<dyn crate::share::ShareHost>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
     pub session_cli: Option<PathBuf>,
     /// Further commands of the host in `.runtime/bin`
@@ -285,6 +289,7 @@ impl RunnerDeps {
             objects: None,
             turn_tasks: None,
             notify: None,
+            share: None,
             session_cli: None,
             session_helpers: Vec::new(),
             app_tools: Vec::new(),

@@ -16,6 +16,22 @@ pub struct ZoneUser {
     /// accounts may not. The service setting `zone_feed_writers` overrides this.
     #[serde(default = "yes")]
     pub zone_feed_writer: bool,
+    /// Set for a zone Agent (`AgentSettings.homestation`): it publishes as itself under its
+    /// short name, and follows its owner and the zone's other Agents by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<ZoneAgentRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ZoneAgentRef {
+    pub agent_id: String,
+    pub owner_did: String,
+}
+
+impl ZoneUser {
+    pub fn is_agent(&self) -> bool {
+        self.agent.is_some()
+    }
 }
 
 fn yes() -> bool {
@@ -38,7 +54,8 @@ impl UserSource for StaticUsers {
 
 /// `users/<id>/doc` (the DID), `users/<id>/profile` (display name) and `users/<id>/settings`
 /// (type, state). Only active accounts other than the Zone owner record (Root) have a
-/// HomeStation; records of an unknown type are skipped.
+/// HomeStation; records of an unknown type are skipped. The accounts' Agents
+/// (`users/<id>/agents/<agent>/{spec,settings,profile}`) follow, under their short names.
 pub struct SystemConfigUsers;
 
 #[async_trait]
@@ -52,12 +69,13 @@ impl UserSource for SystemConfigUsers {
 /// The zone's users in system config. The DID is the one `users/<id>/doc` binds, never the
 /// editable profile's.
 pub async fn load_users(client: std::sync::Arc<buckyos_api::SystemConfigClient>) -> Result<Vec<ZoneUser>, String> {
+    use crate::protocol::valid_user_segment;
     use serde_json::Value;
     let accounts = buckyos_api::ControlPanelClient::from_shared(client.clone());
     let ids = client.list("users").await.map_err(|e| e.to_string())?;
     let mut users = Vec::new();
     for id in ids {
-        if !crate::protocol::valid_user_segment(&id) {
+        if !valid_user_segment(&id) {
             continue;
         }
         let Ok(did) = accounts.get_user_did(&id).await else { continue };
@@ -80,9 +98,46 @@ pub async fn load_users(client: std::sync::Arc<buckyos_api::SystemConfigClient>)
             .unwrap_or(&id)
             .to_string();
         let zone_feed_writer = matches!(settings.user_type, buckyos_api::UserType::Admin | buckyos_api::UserType::User);
-        users.push(ZoneUser { user: id.clone(), did: did.to_string(), name, zone_feed_writer });
+        users.push(ZoneUser { user: id.clone(), did: did.to_string(), name, zone_feed_writer, agent: None });
+    }
+    let people = users.len();
+    for owner in 0..people {
+        let owner_id = users[owner].user.clone();
+        let Ok(agents) = client.list(&format!("users/{owner_id}/agents")).await else { continue };
+        for name in agents {
+            let Ok(agent_id) = buckyos_api::AgentId::parse(&name) else { continue };
+            let Some(agent) = load_agent(&client, &owner_id, &agent_id).await else { continue };
+            if !valid_user_segment(&agent.user) || users.iter().any(|u| u.user == agent.user || u.did == agent.did) {
+                log::warn!("agent {agent_id} of {owner_id}: short name `{}` cannot be a home", agent.user);
+                continue;
+            }
+            users.push(agent);
+        }
     }
     Ok(users)
+}
+
+/// A zone Agent as a publisher: `None` while it has no spec (still being created), when its
+/// owner turned `homestation` off, or when it is disabled.
+async fn load_agent(client: &buckyos_api::SystemConfigClient, owner_id: &str, agent_id: &buckyos_api::AgentId) -> Option<ZoneUser> {
+    use buckyos_api::{agent_profile_key, agent_settings_key, agent_spec_key, AgentProfile, AgentSettings, AgentSpec};
+    let read = |key: String| async move { client.get(&key).await.ok().map(|v| v.value) };
+    let spec: AgentSpec = serde_json::from_str(&read(agent_spec_key(owner_id, agent_id)).await?).ok()?;
+    if spec.validate().is_err() || &spec.agent_id != agent_id {
+        return None;
+    }
+    let settings: AgentSettings = read(agent_settings_key(owner_id, agent_id)).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+    if !settings.enabled || !settings.homestation {
+        return None;
+    }
+    let profile: AgentProfile = read(agent_profile_key(owner_id, agent_id)).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+    Some(ZoneUser {
+        user: buckyos_api::agent_short_name(agent_id),
+        did: spec.agent_doc.id.to_string(),
+        name: profile.resolved_display_name(agent_id),
+        zone_feed_writer: false,
+        agent: Some(ZoneAgentRef { agent_id: agent_id.as_str().to_string(), owner_did: spec.agent_doc.owner.to_string() }),
+    })
 }
 
 /// Cached view of the zone's users. A lookup miss reloads, at most every few seconds, so a
@@ -142,5 +197,10 @@ impl UserRegistry {
     /// For a DID that should be ours (hosted under this zone): reload on a miss.
     pub async fn by_did_fresh(&self, did: &str) -> Option<ZoneUser> {
         self.find(|u| u.did == did).await
+    }
+
+    /// The Agent whose runtime App is `app_id` (its AgentId), if it publishes here.
+    pub async fn agent_by_app(&self, app_id: &str) -> Option<ZoneUser> {
+        self.find(|u| u.agent.as_ref().is_some_and(|a| a.agent_id == app_id)).await
     }
 }

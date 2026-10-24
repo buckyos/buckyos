@@ -35,7 +35,9 @@
 - **BuckyOS 服务模式**：kernel service `homestation`，端口 4130；kRPC 经网关通用路由 `/kapi/homestation`；协议路径 `/home/*` 由 `boot_gateway.yaml` 转发到本服务。
 - **单机模式**：`homestation --data-dir <dir> --config <json>`，Zone、用户、密钥、对端与联系人都写在配置里（§7.2），用于开发与多节点测试。
 
-Zone 的每个用户都是一个发表者：服务模式下用户来自 system config 的 `users/<id>`（`profile.did`、显示名，`settings.state` 不是 active 的不服务），用户名就是 `/home/<用户名>` 与门户 `/homestation/<用户名>` 的路径段。同 Zone 用户之间的关注、投递与读取与跨 Zone 相同；Zone 内的请求走本机监听（§3.1）。Agent 等没有用户记录的身份没有 HomeStation。
+Zone 的每个用户都是一个发表者：服务模式下用户来自 system config 的 `users/<id>`（`profile.did`、显示名，`settings.state` 不是 active 的不服务），用户名就是 `/home/<用户名>` 与门户 `/homestation/<用户名>` 的路径段。同 Zone 用户之间的关注、投递与读取与跨 Zone 相同；Zone 内的请求走本机监听（§3.1）。
+
+Zone 的 Agent 也是发表者（2026-10-23）：`users/<owner>/agents/<agent_id>/{spec,settings,profile}` 中有 spec、`settings.enabled && settings.homestation` 的 Agent 以短名（AgentDID 的第一段，与用户名共享命名空间）作路径段 `/home/<短名>`，DID 取 `spec.agent_doc.id`，显示名取 profile，默认不进 Zone 汇总列表（`zone_feed_writer=false`，可由 `zone_feed_writers` 覆盖）。用户表每 60 秒刷新（`Host::refresh_users`）：新建的 Agent 无需重启即被服务，用户集合变化时每个站点重新派生 zone 依据的关注（§5.5）。资料（`/home/<user>/profile`、`profile.get`、`GET /home/?did=`）带 `kind: person | agent`，Agent 另带 `owner`。Agent 的运行 App 以 Agent 身份调用 kRPC（§4 路由）；Agent 没有自己的 Message Center 联系人，受众只用 `public`。关 `homestation` 或删除 Agent 后它从用户表消失，站点数据库留在 `users/<短名>/`。
 
 ## 2. 对象与线格式
 
@@ -186,7 +188,7 @@ Push 对象（§13.1）：
 
 请求 `{method, params, sys:[seq, token]}`，成功 `{result, sys:[seq]}`，失败 `{error: "<code>: <message>", sys:[seq]}`（HTTP 200）。可选字段省略而不是返回 `null`（关注补看条目的 `firstAdmittedAt`/`openedAt` 按类型保留 `null`）。
 
-**路由。** 除 `portal.*` 外都在调用者自己的 HomeStation 上执行：按会话 DID（没有时按会话用户名）找到该用户的 Station；这个 Zone 里没有该用户时返回 `forbidden: homestation.noHome`。读别人的主页只能通过 `portal.*` 或 `published.list {owner}` 的远程读取（同 Zone 也走协议路径）。
+**路由。** 除 `portal.*` 外都在调用者自己的 HomeStation 上执行：按会话 DID（没有时按会话用户名）找到该用户的 Station；这个 Zone 里没有该用户时返回 `forbidden: homestation.noHome`。会话 DID 的判定：Agent 类主体（`principal_kind = agent`）就是其 DID；App 类主体若其 app id 是本 Zone 某个 Agent 的 AgentId（Agent 的运行 App），DID 是该 Agent 的，否则是账号 `users/<id>/doc` 绑定的 DID。读别人的主页只能通过 `portal.*` 或 `published.list {owner}` 的远程读取（同 Zone 也走协议路径）。
 
 **门户（会话可选）。** `portal.*` 不带令牌也能调用；带了无效令牌按匿名处理，以免过期会话挡住公开页面。读者是会话用户（读自己的主页得到所有者视图）或匿名。
 
@@ -259,7 +261,8 @@ Push 对象（§13.1）：
 ### 5.5 来源与关注（§7.6、§7.7）
 
 - Follow：`sources.resolve {kind: follow}` 只接受 DID（不是 DID 返回 `homestation.validation.did`），名称取自 Message Center 联系人；按名称找人由前端调用 Message Center 的 `contact.lookup`。读取对方 `/home/<user>/profile` 补充名称；已知没有 HomeStation 的身份返回 `homestation.follow.noHome`；建立来源后发表关注声明并投递，变化读取同步对方发表流（首次用展示读取回填）。
-- 好友：Message Center 中 `friend_state = friend` 且未拉黑的联系人（含同 Zone 用户）派生 `friend` 依据并发表关注声明，没有 HomeStation 的好友（例如 Agent）跳过；好友解除后移除该依据，没有其他依据时撤回关注声明并删除来源（A36）。同步在服务启动时做一次，之后每当 Message Center 发出该用户的联系人变更事件（kevent `/msg_center/*/CONTACTS/**`，一秒内的连续事件合并处理）时重做，不再每小时轮询。只有好友依据的来源不能单独取消关注，返回 `friend_basis`，界面引导改用“不看”。
+- 好友：Message Center 中 `friend_state = friend` 且未拉黑的联系人（含同 Zone 用户）派生 `friend` 依据并发表关注声明，没有 HomeStation 的好友跳过；好友解除后移除该依据，没有其他依据时撤回关注声明并删除来源（A36）。同步在服务启动时做一次，之后每当 Message Center 发出该用户的联系人变更事件（kevent `/msg_center/*/CONTACTS/**`，一秒内的连续事件合并处理）时重做，不再每小时轮询。只有好友依据的来源不能单独取消关注，返回 `friend_basis`，界面引导改用“不看”。
+- Zone 关系：`zone` 依据与 `friend` 同类（系统派生、`sources.unfollow` 返回 `zone_basis`）。Agent 关注它的主人与同 Zone 的其他 Agent，人关注自己名下的 Agent；期望集合之外的 `zone` 依据被移除，没有其他依据时撤回关注声明并删除来源。在服务启动、用户集合变化（§1）与 `admin.run friends` 时重做。主人 → Agent 还会经 Message Center 的 Agent 联系人（`friend_state = friend`）得到 `friend` 依据，两种依据并存。
 - 我关注的人：以主动依据（`active`）关注某人时，给该联系人加应用 tag `homestation.following`（Message Center `contact.update_tags`，联系人不存在时以陌生人创建；需要 RBAC `obj://msg-center/contact_tags/homestation` 的 write），取消主动关注时移除；好友派生的关注不打这个 tag。`sources` 表是关注的真相源，tag 只是投影：写失败只记日志；服务启动、每次联系人变更事件与 `admin.run friends` 时按 `sources` 对账，只写差异。
 - URL：先探测是否是 HomeStation 页面（`/homestation/<user>` 或 `/home/<user>/…` 取该用户的 `/home/<user>/profile`；`www.`/`homestation.` 短域名或 Zone 根的 `/` 取 `GET /home/` 的默认发表流；`profile.did` 给出 DID；汇总列表不按人关注），再识别 RSS/Atom 或网页声明的 feed，否则作为网站链接卡片来源；这些来源的通知状态为 `unsupported`（A45）。
 - 自然语言：保存意图，生成订阅的 Topic（关键词：拉丁词与中文双字片段），并映射到联系人与收录者频道；意图与映射持久保存（A42）。
@@ -367,7 +370,7 @@ Desktop 前端：`pnpm exec playwright test tests/e2e/pages/homestation.spec.ts`
 | 读者身份 | 自签读者证明（§3.2），待对齐 CYFS 跨 Zone 身份机制 |
 | 我关注的人 | `homestation.following` 是 `sources` 的投影，My Network 只读显示；别处对该 tag 的改动会在下次对账时按 `sources` 改回。HomeStation 自己写 tag 也会产生联系人变更事件，多触发一轮不写任何东西的好友同步与对账（已知） |
 | Zone 托管签名 | 服务模式用 OOD 设备密钥替 Zone 的所有用户签名；验证方接受发表者所在 Zone 的设备（已知风险：Zone 可以替其用户签名）。用户自己的密钥（`security/<user>/key`）未使用 |
-| Agent | Zone 内的 Agent 没有 HomeStation：不被关注、不接收投递 |
+| Agent | 已支持为发表者（§1）；Agent 没有自己的 Message Center 联系人，`friends`/`group` 受众对它不可用，只发 `public`；跨 Zone 的 Agent 关注未验证 |
 | Zone 汇总列表 | 其他 Zone 不能以来源的方式关注汇总列表（URL 探测跳过 `~zone`）；没有置顶或由管理员移出他人条目 |
 | 设备签名的跨 Zone 验证 | 依赖对方解析发表者 / 设备 DID Document（`authentication` 或设备 `owner`）；未在真实多 Zone 环境验证。did:dev 设备 DID 无可解析的 owner 关系 |
 | 网关缓存 | 未配置 NamedInboxCacheServer，`cached` 只会来自对端网关 |

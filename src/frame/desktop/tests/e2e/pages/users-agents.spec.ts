@@ -40,6 +40,15 @@ test.describe('Users & Agents app panel', () => {
     await expect(detail.getByTestId('agent-channels')).toContainText('@bucky_bot')
     await expect(detail.getByRole('switch', { name: 'Allow this Agent to join group chats' })).not.toBeChecked()
     await expect(detail.getByRole('switch', { name: 'Allow other users to use this Agent' })).toBeDisabled()
+    const social = detail.getByTestId('agent-social')
+    const autoShare = social.getByRole('switch', { name: 'Share results automatically' })
+    await expect(social.getByRole('switch', { name: 'Give this Agent a HomeStation page' })).toBeChecked()
+    await expect(autoShare).toBeChecked()
+    await autoShare.click()
+    await expect(autoShare).not.toBeChecked()
+    await expect(autoShare).toBeEnabled()
+    await social.getByRole('switch', { name: 'Give this Agent a HomeStation page' }).click()
+    await expect(autoShare).toBeDisabled()
 
     currentAction = 'open Add Agent'
     await win.getByLabel('Add Agent').click()

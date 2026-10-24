@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Alert, Button, Chip, CircularProgress, Switch } from '@mui/material'
-import { Bot, MessageSquare, Radio, Settings2, Trash2, UserRound } from 'lucide-react'
+import { Bot, Home, MessageSquare, Radio, Settings2, Trash2, UserRound } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { desktopUIStore } from '../../../../models/DesktopUIDataModel'
 import { getMessageHubStore } from '../../../messagehub/store'
@@ -59,6 +59,8 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
   const location = useLocation(), navigate = useNavigate()
   const [groupPending, setGroupPending] = useState(false)
   const [groupError, setGroupError] = useState<string | null>(null)
+  const [socialPending, setSocialPending] = useState<'homestation' | 'autoShare' | null>(null)
+  const [socialError, setSocialError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -87,6 +89,14 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
     if (error) setGroupError(t('usersAgents.agent.updateFailed', undefined, { detail: errorMessage(error) }))
   }
 
+  const toggleSocial = async (field: 'homestation' | 'autoShare', on: boolean) => {
+    setSocialPending(field)
+    setSocialError(null)
+    const error = await store.setAgentSocial(agent.id, field === 'homestation' ? { homestation: on } : { autoShareResults: on })
+    setSocialPending(null)
+    if (error) setSocialError(t('usersAgents.agent.updateFailed', undefined, { detail: errorMessage(error) }))
+  }
+
   const remove = async () => {
     setDeleting(true)
     setDeleteError(null)
@@ -102,6 +112,7 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
   const created = statusTime(agent.install?.created_at)
   const lastError = agent.install?.last_error
   const tunnelState = agent.install?.tunnel_state ?? 'none'
+  const homestationOn = agent.settings?.homestation ?? true
 
   return (
     <div className="space-y-4" data-testid="agent-detail" data-agent-id={agent.id}>
@@ -193,6 +204,42 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
             </span>
           </div>
           {groupError ? <Alert severity="error">{groupError}</Alert> : null}
+        </div>
+      </Card>
+
+      <Card icon={<Home size={16} />} title={t('agentSetup.social.title')} testId="agent-social">
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('agentSetup.social.homestation')}</div>
+              <p className="mt-0.5 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>{t('agentSetup.social.homestationHint')}</p>
+            </div>
+            <span className="flex items-center gap-1">
+              {socialPending === 'homestation' ? <CircularProgress size={14} /> : null}
+              <Switch
+                checked={homestationOn}
+                disabled={socialPending !== null || !ready}
+                onChange={(event) => void toggleSocial('homestation', event.target.checked)}
+                slotProps={{ input: { 'aria-label': t('agentSetup.social.homestation') } }}
+              />
+            </span>
+          </div>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('agentSetup.social.autoShare')}</div>
+              <p className="mt-0.5 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>{t('agentSetup.social.autoShareHint')}</p>
+            </div>
+            <span className="flex items-center gap-1">
+              {socialPending === 'autoShare' ? <CircularProgress size={14} /> : null}
+              <Switch
+                checked={homestationOn && (agent.settings?.auto_share_results ?? true)}
+                disabled={socialPending !== null || !ready || !homestationOn}
+                onChange={(event) => void toggleSocial('autoShare', event.target.checked)}
+                slotProps={{ input: { 'aria-label': t('agentSetup.social.autoShare') } }}
+              />
+            </span>
+          </div>
+          {socialError ? <Alert severity="error">{socialError}</Alert> : null}
         </div>
       </Card>
 

@@ -1679,6 +1679,8 @@ async function main() {
       assert(data!.display_name === `DV ${testAgentName}`, "display_name");
       assert(data!.settings.allow_group === false, "allow_group defaults to false");
       assert(data!.settings.template_auto_update === true, "auto update");
+      assert(data!.settings.homestation === true, "homestation defaults to true");
+      assert(data!.settings.auto_share_results === true, "auto_share_results defaults to true");
       assert(data!.template?.template_id === DV_DEFAULT_TEMPLATE_ID, "template");
       assert(
         data!.runtime?.app_instance_id === `${testAgentId}@${callerUserId}`,
@@ -1699,6 +1701,25 @@ async function main() {
       });
       assert(!error, `agent.update should not error: ${error}`);
       assert(data!.settings.allow_group === true, "allow_group should be true");
+    }),
+  );
+
+  results.push(
+    await runCase("agent.update toggles auto_share_results and homestation", async () => {
+      const off = await callControlPanel<AgentEntry>("agent.update", {
+        agent_id: testAgentId,
+        auto_share_results: false,
+      });
+      assert(!off.error, `agent.update should not error: ${off.error}`);
+      assert(off.data!.settings.auto_share_results === false, "auto_share_results should be false");
+      assert(off.data!.settings.homestation === true, "homestation stays on");
+      const on = await callControlPanel<AgentEntry>("agent.update", {
+        agent_id: testAgentId,
+        auto_share_results: true,
+        homestation: true,
+      });
+      assert(!on.error, `agent.update should not error: ${on.error}`);
+      assert(on.data!.settings.auto_share_results === true, "auto_share_results should be true");
     }),
   );
 

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Alert, Button, CircularProgress, Switch, TextField } from '@mui/material'
-import { CheckCircle2, ChevronDown, ChevronRight, ShieldCheck, Users } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Home, ShieldCheck, Users } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
@@ -290,6 +290,37 @@ export function PermissionsPage({
               checked={draft.allowGroup}
               onChange={(event) => update({ allowGroup: event.target.checked })}
               slotProps={{ input: { 'aria-label': t('agentSetup.access.group') } }}
+            />
+          </div>
+        </div>
+      </Section>
+
+      <Section title={t('agentSetup.social.title')}>
+        <div className="space-y-4">
+          <div className="flex items-start justify-between gap-3" data-testid="agent-setup-homestation">
+            <div className="flex min-w-0 items-start gap-3">
+              <Home size={18} className="mt-0.5 shrink-0 text-[color:var(--cp-muted)]" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.social.homestation')}</div>
+                <p className="mt-0.5 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.social.homestationHint')}</p>
+              </div>
+            </div>
+            <Switch
+              checked={draft.homestation}
+              onChange={(event) => update({ homestation: event.target.checked })}
+              slotProps={{ input: { 'aria-label': t('agentSetup.social.homestation') } }}
+            />
+          </div>
+          <div className="flex items-start justify-between gap-3" data-testid="agent-setup-auto-share">
+            <div className="min-w-0 pl-[30px]">
+              <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.social.autoShare')}</div>
+              <p className="mt-0.5 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.social.autoShareHint')}</p>
+            </div>
+            <Switch
+              checked={draft.homestation && draft.autoShareResults}
+              disabled={!draft.homestation}
+              onChange={(event) => update({ autoShareResults: event.target.checked })}
+              slotProps={{ input: { 'aria-label': t('agentSetup.social.autoShare') } }}
             />
           </div>
         </div>

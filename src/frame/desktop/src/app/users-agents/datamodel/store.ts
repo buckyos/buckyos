@@ -251,6 +251,16 @@ export class UsersAgentsStore {
     return null
   }
 
+  /** `agent.update` of the social switches; resolves with an error message, or null on success. */
+  async setAgentSocial(agentId: string, input: { homestation?: boolean; autoShareResults?: boolean }): Promise<unknown> {
+    const { data, error } = await updateAgent({ agentId, ...input })
+    if (!data) return error ?? new Error('agent.update failed')
+    this.agents = this.agents.map((agent) => (agent.id === agentId ? toAgentEntity(data) : agent))
+    this.notify()
+    notifyAgentsChanged()
+    return null
+  }
+
   async deleteAgent(agentId: string): Promise<unknown> {
     const { data, error } = await deleteAgent(agentId)
     if (!data) return error ?? new Error('agent.delete failed')

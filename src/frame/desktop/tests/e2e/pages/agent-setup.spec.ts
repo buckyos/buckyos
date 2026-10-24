@@ -59,6 +59,17 @@ test.describe('Agent setup wizard', () => {
     await expect(wizard.getByTestId('agent-setup-sharing')).toContainText('Not supported yet')
     await expect(wizard.getByRole('switch', { name: 'Allow other users to use this Agent' })).toBeDisabled()
     await expect(wizard.getByRole('switch', { name: 'Allow this Agent to join group chats' })).not.toBeChecked()
+    // Social: HomeStation page and automatic sharing are on by default; sharing follows the page.
+    const homestation = wizard.getByRole('switch', { name: 'Give this Agent a HomeStation page' })
+    const autoShare = wizard.getByRole('switch', { name: 'Share results automatically' })
+    await expect(homestation).toBeChecked()
+    await expect(autoShare).toBeChecked()
+    await homestation.click()
+    await expect(autoShare).toBeDisabled()
+    await homestation.click()
+    await expect(autoShare).toBeEnabled()
+    await autoShare.click()
+    await expect(autoShare).not.toBeChecked()
     await nextPage(wizard)
 
     // Step 2: Loader, real template list, update policy, summary.
@@ -86,6 +97,9 @@ test.describe('Agent setup wizard', () => {
     await expect(wizard.getByTestId('agent-setup-confirm-name')).toHaveText('小白')
     await expect(wizard.getByTestId('agent-setup-confirm-channel')).toContainText('None')
     await expect(wizard.getByTestId('agent-setup-confirm-permission')).toContainText('Read and write (default)')
+    const social = wizard.getByTestId('agent-setup-confirm-social')
+    await expect(social.getByText('Give this Agent a HomeStation page').locator('..')).toContainText('Yes')
+    await expect(social.getByText('Share results automatically').locator('..')).toContainText('No')
     await wizard.getByTestId('agent-setup-create').click()
     const status = wizard.getByTestId('agent-setup-status')
     await expect(status).toBeVisible()
@@ -94,6 +108,11 @@ test.describe('Agent setup wizard', () => {
       const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
       return state.agents.find((agent: { name: string }) => agent.name === 'xiaobai')?.permission_mode
     }, MOCK_KEY)).toBe('read_write')
+    expect(await page.evaluate((key) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      const agent = state.agents.find((agent: { name: string }) => agent.name === 'xiaobai')
+      return [agent?.settings.homestation, agent?.settings.auto_share_results]
+    }, MOCK_KEY)).toEqual([true, false])
 
     // Closing during creation does not cancel it; the guide reopens this creation's status.
     await page.getByTestId('window-agent-setup').getByRole('button', { name: 'Close' }).first().click()

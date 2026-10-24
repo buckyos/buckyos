@@ -339,6 +339,7 @@ impl Station {
                     "comments" => json!({ "synced": self.sync_tracked().await? }),
                     "friends" => {
                         self.sync_friends().await?;
+                        self.sync_zone_relations().await?;
                         self.reconcile_following().await?;
                         json!({ "ok": true })
                     }
@@ -680,6 +681,8 @@ impl Station {
                 "featured": profile.featured,
                 "stream": profile.stream,
                 "inbox": profile.inbox,
+                "kind": profile.kind,
+                "owner": profile.owner,
             }));
         }
         let remote = self.fetch_remote_profile_as(did, reader == Reader::Owner).await?;
@@ -696,6 +699,8 @@ impl Station {
             "featured": remote.get("featured"),
             "stream": remote.get("stream"),
             "inbox": remote.get("inbox"),
+            "kind": remote.get("kind"),
+            "owner": remote.get("owner"),
             "readerApproximated": approximated.then_some(true),
         })))
     }

@@ -67,6 +67,13 @@ impl Authenticator for StaticTokens {
 #[async_trait]
 pub trait AccountDids: Send + Sync {
     async fn account_did(&self, user_id: &str) -> Result<DID, RPCErrors>;
+
+    /// The DID of the zone Agent whose runtime App is `app_id`: such an App speaks for the
+    /// Agent, not for the account it runs under.
+    async fn agent_did(&self, app_id: &str) -> Option<String> {
+        let _ = app_id;
+        None
+    }
 }
 
 #[async_trait]
@@ -93,11 +100,20 @@ pub async fn session_caller(token: &RPCSessionToken, accounts: &dyn AccountDids)
     let claims = validate_verify_hub_token_claims(token, TokenUse::Session).map_err(session_error)?;
     let restricted = token_session_ceiling(token).map_err(session_error)?.restricted;
     let principal = token.sub.clone().filter(|s| !s.trim().is_empty()).ok_or_else(|| HsError::Unauthorized("session token has no subject".into()))?;
+    let agent = match claims.principal_kind {
+        TokenPrincipalKind::App => accounts.agent_did(claims.target.appid_claim()).await,
+        _ => None,
+    };
     let did = match claims.principal_kind {
         TokenPrincipalKind::User if token_is_external(token) => {
             name_lib::parse_canonical_did(&principal).map_err(|_| HsError::Unauthorized("external session subject is not a DID".into()))?;
             principal.clone()
         }
+        TokenPrincipalKind::Agent => {
+            name_lib::parse_canonical_did(&principal).map_err(|_| HsError::Unauthorized("agent session subject is not a DID".into()))?;
+            principal.clone()
+        }
+        TokenPrincipalKind::App if agent.is_some() => agent.unwrap(),
         TokenPrincipalKind::User | TokenPrincipalKind::App => match accounts.account_did(&principal).await {
             Ok(did) => did.to_string(),
             Err(RPCErrors::KeyNotExist(_)) => return Err(denied(DenyReason::AccountState, "session")),
@@ -126,17 +142,13 @@ pub struct RuntimeAuth {
     accounts: Box<dyn AccountDids>,
     /// User ids are never reused, so the DID their doc binds is kept once read.
     dids: Mutex<HashMap<String, DID>>,
+    /// The zone's publishers: tells an Agent's runtime App from an ordinary App.
+    users: std::sync::Arc<crate::users::UserRegistry>,
 }
 
 impl RuntimeAuth {
-    pub fn new(accounts: Box<dyn AccountDids>) -> Self {
-        Self { accounts, dids: Mutex::new(HashMap::new()) }
-    }
-}
-
-impl Default for RuntimeAuth {
-    fn default() -> Self {
-        Self::new(Box::new(RuntimeAccounts))
+    pub fn new(accounts: Box<dyn AccountDids>, users: std::sync::Arc<crate::users::UserRegistry>) -> Self {
+        Self { accounts, dids: Mutex::new(HashMap::new()), users }
     }
 }
 
@@ -149,6 +161,10 @@ impl AccountDids for RuntimeAuth {
         let did = self.accounts.account_did(user_id).await?;
         self.dids.lock().unwrap().insert(user_id.to_string(), did.clone());
         Ok(did)
+    }
+
+    async fn agent_did(&self, app_id: &str) -> Option<String> {
+        self.users.agent_by_app(app_id).await.map(|u| u.did)
     }
 }
 

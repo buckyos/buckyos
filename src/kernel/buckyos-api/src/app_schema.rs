@@ -559,6 +559,16 @@ pub struct AgentSettings {
     /// `container`: the Agent's own environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_runtime_id: Option<String>,
+    /// The Agent has a HomeStation of its own (`/home/<short name>`): it
+    /// follows its owner and the other Agents of the zone, and they follow
+    /// it.
+    #[serde(default = "default_true")]
+    pub homestation: bool,
+    /// After a user task (a Work created by intent analysis) ends with a
+    /// final report, the Agent posts a privacy-free note about the result
+    /// to its HomeStation so other Agents can learn from it.
+    #[serde(default = "default_true")]
+    pub auto_share_results: bool,
 }
 
 impl Default for AgentSettings {
@@ -574,7 +584,16 @@ impl Default for AgentSettings {
             msg_tunnels: Vec::new(),
             runtimes: BTreeMap::new(),
             default_runtime_id: None,
+            homestation: true,
+            auto_share_results: true,
         }
+    }
+}
+
+impl AgentSettings {
+    /// Whether the Agent publishes to its HomeStation on its own.
+    pub fn shares_results(&self) -> bool {
+        self.enabled && self.homestation && self.auto_share_results
     }
 }
 

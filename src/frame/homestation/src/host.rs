@@ -145,6 +145,10 @@ impl Station {
     }
 }
 
+pub fn user_kind(user: &ZoneUser) -> &'static str {
+    if user.is_agent() { "agent" } else { "person" }
+}
+
 pub struct Host {
     pub cfg: HostConfig,
     pub directory: Arc<dyn Directory>,
@@ -153,6 +157,8 @@ pub struct Host {
     pub zone_feed: ZoneFeed,
     builder: StationBuilder,
     stations: std::sync::Mutex<HashMap<String, Arc<Station>>>,
+    /// The DIDs served at the last refresh (sorted).
+    known_dids: std::sync::Mutex<Vec<String>>,
     brand: std::sync::RwLock<ZoneBrand>,
     me: Weak<Host>,
 }
@@ -173,7 +179,7 @@ impl Host {
         zone_feed: ZoneFeed,
         builder: StationBuilder,
     ) -> Arc<Self> {
-        Arc::new_cyclic(|me| Self { cfg, directory, auth, users, zone_feed, builder, stations: Default::default(), brand: Default::default(), me: me.clone() })
+        Arc::new_cyclic(|me| Self { cfg, directory, auth, users, zone_feed, builder, stations: Default::default(), known_dids: Default::default(), brand: Default::default(), me: me.clone() })
     }
 
     pub fn set_zone_brand(&self, brand: ZoneBrand) {
@@ -245,7 +251,56 @@ impl Host {
         for user in &users {
             self.open(user)?;
         }
+        let mut dids: Vec<String> = users.iter().map(|u| u.did.clone()).collect();
+        dids.sort();
+        *self.known_dids.lock().unwrap() = dids;
         Ok(users.len())
+    }
+
+    /// Open the stations of users added since the last look (a new Agent, a new account), stop
+    /// serving the homes of users who left (their databases stay on disk) and, when the set of
+    /// users changed, let every station re-derive its zone relations (§4.3).
+    pub async fn refresh_users(&self) -> HsResult<bool> {
+        let users = self.users.list().await;
+        let mut dids: Vec<String> = users.iter().map(|u| u.did.clone()).collect();
+        dids.sort();
+        let changed = {
+            let mut known = self.known_dids.lock().unwrap();
+            let changed = *known != dids;
+            *known = dids;
+            changed
+        };
+        for user in &users {
+            self.open(user)?;
+        }
+        if changed {
+            let mut stations = self.stations.lock().unwrap();
+            stations.retain(|user, station| {
+                let kept = users.iter().any(|u| &u.user == user && u.did == station.cfg.owner);
+                if !kept {
+                    log::info!("closed HomeStation of {user} ({}): no longer a user of the zone", station.cfg.owner);
+                }
+                kept
+            });
+        }
+        if changed {
+            for station in self.opened() {
+                if let Err(e) = station.sync_zone_relations().await {
+                    log::warn!("zone relation sync of {}: {e}", station.cfg.user);
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Periodic [`Self::refresh_users`].
+    pub async fn refresh_loop(self: Arc<Self>, every: std::time::Duration) {
+        loop {
+            tokio::time::sleep(every).await;
+            if let Err(e) = self.refresh_users().await {
+                log::warn!("user refresh failed: {e}");
+            }
+        }
     }
 
     pub fn opened(&self) -> Vec<Arc<Station>> {
@@ -290,7 +345,7 @@ impl Host {
     pub async fn locate(&self, did: &str) -> Option<Value> {
         let user = self.users.by_did(did).await?;
         let home = self.home(&user.user);
-        Some(json!({ "did": user.did, "user": user.user, "stream": home.stream(), "inbox": home.inbox() }))
+        Some(json!({ "did": user.did, "user": user.user, "kind": user_kind(&user), "stream": home.stream(), "inbox": home.inbox() }))
     }
 
     /// Display read of the zone feed: listed entries the viewer may see, newest `iat` first.

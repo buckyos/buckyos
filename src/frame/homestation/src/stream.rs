@@ -101,6 +101,16 @@ pub struct PublicProfile {
     pub posts: i64,
     pub featured: Vec<String>,
     pub collector: bool,
+    /// `person` or `agent`.
+    #[serde(default = "person")]
+    pub kind: String,
+    /// An Agent's owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+fn person() -> String {
+    "person".into()
 }
 
 /// Kinds a non-owner sees in the display read; reactions and follows only appear in the change read.
@@ -560,6 +570,8 @@ impl Station {
             posts,
             featured,
             collector: self.cfg.collector,
+            kind: if self.cfg.agent.is_some() { "agent".into() } else { "person".into() },
+            owner: self.cfg.agent.as_ref().map(|a| a.owner_did.clone()),
         })
     }
 
