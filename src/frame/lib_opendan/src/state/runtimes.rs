@@ -307,7 +307,16 @@ impl RuntimeRegistry for FsRuntimes {
         let mut out = Vec::new();
         for req in builtin {
             validate_id(&req.runtime_id)?;
-            let record = match self.read(&req.runtime_id)? {
+            // Built-in records are the host's projection: one this version
+            // cannot read (an older record version) is written anew.
+            let existing = match self.read(&req.runtime_id) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!("runtime registration {}: {e}; rewritten by the host", req.runtime_id);
+                    None
+                }
+            };
+            let record = match existing {
                 // What the owner changed of the container (name, description,
                 // roots) stays; how the host reaches a runtime, whether it is
                 // the default and what it may do are the system's.

@@ -417,8 +417,12 @@ impl FsWorkspaces {
                 continue;
             }
             if let Some(id) = name.strip_suffix(".json") {
-                if let Some(record) = self.read(id)? {
-                    records.push(record);
+                match self.read(id) {
+                    Ok(Some(record)) => records.push(record),
+                    Ok(None) => {}
+                    // One unreadable registration (an older record version)
+                    // does not hide the others; it is reported where it is read.
+                    Err(e) => log::warn!("workspace registration {name}: {e}"),
                 }
             }
         }

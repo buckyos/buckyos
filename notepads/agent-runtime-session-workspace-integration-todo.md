@@ -2,7 +2,7 @@
 
 日期：2026-10-23
 
-状态：2026-10-23 T1–T6 代码已实施（未提交、未 DV），实施记录见文末“实施进度”。基线核对到工作区 `0c0675962`（agent-daemon 已有 macOS 14+ 与 Windows 当前用户会话的桌面 Driver）。
+状态：2026-10-23 T1–T6 代码已实施（未提交），本机单 OOD DV 已验收 host runtime 主链路（见文末 §6.1）。基线核对到工作区 `0c0675962`（agent-daemon 已有 macOS 14+ 与 Windows 当前用户会话的桌面 Driver）。
 
 ## 0. 开工评审裁决（2026-10-23）
 
@@ -241,3 +241,22 @@ cargo test -p scheduler
 | T6 | 代码完成 | Desktop `agent.runtime_directory` 类型与 API、agent-setup 确认页“运行位置”、Agent 详情 runtime 行；websdk `ExecutorOperation` 加 `mkdir/stat/computer_*`；文档：`doc/arch/node_exector.md`、`AgentRuntime 设计.md`、Session Directory / Agent State / Agent Workspace Protocol、Agent TodoList；手册 `opendan_agent_dev`、`buckyos_admin` |
 
 未做 / 未验证：§5 验收矩阵全部 DV 项（真实 Desktop owner、容器内 OpenDAN 经 host 执行、ComputerUse 闭环、PVE 多 OS）；macOS/Windows 编译未在本机验证（Linux 开发机）；MessageHub 侧仅沿用 UI Session 创建路径冻结 runtime，未增加会话详情的 runtime 展示；websdk CLI 未加 `mkdir/stat` 子命令；`xllm` 手册未改（接口未变）。
+
+### 6.1 本机 DV 验收（2026-10-23，单 OOD Linux，zone test.buckyos.io，Agent xiaobai@devtest）
+
+部署：`uv run buckyos-build.py -s node_daemon scheduler control_panel` + `./build_aios --local-test --reuse-cargo-target` + `uv run start.py`；驱动脚本 `/root/.claude/jobs/81cbdea1/tmp/dv/host_dv.ts`（`directory | enable | disable | get | dan <agent> <method> [json]`，devtest 登录）。Linux 节点没有桌面种子，`nodes/ood1/settings` 用 `buckyos --yes system-config set-file` 写入 `owner_agents{enabled, workdir_roots:[/opt/buckyos-dv-executor/ws], run_as 65534, computer none}`、`profiles {}`、`allowed_devices []`。
+
+| 验收项 | 结果 |
+| --- | --- |
+| 系统目录 | `agent.runtime_directory` 列出 `host` = ood1（node_did `did:web:ood1.test.buckyos.io`，roots、computer_max） |
+| Agent 启用 | `agent.update {runtimes:{host:{enabled}}, default_runtime_id: host}` 写入 AgentSettings；scheduler 派生 `nodes/ood1/config.executor`：profile `agent-6cfd1b0bd82d`（principals=[xiaobai]，ops 含 mkdir/stat，run_as 65534）、principal_bindings、`allowed_devices=[节点自身 DID]`，gen 1 |
+| node-daemon | `node executor opened (system mode)`，`127.0.0.1:3184` 监听，`etc/node_executor_acl.json` 含节点 DID |
+| Agent 投影 | 容器内 Loader `runtimes.list`：host `available`、`default`、exec remote_node；`runtimes.check host` 真实 login+describe → roots、`identity_mode=switch_user`、os linux |
+| 无 Workspace 的 host UI Session | 停掉旧 UI Session 后新消息创建的 UI Session `runtime.frozen = host (selected_by default)`，binding `kind=remote_node`、workdir `/opt/buckyos-dv-executor/ws/.opendan/xiaobai…/sessions/<sid>`（节点上由 mkdir 创建，属主 nobody）；shell 输出 `Linux lzc-pve … / nobody / <该目录>`，`host_check.txt` 落在宿主；背景行显示 `runtime remote_node on lzc-pve` |
+| 控制侧 helper | host Session 里 `agent-session create-worksession --runtime container --wait` 在控制侧执行成功；子 Work Session `frozen = container (explicit)`、binding native、在容器内（hostname 3abcee81a260、root）跑 PLAN/DO 并回报 |
+| host Workspace | `workspaces.create {runtime: host, directory: /opt/buckyos-dv-executor/ws/proj1, url}` → 目录与 `.opendan-workspace.json`（v2，含 url）落在宿主、属主 nobody；登记 `version 2`、`url` 回读一致 |
+| 关闭 host | `agent.update host.enabled=false` → scheduler gen 2 `enabled=false, profiles []`、ACL 清空、node-daemon `close_connections`；Loader 投影 host `runtime_unavailable: not enabled`、container 变默认；已绑定 host 的 UI Session 新消息 `bind_failed: the executor has no valid authorization snapshot`，不回退 native、不换设备；重新启用后 Session 自行恢复 |
+
+DV 中修掉：scheduler `executor_auth::node_did` 原读 `nodes/<node>/config.node_did`（`did:bns:ood1`），与 `devices/<node>/info` 的 `did:web:…` 不一致导致 allowed_devices 为空、派生失败 → 改为以设备文档的 DID 为准（测试同步）；`ensure_builtin` 对无法读取的旧版 runtime 记录改为重写（宿主投影），`workspaces.all()` 跳过无法读取的旧记录。
+
+未验证（本机无法覆盖）：Windows/macOS 桌面模式与 ComputerUse 闭环、跨节点 RTCP、WSLC、Todo 跨 runtime 串行派发的真实 LLM 流程（单元测试覆盖）、Desktop/OpenDAN WebUI 真实点击（仅 tsc）。

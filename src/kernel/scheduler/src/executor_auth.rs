@@ -114,7 +114,16 @@ fn zone_owner(input: &HashMap<String, String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The node's device DID as the device reports it (`devices/<node>/info`,
+/// the form `allowed_devices` and the Agents' runtime targets use);
+/// `nodes/<node>/config.node_did` may carry another form of the same DID.
 fn node_did(input: &HashMap<String, String>, node_id: &str) -> Option<String> {
+    if let Some(info) = input
+        .get(&format!("devices/{node_id}/info"))
+        .and_then(|raw| serde_json::from_str::<DeviceInfo>(raw).ok())
+    {
+        return Some(info.device_doc.id.to_string());
+    }
     let raw = input.get(&buckyos_api::node_config_key(node_id))?;
     let value: Value = serde_json::from_str(raw).ok()?;
     value.get("node_did").and_then(Value::as_str).map(str::to_string)
@@ -571,6 +580,14 @@ mod tests {
         let jarvis = agent_spec("devtest", "jarvis", "jarvis");
         let helper = agent_spec("devtest", "helper", "helper");
         let (mut input, device_did) = base_input(&jarvis);
+        // The node config names the device in another DID form than its
+        // device document (as a real zone does); the device document wins.
+        input.insert(
+            "nodes/ood1/config".to_string(),
+            json!({"node_id": "ood1", "node_did": "did:bns:ood1", "kernel": {}, "apps": {},
+                   "frame_services": {}, "state": "running"})
+            .to_string(),
+        );
         put_spec(&mut input, &helper);
         put_app(&mut input, &jarvis.binding.target_app_instance_id);
         put_app(&mut input, &helper.binding.target_app_instance_id);
