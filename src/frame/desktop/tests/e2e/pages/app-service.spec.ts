@@ -155,6 +155,37 @@ test('home preserves three layers, owner identity and truthful settings and runt
   )
 })
 
+test('the installing account switches customer sign-in by its App on and off', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=normal')
+  await openAppService(page)
+  // bob's installation: alice is signed in, so no switch.
+  await page
+    .getByTestId('app-service-card-nostr-relay.buckyos.bns.did@bob')
+    .click()
+  await expect(page.getByText('Docker Engine')).toBeVisible()
+  await expect(page.getByTestId('app-service-app-login')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Back to applications' }).click()
+  await page
+    .getByTestId('app-service-card-home-assistant.buckyos.bns.did@alice')
+    .click()
+  const section = page.getByTestId('app-service-app-login')
+  await expect(section.getByTestId('app-service-app-login-state')).toHaveText('Off')
+  await section.getByRole('switch').click()
+  await expect(section.getByTestId('app-service-app-login-state')).toHaveText('On')
+  await expect(section.getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+  // The switch is server state, not page state: leaving and coming back shows it on.
+  await page.getByRole('button', { name: 'Back to applications' }).click()
+  await page
+    .getByTestId('app-service-card-home-assistant.buckyos.bns.did@alice')
+    .click()
+  await expect(page.getByTestId('app-service-app-login-state')).toHaveText('On')
+  await page.getByTestId('app-service-app-login-toggle').click()
+  await expect(page.getByTestId('app-service-app-login-state')).toHaveText('Off')
+  await expect(page.getByTestId('app-service-app-login')).toContainText('Sessions ended: 0')
+})
+
 test('local PIKG import, inspection, plan, sudo, task and independent runtime result', async ({
   page,
 }) => {

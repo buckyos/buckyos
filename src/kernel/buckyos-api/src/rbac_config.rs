@@ -196,6 +196,11 @@ p, admin,obj://msg-center/owners/*,read|write,allow
 p, admin,obj://msg-center/group,create,allow
 p, users,obj://msg-center/notify,read|write,allow
 p, admin,obj://msg-center/notify,read|write,allow
+# A user signed in on an App origin (`appid = app:<id>`) creates groups with the user's own
+# rights; enforce is the conjunction of both sides, so the app side must allow it too
+# (self-host-group-extension TODO §11, EXT-10). Membership and Session checks stay with msg-center.
+p, app,obj://msg-center/group,create,allow
+p, app,obj://msg-center/group_inbox/*,read,allow
 p, app,obj://msg-center/notify,read|write,allow
 p, frame,obj://msg-center/notify,read|write,allow
 # Resource services ask whether a DID is in an owner's contact group
@@ -487,6 +492,15 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
             assert!(rbac::enforce(user, "system:control-panel", inbox, "read", None).await);
             assert!(!rbac::enforce(user, "system:control-panel", inbox, "write", None).await);
         }
+        // The same users from an App origin (EXT-10): create and read, never write the inbox.
+        let config = build_current_rbac_config(Some("g, alice, users\ng, app:crm, app"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        assert!(rbac::enforce("alice", "app:crm", group, "create", None).await);
+        assert!(rbac::enforce("alice", "app:crm", inbox, "read", None).await);
+        assert!(!rbac::enforce("alice", "app:crm", inbox, "write", None).await);
+        assert!(!rbac::enforce("mallory", "app:crm", group, "create", None).await);
     }
 
     #[tokio::test]

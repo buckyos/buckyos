@@ -190,13 +190,14 @@ kRPC 失败响应增加可选字段（buckyos-base kRPC）：
 - 签发方在 CP“专属邀请”管理处调用 `user.exclusive_invite.rotate {invite_id}`：生成新版本资格（旧版本 `superseded`），新链接只在本次响应中出现一次；签发方经原渠道发出。系统不发送 SMTP / SMS。
 - App 签发方的记录见 §5.6。
 
-### 5.6 App 签发的登录码与 `verify-hub.login_by_app_access_token`（EXT-09，2026-10-24）
+### 5.6 App 签发的登录码与 `verify-hub.login_by_app_access_token`（EXT-09，2026-10-24；`kind=link` 见 EXT-11）
 
-App 为自己的外部客户代登录（[应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) D-5 / D-7）。复用专属邀请的记录结构与判定表，差别只在签发方、有效期和一次性。
+App 为自己的外部客户代登录（[应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) D-5 / D-7）。复用专属邀请的记录结构与判定表，差别只在签发方、有效期和一次性。`credential.kind`（`link` 缺省 | `code`）标明记录的凭据是 `/sso/invite` 链接的 `#s=` 还是 App 页面兑换的一次性 code，两者不互换：`login_by_exclusive_invite` 只接受 `link`，`login_by_app_access_token` 只接受 `code`，不符返回 `entry_unavailable` + `credential_kind`（排在“记录不存在 / 撤销”之后、账号状态之前）。
 
 - **开关**：`services/control_panel/app_login/<app_instance_id>` → `{enabled, updated_by, updated_at}`，缺省关；owner 以 CP 用户会话调 `apps.app_login.set`。关闭时 CP 对每个绑定账号调 `revoke_families {subject, source_app_instance_id}`。
 - **绑定表**：`services/control_panel/app_identities/<app_instance_id>/<digest>` → `{user_id, created_at, last_issued_at, issue_count}`，`digest = base64url(sha256(app_instance_id "\n" external_account_id))`；外部账号原文不落盘。
-- **签发** `user.app_login.issue {external_account_id, user_id?, show_name?, resource?, return_path?}`：调用者必须是 `principal_kind=app`、target 为自身实例的服务会话。无绑定则新建 Limited 账号 `<app label>-<16 hex>`（不入系统组、`password_state=unset`、无 canonical zone）并写绑定；显式 `user_id` 必须等于已绑定账号。写一条 `ExclusiveInvite`：`issuer={"kind":"app","app_instance_id"}`、`channel.kind="app"`、`credential` 版本 1、有效期 **10 分钟**、`resource` 为 Session 时随后以 App 身份调 `group.invite_session_guest`。返回 `{user_id, code: "<invite_id>.<secret>", expires_at, invite, new_account}`，code 只出现这一次。每实例每分钟最多 60 次签发。
+- **签发** `user.app_login.issue {external_account_id, kind?: "code" | "link", user_id?, show_name?, resource?, return_path?}`：调用者必须是 `principal_kind=app`、target 为自身实例的服务会话。无绑定则新建 Limited 账号 `<app label>-<16 hex>`（不入系统组、`password_state=unset`、无 canonical zone）并写绑定；显式 `user_id` 必须等于已绑定账号。写一条 `ExclusiveInvite`：`issuer={"kind":"app","app_instance_id"}`、`channel.kind="app"`、`credential` 版本 1、有效期 **10 分钟**、`resource` 为 Session 时随后以 App 身份调 `group.invite_session_guest`。返回 `{user_id, code: "<invite_id>.<secret>", expires_at, invite, new_account}`，code 只出现这一次。每实例每分钟最多 60 次签发。
+- **`kind: "link"`（EXT-11，D-8，2026-10-24）**：同一记录结构，`credential.kind="link"`、有效期 `EXCLUSIVE_INVITE_TTL_SECS`（48 小时），返回 `{user_id, link: "https://<zone>/sso/invite/<id>#s=<secret>", expires_at, invite, new_account}`，不返回 code。客户走 §5.3 / §10 的专属邀请路径（CP `auth.invite.login` → `login_by_exclusive_invite`，target 为 control-panel）：链接可反复登录、不被消费、设密码后 `password_required`、过期后 `expired`，`auth.invite.request_resend` 对 App 记录返回 `not_applicable`（由 App 自己重签）。verify-hub 为 App 签发的链接登录签出的 family 来源是 `{"kind":"app_login", app_instance_id, invite_id, version}`（而不是 `exclusive_invite`），因此开关、App 运行态与 `revoke_families {source_app_instance_id}` 对它同样生效；登录时也先查 `app_login_available`，关闭即 `source_revoked` + `app_login_disabled`。claims 仍是 `auth_method=exclusive_invite`、Limited 上限、非 restricted scopes。
 - **兑换** `auth.app_login.exchange {code, nonce, return_path?}`（CP 公开方法，按来源 IP 限流 30/分钟）→ CP 代调 `verify-hub.login_by_app_access_token {code, nonce, target: App 实例}`（CP-only），判定顺序：
 
 | 条件 | 结果 |
@@ -214,7 +215,7 @@ App 为自己的外部客户代登录（[应用扩展实施 TODO](../../../notep
 | 其它 | 签发 `auth_method=app_access_token`、`restricted=true`、`scopes=[msg_group, account_self]`、target=该 App 实例的 token pair；family 来源 `{"kind":"app_login", app_instance_id, invite_id, version}` |
 
   兑换成功后 CP 把记录的 `credential.state` 置为 `consumed`（`SetByJsonPath`，只改该字段与 `updated_at`），并像专属邀请一样走 pending nonce → `/sso_callback`，cookie 落在 **App 子域**（host-only），再回到 `return_path`。
-- **续期**：refresh 复核账号与类型（收窄）、记录 `state=active`、开关与 App 运行态；App target 的 `app_availability` 策略不参与（App 本身为该账号作保）。任一项失败 → `source_revoked`，family 删除。
+- **续期**：refresh 复核账号与类型（收窄）、记录 `state=active`、开关与 App 运行态；target 为 App 实例时 `app_availability` 策略不参与（App 本身为该账号作保），target 为 control-panel 的 `kind=link` family 照常走 target 策略。任一项失败 → `source_revoked`，family 删除。
 - **范围**：这是 Account 的受限会话，CP 对它开放与 CP 受限会话相同的 `account_self` 方法（§3.3 的闸口把“App 签入、target 为 App 实例”的会话视同自助会话，因为它运行在 App 子域、经网关 `/kapi/control-panel` 到达）；msg-center 按 `msg_group` 放行 `group.*`，账号没有个人投递记录。App 后端继续用自己的服务身份调系统服务，不转发客户会话（§3.4）。
 
 ## 6. 会话与撤销矩阵（D-5、Q-03、Q-04）

@@ -123,6 +123,15 @@ main {
     flex-wrap: wrap;
 }
 
+.group-actions input[type="text"] {
+    flex: 1 1 160px;
+    min-width: 0;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
 .btn {
     appearance: none;
     border: 1px solid #d1d5db;

@@ -188,6 +188,14 @@ export const appServiceEn: Record<string, string> = {
     'Your installations and authorized service information. Administrative installation and runtime controls are unavailable.',
   'app22.settingsReadOnly':
     'Settings are read only in this prototype. Saving and application of changes require a defined application settings API.',
+  'app22.appLogin.title': 'Customer sign-in by this App',
+  'app22.appLogin.hint':
+    'When on, this App may sign its own external customers in with its service identity: one-time codes on the App origin and 48-hour links on the Zone root, each tied to a Limited account the App created. Turning it off ends every session the App signed in.',
+  'app22.appLogin.on': 'On',
+  'app22.appLogin.off': 'Off',
+  'app22.appLogin.boundAccounts': 'Accounts signed in by this App: {{count}}',
+  'app22.appLogin.revoked': 'Sessions ended: {{count}}',
+  'app22.appLogin.failed': 'The switch could not be changed.',
   'app22.processHealth': 'Process health',
   'app22.webAccessible': 'Deployment accessibility',
   'app22.agentEnvironment': 'Runtime environment',
@@ -528,6 +536,14 @@ export const appServiceZh: Record<string, string> = {
     '显示你的安装及获授权的服务信息，不提供管理员安装和运行控制。',
   'app22.settingsReadOnly':
     '本原型中的设置为只读，保存和生效需后续明确应用设置接口。',
+  'app22.appLogin.title': '本应用为外部客户代登录',
+  'app22.appLogin.hint':
+    '打开后，本应用可以用自己的服务身份为它的外部客户签发登录凭据：在应用子域兑换的一次性登录码，以及在 Zone 根域打开的 48 小时客户链接，都对应应用创建的受限账号。关闭会结束该应用签入的全部会话。',
+  'app22.appLogin.on': '已开启',
+  'app22.appLogin.off': '已关闭',
+  'app22.appLogin.boundAccounts': '本应用签入过的账号：{{count}}',
+  'app22.appLogin.revoked': '已结束的会话：{{count}}',
+  'app22.appLogin.failed': '开关没有改成功。',
   'app22.processHealth': '进程健康',
   'app22.webAccessible': '部署可访问状态',
   'app22.agentEnvironment': '运行环境',

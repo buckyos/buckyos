@@ -2,6 +2,8 @@
 
 对应 [应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) EXT-08：一个“客服群”应用，把 L1 配置、L2 面板、L3 Hook 和 L4A 代登录四件事各写成一个最小文件，供开发者照抄，也供 DV 驱动。全部 Deno，依赖只有 `../deno.json` 里的 `buckyos`（websdk node 构建）。
 
+**分工（2026-10-24）**：真正装在 Zone 里、点按钮就能跑的官方例子是内置 App `buckyos-systest` 的客服群用例（[src/apps/sys_test](../../../src/apps/sys_test/README.md)，TODO §11）：建群 + 面板 + 48 小时客户链接（`user.app_login.issue {kind:"link"}`）。本目录保留它不覆盖的两件事：L3 Hook 验签服务与 L4A 一次性 code 代登录。
+
 | 文件 | 层 | 作用 |
 | --- | --- | --- |
 | `setup_group.ts` | L1 | 以管理员身份原子建“客服群”：`support` 模板 + `tickets` Session、`display`、两个面板声明、`join` / `post` Hook；把群 DID 与 Hook secret 写进 `state.json`（secret 只在这一步出现一次） |

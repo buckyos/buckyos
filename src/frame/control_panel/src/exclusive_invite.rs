@@ -16,7 +16,7 @@ use buckyos_api::{
     constant_time_eq, exclusive_invite_key, get_buckyos_api_runtime, invite_secret_digest,
     user_did_from_doc_value, AccessDenial, AuthMethod, AuthTarget, DenyReason, ExclusiveInvite,
     ExclusiveInviteLoginRequest, ExclusiveInviteLoginResult, InviteChannel, InviteCredential,
-    InviteCredentialState, InviteIssuer, InviteLoginRefusal, InviteResend, InviteResource,
+    InviteCredentialKind, InviteCredentialState, InviteIssuer, InviteLoginRefusal, InviteResend, InviteResource,
     InviteResourceState, InviteState, NotifySendReq, PasswordState, RevokeFamiliesRequest,
     SystemServiceId, UserPrivateProfile, UserSettings, UserState, UserType,
     CONTROL_PANEL_SERVICE_UNIQUE_ID, EXCLUSIVE_INVITE_PREFIX,
@@ -110,13 +110,19 @@ fn resource_title(resource: Option<&InviteResource>) -> Option<String> {
 
 /// A fresh password-free credential and the secret only the link carries.
 fn issue_credential(version: u32, now: u64) -> (InviteCredential, String) {
-    issue_credential_with_ttl(version, now, EXCLUSIVE_INVITE_TTL_SECS)
+    issue_credential_with_ttl(
+        version,
+        now,
+        EXCLUSIVE_INVITE_TTL_SECS,
+        InviteCredentialKind::Link,
+    )
 }
 
 pub(crate) fn issue_credential_with_ttl(
     version: u32,
     now: u64,
     ttl_secs: u64,
+    kind: InviteCredentialKind,
 ) -> (InviteCredential, String) {
     let secret = random_token(32);
     let credential = InviteCredential {
@@ -125,11 +131,12 @@ pub(crate) fn issue_credential_with_ttl(
         issued_at: now,
         expires_at: now + ttl_secs,
         state: InviteCredentialState::Active,
+        kind,
     };
     (credential, secret)
 }
 
-fn invite_link(origin: &str, invite_id: &str, secret: &str) -> String {
+pub(crate) fn invite_link(origin: &str, invite_id: &str, secret: &str) -> String {
     format!("{origin}/sso/invite/{invite_id}#s={secret}")
 }
 

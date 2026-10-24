@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleStop,
   FileCode2,
+  KeyRound,
   Loader2,
   Play,
   ScrollText,
@@ -17,6 +18,8 @@ import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../i18n/provider'
 import { useServiceText } from '../useServiceText'
 import { AppIcon } from '../../../components/DesktopVisuals'
+import { fetchAppLoginState, setAppLoginEnabled, type AppLoginState } from '../../../api/sso'
+import { useCurrentUser } from '../../../presentation/currentUser'
 import type { AppServiceNav } from '../components/layout/navigation'
 import { useAppServiceStore } from '../hooks/use-app-service-store'
 import type { AppServiceItem } from '../types'
@@ -128,6 +131,86 @@ function DefinitionRows({ values }: { values: Record<string, string> }) {
   )
 }
 
+/**
+ * The owner's "customer sign-in by this App" switch (`apps.app_login.get/set`, EXT-09 /
+ * EXT-11). Only the installing account sees it; the Control Panel refuses anyone else.
+ */
+function AppLoginSwitch({ appInstanceId }: { appInstanceId: string }) {
+  const { t } = useI18n()
+  const [state, setState] = useState<AppLoginState | null>(null)
+  const [pending, setPending] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [revoked, setRevoked] = useState<number | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void fetchAppLoginState(appInstanceId).then(({ data }) => {
+      if (!cancelled && data) setState(data)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [appInstanceId])
+  const enabled = state?.settings.enabled ?? false
+  const toggle = async () => {
+    if (pending) return
+    setPending(true)
+    setFailed(false)
+    setRevoked(null)
+    const { data } = await setAppLoginEnabled(appInstanceId, !enabled)
+    setPending(false)
+    if (!data) {
+      setFailed(true)
+      return
+    }
+    setState((current) => ({ settings: data.settings, bound_accounts: current?.bound_accounts ?? 0 }))
+    if (!data.settings.enabled) setRevoked(data.families_revoked)
+  }
+  return (
+    <section data-testid="app-service-app-login">
+      <SectionTitle icon={KeyRound}>{t('app22.appLogin.title')}</SectionTitle>
+      <div className="rounded-[18px] border border-[var(--cp-border)] bg-[var(--cp-surface)] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span
+            className="text-xs font-semibold"
+            style={{ color: enabled ? 'var(--cp-success)' : 'var(--cp-muted)' }}
+            data-testid="app-service-app-login-state"
+          >
+            {t(enabled ? 'app22.appLogin.on' : 'app22.appLogin.off')}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            aria-label={t('app22.appLogin.title')}
+            disabled={pending || !state}
+            onClick={() => void toggle()}
+            className="relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors disabled:opacity-40"
+            style={{ background: enabled ? 'var(--cp-accent)' : 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+            data-testid="app-service-app-login-toggle"
+          >
+            <span
+              className="absolute size-5 rounded-full transition-transform"
+              style={{ background: 'var(--cp-surface)', transform: enabled ? 'translateX(24px)' : 'translateX(3px)', boxShadow: 'var(--cp-panel-shadow)' }}
+            />
+          </button>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-[var(--cp-muted)]">{t('app22.appLogin.hint')}</p>
+        {state && (
+          <p className="mt-2 text-xs text-[var(--cp-muted)]">
+            {t('app22.appLogin.boundAccounts', undefined, { count: state.bound_accounts })}
+            {revoked !== null ? ` · ${t('app22.appLogin.revoked', undefined, { count: revoked })}` : ''}
+          </p>
+        )}
+        {failed && (
+          <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>
+            {t('app22.appLogin.failed')}
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function SettingsEditor({ service }: { service: AppServiceItem }) {
   const { t } = useI18n()
   return (
@@ -157,6 +240,8 @@ export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [logsOpen, setLogsOpen] = useState(false)
   const service = store.getById(serviceId)
+  const currentUser = useCurrentUser()
+  const ownsInstance = !!service?.app_instance_id && !!service.owner_user_id && service.owner_user_id === currentUser?.userId
 
   if (!service) {
     return (
@@ -332,6 +417,8 @@ export function DetailPage({ serviceId, onNavigate }: DetailPageProps) {
           </div>
         </section>
       )}
+
+      {ownsInstance && service.app_instance_id && <AppLoginSwitch appInstanceId={service.app_instance_id} />}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,0.85fr)]">
         <section>

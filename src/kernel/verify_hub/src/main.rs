@@ -1161,9 +1161,12 @@ impl VerifyHubServer {
             SessionPrincipalKind::User => {
                 let user_settings = self.active_account(&session.subject).await?;
                 claims = claims.narrowed(&SessionCeiling::for_user_type(user_settings.user_type));
-                // An App-signed-in session targets the App that vouched for the account;
+                // An App-signed-in session targeting the App that vouched for the account:
                 // its availability is the App login source check below, not the policy.
-                if !matches!(family.source, Some(SessionSource::AppLogin { .. })) {
+                // The same App's customer link targets the Zone root and keeps the policy.
+                let vouched_by_app = matches!(family.source, Some(SessionSource::AppLogin { .. }))
+                    && matches!(session.target, AuthTarget::App { .. });
+                if !vouched_by_app {
                     self.resolve_user_auth_target(&session.subject, &session.target)
                         .await?;
                 }
@@ -1267,16 +1270,21 @@ impl VerifyHubServer {
 }
 
 /// Login decision for an exclusive invite link (contract §5.3), in order: invite missing or
-/// revoked, account not Active (or not Limited), password already set, then the credential.
+/// revoked, credential of another kind (a code presented as a link or the reverse), account
+/// not Active (or not Limited), password already set, then the credential.
 fn exclusive_invite_decision<'a>(
     invite: Option<&'a ExclusiveInvite>,
     account: Option<&'a UserSettings>,
     secret_digest: &str,
+    kind: InviteCredentialKind,
     now: u64,
 ) -> std::result::Result<(&'a ExclusiveInvite, &'a UserSettings), AccessDenial> {
     let Some(invite) = invite.filter(|invite| invite.state == InviteState::Active) else {
         return Err(InviteLoginRefusal::Revoked.denial());
     };
+    if invite.credential.kind != kind {
+        return Err(AccessDenial::new(DenyReason::EntryUnavailable).with_detail("credential_kind"));
+    }
     let Some(account) =
         account.filter(|account| account.user_id == invite.user_id && user_is_active(account))
     else {
@@ -1854,6 +1862,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             invite.as_ref(),
             account.as_ref(),
             &invite_secret_digest(&request.secret),
+            InviteCredentialKind::Link,
             now,
         ) {
             Ok(granted) => granted,
@@ -1865,6 +1874,34 @@ impl VerifyHubApiHandler for VerifyHubServer {
                 return Ok(ExclusiveInviteLoginResult::Denied { denial });
             }
         };
+        // A link an App issued (EXT-11) stays tied to that App: switch, runtime and
+        // revocation by instance apply to the family like to the App's code sessions.
+        let source = match &invite.issuer {
+            InviteIssuer::App { app_instance_id } => {
+                let instance = app_instance_id.parse::<AppInstanceId>().map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "invite {} app instance: {error}",
+                        invite.invite_id
+                    ))
+                })?;
+                if let Err(denial) = self.state.zone.app_login_available(&instance).await? {
+                    info!(
+                        "exclusive invite {} of app {} refused: {:?}",
+                        invite.invite_id, app_instance_id, denial.detail
+                    );
+                    return Ok(ExclusiveInviteLoginResult::Denied { denial });
+                }
+                SessionSource::AppLogin {
+                    app_instance_id: app_instance_id.clone(),
+                    invite_id: invite.invite_id.clone(),
+                    version: invite.credential.version,
+                }
+            }
+            InviteIssuer::User { .. } => SessionSource::ExclusiveInvite {
+                invite_id: invite.invite_id.clone(),
+                version: invite.credential.version,
+            },
+        };
 
         let session = SessionSubject {
             subject: account.user_id.clone(),
@@ -1873,16 +1910,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             session_id: rand::thread_rng().gen(),
             claims: FamilyClaims::account(AuthMethod::ExclusiveInvite, UserType::Limited),
         };
-        let token_pair = self
-            .issue_family(
-                session,
-                Some(SessionSource::ExclusiveInvite {
-                    invite_id: invite.invite_id.clone(),
-                    version: invite.credential.version,
-                }),
-                None,
-            )
-            .await?;
+        let token_pair = self.issue_family(session, Some(source), None).await?;
         info!(
             "exclusive invite {} v{} signed in {}",
             invite.invite_id, invite.credential.version, account.user_id
@@ -1940,6 +1968,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             invite.as_ref(),
             account.as_ref(),
             &invite_secret_digest(secret),
+            InviteCredentialKind::Code,
             now,
         ) {
             Ok(granted) => granted,
@@ -2808,6 +2837,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 issued_at,
                 expires_at: issued_at + EXCLUSIVE_INVITE_TTL_SECS,
                 state: InviteCredentialState::Active,
+                kind: InviteCredentialKind::Link,
             },
             resend: None,
             created_at: issued_at,
@@ -3842,7 +3872,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         };
         let digest = invite_secret_digest("s3cret");
         let decide = |invite: Option<&ExclusiveInvite>, account: Option<&UserSettings>| {
-            exclusive_invite_decision(invite, account, &digest, now)
+            exclusive_invite_decision(invite, account, &digest, InviteCredentialKind::Link, now)
                 .map(|_| ())
                 .map_err(|denial| (denial.reason, denial.detail.unwrap_or_default()))
         };
@@ -4064,6 +4094,16 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         };
         record.return_path = "/".to_string();
         record.credential.expires_at = now + APP_LOGIN_CODE_TTL_SECS;
+        record.credential.kind = InviteCredentialKind::Code;
+        record
+    }
+
+    /// EXT-11: the same App record as a 48-hour customer link on the Zone root.
+    fn app_link_record(invite_id: &str, user_id: &str, secret: &str, app: &str, now: u64) -> ExclusiveInvite {
+        let mut record = app_code_record(invite_id, user_id, secret, app, now);
+        record.credential.expires_at = now + EXCLUSIVE_INVITE_TTL_SECS;
+        record.credential.kind = InviteCredentialKind::Link;
+        record.return_path = "/messagehub/guest?group=did%3Abns%3Ag&session=t".to_string();
         record
     }
 
@@ -4086,6 +4126,95 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     }
 
     #[tokio::test]
+    async fn app_issued_links_sign_in_on_the_zone_root_and_follow_the_app_switch() {
+        setup_test_environment().await;
+        let (hub, zone) = test_hub();
+        let caller = cp_caller().await;
+        let now = buckyos_get_unix_timestamp();
+        let crm = "crm@bob";
+        let customer = unique_user("crm-");
+        zone.add_user(&customer, UserType::Limited, None);
+        zone.set_app_login(crm, true);
+        zone.put_invite(app_link_record("ei-link", &customer, "l1nk", crm, now));
+        zone.put_invite(app_code_record("ei-code", &customer, "c0de", crm, now));
+
+        // A code is not a link and a link is not a code.
+        assert_eq!(
+            invite_denial(invite_login(&hub, &caller, "ei-code", "c0de").await),
+            (DenyReason::EntryUnavailable, Some("credential_kind".into()))
+        );
+        assert_eq!(
+            invite_denial(app_login(&hub, &caller, &app_login_code("ei-link", "l1nk"), "n1", app_target(crm)).await),
+            (DenyReason::EntryUnavailable, Some("credential_kind".into()))
+        );
+
+        // The link signs the customer in like an admin-issued invite, bound to the App.
+        let pair = issued_pair(invite_login(&hub, &caller, "ei-link", "l1nk").await);
+        let session = decoded(&pair.session_token);
+        assert_eq!(token_auth_method(&session), Some(AuthMethod::ExclusiveInvite));
+        assert_eq!(
+            ceiling_of(&pair.session_token),
+            SessionCeiling::for_user_type(UserType::Limited)
+        );
+        let claims = validate_verify_hub_token_claims(&session, TokenUse::Session).unwrap();
+        assert_eq!(claims.target, system_target("control-panel"));
+        let family = hub
+            .families()
+            .get(&session_key_of(&pair.refresh_token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            family.source,
+            Some(SessionSource::AppLogin {
+                app_instance_id: crm.into(),
+                invite_id: "ei-link".into(),
+                version: 1
+            })
+        );
+        // Unlike a code, the link stays usable: a second device signs in too.
+        let other = issued_pair(invite_login(&hub, &caller, "ei-link", "l1nk").await);
+        let pair = hub.handle_refresh_token(&pair.refresh_token).await.unwrap();
+
+        // Revoking by App instance ends the link families as well.
+        assert_eq!(
+            hub.handle_revoke_families(
+                Some(&caller),
+                RevokeFamiliesRequest {
+                    subject: customer.clone(),
+                    source_app_instance_id: Some(crm.into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap(),
+            RevokeFamiliesResult { revoked: 2 }
+        );
+        assert!(hub.handle_refresh_token(&pair.refresh_token).await.is_err());
+        assert!(hub.handle_refresh_token(&other.refresh_token).await.is_err());
+
+        // The owner switches App login off: no new sign-in, and a live family is refused on refresh.
+        let pair = issued_pair(invite_login(&hub, &caller, "ei-link", "l1nk").await);
+        zone.set_app_login(crm, false);
+        assert_eq!(
+            invite_denial(invite_login(&hub, &caller, "ei-link", "l1nk").await),
+            (DenyReason::SourceRevoked, Some("app_login_disabled".into()))
+        );
+        let error = hub.handle_refresh_token(&pair.refresh_token).await.unwrap_err();
+        assert_eq!(
+            denial_reason(&error),
+            Some((DenyReason::SourceRevoked, Some("app_login_disabled".into())))
+        );
+        zone.set_app_login(crm, true);
+
+        // Once the account sets a password the link asks for it, like any invite.
+        zone.update_user(&customer, |user| user.password_state = PasswordState::Set);
+        assert_eq!(
+            invite_denial(invite_login(&hub, &caller, "ei-link", "l1nk").await),
+            (DenyReason::CredentialState, Some("password_required".into()))
+        );
+    }
+
+    #[tokio::test]
     async fn app_access_token_login_binds_the_issuing_app_and_consumes_the_code_once() {
         setup_test_environment().await;
         let (hub, zone) = test_hub();
@@ -4105,11 +4234,11 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
                 (DenyReason::EntryUnavailable, Some("target_mismatch".into()))
             );
         }
-        // A user-issued invite never opens an App target.
+        // A user-issued invite is a link, never a code for an App target.
         zone.put_invite(invite_record("ei-user", &customer, "s3cret", now));
         assert_eq!(
             invite_denial(app_login(&hub, &caller, &app_login_code("ei-user", "s3cret"), "n1", app_target(crm)).await),
-            (DenyReason::EntryUnavailable, Some("target_mismatch".into()))
+            (DenyReason::EntryUnavailable, Some("credential_kind".into()))
         );
         assert_eq!(
             invite_denial(app_login(&hub, &caller, "no-dot", "n1", app_target(crm)).await),

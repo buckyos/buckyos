@@ -38,6 +38,22 @@ POST /sdk/appservice/selftest/xllm
 
 模型请求超时为 60 秒，任务超时为 90 秒，后台在 120 秒时强制结束未退出的子进程。`deno task start` 已包含运行 bash 和写入临时目录所需权限。
 
+## 客服群与客户链接（Self-host Group 扩展官方例子）
+
+对应 [应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) §11（EXT-10 / EXT-11）：一个真正装在 Zone 里的 App 用“L1 配置 + L2 面板 + 客户链接”服务外部客户。页面上的 `support_group` 卡片有三个按钮，源码在 `web/src/support_group.ts`（页面）与 `support_group.ts`（后台）。
+
+| 步骤 | 谁的身份 | 做了什么 |
+| --- | --- | --- |
+| 创建客服群 | 页面上登录用户在本 App 子域的会话 | `user.list` 取两位成员的 DID → msg-center `group.create`：模板 `support`（`allow_guests`、`post=all_participants`）、具名 Session `support`、群级 `display.announcement`，并把本 App 的 `GET /support/panel` 声明为面板 `tickets`（D-2：面板 host 必须是群主 Zone 的 App 子域） |
+| 生成客户链接 | 页面把自己的会话以 `Authorization: Bearer` 交给后台；后台先问 CP `auth.current_identity` 确认是本 App 实例的安装账号，再用 **App 服务会话**调 `user.app_login.issue {kind:"link", resource:{group_session}, return_path:"/messagehub/guest?group=&session="}` | 得到 `https://<zone>/sso/invite/<id>#s=<secret>`，有效 48 小时；CP 同时以 App 身份预置该账号的 Session 邀请。同一外部标识再次生成复用同一 Limited 账号 |
+| 清理 | 页面用户会话 | `group.delete`。客户账号与链接记录保留，链接到期自动失效 |
+
+客户点链接：未设密码时直接以自己的受限账号进入 `/messagehub/guest`，顶部出现非阻塞的“设置密码”提示（不点即跳过），点“加入”后聊天，侧栏显示“客服工单”面板。设置密码后再点同一链接会要求先输密码，密码登录后回到同一会话。面板内容来自后台 `GET /sdk/appservice/support/summary`（App 服务会话读 `group.list_messages`，只给条数、参与者数和时间，不给正文）。
+
+前置：App 实例 owner 在 App Service 的应用详情页打开“本应用为外部客户代登录”开关（`apps.app_login.set`），成员账号（缺省 alice、bob）存在。限制：只有 App 实例的安装账号能生成链接；客户是 Session Only Member，不进群成员表；面板摘要接口对持有群 DID 的任何人可读（只有计数）；`/support/panel` 由 `www` 端点的 `allow_guest: true` 放行，所以 iframe 内无 App 会话也能加载。
+
+验收脚本：后端 `test/test_sys_test/support_group_dv.ts`（见文件头）；浏览器 `src/frame/desktop/tests/dv/support-group-link.spec.ts`。
+
 ## 构建检查
 
 ```bash

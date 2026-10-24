@@ -13,7 +13,7 @@
 | L1 配置型扩展 | 已实现（含 `display`） | 原子创建群、初始 Session 和邀请；配置成员策略、能力、Session 模板、消息规则、面板声明和展示配置；初始化程序随后退出 | 完整配置编辑 UI |
 | L2 嵌入式应用侧面板 | 已实现（§4） | 在 `extensions.panels` 声明 https 入口，Message Hub 在群 / Session 详情旁以 iframe 加载，访客页同样显示 | `postMessage` 通道；跨来源面板的用户接受 UX（v1 直接拒绝） |
 | L3 Hook / Process Chain | HTTP Hook 已实现（HMAC 签名出站），通用处理链待实现 | 在 `join`、`post`、`read` 上调用应用 HTTP 服务，拒绝操作或按配置提供动态发言许可；Message Hub 展示绑定并按 `hook_dependent` 放开输入框 | 通用 Process Chain 接入、其他 Hook 点、返回消息修改或持久化权限变更指令 |
-| L4A 自定义 UI | 已实现（§6，含外部客户代登录） | 自己实现业务界面，调用 `group.*`、`msg.*`；以 App 身份为外部客户签发一次性登录码；按需复制 Message Hub 组件和数据层 | 独立发布的稳定聊天组件 SDK；跨 Zone 应用身份的标准证明；External（DID 登录）进 App |
+| L4A 自定义 UI | 已实现（§6，含外部客户代登录） | 自己实现业务界面，调用 `group.*`、`msg.*`；以 App 身份为外部客户签发一次性登录码或 48 小时客户链接；按需复制 Message Hub 组件和数据层 | 独立发布的稳定聊天组件 SDK；跨 Zone 应用身份的标准证明；External（DID 登录）进 App |
 | L4B 独立协议实现 | HTTP 协议基础已实现，完整互操作待验证 | 按 v2 协议实现服务或客户端，在显式路由与可验证凭据下对接 | 自动 endpoint 发现、自动建立 Joined Group 绑定、凭据续期，以及不同独立实现之间的联调 |
 
 配置生成器、业务页面和 Hook 服务可以分别部署。只配置群规则的程序无需常驻；绑定 Hook 后，对应操作会依赖业务服务的可用性。
@@ -30,7 +30,7 @@
 
 Group 消息保持 `from = 实际发送主体`、`to = [group_did]`、`kind = "group_msg"`。具名会话通过 `to_session` 指定原始 Session ID；默认会话省略该字段。`thread.topic` 不能代替路由字段。
 
-应用需先完成自身的运行时初始化与登录，取得服务认可的身份，参见 [SSO 接入](SSO.md)。建群另外需要 Zone RBAC 的 `obj://msg-center/group` / `create` 权限；现有默认策略授予 `users` 和 `admin`。群内操作再由成员资格、角色能力、Session 参与关系及客户端限制判定。
+应用需先完成自身的运行时初始化与登录，取得服务认可的身份，参见 [SSO 接入](SSO.md)。建群另外需要 Zone RBAC 的 `obj://msg-center/group` / `create` 权限；现有默认策略授予 `users` 和 `admin`，并在 App 侧对 `app` 组放行（2026-10-24，EXT-10：enforce 是用户侧与 App 侧的合取，App 子域页面上的用户会话凭此建群；App 的 `permissions.scope_path` 目前不会翻译成 msg-center 策略）。群内操作再由成员资格、角色能力、Session 参与关系及客户端限制判定。
 
 以下 TypeScript 示例沿用 Message Hub 的 Web SDK 调用方式。前提是 `buckyos` 已完成当前应用的初始化和登录；示例中的域名、DID 和应用 ID 要替换为实际部署值。
 
@@ -404,7 +404,7 @@ async function postAnnouncement(senderDid: string, text: string) {
 
 ### 6.4 让外部客户进来：两条路径
 
-外部客户（没有本 Zone 普通账号的人）有两条进入业务群 Session 的路径，都以 **Limited 账号** 为主体（混合 SSO 契约 §2、§5）：
+外部客户（没有本 Zone 普通账号的人）有三条进入业务群 Session 的路径，都以 **Limited 账号** 为主体（混合 SSO 契约 §2、§5）：
 
 1. **Message Hub 访客页**（无自定义 UI 时的默认入口）：管理员在 CP 以 `user.exclusive_invite.create` 为客户建号并签发专属邀请链接，客户打开 `/sso/invite/<id>#s=<secret>` 后进入 `/messagehub/guest?group=&session=`，只看到自己所在的 Session，也能看到该 Session 的面板与 `display`。或者开放群的 `membership.guest_entry.auth_methods`，由客户自助注册 / 密码 / DID 登录后提交咨询。
 2. **App 代登录 + 自定义 UI**（EXT-09，D-5 / D-7）：App 自己验证客户（手机号、CRM 账号……），用 **App 的服务身份**向 CP 领取一次性登录码，客户在 **App 子域**页面兑换成指向该 App 实例的受限会话，再以本人 Limited 身份调 `group.*`。流程：
@@ -435,7 +435,22 @@ await completeAppAccessTokenLogin({ code, nonce: sessionStorage.nonce ??= crypto
 - **msg-center 侧**无新分支：该账号以 Limited 进 `group.*`，只读写被邀请的 Session；新账号没有个人投递记录。
 - **不能做的**：App service token 本身不能换成客户会话；External（DID 登录）仍不能 delegate 进 App；Message Hub 不提供自己的兑换中心。
 
-验收矩阵见 TODO §7；样例应用见 [group_ext_sample](../../test/test_msg_center/group_ext_sample/)。
+3. **App 签发 48 小时客户链接 + Message Hub 访客页**（EXT-11，D-8）：App 没有自定义 UI、也没有 CP 管理员会话时，用同一个 `user.app_login.issue` 加 `kind: "link"`，拿到的是根域专属邀请链接 `https://<zone>/sso/invite/<id>#s=<secret>`，语义与管理员在 CP 签的专属邀请完全一样：48 小时内可反复进入，不设密码就一直用链接，访客页顶部是非阻塞的“设置密码”提示；设了密码后同一链接要求先输密码；`return_path` 写根域路径（通常 `/messagehub/guest?group=&session=`）。开关、停用、卸载仍按 `app_login` 管这些会话。
+
+```ts
+import { issueAppCustomerLink } from 'buckyos'
+const issued = await issueAppCustomerLink(client, {
+  external_account_id: 'crm:42',
+  show_name: 'Alice',
+  resource: { kind: 'group_session', group_did: groupDid, session_id: 'support', title: '客服工单' },
+  return_path: `/messagehub/guest?${new URLSearchParams({ group: groupDid, session: 'support' })}`,
+})
+// issued = { user_id, link: 'https://<zone>/sso/invite/ei-…#s=…', expires_at: now + 48h, new_account, invite }
+```
+
+**官方例子**：内置 App `buckyos-systest` 的 `support_group` 卡片（[src/apps/sys_test](../../src/apps/sys_test/README.md) “客服群与客户链接”）：点按钮建客服群（alice、bob + 客户）、把 App 自己的页面声明为面板、生成客户链接；后端 DV `test/test_sys_test/support_group_dv.ts`，浏览器 DV `src/frame/desktop/tests/dv/support-group-link.spec.ts`。
+
+验收矩阵见 TODO §7 / §11.5；代登录 code、Hook 验签的最小样例见 [group_ext_sample](../../test/test_msg_center/group_ext_sample/)。
 
 ## 7. 跨 Zone 与 L4B：当前对接范围
 

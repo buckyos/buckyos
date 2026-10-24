@@ -1,6 +1,6 @@
 # Self-host Group 应用扩展实施 TODO
 
-日期：2026-10-24。状态：**D-1～D-6 已于同日由用户拍板（§1、§9）；D-5 选备选，SSO-10 `login_by_app_access_token` 移入本批（§6 EXT-09）。D-7 已于同日由用户确认按推荐方案（兑换入口放 CP，见 §10 偏差 1）。阶段 A～D 的代码与文档已于同日实施，单测 / Playwright mock 通过；同日部署到本机单 Zone（test.buckyos.io）完成 DV，见 §10。** 本文把 [应用扩展架构设计](<../doc/message_hub/BuckyOS Self-host Group的应用扩展架构设计.md>)（下称架构稿，2026-09-30 定稿后未再修改）对照当前源码，列出已落地部分、决策和拆出的任务。前置依赖混合 SSO 已于 2026-10-22 实施并通过 DV（[混合 SSO TODO](hybrid-sso-implementation-todo.md) §11）。
+日期：2026-10-24。状态：**D-1～D-6 已于同日由用户拍板（§1、§9）；§11 官方例子（sys-test 客服群用例）同日新增，D-8 同日拍板按推荐，EXT-10 / EXT-11 已实施（见 §11.6）。D-5 选备选，SSO-10 `login_by_app_access_token` 移入本批（§6 EXT-09）。D-7 已于同日由用户确认按推荐方案（兑换入口放 CP，见 §10 偏差 1）。阶段 A～D 的代码与文档已于同日实施，单测 / Playwright mock 通过；同日部署到本机单 Zone（test.buckyos.io）完成 DV，见 §10。** 本文把 [应用扩展架构设计](<../doc/message_hub/BuckyOS Self-host Group的应用扩展架构设计.md>)（下称架构稿，2026-09-30 定稿后未再修改）对照当前源码，列出已落地部分、决策和拆出的任务。前置依赖混合 SSO 已于 2026-10-22 实施并通过 DV（[混合 SSO TODO](hybrid-sso-implementation-todo.md) §11）。
 
 目标：补齐架构稿五层中唯一未动的 **L2 嵌入式应用侧面板**，收尾 L1 展示配置与 L3 Hook 的 UI 配套和凭据模型，并让 **L4A 自定义 UI 能服务外部客户**（App 代登录）；使“L1 + L2 + L3”和“L1 + L4A + L3”两种组合在真实 Zone 可用。L4B 只修正文档状态。
 
@@ -15,7 +15,7 @@
 
 源码核对基线：2026-10-24 工作区（含混合 SSO 未提交改动）。本轮只做静态核对，未运行测试、未在 Zone 上复现任何问题。
 
-阅读顺序：§0 现状，**§1 决策（D-1～D-6 已定，D-7 待拍板）**，§2 交付顺序，§3～§6 任务，§7 验收，§8 文档联动，§9 决策回写记录。
+阅读顺序：§0 现状，**§1 决策（D-1～D-7 已定）**，§2 交付顺序，§3～§6 任务，§7 验收，§8 文档联动，§9 决策回写记录，§10 实施记录，**§11 官方例子（sys-test 客服群用例，D-8 已定，§11.6 实施记录）**。
 
 ## 0. 现状：架构稿五层对照源码
 
@@ -180,6 +180,8 @@ D-7 之下由实现者给出可评审结果、不需用户再拍板的工程契�
 
 据此改动：D-2 的判定基准明确为群主 Zone，并把 Agent 会话侧边页记为范围外的相关能力（§2）；D-5 改为选备选，SSO-10 从“不在本批”移到阶段 D，新增 EXT-09 与 D-7；§7 验收与 §8 文档联动随之增加代登录条目；EXT-08 样例应用增加代登录后端。
 
+同日稍后：D-7 用户确认按推荐（§10 偏差 1）。§11 官方例子提出后，用户对 D-8 批注“按推荐，开始实施 EXT-11 和 EXT-10”，实施记录见 §11.6。
+
 ## 10. 实施记录（2026-10-24）
 
 **范围与结论。** 阶段 A～D 的代码与 §8 的文档回写已完成，均未提交；Rust 单测、websdk jest、Message Hub Playwright（mock）通过。用户于同日确认 D-7 后，重建 msg-center / control-panel / verify-hub / Desktop，`start.py` 重启本机单 Zone（test.buckyos.io，保留数据）并完成 DV：
@@ -235,3 +237,115 @@ D-7 之下由实现者给出可评审结果、不需用户再拍板的工程契�
 - `panels` 的 `scope.sessions` 只能引用具名 Session；默认 Session 靠 `scope=group`。
 - `network_directory.rs` 对自托管 Zone 的解析缺陷（§0 发现 ⑥）未改：Message Hub 侧已按 `owner_canonical_zone` 规则实现 host 解析（`zoneHostOfDid`），msg-center 侧 `apply_config` 用事务内 `GroupState.host` 不经过它。
 - `allowed_clients` 仍不能区分系统 SPA（D-4 已知限制）。
+
+## 11. 官方例子：sys-test 客服群用例（2026-10-24 新增）
+
+用户要求（原文）：“在 sys-test 中增加一个用例，1）点击按钮创建群聊，包含 alice,bob + 客户，并为该群聊创建一个自定义页面；2）产生一个链接发给客户，客户点击该链接后，能以客户的身份加入群聊。客户如果不修改密码，链接 48 小时有效。因此客户点链接进来的时候会提示他‘设置密码’还是跳过，直接使用。修改密码后点击链接后，需要先输入密码才能进入聊天。”
+
+这是本 TODO 交付能力的**官方例子**：一个真正安装在 Zone 里的 App（`buckyos-systest`，[src/apps/sys_test](../src/apps/sys_test/)）用“L1 配置 + L2 面板 + 客户链接”服务外部客户。它取代 `group_ext_sample` 里只能用脚本跑的部分成为开发者照抄的范本；`group_ext_sample` 保留 Hook（L3）与 App 代登录 code（L4A）两件 sys-test 不覆盖的事。
+
+### 11.1 用例流程（以用户视角）
+
+前置：Zone 已装 `buckyos-systest`，点按钮的人是该 App 实例的 owner（devtest），alice、bob 是本 Zone 用户。sys_test 页面新增一组 **`support_group`（“客服群与客户链接”）**，三个按钮：**创建客服群**、**生成客户链接**、**清理**。
+
+1. **创建客服群**（页面，用户会话）。页面以当前用户在 App 子域的会话调 msg-center `group.create`：群名“客服群（sys-test）”，邀请 alice、bob（同 Zone 自动接受）；配置复用 `group_ext_sample/common.ts` 的 `supportGroupConfig` 骨架去掉 Hook：`required_features=[sessions, session_guests, panels]`，`default_session` 用 `support` 模板（`allow_guests=true`、`post=all_participants`、`rules.panels=["tickets"]`），`display.announcement`，`extensions.panels=[{id:"tickets", title:"工单", entry_url:"https://buckyos-systest.<zone>/support/panel", scope:"group"}]`。**“自定义页面”就是这块面板**：由 sys_test 后台托管 `GET /support/panel`（照 `group_ext_sample/panel/index.html` 写，读 `group_did` / `session_id` / `session` / `locale` 四个 query），内容从 sys_test 后台 `GET /sdk/appservice/support/summary?group_did=&session_id=` 取：后台以 App 服务会话（按 §10 偏差 8 以 owner DID 行事）调 `group.list_messages`，只返回条数、最近一条时间与参与者数，不返回正文。页面展示群 DID、成员状态与 Message Hub 深链。
+2. **生成客户链接**（页面 → 后台，App 服务会话）。页面输入客户称呼与外部标识（如 `crm:1001`），后台调 CP 签发一条 **48 小时专属邀请链接**（机制见 §11.3 D-8），`resource={kind:"group_session", group_did, session_id:<默认 Session>, title:"客服工单"}`，`return_path=/messagehub/guest?group=<did>&session=<sid>`；CP 以 App 身份 `group.invite_session_guest` 预置 Session 邀请（§6 EXT-09 已有路径）。链接只在本次响应出现一次，页面用现有 `OneTimeLink` 的方式展示并可复制；同一外部标识再次生成复用同一 Limited 账号（绑定表）。至此“alice、bob + 客户”齐了：alice、bob 是群成员，客户是该 Session 的 Session Only Member（v2 §4、SOM），不进群成员表，这是设计使然。
+3. **客户点链接（未设密码）**。`https://<zone>/sso/invite/<id>#s=<secret>` → Desktop 公开路由 `InvitePage` → `auth.invite.login` → 受限会话（target control-panel，`auth_method=exclusive_invite`）→ 回 `return_path` 的访客页 `/messagehub/guest`：顶部出现现有的非阻塞 `FirstPasswordPrompt`（“你的账号还没有密码，设置一个…” + **设置密码** 按钮；不点就是“跳过，直接使用”，不弹阻塞对话框）；页面进入 `invited` 态，点“加入”接受 Session 邀请后聊天，侧栏显示 `display` 与“工单”面板。48 小时内再点链接都能直接进；过期后 InvitePage 显示 `expired`。
+4. **客户设置密码后再点链接**。`auth.invite.set_password` 把记录置 `consumed_by_password`，其它免密 family 被撤销；再点链接 → 判定表 `password_required` → InvitePage 显示“用密码登录”按钮 → `/login?redirect_url=<return_path>` → 密码登录（Limited 普通会话）→ 回到同一访客页继续聊天。alice、bob 在 Message Hub 群详情里看到同一面板与客户的发言。
+5. **清理**：删群、撤销该客户的专属邀请记录（账号保留，重复运行复用）。
+
+### 11.2 现状对照
+
+| 流程 | 现状 | 缺口 |
+| --- | --- | --- |
+| 建群 + 面板声明 + Session 规则（步骤 1） | msg-center `group.create` / `PanelDecl` / `display` 已实现（EXT-01 / 04）；App 子域用户会话可直接调 `/kapi/msg-center`（§0 发现 1）；`buckyos-systest` 的 `www` 端点 `allow_guest: true`，面板页在 iframe 内无会话也能加载 | sys_test 无此页面与后台路由；面板内容只能由后台以 App 服务身份取（面板页上没有 viewer 身份，也拿不到根域 cookie） |
+| 面板在 Message Hub 与访客页显示（步骤 3、4） | EXT-02 / 03 已实现，访客页同样显示；DV 已用 `buckyos-systest` 子域充当面板来源（§10） | 无 |
+| 48 小时链接、设密码提示、设密后要密码（步骤 3、4） | 专属邀请全套已实现：`EXCLUSIVE_INVITE_TTL_SECS = 48h`、`InvitePage`、`FirstPasswordPrompt`、`password_required` → “用密码登录”、`consumed_by_password` + `revoke_families`（契约 §5.2～5.4） | **签发方**：`user.exclusive_invite.create` 要求 `require_control_panel_admin`（CP target 的管理员用户会话）。sys_test 页面是 App target 的用户会话、后台是 App 服务会话，都不满足。App 现有的 `user.app_login.issue` 签的是 10 分钟一次性 code、兑换后 `consumed`、cookie 落 App 子域、不走 InvitePage，三条语义都不符 |
+| 预置 Session 邀请 | `user.app_login.issue` 带 `resource` 时 CP 以 App 身份调 `group.invite_session_guest`（§10 偏差 8） | 复用即可 |
+| 开关 | `apps.app_login.set` 要求 owner 的 CP 用户会话（`is_control_panel_session`） | Desktop 目前没有这个开关的 UI（grep 无消费方）；sys_test 页面在 App 子域也调不了。用例前置里要么由 DV 脚本以管理员会话打开，要么补 Users and Agents 的开关 UI（见 EXT-11） |
+| 重发 | `resend_decision` 对非 `InviteIssuer::User` 的记录返回 `not_applicable`；通知走 `to_user=issuer.user_id` | App 签发的链接过期后客户不能申请重发；例子里由 sys_test“重新生成链接”代替（同外部标识 → 同账号、新记录） |
+| 撤销 | `revoke_request_matches` 的 `source_app_instance_id` 只匹配 `SessionSource::AppLogin` | App 关闭开关 / 卸载时，经 App 签发链接登录的 `ExclusiveInvite` family 不会被一并撤销 |
+
+### 11.3 决策 D-8（已定，2026-10-24 用户“按推荐”）：App 如何签发 48 小时客户链接
+
+| 编号 | 问题 | 推荐 | 影响 |
+| --- | --- | --- | --- |
+| D-8 | sys_test 这类 App 没有 CP 管理员会话，谁来签 48 小时专属邀请链接 | **已定（按推荐）：`user.app_login.issue` 增加 `kind: "code" \| "link"`（缺省 `code`，现有行为不变）。`link`：有效期 `EXCLUSIVE_INVITE_TTL_SECS`（48h）、记录与 code 同结构（`issuer.kind="app"`、`channel.kind="app"`、绑定表、`resource`、限流、审计都复用），返回 `{user_id, link: "https://<zone>/sso/invite/<id>#s=<secret>", expires_at, new_account}`，不返回 code。客户走现有 `/sso/invite` 路径：CP `auth.invite.login` → verify-hub `login_by_exclusive_invite`（已核实不按签发方过滤，判定表原样适用，target 为 control-panel），设密码 / 过期 / 替换语义全部继承；兑换不置 `consumed`。开关、停用、卸载仍以 `app_login` 为准：`recheck_principal` 对 `issuer.kind="app"` 的 `ExclusiveInvite` family 也查开关与 App 运行态，`revoke_request_matches` 的 `source_app_instance_id` 对这类 family 比对记录的 `issuer.app_instance_id`（需要 family 来源带 `app_instance_id`，或 verify-hub 撤销时回读记录）。** | EXT-11；契约 §5.6 增加 `kind=link` 一行与判定差异；SDK 指南 §6 的 L4A 之外多一条“App 签发根域客户链接”路径 |
+| | | 备选 A：用例由管理员会话驱动（Deno 脚本登录 devtest 调 `user.exclusive_invite.create`），sys_test 页面只展示。不满足“点击按钮”，而且例子教的是“开发者得写脚本”，不是 App 能力 | |
+| | | 备选 B：sys_test 页面让用户再输一次管理员口令直接向 verify-hub 换 CP 会话。App 页面持有管理员口令，违反契约 §3.4 的 App 边界，不采用 | |
+| | | 备选 C：沿用 10 分钟 code（现状）。48 小时、设密码提示、设密后要密码三条都不成立 | |
+
+D-8 之下由实现者定、不需拍板：`link` 模式是否允许 `return_path` 为空（缺省到访客页）；同一外部标识 48 小时内重复签 `link` 是新记录还是 rotate（建议新记录，旧记录 `superseded`，与 CP 的 rotate 同义）；`auth.invite.request_resend` 对 App 记录保持 `not_applicable`，由 App 自己重签。
+
+### 11.4 任务
+
+#### EXT-11 / P0：App 签发 48 小时客户链接（按 D-8）
+
+- [x] CP `app_login.rs`：`user.app_login.issue` 增加 `kind`；`link` 用 `issue_credential_with_ttl(1, now, EXCLUSIVE_INVITE_TTL_SECS)`，响应复用 `exclusive_invite.rs` 的 `invite_link()` 拼链接；`auth.app_login.exchange` 对 `link` 记录拒绝（`entry_unavailable` + `target_mismatch`，code 与 link 不互换）；`auth.invite.describe` / `auth.invite.login` 对 App 记录照常。
+- [x] verify-hub：`recheck_principal` 对来源为 `ExclusiveInvite` 且记录 `issuer.kind="app"` 的 family 查开关与 App 运行态（复用 `app_login_available` / `check_app_runtime_session`）；`revoke_request_matches` 让 `source_app_instance_id` 命中这类 family。CP 关闭开关时的 `revoke_families` 路径不变。
+- [x] 单测：`link` 的 TTL 为 48h、不被 exchange 消费、设密码后 `password_required`、关开关后 refresh 拒绝；现有 code 用例不变。
+- [x] websdk `app_login.ts`：`issueAppLoginCode` 加 `kind` 参数（或新增 `issueAppCustomerLink`），返回类型区分 `code` / `link`。
+- [x] Users and Agents → Apps 增加“允许该 App 为外部客户签发登录”开关（调 `apps.app_login.get/set`），否则例子的前置只能靠脚本。（落在 App Service 应用详情页，见 §11.6）
+- [x] 契约 §5.6 与 SDK 指南 §6 回写。
+
+#### EXT-10 / P0：sys_test 用例 `support_group`
+
+- [x] `web/src/test_groups.ts` 新增分组 `support_group`（非 backendOnly，但三个动作是按钮而不是“全部运行”用例）：**创建客服群**（用户会话 `group.create`，群名、alice / bob 邀请、§11.1 配置；结果卡片显示群 DID、成员状态、Message Hub 深链）、**生成客户链接**（输入称呼 + 外部标识 → `POST /sdk/appservice/support/customer_link` → 展示一次性链接与 `expires_at`，并提示“客户未设密码前此链接 48 小时内可直接进入”）、**清理**（删群 + 撤销该群下由本 App 签发的记录）。alice、bob 用户名可改，缺省 `alice` / `bob`。
+- [x] `main.ts` 新增路由：`GET /support/panel`（面板页，静态 HTML，读四个 query；无 App 会话时不报错，只显示摘要）、`GET /sdk/appservice/support/summary`（App 服务会话 `group.list_messages` → 条数 / 最近时间 / 参与者数）、`POST /sdk/appservice/support/customer_link`（校验调用者是本页面的用户会话且为 App 实例 owner，再以 App 服务会话调 `user.app_login.issue {kind:"link", external_account_id, show_name, resource, return_path}`）、`POST /sdk/appservice/support/cleanup`。后台不记录链接、secret 与外部标识原文。
+- [x] `dapp_meta/app.json`：若 msg-center RBAC 拒绝 App 服务会话的 `group.list_messages`，补 `permissions`；面板页路径与 `www` 端点 `allow_guest: true` 保持。（实际缺口在用户会话建群，见 §11.6 偏差 3）
+- [x] README 增加“客服群官方例子”一节：流程、前置（装 App、owner 打开 `app_login` 开关、alice / bob 存在）、已知限制（客户是 Session Only Member 不是群成员；面板摘要接口对持有群 DID 的任何人可读，只给计数不给正文；sys_test 实例 owner 才能签链接）。
+- [x] 自动化：
+  - 后端 DV `test/test_msg_center/group_ext_sample/dv.ts` 增加第 6 节或新建 `test/test_sys_test/support_group_dv.ts`：以 devtest 会话调 sys_test 页面同样的 `group.create`；用 App 服务会话（取法见 §10）调 `user.app_login.issue {kind:"link"}`；断言 `expires_at - issued_at == 48h`；用链接 `auth.invite.login` 得受限会话、接受 Session 邀请、`list_sessions` 看到面板；`auth.invite.set_password` 后再 `auth.invite.login` 得 `credential_state/password_required`；`login_by_password` 后仍能 `group.list_messages`；关开关后 refresh 被拒。48 小时过期不等待，靠 TTL 单测。
+  - 浏览器 DV `src/frame/desktop/tests/dv/support-group-link.spec.ts`（`playwright.dv.config.ts`，`BUCKYOS_TEST_APP_HOST=buckyos-systest`）：devtest 在 sys_test 页面点两个按钮取到链接；新 context 打开链接 → 访客页出现 `sso-first-password`、点“加入”、发言、侧栏“工单”面板加载；点“设置密码”保存 → 新 context 再开链接 → 出现 `sso-invite-password-login` → 密码登录回到访客页；alice 的 context 在 Message Hub 看到客户发言与面板。
+- [x] 文档：架构稿 §12.2 / SDK 指南 §1 把 sys_test 用例登记为官方例子，`group_ext_sample/README.md` 说明分工。
+
+### 11.5 验收补充（并入 §7）
+
+| 场景 | 应验证结果 |
+| --- | --- |
+| App 签发 `kind=link` | 链接 48 小时内多次可用；兑换不消费；`auth.app_login.exchange` 拒绝 link 记录；App 关开关后已登录会话 ≤15 分钟失效 |
+| 客户未设密码 | 访客页顶部出现设置密码提示，可忽略继续聊天；面板与 `display` 可见；拿不到 `group_doc` |
+| 客户设密码后 | 原链接 → `password_required` → 密码登录 → 同一访客页；其它设备的免密 family 已撤销 |
+| 同一外部标识重复签发 | 同一 Limited 账号、新记录；旧链接 `link_replaced` 或自然过期 |
+| sys_test 非 owner 用户点“生成客户链接” | 后台拒绝（不以 owner 的 App 身份替别人的群签发） |
+
+### 11.6 实施记录（2026-10-24）
+
+**范围与结论。** EXT-11（机制）与 EXT-10（sys_test 用例）已实施，未提交；Rust 单测、websdk jest、Desktop Playwright（mock）通过；本机单 Zone（test.buckyos.io）重建 control-panel / verify-hub / msg-center / desktop / buckyos_systest 并 `start.py` 保留数据重启后，后端 DV `test/test_sys_test/support_group_dv.ts` 五步全过；浏览器 DV `src/frame/desktop/tests/dv/support-group-link.spec.ts` 在重建 msg-center（偏差 3 的 RBAC 放行）后**通过**：devtest 在 sys_test 页面点“创建客服群”“生成客户链接”；客户新 context 打开链接 → 访客页出现设置密码提示、点“加入”、侧栏“客服工单”面板（`src` 为 App 子域 `/support/panel`）就绪、发言；点“设置密码”保存后，第三个 context 再开链接 → “用密码登录”→ 登录页预填用户名 → 密码登录回到同一会话看到自己的留言；devtest 在 Message Hub 的 `客服工单` Session 看到客户留言。截图 `test-results/dv-support-group-{owner,guest,password,hub}.png`。
+
+**落点**
+
+| 部分 | 位置 |
+| --- | --- |
+| 共享 | `buckyos-api/src/hybrid_sso.rs`：`InviteCredentialKind { Link, Code }`（`InviteCredential.kind`，`#[serde(default)]`=link）；`SessionSource::AppLogin` 注释改为“App 签发的凭据（code 或 link）”；`rbac_config.rs` 默认策略加 `app` 组 `obj://msg-center/group create`、`group_inbox/* read`（见偏差 3） |
+| CP | `app_login.rs`：`IssueKind { Code, Link }`、`IssueParams.kind`、`issue_app_login` 按 kind 取 TTL 与 `credential.kind`、响应 `code` 或 `link`（`IssuedAppLogin::credential_field`，链接用 `exclusive_invite::invite_link` + `zone_root_origin`）、`auth.app_login.exchange` 对非 code 记录 `entry_unavailable/credential_kind`；`exclusive_invite.rs`：`issue_credential_with_ttl` 多一个 kind 参数，`invite_link` 改 `pub(crate)` |
+| verify-hub | `exclusive_invite_decision` 多一个期望 kind（排在撤销之后、账号状态之前，不符 `entry_unavailable/credential_kind`）；`login_by_exclusive_invite` 对 `issuer.kind=app` 的记录先查 `app_login_available`，family 来源用 `SessionSource::AppLogin`（因此 `revoke_request_matches` 的 `source_app_instance_id` 与 refresh 时的开关 / 运行态复核不用改）；`recheck_principal` 只在 target 为 App 实例时跳过 `resolve_user_auth_target`；新测试 `app_issued_links_sign_in_on_the_zone_root_and_follow_the_app_switch` |
+| websdk | `src/app_login.ts`：`issueAppCustomerLink`（`kind:"link"`，返回 `IssuedAppCustomerLink`）、`issueAppLoginCode` 显式发 `kind:"code"`；`tests/app_login.test.ts` |
+| Desktop | `api/sso.ts`：`fetchAppLoginState` / `setAppLoginEnabled`；`app-service/pages/DetailPage.tsx`：`AppLoginSwitch`（只有安装账号看到，`useCurrentUser` 比对 `owner_user_id`）；`api/control_panel_mock.ts` 增加 `apps.app_login.*`；`i18n/app-service.ts` `app22.appLogin.*`；`tests/e2e/pages/app-service.spec.ts` 新用例 |
+| sys_test | `support_group.ts`（后台：`GET /support/panel`、`GET /sdk/appservice/support/summary`、`POST /sdk/appservice/support/customer_link`，失败响应带 kRPC `code` / `data`）；`web/src/support_group.ts`（卡片与三个按钮）；`main.ts` 接路由并构造 `SupportContext`；`prepare.mjs` 复制新文件；`web/src/styles.css` 输入框样式；README |
+| DV | `test/test_sys_test/support_group_dv.ts`；`src/frame/desktop/tests/dv/support-group-link.spec.ts` |
+| 文档 | 契约 §5.6（`credential.kind`、`kind=link` 一段、续期一句）；SDK 指南 §1 表、§6.4 第三条路径与官方例子；架构稿 §12.2；`group_ext_sample/README.md` 分工；本文 §1 / §9 / §11 |
+
+**验证**
+
+- `cargo test -p verify_hub`（38 通过）、`cargo test -p buckyos-api --test hybrid_sso_fixtures`（fixture 加 `kind`）、`cargo test -p buckyos-api rbac_config`（28 通过）、`cargo test -p control_panel`（199 通过，仍只有既有的 `sso_identity::...carries_ceiling...` 失败，与本批无关）。
+- websdk `npx jest tests/app_login.test.ts`（4 通过）。
+- Desktop `pnpm check`；`npx playwright test tests/e2e/pages/app-service.spec.ts`（20 通过，含新用例）。
+- sys_test `deno check main.ts`、`tsc --noEmit`；`buckyos-build.py -s buckyos_systest` 通过。
+- 后端 DV（真实 Zone）：开关 → 建群（面板 = `https://buckyos-systest.test.buckyos.io/support/panel`）→ 后台签 48h 链接（无页面会话 401；`expires_at` 距今 48h±2 分钟；同外部标识复用账号）→ 链接登录两次得到不同会话、`auth_method=exclusive_invite` 受限、接受 Session 邀请、只见 1 个 Session 且带面板、发言、摘要接口计数但不含正文、`auth.app_login.exchange` 对链接 `credential_kind` 拒绝 → 设密码后链接 `password_required`、密码登录可进同一 Session、新签链接也不再登录 → 关开关后签发 `access_denied/zone_method_disabled/app_login_disabled`。
+
+**偏差 / 决定**
+
+1. **链接登录的 family 来源**：D-8 文字写“`ExclusiveInvite` family 也查开关”；实现改为 App 签发的链接登录直接用 `SessionSource::AppLogin{app_instance_id, invite_id, version}`，复用已有的 refresh 复核与按实例撤销，不加字段。claims 仍是 `auth_method=exclusive_invite`。
+2. **kind 判定位置**：`credential.kind` 不符的拒绝排在“记录不存在 / 撤销”之后、账号状态之前；verify-hub 既有测试里“用户签的邀请当 code 兑换”从 `target_mismatch` 改为 `credential_kind`。
+3. **RBAC（浏览器 DV 发现）**：App 子域上的用户会话（`appid=app:buckyos-systest…`）调 `group.create` 被 zone RBAC 拒绝——enforce 是 user 侧与 app 侧的合取，`app` 组此前没有 `obj://msg-center/group` 规则（App `permissions.scope_path` 也不会翻译成 msg-center 策略）。按“先能力后安全”在默认策略给 `app` 组加 `group create` 与 `group_inbox/* read`；没有改 `dapp_meta/app.json`。已知风险：任何 App 子域页面都能以用户身份建群（群内权限仍由 msg-center 判）。
+4. **sys_test 页面登录**：App 的 `www` 端点 `allow_guest: true`，直接打开页面是“未登录”，要点页面的 Login 走 SDK SSO 到根域登录页再回来；浏览器 DV 按此驱动。
+5. **开关 UI 位置**：任务写 Users and Agents，实际放在 App Service 的应用详情页（那里才有按实例的页面）。
+6. **清理**不撤销链接记录（App 没有可调的撤销方法），记录到期自然失效；README 已注。
+
+**坑**
+
+- sys_test 的 `pnpm update buckyos` 从 GitHub main 取 SDK，本地 websdk 改动不在其中，所以 sys_test 直接用 `getServiceRpcClient('control-panel').call('user.app_login.issue', {kind:'link'})`，不依赖 `issueAppCustomerLink`。
+- `start.py` 会从新构建的 pikg 重新部署内置 App 容器（挂载的 `.pkg` 哈希即新包的 `pkg_objid`），不必手工拷文件。
+- Playwright 的 `locator.isVisible({timeout})` 不等待；跨页跳转后要用 `waitFor({state:'visible'})`。
+- 后台把 kRPC 失败只转成文本会丢掉 `code` / `data`，DV 按文本判断违反“错误只按枚举判断”；改成原样带出。

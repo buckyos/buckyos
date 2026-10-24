@@ -548,7 +548,7 @@ L4B 的互操作依赖协议规范，不应以复用默认实现或等待全部 
 | Group Configuration | Schema、默认值、可配置行为、版本与迁移；哪些内容由 UI 暴露，哪些仅通过配置接口提供。 | 已由 v2 §3 回答；`extensions.panels` 与 `display` schema 随 TODO EXT-01 / EXT-04 落定 |
 | 面板嵌入协议 | HTML 入口、Group / Session 上下文传递、会话切换、加载生命周期、配置描述格式。 | 已实施（TODO D-1、EXT-02）：iframe + URL query，切换换 `src`，10 秒超时与 Error Boundary；`postMessage` 不在本批 |
 | 同源与跨来源策略 | 群的可信来源如何确定，OOD 与 origin 的绑定，用户接受策略的范围和撤销方式。 | 已实施（D-2）：群主 Zone 的 App 子域；跨来源 v1 直接拒绝 |
-| 应用身份与授权 | 面板及自定义 UI 如何以用户或应用主体访问 Message Center，如何限制指定业务路径。 | 已实施（D-4、D-5、EXT-09）：面板用自己 App 的会话；`allowed_clients` 以 `appid` 为准；外部客户经 App 代登录 |
+| 应用身份与授权 | 面板及自定义 UI 如何以用户或应用主体访问 Message Center，如何限制指定业务路径。 | 已实施（D-4、D-5、EXT-09、EXT-11）：面板用自己 App 的会话；`allowed_clients` 以 `appid` 为准；外部客户经 App 代登录（一次性 code 进 App 子域，或 48 小时链接进根域访客页）。官方例子：内置 App `buckyos-systest` 的客服群用例（TODO §11） |
 | Hook / Process Chain | 实际 Hook 点、执行顺序、返回语义、可操作范围、超时、重试、默认行为和版本边界。 | 三个 Hook 点与 HMAC 出站凭据已实施（v2 §7.3、TODO EXT-05）；通用 Process Chain 未做 |
 | 权限语义 | 原生权限与动态许可的优先级、持久化变更、不可覆盖的限制，以及服务故障时的处理。 | 已由 v2 §3.4 / §7.3 回答；`check_access` 的 `hook_dependent` 随 EXT-06 落定 |
 | 数据可靠性 | 多副本规模、主从关系、复制与切换、导入导出、完整备份的授权及恢复数据范围。 | 未做 |

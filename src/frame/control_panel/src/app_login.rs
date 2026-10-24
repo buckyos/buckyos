@@ -1,17 +1,19 @@
-//! App 代登录 (self-host-group-extension TODO EXT-09, D-7): an App signs its own
-//! external customers in. Its backend, with its App service identity, asks
-//! `user.app_login.issue` for a one-time code; Control Panel maps the external
-//! account to a Limited account (created on first sight, never a system group),
-//! writes an exclusive-invite record with `issuer.kind = "app"`, and the App's page
-//! exchanges the code through `auth.app_login.exchange` for a restricted session
-//! targeting that App instance. The owner switches it per App instance with
-//! `apps.app_login.set`; records live under `services/control_panel/app_login/`
-//! and `services/control_panel/app_identities/`.
+//! App 代登录 (self-host-group-extension TODO EXT-09, D-7; EXT-11, D-8): an App signs
+//! its own external customers in. Its backend, with its App service identity, asks
+//! `user.app_login.issue` for a credential; Control Panel maps the external account to
+//! a Limited account (created on first sight, never a system group) and writes an
+//! exclusive-invite record with `issuer.kind = "app"`. `kind: "code"` (default) is a
+//! ten-minute one-time code the App's page exchanges through `auth.app_login.exchange`
+//! for a restricted session targeting that App instance; `kind: "link"` is a 48-hour
+//! `/sso/invite` link the customer opens on the Zone root like an admin-issued exclusive
+//! invite (set a password or keep using the link). The owner switches both per App
+//! instance with `apps.app_login.set`; records live under
+//! `services/control_panel/app_login/` and `services/control_panel/app_identities/`.
 
 use crate::agent_mgr::{AgentKv, AgentNameIndex, ZoneKv};
 use crate::exclusive_invite::{
-    invite_view, is_invite_id, issue_credential_with_ttl, load_account, load_invite,
-    new_invite_id, revoke_families, validate_return_path,
+    invite_link, invite_view, is_invite_id, issue_credential_with_ttl, load_account,
+    load_invite, new_invite_id, revoke_families, validate_return_path,
 };
 use crate::user_mgr::{after_account_created, new_account_actions, validate_username};
 use crate::{ControlPanelServer, RpcAuthPrincipal};
@@ -20,11 +22,11 @@ use buckyos_api::{
     app_identity_digest, app_identity_key, app_login_code, app_login_settings_key,
     exclusive_invite_key, get_buckyos_api_runtime, split_app_login_code, AccessDenial,
     AppAccessTokenLoginRequest, AppIdentityBinding, AppInstanceId, AppLoginSettings, AuthTarget,
-    DenyReason, ExclusiveInvite, ExclusiveInviteLoginResult, InviteChannel, InviteCredentialState,
-    InviteIssuer, InviteLoginRefusal, InviteResource, InviteResourceState, InviteState,
+    DenyReason, ExclusiveInvite, ExclusiveInviteLoginResult, InviteChannel, InviteCredentialKind,
+    InviteCredentialState, InviteIssuer, InviteLoginRefusal, InviteResource, InviteResourceState, InviteState,
     PasswordState, RevokeFamiliesRequest, TokenPrincipalKind, UserSettings, UserState, UserType,
     APP_IDENTITIES_PREFIX, APP_LOGIN_CHANNEL_KIND, APP_LOGIN_CODE_TTL_SECS,
-    APP_LOGIN_ISSUE_PER_MINUTE, CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    APP_LOGIN_ISSUE_PER_MINUTE, CONTROL_PANEL_SERVICE_UNIQUE_ID, EXCLUSIVE_INVITE_TTL_SECS,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use log::{info, warn};
@@ -91,10 +93,32 @@ fn rate_limited(method: &str) -> RPCErrors {
         .into_rpc_error()
 }
 
+/// `user.app_login.issue.kind`: what the App gets back.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IssueKind {
+    /// A one-time code, exchanged on the App's origin within ten minutes.
+    #[default]
+    Code,
+    /// A 48-hour `/sso/invite` link on the Zone root (D-8).
+    Link,
+}
+
+impl IssueKind {
+    fn credential(self) -> (u64, InviteCredentialKind) {
+        match self {
+            IssueKind::Code => (APP_LOGIN_CODE_TTL_SECS, InviteCredentialKind::Code),
+            IssueKind::Link => (EXCLUSIVE_INVITE_TTL_SECS, InviteCredentialKind::Link),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct IssueParams {
     external_account_id: String,
+    #[serde(default)]
+    kind: IssueKind,
     #[serde(default)]
     user_id: Option<String>,
     #[serde(default)]
@@ -145,6 +169,18 @@ pub(crate) struct IssuedAppLogin {
 impl IssuedAppLogin {
     pub(crate) fn code(&self) -> String {
         app_login_code(&self.invite.invite_id, &self.secret)
+    }
+
+    pub(crate) fn link(&self, origin: &str) -> String {
+        invite_link(origin, &self.invite.invite_id, &self.secret)
+    }
+
+    /// `{code}` or `{link}` as the record's credential kind says; the secret appears here only.
+    fn credential_field(&self, origin: &str) -> (&'static str, String) {
+        match self.invite.credential.kind {
+            InviteCredentialKind::Code => ("code", self.code()),
+            InviteCredentialKind::Link => ("link", self.link(origin)),
+        }
     }
 }
 
@@ -204,8 +240,9 @@ fn disabled(method: &str) -> RPCErrors {
 }
 
 /// Maps the external account to its Limited account (creating it on first sight),
-/// and writes the one-time code record; one transaction. An explicit `user_id` must
-/// already be bound to the same external account (SSO-10: no naming other accounts).
+/// and writes the credential record (code or link); one transaction. An explicit
+/// `user_id` must already be bound to the same external account (SSO-10: no naming
+/// other accounts).
 pub(crate) async fn issue_app_login(
     kv: &dyn AgentKv,
     zone_did: &DID,
@@ -320,7 +357,8 @@ pub(crate) async fn issue_app_login(
         }
     };
     let invite_id = new_invite_id();
-    let (credential, secret) = issue_credential_with_ttl(1, now, APP_LOGIN_CODE_TTL_SECS);
+    let (ttl, credential_kind) = params.kind.credential();
+    let (credential, secret) = issue_credential_with_ttl(1, now, ttl, credential_kind);
     let resource_state = match params.resource {
         Some(InviteResource::GroupSession { .. }) => InviteResourceState::Pending,
         _ => InviteResourceState::None,
@@ -543,9 +581,10 @@ impl ControlPanelServer {
         )
     }
 
-    /// `user.app_login.issue {external_account_id, user_id?, show_name?, resource?,
-    /// return_path?}` → `{user_id, code, expires_at, invite, new_account}`; the App's
-    /// own service session. The code appears only in this response.
+    /// `user.app_login.issue {external_account_id, kind?: "code" | "link", user_id?,
+    /// show_name?, resource?, return_path?}` → `{user_id, code | link, expires_at,
+    /// invite, new_account}`; the App's own service session. The code or link appears
+    /// only in this response.
     pub(crate) async fn handle_app_login_issue(
         &self,
         req: RPCRequest,
@@ -566,6 +605,7 @@ impl ControlPanelServer {
             return Err(rate_limited(ISSUE_METHOD));
         }
         let runtime = get_buckyos_api_runtime()?;
+        let zone_host = Self::sso_zone_host(runtime)?;
         let kv = ZoneKv::connect().await?;
         let issued = issue_app_login(&kv, &runtime.zone_id, &app_instance_id, params, now).await?;
         if issued.new_account {
@@ -574,17 +614,21 @@ impl ControlPanelServer {
             }
         }
         info!(
-            "App {} issued a login code {} for account '{}' (new: {})",
-            app_instance_id, issued.invite.invite_id, issued.invite.user_id, issued.new_account
+            "App {} issued a login {:?} {} for account '{}' (new: {})",
+            app_instance_id,
+            issued.invite.credential.kind,
+            issued.invite.invite_id,
+            issued.invite.user_id,
+            issued.new_account
         );
-        let code = issued.code();
+        let (field, secret) = issued.credential_field(&Self::zone_root_origin(&req, &zone_host));
         let invite = self
             .invite_resource_step(&kv, &caller_token, issued.invite, &issued.account_did)
             .await?;
         success(
             json!({
                 "user_id": invite.user_id,
-                "code": code,
+                field: secret,
                 "expires_at": invite.credential.expires_at,
                 "invite": invite_view(&invite),
                 "new_account": issued.new_account,
@@ -631,6 +675,12 @@ impl ControlPanelServer {
                 req.seq,
             );
         };
+        if invite.credential.kind != InviteCredentialKind::Code {
+            return denied(
+                AccessDenial::new(DenyReason::EntryUnavailable).with_detail("credential_kind"),
+                req.seq,
+            );
+        }
         let app_instance_id: AppInstanceId = app_instance_id.parse().map_err(|error| {
             RPCErrors::ReasonError(format!("invite {invite_id} app instance: {error}"))
         })?;
@@ -786,6 +836,7 @@ mod tests {
         assert_eq!(first.invite.channel.kind, APP_LOGIN_CHANNEL_KIND);
         assert_eq!(first.invite.resource_state, InviteResourceState::Pending);
         assert_eq!(first.invite.credential.expires_at, 10 + APP_LOGIN_CODE_TTL_SECS);
+        assert_eq!(first.invite.credential.kind, InviteCredentialKind::Code);
         assert_eq!(first.invite.return_path, "/");
         let code = first.code();
         let (invite_id, secret) = split_app_login_code(&code).unwrap();
@@ -839,6 +890,39 @@ mod tests {
             issue(&kv, &crm, json!({"external_account_id": "x", "return_path": "https://evil/"}), 41).await,
             Err(RPCErrors::ParseRequestError(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_link_lives_48_hours_on_the_zone_root_and_reuses_the_account() {
+        let kv = MemKv::default();
+        let crm = crm();
+        enable(&kv, &crm);
+        let code = issue(&kv, &crm, json!({"external_account_id": "crm:9"}), 10).await.unwrap();
+        let link = issue(
+            &kv,
+            &crm,
+            json!({"external_account_id": "crm:9", "kind": "link", "return_path": "/messagehub/guest?group=did%3Abns%3Ag&session=t"}),
+            20,
+        )
+        .await
+        .unwrap();
+        assert!(!link.new_account);
+        assert_eq!(link.invite.user_id, code.invite.user_id);
+        assert_eq!(link.invite.credential.kind, InviteCredentialKind::Link);
+        assert_eq!(link.invite.credential.expires_at, 20 + EXCLUSIVE_INVITE_TTL_SECS);
+        assert_eq!(link.invite.issuer, code.invite.issuer);
+        assert_eq!(link.invite.channel.kind, APP_LOGIN_CHANNEL_KIND);
+        let (field, value) = link.credential_field("https://test.buckyos.io");
+        assert_eq!(field, "link");
+        assert_eq!(
+            value,
+            format!("https://test.buckyos.io/sso/invite/{}#s={}", link.invite.invite_id, link.secret)
+        );
+        assert_eq!(code.credential_field("https://test.buckyos.io"), ("code", code.code()));
+        let stored: ExclusiveInvite = kv.read(&exclusive_invite_key(&link.invite.invite_id));
+        assert_eq!(stored.credential.kind, InviteCredentialKind::Link);
+        assert_eq!(stored.return_path, "/messagehub/guest?group=did%3Abns%3Ag&session=t");
+        assert!(serde_json::from_value::<IssueParams>(json!({"external_account_id": "crm:9", "kind": "ticket"})).is_err());
     }
 
     #[tokio::test]

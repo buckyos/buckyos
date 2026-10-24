@@ -284,3 +284,23 @@ export const rotateExclusiveInvite = (inviteId: string): RpcResult<ExclusiveInvi
 
 export const retryExclusiveInviteResource = (inviteId: string): RpcResult<Record<string, unknown>> =>
   callSession<Record<string, unknown>>('user.exclusive_invite.retry_resource', { invite_id: inviteId })
+
+// ── App 代登录 (EXT-09 / EXT-11): the App owner's switch per App instance ──
+
+export interface AppLoginSettings {
+  enabled: boolean
+  updated_by: string
+  updated_at: number
+}
+
+export interface AppLoginState {
+  settings: AppLoginSettings
+  /** Limited accounts this App instance has signed in so far. */
+  bound_accounts: number
+}
+
+export const fetchAppLoginState = (appInstanceId: string): RpcResult<AppLoginState> =>
+  callSession<AppLoginState>('apps.app_login.get', { app_instance_id: appInstanceId })
+
+export const setAppLoginEnabled = (appInstanceId: string, enabled: boolean): RpcResult<{ settings: AppLoginSettings; families_revoked: number }> =>
+  callSession<{ settings: AppLoginSettings; families_revoked: number }>('apps.app_login.set', { app_instance_id: appInstanceId, enabled })

@@ -132,6 +132,8 @@ interface MockState {
   /** Hybrid SSO state; a partial seed is merged over the defaults. */
   sso?: Partial<MockSso>
   user_invites?: Record<string, UserInviteRecord>
+  /** `apps.app_login.*`: the owner's switch per App instance (EXT-09 / EXT-11). */
+  app_logins?: Record<string, { enabled: boolean; updated_by: string; updated_at: number }>
 }
 
 type MockSession =
@@ -1023,6 +1025,26 @@ function federationChecks(state: MockState, method: string, params: Record<strin
   return { clientZone: stringParam(params, 'client_zone'), clientHost, redirectUri, flowState: stringParam(params, 'state') }
 }
 
+/** `apps.app_login.get/set`: the App owner's per-instance switch; the mock does not track bound accounts. */
+function handleAppLogin(state: MockState, method: string, params: Record<string, unknown>): unknown {
+  requireSignedIn(state, method)
+  const appInstanceId = stringParam(params, 'app_instance_id')
+  state.app_logins ??= {}
+  const current = state.app_logins[appInstanceId] ?? { enabled: false, updated_by: '', updated_at: 0 }
+  switch (method) {
+    case 'apps.app_login.get':
+      return { settings: current, bound_accounts: 0 }
+    case 'apps.app_login.set': {
+      if (typeof params.enabled !== 'boolean') throw new MockRpcError('missing param enabled')
+      const settings = { enabled: params.enabled, updated_by: state.account.user_id, updated_at: nowSecs() }
+      state.app_logins[appInstanceId] = settings
+      return { settings, families_revoked: 0 }
+    }
+    default:
+      throw new MockRpcError(`Unknown method: ${method}`)
+  }
+}
+
 function handleSso(state: MockState, method: string, params: Record<string, unknown>): unknown {
   const sso = ssoOf(state)
   const now = nowSecs()
@@ -1394,6 +1416,7 @@ function handle(state: MockState, method: string, params: Record<string, unknown
     default:
       if (method.startsWith('user_group.')) return handleUserGroup(state, method, params)
       if (method.startsWith('auth.') || method.startsWith('sso.') || method.startsWith('user.exclusive_invite.')) return handleSso(state, method, params)
+      if (method.startsWith('apps.app_login.')) return handleAppLogin(state, method, params)
       throw new MockRpcError(`Unknown method: ${method}`)
   }
 }

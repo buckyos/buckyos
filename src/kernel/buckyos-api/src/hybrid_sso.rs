@@ -675,6 +675,17 @@ pub enum InviteCredentialState {
     Consumed,
 }
 
+/// What the secret of an invite record is: the `#s=` of a `/sso/invite` link that
+/// stays usable until it expires or the account sets a password, or a one-time code an
+/// App page exchanges on its own origin (EXT-09). The two are never interchangeable.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InviteCredentialKind {
+    #[default]
+    Link,
+    Code,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct InviteCredential {
     pub version: u32,
@@ -683,6 +694,8 @@ pub struct InviteCredential {
     pub issued_at: u64,
     pub expires_at: u64,
     pub state: InviteCredentialState,
+    #[serde(default)]
+    pub kind: InviteCredentialKind,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -780,8 +793,10 @@ impl ExclusiveInvite {
 pub enum SessionSource {
     ExclusiveInvite { invite_id: String, version: u32 },
     DidFederation { canonical_host: String },
-    /// Issued by `login_by_app_access_token`: the App instance the code was
-    /// minted for (also the session's target) and the invite record behind it.
+    /// Signed in through a credential an App issued (`user.app_login.issue`): a one-time
+    /// code exchanged into a session targeting that App instance, or a 48-hour customer
+    /// link opened on the Zone root (EXT-11). Either way the App's `app_login` switch and
+    /// runtime vouch for the family.
     AppLogin {
         app_instance_id: String,
         invite_id: String,
@@ -1049,6 +1064,7 @@ mod tests {
                 issued_at: now,
                 expires_at: now + EXCLUSIVE_INVITE_TTL_SECS,
                 state: InviteCredentialState::Active,
+                kind: InviteCredentialKind::Link,
             },
             resend: None,
             created_at: now,

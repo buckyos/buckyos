@@ -20,6 +20,7 @@
  */
 import { serveDir } from "jsr:@std/http/file-server";
 import { runXllmIdentitySelftest } from "./xllm_selftest.ts";
+import { handleSupportRoute, type SupportContext } from "./support_group.ts";
 
 type NodeSdkModule = typeof import("@sys-test/websdk-node-types");
 type AppInstanceIdentity = {
@@ -831,6 +832,21 @@ let groupRunners = bootstrapState.kind === "ready"
   ? buildGroupRunners(bootstrapState)
   : null;
 
+// The customer-service example (support_group.ts) needs the App service session
+// and the owner identity; both come from the bootstrap state.
+function supportContext(): SupportContext | null {
+  if (bootstrapState.kind !== "ready") return null;
+  const { sdk, identity } = bootstrapState;
+  return {
+    ownerUserId: identity.ownerUserId,
+    appInstanceId: `${identity.appId}@${identity.ownerUserId}`,
+    zoneHost: sdk.buckyos.getZoneHostName() ?? "",
+    serviceClient: (service) => sdk.buckyos.getServiceRpcClient(service),
+    clientWithToken: (service, token) =>
+      new sdk.buckyos.kRPCClient(sdk.buckyos.getZoneServiceURL(service), token),
+  };
+}
+
 let bootstrapRetryAttempt = 0;
 
 async function retryBootstrapUntilReady(): Promise<void> {
@@ -953,6 +969,9 @@ Deno.serve({
     console.log(`  POST ${sdkRoutePrefix}/selftest/service_clients`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/sdk_utilities`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/ndm_proxy`);
+    console.log(`  GET  /support/panel                           (customer-service example panel)`);
+    console.log(`  GET  ${sdkRoutePrefix}/support/summary`);
+    console.log(`  POST ${sdkRoutePrefix}/support/customer_link`);
     console.log(
       `  GET  *                                       (static dist/)`,
     );
@@ -991,6 +1010,9 @@ Deno.serve({
   };
 
   try {
+    const support = await handleSupportRoute(req, url, sdkRoutePrefix, supportContext());
+    if (support) return tap(url.pathname, support);
+
     if (req.method === "GET" && url.pathname === `${sdkRoutePrefix}/healthz`) {
       return tap(
         "healthz",
@@ -1018,7 +1040,7 @@ Deno.serve({
           appId: identity.appId,
           appInstanceId: sdk.buckyos.getAppInstanceId(),
           ownerUserId: identity.ownerUserId,
-          zoneHost: sdk.buckyos.getZoneHostName(),
+          zoneHost: sdk.buckyos.getZoneHostName() ?? "",
           hostGateway: getEnv("BUCKYOS_HOST_GATEWAY"),
           expectedTokenEnvKey: "BUCKYOS_APP_TOKEN",
           serviceUrls: {

@@ -18,6 +18,7 @@
 import { buckyos, ndm, RuntimeType } from 'buckyos'
 import { NfspClient } from 'buckyos/nfsp'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
+import { renderSupportGroupPanel } from './src/support_group'
 
 const APP_ID = 'buckyos-systest.buckyos.bns.did'
 const SELFTEST_BASE_URL = '/sdk/appservice/selftest'
@@ -599,6 +600,7 @@ async function extractNdmObjects() {
 async function main() {
   renderGroups()
   renderNdmDemoPanel()
+  renderSupportGroupPanel()
   setAuthStatus({ kind: 'init' })
 
   try {
